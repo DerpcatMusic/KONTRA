@@ -174,9 +174,17 @@ impl LibraryKey {
     /// is position-relative, so members can be read at random offsets.
     pub fn apply_at(&self, offset: u64, bytes: &mut [u8]) {
         let len = self.stream.len();
-        let start = (offset % len as u64) as usize;
-        for (i, byte) in bytes.iter_mut().enumerate() {
-            *byte ^= self.stream[(start + i) % len];
+        let mut at = (offset % len as u64) as usize;
+        // Whole runs up to the stream's wrap-around: a plain XOR that vectorizes.
+        for run in bytes.chunks_mut(len) {
+            let (head, tail) = run.split_at_mut((len - at).min(run.len()));
+            for (byte, key) in head.iter_mut().zip(&self.stream[at..]) {
+                *byte ^= key;
+            }
+            for (byte, key) in tail.iter_mut().zip(&self.stream[..]) {
+                *byte ^= key;
+            }
+            at = (at + run.len()) % len;
         }
     }
 }

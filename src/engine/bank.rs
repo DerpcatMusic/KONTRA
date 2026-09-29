@@ -695,7 +695,7 @@ fn spans(plays: &[&ZonePlay], preload: u64) -> Plan {
 
 /// Run `f` over `items` on every core, keeping order. Each worker owns one
 /// `S` scratch value across its items.
-fn parallel<T: Send, S: Default, R: Send>(
+pub(crate) fn parallel<T: Send, S: Default, R: Send>(
     items: Vec<T>,
     f: impl Fn(&mut S, T) -> R + Sync,
 ) -> Vec<R> {

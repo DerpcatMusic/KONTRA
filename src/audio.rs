@@ -83,11 +83,10 @@ impl Pcm {
                 .chunks(256)
                 .all(|c| c.iter().fold(true, |ok, &x| ok & exact(x, scale)))
         };
+        // Encoding checks exactness itself and gives up at the first
+        // inexact block, so no separate scan precedes it.
         for scale in [I16_SCALE, I24_SCALE] {
-            if compress
-                && exact(scale)
-                && let Some(packed) = Packed::encode(frames, scale)
-            {
+            if compress && let Some(packed) = Packed::encode(frames, scale) {
                 return Self::Packed(packed);
             }
         }
@@ -210,7 +209,8 @@ pub struct Packed {
 }
 
 impl Packed {
-    /// Pack `frames`, exact at `scale`, unless that saves under a tenth.
+    /// Pack `frames` if every sample is exact at `scale` and packing saves
+    /// at least a tenth.
     fn encode(frames: &[Frame], scale: f32) -> Option<Self> {
         let raw = frames.len() * if scale == I16_SCALE { 4 } else { 6 };
         let blocks = frames.len().div_ceil(BLOCK);
@@ -220,41 +220,48 @@ impl Packed {
         let mut data = Vec::with_capacity(raw * 3 / 4);
         let mut offsets = Vec::with_capacity(blocks);
         let mut block = [[0i32; BLOCK]; 2];
+        let mut residuals = [[0i32; BLOCK - 2]; 2];
         for chunk in frames.chunks(BLOCK) {
             offsets.push(data.len() as u32);
-            for (c, channel) in block.iter_mut().enumerate() {
-                for (i, x) in channel.iter_mut().enumerate() {
-                    // The last block repeats its final frame: cheap to pack.
-                    *x = (chunk[i.min(chunk.len() - 1)][c] * scale) as i32;
+            let mut inexact = false;
+            for i in 0..BLOCK {
+                // The last block repeats its final frame: cheap to pack.
+                let frame = chunk[i.min(chunk.len() - 1)];
+                for c in 0..2 {
+                    let q = frame[c] * scale;
+                    block[c][i] = q as i32;
+                    inexact |= !exact_at(q, scale);
                 }
             }
-            let residuals = block.map(|x| {
-                std::array::from_fn::<i32, { BLOCK - 2 }, _>(|i| {
-                    x[i + 2].wrapping_sub(x[i + 1].wrapping_mul(2)).wrapping_add(x[i])
-                })
-            });
-            let widths = residuals.map(|r| {
-                let m = r.iter().fold(0u32, |m, &v| m | (v ^ (v >> 31)) as u32);
-                if m == 0 { 0 } else { 33 - m.leading_zeros() as u8 }
-            });
+            if inexact {
+                return None;
+            }
+            let mut widths = [0u8; 2];
+            for c in 0..2 {
+                let (x, r) = (&block[c], &mut residuals[c]);
+                let mut magnitude = 0u32;
+                for i in 0..BLOCK - 2 {
+                    r[i] = x[i + 2].wrapping_sub(x[i + 1].wrapping_mul(2)).wrapping_add(x[i]);
+                    magnitude |= (r[i] ^ (r[i] >> 31)) as u32;
+                }
+                widths[c] = if magnitude == 0 { 0 } else { 33 - magnitude.leading_zeros() as u8 };
+            }
             data.extend(widths);
             for x in &block {
                 data.extend(x[0].to_le_bytes());
                 data.extend(x[1].to_le_bytes());
             }
             for (r, &w) in residuals.iter().zip(&widths) {
-                let (mut acc, mut bits) = (0u64, 0);
+                let (mask, mut acc, mut bits) = ((1u64 << w) - 1, 0u64, 0);
                 for &v in r {
-                    acc |= (v as u64 & ((1u64 << w) - 1)) << bits;
-                    bits += w as u32;
-                    while bits >= 8 {
-                        data.push(acc as u8);
-                        (acc, bits) = (acc >> 8, bits - 8);
+                    acc |= (v as u64 & mask) << bits;
+                    bits += u32::from(w);
+                    if bits >= 32 {
+                        data.extend((acc as u32).to_le_bytes());
+                        (acc, bits) = (acc >> 32, bits - 32);
                     }
                 }
-                if bits > 0 {
-                    data.push(acc as u8);
-                }
+                data.extend(&acc.to_le_bytes()[..bits.div_ceil(8) as usize]);
             }
             if data.len() + 8 >= raw * 9 / 10 {
                 return None;
@@ -333,7 +340,12 @@ impl Packed {
 /// Whether `x * scale` is an integer in `-scale..scale`.
 #[inline]
 fn exact(x: f32, scale: f32) -> bool {
-    let q = x * scale;
+    exact_at(x * scale, scale)
+}
+
+/// Whether `q` is an integer in `-scale..scale`.
+#[inline]
+fn exact_at(q: f32, scale: f32) -> bool {
     ((q as i32) as f32 == q) & (q >= -scale) & (q < scale)
 }
 
@@ -404,7 +416,7 @@ impl Sources {
                 }
                 let (index, file) = &self.archives[&archive];
                 let entry = index
-                    .member(file, &member)?
+                    .member(FileAt { file, pos: 0 }, &member)?
                     .context("Archive member not found")?;
                 (archive, entry)
             }
@@ -478,6 +490,36 @@ impl Source {
             pos: 0,
             key: self.key.clone(),
         })
+    }
+}
+
+/// Read and Seek over a shared file with a private position: positional
+/// reads, so threads can share one handle and no seek is a syscall.
+pub(crate) struct FileAt<'a> {
+    pub file: &'a File,
+    pub pos: u64,
+}
+
+impl Read for FileAt<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        #[cfg(unix)]
+        let n = std::os::unix::fs::FileExt::read_at(self.file, buf, self.pos)?;
+        #[cfg(windows)]
+        let n = std::os::windows::fs::FileExt::seek_read(self.file, buf, self.pos)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for FileAt<'_> {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        self.pos = match to {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::Current(n) => self.pos.checked_add_signed(n),
+            SeekFrom::End(n) => self.file.metadata()?.len().checked_add_signed(n),
+        }
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before start"))?;
+        Ok(self.pos)
     }
 }
 
