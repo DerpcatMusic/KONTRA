@@ -11,7 +11,16 @@ use crate::{
     import::{Group, Instrument, VoiceLimit, Zone},
 };
 use anyhow::{Result, bail, ensure};
-use std::{collections::HashMap, num::NonZero, ops::Range, path::PathBuf, sync::Mutex};
+use std::{
+    collections::HashMap,
+    num::NonZero,
+    ops::Range,
+    path::PathBuf,
+    sync::{
+        Mutex,
+        atomic::{AtomicU32, AtomicUsize, Ordering},
+    },
+};
 
 /// Default resident sample memory budget per bank.
 pub const MEMORY_LIMIT: usize = 1 << 30;
@@ -187,6 +196,9 @@ pub struct Bank {
     pub issues: Vec<String>,
 }
 
+/// [`Bank::load_counting`]'s progress once every sample is read.
+pub const LOAD_DONE: u32 = 1000;
+
 impl Bank {
     /// Load every group of `instrument` within [`MEMORY_LIMIT`], streaming
     /// long samples from disk.
@@ -198,6 +210,16 @@ impl Bank {
     /// resident samples and stream buffers. The preload shrinks from
     /// [`PRELOAD_FRAMES`] toward [`MIN_PRELOAD`] until the bank fits.
     pub fn load_within(instrument: &Instrument, budget: usize) -> Result<Self> {
+        Self::load_counting(instrument, budget, &AtomicU32::new(0))
+    }
+
+    /// [`Bank::load_within`], counting `progress` up to [`LOAD_DONE`] as
+    /// samples are opened and then read.
+    pub fn load_counting(
+        instrument: &Instrument,
+        budget: usize,
+        progress: &AtomicU32,
+    ) -> Result<Self> {
         let mut issues = Issues::default();
         // Resolve each distinct sample once, then open them all in parallel.
         let mut ids: HashMap<&PathBuf, usize> = HashMap::new();
@@ -226,7 +248,14 @@ impl Bank {
             .map(|path| sources.source_in(path, members.get(*path)))
             .collect();
         drop(members);
+        // Each sample is opened, then read: two steps apiece.
+        let (steps, done) = (2 * paths.len().max(1), AtomicUsize::new(0));
+        let step = || {
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            progress.store((n * LOAD_DONE as usize / steps) as u32, Ordering::Relaxed);
+        };
         let opened = parallel(resolved, |_: &mut (), source| {
+            step();
             let source = source?;
             anyhow::Ok((source.open()?, source))
         });
@@ -282,6 +311,7 @@ impl Bank {
                         })
                     })
                     .collect::<Result<Vec<_>>>();
+                step();
                 (spans, streamed, reader.rate, source)
             },
         );
@@ -451,7 +481,10 @@ impl Builder {
                             zone.sample.display()
                         ));
                     }
-                    let start_mod = zone.start_mod.map_or(0, u64::from).min(map.end - map.start - 1);
+                    let start_mod = zone
+                        .start_mod
+                        .map_or(0, u64::from)
+                        .min(map.end - map.start - 1);
                     plays.push(ZonePlay {
                         sample,
                         span: 0,
@@ -492,11 +525,14 @@ impl Builder {
             self.polyphony = (limit.max_voices as usize).clamp(1, super::MAX_VOICES);
         }
         for (settings, group) in self.settings.iter_mut().zip(&self.groups) {
-            settings.voice_group = group.voice_group.and_then(|v| u16::try_from(v).ok()).filter(|&v| {
-                self.voice_groups
-                    .get(v as usize)
-                    .is_some_and(Option::is_some)
-            });
+            settings.voice_group = group
+                .voice_group
+                .and_then(|v| u16::try_from(v).ok())
+                .filter(|&v| {
+                    self.voice_groups
+                        .get(v as usize)
+                        .is_some_and(Option::is_some)
+                });
         }
     }
 
