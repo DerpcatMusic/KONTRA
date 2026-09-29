@@ -23,6 +23,8 @@ pub struct NcwReader<R> {
     pub sample_format: SampleFormat,
     /// Reader position after the last decoded block, if nothing moved it since.
     position: Option<u64>,
+    /// Per-channel samples of the last decoded block, reused across blocks.
+    channels: Vec<Vec<i32>>,
 }
 
 impl<R: Read + Seek> NcwReader<R> {
@@ -71,6 +73,7 @@ impl<R: Read + Seek> NcwReader<R> {
             block_offsets,
             sample_format,
             position: None,
+            channels: Vec::new(),
         })
     }
 
@@ -118,6 +121,25 @@ impl<R: Read + Seek> NcwReader<R> {
     /// the frame count. Blocks are independently addressable, so a streamer can
     /// seek to any frame by decoding `frame / FRAMES_PER_BLOCK`.
     pub fn decode_block_into(&mut self, index: usize, out: &mut Vec<i32>) -> Result<usize, Error> {
+        let channels = self.decode_block(index)?;
+        let frames = channels.first().map_or(0, Vec::len);
+        let additional = frames
+            .checked_mul(channels.len())
+            .ok_or(Error::InvalidHeader("decoded sample count overflow"))?;
+        out.try_reserve(additional)
+            .map_err(|_| Error::InvalidHeader("decoded samples exceed available memory"))?;
+        for i in 0..frames {
+            for channel in channels {
+                out.push(channel[i]);
+            }
+        }
+        Ok(frames)
+    }
+
+    /// Decode one block into per-channel sample buffers, each holding the
+    /// block's frames. The buffers are reused, so decoding allocates nothing
+    /// once warm.
+    pub fn decode_block(&mut self, index: usize) -> Result<&[Vec<i32>], Error> {
         let num_samples = self.header.num_samples as usize;
         let num_channels = self.header.channels as usize;
         let offset = *self
@@ -139,7 +161,8 @@ impl<R: Read + Seek> NcwReader<R> {
         }
         // A malformed payload must never consume bytes from the next group.
         let mut group = self.reader.by_ref().take(u64::from(end - offset));
-        let mut channels = Vec::new();
+        let channels = &mut self.channels;
+        channels.resize_with(num_channels, Vec::new);
         let mut mid_side = false;
         for channel_index in 0..num_channels {
             let block_header = BlockHeader::read(&mut group)?;
@@ -154,9 +177,9 @@ impl<R: Read + Seek> NcwReader<R> {
                     ));
                 }
             }
-            let mut channel = Vec::new();
-            read_block(&mut group, &self.header, &block_header, &mut channel)?;
-            channels.push(channel);
+            let channel = &mut channels[channel_index];
+            channel.clear();
+            read_block(&mut group, &self.header, &block_header, channel)?;
         }
         if group.limit() != 0 {
             return Err(Error::InvalidHeader("unconsumed block bytes"));
@@ -167,17 +190,10 @@ impl<R: Read + Seek> NcwReader<R> {
             decode_mid_side(&mut mid[0], &mut side[0], self.sample_format);
         }
         let frames = (num_samples.saturating_sub(index * SAMPLES_PER_BLOCK)).min(SAMPLES_PER_BLOCK);
-        let additional = frames
-            .checked_mul(num_channels)
-            .ok_or(Error::InvalidHeader("decoded sample count overflow"))?;
-        out.try_reserve(additional)
-            .map_err(|_| Error::InvalidHeader("decoded samples exceed available memory"))?;
-        for i in 0..frames {
-            for channel in &channels {
-                out.push(channel[i]);
-            }
+        for channel in channels.iter_mut() {
+            channel.truncate(frames);
         }
-        Ok(frames)
+        Ok(channels)
     }
 }
 

@@ -600,7 +600,6 @@ struct NcwCodec {
     scale: f32,
     /// Cached decoded block: index and frames.
     block: Option<usize>,
-    raw: Vec<i32>,
     frames: Vec<Frame>,
 }
 
@@ -650,7 +649,6 @@ impl SampleReader {
             float: reader.sample_format == ncw::SampleFormat::Float,
             reader,
             block: None,
-            raw: Vec::new(),
             frames: Vec::new(),
         };
         Ok(Self {
@@ -710,12 +708,15 @@ impl SampleReader {
         let (head, tail) = out.split_at_mut(valid);
         tail.fill([0.0; 2]);
         match &mut self.codec {
+            // Integer NCW is always finite; float NCW is cleaned per block.
             Codec::Ncw(codec) => codec.read(start, head)?,
-            Codec::Pcm(codec) => codec.read(start, head)?,
-        }
-        for sample in head.as_flattened_mut() {
-            if !sample.is_finite() {
-                *sample = 0.0;
+            Codec::Pcm(codec) => {
+                codec.read(start, head)?;
+                for sample in head.as_flattened_mut() {
+                    if !sample.is_finite() {
+                        *sample = 0.0;
+                    }
+                }
             }
         }
         Ok(())
@@ -729,22 +730,21 @@ impl NcwCodec {
             let index = (start / BLOCK) as usize;
             if self.block != Some(index) {
                 self.block = None;
-                self.raw.clear();
-                self.reader.decode_block_into(index, &mut self.raw)?;
+                let channels = self.reader.decode_block(index)?;
                 let (float, scale) = (self.float, self.scale);
                 let convert = |s: i32| {
                     if float {
-                        f32::from_bits(s as u32)
+                        Some(f32::from_bits(s as u32)).filter(|x| x.is_finite()).unwrap_or(0.0)
                     } else {
                         s as f32 / scale
                     }
                 };
-                let last = self.channels - 1;
+                let (left, right) = (&channels[0], &channels[self.channels - 1]);
                 self.frames.clear();
                 self.frames.extend(
-                    self.raw
-                        .chunks_exact(self.channels)
-                        .map(|s| [convert(s[0]), convert(s[last])]),
+                    left.iter()
+                        .zip(right)
+                        .map(|(&l, &r)| [convert(l), convert(r)]),
                 );
                 self.block = Some(index);
             }

@@ -386,8 +386,11 @@ impl Worker {
             return false;
         };
         let read = slot.read.load(Ordering::Acquire);
-        let limit = read.saturating_add(lead.min(RING)).min(config.map.len(config.wraps));
-        if cursor.next >= limit {
+        let end = config.map.len(config.wraps);
+        let limit = read.saturating_add(lead.min(RING)).min(end);
+        // Refill in whole chunks: a trickle each wakeup costs nearly as much
+        // per call as a full chunk.
+        if cursor.next >= limit || (limit - cursor.next < CHUNK && limit < end) {
             return false;
         }
         let n = (limit - cursor.next).min(CHUNK);
