@@ -648,7 +648,7 @@ fn streamed_playback_matches_ram_playback() {
         let instrument = instrument(vec![group.clone()], vec![zone.clone()]);
         let mut streamed = Bank::load(&instrument).unwrap();
         if shrink.is_some() {
-            streamed = Bank::load_within(&instrument, streamed.bytes - 1).unwrap();
+            streamed = Bank::load_within(&instrument, streamed.planned - 1).unwrap();
             assert!(streamed.preload < PRELOAD_FRAMES, "case {n}");
         }
         assert_eq!(
