@@ -55,7 +55,9 @@ impl GroupMask {
     }
 
     pub fn contains(&self, group: usize) -> bool {
-        self.0.get(group / 64).is_some_and(|w| w & (1 << (group % 64)) != 0)
+        self.0
+            .get(group / 64)
+            .is_some_and(|w| w & (1 << (group % 64)) != 0)
     }
 }
 
@@ -79,7 +81,16 @@ pub struct NoteEvent<'a> {
 
 impl NoteEvent<'_> {
     pub fn new(channel: u8, note: u8, velocity: u8) -> Self {
-        Self { channel, note, velocity, groups: None, offset_us: 0, volume: 1.0, tune: 0.0, pan: 0.0 }
+        Self {
+            channel,
+            note,
+            velocity,
+            groups: None,
+            offset_us: 0,
+            volume: 1.0,
+            tune: 0.0,
+            pan: 0.0,
+        }
     }
 }
 
@@ -109,7 +120,14 @@ pub struct Engine {
 
 impl Default for Engine {
     fn default() -> Self {
-        Self { bank: None, player: Player::new(48000.0), attack: 0.002, release: 0.15, cutoff: 20000.0, blocking_streams: false }
+        Self {
+            bank: None,
+            player: Player::new(48000.0),
+            attack: 0.002,
+            release: 0.15,
+            cutoff: 20000.0,
+            blocking_streams: false,
+        }
     }
 }
 
@@ -172,7 +190,8 @@ impl Engine {
 
     pub fn cc(&mut self, channel: u8, cc: u8, value: u8) {
         let defaults = self.defaults();
-        self.player.cc(self.bank.as_deref(), channel, cc, value, defaults);
+        self.player
+            .cc(self.bank.as_deref(), channel, cc, value, defaults);
     }
 
     pub fn pitch_bend(&mut self, channel: u8, value: u16) {
@@ -225,7 +244,11 @@ impl Engine {
     }
 
     pub fn set_all_groups_allowed(&mut self, allowed: bool) {
-        self.player.allowed = if allowed { GroupMask::all() } else { GroupMask::none() };
+        self.player.allowed = if allowed {
+            GroupMask::all()
+        } else {
+            GroupMask::none()
+        };
     }
 
     pub fn allowed_groups(&self) -> &GroupMask {
@@ -239,7 +262,11 @@ impl Engine {
 
     /// Whether a key is physically down (KSP `%KEY_DOWN`).
     pub fn key_down(&self, channel: u8, note: u8) -> bool {
-        self.player.keys.get(channel as usize).and_then(|k| k.get(note as usize)).is_some_and(|&v| v > 0)
+        self.player
+            .keys
+            .get(channel as usize)
+            .and_then(|k| k.get(note as usize))
+            .is_some_and(|&v| v > 0)
     }
 
     /// Render `left.len()` frames, overwriting both buffers.
@@ -247,7 +274,10 @@ impl Engine {
         let n = left.len().min(right.len());
         left.fill(0.0);
         right.fill(0.0);
-        for (l, r) in left[..n].chunks_mut(MAX_BLOCK).zip(right[..n].chunks_mut(MAX_BLOCK)) {
+        for (l, r) in left[..n]
+            .chunks_mut(MAX_BLOCK)
+            .zip(right[..n].chunks_mut(MAX_BLOCK))
+        {
             if let Some(bank) = self.bank.as_deref() {
                 self.player.render(bank, l, r, self.blocking_streams);
             }
@@ -256,7 +286,13 @@ impl Engine {
     }
 
     fn defaults(&self) -> Ahdsr {
-        Ahdsr { attack: self.attack, hold: 0.0, decay: 0.0, sustain: 1.0, release: self.release }
+        Ahdsr {
+            attack: self.attack,
+            hold: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: self.release,
+        }
     }
 }
 
@@ -348,7 +384,13 @@ impl Player {
         ((seconds * self.rate as f32) as u32).max(1)
     }
 
-    fn start(&mut self, bank: &Bank, ev: &NoteEvent, release_trigger: bool, defaults: Ahdsr) -> Option<EventId> {
+    fn start(
+        &mut self,
+        bank: &Bank,
+        ev: &NoteEvent,
+        release_trigger: bool,
+        defaults: Ahdsr,
+    ) -> Option<EventId> {
         if ev.channel >= 16 || ev.note >= 128 || !(1..=127).contains(&ev.velocity) {
             return None;
         }
@@ -366,8 +408,19 @@ impl Player {
                 && mask.contains(zone.group)
                 && (zone.low_velocity..=zone.high_velocity).contains(&ev.velocity);
             if eligible && self.pending.len() < self.pending.capacity() {
-                let gain = edge_gain(ev.velocity, zone.low_velocity, zone.high_velocity, zone.fade_low_velocity, zone.fade_high_velocity)
-                    * edge_gain(ev.note, zone.low_key, zone.high_key, zone.fade_low_key, zone.fade_high_key);
+                let gain = edge_gain(
+                    ev.velocity,
+                    zone.low_velocity,
+                    zone.high_velocity,
+                    zone.fade_low_velocity,
+                    zone.fade_high_velocity,
+                ) * edge_gain(
+                    ev.note,
+                    zone.low_key,
+                    zone.high_key,
+                    zone.fade_low_key,
+                    zone.fade_high_key,
+                );
                 self.pending.push((z, gain));
             }
         }
@@ -379,7 +432,16 @@ impl Player {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn spawn(&mut self, bank: &Bank, z: u32, ev: &NoteEvent, event: EventId, gain: f32, release_trigger: bool, defaults: Ahdsr) {
+    fn spawn(
+        &mut self,
+        bank: &Bank,
+        z: u32,
+        ev: &NoteEvent,
+        event: EventId,
+        gain: f32,
+        release_trigger: bool,
+        defaults: Ahdsr,
+    ) {
         let zone = &bank.zones()[z as usize];
         let play = &bank.plays[z as usize];
         let group = &bank.groups()[zone.group];
@@ -387,21 +449,47 @@ impl Player {
         let sample = &bank.samples[play.sample as usize];
         self.make_room(bank, settings.voice_group);
 
-        let key = if group.key_tracking { 2f64.powf((f64::from(ev.note) - f64::from(zone.root)) / 12.0) } else { 1.0 };
+        let key = if group.key_tracking {
+            2f64.powf((f64::from(ev.note) - f64::from(zone.root)) / 12.0)
+        } else {
+            1.0
+        };
         let step = f64::from(sample.rate) / self.rate * zone.tune * group.tune * key;
         let velocity = 1.0 - settings.velocity_intensity * (1.0 - f32::from(ev.velocity) / 127.0);
-        let offset = ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64).min(play.start_mod);
+        let offset =
+            ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64).min(play.start_mod);
         // A release-triggered voice starts with its key already up.
-        let wraps = play.map.wraps(if release_trigger { offset } else { FOREVER });
+        let wraps = play
+            .map
+            .wraps(if release_trigger { offset } else { FOREVER });
         let span = &sample.spans[play.span as usize];
         let limit = play.map.resident_limit(wraps, span.start, span.end());
-        let stream = if sample.streamed { self.free.pop() } else { None }.map(|slot| {
+        let stream = if sample.streamed {
+            self.free.pop()
+        } else {
+            None
+        }
+        .map(|slot| {
             if limit == FOREVER {
                 // Reserved for a loop that may end on release.
-                Stream { slot, tag: 0, trusted: 0 }
+                Stream {
+                    slot,
+                    tag: 0,
+                    trusted: 0,
+                }
             } else {
-                let tag = bank.slots()[slot as usize].configure(play.sample, &play.map, wraps, limit, offset);
-                Stream { slot, tag, trusted: limit }
+                let tag = bank.slots()[slot as usize].configure(
+                    play.sample,
+                    &play.map,
+                    wraps,
+                    limit,
+                    offset,
+                );
+                Stream {
+                    slot,
+                    tag,
+                    trusted: limit,
+                }
             }
         });
         let base_pan = (zone.pan + group.pan).clamp(-1.0, 1.0);
@@ -448,19 +536,31 @@ impl Player {
         if let Some((group, rule)) = rules {
             if rule.exclusion >= 0 {
                 for v in &mut self.voices {
-                    let Some(other) = v.voice_group.filter(|&o| o != group) else { continue };
+                    let Some(other) = v.voice_group.filter(|&o| o != group) else {
+                        continue;
+                    };
                     if let Some(Some(o)) = limits.get(other as usize)
                         && o.exclusion == rule.exclusion
                         && !v.fade.dying()
                     {
-                        v.fade.start(0.0, ((o.fade * self.rate as f32) as u32).max(1), true);
+                        v.fade
+                            .start(0.0, ((o.fade * self.rate as f32) as u32).max(1), true);
                     }
                 }
             }
-            let live = self.voices.iter().filter(|v| v.voice_group == Some(group) && !v.fade.dying()).count();
+            let live = self
+                .voices
+                .iter()
+                .filter(|v| v.voice_group == Some(group) && !v.fade.dying())
+                .count();
             if live >= rule.max_voices {
                 let fade = self.fade_frames(rule.fade);
-                if let Some(i) = victim(&self.voices, |v| v.voice_group == Some(group), rule.kill_mode, rule.prefer_released) {
+                if let Some(i) = victim(
+                    &self.voices,
+                    |v| v.voice_group == Some(group),
+                    rule.kill_mode,
+                    rule.prefer_released,
+                ) {
                     self.voices[i].fade.start(0.0, fade, true);
                 }
             }
@@ -475,7 +575,9 @@ impl Player {
             // Storage is full of fading voices: cut the quietest.
             let quietest = (0..self.voices.len()).min_by(|&a, &b| {
                 let level = |i: usize| (!self.voices[i].fade.dying(), self.voices[i].fade.value());
-                level(a).partial_cmp(&level(b)).unwrap_or(std::cmp::Ordering::Equal)
+                level(a)
+                    .partial_cmp(&level(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
             if let Some(i) = quietest {
                 self.remove(bank, i);
@@ -502,19 +604,33 @@ impl Player {
             if sustained {
                 self.pedal_releases[c][n] = velocity;
             } else {
-                self.start(bank, &NoteEvent::new(channel, note, velocity), true, defaults);
+                self.start(
+                    bank,
+                    &NoteEvent::new(channel, note, velocity),
+                    true,
+                    defaults,
+                );
             }
         }
     }
 
     fn release_event(&mut self, bank: &Bank, id: EventId, defaults: Ahdsr) {
         let mut trigger = None;
-        for v in self.voices.iter_mut().filter(|v| v.event == id && !v.released) {
+        for v in self
+            .voices
+            .iter_mut()
+            .filter(|v| v.event == id && !v.released)
+        {
             trigger.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger));
             v.release(bank, &mut self.free);
         }
         if let Some((channel, note, velocity, false)) = trigger {
-            self.start(bank, &NoteEvent::new(channel, note, velocity), true, defaults);
+            self.start(
+                bank,
+                &NoteEvent::new(channel, note, velocity),
+                true,
+                defaults,
+            );
         }
     }
 
@@ -575,15 +691,26 @@ impl Player {
             }
         }
         for note in 0..128u8 {
-            let velocity = std::mem::take(&mut self.pedal_releases[channel as usize][note as usize]);
+            let velocity =
+                std::mem::take(&mut self.pedal_releases[channel as usize][note as usize]);
             if velocity > 0 {
-                self.start(bank, &NoteEvent::new(channel, note, velocity), true, defaults);
+                self.start(
+                    bank,
+                    &NoteEvent::new(channel, note, velocity),
+                    true,
+                    defaults,
+                );
             }
         }
     }
 
     fn render(&mut self, bank: &Bank, left: &mut [f32], right: &mut [f32], blocking: bool) {
-        let cx = Context { bank, slots: bank.slots(), bend: &self.bend, blocking };
+        let cx = Context {
+            bank,
+            slots: bank.slots(),
+            bend: &self.bend,
+            blocking,
+        };
         let mut i = 0;
         while i < self.voices.len() {
             let (alive, underrun) = self.voices[i].render(&cx, &mut self.scratch, left, right);
@@ -643,7 +770,12 @@ fn edge_gain(x: u8, lo: u8, hi: u8, fade_lo: u8, fade_hi: u8) -> f32 {
 
 /// Voice to steal: kill modes are Kontakt's (0 any, 1 oldest, 2 newest,
 /// 3 highest, 4 lowest); released voices go first when preferred.
-fn victim(voices: &[Voice], filter: impl Fn(&Voice) -> bool, mode: i16, prefer_released: bool) -> Option<usize> {
+fn victim(
+    voices: &[Voice],
+    filter: impl Fn(&Voice) -> bool,
+    mode: i16,
+    prefer_released: bool,
+) -> Option<usize> {
     voices
         .iter()
         .enumerate()

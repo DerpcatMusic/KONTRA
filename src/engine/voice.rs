@@ -57,7 +57,11 @@ pub(crate) struct Envelope {
 
 /// Per-frame multiplier that reaches −60 dB after `seconds`.
 fn exp_coef(seconds: f32, rate: f32) -> f32 {
-    if seconds > 0.0 { 0.001f32.powf(1.0 / (seconds * rate)) } else { 0.0 }
+    if seconds > 0.0 {
+        0.001f32.powf(1.0 / (seconds * rate))
+    } else {
+        0.0
+    }
 }
 
 impl Envelope {
@@ -65,7 +69,11 @@ impl Envelope {
         Self {
             stage: Stage::Attack,
             level: 0.0,
-            attack: if p.attack > 0.0 { 1.0 / (p.attack * rate) } else { 1.0 },
+            attack: if p.attack > 0.0 {
+                1.0 / (p.attack * rate)
+            } else {
+                1.0
+            },
             hold: (p.hold.max(0.0) * rate) as u32,
             decay: exp_coef(p.decay, rate),
             sustain: p.sustain.clamp(0.0, 1.0),
@@ -166,7 +174,13 @@ pub(crate) struct Fade {
 }
 
 impl Fade {
-    pub const FULL: Self = Self { value: 1.0, target: 1.0, step: 0.0, left: 0, stop: false };
+    pub const FULL: Self = Self {
+        value: 1.0,
+        target: 1.0,
+        step: 0.0,
+        left: 0,
+        stop: false,
+    };
 
     pub fn start(&mut self, target: f32, frames: u32, stop: bool) {
         self.target = target;
@@ -201,7 +215,11 @@ impl Fade {
         for a in amp {
             if self.left > 0 {
                 self.left -= 1;
-                self.value = if self.left == 0 { self.target } else { self.value + self.step };
+                self.value = if self.left == 0 {
+                    self.target
+                } else {
+                    self.value + self.step
+                };
             }
             *a *= self.value;
         }
@@ -275,7 +293,10 @@ pub(crate) struct Scratch {
 
 impl Default for Scratch {
     fn default() -> Self {
-        Self { window: vec![[0.0; 2]; WINDOW].into_boxed_slice(), amp: [0.0; MAX_BLOCK] }
+        Self {
+            window: vec![[0.0; 2]; WINDOW].into_boxed_slice(),
+            amp: [0.0; MAX_BLOCK],
+        }
     }
 }
 
@@ -288,7 +309,13 @@ pub(crate) fn balance(gain: f32, pan: f32) -> [f32; 2] {
 impl Voice {
     /// Mix one block (at most [`MAX_BLOCK`] frames) into `left`/`right`.
     /// Returns `(alive, underrun)`.
-    pub fn render(&mut self, cx: &Context, scratch: &mut Scratch, left: &mut [f32], right: &mut [f32]) -> (bool, bool) {
+    pub fn render(
+        &mut self,
+        cx: &Context,
+        scratch: &mut Scratch,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) -> (bool, bool) {
         let n = left.len().min(right.len()).min(MAX_BLOCK);
         let amp = &mut scratch.amp[..n];
         self.env.render(amp);
@@ -296,7 +323,10 @@ impl Voice {
 
         let bend = cx.bend[self.channel as usize];
         if bend != self.bend.0 {
-            self.bend = (bend, 2f64.powf(f64::from(bend) * f64::from(self.bend_range) / 12.0));
+            self.bend = (
+                bend,
+                2f64.powf(f64::from(bend) * f64::from(self.bend_range) / 12.0),
+            );
         }
         let step = (self.step * self.tune * self.bend.1).min(MAX_STEP);
 
@@ -317,8 +347,20 @@ impl Voice {
         };
 
         let target = balance(self.base_level * self.volume, self.pan);
-        let delta = [(target[0] - self.gains[0]) / n as f32, (target[1] - self.gains[1]) / n as f32];
-        mix(window, base, step, amp, self.gains, delta, &mut left[..n], &mut right[..n]);
+        let delta = [
+            (target[0] - self.gains[0]) / n as f32,
+            (target[1] - self.gains[1]) / n as f32,
+        ];
+        mix(
+            window,
+            base,
+            step,
+            amp,
+            self.gains,
+            delta,
+            &mut left[..n],
+            &mut right[..n],
+        );
         self.gains = target;
 
         self.pos += (step * n as u64) as f64 / FIXED_ONE;
@@ -441,8 +483,13 @@ impl Voice {
         };
         // Published frames before the divergence stay valid; restart after them.
         let from = self.limit.max(trusted.min(diverge));
-        let tag = slots[slot as usize].configure(self.sample, &self.map, wraps, from, self.pos as u64);
-        self.stream = Some(Stream { slot, tag, trusted: from });
+        let tag =
+            slots[slot as usize].configure(self.sample, &self.map, wraps, from, self.pos as u64);
+        self.stream = Some(Stream {
+            slot,
+            tag,
+            trusted: from,
+        });
     }
 }
 
@@ -455,7 +502,9 @@ fn copy_run(span: &Span, run: &Run, out: &mut [Frame]) {
             out.fill([0.0; 2]);
             return;
         };
-        out.iter_mut().zip(span.data[top + 1 - n..=top].iter().rev()).for_each(|(o, s)| *o = *s);
+        out.iter_mut()
+            .zip(span.data[top + 1 - n..=top].iter().rev())
+            .for_each(|(o, s)| *o = *s);
         return;
     }
     let Some(src) = at(run.frame).and_then(|s| span.data.get(s..s + n)) else {
@@ -500,7 +549,10 @@ fn mix(
     right: &mut [f32],
 ) {
     #[cfg(target_arch = "x86_64")]
-    if std::arch::is_x86_feature_detected!("avx512f") && std::arch::is_x86_feature_detected!("avx512vl") && std::arch::is_x86_feature_detected!("avx512dq") {
+    if std::arch::is_x86_feature_detected!("avx512f")
+        && std::arch::is_x86_feature_detected!("avx512vl")
+        && std::arch::is_x86_feature_detected!("avx512dq")
+    {
         // SAFETY: the running CPU supports every feature `mix_avx512` is compiled for.
         return unsafe { mix_avx512(window, base, step, amp, gains, delta, left, right) };
     }
@@ -577,7 +629,13 @@ mod tests {
     #[test]
     fn envelope_stages() {
         let rate = 1000.0;
-        let p = Ahdsr { attack: 0.01, hold: 0.005, decay: 0.1, sustain: 0.5, release: 0.1 };
+        let p = Ahdsr {
+            attack: 0.01,
+            hold: 0.005,
+            decay: 0.1,
+            sustain: 0.5,
+            release: 0.1,
+        };
         let mut env = Envelope::new(&p, rate);
         let mut out = [0.0; 400];
         env.render(&mut out);
@@ -586,11 +644,18 @@ mod tests {
         assert!((9..=10).contains(&peak));
         assert!(out[peak..=peak + 5].iter().all(|&x| x == 1.0), "hold");
         // −60 dB of the distance to sustain after the decay time.
-        assert!((out[peak + 105] - 0.5005).abs() < 1e-5, "{}", out[peak + 105]);
+        assert!(
+            (out[peak + 105] - 0.5005).abs() < 1e-5,
+            "{}",
+            out[peak + 105]
+        );
         assert_eq!(out[399], 0.5);
         env.release();
         env.render(&mut out[..100]);
-        assert!((out[99] - 0.0005).abs() < 1e-4, "release reaches −60 dB at its time");
+        assert!(
+            (out[99] - 0.0005).abs() < 1e-4,
+            "release reaches −60 dB at its time"
+        );
         env.render(&mut out[..100]);
         assert!(env.done());
     }

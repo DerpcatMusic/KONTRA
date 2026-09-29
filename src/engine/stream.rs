@@ -73,11 +73,22 @@ impl Slot {
     /// Audio thread: (re)start streaming `map` from virtual frame `from`.
     /// Returns the tag the consumer must match in [`Slot::published`].
     pub fn configure(&self, sample: u32, map: &PlayMap, wraps: u64, from: u64, read: u64) -> u16 {
-        let l = map.looped.unwrap_or(LoopMap { start: 0, end: 0, xfade: 0, until_release: false });
+        let l = map.looped.unwrap_or(LoopMap {
+            start: 0,
+            end: 0,
+            xfade: 0,
+            until_release: false,
+        });
         let flags = u64::from(map.reverse) * REVERSE
             | u64::from(map.looped.is_some()) * LOOPED
             | u64::from(l.until_release) * UNTIL_RELEASE;
-        self.write(sample, [map.start, map.end, l.start, l.end, l.xfade, flags, wraps, from], read)
+        self.write(
+            sample,
+            [
+                map.start, map.end, l.start, l.end, l.xfade, flags, wraps, from,
+            ],
+            read,
+        )
     }
 
     /// Audio thread: stop streaming.
@@ -117,7 +128,10 @@ impl Slot {
     pub fn copy(&self, v: u64, out: &mut [Frame]) {
         for (i, frame) in out.iter_mut().enumerate() {
             let bits = self.ring[((v + i as u64) % RING) as usize].load(Ordering::Relaxed);
-            *frame = [f32::from_bits(bits as u32), f32::from_bits((bits >> 32) as u32)];
+            *frame = [
+                f32::from_bits(bits as u32),
+                f32::from_bits((bits >> 32) as u32),
+            ];
         }
     }
 
@@ -140,8 +154,21 @@ impl Slot {
             xfade,
             until_release: flags & UNTIL_RELEASE != 0,
         });
-        let map = PlayMap { start, end, reverse: flags & REVERSE != 0, looped };
-        Some((seq, (sample != NO_SAMPLE).then_some(Config { sample, map, wraps, from })))
+        let map = PlayMap {
+            start,
+            end,
+            reverse: flags & REVERSE != 0,
+            looped,
+        };
+        Some((
+            seq,
+            (sample != NO_SAMPLE).then_some(Config {
+                sample,
+                map,
+                wraps,
+                from,
+            }),
+        ))
     }
 }
 
@@ -163,12 +190,18 @@ struct Shared {
 impl Streamer {
     /// `sources[i]` is `Some` for every sample that is not fully resident.
     pub fn spawn(sources: Vec<Option<Source>>) -> std::io::Result<Self> {
-        let shared = Arc::new(Shared { slots: (0..SLOTS).map(|_| Slot::new()).collect(), stop: AtomicBool::new(false) });
+        let shared = Arc::new(Shared {
+            slots: (0..SLOTS).map(|_| Slot::new()).collect(),
+            stop: AtomicBool::new(false),
+        });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
             .name("kontakto-stream".into())
             .spawn(move || Worker::new(sources).run(&worker))?;
-        Ok(Self { shared, thread: Some(thread) })
+        Ok(Self {
+            shared,
+            thread: Some(thread),
+        })
     }
 
     pub fn slots(&self) -> &[Slot] {
@@ -205,7 +238,12 @@ struct Worker {
 impl Worker {
     fn new(sources: Vec<Option<Source>>) -> Self {
         let chunk = vec![[0.0; 2]; CHUNK as usize];
-        Self { sources, readers: HashMap::new(), frames: chunk.clone(), partners: chunk }
+        Self {
+            sources,
+            readers: HashMap::new(),
+            frames: chunk.clone(),
+            partners: chunk,
+        }
     }
 
     fn run(mut self, shared: &Shared) {
@@ -224,10 +262,20 @@ impl Worker {
     /// Decode one chunk ahead of the consumer; true if work was done.
     fn serve(&mut self, slot: &Slot, cursor: &mut Cursor) -> bool {
         if let Some((seq, config)) = slot.snapshot(cursor.seq) {
-            *cursor = Cursor { seq, config, next: config.map_or(0, |c| c.from) };
+            *cursor = Cursor {
+                seq,
+                config,
+                next: config.map_or(0, |c| c.from),
+            };
         }
-        let Some(config) = cursor.config else { return false };
-        let limit = slot.read.load(Ordering::Acquire).saturating_add(RING).min(config.map.len(config.wraps));
+        let Some(config) = cursor.config else {
+            return false;
+        };
+        let limit = slot
+            .read
+            .load(Ordering::Acquire)
+            .saturating_add(RING)
+            .min(config.map.len(config.wraps));
         if cursor.next >= limit {
             return false;
         }
@@ -242,7 +290,10 @@ impl Worker {
             slot.ring[((cursor.next + i as u64) % RING) as usize].store(bits, Ordering::Relaxed);
         }
         cursor.next += n;
-        slot.written.store(u64::from(tag(cursor.seq)) << 48 | cursor.next, Ordering::Release);
+        slot.written.store(
+            u64::from(tag(cursor.seq)) << 48 | cursor.next,
+            Ordering::Release,
+        );
         true
     }
 
@@ -267,7 +318,11 @@ impl Worker {
             out.fill([0.0; 2]);
             return;
         };
-        let low = if run.reverse { run.frame + 1 - len as u64 } else { run.frame };
+        let low = if run.reverse {
+            run.frame + 1 - len as u64
+        } else {
+            run.frame
+        };
         if reader.read(low, out).is_err() {
             out.fill([0.0; 2]);
         }

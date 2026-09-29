@@ -41,7 +41,13 @@ pub struct GroupSettings {
 
 impl Default for GroupSettings {
     fn default() -> Self {
-        Self { envelope: None, velocity_intensity: 1.0, bend_range: 2.0, interp_quality: 0, voice_group: None }
+        Self {
+            envelope: None,
+            velocity_intensity: 1.0,
+            bend_range: 2.0,
+            interp_quality: 0,
+            voice_group: None,
+        }
     }
 }
 
@@ -132,7 +138,9 @@ impl Bank {
                 continue;
             }
             let id = *opened.entry(zone.sample.clone()).or_insert_with(|| {
-                let opened = sources.source(&zone.sample).and_then(|source| Ok((source.open()?, source)));
+                let opened = sources
+                    .source(&zone.sample)
+                    .and_then(|source| Ok((source.open()?, source)));
                 match opened {
                     Ok((reader, source)) => {
                         readers.push((source, reader));
@@ -153,7 +161,8 @@ impl Bank {
             }
         }
         let info = readers.iter().map(|(_, r)| (r.rate, r.frames)).collect();
-        let mut builder = Builder::new(instrument.groups.clone(), zones, zone_samples, info, issues)?;
+        let mut builder =
+            Builder::new(instrument.groups.clone(), zones, zone_samples, info, issues)?;
         builder.limits(instrument);
         let mut samples = Vec::with_capacity(readers.len());
         let mut streamed = Vec::with_capacity(readers.len());
@@ -162,13 +171,21 @@ impl Bank {
             let (spans, streamed_sample) = builder.spans(id);
             let resident: u64 = spans.iter().map(|s| s.end - s.start).sum();
             bytes += resident as usize * size_of::<Frame>();
-            ensure!(bytes <= MEMORY_LIMIT, "Resident sample data exceeds the {} MiB bank limit", MEMORY_LIMIT >> 20);
+            ensure!(
+                bytes <= MEMORY_LIMIT,
+                "Resident sample data exceeds the {} MiB bank limit",
+                MEMORY_LIMIT >> 20
+            );
             let read = spans
                 .into_iter()
                 .map(|range| {
-                    let mut data = vec![[0.0; 2]; (range.end - range.start) as usize].into_boxed_slice();
+                    let mut data =
+                        vec![[0.0; 2]; (range.end - range.start) as usize].into_boxed_slice();
                     reader.read(range.start, &mut data)?;
-                    Ok(Span { start: range.start, data })
+                    Ok(Span {
+                        start: range.start,
+                        data,
+                    })
                 })
                 .collect::<Result<Vec<_>>>();
             let (spans, streamed_sample) = match read {
@@ -179,7 +196,11 @@ impl Bank {
                     (Vec::new(), false)
                 }
             };
-            let sample = SampleData { rate: reader.rate, spans, streamed: streamed_sample };
+            let sample = SampleData {
+                rate: reader.rate,
+                spans,
+                streamed: streamed_sample,
+            };
             streamed.push(streamed_sample.then_some(source));
             samples.push(sample);
         }
@@ -193,22 +214,41 @@ impl Bank {
     }
 
     /// A fully resident bank from decoded samples; zones select samples by path.
-    pub fn from_samples(groups: Vec<Group>, zones: Vec<Zone>, samples: Vec<(PathBuf, Sample)>) -> Result<Self> {
-        let index: HashMap<_, _> = samples.iter().enumerate().map(|(i, (path, _))| (path.clone(), i as u32)).collect();
+    pub fn from_samples(
+        groups: Vec<Group>,
+        zones: Vec<Zone>,
+        samples: Vec<(PathBuf, Sample)>,
+    ) -> Result<Self> {
+        let index: HashMap<_, _> = samples
+            .iter()
+            .enumerate()
+            .map(|(i, (path, _))| (path.clone(), i as u32))
+            .collect();
         let mut zone_samples = Vec::new();
         for zone in &zones {
-            zone_samples.push(*index.get(&zone.sample).ok_or_else(|| {
-                anyhow::anyhow!("No sample for {}", zone.sample.display())
-            })?);
+            zone_samples.push(
+                *index
+                    .get(&zone.sample)
+                    .ok_or_else(|| anyhow::anyhow!("No sample for {}", zone.sample.display()))?,
+            );
         }
-        let info = samples.iter().map(|(_, s)| (s.rate, s.frames.len() as u64)).collect();
+        let info = samples
+            .iter()
+            .map(|(_, s)| (s.rate, s.frames.len() as u64))
+            .collect();
         let builder = Builder::new(groups, zones, zone_samples, info, Issues::default())?;
-        let bytes = samples.iter().map(|(_, s)| s.frames.len() * size_of::<Frame>()).sum();
+        let bytes = samples
+            .iter()
+            .map(|(_, s)| s.frames.len() * size_of::<Frame>())
+            .sum();
         let samples = samples
             .into_iter()
             .map(|(_, s)| SampleData {
                 rate: s.rate,
-                spans: vec![Span { start: 0, data: s.frames.into_boxed_slice() }],
+                spans: vec![Span {
+                    start: 0,
+                    data: s.frames.into_boxed_slice(),
+                }],
                 streamed: false,
             })
             .collect();
@@ -277,7 +317,13 @@ struct Builder {
 }
 
 impl Builder {
-    fn new(groups: Vec<Group>, zones: Vec<Zone>, samples: Vec<u32>, info: Vec<(u32, u64)>, mut issues: Issues) -> Result<Self> {
+    fn new(
+        groups: Vec<Group>,
+        zones: Vec<Zone>,
+        samples: Vec<u32>,
+        info: Vec<(u32, u64)>,
+        mut issues: Issues,
+    ) -> Result<Self> {
         // `info[sample]` is `(rate, frames)`.
         let total = zones.len();
         let mut kept = Vec::with_capacity(total);
@@ -291,32 +337,58 @@ impl Builder {
             match play_map(&zone, group, frames) {
                 Ok((map, clamped)) => {
                     if clamped {
-                        issues.note(format_args!("loop crossfade shortened in {}", zone.sample.display()));
+                        issues.note(format_args!(
+                            "loop crossfade shortened in {}",
+                            zone.sample.display()
+                        ));
                     }
                     let start_mod = u64::from(zone.start_mod).min(map.end - map.start - 1);
-                    plays.push(ZonePlay { sample, span: 0, map, start_mod });
+                    plays.push(ZonePlay {
+                        sample,
+                        span: 0,
+                        map,
+                        start_mod,
+                    });
                     kept.push(zone);
                 }
                 Err(e) => issues.skip(format_args!("{e}: {}", zone.sample.display())),
             }
         }
         if kept.is_empty() && total > 0 {
-            bail!("No playable zones: {} skipped ({})", issues.skipped, issues.notes.join("; "));
+            bail!(
+                "No playable zones: {} skipped ({})",
+                issues.skipped,
+                issues.notes.join("; ")
+            );
         }
         let settings = groups.iter().map(|_| GroupSettings::default()).collect();
-        Ok(Self { groups, zones: kept, plays, settings, voice_groups: Vec::new(), polyphony: DEFAULT_POLYPHONY, issues })
+        Ok(Self {
+            groups,
+            zones: kept,
+            plays,
+            settings,
+            voice_groups: Vec::new(),
+            polyphony: DEFAULT_POLYPHONY,
+            issues,
+        })
     }
 
     fn limits(&mut self, instrument: &Instrument) {
-        self.voice_groups = instrument.voice_groups.iter().map(|v| v.as_ref().map(VoiceGroup::from)).collect();
+        self.voice_groups = instrument
+            .voice_groups
+            .iter()
+            .map(|v| v.as_ref().map(VoiceGroup::from))
+            .collect();
         if let Some(limit) = &instrument.voice_limit {
             self.polyphony = (limit.max_voices as usize).clamp(1, super::MAX_VOICES);
         }
         for (settings, group) in self.settings.iter_mut().zip(&self.groups) {
             settings.interp_quality = group.interp_quality;
-            settings.voice_group = u16::try_from(group.voice_group)
-                .ok()
-                .filter(|&v| self.voice_groups.get(v as usize).is_some_and(Option::is_some));
+            settings.voice_group = u16::try_from(group.voice_group).ok().filter(|&v| {
+                self.voice_groups
+                    .get(v as usize)
+                    .is_some_and(Option::is_some)
+            });
         }
     }
 
@@ -335,9 +407,14 @@ impl Builder {
                 continue;
             }
             let mut range = map.start..map.start + head;
-            if let Some(l) = map.looped.filter(|l| l.end <= map.start + RESIDENT_LOOP && map.start < l.end) {
+            if let Some(l) = map
+                .looped
+                .filter(|l| l.end <= map.start + RESIDENT_LOOP && map.start < l.end)
+            {
                 range.start = range.start.min(l.start - l.xfade);
-                range.end = range.end.max(l.end + if l.until_release { PRELOAD_FRAMES } else { 0 });
+                range.end = range
+                    .end
+                    .max(l.end + if l.until_release { PRELOAD_FRAMES } else { 0 });
             }
             ranges.push(range);
         }
@@ -346,15 +423,27 @@ impl Builder {
         for range in ranges {
             match merged.last_mut() {
                 // Bridge small gaps: one span is cheaper than a stream restart.
-                Some(last) if range.start <= last.end + PRELOAD_FRAMES / 2 => last.end = last.end.max(range.end),
+                Some(last) if range.start <= last.end + PRELOAD_FRAMES / 2 => {
+                    last.end = last.end.max(range.end)
+                }
                 _ => merged.push(range),
             }
         }
-        let covered: u64 = merged.iter().map(|r| r.end.min(frames) - r.start.min(frames)).sum();
+        let covered: u64 = merged
+            .iter()
+            .map(|r| r.end.min(frames) - r.start.min(frames))
+            .sum();
         if frames <= 2 * PRELOAD_FRAMES || covered + PRELOAD_FRAMES >= frames {
             return (vec![0..frames], false);
         }
-        (merged.iter().map(|r| r.start..r.end.min(frames)).filter(|r| !r.is_empty()).collect(), true)
+        (
+            merged
+                .iter()
+                .map(|r| r.start..r.end.min(frames))
+                .filter(|r| !r.is_empty())
+                .collect(),
+            true,
+        )
     }
 
     /// Skip every zone of a sample whose data turned out to be damaged.
@@ -367,24 +456,47 @@ impl Builder {
         self.issues.note(format_args!("{error:#}"));
     }
 
-    fn finish(self, samples: Vec<SampleData>, streamer: Option<Streamer>, bytes: usize) -> Result<Bank> {
+    fn finish(
+        self,
+        samples: Vec<SampleData>,
+        streamer: Option<Streamer>,
+        bytes: usize,
+    ) -> Result<Bank> {
         if self.zones.is_empty() && self.issues.skipped > 0 {
-            bail!("No playable zones: {} skipped ({})", self.issues.skipped, self.issues.notes.join("; "));
+            bail!(
+                "No playable zones: {} skipped ({})",
+                self.issues.skipped,
+                self.issues.notes.join("; ")
+            );
         }
         let mut plays = self.plays;
         for play in &mut plays {
             let spans = &samples[play.sample as usize].spans;
-            let first = if play.map.reverse { play.map.end - 1 } else { play.map.start };
-            let span = spans.iter().position(|s| s.start <= first && first < s.end());
+            let first = if play.map.reverse {
+                play.map.end - 1
+            } else {
+                play.map.start
+            };
+            let span = spans
+                .iter()
+                .position(|s| s.start <= first && first < s.end());
             play.span = span.ok_or_else(|| anyhow::anyhow!("Zone start is not resident"))? as u32;
         }
         let any_solo = self.groups.iter().any(|g| g.soloed);
-        let playable = self.groups.iter().map(|g| !g.muted && (!any_solo || g.soloed)).collect();
+        let playable = self
+            .groups
+            .iter()
+            .map(|g| !g.muted && (!any_solo || g.soloed))
+            .collect();
         let mut key_start = [0u32; 129];
         let mut key_zones = Vec::new();
         for note in 0..128u8 {
             key_start[note as usize] = key_zones.len() as u32;
-            let on_key = self.zones.iter().enumerate().filter(|(_, z)| (z.low_key..=z.high_key).contains(&note));
+            let on_key = self
+                .zones
+                .iter()
+                .enumerate()
+                .filter(|(_, z)| (z.low_key..=z.high_key).contains(&note));
             key_zones.extend(on_key.map(|(i, _)| i as u32));
         }
         key_start[128] = key_zones.len() as u32;
@@ -411,7 +523,9 @@ impl Builder {
 /// reports a loop crossfade shortened to fit before the loop start.
 fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), &'static str> {
     let start = zone.start as u64;
-    let end = frames.checked_add_signed(i64::from(zone.end)).ok_or("zone end precedes sample start")?;
+    let end = frames
+        .checked_add_signed(i64::from(zone.end))
+        .ok_or("zone end precedes sample start")?;
     if start >= end || end > frames {
         return Err("invalid sample bounds");
     }
@@ -425,9 +539,22 @@ fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), 
             // The crossfade blends toward the frames before the loop start, which must exist.
             let xfade = (l.crossfade as u64).min(ls).min(le - ls);
             clamped = xfade != l.crossfade as u64;
-            Some(LoopMap { start: ls, end: le, xfade, until_release: l.until_release })
+            Some(LoopMap {
+                start: ls,
+                end: le,
+                xfade,
+                until_release: l.until_release,
+            })
         }
         None => None,
     };
-    Ok((PlayMap { start, end, reverse: group.reverse, looped }, clamped))
+    Ok((
+        PlayMap {
+            start,
+            end,
+            reverse: group.reverse,
+            looped,
+        },
+        clamped,
+    ))
 }

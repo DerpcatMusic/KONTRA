@@ -22,7 +22,15 @@ pub struct PartControls {
 
 impl Default for PartControls {
     fn default() -> Self {
-        Self { port: 0, output: 0, channel: -1, gain: 1.0, pan: 0.0, mute: false, solo: false }
+        Self {
+            port: 0,
+            output: 0,
+            channel: -1,
+            gain: 1.0,
+            pan: 0.0,
+            mute: false,
+            solo: false,
+        }
     }
 }
 

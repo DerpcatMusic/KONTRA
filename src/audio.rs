@@ -36,10 +36,16 @@ pub struct Sample {
 /// Decode a whole sample, refusing anything longer than `max_frames`.
 pub fn decode(path: &Path, max_frames: usize) -> Result<Sample> {
     let mut reader = Sources::default().source(path)?.open()?;
-    ensure!(reader.frames <= max_frames as u64, "Sample exceeds remaining memory budget");
+    ensure!(
+        reader.frames <= max_frames as u64,
+        "Sample exceeds remaining memory budget"
+    );
     let mut frames = vec![[0.0; 2]; reader.frames as usize];
     reader.read(0, &mut frames)?;
-    Ok(Sample { rate: reader.rate, frames })
+    Ok(Sample {
+        rate: reader.rate,
+        frames,
+    })
 }
 
 /// Where a sample's bytes live: a plain file or an archive member.
@@ -62,7 +68,13 @@ pub struct Sources {
 impl Sources {
     pub fn source(&mut self, path: &Path) -> Result<Source> {
         let Some((archive, member)) = crate::import::archive_member(path) else {
-            return Ok(Source { path: path.into(), file: path.into(), offset: 0, len: None, key: None });
+            return Ok(Source {
+                path: path.into(),
+                file: path.into(),
+                offset: 0,
+                len: None,
+                key: None,
+            });
         };
         if !self.archives.contains_key(&archive) {
             let index = Archive::read(File::open(&archive)?)
@@ -72,14 +84,27 @@ impl Sources {
         }
         let (index, key) = &self.archives[&archive];
         let entry = index.find(&member).context("Archive member not found")?;
-        ensure!(entry.valid, "{}", entry.issue.unwrap_or("Invalid archive member"));
+        ensure!(
+            entry.valid,
+            "{}",
+            entry.issue.unwrap_or("Invalid archive member")
+        );
         let key = if entry.encoded && entry.key_index != 0xff {
             ensure!(entry.key_index == 0x100, "Unsupported legacy NKX cipher");
-            Some(key.clone().context("Encrypted archive member needs local library access data")?)
+            Some(
+                key.clone()
+                    .context("Encrypted archive member needs local library access data")?,
+            )
         } else {
             None
         };
-        Ok(Source { path: path.into(), file: archive, offset: entry.offset, len: Some(entry.size), key })
+        Ok(Source {
+            path: path.into(),
+            file: archive,
+            offset: entry.offset,
+            len: Some(entry.size),
+            key,
+        })
     }
 }
 
@@ -89,14 +114,20 @@ impl Source {
     }
 
     fn bytes(&self) -> Result<Bytes> {
-        let mut file =
-            File::open(&self.file).with_context(|| format!("Opening sample {}", self.file.display()))?;
+        let mut file = File::open(&self.file)
+            .with_context(|| format!("Opening sample {}", self.file.display()))?;
         let len = match self.len {
             Some(len) => len,
             None => file.metadata()?.len(),
         };
         file.seek(SeekFrom::Start(self.offset))?;
-        Ok(Bytes { file, base: self.offset, len, pos: 0, key: self.key.clone() })
+        Ok(Bytes {
+            file,
+            base: self.offset,
+            len,
+            pos: 0,
+            key: self.key.clone(),
+        })
     }
 }
 
@@ -182,16 +213,29 @@ const SKIP_AHEAD: u64 = 16384;
 impl SampleReader {
     fn open(source: &Source) -> Result<Self> {
         let bytes = source.bytes()?;
-        let ncw = source.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ncw"));
-        let reader = if ncw { Self::ncw(bytes)? } else { Self::pcm(source, bytes)? };
-        ensure!(reader.rate > 0 && reader.frames > 0, "Empty sample or invalid rate");
+        let ncw = source
+            .path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("ncw"));
+        let reader = if ncw {
+            Self::ncw(bytes)?
+        } else {
+            Self::pcm(source, bytes)?
+        };
+        ensure!(
+            reader.rate > 0 && reader.frames > 0,
+            "Empty sample or invalid rate"
+        );
         Ok(reader)
     }
 
     fn ncw(bytes: Bytes) -> Result<Self> {
         let reader = ncw::NcwReader::read(BufReader::new(bytes))?;
         let header = &reader.header;
-        ensure!((1..=2).contains(&header.channels), "Only mono/stereo samples are supported");
+        ensure!(
+            (1..=2).contains(&header.channels),
+            "Only mono/stereo samples are supported"
+        );
         let (rate, frames) = (header.sample_rate, u64::from(header.num_samples));
         let codec = NcwCodec {
             channels: header.channels as usize,
@@ -202,7 +246,11 @@ impl SampleReader {
             raw: Vec::new(),
             frames: Vec::new(),
         };
-        Ok(Self { rate, frames, codec: Codec::Ncw(Box::new(codec)) })
+        Ok(Self {
+            rate,
+            frames,
+            codec: Codec::Ncw(Box::new(codec)),
+        })
     }
 
     fn pcm(source: &Source, bytes: Bytes) -> Result<Self> {
@@ -212,19 +260,37 @@ impl SampleReader {
         }
         let stream = MediaSourceStream::new(Box::new(bytes), Default::default());
         let format = symphonia::default::get_probe()
-            .format(&hint, stream, &FormatOptions::default(), &MetadataOptions::default())?
+            .format(
+                &hint,
+                stream,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )?
             .format;
         let track = format.default_track().context("No audio track")?;
         let params = &track.codec_params;
         let frames = params.n_frames.context("Sample length is not declared")?;
         let rate = params.sample_rate.context("Sample rate is not declared")?;
         if let Some(channels) = params.channels {
-            ensure!((1..=2).contains(&channels.count()), "Only mono/stereo samples are supported");
+            ensure!(
+                (1..=2).contains(&channels.count()),
+                "Only mono/stereo samples are supported"
+            );
         }
         let decoder = symphonia::default::get_codecs().make(params, &DecoderOptions::default())?;
         let track = track.id;
-        let codec = PcmCodec { format, decoder, track, buffer: Vec::new(), start: 0 };
-        Ok(Self { rate, frames, codec: Codec::Pcm(Box::new(codec)) })
+        let codec = PcmCodec {
+            format,
+            decoder,
+            track,
+            buffer: Vec::new(),
+            start: 0,
+        };
+        Ok(Self {
+            rate,
+            frames,
+            codec: Codec::Pcm(Box::new(codec)),
+        })
     }
 
     /// Fill `out` with frames from `start`. Frames past the end are silent;
@@ -256,14 +322,27 @@ impl NcwCodec {
                 self.raw.clear();
                 self.reader.decode_block_into(index, &mut self.raw)?;
                 let (float, scale) = (self.float, self.scale);
-                let convert = |s: i32| if float { f32::from_bits(s as u32) } else { s as f32 / scale };
+                let convert = |s: i32| {
+                    if float {
+                        f32::from_bits(s as u32)
+                    } else {
+                        s as f32 / scale
+                    }
+                };
                 let last = self.channels - 1;
                 self.frames.clear();
-                self.frames.extend(self.raw.chunks_exact(self.channels).map(|s| [convert(s[0]), convert(s[last])]));
+                self.frames.extend(
+                    self.raw
+                        .chunks_exact(self.channels)
+                        .map(|s| [convert(s[0]), convert(s[last])]),
+                );
                 self.block = Some(index);
             }
             let offset = (start % BLOCK) as usize;
-            let available = self.frames.get(offset..).context("NCW block shorter than declared")?;
+            let available = self
+                .frames
+                .get(offset..)
+                .context("NCW block shorter than declared")?;
             ensure!(!available.is_empty(), "NCW block shorter than declared");
             let n = available.len().min(out.len());
             out[..n].copy_from_slice(&available[..n]);
@@ -300,7 +379,10 @@ impl PcmCodec {
     }
 
     fn seek(&mut self, frame: u64) -> Result<()> {
-        let to = SeekTo::TimeStamp { ts: frame, track_id: self.track };
+        let to = SeekTo::TimeStamp {
+            ts: frame,
+            track_id: self.track,
+        };
         let seeked = self.format.seek(SeekMode::Accurate, to)?;
         self.decoder.reset();
         self.buffer.clear();
@@ -323,12 +405,19 @@ impl PcmCodec {
         let decoded = self.decoder.decode(&packet)?;
         let spec = *decoded.spec();
         let channels = spec.channels.count();
-        ensure!((1..=2).contains(&channels), "Only mono/stereo samples are supported");
+        ensure!(
+            (1..=2).contains(&channels),
+            "Only mono/stereo samples are supported"
+        );
         let mut pcm = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
         pcm.copy_interleaved_ref(decoded);
         self.start = packet.ts();
         self.buffer.clear();
-        self.buffer.extend(pcm.samples().chunks_exact(channels).map(|s| [s[0], s[channels - 1]]));
+        self.buffer.extend(
+            pcm.samples()
+                .chunks_exact(channels)
+                .map(|s| [s[0], s[channels - 1]]),
+        );
         Ok(true)
     }
 }
