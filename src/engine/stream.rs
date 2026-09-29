@@ -12,7 +12,8 @@
 use super::map::{LoopMap, PlayMap, Run};
 use crate::audio::{Frame, SampleReader, Source};
 use std::{
-    collections::HashMap,
+    alloc::Layout,
+    ptr::NonNull,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence},
@@ -24,12 +25,14 @@ use std::{
 /// Ring capacity in frames: ≈170 ms at 48 kHz and unity pitch, and larger
 /// than the widest window one render block can read.
 pub(crate) const RING: u64 = 8192;
-/// Concurrently streaming voices per bank; further voices play their preload only.
-pub(crate) const SLOTS: usize = 512;
+/// Concurrently streaming voices per bank: one per voice, so every voice can
+/// stream. Rings are touched only once used, so idle slots cost no RAM.
+pub(crate) const SLOTS: usize = super::MAX_VOICES;
+/// Streamer threads per bank, each serving an interleaved share of the
+/// slots, so one thread waiting on the disk does not stall every voice.
+const THREADS: usize = 2;
 /// Frames decoded per slot per streamer pass, so one voice cannot starve others.
 const CHUNK: u64 = 2048;
-/// Open sample readers kept by the streamer.
-const OPEN_READERS: usize = 64;
 const NO_SAMPLE: u32 = u32::MAX;
 const POSITION: u64 = (1 << 48) - 1;
 
@@ -43,8 +46,14 @@ pub(crate) struct Slot {
     read: AtomicU64,
     /// `tag << 48 | end`: frames `[from, end)` of configuration `tag` are published.
     written: AtomicU64,
-    ring: Box<[AtomicU64]>,
+    /// `RING` frames in [`Shared::_rings`], which outlives every slot.
+    ring: NonNull<AtomicU64>,
 }
+
+// SAFETY: `ring` points into memory owned by the `Shared` that owns the slot
+// and is only accessed through atomics.
+unsafe impl Send for Slot {}
+unsafe impl Sync for Slot {}
 
 #[derive(Clone, Copy)]
 struct Config {
@@ -59,15 +68,21 @@ const LOOPED: u64 = 2;
 const UNTIL_RELEASE: u64 = 4;
 
 impl Slot {
-    fn new() -> Self {
+    fn new(ring: NonNull<AtomicU64>) -> Self {
         Self {
             seq: AtomicU32::new(0),
             sample: AtomicU32::new(NO_SAMPLE),
             config: Default::default(),
             read: AtomicU64::new(0),
             written: AtomicU64::new(0),
-            ring: (0..RING).map(|_| AtomicU64::new(0)).collect(),
+            ring,
         }
+    }
+
+    #[inline]
+    fn frame(&self, v: u64) -> &AtomicU64 {
+        // SAFETY: in bounds of this slot's `RING` frames, which outlive `self`.
+        unsafe { self.ring.add((v % RING) as usize).as_ref() }
     }
 
     /// Audio thread: (re)start streaming `map` from virtual frame `from`.
@@ -127,7 +142,7 @@ impl Slot {
     #[inline]
     pub fn copy(&self, v: u64, out: &mut [Frame]) {
         for (i, frame) in out.iter_mut().enumerate() {
-            let bits = self.ring[((v + i as u64) % RING) as usize].load(Ordering::Relaxed);
+            let bits = self.frame(v + i as u64).load(Ordering::Relaxed);
             *frame = [
                 f32::from_bits(bits as u32),
                 f32::from_bits((bits >> 32) as u32),
@@ -179,29 +194,67 @@ fn tag(seq: u32) -> u16 {
 /// Streaming thread and the slots it serves; owned by a [`super::Bank`].
 pub(crate) struct Streamer {
     shared: Arc<Shared>,
-    thread: Option<JoinHandle<()>>,
+    threads: Vec<JoinHandle<()>>,
 }
 
 struct Shared {
     slots: Box<[Slot]>,
+    /// Every slot's ring in one zeroed allocation: the kernel maps pages on
+    /// first write, so rings no voice streamed into stay unbacked.
+    _rings: Rings,
     stop: AtomicBool,
 }
+
+struct Rings(NonNull<AtomicU64>);
+
+impl Rings {
+    const LAYOUT: Layout = match Layout::array::<AtomicU64>(SLOTS * RING as usize) {
+        Ok(layout) => layout,
+        Err(_) => panic!("ring memory overflows"),
+    };
+
+    fn new() -> Self {
+        // SAFETY: a nonzero layout; all-zero bits are a valid `AtomicU64`.
+        let ptr = unsafe { std::alloc::alloc_zeroed(Self::LAYOUT) };
+        match NonNull::new(ptr.cast()) {
+            Some(ptr) => Self(ptr),
+            None => std::alloc::handle_alloc_error(Self::LAYOUT),
+        }
+    }
+}
+
+impl Drop for Rings {
+    fn drop(&mut self) {
+        // SAFETY: allocated in `new` with the same layout.
+        unsafe { std::alloc::dealloc(self.0.as_ptr().cast(), Self::LAYOUT) }
+    }
+}
+
+// SAFETY: the memory is only accessed through atomics.
+unsafe impl Send for Rings {}
+unsafe impl Sync for Rings {}
 
 impl Streamer {
     /// `sources[i]` is `Some` for every sample that is not fully resident.
     pub fn spawn(sources: Vec<Option<Source>>) -> std::io::Result<Self> {
+        let rings = Rings::new();
+        // SAFETY: slot `i`'s ring starts in bounds of the allocation.
+        let ring = |i: usize| unsafe { rings.0.add(i * RING as usize) };
         let shared = Arc::new(Shared {
-            slots: (0..SLOTS).map(|_| Slot::new()).collect(),
+            slots: (0..SLOTS).map(|i| Slot::new(ring(i))).collect(),
+            _rings: rings,
             stop: AtomicBool::new(false),
         });
-        let worker = shared.clone();
-        let thread = std::thread::Builder::new()
-            .name("kontakto-stream".into())
-            .spawn(move || Worker::new(sources).run(&worker))?;
-        Ok(Self {
-            shared,
-            thread: Some(thread),
-        })
+        let sources: Arc<[Option<Source>]> = sources.into();
+        let threads = (0..THREADS)
+            .map(|stripe| {
+                let (shared, sources) = (shared.clone(), sources.clone());
+                std::thread::Builder::new()
+                    .name("kontakto-stream".into())
+                    .spawn(move || Worker::new(sources).run(&shared, stripe))
+            })
+            .collect::<std::io::Result<_>>()?;
+        Ok(Self { shared, threads })
     }
 
     pub fn slots(&self) -> &[Slot] {
@@ -215,7 +268,7 @@ impl Streamer {
 impl Drop for Streamer {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
+        for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
     }
@@ -226,31 +279,34 @@ struct Cursor {
     seq: u32,
     config: Option<Config>,
     next: u64,
+    /// The slot's open sample, kept across restarts of the same sample and
+    /// closed when the slot stops: one open file per streaming voice.
+    reader: Option<(u32, SampleReader)>,
 }
 
 struct Worker {
-    sources: Vec<Option<Source>>,
-    readers: HashMap<u32, SampleReader>,
+    sources: Arc<[Option<Source>]>,
     frames: Vec<Frame>,
     partners: Vec<Frame>,
 }
 
 impl Worker {
-    fn new(sources: Vec<Option<Source>>) -> Self {
+    fn new(sources: Arc<[Option<Source>]>) -> Self {
         let chunk = vec![[0.0; 2]; CHUNK as usize];
         Self {
             sources,
-            readers: HashMap::new(),
             frames: chunk.clone(),
             partners: chunk,
         }
     }
 
-    fn run(mut self, shared: &Shared) {
-        let mut cursors: Vec<Cursor> = shared.slots.iter().map(|_| Cursor::default()).collect();
+    /// Serve every `THREADS`th slot from `stripe`.
+    fn run(mut self, shared: &Shared, stripe: usize) {
+        let slots = || shared.slots.iter().skip(stripe).step_by(THREADS);
+        let mut cursors: Vec<Cursor> = slots().map(|_| Cursor::default()).collect();
         while !shared.stop.load(Ordering::Acquire) {
             let mut busy = false;
-            for (slot, cursor) in shared.slots.iter().zip(&mut cursors) {
+            for (slot, cursor) in slots().zip(&mut cursors) {
                 busy |= self.serve(slot, cursor);
             }
             if !busy {
@@ -262,10 +318,15 @@ impl Worker {
     /// Decode one chunk ahead of the consumer; true if work was done.
     fn serve(&mut self, slot: &Slot, cursor: &mut Cursor) -> bool {
         if let Some((seq, config)) = slot.snapshot(cursor.seq) {
+            let reader = cursor
+                .reader
+                .take()
+                .filter(|(sample, _)| config.is_some_and(|c| c.sample == *sample));
             *cursor = Cursor {
                 seq,
                 config,
                 next: config.map_or(0, |c| c.from),
+                reader,
             };
         }
         let Some(config) = cursor.config else {
@@ -280,14 +341,24 @@ impl Worker {
             return false;
         }
         let n = (limit - cursor.next).min(CHUNK);
-        self.fill(&config, cursor.next, n as usize);
+        if cursor.reader.is_none() {
+            cursor.reader = self
+                .sources
+                .get(config.sample as usize)
+                .and_then(Option::as_ref)
+                .and_then(|source| source.open().ok())
+                .map(|reader| (config.sample, reader));
+        }
+        let reader = cursor.reader.as_mut().map(|(_, reader)| reader);
+        self.fill(reader, &config, cursor.next, n as usize);
         // A reconfiguration while decoding makes this chunk stale; never publish it.
         if slot.seq.load(Ordering::Acquire) != cursor.seq {
             return true;
         }
         for (i, frame) in self.frames[..n as usize].iter().enumerate() {
             let bits = u64::from(frame[0].to_bits()) | u64::from(frame[1].to_bits()) << 32;
-            slot.ring[((cursor.next + i as u64) % RING) as usize].store(bits, Ordering::Relaxed);
+            slot.frame(cursor.next + i as u64)
+                .store(bits, Ordering::Relaxed);
         }
         cursor.next += n;
         slot.written.store(
@@ -298,7 +369,13 @@ impl Worker {
     }
 
     /// Decode virtual frames `[v, v + n)` into `self.frames`.
-    fn fill(&mut self, config: &Config, mut v: u64, n: usize) {
+    fn fill(
+        &mut self,
+        mut reader: Option<&mut SampleReader>,
+        config: &Config,
+        mut v: u64,
+        n: usize,
+    ) {
         let mut done = 0;
         while done < n {
             let Some(run) = config.map.run(v, config.wraps) else {
@@ -306,15 +383,15 @@ impl Worker {
                 return;
             };
             let len = (run.len as usize).min(n - done);
-            self.decode_run(config.sample, &run, done, len);
+            self.decode_run(reader.as_deref_mut(), &run, done, len);
             done += len;
             v += len as u64;
         }
     }
 
-    fn decode_run(&mut self, sample: u32, run: &Run, at: usize, len: usize) {
+    fn decode_run(&mut self, reader: Option<&mut SampleReader>, run: &Run, at: usize, len: usize) {
         let out = &mut self.frames[at..at + len];
-        let Some(reader) = reader(&mut self.readers, &self.sources, sample) else {
+        let Some(reader) = reader else {
             out.fill([0.0; 2]);
             return;
         };
@@ -339,21 +416,4 @@ impl Worker {
             }
         }
     }
-}
-
-fn reader<'a>(
-    readers: &'a mut HashMap<u32, SampleReader>,
-    sources: &[Option<Source>],
-    sample: u32,
-) -> Option<&'a mut SampleReader> {
-    if !readers.contains_key(&sample) {
-        let reader = sources.get(sample as usize)?.as_ref()?.open().ok()?;
-        if readers.len() >= OPEN_READERS {
-            // ponytail: arbitrary eviction; switch to LRU if reopen cost shows up in profiles.
-            let victim = *readers.keys().next()?;
-            readers.remove(&victim);
-        }
-        readers.insert(sample, reader);
-    }
-    readers.get_mut(&sample)
 }

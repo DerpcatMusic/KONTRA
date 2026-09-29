@@ -659,7 +659,7 @@ fn spans(plays: &[&ZonePlay], preload: u64) -> Plan {
         .map(|r| r.end.min(frames) - r.start.min(frames))
         .sum();
     if frames <= 2 * preload || covered + preload >= frames {
-        return (vec![0..frames], false);
+        return (std::iter::once(0..frames).collect(), false);
     }
     merged.retain_mut(|r| {
         r.end = r.end.min(frames);

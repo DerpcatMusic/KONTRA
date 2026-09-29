@@ -664,6 +664,50 @@ fn streamed_playback_matches_ram_playback() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// 512 voices streaming from 32 files with the minimum preload, rendered at
+/// real-time pace without waiting for the disk: the streamer keeps up.
+#[test]
+#[ignore = "timing-sensitive: run on an idle machine"]
+fn streams_keep_up_at_real_time_pace() {
+    let dir = std::env::temp_dir().join(format!("kontakto-pace-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (files, frames) = (32, 132_300);
+    let (mut groups, mut zones) = (Vec::new(), Vec::new());
+    for group in 0..files {
+        let sample = dir.join(format!("{group}.wav"));
+        write_wav_bits(&sample, frames, 24);
+        groups.push(Group::default());
+        zones.push(Zone {
+            group,
+            sample,
+            ..Zone::default()
+        });
+    }
+    let instrument = instrument(groups, zones);
+    let full = Bank::load(&instrument).unwrap().bytes;
+    let bank = Bank::load_within(&instrument, full - 1).unwrap();
+    assert_eq!(bank.streamed_samples(), files);
+    let mut e = engine_with(bank);
+    let block = std::time::Duration::from_secs_f64(MAX_BLOCK as f64 / 48_000.0);
+    let (mut late, mut peak) = (0, 0);
+    let start = std::time::Instant::now();
+    for b in 0..900u32 {
+        // 16 notes of 32 voices each, one every 60 ms.
+        if b % 22 == 0 && b / 22 < 16 {
+            e.note_on(0, 48 + (b / 22) as u8, 100);
+        }
+        render(&mut e, MAX_BLOCK);
+        peak = peak.max(e.active_voices());
+        match (start + block * (b + 1)).checked_duration_since(std::time::Instant::now()) {
+            Some(wait) => std::thread::sleep(wait),
+            None => late += 1,
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(peak, 512);
+    assert_eq!(e.underruns(), 0, "{late} late blocks");
+}
+
 #[test]
 fn damaged_zones_are_skipped_not_fatal() {
     let dir = std::env::temp_dir().join(format!("kontakto-skip-{}", std::process::id()));
