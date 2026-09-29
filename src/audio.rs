@@ -27,6 +27,138 @@ use symphonia::core::{
 /// One stereo frame. Mono sources are duplicated to both channels.
 pub type Frame = [f32; 2];
 
+/// Resident frames in the narrowest format that holds them exactly: 16- and
+/// 24-bit sources keep their own resolution (4 or 6 bytes per stereo frame
+/// instead of 8) and the voice kernel converts on the fly. Samples are
+/// interleaved left/right.
+pub enum Pcm {
+    F32(Box<[Frame]>),
+    I16(Box<[i16]>),
+    /// The top 16 bits and, in their own plane, the low byte: decoding stays
+    /// an elementwise pass the compiler vectorizes.
+    I24(Box<[i16]>, Box<[u8]>),
+}
+
+const I16_SCALE: f32 = 32768.0;
+const I24_SCALE: f32 = 8388608.0;
+
+impl Pcm {
+    /// Bytes per frame [`Pcm::pack`] uses at most for a source of `bits`
+    /// resolution (32-bit and float sources stay f32).
+    pub fn frame_bytes(bits: Option<u16>) -> usize {
+        match bits {
+            Some(..=16) => 4,
+            Some(..=24) => 6,
+            _ => 8,
+        }
+    }
+
+    /// Store `frames` in the narrowest exact format.
+    pub fn pack(frames: &[Frame]) -> Self {
+        let samples = frames.as_flattened();
+        // Chunked so the check vectorizes yet fails fast on wider data.
+        let exact = |scale: f32| {
+            samples
+                .chunks(256)
+                .all(|c| c.iter().fold(true, |ok, &x| ok & exact(x, scale)))
+        };
+        if exact(I16_SCALE) {
+            return Self::I16(samples.iter().map(|&x| (x * I16_SCALE) as i16).collect());
+        }
+        if exact(I24_SCALE) {
+            let q = |x: f32| (x * I24_SCALE) as i32;
+            return Self::I24(
+                samples.iter().map(|&x| (q(x) >> 8) as i16).collect(),
+                samples.iter().map(|&x| q(x) as u8).collect(),
+            );
+        }
+        Self::F32(frames.into())
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::F32(d) => d.len(),
+            Self::I16(d) | Self::I24(d, _) => d.len() / 2,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn bytes(&self) -> usize {
+        match self {
+            Self::F32(d) => size_of_val(&**d),
+            Self::I16(d) => size_of_val(&**d),
+            Self::I24(high, low) => size_of_val(&**high) + size_of_val(&**low),
+        }
+    }
+
+    /// Frames `[at, at + buf.len())`: borrowed when stored as f32, otherwise
+    /// decoded into `buf`. `None` if out of range.
+    #[inline]
+    pub fn window<'a>(&'a self, at: usize, buf: &'a mut [Frame]) -> Option<&'a [Frame]> {
+        match self {
+            Self::F32(d) => d.get(at..at + buf.len()),
+            _ => self.decode(at, buf).then_some(buf),
+        }
+    }
+
+    /// Decode frames `[at, at + out.len())` into `out`; false if out of range.
+    /// Uses an AVX2 build when the CPU has it.
+    #[inline]
+    pub fn decode(&self, at: usize, out: &mut [Frame]) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: the running CPU supports AVX2.
+            return unsafe { self.decode_avx2(at, out) };
+        }
+        self.decode_body(at, out)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    fn decode_avx2(&self, at: usize, out: &mut [Frame]) -> bool {
+        self.decode_body(at, out)
+    }
+
+    #[inline(always)]
+    fn decode_body(&self, at: usize, out: &mut [Frame]) -> bool {
+        let samples = 2 * at..2 * (at + out.len());
+        let out = out.as_flattened_mut();
+        match self {
+            Self::F32(d) => match d.as_flattened().get(samples) {
+                Some(s) => out.copy_from_slice(s),
+                None => return false,
+            },
+            Self::I16(d) => match d.get(samples) {
+                Some(s) => {
+                    for (o, &s) in out.iter_mut().zip(s) {
+                        *o = f32::from(s) * (1.0 / I16_SCALE);
+                    }
+                }
+                None => return false,
+            },
+            Self::I24(high, low) => match (high.get(samples.clone()), low.get(samples)) {
+                (Some(high), Some(low)) => {
+                    for ((o, &h), &l) in out.iter_mut().zip(high).zip(low) {
+                        *o = (i32::from(h) << 8 | i32::from(l)) as f32 * (1.0 / I24_SCALE);
+                    }
+                }
+                _ => return false,
+            },
+        }
+        true
+    }
+}
+
+/// Whether `x * scale` is an integer in `-scale..scale`.
+#[inline]
+fn exact(x: f32, scale: f32) -> bool {
+    let q = x * scale;
+    ((q as i32) as f32 == q) & (q >= -scale) & (q < scale)
+}
+
 /// A fully decoded sample.
 pub struct Sample {
     pub rate: u32,
@@ -179,6 +311,8 @@ impl MediaSource for Bytes {
 pub struct SampleReader {
     pub rate: u32,
     pub frames: u64,
+    /// Declared bits per sample.
+    pub bits: Option<u16>,
     codec: Codec,
 }
 
@@ -237,6 +371,7 @@ impl SampleReader {
             "Only mono/stereo samples are supported"
         );
         let (rate, frames) = (header.sample_rate, u64::from(header.num_samples));
+        let bits = Some(header.bits_per_sample);
         let codec = NcwCodec {
             channels: header.channels as usize,
             scale: 2f32.powi(i32::from(header.bits_per_sample) - 1),
@@ -249,6 +384,7 @@ impl SampleReader {
         Ok(Self {
             rate,
             frames,
+            bits,
             codec: Codec::Ncw(Box::new(codec)),
         })
     }
@@ -271,6 +407,7 @@ impl SampleReader {
         let params = &track.codec_params;
         let frames = params.n_frames.context("Sample length is not declared")?;
         let rate = params.sample_rate.context("Sample rate is not declared")?;
+        let bits = params.bits_per_sample.and_then(|b| u16::try_from(b).ok());
         if let Some(channels) = params.channels {
             ensure!(
                 (1..=2).contains(&channels.count()),
@@ -289,6 +426,7 @@ impl SampleReader {
         Ok(Self {
             rate,
             frames,
+            bits,
             codec: Codec::Pcm(Box::new(codec)),
         })
     }
@@ -419,5 +557,29 @@ impl PcmCodec {
                 .map(|s| [s[0], s[channels - 1]]),
         );
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pcm_stores_each_resolution_exactly() {
+        let at = |scale: f32| move |i: i32| (i * 7919 % 65536 - 32768) as f32 * scale;
+        let i16 = at(1.0 / 32768.0);
+        let i24 = at(1.0 / 8388608.0 * 255.0);
+        let cases: [(Vec<Frame>, usize); 3] = [
+            ((0..1000).map(|i| [i16(i), i16(i + 1)]).collect(), 4),
+            ((0..1000).map(|i| [i24(i), -i24(i)]).collect(), 6),
+            ((0..1000).map(|i| [(i as f32).sin(), 1.0]).collect(), 8),
+        ];
+        for (frames, width) in cases {
+            let pcm = Pcm::pack(&frames);
+            assert_eq!(pcm.bytes(), width * frames.len());
+            let mut out = vec![[0.0; 2]; 900];
+            assert_eq!(pcm.window(100, &mut out).unwrap(), &frames[100..]);
+            assert!(pcm.window(101, &mut out).is_none());
+        }
     }
 }

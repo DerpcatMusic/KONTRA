@@ -8,6 +8,7 @@
 mod builtins;
 mod calls;
 mod compile;
+mod idiom;
 pub mod engine;
 mod inventory;
 mod lexer;
@@ -24,7 +25,7 @@ pub use engine::{
     VoicePar, engine_par_name,
 };
 pub use inventory::requirements;
-pub use runtime::{MAX_SLOTS, Persisted, Runtime};
+pub use runtime::{MAX_SLOTS, Persisted, Runtime, settle_persistence};
 
 use anyhow::Result;
 use serde::Serialize;

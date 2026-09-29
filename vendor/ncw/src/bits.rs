@@ -36,6 +36,25 @@ impl Iterator for PackedValues<'_> {
     }
 }
 
+/// Bytes of the widest block body plus room for the unaligned word reads of
+/// [`unpack_block`].
+pub const BLOCK_BYTES: usize = 32 * crate::SAMPLES_PER_BLOCK / 8 + 8;
+
+/// Unpack one block body of `bits`-wide (1..=32) little-endian signed values.
+/// Each value is read with one unaligned 64-bit load, so there is no per-bit
+/// loop; `data` past the body must be zero padding.
+pub fn unpack_block(data: &[u8; BLOCK_BYTES], bits: usize) -> [i32; crate::SAMPLES_PER_BLOCK] {
+    debug_assert!((1..=32).contains(&bits));
+    let mask = (1u64 << bits) - 1;
+    std::array::from_fn(|i| {
+        let bit = i * bits;
+        // Never clamps (bit / 8 <= 2044); it lets the compiler drop the bounds check.
+        let byte = (bit / 8).min(BLOCK_BYTES - 8);
+        let word = u64::from_le_bytes(data[byte..byte + 8].try_into().unwrap_or_default());
+        sign_extend(((word >> (bit % 8)) & mask) as u32, bits)
+    })
+}
+
 /// Sign-extend the low `bits` bits of `raw` to an i32.
 pub fn sign_extend(raw: u32, bits: usize) -> i32 {
     let shift = 32 - bits as u32;
@@ -66,6 +85,19 @@ mod tests {
     fn packed_values_unaligned_width() {
         // 5-bit values 1, 2, 3 packed LSB-first: 0b00011_00010_00001 = 0x0C41
         assert_eq!(unpack(&[0x41, 0x0C], 5), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn unpack_block_matches_packed_values() {
+        for bits in 1..=32 {
+            let len = bits * crate::SAMPLES_PER_BLOCK / 8;
+            let mut data = [0u8; BLOCK_BYTES];
+            for (i, byte) in data[..len].iter_mut().enumerate() {
+                *byte = (i as u32).wrapping_mul(2654435761).rotate_right(13) as u8;
+            }
+            let expected: Vec<_> = packed_values(&data[..len], bits).collect();
+            assert_eq!(unpack_block(&data, bits).to_vec(), expected, "{bits} bits");
+        }
     }
 
     #[test]

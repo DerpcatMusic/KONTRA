@@ -55,9 +55,11 @@ fn main() -> Result<()> {
   },
   Some("render") => render(&args[2..])?,
   Some("ksp-run") => ksp_run(Path::new(args.get(2).context("ksp-run requires an NKI path")?),&args[3..])?,
-  Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000))?,
+  Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(24))?,
+  Some("bench-load") => for p in &args[2..] {bench_load(Path::new(p))?},
+  Some("bench-stream") => bench_stream(Path::new(args.get(2).context("bench-stream requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(64),args.get(4).map(|s|s.parse()).transpose()?.unwrap_or(10.0))?,
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000]\nkontakto bench-script <instrument.nki> [seconds=20]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]"),
  }
  Ok(())
 }
@@ -387,16 +389,18 @@ fn render(args: &[String]) -> Result<()> {
 }
 
 /// Voices one core renders in real time: 48 kHz, 128-frame blocks, stereo,
-/// pitched looping voices with loop crossfades.
-fn bench(voices: usize) -> Result<()> {
+/// pitched looping voices with loop crossfades, playing a sample of `bits`
+/// resolution (resident as 16-bit, 24-bit or f32).
+fn bench(voices: usize, bits: i32) -> Result<()> {
     ensure!(
         (1..=MAX_VOICES).contains(&voices),
         "voices must be 1..={MAX_VOICES}"
     );
     let frames: Vec<[f32; 2]> = (0..96000)
         .map(|i| {
+            let scale = 2f32.powi(bits - 1);
             let x = (i as f32 * 0.013).sin();
-            [x, x * 0.7]
+            [x * 0.9, x * 0.6].map(|v| (v * scale).round() / scale)
         })
         .collect();
     let group = Group {
@@ -463,6 +467,47 @@ fn bench(voices: usize) -> Result<()> {
     Ok(())
 }
 
+/// Import, bank load and script init time plus resident memory of each instrument.
+fn bench_load(path: &Path) -> Result<()> {
+    let name = path.file_stem().unwrap_or_default().to_string_lossy();
+    let started = std::time::Instant::now();
+    let instrument = import::read(path)?;
+    let import_ms = started.elapsed().as_secs_f64() * 1e3;
+    let started = std::time::Instant::now();
+    let bank = match Bank::load(&instrument) {
+        Ok(bank) => bank,
+        Err(e) => {
+            println!("{name}: load failed after {:.0} ms: {e:#}", started.elapsed().as_secs_f64() * 1e3);
+            return Ok(());
+        }
+    };
+    let load_ms = started.elapsed().as_secs_f64() * 1e3;
+    let (mib, preload, samples, streamed, zones, skipped) = (
+        bank.bytes as f64 / (1 << 20) as f64,
+        bank.preload,
+        bank.sample_count(),
+        bank.streamed_samples(),
+        bank.zones().len(),
+        bank.skipped_zones,
+    );
+    let mut engine = Engine::default();
+    engine.set_bank(Some(Box::new(bank)));
+    let started = std::time::Instant::now();
+    install_scripts(&mut engine, &instrument);
+    let init_ms = started.elapsed().as_secs_f64() * 1e3;
+    let rss = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            let line = s.lines().find(|l| l.starts_with("VmRSS:"))?;
+            line.split_whitespace().nth(1)?.parse::<f64>().ok()
+        })
+        .map_or(0.0, |kib| kib / 1024.0);
+    println!(
+        "{name}: {mib:.1} MiB resident (preload {preload}) · RSS {rss:.0} MiB · {samples} samples ({streamed} streamed) · {zones} zones ({skipped} skipped) · import {import_ms:.0} ms · load {load_ms:.0} ms · scripts {init_ms:.0} ms"
+    );
+    Ok(())
+}
+
 /// Time an instrument with and without its scripts on a dense stream: a legato
 /// line (150 ms steps, 30 ms overlap) plus a three-note chord every second.
 /// 48 kHz, 128-frame blocks, effects on. Streams are not awaited, so late disk
@@ -507,9 +552,12 @@ fn bench_script(path: &Path, seconds: f64) -> Result<()> {
     engine.set_script(None);
     engine.reset(RATE);
     let direct = time_blocks(&mut engine, &input);
-    let (script, errors) = load_scripts(&instrument, instrument.script_state.clone(), RATE);
-    ensure!(errors.is_empty(), "Scripts failed to load: {errors:?}");
-    let runtime = time_runtime(*script.context("Instrument has no scripts")?, &input);
+    let fresh = || {
+        let (script, errors) = load_scripts(&instrument, instrument.script_state.clone(), RATE);
+        ensure!(errors.is_empty(), "Scripts failed to load: {errors:?}");
+        script.context("Instrument has no scripts")
+    };
+    let runtime = time_runtime(fresh, &input)?;
     let block_ns = MAX_BLOCK as f64 / RATE * 1e9;
     let report = |name: &str, (mean, p99, max, voices): (f64, f64, f64, usize)| {
         println!(
@@ -522,9 +570,63 @@ fn bench_script(path: &Path, seconds: f64) -> Result<()> {
         instrument.name,
         input.len() / 2
     );
-    report("runtime only (null engine)   ", runtime);
+    report("runtime only (best of 5 runs)", runtime);
     report("scripts + engine             ", scripted);
     report("no scripts, every group plays", direct);
+    Ok(())
+}
+
+/// Streaming under real-time pacing: `notes` held notes across the key
+/// range, one replaced every `1 s / notes`, so new streams keep starting.
+/// Blocks are rendered at their wall-clock deadline (48 kHz, 128 frames) and
+/// never wait for the disk; a voice block missing streamed data is an underrun.
+/// Scripts run, so articulation scripts pick the groups that sound.
+fn bench_stream(path: &Path, notes: usize, seconds: f64) -> Result<()> {
+    let instrument = import::read(path)?;
+    let bank = Bank::load(&instrument)?;
+    let low = bank.zones().iter().map(|z| z.low_key).min().context("Instrument has no playable zones")?;
+    let high = bank.zones().iter().map(|z| z.high_key).max().unwrap_or(low);
+    let preload = bank.preload;
+    let mut engine = Engine::default();
+    engine.set_bank(Some(Box::new(bank)));
+    install_scripts(&mut engine, &instrument);
+    let keys: Vec<u8> = (low..=high).collect();
+    let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+    let block = std::time::Duration::from_secs_f64(MAX_BLOCK as f64 / RATE);
+    let every = (RATE / notes as f64) as u64;
+    let blocks = (seconds * RATE) as u64 / MAX_BLOCK as u64;
+    let (mut held, mut started, mut voice_blocks, mut late, mut peak) =
+        (std::collections::VecDeque::new(), 0, 0, 0, 0);
+    let start = std::time::Instant::now();
+    for b in 0..blocks {
+        let frame = b * MAX_BLOCK as u64;
+        while started * every < frame + MAX_BLOCK as u64 {
+            if held.len() >= notes.min(keys.len())
+                && let Some(key) = held.pop_front()
+            {
+                engine.note_off(0, key);
+            }
+            let key = keys[(started as usize * 7) % keys.len()];
+            engine.note_on(0, key, 100);
+            held.push_back(key);
+            started += 1;
+        }
+        engine.render(&mut left, &mut right);
+        voice_blocks += engine.active_voices();
+        peak = peak.max(engine.active_voices());
+        let deadline = start + block * (b + 1) as u32;
+        match deadline.checked_duration_since(std::time::Instant::now()) {
+            Some(wait) => std::thread::sleep(wait),
+            None => late += 1,
+        }
+    }
+    let underruns = engine.underruns();
+    println!(
+        "{}: preload {preload} · {started} notes over {seconds} s ({notes} held) · {} voices mean, {peak} peak · {underruns} underruns ({:.3}%) · {late} late blocks",
+        instrument.name,
+        voice_blocks / blocks as usize,
+        underruns as f64 * 100.0 / voice_blocks.max(1) as f64
+    );
     Ok(())
 }
 
@@ -561,28 +663,35 @@ impl kontakto::ksp::KspEngine for NullEngine {
     }
 }
 
-/// Like [`time_blocks`], for the runtime alone against a [`NullEngine`].
-fn time_runtime(mut rt: kontakto::ksp::Runtime, input: &[NoteInput]) -> (f64, f64, f64, usize) {
-    let mut engine = NullEngine(0);
+/// Like [`time_blocks`], for the runtime alone against a [`NullEngine`]. The
+/// runtime is deterministic, so each block keeps its fastest of several runs:
+/// preemption by other processes drops out and real spikes remain.
+fn time_runtime(
+    fresh: impl Fn() -> Result<Box<kontakto::ksp::Runtime>>,
+    input: &[NoteInput],
+) -> Result<(f64, f64, f64, usize)> {
     let end = input.last().map_or(0, |e| e.0) + (2.0 * RATE) as u64;
-    let (mut times, mut next) = (Vec::new(), 0);
-    for frame in (0..end).step_by(MAX_BLOCK) {
-        let started = std::time::Instant::now();
-        while let Some(&(time, on, note, velocity)) =
-            input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64)
-        {
-            let at = (time - frame) as u32;
-            if on {
-                rt.note_on(&mut engine, at, note, velocity);
-            } else {
-                rt.note_off(&mut engine, at, note);
+    let mut best = vec![f64::MAX; end.div_ceil(MAX_BLOCK as u64) as usize];
+    for _ in 0..5 {
+        let (mut rt, mut engine, mut next) = (fresh()?, NullEngine(0), 0);
+        for (block, frame) in (0..end).step_by(MAX_BLOCK).enumerate() {
+            let started = std::time::Instant::now();
+            while let Some(&(time, on, note, velocity)) =
+                input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64)
+            {
+                let at = (time - frame) as u32;
+                if on {
+                    rt.note_on(&mut engine, at, note, velocity);
+                } else {
+                    rt.note_off(&mut engine, at, note);
+                }
+                next += 1;
             }
-            next += 1;
+            rt.process(&mut engine, MAX_BLOCK as u32);
+            best[block] = best[block].min(started.elapsed().as_nanos() as f64);
         }
-        rt.process(&mut engine, MAX_BLOCK as u32);
-        times.push(started.elapsed().as_nanos() as f64);
     }
-    summarize(times, 0)
+    Ok(summarize(best, 0))
 }
 
 fn summarize(mut times: Vec<f64>, voices: usize) -> (f64, f64, f64, usize) {

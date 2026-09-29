@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use crate::bits::{packed_values, sign_extend};
+use crate::bits::{BLOCK_BYTES, sign_extend, unpack_block};
 use crate::header::NcwHeader;
 use crate::read_bytes::ReadBytesExt;
 
@@ -84,20 +84,23 @@ pub(crate) fn read_block<R: Read>(
         return Err(Error::UnsupportedBitDepth(block.bits));
     }
 
+    let packed = |reader: &mut R| -> Result<_, Error> {
+        let mut data = [0; BLOCK_BYTES];
+        reader.read_exact(&mut data[..bits * SAMPLES_PER_BLOCK / 8])?;
+        Ok(unpack_block(&data, bits))
+    };
     match block.bits.cmp(&0) {
         std::cmp::Ordering::Greater => {
             // Delta encoded: each value is the difference to the next sample.
-            let data = reader.read_bytes(bits * SAMPLES_PER_BLOCK / 8)?;
             let mut current = block.base_value;
-            for delta in packed_values(&data, bits) {
+            for delta in packed(reader)? {
                 out.push(current);
                 current = current.wrapping_add(delta);
             }
         }
         std::cmp::Ordering::Less => {
             // Bit truncated: raw samples packed at `bits` bits each.
-            let data = reader.read_bytes(bits * SAMPLES_PER_BLOCK / 8)?;
-            out.extend(packed_values(&data, bits));
+            out.extend(packed(reader)?);
         }
         std::cmp::Ordering::Equal => {
             // Legacy zero-width interpretation. Synthetic tests only: Kontakt

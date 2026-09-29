@@ -243,6 +243,61 @@ fn computed_ui_and_execution_limits() {
 }
 
 #[test]
+fn native_loops_match_interpreted_semantics() {
+    let source = r#"on init
+declare %a[8] := (5, 1, 3, 7, 3, 9, 2, 3)
+declare %b[8]
+declare $i
+declare $n
+declare $v := 3
+declare @s
+declare ui_label $l(1,1)
+while ($i < 8)
+ %b[$i] := %a[$i]
+ inc($i)
+end while
+$i := 0
+while ($i < 7)
+ %b[$i + 1] := %b[$i]
+ inc($i)
+end while
+$i := 0
+while ($i < 8)
+ if (%a[$i] = $v)
+ inc($n)
+ end if
+ inc($i)
+end while
+$i := 0
+while ($i <= 7)
+ if (%a[$i] > 6 and $i > 3)
+ @s := @s & $i
+ end if
+ inc($i)
+end while
+$i := 0
+while ($i < 7)
+ %a[$i] := %a[$i + 1]
+ inc($i)
+end while
+set_text($l, %b[7] & ":" & $n & ":" & @s & ":" & %a[0] & %a[6] & %a[7])
+end on"#;
+    let setup = compile::Setup {
+        groups: 0,
+        outputs: 0,
+    };
+    assert_eq!(compile::compile(source, &setup).unwrap().loops.len(), 5);
+    // A forward-unsafe copy spreads %b[0]; the shift is a memmove.
+    assert_eq!(label(source), "5:3:5:133");
+    let oob = "on init\ndeclare %a[4]\ndeclare $i\nwhile ($i < 5)\n%a[$i] := %a[0]\ninc($i)\nend while\nend on";
+    let ui = initialize(oob, 0, 0).unwrap();
+    assert!(ui.diagnostics.iter().any(|d| d.contains("out of bounds")));
+    let spin = "on init\ndeclare %a[4]\ndeclare $i\nwhile (1)\n$i := 0\nwhile ($i < 4)\nif (%a[$i] = 1)\nend if\ninc($i)\nend while\nend while\nend on";
+    let error = initialize(spin, 0, 0).unwrap_err().to_string();
+    assert!(error.contains("budget"), "{error}");
+}
+
+#[test]
 fn saved_persistence_decodes_every_kind() {
     let entries = [
         "$a 5",

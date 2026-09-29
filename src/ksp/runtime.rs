@@ -13,9 +13,8 @@ use super::engine::{EnginePar, EventId, Fade, GroupMask, KspEngine, NoteLength, 
 use super::vm::{self, Ctx, Forward, Kind, Machine, POLY_ROWS, SlotState, Stacks, Thread, Yield};
 use super::{HostState, Interface, Value};
 use anyhow::{Result, bail};
-use std::borrow::Cow;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 
 pub const MAX_SLOTS: usize = 5;
 pub const EVENT_CAPACITY: usize = 4096;
@@ -25,6 +24,10 @@ const THREAD_CAPACITY: usize = 1024;
 const TIMER_CAPACITY: usize = 8192;
 const WORK_CAPACITY: usize = 4096;
 const FAULT_CAPACITY: usize = 256;
+/// Distinct service notes kept; each is static text.
+const NOTE_CAPACITY: usize = 64;
+/// Minimum free bytes a snapshot string starts with.
+const SNAPSHOT_SLACK: usize = 64;
 /// Stored engine parameters that may be added after `on init` without allocating.
 const ENGINE_PAR_HEADROOM: usize = 1024;
 /// Instructions one callback may run between waits.
@@ -291,7 +294,8 @@ pub struct Env {
     loading: bool,
     pub saved_arrays: BTreeMap<(u8, VarId), Value>,
     pub persisted: Vec<Persisted>,
-    pub notes: BTreeSet<Cow<'static, str>>,
+    /// Distinct service notes, preallocated so noting never allocates.
+    pub notes: Vec<&'static str>,
     faults: Vec<FaultRecord>,
     rng: u64,
     next_callback_id: i32,
@@ -328,7 +332,7 @@ impl Env {
             loading: false,
             saved_arrays: BTreeMap::new(),
             persisted,
-            notes: BTreeSet::new(),
+            notes: Vec::with_capacity(NOTE_CAPACITY),
             faults: Vec::with_capacity(FAULT_CAPACITY),
             rng: 0x9E37_79B9_7F4A_7C15,
             next_callback_id: 0,
@@ -375,8 +379,8 @@ impl Env {
     }
 
     pub fn note(&mut self, text: &'static str) {
-        if !self.notes.contains(text) {
-            self.notes.insert(Cow::Borrowed(text));
+        if self.notes.len() < NOTE_CAPACITY && !self.notes.contains(&text) {
+            self.notes.push(text);
         }
     }
 
@@ -705,7 +709,8 @@ impl Runtime {
 
     /// Snapshot of persistent variables for every slot, for the host to save.
     pub fn persistence(&self) -> Vec<Persisted> {
-        self.programs
+        let mut saved: Vec<Persisted> = self
+            .programs
             .iter()
             .zip(&self.states)
             .map(|(prog, state)| {
@@ -718,12 +723,16 @@ impl Runtime {
                     })
                     .collect()
             })
-            .collect()
+            .collect();
+        // Room for strings to grow before `refresh_persistence` must cut them.
+        each_text(&mut saved, |t| t.reserve(t.len().max(SNAPSHOT_SLACK)));
+        saved
     }
 
     /// Update `saved`, built earlier by [`persistence`](Self::persistence), in
-    /// place. Allocates only if a string outgrows its previous value, so the
-    /// audio thread can refresh a snapshot the host then saves.
+    /// place without allocating, so the audio thread can refresh a snapshot
+    /// the host then saves. A string that outgrew its buffer is cut to it;
+    /// [`settle_persistence`] tells the host and makes room.
     pub fn refresh_persistence(&self, saved: &mut [Persisted]) {
         let slots = self.programs.iter().zip(&self.states).zip(saved);
         for ((prog, state), saved) in slots {
@@ -1455,7 +1464,11 @@ fn refresh_value(mem: &vm::Memory, var: &compile::Var, value: &mut Value) {
     let one = |i: usize, v: &mut Value| match (var.ty, v) {
         (Ty::Int, Value::Int(n)) => *n = mem.ints[i],
         (Ty::Real, Value::Real(n)) => *n = mem.reals[i],
-        (Ty::Str, Value::Text(t)) => t.clone_from(&mem.strs[i]),
+        (Ty::Str, Value::Text(t)) => {
+            let s = &mem.strs[i];
+            t.clear();
+            t.push_str(&s[..s.floor_char_boundary(t.capacity())]);
+        }
         _ => {}
     };
     let s = var.slot as usize;
@@ -1467,6 +1480,35 @@ fn refresh_value(mem: &vm::Memory, var: &compile::Var, value: &mut Value) {
             }
         }
         _ => {}
+    }
+}
+
+/// Whether `saved`, refreshed by [`Runtime::refresh_persistence`], holds
+/// every string whole. Strings that may have been cut get twice the room for
+/// the next refresh; a snapshot that is not whole should not be saved.
+pub fn settle_persistence(saved: &mut [Persisted]) -> bool {
+    let mut whole = true;
+    each_text(saved, |t| {
+        // A cut lands within a UTF-8 sequence (< 4 bytes) of the end.
+        if t.capacity() - t.len() < 4 {
+            t.reserve(t.capacity());
+            whole = false;
+        }
+    });
+    whole
+}
+
+fn each_text(saved: &mut [Persisted], mut f: impl FnMut(&mut String)) {
+    for value in saved.iter_mut().flat_map(|p| p.values_mut()) {
+        match value {
+            Value::Text(t) => f(t),
+            Value::Array(items) => items.iter_mut().for_each(|v| {
+                if let Value::Text(t) = v {
+                    f(t);
+                }
+            }),
+            _ => {}
+        }
     }
 }
 

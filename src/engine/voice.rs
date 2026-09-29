@@ -370,7 +370,7 @@ impl Voice {
         let step = (step * FIXED_ONE) as u64;
         let count = ((base + step * (n as u64 - 1)) >> 32) as usize + 4;
         let mut underrun = false;
-        let window = match self.resident_window(cx.bank, first, count) {
+        let window = match self.resident_window(cx.bank, first, &mut scratch.window[..count]) {
             Some(window) => window,
             None => {
                 let window = &mut scratch.window[..count];
@@ -408,19 +408,25 @@ impl Voice {
         (alive, underrun)
     }
 
-    /// Fast path: the window is one contiguous, unblended resident run.
-    fn resident_window<'b>(&self, bank: &'b Bank, first: i64, count: usize) -> Option<&'b [Frame]> {
+    /// Fast path: the window is one contiguous, unblended resident run,
+    /// borrowed when stored as f32 and otherwise decoded into `buf`.
+    fn resident_window<'b>(
+        &self,
+        bank: &'b Bank,
+        first: i64,
+        buf: &'b mut [Frame],
+    ) -> Option<&'b [Frame]> {
         let v = u64::try_from(first).ok()?;
-        if v + count as u64 > self.limit {
+        let count = buf.len() as u64;
+        if v + count > self.limit {
             return None;
         }
         let run = self.map.run(v, self.wraps)?;
-        if run.reverse || run.blend.is_some() || run.len < count as u64 {
+        if run.reverse || run.blend.is_some() || run.len < count {
             return None;
         }
         let span = self.span(bank);
-        let start = (run.frame - span.start) as usize;
-        span.data.get(start..start + count)
+        span.data.window((run.frame - span.start) as usize, buf)
     }
 
     fn span<'b>(&self, bank: &'b Bank) -> &'b Span {
@@ -535,26 +541,33 @@ fn copy_run(span: &Span, run: &Run, out: &mut [Frame]) {
     let n = out.len();
     let at = |frame: u64| frame.checked_sub(span.start).map(|f| f as usize);
     if run.reverse {
-        let Some(top) = at(run.frame).filter(|&t| t + 1 >= n && t < span.data.len()) else {
+        let decoded = at(run.frame)
+            .and_then(|top| (top + 1).checked_sub(n))
+            .is_some_and(|low| span.data.decode(low, out));
+        if decoded {
+            out.reverse();
+        } else {
             out.fill([0.0; 2]);
-            return;
-        };
-        out.iter_mut()
-            .zip(span.data[top + 1 - n..=top].iter().rev())
-            .for_each(|(o, s)| *o = *s);
+        }
         return;
     }
-    let Some(src) = at(run.frame).and_then(|s| span.data.get(s..s + n)) else {
+    if !at(run.frame).is_some_and(|s| span.data.decode(s, out)) {
         out.fill([0.0; 2]);
         return;
+    }
+    let (Some(blend), Some(partner)) = (run.blend, run.blend.and_then(|b| at(b.partner))) else {
+        return;
     };
-    out.copy_from_slice(src);
-    if let Some(blend) = run.blend {
-        let Some(partners) = at(blend.partner).and_then(|p| span.data.get(p..p + n)) else {
+    // Partners decode in stack-sized chunks: no allocation on the audio thread.
+    let mut partners = [[0.0; 2]; 64];
+    for (c, chunk) in out.chunks_mut(partners.len()).enumerate() {
+        let done = c * partners.len();
+        let partners = &mut partners[..chunk.len()];
+        if !span.data.decode(partner + done, partners) {
             return;
-        };
-        for (i, (o, p)) in out.iter_mut().zip(partners).enumerate() {
-            *o = blend.apply(i as u64, *o, *p);
+        }
+        for (i, (o, p)) in chunk.iter_mut().zip(partners.iter()).enumerate() {
+            *o = blend.apply((done + i) as u64, *o, *p);
         }
     }
 }

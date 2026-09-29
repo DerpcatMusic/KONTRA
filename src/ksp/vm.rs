@@ -6,6 +6,7 @@ use super::builtins::{Ret, SysVar};
 use super::calls;
 use super::compile::{Callback, InitData, Op, Program, Ty, VarId};
 use super::engine::KspEngine;
+use super::idiom::Operand;
 use super::runtime::Env;
 use super::ui::Ui;
 
@@ -303,15 +304,18 @@ fn finite(x: f64) -> Exec<f64> {
 
 /// Run until the callback finishes, suspends, faults or exhausts `fuel`.
 pub fn exec(m: &mut Machine, fuel: &mut u64) -> Exec<Yield> {
-    let mut pc = m.t.pc as usize;
-    let result = run(m, &mut pc, fuel);
+    // Locals, not the caller's memory: `run` inlines and keeps both in registers.
+    let (mut pc, mut left) = (m.t.pc as usize, *fuel);
+    let result = run(m, &mut pc, &mut left);
     m.t.pc = pc as u32;
+    *fuel = left;
     if result.is_err() {
         m.stk.clear();
     }
     result
 }
 
+#[inline(always)]
 fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
     let code = &m.prog.code;
     loop {
@@ -540,6 +544,47 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 *pc = m.t.calls[m.t.depth as usize] as usize;
             }
             Op::Halt => return Ok(Yield::Done),
+            Op::AddVarImm(a, n) => {
+                let x = &mut mem.ints[a as usize];
+                *x = x.wrapping_add(n);
+                *pc += 3;
+            }
+            Op::AddImm(n) => {
+                let a = s.int();
+                s.ints.push(a.wrapping_add(n));
+                *pc += 1;
+            }
+            Op::LdIAVar(v, a) => {
+                let i = mem.ints[a as usize];
+                let x = element(m, v, i).map_or(0, |e| m.slot.mem.ints[e]);
+                m.stk.ints.push(x);
+                *pc += 1;
+            }
+            Op::BrImm(cmp, n, t) => {
+                *pc = if cmp.test(s.int(), n) {
+                    *pc + 2
+                } else {
+                    t as usize
+                };
+            }
+            Op::BrVarImm(cmp, a, n, t) => {
+                *pc = if cmp.test(mem.ints[a as usize], n) {
+                    *pc + 3
+                } else {
+                    t as usize
+                };
+            }
+            Op::Loop(l) => {
+                let l = &m.prog.loops[l as usize];
+                let value = match l.operand() {
+                    Some(Operand::Imm(n)) => n,
+                    Some(Operand::Int(v)) => mem.ints[v as usize],
+                    Some(Operand::Sys(v)) => sys(m, v),
+                    None => 0,
+                };
+                let mem = &mut m.slot.mem;
+                *pc = l.run(*pc - 1, &m.prog.vars, &mut mem.ints, fuel, value);
+            }
             Op::Declare(v) => declare(m, v)?,
             Op::InitArray(i) => init_array(m, i),
             Op::Builtin(b, argc) => {

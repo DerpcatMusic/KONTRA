@@ -9,12 +9,11 @@ use kontakto::{
         Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Modulator, Resolver,
         VoiceLimit, Zone,
     },
-    ksp::{Runtime, Value},
+    ksp::{Runtime, Value, settle_persistence},
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 type Frame = [f32; 2];
 
@@ -534,19 +533,36 @@ fn instrument_volume_pan_and_bend_range() {
 
 /// A float WAV long enough to stream, with non-periodic content.
 fn write_wav(path: &Path, frames: usize) {
+    write_wav_bits(path, frames, 32);
+}
+
+/// A stereo test signal: float for 32 bits, otherwise integer.
+fn write_wav_bits(path: &Path, frames: usize, bits: u16) {
+    let float = bits == 32;
     let spec = hound::WavSpec {
         channels: 2,
         sample_rate: 44100,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
+        bits_per_sample: bits,
+        sample_format: if float {
+            hound::SampleFormat::Float
+        } else {
+            hound::SampleFormat::Int
+        },
     };
+    let scale = 2f32.powi(i32::from(bits) - 1) - 1.0;
     let mut w = hound::WavWriter::create(path, spec).unwrap();
     for i in 0..frames {
         let t = i as f32;
-        w.write_sample((t * 0.031).sin() * (t * 0.00037).cos())
-            .unwrap();
-        w.write_sample((t * 0.017 + (t * 0.001).sin()).sin())
-            .unwrap();
+        for x in [
+            (t * 0.031).sin() * (t * 0.00037).cos(),
+            (t * 0.017 + (t * 0.001).sin()).sin(),
+        ] {
+            if float {
+                w.write_sample(x).unwrap();
+            } else {
+                w.write_sample((x * scale) as i32).unwrap();
+            }
+        }
     }
     w.finalize().unwrap();
 }
@@ -571,9 +587,10 @@ fn instrument(groups: Vec<Group>, zones: Vec<Zone>) -> Instrument {
 fn streamed_playback_matches_ram_playback() {
     let dir = std::env::temp_dir().join(format!("kontakto-stream-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("long.wav");
     let frames = 120_000;
+    let (path, path24) = (dir.join("long.wav"), dir.join("long24.wav"));
     write_wav(&path, frames);
+    write_wav_bits(&path24, frames, 24);
     let loop_range = Some(Loop {
         start: 30_000,
         end: 90_000,
@@ -618,14 +635,28 @@ fn streamed_playback_matches_ram_playback() {
             },
         ),
     ];
-    for (n, (group, zone)) in cases.into_iter().enumerate() {
-        let streamed = Bank::load(&instrument(vec![group.clone()], vec![zone.clone()])).unwrap();
+    // Float and 24-bit sources, the latter also with a budget that shrinks the preload.
+    let runs = cases.iter().flat_map(|case| {
+        [(&path, None), (&path24, None), (&path24, Some(()))].map(|run| (case, run))
+    });
+    for (n, ((group, zone), (path, shrink))) in runs.enumerate() {
+        let zone = Zone {
+            sample: path.clone(),
+            ..zone.clone()
+        };
+        let instrument = instrument(vec![group.clone()], vec![zone.clone()]);
+        let mut streamed = Bank::load(&instrument).unwrap();
+        if shrink.is_some() {
+            streamed = Bank::load_within(&instrument, streamed.bytes - 1).unwrap();
+            assert!(streamed.preload < PRELOAD_FRAMES, "case {n}");
+        }
         assert_eq!(
             streamed.streamed_samples(),
             1,
             "case {n} streams instead of loading fully"
         );
-        let decoded = kontakto::audio::decode(&path, frames).unwrap();
+        let group = group.clone();
+        let decoded = kontakto::audio::decode(path, frames).unwrap();
         let ram =
             Bank::from_samples(vec![group], vec![zone], vec![(path.clone(), decoded)]).unwrap();
         let (mut a, mut b) = (engine_with(streamed), engine_with(ram));
@@ -647,6 +678,50 @@ fn streamed_playback_matches_ram_playback() {
     // Long enough to have exercised the streamer, not just the preload.
     assert!(frames as u64 > 4 * PRELOAD_FRAMES);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// 512 voices streaming from 32 files with the minimum preload, rendered at
+/// real-time pace without waiting for the disk: the streamer keeps up.
+#[test]
+#[ignore = "timing-sensitive: run on an idle machine"]
+fn streams_keep_up_at_real_time_pace() {
+    let dir = std::env::temp_dir().join(format!("kontakto-pace-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (files, frames) = (32, 132_300);
+    let (mut groups, mut zones) = (Vec::new(), Vec::new());
+    for group in 0..files {
+        let sample = dir.join(format!("{group}.wav"));
+        write_wav_bits(&sample, frames, 24);
+        groups.push(Group::default());
+        zones.push(Zone {
+            group,
+            sample,
+            ..Zone::default()
+        });
+    }
+    let instrument = instrument(groups, zones);
+    let full = Bank::load(&instrument).unwrap().bytes;
+    let bank = Bank::load_within(&instrument, full - 1).unwrap();
+    assert_eq!(bank.streamed_samples(), files);
+    let mut e = engine_with(bank);
+    let block = std::time::Duration::from_secs_f64(MAX_BLOCK as f64 / 48_000.0);
+    let (mut late, mut peak) = (0, 0);
+    let start = std::time::Instant::now();
+    for b in 0..900u32 {
+        // 16 notes of 32 voices each, one every 60 ms.
+        if b % 22 == 0 && b / 22 < 16 {
+            e.note_on(0, 48 + (b / 22) as u8, 100);
+        }
+        render(&mut e, MAX_BLOCK);
+        peak = peak.max(e.active_voices());
+        match (start + block * (b + 1)).checked_duration_since(std::time::Instant::now()) {
+            Some(wait) => std::thread::sleep(wait),
+            None => late += 1,
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(peak, 512);
+    assert_eq!(e.underruns(), 0, "{late} late blocks");
 }
 
 #[test]
@@ -996,25 +1071,27 @@ fn effects_process_the_output_and_tails_outlive_the_voices() {
 /// handoff and playback can prove they stay allocation-free.
 struct CountingAlloc;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
 thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
+    // Per thread, so tests running in parallel do not count each other.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn count() {
+    if COUNTING.with(Cell::get) {
+        ALLOCATIONS.with(|n| n.set(n.get() + 1));
+    }
 }
 
 // SAFETY: forwards every call unchanged to the system allocator.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.with(Cell::get) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        }
+        count();
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if COUNTING.with(Cell::get) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        }
+        count();
         unsafe { System.dealloc(ptr, layout) }
     }
 }
@@ -1024,11 +1101,11 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 
 /// Allocations and frees `f` makes on this thread.
 fn allocations(f: impl FnOnce()) -> usize {
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = ALLOCATIONS.with(Cell::get);
     COUNTING.with(|c| c.set(true));
     f();
     COUNTING.with(|c| c.set(false));
-    ALLOCATIONS.load(Ordering::Relaxed) - before
+    ALLOCATIONS.with(Cell::get) - before
 }
 
 // Runtimes are built on the loader thread and handed to the audio thread.
@@ -1289,4 +1366,41 @@ fn controllers_set_while_loading_drive_modulation() {
     e.reset(e.rate());
     e.note_on(0, 60, 127);
     assert!(close(last(&mut e, 480), [0.0; 2]));
+}
+
+#[test]
+fn steady_scripted_playback_with_diagnostics_does_not_allocate() {
+    // After a warm-up note sizes the string buffers, every note runs a native
+    // scan, builds an 80-byte persistent string and, from the first counted
+    // note on, faults (out of bounds) and notes a diagnostic (note 200).
+    let script = "on init\ndeclare %a[4]\ndeclare %seen[128]\ndeclare $i\ndeclare $n\ndeclare @log\nmake_persistent(@log)\nend on\non note\nif ($EVENT_NOTE > 60)\n%a[$EVENT_NOTE] := 1\nplay_note(200, 100, 0, -1)\nend if\n$i := 0\nwhile ($i < 128)\nif (%seen[$i] = $EVENT_NOTE)\ninc($n)\nend if\ninc($i)\nend while\n%seen[$EVENT_NOTE] := $EVENT_NOTE\n@log := \"0123456789012345678901234567890123456789\" & \"0123456789012345678901234567890123456789\"\nend on";
+    let rt = runtime(script);
+    let mut snapshot = rt.as_ref().unwrap().persistence();
+    let mut e = engine_with(layered(two_groups().groups, &[0.1, 0.2]));
+    assert!(e.set_script(rt).is_none());
+    let (mut left, mut right) = (vec![0.0; 512], vec![0.0; 512]);
+    let mut play = |e: &mut Engine, note| {
+        e.note_on(0, note, 100);
+        e.render(&mut left, &mut right);
+        e.note_off(0, note);
+        e.render(&mut left, &mut right);
+    };
+    play(&mut e, 60);
+    assert!(e.script().unwrap().diagnostics().is_empty());
+    let count = allocations(|| {
+        for note in 61..69 {
+            play(&mut e, note);
+        }
+        e.script().unwrap().refresh_persistence(&mut snapshot);
+    });
+    assert_eq!(count, 0, "the audio thread allocated");
+    let diagnostics = e.script().unwrap().diagnostics().join("\n");
+    assert!(diagnostics.contains("out of bounds"), "{diagnostics}");
+    assert!(diagnostics.contains("play_note"), "{diagnostics}");
+    // The string outgrew its snapshot buffer: cut, reported, whole once regrown.
+    assert!(!settle_persistence(&mut snapshot));
+    e.script().unwrap().refresh_persistence(&mut snapshot);
+    assert!(settle_persistence(&mut snapshot));
+    let whole = "0123456789012345678901234567890123456789".repeat(2);
+    assert_eq!(snapshot[0]["@log"], Value::Text(whole));
 }

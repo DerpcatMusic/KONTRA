@@ -21,6 +21,8 @@ pub struct NcwReader<R> {
     pub block_offsets: Vec<u32>,
     /// Sample format declared by the first block of the file.
     pub sample_format: SampleFormat,
+    /// Reader position after the last decoded block, if nothing moved it since.
+    position: Option<u64>,
 }
 
 impl<R: Read + Seek> NcwReader<R> {
@@ -68,6 +70,7 @@ impl<R: Read + Seek> NcwReader<R> {
             header,
             block_offsets,
             sample_format,
+            position: None,
         })
     }
 
@@ -77,8 +80,9 @@ impl<R: Read + Seek> NcwReader<R> {
     }
 
     /// Mutably borrow the underlying reader. Moving its position is harmless:
-    /// [`NcwReader::decode_samples`] seeks to every block explicitly.
+    /// the next block read seeks explicitly.
     pub fn get_mut(&mut self) -> &mut R {
+        self.position = None;
         &mut self.reader
     }
 
@@ -128,9 +132,11 @@ impl<R: Read + Seek> NcwReader<R> {
         if end < offset || end > self.header.data_size {
             return Err(Error::InvalidHeader("invalid block offsets or channel framing"));
         }
-        self.reader.seek(SeekFrom::Start(
-            u64::from(self.header.data_offset) + u64::from(offset),
-        ))?;
+        // Consecutive blocks need no seek, which would discard a read buffer.
+        let start = u64::from(self.header.data_offset) + u64::from(offset);
+        if self.position.take() != Some(start) {
+            self.reader.seek(SeekFrom::Start(start))?;
+        }
         // A malformed payload must never consume bytes from the next group.
         let mut group = self.reader.by_ref().take(u64::from(end - offset));
         let mut channels = Vec::new();
@@ -155,6 +161,7 @@ impl<R: Read + Seek> NcwReader<R> {
         if group.limit() != 0 {
             return Err(Error::InvalidHeader("unconsumed block bytes"));
         }
+        self.position = Some(u64::from(self.header.data_offset) + u64::from(end));
         if mid_side {
             let (mid, side) = channels.split_at_mut(1);
             decode_mid_side(&mut mid[0], &mut side[0], self.sample_format);

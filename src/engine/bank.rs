@@ -7,21 +7,22 @@ use super::{
     voice::Ahdsr,
 };
 use crate::{
-    audio::{self, Frame, Sample, SampleReader, Source},
+    audio::{self, Frame, Pcm, Sample, SampleReader, Source},
     import::{Group, Instrument, VoiceLimit, Zone},
 };
 use anyhow::{Result, bail, ensure};
-use std::{collections::HashMap, ops::Range, path::PathBuf};
+use std::{collections::HashMap, num::NonZero, ops::Range, path::PathBuf, sync::Mutex};
 
-/// Resident sample memory ceiling per bank.
+/// Default resident sample memory budget per bank.
 pub const MEMORY_LIMIT: usize = 1 << 30;
-/// Frames of every sample kept in RAM (Kontakt's DFD preload). Voices start
-/// from this instantly while the streamer fetches the rest; 8192 frames is
-/// ≈170 ms at 48 kHz (64 KiB per sample as f32 stereo).
+/// Frames of every sample kept in RAM past the furthest start offset
+/// (Kontakt's DFD preload). Voices start from this instantly while the
+/// streamer fetches the rest; 8192 frames is ≈170 ms at 48 kHz (48 KiB per
+/// 24-bit stereo sample). Shrinks toward [`MIN_PRELOAD`] to fit the budget.
 pub const PRELOAD_FRAMES: u64 = 8192;
-/// Loops ending within this many frames of the zone start stay resident, so
-/// short sustain loops never touch the disk.
-const RESIDENT_LOOP: u64 = 4 * PRELOAD_FRAMES;
+/// Smallest preload the budget may force: ≈43 ms at 48 kHz, several times
+/// the streamer's time to first data on an SSD.
+pub const MIN_PRELOAD: u64 = 2048;
 /// Voices per instrument when the program stores no limit.
 const DEFAULT_POLYPHONY: usize = 512;
 
@@ -88,7 +89,7 @@ pub(crate) struct SampleData {
 
 pub(crate) struct Span {
     pub start: u64,
-    pub data: Box<[Frame]>,
+    pub data: Pcm,
 }
 
 impl Span {
@@ -144,6 +145,8 @@ pub struct Bank {
     pub(crate) streamer: Option<Streamer>,
     /// Resident sample and stream-buffer bytes.
     pub bytes: usize,
+    /// Preload frames per sample the memory budget allowed.
+    pub preload: u64,
     /// Zones dropped because their sample is missing, damaged or out of bounds.
     pub skipped_zones: usize,
     /// First few reasons for skipped zones.
@@ -151,85 +154,111 @@ pub struct Bank {
 }
 
 impl Bank {
-    /// Load every group of `instrument`, streaming long samples from disk.
+    /// Load every group of `instrument` within [`MEMORY_LIMIT`], streaming
+    /// long samples from disk.
     pub fn load(instrument: &Instrument) -> Result<Self> {
-        let mut sources = audio::Sources::default();
-        let mut opened: HashMap<PathBuf, Option<u32>> = HashMap::new();
-        let mut readers: Vec<(Source, SampleReader)> = Vec::new();
+        Self::load_within(instrument, MEMORY_LIMIT)
+    }
+
+    /// Load every group of `instrument` with at most `budget` bytes of
+    /// resident samples and stream buffers. The preload shrinks from
+    /// [`PRELOAD_FRAMES`] toward [`MIN_PRELOAD`] until the bank fits.
+    pub fn load_within(instrument: &Instrument, budget: usize) -> Result<Self> {
         let mut issues = Issues::default();
+        // Resolve each distinct sample once, then open them all in parallel.
+        let mut ids: HashMap<&PathBuf, usize> = HashMap::new();
+        let mut paths = Vec::new();
+        let zone_ids: Vec<_> = instrument
+            .zones
+            .iter()
+            .map(|zone| {
+                zone.available.then(|| {
+                    *ids.entry(&zone.sample).or_insert_with(|| {
+                        paths.push(&zone.sample);
+                        paths.len() - 1
+                    })
+                })
+            })
+            .collect();
+        let mut sources = audio::Sources::default();
+        let resolved: Vec<_> = paths.iter().map(|path| sources.source(path)).collect();
+        let opened = parallel(resolved, |_: &mut (), source| {
+            let source = source?;
+            anyhow::Ok((source.open()?, source))
+        });
+        let mut readers: Vec<(Source, SampleReader)> = Vec::new();
+        let opened: Vec<Option<u32>> = opened
+            .into_iter()
+            .map(|result| match result {
+                Ok((reader, source)) => {
+                    readers.push((source, reader));
+                    Some(readers.len() as u32 - 1)
+                }
+                Err(e) => {
+                    issues.note(format_args!("{e:#}"));
+                    None
+                }
+            })
+            .collect();
         let mut zones = Vec::new();
         let mut zone_samples = Vec::new();
-        for zone in &instrument.zones {
-            if !zone.available {
-                issues.skip(format_args!("missing {}", zone.sample.display()));
-                continue;
-            }
-            let id = *opened.entry(zone.sample.clone()).or_insert_with(|| {
-                let opened = sources
-                    .source(&zone.sample)
-                    .and_then(|source| Ok((source.open()?, source)));
-                match opened {
-                    Ok((reader, source)) => {
-                        readers.push((source, reader));
-                        Some(readers.len() as u32 - 1)
-                    }
-                    Err(e) => {
-                        issues.note(format_args!("{e:#}"));
-                        None
-                    }
-                }
-            });
-            match id {
-                Some(id) => {
+        for (zone, id) in instrument.zones.iter().zip(zone_ids) {
+            match id.map(|id| opened[id]) {
+                None => issues.skip(format_args!("missing {}", zone.sample.display())),
+                Some(None) => issues.skip(format_args!("unreadable {}", zone.sample.display())),
+                Some(Some(id)) => {
                     zones.push(zone.clone());
                     zone_samples.push(id);
                 }
-                None => issues.skip(format_args!("unreadable {}", zone.sample.display())),
             }
         }
         let info = readers.iter().map(|(_, r)| (r.rate, r.frames)).collect();
         let mut builder =
             Builder::new(instrument.groups.clone(), zones, zone_samples, info, issues)?;
         builder.limits(instrument);
-        let mut samples = Vec::with_capacity(readers.len());
-        let mut streamed = Vec::with_capacity(readers.len());
-        let mut bytes = 0;
-        for (id, (source, mut reader)) in readers.into_iter().enumerate() {
-            let (spans, streamed_sample) = builder.spans(id);
-            let resident: u64 = spans.iter().map(|s| s.end - s.start).sum();
-            bytes += resident as usize * size_of::<Frame>();
-            ensure!(
-                bytes <= MEMORY_LIMIT,
-                "Resident sample data exceeds the {} MiB bank limit",
-                MEMORY_LIMIT >> 20
-            );
-            let read = spans
-                .into_iter()
-                .map(|range| {
-                    let mut data =
-                        vec![[0.0; 2]; (range.end - range.start) as usize].into_boxed_slice();
-                    reader.read(range.start, &mut data)?;
-                    Ok(Span {
-                        start: range.start,
-                        data,
+
+        let frame_bytes: Vec<_> = readers
+            .iter()
+            .map(|(_, r)| Pcm::frame_bytes(r.bits))
+            .collect();
+        let (preload, plan) = builder.plan(&frame_bytes, budget)?;
+        let jobs = readers.into_iter().zip(plan).collect();
+        let decoded = parallel(
+            jobs,
+            |buf: &mut Vec<Frame>, ((source, mut reader), (spans, streamed))| {
+                let spans = spans
+                    .into_iter()
+                    .map(|range| {
+                        buf.clear();
+                        buf.resize((range.end - range.start) as usize, [0.0; 2]);
+                        reader.read(range.start, buf)?;
+                        Ok(Span {
+                            start: range.start,
+                            data: Pcm::pack(buf),
+                        })
                     })
-                })
-                .collect::<Result<Vec<_>>>();
-            let (spans, streamed_sample) = match read {
+                    .collect::<Result<Vec<_>>>();
+                (spans, streamed, reader.rate, source)
+            },
+        );
+        let mut samples = Vec::with_capacity(decoded.len());
+        let mut streamed = Vec::with_capacity(decoded.len());
+        let mut bytes = 0;
+        for (id, (spans, streamed_sample, rate, source)) in decoded.into_iter().enumerate() {
+            let (spans, streamed_sample) = match spans {
                 Ok(spans) => (spans, streamed_sample),
                 Err(e) => {
-                    bytes -= resident as usize * size_of::<Frame>();
                     builder.drop_sample(id, &e);
                     (Vec::new(), false)
                 }
             };
-            let sample = SampleData {
-                rate: reader.rate,
+            bytes += spans.iter().map(|s| s.data.bytes()).sum::<usize>();
+            streamed.push(streamed_sample.then_some(source));
+            samples.push(SampleData {
+                rate,
                 spans,
                 streamed: streamed_sample,
-            };
-            streamed.push(streamed_sample.then_some(source));
-            samples.push(sample);
+            });
         }
         let streamer = if streamed.iter().any(Option::is_some) {
             bytes += Streamer::BYTES;
@@ -237,7 +266,14 @@ impl Bank {
         } else {
             None
         };
-        builder.finish(samples, streamer, bytes)
+        ensure!(
+            bytes <= budget,
+            "Resident sample data exceeds the {} MiB bank limit",
+            budget >> 20
+        );
+        let mut bank = builder.finish(samples, streamer, bytes)?;
+        bank.preload = preload;
+        Ok(bank)
     }
 
     /// A fully resident bank from decoded samples; zones select samples by path.
@@ -264,21 +300,18 @@ impl Bank {
             .map(|(_, s)| (s.rate, s.frames.len() as u64))
             .collect();
         let builder = Builder::new(groups, zones, zone_samples, info, Issues::default())?;
-        let bytes = samples
-            .iter()
-            .map(|(_, s)| s.frames.len() * size_of::<Frame>())
-            .sum();
-        let samples = samples
+        let samples: Vec<_> = samples
             .into_iter()
             .map(|(_, s)| SampleData {
                 rate: s.rate,
                 spans: vec![Span {
                     start: 0,
-                    data: s.frames.into_boxed_slice(),
+                    data: Pcm::pack(&s.frames),
                 }],
                 streamed: false,
             })
             .collect();
+        let bytes = samples.iter().map(|s| s.spans[0].data.bytes()).sum();
         builder.finish(samples, None, bytes)
     }
 
@@ -331,6 +364,9 @@ impl Issues {
         }
     }
 }
+
+/// A sample's resident frame ranges and whether it streams beyond them.
+type Plan = (Vec<Range<u64>>, bool);
 
 /// Shared validation and indexing for loaded and in-memory banks.
 struct Builder {
@@ -418,58 +454,51 @@ impl Builder {
         }
     }
 
-    /// Resident frame ranges of sample `id`, merged and sorted, and whether
-    /// any zone path extends beyond them. `frames` becomes the furthest frame
-    /// any zone plays; data past it is never needed.
-    fn spans(&self, id: usize) -> (Vec<Range<u64>>, bool) {
-        let mut frames = 0;
-        let mut ranges = Vec::new();
-        for play in self.plays.iter().filter(|p| p.sample as usize == id) {
-            let map = &play.map;
-            frames = frames.max(map.end);
-            let head = PRELOAD_FRAMES + play.start_mod;
-            if map.reverse {
-                ranges.push(map.end.saturating_sub(head)..map.end);
-                continue;
-            }
-            let mut range = map.start..map.start + head;
-            if let Some(l) = map
-                .looped
-                .filter(|l| l.end <= map.start + RESIDENT_LOOP && map.start < l.end)
-            {
-                range.start = range.start.min(l.start - l.xfade);
-                range.end = range
-                    .end
-                    .max(l.end + if l.until_release { PRELOAD_FRAMES } else { 0 });
-            }
-            ranges.push(range);
+    /// The largest preload in `MIN_PRELOAD..=PRELOAD_FRAMES` whose resident
+    /// data fits `budget`, and per sample the resident ranges and whether it
+    /// streams. `frame_bytes[sample]` is its expected storage per frame.
+    fn plan(&self, frame_bytes: &[usize], budget: usize) -> Result<(u64, Vec<Plan>)> {
+        let mut uses = vec![Vec::new(); frame_bytes.len()];
+        for play in &self.plays {
+            uses[play.sample as usize].push(play);
         }
-        ranges.sort_by_key(|r| r.start);
-        let mut merged: Vec<Range<u64>> = Vec::new();
-        for range in ranges {
-            match merged.last_mut() {
-                // Bridge small gaps: one span is cheaper than a stream restart.
-                Some(last) if range.start <= last.end + PRELOAD_FRAMES / 2 => {
-                    last.end = last.end.max(range.end)
-                }
-                _ => merged.push(range),
-            }
-        }
-        let covered: u64 = merged
-            .iter()
-            .map(|r| r.end.min(frames) - r.start.min(frames))
-            .sum();
-        if frames <= 2 * PRELOAD_FRAMES || covered + PRELOAD_FRAMES >= frames {
-            return (std::iter::once(0..frames).collect(), false);
-        }
-        (
-            merged
+        let plan = |preload| -> (Vec<Plan>, usize) {
+            let plan: Vec<_> = uses.iter().map(|plays| spans(plays, preload)).collect();
+            let mut bytes: usize = plan
                 .iter()
-                .map(|r| r.start..r.end.min(frames))
-                .filter(|r| !r.is_empty())
-                .collect(),
-            true,
-        )
+                .zip(frame_bytes)
+                .map(|((ranges, _), size)| {
+                    size * ranges.iter().map(|r| r.end - r.start).sum::<u64>() as usize
+                })
+                .sum();
+            if plan.iter().any(|(_, streamed)| *streamed) {
+                bytes += Streamer::BYTES;
+            }
+            (plan, bytes)
+        };
+        let (full, bytes) = plan(PRELOAD_FRAMES);
+        if bytes <= budget {
+            return Ok((PRELOAD_FRAMES, full));
+        }
+        let (mut best, bytes) = plan(MIN_PRELOAD);
+        ensure!(
+            bytes <= budget,
+            "Resident sample data needs {} MiB even at the minimum preload; the bank limit is {} MiB",
+            bytes >> 20,
+            budget >> 20
+        );
+        // Resident bytes grow with the preload: bisect to 256-frame precision.
+        let (mut fits, mut over) = (MIN_PRELOAD, PRELOAD_FRAMES);
+        while over - fits > 256 {
+            let mid = (fits + over) / 2;
+            let (candidate, bytes) = plan(mid);
+            if bytes <= budget {
+                (fits, best) = (mid, candidate);
+            } else {
+                over = mid;
+            }
+        }
+        Ok((fits, best))
     }
 
     /// Skip every zone of a sample whose data turned out to be damaged.
@@ -535,6 +564,7 @@ impl Builder {
             key_start,
             key_zones: key_zones.into_boxed_slice(),
             samples,
+            preload: PRELOAD_FRAMES,
             voice_groups: self.voice_groups,
             polyphony: self.polyphony,
             streamer,
@@ -583,4 +613,95 @@ fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), 
         },
         clamped,
     ))
+}
+
+/// Resident frame ranges of a sample played by `plays`, merged and sorted,
+/// and whether any zone path extends beyond them. Each zone keeps `preload`
+/// frames past its furthest start offset; loops ending within four preloads
+/// of the zone start stay resident, so short sustain loops never touch the
+/// disk. Data past the furthest frame any zone plays is never needed.
+fn spans(plays: &[&ZonePlay], preload: u64) -> Plan {
+    let mut frames = 0;
+    let mut ranges = Vec::with_capacity(plays.len());
+    for play in plays {
+        let map = &play.map;
+        frames = frames.max(map.end);
+        let head = preload + play.start_mod;
+        if map.reverse {
+            ranges.push(map.end.saturating_sub(head)..map.end);
+            continue;
+        }
+        let mut range = map.start..map.start + head;
+        if let Some(l) = map
+            .looped
+            .filter(|l| l.end <= map.start + 4 * preload && map.start < l.end)
+        {
+            range.start = range.start.min(l.start - l.xfade);
+            range.end = range
+                .end
+                .max(l.end + if l.until_release { preload } else { 0 });
+        }
+        ranges.push(range);
+    }
+    ranges.sort_by_key(|r| r.start);
+    let mut merged: Vec<Range<u64>> = Vec::new();
+    for range in ranges {
+        match merged.last_mut() {
+            // Bridge small gaps: one span is cheaper than a stream restart.
+            Some(last) if range.start <= last.end + preload / 2 => {
+                last.end = last.end.max(range.end)
+            }
+            _ => merged.push(range),
+        }
+    }
+    let covered: u64 = merged
+        .iter()
+        .map(|r| r.end.min(frames) - r.start.min(frames))
+        .sum();
+    if frames <= 2 * preload || covered + preload >= frames {
+        return (std::iter::once(0..frames).collect(), false);
+    }
+    merged.retain_mut(|r| {
+        r.end = r.end.min(frames);
+        !r.is_empty()
+    });
+    (merged, true)
+}
+
+/// Run `f` over `items` on every core, keeping order. Each worker owns one
+/// `S` scratch value across its items.
+fn parallel<T: Send, S: Default, R: Send>(
+    items: Vec<T>,
+    f: impl Fn(&mut S, T) -> R + Sync,
+) -> Vec<R> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, NonZero::get)
+        .min(items.len());
+    let len = items.len();
+    let queue = Mutex::new(items.into_iter().enumerate());
+    let next = || queue.lock().unwrap_or_else(|e| e.into_inner()).next();
+    let mut out: Vec<Option<R>> = (0..len).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut scratch = S::default();
+                    let mut done = Vec::new();
+                    while let Some((i, item)) = next() {
+                        done.push((i, f(&mut scratch, item)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        for worker in workers {
+            let done = worker
+                .join()
+                .unwrap_or_else(|e| std::panic::resume_unwind(e));
+            for (i, result) in done {
+                out[i] = Some(result);
+            }
+        }
+    });
+    out.into_iter().flatten().collect()
 }
