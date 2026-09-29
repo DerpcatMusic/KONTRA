@@ -255,7 +255,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         .or(c.0.iter().find(|c| c.id == 0x3d).map(FileNameListPreK51::try_from).transpose().context("Legacy file table")?.map(|f| f.sample_filetable))
         .context("Missing Kontakt sample file table")?;
     let gl = GroupList::try_from(p.0.find_first(0x33).context("Missing group list")?).context("Group list")?;
-    ensure!(gl.groups.len() <= 16384, "Too many groups");
+    ensure!(gl.groups.len() <= crate::engine::MAX_GROUPS, "Too many groups (Kontakt allows {})", crate::engine::MAX_GROUPS);
     let mut groups = Vec::new();
     for g in &gl.groups {
         let v = g.params().with_context(|| format!("Group {} version {:x}", groups.len(),g.0.version))?;

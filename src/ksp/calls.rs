@@ -486,7 +486,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let [id, p, group] = ints(m);
             let v = match (p, m.env.events.get(id)) {
                 (par::ALLOW_GROUP, Some(e)) => {
-                    usize::try_from(group).is_ok_and(|g| e.groups.allows(g)) as i32
+                    usize::try_from(group).is_ok_and(|g| e.groups.contains(g)) as i32
                 }
                 _ => 0,
             };
@@ -696,7 +696,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let v = m
                 .engine
                 .engine_par(p)
-                .or_else(|| m.env.engine_pars.get(&p).copied())
+                .or_else(|| m.env.engine_par(p))
                 .unwrap_or(0);
             if f == GetEnginePar {
                 push_int(m, v)
@@ -715,7 +715,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             if !m.engine.set_engine_par(p, value) {
                 m.env
                     .note("set_engine_par: parameter not implemented by the engine; value stored");
-                m.env.engine_pars.insert(p, value);
+                m.env.set_engine_par(p, value);
             }
             Ok(Step::Next)
         }

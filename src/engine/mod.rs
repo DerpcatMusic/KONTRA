@@ -6,19 +6,28 @@
 //! caller frees it off the audio thread. Everything reachable from
 //! [`Engine::render`] and the event methods is free of allocation, locks, I/O
 //! and panics; storage is preallocated in [`Engine::default`].
+//!
+//! A KSP [`Runtime`] is initialized off the audio thread (against a
+//! [`ScriptSetup`]) and installed with [`Engine::set_script`]. From then on
+//! MIDI input reaches voices only through it: its engine calls become
+//! time-stamped commands that [`Engine::render`] applies at their frame.
 
 mod bank;
 mod map;
 mod rack;
+mod script;
 mod stream;
 mod voice;
 
 pub use bank::{Bank, GroupSettings, MEMORY_LIMIT, PRELOAD_FRAMES};
 pub use rack::{BUSES, Block, PartControls, RACK_SLOTS, Rack};
+pub use script::{MAX_COMMANDS, ScriptSetup};
 pub use voice::Ahdsr;
 
 use crate::fx::FxProcessor;
+use crate::ksp::Runtime;
 use map::FOREVER;
+use script::{Command, Host};
 use stream::Slot;
 use voice::{Context, Envelope, Fade, Scratch, Stream, Voice, balance};
 
@@ -27,25 +36,31 @@ use voice::{Context, Envelope, Fade, Scratch, Stream, Voice, balance};
 pub const MAX_VOICES: usize = 1024;
 /// Largest block rendered in one pass; longer requests are split.
 pub const MAX_BLOCK: usize = 128;
-/// Groups addressable by [`GroupMask`].
-pub const MAX_GROUPS: usize = 16384;
+/// Groups addressable by [`GroupMask`]: Kontakt's per-instrument ceiling.
+pub const MAX_GROUPS: usize = 4096;
 /// Fade applied to voices stolen by the instrument polyphony limit.
 const STEAL_FADE: f32 = 0.005;
 
 /// Identifies one note event and every voice it started.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct EventId(pub u32);
 
+impl std::fmt::Display for EventId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Groups a note may start, like KSP's allow_group/disallow_group.
-#[derive(Clone)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct GroupMask([u64; MAX_GROUPS / 64]);
 
 impl GroupMask {
-    pub fn all() -> Self {
+    pub const fn all() -> Self {
         Self([u64::MAX; MAX_GROUPS / 64])
     }
 
-    pub fn none() -> Self {
+    pub const fn none() -> Self {
         Self([0; MAX_GROUPS / 64])
     }
 
@@ -60,6 +75,17 @@ impl GroupMask {
         self.0
             .get(group / 64)
             .is_some_and(|w| w & (1 << (group % 64)) != 0)
+    }
+
+    /// Allowed group indices below `count`.
+    pub fn iter(&self, count: usize) -> impl Iterator<Item = usize> + '_ {
+        (0..count.min(MAX_GROUPS)).filter(|&g| self.contains(g))
+    }
+}
+
+impl std::fmt::Debug for GroupMask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter(MAX_GROUPS)).finish()
     }
 }
 
@@ -112,6 +138,12 @@ pub struct Engine {
     /// Program effects, applied to the whole output after the output stage.
     fx: FxProcessor,
     player: Player,
+    /// Instrument scripts; when present, MIDI reaches voices only through them.
+    script: Option<Box<Runtime>>,
+    /// Script engine calls for the next render, ordered by frame.
+    commands: Vec<Command>,
+    /// MIDI channel of the latest input routed to the script; its notes play there.
+    script_channel: u8,
     /// Envelope attack (s) for groups without their own envelope.
     pub attack: f32,
     /// Envelope release (s) for groups without their own envelope.
@@ -128,6 +160,9 @@ impl Default for Engine {
             bank: None,
             fx: FxProcessor::default(),
             player: Player::new(48000.0),
+            script: None,
+            commands: Vec::with_capacity(MAX_COMMANDS),
+            script_channel: 0,
             attack: 0.002,
             release: 0.15,
             cutoff: 20000.0,
@@ -141,6 +176,7 @@ impl Engine {
     /// disposal off the audio thread.
     pub fn set_bank(&mut self, bank: Option<Box<Bank>>) -> Option<Box<Bank>> {
         self.player.clear_voices(self.bank.as_deref());
+        self.commands.clear();
         let old = std::mem::replace(&mut self.bank, bank);
         self.player.free.clear();
         let slots = self.bank.as_deref().map_or(0, |b| b.slots().len());
@@ -155,6 +191,20 @@ impl Engine {
         std::mem::replace(&mut self.fx, fx)
     }
 
+    /// Install the instrument scripts, initialized off the audio thread; returns
+    /// the previous runtime for disposal there. `None` plays MIDI directly.
+    pub fn set_script(&mut self, mut script: Option<Box<Runtime>>) -> Option<Box<Runtime>> {
+        self.commands.clear();
+        if let Some(rt) = script.as_deref_mut() {
+            rt.set_sample_rate(self.player.rate);
+        }
+        std::mem::replace(&mut self.script, script)
+    }
+
+    pub fn script(&self) -> Option<&Runtime> {
+        self.script.as_deref()
+    }
+
     pub fn bank(&self) -> Option<&Bank> {
         self.bank.as_deref()
     }
@@ -164,13 +214,17 @@ impl Engine {
     }
 
     /// Stop all voices, silence effect tails and reset MIDI state; keeps the
-    /// bank, effects and group mask. Effects stay built for their own rate:
-    /// replace them with [`set_fx`](Self::set_fx) when `rate` changes.
+    /// bank, effects, scripts and group mask. Effects stay built for their own
+    /// rate: replace them with [`set_fx`](Self::set_fx) when `rate` changes.
     pub fn reset(&mut self, rate: f64) {
         self.player.clear_voices(self.bank.as_deref());
+        self.commands.clear();
         self.fx.clear();
         self.player.reset_midi();
         self.player.rate = rate;
+        if let Some(rt) = self.script.as_deref_mut() {
+            rt.set_sample_rate(rate);
+        }
     }
 
     pub fn active_voices(&self) -> usize {
@@ -182,6 +236,24 @@ impl Engine {
         self.player.underruns
     }
 
+    /// Script engine calls dropped because the command queue was full.
+    pub fn dropped_commands(&self) -> u64 {
+        self.player.dropped_commands
+    }
+
+    /// The runtime and its engine view, borrowed apart so scripts can drive voices.
+    fn scripted(&mut self, channel: u8) -> Option<(&mut Runtime, Host<'_>)> {
+        let rt = self.script.as_deref_mut()?;
+        self.script_channel = channel;
+        let host = Host {
+            bank: self.bank.as_deref(),
+            player: &mut self.player,
+            commands: &mut self.commands,
+        };
+        Some((rt, host))
+    }
+
+    /// Note input takes effect at the start of the next [`render`](Self::render).
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
         if channel >= 16 || note >= 128 {
             return;
@@ -190,28 +262,81 @@ impl Engine {
             return self.note_off(channel, note);
         }
         self.player.keys[channel as usize][note as usize] = velocity.min(127);
+        if let Some((rt, mut host)) = self.scripted(channel) {
+            return rt.note_on(&mut host, 0, note, velocity.min(127));
+        }
         self.player.pedal_releases[channel as usize][note as usize] = 0;
         self.start_event(&NoteEvent::new(channel, note, velocity));
     }
 
     pub fn note_off(&mut self, channel: u8, note: u8) {
+        if channel >= 16 || note >= 128 {
+            return;
+        }
+        if self.script.is_some() {
+            self.player.keys[channel as usize][note as usize] = 0;
+            if let Some((rt, mut host)) = self.scripted(channel) {
+                rt.note_off(&mut host, 0, note);
+            }
+            return;
+        }
         let defaults = self.defaults();
         if let Some(bank) = self.bank.as_deref() {
             self.player.note_off(bank, channel, note, defaults);
-        } else if channel < 16 && note < 128 {
+        } else {
             self.player.keys[channel as usize][note as usize] = 0;
         }
     }
 
+    /// Controllers pass through the scripts; channel mode messages (120 and up)
+    /// act on the engine directly so a script can never swallow a panic.
     pub fn cc(&mut self, channel: u8, cc: u8, value: u8) {
+        if channel >= 16 || cc >= 128 {
+            return;
+        }
+        if self.script.is_some() {
+            if cc < 120 {
+                if let Some((rt, mut host)) = self.scripted(channel) {
+                    rt.controller(&mut host, 0, cc, value.min(127));
+                }
+                return;
+            }
+            if cc == 123 {
+                for note in 0..128 {
+                    if self.key_down(channel, note) {
+                        self.note_off(channel, note);
+                    }
+                }
+                return;
+            }
+        }
         let defaults = self.defaults();
         self.player
             .cc(self.bank.as_deref(), channel, cc, value, defaults);
     }
 
     pub fn pitch_bend(&mut self, channel: u8, value: u16) {
-        if let Some(bend) = self.player.bend.get_mut(channel as usize) {
-            *bend = (f32::from(value.min(16383)) - 8192.0) / 8192.0;
+        if channel >= 16 {
+            return;
+        }
+        let value = value.min(16383);
+        if let Some((rt, mut host)) = self.scripted(channel) {
+            return rt.pitch_bend(&mut host, 0, i32::from(value) - 8192);
+        }
+        self.player.bend[channel as usize] = (f32::from(value) - 8192.0) / 8192.0;
+    }
+
+    /// Channel pressure; only scripts react to it.
+    pub fn channel_pressure(&mut self, channel: u8, value: u8) {
+        if let Some((rt, mut host)) = self.scripted(channel.min(15)) {
+            rt.channel_pressure(&mut host, 0, value.min(127));
+        }
+    }
+
+    /// Polyphonic key pressure; only scripts react to it.
+    pub fn poly_pressure(&mut self, channel: u8, note: u8, value: u8) {
+        if let Some((rt, mut host)) = self.scripted(channel.min(15)) {
+            rt.poly_pressure(&mut host, 0, note, value.min(127));
         }
     }
 
@@ -220,33 +345,29 @@ impl Engine {
     pub fn start_event(&mut self, event: &NoteEvent) -> Option<EventId> {
         let defaults = self.defaults();
         let bank = self.bank.as_deref()?;
-        self.player.start(bank, event, false, defaults)
+        let id = self.player.next_id();
+        self.player.start(bank, event, id, false, defaults)
     }
 
     /// Release the event's voices (note-off by id), firing release triggers.
     pub fn release_event(&mut self, id: EventId) {
         let defaults = self.defaults();
         if let Some(bank) = self.bank.as_deref() {
-            self.player.release_event(bank, id, defaults);
+            let allowed = self.player.allowed;
+            self.player.release_event(bank, id, &allowed, defaults);
         }
     }
 
     /// Ramp the event's voices to `level` over `seconds`; `stop` ends them at silence.
     pub fn fade_event(&mut self, id: EventId, seconds: f32, level: f32, stop: bool) {
-        let frames = (seconds.max(0.0) * self.player.rate as f32) as u32;
+        let frames = self.player.frames(seconds);
         for v in self.player.voices.iter_mut().filter(|v| v.event == id) {
             v.fade.start(level.max(0.0), frames, stop);
         }
     }
 
     pub fn change_event(&mut self, id: EventId, change: EventChange) {
-        for v in self.player.voices.iter_mut().filter(|v| v.event == id) {
-            match change {
-                EventChange::Volume(gain) => v.volume = gain.max(0.0),
-                EventChange::Tune(semitones) => v.tune = 2f64.powf(semitones / 12.0),
-                EventChange::Pan(pan) => v.pan = (v.base_pan + pan).clamp(-1.0, 1.0),
-            }
-        }
+        self.player.change_event(id, change);
     }
 
     pub fn event_active(&self, id: EventId) -> bool {
@@ -284,22 +405,62 @@ impl Engine {
             .is_some_and(|&v| v > 0)
     }
 
-    /// Render `left.len()` frames, overwriting both buffers.
+    /// Render `left.len()` frames, overwriting both buffers. Scripts advance
+    /// first; their commands then split voice rendering at their exact frames.
     pub fn render(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len());
         left.fill(0.0);
         right.fill(0.0);
-        for (l, r) in left[..n]
+        let channel = self.script_channel;
+        if let Some((rt, mut host)) = self.scripted(channel) {
+            rt.process(&mut host, n as u32);
+        }
+        let defaults = self.defaults();
+        let bank = self.bank.as_deref();
+        let mut next = 0;
+        for (block, (l, r)) in left[..n]
             .chunks_mut(MAX_BLOCK)
             .zip(right[..n].chunks_mut(MAX_BLOCK))
+            .enumerate()
         {
-            if let Some(bank) = self.bank.as_deref() {
-                self.player.render(bank, l, r, self.blocking_streams);
+            let (base, len) = (block * MAX_BLOCK, l.len());
+            let mut pos = 0;
+            loop {
+                while let Some(c) = self
+                    .commands
+                    .get(next)
+                    .filter(|c| c.at as usize <= base + pos)
+                {
+                    if let Some(bank) = bank {
+                        self.player.apply(bank, c, channel, defaults);
+                    }
+                    next += 1;
+                }
+                if pos == len {
+                    break;
+                }
+                let end = self
+                    .commands
+                    .get(next)
+                    .map_or(len, |c| (c.at as usize - base).min(len));
+                if let Some(bank) = bank {
+                    let blocking = self.blocking_streams;
+                    self.player
+                        .render(bank, &mut l[pos..end], &mut r[pos..end], blocking);
+                }
+                pos = end;
             }
             self.player.output(l, r, self.cutoff);
             // Runs without voices too, so reverb and convolution tails ring out.
             self.fx.process(l, r);
         }
+        // Only an empty render leaves commands behind: apply them now.
+        if let Some(bank) = bank {
+            for c in &self.commands[next..] {
+                self.player.apply(bank, c, channel, defaults);
+            }
+        }
+        self.commands.clear();
     }
 
     fn defaults(&self) -> Ahdsr {
@@ -338,6 +499,7 @@ struct Player {
     out_gains: [f32; 2],
     tone: [f32; 2],
     underruns: u64,
+    dropped_commands: u64,
 }
 
 impl Player {
@@ -361,6 +523,7 @@ impl Player {
             out_gains: [1.0; 2],
             tone: [0.0; 2],
             underruns: 0,
+            dropped_commands: 0,
         };
         player.reset_midi();
         player
@@ -398,21 +561,40 @@ impl Player {
     }
 
     fn fade_frames(&self, seconds: f32) -> u32 {
-        ((seconds * self.rate as f32) as u32).max(1)
+        self.frames(seconds).max(1)
     }
 
+    fn frames(&self, seconds: f32) -> u32 {
+        (seconds.max(0.0) * self.rate as f32) as u32
+    }
+
+    fn next_id(&mut self) -> EventId {
+        self.next_event = self.next_event.wrapping_add(1).max(1);
+        EventId(self.next_event)
+    }
+
+    fn change_event(&mut self, id: EventId, change: EventChange) {
+        for v in self.voices.iter_mut().filter(|v| v.event == id) {
+            match change {
+                EventChange::Volume(gain) => v.volume = gain.max(0.0),
+                EventChange::Tune(semitones) => v.tune = 2f64.powf(semitones / 12.0),
+                EventChange::Pan(pan) => v.pan = (v.base_pan + pan).clamp(-1.0, 1.0),
+            }
+        }
+    }
+
+    /// Start `ev` under the caller-assigned `id`.
     fn start(
         &mut self,
         bank: &Bank,
         ev: &NoteEvent,
+        id: EventId,
         release_trigger: bool,
         defaults: Ahdsr,
     ) -> Option<EventId> {
         if ev.channel >= 16 || ev.note >= 128 || !(1..=127).contains(&ev.velocity) {
             return None;
         }
-        self.next_event = self.next_event.wrapping_add(1).max(1);
-        let id = EventId(self.next_event);
         self.clock += 1;
         let mask = ev.groups.unwrap_or(&self.allowed);
         self.pending.clear();
@@ -621,17 +803,16 @@ impl Player {
             if sustained {
                 self.pedal_releases[c][n] = velocity;
             } else {
-                self.start(
-                    bank,
-                    &NoteEvent::new(channel, note, velocity),
-                    true,
-                    defaults,
-                );
+                let id = self.next_id();
+                let event = NoteEvent::new(channel, note, velocity);
+                self.start(bank, &event, id, true, defaults);
             }
         }
     }
 
-    fn release_event(&mut self, bank: &Bank, id: EventId, defaults: Ahdsr) {
+    /// Release one event's voices; release triggers start in the groups of
+    /// `groups`. A held sustain pedal defers both, like a key release.
+    fn release_event(&mut self, bank: &Bank, id: EventId, groups: &GroupMask, defaults: Ahdsr) {
         let mut trigger = None;
         for v in self
             .voices
@@ -639,15 +820,24 @@ impl Player {
             .filter(|v| v.event == id && !v.released)
         {
             trigger.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger));
-            v.release(bank, &mut self.free);
+            if self.sustain[v.channel as usize] {
+                v.held = false;
+            } else {
+                v.release(bank, &mut self.free);
+            }
         }
-        if let Some((channel, note, velocity, false)) = trigger {
-            self.start(
-                bank,
-                &NoteEvent::new(channel, note, velocity),
-                true,
-                defaults,
-            );
+        let Some((channel, note, velocity, false)) = trigger else {
+            return;
+        };
+        if self.sustain[channel as usize] {
+            self.pedal_releases[channel as usize][note as usize] = velocity;
+        } else {
+            let id = self.next_id();
+            let event = NoteEvent {
+                groups: Some(groups),
+                ..NoteEvent::new(channel, note, velocity)
+            };
+            self.start(bank, &event, id, true, defaults);
         }
     }
 
@@ -711,12 +901,9 @@ impl Player {
             let velocity =
                 std::mem::take(&mut self.pedal_releases[channel as usize][note as usize]);
             if velocity > 0 {
-                self.start(
-                    bank,
-                    &NoteEvent::new(channel, note, velocity),
-                    true,
-                    defaults,
-                );
+                let id = self.next_id();
+                let event = NoteEvent::new(channel, note, velocity);
+                self.start(bank, &event, id, true, defaults);
             }
         }
     }

@@ -20,7 +20,7 @@ mod vm;
 mod tests;
 
 pub use engine::{
-    EngineCall, EnginePar, Fade, GroupMask, KspEngine, LogEngine, NoteLength, NoteSpec, VoiceId,
+    EngineCall, EnginePar, EventId, Fade, GroupMask, KspEngine, LogEngine, NoteLength, NoteSpec,
     VoicePar,
 };
 pub use inventory::requirements;

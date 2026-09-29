@@ -1,53 +1,9 @@
 //! The boundary between the KSP runtime and the sampler engine. Every call is made
 //! on the audio thread at a frame offset within the current block.
 
+pub use crate::engine::{EventId, GroupMask};
 use serde::Serialize;
 use std::fmt::Write as _;
-
-/// Engine-defined handle for the voices started by one note event.
-pub type VoiceId = u32;
-
-/// Allowed groups for a note event: one bit per group, Kontakt's 4096-group ceiling.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct GroupMask([u64; 64]);
-
-impl GroupMask {
-    pub const MAX_GROUPS: usize = 4096;
-
-    pub const fn all() -> Self {
-        Self([u64::MAX; 64])
-    }
-
-    pub const fn none() -> Self {
-        Self([0; 64])
-    }
-
-    pub fn allows(&self, group: usize) -> bool {
-        group < Self::MAX_GROUPS && self.0[group / 64] & (1 << (group % 64)) != 0
-    }
-
-    pub fn set(&mut self, group: usize, allowed: bool) {
-        if group < Self::MAX_GROUPS {
-            let bit = 1 << (group % 64);
-            if allowed {
-                self.0[group / 64] |= bit;
-            } else {
-                self.0[group / 64] &= !bit;
-            }
-        }
-    }
-
-    /// Allowed group indices below `count`.
-    pub fn iter(&self, count: usize) -> impl Iterator<Item = usize> + '_ {
-        (0..count.min(Self::MAX_GROUPS)).filter(|&g| self.allows(g))
-    }
-}
-
-impl std::fmt::Debug for GroupMask {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.iter(Self::MAX_GROUPS)).finish()
-    }
-}
 
 /// How long the engine should play a note when no note-off arrives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -109,10 +65,11 @@ pub struct EnginePar {
 }
 
 pub trait KspEngine {
-    fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<VoiceId>;
-    fn note_off(&mut self, at: u32, voice: VoiceId);
-    fn fade(&mut self, at: u32, voice: VoiceId, fade: Fade);
-    fn set_par(&mut self, at: u32, voice: VoiceId, par: VoicePar, value: i32);
+    fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<EventId>;
+    /// Release a voice; release triggers may start in `groups`.
+    fn note_off(&mut self, at: u32, voice: EventId, groups: &GroupMask);
+    fn fade(&mut self, at: u32, voice: EventId, fade: Fade);
+    fn set_par(&mut self, at: u32, voice: EventId, par: VoicePar, value: i32);
     /// A controller that passed every slot: 0..127, 128 pitch bend (-8192..8191),
     /// 129 channel pressure.
     fn controller(&mut self, at: u32, cc: u8, value: i32);
@@ -132,7 +89,7 @@ pub trait KspEngine {
         None
     }
     /// Whether a voice is still sounding; drives `event_status` for sample-length notes.
-    fn voice_active(&self, _voice: VoiceId) -> bool {
+    fn voice_active(&self, _voice: EventId) -> bool {
         true
     }
 }
@@ -143,7 +100,7 @@ pub trait KspEngine {
 pub enum EngineCall {
     PlayNote {
         time: u64,
-        voice: VoiceId,
+        voice: EventId,
         event: i32,
         note: u8,
         velocity: u8,
@@ -156,16 +113,16 @@ pub enum EngineCall {
     },
     NoteOff {
         time: u64,
-        voice: VoiceId,
+        voice: EventId,
     },
     Fade {
         time: u64,
-        voice: VoiceId,
+        voice: EventId,
         fade: Fade,
     },
     SetPar {
         time: u64,
-        voice: VoiceId,
+        voice: EventId,
         par: VoicePar,
         value: i32,
     },
@@ -192,7 +149,7 @@ pub struct LogEngine {
     pub block_start: u64,
     pub rate: f64,
     pars: std::collections::BTreeMap<EnginePar, i32>,
-    next_voice: VoiceId,
+    next_voice: EventId,
 }
 
 impl LogEngine {
@@ -210,8 +167,8 @@ impl LogEngine {
 }
 
 impl KspEngine for LogEngine {
-    fn play_note(&mut self, at: u32, n: &NoteSpec<'_>) -> Option<VoiceId> {
-        self.next_voice += 1;
+    fn play_note(&mut self, at: u32, n: &NoteSpec<'_>) -> Option<EventId> {
+        self.next_voice.0 += 1;
         let call = EngineCall::PlayNote {
             time: self.time(at),
             voice: self.next_voice,
@@ -229,14 +186,14 @@ impl KspEngine for LogEngine {
         Some(self.next_voice)
     }
 
-    fn note_off(&mut self, at: u32, voice: VoiceId) {
+    fn note_off(&mut self, at: u32, voice: EventId, _groups: &GroupMask) {
         self.calls.push(EngineCall::NoteOff {
             time: self.time(at),
             voice,
         });
     }
 
-    fn fade(&mut self, at: u32, voice: VoiceId, fade: Fade) {
+    fn fade(&mut self, at: u32, voice: EventId, fade: Fade) {
         self.calls.push(EngineCall::Fade {
             time: self.time(at),
             voice,
@@ -244,7 +201,7 @@ impl KspEngine for LogEngine {
         });
     }
 
-    fn set_par(&mut self, at: u32, voice: VoiceId, par: VoicePar, value: i32) {
+    fn set_par(&mut self, at: u32, voice: EventId, par: VoicePar, value: i32) {
         self.calls.push(EngineCall::SetPar {
             time: self.time(at),
             voice,

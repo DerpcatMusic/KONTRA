@@ -193,6 +193,12 @@ impl Fade {
         }
     }
 
+    /// Restart from silence and rise to unity.
+    pub fn fade_in(&mut self, frames: u32) {
+        self.value = 0.0;
+        self.start(1.0, frames, false);
+    }
+
     pub fn dying(&self) -> bool {
         self.stop && self.target <= 0.0
     }

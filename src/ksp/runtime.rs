@@ -9,7 +9,7 @@
 
 use super::builtins::{self as b, CC_SLOTS, SysArray};
 use super::compile::{self, Callback, Program, Setup, Ty, VarId};
-use super::engine::{Fade, GroupMask, KspEngine, NoteLength, NoteSpec, VoiceId};
+use super::engine::{EnginePar, EventId, Fade, GroupMask, KspEngine, NoteLength, NoteSpec};
 use super::vm::{self, Ctx, Forward, Kind, Machine, POLY_ROWS, SlotState, Stacks, Thread, Yield};
 use super::{HostState, Interface, Value};
 use anyhow::{Result, bail};
@@ -25,6 +25,8 @@ const THREAD_CAPACITY: usize = 1024;
 const TIMER_CAPACITY: usize = 8192;
 const WORK_CAPACITY: usize = 4096;
 const FAULT_CAPACITY: usize = 256;
+/// Stored engine parameters that may be added after `on init` without allocating.
+const ENGINE_PAR_HEADROOM: usize = 1024;
 /// Instructions one callback may run between waits.
 pub const CALLBACK_FUEL: u64 = 5_000_000;
 /// Instructions all callbacks together may run per audio block; the rest is deferred.
@@ -66,7 +68,7 @@ pub struct Event {
     pub ignored: bool,
     pub release_ignored: bool,
     pub at_engine: bool,
-    pub voice: Option<VoiceId>,
+    pub voice: Option<EventId>,
     /// MIDI key still down.
     pub held: bool,
     pub fade_in_us: i32,
@@ -267,7 +269,10 @@ pub struct Env {
     pub block_fuel: u64,
     pub targets: Vec<i32>,
     pub message: String,
-    pub engine_pars: BTreeMap<super::engine::EnginePar, i32>,
+    /// Engine parameters the engine does not model, sorted by address.
+    engine_pars: Vec<(EnginePar, i32)>,
+    /// Set while `on init` runs off the audio thread: storage may grow.
+    loading: bool,
     pub saved_arrays: BTreeMap<(u8, VarId), Value>,
     pub persisted: Vec<Persisted>,
     pub notes: BTreeSet<Cow<'static, str>>,
@@ -303,7 +308,8 @@ impl Env {
             block_fuel: BLOCK_FUEL,
             targets: Vec::with_capacity(EVENT_CAPACITY),
             message: String::with_capacity(256),
-            engine_pars: BTreeMap::new(),
+            engine_pars: Vec::with_capacity(ENGINE_PAR_HEADROOM),
+            loading: false,
             saved_arrays: BTreeMap::new(),
             persisted,
             notes: BTreeSet::new(),
@@ -329,6 +335,23 @@ impl Env {
 
     pub fn samples(&self, us: i64) -> u64 {
         (us.max(0) as f64 * self.sample_rate / 1e6).round() as u64
+    }
+
+    pub fn engine_par(&self, par: EnginePar) -> Option<i32> {
+        let i = self.engine_pars.binary_search_by_key(&par, |e| e.0).ok()?;
+        Some(self.engine_pars[i].1)
+    }
+
+    /// Store a parameter the engine does not model. After loading, new
+    /// addresses only fit the preallocated headroom.
+    pub fn set_engine_par(&mut self, par: EnginePar, value: i32) {
+        match self.engine_pars.binary_search_by_key(&par, |e| e.0) {
+            Ok(i) => self.engine_pars[i].1 = value,
+            Err(_) if !self.loading && self.engine_pars.len() == self.engine_pars.capacity() => {
+                self.note("set_engine_par: parameter store full; value dropped");
+            }
+            Err(i) => self.engine_pars.insert(i, (par, value)),
+        }
     }
 
     pub fn quarter_us(&self) -> i32 {
@@ -537,9 +560,24 @@ impl Runtime {
         }
     }
 
-    /// Compile a script into the next slot and run `on init`. Shared host state is
-    /// committed only if initialization succeeds.
+    /// Sample rate for µs timing; the engine sets it when the host rate changes.
+    pub fn set_sample_rate(&mut self, rate: f64) {
+        if rate.is_finite() && rate > 0.0 {
+            self.env.sample_rate = rate;
+        }
+    }
+
+    /// Compile a script into the next slot and run `on init`, off the audio
+    /// thread. Shared host state is committed only if initialization succeeds.
     pub fn load(&mut self, engine: &mut dyn KspEngine, source: &str) -> Result<()> {
+        self.env.loading = true;
+        let result = self.load_slot(engine, source);
+        self.env.loading = false;
+        self.env.engine_pars.reserve(ENGINE_PAR_HEADROOM);
+        result
+    }
+
+    fn load_slot(&mut self, engine: &mut dyn KspEngine, source: &str) -> Result<()> {
         if self.programs.len() >= MAX_SLOTS {
             bail!("At most {MAX_SLOTS} script slots");
         }
@@ -655,6 +693,21 @@ impl Runtime {
                     .collect()
             })
             .collect()
+    }
+
+    /// Update `saved`, built earlier by [`persistence`](Self::persistence), in
+    /// place. Allocates only if a string outgrows its previous value, so the
+    /// audio thread can refresh a snapshot the host then saves.
+    pub fn refresh_persistence(&self, saved: &mut [Persisted]) {
+        let slots = self.programs.iter().zip(&self.states).zip(saved);
+        for ((prog, state), saved) in slots {
+            for &v in &state.persistent {
+                let var = &prog.vars[v as usize];
+                if let Some(value) = saved.get_mut(&*var.name) {
+                    refresh_value(&state.mem, var, value);
+                }
+            }
+        }
     }
 
     pub fn interface(&self, slot: usize) -> Interface {
@@ -1026,7 +1079,7 @@ impl Runtime {
                 };
                 if slot >= slots {
                     if let Some(v) = e.voice.take() {
-                        engine.note_off(self.env.offset, v);
+                        engine.note_off(self.env.offset, v, &e.groups);
                     }
                     return self.env.events.free(event);
                 }
@@ -1377,6 +1430,29 @@ pub fn read_value(mem: &vm::Memory, var: &compile::Var) -> Value {
                 .map(|x| Value::Text(x.clone()))
                 .collect(),
         ),
+    }
+}
+
+/// Copy current values into a value shaped by [`read_value`], without reshaping it.
+fn refresh_value(mem: &vm::Memory, var: &compile::Var, value: &mut Value) {
+    if var.poly {
+        return;
+    }
+    let one = |i: usize, v: &mut Value| match (var.ty, v) {
+        (Ty::Int, Value::Int(n)) => *n = mem.ints[i],
+        (Ty::Real, Value::Real(n)) => *n = mem.reals[i],
+        (Ty::Str, Value::Text(t)) => t.clone_from(&mem.strs[i]),
+        _ => {}
+    };
+    let s = var.slot as usize;
+    match (var.len, value) {
+        (None, v) => one(s, v),
+        (Some(n), Value::Array(items)) => {
+            for (i, v) in items.iter_mut().take(n as usize).enumerate() {
+                one(s + i, v);
+            }
+        }
+        _ => {}
     }
 }
 
