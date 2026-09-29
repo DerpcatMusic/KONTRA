@@ -226,3 +226,201 @@ fn group_conditions_are_found_by_id() {
     assert!(group.params().unwrap().start_criteria.items.is_empty());
     group.0.children.clear();assert!(group.params().is_err());
 }
+
+/// Synthetic modulation records built from the layout in `audits/MODULATION.md`.
+mod modulation {
+    use ni_file::kontakt::{
+        objects::{
+            EnvelopeAhdsr, ExternalMod, ExternalModArray32, InternalMod, InternalModArray16,
+            ModSource, Modulator, ShaperCurve,
+        },
+        Chunk,
+    };
+
+    fn name(out: &mut Vec<u8>, text: &str) {
+        out.extend((text.len() as u32).to_le_bytes());
+        out.extend(text.as_bytes());
+    }
+
+    fn target_header(out: &mut Vec<u8>, param: &str, slot: Option<u8>, invert: bool) {
+        name(out, param);
+        out.extend(0.5f32.to_le_bytes());
+        out.extend((-1i16).to_le_bytes());
+        out.push(0x10);
+        out.extend(250u16.to_le_bytes());
+        name(out, "<none>");
+        out.extend(slot);
+        out.push(invert.into());
+    }
+
+    fn structured(id: u16, version: u16, private: &[u8], public: &[u8], children: &[u8]) -> Chunk {
+        let mut data = vec![1];
+        data.extend(version.to_le_bytes());
+        for part in [private, public, children] {
+            data.extend((part.len() as u32).to_le_bytes());
+            data.extend(part);
+        }
+        Chunk { id, data }
+    }
+
+    fn chunk_bytes(chunk: &Chunk) -> Vec<u8> {
+        let mut out = chunk.id.to_le_bytes().to_vec();
+        out.extend((chunk.data.len() as u32).to_le_bytes());
+        out.extend(&chunk.data);
+        out
+    }
+
+    fn velocity_to_volume() -> Vec<u8> {
+        let mut data = 1u32.to_le_bytes().to_vec();
+        target_header(&mut data, "volume", None, false);
+        data.extend([2, 1, 2]);
+        for value in [0.0f32, 0.0, 0.0, 1.0, 1.0, 0.0] {
+            data.extend(value.to_le_bytes());
+        }
+        name(&mut data, "VEL_VOLUME");
+        data.extend(1u32.to_le_bytes());
+        data.extend(6u32.to_le_bytes());
+        data.extend([0; 4]);
+        data.extend(7u32.to_le_bytes());
+        data
+    }
+
+    fn cc_to_module() -> Vec<u8> {
+        let mut data = 1u32.to_le_bytes().to_vec();
+        target_header(&mut data, "eqGain1", Some(2), true);
+        data.extend([1, 0]);
+        for step in 0..128 {
+            data.extend((step as f32 / 127.0).to_le_bytes());
+        }
+        name(&mut data, "CC_EQ");
+        data.extend(1u32.to_le_bytes());
+        data.extend(4u32.to_le_bytes());
+        data.push(11);
+        data.extend([0x7f, 0, 0, 0]);
+        data.extend(9u32.to_le_bytes());
+        data
+    }
+
+    fn ahdsr(sustain: f32) -> Chunk {
+        let mut data = vec![0];
+        data.extend(0x11u16.to_le_bytes());
+        for value in [0.25f32, 10.0, 500.0, 0.0, 300.0, sustain] {
+            data.extend(value.to_le_bytes());
+        }
+        data.push(0);
+        data.extend([0; 52]);
+        Chunk { id: 0x3F, data }
+    }
+
+    #[test]
+    fn external_assignments_decode_source_target_and_shaper() {
+        let velocity = structured(0x0C, 0x102, &velocity_to_volume(), &[], &[]);
+        let cc = structured(0x0C, 0x102, &cc_to_module(), &[], &[]);
+        let mut slots = vec![0, 1];
+        slots.extend(chunk_bytes(&velocity));
+        slots.push(1);
+        slots.extend(chunk_bytes(&cc));
+        slots.resize(slots.len() + 29, 0);
+        let array =
+            ExternalModArray32::try_from(&structured(0x3C, 0x12, &[], &slots, &[])).unwrap();
+
+        let items = array.slots().unwrap();
+        let indices: Vec<_> = items.iter().map(|(slot, _)| *slot).collect();
+        assert_eq!(indices, [1, 2]);
+
+        let velocity = items[0].1.params().unwrap();
+        assert_eq!(velocity.name, "VEL_VOLUME");
+        assert_eq!(velocity.source, ModSource::Velocity);
+        let target = &velocity.targets[0];
+        assert_eq!(
+            (target.param.as_str(), target.slot, target.invert),
+            ("volume", None, false)
+        );
+        assert_eq!((target.intensity, target.lag_ms), (0.5, 250));
+        let shaper = target.shaper.as_ref().unwrap();
+        assert!(shaper.enabled);
+        assert!(matches!(&shaper.curve, ShaperCurve::Breakpoints(points) if points.len() == 2));
+
+        let cc = items[1].1.params().unwrap();
+        assert_eq!(cc.source, ModSource::MidiCc(11));
+        let target = &cc.targets[0];
+        assert_eq!(
+            (target.param.as_str(), target.slot, target.invert),
+            ("eqGain1", Some(2), true)
+        );
+        let shaper = target.shaper.as_ref().unwrap();
+        assert!(!shaper.enabled);
+        assert!(matches!(&shaper.curve, ShaperCurve::Table(table) if table.len() == 128));
+    }
+
+    #[test]
+    fn malformed_external_assignments_are_errors() {
+        let valid = velocity_to_volume();
+        let mut trailing = valid.clone();
+        trailing.push(0);
+        let mut truncated = valid.clone();
+        truncated.truncate(valid.len() - 3);
+        // count, "volume", intensity, i16, flags, lag, "<none>"
+        let invert_offset = 4 + (4 + 6) + 4 + 2 + 1 + 2 + (4 + 6);
+        let mut bad_invert = valid.clone();
+        bad_invert[invert_offset] = 7;
+        for data in [trailing, truncated, bad_invert, vec![0; 4]] {
+            let chunk = structured(0x0C, 0x102, &data, &[], &[]);
+            assert!(ExternalMod::try_from(&chunk).unwrap().params().is_err());
+        }
+        let unknown_version = structured(0x0C, 0x0FF, &valid, &[], &[]);
+        assert!(ExternalMod::try_from(&unknown_version)
+            .unwrap()
+            .params()
+            .is_err());
+    }
+
+    #[test]
+    fn internal_modulator_reads_ahdsr_envelope() {
+        let mut private = 1u32.to_le_bytes().to_vec();
+        target_header(&mut private, "volume", None, false);
+        private.push(0);
+        private.extend([0, 0, 1, 0]);
+        private.extend(0u32.to_le_bytes());
+        name(&mut private, "ENV_AHDSR");
+        private.extend(2u32.to_le_bytes());
+        let envelope = chunk_bytes(&ahdsr(0.5));
+        let wrapper = structured(0x07, 0x90, &[], &0u32.to_le_bytes(), &envelope);
+        let modulator = structured(0x0D, 0x81, &private, &[], &chunk_bytes(&wrapper));
+        let mut slots = vec![1];
+        slots.extend(chunk_bytes(&modulator));
+        slots.resize(slots.len() + 15, 0);
+        let array =
+            InternalModArray16::try_from(&structured(0x3B, 0x10, &[], &slots, &[])).unwrap();
+
+        let (slot, modulator) = array.slots().unwrap().pop().unwrap();
+        assert_eq!(slot, 0);
+        let params = modulator.params().unwrap();
+        assert_eq!(params.name, "ENV_AHDSR");
+        assert_eq!(params.targets[0].param, "volume");
+        let Modulator::Ahdsr(env) = params.modulator else {
+            panic!("expected an AHDSR modulator");
+        };
+        let fields = (
+            env.attack_curve,
+            env.attack_ms,
+            env.decay_ms,
+            env.hold_ms,
+            env.release_ms,
+            env.sustain,
+        );
+        assert_eq!(fields, (0.25, 10.0, 500.0, 0.0, 300.0, 0.5));
+
+        let wrong_id = structured(0x0C, 0x81, &private, &[], &[]);
+        assert!(InternalMod::try_from(&wrong_id).is_err());
+    }
+
+    #[test]
+    fn out_of_range_envelope_is_an_error() {
+        assert!(EnvelopeAhdsr::try_from(&ahdsr(0.5)).is_ok());
+        assert!(EnvelopeAhdsr::try_from(&ahdsr(2.0)).is_err());
+        let mut truncated = ahdsr(0.5);
+        truncated.data.truncate(20);
+        assert!(EnvelopeAhdsr::try_from(&truncated).is_err());
+    }
+}
