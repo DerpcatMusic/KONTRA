@@ -55,16 +55,24 @@ impl Pcm {
 
     /// Store `frames` in the narrowest exact format.
     pub fn pack(frames: &[Frame]) -> Self {
-        if let Some(data) = quantize(frames, I16_SCALE) {
-            return Self::I16(data.iter().map(|&q| q as i16).collect());
+        let samples = frames.as_flattened();
+        // Chunked so the check vectorizes yet fails fast on wider data.
+        let exact = |scale: f32| {
+            samples
+                .chunks(256)
+                .all(|c| c.iter().fold(true, |ok, &x| ok & exact(x, scale)))
+        };
+        if exact(I16_SCALE) {
+            return Self::I16(samples.iter().map(|&x| (x * I16_SCALE) as i16).collect());
         }
-        match quantize(frames, I24_SCALE) {
-            Some(data) => Self::I24(
-                data.iter().map(|&q| (q >> 8) as i16).collect(),
-                data.iter().map(|&q| q as u8).collect(),
-            ),
-            None => Self::F32(frames.into()),
+        if exact(I24_SCALE) {
+            let q = |x: f32| (x * I24_SCALE) as i32;
+            return Self::I24(
+                samples.iter().map(|&x| (q(x) >> 8) as i16).collect(),
+                samples.iter().map(|&x| q(x) as u8).collect(),
+            );
         }
+        Self::F32(frames.into())
     }
 
     pub fn len(&self) -> usize {
@@ -144,16 +152,11 @@ impl Pcm {
     }
 }
 
-/// Interleaved `frames` as exact integers at `scale`, if every value is one.
-fn quantize(frames: &[Frame], scale: f32) -> Option<Vec<i32>> {
-    frames
-        .as_flattened()
-        .iter()
-        .map(|x| {
-            let q = x * scale;
-            (q.fract() == 0.0 && (-scale..scale).contains(&q)).then_some(q as i32)
-        })
-        .collect()
+/// Whether `x * scale` is an integer in `-scale..scale`.
+#[inline]
+fn exact(x: f32, scale: f32) -> bool {
+    let q = x * scale;
+    ((q as i32) as f32 == q) & (q >= -scale) & (q < scale)
 }
 
 /// A fully decoded sample.
