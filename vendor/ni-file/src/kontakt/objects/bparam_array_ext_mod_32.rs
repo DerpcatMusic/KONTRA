@@ -1,9 +1,9 @@
 use crate::{
-    kontakt::{error::KontaktError, structured_object::StructuredObject, Chunk},
     Error,
+    kontakt::{Chunk, error::KontaktError, structured_object::StructuredObject},
 };
 
-use super::{modulation::read_param_slots, ExternalMod};
+use super::{ExternalMod, modulation::read_param_slots};
 
 const CHUNK_ID: u16 = 0x3C;
 const SLOTS: usize = 32;

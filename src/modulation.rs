@@ -3,7 +3,7 @@
 //! Field meanings and confidence are documented in `audits/MODULATION.md`.
 //! Nothing here is applied to playback by itself.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use ni_file::kontakt::objects::{
     ExternalModArray32, Group as RawGroup, InternalModArray16, Modulator,
 };

@@ -6,9 +6,9 @@
 use std::io::Cursor;
 
 use crate::{
+    Error,
     kontakt::{Chunk, KontaktError, StructuredObject},
     read_bytes::ReadBytesExt,
-    Error,
 };
 
 /// Target parameters stored without a module slot byte. Every other
@@ -178,7 +178,7 @@ impl ExternalMod {
             other => {
                 return Err(Error::Generic(format!(
                     "Unknown external modulation category {other}"
-                )))
+                )));
             }
         };
         let unknown_source_data = reader.read_bytes(unknown_len)?;
@@ -231,7 +231,7 @@ fn read_source(reader: &mut Cursor<&[u8]>) -> Result<ModSource, Error> {
         other => {
             return Err(Error::Generic(format!(
                 "Unknown external modulation source {other}"
-            )))
+            )));
         }
     })
 }
@@ -311,7 +311,7 @@ fn read_shaper(reader: &mut Cursor<&[u8]>) -> Result<Option<ModShaper>, Error> {
         other => {
             return Err(Error::Generic(format!(
                 "Unknown modulation shaper kind {other}"
-            )))
+            )));
         }
     };
     Ok(Some(ModShaper { enabled, curve }))

@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
 use crate::{
+    Error,
     kontakt::{Chunk, KontaktError},
     read_bytes::ReadBytesExt,
-    Error,
 };
 
 const CHUNK_ID: u16 = 0x3F;

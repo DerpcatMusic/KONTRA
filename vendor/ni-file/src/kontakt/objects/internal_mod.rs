@@ -1,14 +1,14 @@
 use std::io::Cursor;
 
 use crate::{
-    kontakt::{error::KontaktError, structured_object::StructuredObject, Chunk},
-    read_bytes::ReadBytesExt,
     Error,
+    kontakt::{Chunk, error::KontaktError, structured_object::StructuredObject},
+    read_bytes::ReadBytesExt,
 };
 
 use super::{
-    modulation::{ensure_consumed, read_name, read_targets},
     EnvelopeAhdsr, ModTarget,
+    modulation::{ensure_consumed, read_name, read_targets},
 };
 
 const CHUNK_ID: u16 = 0x0D;

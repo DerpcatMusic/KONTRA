@@ -230,11 +230,11 @@ fn group_conditions_are_found_by_id() {
 /// Synthetic modulation records built from the layout in `audits/MODULATION.md`.
 mod modulation {
     use ni_file::kontakt::{
+        Chunk,
         objects::{
             EnvelopeAhdsr, ExternalMod, ExternalModArray32, InternalMod, InternalModArray16,
             ModSource, Modulator, ShaperCurve,
         },
-        Chunk,
     };
 
     fn name(out: &mut Vec<u8>, text: &str) {
@@ -384,10 +384,12 @@ mod modulation {
             assert!(ExternalMod::try_from(&chunk).unwrap().params().is_err());
         }
         let unknown_version = structured(0x0C, 0x0FF, &valid, &[], &[]);
-        assert!(ExternalMod::try_from(&unknown_version)
-            .unwrap()
-            .params()
-            .is_err());
+        assert!(
+            ExternalMod::try_from(&unknown_version)
+                .unwrap()
+                .params()
+                .is_err()
+        );
     }
 
     #[test]
@@ -438,7 +440,8 @@ mod modulation {
         assert!((table.evaluate(0.5) - 0.5).abs() < 1e-6);
         assert_eq!(table.evaluate(2.0), 0.0);
         let point = |x, y| Breakpoint { x, y, curve: 0.0 };
-        let knee = ShaperCurve::Breakpoints(vec![point(0.0, 0.0), point(0.5, 1.0), point(1.0, 1.0)]);
+        let knee =
+            ShaperCurve::Breakpoints(vec![point(0.0, 0.0), point(0.5, 1.0), point(1.0, 1.0)]);
         assert_eq!(knee.evaluate(0.25), 0.5);
         assert_eq!(knee.evaluate(0.75), 1.0);
         assert_eq!(ShaperCurve::Breakpoints(vec![]).evaluate(0.3), 0.3);
