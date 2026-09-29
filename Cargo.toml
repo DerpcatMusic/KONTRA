@@ -50,7 +50,11 @@ moose-test = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b
 [patch."https://github.com/Matari-Audio/moose"]
 moose-mui = { path = "vendor/moose-mui" }
 
+# MUI's vello with a fix for images vanishing after a partial redraw; see vendor/vello/PATCHES.md.
+[patch."https://github.com/Matari-Audio/MUI"]
+vello = { path = "vendor/vello" }
+
 [workspace]
 members = [".", "vendor/moose-mui"]
-exclude = ["vendor/ni-file", "vendor/ncw"]
+exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello"]
 resolver = "3"
