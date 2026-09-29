@@ -115,8 +115,26 @@ Which of the five flags is Kontakt's auto-gain is unknown (they are identical in
 
 ## DSP
 
-Real-time contract: allocation only in `prepare`; `process` never allocates, locks or
-panics and splits blocks longer than `max_block`.
+Ownership: `ProgramFx` (on `Instrument.fx`) is an immutable description, `Clone` and
+shared with the UI; IRs sit behind `Arc`. `ProgramFx::processor(rate, max_block)` builds
+an owned `FxProcessor` holding all DSP state, leaving out bypassed and unimplemented
+slots and send slots nothing taps. All allocation happens there; `FxProcessor::process`
+never allocates, locks or panics and splits blocks longer than `max_block`.
+
+Signal path: `Engine` owns the processor next to its bank (`Engine::set_fx`) and runs it
+on the whole part output inside `Engine::render`, after voice rendering and the output
+stage (instrument volume/pan, Tone), so racks, `kontakto render` and tests all hear it.
+It runs with no voices active so tails ring out; once the input has been below -120 dBFS
+for longer than the summed tails of all slots (reverb: 2 x RT60 + predelay; convolution:
+IR length) it stops processing until input returns. `Engine::reset` clears all effect
+state without allocating.
+
+Plugin: the loader builds the processor at the host rate with the bank and hands both
+over in one `ready` message; replaced banks and processors go back through `discard` and
+are dropped on the loader thread. `reset(rate)` records the rate; the next loader run
+(forced by the reset) rebuilds processors whose rate differs from the cached instrument
+description and hands them over alone, keeping the bank. Until that arrives (one loader
+run) the old processor keeps running at its original rate.
 
 - **Convolution**: two-stage zero-latency partitioned FFT (`realfft`). Head: partitions of
   `next_pow2(max_block)` (32..512) covering the first 16 blocks, recomputing the partial

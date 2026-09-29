@@ -161,7 +161,7 @@ fn render(args: &[String]) -> Result<()> {
     }
     peak = peak.max(block_peak);
     blocks += 1;
-    if block_peak > 1e-4 {
+    if block_peak > peak * 1e-3 {
       last_audible = blocks;
     }
     if blocks > held && engine.active_voices() == 0 {
@@ -174,7 +174,7 @@ fn render(args: &[String]) -> Result<()> {
   writer.finalize()?;
   let seconds = |blocks: usize| (blocks * MAX_BLOCK) as f64 / 48000.0;
   let tail = voices_end.map_or("voices still playing at 60 s".into(), |end| {
-    format!("audible (-80 dB) {:.2} s after the last voice", seconds(last_audible.saturating_sub(end)))
+    format!("{:.2} s to -60 dB re peak after the last voice", seconds(last_audible.saturating_sub(end)))
   });
   ensure!(peak > 0.00001, "Rendered silence; chosen key/velocity has no audible zone");
   let groups = group.map_or_else(|| "all groups".to_string(), |g| format!("group {g} ({})", instrument.groups[g].name));
