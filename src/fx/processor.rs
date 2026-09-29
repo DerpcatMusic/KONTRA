@@ -118,8 +118,9 @@ enum Dsp {
 
 impl ProgramFx {
     /// Builds the DSP state for `sample_rate`; `process` calls are split into
-    /// blocks of at most `max_block` frames. Bypassed and unimplemented slots
-    /// are left out; every stored bus gets input buffers of `max_block`.
+    /// blocks of at most `max_block` frames. Unimplemented slots are left
+    /// out; bypassed ones are built so scripts can switch them on. Every
+    /// stored bus gets input buffers of `max_block`.
     pub fn processor(&self, sample_rate: f32, max_block: usize) -> FxProcessor {
         let max_block = max_block.max(1);
         let build = |fx: &Effect| Slot::new(fx, sample_rate, max_block);
@@ -127,7 +128,7 @@ impl ProgramFx {
             .insert
             .slots
             .iter()
-            .any(|fx| !fx.bypass && matches!(fx.params, Params::SendLevels(_)));
+            .any(|fx| matches!(fx.params, Params::SendLevels(_)));
         // Unfed send slots would only ever process silence.
         let sends: Vec<_> = if tapped {
             self.send.slots.iter().filter_map(build).collect()
@@ -139,9 +140,9 @@ impl ProgramFx {
             .slots
             .iter()
             .filter_map(|fx| match &fx.params {
-                Params::SendLevels(levels) if !fx.bypass => Some(Stage::Tap(Tap {
+                Params::SendLevels(levels) => Some(Stage::Tap(Tap {
                     index: fx.slot as u8,
-                    bypass: false,
+                    bypass: fx.bypass,
                     gain: fx.output_gain,
                     levels: sends
                         .iter()
@@ -303,7 +304,7 @@ impl FxProcessor {
     }
 
     /// Set a script-controllable value; false when this processor does not
-    /// hold it (unknown, bypassed at load or unimplemented slots).
+    /// hold it (unknown or unimplemented slots).
     pub fn set_param(&mut self, rack: Rack, slot: u8, param: FxParam, value: f32) -> bool {
         let gain = value.max(0.0);
         if let FxParam::Volume | FxParam::Pan = param {
@@ -486,14 +487,11 @@ fn balance(gain: f32, pan: f32) -> [f32; 2] {
 
 impl Slot {
     fn new(fx: &Effect, sample_rate: f32, max_block: usize) -> Option<Self> {
-        if fx.bypass {
-            return None;
-        }
         let dsp = Dsp::new(&fx.params, sample_rate, max_block)?;
         // Scripts may raise the dry level later, so the buffer always exists.
         Some(Self {
             index: fx.slot as u8,
-            bypass: false,
+            bypass: fx.bypass,
             dsp,
             wet: fx.output_gain,
             dry: fx.dry_level,

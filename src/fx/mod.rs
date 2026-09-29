@@ -238,13 +238,14 @@ impl ProgramFx {
         }
     }
 
-    /// Decodes the IR of every active convolution slot; one decode per file.
+    /// Decodes the IR of every convolution slot, bypassed ones included since
+    /// scripts may switch them on; one decode per file.
     pub fn load_impulses(
         &mut self,
         mut load: impl FnMut(&str, usize) -> Result<crate::audio::Sample>,
     ) {
         let mut cache: HashMap<String, Result<Arc<crate::audio::Sample>, String>> = HashMap::new();
-        for fx in self.effects_mut().filter(|fx| !fx.bypass) {
+        for fx in self.effects_mut() {
             let Params::Convolution(c) = &mut fx.params else {
                 continue;
             };

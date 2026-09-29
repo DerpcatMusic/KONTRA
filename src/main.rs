@@ -57,7 +57,7 @@ fn main() -> Result<()> {
   Some("ksp-run") => ksp_run(Path::new(args.get(2).context("ksp-run requires an NKI path")?),&args[3..])?,
   Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000))?,
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--notes 60@0-600,62@500-1100:90] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000]\nkontakto bench-script <instrument.nki> [seconds=20]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000]\nkontakto bench-script <instrument.nki> [seconds=20]"),
  }
  Ok(())
 }
@@ -155,6 +155,26 @@ fn parse_notes<'a>(specs: impl IntoIterator<Item = &'a str>) -> Result<Vec<NoteI
     Ok(input)
 }
 
+/// Parse `cc@ms:value` specs (`11@0:40,11@500:127`) into time-ordered
+/// controller input: frame, controller, value.
+fn parse_ccs(list: &str) -> Result<Vec<(u64, u8, u8)>> {
+    let mut input = list
+        .split(',')
+        .map(|spec| {
+            let parsed = spec.split_once('@').and_then(|(cc, rest)| {
+                let (ms, value) = rest.split_once(':')?;
+                let frame = (ms.parse::<f64>().ok()? * RATE / 1e3) as u64;
+                Some((frame, cc.parse::<u8>().ok()?, value.parse::<u8>().ok()?))
+            });
+            parsed
+                .filter(|&(_, cc, value)| cc < 128 && value < 128)
+                .with_context(|| format!("Bad controller {spec}; expected cc@ms:value"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    input.sort_by_key(|e| e.0);
+    Ok(input)
+}
+
 fn play(engine: &mut Engine, &(_, on, note, velocity): &NoteInput) {
     if on {
         engine.note_on(0, note, velocity);
@@ -176,20 +196,24 @@ fn install_scripts(engine: &mut Engine, instrument: &import::Instrument) {
 /// directly), every playable group (or one group, unscripted) and the
 /// instrument effects (`--dry` skips them) to a WAV file, with the tail.
 /// `--notes 60@0-600,62@500-1100:90` plays a sequence (times in ms); otherwise
-/// one note is held for 2 s.
+/// one note is held for 2 s. `--cc 11@0:40,11@500:127` sends controllers on
+/// channel 1 (times in ms), before notes at the same time.
 fn render(args: &[String]) -> Result<()> {
     let flag = |name: &str| args.iter().any(|a| a == name);
     let (dry, no_script) = (flag("--dry"), flag("--no-script"));
-    let notes = args
-        .iter()
-        .position(|a| a == "--notes")
-        .map(|i| args.get(i + 1).context("--notes requires a note list"))
-        .transpose()?;
+    let option = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .map(|i| args.get(i + 1).with_context(|| format!("{name} requires a list")))
+            .transpose()
+    };
+    let (notes, ccs) = (option("--notes")?, option("--cc")?);
     let args: Vec<_> = args
         .iter()
-        .filter(|a| !a.starts_with("--") && Some(*a) != notes)
+        .filter(|a| !a.starts_with("--") && Some(*a) != notes && Some(*a) != ccs)
         .cloned()
         .collect();
+    let ccs = ccs.map(|list| parse_ccs(list)).transpose()?.unwrap_or_default();
     let instrument = import::read(Path::new(
         args.first().context("render requires an NKI path")?,
     ))?;
@@ -256,7 +280,7 @@ fn render(args: &[String]) -> Result<()> {
             ((2.0 * RATE) as u64, false, note, 0),
         ],
     };
-    let last_off = input.last().map_or(0, |e| e.0);
+    let last_off = input.last().map_or(0, |e| e.0).max(ccs.last().map_or(0, |e| e.0));
     let spec = hound::WavSpec {
         channels: 2,
         sample_rate: 48000,
@@ -273,15 +297,20 @@ fn render(args: &[String]) -> Result<()> {
     // note times so input lands on its exact frame.
     let (min_frames, max_frames) = ((4.0 * RATE) as u64, (60.0 * RATE) as u64);
     let (mut frame, mut next, mut voices_end, mut last_audible) = (0u64, 0, None, 0);
+    let mut next_cc = 0;
     loop {
+        while let Some(&(_, cc, value)) = ccs.get(next_cc).filter(|e| e.0 <= frame) {
+            engine.cc(0, cc, value);
+            next_cc += 1;
+        }
         while let Some(event) = input.get(next).filter(|e| e.0 <= frame) {
             play(&mut engine, event);
             next += 1;
         }
-        let len = input
-            .get(next)
-            .map_or(MAX_BLOCK as u64, |e| (e.0 - frame).min(MAX_BLOCK as u64))
-            as usize;
+        let until = |t: Option<u64>| t.map_or(MAX_BLOCK as u64, |t| t - frame);
+        let len = until(input.get(next).map(|e| e.0))
+            .min(until(ccs.get(next_cc).map(|e| e.0)))
+            .min(MAX_BLOCK as u64) as usize;
         engine.render(&mut left[..len], &mut right[..len]);
         let mut block_peak = 0f32;
         for (i, (l, r)) in left[..len].iter().zip(&right[..len]).enumerate() {
@@ -333,7 +362,10 @@ fn render(args: &[String]) -> Result<()> {
         Some(rt) => format!("{} script slots", rt.slots()),
         None => "no scripts".into(),
     };
-    let played = notes.map_or_else(|| format!("note {note}"), |n| format!("notes {n}"));
+    let mut played = notes.map_or_else(|| format!("note {note}"), |n| format!("notes {n}"));
+    if !ccs.is_empty() {
+        played += &format!(" · {} CC changes", ccs.len());
+    }
     println!(
         "{} · {groups} · {played} · {scripts} · {fx} · {:.2} s · peak {peak:.6} · RMS {rms:.6} · max step {jump:.6} at {:.3} s · sound until {:.2} s (last note-off {:.2} s) · {tail} · {streamed} streamed samples · {} underruns",
         instrument.name,

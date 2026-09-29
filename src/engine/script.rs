@@ -28,6 +28,7 @@ pub fn load_scripts(
     let (mut rt, errors) =
         Runtime::with_scripts(&instrument.scripts, &mut setup, SCRIPT_OUTPUTS, persisted);
     rt.init_engine_pars = setup.pars;
+    rt.init_controllers = setup.controllers;
     let errors = errors
         .into_iter()
         .enumerate()
@@ -298,6 +299,7 @@ pub struct ScriptSetup<'a> {
     /// Effect values written so far, by address.
     effects: Vec<(Address, f32)>,
     pars: Vec<(EnginePar, i32)>,
+    controllers: Vec<(u8, u8)>,
 }
 
 impl<'a> ScriptSetup<'a> {
@@ -310,6 +312,7 @@ impl<'a> ScriptSetup<'a> {
             instrument: (1.0, 0.0, 0.0),
             effects: Vec::new(),
             pars: Vec::new(),
+            controllers: Vec::new(),
         }
     }
 
@@ -333,7 +336,14 @@ impl KspEngine for ScriptSetup<'_> {
 
     fn set_par(&mut self, _at: u32, _voice: EventId, _par: VoicePar, _value: i32) {}
 
-    fn controller(&mut self, _at: u32, _cc: u8, _value: i32) {}
+    /// Recorded for the playing engine: Areia, for one, sets its expression
+    /// controllers while loading, and its CC volume modulation is silent
+    /// without them.
+    fn controller(&mut self, _at: u32, cc: u8, value: i32) {
+        if cc < 128 {
+            self.controllers.push((cc, value.clamp(0, 127) as u8));
+        }
+    }
 
     fn group_count(&self) -> usize {
         self.groups.len()

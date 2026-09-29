@@ -300,7 +300,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         }
     }
     if !scripts.is_empty() { warnings.push(format!("{} active KSP script(s): manual group playback only; scripted legato and round robin are not emulated; interface initialization is a preview only", scripts.len())); }
-    warnings.push("Kontakt effects are not imported and modulation is not applied; playback uses the sampler's envelope".into());
+    warnings.push("Modulation drives volume, pitch and sample start from velocity, key, CC, pitch bend and aftertouch; LFOs, other envelopes and effect or module targets are not applied".into());
     let parent = path.parent().context("Instrument has no parent")?;
     let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
     let mut resolver = Resolver::new(root);

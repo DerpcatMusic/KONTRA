@@ -213,7 +213,22 @@ impl Engine {
         }
         let old = std::mem::replace(&mut self.script, script);
         self.replay(|_| true);
+        self.apply_init_controllers();
         old
+    }
+
+    /// Set the controllers the scripts set while loading, on every channel.
+    fn apply_init_controllers(&mut self) {
+        let Some(rt) = self.script.as_deref() else {
+            return;
+        };
+        let defaults = self.defaults();
+        for &(cc, value) in &rt.init_controllers {
+            for channel in 0..16 {
+                self.player
+                    .cc(self.bank.as_deref(), channel, cc, value, defaults);
+            }
+        }
     }
 
     /// Apply the scripts' `on init` engine parameters whose address `only` accepts.
@@ -280,6 +295,7 @@ impl Engine {
         if let Some(rt) = self.script.as_deref_mut() {
             rt.set_sample_rate(rate);
         }
+        self.apply_init_controllers();
     }
 
     pub fn active_voices(&self) -> usize {
@@ -489,7 +505,10 @@ impl Engine {
             let mut pos = 0;
             loop {
                 // Parameters first: they configure notes started at the same frame.
-                while let Some(&w) = self.writes.get(written).filter(|w| w.at as usize <= base + pos)
+                while let Some(&w) = self
+                    .writes
+                    .get(written)
+                    .filter(|w| w.at as usize <= base + pos)
                 {
                     self.write(w.address, w.value);
                     written += 1;

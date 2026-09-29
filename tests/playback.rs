@@ -6,7 +6,8 @@ use kontakto::{
     },
     fx,
     import::{
-        Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Resolver, VoiceLimit, Zone,
+        Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Modulator, Resolver,
+        VoiceLimit, Zone,
     },
     ksp::{Runtime, Value},
 };
@@ -1155,4 +1156,137 @@ fn script_handoff_and_playback_do_not_allocate() {
     );
     assert!(left.iter().any(|x| *x != 0.0));
     assert_eq!(snapshot[0]["$count"], Value::Int(4));
+}
+
+/// Volume modulation of `source` at full intensity, without a shaper.
+fn volume_mod(source: ModSource, lag_ms: u16) -> ModAssignment {
+    ModAssignment {
+        name: String::new(),
+        source,
+        target: ModTarget::Volume,
+        intensity: 1.0,
+        invert: false,
+        lag_ms,
+        shaper: None,
+    }
+}
+
+#[test]
+fn cc_volume_follows_the_controller_with_lag_without_a_script() {
+    let group = Group {
+        mods: vec![volume_mod(ModSource::MidiCc(11), 100)],
+        ..Group::default()
+    };
+    let mut e = engine_with(layered(vec![group], &[0.5]));
+    e.note_on(0, 60, 127);
+    assert!(close(last(&mut e, 480), [0.5; 2]), "CC11 starts at 127");
+    // One lag time constant after CC11 drops to 0, 63% of the way down.
+    e.cc(0, 11, 0);
+    let out = render(&mut e, 4800);
+    let expected = 0.5 * (-1.0f32).exp();
+    assert!((out[4799][0] - expected).abs() < 0.01, "{:?}", out[4799]);
+    assert!(max_step(&out) < 1e-3, "the lag smooths the drop");
+    render(&mut e, 48000);
+    assert!(last(&mut e, 64)[0] < 1e-4);
+}
+
+/// Group 0 scales with velocity (`VEL_VOLUME`); group 1 is plain. Bus 0
+/// holds a ×2 gainer and its fader is at 0.25.
+fn modulated_groups() -> Instrument {
+    let velocity = Group {
+        mods: vec![volume_mod(ModSource::Velocity, 0)],
+        modulators: vec![Modulator {
+            name: "VEL_VOLUME".into(),
+            targets: vec![String::new()],
+            assignments: Some(0),
+            volume_env: false,
+        }],
+        ..Group::default()
+    };
+    let mut i = instrument(vec![velocity, Group::default()], Vec::new());
+    i.fx.buses = vec![fx::Bus {
+        index: 0,
+        name: "bus".into(),
+        volume: 0.25,
+        pan: 0.0,
+        output: -1,
+        chain: fx::Chain {
+            slots: vec![fx::Effect {
+                slot: 0,
+                kind: fx::Kind::Gainer,
+                version: 0,
+                bypass: false,
+                output_gain: 1.0,
+                dry_level: 0.0,
+                params: fx::Params::Gainer(fx::params::Gainer { gain: 2.0 }),
+            }],
+        },
+    }];
+    i
+}
+
+#[test]
+fn scripts_set_intensity_output_bus_and_volume_sample_accurately() {
+    let mut i = modulated_groups();
+    i.scripts = vec![
+        "on init
+set_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY, 0, 0, find_mod(0, \"VEL_VOLUME\"), -1)
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, $NI_BUS_OFFSET, 1, -1, -1)
+end on
+on note
+wait(10000)
+set_engine_par($ENGINE_PAR_VOLUME, 0, 1, -1, -1)
+end on"
+            .into(),
+    ];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut e = engine_with(layered(i.groups.clone(), &[0.1, 0.2]));
+    assert!(e.set_script(rt).is_none());
+    e.set_fx(i.fx.processor(e.rate() as f32, MAX_BLOCK));
+
+    // Group 0 ignores velocity (intensity 0): 0.1. Group 1 goes through bus
+    // 0: 0.2 × 2 × 0.25 = 0.1. Wrong routing or intensity gives 0.05–0.3.
+    e.note_on(0, 60, 64);
+    let out = render(&mut e, 1024);
+    assert!(close(out[400], [0.2; 2]), "{:?}", out[400]);
+    // 10 ms in, the script silences group 1, smoothed over the rest.
+    assert!(close(out[479], [0.2; 2]), "{:?}", out[479]);
+    assert!(out[481][0] < 0.2 && out[481][0] > 0.19, "{:?}", out[481]);
+    assert!(close(out[1023], [0.1; 2]), "{:?}", out[1023]);
+
+    // Steady state with queued writes and a bus does not allocate.
+    let (mut left, mut right) = (vec![0.0; 512], vec![0.0; 512]);
+    let count = allocations(|| {
+        for note in 61..65 {
+            e.note_on(0, note, 100);
+            e.render(&mut left, &mut right);
+            e.note_off(0, note);
+            e.render(&mut left, &mut right);
+        }
+    });
+    assert_eq!(count, 0, "the audio thread allocated");
+    assert!(left.iter().any(|x| *x != 0.0));
+}
+
+#[test]
+fn controllers_set_while_loading_drive_modulation() {
+    let group = Group {
+        mods: vec![volume_mod(ModSource::MidiCc(11), 0)],
+        ..Group::default()
+    };
+    let mut i = instrument(vec![group], Vec::new());
+    i.scripts =
+        vec!["on init\nend on\non persistence_changed\nset_controller(11, 0)\nend on".into()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(rt.as_ref().unwrap().init_controllers, vec![(11, 0)]);
+    let mut e = engine_with(layered(i.groups.clone(), &[0.5]));
+    assert!(e.set_script(rt).is_none());
+    e.note_on(0, 60, 127);
+    assert!(close(last(&mut e, 480), [0.0; 2]), "CC11 starts at 0");
+    // A reset keeps the controllers the script set.
+    e.reset(e.rate());
+    e.note_on(0, 60, 127);
+    assert!(close(last(&mut e, 480), [0.0; 2]));
 }

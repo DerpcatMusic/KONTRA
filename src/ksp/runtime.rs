@@ -525,6 +525,10 @@ pub struct Runtime {
     /// before any sound engine existed (in call order); the playing engine
     /// applies them when the runtime is installed.
     pub init_engine_pars: Vec<(EnginePar, i32)>,
+    /// Controllers the scripts set while loading (`set_controller` in
+    /// `on persistence_changed`; `on init` drops its work), in call order.
+    /// The playing engine applies them on install and after a reset.
+    pub init_controllers: Vec<(u8, u8)>,
 }
 
 impl Runtime {
@@ -539,6 +543,7 @@ impl Runtime {
             outputs,
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
+            init_controllers: Vec::new(),
         }
     }
 
