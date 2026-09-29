@@ -5,7 +5,7 @@ use std::{collections::HashMap, fs::File, io::{Cursor, Read}, path::{Path, PathB
 
 pub const LIBRARY_ROOT: &str = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
 
-pub use crate::modulation::{Ahdsr, ModAssignment, ModSource, ModTarget, ShaperCurve};
+pub use crate::modulation::{Ahdsr, ModAssignment, ModSource, ModTarget, Modulator, ShaperCurve};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Group {
@@ -25,6 +25,8 @@ pub struct Group {
     pub volume_env: Option<Ahdsr>,
     /// External modulation assignments, one per target.
     pub mods: Vec<ModAssignment>,
+    /// Internal and external modulators in KSP `find_mod` order.
+    pub modulators: Vec<Modulator>,
     /// Kontakt voice group (choke/voice-limit group) index, if assigned.
     pub voice_group: Option<u32>,
     /// Raw interpolation quality setting; 0 in every local preset.
@@ -34,7 +36,7 @@ pub struct Group {
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
-            release_trigger: false, muted: false, channel: -1, soloed: false, volume_env: None, mods: Vec::new(), voice_group: None, interp_quality: 0 }
+            release_trigger: false, muted: false, channel: -1, soloed: false, volume_env: None, mods: Vec::new(), modulators: Vec::new(), voice_group: None, interp_quality: 0 }
     }
 }
 
@@ -284,6 +286,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
             soloed: v.soloed,
             volume_env: modulation.volume_env,
             mods: modulation.mods,
+            modulators: modulation.modulators,
             voice_group: u32::try_from(v.voice_group_index).ok(),
             interp_quality: v.interp_quality,
         });

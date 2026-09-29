@@ -5,7 +5,9 @@ use kontakto::{
         load_scripts,
     },
     fx,
-    import::{Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Resolver, VoiceLimit, Zone},
+    import::{
+        Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Resolver, VoiceLimit, Zone,
+    },
     ksp::{Runtime, Value},
 };
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -452,13 +454,13 @@ fn zone_crossfades_velocity_curve_and_start_offset() {
         rate: 48000,
         frames: (0..2000).map(|i| [i as f32 / 2000.0; 2]).collect(),
     };
-    let mut bank = Bank::from_samples(
+    // No velocity assignment: velocity leaves the level alone.
+    let bank = Bank::from_samples(
         vec![Group::default()],
         vec![zone],
         vec![(PathBuf::new(), ramp)],
     )
     .unwrap();
-    bank.settings[0].velocity_intensity = 0.0;
     let mut e = engine_with(bank);
     let mut event = NoteEvent::new(0, 60, 15);
     event.offset_us = 12500;
@@ -497,13 +499,26 @@ fn instrument_volume_pan_and_bend_range() {
         rate: 48000,
         frames: (0..48000).map(|i| [i as f32 / 48000.0; 2]).collect(),
     };
-    let mut bank = Bank::from_samples(
-        vec![Group::default()],
+    // Intensity 1.0 bends an octave.
+    let bend = ModAssignment {
+        name: "PB_PITCH".into(),
+        source: ModSource::PitchBend,
+        target: ModTarget::Pitch,
+        intensity: 1.0,
+        invert: false,
+        lag_ms: 0,
+        shaper: None,
+    };
+    let group = Group {
+        mods: vec![bend],
+        ..Group::default()
+    };
+    let bank = Bank::from_samples(
+        vec![group],
         vec![Zone::default()],
         vec![(PathBuf::new(), ramp)],
     )
     .unwrap();
-    bank.settings[0].bend_range = 12.0;
     let mut e = engine_with(bank);
     e.pitch_bend(0, 16383);
     e.note_on(0, 60, 127);
@@ -832,12 +847,24 @@ fn vista_harp_modulation_is_decoded() {
     let path = PathBuf::from(kontakto::import::LIBRARY_ROOT)
         .join("Performance Samples Vista/Instruments/Bonus/Vista - Harp.nki");
     let instrument = kontakto::import::read(&path).unwrap();
-    assert!(!instrument.warnings.iter().any(|w| w.contains("modulation not imported")));
+    assert!(
+        !instrument
+            .warnings
+            .iter()
+            .any(|w| w.contains("modulation not imported"))
+    );
     for group in &instrument.groups {
-        let env = group.volume_env.as_ref().expect("every group has a volume AHDSR");
+        let env = group
+            .volume_env
+            .as_ref()
+            .expect("every group has a volume AHDSR");
         assert!(env.attack_ms >= 0.0 && (0.0..=1.0).contains(&env.sustain));
         assert_eq!(group.cc_volume().map(|(cc, _)| cc), Some(11));
-        assert!(group.modulation(ModSource::KeyPosition, &ModTarget::Volume).is_some());
+        assert!(
+            group
+                .modulation(ModSource::KeyPosition, &ModTarget::Volume)
+                .is_some()
+        );
     }
 }
 

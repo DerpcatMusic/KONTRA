@@ -521,6 +521,10 @@ pub struct Runtime {
     outputs: usize,
     /// Per-callback instruction cap: `CALLBACK_FUEL`, or `INIT_FUEL` while loading.
     fuel_cap: u64,
+    /// Engine parameters `on init` set through an engine that accepted them
+    /// before any sound engine existed (in call order); the playing engine
+    /// applies them when the runtime is installed.
+    pub init_engine_pars: Vec<(EnginePar, i32)>,
 }
 
 impl Runtime {
@@ -534,6 +538,7 @@ impl Runtime {
             free_threads: (0..THREAD_CAPACITY as u16).rev().collect(),
             outputs,
             fuel_cap: CALLBACK_FUEL,
+            init_engine_pars: Vec::new(),
         }
     }
 

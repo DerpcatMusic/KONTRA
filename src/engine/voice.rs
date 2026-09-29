@@ -4,6 +4,7 @@ use super::{
     EventId, MAX_BLOCK,
     bank::{Bank, Span},
     map::{FOREVER, PlayMap, Run},
+    params::{Inputs, VOICE_MODS},
     stream::Slot,
 };
 use crate::audio::Frame;
@@ -243,6 +244,7 @@ pub(crate) struct Stream {
 /// One playing zone. Plain data; the engine owns the storage.
 pub(crate) struct Voice {
     pub event: EventId,
+    pub group: u32,
     pub voice_group: Option<u16>,
     pub channel: u8,
     pub note: u8,
@@ -264,20 +266,26 @@ pub(crate) struct Voice {
     pub limit: u64,
     /// Virtual playback position.
     pub pos: f64,
-    /// Source frames per output frame before bend and scripted tuning.
+    /// Source frames per output frame before group tune, modulation and
+    /// scripted tuning.
     pub step: f64,
     /// Scripted tuning ratio.
     pub tune: f64,
-    pub bend_range: f32,
-    /// Cached `(bend input, ratio)`.
-    pub bend: (f32, f64),
+    /// Cached `(semitones, ratio)` of group, instrument and modulated pitch.
+    pub pitch: (f32, f64),
+    /// Current value of each of the group's voiced modulation assignments.
+    pub mods: [f32; VOICE_MODS],
     pub stream: Option<Stream>,
     pub env: Envelope,
     pub fade: Fade,
-    /// Static gain without scripted volume.
+    /// Zone gain with velocity and key crossfades; group volume and
+    /// modulation apply per block.
     pub base_level: f32,
+    /// Scripted event volume.
     pub volume: f32,
+    /// Zone pan.
     pub base_pan: f32,
+    /// Scripted event pan, added to zone and group pan.
     pub pan: f32,
     /// Channel gains reached at the end of the last block.
     pub gains: [f32; 2],
@@ -287,8 +295,27 @@ pub(crate) struct Voice {
 pub(crate) struct Context<'a> {
     pub bank: &'a Bank,
     pub slots: &'a [Slot],
+    pub cc: &'a [[u8; 128]; 16],
     pub bend: &'a [f32; 16],
+    pub pressure: &'a [u8; 16],
+    /// Instrument tune in semitones.
+    pub tune: f32,
+    pub rate: f32,
     pub blocking: bool,
+}
+
+impl Context<'_> {
+    /// Modulation inputs for a note on `channel`.
+    pub fn inputs(&self, channel: u8, note: u8, velocity: u8) -> Inputs<'_> {
+        let c = channel as usize & 15;
+        Inputs {
+            cc: &self.cc[c],
+            bend: self.bend[c],
+            pressure: self.pressure[c],
+            note,
+            velocity,
+        }
+    }
 }
 
 /// Preallocated per-engine render buffers.
@@ -327,14 +354,14 @@ impl Voice {
         self.env.render(amp);
         self.fade.apply(amp);
 
-        let bend = cx.bend[self.channel as usize];
-        if bend != self.bend.0 {
-            self.bend = (
-                bend,
-                2f64.powf(f64::from(bend) * f64::from(self.bend_range) / 12.0),
-            );
+        let group = &cx.bank.settings[self.group as usize];
+        let inputs = cx.inputs(self.channel, self.note, self.velocity);
+        let (modulation, semitones) = group.mods.modulate(&mut self.mods, &inputs, n, cx.rate);
+        let semitones = semitones + group.tune + cx.tune;
+        if semitones != self.pitch.0 {
+            self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));
         }
-        let step = (self.step * self.tune * self.bend.1).min(MAX_STEP);
+        let step = (self.step * self.tune * self.pitch.1).min(MAX_STEP);
 
         // The window starts one frame before the position for the cubic's left tap.
         let first = self.pos as i64 - 1;
@@ -352,7 +379,11 @@ impl Voice {
             }
         };
 
-        let target = balance(self.base_level * self.volume, self.pan);
+        let level = self.base_level * group.gain * modulation * self.volume;
+        let target = balance(
+            level,
+            (self.base_pan + group.pan + self.pan).clamp(-1.0, 1.0),
+        );
         let delta = [
             (target[0] - self.gains[0]) / n as f32,
             (target[1] - self.gains[1]) / n as f32,

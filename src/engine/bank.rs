@@ -2,6 +2,7 @@
 
 use super::{
     map::{LoopMap, PlayMap},
+    params::ModTable,
     stream::Streamer,
     voice::Ahdsr,
 };
@@ -24,31 +25,27 @@ const RESIDENT_LOOP: u64 = 4 * PRELOAD_FRAMES;
 /// Voices per instrument when the program stores no limit.
 const DEFAULT_POLYPHONY: usize = 512;
 
-/// Per-group playback parameters the engine derives from import data.
+/// Per-group playback parameters, derived from import data and then changed
+/// by scripts (`set_engine_par`) on the audio thread; the rest of a bank
+/// never changes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupSettings {
     /// Amplitude envelope; `None` uses the engine's attack/release defaults.
     pub envelope: Option<Ahdsr>,
-    /// Velocity→volume depth: 0 ignores velocity, 1 is linear `velocity / 127`.
-    pub velocity_intensity: f32,
-    /// Pitch-bend range in semitones.
-    pub bend_range: f32,
+    /// Linear group volume.
+    pub gain: f32,
+    /// -1 (left) to 1 (right).
+    pub pan: f32,
+    /// Semitones.
+    pub tune: f32,
+    /// Instrument bus the group renders into; `None` is the instrument output.
+    pub bus: Option<u8>,
+    /// External modulation (velocity, controllers, pitch bend...).
+    pub mods: ModTable,
     /// Kontakt interpolation quality; every setting currently uses 4-point Hermite.
     pub interp_quality: i32,
     /// Index into the instrument's voice groups.
     pub voice_group: Option<u16>,
-}
-
-impl Default for GroupSettings {
-    fn default() -> Self {
-        Self {
-            envelope: None,
-            velocity_intensity: 1.0,
-            bend_range: 2.0,
-            interp_quality: 0,
-            voice_group: None,
-        }
-    }
 }
 
 impl From<&Group> for GroupSettings {
@@ -57,8 +54,11 @@ impl From<&Group> for GroupSettings {
     fn from(group: &Group) -> Self {
         Self {
             envelope: group.volume_env.as_ref().map(Ahdsr::from),
-            velocity_intensity: group.velocity_to_volume(),
-            bend_range: group.pitch_bend_range().unwrap_or(0.0),
+            gain: group.gain,
+            pan: group.pan,
+            tune: 12.0 * group.tune.log2() as f32,
+            bus: None,
+            mods: ModTable::from(group),
             interp_quality: group.interp_quality,
             voice_group: None,
         }

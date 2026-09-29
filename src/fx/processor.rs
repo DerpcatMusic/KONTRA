@@ -1,21 +1,57 @@
 //! Real-time DSP state built from a [`ProgramFx`] description.
 
 use super::{Effect, Params, ProgramFx, convolution::Convolver, params, reverb::Reverb};
+use std::ops::Range;
 
 /// Input at or below this level (−120 dBFS) counts as silence for tail tracking.
 const SILENCE: f32 = 1e-6;
+/// Kontakt's instrument buses.
+const BUSES: usize = 16;
+const NO_BUS: u8 = u8::MAX;
 
-/// Owned DSP state for one program's insert, send and main racks.
+/// An effect rack a script addresses (`$NI_INSERT_BUS`, `$NI_SEND_BUS`,
+/// `$NI_MAIN_BUS`, `$NI_BUS_OFFSET + n`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rack {
+    Insert,
+    Send,
+    Main,
+    Bus(u8),
+}
+
+/// A script-controllable effect or bus value. Gains are linear.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FxParam {
+    /// 1.0 bypasses the slot.
+    Bypass,
+    /// Output gain of the processed signal (a send slot's return level).
+    Wet,
+    /// Level of the unprocessed signal added after the effect.
+    Dry,
+    /// Send Levels slot: level into send slot `n`.
+    SendLevel(u8),
+    /// Bus fader; the slot is ignored.
+    Volume,
+    /// Bus pan, -1..=1; the slot is ignored.
+    Pan,
+}
+
+/// Owned DSP state for one program's insert, send and main racks and its
+/// instrument buses.
 ///
 /// Built by [`ProgramFx::processor`], which allocates everything;
-/// [`process`](Self::process) never allocates, locks or panics and accepts
-/// any block length. The default processor passes audio through.
+/// [`process`](Self::process), [`mix_buses`](Self::mix_buses) and the
+/// parameter setters never allocate, lock or panic. The default processor
+/// passes audio through and has no buses.
 #[derive(Default)]
 pub struct FxProcessor {
     insert: Vec<Stage>,
     /// Parallel send slots fed by [`Stage::Tap`]s; empty when nothing taps.
     returns: Vec<Return>,
     main: Vec<Slot>,
+    buses: Vec<Bus>,
+    /// Position in `buses` of each Kontakt bus, or [`NO_BUS`].
+    bus_of: [u8; BUSES],
     max_block: usize,
     /// Upper bound on the frames an effect keeps sounding after silent input.
     tail: usize,
@@ -25,8 +61,16 @@ pub struct FxProcessor {
 
 enum Stage {
     Effect(Slot),
-    /// Send Levels: linear level into each of `returns`, taken here.
-    Tap(Box<[f32]>),
+    /// Send Levels: level into each of `returns`, taken here.
+    Tap(Tap),
+}
+
+struct Tap {
+    index: u8,
+    bypass: bool,
+    /// The slot's output gain, applied to every level.
+    gain: f32,
+    levels: Box<[f32]>,
 }
 
 struct Return {
@@ -36,11 +80,29 @@ struct Return {
 
 /// One active effect with its slot's wet/dry levels.
 struct Slot {
+    /// Rack position 0..8.
+    index: u8,
+    bypass: bool,
     dsp: Dsp,
     wet: f32,
     dry: f32,
-    /// The input kept for the dry mix; empty when `dry` is 0.
+    /// The input kept for the dry mix.
     dry_buffer: [Box<[f32]>; 2],
+}
+
+/// An instrument bus: groups render into `input`; its chain, fader and pan
+/// feed the instrument signal ahead of the insert rack.
+struct Bus {
+    chain: Vec<Slot>,
+    input: [Box<[f32]>; 2],
+    volume: f32,
+    pan: f32,
+    /// Channel gains reached at the end of the last block.
+    gains: [f32; 2],
+    /// A voice rendered into `input` this block.
+    fed: bool,
+    tail: usize,
+    silent: usize,
 }
 
 enum Dsp {
@@ -57,7 +119,7 @@ enum Dsp {
 impl ProgramFx {
     /// Builds the DSP state for `sample_rate`; `process` calls are split into
     /// blocks of at most `max_block` frames. Bypassed and unimplemented slots
-    /// are left out, and buses are not built (their routing is unknown).
+    /// are left out; every stored bus gets input buffers of `max_block`.
     pub fn processor(&self, sample_rate: f32, max_block: usize) -> FxProcessor {
         let max_block = max_block.max(1);
         let build = |fx: &Effect| Slot::new(fx, sample_rate, max_block);
@@ -68,10 +130,7 @@ impl ProgramFx {
             .any(|fx| !fx.bypass && matches!(fx.params, Params::SendLevels(_)));
         // Unfed send slots would only ever process silence.
         let sends: Vec<_> = if tapped {
-            let active = self.send.slots.iter();
-            active
-                .filter_map(|fx| Some((fx.slot, build(fx)?)))
-                .collect()
+            self.send.slots.iter().filter_map(build).collect()
         } else {
             Vec::new()
         };
@@ -80,28 +139,53 @@ impl ProgramFx {
             .slots
             .iter()
             .filter_map(|fx| match &fx.params {
-                Params::SendLevels(levels) if !fx.bypass => Some(Stage::Tap(
-                    sends
+                Params::SendLevels(levels) if !fx.bypass => Some(Stage::Tap(Tap {
+                    index: fx.slot as u8,
+                    bypass: false,
+                    gain: fx.output_gain,
+                    levels: sends
                         .iter()
-                        .map(|(slot, _)| {
-                            levels.sends.get(*slot).copied().unwrap_or(0.0) * fx.output_gain
-                        })
+                        .map(|s| levels.sends.get(s.index as usize).copied().unwrap_or(0.0))
                         .collect(),
-                )),
+                })),
                 _ => build(fx).map(Stage::Effect),
             })
             .collect();
         let returns = sends
             .into_iter()
-            .map(|(_, slot)| Return {
+            .map(|slot| Return {
                 slot,
                 buffer: [zeros(max_block), zeros(max_block)],
+            })
+            .collect();
+        let mut bus_of = [NO_BUS; BUSES];
+        let buses = self
+            .buses
+            .iter()
+            .filter(|b| b.index < BUSES)
+            .enumerate()
+            .map(|(i, b)| {
+                bus_of[b.index] = i as u8;
+                let chain: Vec<_> = b.chain.slots.iter().filter_map(build).collect();
+                let tail = chain.iter().map(|s| s.dsp.tail()).sum();
+                Bus {
+                    chain,
+                    input: [zeros(max_block), zeros(max_block)],
+                    volume: b.volume,
+                    pan: b.pan.clamp(-1.0, 1.0),
+                    gains: balance(b.volume, b.pan),
+                    fed: false,
+                    tail,
+                    silent: tail + 1,
+                }
             })
             .collect();
         let mut fx = FxProcessor {
             insert,
             returns,
             main: self.main.slots.iter().filter_map(build).collect(),
+            buses,
+            bus_of,
             max_block,
             tail: 0,
             silent: 0,
@@ -127,7 +211,16 @@ impl FxProcessor {
         });
         dsp.chain(self.returns.iter_mut().map(|r| &mut r.slot.dsp))
             .chain(self.main.iter_mut().map(|s| &mut s.dsp))
+            .chain(
+                self.buses
+                    .iter_mut()
+                    .flat_map(|b| b.chain.iter_mut().map(|s| &mut s.dsp)),
+            )
             .for_each(Dsp::clear);
+        for bus in &mut self.buses {
+            bus.input.iter_mut().for_each(|b| b.fill(0.0));
+            bus.silent = bus.tail + 1;
+        }
         self.silent = self.tail;
     }
 
@@ -156,6 +249,192 @@ impl FxProcessor {
         }
     }
 
+    /// `frames` of Kontakt bus `bus`'s input for the current block (within
+    /// `max_block`); `None` when the program has no such bus.
+    pub fn bus_input(&mut self, bus: u8, frames: Range<usize>) -> Option<(&mut [f32], &mut [f32])> {
+        let i = *self.bus_of.get(bus as usize)?;
+        let bus = self.buses.get_mut(i as usize)?;
+        let [l, r] = &mut bus.input;
+        let input = (l.get_mut(frames.clone())?, r.get_mut(frames)?);
+        bus.fed = true;
+        Some(input)
+    }
+
+    /// Runs every bus that was fed or still rings on its first `left.len()`
+    /// input frames (at most `max_block`), adds it to `left`/`right` through
+    /// its fader and pan, and clears the inputs for the next block.
+    pub fn mix_buses(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let n = left.len().min(right.len()).min(self.max_block);
+        for bus in &mut self.buses {
+            if !bus.fed && bus.silent > bus.tail {
+                continue;
+            }
+            bus.fed = false;
+            let [il, ir] = &mut bus.input;
+            let (il, ir) = (&mut il[..n], &mut ir[..n]);
+            let quiet = il.iter().chain(&*ir).all(|x| x.abs() <= SILENCE);
+            bus.silent = if quiet {
+                bus.silent.saturating_add(n)
+            } else {
+                0
+            };
+            for slot in &mut bus.chain {
+                slot.process(il, ir);
+            }
+            let target = balance(bus.volume, bus.pan);
+            let start = bus.gains;
+            let step = [
+                (target[0] - start[0]) / n as f32,
+                (target[1] - start[1]) / n as f32,
+            ];
+            for (i, ((l, r), (x, y))) in left
+                .iter_mut()
+                .zip(right.iter_mut())
+                .zip(il.iter_mut().zip(ir.iter_mut()))
+                .enumerate()
+            {
+                let i = i as f32;
+                *l += *x * (start[0] + step[0] * i);
+                *r += *y * (start[1] + step[1] * i);
+                (*x, *y) = (0.0, 0.0);
+            }
+            bus.gains = target;
+        }
+    }
+
+    /// Set a script-controllable value; false when this processor does not
+    /// hold it (unknown, bypassed at load or unimplemented slots).
+    pub fn set_param(&mut self, rack: Rack, slot: u8, param: FxParam, value: f32) -> bool {
+        let gain = value.max(0.0);
+        if let FxParam::Volume | FxParam::Pan = param {
+            let Some(bus) = self.bus_mut(rack) else {
+                return false;
+            };
+            match param {
+                FxParam::Volume => bus.volume = gain,
+                _ => bus.pan = value.clamp(-1.0, 1.0),
+            }
+            return true;
+        }
+        let returns = &self.returns;
+        if let Some(tap) = tap_mut(&mut self.insert, rack, slot) {
+            match param {
+                FxParam::Bypass => tap.bypass = value != 0.0,
+                FxParam::Wet => tap.gain = gain,
+                FxParam::SendLevel(n) => {
+                    let level = returns
+                        .iter()
+                        .position(|r| r.slot.index == n)
+                        .and_then(|j| tap.levels.get_mut(j));
+                    let Some(level) = level else {
+                        return false;
+                    };
+                    *level = gain;
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        let Some(s) = self.slot_mut(rack, slot) else {
+            return false;
+        };
+        match param {
+            FxParam::Bypass => s.bypass = value != 0.0,
+            FxParam::Wet => s.wet = gain,
+            FxParam::Dry => s.dry = gain,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Current value of a script-controllable parameter.
+    pub fn param(&self, rack: Rack, slot: u8, param: FxParam) -> Option<f32> {
+        if let FxParam::Volume | FxParam::Pan = param {
+            let bus = self.bus(rack)?;
+            return Some(if param == FxParam::Volume {
+                bus.volume
+            } else {
+                bus.pan
+            });
+        }
+        let tap = self.insert.iter().find_map(|stage| match stage {
+            Stage::Tap(tap) if rack == Rack::Insert && tap.index == slot => Some(tap),
+            _ => None,
+        });
+        if let Some(tap) = tap {
+            return match param {
+                FxParam::Bypass => Some(f32::from(tap.bypass)),
+                FxParam::Wet => Some(tap.gain),
+                FxParam::SendLevel(n) => {
+                    let j = self.returns.iter().position(|r| r.slot.index == n)?;
+                    tap.levels.get(j).copied()
+                }
+                _ => None,
+            };
+        }
+        let s = self.slot(rack, slot)?;
+        match param {
+            FxParam::Bypass => Some(f32::from(s.bypass)),
+            FxParam::Wet => Some(s.wet),
+            FxParam::Dry => Some(s.dry),
+            _ => None,
+        }
+    }
+
+    fn bus(&self, rack: Rack) -> Option<&Bus> {
+        let Rack::Bus(b) = rack else { return None };
+        self.buses.get(*self.bus_of.get(b as usize)? as usize)
+    }
+
+    fn bus_mut(&mut self, rack: Rack) -> Option<&mut Bus> {
+        let Rack::Bus(b) = rack else { return None };
+        self.buses.get_mut(*self.bus_of.get(b as usize)? as usize)
+    }
+
+    fn slot(&self, rack: Rack, index: u8) -> Option<&Slot> {
+        let find = |s: &&Slot| s.index == index;
+        match rack {
+            Rack::Insert => self
+                .insert
+                .iter()
+                .filter_map(|stage| match stage {
+                    Stage::Effect(slot) => Some(slot),
+                    Stage::Tap(_) => None,
+                })
+                .find(find),
+            Rack::Send => self.returns.iter().map(|r| &r.slot).find(find),
+            Rack::Main => self.main.iter().find(find),
+            Rack::Bus(_) => self.bus(rack)?.chain.iter().find(find),
+        }
+    }
+
+    fn slot_mut(&mut self, rack: Rack, index: u8) -> Option<&mut Slot> {
+        let find = |s: &&mut Slot| s.index == index;
+        match rack {
+            Rack::Insert => self
+                .insert
+                .iter_mut()
+                .filter_map(|stage| match stage {
+                    Stage::Effect(slot) => Some(slot),
+                    Stage::Tap(_) => None,
+                })
+                .find(find),
+            Rack::Send => self.returns.iter_mut().map(|r| &mut r.slot).find(find),
+            Rack::Main => self.main.iter_mut().find(find),
+            Rack::Bus(_) => self.bus_mut(rack)?.chain.iter_mut().find(find),
+        }
+    }
+
+    fn slots(&self) -> impl Iterator<Item = &Slot> {
+        let insert = self.insert.iter().filter_map(|stage| match stage {
+            Stage::Effect(slot) => Some(slot),
+            Stage::Tap(_) => None,
+        });
+        insert
+            .chain(self.returns.iter().map(|r| &r.slot))
+            .chain(&self.main)
+    }
+
     /// `left.len() == right.len() <= max_block`.
     fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len();
@@ -167,8 +446,9 @@ impl FxProcessor {
         for stage in &mut self.insert {
             match stage {
                 Stage::Effect(slot) => slot.process(left, right),
-                Stage::Tap(levels) => {
-                    for (ret, &level) in self.returns.iter_mut().zip(levels.iter()) {
+                Stage::Tap(tap) if !tap.bypass => {
+                    for (ret, &level) in self.returns.iter_mut().zip(tap.levels.iter()) {
+                        let level = level * tap.gain;
                         if level != 0.0 {
                             let [bl, br] = &mut ret.buffer;
                             mix(&mut bl[..n], left, level);
@@ -176,6 +456,7 @@ impl FxProcessor {
                         }
                     }
                 }
+                Stage::Tap(_) => {}
             }
         }
         for ret in &mut self.returns {
@@ -189,16 +470,18 @@ impl FxProcessor {
             slot.process(left, right);
         }
     }
+}
 
-    fn slots(&self) -> impl Iterator<Item = &Slot> {
-        let insert = self.insert.iter().filter_map(|stage| match stage {
-            Stage::Effect(slot) => Some(slot),
-            Stage::Tap(_) => None,
-        });
-        insert
-            .chain(self.returns.iter().map(|r| &r.slot))
-            .chain(&self.main)
-    }
+fn tap_mut(insert: &mut [Stage], rack: Rack, index: u8) -> Option<&mut Tap> {
+    insert.iter_mut().find_map(|stage| match stage {
+        Stage::Tap(tap) if rack == Rack::Insert && tap.index == index => Some(tap),
+        _ => None,
+    })
+}
+
+/// Balance law shared with the engine: the far side attenuates linearly.
+fn balance(gain: f32, pan: f32) -> [f32; 2] {
+    [gain * (1.0 - pan.max(0.0)), gain * (1.0 + pan.min(0.0))]
 }
 
 impl Slot {
@@ -207,17 +490,22 @@ impl Slot {
             return None;
         }
         let dsp = Dsp::new(&fx.params, sample_rate, max_block)?;
-        let buffer = || zeros(if fx.dry_level == 0.0 { 0 } else { max_block });
+        // Scripts may raise the dry level later, so the buffer always exists.
         Some(Self {
+            index: fx.slot as u8,
+            bypass: false,
             dsp,
             wet: fx.output_gain,
             dry: fx.dry_level,
-            dry_buffer: [buffer(), buffer()],
+            dry_buffer: [zeros(max_block), zeros(max_block)],
         })
     }
 
     /// `left.len() == right.len() <= max_block`.
     fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        if self.bypass {
+            return;
+        }
         let n = left.len();
         let keep_dry = self.dry != 0.0;
         if keep_dry {

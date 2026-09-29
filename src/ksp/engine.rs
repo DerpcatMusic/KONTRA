@@ -1,6 +1,7 @@
 //! The boundary between the KSP runtime and the sampler engine. Every call is made
 //! on the audio thread at a frame offset within the current block.
 
+pub use super::builtins::{ENGINE_PAR_BASE, engine_par_name};
 pub use crate::engine::{EventId, GroupMask};
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -77,9 +78,9 @@ pub trait KspEngine {
     fn group_count(&self) -> usize;
     fn group_name(&self, group: usize) -> &str;
     fn sample_rate(&self) -> f64;
-    /// Returns false when the engine does not implement the parameter; the runtime
-    /// then stores the value itself and reports it.
-    fn set_engine_par(&mut self, par: EnginePar, value: i32) -> bool;
+    /// Set at frame `at`. Returns false when the engine does not implement the
+    /// parameter; the runtime then stores the value itself and reports it.
+    fn set_engine_par(&mut self, at: u32, par: EnginePar, value: i32) -> bool;
     fn engine_par(&self, par: EnginePar) -> Option<i32>;
     /// Index of a named modulator within a group, if the engine knows it.
     fn find_mod(&self, _group: usize, _name: &str) -> Option<usize> {
@@ -142,10 +143,12 @@ pub enum EngineCall {
 }
 
 /// Test and CLI engine: records calls with absolute sample times, stores engine
-/// parameters, and knows only group names.
+/// parameters, and knows only group names and modulator names.
 #[derive(Debug, Default)]
 pub struct LogEngine {
     pub groups: Vec<String>,
+    /// Per group: modulator names with their target names, in `find_mod` order.
+    pub modulators: Vec<Vec<(String, Vec<String>)>>,
     pub calls: Vec<EngineCall>,
     pub block_start: u64,
     pub rate: f64,
@@ -231,9 +234,9 @@ impl KspEngine for LogEngine {
         self.rate
     }
 
-    fn set_engine_par(&mut self, par: EnginePar, value: i32) -> bool {
+    fn set_engine_par(&mut self, _at: u32, par: EnginePar, value: i32) -> bool {
         let mut name = String::new();
-        match super::builtins::engine_par_name(par.id) {
+        match engine_par_name(par.id) {
             Some(n) => name.push_str(n),
             None => {
                 let _ = write!(name, "#{}", par.id);
@@ -252,5 +255,14 @@ impl KspEngine for LogEngine {
 
     fn engine_par(&self, par: EnginePar) -> Option<i32> {
         self.pars.get(&par).copied()
+    }
+
+    fn find_mod(&self, group: usize, name: &str) -> Option<usize> {
+        self.modulators.get(group)?.iter().position(|m| m.0 == name)
+    }
+
+    fn find_target(&self, group: usize, modulator: usize, name: &str) -> Option<usize> {
+        let targets = &self.modulators.get(group)?.get(modulator)?.1;
+        targets.iter().position(|t| t == name)
     }
 }

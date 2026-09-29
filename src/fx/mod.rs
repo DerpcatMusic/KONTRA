@@ -14,7 +14,7 @@ mod reverb;
 
 pub use kind::Kind;
 pub use params::Params;
-pub use processor::FxProcessor;
+pub use processor::{FxParam, FxProcessor, Rack};
 
 use anyhow::{Context, Result, ensure};
 use ni_file::kontakt::{
@@ -63,10 +63,11 @@ pub struct Bus {
 
 /// All effects of one program.
 ///
-/// Signal flow: `insert` in series; a Send Levels slot in `insert` taps the
+/// Signal flow: groups routed to a bus (by script, `$ENGINE_PAR_OUTPUT_CHANNEL`)
+/// render into it; each bus runs its chain, fader and pan and joins the other
+/// groups. Then `insert` in series; a Send Levels slot in `insert` taps the
 /// signal at its position into the parallel `send` slots, whose returns are
-/// summed back; then `main`. Buses are parsed but not mixed: group-to-bus
-/// routing is not decoded (see `audits/EFFECTS.md`).
+/// summed back; then `main` (see `audits/EFFECTS.md`).
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ProgramFx {
     pub insert: Chain,
@@ -174,6 +175,34 @@ impl ProgramFx {
         })
     }
 
+    /// Stored value of a script-controllable parameter, as
+    /// [`FxProcessor::param`] reports it once built.
+    pub fn param(&self, rack: Rack, slot: u8, param: FxParam) -> Option<f32> {
+        let chain = match rack {
+            Rack::Insert => &self.insert,
+            Rack::Send => &self.send,
+            Rack::Main => &self.main,
+            Rack::Bus(b) => {
+                let bus = self.buses.iter().find(|bus| bus.index == b as usize)?;
+                match param {
+                    FxParam::Volume => return Some(bus.volume),
+                    FxParam::Pan => return Some(bus.pan),
+                    _ => &bus.chain,
+                }
+            }
+        };
+        let fx = chain.slots.iter().find(|fx| fx.slot == slot as usize)?;
+        Some(match (param, &fx.params) {
+            (FxParam::Bypass, _) => f32::from(fx.bypass),
+            (FxParam::Wet, _) => fx.output_gain,
+            (FxParam::Dry, _) => fx.dry_level,
+            (FxParam::SendLevel(n), Params::SendLevels(levels)) => {
+                *levels.sends.get(n as usize)?
+            }
+            _ => return None,
+        })
+    }
+
     /// Every effect with a human-readable location.
     pub fn effects(&self) -> impl Iterator<Item = (String, &Effect)> {
         let racks = [
@@ -265,13 +294,6 @@ impl ProgramFx {
                 }
                 _ => {}
             }
-        }
-        if self
-            .buses
-            .iter()
-            .any(|b| b.chain.slots.iter().any(|fx| !fx.bypass))
-        {
-            out.push("Instrument bus effects are parsed but bus routing is not applied".into());
         }
         out
     }

@@ -712,7 +712,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 slot: s,
                 generic,
             };
-            if !m.engine.set_engine_par(p, value) {
+            if !m.engine.set_engine_par(m.env.offset, p, value) {
                 m.env
                     .note("set_engine_par: parameter not implemented by the engine; value stored");
                 m.env.set_engine_par(p, value);

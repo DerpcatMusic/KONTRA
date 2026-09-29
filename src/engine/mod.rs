@@ -14,12 +14,14 @@
 
 mod bank;
 mod map;
+mod params;
 mod rack;
 mod script;
 mod stream;
 mod voice;
 
 pub use bank::{Bank, GroupSettings, MEMORY_LIMIT, PRELOAD_FRAMES};
+pub use params::{MAX_WRITES, Mod, ModTable, VOICE_MODS};
 pub use rack::{BUSES, Block, PartControls, RACK_SLOTS, Rack};
 pub use script::{MAX_COMMANDS, ScriptSetup, load_scripts};
 pub use voice::Ahdsr;
@@ -27,6 +29,7 @@ pub use voice::Ahdsr;
 use crate::fx::FxProcessor;
 use crate::ksp::Runtime;
 use map::FOREVER;
+use params::{Address, GroupPar, Write};
 use script::{Command, Host};
 use stream::Slot;
 use voice::{Context, Envelope, Fade, Scratch, Stream, Voice, balance};
@@ -142,6 +145,8 @@ pub struct Engine {
     script: Option<Box<Runtime>>,
     /// Script engine calls for the next render, ordered by frame.
     commands: Vec<Command>,
+    /// Script engine parameter changes for the next render, ordered by frame.
+    writes: Vec<Write>,
     /// MIDI channel of the latest input routed to the script; its notes play there.
     script_channel: u8,
     /// Envelope attack (s) for groups without their own envelope.
@@ -162,6 +167,7 @@ impl Default for Engine {
             player: Player::new(48000.0),
             script: None,
             commands: Vec::with_capacity(MAX_COMMANDS),
+            writes: Vec::with_capacity(MAX_WRITES),
             script_channel: 0,
             attack: 0.002,
             release: 0.15,
@@ -177,10 +183,12 @@ impl Engine {
     pub fn set_bank(&mut self, bank: Option<Box<Bank>>) -> Option<Box<Bank>> {
         self.player.clear_voices(self.bank.as_deref());
         self.commands.clear();
+        self.writes.clear();
         let old = std::mem::replace(&mut self.bank, bank);
         self.player.free.clear();
         let slots = self.bank.as_deref().map_or(0, |b| b.slots().len());
         self.player.free.extend((0..slots as u16).rev());
+        self.replay(Address::is_group);
         old
     }
 
@@ -188,17 +196,63 @@ impl Engine {
     /// blocks of [`MAX_BLOCK`]; returns the previous processor for disposal
     /// off the audio thread.
     pub fn set_fx(&mut self, fx: FxProcessor) -> FxProcessor {
-        std::mem::replace(&mut self.fx, fx)
+        let old = std::mem::replace(&mut self.fx, fx);
+        self.replay(|a| matches!(a, Address::Fx(..)));
+        old
     }
 
     /// Install the instrument scripts, initialized off the audio thread; returns
     /// the previous runtime for disposal there. `None` plays MIDI directly.
+    /// Engine parameters the scripts set in `on init` apply now, and again to
+    /// banks and effects installed later.
     pub fn set_script(&mut self, mut script: Option<Box<Runtime>>) -> Option<Box<Runtime>> {
         self.commands.clear();
+        self.writes.clear();
         if let Some(rt) = script.as_deref_mut() {
             rt.set_sample_rate(self.player.rate);
         }
-        std::mem::replace(&mut self.script, script)
+        let old = std::mem::replace(&mut self.script, script);
+        self.replay(|_| true);
+        old
+    }
+
+    /// Apply the scripts' `on init` engine parameters whose address `only` accepts.
+    fn replay(&mut self, only: fn(&Address) -> bool) {
+        let Some(rt) = self.script.as_deref_mut() else {
+            return;
+        };
+        // Moved out and back: no allocation.
+        let pars = std::mem::take(&mut rt.init_engine_pars);
+        for &(par, value) in &pars {
+            let groups = self.bank.as_deref().map_or(&[][..], Bank::groups);
+            if let Some(address) = Address::resolve(par, groups).filter(only) {
+                self.write(address, address.decode(value));
+            }
+        }
+        if let Some(rt) = self.script.as_deref_mut() {
+            rt.init_engine_pars = pars;
+        }
+    }
+
+    /// Apply one engine parameter; false when nothing installed holds it.
+    fn write(&mut self, address: Address, value: f32) -> bool {
+        match address {
+            Address::Fx(rack, slot, param) => self.fx.set_param(rack, slot, param, value),
+            Address::Instrument(p) => {
+                let (volume, pan, tune) = &mut self.player.instrument;
+                match p {
+                    GroupPar::Volume => *volume = value.max(0.0),
+                    GroupPar::Pan => *pan = value.clamp(-1.0, 1.0),
+                    GroupPar::Tune => *tune = value,
+                    GroupPar::Output => return false,
+                }
+                true
+            }
+            _ => self
+                .bank
+                .as_deref_mut()
+                .is_some_and(|bank| params::write(&mut bank.settings, address, value)),
+        }
     }
 
     pub fn script(&self) -> Option<&Runtime> {
@@ -219,6 +273,7 @@ impl Engine {
     pub fn reset(&mut self, rate: f64) {
         self.player.clear_voices(self.bank.as_deref());
         self.commands.clear();
+        self.writes.clear();
         self.fx.clear();
         self.player.reset_midi();
         self.player.rate = rate;
@@ -247,8 +302,10 @@ impl Engine {
         self.script_channel = channel;
         let host = Host {
             bank: self.bank.as_deref(),
+            fx: &self.fx,
             player: &mut self.player,
             commands: &mut self.commands,
+            writes: &mut self.writes,
         };
         Some((rt, host))
     }
@@ -326,11 +383,13 @@ impl Engine {
         self.player.bend[channel as usize] = (f32::from(value) - 8192.0) / 8192.0;
     }
 
-    /// Channel pressure; only scripts react to it.
+    /// Channel pressure (mono aftertouch modulation), through the scripts.
     pub fn channel_pressure(&mut self, channel: u8, value: u8) {
-        if let Some((rt, mut host)) = self.scripted(channel.min(15)) {
-            rt.channel_pressure(&mut host, 0, value.min(127));
+        let (channel, value) = (channel.min(15), value.min(127));
+        if let Some((rt, mut host)) = self.scripted(channel) {
+            return rt.channel_pressure(&mut host, 0, value);
         }
+        self.player.pressure[channel as usize] = value;
     }
 
     /// Polyphonic key pressure; only scripts react to it.
@@ -420,8 +479,7 @@ impl Engine {
             rt.process(&mut host, n as u32);
         }
         let defaults = self.defaults();
-        let bank = self.bank.as_deref();
-        let mut next = 0;
+        let (mut next, mut written) = (0, 0);
         for (block, (l, r)) in left[..n]
             .chunks_mut(MAX_BLOCK)
             .zip(right[..n].chunks_mut(MAX_BLOCK))
@@ -430,12 +488,18 @@ impl Engine {
             let (base, len) = (block * MAX_BLOCK, l.len());
             let mut pos = 0;
             loop {
+                // Parameters first: they configure notes started at the same frame.
+                while let Some(&w) = self.writes.get(written).filter(|w| w.at as usize <= base + pos)
+                {
+                    self.write(w.address, w.value);
+                    written += 1;
+                }
                 while let Some(c) = self
                     .commands
                     .get(next)
                     .filter(|c| c.at as usize <= base + pos)
                 {
-                    if let Some(bank) = bank {
+                    if let Some(bank) = self.bank.as_deref() {
                         self.player.apply(bank, c, channel, defaults);
                     }
                     next += 1;
@@ -443,28 +507,38 @@ impl Engine {
                 if pos == len {
                     break;
                 }
-                let end = self
-                    .commands
-                    .get(next)
-                    .map_or(len, |c| (c.at as usize - base).min(len));
-                if let Some(bank) = bank {
+                let due = [
+                    self.commands.get(next).map(|c| c.at),
+                    self.writes.get(written).map(|w| w.at),
+                ];
+                let end = due
+                    .into_iter()
+                    .flatten()
+                    .fold(len, |end, at| end.min(at as usize - base));
+                if let Some(bank) = self.bank.as_deref() {
                     let blocking = self.blocking_streams;
-                    self.player
-                        .render(bank, &mut l[pos..end], &mut r[pos..end], blocking);
+                    let out = (&mut l[pos..end], &mut r[pos..end]);
+                    self.player.render(bank, out, &mut self.fx, pos, blocking);
                 }
                 pos = end;
             }
+            self.fx.mix_buses(l, r);
             self.player.output(l, r, self.cutoff);
             // Runs without voices too, so reverb and convolution tails ring out.
             self.fx.process(l, r);
         }
-        // Only an empty render leaves commands behind: apply them now.
-        if let Some(bank) = bank {
+        // Only an empty render leaves changes behind: apply them now.
+        for i in written..self.writes.len() {
+            let w = self.writes[i];
+            self.write(w.address, w.value);
+        }
+        if let Some(bank) = self.bank.as_deref() {
             for c in &self.commands[next..] {
                 self.player.apply(bank, c, channel, defaults);
             }
         }
         self.commands.clear();
+        self.writes.clear();
     }
 
     fn defaults(&self) -> Ahdsr {
@@ -490,6 +564,8 @@ struct Player {
     sustain: [bool; 16],
     bend: [f32; 16],
     cc: [[u8; 128]; 16],
+    /// Channel pressure.
+    pressure: [u8; 16],
     /// Velocity of keys that are down.
     keys: [[u8; 128]; 16],
     /// Release triggers deferred by the sustain pedal: note-on velocity.
@@ -500,6 +576,8 @@ struct Player {
     /// Instrument volume (CC7) and pan (CC10).
     volume: f32,
     pan: f32,
+    /// Instrument volume (linear), pan and tune (semitones) set by scripts.
+    instrument: (f32, f32, f32),
     out_gains: [f32; 2],
     tone: [f32; 2],
     underruns: u64,
@@ -517,6 +595,7 @@ impl Player {
             sustain: [false; 16],
             bend: [0.0; 16],
             cc: [[0; 128]; 16],
+            pressure: [0; 16],
             keys: [[0; 128]; 16],
             pedal_releases: [[0; 128]; 16],
             allowed: GroupMask::all(),
@@ -524,6 +603,7 @@ impl Player {
             clock: 0,
             volume: 1.0,
             pan: 0.0,
+            instrument: (1.0, 0.0, 0.0),
             out_gains: [1.0; 2],
             tone: [0.0; 2],
             underruns: 0,
@@ -536,6 +616,7 @@ impl Player {
     fn reset_midi(&mut self) {
         self.sustain = [false; 16];
         self.bend = [0.0; 16];
+        self.pressure = [0; 16];
         self.cc = [[0; 128]; 16];
         for cc in &mut self.cc {
             (cc[7], cc[10], cc[11]) = (127, 64, 127);
@@ -582,7 +663,7 @@ impl Player {
             match change {
                 EventChange::Volume(gain) => v.volume = gain.max(0.0),
                 EventChange::Tune(semitones) => v.tune = 2f64.powf(semitones / 12.0),
-                EventChange::Pan(pan) => v.pan = (v.base_pan + pan).clamp(-1.0, 1.0),
+                EventChange::Pan(pan) => v.pan = pan,
             }
         }
     }
@@ -657,10 +738,19 @@ impl Player {
         } else {
             1.0
         };
-        let step = f64::from(sample.rate) / self.rate * zone.tune * group.tune * key;
-        let velocity = 1.0 - settings.velocity_intensity * (1.0 - f32::from(ev.velocity) / 127.0);
-        let offset =
-            ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64).min(play.start_mod);
+        let step = f64::from(sample.rate) / self.rate * zone.tune * key;
+        let c = ev.channel as usize;
+        let inputs = params::Inputs {
+            cc: &self.cc[c],
+            bend: self.bend[c],
+            pressure: self.pressure[c],
+            note: ev.note,
+            velocity: ev.velocity,
+        };
+        let mods = settings.mods.start(&inputs);
+        let modulated = (settings.mods.start_offset(&inputs) * play.start_mod as f32) as u64;
+        let offset = ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)
+            .min(play.start_mod);
         // A release-triggered voice starts with its key already up.
         let wraps = play
             .map
@@ -695,12 +785,11 @@ impl Player {
                 }
             }
         });
-        let base_pan = (zone.pan + group.pan).clamp(-1.0, 1.0);
-        let base_level = zone.gain * group.gain * velocity * gain;
-        let pan = (base_pan + ev.pan).clamp(-1.0, 1.0);
+        let base_level = zone.gain * gain;
         let envelope = settings.envelope.unwrap_or(defaults);
-        let voice = Voice {
+        let mut voice = Voice {
             event,
+            group: zone.group as u32,
             voice_group: settings.voice_group,
             channel: ev.channel,
             note: ev.note,
@@ -718,17 +807,21 @@ impl Player {
             pos: offset as f64,
             step,
             tune: 2f64.powf(ev.tune / 12.0),
-            bend_range: settings.bend_range,
-            bend: (0.0, 1.0),
+            pitch: (f32::NAN, 1.0),
+            mods,
             stream,
             env: Envelope::new(&envelope, self.rate as f32),
             fade: Fade::FULL,
             base_level,
             volume: ev.volume.max(0.0),
-            base_pan,
-            pan,
-            gains: balance(base_level * ev.volume.max(0.0), pan),
+            base_pan: zone.pan,
+            pan: ev.pan,
+            gains: [0.0; 2],
         };
+        // Start at the voice's first-block gains, so it does not ramp in.
+        let (modulation, _) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
+        let pan = (zone.pan + settings.pan + ev.pan).clamp(-1.0, 1.0);
+        voice.gains = balance(base_level * settings.gain * modulation * voice.volume, pan);
         self.voices.push(voice);
     }
 
@@ -922,16 +1015,35 @@ impl Player {
         }
     }
 
-    fn render(&mut self, bank: &Bank, left: &mut [f32], right: &mut [f32], blocking: bool) {
+    /// Render every voice into `left`/`right`, or into its group's bus input
+    /// at frame `offset` of the current block.
+    fn render(
+        &mut self,
+        bank: &Bank,
+        (left, right): (&mut [f32], &mut [f32]),
+        fx: &mut FxProcessor,
+        offset: usize,
+        blocking: bool,
+    ) {
         let cx = Context {
             bank,
             slots: bank.slots(),
+            cc: &self.cc,
             bend: &self.bend,
+            pressure: &self.pressure,
+            tune: self.instrument.2,
+            rate: self.rate as f32,
             blocking,
         };
+        let n = left.len();
         let mut i = 0;
         while i < self.voices.len() {
-            let (alive, underrun) = self.voices[i].render(&cx, &mut self.scratch, left, right);
+            let voice = &mut self.voices[i];
+            let bus = bank.settings[voice.group as usize].bus;
+            let (alive, underrun) = match bus.and_then(|b| fx.bus_input(b, offset..offset + n)) {
+                Some((l, r)) => voice.render(&cx, &mut self.scratch, l, r),
+                None => voice.render(&cx, &mut self.scratch, left, right),
+            };
             self.underruns += u64::from(underrun);
             if alive {
                 i += 1;
@@ -948,7 +1060,8 @@ impl Player {
     /// Instrument volume/pan (ramped per block) and the Tone low-pass.
     fn output(&mut self, left: &mut [f32], right: &mut [f32], cutoff: f32) {
         let n = left.len() as f32;
-        let target = balance(self.volume, self.pan);
+        let (gain, pan, _) = self.instrument;
+        let target = balance(self.volume * gain, (self.pan + pan).clamp(-1.0, 1.0));
         let start = self.out_gains;
         let delta = [(target[0] - start[0]) / n, (target[1] - start[1]) / n];
         self.out_gains = target;

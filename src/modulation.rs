@@ -3,9 +3,9 @@
 //! Field meanings and confidence are documented in `audits/MODULATION.md`.
 //! Nothing here is applied to playback by itself.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use ni_file::kontakt::objects::{
-    ExternalModArray32, Group as RawGroup, InternalModArray16, Modulator,
+    ExternalModArray32, Group as RawGroup, InternalModArray16, Modulator as RawModulator,
 };
 use serde::Serialize;
 
@@ -61,11 +61,27 @@ impl ModAssignment {
     }
 }
 
+/// A modulator as KSP addresses it: its position in `Group::modulators` is the
+/// `find_mod` index (internal modulators in slot order, then external ones).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Modulator {
+    /// `find_mod` name, e.g. `ENV_AHDSR` or `VEL_VOLUME`.
+    pub name: String,
+    /// `find_target` names, in target order.
+    pub targets: Vec<String>,
+    /// First of this external modulator's entries in `Group::mods` (one per
+    /// target); `None` for internal modulators.
+    pub assignments: Option<usize>,
+    /// This is the internal envelope imported as `Group::volume_env`.
+    pub volume_env: bool,
+}
+
 /// Modulation read from one group, plus notes about what was left out.
 #[derive(Debug, Default)]
 pub(crate) struct GroupModulation {
     pub volume_env: Option<Ahdsr>,
     pub mods: Vec<ModAssignment>,
+    pub modulators: Vec<Modulator>,
     pub warnings: Vec<String>,
 }
 
@@ -78,12 +94,22 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
         for (_, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
             let params = modulator.params()?;
             let drives_volume = params.targets.iter().any(|t| t.param == "volume");
-            match params.modulator {
-                Modulator::Ahdsr(env) if drives_volume && out.volume_env.is_none() => {
+            let volume_env = match params.modulator {
+                RawModulator::Ahdsr(env) if drives_volume && out.volume_env.is_none() => {
                     out.volume_env = Some(env);
+                    true
                 }
-                _ => skipped += 1,
-            }
+                _ => {
+                    skipped += 1;
+                    false
+                }
+            };
+            out.modulators.push(Modulator {
+                name: params.name,
+                targets: params.targets.into_iter().map(|t| t.name).collect(),
+                assignments: None,
+                volume_env,
+            });
         }
         if skipped > 0 {
             out.warnings.push(
@@ -95,6 +121,12 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
     if let Some(chunk) = group.0.find_first(EXTERNAL_MODS_ID) {
         for (_, assignment) in ExternalModArray32::try_from(chunk)?.slots()? {
             let params = assignment.params()?;
+            out.modulators.push(Modulator {
+                name: params.name.clone(),
+                targets: params.targets.iter().map(|t| t.name.clone()).collect(),
+                assignments: Some(out.mods.len()),
+                volume_env: false,
+            });
             for target in params.targets {
                 out.mods.push(ModAssignment {
                     name: params.name.clone(),

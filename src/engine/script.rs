@@ -4,7 +4,9 @@
 //! sample-accurate without per-sample checks. [`ScriptSetup`] serves `on init`
 //! off the audio thread, where nothing can play.
 
-use super::{Ahdsr, Bank, EventChange, EventId, GroupMask, NoteEvent, Player};
+use super::params::{self, Address, GroupPar, MAX_WRITES, Write};
+use super::{Ahdsr, Bank, EventChange, EventId, GroupMask, GroupSettings, NoteEvent, Player};
+use crate::fx::{FxProcessor, ProgramFx};
 use crate::import::{Group, Instrument};
 use crate::ksp::{EnginePar, Fade, KspEngine, NoteLength, NoteSpec, Persisted, Runtime, VoicePar};
 
@@ -22,12 +24,10 @@ pub fn load_scripts(
     if instrument.scripts.is_empty() {
         return (None, Vec::new());
     }
-    let mut setup = ScriptSetup {
-        groups: &instrument.groups,
-        rate,
-    };
-    let (rt, errors) =
+    let mut setup = ScriptSetup::new(instrument, rate);
+    let (mut rt, errors) =
         Runtime::with_scripts(&instrument.scripts, &mut setup, SCRIPT_OUTPUTS, persisted);
+    rt.init_engine_pars = setup.pars;
     let errors = errors
         .into_iter()
         .enumerate()
@@ -79,11 +79,22 @@ pub(super) enum Kind {
 /// The engine as the runtime sees it during one call, borrowed from `Engine`.
 pub(super) struct Host<'a> {
     pub bank: Option<&'a Bank>,
+    pub fx: &'a FxProcessor,
     pub player: &'a mut Player,
     pub commands: &'a mut Vec<Command>,
+    pub writes: &'a mut Vec<Write>,
 }
 
 impl Host<'_> {
+    /// Engine address of a parameter the installed bank and effects hold.
+    fn address(&self, par: EnginePar) -> Option<Address> {
+        let address = Address::resolve(par, self.bank?.groups())?;
+        match address {
+            Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param).map(|_| address),
+            _ => Some(address),
+        }
+    }
+
     /// Queue in frame order (stable for equal frames) within the preallocated capacity.
     fn push(&mut self, at: u32, id: EventId, kind: Kind) -> bool {
         if self.commands.len() == MAX_COMMANDS {
@@ -152,13 +163,42 @@ impl KspEngine for Host<'_> {
         self.player.rate
     }
 
-    // Engine parameters are not modelled yet: the runtime keeps the values.
-    fn set_engine_par(&mut self, _par: EnginePar, _value: i32) -> bool {
-        false
+    /// Modelled parameters are queued for their frame, like notes.
+    fn set_engine_par(&mut self, at: u32, par: EnginePar, value: i32) -> bool {
+        let Some(address) = self.address(par) else {
+            return false;
+        };
+        if self.writes.len() == MAX_WRITES {
+            self.player.dropped_commands += 1;
+            return true;
+        }
+        let i = self.writes.partition_point(|w| w.at <= at);
+        let value = address.decode(value);
+        self.writes.insert(i, Write { at, address, value });
+        true
     }
 
-    fn engine_par(&self, _par: EnginePar) -> Option<i32> {
-        None
+    /// The latest queued value, else the engine's current one.
+    fn engine_par(&self, par: EnginePar) -> Option<i32> {
+        let address = self.address(par)?;
+        let queued = self.writes.iter().rev().find(|w| w.address == address);
+        let value = match queued {
+            Some(w) => w.value,
+            None => match address {
+                Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param)?,
+                Address::Instrument(p) => instrument(self.player.instrument, p)?,
+                _ => params::read(&self.bank?.settings, address)?,
+            },
+        };
+        Some(address.encode(value))
+    }
+
+    fn find_mod(&self, group: usize, name: &str) -> Option<usize> {
+        params::find_mod(self.bank?.groups(), group, name)
+    }
+
+    fn find_target(&self, group: usize, modulator: usize, name: &str) -> Option<usize> {
+        params::find_target(self.bank?.groups(), group, modulator, name)
     }
 
     fn voice_active(&self, voice: EventId) -> bool {
@@ -226,17 +266,60 @@ impl Player {
                 let value = value.clamp(0, 127) as u8;
                 self.cc(Some(bank), channel, cc, value, defaults);
             }
-            // Channel pressure and other virtual controllers: nothing in the engine uses them.
+            &Kind::Controller { cc: 129, value } => {
+                self.pressure[channel as usize] = value.clamp(0, 127) as u8;
+            }
+            // Other virtual controllers: nothing in the engine uses them.
             Kind::Controller { .. } => {}
         }
     }
 }
 
-/// Engine view for `on init` off the audio thread: group names and the sample
-/// rate. Nothing plays during init.
+/// Instrument volume, pan or tune from `(volume, pan, tune)`.
+fn instrument((volume, pan, tune): (f32, f32, f32), p: GroupPar) -> Option<f32> {
+    match p {
+        GroupPar::Volume => Some(volume),
+        GroupPar::Pan => Some(pan),
+        GroupPar::Tune => Some(tune),
+        GroupPar::Output => None,
+    }
+}
+
+/// Engine view for `on init` off the audio thread: group names, modulators,
+/// the sample rate and the parameters the engine models, which it records
+/// for the playing engine ([`Runtime::init_engine_pars`]). Nothing plays
+/// during init.
 pub struct ScriptSetup<'a> {
-    pub groups: &'a [Group],
-    pub rate: f64,
+    groups: &'a [Group],
+    fx: &'a ProgramFx,
+    rate: f64,
+    settings: Vec<GroupSettings>,
+    instrument: (f32, f32, f32),
+    /// Effect values written so far, by address.
+    effects: Vec<(Address, f32)>,
+    pars: Vec<(EnginePar, i32)>,
+}
+
+impl<'a> ScriptSetup<'a> {
+    pub fn new(instrument: &'a Instrument, rate: f64) -> Self {
+        Self {
+            groups: &instrument.groups,
+            fx: &instrument.fx,
+            rate,
+            settings: instrument.groups.iter().map(GroupSettings::from).collect(),
+            instrument: (1.0, 0.0, 0.0),
+            effects: Vec::new(),
+            pars: Vec::new(),
+        }
+    }
+
+    fn address(&self, par: EnginePar) -> Option<Address> {
+        let address = Address::resolve(par, self.groups)?;
+        match address {
+            Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param).map(|_| address),
+            _ => Some(address),
+        }
+    }
 }
 
 impl KspEngine for ScriptSetup<'_> {
@@ -264,11 +347,50 @@ impl KspEngine for ScriptSetup<'_> {
         self.rate
     }
 
-    fn set_engine_par(&mut self, _par: EnginePar, _value: i32) -> bool {
-        false
+    fn set_engine_par(&mut self, _at: u32, par: EnginePar, value: i32) -> bool {
+        let Some(address) = self.address(par) else {
+            return false;
+        };
+        let v = address.decode(value);
+        match address {
+            Address::Fx(..) => match self.effects.iter_mut().find(|e| e.0 == address) {
+                Some(e) => e.1 = v,
+                None => self.effects.push((address, v)),
+            },
+            Address::Instrument(p) => {
+                let (volume, pan, tune) = &mut self.instrument;
+                match p {
+                    GroupPar::Volume => *volume = v,
+                    GroupPar::Pan => *pan = v,
+                    _ => *tune = v,
+                }
+            }
+            _ => {
+                params::write(&mut self.settings, address, v);
+            }
+        }
+        self.pars.push((par, value));
+        true
     }
 
-    fn engine_par(&self, _par: EnginePar) -> Option<i32> {
-        None
+    fn engine_par(&self, par: EnginePar) -> Option<i32> {
+        let address = self.address(par)?;
+        let value = match address {
+            Address::Fx(rack, slot, param) => match self.effects.iter().find(|e| e.0 == address) {
+                Some(e) => e.1,
+                None => self.fx.param(rack, slot, param)?,
+            },
+            Address::Instrument(p) => instrument(self.instrument, p)?,
+            _ => params::read(&self.settings, address)?,
+        };
+        Some(address.encode(value))
+    }
+
+    fn find_mod(&self, group: usize, name: &str) -> Option<usize> {
+        params::find_mod(self.groups, group, name)
+    }
+
+    fn find_target(&self, group: usize, modulator: usize, name: &str) -> Option<usize> {
+        params::find_target(self.groups, group, modulator, name)
     }
 }

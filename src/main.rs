@@ -521,7 +521,7 @@ impl kontakto::ksp::KspEngine for NullEngine {
     fn sample_rate(&self) -> f64 {
         RATE
     }
-    fn set_engine_par(&mut self, _: kontakto::ksp::EnginePar, _: i32) -> bool {
+    fn set_engine_par(&mut self, _: u32, _: kontakto::ksp::EnginePar, _: i32) -> bool {
         false
     }
     fn engine_par(&self, _: kontakto::ksp::EnginePar) -> Option<i32> {
@@ -610,6 +610,7 @@ fn inspect_mods(path: &Path) -> Result<serde_json::Value> {
                 "pitch_bend_range": group.pitch_bend_range(),
                 "cc_volume": group.cc_volume().map(|(cc, _)| cc),
                 "mods": group.mods,
+                "modulators": group.modulators,
                 "zones": zones.len(),
                 "crossfaded_zones": crossfaded,
                 "start_mod_zones": zones.iter().filter(|z| z.start_mod.is_some_and(|frames| frames != 0)).count(),
@@ -632,6 +633,7 @@ fn ksp_run(path:&Path,notes:&[String])->Result<()> {
     const BLOCK:u32=128;
     let instrument=import::read(path)?;
     let mut engine=LogEngine::new(instrument.groups.iter().map(|g|g.name.clone()).collect(),RATE);
+    engine.modulators=instrument.groups.iter().map(|g|g.modulators.iter().map(|m|(m.name.clone(),m.targets.clone())).collect()).collect();
     let start=std::time::Instant::now();
     let (mut rt,init_errors)=Runtime::with_scripts(&instrument.scripts,&mut engine,8,instrument.script_state.clone());
     let init_ms=start.elapsed().as_secs_f64()*1e3;

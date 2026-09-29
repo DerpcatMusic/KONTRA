@@ -20,8 +20,8 @@ mod vm;
 mod tests;
 
 pub use engine::{
-    EngineCall, EnginePar, EventId, Fade, GroupMask, KspEngine, LogEngine, NoteLength, NoteSpec,
-    VoicePar,
+    ENGINE_PAR_BASE, EngineCall, EnginePar, EventId, Fade, GroupMask, KspEngine, LogEngine, NoteLength, NoteSpec,
+    VoicePar, engine_par_name,
 };
 pub use inventory::requirements;
 pub use runtime::{MAX_SLOTS, Persisted, Runtime};
