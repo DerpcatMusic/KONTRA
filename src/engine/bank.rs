@@ -4,7 +4,7 @@ use super::{
     map::{LoopMap, PlayMap},
     params::ModTable,
     stream::Streamer,
-    voice::Ahdsr,
+    voice::{Ahdsr, Flex, FlexPoint},
 };
 use crate::{
     audio::{self, Frame, Pcm, Sample, SampleReader, Source},
@@ -33,6 +33,8 @@ const DEFAULT_POLYPHONY: usize = 512;
 pub struct GroupSettings {
     /// Amplitude envelope; `None` uses the engine's attack/release defaults.
     pub envelope: Option<Ahdsr>,
+    /// Flex amplitude envelope, multiplied with `envelope`.
+    pub flex: Option<Flex>,
     /// Linear group volume.
     pub gain: f32,
     /// -1 (left) to 1 (right).
@@ -55,6 +57,7 @@ impl From<&Group> for GroupSettings {
     fn from(group: &Group) -> Self {
         Self {
             envelope: group.volume_env.as_ref().map(Ahdsr::from),
+            flex: group.flex_env.as_ref().map(Flex::from),
             gain: group.gain,
             pan: group.pan,
             tune: 12.0 * group.tune.log2() as f32,
@@ -75,6 +78,32 @@ impl From<&crate::import::Ahdsr> for Ahdsr {
             decay: env.decay_ms / 1000.0,
             sustain: env.sustain.clamp(0.0, 1.0),
             release: env.release_ms / 1000.0,
+        }
+    }
+}
+
+impl From<&crate::import::FlexEnvelope> for Flex {
+    /// Stored curves bulge above (> 0.5) or below the straight segment;
+    /// the engine's curve is signed by direction (see `audits/MODULATION.md`).
+    fn from(env: &crate::import::FlexEnvelope) -> Self {
+        let mut from = 0.0;
+        let points = env
+            .points
+            .iter()
+            .map(|p| {
+                let bulge = 2.0 * p.curve - 1.0;
+                let point = FlexPoint {
+                    seconds: p.time_ms / 1000.0,
+                    level: p.level,
+                    curve: if p.level < from { -bulge } else { bulge },
+                };
+                from = p.level;
+                point
+            })
+            .collect();
+        Self {
+            points,
+            sustain: env.sustain as usize,
         }
     }
 }

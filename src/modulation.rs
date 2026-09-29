@@ -12,7 +12,8 @@ use serde::Serialize;
 use crate::import::Group;
 
 pub use ni_file::kontakt::objects::{
-    Breakpoint, EnvelopeAhdsr as Ahdsr, ModShaper, ModSource, ShaperCurve,
+    Breakpoint, EnvelopeAhdsr as Ahdsr, EnvelopeFlex as FlexEnvelope, FlexPoint, ModShaper,
+    ModSource, ShaperCurve,
 };
 
 const INTERNAL_MODS_ID: u16 = 0x3B;
@@ -72,7 +73,8 @@ pub struct Modulator {
     /// First of this external modulator's entries in `Group::mods` (one per
     /// target); `None` for internal modulators.
     pub assignments: Option<usize>,
-    /// This is the internal envelope imported as `Group::volume_env`.
+    /// This is the internal envelope imported as `Group::volume_env` (AHDSR
+    /// only, the target of `$ENGINE_PAR_ATTACK` and friends).
     pub volume_env: bool,
 }
 
@@ -80,6 +82,7 @@ pub struct Modulator {
 #[derive(Debug, Default)]
 pub(crate) struct GroupModulation {
     pub volume_env: Option<Ahdsr>,
+    pub flex_env: Option<FlexEnvelope>,
     pub mods: Vec<ModAssignment>,
     pub modulators: Vec<Modulator>,
     pub warnings: Vec<String>,
@@ -93,11 +96,17 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
         let mut skipped = 0;
         for (_, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
             let params = modulator.params()?;
-            let drives_volume = params.targets.iter().any(|t| t.param == "volume");
+            if std::env::var("DBG_INT").is_ok() { for t in &params.targets { eprintln!("INT {} flags={:02x?} {} i={:.3} inv={} tflags={:02x} shaper={}", params.name, params.unknown_flags, t.param, t.intensity, t.invert, t.unknown_flags, t.shaper.as_ref().is_some_and(|s| s.enabled)); } }
+            // The first volume envelope of each kind; the voice multiplies them.
+            let volume = params.targets.iter().any(|t| t.param == "volume");
             let volume_env = match params.modulator {
-                RawModulator::Ahdsr(env) if drives_volume && out.volume_env.is_none() => {
+                RawModulator::Ahdsr(env) if volume && out.volume_env.is_none() => {
                     out.volume_env = Some(env);
                     true
+                }
+                RawModulator::Flex(env) if volume && out.flex_env.is_none() => {
+                    out.flex_env = Some(env);
+                    false
                 }
                 _ => {
                     skipped += 1;
@@ -113,7 +122,7 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
         }
         if skipped > 0 {
             out.warnings.push(
-                "Internal modulators other than the first volume AHDSR are not imported".into(),
+                "Internal modulators other than the first volume AHDSR and flex envelopes are not applied".into(),
             );
         }
     }

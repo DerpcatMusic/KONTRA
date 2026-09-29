@@ -36,6 +36,36 @@ pub struct Ahdsr {
     pub release: f32,
 }
 
+impl Ahdsr {
+    /// Holds 1 until the voice ends another way: the partner of a lone flex envelope.
+    pub const UNITY: Self = Self {
+        attack: 0.0,
+        curve: 0.0,
+        hold: 0.0,
+        decay: 0.0,
+        sustain: 1.0,
+        release: f32::INFINITY,
+    };
+}
+
+/// Breakpoint (flex) envelope: glides from silence through `points` and
+/// holds at `points[sustain]` while the key is down.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Flex {
+    pub points: Box<[FlexPoint]>,
+    pub sustain: usize,
+}
+
+/// A flex envelope point, reached from the previous level.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlexPoint {
+    pub seconds: f32,
+    /// Linear level, 0–1.
+    pub level: f32,
+    /// Segment shape like [`Ahdsr::curve`]: positive moves fast early.
+    pub curve: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
     Attack,
@@ -43,19 +73,25 @@ enum Stage {
     Decay,
     Sustain,
     Release,
+    /// Start the glide toward this flex point from the current level.
+    Enter(u8),
+    /// Gliding toward this flex point.
+    Point(u8),
     Done,
 }
 
 /// Curved attack, then exponential decay and release (−60 dB over the stage
-/// time, like Kontakt's AHDSR).
+/// time, like Kontakt's AHDSR); or a flex envelope's curved segments.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Envelope {
     stage: Stage,
     level: f32,
-    /// Attack step `level = level * attack.0 + attack.1`: a one-pole glide
-    /// whose target lies past 1 (convex) or below 0 (concave), or a line.
-    attack: (f32, f32),
-    hold: u32,
+    /// Glide step of the attack or flex segment, `level = level * step.0 +
+    /// step.1`: a one-pole glide whose target lies past the end (convex),
+    /// before the start (concave), or a line.
+    step: (f32, f32),
+    /// Frames left in the hold stage or flex segment.
+    left: u32,
     decay: f32,
     sustain: f32,
     release: f32,
@@ -74,47 +110,66 @@ fn exp_coef(seconds: f32, rate: f32) -> f32 {
 /// with `k = CURVE_STEEPNESS * curve`. Kontakt's exact law is unverified.
 const CURVE_STEEPNESS: f32 = 5.0;
 
-/// Per-frame attack step reaching 1 after `seconds`, bent by `curve`.
-fn attack_step(seconds: f32, curve: f32, rate: f32) -> (f32, f32) {
-    if seconds <= 0.0 {
-        return (1.0, 1.0);
-    }
-    let dt = 1.0 / (seconds * rate);
+/// Per-frame step from `from` to `to` over `frames` (at least 1), bent by
+/// `curve`.
+fn glide(from: f32, to: f32, frames: f32, curve: f32) -> (f32, f32) {
     let k = CURVE_STEEPNESS * curve.clamp(-1.0, 1.0);
     if k.abs() < 1e-3 {
-        return (1.0, dt);
+        return (1.0, (to - from) / frames);
     }
     // The shape is a one-pole glide toward `target`, reached asymptotically.
-    let target = 1.0 / -(-k).exp_m1();
-    let mul = (-k * dt).exp();
+    let target = from + (to - from) / -(-k).exp_m1();
+    let mul = (-k / frames).exp();
     (mul, target * (1.0 - mul))
 }
 
 impl Envelope {
     pub fn new(p: &Ahdsr, rate: f32) -> Self {
+        let attack = p.attack * rate;
         Self {
             stage: Stage::Attack,
             level: 0.0,
-            attack: attack_step(p.attack, p.curve, rate),
-            hold: (p.hold.max(0.0) * rate) as u32,
+            step: if attack > 0.0 {
+                glide(0.0, 1.0, attack, p.curve)
+            } else {
+                (1.0, 1.0)
+            },
+            left: (p.hold.max(0.0) * rate) as u32,
             decay: exp_coef(p.decay, rate),
             sustain: p.sustain.clamp(0.0, 1.0),
             release: exp_coef(p.release, rate),
         }
     }
 
-    pub fn release(&mut self) {
-        if self.stage != Stage::Done {
-            self.stage = Stage::Release;
+    /// A flex envelope's state; its points are passed to `render`.
+    pub fn flex() -> Self {
+        Self {
+            stage: Stage::Enter(0),
+            level: 0.0,
+            step: (1.0, 0.0),
+            left: 0,
+            decay: 0.0,
+            sustain: 0.0,
+            release: 0.0,
         }
+    }
+
+    /// Enter the release: the flex segment after the sustain point, or the
+    /// AHDSR release.
+    pub fn release(&mut self, flex: Option<&Flex>) {
+        self.stage = match (self.stage, flex) {
+            (Stage::Done, _) => Stage::Done,
+            (_, Some(flex)) => Stage::Enter((flex.sustain + 1) as u8),
+            _ => Stage::Release,
+        };
     }
 
     pub fn done(&self) -> bool {
         self.stage == Stage::Done
     }
 
-    /// Write one gain per frame.
-    pub fn render(&mut self, out: &mut [f32]) {
+    /// Write one gain per frame; `flex` is the envelope's points, if it is one.
+    pub fn render(&mut self, out: &mut [f32], flex: Option<&Flex>, rate: f32) {
         let mut i = 0;
         while i < out.len() {
             let rest = &mut out[i..];
@@ -122,7 +177,7 @@ impl Envelope {
                 Stage::Attack => {
                     let mut n = 0;
                     for o in rest.iter_mut() {
-                        self.level = (self.level * self.attack.0 + self.attack.1).min(1.0);
+                        self.level = (self.level * self.step.0 + self.step.1).min(1.0);
                         *o = self.level;
                         n += 1;
                         if self.level >= 1.0 {
@@ -133,11 +188,48 @@ impl Envelope {
                     n
                 }
                 Stage::Hold => {
-                    let n = rest.len().min(self.hold as usize);
+                    let n = rest.len().min(self.left as usize);
                     rest[..n].fill(self.level);
-                    self.hold -= n as u32;
-                    if self.hold == 0 {
+                    self.left -= n as u32;
+                    if self.left == 0 {
                         self.stage = Stage::Decay;
+                    }
+                    n
+                }
+                Stage::Enter(i) => {
+                    self.stage = match flex.and_then(|f| f.points.get(i as usize)) {
+                        Some(p) => {
+                            let frames = (p.seconds * rate).round().max(1.0);
+                            self.step = glide(self.level, p.level, frames, p.curve);
+                            self.left = frames as u32;
+                            Stage::Point(i)
+                        }
+                        None => Stage::Done,
+                    };
+                    0
+                }
+                Stage::Point(i) => {
+                    let n = rest.len().min(self.left as usize);
+                    for o in &mut rest[..n] {
+                        self.level = self.level * self.step.0 + self.step.1;
+                        *o = self.level;
+                    }
+                    self.left -= n as u32;
+                    if self.left == 0 {
+                        let point = flex.and_then(|f| Some((f.sustain, f.points.get(i as usize)?)));
+                        self.stage = match point {
+                            Some((sustain, p)) => {
+                                // Land exactly on the point.
+                                self.level = p.level;
+                                rest[n - 1] = p.level;
+                                if i as usize == sustain {
+                                    Stage::Sustain
+                                } else {
+                                    Stage::Enter(i + 1)
+                                }
+                            }
+                            None => Stage::Done,
+                        };
                     }
                     n
                 }
@@ -297,7 +389,10 @@ pub(crate) struct Voice {
     /// Current value of each of the group's voiced modulation assignments.
     pub mods: [f32; VOICE_MODS],
     pub stream: Option<Stream>,
+    /// AHDSR envelope (the engine defaults without one, unity with only a flex).
     pub env: Envelope,
+    /// The group's flex envelope, multiplied with `env`.
+    pub flex: Option<Envelope>,
     pub fade: Fade,
     /// Zone gain with velocity and key crossfades; group volume and
     /// modulation apply per block.
@@ -343,6 +438,7 @@ impl Context<'_> {
 pub(crate) struct Scratch {
     pub window: Box<[Frame]>,
     pub amp: [f32; MAX_BLOCK],
+    pub flex: [f32; MAX_BLOCK],
 }
 
 impl Default for Scratch {
@@ -350,6 +446,7 @@ impl Default for Scratch {
         Self {
             window: vec![[0.0; 2]; WINDOW].into_boxed_slice(),
             amp: [0.0; MAX_BLOCK],
+            flex: [0.0; MAX_BLOCK],
         }
     }
 }
@@ -372,10 +469,15 @@ impl Voice {
     ) -> (bool, bool) {
         let n = left.len().min(right.len()).min(MAX_BLOCK);
         let amp = &mut scratch.amp[..n];
-        self.env.render(amp);
+        let group = &cx.bank.settings[self.group as usize];
+        self.env.render(amp, None, cx.rate);
+        if let Some(env) = &mut self.flex {
+            let flex = &mut scratch.flex[..n];
+            env.render(flex, group.flex.as_ref(), cx.rate);
+            amp.iter_mut().zip(flex.iter()).for_each(|(a, f)| *a *= f);
+        }
         self.fade.apply(amp);
 
-        let group = &cx.bank.settings[self.group as usize];
         let inputs = cx.inputs(self.channel, self.note, self.velocity);
         let (modulation, semitones) = group.mods.modulate(&mut self.mods, &inputs, n, cx.rate);
         let semitones = semitones + group.tune + cx.tune;
@@ -425,7 +527,10 @@ impl Voice {
         if let Some(stream) = &self.stream {
             cx.slots[stream.slot as usize].release_below((self.pos as u64).saturating_sub(1));
         }
-        let alive = !self.env.done() && !self.fade.finished() && self.pos < self.length as f64;
+        let alive = !self.env.done()
+            && !self.flex.as_ref().is_some_and(Envelope::done)
+            && !self.fade.finished()
+            && self.pos < self.length as f64;
         (alive, underrun)
     }
 
@@ -520,7 +625,10 @@ impl Voice {
         }
         self.released = true;
         self.held = false;
-        self.env.release();
+        self.env.release(None);
+        if let Some(env) = &mut self.flex {
+            env.release(bank.settings[self.group as usize].flex.as_ref());
+        }
         let wraps = self.map.wraps(self.pos as u64 + 3);
         if wraps == self.wraps {
             return;
@@ -687,7 +795,7 @@ mod tests {
         };
         let mut env = Envelope::new(&p, rate);
         let mut out = [0.0; 400];
-        env.render(&mut out);
+        env.render(&mut out, None, rate);
         assert!((out[4] - 0.5).abs() < 1e-5, "linear attack");
         let peak = out.iter().position(|&x| x == 1.0).unwrap();
         assert!((9..=10).contains(&peak));
@@ -699,13 +807,13 @@ mod tests {
             out[peak + 105]
         );
         assert_eq!(out[399], 0.5);
-        env.release();
-        env.render(&mut out[..100]);
+        env.release(None);
+        env.render(&mut out[..100], None, rate);
         assert!(
             (out[99] - 0.0005).abs() < 1e-4,
             "release reaches −60 dB at its time"
         );
-        env.render(&mut out[..100]);
+        env.render(&mut out[..100], None, rate);
         assert!(env.done());
     }
 
@@ -722,7 +830,7 @@ mod tests {
                 release: 0.1,
             };
             let mut out = [0.0; 120];
-            Envelope::new(&p, rate).render(&mut out);
+            Envelope::new(&p, rate).render(&mut out, None, rate);
             out
         };
         // (1 - e^(-k t)) / (1 - e^(-k)), k = 5 · curve.
@@ -747,5 +855,43 @@ mod tests {
         }
         // Positive is convex (fast rise), negative concave (slow start).
         assert!(attack(1.0)[19] > 0.6 && attack(-1.0)[49] < 0.08);
+    }
+
+    #[test]
+    fn flex_envelope_glides_holds_and_releases() {
+        let rate = 1000.0;
+        let point = |seconds, level, curve| FlexPoint {
+            seconds,
+            level,
+            curve,
+        };
+        let flex = Flex {
+            points: [
+                point(0.01, 1.0, 0.0),
+                point(0.01, 0.5, 0.0),
+                point(0.02, 0.0, 1.0),
+            ]
+            .into(),
+            sustain: 1,
+        };
+        let mut env = Envelope::flex();
+        let mut out = [0.0; 100];
+        env.render(&mut out, Some(&flex), rate);
+        assert!((out[4] - 0.5).abs() < 1e-6 && out[9] == 1.0, "attack");
+        assert!((out[14] - 0.75).abs() < 1e-6 && out[19] == 0.5, "decay");
+        assert!(out[20..].iter().all(|&x| x == 0.5), "sustain point holds");
+        env.release(Some(&flex));
+        env.render(&mut out[..30], Some(&flex), rate);
+        // Convex release: more than halfway down after a quarter of its time.
+        assert!(out[4] < 0.25, "{}", out[4]);
+        assert_eq!(out[19], 0.0);
+        assert!(env.done());
+
+        // Released before the sustain point: straight to the release segment.
+        let mut env = Envelope::flex();
+        env.render(&mut out[..5], Some(&flex), rate);
+        env.release(Some(&flex));
+        env.render(&mut out[..30], Some(&flex), rate);
+        assert!(out[0] < 0.5 && env.done());
     }
 }

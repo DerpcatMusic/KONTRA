@@ -747,6 +747,7 @@ fn inspect_mods(path: &Path) -> Result<serde_json::Value> {
                 "voice_group": group.voice_group,
                 "interp_quality": group.interp_quality,
                 "volume_env": group.volume_env,
+                "flex_env": group.flex_env,
                 "velocity_to_volume": group.velocity_to_volume(),
                 "pitch_bend_range": group.pitch_bend_range(),
                 "cc_volume": group.cc_volume().map(|(cc, _)| cc),
