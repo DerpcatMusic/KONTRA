@@ -25,7 +25,7 @@ pub use engine::{
     VoicePar,
 };
 pub use inventory::requirements;
-pub use runtime::{MAX_SLOTS, Persisted, Runtime};
+pub use runtime::{MAX_SLOTS, Persisted, Runtime, settle_persistence};
 
 use anyhow::Result;
 use serde::Serialize;

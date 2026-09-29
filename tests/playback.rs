@@ -6,12 +6,11 @@ use kontakto::{
     },
     fx,
     import::{Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Resolver, VoiceLimit, Zone},
-    ksp::{Runtime, Value},
+    ksp::{Runtime, Value, settle_persistence},
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 type Frame = [f32; 2];
 
@@ -1000,25 +999,27 @@ fn effects_process_the_output_and_tails_outlive_the_voices() {
 /// handoff and playback can prove they stay allocation-free.
 struct CountingAlloc;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
 thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
+    // Per thread, so tests running in parallel do not count each other.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn count() {
+    if COUNTING.with(Cell::get) {
+        ALLOCATIONS.with(|n| n.set(n.get() + 1));
+    }
 }
 
 // SAFETY: forwards every call unchanged to the system allocator.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.with(Cell::get) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        }
+        count();
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if COUNTING.with(Cell::get) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        }
+        count();
         unsafe { System.dealloc(ptr, layout) }
     }
 }
@@ -1028,11 +1029,11 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 
 /// Allocations and frees `f` makes on this thread.
 fn allocations(f: impl FnOnce()) -> usize {
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = ALLOCATIONS.with(Cell::get);
     COUNTING.with(|c| c.set(true));
     f();
     COUNTING.with(|c| c.set(false));
-    ALLOCATIONS.load(Ordering::Relaxed) - before
+    ALLOCATIONS.with(Cell::get) - before
 }
 
 // Runtimes are built on the loader thread and handed to the audio thread.
@@ -1160,4 +1161,41 @@ fn script_handoff_and_playback_do_not_allocate() {
     );
     assert!(left.iter().any(|x| *x != 0.0));
     assert_eq!(snapshot[0]["$count"], Value::Int(4));
+}
+
+#[test]
+fn steady_scripted_playback_with_diagnostics_does_not_allocate() {
+    // After a warm-up note sizes the string buffers, every note runs a native
+    // scan, builds an 80-byte persistent string and, from the first counted
+    // note on, faults (out of bounds) and notes a diagnostic (note 200).
+    let script = "on init\ndeclare %a[4]\ndeclare %seen[128]\ndeclare $i\ndeclare $n\ndeclare @log\nmake_persistent(@log)\nend on\non note\nif ($EVENT_NOTE > 60)\n%a[$EVENT_NOTE] := 1\nplay_note(200, 100, 0, -1)\nend if\n$i := 0\nwhile ($i < 128)\nif (%seen[$i] = $EVENT_NOTE)\ninc($n)\nend if\ninc($i)\nend while\n%seen[$EVENT_NOTE] := $EVENT_NOTE\n@log := \"0123456789012345678901234567890123456789\" & \"0123456789012345678901234567890123456789\"\nend on";
+    let rt = runtime(script);
+    let mut snapshot = rt.as_ref().unwrap().persistence();
+    let mut e = engine_with(layered(two_groups().groups, &[0.1, 0.2]));
+    assert!(e.set_script(rt).is_none());
+    let (mut left, mut right) = (vec![0.0; 512], vec![0.0; 512]);
+    let mut play = |e: &mut Engine, note| {
+        e.note_on(0, note, 100);
+        e.render(&mut left, &mut right);
+        e.note_off(0, note);
+        e.render(&mut left, &mut right);
+    };
+    play(&mut e, 60);
+    assert!(e.script().unwrap().diagnostics().is_empty());
+    let count = allocations(|| {
+        for note in 61..69 {
+            play(&mut e, note);
+        }
+        e.script().unwrap().refresh_persistence(&mut snapshot);
+    });
+    assert_eq!(count, 0, "the audio thread allocated");
+    let diagnostics = e.script().unwrap().diagnostics().join("\n");
+    assert!(diagnostics.contains("out of bounds"), "{diagnostics}");
+    assert!(diagnostics.contains("play_note"), "{diagnostics}");
+    // The string outgrew its snapshot buffer: cut, reported, whole once regrown.
+    assert!(!settle_persistence(&mut snapshot));
+    e.script().unwrap().refresh_persistence(&mut snapshot);
+    assert!(settle_persistence(&mut snapshot));
+    let whole = "0123456789012345678901234567890123456789".repeat(2);
+    assert_eq!(snapshot[0]["@log"], Value::Text(whole));
 }

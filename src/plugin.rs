@@ -168,9 +168,10 @@ impl BackgroundTask for Load {
             let _=params.shared.ready.force_push((slot,params.shared.generation[slot].load(Ordering::Acquire),Handoff::Fx(fx)));
         }
         // Save script values the audio thread reported, then lend the buffers out again.
-        while let Some((slot,epoch,snapshot))=params.shared.snapshots.pop() {
+        while let Some((slot,epoch,mut snapshot))=params.shared.snapshots.pop() {
             let mut view=params.shared.view.lock().unwrap();let v=&mut view.parts[slot];
             if epoch==0 || epoch!=v.script_epoch {continue;}
+            if !crate::ksp::settle_persistence(&mut snapshot) {v.snapshot=Some(snapshot);continue;}
             let json=serde_json::to_string(&*snapshot).unwrap_or_default();v.snapshot=Some(snapshot);
             if json==v.script_state {continue;}
             let path=v.instrument.as_ref().map(|i|i.path.clone());let program=v.program;v.script_state=json.clone();drop(view);
