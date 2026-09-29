@@ -98,6 +98,8 @@ pub struct Thread {
     pub generation: u32,
     pub live: bool,
     pub waiting: bool,
+    /// Instructions run since the callback started or last waited.
+    pub spent: u64,
     pub calls: [u32; MAX_CALL_DEPTH],
     pub ctx: Ctx,
 }
@@ -110,6 +112,7 @@ impl Default for Thread {
             generation: 0,
             live: false,
             waiting: false,
+            spent: 0,
             calls: [0; MAX_CALL_DEPTH],
             ctx: Ctx::new(0, Kind::Cb(Callback::Init)),
         }
@@ -283,7 +286,11 @@ fn element(m: &Machine, v: VarId, index: i32) -> Exec<usize> {
 }
 
 fn finite(x: f64) -> Exec<f64> {
-    if x.is_finite() { Ok(x) } else { Err(Fault("Nonfinite real result")) }
+    if x.is_finite() {
+        Ok(x)
+    } else {
+        Err(Fault("Nonfinite real result"))
+    }
 }
 
 /// Run until the callback finishes, suspends, faults or exhausts `fuel`.
@@ -300,10 +307,9 @@ pub fn exec(m: &mut Machine, fuel: &mut u64) -> Exec<Yield> {
 fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
     let code = &m.prog.code;
     loop {
-        if *fuel == 0 {
-            return Ok(Yield::OutOfFuel);
-        }
-        *fuel -= 1;
+        // Fuel is only checked at loop back-edges and calls: those are statement
+        // boundaries, so a preempted thread never leaves operands on the shared stacks.
+        *fuel = fuel.saturating_sub(1);
         let op = code[*pc];
         *pc += 1;
         let s = &mut *m.stk;
@@ -467,7 +473,13 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                     return Err(Fault("KSP string length limit"));
                 }
             }
-            Op::Jump(t) => *pc = t as usize,
+            Op::Jump(t) => {
+                let back = (t as usize) < *pc;
+                *pc = t as usize;
+                if back && *fuel == 0 {
+                    return Ok(Yield::OutOfFuel);
+                }
+            }
             Op::JumpIfZero(t) => {
                 if s.int() == 0 {
                     *pc = t as usize;
@@ -488,6 +500,10 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 }
             }
             Op::Call(f) => {
+                if *fuel == 0 {
+                    *pc -= 1;
+                    return Ok(Yield::OutOfFuel);
+                }
                 let depth = m.t.depth as usize;
                 if depth >= MAX_CALL_DEPTH {
                     return Err(Fault("KSP call nesting limit"));
@@ -594,7 +610,10 @@ fn declare(m: &mut Machine, v: VarId) -> Exec<()> {
     ints[..ints_used].reverse();
     if first {
         let kind = var.ui.as_deref().unwrap_or_default();
-        m.slot.ui.add_control(v, kind, &ints[..ints_used]).map_err(Fault)?;
+        m.slot
+            .ui
+            .add_control(v, kind, &ints[..ints_used])
+            .map_err(Fault)?;
     }
     Ok(())
 }

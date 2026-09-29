@@ -123,7 +123,13 @@ pub struct Parser<'a> {
 
 /// Split into top-level blocks, parsing each body on its own.
 pub fn parse(t: &Tokens) -> Result<Vec<Block>> {
-    let mut p = Parser { toks: &t.toks, lines: &t.lines, reals: &t.reals, pos: 0, end: t.toks.len() };
+    let mut p = Parser {
+        toks: &t.toks,
+        lines: &t.lines,
+        reals: &t.reals,
+        pos: 0,
+        end: t.toks.len(),
+    };
     let mut blocks = Vec::new();
     loop {
         p.skip_newlines();
@@ -140,7 +146,9 @@ pub fn parse(t: &Tokens) -> Result<Vec<Block>> {
             bail!("Expected callback or function name at line {line}")
         };
         let arg = if !function && p.eat(Punct::LParen) {
-            let Tok::Var(v) = p.next() else { bail!("Expected ui_control variable at line {line}") };
+            let Tok::Var(v) = p.next() else {
+                bail!("Expected ui_control variable at line {line}")
+            };
             p.need(Punct::RParen)?;
             Some(v)
         } else {
@@ -160,16 +168,32 @@ pub fn parse(t: &Tokens) -> Result<Vec<Block>> {
                 _ => end += 1,
             }
         }
-        let mut body_parser = Parser { toks: p.toks, lines: p.lines, reals: p.reals, pos: start, end };
+        let mut body_parser = Parser {
+            toks: p.toks,
+            lines: p.lines,
+            reals: p.reals,
+            pos: start,
+            end,
+        };
         let body = body_parser.body().map_err(|e| format!("{e:#}"));
-        blocks.push(Block { line, function, name, arg, body });
+        blocks.push(Block {
+            line,
+            function,
+            name,
+            arg,
+            body,
+        });
         p.pos = end + 2;
     }
 }
 
 impl Parser<'_> {
     fn peek(&self) -> Tok {
-        if self.pos < self.end { self.toks[self.pos] } else { Tok::Eof }
+        if self.pos < self.end {
+            self.toks[self.pos]
+        } else {
+            Tok::Eof
+        }
     }
 
     fn line(&self) -> u32 {
@@ -201,7 +225,12 @@ impl Parser<'_> {
     }
 
     fn need(&mut self, p: Punct) -> Result<()> {
-        ensure!(self.eat(p), "Expected {p:?}, found {:?} at line {}", self.peek(), self.line());
+        ensure!(
+            self.eat(p),
+            "Expected {p:?}, found {:?} at line {}",
+            self.peek(),
+            self.line()
+        );
         Ok(())
     }
 
@@ -229,16 +258,27 @@ impl Parser<'_> {
 
     fn body(&mut self) -> Result<Vec<Stmt>> {
         let body = self.block(0)?;
-        ensure!(self.peek() == Tok::Eof, "Unexpected block terminator at line {}", self.line());
+        ensure!(
+            self.peek() == Tok::Eof,
+            "Unexpected block terminator at line {}",
+            self.line()
+        );
         Ok(body)
     }
 
     fn at_block_end(&self) -> bool {
-        matches!(self.peek(), Tok::Eof | Tok::Ident(kw::END | kw::ELSE | kw::CASE))
+        matches!(
+            self.peek(),
+            Tok::Eof | Tok::Ident(kw::END | kw::ELSE | kw::CASE)
+        )
     }
 
     fn block(&mut self, depth: usize) -> Result<Vec<Stmt>> {
-        ensure!(depth < MAX_DEPTH, "Statement nesting limit at line {}", self.line());
+        ensure!(
+            depth < MAX_DEPTH,
+            "Statement nesting limit at line {}",
+            self.line()
+        );
         let mut out = Vec::new();
         self.skip_newlines();
         while !self.at_block_end() {
@@ -267,14 +307,20 @@ impl Parser<'_> {
                     Vec::new()
                 };
                 self.close(kw::IF, "end if")?;
-                return Ok(Stmt { line, kind: StmtKind::If(cond, yes, no) });
+                return Ok(Stmt {
+                    line,
+                    kind: StmtKind::If(cond, yes, no),
+                });
             }
             Tok::Ident(kw::WHILE) => {
                 let cond = self.expr(0, 0)?;
                 self.end_of_statement()?;
                 let body = self.block(depth + 1)?;
                 self.close(kw::WHILE, "end while")?;
-                return Ok(Stmt { line, kind: StmtKind::While(cond, body) });
+                return Ok(Stmt {
+                    line,
+                    kind: StmtKind::While(cond, body),
+                });
             }
             Tok::Ident(kw::SELECT) => {
                 let value = self.expr(0, 0)?;
@@ -283,17 +329,31 @@ impl Parser<'_> {
                 while self.eat_kw(kw::CASE) {
                     let line = self.line();
                     let low = self.expr(0, 0)?;
-                    let high = if self.eat_kw(kw::TO) { Some(self.expr(0, 0)?) } else { None };
+                    let high = if self.eat_kw(kw::TO) {
+                        Some(self.expr(0, 0)?)
+                    } else {
+                        None
+                    };
                     self.end_of_statement()?;
                     let body = self.block(depth + 1)?;
-                    cases.push(Case { line, low, high, body });
+                    cases.push(Case {
+                        line,
+                        low,
+                        high,
+                        body,
+                    });
                 }
                 self.close(kw::SELECT, "end select")?;
-                return Ok(Stmt { line, kind: StmtKind::Select(value, cases) });
+                return Ok(Stmt {
+                    line,
+                    kind: StmtKind::Select(value, cases),
+                });
             }
             Tok::Ident(kw::DECLARE) => StmtKind::Declare(Box::new(self.declare()?)),
             Tok::Ident(kw::CALL) => {
-                let Tok::Ident(name) = self.next() else { bail!("Expected function name at line {line}") };
+                let Tok::Ident(name) = self.next() else {
+                    bail!("Expected function name at line {line}")
+                };
                 StmtKind::Call(name)
             }
             Tok::Var(name) => {
@@ -302,7 +362,11 @@ impl Parser<'_> {
                 StmtKind::Assign(Expr::Var(name, index), self.expr(0, 0)?)
             }
             Tok::Ident(name) => {
-                let args = if self.eat(Punct::LParen) { self.args(0)? } else { Vec::new() };
+                let args = if self.eat(Punct::LParen) {
+                    self.args(0)?
+                } else {
+                    Vec::new()
+                };
                 StmtKind::Command(name, args)
             }
             t => bail!("Unexpected token {t:?} at line {line}"),
@@ -319,14 +383,20 @@ impl Parser<'_> {
                 Tok::Ident(kw::POLYPHONIC) => d.polyphonic = true,
                 Tok::Ident(kw::PERS | kw::INSTPERS) => d.persistent = true,
                 Tok::Ident(ui) => {
-                    ensure!(d.ui.is_none(), "Unexpected declaration keyword at line {}", self.line());
+                    ensure!(
+                        d.ui.is_none(),
+                        "Unexpected declaration keyword at line {}",
+                        self.line()
+                    );
                     d.ui = Some(ui);
                 }
                 _ => break,
             }
             self.pos += 1;
         }
-        let Tok::Var(name) = self.next() else { bail!("Expected variable name at line {}", self.line()) };
+        let Tok::Var(name) = self.next() else {
+            bail!("Expected variable name at line {}", self.line())
+        };
         d.name = name;
         d.size = self.index()?.map(|e| *e);
         if self.eat(Punct::LParen) {
@@ -393,7 +463,11 @@ impl Parser<'_> {
     }
 
     pub fn expr(&mut self, min: u8, depth: usize) -> Result<Expr> {
-        ensure!(depth < MAX_DEPTH, "Expression nesting limit at line {}", self.line());
+        ensure!(
+            depth < MAX_DEPTH,
+            "Expression nesting limit at line {}",
+            self.line()
+        );
         let line = self.line();
         let mut lhs = match self.next() {
             Tok::Punct(Punct::LParen) => {
@@ -407,8 +481,12 @@ impl Parser<'_> {
                 e => Expr::Unary(UnOp::Neg, Box::new(e)),
             },
             Tok::Punct(Punct::Plus) => self.expr(UNARY_BP, depth + 1)?,
-            Tok::Punct(Punct::BitNot) => Expr::Unary(UnOp::BitNot, Box::new(self.expr(UNARY_BP, depth + 1)?)),
-            Tok::Ident(kw::NOT) => Expr::Unary(UnOp::Not, Box::new(self.expr(NOT_OPERAND_BP, depth + 1)?)),
+            Tok::Punct(Punct::BitNot) => {
+                Expr::Unary(UnOp::BitNot, Box::new(self.expr(UNARY_BP, depth + 1)?))
+            }
+            Tok::Ident(kw::NOT) => {
+                Expr::Unary(UnOp::Not, Box::new(self.expr(NOT_OPERAND_BP, depth + 1)?))
+            }
             Tok::Int(n) => Expr::Int(n),
             Tok::Real(i) => Expr::Real(self.reals[i as usize]),
             Tok::Str(s) => Expr::Str(s),
@@ -420,13 +498,21 @@ impl Parser<'_> {
             Tok::Ident(name) => Expr::Ident(name),
             t => bail!("Unexpected token {t:?} in expression at line {line}"),
         };
+        // Left-associative chains deepen the tree too; bound them like nesting.
+        let mut depth = depth;
         while let Some(op) = self.binop() {
             let bp = op.binding_power();
             if bp < min {
                 break;
             }
+            depth += 1;
+            ensure!(
+                depth < MAX_DEPTH,
+                "Expression nesting limit at line {}",
+                self.line()
+            );
             self.pos += 1;
-            let rhs = self.expr(bp + 1, depth + 1)?;
+            let rhs = self.expr(bp + 1, depth)?;
             lhs = Expr::Binary(op, Box::new(lhs), Box::new(rhs));
         }
         Ok(lhs)
@@ -440,13 +526,20 @@ mod tests {
 
     #[test]
     fn blocks_fail_independently() {
-        let t = lex("on init\n$a := 1 + 2 * 3\nend on\non note\n$a := (\nend on\nfunction f\nend function").unwrap();
+        let t = lex(
+            "on init\n$a := 1 + 2 * 3\nend on\non note\n$a := (\nend on\nfunction f\nend function",
+        )
+        .unwrap();
         let blocks = parse(&t).unwrap();
         assert_eq!(blocks.len(), 3);
         assert!(blocks[0].body.is_ok());
         assert!(blocks[1].body.is_err());
-        let Ok(body) = &blocks[0].body else { unreachable!() };
-        let StmtKind::Assign(_, Expr::Binary(BinOp::Add, _, rhs)) = &body[0].kind else { panic!() };
+        let Ok(body) = &blocks[0].body else {
+            unreachable!()
+        };
+        let StmtKind::Assign(_, Expr::Binary(BinOp::Add, _, rhs)) = &body[0].kind else {
+            panic!()
+        };
         assert!(matches!(**rhs, Expr::Binary(BinOp::Mul, ..)));
         assert!(parse(&lex("on init\n").unwrap()).is_err());
         assert!(parse(&lex("on init\nend on\non note\non release\nend on").unwrap()).is_err());

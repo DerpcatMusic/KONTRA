@@ -19,7 +19,10 @@ mod vm;
 #[cfg(test)]
 mod tests;
 
-pub use engine::{EngineCall, EnginePar, Fade, GroupMask, KspEngine, LogEngine, NoteLength, NoteSpec, VoiceId, VoicePar};
+pub use engine::{
+    EngineCall, EnginePar, Fade, GroupMask, KspEngine, LogEngine, NoteLength, NoteSpec, VoiceId,
+    VoicePar,
+};
 pub use inventory::requirements;
 pub use runtime::{MAX_SLOTS, Persisted, Runtime};
 
@@ -95,7 +98,12 @@ pub fn initialize(source: &str, groups: usize, outputs: usize) -> Result<Interfa
 
 /// Compile one script and run `on init`. Shared host state is committed only if
 /// the whole initialization succeeds.
-pub fn initialize_with_host(source: &str, groups: usize, outputs: usize, host: &mut HostState) -> Result<Interface> {
+pub fn initialize_with_host(
+    source: &str,
+    groups: usize,
+    outputs: usize,
+    host: &mut HostState,
+) -> Result<Interface> {
     let mut engine = LogEngine::new(vec![String::new(); groups], 48_000.0);
     let mut rt = Runtime::new(host.clone(), outputs, Vec::new());
     rt.load(&mut engine, source)?;
@@ -106,7 +114,8 @@ pub fn initialize_with_host(source: &str, groups: usize, outputs: usize, host: &
 }
 
 pub fn inspect(source: &str, groups: usize, host: &mut HostState) -> serde_json::Value {
-    let requirements = requirements(source).unwrap_or_else(|e| serde_json::json!({"inventory_error": format!("{e:#}")}));
+    let requirements = requirements(source)
+        .unwrap_or_else(|e| serde_json::json!({"inventory_error": format!("{e:#}")}));
     let initialization = match initialize_with_host(source, groups, 8, host) {
         Ok(ui) => serde_json::json!({
             "controls": ui.controls.len(),

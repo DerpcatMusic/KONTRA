@@ -56,7 +56,11 @@ impl ControlState {
     }
 
     pub fn str_mut(&mut self, par: i32) -> &mut String {
-        let i = match self.props.iter().position(|(p, v)| *p == par && matches!(v, Prop::Str(_))) {
+        let i = match self
+            .props
+            .iter()
+            .position(|(p, v)| *p == par && matches!(v, Prop::Str(_)))
+        {
             Some(i) => i,
             None => {
                 self.props.retain(|(p, _)| *p != par);
@@ -64,7 +68,9 @@ impl ControlState {
                 self.props.len() - 1
             }
         };
-        let Prop::Str(s) = &mut self.props[i].1 else { unreachable!() };
+        let Prop::Str(s) = &mut self.props[i].1 else {
+            unreachable!()
+        };
         s
     }
 }
@@ -115,18 +121,32 @@ impl Ui {
         true
     }
 
-    pub fn add_control(&mut self, v: VarId, kind: &str, params: &[i32]) -> Result<(), &'static str> {
+    pub fn add_control(
+        &mut self,
+        v: VarId,
+        kind: &str,
+        params: &[i32],
+    ) -> Result<(), &'static str> {
         if self.controls.len() >= MAX_CONTROLS {
             return Err("KSP control limit");
         }
-        let mut c = ControlState { var: v, props: Vec::with_capacity(8), menu: Vec::new() };
+        let mut c = ControlState {
+            var: v,
+            props: Vec::with_capacity(8),
+            menu: Vec::new(),
+        };
         c.set_int(b::CONTROL_PAR_POS_X, 0);
         c.set_int(b::CONTROL_PAR_POS_Y, 0);
         c.set_int(b::CONTROL_PAR_WIDTH, 85);
-        c.set_int(b::CONTROL_PAR_HEIGHT, if kind == "ui_knob" { 40 } else { 18 });
+        c.set_int(
+            b::CONTROL_PAR_HEIGHT,
+            if kind == "ui_knob" { 40 } else { 18 },
+        );
         c.set_int(b::CONTROL_PAR_HIDE, 0);
         if matches!(kind, "ui_knob" | "ui_slider" | "ui_value_edit") {
-            let [min, max, ..] = params else { return Err("Control range missing") };
+            let [min, max, ..] = params else {
+                return Err("Control range missing");
+            };
             c.set_int(b::CONTROL_PAR_MIN_VALUE, *min);
             c.set_int(b::CONTROL_PAR_MAX_VALUE, *max);
         }
@@ -139,7 +159,10 @@ impl Ui {
     /// Control index for a Kontakt UI ID.
     pub fn control(&self, id: i32) -> Option<usize> {
         let i = usize::try_from(id.checked_sub(FIRST_UI_ID)?).ok()?;
-        self.id_controls.get(i).filter(|&&c| c != NO_CONTROL).map(|&c| c as usize)
+        self.id_controls
+            .get(i)
+            .filter(|&&c| c != NO_CONTROL)
+            .map(|&c| c as usize)
     }
 
     /// Control index for a UI variable.
@@ -155,7 +178,9 @@ impl Ui {
                 let var = &prog.vars[c.var as usize];
                 let mut properties = BTreeMap::new();
                 for (par, v) in &c.props {
-                    let name = prog.symbol_name(*par).map_or_else(|| format!("#{par}"), str::to_owned);
+                    let name = prog
+                        .symbol_name(*par)
+                        .map_or_else(|| format!("#{par}"), str::to_owned);
                     let value = match v {
                         Prop::Int(n) => Value::Int(*n),
                         Prop::Str(s) => Value::Text(s.clone()),
@@ -167,26 +192,47 @@ impl Ui {
                     (Ty::Int, None) => Value::Int(mem.ints[slot]),
                     (Ty::Real, None) => Value::Real(mem.reals[slot]),
                     (Ty::Str, None) => Value::Text(mem.strs[slot].clone()),
-                    (Ty::Int, Some(n)) => Value::Array(mem.ints[slot..slot + n as usize].iter().map(|&x| Value::Int(x)).collect()),
-                    (Ty::Real, Some(n)) => {
-                        Value::Array(mem.reals[slot..slot + n as usize].iter().map(|&x| Value::Real(x)).collect())
-                    }
-                    (Ty::Str, Some(n)) => {
-                        Value::Array(mem.strs[slot..slot + n as usize].iter().map(|x| Value::Text(x.clone())).collect())
-                    }
+                    (Ty::Int, Some(n)) => Value::Array(
+                        mem.ints[slot..slot + n as usize]
+                            .iter()
+                            .map(|&x| Value::Int(x))
+                            .collect(),
+                    ),
+                    (Ty::Real, Some(n)) => Value::Array(
+                        mem.reals[slot..slot + n as usize]
+                            .iter()
+                            .map(|&x| Value::Real(x))
+                            .collect(),
+                    ),
+                    (Ty::Str, Some(n)) => Value::Array(
+                        mem.strs[slot..slot + n as usize]
+                            .iter()
+                            .map(|x| Value::Text(x.clone()))
+                            .collect(),
+                    ),
                 };
                 properties.insert("$CONTROL_PAR_VALUE".into(), value);
                 Control {
                     variable: var.name.to_string(),
                     kind: var.ui.as_deref().unwrap_or_default().to_owned(),
                     properties,
-                    menu: c.menu.iter().filter(|m| m.visible).map(|m| (m.text.clone(), m.value)).collect(),
+                    menu: c
+                        .menu
+                        .iter()
+                        .filter(|m| m.visible)
+                        .map(|m| (m.text.clone(), m.value))
+                        .collect(),
                 }
             })
             .collect();
-        let mut diagnostics: BTreeSet<String> = self.diagnostics.iter().map(|d| d.to_string()).collect();
+        let mut diagnostics: BTreeSet<String> =
+            self.diagnostics.iter().map(|d| d.to_string()).collect();
         diagnostics.extend(prog.diagnostics.iter().cloned());
-        diagnostics.extend(prog.errors.iter().map(|e| format!("Callback disabled: {e}")));
+        diagnostics.extend(
+            prog.errors
+                .iter()
+                .map(|e| format!("Callback disabled: {e}")),
+        );
         Interface {
             performance: self.performance,
             width: self.width,
@@ -195,7 +241,11 @@ impl Ui {
             wallpaper: self.wallpaper.clone(),
             controls,
             diagnostics,
-            listeners: self.listeners.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect(),
+            listeners: self
+                .listeners
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), *v))
+                .collect(),
         }
     }
 }

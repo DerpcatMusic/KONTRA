@@ -174,7 +174,8 @@ pub fn lex(source: &str) -> Result<Tokens> {
                     bail!("Unterminated KSP comment at line {line}")
                 };
                 let newlines = s[i..i + len].iter().filter(|&&c| c == b'\n').count() as u32;
-                if newlines > 0 && !continued && out.toks.last().is_some_and(|t| *t != Tok::Newline) {
+                if newlines > 0 && !continued && out.toks.last().is_some_and(|t| *t != Tok::Newline)
+                {
                     push(&mut out, Tok::Newline, line);
                 }
                 line += newlines;
@@ -184,7 +185,10 @@ pub fn lex(source: &str) -> Result<Tokens> {
                 let Some(len) = s[i + 1..].iter().position(|&c| c == b'"' || c == b'\n') else {
                     bail!("Unterminated KSP string at line {line}")
                 };
-                ensure!(s[i + 1 + len] == b'"', "Unterminated KSP string at line {line}");
+                ensure!(
+                    s[i + 1 + len] == b'"',
+                    "Unterminated KSP string at line {line}"
+                );
                 let sym = out.syms.intern(&source[i + 1..i + 1 + len]);
                 push(&mut out, Tok::Str(sym), line);
                 i += len + 2;
@@ -240,10 +244,7 @@ pub fn lex(source: &str) -> Result<Tokens> {
                     let n = if let Some(hex) = digits.strip_suffix(['h', 'H']) {
                         u32::from_str_radix(hex, 16).ok().map(|n| n as i32)
                     } else {
-                        digits
-                            .parse::<u32>()
-                            .ok()
-                            .map(|n| n as i32)
+                        digits.parse::<u32>().ok().map(|n| n as i32)
                     };
                     let Some(n) = n else {
                         bail!("Invalid integer literal {digits} at line {line}")
@@ -251,7 +252,9 @@ pub fn lex(source: &str) -> Result<Tokens> {
                     push(&mut out, Tok::Int(n), line);
                 }
             }
-            b'$' | b'%' | b'@' | b'~' | b'?' | b'!' if s.get(i + 1).is_some_and(|&c| ident_byte(c)) => {
+            b'$' | b'%' | b'@' | b'~' | b'?' | b'!'
+                if s.get(i + 1).is_some_and(|&c| ident_byte(c)) =>
+            {
                 i += 1;
                 while i < s.len() && ident_byte(s[i]) {
                     i += 1;
@@ -314,7 +317,10 @@ mod tests {
         assert_eq!(t.toks[0], Tok::Ident(kw::IF));
         assert_eq!(t.toks[4], Tok::Int(255));
         assert_eq!(t.reals, [150.0]);
-        assert!(kinds.iter().filter(|k| *k == "Newline").count() == 2, "{kinds:?}");
+        assert!(
+            kinds.iter().filter(|k| *k == "Newline").count() == 2,
+            "{kinds:?}"
+        );
         assert!(matches!(t.toks[t.toks.len() - 3], Tok::Punct(Punct::Ne)));
         assert!(lex("\"open").is_err());
         assert!(lex("{ open").is_err());

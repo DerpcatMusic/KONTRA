@@ -299,16 +299,27 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
         .position(|b| !b.function && c.name(b.name) == "init")
         .context("No KSP init callback")?;
     ensure!(
-        blocks.iter().filter(|b| !b.function && c.name(b.name) == "init").count() == 1,
+        blocks
+            .iter()
+            .filter(|b| !b.function && c.name(b.name) == "init")
+            .count()
+            == 1,
         "Duplicate init callback"
     );
     for b in blocks.iter().filter(|b| b.function) {
         let id = c.fn_ids.len() as u32;
-        ensure!(c.fn_ids.insert(b.name, id).is_none(), "Duplicate KSP function {}", c.name(b.name));
+        ensure!(
+            c.fn_ids.insert(b.name, id).is_none(),
+            "Duplicate KSP function {}",
+            c.name(b.name)
+        );
     }
     c.p.functions = vec![u32::MAX; c.fn_ids.len()];
     // Declarations first, so every body sees every variable regardless of order.
-    let init_body = blocks[init].body.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let init_body = blocks[init]
+        .body
+        .as_ref()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     c.declare_all(init_body)?;
     for b in blocks.iter().filter(|b| b.function) {
         if let Ok(body) = &b.body {
@@ -335,7 +346,11 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
             }
             let failed = units[u].1.calls.iter().find_map(|f| {
                 let callee = &units[fn_unit[f]];
-                callee.1.error.as_ref().map(|e| (blocks[callee.0].name, e.clone()))
+                callee
+                    .1
+                    .error
+                    .as_ref()
+                    .map(|e| (blocks[callee.0].name, e.clone()))
             });
             if let Some((name, e)) = failed {
                 units[u].1.error = Some(format!("Function {}: {e}", c.name(name)));
@@ -353,7 +368,11 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
                 bail!("{e}");
             }
             if !block.function {
-                c.p.errors.push(format!("on {} (line {}): {e}", c.name(block.name), block.line));
+                c.p.errors.push(format!(
+                    "on {} (line {}): {e}",
+                    c.name(block.name),
+                    block.line
+                ));
                 c.disable(block);
             }
         }
@@ -422,20 +441,38 @@ impl<'a> Compiler<'a> {
                 Ok(())
             }),
         };
-        Unit { calls: std::mem::take(&mut self.calls), error: result.err().map(|e| format!("{e:#}")) }
+        Unit {
+            calls: std::mem::take(&mut self.calls),
+            error: result.err().map(|e| format!("{e:#}")),
+        }
     }
 
     fn register(&mut self, block: &Block, entry: u32) -> Result<()> {
         let name = self.name(block.name);
         if name == "ui_control" {
             let arg = block.arg.context("ui_control callback without a control")?;
-            let v = *self.var_ids.get(&arg).with_context(|| format!("Unknown control {}", self.name(arg)))?;
-            ensure!(self.p.vars[v as usize].ui.is_some(), "{} is not a UI control", self.name(arg));
-            ensure!(self.p.ui_callbacks[v as usize].replace(entry).is_none(), "Duplicate ui_control callback");
+            let v = *self
+                .var_ids
+                .get(&arg)
+                .with_context(|| format!("Unknown control {}", self.name(arg)))?;
+            ensure!(
+                self.p.vars[v as usize].ui.is_some(),
+                "{} is not a UI control",
+                self.name(arg)
+            );
+            ensure!(
+                self.p.ui_callbacks[v as usize].replace(entry).is_none(),
+                "Duplicate ui_control callback"
+            );
         } else if let Some(cb) = Callback::from_name(name) {
-            ensure!(self.p.callbacks[cb as usize].replace(entry).is_none(), "Duplicate {name} callback");
+            ensure!(
+                self.p.callbacks[cb as usize].replace(entry).is_none(),
+                "Duplicate {name} callback"
+            );
         } else {
-            self.p.diagnostics.insert(format!("Callback on {name} is not dispatched"));
+            self.p
+                .diagnostics
+                .insert(format!("Callback on {name} is not dispatched"));
         }
         Ok(())
     }
@@ -446,7 +483,9 @@ impl<'a> Compiler<'a> {
         for s in body {
             self.line = s.line;
             match &s.kind {
-                StmtKind::Declare(d) => self.declare(d).with_context(|| format!("KSP line {}", s.line))?,
+                StmtKind::Declare(d) => self
+                    .declare(d)
+                    .with_context(|| format!("KSP line {}", s.line))?,
                 StmtKind::If(_, a, b) => {
                     self.declare_all(a)?;
                     self.declare_all(b)?;
@@ -465,16 +504,30 @@ impl<'a> Compiler<'a> {
 
     fn declare(&mut self, d: &Declare) -> Result<()> {
         let name = self.name(d.name);
-        ensure!(!self.var_ids.contains_key(&d.name), "Duplicate variable {name}");
+        ensure!(
+            !self.var_ids.contains_key(&d.name),
+            "Duplicate variable {name}"
+        );
         ensure!(self.p.vars.len() < MAX_VARS, "KSP variable limit");
         let ty = Ty::of(name);
         let array = name.starts_with(['%', '?', '!']);
-        ensure!(array == d.size.is_some(), "Array syntax does not match variable type of {name}");
+        ensure!(
+            array == d.size.is_some(),
+            "Array syntax does not match variable type of {name}"
+        );
         let len = match &d.size {
             Some(size) => {
-                let Some(Const::Int(n)) = self.fold(size) else { bail!("Array size of {name} must be a constant integer") };
-                let n = u32::try_from(n).ok().filter(|n| *n <= MAX_ARRAY_LEN).context("KSP array memory limit")?;
-                ensure!(self.elements + n <= MAX_TOTAL_ELEMENTS, "KSP array memory limit");
+                let Some(Const::Int(n)) = self.fold(size) else {
+                    bail!("Array size of {name} must be a constant integer")
+                };
+                let n = u32::try_from(n)
+                    .ok()
+                    .filter(|n| *n <= MAX_ARRAY_LEN)
+                    .context("KSP array memory limit")?;
+                ensure!(
+                    self.elements + n <= MAX_TOTAL_ELEMENTS,
+                    "KSP array memory limit"
+                );
                 self.elements += n;
                 Some(n)
             }
@@ -492,10 +545,22 @@ impl<'a> Compiler<'a> {
             self.name(d.ui.unwrap_or_default())
         );
         let poly = d.polyphonic;
-        ensure!(!poly || (ty == Ty::Int && !array), "Only integer scalars can be polyphonic: {name}");
+        ensure!(
+            !poly || (ty == Ty::Int && !array),
+            "Only integer scalars can be polyphonic: {name}"
+        );
         let slot = self.alloc(ty, poly, len.unwrap_or(1));
         let id = self.p.vars.len() as VarId;
-        self.p.vars.push(Var { name: name.into(), ty, len, slot, poly, constant, ui, params: Box::new([]) });
+        self.p.vars.push(Var {
+            name: name.into(),
+            ty,
+            len,
+            slot,
+            poly,
+            constant,
+            ui,
+            params: Box::new([]),
+        });
         self.p.ui_callbacks.push(None);
         self.var_ids.insert(d.name, id);
         Ok(())
@@ -603,11 +668,15 @@ impl<'a> Compiler<'a> {
                 let arg = |c: &mut Self, i: usize| args.get(i).and_then(|e| c.fold(e));
                 match (self.name(*name), args.len()) {
                     ("sh_left", 2) => match (arg(self, 0)?, arg(self, 1)?) {
-                        (Const::Int(a), Const::Int(b)) if (0..32).contains(&b) => Const::Int(a.wrapping_shl(b as u32)),
+                        (Const::Int(a), Const::Int(b)) if (0..32).contains(&b) => {
+                            Const::Int(a.wrapping_shl(b as u32))
+                        }
                         _ => return None,
                     },
                     ("sh_right", 2) => match (arg(self, 0)?, arg(self, 1)?) {
-                        (Const::Int(a), Const::Int(b)) if (0..32).contains(&b) => Const::Int(a >> b),
+                        (Const::Int(a), Const::Int(b)) if (0..32).contains(&b) => {
+                            Const::Int(a >> b)
+                        }
                         _ => return None,
                     },
                     ("int_to_real" | "real", 1) => match arg(self, 0)? {
@@ -633,7 +702,8 @@ impl<'a> Compiler<'a> {
     fn stmts(&mut self, body: &[Stmt]) -> Result<()> {
         for s in body {
             self.line = s.line;
-            self.stmt(s).with_context(|| format!("KSP line {}", s.line))?;
+            self.stmt(s)
+                .with_context(|| format!("KSP line {}", s.line))?;
         }
         Ok(())
     }
@@ -642,13 +712,17 @@ impl<'a> Compiler<'a> {
         match &s.kind {
             StmtKind::Declare(d) => self.declaration(d),
             StmtKind::Assign(target, value) => {
-                let Expr::Var(sym, index) = target else { unreachable!("parser produces variable targets") };
+                let Expr::Var(sym, index) = target else {
+                    unreachable!("parser produces variable targets")
+                };
                 self.assign(*sym, index.as_deref(), |c| c.expr(value))
             }
             StmtKind::Command(name, args) => match self.name(*name) {
                 "inc" | "dec" => {
                     let delta = if self.name(*name) == "inc" { 1 } else { -1 };
-                    let [Expr::Var(sym, index)] = args.as_slice() else { bail!("inc/dec requires one integer variable") };
+                    let [Expr::Var(sym, index)] = args.as_slice() else {
+                        bail!("inc/dec requires one integer variable")
+                    };
                     self.assign(*sym, index.as_deref(), |c| {
                         c.expr_ty(&args[0], Ty::Int)?;
                         c.emit(Op::PushI(delta));
@@ -690,7 +764,12 @@ impl<'a> Compiler<'a> {
                 for case in cases {
                     self.line = case.line;
                     let low = self.case_label(&case.low)?;
-                    let high = case.high.as_ref().map(|h| self.case_label(h)).transpose()?.unwrap_or(low);
+                    let high = case
+                        .high
+                        .as_ref()
+                        .map(|h| self.case_label(h))
+                        .transpose()?
+                        .unwrap_or(low);
                     ensure!(low <= high, "Reversed case range at line {}", case.line);
                     let arm = self.here();
                     self.p.cases.push(CaseArm { low, high, miss: 0 });
@@ -707,7 +786,10 @@ impl<'a> Compiler<'a> {
                 Ok(())
             }
             StmtKind::Call(name) => {
-                let f = *self.fn_ids.get(name).with_context(|| format!("Unknown function {}", self.name(*name)))?;
+                let f = *self
+                    .fn_ids
+                    .get(name)
+                    .with_context(|| format!("Unknown function {}", self.name(*name)))?;
                 self.calls.push(f);
                 self.emit(Op::Call(f));
                 Ok(())
@@ -756,7 +838,10 @@ impl<'a> Compiler<'a> {
             });
             return Ok(());
         };
-        ensure!(d.init.len() as u32 <= len.max(1), "Too many array initializers");
+        ensure!(
+            d.init.len() as u32 <= len.max(1),
+            "Too many array initializers"
+        );
         let folded: Option<Vec<Const>> = d.init.iter().map(|e| self.fold(e)).collect();
         let data = match (ty, folded) {
             (Ty::Int, Some(c)) => c
@@ -805,12 +890,25 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn assign(&mut self, sym: Sym, index: Option<&Expr>, value: impl FnOnce(&mut Self) -> Result<Ty>) -> Result<()> {
+    fn assign(
+        &mut self,
+        sym: Sym,
+        index: Option<&Expr>,
+        value: impl FnOnce(&mut Self) -> Result<Ty>,
+    ) -> Result<()> {
         let name = self.name(sym);
-        let v = self.var(sym).with_context(|| format!("Undeclared variable {name}"))?;
+        let v = self
+            .var(sym)
+            .with_context(|| format!("Undeclared variable {name}"))?;
         let (ty, slot, array, poly, constant) = {
             let var = &self.p.vars[v as usize];
-            (var.ty, var.slot, var.is_array(), var.poly, var.constant.is_some())
+            (
+                var.ty,
+                var.slot,
+                var.is_array(),
+                var.poly,
+                var.constant.is_some(),
+            )
         };
         ensure!(!constant, "Assignment to constant {name}");
         match (array, index) {
@@ -848,7 +946,9 @@ impl<'a> Compiler<'a> {
             (a, b) if a == b => {}
             (Ty::Int, Ty::Str) => self.emit(Op::IToS),
             (Ty::Real, Ty::Str) => self.emit(Op::RToS),
-            (Ty::Int, Ty::Real) | (Ty::Real, Ty::Int) => bail!("Expected {want:?}, found {got:?}; use int_to_real/real_to_int"),
+            (Ty::Int, Ty::Real) | (Ty::Real, Ty::Int) => {
+                bail!("Expected {want:?}, found {got:?}; use int_to_real/real_to_int")
+            }
             _ => bail!("Expected {want:?}, found {got:?}"),
         }
         Ok(())
@@ -879,7 +979,9 @@ impl<'a> Compiler<'a> {
             }
             Expr::Ident(sym) => bail!("Unexpected identifier {}", self.name(*sym)),
             Expr::Var(sym, index) => self.load(*sym, index.as_deref()),
-            Expr::Call(name, args) => self.call(*name, args, true)?.context("Function has no value"),
+            Expr::Call(name, args) => self
+                .call(*name, args, true)?
+                .context("Function has no value"),
             Expr::Unary(op, inner) => {
                 let ty = self.expr(inner)?;
                 match (op, ty) {
@@ -934,7 +1036,9 @@ impl<'a> Compiler<'a> {
             self.emit(Op::Sys(s));
             return Ok(Ty::Int);
         }
-        let n = self.named_constant(sym).with_context(|| format!("Undeclared variable {}", self.name(sym)))?;
+        let n = self
+            .named_constant(sym)
+            .with_context(|| format!("Undeclared variable {}", self.name(sym)))?;
         self.emit(Op::PushI(n));
         Ok(Ty::Int)
     }
@@ -980,7 +1084,11 @@ impl<'a> Compiler<'a> {
                 // Short-circuit: never faults on a guarded array index.
                 self.expr_ty(a, Ty::Int)?;
                 let short = self.here();
-                self.emit(if op == BinOp::And { Op::JumpIfZero(0) } else { Op::JumpIfNonZero(0) });
+                self.emit(if op == BinOp::And {
+                    Op::JumpIfZero(0)
+                } else {
+                    Op::JumpIfNonZero(0)
+                });
                 self.expr_ty(b, Ty::Int)?;
                 self.emit(Op::PushI(0));
                 self.emit(Op::INe);
@@ -1005,7 +1113,10 @@ impl<'a> Compiler<'a> {
         let ta = self.expr(a)?;
         let tb = self.expr(b)?;
         ensure!(ta == tb, "Mixed {ta:?}/{tb:?} operands; convert explicitly");
-        let compare = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
+        let compare = matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
+        );
         let result = if compare { Ty::Int } else { ta };
         match ta {
             Ty::Int => {
@@ -1055,7 +1166,9 @@ impl<'a> Compiler<'a> {
         let fname = self.name(name);
         match (fname, args) {
             ("get_ui_id", [Expr::Var(sym, None)]) => {
-                let v = self.var(*sym).with_context(|| format!("Undeclared variable {}", self.name(*sym)))?;
+                let v = self
+                    .var(*sym)
+                    .with_context(|| format!("Undeclared variable {}", self.name(*sym)))?;
                 self.emit(Op::UiId(v));
                 return Ok(Some(Ty::Int));
             }
@@ -1072,11 +1185,16 @@ impl<'a> Compiler<'a> {
             }
             _ => {}
         }
-        let b = Builtin::from_name(fname).with_context(|| format!("Unsupported KSP function: {fname}"))?;
+        let b = Builtin::from_name(fname)
+            .with_context(|| format!("Unsupported KSP function: {fname}"))?;
         let sig = b.sig();
         let max = sig.args.len();
         let min = max - sig.optional as usize;
-        ensure!((min..=max).contains(&args.len()), "{fname} expects {min}..{max} arguments, got {}", args.len());
+        ensure!(
+            (min..=max).contains(&args.len()),
+            "{fname} expects {min}..{max} arguments, got {}",
+            args.len()
+        );
         let mut num = None;
         for (e, kind) in args.iter().zip(sig.args) {
             match kind {
@@ -1086,26 +1204,43 @@ impl<'a> Compiler<'a> {
                 Arg::N => {
                     let ty = self.expr(e)?;
                     ensure!(ty != Ty::Str, "{fname} requires numbers");
-                    ensure!(num.is_none_or(|n| n == ty), "{fname} mixes integer and real arguments");
+                    ensure!(
+                        num.is_none_or(|n| n == ty),
+                        "{fname} mixes integer and real arguments"
+                    );
                     num = Some(ty);
                 }
                 Arg::V | Arg::A => {
-                    let Expr::Var(sym, None) = e else { bail!("{fname} requires a variable") };
-                    let v = self.var(*sym).with_context(|| format!("Undeclared variable {}", self.name(*sym)))?;
-                    ensure!(*kind == Arg::V || self.p.vars[v as usize].is_array(), "{fname} requires an array");
+                    let Expr::Var(sym, None) = e else {
+                        bail!("{fname} requires a variable")
+                    };
+                    let v = self
+                        .var(*sym)
+                        .with_context(|| format!("Undeclared variable {}", self.name(*sym)))?;
+                    ensure!(
+                        *kind == Arg::V || self.p.vars[v as usize].is_array(),
+                        "{fname} requires an array"
+                    );
                     self.emit(Op::Ref(v));
                 }
                 Arg::K => {
-                    let (Expr::Ident(s) | Expr::Str(s)) = e else { bail!("{fname} requires a key name") };
+                    let (Expr::Ident(s) | Expr::Str(s)) = e else {
+                        bail!("{fname} requires a key name")
+                    };
                     let id = self.string(*s);
                     self.emit(Op::Ref(id));
                 }
             }
         }
         if b == Builtin::Search {
-            let Expr::Var(sym, None) = &args[0] else { unreachable!() };
+            let Expr::Var(sym, None) = &args[0] else {
+                unreachable!()
+            };
             let v = self.var(*sym).unwrap_or_default();
-            ensure!(Some(self.p.vars[v as usize].ty) == num, "search value type must match the array");
+            ensure!(
+                Some(self.p.vars[v as usize].ty) == num,
+                "search value type must match the array"
+            );
         }
         let b = match (b, num) {
             (Builtin::Abs, Some(Ty::Real)) => Builtin::AbsReal,

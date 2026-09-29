@@ -117,14 +117,21 @@ pub struct Events {
 
 impl Events {
     fn new() -> Self {
-        Self { slots: vec![Event::EMPTY; EVENT_CAPACITY], free: (0..EVENT_CAPACITY as u32).collect() }
+        Self {
+            slots: vec![Event::EMPTY; EVENT_CAPACITY],
+            free: (0..EVENT_CAPACITY as u32).collect(),
+        }
     }
 
     fn alloc(&mut self) -> Option<i32> {
         let i = self.free.pop_front()?;
         let e = &mut self.slots[i as usize];
         let generation = e.generation % 0x7FFF + 1;
-        *e = Event { generation, live: true, ..Event::EMPTY };
+        *e = Event {
+            generation,
+            live: true,
+            ..Event::EMPTY
+        };
         Some(i32::from(generation) << EVENT_INDEX_BITS | i as i32)
     }
 
@@ -175,11 +182,30 @@ impl Events {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Work {
-    Note { event: i32, slot: u8 },
-    Release { event: i32, slot: u8 },
-    Controller { cc: u8, value: i32, slot: u8 },
-    PolyAt { note: u8, value: i32, slot: u8 },
-    Rpn { nrpn: bool, address: i32, value: i32, slot: u8 },
+    Note {
+        event: i32,
+        slot: u8,
+    },
+    Release {
+        event: i32,
+        slot: u8,
+    },
+    Controller {
+        cc: u8,
+        value: i32,
+        slot: u8,
+    },
+    PolyAt {
+        note: u8,
+        value: i32,
+        slot: u8,
+    },
+    Rpn {
+        nrpn: bool,
+        address: i32,
+        value: i32,
+        slot: u8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -249,7 +275,11 @@ impl Env {
         Self {
             host,
             events: Events::new(),
-            input: Input { cc: [0; CC_SLOTS], pitch_bend: 0, keys: [[0; 4]; 128] },
+            input: Input {
+                cc: [0; CC_SLOTS],
+                pitch_bend: 0,
+                keys: [[0; 4]; 128],
+            },
             work: VecDeque::with_capacity(WORK_CAPACITY),
             timers: BinaryHeap::with_capacity(TIMER_CAPACITY),
             timer_seq: 0,
@@ -327,7 +357,11 @@ impl Env {
             return;
         }
         self.timer_seq += 1;
-        self.timers.push(Reverse(Timer { at, seq: self.timer_seq, kind }));
+        self.timers.push(Reverse(Timer {
+            at,
+            seq: self.timer_seq,
+            kind,
+        }));
     }
 
     pub fn release_after(&mut self, event: i32, slot: u8, us: i64) {
@@ -336,20 +370,40 @@ impl Env {
     }
 
     fn fault(&mut self, slot: u8, pc: u32, what: &'static str) {
-        if let Some(f) = self.faults.iter_mut().find(|f| f.slot == slot && f.pc == pc && f.what == what) {
+        if let Some(f) = self
+            .faults
+            .iter_mut()
+            .find(|f| f.slot == slot && f.pc == pc && f.what == what)
+        {
             f.count = f.count.saturating_add(1);
         } else if self.faults.len() < FAULT_CAPACITY {
-            self.faults.push(FaultRecord { slot, pc, what, count: 1 });
+            self.faults.push(FaultRecord {
+                slot,
+                pc,
+                what,
+                count: 1,
+            });
         }
     }
 
     /// Create a note event for `play_note` in `slot`, queued for the next slot.
-    pub fn play_note(&mut self, slot: u8, parent: i32, note: i32, velocity: i32, offset_us: i32, duration_us: i32) -> i32 {
+    pub fn play_note(
+        &mut self,
+        slot: u8,
+        parent: i32,
+        note: i32,
+        velocity: i32,
+        offset_us: i32,
+        duration_us: i32,
+    ) -> i32 {
         let Some(id) = self.events.alloc() else {
             self.note("KSP event pool exhausted; play_note ignored");
             return 0;
         };
-        let parent_state = self.events.get(parent).map(|p| (p.groups, p.released & (1 << slot) != 0));
+        let parent_state = self
+            .events
+            .get(parent)
+            .map(|p| (p.groups, p.released & (1 << slot) != 0));
         let e = self.events.get_mut(id).expect("fresh event");
         e.note = note;
         e.velocity = velocity;
@@ -358,21 +412,33 @@ impl Env {
         e.origin = slot + 1;
         e.reached = slot + 1;
         e.parent = parent;
-        e.length = if duration_us == 0 { NoteLength::Sample } else { NoteLength::UntilNoteOff };
+        e.length = if duration_us == 0 {
+            NoteLength::Sample
+        } else {
+            NoteLength::UntilNoteOff
+        };
         e.follows_parent = duration_us < 0 && parent_state.is_some();
         if let Some((groups, _)) = parent_state {
             e.groups = groups;
         }
-        self.queue(Work::Note { event: id, slot: slot + 1 });
+        self.queue(Work::Note {
+            event: id,
+            slot: slot + 1,
+        });
         match parent_state {
-            Some((_, true)) if duration_us < 0 => self.queue(Work::Release { event: id, slot: slot + 1 }),
+            Some((_, true)) if duration_us < 0 => self.queue(Work::Release {
+                event: id,
+                slot: slot + 1,
+            }),
             Some(_) if duration_us < 0 => {
                 if let Some(p) = self.events.get_mut(parent) {
                     if (p.child_count as usize) < MAX_CHILDREN {
                         p.children[p.child_count as usize] = id;
                         p.child_count += 1;
                     } else {
-                        self.note("Too many notes follow one parent; extra notes release after 1 s");
+                        self.note(
+                            "Too many notes follow one parent; extra notes release after 1 s",
+                        );
                         self.release_after(id, slot + 1, 1_000_000);
                     }
                 }
@@ -387,7 +453,10 @@ impl Env {
     pub fn note_off(&mut self, slot: u8, id: i32) {
         if let Some(e) = self.events.get(id) {
             let start = (slot + 1).max(e.origin);
-            self.queue(Work::Release { event: id, slot: start });
+            self.queue(Work::Release {
+                event: id,
+                slot: start,
+            });
         }
     }
 }
@@ -462,7 +531,10 @@ impl Runtime {
         }
         self.env.sample_rate = engine.sample_rate();
         let index = self.programs.len() as u8;
-        let setup = Setup { groups: engine.group_count(), outputs: self.outputs };
+        let setup = Setup {
+            groups: engine.group_count(),
+            outputs: self.outputs,
+        };
         let program = match compile::compile(source, &setup) {
             Ok(p) => p,
             Err(e) => {
@@ -482,15 +554,27 @@ impl Runtime {
             return Err(e);
         }
         self.restore_persistent(index);
-        self.spawn_cb(engine, index, Callback::PersistenceChanged, Ctx::new(index, Kind::Cb(Callback::PersistenceChanged)));
+        self.spawn_cb(
+            engine,
+            index,
+            Callback::PersistenceChanged,
+            Ctx::new(index, Kind::Cb(Callback::PersistenceChanged)),
+        );
         self.settle(engine);
         Ok(())
     }
 
     fn run_init(&mut self, engine: &mut dyn KspEngine, slot: u8) -> Result<()> {
         let prog = &self.programs[slot as usize];
-        let entry = prog.callback(Callback::Init).expect("compiler requires on init");
-        let mut t = Thread { pc: entry, live: true, ctx: Ctx::new(slot, Kind::Cb(Callback::Init)), ..Thread::default() };
+        let entry = prog
+            .callback(Callback::Init)
+            .expect("compiler requires on init");
+        let mut t = Thread {
+            pc: entry,
+            live: true,
+            ctx: Ctx::new(slot, Kind::Cb(Callback::Init)),
+            ..Thread::default()
+        };
         t.ctx.poly_row = POLY_ROWS - 1;
         let mut fuel = INIT_FUEL;
         let saved_fuel = std::mem::replace(&mut self.env.block_fuel, INIT_FUEL);
@@ -508,7 +592,10 @@ impl Runtime {
         self.env.block_fuel = saved_fuel;
         match result {
             Ok(Yield::Done) => {}
-            Ok(Yield::Wait(_)) => bail!("KSP line {}: wait() is not allowed in on init", prog.line(t.pc - 1)),
+            Ok(Yield::Wait(_)) => bail!(
+                "KSP line {}: wait() is not allowed in on init",
+                prog.line(t.pc - 1)
+            ),
             Ok(Yield::OutOfFuel) => bail!("KSP execution budget exhausted in on init"),
             Err(f) => bail!("KSP line {}: {}", prog.line(t.pc.saturating_sub(1)), f.0),
         }
@@ -518,8 +605,13 @@ impl Runtime {
     }
 
     fn restore_persistent(&mut self, slot: u8) {
-        let Some(saved) = self.env.persisted.get(slot as usize) else { return };
-        let (prog, state) = (&self.programs[slot as usize], &mut self.states[slot as usize]);
+        let Some(saved) = self.env.persisted.get(slot as usize) else {
+            return;
+        };
+        let (prog, state) = (
+            &self.programs[slot as usize],
+            &mut self.states[slot as usize],
+        );
         for &v in &state.persistent {
             let var = &prog.vars[v as usize];
             if let Some(value) = saved.get(&*var.name) {
@@ -547,7 +639,9 @@ impl Runtime {
     }
 
     pub fn interface(&self, slot: usize) -> Interface {
-        self.states[slot].ui.interface(&self.programs[slot], &self.states[slot].mem)
+        self.states[slot]
+            .ui
+            .interface(&self.programs[slot], &self.states[slot].mem)
     }
 
     /// Slot errors, runtime faults (with script line numbers) and service notes.
@@ -559,7 +653,11 @@ impl Runtime {
             .filter_map(|(i, s)| s.error.as_ref().map(|e| format!("Slot {}: {e}", i + 1)))
             .collect();
         for (i, p) in self.programs.iter().enumerate() {
-            out.extend(p.errors.iter().map(|e| format!("Slot {}: callback disabled: {e}", i + 1)));
+            out.extend(
+                p.errors
+                    .iter()
+                    .map(|e| format!("Slot {}: callback disabled: {e}", i + 1)),
+            );
         }
         out.extend(self.env.faults.iter().map(|f| {
             let line = self.programs[f.slot as usize].line(f.pc.saturating_sub(1));
@@ -623,7 +721,12 @@ impl Runtime {
     /// Pitch bend, -8192..8191.
     pub fn pitch_bend(&mut self, engine: &mut dyn KspEngine, at: u32, value: i32) {
         self.env.input.pitch_bend = value.clamp(-8192, 8191);
-        self.cc(engine, at, b::VCC_PITCH_BEND as u8, value.clamp(-8192, 8191));
+        self.cc(
+            engine,
+            at,
+            b::VCC_PITCH_BEND as u8,
+            value.clamp(-8192, 8191),
+        );
     }
 
     pub fn channel_pressure(&mut self, engine: &mut dyn KspEngine, at: u32, value: u8) {
@@ -639,20 +742,46 @@ impl Runtime {
 
     pub fn poly_pressure(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8, value: u8) {
         self.advance(engine, at);
-        self.env.queue(Work::PolyAt { note: note.min(127), value: i32::from(value), slot: 0 });
+        self.env.queue(Work::PolyAt {
+            note: note.min(127),
+            value: i32::from(value),
+            slot: 0,
+        });
         self.settle(engine);
     }
 
-    pub fn rpn(&mut self, engine: &mut dyn KspEngine, at: u32, nrpn: bool, address: u16, value: u16) {
+    pub fn rpn(
+        &mut self,
+        engine: &mut dyn KspEngine,
+        at: u32,
+        nrpn: bool,
+        address: u16,
+        value: u16,
+    ) {
         self.advance(engine, at);
-        self.env.queue(Work::Rpn { nrpn, address: i32::from(address), value: i32::from(value), slot: 0 });
+        self.env.queue(Work::Rpn {
+            nrpn,
+            address: i32::from(address),
+            value: i32::from(value),
+            slot: 0,
+        });
         self.settle(engine);
     }
 
     /// A host-side edit of control `control` (index into `Interface::controls`).
-    pub fn ui_control(&mut self, engine: &mut dyn KspEngine, slot: usize, control: usize, value: i32) {
-        let Some(state) = self.states.get_mut(slot) else { return };
-        let Some(c) = state.ui.controls.get(control) else { return };
+    pub fn ui_control(
+        &mut self,
+        engine: &mut dyn KspEngine,
+        slot: usize,
+        control: usize,
+        value: i32,
+    ) {
+        let Some(state) = self.states.get_mut(slot) else {
+            return;
+        };
+        let Some(c) = state.ui.controls.get(control) else {
+            return;
+        };
         let v = c.var;
         let prog = &self.programs[slot];
         let var = &prog.vars[v as usize];
@@ -663,7 +792,12 @@ impl Runtime {
             let ctx = Ctx::new(slot as u8, Kind::UiControl);
             self.spawn(engine, entry, ctx);
         }
-        self.spawn_cb(engine, slot as u8, Callback::UiUpdate, Ctx::new(slot as u8, Kind::Cb(Callback::UiUpdate)));
+        self.spawn_cb(
+            engine,
+            slot as u8,
+            Callback::UiUpdate,
+            Ctx::new(slot as u8, Kind::Cb(Callback::UiUpdate)),
+        );
         self.settle(engine);
     }
 
@@ -672,7 +806,11 @@ impl Runtime {
             return;
         }
         self.env.transport = playing;
-        let signal = if playing { b::signal::TRANSP_START } else { b::signal::TRANSP_STOP };
+        let signal = if playing {
+            b::signal::TRANSP_START
+        } else {
+            b::signal::TRANSP_STOP
+        };
         for slot in 0..self.states.len() as u8 {
             if self.states[slot as usize].listener.transport {
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Listener));
@@ -688,7 +826,8 @@ impl Runtime {
         let end = self.env.now + u64::from(frames);
         self.run_timers(engine, end);
         if self.env.block_fuel == 0 {
-            self.env.note("KSP instruction budget exhausted for a block; callbacks deferred");
+            self.env
+                .note("KSP instruction budget exhausted for a block; callbacks deferred");
         }
         self.env.now = end;
         self.env.offset = 0;
@@ -720,7 +859,11 @@ impl Runtime {
                     let l = self.states[slot as usize].listener;
                     if l.generation == generation {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Listener));
-                        ctx.signal = if l.timer_us > 0 { b::signal::TIMER_MS } else { b::signal::TIMER_BEAT };
+                        ctx.signal = if l.timer_us > 0 {
+                            b::signal::TIMER_MS
+                        } else {
+                            b::signal::TIMER_BEAT
+                        };
                         self.spawn_cb(engine, slot, Callback::Listener, ctx);
                         self.schedule_listener(slot, t.at);
                     }
@@ -740,7 +883,13 @@ impl Runtime {
             return;
         };
         let at = from + self.env.samples(us).max(1);
-        self.env.timer(at, TimerKind::Listener { slot, generation: l.generation });
+        self.env.timer(
+            at,
+            TimerKind::Listener {
+                slot,
+                generation: l.generation,
+            },
+        );
     }
 
     // ---- Scheduling ------------------------------------------------------------------
@@ -772,7 +921,12 @@ impl Runtime {
             }
             if std::mem::take(&mut self.env.pgs_changed) {
                 for slot in 0..self.states.len() as u8 {
-                    self.spawn_cb(engine, slot, Callback::PgsChanged, Ctx::new(slot, Kind::Cb(Callback::PgsChanged)));
+                    self.spawn_cb(
+                        engine,
+                        slot,
+                        Callback::PgsChanged,
+                        Ctx::new(slot, Kind::Cb(Callback::PgsChanged)),
+                    );
                 }
                 // Changes made inside pgs_changed are delivered on the next pass.
                 if !self.env.work.is_empty() || !self.env.async_done.is_empty() {
@@ -786,7 +940,11 @@ impl Runtime {
 
     fn stop_waits(&mut self, engine: &mut dyn KspEngine) {
         while let Some((id, mode)) = self.env.stop_waits.pop() {
-            let Some(i) = self.threads.iter().position(|t| t.live && t.waiting && t.ctx.callback_id == id) else {
+            let Some(i) = self
+                .threads
+                .iter()
+                .position(|t| t.live && t.waiting && t.ctx.callback_id == id)
+            else {
                 continue;
             };
             let t = &mut self.threads[i];
@@ -805,14 +963,20 @@ impl Runtime {
     }
 
     fn entry(&self, slot: u8, cb: Callback) -> Option<u32> {
-        if self.enabled(slot) { self.programs[slot as usize].callback(cb) } else { None }
+        if self.enabled(slot) {
+            self.programs[slot as usize].callback(cb)
+        } else {
+            None
+        }
     }
 
     fn handle(&mut self, engine: &mut dyn KspEngine, w: Work) {
         let slots = self.programs.len() as u8;
         match w {
             Work::Note { event, slot } => {
-                let Some(e) = self.env.events.get_mut(event) else { return };
+                let Some(e) = self.env.events.get_mut(event) else {
+                    return;
+                };
                 if std::mem::take(&mut e.ignored) {
                     if e.length == NoteLength::Sample {
                         self.env.events.free(event);
@@ -831,11 +995,16 @@ impl Runtime {
                         ctx.forward = Forward::Note;
                         self.spawn_cb(engine, slot, Callback::Note, ctx);
                     }
-                    None => self.env.queue(Work::Note { event, slot: slot + 1 }),
+                    None => self.env.queue(Work::Note {
+                        event,
+                        slot: slot + 1,
+                    }),
                 }
             }
             Work::Release { event, slot } => {
-                let Some(e) = self.env.events.get_mut(event) else { return };
+                let Some(e) = self.env.events.get_mut(event) else {
+                    return;
+                };
                 if slot >= slots {
                     if let Some(v) = e.voice.take() {
                         engine.note_off(self.env.offset, v);
@@ -849,8 +1018,16 @@ impl Runtime {
                 let children = e.children;
                 let count = e.child_count as usize;
                 for &child in &children[..count] {
-                    if self.env.events.get(child).is_some_and(|c| c.follows_parent && c.origin == slot + 1) {
-                        self.env.queue(Work::Release { event: child, slot: slot + 1 });
+                    if self
+                        .env
+                        .events
+                        .get(child)
+                        .is_some_and(|c| c.follows_parent && c.origin == slot + 1)
+                    {
+                        self.env.queue(Work::Release {
+                            event: child,
+                            slot: slot + 1,
+                        });
                     }
                 }
                 match self.entry(slot, Callback::Release) {
@@ -861,7 +1038,10 @@ impl Runtime {
                         ctx.forward = Forward::Release;
                         self.spawn_cb(engine, slot, Callback::Release, ctx);
                     }
-                    None => self.env.queue(Work::Release { event, slot: slot + 1 }),
+                    None => self.env.queue(Work::Release {
+                        event,
+                        slot: slot + 1,
+                    }),
                 }
             }
             Work::Controller { cc, value, slot } => {
@@ -876,7 +1056,11 @@ impl Runtime {
                 ctx.forward = Forward::Controller;
                 if !self.spawn_cb(engine, slot, Callback::Controller, ctx) {
                     self.write_sys(slot, SysArray::CcTouched, cc as usize, 0);
-                    self.env.queue(Work::Controller { cc, value, slot: slot + 1 });
+                    self.env.queue(Work::Controller {
+                        cc,
+                        value,
+                        slot: slot + 1,
+                    });
                 }
             }
             Work::PolyAt { note, value, slot } => {
@@ -889,10 +1073,19 @@ impl Runtime {
                 ctx.value = value;
                 ctx.forward = Forward::PolyAt;
                 if !self.spawn_cb(engine, slot, Callback::PolyAt, ctx) {
-                    self.env.queue(Work::PolyAt { note, value, slot: slot + 1 });
+                    self.env.queue(Work::PolyAt {
+                        note,
+                        value,
+                        slot: slot + 1,
+                    });
                 }
             }
-            Work::Rpn { nrpn, address, value, slot } => {
+            Work::Rpn {
+                nrpn,
+                address,
+                value,
+                slot,
+            } => {
                 if slot >= slots {
                     return;
                 }
@@ -902,7 +1095,12 @@ impl Runtime {
                 ctx.value = value;
                 ctx.forward = Forward::Rpn { nrpn };
                 if !self.spawn_cb(engine, slot, cb, ctx) {
-                    self.env.queue(Work::Rpn { nrpn, address, value, slot: slot + 1 });
+                    self.env.queue(Work::Rpn {
+                        nrpn,
+                        address,
+                        value,
+                        slot: slot + 1,
+                    });
                 }
             }
         }
@@ -911,7 +1109,9 @@ impl Runtime {
     /// The event passed every slot: start it in the engine.
     fn play(&mut self, engine: &mut dyn KspEngine, event: i32) {
         let at = self.env.offset;
-        let Some(e) = self.env.events.get_mut(event) else { return };
+        let Some(e) = self.env.events.get_mut(event) else {
+            return;
+        };
         e.at_engine = true;
         let spec = NoteSpec {
             event,
@@ -928,7 +1128,13 @@ impl Runtime {
         let voice = engine.play_note(at, &spec);
         e.voice = voice;
         if let (Some(v), true) = (voice, e.fade_in_us > 0) {
-            engine.fade(at, v, Fade::In { duration_us: e.fade_in_us });
+            engine.fade(
+                at,
+                v,
+                Fade::In {
+                    duration_us: e.fade_in_us,
+                },
+            );
         }
         if e.length == NoteLength::Sample {
             self.env.events.free(event);
@@ -936,7 +1142,10 @@ impl Runtime {
     }
 
     fn write_sys(&mut self, slot: u8, a: SysArray, i: usize, value: i32) {
-        let (prog, state) = (&self.programs[slot as usize], &mut self.states[slot as usize]);
+        let (prog, state) = (
+            &self.programs[slot as usize],
+            &mut self.states[slot as usize],
+        );
         if let Some(v) = prog.sys_arrays[a as usize] {
             state.mem.ints[prog.vars[v as usize].slot as usize + i] = value;
         }
@@ -961,7 +1170,8 @@ impl Runtime {
 
     fn spawn(&mut self, engine: &mut dyn KspEngine, entry: u32, mut ctx: Ctx) {
         let Some(i) = self.free_threads.pop() else {
-            self.env.note("KSP callback pool exhausted; callback dropped");
+            self.env
+                .note("KSP callback pool exhausted; callback dropped");
             self.forward(ctx);
             return;
         };
@@ -971,14 +1181,20 @@ impl Runtime {
             ctx.poly_row = POLY_ROWS - 1;
         }
         let t = &mut self.threads[i as usize];
-        *t = Thread { pc: entry, live: true, generation: t.generation.wrapping_add(1), ctx, ..Thread::default() };
+        *t = Thread {
+            pc: entry,
+            live: true,
+            generation: t.generation.wrapping_add(1),
+            ctx,
+            ..Thread::default()
+        };
         self.resume(engine, i);
     }
 
     fn resume(&mut self, engine: &mut dyn KspEngine, i: u16) {
         let t = &mut self.threads[i as usize];
         let slot = t.ctx.slot as usize;
-        let budget = self.env.block_fuel.min(CALLBACK_FUEL);
+        let budget = self.env.block_fuel.min(CALLBACK_FUEL - t.spent);
         let mut fuel = budget;
         let result = vm::exec(
             &mut Machine {
@@ -992,25 +1208,43 @@ impl Runtime {
             &mut fuel,
         );
         self.env.block_fuel -= budget - fuel;
+        self.threads[i as usize].spent += budget - fuel;
         match result {
             Ok(Yield::Done) => self.finish(i),
             Ok(Yield::Wait(at)) => {
                 let t = &mut self.threads[i as usize];
                 t.waiting = true;
+                t.spent = 0;
                 let generation = t.generation;
-                self.env.timer(at, TimerKind::Resume { thread: i, generation });
+                self.env.timer(
+                    at,
+                    TimerKind::Resume {
+                        thread: i,
+                        generation,
+                    },
+                );
                 self.yielded(i);
             }
-            Ok(Yield::OutOfFuel) if budget == CALLBACK_FUEL => {
+            Ok(Yield::OutOfFuel) if self.threads[i as usize].spent >= CALLBACK_FUEL => {
                 let pc = self.threads[i as usize].pc;
-                self.env.fault(slot as u8, pc, "KSP callback exceeded its instruction budget");
+                self.env.fault(
+                    slot as u8,
+                    pc,
+                    "KSP callback exceeded its instruction budget",
+                );
                 self.finish(i);
             }
             Ok(Yield::OutOfFuel) => {
                 // Block budget spent: continue at the start of the next block.
                 let generation = self.threads[i as usize].generation;
                 let at = self.env.clock();
-                self.env.timer(at, TimerKind::Resume { thread: i, generation });
+                self.env.timer(
+                    at,
+                    TimerKind::Resume {
+                        thread: i,
+                        generation,
+                    },
+                );
             }
             Err(f) => {
                 let pc = self.threads[i as usize].pc;
@@ -1040,36 +1274,59 @@ impl Runtime {
         match ctx.forward {
             Forward::None => {}
             Forward::Note => {
-                let Some(e) = self.env.events.get_mut(ctx.event) else { return };
+                let Some(e) = self.env.events.get_mut(ctx.event) else {
+                    return;
+                };
                 if std::mem::take(&mut e.ignored) {
                     if e.length == NoteLength::Sample {
                         self.env.events.free(ctx.event);
                     }
                 } else {
-                    self.env.queue(Work::Note { event: ctx.event, slot: next });
+                    self.env.queue(Work::Note {
+                        event: ctx.event,
+                        slot: next,
+                    });
                 }
             }
             Forward::Release => {
-                let Some(e) = self.env.events.get_mut(ctx.event) else { return };
+                let Some(e) = self.env.events.get_mut(ctx.event) else {
+                    return;
+                };
                 if !std::mem::take(&mut e.release_ignored) {
-                    self.env.queue(Work::Release { event: ctx.event, slot: next });
+                    self.env.queue(Work::Release {
+                        event: ctx.event,
+                        slot: next,
+                    });
                 }
             }
             Forward::Controller => {
                 let cc = ctx.cc as u8;
                 self.write_sys(ctx.slot, SysArray::CcTouched, cc as usize, 0);
                 if !ctx.ignore_controller {
-                    self.env.queue(Work::Controller { cc, value: ctx.value, slot: next });
+                    self.env.queue(Work::Controller {
+                        cc,
+                        value: ctx.value,
+                        slot: next,
+                    });
                 }
             }
             Forward::PolyAt => {
                 if !ctx.ignore_controller {
-                    self.env.queue(Work::PolyAt { note: ctx.note as u8, value: ctx.value, slot: next });
+                    self.env.queue(Work::PolyAt {
+                        note: ctx.note as u8,
+                        value: ctx.value,
+                        slot: next,
+                    });
                 }
             }
             Forward::Rpn { nrpn } => {
                 if !ctx.ignore_controller {
-                    self.env.queue(Work::Rpn { nrpn, address: ctx.cc, value: ctx.value, slot: next });
+                    self.env.queue(Work::Rpn {
+                        nrpn,
+                        address: ctx.cc,
+                        value: ctx.value,
+                        slot: next,
+                    });
                 }
             }
         }
@@ -1083,9 +1340,24 @@ pub fn read_value(mem: &vm::Memory, var: &compile::Var) -> Value {
         (Ty::Int, None, _) => Value::Int(mem.ints[s]),
         (Ty::Real, None, _) => Value::Real(mem.reals[s]),
         (Ty::Str, None, _) => Value::Text(mem.strs[s].clone()),
-        (Ty::Int, Some(n), _) => Value::Array(mem.ints[s..s + n as usize].iter().map(|&x| Value::Int(x)).collect()),
-        (Ty::Real, Some(n), _) => Value::Array(mem.reals[s..s + n as usize].iter().map(|&x| Value::Real(x)).collect()),
-        (Ty::Str, Some(n), _) => Value::Array(mem.strs[s..s + n as usize].iter().map(|x| Value::Text(x.clone())).collect()),
+        (Ty::Int, Some(n), _) => Value::Array(
+            mem.ints[s..s + n as usize]
+                .iter()
+                .map(|&x| Value::Int(x))
+                .collect(),
+        ),
+        (Ty::Real, Some(n), _) => Value::Array(
+            mem.reals[s..s + n as usize]
+                .iter()
+                .map(|&x| Value::Real(x))
+                .collect(),
+        ),
+        (Ty::Str, Some(n), _) => Value::Array(
+            mem.strs[s..s + n as usize]
+                .iter()
+                .map(|x| Value::Text(x.clone()))
+                .collect(),
+        ),
     }
 }
 

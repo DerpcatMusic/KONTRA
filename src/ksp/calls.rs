@@ -37,7 +37,10 @@ fn push_fmt(m: &mut Machine, args: std::fmt::Arguments) -> Exec<Step> {
 }
 
 fn midi_note(n: i32) -> Exec<u8> {
-    u8::try_from(n).ok().filter(|n| *n < 128).ok_or(Fault("MIDI note must be 0..127"))
+    u8::try_from(n)
+        .ok()
+        .filter(|n| *n < 128)
+        .ok_or(Fault("MIDI note must be 0..127"))
 }
 
 fn key_name_ok(key: &str) -> bool {
@@ -49,11 +52,17 @@ fn key_name_ok(key: &str) -> bool {
 
 /// Control index for a UI variable argument.
 fn control_of(m: &Machine, v: VarId) -> Exec<usize> {
-    m.slot.ui.control_of(v).ok_or(Fault("Command requires a declared UI control"))
+    m.slot
+        .ui
+        .control_of(v)
+        .ok_or(Fault("Command requires a declared UI control"))
 }
 
 fn control(m: &Machine, id: i32) -> Exec<usize> {
-    m.slot.ui.control(id).ok_or(Fault("ID does not refer to a UI control"))
+    m.slot
+        .ui
+        .control(id)
+        .ok_or(Fault("ID does not refer to a UI control"))
 }
 
 /// Expand an event ID or `by_marks` value into `env.targets`.
@@ -66,13 +75,19 @@ fn targets(m: &mut Machine, id: i32) -> usize {
 fn set_voice_par(m: &mut Machine, id: i32, which: VoicePar, value: i32, relative: bool) {
     for k in 0..targets(m, id) {
         let id = m.env.targets[k];
-        let Some(e) = m.env.events.get_mut(id) else { continue };
+        let Some(e) = m.env.events.get_mut(id) else {
+            continue;
+        };
         let field = match which {
             VoicePar::VolumeMdb => &mut e.volume,
             VoicePar::TuneMc => &mut e.tune,
             VoicePar::Pan => &mut e.pan,
         };
-        *field = if relative { field.saturating_add(value) } else { value };
+        *field = if relative {
+            field.saturating_add(value)
+        } else {
+            value
+        };
         if which == VoicePar::Pan {
             *field = (*field).clamp(-1000, 1000);
         }
@@ -84,7 +99,12 @@ fn set_voice_par(m: &mut Machine, id: i32, which: VoicePar, value: i32, relative
 }
 
 fn engine_par(p: [i32; 4]) -> EnginePar {
-    EnginePar { id: p[0], group: p[1], slot: p[2], generic: p[3] }
+    EnginePar {
+        id: p[0],
+        group: p[1],
+        slot: p[2],
+        generic: p[3],
+    }
 }
 
 fn pgs_int_key(m: &mut Machine, key: u32) -> Option<usize> {
@@ -93,7 +113,12 @@ fn pgs_int_key(m: &mut Machine, key: u32) -> Option<usize> {
         return Some(cached as usize);
     }
     let name = &m.prog.strings[key as usize];
-    let i = m.env.host.pgs_ints.iter().position(|(k, _)| **k == **name)?;
+    let i = m
+        .env
+        .host
+        .pgs_ints
+        .iter()
+        .position(|(k, _)| **k == **name)?;
     m.slot.pgs_keys[key as usize] = i as u32;
     Some(i)
 }
@@ -148,7 +173,14 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             if !(0..32).contains(&n) {
                 return Err(Fault("Bit shift must be 0..31"));
             }
-            push_int(m, if f == ShLeft { a.wrapping_shl(n as u32) } else { a >> n })
+            push_int(
+                m,
+                if f == ShLeft {
+                    a.wrapping_shl(n as u32)
+                } else {
+                    a >> n
+                },
+            )
         }
         Random => {
             let [lo, hi] = ints(m);
@@ -166,7 +198,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             }
             push_int(m, x as i32)
         }
-        Round | Floor | Ceil | Sqrt | Exp | Log | Log2 | Log10 | Sin | Cos | Tan | Asin | Acos | Atan => {
+        Round | Floor | Ceil | Sqrt | Exp | Log | Log2 | Log10 | Sin | Cos | Tan | Asin | Acos
+        | Atan => {
             let x = m.stk.real();
             let y = match f {
                 Round => x.round(),
@@ -254,7 +287,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let v = m.stk.var();
             let (a, c) = (&m.prog.vars[v as usize], &m.prog.vars[w as usize]);
             let equal = a.ty == c.ty && a.len == c.len && {
-                let (x, y, n) = (a.slot as usize, c.slot as usize, a.len.unwrap_or(1) as usize);
+                let (x, y, n) = (
+                    a.slot as usize,
+                    c.slot as usize,
+                    a.len.unwrap_or(1) as usize,
+                );
                 let mem = &m.slot.mem;
                 match a.ty {
                     Ty::Int => mem.ints[x..x + n] == mem.ints[y..y + n],
@@ -297,7 +334,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 Kind::Cb(Callback::Note | Callback::Release) => m.t.ctx.event,
                 _ => 0,
             };
-            let id = m.env.play_note(slot, parent, note, velocity.clamp(1, 127), offset, duration);
+            let id = m
+                .env
+                .play_note(slot, parent, note, velocity.clamp(1, 127), offset, duration);
             push_int(m, id)
         }
         NoteOff => {
@@ -312,12 +351,18 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             Ok(Step::Next)
         }
         IgnoreEvent => {
-            let id = if argc == 1 { m.stk.int() } else { m.t.ctx.event };
+            let id = if argc == 1 {
+                m.stk.int()
+            } else {
+                m.t.ctx.event
+            };
             let in_release = m.t.ctx.kind == Kind::Cb(Callback::Release);
             let current = m.t.ctx.event;
             for k in 0..targets(m, id) {
                 let id = m.env.targets[k];
-                let Some(e) = m.env.events.get_mut(id) else { continue };
+                let Some(e) = m.env.events.get_mut(id) else {
+                    continue;
+                };
                 if in_release && id == current {
                     e.release_ignored = true;
                 } else if !e.at_engine {
@@ -355,16 +400,27 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             if (f == FadeIn && argc == 3) || (f == FadeOut && argc == 4) {
                 m.stk.int();
             }
-            let stop = if f == FadeOut { m.stk.int() != 0 } else { false };
+            let stop = f == FadeOut && argc >= 3 && m.stk.int() != 0;
             let [id, us] = ints(m);
             let us = us.max(0);
             for k in 0..targets(m, id) {
                 let id = m.env.targets[k];
-                let Some(e) = m.env.events.get_mut(id) else { continue };
+                let Some(e) = m.env.events.get_mut(id) else {
+                    continue;
+                };
                 match (f, e.voice) {
-                    (FadeIn, Some(v)) => m.engine.fade(m.env.offset, v, Fade::In { duration_us: us }),
+                    (FadeIn, Some(v)) => {
+                        m.engine.fade(m.env.offset, v, Fade::In { duration_us: us })
+                    }
                     (FadeIn, None) => e.fade_in_us = us,
-                    (_, Some(v)) => m.engine.fade(m.env.offset, v, Fade::Out { duration_us: us, stop }),
+                    (_, Some(v)) => m.engine.fade(
+                        m.env.offset,
+                        v,
+                        Fade::Out {
+                            duration_us: us,
+                            stop,
+                        },
+                    ),
                     (_, None) if stop && !e.at_engine => e.ignored = true,
                     _ => {}
                 }
@@ -380,7 +436,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 _ => {
                     for k in 0..targets(m, id) {
                         let id = m.env.targets[k];
-                        let Some(e) = m.env.events.get_mut(id) else { continue };
+                        let Some(e) = m.env.events.get_mut(id) else {
+                            continue;
+                        };
                         match p {
                             par::PAR_0..=par::PAR_3 => e.pars[p as usize] = value,
                             par::NOTE if !e.at_engine => e.note = value.clamp(0, 127),
@@ -411,7 +469,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         SetEventParArr => {
             let [id, p, value, group] = ints(m);
             if p != par::ALLOW_GROUP {
-                m.env.note("set_event_par_arr: only $EVENT_PAR_ALLOW_GROUP is supported");
+                m.env
+                    .note("set_event_par_arr: only $EVENT_PAR_ALLOW_GROUP is supported");
                 return Ok(Step::Next);
             }
             for k in 0..targets(m, id) {
@@ -425,7 +484,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         GetEventParArr => {
             let [id, p, group] = ints(m);
             let v = match (p, m.env.events.get(id)) {
-                (par::ALLOW_GROUP, Some(e)) => usize::try_from(group).is_ok_and(|g| e.groups.allows(g)) as i32,
+                (par::ALLOW_GROUP, Some(e)) => {
+                    usize::try_from(group).is_ok_and(|g| e.groups.allows(g)) as i32
+                }
                 _ => 0,
             };
             push_int(m, v)
@@ -435,7 +496,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let id = m.t.ctx.event;
             match m.env.events.get_mut(id).filter(|e| !e.at_engine) {
                 Some(e) => allow(&mut e.groups, group, f == AllowGroup),
-                None => m.env.note("allow_group/disallow_group outside a note callback has no effect"),
+                None => m
+                    .env
+                    .note("allow_group/disallow_group outside a note callback has no effect"),
             }
             Ok(Step::Next)
         }
@@ -456,7 +519,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         GetEventMark => {
             let [id, mark] = ints(m);
-            let v = m.env.events.get(id).is_some_and(|e| e.marks & mark as u32 != 0);
+            let v = m
+                .env
+                .events
+                .get(id)
+                .is_some_and(|e| e.marks & mark as u32 != 0);
             push_int(m, v as i32)
         }
         EventStatus => {
@@ -482,8 +549,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         SetController => {
             let [cc, value] = ints(m);
-            match u8::try_from(cc).ok().filter(|&c| usize::from(c) < b::CC_SLOTS) {
-                Some(cc) => m.env.queue(super::runtime::Work::Controller { cc, value, slot: slot + 1 }),
+            match u8::try_from(cc)
+                .ok()
+                .filter(|&c| usize::from(c) < b::CC_SLOTS)
+            {
+                Some(cc) => m.env.queue(super::runtime::Work::Controller {
+                    cc,
+                    value,
+                    slot: slot + 1,
+                }),
                 None => m.env.note("set_controller: controller number out of range"),
             }
             Ok(Step::Next)
@@ -501,7 +575,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         // ---- Time --------------------------------------------------------------------
         Wait | WaitTicks => {
             let [n] = ints(m);
-            let us = if f == Wait { i64::from(n) } else { i64::from(n) * i64::from(m.env.quarter_us()) / 960 };
+            let us = if f == Wait {
+                i64::from(n)
+            } else {
+                i64::from(n) * i64::from(m.env.quarter_us()) / 960
+            };
             let at = m.env.clock() + m.env.samples(us).max(1);
             Ok(Step::Wait(at))
         }
@@ -525,7 +603,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let valid = match signal {
                 b::signal::TIMER_MS => value >= 1000 || value == 0,
                 b::signal::TIMER_BEAT => (0..=24).contains(&value),
-                b::signal::TRANSP_START | b::signal::TRANSP_STOP => f == SetListener && (0..=1).contains(&value),
+                b::signal::TRANSP_START | b::signal::TRANSP_STOP => {
+                    f == SetListener && (0..=1).contains(&value)
+                }
                 _ => false,
             };
             if !valid {
@@ -552,7 +632,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             };
             if value == 0 {
                 m.slot.ui.listeners.remove(name);
-            } else if !m.slot.ui.listeners.contains_key(name) || m.slot.ui.listeners[name] != value {
+            } else if !m.slot.ui.listeners.contains_key(name) || m.slot.ui.listeners[name] != value
+            {
                 m.slot.ui.listeners.insert(name, value);
             }
             m.env.listeners_changed |= 1 << slot;
@@ -569,7 +650,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         GroupName => {
             let [g] = ints(m);
-            let name = usize::try_from(g).ok().filter(|&g| g < m.engine.group_count()).map_or("", |g| m.engine.group_name(g));
+            let name = usize::try_from(g)
+                .ok()
+                .filter(|&g| g < m.engine.group_count())
+                .map_or("", |g| m.engine.group_name(g));
             m.stk.strs.push_str(name);
             Ok(Step::Next)
         }
@@ -597,13 +681,18 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 _ => None,
             };
             if found.is_none() {
-                m.env.note("find_mod/find_target: modulator unknown to the engine; returned 0");
+                m.env
+                    .note("find_mod/find_target: modulator unknown to the engine; returned 0");
             }
             push_int(m, found.unwrap_or(0) as i32)
         }
         GetEnginePar | GetEngineParDisp => {
             let p = engine_par(ints(m));
-            let v = m.engine.engine_par(p).or_else(|| m.env.engine_pars.get(&p).copied()).unwrap_or(0);
+            let v = m
+                .engine
+                .engine_par(p)
+                .or_else(|| m.env.engine_pars.get(&p).copied())
+                .unwrap_or(0);
             if f == GetEnginePar {
                 push_int(m, v)
             } else {
@@ -612,9 +701,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         SetEnginePar => {
             let [id, value, group, s, generic] = ints(m);
-            let p = EnginePar { id, group, slot: s, generic };
+            let p = EnginePar {
+                id,
+                group,
+                slot: s,
+                generic,
+            };
             if !m.engine.set_engine_par(p, value) {
-                m.env.note("set_engine_par: parameter not implemented by the engine; value stored");
+                m.env
+                    .note("set_engine_par: parameter not implemented by the engine; value stored");
                 m.env.engine_pars.insert(p, value);
             }
             Ok(Step::Next)
@@ -630,7 +725,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         LoadIrSample => {
             ints::<2>(m);
             m.stk.strs.pop();
-            m.env.note("load_ir_sample: impulse responses are not loaded");
+            m.env
+                .note("load_ir_sample: impulse responses are not loaded");
             let id = async_done(m, 0);
             push_int(m, id)
         }
@@ -659,7 +755,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             if id == b::INST_ICON_ID || id == b::INST_WALLPAPER_ID {
                 return Ok(Step::Next);
             }
-            let c = m.slot.ui.control(id).ok_or(Fault("ID does not refer to a UI control"))?;
+            let c = m
+                .slot
+                .ui
+                .control(id)
+                .ok_or(Fault("ID does not refer to a UI control"))?;
             let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];
             if p == b::CONTROL_PAR_VALUE && var.ty == Ty::Str && var.len.is_none() {
                 let dst = &mut m.slot.mem.strs[var.slot as usize];
@@ -691,7 +791,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let c = control(m, id)?;
             let v = if p == b::CONTROL_PAR_VALUE {
                 let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];
-                if var.ty == Ty::Int && var.len.is_none() { m.slot.mem.ints[var.slot as usize] } else { 0 }
+                if var.ty == Ty::Int && var.len.is_none() {
+                    m.slot.mem.ints[var.slot as usize]
+                } else {
+                    0
+                }
             } else {
                 match m.slot.ui.controls[c].get(p) {
                     Some(Prop::Int(n)) => *n,
@@ -710,7 +814,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let var = &m.prog.vars[control.var as usize];
             let text = match control.get(p) {
                 Some(Prop::Str(s)) => s.as_str(),
-                _ if p == b::CONTROL_PAR_VALUE && var.ty == Ty::Str && var.len.is_none() => &m.slot.mem.strs[var.slot as usize],
+                _ if p == b::CONTROL_PAR_VALUE && var.ty == Ty::Str && var.len.is_none() => {
+                    &m.slot.mem.strs[var.slot as usize]
+                }
                 _ => "",
             };
             m.stk.strs.push_str(text);
@@ -719,7 +825,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         SetText | AddTextLine | SetKnobLabel | SetControlHelp => {
             let v = m.stk.var();
             let text = m.stk.strs.pop();
-            let c = m.slot.ui.control_of(v).ok_or(Fault("Command requires a declared UI control"))?;
+            let c = m
+                .slot
+                .ui
+                .control_of(v)
+                .ok_or(Fault("Command requires a declared UI control"))?;
             let p = match f {
                 SetText | AddTextLine => b::CONTROL_PAR_TEXT,
                 SetKnobLabel => b::CONTROL_PAR_LABEL,
@@ -776,19 +886,34 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let [value] = ints(m);
             let v = m.stk.var();
             let text = m.stk.strs.pop();
-            let c = m.slot.ui.control_of(v).ok_or(Fault("Command requires a declared UI control"))?;
+            let c = m
+                .slot
+                .ui
+                .control_of(v)
+                .ok_or(Fault("Command requires a declared UI control"))?;
             let menu = &mut m.slot.ui.controls[c].menu;
             if menu.len() >= 4096 {
                 return Err(Fault("Menu item limit"));
             }
-            menu.push(MenuItem { text: text.to_owned(), value, visible: true });
+            menu.push(MenuItem {
+                text: text.to_owned(),
+                value,
+                visible: true,
+            });
             Ok(Step::Next)
         }
         SetMenuItemStr => {
             let [id, index] = ints(m);
             let text = m.stk.strs.pop();
-            let c = m.slot.ui.control(id).ok_or(Fault("ID does not refer to a UI control"))?;
-            if let Some(item) = usize::try_from(index).ok().and_then(|i| m.slot.ui.controls[c].menu.get_mut(i)) {
+            let c = m
+                .slot
+                .ui
+                .control(id)
+                .ok_or(Fault("ID does not refer to a UI control"))?;
+            if let Some(item) = usize::try_from(index)
+                .ok()
+                .and_then(|i| m.slot.ui.controls[c].menu.get_mut(i))
+            {
                 item.text.clear();
                 item.text.push_str(text);
             }
@@ -797,7 +922,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         SetMenuItemVisibility | SetMenuItemValue => {
             let [id, index, value] = ints(m);
             let c = control(m, id)?;
-            if let Some(item) = usize::try_from(index).ok().and_then(|i| m.slot.ui.controls[c].menu.get_mut(i)) {
+            if let Some(item) = usize::try_from(index)
+                .ok()
+                .and_then(|i| m.slot.ui.controls[c].menu.get_mut(i))
+            {
                 if f == SetMenuItemValue {
                     item.value = value;
                 } else {
@@ -810,7 +938,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let [id, index] = ints(m);
             let c = control(m, id)?;
             let menu = &m.slot.ui.controls[c].menu;
-            let text = usize::try_from(index).ok().and_then(|i| menu.get(i)).map_or("", |item| item.text.as_str());
+            let text = usize::try_from(index)
+                .ok()
+                .and_then(|i| menu.get(i))
+                .map_or("", |item| item.text.as_str());
             m.stk.strs.push_str(text);
             Ok(Step::Next)
         }
@@ -830,7 +961,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let c = control(m, id)?;
             push_int(m, m.slot.ui.controls[c].menu.len() as i32)
         }
-        SetSkinOffset | SetUiColor | SetSnapshotType | DisableLogging | FsNavigate | RemoveKeyrange => {
+        SetSkinOffset | SetUiColor | SetSnapshotType | DisableLogging | FsNavigate
+        | RemoveKeyrange => {
             if f == FsNavigate {
                 m.stk.int();
             }
@@ -889,7 +1021,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         SetKeyName => {
             let [note] = ints(m);
             let text = m.stk.strs.pop();
-            let key = m.env.host.keyboard.entry(midi_note(note)?).or_insert_with(KeyState::default);
+            let key = m
+                .env
+                .host
+                .keyboard
+                .entry(midi_note(note)?)
+                .or_insert_with(KeyState::default);
             key.name.clear();
             key.name.push_str(text);
             Ok(Step::Next)
@@ -909,7 +1046,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 Some(name) if f != SetKeyPressed => Value::Text(name.to_owned()),
                 _ => Value::Int(value),
             };
-            let key = m.env.host.keyboard.entry(note).or_insert_with(KeyState::default);
+            let key = m
+                .env
+                .host
+                .keyboard
+                .entry(note)
+                .or_insert_with(KeyState::default);
             match f {
                 SetKeyColor => key.color = Some(shown),
                 SetKeyType => key.kind = Some(shown),
@@ -920,7 +1062,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         GetKeyName => {
             let [note] = ints(m);
             let note = midi_note(note)?;
-            let name = m.env.host.keyboard.get(&note).map_or("", |k| k.name.as_str());
+            let name = m
+                .env
+                .host
+                .keyboard
+                .get(&note)
+                .map_or("", |k| k.name.as_str());
             m.stk.strs.push_str(name);
             Ok(Step::Next)
         }
@@ -928,12 +1075,20 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let [note] = ints(m);
             let note = midi_note(note)?;
             if f == GetKeyTriggerstate && !m.env.host.script_pressed {
-                return Err(Fault("get_key_triggerstate requires script pressed support"));
+                return Err(Fault(
+                    "get_key_triggerstate requires script pressed support",
+                ));
             }
             let key = m.env.host.keyboard.get(&note);
             let v = match f {
                 GetKeyTriggerstate => key.is_some_and(|k| k.pressed) as i32,
-                _ => match key.and_then(|k| if f == GetKeyColor { k.color.as_ref() } else { k.kind.as_ref() }) {
+                _ => match key.and_then(|k| {
+                    if f == GetKeyColor {
+                        k.color.as_ref()
+                    } else {
+                        k.kind.as_ref()
+                    }
+                }) {
                     Some(Value::Int(n)) => *n,
                     _ => 0,
                 },
@@ -967,7 +1122,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         ReadPersistentVar => {
             let v = m.stk.var();
             let var = &m.prog.vars[v as usize];
-            if let Some(value) = m.env.persisted.get(slot as usize).and_then(|p| p.get(&*var.name)) {
+            if let Some(value) = m
+                .env
+                .persisted
+                .get(slot as usize)
+                .and_then(|p| p.get(&*var.name))
+            {
                 write_value(&mut m.slot.mem, var, value);
             }
             Ok(Step::Next)
@@ -989,7 +1149,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 }
                 Some(_) => {}
                 None if m.env.host.pgs_ints.len() >= 4096 => return Err(Fault("PGS key limit")),
-                None => m.env.host.pgs_ints.push((name.to_string(), vec![0; size as usize])),
+                None => m
+                    .env
+                    .host
+                    .pgs_ints
+                    .push((name.to_string(), vec![0; size as usize])),
             }
             Ok(Step::Next)
         }
@@ -1066,7 +1230,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
 
 fn allow(groups: &mut GroupMask, group: i32, allowed: bool) {
     if group == b::ALL_GROUPS {
-        *groups = if allowed { GroupMask::all() } else { GroupMask::none() };
+        *groups = if allowed {
+            GroupMask::all()
+        } else {
+            GroupMask::none()
+        };
     } else if let Ok(g) = usize::try_from(group) {
         groups.set(g, allowed);
     }

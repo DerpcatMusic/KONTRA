@@ -150,11 +150,33 @@ pub enum EngineCall {
         pan: i32,
         groups: Vec<usize>,
     },
-    NoteOff { time: u64, voice: VoiceId },
-    Fade { time: u64, voice: VoiceId, fade: Fade },
-    SetPar { time: u64, voice: VoiceId, par: VoicePar, value: i32 },
-    Controller { time: u64, cc: u8, value: i32 },
-    SetEnginePar { par: String, group: i32, slot: i32, generic: i32, value: i32 },
+    NoteOff {
+        time: u64,
+        voice: VoiceId,
+    },
+    Fade {
+        time: u64,
+        voice: VoiceId,
+        fade: Fade,
+    },
+    SetPar {
+        time: u64,
+        voice: VoiceId,
+        par: VoicePar,
+        value: i32,
+    },
+    Controller {
+        time: u64,
+        cc: u8,
+        value: i32,
+    },
+    SetEnginePar {
+        par: String,
+        group: i32,
+        slot: i32,
+        generic: i32,
+        value: i32,
+    },
 }
 
 /// Test and CLI engine: records calls with absolute sample times, stores engine
@@ -171,7 +193,11 @@ pub struct LogEngine {
 
 impl LogEngine {
     pub fn new(groups: Vec<String>, rate: f64) -> Self {
-        Self { groups, rate, ..Self::default() }
+        Self {
+            groups,
+            rate,
+            ..Self::default()
+        }
     }
 
     fn time(&self, at: u32) -> u64 {
@@ -200,19 +226,35 @@ impl KspEngine for LogEngine {
     }
 
     fn note_off(&mut self, at: u32, voice: VoiceId) {
-        self.calls.push(EngineCall::NoteOff { time: self.time(at), voice });
+        self.calls.push(EngineCall::NoteOff {
+            time: self.time(at),
+            voice,
+        });
     }
 
     fn fade(&mut self, at: u32, voice: VoiceId, fade: Fade) {
-        self.calls.push(EngineCall::Fade { time: self.time(at), voice, fade });
+        self.calls.push(EngineCall::Fade {
+            time: self.time(at),
+            voice,
+            fade,
+        });
     }
 
     fn set_par(&mut self, at: u32, voice: VoiceId, par: VoicePar, value: i32) {
-        self.calls.push(EngineCall::SetPar { time: self.time(at), voice, par, value });
+        self.calls.push(EngineCall::SetPar {
+            time: self.time(at),
+            voice,
+            par,
+            value,
+        });
     }
 
     fn controller(&mut self, at: u32, cc: u8, value: i32) {
-        self.calls.push(EngineCall::Controller { time: self.time(at), cc, value });
+        self.calls.push(EngineCall::Controller {
+            time: self.time(at),
+            cc,
+            value,
+        });
     }
 
     fn group_count(&self) -> usize {

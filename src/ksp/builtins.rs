@@ -374,10 +374,16 @@ pub mod signal {
 
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
-    if let Some(n) = name.strip_prefix("$MARK_").and_then(|n| n.parse::<u32>().ok()) {
+    if let Some(n) = name
+        .strip_prefix("$MARK_")
+        .and_then(|n| n.parse::<u32>().ok())
+    {
         return (1..=28).contains(&n).then(|| 1 << (n - 1));
     }
-    if let Some(n) = name.strip_prefix("$EVENT_PAR_").and_then(|n| n.parse::<i32>().ok()) {
+    if let Some(n) = name
+        .strip_prefix("$EVENT_PAR_")
+        .and_then(|n| n.parse::<i32>().ok())
+    {
         return (0..=3).contains(&n).then_some(n);
     }
     Some(match name {
@@ -680,11 +686,16 @@ pub const ENGINE_PARS: &[&str] = &[
 ];
 
 pub fn engine_par_id(name: &str) -> Option<i32> {
-    ENGINE_PARS.iter().position(|n| *n == name).map(|i| ENGINE_PAR_BASE + i as i32)
+    ENGINE_PARS
+        .iter()
+        .position(|n| *n == name)
+        .map(|i| ENGINE_PAR_BASE + i as i32)
 }
 
 pub fn engine_par_name(id: i32) -> Option<&'static str> {
-    ENGINE_PARS.get(usize::try_from(id.wrapping_sub(ENGINE_PAR_BASE)).ok()?).copied()
+    ENGINE_PARS
+        .get(usize::try_from(id.wrapping_sub(ENGINE_PAR_BASE)).ok()?)
+        .copied()
 }
 
 /// Name for any symbolic value (control parameters, engine parameters). Script-local
