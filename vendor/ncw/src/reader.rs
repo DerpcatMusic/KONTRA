@@ -100,62 +100,77 @@ impl<R: Read + Seek> NcwReader<R> {
         if u64::from(self.header.data_offset) + u64::from(self.header.data_size) > file_len {
             return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
         }
+        let mut interleaved = Vec::new();
+        for index in 0..self.block_offsets.len() {
+            self.decode_block_into(index, &mut interleaved)?;
+        }
+        Ok(interleaved)
+    }
+
+    /// Number of frames in each block except possibly the last.
+    pub const FRAMES_PER_BLOCK: usize = SAMPLES_PER_BLOCK;
+
+    /// Decode one block and append its interleaved frames to `out`, returning
+    /// the frame count. Blocks are independently addressable, so a streamer can
+    /// seek to any frame by decoding `frame / FRAMES_PER_BLOCK`.
+    pub fn decode_block_into(&mut self, index: usize, out: &mut Vec<i32>) -> Result<usize, Error> {
         let num_samples = self.header.num_samples as usize;
         let num_channels = self.header.channels as usize;
-        let mut interleaved = Vec::new();
-
-        for (index, &offset) in self.block_offsets.iter().enumerate() {
-            let end = self
-                .block_offsets
-                .get(index + 1)
-                .copied()
-                .unwrap_or(self.header.data_size);
-            self.reader.seek(SeekFrom::Start(
-                u64::from(self.header.data_offset) + u64::from(offset),
-            ))?;
-            // A malformed payload must never consume bytes from the next group.
-            let mut group = self.reader.by_ref().take(u64::from(end - offset));
-            let mut channels = Vec::new();
-            let mut mid_side = false;
-            for channel_index in 0..num_channels {
-                let block_header = BlockHeader::read(&mut group)?;
-                if block_header.sample_format() != self.sample_format {
-                    return Err(Error::InvalidHeader("sample format changes between blocks"));
-                }
-                if channel_index == 0 {
-                    mid_side = block_header.channel_encoding() == ChannelEncoding::MidSide;
-                    if mid_side && num_channels != 2 {
-                        return Err(Error::InvalidHeader(
-                            "mid/side encoding requires exactly two channels",
-                        ));
-                    }
-                }
-                let mut channel = Vec::new();
-                read_block(&mut group, &self.header, &block_header, &mut channel)?;
-                channels.push(channel);
+        let offset = *self
+            .block_offsets
+            .get(index)
+            .ok_or(Error::InvalidHeader("block index out of range"))?;
+        let end = self
+            .block_offsets
+            .get(index + 1)
+            .copied()
+            .unwrap_or(self.header.data_size);
+        if end < offset || end > self.header.data_size {
+            return Err(Error::InvalidHeader("invalid block offsets or channel framing"));
+        }
+        self.reader.seek(SeekFrom::Start(
+            u64::from(self.header.data_offset) + u64::from(offset),
+        ))?;
+        // A malformed payload must never consume bytes from the next group.
+        let mut group = self.reader.by_ref().take(u64::from(end - offset));
+        let mut channels = Vec::new();
+        let mut mid_side = false;
+        for channel_index in 0..num_channels {
+            let block_header = BlockHeader::read(&mut group)?;
+            if block_header.sample_format() != self.sample_format {
+                return Err(Error::InvalidHeader("sample format changes between blocks"));
             }
-            if group.limit() != 0 {
-                return Err(Error::InvalidHeader("unconsumed block bytes"));
-            }
-            if mid_side {
-                let (mid, side) = channels.split_at_mut(1);
-                decode_mid_side(&mut mid[0], &mut side[0], self.sample_format);
-            }
-            let frames = (num_samples - index * SAMPLES_PER_BLOCK).min(SAMPLES_PER_BLOCK);
-            let additional = frames
-                .checked_mul(num_channels)
-                .ok_or(Error::InvalidHeader("decoded sample count overflow"))?;
-            interleaved
-                .try_reserve(additional)
-                .map_err(|_| Error::InvalidHeader("decoded samples exceed available memory"))?;
-            for i in 0..frames {
-                for channel in &channels {
-                    interleaved.push(channel[i]);
+            if channel_index == 0 {
+                mid_side = block_header.channel_encoding() == ChannelEncoding::MidSide;
+                if mid_side && num_channels != 2 {
+                    return Err(Error::InvalidHeader(
+                        "mid/side encoding requires exactly two channels",
+                    ));
                 }
+            }
+            let mut channel = Vec::new();
+            read_block(&mut group, &self.header, &block_header, &mut channel)?;
+            channels.push(channel);
+        }
+        if group.limit() != 0 {
+            return Err(Error::InvalidHeader("unconsumed block bytes"));
+        }
+        if mid_side {
+            let (mid, side) = channels.split_at_mut(1);
+            decode_mid_side(&mut mid[0], &mut side[0], self.sample_format);
+        }
+        let frames = (num_samples.saturating_sub(index * SAMPLES_PER_BLOCK)).min(SAMPLES_PER_BLOCK);
+        let additional = frames
+            .checked_mul(num_channels)
+            .ok_or(Error::InvalidHeader("decoded sample count overflow"))?;
+        out.try_reserve(additional)
+            .map_err(|_| Error::InvalidHeader("decoded samples exceed available memory"))?;
+        for i in 0..frames {
+            for channel in &channels {
+                out.push(channel[i]);
             }
         }
-
-        Ok(interleaved)
+        Ok(frames)
     }
 }
 
