@@ -92,6 +92,34 @@ impl Default for Interface {
     }
 }
 
+/// Decode the persistent values Kontakt saves with a script: one entry per variable,
+/// `"<name> <values>"`, with integers/reals space-separated and string arrays one
+/// element per line.
+pub fn saved_persistence(entries: &[String]) -> Persisted {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let (name, rest) = entry.split_once(' ').unwrap_or((entry, ""));
+            let ints = || rest.split_whitespace().map(|x| x.parse().map(Value::Int));
+            let reals = || rest.split_whitespace().map(|x| x.parse().map(Value::Real));
+            let value = match name.as_bytes().first()? {
+                b'$' => ints().next()?.ok()?,
+                b'~' => reals().next()?.ok()?,
+                b'%' => Value::Array(ints().collect::<Result<_, _>>().ok()?),
+                b'?' => Value::Array(reals().collect::<Result<_, _>>().ok()?),
+                b'@' => Value::Text(rest.to_owned()),
+                b'!' => Value::Array(
+                    rest.split('\n')
+                        .map(|s| Value::Text(s.to_owned()))
+                        .collect(),
+                ),
+                _ => return None,
+            };
+            Some((name.to_owned(), value))
+        })
+        .collect()
+}
+
 pub fn initialize(source: &str, groups: usize, outputs: usize) -> Result<Interface> {
     initialize_with_host(source, groups, outputs, &mut HostState::default())
 }

@@ -242,6 +242,36 @@ fn computed_ui_and_execution_limits() {
     assert_eq!(label(called), "{quoted}");
 }
 
+#[test]
+fn saved_persistence_decodes_every_kind() {
+    let entries = [
+        "$a 5",
+        "%b 1 2 3",
+        "~c 1.5",
+        "@d two words",
+        "!e x\ny\n",
+        "$bad x",
+    ]
+    .map(String::from);
+    let saved = saved_persistence(&entries);
+    assert_eq!(saved["$a"], Value::Int(5));
+    assert_eq!(
+        saved["%b"],
+        Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+    );
+    assert_eq!(saved["~c"], Value::Real(1.5));
+    assert_eq!(saved["@d"], Value::Text("two words".into()));
+    assert_eq!(
+        saved["!e"],
+        Value::Array(["x", "y", ""].map(|s| Value::Text(s.into())).to_vec())
+    );
+    assert!(!saved.contains_key("$bad"));
+    let script = "on init\ndeclare %b[3]\nmake_persistent(%b)\nread_persistent_var(%b)\ndeclare ui_label $l(1,1)\nset_text($l, %b[2])\nend on";
+    let mut engine = LogEngine::new(Vec::new(), 48_000.0);
+    let (rt, _) = Runtime::with_scripts(&[script], &mut engine, 8, vec![saved]);
+    assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "3");
+}
+
 // ---- Runtime --------------------------------------------------------------------------
 
 struct Rig {

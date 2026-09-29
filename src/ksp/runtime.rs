@@ -469,6 +469,8 @@ pub struct Runtime {
     threads: Vec<Thread>,
     free_threads: Vec<u16>,
     outputs: usize,
+    /// Per-callback instruction cap: `CALLBACK_FUEL`, or `INIT_FUEL` while loading.
+    fuel_cap: u64,
 }
 
 impl Runtime {
@@ -481,6 +483,7 @@ impl Runtime {
             threads: vec![Thread::default(); THREAD_CAPACITY],
             free_threads: (0..THREAD_CAPACITY as u16).rev().collect(),
             outputs,
+            fuel_cap: CALLBACK_FUEL,
         }
     }
 
@@ -554,6 +557,9 @@ impl Runtime {
             return Err(e);
         }
         self.restore_persistent(index);
+        // Loading is off the audio thread: callbacks it triggers get the init budget.
+        let block_fuel = std::mem::replace(&mut self.env.block_fuel, INIT_FUEL);
+        self.fuel_cap = INIT_FUEL;
         self.spawn_cb(
             engine,
             index,
@@ -561,6 +567,8 @@ impl Runtime {
             Ctx::new(index, Kind::Cb(Callback::PersistenceChanged)),
         );
         self.settle(engine);
+        self.fuel_cap = CALLBACK_FUEL;
+        self.env.block_fuel = block_fuel;
         Ok(())
     }
 
@@ -1194,7 +1202,10 @@ impl Runtime {
     fn resume(&mut self, engine: &mut dyn KspEngine, i: u16) {
         let t = &mut self.threads[i as usize];
         let slot = t.ctx.slot as usize;
-        let budget = self.env.block_fuel.min(CALLBACK_FUEL - t.spent);
+        let budget = self
+            .env
+            .block_fuel
+            .min(self.fuel_cap.saturating_sub(t.spent));
         let mut fuel = budget;
         let result = vm::exec(
             &mut Machine {
@@ -1225,7 +1236,7 @@ impl Runtime {
                 );
                 self.yielded(i);
             }
-            Ok(Yield::OutOfFuel) if self.threads[i as usize].spent >= CALLBACK_FUEL => {
+            Ok(Yield::OutOfFuel) if self.threads[i as usize].spent >= self.fuel_cap => {
                 let pc = self.threads[i as usize].pc;
                 self.env.fault(
                     slot as u8,

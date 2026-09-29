@@ -43,6 +43,9 @@ pub struct Instrument {
     pub missing_samples: Vec<String>,
     #[serde(skip)]
     pub scripts: Vec<String>,
+    /// Persistent variable values saved with each script, parallel to `scripts`.
+    #[serde(skip)]
+    pub script_state: Vec<crate::ksp::Persisted>,
 }
 
 /// ni-file is a research parser with panic paths. Keep those off the host thread.
@@ -180,10 +183,11 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
             muted: v.muted, channel: v.midi_channel });
     }
     let mut scripts = Vec::new();
+    let mut script_state = Vec::new();
     for c in &p.0.children {
         if c.id == 6 {
             let s = BParScript::try_from(c)?.params().context("Script parameters")?;
-            if !s.bypass && let Some(text) = s.text.filter(|s| !s.trim().is_empty()) { scripts.push(text); }
+            if !s.bypass && let Some(text) = s.text.filter(|s| !s.trim().is_empty()) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
         }
     }
     if !scripts.is_empty() { warnings.push(format!("{} active KSP script(s): manual group playback only; scripted legato and round robin are not emulated; interface initialization is a preview only", scripts.len())); }
@@ -247,7 +251,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
     for (archive,index) in &resolver.archives {warnings.extend(index.issues.iter().map(|issue|format!("{}: {issue}",archive.display())));}
     if c.find_first(3).is_some(){warnings.push("Multi routing, master processing and multi scripts are not restored; parts use manual playback".into());}
     warnings.sort(); warnings.dedup(); missing_samples.sort(); missing_samples.dedup();
-    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts })
+    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, script_state })
 }
 
 pub struct Resolver { root: PathBuf, index: Option<HashMap<String, Vec<PathBuf>>>, archives: HashMap<PathBuf,ni_file::nkr::Archive> }
