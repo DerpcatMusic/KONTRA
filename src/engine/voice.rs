@@ -536,7 +536,8 @@ fn hermite(q: &[Frame; 4], t: f32) -> Frame {
 
 /// The inner loop: resample `window` from `base` by `step` (32.32 fixed
 /// point), apply per-frame amplitude and ramped channel gains, and accumulate.
-/// Dispatches to an AVX2/FMA build of the same code when the CPU has it.
+/// Dispatches to an AVX2/FMA build of the same code when the CPU has it
+/// (about 15% faster than SSE2; an AVX-512 build measured no better).
 #[allow(clippy::too_many_arguments)]
 fn mix(
     window: &[Frame],
@@ -549,14 +550,6 @@ fn mix(
     right: &mut [f32],
 ) {
     #[cfg(target_arch = "x86_64")]
-    if std::arch::is_x86_feature_detected!("avx512f")
-        && std::arch::is_x86_feature_detected!("avx512vl")
-        && std::arch::is_x86_feature_detected!("avx512dq")
-    {
-        // SAFETY: the running CPU supports every feature `mix_avx512` is compiled for.
-        return unsafe { mix_avx512(window, base, step, amp, gains, delta, left, right) };
-    }
-    #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
         // SAFETY: the running CPU supports every feature `mix_avx2` is compiled for.
         return unsafe { mix_avx2(window, base, step, amp, gains, delta, left, right) };
@@ -568,22 +561,6 @@ fn mix(
 #[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
 fn mix_avx2(
-    window: &[Frame],
-    base: u64,
-    step: u64,
-    amp: &[f32],
-    gains: [f32; 2],
-    delta: [f32; 2],
-    left: &mut [f32],
-    right: &mut [f32],
-) {
-    mix_body(window, base, step, amp, gains, delta, left, right);
-}
-
-#[cfg(target_arch = "x86_64")]
-#[allow(clippy::too_many_arguments)]
-#[target_feature(enable = "avx512f,avx512vl,avx512dq,avx2,fma")]
-fn mix_avx512(
     window: &[Frame],
     base: u64,
     step: u64,

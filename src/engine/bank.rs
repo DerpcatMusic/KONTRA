@@ -434,7 +434,7 @@ impl Builder {
             .map(|r| r.end.min(frames) - r.start.min(frames))
             .sum();
         if frames <= 2 * PRELOAD_FRAMES || covered + PRELOAD_FRAMES >= frames {
-            return (vec![0..frames], false);
+            return (std::iter::once(0..frames).collect(), false);
         }
         (
             merged

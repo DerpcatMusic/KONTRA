@@ -79,9 +79,9 @@ impl Slot {
             xfade: 0,
             until_release: false,
         });
-        let flags = u64::from(map.reverse) * REVERSE
-            | u64::from(map.looped.is_some()) * LOOPED
-            | u64::from(l.until_release) * UNTIL_RELEASE;
+        let flags = (u64::from(map.reverse) * REVERSE)
+            | (u64::from(map.looped.is_some()) * LOOPED)
+            | (u64::from(l.until_release) * UNTIL_RELEASE);
         self.write(
             sample,
             [
