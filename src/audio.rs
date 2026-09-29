@@ -242,7 +242,27 @@ impl Sources {
 
 impl Source {
     pub fn open(&self) -> Result<SampleReader> {
-        SampleReader::open(self).with_context(|| format!("Decoding {}", self.path.display()))
+        SampleReader::open(self).with_context(|| {
+            let why = if self.is_unwritten() {
+                "library download is incomplete (its data is still zeros; repair it in Native Access)"
+            } else {
+                "decoding failed"
+            };
+            format!("{}: {why}", self.path.display())
+        })
+    }
+
+    /// Whether the sample's first bytes on disk are all zero: an interrupted
+    /// download preallocates archives and leaves the unfetched rest zeroed.
+    fn is_unwritten(&self) -> bool {
+        let mut head = [0u8; 64];
+        let len = self.len.map_or(head.len() as u64, |l| l.min(head.len() as u64)) as usize;
+        File::open(&self.file)
+            .and_then(|mut f| {
+                f.seek(SeekFrom::Start(self.offset))?;
+                f.read_exact(&mut head[..len])
+            })
+            .is_ok_and(|()| len > 0 && head[..len].iter().all(|&b| b == 0))
     }
 
     fn bytes(&self) -> Result<Bytes> {

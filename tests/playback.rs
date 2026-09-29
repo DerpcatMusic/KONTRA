@@ -1369,6 +1369,15 @@ fn controllers_set_while_loading_drive_modulation() {
 }
 
 #[test]
+fn set_controller_in_init_reaches_the_engine() {
+    let mut i = instrument(vec![Group::default()], Vec::new());
+    i.scripts = vec!["on init\nset_controller(1, 90)\nplay_note(60, 100, 0, -1)\nend on".into()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(rt.unwrap().init_controllers, vec![(1, 90)]);
+}
+
+#[test]
 fn steady_scripted_playback_with_diagnostics_does_not_allocate() {
     // After a warm-up note sizes the string buffers, every note runs a native
     // scan, builds an 80-byte persistent string and, from the first counted

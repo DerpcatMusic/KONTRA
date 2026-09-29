@@ -530,7 +530,7 @@ pub struct Runtime {
     /// applies them when the runtime is installed.
     pub init_engine_pars: Vec<(EnginePar, i32)>,
     /// Controllers the scripts set while loading (`set_controller` in
-    /// `on persistence_changed`; `on init` drops its work), in call order.
+    /// `on init` or `on persistence_changed`), in call order.
     /// The playing engine applies them on install and after a reset.
     pub init_controllers: Vec<(u8, u8)>,
 }
@@ -686,8 +686,9 @@ impl Runtime {
             Ok(Yield::OutOfFuel) => bail!("KSP execution budget exhausted in on init"),
             Err(f) => bail!("KSP line {}: {}", prog.line(t.pc.saturating_sub(1)), f.0),
         }
-        // Work queued during init (e.g. set_controller) is dropped: nothing plays yet.
-        self.env.work.clear();
+        // Nothing plays yet, so init's notes are dropped; controllers it sets
+        // settle with `on persistence_changed`.
+        self.env.work.retain(|w| matches!(w, Work::Controller { .. }));
         Ok(())
     }
 

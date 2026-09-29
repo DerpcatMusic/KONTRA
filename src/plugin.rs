@@ -204,7 +204,7 @@ fn preview_velocity(e: &Engine, note: u8) -> u8 {
 fn bank_status(bank: &Bank) -> String {
     let mut status = format!("{} samples · {} streamed · {:.0} MB", bank.sample_count(), bank.streamed_samples(), bank.bytes as f64 / 1048576.0);
     if bank.skipped_zones > 0 {
-        status += &format!(" · {} zones skipped (missing or damaged)", bank.skipped_zones);
+        status += &format!(" · {} zones skipped (missing or incomplete download)", bank.skipped_zones);
     }
     status
 }

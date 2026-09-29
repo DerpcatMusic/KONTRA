@@ -299,7 +299,6 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
             if !s.bypass && let Some(text) = s.text.filter(|s| !s.trim().is_empty()) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
         }
     }
-    if !scripts.is_empty() { warnings.push(format!("{} active KSP script(s): manual group playback only; scripted legato and round robin are not emulated; interface initialization is a preview only", scripts.len())); }
     warnings.push("Modulation drives volume, pitch and sample start from velocity, key, CC, pitch bend and aftertouch; LFOs, other envelopes and effect or module targets are not applied".into());
     let parent = path.parent().context("Instrument has no parent")?;
     let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
@@ -377,13 +376,16 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
                     (None, Some(nkr), Some(at)) => resolver.resolve(parent, &format!("{nkr}/{}", &name[at..]))?,
                     _ => None,
                 };
-                crate::audio::decode(&ir.context("file missing or its archive member is damaged")?, max_frames)
+                crate::audio::decode(&ir.context("file missing or its archive member is unreadable")?, max_frames)
             });
             warnings.extend(fx.warnings());
             fx
         }
         Err(e) => { warnings.push(format!("Effects were not imported: {e:#}")); Default::default() }
     };
+    if resolver.undownloaded > 0 {
+        warnings.push(format!("{} samples were never downloaded (their archive data is still zeros); repair the library in Native Access", resolver.undownloaded));
+    }
     warnings.sort(); warnings.dedup(); missing_samples.sort(); missing_samples.dedup();
     let (voice_limit, voice_groups) = match p.0.find_first(0x32).map(|c| voice_groups(&c.data)).transpose() {
         Ok(v) => v.map_or((None, Vec::new()), |(limit, groups)| (Some(limit), groups)),
@@ -416,9 +418,16 @@ fn voice_groups(data: &[u8]) -> Result<(VoiceLimit, Vec<Option<VoiceLimit>>)> {
     Ok((program, groups))
 }
 
-pub struct Resolver { root: PathBuf, index: Option<HashMap<String, Vec<PathBuf>>>, archives: HashMap<PathBuf,ni_file::nkr::Archive> }
+pub struct Resolver {
+    root: PathBuf,
+    index: Option<HashMap<String, Vec<PathBuf>>>,
+    archives: HashMap<PathBuf, ni_file::nkr::Archive>,
+    /// Archive members found zero-filled so far: an interrupted download
+    /// preallocates the archive and leaves the unfetched rest as zeros.
+    pub undownloaded: usize,
+}
 impl Resolver {
-    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new() } }
+    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), undownloaded: 0 } }
     pub fn resolve(&mut self, parent: &Path, name: &str) -> Result<Option<PathBuf>> {
         let name = name.replace('\\', "/");
         let direct = parent.join(&name);
@@ -427,8 +436,10 @@ impl Resolver {
             if !self.archives.contains_key(&archive) {
                 self.archives.insert(archive.clone(), ni_file::nkr::Archive::read(File::open(&archive)?).with_context(|| format!("Archive {}", archive.display()))?);
             }
-            if let Some(entry) = self.archives[&archive].find(&member).filter(|e| e.valid) {
-                return Ok(Some(archive.canonicalize()?.join(&entry.name)));
+            match self.archives[&archive].find(&member) {
+                Some(entry) if entry.valid => return Ok(Some(archive.canonicalize()?.join(&entry.name))),
+                Some(entry) if entry.issue == Some("Zero-filled NKX member header") => self.undownloaded += 1,
+                _ => {}
             }
             return Ok(None);
         }

@@ -147,7 +147,7 @@ pub struct Bank {
     pub bytes: usize,
     /// Preload frames per sample the memory budget allowed.
     pub preload: u64,
-    /// Zones dropped because their sample is missing, damaged or out of bounds.
+    /// Zones dropped because their sample is missing, unreadable or out of bounds.
     pub skipped_zones: usize,
     /// First few reasons for skipped zones.
     pub issues: Vec<String>,
@@ -204,7 +204,7 @@ impl Bank {
         let mut zone_samples = Vec::new();
         for (zone, id) in instrument.zones.iter().zip(zone_ids) {
             match id.map(|id| opened[id]) {
-                None => issues.skip(format_args!("missing {}", zone.sample.display())),
+                None => issues.skip(format_args!("unavailable {}", zone.sample.display())),
                 Some(None) => issues.skip(format_args!("unreadable {}", zone.sample.display())),
                 Some(Some(id)) => {
                     zones.push(zone.clone());
@@ -501,7 +501,7 @@ impl Builder {
         Ok((fits, best))
     }
 
-    /// Skip every zone of a sample whose data turned out to be damaged.
+    /// Skip every zone of a sample whose data turned out to be unreadable.
     fn drop_sample(&mut self, id: usize, error: &anyhow::Error) {
         let mut kept = self.plays.iter().map(|p| p.sample as usize != id);
         let before = self.zones.len();
