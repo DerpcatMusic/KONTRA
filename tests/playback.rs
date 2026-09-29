@@ -6,7 +6,7 @@ use kontakto::{
     },
     fx,
     import::{
-        Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Modulator, Resolver,
+        FlexEnvelope, FlexPoint, Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Modulator, Resolver,
         VoiceLimit, Zone,
     },
     ksp::{Runtime, Value, settle_persistence},
@@ -411,6 +411,7 @@ fn envelope_follows_group_ahdsr() {
     .unwrap();
     bank.settings[0].envelope = Some(Ahdsr {
         attack: 0.01,
+        curve: 0.0,
         hold: 0.0,
         decay: 0.05,
         sustain: 0.5,
@@ -439,6 +440,56 @@ fn envelope_follows_group_ahdsr() {
         out[2399][0]
     );
     render(&mut e, 2400);
+    assert_eq!(e.active_voices(), 0);
+}
+
+#[test]
+fn flex_envelope_shapes_group_volume() {
+    let point = |time_ms, level, curve| FlexPoint {
+        time_ms,
+        level,
+        curve,
+    };
+    let group = Group {
+        flex_env: Some(FlexEnvelope {
+            // Silent 5 ms, linear rise over 10 ms, sustain, 10 ms release
+            // bulging below the line (fast start).
+            points: vec![
+                point(5.0, 0.0, 0.5),
+                point(10.0, 1.0, 0.5),
+                point(10.0, 0.0, 0.0),
+            ],
+            sustain: 1,
+            unknown_index: 0,
+            unknown_tail: Vec::new(),
+        }),
+        ..Group::default()
+    };
+    let bank = Bank::from_samples(
+        vec![group],
+        vec![Zone {
+            loop_range: Some(Loop {
+                start: 0,
+                end: 100,
+                until_release: false,
+                crossfade: 0,
+            }),
+            ..Zone::default()
+        }],
+        vec![(PathBuf::new(), constant([1.0; 2], 100))],
+    )
+    .unwrap();
+    let mut e = engine_with(bank);
+    e.note_on(0, 60, 127);
+    let out = render(&mut e, 4800);
+    assert_eq!(out[200][0], 0.0, "delay segment");
+    assert!((out[240 + 239][0] - 0.5).abs() < 0.01, "{}", out[479][0]);
+    assert!((out[4799][0] - 1.0).abs() < 1e-5, "sustain point");
+    e.note_off(0, 60);
+    let out = render(&mut e, 480);
+    // A quarter of the way: linear would still be at 0.75.
+    assert!(out[119][0] < 0.3, "convex release: {}", out[119][0]);
+    render(&mut e, 64);
     assert_eq!(e.active_voices(), 0);
 }
 

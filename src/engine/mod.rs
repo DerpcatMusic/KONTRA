@@ -25,7 +25,7 @@ pub use bank::{Bank, GroupSettings, MEMORY_LIMIT, PRELOAD_FRAMES};
 pub use params::{MAX_WRITES, Mod, ModTable, VOICE_MODS};
 pub use rack::{BUSES, Block, PartControls, RACK_SLOTS, Rack};
 pub use script::{MAX_COMMANDS, ScriptSetup, load_scripts};
-pub use voice::Ahdsr;
+pub use voice::{Ahdsr, Flex, FlexPoint};
 
 use crate::fx::FxProcessor;
 use crate::ksp::Runtime;
@@ -564,6 +564,7 @@ impl Engine {
     fn defaults(&self) -> Ahdsr {
         Ahdsr {
             attack: self.attack,
+            curve: 0.0,
             hold: 0.0,
             decay: 0.0,
             sustain: 1.0,
@@ -806,7 +807,11 @@ impl Player {
             }
         });
         let base_level = zone.gain * gain;
-        let envelope = settings.envelope.unwrap_or(defaults);
+        let envelope = settings.envelope.unwrap_or(if settings.flex.is_some() {
+            Ahdsr::UNITY
+        } else {
+            defaults
+        });
         let mut voice = Voice {
             event,
             group: zone.group as u32,
@@ -831,6 +836,7 @@ impl Player {
             mods,
             stream,
             env: Envelope::new(&envelope, self.rate as f32),
+            flex: settings.flex.as_ref().map(|_| Envelope::flex()),
             fade: Fade::FULL,
             base_level,
             volume: ev.volume.max(0.0),

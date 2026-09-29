@@ -7,7 +7,7 @@ use crate::{
 };
 
 use super::{
-    EnvelopeAhdsr, ModTarget,
+    EnvelopeAhdsr, EnvelopeFlex, ModTarget,
     modulation::{ensure_consumed, read_name, read_targets},
 };
 
@@ -44,7 +44,8 @@ pub struct InternalModParams {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modulator {
     Ahdsr(EnvelopeAhdsr),
-    /// Undecoded modulator, identified by its chunk id (0x40 is the flex envelope).
+    Flex(EnvelopeFlex),
+    /// Undecoded modulator, identified by its chunk id.
     Other {
         chunk_id: u16,
     },
@@ -95,6 +96,7 @@ impl InternalMod {
             .ok_or(Error::Static("Modulator wrapper has no modulator"))?;
         Ok(match inner.id {
             0x3F => Modulator::Ahdsr(EnvelopeAhdsr::try_from(inner)?),
+            0x40 => Modulator::Flex(EnvelopeFlex::try_from(inner)?),
             chunk_id => Modulator::Other { chunk_id },
         })
     }
