@@ -325,7 +325,7 @@ fn voice_groups_limit_and_choke_their_members() {
     write_wav(&path, 1000);
     let groups = (0..3)
         .map(|voice_group| Group {
-            voice_group,
+            voice_group: Some(voice_group),
             ..Group::default()
         })
         .collect();
@@ -424,7 +424,7 @@ fn zone_crossfades_velocity_curve_and_start_offset() {
     let zone = Zone {
         low_velocity: 10,
         fade_low_velocity: 20,
-        start_mod: 1000,
+        start_mod: Some(1000),
         ..Zone::default()
     };
     let ramp = Sample {
@@ -565,7 +565,7 @@ fn streamed_playback_matches_ram_playback() {
             Zone {
                 sample: path.clone(),
                 loop_range: loop_range.clone(),
-                start_mod: 4000,
+                start_mod: Some(4000),
                 ..Zone::default()
             },
         ),
@@ -800,6 +800,23 @@ fn vista_harp_real_instrument() {
     let (peak, underruns) = render_real(bank, 60);
     assert!(peak > 0.001, "peak {peak}");
     assert_eq!(underruns, 0);
+}
+
+#[test]
+#[ignore = "uses the owner's installed library; never redistributes samples"]
+fn vista_harp_modulation_is_decoded() {
+    use kontakto::import::{ModSource, ModTarget};
+
+    let path = PathBuf::from(kontakto::import::LIBRARY_ROOT)
+        .join("Performance Samples Vista/Instruments/Bonus/Vista - Harp.nki");
+    let instrument = kontakto::import::read(&path).unwrap();
+    assert!(!instrument.warnings.iter().any(|w| w.contains("modulation not imported")));
+    for group in &instrument.groups {
+        let env = group.volume_env.as_ref().expect("every group has a volume AHDSR");
+        assert!(env.attack_ms >= 0.0 && (0.0..=1.0).contains(&env.sustain));
+        assert_eq!(group.cc_volume().map(|(cc, _)| cc), Some(11));
+        assert!(group.modulation(ModSource::KeyPosition, &ModTarget::Volume).is_some());
+    }
 }
 
 #[test]

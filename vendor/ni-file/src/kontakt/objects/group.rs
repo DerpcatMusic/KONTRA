@@ -18,9 +18,10 @@ pub struct Group(pub StructuredObject);
 #[derive(Debug)]
 pub struct GroupParams {
     pub name: String,
+    /// Linear amplitude ratio (0.5 is -6 dB).
     pub volume: f32,
     pub pan: f32,
-    /// Change pitch in semitones.
+    /// Linear pitch ratio (0.5 is one octave down), not semitones.
     pub tune: f32,
     /// Repitch samples to midi note triggered.
     pub key_tracking: bool,
@@ -35,12 +36,9 @@ pub struct GroupParams {
     pub muted: bool,
     pub soloed: bool,
     pub interp_quality: i32,
-    // v90
-    //     BParameterArraySerBParInternalMod16 0x3B
-    //     BParameterArraySerBParExternalMod32 0x3C
+    // Children: InternalModArray16 0x3B, ExternalModArray32 0x3C,
+    // BParGroupDynamics 0x4A (256 zero bytes in every local preset).
     pub start_criteria: StartCriteriaList,
-    // v95
-    //     BParGroupDynamics 0x4A
 }
 
 impl Group {

@@ -342,7 +342,7 @@ impl Builder {
                             zone.sample.display()
                         ));
                     }
-                    let start_mod = u64::from(zone.start_mod).min(map.end - map.start - 1);
+                    let start_mod = zone.start_mod.map_or(0, u64::from).min(map.end - map.start - 1);
                     plays.push(ZonePlay {
                         sample,
                         span: 0,
@@ -384,7 +384,7 @@ impl Builder {
         }
         for (settings, group) in self.settings.iter_mut().zip(&self.groups) {
             settings.interp_quality = group.interp_quality;
-            settings.voice_group = u16::try_from(group.voice_group).ok().filter(|&v| {
+            settings.voice_group = group.voice_group.and_then(|v| u16::try_from(v).ok()).filter(|&v| {
                 self.voice_groups
                     .get(v as usize)
                     .is_some_and(Option::is_some)

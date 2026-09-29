@@ -1,5 +1,6 @@
 pub mod ksp;
 pub mod import;
+pub mod modulation;
 pub mod audio;
 pub mod engine;
 pub mod fx;

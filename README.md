@@ -7,6 +7,7 @@ cargo moose install --clap --vst3 --user
 cargo run --release --features standalone --bin kontakto-standalone
 cargo run --release --no-default-features --bin kontakto -- scan
 cargo run --release --no-default-features --bin kontakto -- inspect '/path/to/instrument.nki'
+cargo run --release --no-default-features --bin kontakto -- inspect-mods '/path/to/instrument.nki'
 cargo run --release --no-default-features --bin kontakto -- audit > audit.json
 cargo run --release --no-default-features --bin kontakto -- render '/path/to/instrument.nki' /tmp/instrument.wav
 ```

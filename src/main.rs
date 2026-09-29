@@ -8,6 +8,7 @@ fn main() -> Result<()> {
   Some("inspect") => {let p=args.get(2).context("inspect requires an NKI path")?; println!("{}",serde_json::to_string_pretty(&import::read(Path::new(p))?)?);},
   Some("inspect-fx") => {let path=args.get(2).context("inspect-fx requires an NKI/NKM path")?;println!("{}",serde_json::to_string_pretty(&inspect_fx(Path::new(path))?)?);},
   Some("audit-fx") => {println!("{}",serde_json::to_string_pretty(&audit_fx(Path::new(args.get(2).map(String::as_str).unwrap_or(import::LIBRARY_ROOT)))?)?);},
+  Some("inspect-mods") => {let p=args.get(2).context("inspect-mods requires an NKI path")?;println!("{}",serde_json::to_string_pretty(&inspect_mods(Path::new(p))?)?);},
   Some("inspect-multi") => {let path=args.get(2).context("inspect-multi requires an NKM path")?;println!("{}",serde_json::to_string_pretty(&import::read_multi(Path::new(path))?)?);},
   Some("ui") => {let p=args.get(2).context("ui requires an NKI path")?;let i=import::read(Path::new(p))?;let mut host=kontakto::ksp::HostState::default();let report:Vec<_>=i.scripts.iter().map(|s|match kontakto::ksp::initialize_with_host(s,i.groups.len(),8,&mut host){Ok(ui)=>serde_json::json!({"interface":ui}),Err(e)=>serde_json::json!({"error":format!("{e:#}")})}).collect();println!("{}",serde_json::to_string_pretty(&report)?);},
   Some("audit-archives") => {
@@ -54,7 +55,7 @@ fn main() -> Result<()> {
   },
   Some("render") => render(&args[2..])?,
   Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto bench [voices=1000]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto bench [voices=1000]"),
  }
  Ok(())
 }
@@ -196,4 +197,46 @@ fn bench(voices: usize) -> Result<()> {
   let realtime = seconds / cpu;
   println!("{voices} voices · {seconds} s audio in {cpu:.3} s (best of 7) · {realtime:.1}x real time · {:.0} voices per core", voices as f64 * realtime);
   Ok(())
+}
+
+/// Group modulation, envelopes and zone crossfade summary; no sample data or paths.
+fn inspect_mods(path: &Path) -> Result<serde_json::Value> {
+    let instrument = import::read(path)?;
+    let groups: Vec<_> = instrument
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(index, group)| {
+            let zones: Vec<_> = instrument.zones.iter().filter(|z| z.group == index).collect();
+            let crossfaded = zones
+                .iter()
+                .filter(|z| {
+                    [z.fade_low_velocity, z.fade_high_velocity, z.fade_low_key, z.fade_high_key]
+                        .iter()
+                        .any(|fade| *fade != 0)
+                })
+                .count();
+            serde_json::json!({
+                "name": group.name,
+                "gain": group.gain,
+                "tune": group.tune,
+                "voice_group": group.voice_group,
+                "interp_quality": group.interp_quality,
+                "volume_env": group.volume_env,
+                "velocity_to_volume": group.velocity_to_volume(),
+                "pitch_bend_range": group.pitch_bend_range(),
+                "cc_volume": group.cc_volume().map(|(cc, _)| cc),
+                "mods": group.mods,
+                "zones": zones.len(),
+                "crossfaded_zones": crossfaded,
+                "start_mod_zones": zones.iter().filter(|z| z.start_mod.is_some_and(|frames| frames != 0)).count(),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "name": instrument.name,
+        "groups": groups,
+        "warnings": instrument.warnings,
+        "kontakt_behavior_verified": false,
+    }))
 }
