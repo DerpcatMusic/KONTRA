@@ -354,6 +354,21 @@ mod modulation {
     }
 
     #[test]
+    fn unassigned_external_mod_has_a_shorter_tail() {
+        let mut data = 1u32.to_le_bytes().to_vec();
+        target_header(&mut data, "volume", None, false);
+        data.push(0);
+        name(&mut data, "<none>");
+        data.extend(2u32.to_le_bytes());
+        data.extend([0, 0]);
+        data.extend(33u32.to_le_bytes());
+        let chunk = structured(0x0C, 0x101, &data, &[], &[]);
+        let params = ExternalMod::try_from(&chunk).unwrap().params().unwrap();
+        assert_eq!(params.source, ModSource::Unassigned);
+        assert_eq!(params.unknown_id, 33);
+    }
+
+    #[test]
     fn malformed_external_assignments_are_errors() {
         let valid = velocity_to_volume();
         let mut trailing = valid.clone();

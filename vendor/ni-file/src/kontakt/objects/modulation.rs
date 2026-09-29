@@ -154,9 +154,10 @@ pub struct ExternalModParams {
     /// Numeric id stored after the source; meaning unknown.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_id: u32,
-    /// Four source bytes of unknown meaning (e.g. `7f000000` for some CCs).
+    /// Source bytes of unknown meaning: four with a source (e.g. `7f000000`
+    /// for some CCs), two when unassigned.
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub unknown_source_data: [u8; 4],
+    pub unknown_source_data: Vec<u8>,
 }
 
 impl ExternalMod {
@@ -171,17 +172,16 @@ impl ExternalMod {
         let mut reader = Cursor::new(self.0.private_data.as_slice());
         let targets = read_targets(&mut reader)?;
         let name = read_name(&mut reader)?;
-        let source = match reader.read_u32_le()? {
-            1 => read_source(&mut reader)?,
-            2 => ModSource::Unassigned,
+        let (source, unknown_len) = match reader.read_u32_le()? {
+            1 => (read_source(&mut reader)?, 4),
+            2 => (ModSource::Unassigned, 2),
             other => {
                 return Err(Error::Generic(format!(
                     "Unknown external modulation category {other}"
                 )))
             }
         };
-        let mut unknown_source_data = [0; 4];
-        std::io::Read::read_exact(&mut reader, &mut unknown_source_data)?;
+        let unknown_source_data = reader.read_bytes(unknown_len)?;
         let unknown_id = reader.read_u32_le()?;
         ensure_consumed(&reader)?;
 
