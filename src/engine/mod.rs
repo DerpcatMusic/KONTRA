@@ -21,7 +21,7 @@ mod stream;
 mod voice;
 
 pub(crate) use bank::parallel;
-pub use bank::{Bank, GroupSettings, MEMORY_LIMIT, PRELOAD_FRAMES};
+pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES};
 pub use params::{MAX_WRITES, Mod, ModTable, VOICE_MODS};
 pub use rack::{BUSES, Block, PartControls, RACK_SLOTS, Rack};
 pub use script::{MAX_COMMANDS, ScriptSetup, load_scripts};

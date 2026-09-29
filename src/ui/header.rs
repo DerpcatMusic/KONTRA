@@ -105,19 +105,31 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     .fill(Role::Surface)
 }
 
-/// A 2 px line under the top bar; a segment sweeps across it while anything loads.
-pub fn loading_bar(view: &View, started: Instant) -> El {
+/// A 2 px line under the top bar. It fills as loading parts read their
+/// samples; before any sample is read, a segment sweeps across it.
+pub fn loading_bar(view: &View, p: &SamplerParams, started: Instant) -> El {
     let busy = view.parts.iter().any(|v| v.loading) || view.multi_status.starts_with("Loading");
     if !busy {
         return block(Len::Pct(100.), 2)
             .fill(Role::Ink.alpha(0.05))
             .shrink(0);
     }
-    // Bank loading reports no fraction, so this shows activity, not progress.
+    let fractions: Vec<f64> = (view.parts.iter().enumerate())
+        .filter(|(_, v)| v.loading)
+        .map(|(n, _)| {
+            let done = p.shared.load_progress[n].load(Ordering::Relaxed);
+            f64::from(done) / f64::from(crate::engine::LOAD_DONE)
+        })
+        .collect();
+    let fraction = fractions.iter().sum::<f64>() / fractions.len().max(1) as f64;
     let phase = (started.elapsed().as_secs_f64() / 1.4).fract();
     canvas(move |s| {
-        let w = s.width * 0.3;
-        let x = -w + phase * (s.width + w);
+        let (x, w) = if fraction > 0. {
+            (0., fraction.min(1.) * s.width)
+        } else {
+            let w = s.width * 0.3;
+            (-w + phase * (s.width + w), w)
+        };
         let r = |x: f64, w: f64| {
             Path::polyline(
                 [(x, 0.), (x + w, 0.), (x + w, s.height), (x, s.height)]

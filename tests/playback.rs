@@ -6,8 +6,8 @@ use kontakto::{
     },
     fx,
     import::{
-        FlexEnvelope, FlexPoint, Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Modulator, Resolver,
-        VoiceLimit, Zone,
+        FlexEnvelope, FlexPoint, Group, Instrument, Loop, ModAssignment, ModSource, ModTarget,
+        Modulator, Resolver, VoiceLimit, Zone,
     },
     ksp::{Runtime, Value, settle_persistence},
 };
@@ -697,7 +697,14 @@ fn streamed_playback_matches_ram_playback() {
             ..zone.clone()
         };
         let instrument = instrument(vec![group.clone()], vec![zone.clone()]);
-        let mut streamed = Bank::load(&instrument).unwrap();
+        let progress = std::sync::atomic::AtomicU32::new(0);
+        let mut streamed =
+            Bank::load_counting(&instrument, kontakto::engine::MEMORY_LIMIT, &progress).unwrap();
+        assert_eq!(
+            progress.into_inner(),
+            kontakto::engine::LOAD_DONE,
+            "a load ends at done"
+        );
         if shrink.is_some() {
             streamed = Bank::load_within(&instrument, streamed.planned - 1).unwrap();
             assert!(streamed.preload < PRELOAD_FRAMES, "case {n}");

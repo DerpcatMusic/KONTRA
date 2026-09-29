@@ -373,7 +373,7 @@ fn build(
             .selected
             .store(state.selected as u64, Ordering::Relaxed);
 
-        let mut shell = vec![top, header::loading_bar(&view, state.started)];
+        let mut shell = vec![top, header::loading_bar(&view, &p, state.started)];
         shell.extend(settings);
         shell.push(row![sidebar, vrule(), main].flex(1).min_h(0));
         shell.push(rule());
