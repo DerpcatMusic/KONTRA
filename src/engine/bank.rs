@@ -589,7 +589,9 @@ fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), 
     let looped = match &zone.loop_range {
         Some(l) => {
             let (ls, le) = (l.start as u64, l.end as u64);
-            if ls < start || ls >= le || le > end {
+            // Zones may start inside or past their loop (Vista's sustains
+            // do): the path enters the loop mid-cycle or plays straight through.
+            if ls >= le || le > end {
                 return Err("invalid loop");
             }
             // The crossfade blends toward the frames before the loop start, which must exist.
