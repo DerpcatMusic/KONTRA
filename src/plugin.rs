@@ -1,4 +1,4 @@
-use crate::{engine::{Bank,Engine,MAX_BLOCK,Rack,PartControls,RACK_SLOTS}, import::{self, Instrument}};
+use crate::{engine::{Bank,Engine,MAX_BLOCK,Rack,PartControls,RACK_SLOTS}, fx::FxProcessor, import::{self, Instrument}};
 use crossbeam_queue::ArrayQueue;
 #[path="artwork.rs"] mod artwork;
 use moose::mui::mui::{scene::{Theme,Color,TypeScale,Fill,Fit},geometry::Path as DrawPath};
@@ -32,19 +32,31 @@ pub struct SamplerParams {
 use SamplerParamsParamId as P;
 
 pub struct Shared {
-    ready:ArrayQueue<(usize,u64,Option<Box<Bank>>)>, discard:ArrayQueue<Box<Bank>>,
+    ready:ArrayQueue<(usize,u64,Handoff)>, discard:ArrayQueue<(Option<Box<Bank>>,FxProcessor)>,
+    /// Host sample rate (`f64` bits) that effect processors are built for.
+    rate:AtomicU64,
     key_owners:[AtomicU64;128],keyboard:ArrayQueue<(usize,u8,bool)>, controls:ArrayQueue<[PartControls;RACK_SLOTS]>, generation:[AtomicU64;RACK_SLOTS],
     audition:AtomicBool, audition_note:AtomicU64, selected:AtomicU64, focus_request:AtomicU64, panic:AtomicBool, midi_thru:AtomicBool,
     multi_request:Mutex<Option<String>>,view:Mutex<View>,
 }
 #[derive(Default,Clone)]
-struct PartView {program:u32,interface:Option<Arc<crate::ksp::Interface>>,interface_status:String,wallpaper:Option<Arc<moose::mui::mui::scene::Image>>,wallpaper_status:String,attempted:Option<(String,u32)>,instrument:Option<Arc<Instrument>>,status:String,active:String,bytes:usize}
+struct PartView {program:u32,interface:Option<Arc<crate::ksp::Interface>>,interface_status:String,wallpaper:Option<Arc<moose::mui::mui::scene::Image>>,wallpaper_status:String,attempted:Option<(String,u32)>,instrument:Option<Arc<Instrument>>,status:String,active:String,bytes:usize,
+    /// Rate of the effects handed to the audio thread; 0 when none were.
+    fx_rate:f64}
 #[derive(Clone)]
 struct View {multi_status:String,artwork:std::collections::HashMap<String,Arc<moose::mui::mui::scene::Image>>,root:String,files:Arc<Vec<PathBuf>>,parts:[PartView;RACK_SLOTS],status:String}
 impl Default for Shared {
-    fn default()->Self {Self {ready:ArrayQueue::new(32),discard:ArrayQueue::new(32),key_owners:std::array::from_fn(|_|AtomicU64::new(128)),keyboard:ArrayQueue::new(256),controls:ArrayQueue::new(1),generation:std::array::from_fn(|_|AtomicU64::new(0)),audition:AtomicBool::new(false),audition_note:AtomicU64::new(128),selected:AtomicU64::new(0),focus_request:AtomicU64::new(128),panic:AtomicBool::new(false),midi_thru:AtomicBool::new(false),multi_request:Mutex::new(None),view:Mutex::new(View{multi_status:String::new(),artwork:Default::default(),root:String::new(),files:Arc::default(),parts:std::array::from_fn(|_|PartView::default()),status:"Choose a library and select a preset".into()})}}
+    fn default()->Self {Self {ready:ArrayQueue::new(64),discard:ArrayQueue::new(64),rate:AtomicU64::new(48000f64.to_bits()),key_owners:std::array::from_fn(|_|AtomicU64::new(128)),keyboard:ArrayQueue::new(256),controls:ArrayQueue::new(1),generation:std::array::from_fn(|_|AtomicU64::new(0)),audition:AtomicBool::new(false),audition_note:AtomicU64::new(128),selected:AtomicU64::new(0),focus_request:AtomicU64::new(128),panic:AtomicBool::new(false),midi_thru:AtomicBool::new(false),multi_request:Mutex::new(None),view:Mutex::new(View{multi_status:String::new(),artwork:Default::default(),root:String::new(),files:Arc::default(),parts:std::array::from_fn(|_|PartView::default()),status:"Choose a library and select a preset".into()})}}
 }
 fn rack_controls(selection:&Selection)->[PartControls;RACK_SLOTS] {std::array::from_fn(|n|selection.parts.get(n).map(|p|PartControls {port:p.port.min(3),output:p.output.min(7),channel:p.channel.clamp(-1,15),gain:if p.gain.is_finite(){db_to_linear(p.gain.clamp(-60.,6.))}else{1.},pan:if p.pan.is_finite(){p.pan.clamp(-1.,1.)}else{0.},mute:p.mute,solo:p.solo}).unwrap_or_default())}
+/// Loader-built state for one rack slot, installed by the audio thread.
+enum Handoff {
+    /// A new instrument, or an empty slot, with its effects.
+    Part{bank:Option<Box<Bank>>,fx:FxProcessor},
+    /// Effects rebuilt for a new host sample rate; the bank stays.
+    Fx(FxProcessor),
+}
+impl Shared {fn rate(&self)->f64 {f64::from_bits(self.rate.load(Ordering::Acquire))}}
 pub struct Load;
 impl BackgroundTask for Load {
     type Params=SamplerParams;
@@ -77,7 +89,7 @@ impl BackgroundTask for Load {
                 v.attempted=Some(target.clone());v.status="Loading samples…".into();
                 v.instrument.as_ref().filter(|i|i.path==Path::new(&part.path) && v.program==part.program).cloned()};
             let generation=params.shared.generation[slot].fetch_add(1,Ordering::AcqRel)+1;
-            if part.path.is_empty() {params.shared.view.lock().unwrap().parts[slot]=PartView{attempted:Some(target),..Default::default()};let _=params.shared.ready.force_push((slot,generation,None));continue;}
+            if part.path.is_empty() {params.shared.view.lock().unwrap().parts[slot]=PartView{attempted:Some(target),..Default::default()};let _=params.shared.ready.force_push((slot,generation,Handoff::Part{bank:None,fx:FxProcessor::default()}));continue;}
             let result=(||->anyhow::Result<_>{
                 let instrument=if let Some(i)=cached {i}else{Arc::new(import::read_program(Path::new(&part.path),part.program)?)};
                 {
@@ -102,7 +114,18 @@ impl BackgroundTask for Load {
             })();
             let current=params.selection.read().unwrap();if current.parts.get(slot).map(|p|(&p.path,p.program))!=Some((&target.0,target.1)) {continue;}drop(current);
             let mut view=params.shared.view.lock().unwrap();let v=&mut view.parts[slot];
-            match result {Ok((instrument,bank))=>{v.active=instrument.name.clone();v.bytes=bank.as_ref().map(|b|b.bytes).unwrap_or(0);v.status=bank.as_deref().map(bank_status).unwrap_or_else(||"Controller instrument · KSP playback unavailable".into());let _=params.shared.ready.force_push((slot,generation,bank));},Err(e)=>v.status=format!("Load failed: {e:#}")}
+            match result {Ok((instrument,bank))=>{v.active=instrument.name.clone();v.bytes=bank.as_ref().map(|b|b.bytes).unwrap_or(0);v.status=bank.as_deref().map(bank_status).unwrap_or_else(||"Controller instrument · KSP playback unavailable".into());
+                let rate=params.shared.rate();v.fx_rate=rate;let fx=instrument.fx.processor(rate as f32,MAX_BLOCK);let _=params.shared.ready.force_push((slot,generation,Handoff::Part{bank,fx}));},
+                Err(e)=>{v.status=format!("Load failed: {e:#}");v.fx_rate=0.;}}
+        }
+        // The host changed sample rate since these effects were built: rebuild them here, off the audio thread.
+        let rate=params.shared.rate();
+        for slot in 0..RACK_SLOTS {
+            let stale={let view=params.shared.view.lock().unwrap();let v=&view.parts[slot];v.instrument.clone().filter(|_|v.fx_rate!=0. && v.fx_rate!=rate)};
+            let Some(instrument)=stale else {continue};
+            let fx=instrument.fx.processor(rate as f32,MAX_BLOCK);
+            params.shared.view.lock().unwrap().parts[slot].fx_rate=rate;
+            let _=params.shared.ready.force_push((slot,params.shared.generation[slot].load(Ordering::Acquire),Handoff::Fx(fx)));
         }
     }
 }
@@ -131,7 +154,7 @@ fn bank_status(bank: &Bank) -> String {
 impl PluginLogic for Sampler {
     type Params=SamplerParams;type DspState=Dsp;
     fn bus_layouts()->Vec<BusLayout> {vec![BusLayout::new().with_output("Main",ChannelConfig::Stereo).with_output("Out 2",ChannelConfig::Stereo).with_output("Out 3",ChannelConfig::Stereo).with_output("Out 4",ChannelConfig::Stereo).with_output("Out 5",ChannelConfig::Stereo).with_output("Out 6",ChannelConfig::Stereo).with_output("Out 7",ChannelConfig::Stereo).with_output("Out 8",ChannelConfig::Stereo)]}
-    fn reset(s:&mut Dsp,_:&SamplerParams,c:&AudioConfig){s.rack.reset(c.sample_rate);s.until_poll=0;s.audition_left.fill(0);}
+    fn reset(s:&mut Dsp,p:&SamplerParams,c:&AudioConfig){s.rack.reset(c.sample_rate);p.shared.rate.store(c.sample_rate.to_bits(),Ordering::Release);s.until_poll=0;s.audition_left.fill(0);}
     fn process(s: &mut Dsp, p: &SamplerParams, b: &mut AudioBuffer, events: &EventList, cx: &mut ProcessContext) -> ProcessStatus {
         let rate = s.rack.parts[0].rate();
         let frames = b.num_samples();
@@ -146,19 +169,22 @@ impl PluginLogic for Sampler {
         if let Some(controls) = p.shared.controls.pop() {
             s.rack.set_controls(controls);
         }
-        // Retired banks go back to the loader thread to be freed; stop while it cannot take more.
+        // Retired banks and effects go back to the loader thread to be freed;
+        // stop while it cannot take more.
         while !p.shared.discard.is_full() {
-            let Some((slot, generation, bank)) = p.shared.ready.pop() else { break };
-            let retired = if generation == p.shared.generation[slot].load(Ordering::Acquire) {
-                let engine = &mut s.rack.parts[slot];
-                engine.reset(rate);
-                engine.set_bank(bank)
-            } else {
-                bank
+            let Some((slot, generation, handoff)) = p.shared.ready.pop() else { break };
+            let engine = &mut s.rack.parts[slot];
+            let current = generation == p.shared.generation[slot].load(Ordering::Acquire);
+            let retired = match handoff {
+                Handoff::Part { bank, fx } if current => {
+                    engine.reset(rate);
+                    (engine.set_bank(bank), engine.set_fx(fx))
+                }
+                Handoff::Fx(fx) if current => (None, engine.set_fx(fx)),
+                Handoff::Part { bank, fx } => (bank, fx),
+                Handoff::Fx(fx) => (None, fx),
             };
-            if let Some(old) = retired {
-                let _ = p.shared.discard.push(old);
-            }
+            let _ = p.shared.discard.push(retired);
         }
         for e in &mut s.rack.parts {
             e.attack = p.attack.value();
@@ -553,6 +579,9 @@ mod tests {
         for ch in [0,2] {assert!(buffer.output(ch).iter().all(|x|x.is_finite()));assert!(buffer.output(ch).iter().any(|x|x.abs()>0.00001));}
         p.selection.write().unwrap().parts[0]=Part::default();Load.run(&p);Sampler::process(&mut dsp,&p,&mut buffer,&EventList::with_capacity(0),&mut cx);
         assert!(dsp.rack.parts[0].bank().is_none());assert!(dsp.rack.parts[1].bank().is_some());assert!(dsp.rack.parts[1].active_voices()>0);
+        // A host rate change rebuilds the effects on the loader and keeps the bank.
+        Sampler::reset(&mut dsp,&p,&AudioConfig::new(44100.,2048));Load.run(&p);assert_eq!(p.shared.view.lock().unwrap().parts[1].fx_rate,44100.);assert!(!p.shared.ready.is_empty());
+        Sampler::process(&mut dsp,&p,&mut buffer,&EventList::with_capacity(0),&mut cx);assert!(p.shared.ready.is_empty());assert!(dsp.rack.parts[1].bank().is_some());
     }
     #[test]
     fn rack_interactions() {

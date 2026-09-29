@@ -13,7 +13,6 @@ fn effect(kind: Kind, params: Params) -> Effect {
         output_gain: 1.0,
         dry_level: 0.0,
         params,
-        runtime: None,
     }
 }
 
@@ -43,13 +42,13 @@ fn convolution(ir: &[f32]) -> Effect {
     fx
 }
 
-fn chain(slots: Vec<Effect>) -> Chain {
-    let mut chain = Chain {
-        slots,
-        max_block: 0,
-    };
-    chain.prepare(SR, 64);
-    chain
+/// A processor running `slots` as the insert rack, in 64-frame blocks.
+fn chain(slots: Vec<Effect>) -> FxProcessor {
+    ProgramFx {
+        insert: Chain { slots },
+        ..Default::default()
+    }
+    .processor(SR, 64)
 }
 
 fn ramp(n: usize) -> (Vec<f32>, Vec<f32>) {
@@ -103,19 +102,16 @@ fn send_levels_feed_parallel_send_slots() {
     let mut fx = ProgramFx {
         insert: Chain {
             slots: vec![levels],
-            max_block: 0,
         },
         send: Chain {
             slots: vec![unfed, fed],
-            max_block: 0,
         },
         main: Chain {
             slots: vec![gainer(0.5)],
-            max_block: 0,
         },
         ..Default::default()
-    };
-    fx.prepare(SR, 32);
+    }
+    .processor(SR, 32);
     let (mut l, mut r) = ramp(100);
     let (l0, r0) = (l.clone(), r.clone());
     fx.process(&mut l, &mut r);
@@ -163,6 +159,32 @@ fn reverb_effect_is_finite_with_hostile_input() {
         c.process(&mut l, &mut r);
         assert!(l.iter().chain(&r).all(|v| v.is_finite()));
     }
+}
+
+#[test]
+fn tail_rings_through_silence_then_idles() {
+    let mut ir = vec![0.0; 300];
+    ir[250] = 1.0;
+    let mut c = chain(vec![convolution(&ir)]);
+    let mut block = |first: f32| {
+        let mut l = vec![0.0; 64];
+        l[0] = first;
+        let mut r = l.clone();
+        c.process(&mut l, &mut r);
+        l
+    };
+    let out: Vec<f32> = (0..8)
+        .flat_map(|i| block(if i == 0 { 1.0 } else { 0.0 }))
+        .collect();
+    assert!(
+        (out[250] - 1.0).abs() < 1e-5,
+        "the echo sounds after the input fell silent"
+    );
+    for _ in 0..3 {
+        block(0.0);
+    }
+    // Silent longer than the IR: below-threshold input passes untouched.
+    assert_eq!(block(1e-7)[0], 1e-7);
 }
 
 fn chunk(id: u16, data: Vec<u8>) -> Vec<u8> {
@@ -307,11 +329,7 @@ fn bench() {
         ("convolution 5 s", with_dry(convolution(&noise_ir(5.0)))),
     ];
     for (name, fx) in cases {
-        let mut c = Chain {
-            slots: vec![fx],
-            max_block: 0,
-        };
-        c.prepare(SR, BLOCK);
+        let mut c = chain(vec![fx]);
         let (mut l, mut r) = ramp(BLOCK);
         let mut worst = 0u128;
         let start = std::time::Instant::now();

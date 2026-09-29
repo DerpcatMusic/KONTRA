@@ -50,6 +50,10 @@ impl Line {
     fn write(&mut self, pos: usize, value: f32) {
         self.buf[pos & self.mask] = value;
     }
+
+    fn clear(&mut self) {
+        self.buf.fill(0.0);
+    }
 }
 
 pub struct Reverb {
@@ -74,6 +78,8 @@ pub struct Reverb {
     shelf_gain: f32,
     shelf_state: [f32; 2],
     width: f32,
+    /// Frames until an impulse decays below -120 dB.
+    tail: usize,
 }
 
 /// One-pole lowpass coefficient for cutoff `hz`.
@@ -118,7 +124,23 @@ impl Reverb {
             shelf_gain: 10f32.powf(-18.0 * n(p.low_shelf) / 20.0) - 1.0,
             shelf_state: [0.0; 2],
             width: n(p.stereo),
+            tail: (2.0 * rt60 * sample_rate) as usize + predelay_len,
         }
+    }
+
+    /// Frames of output after the input falls silent (to -120 dB).
+    pub fn tail(&self) -> usize {
+        self.tail
+    }
+
+    /// Silences the network.
+    pub fn clear(&mut self) {
+        self.predelay.clear();
+        self.allpass.iter_mut().flatten().for_each(Line::clear);
+        self.lines.iter_mut().for_each(Line::clear);
+        self.damp_state = [0.0; LINES];
+        self.input_state = [0.0; 2];
+        self.shelf_state = [0.0; 2];
     }
 
     /// Replaces `left`/`right` with the wet (100%) reverb signal.

@@ -56,7 +56,7 @@ fn main() -> Result<()> {
   Some("render") => render(&args[2..])?,
   Some("ksp-run") => ksp_run(Path::new(args.get(2).context("ksp-run requires an NKI path")?),&args[3..])?,
   Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000]"),
  }
  Ok(())
 }
@@ -107,8 +107,11 @@ fn audit_fx(root: &Path) -> Result<serde_json::Value> {
     Ok(serde_json::json!({"presets": presets, "failures": failures, "kinds": kinds}))
 }
 
-/// Render a note through every playable group (or one group) to a WAV file.
+/// Render a note through every playable group (or one group) and the
+/// instrument effects (`--dry` skips them) to a WAV file, with the tail.
 fn render(args: &[String]) -> Result<()> {
+  let dry = args.iter().any(|a| a == "--dry");
+  let args: Vec<_> = args.iter().filter(|a| *a != "--dry").cloned().collect();
   let instrument = import::read(Path::new(args.first().context("render requires an NKI path")?))?;
   let output = args.get(1).context("render requires an output WAV path")?;
   ensure!(!Path::new(output).exists(), "Output already exists; choose a new output path");
@@ -128,6 +131,9 @@ fn render(args: &[String]) -> Result<()> {
   let mut engine = Engine::default();
   engine.blocking_streams = true;
   engine.set_bank(Some(Box::new(bank)));
+  if !dry {
+    engine.set_fx(instrument.fx.processor(engine.rate() as f32, MAX_BLOCK));
+  }
   if let Some(g) = group {
     engine.set_all_groups_allowed(false);
     engine.set_group_allowed(g, true);
@@ -137,26 +143,46 @@ fn render(args: &[String]) -> Result<()> {
   engine.note_on(0, note, velocity);
   let (mut peak, mut square) = (0f32, 0f64);
   let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
-  let blocks = 48000 * 4 / MAX_BLOCK;
-  for block in 0..blocks {
-    if block == blocks / 2 {
+  // Hold 2 s, then render until voices end and the effect tails fall below
+  // -120 dB, for at least 4 s and at most 60 s.
+  let (held, min_blocks, max_blocks) = (48000 * 2 / MAX_BLOCK, 48000 * 4 / MAX_BLOCK, 48000 * 60 / MAX_BLOCK);
+  let (mut blocks, mut voices_end, mut last_audible) = (0, None, 0);
+  loop {
+    if blocks == held {
       engine.note_off(0, note);
     }
     engine.render(&mut left, &mut right);
+    let mut block_peak = 0f32;
     for (l, r) in left.iter().zip(&right) {
       for sample in [l * 0.25, r * 0.25] {
         ensure!(sample.is_finite(), "Nonfinite rendered audio");
-        peak = peak.max(sample.abs());
+        block_peak = block_peak.max(sample.abs());
         square += f64::from(sample) * f64::from(sample);
         writer.write_sample(sample)?;
       }
     }
+    peak = peak.max(block_peak);
+    blocks += 1;
+    if block_peak > peak * 1e-3 {
+      last_audible = blocks;
+    }
+    if blocks > held && engine.active_voices() == 0 {
+      voices_end.get_or_insert(blocks);
+    }
+    if blocks >= max_blocks || (blocks >= min_blocks && voices_end.is_some() && block_peak <= 1e-6) {
+      break;
+    }
   }
   writer.finalize()?;
+  let seconds = |blocks: usize| (blocks * MAX_BLOCK) as f64 / 48000.0;
+  let tail = voices_end.map_or("voices still playing at 60 s".into(), |end| {
+    format!("{:.2} s to -60 dB re peak after the last voice", seconds(last_audible.saturating_sub(end)))
+  });
   ensure!(peak > 0.00001, "Rendered silence; chosen key/velocity has no audible zone");
   let groups = group.map_or_else(|| "all groups".to_string(), |g| format!("group {g} ({})", instrument.groups[g].name));
   let rms = (square / (blocks * MAX_BLOCK * 2) as f64).sqrt();
-  println!("{} · {groups} · note {note} · peak {peak:.6} · RMS {rms:.6} · {streamed} streamed samples · {} underruns", instrument.name, engine.underruns());
+  let fx = if dry { "dry" } else { "with effects" };
+  println!("{} · {groups} · note {note} · {fx} · {:.2} s · peak {peak:.6} · RMS {rms:.6} · {tail} · {streamed} streamed samples · {} underruns", instrument.name, seconds(blocks), engine.underruns());
   for warning in instrument.warnings {
     eprintln!("Compatibility: {warning}");
   }

@@ -73,6 +73,14 @@ impl Partitioned {
         }
     }
 
+    fn clear(&mut self) {
+        self.segments.fill(Complex32::default());
+        self.history.fill(Complex32::default());
+        self.input.fill(0.0);
+        self.overlap.fill(0.0);
+        (self.current, self.pending, self.fill) = (0, 1, 0);
+    }
+
     fn count(&self) -> usize {
         self.segments.len() / self.bins
     }
@@ -162,6 +170,7 @@ pub struct Convolver {
     head: Partitioned,
     tail: Option<Tail>,
     scratch: Vec<f32>,
+    len: usize,
 }
 
 struct Tail {
@@ -190,6 +199,23 @@ impl Convolver {
             head,
             tail,
             scratch: vec![0.0; max_block],
+            len: ir.len(),
+        }
+    }
+
+    /// Impulse response length in frames.
+    pub fn ir_len(&self) -> usize {
+        self.len
+    }
+
+    /// Silences the convolver's history.
+    pub fn clear(&mut self) {
+        self.head.clear();
+        if let Some(tail) = &mut self.tail {
+            tail.conv.clear();
+            tail.input.fill(0.0);
+            tail.output.fill(0.0);
+            tail.pos = 0;
         }
     }
 
