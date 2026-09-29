@@ -310,9 +310,10 @@ fn screenshot() {
                         group: i.first_playable_group().unwrap_or(0) as u32,
                         ..Default::default()
                     });
-                    let (interface, _, keys) = script_interface(
+                    let script = script_interface(
                         load_scripts(i, i.script_state.clone(), 48000.).0.as_deref(),
                     );
+                    let (interface, keys) = (script.interface, script.keys);
                     view.parts[slot] = PartView {
                         wallpaper: artwork::performance(
                             i,
@@ -403,4 +404,66 @@ fn screenshot() {
             }
         }
     }
+}
+
+#[test]
+fn performance_controls_edit_the_script() {
+    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_knob $vibrato(0, 100, 1)\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
+    let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
+    let (rt, errors) = crate::ksp::Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    let path = "/virtual/Library/Solo.nki";
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(Part {
+        path: path.into(),
+        ..Default::default()
+    });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.files = Arc::new(vec![path.into()]);
+        view.parts[0].interface = script_interface(Some(&rt)).interface;
+        view.parts[0].instrument = Some(Arc::new(import::Instrument {
+            path: path.into(),
+            name: "Solo".into(),
+            groups: Vec::new(),
+            zones: Vec::new(),
+            warnings: Vec::new(),
+            missing_samples: Vec::new(),
+            scripts: vec![script.into()],
+            fx: Default::default(),
+            voice_limit: None,
+            voice_groups: Vec::new(),
+            script_state: Vec::new(),
+        }));
+    }
+    let value = |n: usize| {
+        let view = p.shared.view.lock().unwrap();
+        view.parts[0].interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"]
+            .clone()
+    };
+    let mut h = Harness::new(&p, 1180., 760.);
+
+    h.press("ksp-control-0");
+    assert_eq!(value(0), crate::ksp::Value::Int(1), "a switch toggles on");
+    h.press("ksp-control-0");
+    assert_eq!(value(0), crate::ksp::Value::Int(0), "and off");
+
+    let knob = center(&h.ui, "ksp-control-1");
+    for y in [0., -10., -60.] {
+        h.tick(pointer(Point::new(knob.x, knob.y + y), true));
+    }
+    h.tick(pointer(Point::new(knob.x, knob.y - 60.), false));
+    h.idle(2);
+    let crate::ksp::Value::Int(dragged) = value(1) else {
+        panic!("knob value")
+    };
+    assert!(dragged > 10, "dragging a knob up raises it, got {dragged}");
+
+    h.press("ksp-control-2");
+    h.press("ksp-menu-2-1");
+    assert_eq!(
+        value(2),
+        crate::ksp::Value::Int(1),
+        "a menu item sets the menu"
+    );
 }

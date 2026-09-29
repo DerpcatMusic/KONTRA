@@ -4,6 +4,7 @@
 
 use super::builtins::{self as b, FIRST_UI_ID};
 use super::compile::{Program, Ty, VarId};
+use super::runtime::{copy_text, refresh_value};
 use super::vm::Memory;
 use super::{Control, Interface, Value};
 use std::borrow::Cow;
@@ -168,6 +169,33 @@ impl Ui {
     /// Control index for a UI variable.
     pub fn control_of(&self, v: VarId) -> Option<usize> {
         self.control(self.var_ids[v as usize])
+    }
+
+    /// Copy properties, values and menu items into `out`, built by
+    /// [`interface`](Self::interface), without allocating.
+    pub fn refresh(&self, prog: &Program, mem: &Memory, out: &mut Interface) {
+        for (c, o) in self.controls.iter().zip(&mut out.controls) {
+            for (par, v) in &c.props {
+                let Some(name) = prog.symbol_name(*par) else {
+                    continue;
+                };
+                match (v, o.properties.get_mut(name)) {
+                    (Prop::Int(n), Some(Value::Int(d))) => *d = *n,
+                    (Prop::Str(s), Some(Value::Text(d))) => copy_text(d, s),
+                    _ => {}
+                }
+            }
+            if let Some(v) = o.properties.get_mut("$CONTROL_PAR_VALUE") {
+                refresh_value(mem, &prog.vars[c.var as usize], v);
+            }
+            let visible = c.menu.iter().filter(|m| m.visible);
+            if visible.clone().count() == o.menu.len() {
+                for (m, (text, value)) in visible.zip(&mut o.menu) {
+                    copy_text(text, &m.text);
+                    *value = m.value;
+                }
+            }
+        }
     }
 
     pub fn interface(&self, prog: &Program, mem: &Memory) -> Interface {

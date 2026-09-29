@@ -594,3 +594,42 @@ fn note_on_cost() {
     let ns = start.elapsed().as_nanos() as f64 / f64::from(n);
     println!("{ns:.0} ns per note-on + note-off pair (both callbacks, logging engine)");
 }
+
+#[test]
+fn live_view_follows_ui_control() {
+    let script = "on init\nmake_perfview\ndeclare ui_switch $legato\ndeclare ui_label $l(1,1)\nset_text($l, \"Sustain\")\nset_key_color(36, $KEY_COLOR_RED)\nend on\non ui_control($legato)\nset_text($l, \"Legato\")\nset_key_color(36, $KEY_COLOR_BLUE)\nset_key_name(37, \"Legato\")\nset_control_par(get_ui_id($l), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nend on";
+    let mut rig = Rig::new(&[script]);
+    let mut live = rig.rt.live();
+    let ui = live.interface.as_ref().unwrap();
+    assert_eq!(prop(ui, 1, "$CONTROL_PAR_TEXT"), "Sustain");
+    assert_eq!(
+        live.keys[&36].color,
+        Some(Value::Text("$KEY_COLOR_RED".into()))
+    );
+    assert_eq!(live.keys[&37].name, "");
+    let buffer = live.keys[&37].name.as_ptr();
+
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    rig.rt.refresh_live(&mut live);
+    let ui = live.interface.as_ref().unwrap();
+    assert_eq!(
+        ui.controls[0].properties["$CONTROL_PAR_VALUE"],
+        Value::Int(1)
+    );
+    assert_eq!(prop(ui, 1, "$CONTROL_PAR_TEXT"), "Legato");
+    assert_eq!(
+        ui.controls[1].properties["$CONTROL_PAR_HIDE"],
+        Value::Int(1)
+    );
+    assert_eq!(
+        live.keys[&36].color,
+        Some(Value::Text("$KEY_COLOR_BLUE".into()))
+    );
+    assert_eq!(live.keys[&37].name, "Legato");
+    assert_eq!(live.keys[&37].name.as_ptr(), buffer, "refreshed in place");
+    assert_eq!(live, {
+        let mut l = rig.rt.live();
+        rig.rt.refresh_live(&mut l);
+        l
+    });
+}

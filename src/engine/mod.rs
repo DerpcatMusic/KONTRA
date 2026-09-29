@@ -408,6 +408,15 @@ impl Engine {
         self.player.pressure[channel as usize] = value;
     }
 
+    /// A host edit of script control `control` in script slot `slot`: sets its
+    /// value and runs the script's `on ui_control`.
+    pub fn ui_control(&mut self, slot: usize, control: usize, value: i32) {
+        let channel = self.script_channel;
+        if let Some((rt, mut host)) = self.scripted(channel) {
+            rt.ui_control(&mut host, slot, control, value);
+        }
+    }
+
     /// Polyphonic key pressure; only scripts react to it.
     pub fn poly_pressure(&mut self, channel: u8, note: u8, value: u8) {
         if let Some((rt, mut host)) = self.scripted(channel.min(15)) {

@@ -213,18 +213,20 @@ pub fn perform(ui: &mut Ui, cx: &mut Cx) -> El {
         .scene()
         .and_then(|s| s.surface("instrument-stage"))
         .map(|s| (s.frame.size.width, s.frame.size.height));
-    let content = match (&v.interface, &v.wallpaper) {
+    let scripted = current(cx).is_some_and(|i| !i.scripts.is_empty());
+    let (interface, wallpaper) = (v.interface.clone(), v.wallpaper.clone());
+    let content = match (interface, wallpaper) {
         (Some(interface), wallpaper) if loaded => {
-            performance_view(interface, wallpaper.as_ref(), stage_size)
+            performance_view(ui, cx, &interface, wallpaper.as_ref(), stage_size)
         }
         (None, Some(image)) if loaded => block(Len::Pct(100.), Len::Pct(100.))
-            .fill(Fill::Image(image.clone(), Fit::Contain))
+            .fill(Fill::Image(image, Fit::Contain))
             .named("Instrument wallpaper")
             .id("instrument-wallpaper"),
         _ => {
             let text = if !loaded {
                 "Loading instrument…"
-            } else if current(cx).is_some_and(|i| !i.scripts.is_empty()) {
+            } else if scripted {
                 "This instrument's scripts run, but its performance view can't be shown yet."
             } else {
                 "This instrument has no performance view. Play it from the keyboard below."
@@ -249,8 +251,12 @@ pub fn perform(ui: &mut Ui, cx: &mut Cx) -> El {
 /// Kontakt's performance view height includes a 68 px header its wallpaper leaves out.
 const WALLPAPER_OFFSET: f64 = 68.;
 
-/// Authored KSP coordinates, scaled uniformly to fit `stage` (last frame's size).
+/// Authored KSP coordinates, scaled uniformly to fit `stage` (last frame's
+/// size). Knobs, sliders and value fields drag, buttons and switches toggle,
+/// menus open a list; every edit runs the script's `on ui_control`.
 fn performance_view(
+    ui: &mut Ui,
+    cx: &mut Cx,
     interface: &Interface,
     image: Option<&Arc<Image>>,
     stage: Option<(f64, f64)>,
@@ -265,11 +271,26 @@ fn performance_view(
         })
         .clamp(0.4, 2.);
     let (width, height) = (iw * scale, ih * scale);
-    let controls: Vec<Widget> = interface
+    let mut controls: Vec<Widget> = interface
         .controls
         .iter()
-        .filter_map(|c| Widget::of(c, interface))
+        .enumerate()
+        .filter_map(|(n, c)| Widget::of(n, c, interface))
         .collect();
+    let part = cx.state.selected;
+    let mut open_menu = None;
+    for w in &mut controls {
+        if let Some(value) = w.interact(ui, cx.state, scale) {
+            cx.p.shared.edit_control(part, w.control, value);
+            w.set(f64::from(value));
+        }
+        if cx.state.menu == Some(w.control) && w.kind == Kind::Menu {
+            open_menu = Some(w.clone());
+        }
+    }
+    if cx.state.menu.is_some() && open_menu.is_none() {
+        cx.state.menu = None;
+    }
 
     let image = image.cloned();
     let shapes = controls.clone();
@@ -295,10 +316,9 @@ fn performance_view(
         .at(0, 0)
         .id("instrument-wallpaper"),
     ];
-    for (n, w) in controls.iter().enumerate() {
-        if let Some(label) = w.label(scale) {
-            layers.push(label.id(format!("ksp-control-{n}")));
-        }
+    layers.extend(controls.iter().filter_map(|w| w.el(scale)));
+    if let Some(menu) = open_menu {
+        layers.push(menu_list(ui, cx, part, &menu, scale, height));
     }
     stack(layers)
         .w(width)
@@ -311,18 +331,71 @@ fn performance_view(
         .id("ksp-preview")
 }
 
+/// An open script menu's items, below the menu or above it when there is no room.
+fn menu_list(ui: &mut Ui, cx: &mut Cx, part: usize, menu: &Widget, scale: f64, height: f64) -> El {
+    let row_h = (22. * scale).max(20.);
+    let (x, y, w, h) = (
+        menu.x * scale,
+        menu.y * scale,
+        (menu.w * scale).max(120.),
+        menu.h * scale,
+    );
+    let list_h = (menu.menu.len() as f64 * row_h + GAP).min(height - GAP);
+    let top = if y + h + list_h <= height {
+        y + h
+    } else {
+        (y - list_h).max(0.)
+    };
+    let mut items = Vec::new();
+    for (n, (text, value)) in menu.menu.iter().enumerate() {
+        let id = format!("ksp-menu-{}-{n}", menu.control);
+        if ui.get(id.as_str()).activated() {
+            cx.p.shared.edit_control(part, menu.control, *value);
+            cx.state.menu = None;
+        }
+        let chosen = f64::from(*value) == menu.raw;
+        let (_, el) = action(ui, id.as_str(), &clean(text), chosen);
+        items.push(el.w(Len::Pct(100.)).h(row_h).shrink(0));
+    }
+    col(items)
+        .gap(0)
+        .align(Align::Stretch)
+        .pad(HALF)
+        .w(w)
+        .h(list_h)
+        .at(x, top)
+        .fill(Role::Raised)
+        .radius(6)
+        .scroll()
+        .id(format!("ksp-menu-{}", menu.control))
+}
+
+/// Text without glyphs from a library's private icon font, which ours can't draw.
+fn clean(text: &str) -> String {
+    text.chars()
+        .filter(|c| !matches!(*c as u32, 0xE000..=0xF8FF) && !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
 /// One visible script control, in authored pixels.
 #[derive(Clone)]
 struct Widget {
     kind: Kind,
+    /// Index into `Interface::controls`.
+    control: usize,
     x: f64,
     y: f64,
     w: f64,
     h: f64,
     text: String,
-    /// 0..1 for knobs and sliders; on/off for buttons.
-    value: f64,
+    raw: f64,
+    min: f64,
+    max: f64,
+    menu: Vec<(String, i32)>,
     background: bool,
+    hide_text: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -337,7 +410,7 @@ enum Kind {
 }
 
 impl Widget {
-    fn of(c: &Control, interface: &Interface) -> Option<Self> {
+    fn of(control: usize, c: &Control, interface: &Interface) -> Option<Self> {
         let int = |name: &str| match c.properties.get(&format!("$CONTROL_PAR_{name}")) {
             Some(Value::Int(n)) => Some(*n),
             _ => None,
@@ -374,32 +447,15 @@ impl Widget {
             Some(Value::Real(r)) => *r,
             _ => 0.,
         };
-        let (min, max) = (
-            int("MIN_VALUE").unwrap_or(0),
-            int("MAX_VALUE").unwrap_or(1_000_000),
-        );
-        let value = if max > min {
-            ((raw - f64::from(min)) / f64::from(max - min)).clamp(0., 1.)
-        } else {
-            0.
+        let (min, max) = match kind {
+            Kind::Button => (0, 1),
+            _ => (
+                int("MIN_VALUE").unwrap_or(0),
+                int("MAX_VALUE").unwrap_or(1_000_000),
+            ),
         };
-        // Glyphs from a library's private icon font have nothing to draw in ours.
-        let mut label: String = text("TEXT")
-            .chars()
-            .filter(|c| !matches!(*c as u32, 0xE000..=0xF8FF) && !c.is_control())
-            .collect::<String>()
-            .trim()
-            .to_owned();
-        if kind == Kind::Menu {
-            label = c
-                .menu
-                .iter()
-                .find(|(_, v)| f64::from(*v) == raw)
-                .map(|(t, _)| t.clone())
-                .unwrap_or_default();
-        } else if kind == Kind::Value {
-            label = format!("{raw}");
-        } else if label.is_empty() && kind == Kind::Knob {
+        let mut label = clean(&text("TEXT"));
+        if label.is_empty() && kind == Kind::Knob {
             label = c
                 .variable
                 .trim_start_matches(['$', '~', '?', '%', '@', '!'])
@@ -408,24 +464,96 @@ impl Widget {
         if label.is_empty() && matches!(kind, Kind::Button | Kind::Label) {
             return None;
         }
-        if hide & 8 != 0 {
-            label.clear();
-        }
         let w = if kind == Kind::Knob { w.max(40) } else { w };
-        Some(Self {
+        let mut widget = Self {
             kind,
+            control,
             x: f64::from(x),
             y: f64::from(y),
             w: f64::from(w.min(interface.width - x)),
             h: f64::from(h.min(interface.height - y)),
             text: label,
-            value: if kind == Kind::Button {
-                raw.min(1.)
-            } else {
-                value
-            },
+            raw,
+            min: f64::from(min),
+            max: f64::from(max),
+            menu: c.menu.clone(),
             background: hide & 2 == 0,
-        })
+            hide_text: hide & 8 != 0,
+        };
+        widget.set(raw);
+        Some(widget)
+    }
+
+    /// Show `raw` as the value; menus and value fields say it.
+    fn set(&mut self, raw: f64) {
+        self.raw = raw;
+        match self.kind {
+            Kind::Menu => {
+                self.text = self
+                    .menu
+                    .iter()
+                    .find(|(_, v)| f64::from(*v) == raw)
+                    .map(|(t, _)| clean(t))
+                    .unwrap_or_default();
+            }
+            Kind::Value => self.text = format!("{raw}"),
+            _ => {}
+        }
+    }
+
+    /// 0..1 along the control's range.
+    fn unit(&self) -> f64 {
+        if self.max > self.min {
+            ((self.raw - self.min) / (self.max - self.min)).clamp(0., 1.)
+        } else {
+            0.
+        }
+    }
+
+    fn id(&self) -> String {
+        format!("ksp-control-{}", self.control)
+    }
+
+    /// This frame's pointer and keys on the control; the new value to send, if any.
+    fn interact(&self, ui: &mut Ui, state: &mut super::EditorState, scale: f64) -> Option<i32> {
+        let id = self.id();
+        let r = ui.get(id.as_str());
+        match self.kind {
+            Kind::Knob | Kind::Slider | Kind::Value => {
+                // Sub-step drag travel accumulates in `held` until the gesture ends.
+                let mut raw = match state.held {
+                    Some((c, v)) if c == self.control => v,
+                    _ => self.raw,
+                };
+                if r.pressed {
+                    raw = self.raw;
+                }
+                if r.dragged {
+                    let d = r.drag_delta;
+                    let travel = match self.kind {
+                        Kind::Slider if self.w >= self.h => d.x / (self.w * scale),
+                        Kind::Slider => -d.y / (self.h * scale),
+                        _ => -d.y / 200.,
+                    };
+                    let fine = if r.mods.shift { 0.1 } else { 1. };
+                    raw = (raw + travel * fine * (self.max - self.min)).clamp(self.min, self.max);
+                }
+                stepped(ui, &id, &mut raw, &(self.min..=self.max));
+                if r.held && !r.released {
+                    state.held = Some((self.control, raw));
+                } else if state.held.is_some_and(|(c, _)| c == self.control) {
+                    state.held = None;
+                }
+                let value = raw.round();
+                (value != self.raw).then_some(value as i32)
+            }
+            Kind::Button if r.activated() => Some(i32::from(self.raw < 1.)),
+            Kind::Menu if r.activated() => {
+                state.menu = (state.menu != Some(self.control)).then_some(self.control);
+                None
+            }
+            _ => None,
+        }
     }
 
     /// Shapes: panels, knob arcs, slider tracks.
@@ -454,14 +582,14 @@ impl Widget {
                     Color::oklcha(1., 0., 0., 0.14),
                     stroke,
                 ));
-                if self.value > 0.001 {
+                if self.unit() > 0.001 {
                     out.push(Draw::stroke(
-                        arc(cx, cy, r - stroke, from, sweep * self.value),
+                        arc(cx, cy, r - stroke, from, sweep * self.unit()),
                         accent(),
                         stroke,
                     ));
                 }
-                let a = from + sweep * self.value;
+                let a = from + sweep * self.unit();
                 let (inner, outer) = (r * 0.25, r - stroke * 2.);
                 out.push(Draw::stroke(
                     DrawPath::polyline(
@@ -475,22 +603,36 @@ impl Widget {
                     stroke * 0.8,
                 ));
             }
-            Kind::Slider => {
+            Kind::Slider if w >= h => {
                 let t = (3. * scale).max(2.);
                 let mid = y + h / 2.;
                 out.push(Draw::fill(rect(x, mid - t / 2., w, t), panel));
                 out.push(Draw::fill(
-                    rect(x, mid - t / 2., w * self.value, t),
+                    rect(x, mid - t / 2., w * self.unit(), t),
                     accent(),
                 ));
                 out.push(Draw::fill(
-                    circle(x + w * self.value, mid, t * 1.8),
+                    circle(x + w * self.unit(), mid, t * 1.8),
+                    Color::oklch(0.95, 0., 0.),
+                ));
+            }
+            Kind::Slider => {
+                let t = (3. * scale).max(2.);
+                let mid = x + w / 2.;
+                let top = y + h * (1. - self.unit());
+                out.push(Draw::fill(rect(mid - t / 2., y, t, h), panel));
+                out.push(Draw::fill(
+                    rect(mid - t / 2., top, t, y + h - top),
+                    accent(),
+                ));
+                out.push(Draw::fill(
+                    circle(mid, top, t * 1.8),
                     Color::oklch(0.95, 0., 0.),
                 ));
             }
             Kind::Button => {
-                let fill = if self.value >= 1. { accent() } else { panel };
-                if self.background || self.value >= 1. {
+                let fill = if self.raw >= 1. { accent() } else { panel };
+                if self.background || self.raw >= 1. {
                     out.push(Draw::fill(rounded(x, y, w, h, 4. * scale), fill));
                 }
             }
@@ -523,23 +665,26 @@ impl Widget {
         }
     }
 
-    /// Text on top of the shapes.
-    fn label(&self, scale: f64) -> Option<El> {
-        if self.text.is_empty() {
-            return None;
-        }
-        let size = (11. * scale).clamp(9., 16.);
+    /// The control's own element over the shapes: its text, and the target
+    /// the pointer and keyboard act on.
+    fn el(&self, scale: f64) -> Option<El> {
         let (x, y, w, h) = (
             self.x * scale,
             self.y * scale,
             self.w * scale,
             self.h * scale,
         );
+        let interactive = !matches!(self.kind, Kind::Label | Kind::Other);
+        let text = if self.hide_text { "" } else { &self.text };
+        if text.is_empty() && !interactive {
+            return None;
+        }
+        let size = (11. * scale).clamp(9., 16.);
         let ink = match self.kind {
-            Kind::Button if self.value >= 1. => Color::oklch(0.18, 0., 0.),
+            Kind::Button if self.raw >= 1. => Color::oklch(0.18, 0., 0.),
             _ => Color::oklch(0.93, 0., 0.),
         };
-        let text = body(self.text.clone()).text_size(size).fill(ink).lines(1);
+        let label = body(text.to_owned()).text_size(size).fill(ink).lines(1);
         // Text on a wallpaper needs its own ground to stay legible.
         let pill = |text: El| {
             row![text]
@@ -547,31 +692,58 @@ impl Widget {
                 .fill(Color::oklcha(0.16, 0.005, 260., 0.72))
                 .radius(3)
         };
-        let (el, y, h) = match self.kind {
-            Kind::Knob => {
-                let line = 14. * scale;
-                (pill(text), y + h - line, line)
-            }
-            Kind::Label => (pill(text), y, h),
-            Kind::Button | Kind::Value => (text.justify(Justify::Center), y, h),
-            _ => (text.pad((HALF * scale, 0.)), y, h),
+        let content = match self.kind {
+            _ if text.is_empty() => spacer(),
+            Kind::Knob => col![spacer(), pill(label)].align(Align::Center),
+            Kind::Label => pill(label),
+            Kind::Button | Kind::Value => label.justify(Justify::Center),
+            Kind::Menu => label.pad(edges(0., self.h * scale, 0., HALF * scale)),
+            _ => label.pad((HALF * scale, 0.)),
         };
-        Some(
-            row![el]
-                .justify(
-                    if matches!(self.kind, Kind::Knob | Kind::Button | Kind::Value) {
-                        Justify::Center
-                    } else {
-                        Justify::Start
-                    },
-                )
-                .align(Align::Center)
-                .w(w)
-                .h(h)
-                .at(x, y)
-                .clip()
-                .named(format!("Preview only: {}", self.text)),
-        )
+        let centered = matches!(self.kind, Kind::Knob | Kind::Button | Kind::Value);
+        let el = row![content]
+            .justify(if centered {
+                Justify::Center
+            } else {
+                Justify::Start
+            })
+            .align(Align::Center)
+            .w(w)
+            .h(h)
+            .at(x, y)
+            .clip()
+            .id(self.id());
+        let name = if self.text.is_empty() {
+            "Control".to_owned()
+        } else {
+            self.text.clone()
+        };
+        Some(match self.kind {
+            Kind::Label | Kind::Other => el.named(name),
+            Kind::Knob | Kind::Slider | Kind::Value => el
+                .focusable()
+                .a11y(A11y::Slider {
+                    value: self.raw,
+                    min: self.min,
+                    max: self.max,
+                })
+                .named(name)
+                .tip(format!("{}: {}", self.text, self.raw))
+                .radius(4)
+                .on(State::Hover, |s| s.fill(Color::oklcha(1., 0., 0., 0.06))),
+            Kind::Button => el
+                .focusable()
+                .a11y(A11y::Toggle { on: self.raw >= 1. })
+                .named(name)
+                .radius(4)
+                .on(State::Hover, |s| s.fill(Color::oklcha(1., 0., 0., 0.08))),
+            Kind::Menu => el
+                .focusable()
+                .a11y(A11y::Button)
+                .named(format!("{name} menu"))
+                .radius(4)
+                .on(State::Hover, |s| s.fill(Color::oklcha(1., 0., 0., 0.08))),
+        })
     }
 }
 
