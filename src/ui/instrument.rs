@@ -36,7 +36,7 @@ pub fn welcome(cx: &Cx) -> El {
                 .lines(2),
         );
     }
-    col![spacer(), col(lines).gap(GAP).align(Align::Center), spacer()]
+    col![spacer(), col(lines).gap(GAP).align(Align::Start), spacer()]
         .align(Align::Center)
         .pad(WIDE * 2.)
         .flex(1)
@@ -383,7 +383,13 @@ impl Widget {
         } else {
             0.
         };
-        let mut label = text("TEXT");
+        // Glyphs from a library's private icon font have nothing to draw in ours.
+        let mut label: String = text("TEXT")
+            .chars()
+            .filter(|c| !matches!(*c as u32, 0xE000..=0xF8FF) && !c.is_control())
+            .collect::<String>()
+            .trim()
+            .to_owned();
         if kind == Kind::Menu {
             label = c
                 .menu
@@ -533,30 +539,20 @@ impl Widget {
             Kind::Button if self.value >= 1. => Color::oklch(0.18, 0., 0.),
             _ => Color::oklch(0.93, 0., 0.),
         };
-        let text = body(match self.kind {
-            _ => self.text.clone(),
-        })
-        .text_size(size)
-        .fill(ink)
-        .lines(1);
+        let text = body(self.text.clone()).text_size(size).fill(ink).lines(1);
+        // Text on a wallpaper needs its own ground to stay legible.
+        let pill = |text: El| {
+            row![text]
+                .pad((HALF * scale, 0.))
+                .fill(Color::oklcha(0.16, 0.005, 260., 0.72))
+                .radius(3)
+        };
         let (el, y, h) = match self.kind {
             Kind::Knob => {
                 let line = 14. * scale;
-                (
-                    text.pad((HALF * scale, 0.))
-                        .fill(Color::oklcha(0.16, 0.005, 260., 0.7))
-                        .radius(3),
-                    y + h - line,
-                    line,
-                )
+                (pill(text), y + h - line, line)
             }
-            Kind::Label => (
-                text.pad((HALF * scale, 0.))
-                    .fill(Color::oklcha(0.16, 0.005, 260., 0.7))
-                    .radius(3),
-                y,
-                h,
-            ),
+            Kind::Label => (pill(text), y, h),
             Kind::Button | Kind::Value => (text.justify(Justify::Center), y, h),
             _ => (text.pad((HALF * scale, 0.)), y, h),
         };
@@ -770,6 +766,7 @@ pub fn info(cx: &Cx) -> El {
         rows.push(caption(v.wallpaper_status.clone()).fill(Role::Dim).lines(3));
     }
     col(rows)
+        .align(Align::Start)
         .gap(GAP)
         .pad(WIDE)
         .flex(1)

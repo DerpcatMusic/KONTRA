@@ -105,10 +105,12 @@ pub fn vrule() -> El {
 
 /// A small uppercase section label.
 pub fn section(label: &str) -> El {
-    caption(label.to_uppercase())
-        .fill(Role::Dim)
-        .text_weight(Weight::SEMIBOLD)
-        .shrink(0)
+    row![
+        caption(label.to_uppercase())
+            .fill(Role::Dim)
+            .text_weight(Weight::SEMIBOLD)
+    ]
+    .shrink(0)
 }
 
 /// A labelled number to drag, type or step.
@@ -150,7 +152,12 @@ pub fn stat(label: &str, value: String, widest: &str) -> El {
 pub fn banner(role: Role, text: impl Into<String>) -> El {
     row![
         block(3, Len::Pct(100.)).pill().fill(role.alpha(1.)),
-        body(text.into()).text_size(12).lines(4).flex(1).min_w(0)
+        body(text.into())
+            .text_size(12)
+            .fill(Color::oklch(0.9, 0., 0.))
+            .lines(4)
+            .flex(1)
+            .min_w(0)
     ]
     .gap(GAP)
     .align(Align::Stretch)

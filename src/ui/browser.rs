@@ -58,6 +58,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let needle = cx.state.search.to_lowercase();
     let mut items = Vec::new();
     let mut n = 0;
+    let mut heading = None;
     if !needle.is_empty() {
         for (name, files) in &libraries {
             let hits: Vec<_> = files
@@ -86,11 +87,12 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         if back {
             cx.state.library = None;
         }
-        items.push(row![back_el].shrink(0));
+        // The library's header stays put while its presets scroll.
+        let mut top = vec![row![back_el].shrink(0)];
         if let Some(image) = view.artwork.get(&open) {
-            items.push(artwork(image, 96.).radius(8).clip());
+            top.push(artwork(image, 88.).radius(8).clip());
         }
-        items.push(
+        top.push(
             row![
                 body(library_label(&open))
                     .text_weight(Weight::SEMIBOLD)
@@ -100,10 +102,20 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                 caption(libraries[&open].len().to_string()).fill(Role::Dim)
             ]
             .align(Align::Center)
-            .pad((HALF, GAP))
+            .pad((HALF, 0.))
             .shrink(0),
         );
+        heading = Some(col(top).gap(GAP).pad(edges(GAP, GAP, 0., GAP)).shrink(0));
+        let mut folder = None;
         for path in &libraries[&open] {
+            // Subfolders become headings; the usual "Instruments" level says nothing.
+            let here = subfolder(&view.root, &open, path);
+            if folder.as_ref() != Some(&here) {
+                if !here.is_empty() {
+                    items.push(section(&here).pad(edges(GAP + HALF, HALF, HALF, HALF)));
+                }
+                folder = Some(here);
+            }
             items.push(preset(ui, cx, n, path));
             n += 1;
         }
@@ -156,6 +168,12 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         }
     }
 
+    let cards = needle.is_empty()
+        && !cx
+            .state
+            .library
+            .as_ref()
+            .is_some_and(|l| libraries.contains_key(l));
     let list_id = format!(
         "browser-{}-{multis}-{needle}",
         cx.state.library.as_deref().unwrap_or("")
@@ -174,8 +192,10 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             .pad(edges(0., GAP, GAP, GAP))
             .shrink(0),
         rule(),
+        heading.unwrap_or_else(|| block(0, 0)),
         col(items)
-            .gap(GAP)
+            .gap(if cards { GAP } else { 2. })
+            .align(Align::Stretch)
             .pad(GAP)
             .flex(1)
             .min_h(0)
@@ -218,6 +238,21 @@ fn artwork(image: &std::sync::Arc<Image>, height: f64) -> El {
     block(Len::Pct(100.), height)
         .fill(Fill::Image(image.clone(), Fit::Cover))
         .shrink(0)
+}
+
+/// The folders between a library and a preset, without "Instruments"/"Multis".
+fn subfolder(root: &str, library: &str, path: &std::path::Path) -> String {
+    let folder = path.parent().and_then(|p| {
+        p.strip_prefix(std::path::Path::new(root).join(library))
+            .ok()
+    });
+    folder
+        .into_iter()
+        .flat_map(|f| f.components())
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .filter(|c| !matches!(c.to_lowercase().as_str(), "instruments" | "multis"))
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 fn hint(text: &str) -> El {

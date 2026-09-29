@@ -199,11 +199,11 @@ pub fn mixer(ui: &mut Ui, cx: &mut Cx) -> El {
         if dup {
             duplicate = Some(part.clone());
         }
-        let (up, up_el) = action(ui, format!("up-{slot}"), "↑", false);
+        let (up, up_el) = action(ui, format!("up-{slot}"), "Up", false);
         if up && position > 0 {
             reorder = Some((slot, order[position - 1] as usize));
         }
-        let (down, down_el) = action(ui, format!("down-{slot}"), "↓", false);
+        let (down, down_el) = action(ui, format!("down-{slot}"), "Down", false);
         if down && position + 1 < order.len() {
             reorder = Some((order[position + 1] as usize, slot));
         }
