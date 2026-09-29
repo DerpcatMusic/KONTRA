@@ -1,4 +1,4 @@
-use crate::{engine::{Bank,Rack,PartControls,RACK_SLOTS}, import::{self, Instrument}};
+use crate::{engine::{Bank,Engine,MAX_BLOCK,Rack,PartControls,RACK_SLOTS}, import::{self, Instrument}};
 use crossbeam_queue::ArrayQueue;
 #[path="artwork.rs"] mod artwork;
 use moose::mui::mui::{scene::{Theme,Color,TypeScale,Fill,Fit},geometry::Path as DrawPath};
@@ -38,7 +38,7 @@ pub struct Shared {
     multi_request:Mutex<Option<String>>,view:Mutex<View>,
 }
 #[derive(Default,Clone)]
-struct PartView {program:u32,interface:Option<Arc<crate::ksp::Interface>>,interface_status:String,wallpaper:Option<Arc<moose::mui::mui::scene::Image>>,wallpaper_status:String,attempted:Option<(String,u32,u32)>,instrument:Option<Arc<Instrument>>,status:String,active:String,bytes:usize}
+struct PartView {program:u32,interface:Option<Arc<crate::ksp::Interface>>,interface_status:String,wallpaper:Option<Arc<moose::mui::mui::scene::Image>>,wallpaper_status:String,attempted:Option<(String,u32)>,instrument:Option<Arc<Instrument>>,status:String,active:String,bytes:usize}
 #[derive(Clone)]
 struct View {multi_status:String,artwork:std::collections::HashMap<String,Arc<moose::mui::mui::scene::Image>>,root:String,files:Arc<Vec<PathBuf>>,parts:[PartView;RACK_SLOTS],status:String}
 impl Default for Shared {
@@ -71,7 +71,7 @@ impl BackgroundTask for Load {
         }
         {let current=params.selection.read().unwrap();let _=params.shared.controls.force_push(rack_controls(&current));params.shared.midi_thru.store(current.midi_thru,Ordering::Release);}
         for slot in 0..RACK_SLOTS {
-            let part=selection.parts.get(slot).cloned().unwrap_or_default();let mut target=(part.path.clone(),part.group,part.program);
+            let part=selection.parts.get(slot).cloned().unwrap_or_default();let target=(part.path.clone(),part.program);
             let cached={let mut view=params.shared.view.lock().unwrap();let v=&mut view.parts[slot];
                 if v.attempted.as_ref()==Some(&target) {continue;}
                 v.attempted=Some(target.clone());v.status="Loading samples…".into();
@@ -89,64 +89,176 @@ impl BackgroundTask for Load {
                     if let Some(art)=art {match art {Ok(image)=>{v.wallpaper=image;v.wallpaper_status.clear();},Err(e)=>{v.wallpaper=None;v.wallpaper_status=e;}}}
                 }
                 if instrument.zones.is_empty(){return Ok((instrument,None));}
-                if target.1==u32::MAX {
-                    target.1=instrument.first_playable_group().ok_or_else(||anyhow::anyhow!("No complete playable group; sample data is missing or damaged"))? as u32;
-                    let mut current=params.selection.write().unwrap();let c=current.parts.get_mut(slot).ok_or_else(||anyhow::anyhow!("Load superseded"))?;
-                    if (c.path.clone(),c.group,c.program)!=(part.path.clone(),part.group,part.program) {anyhow::bail!("Load superseded");}c.group=target.1;
-                    params.shared.view.lock().unwrap().parts[slot].attempted=Some(target.clone());
+                // Every group plays; the stored group only selects what the mapping inspector shows.
+                if part.group==u32::MAX {
+                    let group=instrument.first_playable_group().unwrap_or(0);
+                    let mut current=params.selection.write().unwrap();
+                    if let Some(c)=current.parts.get_mut(slot).filter(|c|c.path==part.path && c.program==part.program && c.group==u32::MAX) {c.group=group as u32;}
                 }
-                let bank=Box::new(Bank::load(&instrument,target.1 as usize)?);
+                let bank=Box::new(Bank::load(&instrument)?);
                 let resident:usize=params.shared.view.lock().unwrap().parts.iter().enumerate().filter(|(n,_)|*n!=slot).map(|(_,p)|p.bytes).sum();
                 anyhow::ensure!(resident+bank.bytes<=2*crate::engine::MEMORY_LIMIT,"Rack exceeds 2 GiB RAM limit");
                 Ok((instrument,Some(bank)))
             })();
-            let current=params.selection.read().unwrap();if current.parts.get(slot).map(|p|(&p.path,p.group,p.program))!=Some((&target.0,target.1,target.2)) {continue;}drop(current);
+            let current=params.selection.read().unwrap();if current.parts.get(slot).map(|p|(&p.path,p.program))!=Some((&target.0,target.1)) {continue;}drop(current);
             let mut view=params.shared.view.lock().unwrap();let v=&mut view.parts[slot];
-            match result {Ok((instrument,bank))=>{v.active=instrument.name.clone();v.bytes=bank.as_ref().map(|b|b.bytes).unwrap_or(0);v.status=bank.as_ref().map(|b|format!("{} samples · {:.0} MB",b.samples.len(),b.bytes as f64/1048576.)).unwrap_or_else(||"Controller instrument · KSP playback unavailable".into());let _=params.shared.ready.force_push((slot,generation,bank));},Err(e)=>v.status=format!("Load failed: {e:#}")}
+            match result {Ok((instrument,bank))=>{v.active=instrument.name.clone();v.bytes=bank.as_ref().map(|b|b.bytes).unwrap_or(0);v.status=bank.as_deref().map(bank_status).unwrap_or_else(||"Controller instrument · KSP playback unavailable".into());let _=params.shared.ready.force_push((slot,generation,bank));},Err(e)=>v.status=format!("Load failed: {e:#}")}
         }
     }
 }
 #[derive(Default)]
 pub struct Dsp {rack:Rack,until_poll:usize,audition_left:[usize;RACK_SLOTS]}
 pub struct Sampler;
+
+/// Channel that makes the on-screen keyboard reach the part's first zone.
+fn preview_channel(e: &Engine) -> u8 {
+    e.bank().and_then(|b| b.zones().first().map(|z| b.groups()[z.group].channel.max(0) as u8)).unwrap_or(0)
+}
+
+/// Mid-range velocity of the first zone on `note`.
+fn preview_velocity(e: &Engine, note: u8) -> u8 {
+    let zone = e.bank().and_then(|b| b.zones().iter().find(|z| (z.low_key..=z.high_key).contains(&note)));
+    zone.map_or(100, |z| ((u16::from(z.low_velocity) + u16::from(z.high_velocity)) / 2).max(1) as u8)
+}
+
+fn bank_status(bank: &Bank) -> String {
+    let mut status = format!("{} samples · {} streamed · {:.0} MB", bank.sample_count(), bank.streamed_samples(), bank.bytes as f64 / 1048576.0);
+    if bank.skipped_zones > 0 {
+        status += &format!(" · {} zones skipped (missing or damaged)", bank.skipped_zones);
+    }
+    status
+}
 impl PluginLogic for Sampler {
     type Params=SamplerParams;type DspState=Dsp;
     fn bus_layouts()->Vec<BusLayout> {vec![BusLayout::new().with_output("Main",ChannelConfig::Stereo).with_output("Out 2",ChannelConfig::Stereo).with_output("Out 3",ChannelConfig::Stereo).with_output("Out 4",ChannelConfig::Stereo).with_output("Out 5",ChannelConfig::Stereo).with_output("Out 6",ChannelConfig::Stereo).with_output("Out 7",ChannelConfig::Stereo).with_output("Out 8",ChannelConfig::Stereo)]}
     fn reset(s:&mut Dsp,_:&SamplerParams,c:&AudioConfig){s.rack.reset(c.sample_rate);s.until_poll=0;s.audition_left.fill(0);}
-    fn process(s:&mut Dsp,p:&SamplerParams,b:&mut AudioBuffer,events:&EventList,cx:&mut ProcessContext)->ProcessStatus {
-        let rate=s.rack.parts[0].rate;
-        if s.until_poll<=b.num_samples() {if let Some(tasks)=cx.tasks::<Load>() {tasks.spawn_coalescing(Load);}s.until_poll=(rate*0.1) as usize;}else{s.until_poll-=b.num_samples();}
-        if let Some(controls)=p.shared.controls.pop() {s.rack.set_controls(controls);}
+    fn process(s: &mut Dsp, p: &SamplerParams, b: &mut AudioBuffer, events: &EventList, cx: &mut ProcessContext) -> ProcessStatus {
+        let rate = s.rack.parts[0].rate();
+        let frames = b.num_samples();
+        if s.until_poll <= frames {
+            if let Some(tasks) = cx.tasks::<Load>() {
+                tasks.spawn_coalescing(Load);
+            }
+            s.until_poll = (rate * 0.1) as usize;
+        } else {
+            s.until_poll -= frames;
+        }
+        if let Some(controls) = p.shared.controls.pop() {
+            s.rack.set_controls(controls);
+        }
+        // Retired banks go back to the loader thread to be freed; stop while it cannot take more.
         while !p.shared.discard.is_full() {
-            let Some((slot,generation,bank))=p.shared.ready.pop() else{break;};
-            if generation==p.shared.generation[slot].load(Ordering::Acquire) {let e=&mut s.rack.parts[slot];e.reset(rate);if let Some(old)=std::mem::replace(&mut e.bank,bank) {let _=p.shared.discard.push(old);}}else if let Some(bank)=bank {let _=p.shared.discard.push(bank);}
-        }
-        for e in &mut s.rack.parts {e.attack=p.attack.value();e.release=p.release.value();e.cutoff=p.cutoff.value();}
-        if p.shared.panic.swap(false,Ordering::AcqRel) {while p.shared.keyboard.pop().is_some(){} for owner in &p.shared.key_owners {owner.store(128,Ordering::Release);}for ch in 0..16 {s.rack.cc(ch,120,0);s.rack.cc(ch,121,0);}s.audition_left.fill(0);}
-        while let Some((slot,note,down))=p.shared.keyboard.pop() {
-            let e=&mut s.rack.parts[slot.min(RACK_SLOTS-1)];let channel=e.bank.as_ref().and_then(|b|b.zones.first().map(|z|b.groups[z.group].channel.max(0) as u8)).unwrap_or(0);
-            if down {let velocity=e.bank.as_ref().and_then(|b|b.zones.iter().find(|z|note>=z.low_key && note<=z.high_key)).map(|z|((z.low_velocity as u16+z.high_velocity as u16)/2).max(1) as u8).unwrap_or(100);e.note_on(channel,note,velocity);}else{e.note_off(channel,note);}
-        }
-        if p.shared.audition.swap(false,Ordering::AcqRel) {
-            let slot=(p.shared.selected.load(Ordering::Relaxed) as usize).min(RACK_SLOTS-1);let e=&mut s.rack.parts[slot];for channel in 0..16 {e.cc(channel,120,0);}
-            let requested=p.shared.audition_note.swap(128,Ordering::Relaxed);
-            let note=if requested<128 {requested as u8}else{e.bank.as_ref().and_then(|b|b.zones.first()).map(|z|z.root).unwrap_or(60)};
-            let velocity=e.bank.as_ref().and_then(|b|b.zones.iter().find(|z|note>=z.low_key && note<=z.high_key)).map(|z|((z.low_velocity as u16+z.high_velocity as u16)/2).max(1) as u8).unwrap_or(100);
-            let channel=e.bank.as_ref().and_then(|b|b.zones.first().map(|z|b.groups[z.group].channel.max(0) as u8)).unwrap_or(0);e.note_on(channel,note,velocity);s.audition_left[slot]=(rate*1.5) as usize;
-        }
-        let mut next=0;let channels=b.num_output_channels();let mut peak=0f32;
-        for i in 0..b.num_samples() {
-            while let Some(e)=events.get(next) {if e.sample_offset as usize>i {break;}if p.shared.midi_thru.load(Ordering::Relaxed) && matches!(e.body,EventBody::NoteOn{..}|EventBody::NoteOff{..}|EventBody::PitchBend{..}|EventBody::ControlChange{..}) {let mut out=*e;out.port=0;cx.output_events.push(out);}match e.body {
-                EventBody::NoteOn{channel,note,velocity,..}=>s.rack.note_on_port(e.port,channel,note,velocity),EventBody::NoteOff{channel,note,..}=>s.rack.note_off_port(e.port,channel,note),EventBody::PitchBend{channel,value,..}=>s.rack.pitch_bend_port(e.port,channel,value),EventBody::ControlChange{channel,cc,value,..}=>s.rack.cc_port(e.port,channel,cc,value),_=>(),}next+=1;}
-            for (e,left) in s.rack.parts.iter_mut().zip(&mut s.audition_left) {if *left>0 {*left-=1;if *left==0 {for channel in 0..16 {e.cc(channel,123,0);}}}}
-            let out=s.rack.frame_outputs();let gain=db_to_linear(p.volume.read());
-            for ch in 0..channels {b.output(ch)[i]=0.;}
-            for (bus,x) in out.iter().enumerate() {
-                let route=cx.bus_routing.output(bus);let (start,count)=route.map(|r|(r.channel_start(),r.channel_count())).unwrap_or_else(||if bus==0{(0,channels.min(2))}else{(0,0)});
-                for ch in 0..count.min(2) {if start+ch<channels {let value=if count==1{(x[0]+x[1])*0.5}else{x[ch]};b.output(start+ch)[i]=value*gain;peak=peak.max((value*gain).abs());}}
+            let Some((slot, generation, bank)) = p.shared.ready.pop() else { break };
+            let retired = if generation == p.shared.generation[slot].load(Ordering::Acquire) {
+                let engine = &mut s.rack.parts[slot];
+                engine.reset(rate);
+                engine.set_bank(bank)
+            } else {
+                bank
+            };
+            if let Some(old) = retired {
+                let _ = p.shared.discard.push(old);
             }
         }
-        cx.set_meter(P::Level,peak.min(1.));ProcessStatus::Normal
+        for e in &mut s.rack.parts {
+            e.attack = p.attack.value();
+            e.release = p.release.value();
+            e.cutoff = p.cutoff.value();
+        }
+        if p.shared.panic.swap(false, Ordering::AcqRel) {
+            while p.shared.keyboard.pop().is_some() {}
+            for owner in &p.shared.key_owners {
+                owner.store(128, Ordering::Release);
+            }
+            for channel in 0..16 {
+                s.rack.cc(channel, 120, 0);
+                s.rack.cc(channel, 121, 0);
+            }
+            s.audition_left.fill(0);
+        }
+        while let Some((slot, note, down)) = p.shared.keyboard.pop() {
+            let e = &mut s.rack.parts[slot.min(RACK_SLOTS - 1)];
+            let channel = preview_channel(e);
+            if down {
+                let velocity = preview_velocity(e, note);
+                e.note_on(channel, note, velocity);
+            } else {
+                e.note_off(channel, note);
+            }
+        }
+        if p.shared.audition.swap(false, Ordering::AcqRel) {
+            let slot = (p.shared.selected.load(Ordering::Relaxed) as usize).min(RACK_SLOTS - 1);
+            let e = &mut s.rack.parts[slot];
+            for channel in 0..16 {
+                e.cc(channel, 120, 0);
+            }
+            let requested = p.shared.audition_note.swap(128, Ordering::Relaxed);
+            let note = if requested < 128 { requested as u8 } else { e.bank().and_then(|b| b.zones().first()).map_or(60, |z| z.root) };
+            let (channel, velocity) = (preview_channel(e), preview_velocity(e, note));
+            e.note_on(channel, note, velocity);
+            s.audition_left[slot] = (rate * 1.5) as usize;
+        }
+
+        let channels = b.num_output_channels();
+        let thru = p.shared.midi_thru.load(Ordering::Relaxed);
+        let mut peak = 0f32;
+        let mut gains = [0f32; MAX_BLOCK];
+        let (mut at, mut next) = (0, 0);
+        loop {
+            // Apply events due now; once the buffer is rendered, apply any stragglers.
+            while let Some(e) = events.get(next).filter(|e| at >= frames || e.sample_offset as usize <= at) {
+                if thru && matches!(e.body, EventBody::NoteOn { .. } | EventBody::NoteOff { .. } | EventBody::PitchBend { .. } | EventBody::ControlChange { .. }) {
+                    let mut out = *e;
+                    out.port = 0;
+                    cx.output_events.push(out);
+                }
+                match e.body {
+                    EventBody::NoteOn { channel, note, velocity, .. } => s.rack.note_on_port(e.port, channel, note, velocity),
+                    EventBody::NoteOff { channel, note, .. } => s.rack.note_off_port(e.port, channel, note),
+                    EventBody::PitchBend { channel, value, .. } => s.rack.pitch_bend_port(e.port, channel, value),
+                    EventBody::ControlChange { channel, cc, value, .. } => s.rack.cc_port(e.port, channel, cc, value),
+                    _ => {}
+                }
+                next += 1;
+            }
+            if at >= frames {
+                break;
+            }
+            let due = events.get(next).map_or(frames, |e| (e.sample_offset as usize).min(frames));
+            let len = (due - at).min(MAX_BLOCK);
+            for (e, left) in s.rack.parts.iter_mut().zip(&mut s.audition_left) {
+                if *left > 0 {
+                    *left = left.saturating_sub(len);
+                    if *left == 0 {
+                        for channel in 0..16 {
+                            e.cc(channel, 123, 0);
+                        }
+                    }
+                }
+            }
+            for gain in &mut gains[..len] {
+                *gain = db_to_linear(p.volume.read());
+            }
+            let buses = s.rack.render(len);
+            for channel in 0..channels {
+                b.output(channel)[at..at + len].fill(0.0);
+            }
+            for (bus, x) in buses.iter().enumerate() {
+                let route = cx.bus_routing.output(bus).map(|r| (r.channel_start(), r.channel_count()));
+                let (start, count) = route.unwrap_or(if bus == 0 { (0, channels.min(2)) } else { (0, 0) });
+                for channel in (0..count.min(2)).filter(|c| start + c < channels) {
+                    let out = &mut b.output(start + channel)[at..at + len];
+                    for (i, (o, gain)) in out.iter_mut().zip(&gains[..len]).enumerate() {
+                        let value = if count == 1 { (x[0][i] + x[1][i]) * 0.5 } else { x[channel][i] };
+                        *o = value * gain;
+                        peak = peak.max(o.abs());
+                    }
+                }
+            }
+            at += len;
+        }
+        cx.set_meter(P::Level, peak.min(1.0));
+        ProcessStatus::Normal
     }
     fn editor(params:Arc<SamplerParams>)->Box<dyn Editor> {editor(params)}
 }
@@ -383,7 +495,7 @@ fn editor_ui(params:&Arc<SamplerParams>)->impl FnMut(&mut Ui,&mut moose::mui::Br
             }
             else if tab==1 {content.push(mapping(i,group).h(Len::Auto).flex(1).min_h(0).radius(0));content.push(row![caption("C−1"),spacer(),caption("Key / velocity"),spacer(),caption("G9")].pad(8).shrink(0));}
             else if tab==2 {let mut rows=Vec::new();if let Some(i)=i {for (n,g) in i.groups.iter().enumerate() {let(hit,e)=action(ui,format!("group-{n}"),&g.name,group==n as u32);if hit {if let Some(p)=selection.parts.get_mut(selected){p.group=n as u32;}}rows.push(e.lines(2).shrink(0));rows.push(rule());}}content.push(col(rows).gap(0).flex(1).min_h(0).scroll().id("groups-scroll"));}
-            else {let mut rows=vec![body("Manual group playback").text_weight(Weight::SEMIBOLD),body("KSP, scripted articulations, Kontakt effects and disk streaming are not implemented yet.").fill(Role::Dim).lines(4)];if let Some(i)=i {rows.push(body(format!("{} groups · {} zones · {} missing references",i.groups.len(),i.zones.len(),i.missing_samples.len())).lines(3));rows.push(caption(i.path.display().to_string()).fill(Role::Dim).lines(4));for w in &i.warnings {rows.push(body(w.as_str()).text_size(12).fill(Role::Dim).lines(6).shrink(0));}}content.push(col(rows).gap(8).pad(12).flex(1).min_h(0).scroll().id("details-scroll"));}
+            else {let mut rows=vec![body("All groups play; long samples stream from disk").text_weight(Weight::SEMIBOLD),body("KSP, scripted articulations and Kontakt effects are not implemented yet.").fill(Role::Dim).lines(4)];if let Some(i)=i {rows.push(body(format!("{} groups · {} zones · {} missing references",i.groups.len(),i.zones.len(),i.missing_samples.len())).lines(3));rows.push(caption(i.path.display().to_string()).fill(Role::Dim).lines(4));for w in &i.warnings {rows.push(body(w.as_str()).text_size(12).fill(Role::Dim).lines(6).shrink(0));}}content.push(col(rows).gap(8).pad(12).flex(1).min_h(0).scroll().id("details-scroll"));}
         }
         let master_text=format!("{:.1} dB",p.volume.value());let master=bridge.bind(ui,P::Volume,|ui,id,v|{let mut db=*v*66.-60.;let control=drag_value(ui,id,"Master",&mut db,-60.0..=6.0).size(S).value_text(master_text);*v=(db+60.)/66.;control});
         let status=view.parts.get(selected).map(|v|v.status.as_str()).filter(|s|!s.is_empty()).unwrap_or(&view.status);
@@ -414,7 +526,9 @@ mod tests {
         use crate::{audio::Sample,import::{Group,Zone,Loop}};
         use moose::core::bus_routing::{BusRouting,BusActivation};
         let mut dsp=Dsp::default();let p=SamplerParams::new();p.shared.midi_thru.store(true,Ordering::Relaxed);
-        dsp.rack.parts[1].bank=Some(Box::new(Bank{groups:vec![Group{name:"test".into(),gain:1.,pan:0.,tune:1.,key_tracking:true,reverse:false,release_trigger:false,muted:false,channel:-1}],zones:vec![Zone{group:0,sample:PathBuf::new(),available:true,low_key:0,high_key:127,root:60,low_velocity:0,high_velocity:127,start:0,end:0,gain:1.,pan:0.,tune:1.,loop_range:Some(Loop{start:0,end:100,until_release:false,crossfade:0})}],samples:vec![Sample{rate:48000,frames:vec![[0.5,0.25];100]}],sample_ids:vec![0],bytes:800}));
+        let group=Group{name:"test".into(),..Group::default()};
+        let zone=Zone{loop_range:Some(Loop{start:0,end:100,until_release:false,crossfade:0}),..Zone::default()};
+        dsp.rack.parts[1].set_bank(Some(Box::new(Bank::from_samples(vec![group],vec![zone],vec![(PathBuf::new(),Sample{rate:48000,frames:vec![[0.5,0.25];100]})]).unwrap())));
         dsp.rack.controls[1].port=1;dsp.rack.controls[1].output=2;
         let mut events=EventList::with_capacity(4);events.push(Event::on_port(16,1,EventBody::NoteOn{group:0,channel:0,note:60,velocity:127}));
         let mut outputs=vec![vec![0f32;128];6];let mut refs:Vec<_>=outputs.iter_mut().map(|o|o.as_mut_slice()).collect();let mut buffer=AudioBuffer::from_slices_checked(&[],&mut refs,128);
@@ -435,10 +549,10 @@ mod tests {
         let mut data=vec![vec![0f32;2048];4];let mut channels:Vec<_>=data.iter_mut().map(|v|v.as_mut_slice()).collect();let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,2048);
         let mut routing=moose::core::bus_routing::BusRouting::new();for _ in 0..2{routing.push_output(2,moose::core::bus_routing::BusActivation::Active);}
         let mut cx=ProcessContext::new(&transport,48000.,2048,&mut outgoing).with_bus_routing(routing);Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);
-        assert!(dsp.rack.parts[0].bank.is_some() && dsp.rack.parts[1].bank.is_some());
+        assert!(dsp.rack.parts[0].bank().is_some() && dsp.rack.parts[1].bank().is_some());
         for ch in [0,2] {assert!(buffer.output(ch).iter().all(|x|x.is_finite()));assert!(buffer.output(ch).iter().any(|x|x.abs()>0.00001));}
         p.selection.write().unwrap().parts[0]=Part::default();Load.run(&p);Sampler::process(&mut dsp,&p,&mut buffer,&EventList::with_capacity(0),&mut cx);
-        assert!(dsp.rack.parts[0].bank.is_none());assert!(dsp.rack.parts[1].bank.is_some());assert!(dsp.rack.parts[1].active_voices()>0);
+        assert!(dsp.rack.parts[0].bank().is_none());assert!(dsp.rack.parts[1].bank().is_some());assert!(dsp.rack.parts[1].active_voices()>0);
     }
     #[test]
     fn rack_interactions() {

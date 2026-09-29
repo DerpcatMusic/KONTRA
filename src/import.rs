@@ -16,6 +16,30 @@ pub struct Group {
     pub release_trigger: bool,
     pub muted: bool,
     pub channel: i16,
+    pub soloed: bool,
+    /// Index into `Instrument::voice_groups`; negative means none.
+    pub voice_group: i32,
+    /// Kontakt interpolation quality setting, kept for the engine's interpolator choice.
+    pub interp_quality: i32,
+}
+
+impl Default for Group {
+    fn default() -> Self {
+        Self { name: String::new(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
+            release_trigger: false, muted: false, channel: -1, soloed: false, voice_group: -1, interp_quality: 0 }
+    }
+}
+
+/// Kontakt voice-group (and program) polyphony limit.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct VoiceLimit {
+    pub max_voices: u32,
+    /// 0 any, 1 oldest, 2 newest, 3 highest, 4 lowest.
+    pub kill_mode: i16,
+    pub prefer_released: bool,
+    pub fade_ms: u32,
+    /// Voice groups sharing a non-negative exclusion group choke each other.
+    pub exclusion_group: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,6 +55,18 @@ pub struct Zone {
     pub start: usize, pub end: i32,
     pub gain: f32, pub pan: f32, pub tune: f64,
     pub loop_range: Option<Loop>,
+    /// Sample-start modulation range in frames; bounds scripted start offsets.
+    pub start_mod: u32,
+    /// Crossfade widths (keys/velocity steps) inside the zone edges.
+    pub fade_low_velocity: u8, pub fade_high_velocity: u8, pub fade_low_key: u8, pub fade_high_key: u8,
+}
+
+impl Default for Zone {
+    fn default() -> Self {
+        Self { group: 0, sample: PathBuf::new(), available: true, low_key: 0, high_key: 127, root: 60,
+            low_velocity: 0, high_velocity: 127, start: 0, end: 0, gain: 1.0, pan: 0.0, tune: 1.0, loop_range: None,
+            start_mod: 0, fade_low_velocity: 0, fade_high_velocity: 0, fade_low_key: 0, fade_high_key: 0 }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -43,6 +79,9 @@ pub struct Instrument {
     pub missing_samples: Vec<String>,
     #[serde(skip)]
     pub scripts: Vec<String>,
+    /// Program-wide polyphony limit, when stored.
+    pub voice_limit: Option<VoiceLimit>,
+    pub voice_groups: Vec<Option<VoiceLimit>>,
 }
 
 /// ni-file is a research parser with panic paths. Keep those off the host thread.
@@ -171,13 +210,12 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         let v = g.params().with_context(|| format!("Group {} version {:x}", groups.len(),g.0.version))?;
         ensure!(v.volume.is_finite() && v.pan.is_finite() && v.tune.is_finite() && v.tune > 0.0, "Invalid group gain/tuning");
         if !v.start_criteria.items.is_empty() { warnings.push(format!("{}: native group start conditions are not implemented", v.name)); }
-        if v.soloed {warnings.push("Group solo flags are not applied".into());}
         if v.release_trigger_note_monophonic || v.rls_trig_counter!=0 {warnings.push("Release-trigger monophony/counter behavior is not imported".into());}
-        if v.voice_group_index>=0 {warnings.push("Voice-group allocation/choke settings are not imported".into());}
         // Kontakt stores gain and tuning as linear ratios, despite the parser's tune comment.
         groups.push(Group { name: v.name, gain: v.volume, pan: v.pan, tune: v.tune as f64,
             key_tracking: v.key_tracking, reverse: v.reverse, release_trigger: v.release_trigger,
-            muted: v.muted, channel: v.midi_channel });
+            muted: v.muted, channel: v.midi_channel, soloed: v.soloed, voice_group: v.voice_group_index,
+            interp_quality: v.interp_quality });
     }
     let mut scripts = Vec::new();
     for c in &p.0.children {
@@ -208,11 +246,10 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         let start = i32le(&mut z)?;
         let end = i32le(&mut z)?;
         let start_mod = i32le(&mut z)?;
-        if start_mod!=0 && !warnings.iter().any(|s|s=="Zone sample-start modulation is not imported"){warnings.push("Zone sample-start modulation is not imported".into());}
         let lv = i16le(&mut z)?; let hv = i16le(&mut z)?;
         let lk = i16le(&mut z)?; let hk = i16le(&mut z)?;
         let fades = [i16le(&mut z)?,i16le(&mut z)?,i16le(&mut z)?,i16le(&mut z)?];
-        if fades.iter().any(|v| *v != 0) && !warnings.iter().any(|s| s.starts_with("Zone crossfades")) { warnings.push("Zone crossfades are not imported".into()); }
+        let fade = |v: i16| v.clamp(0, 127) as u8;
         let root = i16le(&mut z)?;
         let gain = f32le(&mut z)?; let pan = f32le(&mut z)?; let tune = f32le(&mut z)?;
         if so.version >= 0x9a { let mut flags=[0;6]; z.read_exact(&mut flags)?; }
@@ -242,12 +279,42 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         zones.push(Zone { group, sample: paths.get(&file_id).with_context(||format!("Zone {} v{:x}: sample id {} missing from file table ({} entries); public {:?}",zones.len(),so.version,file_id,paths.len(),&so.public_data[..so.public_data.len().min(64)]))?.clone(),
             available: !unavailable.contains(&file_id), low_key: lk as u8, high_key: hk as u8, root: root as u8, low_velocity: lv as u8, high_velocity: hv as u8,
             start: start as usize, end, gain: gain * program.volume, pan: (pan + program.pan).clamp(-1.0,1.0),
-            tune: tune as f64 * program.tune as f64 * 2f64.powf(program.transpose as f64 / 12.0), loop_range });
+            tune: tune as f64 * program.tune as f64 * 2f64.powf(program.transpose as f64 / 12.0), loop_range,
+            start_mod: start_mod.max(0) as u32, fade_low_velocity: fade(fades[0]), fade_high_velocity: fade(fades[1]),
+            fade_low_key: fade(fades[2]), fade_high_key: fade(fades[3]) });
     }
     for (archive,index) in &resolver.archives {warnings.extend(index.issues.iter().map(|issue|format!("{}: {issue}",archive.display())));}
     if c.find_first(3).is_some(){warnings.push("Multi routing, master processing and multi scripts are not restored; parts use manual playback".into());}
     warnings.sort(); warnings.dedup(); missing_samples.sort(); missing_samples.dedup();
-    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts })
+    let (voice_limit, voice_groups) = match p.0.find_first(0x32).map(|c| voice_groups(&c.data)).transpose() {
+        Ok(v) => v.map_or((None, Vec::new()), |(limit, groups)| (Some(limit), groups)),
+        Err(e) => { warnings.push(format!("Voice groups ignored: {e:#}")); (None, Vec::new()) }
+    };
+    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups })
+}
+
+/// VoiceGroups chunk (0x32, v0x60): program limit, a 128-bit presence mask, then one
+/// limit per present voice group. Layout verified against local Afflatus presets.
+fn voice_groups(data: &[u8]) -> Result<(VoiceLimit, Vec<Option<VoiceLimit>>)> {
+    fn limit(r: &mut Cursor<&[u8]>) -> Result<VoiceLimit> {
+        let mut flag = [0; 3];
+        r.read_exact(&mut flag)?;
+        ensure!(flag == [0, 0x60, 0], "Unsupported voice limit version");
+        let chars = u32le(r)? as usize;
+        ensure!(chars <= 1024, "Voice group name too long");
+        r.set_position(r.position() + 2 * chars as u64);
+        let kill_mode = i16le(r)?;
+        let mut prefer = [0];
+        r.read_exact(&mut prefer)?;
+        Ok(VoiceLimit { kill_mode, prefer_released: prefer[0] != 0, max_voices: i32le(r)?.max(1) as u32,
+            fade_ms: i32le(r)?.max(0) as u32, exclusion_group: i32le(r)? })
+    }
+    let mut r = Cursor::new(data);
+    let program = limit(&mut r)?;
+    let mut mask = [0; 16];
+    r.read_exact(&mut mask)?;
+    let groups = (0..128).map(|i| (mask[i / 8] & (1 << (i % 8)) != 0).then(|| limit(&mut r)).transpose()).collect::<Result<Vec<_>>>()?;
+    Ok((program, groups))
 }
 
 pub struct Resolver { root: PathBuf, index: Option<HashMap<String, Vec<PathBuf>>>, archives: HashMap<PathBuf,ni_file::nkr::Archive> }

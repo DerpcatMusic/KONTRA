@@ -168,8 +168,15 @@ impl LibraryKey {
     }
     /// Resource-relative cipher stream; precomputed once, repeated every 64 KiB.
     pub fn apply(&self, bytes: &mut [u8]) {
+        self.apply_at(0, bytes);
+    }
+    /// Decrypt `bytes` that start `offset` bytes into the resource. The stream
+    /// is position-relative, so members can be read at random offsets.
+    pub fn apply_at(&self, offset: u64, bytes: &mut [u8]) {
+        let len = self.stream.len();
+        let start = (offset % len as u64) as usize;
         for (i, byte) in bytes.iter_mut().enumerate() {
-            *byte ^= self.stream[i % self.stream.len()];
+            *byte ^= self.stream[(start + i) % len];
         }
     }
 }

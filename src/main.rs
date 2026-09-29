@@ -1,6 +1,6 @@
 use anyhow::{Context,Result,ensure};
 use std::path::Path;
-use kontakto::{import,engine::{Bank,Engine}};
+use kontakto::{audio::Sample,engine::{Bank,Engine,MAX_BLOCK,MAX_VOICES,NoteEvent},import::{self,Group,Loop,Zone}};
 fn main() -> Result<()> {
  let args:Vec<_>=std::env::args().collect();
  match args.get(1).map(String::as_str) {
@@ -50,29 +50,102 @@ fn main() -> Result<()> {
     }
     println!("{}",serde_json::to_string_pretty(&report)?);
   },
-  Some("render") => {
-    let instrument=import::read(Path::new(args.get(2).context("render requires an NKI path")?))?;
-    let output=args.get(3).context("render requires an output WAV path")?;
-    ensure!(!Path::new(output).exists(),"Output already exists; choose a new output path");
-    let group=args.get(4).map(|s|s.parse()).transpose()?.or_else(||instrument.first_playable_group()).context("No complete playable group: inspect the missing sample report")?;
-    let bank=Bank::load(&instrument,group)?;
-    let note=args.get(5).map(|s|s.parse::<u8>()).transpose()?.unwrap_or(bank.zones[0].root);
-    ensure!(note<128,"MIDI note must be 0..127");
-    let velocity=args.get(6).map(|s|s.parse::<u8>()).transpose()?.unwrap_or_else(|| bank.zones.iter().find(|z|note>=z.low_key && note<=z.high_key).map(|z|((z.low_velocity as u16+z.high_velocity as u16)/2).max(1) as u8).unwrap_or(100));
-    let mut engine=Engine::default();engine.bank=Some(Box::new(bank));
-    let spec=hound::WavSpec{channels:2,sample_rate:48000,bits_per_sample:32,sample_format:hound::SampleFormat::Float};
-    let mut writer=hound::WavWriter::create(output,spec)?;
-    engine.note_on(0,note,velocity);let mut peak=0f32;let mut square=0f64;
-    for n in 0..(48000*4) {
-       if n==48000*2 {engine.note_off(0,note);}
-       for sample in engine.frame() {let sample=sample*0.25;ensure!(sample.is_finite(),"Nonfinite rendered audio");peak=peak.max(sample.abs());square+=sample as f64*sample as f64;writer.write_sample(sample)?;}
-    }
-    writer.finalize()?;
-    ensure!(peak>0.00001,"Rendered silence; chosen key/velocity has no audible zone in this group");
-    println!("{} · group {} ({}) · note {note} · peak {peak:.6} · RMS {:.6}",instrument.name,group,instrument.groups[group].name,(square/(48000.0*4.0*2.0)).sqrt());
-    for warning in instrument.warnings {eprintln!("Compatibility: {warning}");}
-  },
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render <instrument.nki> <output.wav> [group=0] [note=first root] [velocity=zone midpoint]"),
+  Some("render") => render(&args[2..])?,
+  Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000))?,
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto bench [voices=1000]"),
  }
  Ok(())
+}
+
+/// Render a note through every playable group (or one group) to a WAV file.
+fn render(args: &[String]) -> Result<()> {
+  let instrument = import::read(Path::new(args.first().context("render requires an NKI path")?))?;
+  let output = args.get(1).context("render requires an output WAV path")?;
+  ensure!(!Path::new(output).exists(), "Output already exists; choose a new output path");
+  let group: Option<usize> = args.get(2).filter(|s| *s != "all").map(|s| s.parse()).transpose()?;
+  let bank = Bank::load(&instrument)?;
+  if bank.skipped_zones > 0 {
+    eprintln!("Skipped {} zones: {}", bank.skipped_zones, bank.issues.join("; "));
+  }
+  let first = bank.zones().iter().find(|z| group.is_none_or(|g| z.group == g)).context("Group has no playable zones")?;
+  let note = args.get(3).map(|s| s.parse::<u8>()).transpose()?.unwrap_or(first.root);
+  ensure!(note < 128, "MIDI note must be 0..127");
+  let velocity = args.get(4).map(|s| s.parse::<u8>()).transpose()?.unwrap_or_else(|| {
+    let zone = bank.zones().iter().find(|z| (z.low_key..=z.high_key).contains(&note));
+    zone.map_or(100, |z| ((u16::from(z.low_velocity) + u16::from(z.high_velocity)) / 2).max(1) as u8)
+  });
+  let streamed = bank.streamed_samples();
+  let mut engine = Engine::default();
+  engine.blocking_streams = true;
+  engine.set_bank(Some(Box::new(bank)));
+  if let Some(g) = group {
+    engine.set_all_groups_allowed(false);
+    engine.set_group_allowed(g, true);
+  }
+  let spec = hound::WavSpec { channels: 2, sample_rate: 48000, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+  let mut writer = hound::WavWriter::create(output, spec)?;
+  engine.note_on(0, note, velocity);
+  let (mut peak, mut square) = (0f32, 0f64);
+  let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+  let blocks = 48000 * 4 / MAX_BLOCK;
+  for block in 0..blocks {
+    if block == blocks / 2 {
+      engine.note_off(0, note);
+    }
+    engine.render(&mut left, &mut right);
+    for (l, r) in left.iter().zip(&right) {
+      for sample in [l * 0.25, r * 0.25] {
+        ensure!(sample.is_finite(), "Nonfinite rendered audio");
+        peak = peak.max(sample.abs());
+        square += f64::from(sample) * f64::from(sample);
+        writer.write_sample(sample)?;
+      }
+    }
+  }
+  writer.finalize()?;
+  ensure!(peak > 0.00001, "Rendered silence; chosen key/velocity has no audible zone");
+  let groups = group.map_or_else(|| "all groups".to_string(), |g| format!("group {g} ({})", instrument.groups[g].name));
+  let rms = (square / (blocks * MAX_BLOCK * 2) as f64).sqrt();
+  println!("{} · {groups} · note {note} · peak {peak:.6} · RMS {rms:.6} · {streamed} streamed samples · {} underruns", instrument.name, engine.underruns());
+  for warning in instrument.warnings {
+    eprintln!("Compatibility: {warning}");
+  }
+  Ok(())
+}
+
+/// Voices one core renders in real time: 48 kHz, 128-frame blocks, stereo,
+/// pitched looping voices with loop crossfades.
+fn bench(voices: usize) -> Result<()> {
+  ensure!((1..=MAX_VOICES).contains(&voices), "voices must be 1..={MAX_VOICES}");
+  let frames: Vec<[f32; 2]> = (0..96000).map(|i| { let x = (i as f32 * 0.013).sin(); [x, x * 0.7] }).collect();
+  let group = Group { name: "bench".into(), ..Group::default() };
+  let zone = Zone { low_velocity: 1, loop_range: Some(Loop { start: 20000, end: 90000, until_release: false, crossfade: 2000 }), ..Zone::default() };
+  let mut bank = Bank::from_samples(vec![group], vec![zone], vec![(Default::default(), Sample { rate: 44100, frames })])?;
+  bank.set_polyphony(MAX_VOICES);
+  let mut engine = Engine::default();
+  engine.set_bank(Some(Box::new(bank)));
+  for i in 0..voices {
+    let mut event = NoteEvent::new((i % 16) as u8, 36 + (i % 48) as u8, 100);
+    event.tune = (i % 7) as f64 * 0.013;
+    engine.start_event(&event);
+  }
+  ensure!(engine.active_voices() == voices, "only {} voices started", engine.active_voices());
+  let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+  // Best of several runs: the minimum is the least disturbed by other load.
+  let seconds = 2.0;
+  let blocks = (48000.0 * seconds / MAX_BLOCK as f64) as usize;
+  let mut checksum = 0f32;
+  let mut cpu = f64::MAX;
+  for _ in 0..7 {
+    let started = std::time::Instant::now();
+    for _ in 0..blocks {
+      engine.render(&mut left, &mut right);
+      checksum += left[0] + right[MAX_BLOCK - 1];
+    }
+    cpu = cpu.min(started.elapsed().as_secs_f64());
+  }
+  ensure!(engine.active_voices() == voices && checksum.is_finite(), "voices ended during the benchmark");
+  let realtime = seconds / cpu;
+  println!("{voices} voices · {seconds} s audio in {cpu:.3} s (best of 7) · {realtime:.1}x real time · {:.0} voices per core", voices as f64 * realtime);
+  Ok(())
 }
