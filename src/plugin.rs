@@ -1,4 +1,4 @@
-use crate::{engine::{Bank,Engine,MAX_BLOCK,Rack,PartControls,RACK_SLOTS}, fx::FxProcessor, import::{self, Instrument}};
+use crate::{engine::{Bank,Engine,MAX_BLOCK,Rack,PartControls,RACK_SLOTS,load_scripts}, fx::FxProcessor, import::{self, Instrument}, ksp::{Persisted,Runtime}};
 use crossbeam_queue::ArrayQueue;
 #[path="artwork.rs"] mod artwork;
 use moose::mui::mui::{scene::{Theme,Color,TypeScale,Fill,Fit},geometry::Path as DrawPath};
@@ -6,8 +6,10 @@ use moose::{prelude::*, mui::{MuiEditor, mui::prelude::*}};
 use std::{path::{Path,PathBuf}, sync::{Mutex,RwLock,atomic::{AtomicU64,AtomicBool,Ordering}}, time::{Instant,Duration}};
 
 #[derive(State, Clone, PartialEq)]
-pub struct Part { pub path:String, pub group:u32, pub port:u8, pub output:u8, pub channel:i16, pub gain:f32, pub pan:f32, pub mute:bool, pub solo:bool, pub program:u32 }
-impl Default for Part {fn default()->Self {Self {path:String::new(),program:0,group:u32::MAX,port:0,output:0,channel:-1,gain:0.,pan:0.,mute:false,solo:false}}}
+pub struct Part { pub path:String, pub group:u32, pub port:u8, pub output:u8, pub channel:i16, pub gain:f32, pub pan:f32, pub mute:bool, pub solo:bool, pub program:u32,
+    /// Script persistent variables as JSON (`Vec<Persisted>`); empty uses the instrument's saved values.
+    pub script_state:String }
+impl Default for Part {fn default()->Self {Self {path:String::new(),program:0,group:u32::MAX,port:0,output:0,channel:-1,gain:0.,pan:0.,mute:false,solo:false,script_state:String::new()}}}
 #[derive(State, Default, Clone, PartialEq)]
 pub struct Selection { pub root:String, pub parts:Vec<Part>, pub order:Vec<u32>, pub midi_thru:bool, pub multi:String }
 
@@ -32,7 +34,9 @@ pub struct SamplerParams {
 use SamplerParamsParamId as P;
 
 pub struct Shared {
-    ready:ArrayQueue<(usize,u64,Handoff)>, discard:ArrayQueue<(Option<Box<Bank>>,FxProcessor)>,
+    ready:ArrayQueue<(usize,u64,Handoff)>, discard:ArrayQueue<Retired>,
+    /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
+    snapshot_requests:ArrayQueue<(usize,Box<Vec<Persisted>>)>, snapshots:ArrayQueue<(usize,u64,Box<Vec<Persisted>>)>,
     /// Host sample rate (`f64` bits) that effect processors are built for.
     rate:AtomicU64,
     key_owners:[AtomicU64;128],keyboard:ArrayQueue<(usize,u8,bool)>, controls:ArrayQueue<[PartControls;RACK_SLOTS]>, generation:[AtomicU64;RACK_SLOTS],
@@ -42,20 +46,46 @@ pub struct Shared {
 #[derive(Default,Clone)]
 struct PartView {program:u32,interface:Option<Arc<crate::ksp::Interface>>,interface_status:String,wallpaper:Option<Arc<moose::mui::mui::scene::Image>>,wallpaper_status:String,attempted:Option<(String,u32)>,instrument:Option<Arc<Instrument>>,status:String,active:String,bytes:usize,
     /// Rate of the effects handed to the audio thread; 0 when none were.
-    fx_rate:f64}
+    fx_rate:f64,
+    /// `Part::script_state` the audio thread's runtime matches (loaded from or last saved).
+    script_state:String,
+    /// Epoch of the runtime last handed to the audio thread.
+    script_epoch:u64,
+    /// Snapshot buffer for this slot's runtime while the loader holds it.
+    snapshot:Option<Box<Vec<Persisted>>>}
 #[derive(Clone)]
-struct View {multi_status:String,artwork:std::collections::HashMap<String,Arc<moose::mui::mui::scene::Image>>,root:String,files:Arc<Vec<PathBuf>>,parts:[PartView;RACK_SLOTS],status:String}
+struct View {
+    /// Last script epoch handed out; tags runtimes so stale persistence snapshots are ignored.
+    script_epoch:u64,
+    multi_status:String,artwork:std::collections::HashMap<String,Arc<moose::mui::mui::scene::Image>>,root:String,files:Arc<Vec<PathBuf>>,parts:[PartView;RACK_SLOTS],status:String}
 impl Default for Shared {
-    fn default()->Self {Self {ready:ArrayQueue::new(64),discard:ArrayQueue::new(64),rate:AtomicU64::new(48000f64.to_bits()),key_owners:std::array::from_fn(|_|AtomicU64::new(128)),keyboard:ArrayQueue::new(256),controls:ArrayQueue::new(1),generation:std::array::from_fn(|_|AtomicU64::new(0)),audition:AtomicBool::new(false),audition_note:AtomicU64::new(128),selected:AtomicU64::new(0),focus_request:AtomicU64::new(128),panic:AtomicBool::new(false),midi_thru:AtomicBool::new(false),multi_request:Mutex::new(None),view:Mutex::new(View{multi_status:String::new(),artwork:Default::default(),root:String::new(),files:Arc::default(),parts:std::array::from_fn(|_|PartView::default()),status:"Choose a library and select a preset".into()})}}
+    fn default()->Self {Self {ready:ArrayQueue::new(64),discard:ArrayQueue::new(64),snapshot_requests:ArrayQueue::new(2*RACK_SLOTS),snapshots:ArrayQueue::new(2*RACK_SLOTS),rate:AtomicU64::new(48000f64.to_bits()),key_owners:std::array::from_fn(|_|AtomicU64::new(128)),keyboard:ArrayQueue::new(256),controls:ArrayQueue::new(1),generation:std::array::from_fn(|_|AtomicU64::new(0)),audition:AtomicBool::new(false),audition_note:AtomicU64::new(128),selected:AtomicU64::new(0),focus_request:AtomicU64::new(128),panic:AtomicBool::new(false),midi_thru:AtomicBool::new(false),multi_request:Mutex::new(None),view:Mutex::new(View{script_epoch:0,multi_status:String::new(),artwork:Default::default(),root:String::new(),files:Arc::default(),parts:std::array::from_fn(|_|PartView::default()),status:"Choose a library and select a preset".into()})}}
 }
 fn rack_controls(selection:&Selection)->[PartControls;RACK_SLOTS] {std::array::from_fn(|n|selection.parts.get(n).map(|p|PartControls {port:p.port.min(3),output:p.output.min(7),channel:p.channel.clamp(-1,15),gain:if p.gain.is_finite(){db_to_linear(p.gain.clamp(-60.,6.))}else{1.},pan:if p.pan.is_finite(){p.pan.clamp(-1.,1.)}else{0.},mute:p.mute,solo:p.solo}).unwrap_or_default())}
 /// Loader-built state for one rack slot, installed by the audio thread.
 enum Handoff {
-    /// A new instrument, or an empty slot, with its effects.
-    Part{bank:Option<Box<Bank>>,fx:FxProcessor},
+    /// A new instrument, or an empty slot, with its effects and initialized scripts.
+    Part{bank:Option<Box<Bank>>,fx:FxProcessor,script:Option<Box<Runtime>>,epoch:u64},
     /// Effects rebuilt for a new host sample rate; the bank stays.
     Fx(FxProcessor),
+    /// Scripts rebuilt from restored host state; the bank stays.
+    Script{script:Option<Box<Runtime>>,epoch:u64},
 }
+/// What the audio thread replaced, freed on the loader thread.
+#[expect(dead_code,reason="held only to be dropped off the audio thread")]
+#[derive(Default)]
+struct Retired {bank:Option<Box<Bank>>,fx:Option<FxProcessor>,script:Option<Box<Runtime>>}
+/// Persistent script values to restore: the host's saved state, else the instrument's.
+fn persisted(saved:&str,i:&Instrument)->Vec<Persisted> {serde_json::from_str(saved).unwrap_or_else(|_|i.script_state.clone())}
+/// Initialize `i`'s scripts off the audio thread, with a snapshot buffer shaped for them.
+fn scripts(i:&Instrument,saved:&str,rate:f64)->(Option<Box<Runtime>>,Option<Box<Vec<Persisted>>>,Vec<String>) {
+    let (script,errors)=load_scripts(i,persisted(saved,i),rate);
+    // Nothing persistent: no snapshots to trade with the audio thread.
+    let snapshot=script.as_ref().map(|rt|rt.persistence()).filter(|s|s.iter().any(|p|!p.is_empty())).map(Box::new);
+    (script,snapshot,errors)
+}
+/// Epoch for a runtime about to be handed off from `slot`; forgets the old runtime's snapshot.
+fn next_epoch(view:&mut View,slot:usize,snapshot:Option<Box<Vec<Persisted>>>)->u64 {view.script_epoch+=1;let v=&mut view.parts[slot];v.script_epoch=view.script_epoch;v.snapshot=snapshot;view.script_epoch}
 impl Shared {fn rate(&self)->f64 {f64::from_bits(self.rate.load(Ordering::Acquire))}}
 pub struct Load;
 impl BackgroundTask for Load {
@@ -84,23 +114,33 @@ impl BackgroundTask for Load {
         {let current=params.selection.read().unwrap();let _=params.shared.controls.force_push(rack_controls(&current));params.shared.midi_thru.store(current.midi_thru,Ordering::Release);}
         for slot in 0..RACK_SLOTS {
             let part=selection.parts.get(slot).cloned().unwrap_or_default();let target=(part.path.clone(),part.program);
+            // The host restored different script values for a loaded part: rebuild only its scripts.
+            let restore={let view=params.shared.view.lock().unwrap();let v=&view.parts[slot];
+                v.instrument.clone().filter(|i|v.attempted.as_ref()==Some(&target) && v.fx_rate!=0. && !i.scripts.is_empty() && part.script_state!=v.script_state)};
+            if let Some(instrument)=restore {
+                let (script,snapshot,_)=scripts(&instrument,&part.script_state,params.shared.rate());
+                let mut view=params.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,slot,snapshot);view.parts[slot].script_state=part.script_state.clone();
+                let _=params.shared.ready.force_push((slot,params.shared.generation[slot].load(Ordering::Acquire),Handoff::Script{script,epoch}));
+                continue;
+            }
             let cached={let mut view=params.shared.view.lock().unwrap();let v=&mut view.parts[slot];
                 if v.attempted.as_ref()==Some(&target) {continue;}
-                v.attempted=Some(target.clone());v.status="Loading samples…".into();
+                v.attempted=Some(target.clone());v.status="Loading samples…".into();v.script_epoch=0;v.snapshot=None;
                 v.instrument.as_ref().filter(|i|i.path==Path::new(&part.path) && v.program==part.program).cloned()};
             let generation=params.shared.generation[slot].fetch_add(1,Ordering::AcqRel)+1;
-            if part.path.is_empty() {params.shared.view.lock().unwrap().parts[slot]=PartView{attempted:Some(target),..Default::default()};let _=params.shared.ready.force_push((slot,generation,Handoff::Part{bank:None,fx:FxProcessor::default()}));continue;}
+            if part.path.is_empty() {params.shared.view.lock().unwrap().parts[slot]=PartView{attempted:Some(target),..Default::default()};let _=params.shared.ready.force_push((slot,generation,Handoff::Part{bank:None,fx:FxProcessor::default(),script:None,epoch:0}));continue;}
             let result=(||->anyhow::Result<_>{
                 let instrument=if let Some(i)=cached {i}else{Arc::new(import::read_program(Path::new(&part.path),part.program)?)};
+                let (script,snapshot,_)=scripts(&instrument,&part.script_state,params.shared.rate());
                 {
                     let needs_art={let view=params.shared.view.lock().unwrap();let v=&view.parts[slot];v.program!=part.program || v.instrument.as_ref().is_none_or(|i|i.path!=instrument.path)};
-                    let parsed=needs_art.then(||script_interface(&instrument));
+                    let parsed=needs_art.then(||script_interface(script.as_deref()));
                     let art=parsed.as_ref().map(|(interface,_)|artwork::performance(&instrument,interface.as_ref().map(|u|u.wallpaper.as_str())));
                     let mut view=params.shared.view.lock().unwrap();let v=&mut view.parts[slot];v.instrument=Some(instrument.clone());v.program=part.program;
                     if let Some((interface,status))=parsed {v.interface=interface;v.interface_status=status;}
                     if let Some(art)=art {match art {Ok(image)=>{v.wallpaper=image;v.wallpaper_status.clear();},Err(e)=>{v.wallpaper=None;v.wallpaper_status=e;}}}
                 }
-                if instrument.zones.is_empty(){return Ok((instrument,None));}
+                if instrument.zones.is_empty(){return Ok((instrument,None,script,snapshot));}
                 // Every group plays; the stored group only selects what the mapping inspector shows.
                 if part.group==u32::MAX {
                     let group=instrument.first_playable_group().unwrap_or(0);
@@ -110,13 +150,13 @@ impl BackgroundTask for Load {
                 let bank=Box::new(Bank::load(&instrument)?);
                 let resident:usize=params.shared.view.lock().unwrap().parts.iter().enumerate().filter(|(n,_)|*n!=slot).map(|(_,p)|p.bytes).sum();
                 anyhow::ensure!(resident+bank.bytes<=2*crate::engine::MEMORY_LIMIT,"Rack exceeds 2 GiB RAM limit");
-                Ok((instrument,Some(bank)))
+                Ok((instrument,Some(bank),script,snapshot))
             })();
             let current=params.selection.read().unwrap();if current.parts.get(slot).map(|p|(&p.path,p.program))!=Some((&target.0,target.1)) {continue;}drop(current);
-            let mut view=params.shared.view.lock().unwrap();let v=&mut view.parts[slot];
-            match result {Ok((instrument,bank))=>{v.active=instrument.name.clone();v.bytes=bank.as_ref().map(|b|b.bytes).unwrap_or(0);v.status=bank.as_deref().map(bank_status).unwrap_or_else(||"Controller instrument · KSP playback unavailable".into());
-                let rate=params.shared.rate();v.fx_rate=rate;let fx=instrument.fx.processor(rate as f32,MAX_BLOCK);let _=params.shared.ready.force_push((slot,generation,Handoff::Part{bank,fx}));},
-                Err(e)=>{v.status=format!("Load failed: {e:#}");v.fx_rate=0.;}}
+            let mut view=params.shared.view.lock().unwrap();
+            match result {Ok((instrument,bank,script,snapshot))=>{let epoch=if script.is_some(){next_epoch(&mut view,slot,snapshot)}else{0};let v=&mut view.parts[slot];v.script_state=part.script_state.clone();v.active=instrument.name.clone();v.bytes=bank.as_ref().map(|b|b.bytes).unwrap_or(0);v.status=bank.as_deref().map(bank_status).unwrap_or_else(||"Controller instrument · KSP playback unavailable".into());
+                let rate=params.shared.rate();v.fx_rate=rate;let fx=instrument.fx.processor(rate as f32,MAX_BLOCK);let _=params.shared.ready.force_push((slot,generation,Handoff::Part{bank,fx,script,epoch}));},
+                Err(e)=>{let v=&mut view.parts[slot];v.status=format!("Load failed: {e:#}");v.fx_rate=0.;}}
         }
         // The host changed sample rate since these effects were built: rebuild them here, off the audio thread.
         let rate=params.shared.rate();
@@ -127,10 +167,26 @@ impl BackgroundTask for Load {
             params.shared.view.lock().unwrap().parts[slot].fx_rate=rate;
             let _=params.shared.ready.force_push((slot,params.shared.generation[slot].load(Ordering::Acquire),Handoff::Fx(fx)));
         }
+        // Save script values the audio thread reported, then lend the buffers out again.
+        while let Some((slot,epoch,snapshot))=params.shared.snapshots.pop() {
+            let mut view=params.shared.view.lock().unwrap();let v=&mut view.parts[slot];
+            if epoch==0 || epoch!=v.script_epoch {continue;}
+            let json=serde_json::to_string(&*snapshot).unwrap_or_default();v.snapshot=Some(snapshot);
+            if json==v.script_state {continue;}
+            let path=v.instrument.as_ref().map(|i|i.path.clone());let program=v.program;v.script_state=json.clone();drop(view);
+            let mut current=params.selection.write().unwrap();
+            if let Some(p)=current.parts.get_mut(slot).filter(|p|path.as_deref()==Some(Path::new(&p.path)) && p.program==program) {p.script_state=json;}
+        }
+        for slot in 0..RACK_SLOTS {
+            let mut view=params.shared.view.lock().unwrap();
+            if let Some(snapshot)=view.parts[slot].snapshot.take() && let Err((_,snapshot))=params.shared.snapshot_requests.push((slot,snapshot)) {view.parts[slot].snapshot=Some(snapshot);}
+        }
     }
 }
 #[derive(Default)]
-pub struct Dsp {rack:Rack,until_poll:usize,audition_left:[usize;RACK_SLOTS]}
+pub struct Dsp {rack:Rack,until_poll:usize,audition_left:[usize;RACK_SLOTS],
+    /// Epoch of each slot's installed runtime, returned with its persistence snapshots.
+    script_epoch:[u64;RACK_SLOTS]}
 pub struct Sampler;
 
 /// Channel that makes the on-screen keyboard reach the part's first zone.
@@ -169,22 +225,37 @@ impl PluginLogic for Sampler {
         if let Some(controls) = p.shared.controls.pop() {
             s.rack.set_controls(controls);
         }
-        // Retired banks and effects go back to the loader thread to be freed;
-        // stop while it cannot take more.
+        // Retired banks, effects and scripts go back to the loader thread to be
+        // freed; stop while it cannot take more.
         while !p.shared.discard.is_full() {
             let Some((slot, generation, handoff)) = p.shared.ready.pop() else { break };
             let engine = &mut s.rack.parts[slot];
             let current = generation == p.shared.generation[slot].load(Ordering::Acquire);
             let retired = match handoff {
-                Handoff::Part { bank, fx } if current => {
+                Handoff::Part { bank, fx, script, epoch } if current => {
                     engine.reset(rate);
-                    (engine.set_bank(bank), engine.set_fx(fx))
+                    s.script_epoch[slot] = epoch;
+                    Retired { script: engine.set_script(script), bank: engine.set_bank(bank), fx: Some(engine.set_fx(fx)) }
                 }
-                Handoff::Fx(fx) if current => (None, engine.set_fx(fx)),
-                Handoff::Part { bank, fx } => (bank, fx),
-                Handoff::Fx(fx) => (None, fx),
+                Handoff::Fx(fx) if current => Retired { fx: Some(engine.set_fx(fx)), ..Retired::default() },
+                Handoff::Script { script, epoch } if current => {
+                    engine.reset(rate);
+                    s.script_epoch[slot] = epoch;
+                    Retired { script: engine.set_script(script), ..Retired::default() }
+                }
+                Handoff::Part { bank, fx, script, .. } => Retired { bank, fx: Some(fx), script },
+                Handoff::Fx(fx) => Retired { fx: Some(fx), ..Retired::default() },
+                Handoff::Script { script, .. } => Retired { script, ..Retired::default() },
             };
             let _ = p.shared.discard.push(retired);
+        }
+        // Refresh lent persistence snapshots in place; the loader saves them.
+        while !p.shared.snapshots.is_full() {
+            let Some((slot, mut snapshot)) = p.shared.snapshot_requests.pop() else { break };
+            if let Some(rt) = s.rack.parts[slot].script() {
+                rt.refresh_persistence(&mut snapshot);
+            }
+            let _ = p.shared.snapshots.push((slot, s.script_epoch[slot], snapshot));
         }
         for e in &mut s.rack.parts {
             e.attack = p.attack.value();
@@ -243,6 +314,8 @@ impl PluginLogic for Sampler {
                     EventBody::NoteOff { channel, note, .. } => s.rack.note_off_port(e.port, channel, note),
                     EventBody::PitchBend { channel, value, .. } => s.rack.pitch_bend_port(e.port, channel, value),
                     EventBody::ControlChange { channel, cc, value, .. } => s.rack.cc_port(e.port, channel, cc, value),
+                    EventBody::ChannelPressure { channel, pressure, .. } => s.rack.channel_pressure_port(e.port, channel, pressure),
+                    EventBody::Aftertouch { channel, note, pressure, .. } => s.rack.poly_pressure_port(e.port, channel, note, pressure),
                     _ => {}
                 }
                 next += 1;
@@ -368,16 +441,11 @@ fn number(ui:&mut Ui,id:impl Into<Id>,label:&str,value:&mut f64,range:std::ops::
     let c=drag_value(ui,id,label,value,range).size(S);
     row![caption(label).fill(Role::Dim),c.el.value_text(display).el().min_w(36)].gap(4).align(Align::Center)
 }
-fn script_interface(i:&Instrument)->(Option<Arc<crate::ksp::Interface>>,String) {
-    let mut interface=None;let mut issues=Vec::new();let mut host=crate::ksp::HostState::default();
-    for (slot,source) in i.scripts.iter().enumerate() {
-        match crate::ksp::initialize_with_host(source,i.groups.len(),8,&mut host) {
-            Ok(ui) if ui.performance=>{issues.extend(ui.diagnostics.iter().cloned());interface=Some(Arc::new(ui));},
-            Ok(_)=>{},
-            Err(e)=>{issues.push(format!("Script {}: {e:#}",slot+1));if source.contains("make_perfview"){interface=None;}},
-        }
-    }
-    (interface,issues.join("\n"))
+/// The performance view of initialized scripts (the last slot with one) and their issues.
+fn script_interface(rt:Option<&Runtime>)->(Option<Arc<crate::ksp::Interface>>,String) {
+    let Some(rt)=rt else {return (None,String::new())};
+    let interface=(0..rt.slots()).map(|slot|rt.interface(slot)).filter(|ui|ui.performance).last().map(Arc::new);
+    (interface,rt.diagnostics().join("\n"))
 }
 /// Authored KSP coordinates belong inside this bounded canvas; the editor shell still reflows.
 fn script_preview(ui:&mut Ui,interface:&crate::ksp::Interface,image:Option<&Arc<moose::mui::mui::scene::Image>>)->El {
@@ -507,7 +575,7 @@ fn editor_ui(params:&Arc<SamplerParams>)->impl FnMut(&mut Ui,&mut moose::mui::Br
                     panel.push(row![caption(family.replace("Performance Samples ","")).fill(Role::Dim).lines(2).flex(1).min_w(0),prev_el,next_el].gap(4).align(Align::Center).pad((12,4)));
                     let current=pv.instrument.as_deref().filter(|i|i.path==Path::new(&part.path) && pv.program==part.program);
                     panel.push(row![body(current.map(|i|i.name.as_str()).unwrap_or("Loading instrument…")).text_size(20).lines(2).flex(1).min_w(0),caption("INSTRUMENT").fill(Role::Dim)].align(Align::Center).gap(8).pad((12,10)));
-                    if current.is_some_and(|i|!i.scripts.is_empty()) {panel.push(caption(if pv.interface.is_some(){"Interface preview · saved values and callbacks unavailable"}else{"Manual performance · scripted interface unavailable"}).fill(Role::Dim).pad((12,4)).lines(2).tip(pv.interface_status.clone()));}
+                    if current.is_some_and(|i|!i.scripts.is_empty()) {panel.push(caption(if pv.interface.is_some(){"Scripts run · interface preview only"}else{"Manual performance · scripted interface unavailable"}).fill(Role::Dim).pad((12,4)).lines(2).tip(pv.interface_status.clone()));}
                     let mut gain=part.gain as f64;let gain_el=number(ui,"performance-gain","Level",&mut gain,-60.0..=6.0,format!("{:.1} dB",part.gain));part.gain=gain as f32;
                     let mut pan=part.pan as f64;let pan_el=number(ui,"performance-pan","Pan",&mut pan,-1.0..=1.0,format!("{:.0}",part.pan*100.));part.pan=pan as f32;
                     let (audition,play)=action(ui,"performance-play","Audition",false);if audition {p.shared.audition.store(true,Ordering::Release);}
@@ -521,7 +589,7 @@ fn editor_ui(params:&Arc<SamplerParams>)->impl FnMut(&mut Ui,&mut moose::mui::Br
             }
             else if tab==1 {content.push(mapping(i,group).h(Len::Auto).flex(1).min_h(0).radius(0));content.push(row![caption("C−1"),spacer(),caption("Key / velocity"),spacer(),caption("G9")].pad(8).shrink(0));}
             else if tab==2 {let mut rows=Vec::new();if let Some(i)=i {for (n,g) in i.groups.iter().enumerate() {let(hit,e)=action(ui,format!("group-{n}"),&g.name,group==n as u32);if hit {if let Some(p)=selection.parts.get_mut(selected){p.group=n as u32;}}rows.push(e.lines(2).shrink(0));rows.push(rule());}}content.push(col(rows).gap(0).flex(1).min_h(0).scroll().id("groups-scroll"));}
-            else {let mut rows=vec![body("All groups play; long samples stream from disk").text_weight(Weight::SEMIBOLD),body("KSP, scripted articulations and Kontakt effects are not implemented yet.").fill(Role::Dim).lines(4)];if let Some(i)=i {rows.push(body(format!("{} groups · {} zones · {} missing references",i.groups.len(),i.zones.len(),i.missing_samples.len())).lines(3));rows.push(caption(i.path.display().to_string()).fill(Role::Dim).lines(4));for w in &i.warnings {rows.push(body(w.as_str()).text_size(12).fill(Role::Dim).lines(6).shrink(0));}}content.push(col(rows).gap(8).pad(12).flex(1).min_h(0).scroll().id("details-scroll"));}
+            else {let mut rows=vec![body("Scripts play the groups they choose; long samples stream from disk").text_weight(Weight::SEMIBOLD),body("Script interfaces are preview only; engine parameters and modulation from scripts are not applied yet.").fill(Role::Dim).lines(4)];if let Some(i)=i {rows.push(body(format!("{} groups · {} zones · {} missing references",i.groups.len(),i.zones.len(),i.missing_samples.len())).lines(3));rows.push(caption(i.path.display().to_string()).fill(Role::Dim).lines(4));for w in &i.warnings {rows.push(body(w.as_str()).text_size(12).fill(Role::Dim).lines(6).shrink(0));}}content.push(col(rows).gap(8).pad(12).flex(1).min_h(0).scroll().id("details-scroll"));}
         }
         let master_text=format!("{:.1} dB",p.volume.value());let master=bridge.bind(ui,P::Volume,|ui,id,v|{let mut db=*v*66.-60.;let control=drag_value(ui,id,"Master",&mut db,-60.0..=6.0).size(S).value_text(master_text);*v=(db+60.)/66.;control});
         let status=view.parts.get(selected).map(|v|v.status.as_str()).filter(|s|!s.is_empty()).unwrap_or(&view.status);
@@ -579,6 +647,16 @@ mod tests {
         for ch in [0,2] {assert!(buffer.output(ch).iter().all(|x|x.is_finite()));assert!(buffer.output(ch).iter().any(|x|x.abs()>0.00001));}
         p.selection.write().unwrap().parts[0]=Part::default();Load.run(&p);Sampler::process(&mut dsp,&p,&mut buffer,&EventList::with_capacity(0),&mut cx);
         assert!(dsp.rack.parts[0].bank().is_none());assert!(dsp.rack.parts[1].bank().is_some());assert!(dsp.rack.parts[1].active_voices()>0);
+        // Scripts run on the audio thread; their persistent values reach the host state.
+        assert!(dsp.rack.parts[1].script().is_some());
+        Load.run(&p);Sampler::process(&mut dsp,&p,&mut buffer,&EventList::with_capacity(0),&mut cx);Load.run(&p);
+        let saved=p.selection.read().unwrap().parts[1].script_state.clone();assert!(saved.starts_with("[{"),"the instrument's values are saved");
+        // Restored host state rebuilds only the scripts: "[]" restores nothing, leaving declared defaults.
+        let mut round_trip=|state:&str|{let epoch=dsp.script_epoch[1];p.selection.write().unwrap().parts[1].script_state=state.into();Load.run(&p);Sampler::process(&mut dsp,&p,&mut buffer,&EventList::with_capacity(0),&mut cx);
+            assert!(dsp.script_epoch[1]>epoch);assert!(dsp.rack.parts[1].bank().is_some() && dsp.rack.parts[1].script().is_some());
+            Load.run(&p);Sampler::process(&mut dsp,&p,&mut buffer,&EventList::with_capacity(0),&mut cx);Load.run(&p);p.selection.read().unwrap().parts[1].script_state.clone()};
+        assert!(round_trip("[]")!=saved,"declared defaults differ from the saved values");
+        assert!(round_trip(&saved)==saved,"saved values restore exactly");
         // A host rate change rebuilds the effects on the loader and keeps the bank.
         Sampler::reset(&mut dsp,&p,&AudioConfig::new(44100.,2048));Load.run(&p);assert_eq!(p.shared.view.lock().unwrap().parts[1].fx_rate,44100.);assert!(!p.shared.ready.is_empty());
         Sampler::process(&mut dsp,&p,&mut buffer,&EventList::with_capacity(0),&mut cx);assert!(p.shared.ready.is_empty());assert!(dsp.rack.parts[1].bank().is_some());
@@ -648,7 +726,7 @@ mod tests {
           for (width,height) in [(1180,780),(900,640)] {
             let p=Arc::new(SamplerParams::new());
             {let mut view=p.shared.view.lock().unwrap();view.artwork=artwork::scan(Path::new(import::LIBRARY_ROOT),&files);view.files=Arc::new(files.clone());view.root=import::LIBRARY_ROOT.into();
-             if loaded {for (slot,i) in instruments.iter().enumerate() {let group=i.first_playable_group().unwrap();p.selection.write().unwrap().parts.push(Part{path:i.path.to_string_lossy().into(),group:group as u32,channel:slot as i16,..Default::default()});view.parts[slot]=PartView{interface:script_interface(i).0,wallpaper:artwork::performance(i,None).unwrap_or(None),instrument:Some(i.clone()),active:i.name.clone(),status:if state=="error" && slot==0 {"Load failed: missing sample data in archive".into()}else{format!("{} groups · {} zones",i.groups.len(),i.zones.len())},..Default::default()};}}}
+             if loaded {for (slot,i) in instruments.iter().enumerate() {let group=i.first_playable_group().unwrap();p.selection.write().unwrap().parts.push(Part{path:i.path.to_string_lossy().into(),group:group as u32,channel:slot as i16,..Default::default()});view.parts[slot]=PartView{interface:script_interface(load_scripts(i,i.script_state.clone(),48000.).0.as_deref()).0,wallpaper:artwork::performance(i,None).unwrap_or(None),instrument:Some(i.clone()),active:i.name.clone(),status:if state=="error" && slot==0 {"Load failed: missing sample data in archive".into()}else{format!("{} groups · {} zones",i.groups.len(),i.zones.len())},..Default::default()};}}}
             let mut ui=editor_theme();let mut build=editor_ui(&p);let mut bridge=moose::mui::Bridge::new(p.clone());
             for _ in 0..3 {let root=build(&mut ui,&mut bridge);ui.frame(root,Some(Size::new(width as f64,height as f64)),Input::default(),1./60.).unwrap();}
             if state=="multis" {let lib=files.iter().filter_map(|p|p.strip_prefix(import::LIBRARY_ROOT).ok()?.components().next().map(|c|c.as_os_str().to_string_lossy().into_owned())).collect::<std::collections::BTreeSet<_>>().iter().position(|name|name=="Audio Imperia CHORUS").unwrap();ui.focus(format!("library-{lib}"));let input=Input{keys:vec![KeyPress{key:Key::Enter,mods:Mods::default()}],..Default::default()};let root=build(&mut ui,&mut bridge);ui.frame(root,Some(Size::new(width as f64,height as f64)),input,1./60.).unwrap();for _ in 0..3{let root=build(&mut ui,&mut bridge);ui.frame(root,Some(Size::new(width as f64,height as f64)),Input::default(),1./60.).unwrap();}}

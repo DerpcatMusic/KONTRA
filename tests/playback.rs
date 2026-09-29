@@ -2,11 +2,16 @@ use kontakto::{
     audio::Sample,
     engine::{
         Ahdsr, Bank, Engine, EventChange, MAX_BLOCK, MAX_VOICES, NoteEvent, PRELOAD_FRAMES, Rack,
+        load_scripts,
     },
     fx,
     import::{Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Resolver, VoiceLimit, Zone},
+    ksp::{Runtime, Value},
 };
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 type Frame = [f32; 2];
 
@@ -957,4 +962,170 @@ fn effects_process_the_output_and_tails_outlive_the_voices() {
     render(&mut wet, 1000);
     wet.reset(wet.rate());
     assert!(render(&mut wet, 3000).iter().all(|f| f[0] == 0.0));
+}
+
+/// Counts allocations and frees made by threads that armed it, so script
+/// handoff and playback can prove they stay allocation-free.
+struct CountingAlloc;
+
+static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+}
+
+// SAFETY: forwards every call unchanged to the system allocator.
+unsafe impl GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if COUNTING.with(Cell::get) {
+            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if COUNTING.with(Cell::get) {
+            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: CountingAlloc = CountingAlloc;
+
+/// Allocations and frees `f` makes on this thread.
+fn allocations(f: impl FnOnce()) -> usize {
+    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    COUNTING.with(|c| c.set(true));
+    f();
+    COUNTING.with(|c| c.set(false));
+    ALLOCATIONS.load(Ordering::Relaxed) - before
+}
+
+// Runtimes are built on the loader thread and handed to the audio thread.
+const _: () = {
+    const fn send<T: Send>() {}
+    send::<Runtime>();
+};
+
+/// Two layered groups (0.1 and 0.2) on every key.
+fn two_groups() -> Instrument {
+    instrument(vec![Group::default(), Group::default()], Vec::new())
+}
+
+fn runtime(script: &str) -> Option<Box<Runtime>> {
+    let mut i = two_groups();
+    i.scripts = vec![script.to_owned()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    rt
+}
+
+/// The two layered groups, driven by `script`.
+fn scripted(script: &str) -> Engine {
+    let mut e = engine_with(layered(two_groups().groups, &[0.1, 0.2]));
+    assert!(e.set_script(runtime(script)).is_none());
+    e
+}
+
+/// First frame with sound.
+fn onset(out: &[Frame]) -> Option<usize> {
+    out.iter().position(|f| f[0] != 0.0)
+}
+
+#[test]
+fn ignored_notes_replayed_by_scripts_reach_the_voices() {
+    let mut e = scripted(
+        "on init\nend on\non note\nignore_event($EVENT_ID)\nplay_note($EVENT_NOTE + 2, $EVENT_VELOCITY, 0, -1)\nend on",
+    );
+    e.note_on(0, 60, 127);
+    let out = render(&mut e, 64);
+    assert!(
+        onset(&out).is_some_and(|n| n <= 1),
+        "plays at the note's frame"
+    );
+    assert!(
+        close(out[63], [0.3; 2]),
+        "both groups play the script's note"
+    );
+    e.note_off(0, 60);
+    render(&mut e, 480);
+    assert_eq!(
+        e.active_voices(),
+        0,
+        "the replayed note follows its parent's release"
+    );
+}
+
+#[test]
+fn waits_delay_script_notes_to_the_exact_frame() {
+    let mut e = scripted(
+        "on init\nend on\non note\nignore_event($EVENT_ID)\nwait(1000)\nplay_note($EVENT_NOTE, $EVENT_VELOCITY, 0, -1)\nend on",
+    );
+    e.note_on(0, 60, 127);
+    // 1 ms at 48 kHz is 48 frames; the render splits the voices there.
+    let start = onset(&render(&mut e, 256)).expect("the delayed note plays");
+    assert!((48..=49).contains(&start), "starts at frame {start}");
+}
+
+#[test]
+fn fade_out_stops_the_voice() {
+    let mut e =
+        scripted("on init\nend on\non note\nwait(1000)\nfade_out($EVENT_ID, 1000, 1)\nend on");
+    e.note_on(0, 60, 127);
+    let out = render(&mut e, 200);
+    assert!(close(out[40], [0.3; 2]), "plays until the fade");
+    assert!(out[48..96].windows(2).all(|w| w[1][0] <= w[0][0]), "fades");
+    assert!(close(out[199], [0.0; 2]));
+    assert_eq!(e.active_voices(), 0, "the fade stops the voices");
+}
+
+#[test]
+fn disallowed_groups_do_not_play() {
+    let mut e = scripted("on init\nend on\non note\ndisallow_group(0)\nend on");
+    e.note_on(0, 60, 127);
+    assert!(close(last(&mut e, 64), [0.2; 2]), "only group 1 plays");
+}
+
+#[test]
+fn note_durations_release_on_their_own() {
+    let mut e = scripted(
+        "on init\nend on\non note\nignore_event($EVENT_ID)\nplay_note($EVENT_NOTE, $EVENT_VELOCITY, 0, 5000)\nend on",
+    );
+    e.note_on(0, 60, 127);
+    let out = render(&mut e, 1024);
+    assert!(close(out[200], [0.3; 2]), "sounds for its duration");
+    assert!(
+        close(out[1023], [0.0; 2]),
+        "released after 5 ms without a note-off"
+    );
+    assert_eq!(e.active_voices(), 0);
+}
+
+#[test]
+fn script_handoff_and_playback_do_not_allocate() {
+    let script = "on init\ndeclare $count\nmake_persistent($count)\nend on\non note\nignore_event($EVENT_ID)\ninc($count)\nwait(500)\nplay_note($EVENT_NOTE, $EVENT_VELOCITY, 0, 20000)\nend on";
+    let mut e = scripted(script);
+    let next = runtime(script);
+    let mut snapshot = next.as_ref().unwrap().persistence();
+    let mut retired = None;
+    let (mut left, mut right) = (vec![0.0; 512], vec![0.0; 512]);
+    let count = allocations(|| {
+        retired = e.set_script(next);
+        for note in 60..64 {
+            e.note_on(0, note, 100);
+            e.render(&mut left, &mut right);
+            e.note_off(0, note);
+        }
+        e.render(&mut left, &mut right);
+        e.script().unwrap().refresh_persistence(&mut snapshot);
+    });
+    assert_eq!(count, 0, "the audio thread allocated");
+    assert!(
+        retired.is_some(),
+        "the old runtime returns for disposal elsewhere"
+    );
+    assert!(left.iter().any(|x| *x != 0.0));
+    assert_eq!(snapshot[0]["$count"], Value::Int(4));
 }

@@ -117,48 +117,59 @@ type NoteInput = (u64, bool, u8, u8);
 /// Without times, notes are 400 ms apart and overlap by 100 ms (legato); without
 /// an end, a note lasts 400 ms.
 fn parse_notes<'a>(specs: impl IntoIterator<Item = &'a str>) -> Result<Vec<NoteInput>> {
-  let ms = |s: &str| s.parse::<f64>().map(|ms| (ms * RATE / 1e3) as u64);
-  let mut input = Vec::new();
-  for (i, spec) in specs.into_iter().enumerate() {
-    let (spec, velocity) = spec.split_once(':').map_or((spec, Ok(100)), |(s, v)| (s, v.parse::<u8>()));
-    let (note, times) = spec.split_once('@').map_or((spec, None), |(n, t)| (n, Some(t)));
-    let note: u8 = note.parse().with_context(|| format!("Bad note {spec}"))?;
-    let velocity = velocity.with_context(|| format!("Bad velocity in {spec}"))?;
-    ensure!(note < 128 && (1..128).contains(&velocity), "Notes and velocities must be MIDI values");
-    let (on, off) = match times.map(|t| t.split_once('-').map_or((t, None), |(a, b)| (a, Some(b)))) {
-      Some((on, off)) => {
-        let on = ms(on)?;
-        (on, off.map(ms).transpose()?.unwrap_or(on + (0.4 * RATE) as u64))
-      }
-      None => {
-        let on = (i as f64 * 0.4 * RATE) as u64;
-        (on, on + (0.5 * RATE) as u64)
-      }
-    };
-    ensure!(off > on, "Note-off must follow note-on in {spec}");
-    input.push((on, true, note, velocity));
-    input.push((off, false, note, 0));
-  }
-  // Note-offs sort before note-ons at the same frame.
-  input.sort();
-  Ok(input)
+    let ms = |s: &str| s.parse::<f64>().map(|ms| (ms * RATE / 1e3) as u64);
+    let mut input = Vec::new();
+    for (i, spec) in specs.into_iter().enumerate() {
+        let (spec, velocity) = spec
+            .split_once(':')
+            .map_or((spec, Ok(100)), |(s, v)| (s, v.parse::<u8>()));
+        let (note, times) = spec
+            .split_once('@')
+            .map_or((spec, None), |(n, t)| (n, Some(t)));
+        let note: u8 = note.parse().with_context(|| format!("Bad note {spec}"))?;
+        let velocity = velocity.with_context(|| format!("Bad velocity in {spec}"))?;
+        ensure!(
+            note < 128 && (1..128).contains(&velocity),
+            "Notes and velocities must be MIDI values"
+        );
+        let (on, off) =
+            match times.map(|t| t.split_once('-').map_or((t, None), |(a, b)| (a, Some(b)))) {
+                Some((on, off)) => {
+                    let on = ms(on)?;
+                    (
+                        on,
+                        off.map(ms).transpose()?.unwrap_or(on + (0.4 * RATE) as u64),
+                    )
+                }
+                None => {
+                    let on = (i as f64 * 0.4 * RATE) as u64;
+                    (on, on + (0.5 * RATE) as u64)
+                }
+            };
+        ensure!(off > on, "Note-off must follow note-on in {spec}");
+        input.push((on, true, note, velocity));
+        input.push((off, false, note, 0));
+    }
+    // Note-offs sort before note-ons at the same frame.
+    input.sort();
+    Ok(input)
 }
 
 fn play(engine: &mut Engine, &(_, on, note, velocity): &NoteInput) {
-  if on {
-    engine.note_on(0, note, velocity);
-  } else {
-    engine.note_off(0, note);
-  }
+    if on {
+        engine.note_on(0, note, velocity);
+    } else {
+        engine.note_off(0, note);
+    }
 }
 
 /// Load an instrument's scripts for `engine`, reporting slot errors.
 fn install_scripts(engine: &mut Engine, instrument: &import::Instrument) {
-  let (script, errors) = load_scripts(instrument, instrument.script_state.clone(), engine.rate());
-  for error in errors {
-    eprintln!("{error}");
-  }
-  engine.set_script(script);
+    let (script, errors) = load_scripts(instrument, instrument.script_state.clone(), engine.rate());
+    for error in errors {
+        eprintln!("{error}");
+    }
+    engine.set_script(script);
 }
 
 /// Render notes through the instrument scripts (`--no-script` plays MIDI
@@ -167,149 +178,257 @@ fn install_scripts(engine: &mut Engine, instrument: &import::Instrument) {
 /// `--notes 60@0-600,62@500-1100:90` plays a sequence (times in ms); otherwise
 /// one note is held for 2 s.
 fn render(args: &[String]) -> Result<()> {
-  let flag = |name: &str| args.iter().any(|a| a == name);
-  let (dry, no_script) = (flag("--dry"), flag("--no-script"));
-  let notes = args.iter().position(|a| a == "--notes").map(|i| args.get(i + 1).context("--notes requires a note list")).transpose()?;
-  let args: Vec<_> = args.iter().filter(|a| !a.starts_with("--") && Some(*a) != notes).cloned().collect();
-  let instrument = import::read(Path::new(args.first().context("render requires an NKI path")?))?;
-  let output = args.get(1).context("render requires an output WAV path")?;
-  ensure!(!Path::new(output).exists(), "Output already exists; choose a new output path");
-  let group: Option<usize> = args.get(2).filter(|s| *s != "all").map(|s| s.parse()).transpose()?;
-  let bank = Bank::load(&instrument)?;
-  if bank.skipped_zones > 0 {
-    eprintln!("Skipped {} zones: {}", bank.skipped_zones, bank.issues.join("; "));
-  }
-  let first = bank.zones().iter().find(|z| group.is_none_or(|g| z.group == g)).context("Group has no playable zones")?;
-  let note = args.get(3).map(|s| s.parse::<u8>()).transpose()?.unwrap_or(first.root);
-  ensure!(note < 128, "MIDI note must be 0..127");
-  let velocity = args.get(4).map(|s| s.parse::<u8>()).transpose()?.unwrap_or_else(|| {
-    let zone = bank.zones().iter().find(|z| (z.low_key..=z.high_key).contains(&note));
-    zone.map_or(100, |z| ((u16::from(z.low_velocity) + u16::from(z.high_velocity)) / 2).max(1) as u8)
-  });
-  let streamed = bank.streamed_samples();
-  let mut engine = Engine::default();
-  engine.blocking_streams = true;
-  engine.set_bank(Some(Box::new(bank)));
-  if !dry {
-    engine.set_fx(instrument.fx.processor(engine.rate() as f32, MAX_BLOCK));
-  }
-  if let Some(g) = group {
-    engine.set_all_groups_allowed(false);
-    engine.set_group_allowed(g, true);
-  }
-  if !no_script {
-    install_scripts(&mut engine, &instrument);
-  }
-  let input = match notes {
-    Some(list) => parse_notes(list.split(','))?,
-    None => vec![(0, true, note, velocity), ((2.0 * RATE) as u64, false, note, 0)],
-  };
-  let last_off = input.last().map_or(0, |e| e.0);
-  let spec = hound::WavSpec { channels: 2, sample_rate: 48000, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
-  let mut writer = hound::WavWriter::create(output, spec)?;
-  let (mut peak, mut square) = (0f32, 0f64);
-  // Largest sample-to-sample step: clicks at note transitions show up here.
-  let (mut jump, mut jump_at, mut previous) = (0f32, 0, [0f32; 2]);
-  let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
-  // Render until the last note-off, then until voices end and the effect tails
-  // fall below -120 dB, for at least 4 s and at most 60 s. Rendering splits at
-  // note times so input lands on its exact frame.
-  let (min_frames, max_frames) = ((4.0 * RATE) as u64, (60.0 * RATE) as u64);
-  let (mut frame, mut next, mut voices_end, mut last_audible) = (0u64, 0, None, 0);
-  loop {
-    while let Some(event) = input.get(next).filter(|e| e.0 <= frame) {
-      play(&mut engine, event);
-      next += 1;
+    let flag = |name: &str| args.iter().any(|a| a == name);
+    let (dry, no_script) = (flag("--dry"), flag("--no-script"));
+    let notes = args
+        .iter()
+        .position(|a| a == "--notes")
+        .map(|i| args.get(i + 1).context("--notes requires a note list"))
+        .transpose()?;
+    let args: Vec<_> = args
+        .iter()
+        .filter(|a| !a.starts_with("--") && Some(*a) != notes)
+        .cloned()
+        .collect();
+    let instrument = import::read(Path::new(
+        args.first().context("render requires an NKI path")?,
+    ))?;
+    let output = args.get(1).context("render requires an output WAV path")?;
+    ensure!(
+        !Path::new(output).exists(),
+        "Output already exists; choose a new output path"
+    );
+    let group: Option<usize> = args
+        .get(2)
+        .filter(|s| *s != "all")
+        .map(|s| s.parse())
+        .transpose()?;
+    let bank = Bank::load(&instrument)?;
+    if bank.skipped_zones > 0 {
+        eprintln!(
+            "Skipped {} zones: {}",
+            bank.skipped_zones,
+            bank.issues.join("; ")
+        );
     }
-    let len = input.get(next).map_or(MAX_BLOCK as u64, |e| (e.0 - frame).min(MAX_BLOCK as u64)) as usize;
-    engine.render(&mut left[..len], &mut right[..len]);
-    let mut block_peak = 0f32;
-    for (i, (l, r)) in left[..len].iter().zip(&right[..len]).enumerate() {
-      let pair = [l * 0.25, r * 0.25];
-      for (sample, before) in pair.iter().zip(&previous) {
-        ensure!(sample.is_finite(), "Nonfinite rendered audio");
-        block_peak = block_peak.max(sample.abs());
-        square += f64::from(*sample) * f64::from(*sample);
-        writer.write_sample(*sample)?;
-        if (sample - before).abs() > jump {
-          (jump, jump_at) = ((sample - before).abs(), frame + i as u64);
+    let first = bank
+        .zones()
+        .iter()
+        .find(|z| group.is_none_or(|g| z.group == g))
+        .context("Group has no playable zones")?;
+    let note = args
+        .get(3)
+        .map(|s| s.parse::<u8>())
+        .transpose()?
+        .unwrap_or(first.root);
+    ensure!(note < 128, "MIDI note must be 0..127");
+    let velocity = args
+        .get(4)
+        .map(|s| s.parse::<u8>())
+        .transpose()?
+        .unwrap_or_else(|| {
+            let zone = bank
+                .zones()
+                .iter()
+                .find(|z| (z.low_key..=z.high_key).contains(&note));
+            zone.map_or(100, |z| {
+                ((u16::from(z.low_velocity) + u16::from(z.high_velocity)) / 2).max(1) as u8
+            })
+        });
+    let streamed = bank.streamed_samples();
+    let mut engine = Engine::default();
+    engine.blocking_streams = true;
+    engine.set_bank(Some(Box::new(bank)));
+    if !dry {
+        engine.set_fx(instrument.fx.processor(engine.rate() as f32, MAX_BLOCK));
+    }
+    if let Some(g) = group {
+        engine.set_all_groups_allowed(false);
+        engine.set_group_allowed(g, true);
+    }
+    if !no_script {
+        install_scripts(&mut engine, &instrument);
+    }
+    let input = match notes {
+        Some(list) => parse_notes(list.split(','))?,
+        None => vec![
+            (0, true, note, velocity),
+            ((2.0 * RATE) as u64, false, note, 0),
+        ],
+    };
+    let last_off = input.last().map_or(0, |e| e.0);
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: 48000,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer = hound::WavWriter::create(output, spec)?;
+    let (mut peak, mut square) = (0f32, 0f64);
+    // Largest sample-to-sample step: clicks at note transitions show up here.
+    let (mut jump, mut jump_at, mut previous) = (0f32, 0, [0f32; 2]);
+    let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+    // Render until the last note-off, then until voices end and the effect tails
+    // fall below -120 dB, for at least 4 s and at most 60 s. Rendering splits at
+    // note times so input lands on its exact frame.
+    let (min_frames, max_frames) = ((4.0 * RATE) as u64, (60.0 * RATE) as u64);
+    let (mut frame, mut next, mut voices_end, mut last_audible) = (0u64, 0, None, 0);
+    loop {
+        while let Some(event) = input.get(next).filter(|e| e.0 <= frame) {
+            play(&mut engine, event);
+            next += 1;
         }
-      }
-      previous = pair;
+        let len = input
+            .get(next)
+            .map_or(MAX_BLOCK as u64, |e| (e.0 - frame).min(MAX_BLOCK as u64))
+            as usize;
+        engine.render(&mut left[..len], &mut right[..len]);
+        let mut block_peak = 0f32;
+        for (i, (l, r)) in left[..len].iter().zip(&right[..len]).enumerate() {
+            let pair = [l * 0.25, r * 0.25];
+            for (sample, before) in pair.iter().zip(&previous) {
+                ensure!(sample.is_finite(), "Nonfinite rendered audio");
+                block_peak = block_peak.max(sample.abs());
+                square += f64::from(*sample) * f64::from(*sample);
+                writer.write_sample(*sample)?;
+                if (sample - before).abs() > jump {
+                    (jump, jump_at) = ((sample - before).abs(), frame + i as u64);
+                }
+            }
+            previous = pair;
+        }
+        peak = peak.max(block_peak);
+        frame += len as u64;
+        if block_peak > peak * 1e-3 {
+            last_audible = frame;
+        }
+        if frame > last_off && engine.active_voices() == 0 {
+            voices_end.get_or_insert(frame);
+        }
+        if frame >= max_frames
+            || (frame >= min_frames && voices_end.is_some() && block_peak <= 1e-6)
+        {
+            break;
+        }
     }
-    peak = peak.max(block_peak);
-    frame += len as u64;
-    if block_peak > peak * 1e-3 {
-      last_audible = frame;
+    writer.finalize()?;
+    let seconds = |frames: u64| frames as f64 / RATE;
+    let tail = voices_end.map_or("voices still playing at 60 s".into(), |end| {
+        format!(
+            "{:.2} s to -60 dB re peak after the last voice",
+            seconds(last_audible.saturating_sub(end))
+        )
+    });
+    ensure!(
+        peak > 0.00001,
+        "Rendered silence; chosen key/velocity has no audible zone"
+    );
+    let groups = group.map_or_else(
+        || "all groups".to_string(),
+        |g| format!("group {g} ({})", instrument.groups[g].name),
+    );
+    let rms = (square / (frame * 2) as f64).sqrt();
+    let fx = if dry { "dry" } else { "with effects" };
+    let scripts = match engine.script() {
+        Some(rt) => format!("{} script slots", rt.slots()),
+        None => "no scripts".into(),
+    };
+    let played = notes.map_or_else(|| format!("note {note}"), |n| format!("notes {n}"));
+    println!(
+        "{} · {groups} · {played} · {scripts} · {fx} · {:.2} s · peak {peak:.6} · RMS {rms:.6} · max step {jump:.6} at {:.3} s · sound until {:.2} s (last note-off {:.2} s) · {tail} · {streamed} streamed samples · {} underruns",
+        instrument.name,
+        seconds(frame),
+        seconds(jump_at),
+        seconds(last_audible),
+        seconds(last_off),
+        engine.underruns()
+    );
+    if let Some(rt) = engine.script() {
+        for line in rt.diagnostics() {
+            eprintln!("Script: {line}");
+        }
     }
-    if frame > last_off && engine.active_voices() == 0 {
-      voices_end.get_or_insert(frame);
+    for warning in instrument.warnings {
+        eprintln!("Compatibility: {warning}");
     }
-    if frame >= max_frames || (frame >= min_frames && voices_end.is_some() && block_peak <= 1e-6) {
-      break;
-    }
-  }
-  writer.finalize()?;
-  let seconds = |frames: u64| frames as f64 / RATE;
-  let tail = voices_end.map_or("voices still playing at 60 s".into(), |end| {
-    format!("{:.2} s to -60 dB re peak after the last voice", seconds(last_audible.saturating_sub(end)))
-  });
-  ensure!(peak > 0.00001, "Rendered silence; chosen key/velocity has no audible zone");
-  let groups = group.map_or_else(|| "all groups".to_string(), |g| format!("group {g} ({})", instrument.groups[g].name));
-  let rms = (square / (frame * 2) as f64).sqrt();
-  let fx = if dry { "dry" } else { "with effects" };
-  let scripts = match engine.script() {
-    Some(rt) => format!("{} script slots", rt.slots()),
-    None => "no scripts".into(),
-  };
-  let played = notes.map_or_else(|| format!("note {note}"), |n| format!("notes {n}"));
-  println!("{} · {groups} · {played} · {scripts} · {fx} · {:.2} s · peak {peak:.6} · RMS {rms:.6} · max step {jump:.6} at {:.3} s · sound until {:.2} s (last note-off {:.2} s) · {tail} · {streamed} streamed samples · {} underruns", instrument.name, seconds(frame), seconds(jump_at), seconds(last_audible), seconds(last_off), engine.underruns());
-  if let Some(rt) = engine.script() {
-    for line in rt.diagnostics() {
-      eprintln!("Script: {line}");
-    }
-  }
-  for warning in instrument.warnings {
-    eprintln!("Compatibility: {warning}");
-  }
-  Ok(())
+    Ok(())
 }
 
 /// Voices one core renders in real time: 48 kHz, 128-frame blocks, stereo,
 /// pitched looping voices with loop crossfades.
 fn bench(voices: usize) -> Result<()> {
-  ensure!((1..=MAX_VOICES).contains(&voices), "voices must be 1..={MAX_VOICES}");
-  let frames: Vec<[f32; 2]> = (0..96000).map(|i| { let x = (i as f32 * 0.013).sin(); [x, x * 0.7] }).collect();
-  let group = Group { name: "bench".into(), ..Group::default() };
-  let zone = Zone { low_velocity: 1, loop_range: Some(Loop { start: 20000, end: 90000, until_release: false, crossfade: 2000 }), ..Zone::default() };
-  let mut bank = Bank::from_samples(vec![group], vec![zone], vec![(Default::default(), Sample { rate: 44100, frames })])?;
-  bank.set_polyphony(MAX_VOICES);
-  let mut engine = Engine::default();
-  engine.set_bank(Some(Box::new(bank)));
-  for i in 0..voices {
-    let mut event = NoteEvent::new((i % 16) as u8, 36 + (i % 48) as u8, 100);
-    event.tune = (i % 7) as f64 * 0.013;
-    engine.start_event(&event);
-  }
-  ensure!(engine.active_voices() == voices, "only {} voices started", engine.active_voices());
-  let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
-  // Best of several runs: the minimum is the least disturbed by other load.
-  let seconds = 2.0;
-  let blocks = (48000.0 * seconds / MAX_BLOCK as f64) as usize;
-  let mut checksum = 0f32;
-  let mut cpu = f64::MAX;
-  for _ in 0..7 {
-    let started = std::time::Instant::now();
-    for _ in 0..blocks {
-      engine.render(&mut left, &mut right);
-      checksum += left[0] + right[MAX_BLOCK - 1];
+    ensure!(
+        (1..=MAX_VOICES).contains(&voices),
+        "voices must be 1..={MAX_VOICES}"
+    );
+    let frames: Vec<[f32; 2]> = (0..96000)
+        .map(|i| {
+            let x = (i as f32 * 0.013).sin();
+            [x, x * 0.7]
+        })
+        .collect();
+    let group = Group {
+        name: "bench".into(),
+        ..Group::default()
+    };
+    let zone = Zone {
+        low_velocity: 1,
+        loop_range: Some(Loop {
+            start: 20000,
+            end: 90000,
+            until_release: false,
+            crossfade: 2000,
+        }),
+        ..Zone::default()
+    };
+    let mut bank = Bank::from_samples(
+        vec![group],
+        vec![zone],
+        vec![(
+            Default::default(),
+            Sample {
+                rate: 44100,
+                frames,
+            },
+        )],
+    )?;
+    bank.set_polyphony(MAX_VOICES);
+    let mut engine = Engine::default();
+    engine.set_bank(Some(Box::new(bank)));
+    for i in 0..voices {
+        let mut event = NoteEvent::new((i % 16) as u8, 36 + (i % 48) as u8, 100);
+        event.tune = (i % 7) as f64 * 0.013;
+        engine.start_event(&event);
     }
-    cpu = cpu.min(started.elapsed().as_secs_f64());
-  }
-  ensure!(engine.active_voices() == voices && checksum.is_finite(), "voices ended during the benchmark");
-  let realtime = seconds / cpu;
-  println!("{voices} voices · {seconds} s audio in {cpu:.3} s (best of 7) · {realtime:.1}x real time · {:.0} voices per core", voices as f64 * realtime);
-  Ok(())
+    ensure!(
+        engine.active_voices() == voices,
+        "only {} voices started",
+        engine.active_voices()
+    );
+    let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+    // Best of several runs: the minimum is the least disturbed by other load.
+    let seconds = 2.0;
+    let blocks = (48000.0 * seconds / MAX_BLOCK as f64) as usize;
+    let mut checksum = 0f32;
+    let mut cpu = f64::MAX;
+    for _ in 0..7 {
+        let started = std::time::Instant::now();
+        for _ in 0..blocks {
+            engine.render(&mut left, &mut right);
+            checksum += left[0] + right[MAX_BLOCK - 1];
+        }
+        cpu = cpu.min(started.elapsed().as_secs_f64());
+    }
+    ensure!(
+        engine.active_voices() == voices && checksum.is_finite(),
+        "voices ended during the benchmark"
+    );
+    let realtime = seconds / cpu;
+    println!(
+        "{voices} voices · {seconds} s audio in {cpu:.3} s (best of 7) · {realtime:.1}x real time · {:.0} voices per core",
+        voices as f64 * realtime
+    );
+    Ok(())
 }
 
 /// Time an instrument with and without its scripts on a dense stream: a legato
@@ -317,126 +436,152 @@ fn bench(voices: usize) -> Result<()> {
 /// 48 kHz, 128-frame blocks, effects on. Streams are not awaited, so late disk
 /// data plays as silence; the per-voice work is the same.
 fn bench_script(path: &Path, seconds: f64) -> Result<()> {
-  let instrument = import::read(path)?;
-  ensure!(!instrument.scripts.is_empty(), "Instrument has no scripts");
-  let bank = Bank::load(&instrument)?;
-  let low = bank.zones().iter().map(|z| z.low_key).min().context("Instrument has no playable zones")?;
-  let high = bank.zones().iter().map(|z| z.high_key).max().unwrap_or(low);
-  let mid = (u16::from(low) + u16::from(high)) / 2;
-  let mut specs = Vec::new();
-  for i in 0..(seconds / 0.15) as usize {
-    let (on, step) = (i as f64 * 150.0, [0, 2, 4, 5, 7, 5, 4, 2][i % 8]);
-    specs.push(format!("{}@{on}-{}", mid + step, on + 180.0));
-  }
-  for s in 0..seconds as usize {
-    let on = s as f64 * 1000.0 + 500.0;
-    for interval in [0, 4, 7] {
-      specs.push(format!("{}@{on}-{}:90", mid.saturating_sub(12) + interval, on + 800.0));
+    let instrument = import::read(path)?;
+    ensure!(!instrument.scripts.is_empty(), "Instrument has no scripts");
+    let bank = Bank::load(&instrument)?;
+    let low = bank
+        .zones()
+        .iter()
+        .map(|z| z.low_key)
+        .min()
+        .context("Instrument has no playable zones")?;
+    let high = bank.zones().iter().map(|z| z.high_key).max().unwrap_or(low);
+    let mid = (u16::from(low) + u16::from(high)) / 2;
+    let mut specs = Vec::new();
+    for i in 0..(seconds / 0.15) as usize {
+        let (on, step) = (i as f64 * 150.0, [0, 2, 4, 5, 7, 5, 4, 2][i % 8]);
+        specs.push(format!("{}@{on}-{}", mid + step, on + 180.0));
     }
-  }
-  let input = parse_notes(specs.iter().map(String::as_str))?;
-  let mut engine = Engine::default();
-  engine.set_bank(Some(Box::new(bank)));
-  engine.set_fx(instrument.fx.processor(RATE as f32, MAX_BLOCK));
-  let started = std::time::Instant::now();
-  install_scripts(&mut engine, &instrument);
-  let init_ms = started.elapsed().as_secs_f64() * 1e3;
-  let slots = engine.script().map_or(0, |rt| rt.slots());
-  let scripted = time_blocks(&mut engine, &input);
-  let underruns = engine.underruns();
-  engine.set_script(None);
-  engine.reset(RATE);
-  let direct = time_blocks(&mut engine, &input);
-  let (script, errors) = load_scripts(&instrument, instrument.script_state.clone(), RATE);
-  ensure!(errors.is_empty(), "Scripts failed to load: {errors:?}");
-  let runtime = time_runtime(*script.context("Instrument has no scripts")?, &input);
-  let block_ns = MAX_BLOCK as f64 / RATE * 1e9;
-  let report = |name: &str, (mean, p99, max, voices): (f64, f64, f64, usize)| {
-    println!("{name}: {mean:.0} ns/block mean · p99 {p99:.0} · max {max:.0} · {:.1}x real time · peak {voices} voices", block_ns / mean);
-  };
-  println!("{} · {slots} script slots · init {init_ms:.1} ms · {} notes over {seconds} s · {underruns} underruns", instrument.name, input.len() / 2);
-  report("runtime only (null engine)   ", runtime);
-  report("scripts + engine             ", scripted);
-  report("no scripts, every group plays", direct);
-  Ok(())
+    for s in 0..seconds as usize {
+        let on = s as f64 * 1000.0 + 500.0;
+        for interval in [0, 4, 7] {
+            specs.push(format!(
+                "{}@{on}-{}:90",
+                mid.saturating_sub(12) + interval,
+                on + 800.0
+            ));
+        }
+    }
+    let input = parse_notes(specs.iter().map(String::as_str))?;
+    let mut engine = Engine::default();
+    engine.set_bank(Some(Box::new(bank)));
+    engine.set_fx(instrument.fx.processor(RATE as f32, MAX_BLOCK));
+    let started = std::time::Instant::now();
+    install_scripts(&mut engine, &instrument);
+    let init_ms = started.elapsed().as_secs_f64() * 1e3;
+    let slots = engine.script().map_or(0, |rt| rt.slots());
+    let scripted = time_blocks(&mut engine, &input);
+    let underruns = engine.underruns();
+    engine.set_script(None);
+    engine.reset(RATE);
+    let direct = time_blocks(&mut engine, &input);
+    let (script, errors) = load_scripts(&instrument, instrument.script_state.clone(), RATE);
+    ensure!(errors.is_empty(), "Scripts failed to load: {errors:?}");
+    let runtime = time_runtime(*script.context("Instrument has no scripts")?, &input);
+    let block_ns = MAX_BLOCK as f64 / RATE * 1e9;
+    let report = |name: &str, (mean, p99, max, voices): (f64, f64, f64, usize)| {
+        println!(
+            "{name}: {mean:.0} ns/block mean · p99 {p99:.0} · max {max:.0} · {:.1}x real time · peak {voices} voices",
+            block_ns / mean
+        );
+    };
+    println!(
+        "{} · {slots} script slots · init {init_ms:.1} ms · {} notes over {seconds} s · {underruns} underruns",
+        instrument.name,
+        input.len() / 2
+    );
+    report("runtime only (null engine)   ", runtime);
+    report("scripts + engine             ", scripted);
+    report("no scripts, every group plays", direct);
+    Ok(())
 }
 
 /// Engine stand-in that plays nothing, so timing isolates the runtime.
 struct NullEngine(u32);
 
 impl kontakto::ksp::KspEngine for NullEngine {
-  fn play_note(&mut self, _: u32, _: &kontakto::ksp::NoteSpec<'_>) -> Option<kontakto::ksp::EventId> {
-    self.0 += 1;
-    Some(kontakto::ksp::EventId(self.0))
-  }
-  fn note_off(&mut self, _: u32, _: kontakto::ksp::EventId, _: &kontakto::ksp::NoteSpec<'_>) {}
-  fn fade(&mut self, _: u32, _: kontakto::ksp::EventId, _: kontakto::ksp::Fade) {}
-  fn set_par(&mut self, _: u32, _: kontakto::ksp::EventId, _: kontakto::ksp::VoicePar, _: i32) {}
-  fn controller(&mut self, _: u32, _: u8, _: i32) {}
-  fn group_count(&self) -> usize {
-    0
-  }
-  fn group_name(&self, _: usize) -> &str {
-    ""
-  }
-  fn sample_rate(&self) -> f64 {
-    RATE
-  }
-  fn set_engine_par(&mut self, _: kontakto::ksp::EnginePar, _: i32) -> bool {
-    false
-  }
-  fn engine_par(&self, _: kontakto::ksp::EnginePar) -> Option<i32> {
-    None
-  }
+    fn play_note(
+        &mut self,
+        _: u32,
+        _: &kontakto::ksp::NoteSpec<'_>,
+    ) -> Option<kontakto::ksp::EventId> {
+        self.0 += 1;
+        Some(kontakto::ksp::EventId(self.0))
+    }
+    fn note_off(&mut self, _: u32, _: kontakto::ksp::EventId, _: &kontakto::ksp::NoteSpec<'_>) {}
+    fn fade(&mut self, _: u32, _: kontakto::ksp::EventId, _: kontakto::ksp::Fade) {}
+    fn set_par(&mut self, _: u32, _: kontakto::ksp::EventId, _: kontakto::ksp::VoicePar, _: i32) {}
+    fn controller(&mut self, _: u32, _: u8, _: i32) {}
+    fn group_count(&self) -> usize {
+        0
+    }
+    fn group_name(&self, _: usize) -> &str {
+        ""
+    }
+    fn sample_rate(&self) -> f64 {
+        RATE
+    }
+    fn set_engine_par(&mut self, _: kontakto::ksp::EnginePar, _: i32) -> bool {
+        false
+    }
+    fn engine_par(&self, _: kontakto::ksp::EnginePar) -> Option<i32> {
+        None
+    }
 }
 
 /// Like [`time_blocks`], for the runtime alone against a [`NullEngine`].
 fn time_runtime(mut rt: kontakto::ksp::Runtime, input: &[NoteInput]) -> (f64, f64, f64, usize) {
-  let mut engine = NullEngine(0);
-  let end = input.last().map_or(0, |e| e.0) + (2.0 * RATE) as u64;
-  let (mut times, mut next) = (Vec::new(), 0);
-  for frame in (0..end).step_by(MAX_BLOCK) {
-    let started = std::time::Instant::now();
-    while let Some(&(time, on, note, velocity)) = input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64) {
-      let at = (time - frame) as u32;
-      if on {
-        rt.note_on(&mut engine, at, note, velocity);
-      } else {
-        rt.note_off(&mut engine, at, note);
-      }
-      next += 1;
+    let mut engine = NullEngine(0);
+    let end = input.last().map_or(0, |e| e.0) + (2.0 * RATE) as u64;
+    let (mut times, mut next) = (Vec::new(), 0);
+    for frame in (0..end).step_by(MAX_BLOCK) {
+        let started = std::time::Instant::now();
+        while let Some(&(time, on, note, velocity)) =
+            input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64)
+        {
+            let at = (time - frame) as u32;
+            if on {
+                rt.note_on(&mut engine, at, note, velocity);
+            } else {
+                rt.note_off(&mut engine, at, note);
+            }
+            next += 1;
+        }
+        rt.process(&mut engine, MAX_BLOCK as u32);
+        times.push(started.elapsed().as_nanos() as f64);
     }
-    rt.process(&mut engine, MAX_BLOCK as u32);
-    times.push(started.elapsed().as_nanos() as f64);
-  }
-  summarize(times, 0)
+    summarize(times, 0)
 }
 
 fn summarize(mut times: Vec<f64>, voices: usize) -> (f64, f64, f64, usize) {
-  let mean = times.iter().sum::<f64>() / times.len() as f64;
-  times.sort_by(f64::total_cmp);
-  (mean, times[times.len() * 99 / 100], times[times.len() - 1], voices)
+    let mean = times.iter().sum::<f64>() / times.len() as f64;
+    times.sort_by(f64::total_cmp);
+    (
+        mean,
+        times[times.len() * 99 / 100],
+        times[times.len() - 1],
+        voices,
+    )
 }
 
 /// Render `input` (quantized to 128-frame blocks) plus a 2 s tail, timing
 /// each block with its MIDI input: mean, p99 and max ns, and peak voices.
 fn time_blocks(engine: &mut Engine, input: &[NoteInput]) -> (f64, f64, f64, usize) {
-  let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
-  let end = input.last().map_or(0, |e| e.0) + (2.0 * RATE) as u64;
-  let (mut times, mut voices, mut next) = (Vec::new(), 0, 0);
-  for frame in (0..end).step_by(MAX_BLOCK) {
-    let started = std::time::Instant::now();
-    while let Some(event) = input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64) {
-      play(engine, event);
-      next += 1;
+    let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+    let end = input.last().map_or(0, |e| e.0) + (2.0 * RATE) as u64;
+    let (mut times, mut voices, mut next) = (Vec::new(), 0, 0);
+    for frame in (0..end).step_by(MAX_BLOCK) {
+        let started = std::time::Instant::now();
+        while let Some(event) = input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64) {
+            play(engine, event);
+            next += 1;
+        }
+        engine.render(&mut left, &mut right);
+        times.push(started.elapsed().as_nanos() as f64);
+        voices = voices.max(engine.active_voices());
     }
-    engine.render(&mut left, &mut right);
-    times.push(started.elapsed().as_nanos() as f64);
-    voices = voices.max(engine.active_voices());
-  }
-  summarize(times, voices)
+    summarize(times, voices)
 }
-
 /// Group modulation, envelopes and zone crossfade summary; no sample data or paths.
 fn inspect_mods(path: &Path) -> Result<serde_json::Value> {
     let instrument = import::read(path)?;

@@ -107,6 +107,24 @@ impl Rack {
         }
     }
 
+    /// Channel pressure, for scripts of parts listening on the channel.
+    pub fn channel_pressure_port(&mut self, port: u8, channel: u8, value: u8) {
+        for (e, c) in self.parts.iter_mut().zip(&self.controls) {
+            if c.hears(port, channel) {
+                e.channel_pressure(channel, value);
+            }
+        }
+    }
+
+    /// Polyphonic key pressure, for scripts of parts listening on the channel.
+    pub fn poly_pressure_port(&mut self, port: u8, channel: u8, note: u8, value: u8) {
+        for (e, c) in self.parts.iter_mut().zip(&self.controls) {
+            if c.hears(port, channel) {
+                e.poly_pressure(channel, note, value);
+            }
+        }
+    }
+
     pub fn pitch_bend_port(&mut self, port: u8, channel: u8, value: u16) {
         for (e, c) in self.parts.iter_mut().zip(&self.controls) {
             if c.port == port {
