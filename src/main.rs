@@ -55,9 +55,10 @@ fn main() -> Result<()> {
   },
   Some("render") => render(&args[2..])?,
   Some("ksp-run") => ksp_run(Path::new(args.get(2).context("ksp-run requires an NKI path")?),&args[3..])?,
-  Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000))?,
+  Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(24))?,
+  Some("bench-load") => for p in &args[2..] {bench_load(Path::new(p))?},
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--notes 60@0-600,62@500-1100:90] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000]\nkontakto bench-script <instrument.nki> [seconds=20]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--notes 60@0-600,62@500-1100:90] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto bench-load <instrument.nki>..."),
  }
  Ok(())
 }
@@ -355,16 +356,18 @@ fn render(args: &[String]) -> Result<()> {
 }
 
 /// Voices one core renders in real time: 48 kHz, 128-frame blocks, stereo,
-/// pitched looping voices with loop crossfades.
-fn bench(voices: usize) -> Result<()> {
+/// pitched looping voices with loop crossfades, playing a sample of `bits`
+/// resolution (resident as 16-bit, 24-bit or f32).
+fn bench(voices: usize, bits: i32) -> Result<()> {
     ensure!(
         (1..=MAX_VOICES).contains(&voices),
         "voices must be 1..={MAX_VOICES}"
     );
     let frames: Vec<[f32; 2]> = (0..96000)
         .map(|i| {
+            let scale = 2f32.powi(bits - 1);
             let x = (i as f32 * 0.013).sin();
-            [x, x * 0.7]
+            [x * 0.9, x * 0.6].map(|v| (v * scale).round() / scale)
         })
         .collect();
     let group = Group {
@@ -427,6 +430,47 @@ fn bench(voices: usize) -> Result<()> {
     println!(
         "{voices} voices · {seconds} s audio in {cpu:.3} s (best of 7) · {realtime:.1}x real time · {:.0} voices per core",
         voices as f64 * realtime
+    );
+    Ok(())
+}
+
+/// Import, bank load and script init time plus resident memory of each instrument.
+fn bench_load(path: &Path) -> Result<()> {
+    let name = path.file_stem().unwrap_or_default().to_string_lossy();
+    let started = std::time::Instant::now();
+    let instrument = import::read(path)?;
+    let import_ms = started.elapsed().as_secs_f64() * 1e3;
+    let started = std::time::Instant::now();
+    let bank = match Bank::load(&instrument) {
+        Ok(bank) => bank,
+        Err(e) => {
+            println!("{name}: load failed after {:.0} ms: {e:#}", started.elapsed().as_secs_f64() * 1e3);
+            return Ok(());
+        }
+    };
+    let load_ms = started.elapsed().as_secs_f64() * 1e3;
+    let (mib, preload, samples, streamed, zones, skipped) = (
+        bank.bytes as f64 / (1 << 20) as f64,
+        bank.preload,
+        bank.sample_count(),
+        bank.streamed_samples(),
+        bank.zones().len(),
+        bank.skipped_zones,
+    );
+    let mut engine = Engine::default();
+    engine.set_bank(Some(Box::new(bank)));
+    let started = std::time::Instant::now();
+    install_scripts(&mut engine, &instrument);
+    let init_ms = started.elapsed().as_secs_f64() * 1e3;
+    let rss = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            let line = s.lines().find(|l| l.starts_with("VmRSS:"))?;
+            line.split_whitespace().nth(1)?.parse::<f64>().ok()
+        })
+        .map_or(0.0, |kib| kib / 1024.0);
+    println!(
+        "{name}: {mib:.1} MiB resident (preload {preload}) · RSS {rss:.0} MiB · {samples} samples ({streamed} streamed) · {zones} zones ({skipped} skipped) · import {import_ms:.0} ms · load {load_ms:.0} ms · scripts {init_ms:.0} ms"
     );
     Ok(())
 }

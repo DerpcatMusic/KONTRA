@@ -518,19 +518,36 @@ fn instrument_volume_pan_and_bend_range() {
 
 /// A float WAV long enough to stream, with non-periodic content.
 fn write_wav(path: &Path, frames: usize) {
+    write_wav_bits(path, frames, 32);
+}
+
+/// A stereo test signal: float for 32 bits, otherwise integer.
+fn write_wav_bits(path: &Path, frames: usize, bits: u16) {
+    let float = bits == 32;
     let spec = hound::WavSpec {
         channels: 2,
         sample_rate: 44100,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
+        bits_per_sample: bits,
+        sample_format: if float {
+            hound::SampleFormat::Float
+        } else {
+            hound::SampleFormat::Int
+        },
     };
+    let scale = 2f32.powi(i32::from(bits) - 1) - 1.0;
     let mut w = hound::WavWriter::create(path, spec).unwrap();
     for i in 0..frames {
         let t = i as f32;
-        w.write_sample((t * 0.031).sin() * (t * 0.00037).cos())
-            .unwrap();
-        w.write_sample((t * 0.017 + (t * 0.001).sin()).sin())
-            .unwrap();
+        for x in [
+            (t * 0.031).sin() * (t * 0.00037).cos(),
+            (t * 0.017 + (t * 0.001).sin()).sin(),
+        ] {
+            if float {
+                w.write_sample(x).unwrap();
+            } else {
+                w.write_sample((x * scale) as i32).unwrap();
+            }
+        }
     }
     w.finalize().unwrap();
 }
@@ -555,9 +572,10 @@ fn instrument(groups: Vec<Group>, zones: Vec<Zone>) -> Instrument {
 fn streamed_playback_matches_ram_playback() {
     let dir = std::env::temp_dir().join(format!("kontakto-stream-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("long.wav");
     let frames = 120_000;
+    let (path, path24) = (dir.join("long.wav"), dir.join("long24.wav"));
     write_wav(&path, frames);
+    write_wav_bits(&path24, frames, 24);
     let loop_range = Some(Loop {
         start: 30_000,
         end: 90_000,
@@ -602,14 +620,28 @@ fn streamed_playback_matches_ram_playback() {
             },
         ),
     ];
-    for (n, (group, zone)) in cases.into_iter().enumerate() {
-        let streamed = Bank::load(&instrument(vec![group.clone()], vec![zone.clone()])).unwrap();
+    // Float and 24-bit sources, the latter also with a budget that shrinks the preload.
+    let runs = cases.iter().flat_map(|case| {
+        [(&path, None), (&path24, None), (&path24, Some(()))].map(|run| (case, run))
+    });
+    for (n, ((group, zone), (path, shrink))) in runs.enumerate() {
+        let zone = Zone {
+            sample: path.clone(),
+            ..zone.clone()
+        };
+        let instrument = instrument(vec![group.clone()], vec![zone.clone()]);
+        let mut streamed = Bank::load(&instrument).unwrap();
+        if shrink.is_some() {
+            streamed = Bank::load_within(&instrument, streamed.bytes - 1).unwrap();
+            assert!(streamed.preload < PRELOAD_FRAMES, "case {n}");
+        }
         assert_eq!(
             streamed.streamed_samples(),
             1,
             "case {n} streams instead of loading fully"
         );
-        let decoded = kontakto::audio::decode(&path, frames).unwrap();
+        let group = group.clone();
+        let decoded = kontakto::audio::decode(path, frames).unwrap();
         let ram =
             Bank::from_samples(vec![group], vec![zone], vec![(path.clone(), decoded)]).unwrap();
         let (mut a, mut b) = (engine_with(streamed), engine_with(ram));
