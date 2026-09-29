@@ -2,11 +2,13 @@
 //! key/velocity mapping, details, and plain-spoken notices.
 
 use super::{Cx, Tab, rack::pan_text, theme::*};
+use crate::artwork::Picture;
 use crate::import::{self, Instrument};
 use crate::ksp::{Control, Interface, Value};
 use moose::mui::mui::geometry::Path as DrawPath;
 use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::Fit;
+use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::path::Path;
 use std::sync::Arc;
@@ -215,10 +217,16 @@ pub fn perform(ui: &mut Ui, cx: &mut Cx) -> El {
         .map(|s| (s.frame.size.width, s.frame.size.height));
     let scripted = current(cx).is_some_and(|i| !i.scripts.is_empty());
     let (interface, wallpaper) = (v.interface.clone(), v.wallpaper.clone());
+    let pictures = v.pictures.clone();
     let content = match (interface, wallpaper) {
-        (Some(interface), wallpaper) if loaded => {
-            performance_view(ui, cx, &interface, wallpaper.as_ref(), stage_size)
-        }
+        (Some(interface), wallpaper) if loaded => performance_view(
+            ui,
+            cx,
+            &interface,
+            &pictures,
+            wallpaper.as_ref(),
+            stage_size,
+        ),
         (None, Some(image)) if loaded => block(Len::Pct(100.), Len::Pct(100.))
             .fill(Fill::Image(image, Fit::Contain))
             .named("Instrument wallpaper")
@@ -258,6 +266,7 @@ fn performance_view(
     ui: &mut Ui,
     cx: &mut Cx,
     interface: &Interface,
+    pictures: &HashMap<String, Arc<Picture>>,
     image: Option<&Arc<Image>>,
     stage: Option<(f64, f64)>,
 ) -> El {
@@ -275,8 +284,10 @@ fn performance_view(
         .controls
         .iter()
         .enumerate()
-        .filter_map(|(n, c)| Widget::of(n, c, interface))
+        .filter_map(|(n, c)| Widget::of(n, c, interface, pictures))
         .collect();
+    // Kontakt's Z layers: back (-1), default, front (1); declaration order within one.
+    controls.sort_by_key(|w| w.z);
     let part = cx.state.selected;
     let mut open_menu = None;
     for w in &mut controls {
@@ -370,12 +381,13 @@ fn menu_list(ui: &mut Ui, cx: &mut Cx, part: usize, menu: &Widget, scale: f64, h
         .id(format!("ksp-menu-{}", menu.control))
 }
 
-/// Text without glyphs from a library's private icon font, which ours can't draw.
+/// Text without glyphs from a library's private icon font, which ours can't
+/// draw. Leading spaces stay: scripts indent labels with them.
 fn clean(text: &str) -> String {
     text.chars()
         .filter(|c| !matches!(*c as u32, 0xE000..=0xF8FF) && !c.is_control())
         .collect::<String>()
-        .trim()
+        .trim_end()
         .to_owned()
 }
 
@@ -396,6 +408,16 @@ struct Widget {
     menu: Vec<(String, i32)>,
     background: bool,
     hide_text: bool,
+    /// The script's picture for the control, drawn in place of our shapes.
+    picture: Option<Arc<Picture>>,
+    /// `$CONTROL_PAR_PICTURE_STATE`: the frame a label shows.
+    picture_state: i32,
+    /// `$CONTROL_PAR_TEXT_ALIGNMENT`, when the script set it.
+    align: Option<Justify>,
+    /// `$CONTROL_PAR_TEXTPOS_Y`: text offset down, in authored pixels.
+    text_y: f64,
+    /// `$CONTROL_PAR_Z_LAYER`.
+    z: i32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -410,7 +432,12 @@ enum Kind {
 }
 
 impl Widget {
-    fn of(control: usize, c: &Control, interface: &Interface) -> Option<Self> {
+    fn of(
+        control: usize,
+        c: &Control,
+        interface: &Interface,
+        pictures: &HashMap<String, Arc<Picture>>,
+    ) -> Option<Self> {
         let int = |name: &str| match c.properties.get(&format!("$CONTROL_PAR_{name}")) {
             Some(Value::Int(n)) => Some(*n),
             _ => None,
@@ -435,10 +462,15 @@ impl Widget {
         };
         let (x, y) = (int("POS_X").unwrap_or(0), int("POS_Y").unwrap_or(0));
         let default_h = if kind == Kind::Knob { 52 } else { 18 };
-        let (w, h) = (
-            int("WIDTH").unwrap_or(85),
-            int("HEIGHT").unwrap_or(default_h),
-        );
+        let picture = pictures.get(&text("PICTURE")).cloned();
+        // Kontakt sizes a control to a picture that cannot stretch.
+        let (w, h) = match &picture {
+            Some(p) if !p.resizable => (p.frames[0].width as i32, p.frames[0].height as i32),
+            _ => (
+                int("WIDTH").unwrap_or(85),
+                int("HEIGHT").unwrap_or(default_h),
+            ),
+        };
         if x < 0 || y < 0 || x >= interface.width || y >= interface.height || w <= 0 || h <= 0 {
             return None;
         }
@@ -461,7 +493,7 @@ impl Widget {
                 .trim_start_matches(['$', '~', '?', '%', '@', '!'])
                 .replace('_', " ");
         }
-        if label.is_empty() && matches!(kind, Kind::Button | Kind::Label) {
+        if label.is_empty() && picture.is_none() && matches!(kind, Kind::Button | Kind::Label) {
             return None;
         }
         let w = if kind == Kind::Knob { w.max(40) } else { w };
@@ -479,6 +511,15 @@ impl Widget {
             menu: c.menu.clone(),
             background: hide & 2 == 0,
             hide_text: hide & 8 != 0,
+            picture,
+            picture_state: int("PICTURE_STATE").unwrap_or(0),
+            align: int("TEXT_ALIGNMENT").map(|a| match a {
+                1 => Justify::Center,
+                2 => Justify::End,
+                _ => Justify::Start,
+            }),
+            text_y: f64::from(int("TEXTPOS_Y").unwrap_or(0)),
+            z: int("Z_LAYER").unwrap_or(0).signum(),
         };
         widget.set(raw);
         Some(widget)
@@ -499,6 +540,19 @@ impl Widget {
             Kind::Value => self.text = format!("{raw}"),
             _ => {}
         }
+    }
+
+    /// The picture frame for the control's state: a switch's on/off, a
+    /// slider's position along its strip, a label's picture state.
+    fn frame(&self) -> Option<(&Picture, usize)> {
+        let picture = self.picture.as_deref()?;
+        let last = picture.frames.len() - 1;
+        let n = match self.kind {
+            Kind::Button => usize::from(self.raw >= 1.),
+            Kind::Slider | Kind::Value => (self.unit() * last as f64).round() as usize,
+            _ => usize::try_from(self.picture_state).unwrap_or(0),
+        };
+        Some((picture, n.min(last)))
     }
 
     /// 0..1 along the control's range.
@@ -565,6 +619,13 @@ impl Widget {
             self.h * scale,
         );
         let panel = Color::oklcha(0.16, 0.005, 260., 0.82);
+        if let Some((picture, n)) = self.frame() {
+            match picture.pieces.get(n) {
+                Some(pieces) => nine(pieces, picture.fixed, scale, (x, y, w, h), out),
+                None => out.push(Draw::image(x, y, w, h, picture.frames[n].clone())),
+            }
+            return;
+        }
         match self.kind {
             Kind::Knob => {
                 let label = if self.text.is_empty() {
@@ -694,20 +755,23 @@ impl Widget {
         };
         let content = match self.kind {
             _ if text.is_empty() => spacer(),
+            Kind::Label if self.picture.is_some() => label,
             Kind::Knob => col![spacer(), pill(label)].align(Align::Center),
             Kind::Label => pill(label),
             Kind::Button | Kind::Value => label.justify(Justify::Center),
             Kind::Menu => label.pad(edges(0., self.h * scale, 0., HALF * scale)),
             _ => label.pad((HALF * scale, 0.)),
         };
-        let centered = matches!(self.kind, Kind::Knob | Kind::Button | Kind::Value);
+        let justify = match (self.kind, self.align) {
+            (Kind::Knob, _) => Justify::Center,
+            (_, Some(align)) => align,
+            (Kind::Button | Kind::Value, None) => Justify::Center,
+            _ => Justify::Start,
+        };
         let el = row![content]
-            .justify(if centered {
-                Justify::Center
-            } else {
-                Justify::Start
-            })
+            .justify(justify)
             .align(Align::Center)
+            .pad(edges(self.text_y * scale, 0., 0., 0.))
             .w(w)
             .h(h)
             .at(x, y)
@@ -744,6 +808,32 @@ impl Widget {
                 .radius(4)
                 .on(State::Hover, |s| s.fill(Color::oklcha(1., 0., 0., 0.08))),
         })
+    }
+}
+
+/// A stretchable picture's nine pieces over `(x, y, w, h)`: corners keep
+/// their size, edges stretch one way, the middle both.
+fn nine(
+    pieces: &[Option<Arc<Image>>; 9],
+    [top, bottom, left, right]: [u32; 4],
+    scale: f64,
+    (x, y, w, h): (f64, f64, f64, f64),
+    out: &mut Vec<Draw>,
+) {
+    let fit = |a: u32, b: u32, room: f64| {
+        let (a, b) = (f64::from(a) * scale, f64::from(b) * scale);
+        let shrink = if a + b > room { room / (a + b) } else { 1. };
+        (a * shrink, b * shrink)
+    };
+    let (l, r) = fit(left, right, w);
+    let (t, b) = fit(top, bottom, h);
+    let cols = [(x, l), (x + l, w - l - r), (x + w - r, r)];
+    let rows = [(y, t), (y + t, h - t - b), (y + h - b, b)];
+    for (i, piece) in pieces.iter().enumerate() {
+        let ((px, pw), (py, ph)) = (cols[i % 3], rows[i / 3]);
+        if let Some(piece) = piece.as_ref().filter(|_| pw > 0. && ph > 0.) {
+            out.push(Draw::image(px, py, pw, ph, piece.clone()));
+        }
     }
 }
 

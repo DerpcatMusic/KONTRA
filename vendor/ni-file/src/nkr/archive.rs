@@ -162,7 +162,9 @@ fn directory<R: ReadBytesExt>(
                     else if version!=0x110 && version!=0x111{Some("Unsupported NKX member version")}
                     else if file_offset+header_size>length{Some("Truncated NKX member header")}
                     else {
-                        e.offset=file_offset+header_size;e.encoded=magic==0x16ccf80a;e.key_index=u32::from_le_bytes(header[10..14].try_into().unwrap());
+                        e.offset=file_offset+header_size;e.key_index=u32::from_le_bytes(header[10..14].try_into().unwrap());
+                        // Members naming the library key (0x100) are encrypted whatever their header magic: Solo's shared NKR uses the 22-byte header.
+                        e.encoded=magic==0x16ccf80a || e.key_index==0x100;
                         r.seek(SeekFrom::Start(file_offset+if magic==0x2ae905fa{14}else{19}))?;e.size=r.read_u32_le()? as u64;
                         if e.offset+e.size>length{Some("Truncated NKX member payload")}else{None}
                     }

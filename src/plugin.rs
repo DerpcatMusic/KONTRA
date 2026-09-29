@@ -120,6 +120,8 @@ pub(crate) struct PartView {
     pub(crate) interface: Option<Arc<crate::ksp::Interface>>,
     pub(crate) interface_status: String,
     pub(crate) wallpaper: Option<Arc<Image>>,
+    /// Control pictures the scripts name, by name.
+    pub(crate) pictures: Arc<HashMap<String, Arc<artwork::Picture>>>,
     pub(crate) wallpaper_status: String,
     pub(crate) attempted: Option<(String, u32)>,
     pub(crate) instrument: Option<Arc<Instrument>>,
@@ -523,10 +525,20 @@ impl BackgroundTask for Load {
                     };
                     let parsed = needs_art.then(|| script_interface(script.as_deref()));
                     let art = parsed.as_ref().map(|parsed| {
-                        artwork::performance(
+                        let interface = parsed.interface.as_deref();
+                        let wallpaper = artwork::performance(
                             &instrument,
-                            parsed.interface.as_ref().map(|u| u.wallpaper.as_str()),
-                        )
+                            interface.map(|u| u.wallpaper.as_str()),
+                        );
+                        let names =
+                            interface
+                                .into_iter()
+                                .flat_map(|u| &u.controls)
+                                .filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+                                    Some(crate::ksp::Value::Text(name)) => Some(name.as_str()),
+                                    _ => None,
+                                });
+                        (wallpaper, artwork::pictures(&instrument.path, names))
                     });
                     let mut view = params.shared.view.lock().unwrap();
                     let v = &mut view.parts[slot];
@@ -538,7 +550,8 @@ impl BackgroundTask for Load {
                         v.interface_status = parsed.status;
                         v.keys = parsed.keys;
                     }
-                    if let Some(art) = art {
+                    if let Some((art, pictures)) = art {
+                        v.pictures = Arc::new(pictures);
                         match art {
                             Ok(image) => {
                                 v.wallpaper = image;
