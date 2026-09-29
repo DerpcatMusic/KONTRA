@@ -86,7 +86,7 @@ impl Default for Zone {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct Instrument {
     pub path: PathBuf,
     pub name: String,
@@ -103,6 +103,14 @@ pub struct Instrument {
     /// Persistent variable values saved with each script, parallel to `scripts`.
     #[serde(skip)]
     pub script_state: Vec<crate::ksp::Persisted>,
+    /// Kontakt's own figures saved in the program: total sample bytes and
+    /// per-instrument DFD preload override (0 = the global default).
+    pub kontakt_sample_bytes: f64,
+    pub kontakt_preload: i32,
+    /// Archive and validated entry of every resolved archive member, so
+    /// loading does not index the archives again.
+    #[serde(skip)]
+    pub archive_members: HashMap<PathBuf, (PathBuf, ni_file::nkr::Entry)>,
 }
 
 /// ni-file is a research parser with panic paths. Keep those off the host thread.
@@ -363,7 +371,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
             start: start as usize, end, gain: gain * program.volume, pan: (pan + program.pan).clamp(-1.0,1.0),
             tune: tune as f64 * program.tune as f64 * 2f64.powf(program.transpose as f64 / 12.0), loop_range });
     }
-    for (archive,index) in &resolver.archives {warnings.extend(index.issues.iter().map(|issue|format!("{}: {issue}",archive.display())));}
+    for (archive,(index,_)) in &resolver.archives {warnings.extend(index.issues.iter().map(|issue|format!("{}: {issue}",archive.display())));}
     if c.find_first(3).is_some(){warnings.push("Multi routing, master processing and multi scripts are not restored; parts use manual playback".into());}
     let fx = match crate::fx::ProgramFx::read(&p) {
         Ok(mut fx) => {
@@ -391,7 +399,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         Ok(v) => v.map_or((None, Vec::new()), |(limit, groups)| (Some(limit), groups)),
         Err(e) => { warnings.push(format!("Voice groups ignored: {e:#}")); (None, Vec::new()) }
     };
-    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state })
+    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state, kontakt_sample_bytes: program.num_bytes_samples_total, kontakt_preload: program.dfd_channel_preload_size, archive_members: resolver.members })
 }
 
 /// VoiceGroups chunk (0x32, v0x60): program limit, a 128-bit presence mask, then one
@@ -421,28 +429,48 @@ fn voice_groups(data: &[u8]) -> Result<(VoiceLimit, Vec<Option<VoiceLimit>>)> {
 pub struct Resolver {
     root: PathBuf,
     index: Option<HashMap<String, Vec<PathBuf>>>,
-    archives: HashMap<PathBuf, ni_file::nkr::Archive>,
+    /// Lazily indexed archives with an open handle for member headers.
+    archives: HashMap<PathBuf, (ni_file::nkr::Archive, File)>,
+    /// Canonical path of each archive: canonicalizing per member costs a
+    /// path walk per component, which dominated large imports.
+    canonical: HashMap<PathBuf, PathBuf>,
+    is_file: HashMap<PathBuf, bool>,
+    /// Every resolved archive member: its archive and validated entry, so
+    /// loading samples does not index the archives again.
+    pub members: HashMap<PathBuf, (PathBuf, ni_file::nkr::Entry)>,
     /// Archive members found zero-filled so far: an interrupted download
     /// preallocates the archive and leaves the unfetched rest as zeros.
     pub undownloaded: usize,
 }
 impl Resolver {
-    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), undownloaded: 0 } }
+    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), canonical: HashMap::new(), is_file: HashMap::new(), members: HashMap::new(), undownloaded: 0 } }
     pub fn resolve(&mut self, parent: &Path, name: &str) -> Result<Option<PathBuf>> {
         let name = name.replace('\\', "/");
         let direct = parent.join(&name);
-        if direct.is_file() { return Ok(Some(direct.canonicalize()?)); }
-        if let Some((archive, member)) = archive_member(&direct) {
+        // Archive members first: a path inside an archive file is never a file itself.
+        if let Some((archive, member)) = self.archive_member(&direct) {
             if !self.archives.contains_key(&archive) {
-                self.archives.insert(archive.clone(), ni_file::nkr::Archive::read(File::open(&archive)?).with_context(|| format!("Archive {}", archive.display()))?);
+                let mut file = File::open(&archive)?;
+                let index = ni_file::nkr::Archive::read_index(&mut file).with_context(|| format!("Archive {}", archive.display()))?;
+                self.archives.insert(archive.clone(), (index, file));
             }
-            match self.archives[&archive].find(&member) {
-                Some(entry) if entry.valid => return Ok(Some(archive.canonicalize()?.join(&entry.name))),
+            let (index, file) = &self.archives[&archive];
+            match index.member(file, &member)? {
+                Some(entry) if entry.valid => {
+                    let canonical = match self.canonical.get(&archive) {
+                        Some(c) => c.clone(),
+                        None => self.canonical.entry(archive.clone()).or_insert(archive.canonicalize()?).clone(),
+                    };
+                    let path = canonical.join(&entry.name);
+                    self.members.insert(path.clone(), (canonical, entry));
+                    return Ok(Some(path));
+                }
                 Some(entry) if entry.issue == Some("Zero-filled NKX member header") => self.undownloaded += 1,
                 _ => {}
             }
             return Ok(None);
         }
+        if direct.is_file() { return Ok(Some(direct.canonicalize()?)); }
         let basename = name.rsplit('/').next().unwrap_or(&name).to_lowercase();
         let index = self.index.get_or_insert_with(|| {
             let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
@@ -461,6 +489,18 @@ impl Resolver {
             if candidates.len() == 1 { return Ok(Some(candidates[0].clone())); }
         }
         bail!("Ambiguous sample {name}: {} matching files", matches.len())
+    }
+    /// [`archive_member`], remembering which archive paths are files: one
+    /// stat per archive instead of one per member.
+    fn archive_member(&mut self, path: &Path) -> Option<(PathBuf, String)> {
+        for parent in path.ancestors().skip(1) {
+            if !parent.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr")) { continue; }
+            let is_file = *self.is_file.entry(parent.to_path_buf()).or_insert_with(|| parent.is_file());
+            if is_file {
+                return Some((parent.to_path_buf(), path.strip_prefix(parent).ok()?.to_string_lossy().replace('\\',"/")));
+            }
+        }
+        None
     }
 }
 

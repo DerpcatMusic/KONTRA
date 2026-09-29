@@ -495,15 +495,20 @@ fn bench_load(path: &Path) -> Result<()> {
     let started = std::time::Instant::now();
     install_scripts(&mut engine, &instrument);
     let init_ms = started.elapsed().as_secs_f64() * 1e3;
-    let rss = std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| {
-            let line = s.lines().find(|l| l.starts_with("VmRSS:"))?;
-            line.split_whitespace().nth(1)?.parse::<f64>().ok()
-        })
-        .map_or(0.0, |kib| kib / 1024.0);
+    let status = |key: &str| {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                let line = s.lines().find(|l| l.starts_with(key))?;
+                line.split_whitespace().nth(1)?.parse::<f64>().ok()
+            })
+            .map_or(0.0, |kib| kib / 1024.0)
+    };
+    let (rss, peak) = (status("VmRSS:"), status("VmHWM:"));
     println!(
-        "{name}: {mib:.1} MiB resident (preload {preload}) · RSS {rss:.0} MiB · {samples} samples ({streamed} streamed) · {zones} zones ({skipped} skipped) · import {import_ms:.0} ms · load {load_ms:.0} ms · scripts {init_ms:.0} ms"
+        "{name}: {mib:.1} MiB resident (preload {preload}) · RSS {rss:.0} MiB (peak {peak:.0}) · {samples} samples ({streamed} streamed) · {zones} zones ({skipped} skipped) · import {import_ms:.0} ms · load {load_ms:.0} ms · scripts {init_ms:.0} ms · Kontakt stores {:.0} MiB of samples, preload override {}",
+        instrument.kontakt_sample_bytes / (1 << 20) as f64,
+        instrument.kontakt_preload
     );
     Ok(())
 }

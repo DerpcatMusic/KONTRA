@@ -6,7 +6,10 @@
 //! cipher is position-relative, so any byte offset is addressable.
 
 use anyhow::{Context, Result, bail, ensure};
-use ni_file::{nis::LibraryKey, nkr::Archive};
+use ni_file::{
+    nis::LibraryKey,
+    nkr::{Archive, Entry},
+};
 use std::{
     collections::HashMap,
     fs::File,
@@ -194,28 +197,43 @@ pub struct Source {
 /// Resolves sample paths, caching archive indexes and library keys.
 #[derive(Default)]
 pub struct Sources {
-    archives: HashMap<PathBuf, (Archive, Option<Arc<LibraryKey>>)>,
+    archives: HashMap<PathBuf, (Archive, File)>,
+    keys: HashMap<PathBuf, Option<Arc<LibraryKey>>>,
 }
 
 impl Sources {
     pub fn source(&mut self, path: &Path) -> Result<Source> {
-        let Some((archive, member)) = crate::import::archive_member(path) else {
-            return Ok(Source {
-                path: path.into(),
-                file: path.into(),
-                offset: 0,
-                len: None,
-                key: None,
-            });
+        self.source_in(path, None)
+    }
+
+    /// Like [`Sources::source`]; `known` is the archive and member entry the
+    /// importer already validated, which skips re-reading the archive index.
+    pub fn source_in(&mut self, path: &Path, known: Option<&(PathBuf, Entry)>) -> Result<Source> {
+        let (archive, entry) = match known {
+            Some((archive, entry)) => (archive.clone(), entry.clone()),
+            None => {
+                let Some((archive, member)) = crate::import::archive_member(path) else {
+                    return Ok(Source {
+                        path: path.into(),
+                        file: path.into(),
+                        offset: 0,
+                        len: None,
+                        key: None,
+                    });
+                };
+                if !self.archives.contains_key(&archive) {
+                    let mut file = File::open(&archive)?;
+                    let index = Archive::read_index(&mut file)
+                        .with_context(|| format!("Archive {}", archive.display()))?;
+                    self.archives.insert(archive.clone(), (index, file));
+                }
+                let (index, file) = &self.archives[&archive];
+                let entry = index
+                    .member(file, &member)?
+                    .context("Archive member not found")?;
+                (archive, entry)
+            }
         };
-        if !self.archives.contains_key(&archive) {
-            let index = Archive::read(File::open(&archive)?)
-                .with_context(|| format!("Archive {}", archive.display()))?;
-            let key = crate::import::library_key(&archive)?.map(Arc::new);
-            self.archives.insert(archive.clone(), (index, key));
-        }
-        let (index, key) = &self.archives[&archive];
-        let entry = index.find(&member).context("Archive member not found")?;
         ensure!(
             entry.valid,
             "{}",
@@ -223,8 +241,13 @@ impl Sources {
         );
         let key = if entry.encoded && entry.key_index != 0xff {
             ensure!(entry.key_index == 0x100, "Unsupported legacy NKX cipher");
+            if !self.keys.contains_key(&archive) {
+                let key = crate::import::library_key(&archive)?.map(Arc::new);
+                self.keys.insert(archive.clone(), key);
+            }
             Some(
-                key.clone()
+                self.keys[&archive]
+                    .clone()
                     .context("Encrypted archive member needs local library access data")?,
             )
         } else {

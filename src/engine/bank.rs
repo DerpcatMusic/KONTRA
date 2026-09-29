@@ -181,7 +181,10 @@ impl Bank {
             })
             .collect();
         let mut sources = audio::Sources::default();
-        let resolved: Vec<_> = paths.iter().map(|path| sources.source(path)).collect();
+        let resolved: Vec<_> = paths
+            .iter()
+            .map(|path| sources.source_in(path, instrument.archive_members.get(*path)))
+            .collect();
         let opened = parallel(resolved, |_: &mut (), source| {
             let source = source?;
             anyhow::Ok((source.open()?, source))
