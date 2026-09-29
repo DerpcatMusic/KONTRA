@@ -155,6 +155,59 @@ consistent release times. It has not been checked against Kontakt's UI.
 - Many libraries (Areia, Dolce, Vista, Pacific) set these intensities to 0 and drive them
   from scripts at runtime. Stored values reflect the saved state, not what plays.
 
+- `Group.modulators: Vec<Modulator>`: `find_mod` order (internal modulators in slot
+  order, then external ones), with target names for `find_target`, the index of their
+  first `Group.mods` entry (external only) and whether it is the imported volume AHDSR.
+
+## Runtime modulation and engine parameters (`src/engine/params.rs`)
+
+Each group's assignments become a `ModTable` at bank load: per-entry route, intensity,
+lag and a 128-point shaper table, plus the list of voice-rate entries. Per voice and
+block the engine reads each source (0..1), shapes it, applies a one-pole lag
+(`1 - exp(-n / (lag_ms * rate))`, stepped per block) and combines:
+
+| Target | Law | Confidence |
+|---|---|---|
+| Volume | multiplicative: each entry scales by `1 - |i| * (1 - v)`; negative `i` uses `1 - v` | medium: matches stored crossfade shapers (layers sum to about 1), unverified against Kontakt |
+| Pitch | `12 * i * v` semitones, bend mapped to -1..1 | high for the 2-semitone stored range (i = 0.1667) |
+| Sample start | `i * v * zone.start_mod` frames, fixed at note start | medium |
+
+Sources: velocity, key, constant, MIDI CC (live, per channel), pitch bend, channel
+pressure. Not applied: Script/RTC, random, release velocity, poly aftertouch,
+`Unassigned`, and `Module` targets (effect and internal-modulator parameters); no pan
+target exists in the local corpus. Velocity → volume always goes through the shaper.
+The decoded `invert` flag is **ignored**: Afflatus sets it on rising velocity/CC
+shapers, Vista on some bell-shaped crossfade layers but not their siblings, Areia and
+Solo almost never; applying it silences or inverts layers that clearly play upright.
+The GM reset defaults hold before any input (CC7 127, CC10 64, CC11 127, rest 0), and
+controllers scripts set while loading (Areia sets CC110-113 in
+`on persistence_changed`) are applied on install and after resets.
+
+`set_engine_par`/`get_engine_par` (queued with notes, applied at their frame, gain
+changes ramped over the block by the voice gain ramp):
+
+| Parameter | Address | Value law | Evidence |
+|---|---|---|---|
+| VOLUME | group, instrument (`-1`), bus (`generic 1000+b`) | gain = 3.9810717 * x^3 (x = v/1e6) | 630859 = 0 dB (0.005 dB off), Areia SENDLEVEL 396820 = stored 0.25 |
+| PAN | same | 2x - 1 | NI docs |
+| TUNE | group, instrument | ±36 semitones linear | NI docs, unverified |
+| OUTPUT_CHANNEL | group | `-1` instrument, 1000+b bus b | Areia init |
+| ATTACK, HOLD | group, volume-AHDSR slot | ms = 2 * ((1 + 7500.01)^x - 1) | Areia 465229 = stored 125.013 ms |
+| DECAY, RELEASE | same | ms = 2 * ((1 + 12500.02)^x - 1) | 512668 = 250.001 ms, 1e6 = 25000.04 ms |
+| SUSTAIN | same | linear | low |
+| MOD_TARGET_INTENSITY | group, `find_mod` slot, target (generic, -1 = 0) | i = x^2 | Areia 704316 where presets store 0.4961 |
+| MOD_TARGET_MP_INTENSITY | same | 2x - 1 | NI docs |
+| EFFECT_BYPASS, SEND_EFFECT_BYPASS | FX slot (`group -1`, generic 0/1/2 or bus) | v != 0 | - |
+| SEND/INSERT_EFFECT_OUTPUT_GAIN, SEND_EFFECT_DRY_LEVEL, SENDLEVEL_0..7 | same | volume law | Areia |
+
+`find_mod`/`find_target` resolve by decoded names; indices are stable positions in
+`Group.modulators` and its target list. Everything else (ATK_CURVE, effect-specific
+parameters) is stored by the KSP runtime, read back unchanged, and listed by
+`ksp-run`. On init, writes go to a setup engine that answers reads and records them
+(`Runtime::init_engine_pars`); the playing engine replays them when the scripts,
+bank or effects are installed. Up to 4096 writes queue per render (Areia bursts reach
+about 320 per note); overflow is counted as dropped commands.
+
 ## Corpus run (`kontakto inspect-mods` over every local NKI)
 
 All 778 NKIs import with no modulation errors. Stored pitch-bend range is 2 semitones
@@ -165,7 +218,8 @@ CHORUS and Pacific groups) have none stored.
 
 ## Not verified
 
-- How Kontakt combines intensity, invert and shaper for volume and pitch, and whether
-  volume modulation is linear or in dB. No Kontakt reference renders are available.
+- How Kontakt combines intensity, invert and shaper for volume and pitch (the
+  multiplicative model above is inferred from stored crossfades). No Kontakt
+  reference renders are available.
 - The 0x40 flex envelope, 0x4A dynamics, the source module, internal-modulator
   bypass, the extra AHDSR flag and records, and the ext-mod unknown bytes and id.

@@ -117,8 +117,8 @@ Which of the five flags is Kontakt's auto-gain is unknown (they are identical in
 
 Ownership: `ProgramFx` (on `Instrument.fx`) is an immutable description, `Clone` and
 shared with the UI; IRs sit behind `Arc`. `ProgramFx::processor(rate, max_block)` builds
-an owned `FxProcessor` holding all DSP state, leaving out bypassed and unimplemented
-slots and send slots nothing taps. All allocation happens there; `FxProcessor::process`
+an owned `FxProcessor` holding all DSP state, leaving out unimplemented
+slots and send slots nothing taps; bypassed slots are built so scripts can enable them. All allocation happens there; `FxProcessor::process`
 never allocates, locks or panics and splits blocks longer than `max_block`.
 
 Signal path: `Engine` owns the processor next to its bank (`Engine::set_fx`) and runs it
@@ -175,9 +175,19 @@ Worst cases include the first (cold) block and scheduler noise; under a load ave
 
 - Semantics of Send Levels' second table (17 values), the convolution curve/flags, and
   the `-1` in legacy FX `*_unit` fields.
-- Group-to-bus routing (engine) - bus chains are parsed and preparable but not mixed.
 - Exact Kontakt reverb/convolution gain staging; validate against Kontakt renders when available.
 
 ## Group-to-bus routing (2026-09-29)
+
+Signal flow, per render block: voices of groups routed to bus b (by
+`$ENGINE_PAR_OUTPUT_CHANNEL` = 1000+b; stored routing is always the instrument)
+render into bus b's input; every fed or still-ringing bus runs its chain, then its
+fader and pan (ramped), and adds into the instrument sum with the unrouted groups;
+then instrument volume/pan/Tone, the insert rack (Send Levels taps into the send
+rack), and the main rack. Bus output other than the instrument is not modelled.
+Input buffers exist for every stored bus (16 x 2 x max_block floats, 128 KiB at
+1024 frames) so routing can change at any frame without allocating. Bypassed
+effects (and their IRs) are built too, so scripts can switch them on.
+
 
 No stored group output selector was found. Group children are only 0x38, 0x3b, 0x3c and 0x4a; `GroupParams` reads a fixed public-data prefix and `fx_idx_amp_split_point` is undocumented (likely the amp position in the old group insert chain, unverified). All 12,592 local buses output to the instrument (`output = -1`). Only Areia uses buses actively (convolution on Bus 1-5, distinct pans), and its scripts reference `$ENGINE_PAR_OUTPUT_CHANNEL` and `$NI_BUS_OFFSET`: routing is most likely script-set via `set_engine_par`. Unverified next step: dump group public/private bytes past `interp_quality` for Areia groups differing only by mic tag.
