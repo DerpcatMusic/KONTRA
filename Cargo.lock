@@ -2260,6 +2260,7 @@ dependencies = [
  "glob",
  "lz77",
  "ncw",
+ "serde",
  "thiserror 1.0.69",
  "time",
  "tui-tree-widget",

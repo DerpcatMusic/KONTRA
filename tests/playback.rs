@@ -1,8 +1,8 @@
 use kontakto::{audio::Sample,engine::{Bank,Engine},import::{Group,Zone,Loop,Resolver}};
 use std::path::PathBuf;
 fn engine()->Engine {
- let group=Group{name:"test".into(),gain:1.0,pan:0.0,tune:1.0,key_tracking:true,reverse:false,release_trigger:false,muted:false,channel:-1};
- let zone=Zone{group:0,sample:PathBuf::new(),available:true,low_key:60,high_key:72,root:60,low_velocity:10,high_velocity:127,start:0,end:0,gain:1.0,pan:0.0,tune:1.0,loop_range:Some(Loop{start:0,end:100,until_release:false,crossfade:0})};
+ let group=Group{name:"test".into(),gain:1.0,pan:0.0,tune:1.0,key_tracking:true,reverse:false,release_trigger:false,muted:false,channel:-1,..Default::default()};
+ let zone=Zone{group:0,sample:PathBuf::new(),available:true,low_key:60,high_key:72,root:60,low_velocity:10,high_velocity:127,start:0,end:0,gain:1.0,pan:0.0,tune:1.0,loop_range:Some(Loop{start:0,end:100,until_release:false,crossfade:0}),..Default::default()};
  let mut e=Engine::default();e.attack=0.0001;e.release=0.001;e.bank=Some(Box::new(Bank{zones:vec![zone],groups:vec![group],samples:vec![Sample{rate:48000,frames:vec![[0.5,0.25];100]}],sample_ids:vec![0],bytes:800}));e
 }
 #[test]
@@ -40,6 +40,23 @@ fn vista_harp_real_instrument() {
  let i=kontakto::import::read(&path).unwrap();assert_eq!(i.groups.len(),20);assert_eq!(i.zones.len(),2000);assert!(i.missing_samples.is_empty());assert!(!i.scripts.is_empty());
  let b=Bank::load(&i,0).unwrap();assert!(!b.samples.is_empty());let mut e=Engine::default();e.bank=Some(Box::new(b));e.note_on(0,60,100);
  let peak=(0..48000).map(|_|e.frame()[0].abs()).fold(0f32,f32::max);assert!(peak>0.001 && peak.is_finite());
+}
+
+#[test]
+#[ignore = "uses the owner's installed library; never redistributes samples"]
+fn vista_harp_modulation_is_decoded() {
+    use kontakto::import::{ModSource, ModTarget};
+
+    let path = PathBuf::from(kontakto::import::LIBRARY_ROOT)
+        .join("Performance Samples Vista/Instruments/Bonus/Vista - Harp.nki");
+    let instrument = kontakto::import::read(&path).unwrap();
+    assert!(!instrument.warnings.iter().any(|w| w.contains("modulation not imported")));
+    for group in &instrument.groups {
+        let env = group.volume_env.as_ref().expect("every group has a volume AHDSR");
+        assert!(env.attack_ms >= 0.0 && (0.0..=1.0).contains(&env.sustain));
+        assert_eq!(group.cc_volume().map(|(cc, _)| cc), Some(11));
+        assert!(group.modulation(ModSource::KeyPosition, &ModTarget::Volume).is_some());
+    }
 }
 
 #[test]

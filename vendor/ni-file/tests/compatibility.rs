@@ -416,6 +416,20 @@ mod modulation {
     }
 
     #[test]
+    fn shaper_curves_interpolate_linearly() {
+        use ni_file::kontakt::objects::Breakpoint;
+        let table = ShaperCurve::Table((0..128).map(|i| 1.0 - i as f32 / 127.0).collect());
+        assert_eq!(table.evaluate(0.0), 1.0);
+        assert!((table.evaluate(0.5) - 0.5).abs() < 1e-6);
+        assert_eq!(table.evaluate(2.0), 0.0);
+        let point = |x, y| Breakpoint { x, y, curve: 0.0 };
+        let knee = ShaperCurve::Breakpoints(vec![point(0.0, 0.0), point(0.5, 1.0), point(1.0, 1.0)]);
+        assert_eq!(knee.evaluate(0.25), 0.5);
+        assert_eq!(knee.evaluate(0.75), 1.0);
+        assert_eq!(ShaperCurve::Breakpoints(vec![]).evaluate(0.3), 0.3);
+    }
+
+    #[test]
     fn out_of_range_envelope_is_an_error() {
         assert!(EnvelopeAhdsr::try_from(&ahdsr(0.5)).is_ok());
         assert!(EnvelopeAhdsr::try_from(&ahdsr(2.0)).is_err());

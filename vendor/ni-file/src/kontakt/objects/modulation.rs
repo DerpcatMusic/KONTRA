@@ -64,6 +64,40 @@ pub enum ShaperCurve {
     Breakpoints(Vec<Breakpoint>),
 }
 
+impl ShaperCurve {
+    /// Output for input `x` (clamped to 0..=1) by linear interpolation.
+    /// An empty curve is the identity.
+    // ponytail: breakpoint segment curvature is ignored; apply it once its formula is known.
+    pub fn evaluate(&self, x: f32) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        match self {
+            Self::Table(table) => {
+                let Some(last) = table.len().checked_sub(1) else {
+                    return x;
+                };
+                let position = x * last as f32;
+                let index = (position.floor() as usize).min(last);
+                let next = (index + 1).min(last);
+                let fraction = position - index as f32;
+                table[index] + (table[next] - table[index]) * fraction
+            }
+            Self::Breakpoints(points) => match points.iter().position(|p| p.x >= x) {
+                None => points.last().map_or(x, |p| p.y),
+                Some(0) => points[0].y,
+                Some(index) => {
+                    let (a, b) = (points[index - 1], points[index]);
+                    let span = b.x - a.x;
+                    if span > 0.0 {
+                        a.y + (b.y - a.y) * (x - a.x) / span
+                    } else {
+                        b.y
+                    }
+                }
+            },
+        }
+    }
+}
+
 /// One node of a graphical shaper curve.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -207,7 +241,9 @@ fn read_source(reader: &mut Cursor<&[u8]>) -> Result<ModSource, Error> {
 pub(crate) fn read_targets(reader: &mut Cursor<&[u8]>) -> Result<Vec<ModTarget>, Error> {
     let count = reader.read_u32_le()?;
     if !(1..=MAX_TARGETS).contains(&count) {
-        return Err(Error::Generic(format!("Invalid modulation target count {count}")));
+        return Err(Error::Generic(format!(
+            "Invalid modulation target count {count}"
+        )));
     }
 
     let mut targets = Vec::with_capacity(count as usize);
@@ -273,7 +309,9 @@ fn read_shaper(reader: &mut Cursor<&[u8]>) -> Result<Option<ModShaper>, Error> {
             ShaperCurve::Breakpoints(points)
         }
         other => {
-            return Err(Error::Generic(format!("Unknown modulation shaper kind {other}")))
+            return Err(Error::Generic(format!(
+                "Unknown modulation shaper kind {other}"
+            )))
         }
     };
     Ok(Some(ModShaper { enabled, curve }))
@@ -281,7 +319,10 @@ fn read_shaper(reader: &mut Cursor<&[u8]>) -> Result<Option<ModShaper>, Error> {
 
 /// Parameter arrays (0x3A/0x3B/0x3C) store a presence byte per slot followed
 /// by the slot's chunk. Returns `(slot, chunk)` for every occupied slot.
-pub fn read_param_slots(object: &StructuredObject, slots: usize) -> Result<Vec<(usize, Chunk)>, Error> {
+pub fn read_param_slots(
+    object: &StructuredObject,
+    slots: usize,
+) -> Result<Vec<(usize, Chunk)>, Error> {
     if !matches!(object.version, 0x10 | 0x12) {
         return Err(Error::Generic(format!(
             "Unsupported parameter array version 0x{:X}",
@@ -303,7 +344,9 @@ pub fn read_param_slots(object: &StructuredObject, slots: usize) -> Result<Vec<(
 pub(crate) fn read_name(reader: &mut Cursor<&[u8]>) -> Result<String, Error> {
     let len = reader.read_u32_le()?;
     if len > MAX_NAME_BYTES {
-        return Err(Error::Generic(format!("Modulation name too long ({len} bytes)")));
+        return Err(Error::Generic(format!(
+            "Modulation name too long ({len} bytes)"
+        )));
     }
     let bytes = reader.read_bytes(len as usize)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -320,7 +363,9 @@ fn read_flag(reader: &mut Cursor<&[u8]>) -> Result<bool, Error> {
 pub(crate) fn ensure_consumed(reader: &Cursor<&[u8]>) -> Result<(), Error> {
     let left = (reader.get_ref().len() as u64).saturating_sub(reader.position());
     if left != 0 {
-        return Err(Error::Generic(format!("{left} unexpected trailing modulation bytes")));
+        return Err(Error::Generic(format!(
+            "{left} unexpected trailing modulation bytes"
+        )));
     }
     Ok(())
 }

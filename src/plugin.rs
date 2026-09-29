@@ -414,7 +414,7 @@ mod tests {
         use crate::{audio::Sample,import::{Group,Zone,Loop}};
         use moose::core::bus_routing::{BusRouting,BusActivation};
         let mut dsp=Dsp::default();let p=SamplerParams::new();p.shared.midi_thru.store(true,Ordering::Relaxed);
-        dsp.rack.parts[1].bank=Some(Box::new(Bank{groups:vec![Group{name:"test".into(),gain:1.,pan:0.,tune:1.,key_tracking:true,reverse:false,release_trigger:false,muted:false,channel:-1}],zones:vec![Zone{group:0,sample:PathBuf::new(),available:true,low_key:0,high_key:127,root:60,low_velocity:0,high_velocity:127,start:0,end:0,gain:1.,pan:0.,tune:1.,loop_range:Some(Loop{start:0,end:100,until_release:false,crossfade:0})}],samples:vec![Sample{rate:48000,frames:vec![[0.5,0.25];100]}],sample_ids:vec![0],bytes:800}));
+        dsp.rack.parts[1].bank=Some(Box::new(Bank{groups:vec![Group{name:"test".into(),gain:1.,pan:0.,tune:1.,key_tracking:true,reverse:false,release_trigger:false,muted:false,channel:-1,..Default::default()}],zones:vec![Zone{group:0,sample:PathBuf::new(),available:true,low_key:0,high_key:127,root:60,low_velocity:0,high_velocity:127,start:0,end:0,gain:1.,pan:0.,tune:1.,loop_range:Some(Loop{start:0,end:100,until_release:false,crossfade:0}),..Default::default()}],samples:vec![Sample{rate:48000,frames:vec![[0.5,0.25];100]}],sample_ids:vec![0],bytes:800}));
         dsp.rack.controls[1].port=1;dsp.rack.controls[1].output=2;
         let mut events=EventList::with_capacity(4);events.push(Event::on_port(16,1,EventBody::NoteOn{group:0,channel:0,note:60,velocity:127}));
         let mut outputs=vec![vec![0f32;128];6];let mut refs:Vec<_>=outputs.iter_mut().map(|o|o.as_mut_slice()).collect();let mut buffer=AudioBuffer::from_slices_checked(&[],&mut refs,128);

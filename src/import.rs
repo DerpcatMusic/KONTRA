@@ -5,30 +5,53 @@ use std::{collections::HashMap, fs::File, io::{Cursor, Read}, path::{Path, PathB
 
 pub const LIBRARY_ROOT: &str = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
 
-#[derive(Debug, Clone, Serialize)]
+pub use crate::modulation::{Ahdsr, ModAssignment, ModSource, ModTarget, ShaperCurve};
+
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Group {
     pub name: String,
+    /// Linear amplitude ratio.
     pub gain: f32,
     pub pan: f32,
+    /// Linear pitch ratio.
     pub tune: f64,
     pub key_tracking: bool,
     pub reverse: bool,
     pub release_trigger: bool,
     pub muted: bool,
     pub channel: i16,
+    /// Volume AHDSR envelope (first internal AHDSR modulating volume).
+    pub volume_env: Option<Ahdsr>,
+    /// External modulation assignments, one per target.
+    pub mods: Vec<ModAssignment>,
+    /// Kontakt voice group (choke/voice-limit group) index, if assigned.
+    pub voice_group: Option<u32>,
+    /// Raw interpolation quality setting; 0 in every local preset.
+    pub interp_quality: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Loop { pub start: usize, pub end: usize, pub until_release: bool, pub crossfade: usize }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Zone {
     pub group: usize,
     pub sample: PathBuf,
     pub available: bool,
     pub low_key: u8, pub high_key: u8, pub root: u8,
     pub low_velocity: u8, pub high_velocity: u8,
+    /// Crossfade width in velocity steps above `low_velocity`.
+    pub fade_low_velocity: u8,
+    /// Crossfade width in velocity steps below `high_velocity`.
+    pub fade_high_velocity: u8,
+    /// Crossfade width in keys above `low_key`.
+    pub fade_low_key: u8,
+    /// Crossfade width in keys below `high_key`.
+    pub fade_high_key: u8,
     pub start: usize, pub end: i32,
+    /// Sample-start modulation range in frames (driven by `ModTarget::SampleStart`);
+    /// `None` when the zone stores -1.
+    pub start_mod: Option<u32>,
     pub gain: f32, pub pan: f32, pub tune: f64,
     pub loop_range: Option<Loop>,
 }
@@ -173,11 +196,31 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         if !v.start_criteria.items.is_empty() { warnings.push(format!("{}: native group start conditions are not implemented", v.name)); }
         if v.soloed {warnings.push("Group solo flags are not applied".into());}
         if v.release_trigger_note_monophonic || v.rls_trig_counter!=0 {warnings.push("Release-trigger monophony/counter behavior is not imported".into());}
-        if v.voice_group_index>=0 {warnings.push("Voice-group allocation/choke settings are not imported".into());}
-        // Kontakt stores gain and tuning as linear ratios, despite the parser's tune comment.
-        groups.push(Group { name: v.name, gain: v.volume, pan: v.pan, tune: v.tune as f64,
-            key_tracking: v.key_tracking, reverse: v.reverse, release_trigger: v.release_trigger,
-            muted: v.muted, channel: v.midi_channel });
+        if v.voice_group_index>=0 {warnings.push("Voice-group allocation/choke settings are not applied".into());}
+        let modulation = match crate::modulation::read_group(g) {
+            Ok(modulation) => modulation,
+            Err(e) => {
+                warnings.push(format!("{}: modulation not imported: {e:#}", v.name));
+                Default::default()
+            }
+        };
+        warnings.extend(modulation.warnings);
+        // Gain and tuning are linear ratios (see audits/MODULATION.md).
+        groups.push(Group {
+            name: v.name,
+            gain: v.volume,
+            pan: v.pan,
+            tune: v.tune as f64,
+            key_tracking: v.key_tracking,
+            reverse: v.reverse,
+            release_trigger: v.release_trigger,
+            muted: v.muted,
+            channel: v.midi_channel,
+            volume_env: modulation.volume_env,
+            mods: modulation.mods,
+            voice_group: u32::try_from(v.voice_group_index).ok(),
+            interp_quality: v.interp_quality,
+        });
     }
     let mut scripts = Vec::new();
     for c in &p.0.children {
@@ -187,7 +230,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         }
     }
     if !scripts.is_empty() { warnings.push(format!("{} active KSP script(s): manual group playback only; scripted legato and round robin are not emulated; interface initialization is a preview only", scripts.len())); }
-    warnings.push("Kontakt effects and modulation are not imported; playback uses the sampler's envelope".into());
+    warnings.push("Kontakt effects are not imported and modulation is not applied; playback uses the sampler's envelope".into());
     let parent = path.parent().context("Instrument has no parent")?;
     let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
     let mut resolver = Resolver::new(root);
@@ -199,6 +242,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
     let count = u32le(&mut r)? as usize;
     ensure!(count <= 1_000_000 && count <= data.len() / 8, "Invalid zone count");
     let mut zones = Vec::with_capacity(count);
+    let (mut uses_start_mod, mut uses_crossfades) = (false, false);
     for _ in 0..count {
         // Group ownership precedes each structured zone.
         let group = u32le(&mut r)? as usize;
@@ -207,15 +251,21 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         let mut z = Cursor::new(&so.public_data);
         let start = i32le(&mut z)?;
         let end = i32le(&mut z)?;
-        let start_mod = i32le(&mut z)?;
-        if start_mod!=0 && !warnings.iter().any(|s|s=="Zone sample-start modulation is not imported"){warnings.push("Zone sample-start modulation is not imported".into());}
+        // -1 is the only negative value stored locally: no range.
+        let start_mod = match i32le(&mut z)? {
+            -1 => None,
+            frames => Some(u32::try_from(frames).context("Invalid sample-start modulation range")?),
+        };
+        uses_start_mod |= start_mod.is_some_and(|frames| frames != 0);
         let lv = i16le(&mut z)?; let hv = i16le(&mut z)?;
         let lk = i16le(&mut z)?; let hk = i16le(&mut z)?;
+        // Crossfade widths: low/high velocity, then low/high key.
         let fades = [i16le(&mut z)?,i16le(&mut z)?,i16le(&mut z)?,i16le(&mut z)?];
-        if fades.iter().any(|v| *v != 0) && !warnings.iter().any(|s| s.starts_with("Zone crossfades")) { warnings.push("Zone crossfades are not imported".into()); }
+        uses_crossfades |= fades.iter().any(|v| *v != 0);
         let root = i16le(&mut z)?;
         let gain = f32le(&mut z)?; let pan = f32le(&mut z)?; let tune = f32le(&mut z)?;
-        if so.version >= 0x9a { let mut flags=[0;6]; z.read_exact(&mut flags)?; }
+        // Six bytes, 00 01 ff ff ff ff in every local v0x9a zone; meaning unknown.
+        if so.version >= 0x9a { let mut unknown=[0;6]; z.read_exact(&mut unknown)?; }
         let file_id = i32le(&mut z)?;
         if let std::collections::hash_map::Entry::Vacant(entry)=paths.entry(file_id) {
             let name=table.get(&(file_id as u32)).context("Zone sample ID is absent from file table")?;
@@ -223,7 +273,8 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
             if resolved.is_none(){missing_samples.push(name.clone());unavailable.insert(file_id);}
             entry.insert(resolved.unwrap_or_else(||parent.join(name)));
         }
-        ensure!([lk,hk,lv,hv,root].iter().all(|v| (0..=127).contains(v)) && lk <= hk && lv <= hv, "Invalid zone mapping");
+        ensure!([lk,hk,lv,hv,root].iter().chain(&fades).all(|v| (0..=127).contains(v)) && lk <= hk && lv <= hv, "Invalid zone mapping");
+        let [fade_low_velocity, fade_high_velocity, fade_low_key, fade_high_key] = fades.map(|v| v as u8);
         ensure!(start >= 0 && end <= 0 && gain.is_finite() && pan.is_finite() && tune.is_finite() && tune > 0.0, "Invalid zone {} v{:x}: start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}",zones.len(),so.version);
         let loops = so.find_first(0x39).map(LoopArray::try_from).transpose().with_context(|| format!("Zone {} loops",zones.len()))?;
         let mut loop_range = None;
@@ -234,6 +285,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
                     warnings.push("An unsupported alternating/counted/tuned loop was skipped".into()); continue;
                 }
                 ensure!(l.loop_start >= 0 && l.loop_length > 0, "Invalid sample loop");
+                // Only mode 1 occurs locally; mode 2 as "until release" is unverified.
                 loop_range = Some(Loop { start: l.loop_start as usize, end: l.loop_start as usize + l.loop_length as usize,
                     until_release: l.mode == 2, crossfade: l.x_fade_length.max(0) as usize });
                 break;
@@ -241,9 +293,12 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         }
         zones.push(Zone { group, sample: paths.get(&file_id).with_context(||format!("Zone {} v{:x}: sample id {} missing from file table ({} entries); public {:?}",zones.len(),so.version,file_id,paths.len(),&so.public_data[..so.public_data.len().min(64)]))?.clone(),
             available: !unavailable.contains(&file_id), low_key: lk as u8, high_key: hk as u8, root: root as u8, low_velocity: lv as u8, high_velocity: hv as u8,
+            fade_low_velocity, fade_high_velocity, fade_low_key, fade_high_key, start_mod,
             start: start as usize, end, gain: gain * program.volume, pan: (pan + program.pan).clamp(-1.0,1.0),
             tune: tune as f64 * program.tune as f64 * 2f64.powf(program.transpose as f64 / 12.0), loop_range });
     }
+    if uses_start_mod { warnings.push("Zone sample-start modulation is not applied".into()); }
+    if uses_crossfades { warnings.push("Zone crossfades are not applied".into()); }
     for (archive,index) in &resolver.archives {warnings.extend(index.issues.iter().map(|issue|format!("{}: {issue}",archive.display())));}
     if c.find_first(3).is_some(){warnings.push("Multi routing, master processing and multi scripts are not restored; parts use manual playback".into());}
     warnings.sort(); warnings.dedup(); missing_samples.sort(); missing_samples.dedup();

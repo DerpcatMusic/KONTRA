@@ -45,7 +45,9 @@ pub struct InternalModParams {
 pub enum Modulator {
     Ahdsr(EnvelopeAhdsr),
     /// Undecoded modulator, identified by its chunk id (0x40 is the flex envelope).
-    Other { chunk_id: u16 },
+    Other {
+        chunk_id: u16,
+    },
 }
 
 impl InternalMod {
