@@ -951,4 +951,27 @@ mod decode_bench {
             );
         }
     }
+
+    /// Streaming decode cost of a real sample, in the streamer's chunks:
+    /// `KONTAKTO_BENCH_SAMPLE=<path> cargo test --release --lib stream_decode_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "linux")]
+    fn stream_decode_speed() {
+        let Some(path) = std::env::var_os("KONTAKTO_BENCH_SAMPLE") else { return };
+        let source = Sources::default().source(Path::new(&path)).unwrap();
+        let mut out = vec![[0f32; 2]; 1024];
+        let mut best = f64::MAX;
+        let mut frames = 0;
+        for _ in 0..10 {
+            let mut reader = source.open().unwrap();
+            frames = reader.frames;
+            let t = cpu();
+            for at in (0..frames).step_by(out.len()) {
+                reader.read(at, &mut out).unwrap();
+            }
+            best = best.min(cpu() - t);
+        }
+        println!("{:.1} ns per frame over {frames} frames", best / frames as f64 * 1e9);
+    }
 }
