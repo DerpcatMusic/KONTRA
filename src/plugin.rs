@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -101,6 +101,8 @@ pub struct Shared {
     pub(crate) keyboard: ArrayQueue<(usize, u8, bool)>,
     pub(crate) controls: ArrayQueue<[PartControls; RACK_SLOTS]>,
     generation: [AtomicU64; RACK_SLOTS],
+    /// Per slot, how far its bank load is, out of [`crate::engine::LOAD_DONE`].
+    pub(crate) load_progress: [AtomicU32; RACK_SLOTS],
     pub(crate) audition: AtomicBool,
     pub(crate) audition_note: AtomicU64,
     pub(crate) selected: AtomicU64,
@@ -171,6 +173,7 @@ impl Default for Shared {
             keyboard: ArrayQueue::new(256),
             controls: ArrayQueue::new(1),
             generation: std::array::from_fn(|_| AtomicU64::new(0)),
+            load_progress: std::array::from_fn(|_| AtomicU32::new(0)),
             audition: AtomicBool::new(false),
             audition_note: AtomicU64::new(128),
             selected: AtomicU64::new(0),
@@ -479,6 +482,7 @@ impl BackgroundTask for Load {
                 }
                 v.attempted = Some(target.clone());
                 v.status = "Loading samples…".into();
+                params.shared.load_progress[slot].store(0, Ordering::Relaxed);
                 v.loading = true;
                 v.script_epoch = 0;
                 v.snapshot = None;
@@ -577,7 +581,11 @@ impl BackgroundTask for Load {
                         c.group = group as u32;
                     }
                 }
-                let bank = Box::new(Bank::load(&instrument)?);
+                let bank = Box::new(Bank::load_counting(
+                    &instrument,
+                    crate::engine::MEMORY_LIMIT,
+                    &params.shared.load_progress[slot],
+                )?);
                 let resident: usize = params
                     .shared
                     .view

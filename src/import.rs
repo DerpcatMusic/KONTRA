@@ -307,7 +307,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
             if !s.bypass && let Some(text) = s.text.filter(|s| !s.trim().is_empty()) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
         }
     }
-    warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, and velocity, key, CC, pitch bend and aftertouch drive volume, pitch and sample start; LFOs, further envelopes, invert and effect or envelope-parameter targets are not applied".into());
+    warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, and velocity, key, CC, pitch bend and aftertouch drive volume, pitch, sample start and the AHDSR's attack and release times; LFOs, further envelopes, the invert button, effect targets and other modulator parameters are not applied".into());
     let parent = path.parent().context("Instrument has no parent")?;
     let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
     let mut resolver = Resolver::new(root);
