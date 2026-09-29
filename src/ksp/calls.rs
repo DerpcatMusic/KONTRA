@@ -529,7 +529,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         EventStatus => {
             let [id] = ints(m);
-            let live = m.env.events.get(id).is_some_and(|e| e.live);
+            let live = m
+                .env
+                .events
+                .get(id)
+                .is_some_and(|e| e.live && e.voice.is_none_or(|v| m.engine.voice_active(v)));
             push_int(m, live as i32)
         }
         GetEventIds => {

@@ -432,6 +432,27 @@ fn event_par_array_addresses_the_current_event() {
 }
 
 #[test]
+fn sample_length_notes_stay_addressable_and_recycle() {
+    let script = "on init\ndeclare $id\nend on\non note\nignore_event($EVENT_ID)\n$id := play_note($EVENT_NOTE, 100, 0, 0)\nwait(1)\nmessage(event_status($id))\nend on";
+    let mut rig = Rig::new(&[script]);
+    rig.on(0, 60).block(64);
+    assert_eq!(rig.rt.last_message(), "1");
+    // One-shots are never released, yet the pool keeps working past its capacity.
+    for i in 0..5000 {
+        rig.on(0, (i % 100) as u8).off(0, (i % 100) as u8).block(64);
+    }
+    assert!(
+        rig.rt.diagnostics().is_empty(),
+        "{:?}",
+        rig.rt.diagnostics()
+    );
+    assert_eq!(
+        rig.log().iter().filter(|c| c.starts_with("play")).count(),
+        5001
+    );
+}
+
+#[test]
 fn release_callback_and_note_held() {
     let script = "on init\ndeclare $held\nend on\non note\n$held := $NOTE_HELD\nend on\non release\nplay_note(80, 100, 0, 0)\nmessage($held & \":\" & $NOTE_HELD)\nend on";
     let mut rig = Rig::new(&[script]);

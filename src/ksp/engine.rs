@@ -131,6 +131,10 @@ pub trait KspEngine {
     fn find_target(&self, _group: usize, _modulator: usize, _name: &str) -> Option<usize> {
         None
     }
+    /// Whether a voice is still sounding; drives `event_status` for sample-length notes.
+    fn voice_active(&self, _voice: VoiceId) -> bool {
+        true
+    }
 }
 
 /// Recorded engine call, serialized by `kontakto ksp-run`.

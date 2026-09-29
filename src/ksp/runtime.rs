@@ -124,7 +124,18 @@ impl Events {
     }
 
     fn alloc(&mut self) -> Option<i32> {
-        let i = self.free.pop_front()?;
+        let i = match self.free.pop_front() {
+            Some(i) => i,
+            // ponytail: linear scan, only when the pool is full. Sample-length notes stay
+            // live until released because the engine does not report voice ends.
+            None => {
+                let i = self
+                    .slots
+                    .iter()
+                    .position(|e| e.live && e.at_engine && e.length == NoteLength::Sample)?;
+                i as u32
+            }
+        };
         let e = &mut self.slots[i as usize];
         let generation = e.generation % 0x7FFF + 1;
         *e = Event {
@@ -1143,9 +1154,6 @@ impl Runtime {
                     duration_us: e.fade_in_us,
                 },
             );
-        }
-        if e.length == NoteLength::Sample {
-            self.env.events.free(event);
         }
     }
 
