@@ -1,0 +1,467 @@
+//! Effect parameter layouts. Every layout was checked for exact byte length
+//! against all local instances; names and confidence are in `audits/EFFECTS.md`.
+
+use super::Kind;
+use crate::audio::Sample;
+use serde::Serialize;
+use std::{fmt, sync::Arc};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Params {
+    Gainer(Gainer),
+    SendLevels(SendLevels),
+    StereoModeller(StereoModeller),
+    Reverb(Reverb),
+    Convolution(Box<Convolution>),
+    /// Layout known, no DSP: named in serialization order.
+    Fields(Vec<Field>),
+    /// Layout not identified for this kind/length.
+    Opaque {
+        bytes: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Gainer {
+    /// Linear gain (1.0011 and 2.0 locally).
+    pub gain: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SendLevels {
+    /// Linear level into instrument send slot `n`.
+    pub sends: Vec<f32>,
+    /// A second table of 17 levels, 1.0 everywhere locally; meaning unknown.
+    pub outputs: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct StereoModeller {
+    /// Stored 0.0 locally; read as offset from 100% width (-1 mono, +1 200%).
+    pub spread: f32,
+    /// -1 left .. 1 right.
+    pub pan: f32,
+    pub pseudo_stereo: bool,
+}
+
+/// `BParFXGaloisReverb`: Kontakt's modern "Reverb" (`$EFFECT_TYPE_REVERB2`).
+/// Ten normalized values in `$ENGINE_PAR_RV2_*` order.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Reverb {
+    /// 0 Room, 1 Hall.
+    pub room_type: f32,
+    pub time: f32,
+    pub size: f32,
+    pub damping: f32,
+    pub modulation: f32,
+    pub diffusion: f32,
+    pub predelay: f32,
+    pub high_cut: f32,
+    pub low_shelf: f32,
+    pub stereo: f32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct IrBand {
+    pub length_ratio: f32,
+    pub low_cut_hz: f32,
+    pub high_cut_hz: f32,
+}
+
+/// `BParFXIRC`. The impulse response is an index into the preset's
+/// "other files" table, not an inline path.
+#[derive(Debug, Clone, Serialize)]
+pub struct Convolution {
+    pub unknown: [f32; 2],
+    pub predelay_ms: f32,
+    pub early: IrBand,
+    pub late: IrBand,
+    pub unknown_9: f32,
+    /// Always `[false, true, true, true, false]` locally; meaning unknown.
+    pub flags: [bool; 5],
+    /// An 8-point curve (x 0..1, y 0..-79 dB), identical in every local preset.
+    pub curve_x: Vec<f32>,
+    pub curve_db: Vec<f32>,
+    pub ir_index: i32,
+    pub ir_file: Option<String>,
+    pub ir_error: Option<String>,
+    #[serde(skip)]
+    pub ir: Option<Impulse>,
+}
+
+/// Decoded impulse response, shared between slots using the same file.
+#[derive(Clone)]
+pub struct Impulse(pub Arc<Sample>);
+
+impl fmt::Debug for Impulse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Impulse({} frames @ {} Hz)",
+            self.0.frames.len(),
+            self.0.rate
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Field {
+    pub name: &'static str,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(untagged)]
+pub enum Value {
+    Number(f32),
+    Integer(i32),
+    Flag(bool),
+}
+
+pub(super) fn parse(kind: Kind, data: &[u8]) -> Params {
+    let mut r = Reader(data);
+    let typed = match kind {
+        Kind::Gainer => r.f32().map(|gain| Params::Gainer(Gainer { gain })),
+        Kind::SendLevels => send_levels(&mut r),
+        Kind::StereoModeller => stereo_modeller(&mut r),
+        Kind::Convolution => convolution(&mut r),
+        Kind::Reverb => r.array().map(|[a, b, c, d, e, f, g, h, i, j]| {
+            Params::Reverb(Reverb {
+                room_type: a,
+                time: b,
+                size: c,
+                damping: d,
+                modulation: e,
+                diffusion: f,
+                predelay: g,
+                high_cut: h,
+                low_shelf: i,
+                stereo: j,
+            })
+        }),
+        _ => layout(kind).and_then(|layout| fields(&mut r, layout)),
+    };
+    match typed {
+        Some(params) if r.0.is_empty() => params,
+        _ => Params::Opaque { bytes: data.len() },
+    }
+}
+
+fn send_levels(r: &mut Reader) -> Option<Params> {
+    Some(Params::SendLevels(SendLevels {
+        sends: r.list()?,
+        outputs: r.list()?,
+    }))
+}
+
+fn stereo_modeller(r: &mut Reader) -> Option<Params> {
+    Some(Params::StereoModeller(StereoModeller {
+        spread: r.f32()?,
+        pan: r.f32()?,
+        pseudo_stereo: r.flag()?,
+    }))
+}
+
+fn convolution(r: &mut Reader) -> Option<Params> {
+    let [
+        u0,
+        u1,
+        predelay_ms,
+        e_len,
+        e_lo,
+        e_hi,
+        l_len,
+        l_lo,
+        l_hi,
+        unknown_9,
+    ] = r.array()?;
+    let mut flags = [false; 5];
+    for flag in &mut flags {
+        *flag = r.flag()?;
+    }
+    Some(Params::Convolution(Box::new(Convolution {
+        unknown: [u0, u1],
+        predelay_ms,
+        early: IrBand {
+            length_ratio: e_len,
+            low_cut_hz: e_lo,
+            high_cut_hz: e_hi,
+        },
+        late: IrBand {
+            length_ratio: l_len,
+            low_cut_hz: l_lo,
+            high_cut_hz: l_hi,
+        },
+        unknown_9,
+        flags,
+        curve_x: r.list()?,
+        curve_db: r.list()?,
+        ir_index: r.i32()?,
+        ir_file: None,
+        ir_error: None,
+        ir: None,
+    })))
+}
+
+#[derive(Clone, Copy)]
+enum Ty {
+    F,
+    I,
+    B,
+}
+
+fn fields(r: &mut Reader, layout: &[(&'static str, Ty)]) -> Option<Params> {
+    layout
+        .iter()
+        .map(|&(name, ty)| {
+            let value = match ty {
+                Ty::F => Value::Number(r.f32()?),
+                Ty::I => Value::Integer(r.i32()?),
+                Ty::B => Value::Flag(r.flag()?),
+            };
+            Some(Field { name, value })
+        })
+        .collect::<Option<_>>()
+        .map(Params::Fields)
+}
+
+/// Names follow `$ENGINE_PAR_*` order where the value count matches it;
+/// `param_n`/`flag_n` mark positions whose meaning is not established.
+fn layout(kind: Kind) -> Option<&'static [(&'static str, Ty)]> {
+    use Ty::{B, F, I};
+    Some(match kind {
+        Kind::Delay => &[
+            ("time_ms", F),
+            ("damping", F),
+            ("pan", F),
+            ("feedback", F),
+            ("time_unit", F),
+            ("time_free_ms", F),
+            ("param_6", F),
+            ("flag_7", B),
+        ],
+        Kind::Chorus => &[
+            ("depth", F),
+            ("speed", F),
+            ("phase", F),
+            ("speed_unit", F),
+            ("speed_free", F),
+            ("param_5", F),
+            ("flag_6", B),
+        ],
+        Kind::Flanger => &[
+            ("depth", F),
+            ("speed", F),
+            ("phase", F),
+            ("feedback", F),
+            ("color", F),
+            ("speed_unit", F),
+            ("speed_free", F),
+            ("param_7", F),
+            ("flag_8", B),
+        ],
+        Kind::Phaser => &[
+            ("depth", F),
+            ("param_1", F),
+            ("speed", F),
+            ("param_3", F),
+            ("speed_unit", F),
+            ("speed_free", F),
+            ("param_6", F),
+            ("flag_7", B),
+        ],
+        Kind::Filter => &[
+            ("filter_type", I),
+            ("param_1", I),
+            ("cutoff", F),
+            ("resonance", F),
+        ],
+        Kind::Compressor => &[
+            ("param_0", F),
+            ("threshold_db", F),
+            ("ratio", F),
+            ("attack_ms", F),
+            ("release_ms", F),
+            ("link", B),
+        ],
+        Kind::SurroundPanner => &[("param_0", F), ("param_1", F)],
+        Kind::Distortion => &[("param_0", F), ("drive", F), ("damping", F)],
+        Kind::LoFi => &[
+            ("bits", F),
+            ("frequency", F),
+            ("noise_level", F),
+            ("flag_3", B),
+            ("noise_color", F),
+        ],
+        Kind::Skreamer => &[
+            ("tone", F),
+            ("drive", F),
+            ("bass", F),
+            ("bright", F),
+            ("mix", F),
+        ],
+        Kind::Rotator => &[
+            ("speed", F),
+            ("balance", F),
+            ("accel_hi", F),
+            ("accel_lo", F),
+            ("distance", F),
+            ("mix", F),
+        ],
+        Kind::TapeSaturator => &[
+            ("gain", F),
+            ("warmth", F),
+            ("hf_rolloff", F),
+            ("quality", B),
+        ],
+        Kind::TransientMaster => &[("input", F), ("attack", F), ("sustain", F), ("smooth", F)],
+        Kind::SolidGeq => &[
+            ("lf_gain", F),
+            ("lf_freq", F),
+            ("lf_bell", B),
+            ("lmf_gain", F),
+            ("lmf_freq", F),
+            ("lmf_q", F),
+            ("hmf_gain", F),
+            ("hmf_freq", F),
+            ("hmf_q", F),
+            ("hf_gain", F),
+            ("hf_freq", F),
+            ("hf_bell", B),
+        ],
+        Kind::SolidBusComp => &[
+            ("threshold", F),
+            ("ratio", F),
+            ("attack", F),
+            ("release", F),
+            ("makeup", F),
+            ("mix", F),
+            ("link", B),
+            ("flag_7", B),
+            ("param_8", F),
+        ],
+        Kind::FeedbackCompressor => &[
+            ("input", F),
+            ("ratio", F),
+            ("attack", F),
+            ("release", F),
+            ("makeup", F),
+            ("mix", F),
+            ("param_6", F),
+            ("hq_mode", B),
+            ("link", B),
+            ("flag_9", B),
+        ],
+        _ => return None,
+    })
+}
+
+/// Little-endian cursor; `None` on truncation.
+struct Reader<'a>(&'a [u8]);
+
+impl Reader<'_> {
+    fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
+        let (head, rest) = self.0.split_first_chunk::<N>()?;
+        self.0 = rest;
+        Some(*head)
+    }
+
+    fn f32(&mut self) -> Option<f32> {
+        self.take().map(f32::from_le_bytes)
+    }
+
+    fn i32(&mut self) -> Option<i32> {
+        self.take().map(i32::from_le_bytes)
+    }
+
+    fn flag(&mut self) -> Option<bool> {
+        self.take::<1>().map(|[b]| b != 0)
+    }
+
+    fn array<const N: usize>(&mut self) -> Option<[f32; N]> {
+        let mut out = [0.0; N];
+        for v in &mut out {
+            *v = self.f32()?;
+        }
+        Some(out)
+    }
+
+    /// `u32` count followed by that many `f32`s.
+    fn list(&mut self) -> Option<Vec<f32>> {
+        let n = u32::from_le_bytes(self.take()?) as usize;
+        if n > self.0.len() / 4 {
+            return None;
+        }
+        (0..n).map(|_| self.f32()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn floats(values: &[f32]) -> Vec<u8> {
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn typed_layouts_require_exact_length() {
+        let Params::Gainer(g) = parse(Kind::Gainer, &floats(&[2.0])) else {
+            panic!("gainer")
+        };
+        assert_eq!(g.gain, 2.0);
+        assert!(matches!(
+            parse(Kind::Gainer, &floats(&[2.0, 1.0])),
+            Params::Opaque { bytes: 8 }
+        ));
+        assert!(matches!(
+            parse(Kind::Reverb, &floats(&[0.5; 9])),
+            Params::Opaque { .. }
+        ));
+    }
+
+    #[test]
+    fn send_levels_and_convolution() {
+        let mut data = 2u32.to_le_bytes().to_vec();
+        data.extend(floats(&[0.25, 1.0]));
+        data.extend(1u32.to_le_bytes());
+        data.extend(floats(&[1.0]));
+        let Params::SendLevels(s) = parse(Kind::SendLevels, &data) else {
+            panic!("send levels")
+        };
+        assert_eq!((s.sends, s.outputs), (vec![0.25, 1.0], vec![1.0]));
+
+        let mut data = floats(&[-1.0, 0.0, 40.0, 1.0, 20.0, 20e3, 1.0, 20.0, 20e3, -1.0]);
+        data.extend([0, 1, 1, 1, 0]);
+        data.extend(1u32.to_le_bytes());
+        data.extend(floats(&[0.0]));
+        data.extend(1u32.to_le_bytes());
+        data.extend(floats(&[-40.0]));
+        data.extend(3i32.to_le_bytes());
+        let Params::Convolution(c) = parse(Kind::Convolution, &data) else {
+            panic!("convolution")
+        };
+        assert_eq!((c.predelay_ms, c.ir_index), (40.0, 3));
+        assert_eq!(c.early.high_cut_hz, 20e3);
+        // A lying count must not over-read.
+        let mut bad = data.clone();
+        bad[45] = 0xff;
+        assert!(matches!(
+            parse(Kind::Convolution, &bad),
+            Params::Opaque { .. }
+        ));
+    }
+
+    #[test]
+    fn field_layouts_decode_names() {
+        let mut data = floats(&[0.0, -24.0, 0.25, 50.0, 300.0]);
+        data.push(1);
+        let Params::Fields(f) = parse(Kind::Compressor, &data) else {
+            panic!("compressor")
+        };
+        assert_eq!(f[1].name, "threshold_db");
+        assert!(matches!(f[5].value, Value::Flag(true)));
+        assert!(matches!(parse(Kind::Twang, &data), Params::Opaque { .. }));
+    }
+}

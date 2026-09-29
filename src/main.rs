@@ -6,6 +6,8 @@ fn main() -> Result<()> {
  match args.get(1).map(String::as_str) {
   Some("scan") => {for p in import::presets(Path::new(args.get(2).map(String::as_str).unwrap_or(import::LIBRARY_ROOT)))? {println!("{}",p.display());}},
   Some("inspect") => {let p=args.get(2).context("inspect requires an NKI path")?; println!("{}",serde_json::to_string_pretty(&import::read(Path::new(p))?)?);},
+  Some("inspect-fx") => {let path=args.get(2).context("inspect-fx requires an NKI/NKM path")?;println!("{}",serde_json::to_string_pretty(&inspect_fx(Path::new(path))?)?);},
+  Some("audit-fx") => {println!("{}",serde_json::to_string_pretty(&audit_fx(Path::new(args.get(2).map(String::as_str).unwrap_or(import::LIBRARY_ROOT)))?)?);},
   Some("inspect-multi") => {let path=args.get(2).context("inspect-multi requires an NKM path")?;println!("{}",serde_json::to_string_pretty(&import::read_multi(Path::new(path))?)?);},
   Some("ui") => {let p=args.get(2).context("ui requires an NKI path")?;let i=import::read(Path::new(p))?;let mut host=kontakto::ksp::HostState::default();let report:Vec<_>=i.scripts.iter().map(|s|match kontakto::ksp::initialize_with_host(s,i.groups.len(),8,&mut host){Ok(ui)=>serde_json::json!({"interface":ui}),Err(e)=>serde_json::json!({"error":format!("{e:#}")})}).collect();println!("{}",serde_json::to_string_pretty(&report)?);},
   Some("audit-archives") => {
@@ -72,7 +74,53 @@ fn main() -> Result<()> {
     println!("{} · group {} ({}) · note {note} · peak {peak:.6} · RMS {:.6}",instrument.name,group,instrument.groups[group].name,(square/(48000.0*4.0*2.0)).sqrt());
     for warning in instrument.warnings {eprintln!("Compatibility: {warning}");}
   },
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render <instrument.nki> <output.wav> [group=0] [note=first root] [velocity=zone midpoint]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render <instrument.nki> <output.wav> [group=0] [note=first root] [velocity=zone midpoint]"),
  }
  Ok(())
+}
+
+fn inspect_fx(path: &Path) -> Result<serde_json::Value> {
+    let programs = import::read_fx(path)?
+        .into_iter()
+        .map(|(program, fx)| {
+            serde_json::json!({"program": program, "warnings": fx.warnings(), "effects": fx})
+        })
+        .collect();
+    Ok(serde_json::Value::Array(programs))
+}
+
+/// Instance counts per effect kind and rack, split by bypass state.
+fn audit_fx(root: &Path) -> Result<serde_json::Value> {
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<String, BTreeMap<String, [usize; 2]>> = BTreeMap::new();
+    let (mut presets, mut failures) = (0, Vec::new());
+    for path in import::presets(root)? {
+        eprintln!("Effects {}", path.display());
+        match import::read_fx(&path) {
+            Ok(programs) => {
+                presets += 1;
+                for (_, fx) in programs {
+                    for (location, effect) in fx.effects() {
+                        let rack = if location.starts_with("bus") { "bus".into() } else { location };
+                        let row = counts.entry(effect.kind.name()).or_default();
+                        row.entry(rack).or_default()[usize::from(effect.bypass)] += 1;
+                    }
+                }
+            }
+            Err(e) => failures.push(serde_json::json!({"path": path, "error": format!("{e:#}")})),
+        }
+    }
+    let kinds: BTreeMap<_, _> = counts
+        .into_iter()
+        .map(|(kind, racks)| {
+            let racks: BTreeMap<_, _> = racks
+                .into_iter()
+                .map(|(rack, [active, bypassed])| {
+                    (rack, serde_json::json!({"active": active, "bypassed": bypassed}))
+                })
+                .collect();
+            (kind, racks)
+        })
+        .collect();
+    Ok(serde_json::json!({"presets": presets, "failures": failures, "kinds": kinds}))
 }

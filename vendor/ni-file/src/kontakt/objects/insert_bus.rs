@@ -24,10 +24,13 @@ pub struct InsertBus(pub StructuredObject);
 
 #[derive(Debug)]
 pub struct InsertBusParams {
-    name: String,
-    pan: f32,
-    volume: f32,
-    output: i32,
+    pub name: String,
+    /// Linear gain; 1.0 in every local preset (a few store 0.99996).
+    pub volume: f32,
+    /// -1..1, 0 centre (local values are 0 or 0.0056).
+    pub pan: f32,
+    /// -1 routes to the instrument output.
+    pub output: i32,
 }
 
 impl InsertBus {
@@ -36,8 +39,8 @@ impl InsertBus {
 
         Ok(InsertBusParams {
             name: reader.read_widestring_utf16()?,
-            pan: reader.read_f32_le()?,
             volume: reader.read_f32_le()?,
+            pan: reader.read_f32_le()?,
             output: reader.read_i32_le()?,
         })
     }
