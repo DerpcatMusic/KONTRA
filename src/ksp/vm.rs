@@ -2,7 +2,7 @@
 //! `Thread` (pc, call stack, callback context); operand stacks are shared because a
 //! callback can only suspend between statements, when they are empty.
 
-use super::builtins::SysVar;
+use super::builtins::{Ret, SysVar};
 use super::calls;
 use super::compile::{Callback, InitData, Op, Program, Ty, VarId};
 use super::engine::KspEngine;
@@ -276,12 +276,20 @@ fn bool_int(b: bool) -> i32 {
     b as i32
 }
 
-fn element(m: &Machine, v: VarId, index: i32) -> Exec<usize> {
+/// Memory index of an array element. Like Kontakt, an out-of-bounds access is
+/// reported but not fatal: reads yield zero/empty and writes are dropped.
+fn element(m: &mut Machine, v: VarId, index: i32) -> Option<usize> {
     let var = &m.prog.vars[v as usize];
-    let len = var.len.unwrap_or(1);
     match u32::try_from(index) {
-        Ok(i) if i < len => Ok((var.slot + i) as usize),
-        _ => Err(Fault("KSP array index out of bounds")),
+        Ok(i) if i < var.len.unwrap_or(1) => Some((var.slot + i) as usize),
+        _ => {
+            m.env.fault(
+                m.slot.index,
+                m.t.pc,
+                "Array index out of bounds (read 0, write ignored)",
+            );
+            None
+        }
     }
 }
 
@@ -359,37 +367,44 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             }
             Op::LdIA(v) => {
                 let i = s.int();
-                let e = element(m, v, i)?;
-                m.stk.ints.push(m.slot.mem.ints[e]);
+                let x = element(m, v, i).map_or(0, |e| m.slot.mem.ints[e]);
+                m.stk.ints.push(x);
             }
             Op::StIA(v) => {
                 let value = s.int();
                 let i = s.int();
-                let e = element(m, v, i)?;
-                m.slot.mem.ints[e] = value;
+                if let Some(e) = element(m, v, i) {
+                    m.slot.mem.ints[e] = value;
+                }
             }
             Op::LdRA(v) => {
                 let i = s.int();
-                let e = element(m, v, i)?;
-                m.stk.reals.push(m.slot.mem.reals[e]);
+                let x = element(m, v, i).map_or(0.0, |e| m.slot.mem.reals[e]);
+                m.stk.reals.push(x);
             }
             Op::StRA(v) => {
                 let value = s.real();
                 let i = s.int();
-                let e = element(m, v, i)?;
-                m.slot.mem.reals[e] = value;
+                if let Some(e) = element(m, v, i) {
+                    m.slot.mem.reals[e] = value;
+                }
             }
             Op::LdSA(v) => {
                 let i = s.int();
-                let e = element(m, v, i)?;
-                m.stk.strs.push_str(&m.slot.mem.strs[e]);
+                match element(m, v, i) {
+                    Some(e) => m.stk.strs.push_str(&m.slot.mem.strs[e]),
+                    None => m.stk.strs.push_str(""),
+                }
             }
             Op::StSA(v) => {
                 let i = s.int();
-                let e = element(m, v, i)?;
-                let dst = &mut m.slot.mem.strs[e];
-                dst.clear();
-                dst.push_str(m.stk.strs.pop());
+                let e = element(m, v, i);
+                let text = m.stk.strs.pop();
+                if let Some(e) = e {
+                    let dst = &mut m.slot.mem.strs[e];
+                    dst.clear();
+                    dst.push_str(text);
+                }
             }
             Op::Sys(v) => {
                 let value = sys(m, v);
@@ -529,7 +544,22 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             Op::InitArray(i) => init_array(m, i),
             Op::Builtin(b, argc) => {
                 m.t.pc = *pc as u32;
-                match calls::call(m, b, argc)? {
+                let step = match calls::call(m, b, argc) {
+                    Err(f) if f == calls::NO_CONTROL || f == calls::NO_PGS_KEY => {
+                        m.env.fault(m.slot.index, m.t.pc, f.0);
+                        match b.sig().ret {
+                            Ret::Int | Ret::Num => m.stk.ints.push(0),
+                            Ret::Real => m.stk.reals.push(0.0),
+                            Ret::Str => {
+                                m.stk.strs.push();
+                            }
+                            Ret::Void => {}
+                        }
+                        Step::Next
+                    }
+                    step => step?,
+                };
+                match step {
                     Step::Next => {}
                     Step::Wait(at) => return Ok(Yield::Wait(at)),
                     Step::Exit => {

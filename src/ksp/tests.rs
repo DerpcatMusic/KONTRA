@@ -33,8 +33,12 @@ fn control_ids_follow_declaration_order() {
         "set_control_par(get_ui_id($gap),$CONTROL_PAR_VALUE,1)",
         "set_control_par(0,$CONTROL_PAR_VALUE,1)",
     ] {
+        // Like Kontakt, a bad control ID is reported but does not stop the script.
+        let ui = initialize(&source.replace("end on", &format!("{bad}\nend on")), 0, 0).unwrap();
         assert!(
-            initialize(&source.replace("end on", &format!("{bad}\nend on")), 0, 0).is_err(),
+            ui.diagnostics
+                .iter()
+                .any(|d| d.contains("ID does not refer")),
             "{bad}"
         );
     }
@@ -53,7 +57,7 @@ fn shared_host_services_are_scoped_and_transactional() {
     let ui = initialize_with_host(next, 0, 0, &mut host).unwrap();
     assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "Warm73Keyswitch1");
     assert!(initialize(next, 0, 0).is_err());
-    let failed = "on init\npgs_set_key_val(MIC_LEVEL,1,0)\ndeclare %a[1]\n%a[2] := 1\nend on";
+    let failed = "on init\npgs_set_key_val(MIC_LEVEL,1,0)\ndeclare $a := 1/0\nend on";
     assert!(initialize_with_host(failed, 0, 0, &mut host).is_err());
     assert_eq!(host.pgs_ints[0].1[1], 73);
     for bad in [
@@ -104,6 +108,8 @@ fn real_expressions_and_arrays() {
     assert!(initialize(ok, 0, 0).is_ok());
     let fill = "on init\ndeclare %a[4] := (1, 2)\ndeclare ui_label $l(1,1)\nset_text($l, %a[3] & min(4, 2) & max(1.5, 2.5))\nend on";
     assert_eq!(label(fill), "222.5");
+    let special = "on init\ndeclare ui_label $l(1,1)\nset_text($l, int(~NI_MATH_PI * 100.0) & get_font_id(\"7\") & %GROUPS_SELECTED[0])\nend on";
+    assert_eq!(label(special), "31470");
 }
 
 #[test]
@@ -203,7 +209,8 @@ fn computed_ui_and_execution_limits() {
             .to_string()
             .contains("budget")
     );
-    assert!(initialize("on init\ndeclare %a[1]\n%a[2] := 1\nend on", 0, 0).is_err());
+    let oob = initialize("on init\ndeclare %a[1]\n%a[2] := 1\nend on", 0, 0).unwrap();
+    assert!(oob.diagnostics.iter().any(|d| d.contains("out of bounds")));
     assert!(initialize("on init\nunknown_function()\nend on", 0, 0).is_err());
     assert!(initialize("on init\ndeclare $a := 1/0\nend on", 0, 0).is_err());
     assert!(
@@ -384,6 +391,14 @@ fn group_masks_and_voice_parameters() {
     let mut rig = Rig::new(&[script]);
     rig.on(0, 60).block(64);
     assert_eq!(rig.log(), ["play 60@0 v1 [1]", "par v1 TuneMc=100"]);
+}
+
+#[test]
+fn event_par_array_addresses_the_current_event() {
+    let script = "on init\nend on\non note\n%EVENT_PAR[$EVENT_PAR_1] := 5\nmessage(get_event_par($EVENT_ID, $EVENT_PAR_1) + %EVENT_PAR[$EVENT_PAR_1])\nend on";
+    let mut rig = Rig::new(&[script]);
+    rig.on(0, 60);
+    assert_eq!(rig.rt.last_message(), "10");
 }
 
 #[test]

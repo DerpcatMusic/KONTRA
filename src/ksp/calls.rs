@@ -59,10 +59,7 @@ fn control_of(m: &Machine, v: VarId) -> Exec<usize> {
 }
 
 fn control(m: &Machine, id: i32) -> Exec<usize> {
-    m.slot
-        .ui
-        .control(id)
-        .ok_or(Fault("ID does not refer to a UI control"))
+    m.slot.ui.control(id).ok_or(NO_CONTROL)
 }
 
 /// Expand an event ID or `by_marks` value into `env.targets`.
@@ -135,6 +132,10 @@ fn async_done(m: &mut Machine, status: i32) -> i32 {
     }
     id
 }
+
+/// Recoverable failures: recorded as diagnostics, the call yields its default value.
+pub const NO_CONTROL: Fault = Fault("ID does not refer to a UI control");
+pub const NO_PGS_KEY: Fault = Fault("Unknown PGS key");
 
 pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
     use Builtin::*;
@@ -755,11 +756,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             if id == b::INST_ICON_ID || id == b::INST_WALLPAPER_ID {
                 return Ok(Step::Next);
             }
-            let c = m
-                .slot
-                .ui
-                .control(id)
-                .ok_or(Fault("ID does not refer to a UI control"))?;
+            let c = m.slot.ui.control(id).ok_or(NO_CONTROL)?;
             let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];
             if p == b::CONTROL_PAR_VALUE && var.ty == Ty::Str && var.len.is_none() {
                 let dst = &mut m.slot.mem.strs[var.slot as usize];
@@ -905,11 +902,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         SetMenuItemStr => {
             let [id, index] = ints(m);
             let text = m.stk.strs.pop();
-            let c = m
-                .slot
-                .ui
-                .control(id)
-                .ok_or(Fault("ID does not refer to a UI control"))?;
+            let c = m.slot.ui.control(id).ok_or(NO_CONTROL)?;
             if let Some(item) = usize::try_from(index)
                 .ok()
                 .and_then(|i| m.slot.ui.controls[c].menu.get_mut(i))
@@ -996,7 +989,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             Ok(Step::Next)
         }
         GetFontId => {
-            let [n] = ints(m);
+            // Numeric IDs (older scripts) pass through; named fonts are not rendered.
+            let n = m.stk.strs.pop().parse().unwrap_or(0);
             push_int(m, n)
         }
         GetFolder => {
@@ -1096,8 +1090,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             push_int(m, v)
         }
         SetKeyrange => {
-            ints::<3>(m);
+            ints::<2>(m);
             m.stk.strs.pop();
+            Ok(Step::Next)
+        }
+        AttachZone => {
+            ints::<2>(m);
+            m.stk.var();
             Ok(Step::Next)
         }
         // ---- Diagnostics -------------------------------------------------------------
@@ -1165,7 +1164,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         PgsSetKeyVal => {
             let [index, value] = ints(m);
             let key = m.stk.var();
-            let i = pgs_int_key(m, key).ok_or(Fault("Unknown PGS integer key"))?;
+            let i = pgs_int_key(m, key).ok_or(NO_PGS_KEY)?;
             let cell = usize::try_from(index)
                 .ok()
                 .and_then(|x| m.env.host.pgs_ints[i].1.get_mut(x))
@@ -1177,7 +1176,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         PgsGetKeyVal => {
             let [index] = ints(m);
             let key = m.stk.var();
-            let i = pgs_int_key(m, key).ok_or(Fault("Unknown PGS integer key"))?;
+            let i = pgs_int_key(m, key).ok_or(NO_PGS_KEY)?;
             let v = usize::try_from(index)
                 .ok()
                 .and_then(|x| m.env.host.pgs_ints[i].1.get(x))
@@ -1206,8 +1205,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         PgsSetStrKeyVal => {
             let key = m.stk.var();
-            let i = pgs_str_key(m, key).ok_or(Fault("Unknown PGS string key"))?;
             let text = m.stk.strs.pop();
+            let name = &*m.prog.strings[key as usize];
+            let i = m
+                .env
+                .host
+                .pgs_strs
+                .iter()
+                .position(|(k, _)| k == name)
+                .ok_or(NO_PGS_KEY)?;
             let total: usize = m.env.host.pgs_strs.iter().map(|(_, s)| s.len()).sum();
             if text.len() > 65536 || total - m.env.host.pgs_strs[i].1.len() + text.len() > 4 << 20 {
                 return Err(Fault("PGS string memory limit"));
@@ -1220,7 +1226,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         PgsGetStrKeyVal => {
             let key = m.stk.var();
-            let i = pgs_str_key(m, key).ok_or(Fault("Unknown PGS string key"))?;
+            let i = pgs_str_key(m, key).ok_or(NO_PGS_KEY)?;
             let (strs, host) = (&mut m.stk.strs, &m.env.host);
             strs.push_str(&host.pgs_strs[i].1);
             Ok(Step::Next)

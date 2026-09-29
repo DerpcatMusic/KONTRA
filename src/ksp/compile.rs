@@ -225,7 +225,7 @@ pub struct Program {
     pub real_slots: u32,
     pub strs: u32,
     pub poly: u32,
-    pub sys_arrays: [Option<VarId>; 4],
+    pub sys_arrays: [Option<VarId>; 5],
     /// Script-local names for undeclared uppercase constants.
     pub auto_symbols: Vec<Box<str>>,
     /// Blocks that failed to compile, disabled at runtime.
@@ -262,6 +262,9 @@ struct Unit {
     calls: Vec<u32>,
     error: Option<String>,
 }
+
+/// `%EVENT_PAR[i]` reads and writes parameters of the current event.
+const EVENT_PAR: &str = "%EVENT_PAR";
 
 struct Compiler<'a> {
     syms: &'a Interner,
@@ -582,18 +585,20 @@ impl<'a> Compiler<'a> {
         if let Some(v) = self.p.sys_arrays[a as usize] {
             return v;
         }
-        let slot = self.alloc(Ty::Int, false, a.len());
+        let len = a.len(self.setup.groups);
+        let slot = self.alloc(Ty::Int, false, len);
         let id = self.p.vars.len() as VarId;
         let name = match a {
             SysArray::KeyDown => "%KEY_DOWN",
             SysArray::Cc => "%CC",
             SysArray::CcTouched => "%CC_TOUCHED",
             SysArray::PolyAt => "%POLY_AT",
+            SysArray::GroupsSelected => "%GROUPS_SELECTED",
         };
         self.p.vars.push(Var {
             name: name.into(),
             ty: Ty::Int,
-            len: Some(a.len()),
+            len: Some(len),
             slot,
             poly: false,
             constant: None,
@@ -644,7 +649,10 @@ impl<'a> Compiler<'a> {
             Expr::Var(sym, None) => match self.var_ids.get(sym) {
                 Some(&v) => self.p.vars[v as usize].constant?,
                 None if builtins::sys_var(self.name(*sym)).is_some() => return None,
-                None => Const::Int(self.named_constant(*sym)?),
+                None => match builtins::real_constant(self.name(*sym)) {
+                    Some(x) => Const::Real(x),
+                    None => Const::Int(self.named_constant(*sym)?),
+                },
             },
             Expr::Unary(op, e) => match (op, self.fold(e)?) {
                 (UnOp::Neg, Const::Int(n)) => Const::Int(n.wrapping_neg()),
@@ -897,6 +905,13 @@ impl<'a> Compiler<'a> {
         value: impl FnOnce(&mut Self) -> Result<Ty>,
     ) -> Result<()> {
         let name = self.name(sym);
+        if let (EVENT_PAR, Some(index)) = (name, index) {
+            self.emit(Op::Sys(SysVar::EventId));
+            self.expr_ty(index, Ty::Int)?;
+            self.value_as(value, Ty::Int)?;
+            self.emit(Op::Builtin(Builtin::SetEventPar, 3));
+            return Ok(());
+        }
         let v = self
             .var(sym)
             .with_context(|| format!("Undeclared variable {name}"))?;
@@ -1031,7 +1046,18 @@ impl<'a> Compiler<'a> {
             }
             return Ok(ty);
         }
+        if let (EVENT_PAR, Some(index)) = (name, index) {
+            self.emit(Op::Sys(SysVar::EventId));
+            self.expr_ty(index, Ty::Int)?;
+            self.emit(Op::Builtin(Builtin::GetEventPar, 2));
+            return Ok(Ty::Int);
+        }
         ensure!(index.is_none(), "Undeclared array {name}");
+        if let Some(x) = builtins::real_constant(name) {
+            self.p.reals.push(x);
+            self.emit(Op::PushR(self.p.reals.len() as u32 - 1));
+            return Ok(Ty::Real);
+        }
         if let Some(s) = builtins::sys_var(name) {
             self.emit(Op::Sys(s));
             return Ok(Ty::Int);

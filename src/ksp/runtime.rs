@@ -369,7 +369,7 @@ impl Env {
         self.timer(at, TimerKind::Release { event, slot });
     }
 
-    fn fault(&mut self, slot: u8, pc: u32, what: &'static str) {
+    pub fn fault(&mut self, slot: u8, pc: u32, what: &'static str) {
         if let Some(f) = self
             .faults
             .iter_mut()

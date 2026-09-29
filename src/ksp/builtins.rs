@@ -177,6 +177,7 @@ builtins! {
     GetMenuItemVisibility "get_menu_item_visibility" [I I] 0 Int;
     GetNumMenuItems "get_num_menu_items" [I] 0 Int;
     SetTableStepsShown "set_table_steps_shown" [V I] 0 Void;
+    AttachZone "attach_zone" [V I I] 0 Void;
     SetSkinOffset "set_skin_offset" [I] 0 Void;
     SetUiColor "set_ui_color" [I] 0 Void;
     SetUiHeight "set_ui_height" [I] 0 Void;
@@ -187,7 +188,7 @@ builtins! {
     SetSnapshotType "set_snapshot_type" [I] 0 Void;
     ShowLibraryTab "show_library_tab" [] 0 Void;
     SetUiWfProperty "set_ui_wf_property" [V I I I] 0 Void;
-    GetFontId "get_font_id" [I] 0 Int;
+    GetFontId "get_font_id" [S] 0 Int;
     GetFolder "get_folder" [I] 0 Str;
     FsGetFilename "fs_get_filename" [I I] 0 Str;
     FsNavigate "fs_navigate" [I I] 0 Void;
@@ -201,7 +202,7 @@ builtins! {
     GetKeyName "get_key_name" [I] 0 Str;
     GetKeyType "get_key_type" [I] 0 Int;
     GetKeyTriggerstate "get_key_triggerstate" [I] 0 Int;
-    SetKeyrange "set_keyrange" [I I I S] 0 Void;
+    SetKeyrange "set_keyrange" [I I S] 0 Void;
     RemoveKeyrange "remove_keyrange" [I] 0 Void;
     // Diagnostics and preprocessor leftovers.
     Message "message" [S] 0 Void;
@@ -298,6 +299,8 @@ pub enum SysArray {
     Cc,
     CcTouched,
     PolyAt,
+    /// Edit-mode group selection; nothing is selected in a player.
+    GroupsSelected,
 }
 
 impl SysArray {
@@ -307,12 +310,14 @@ impl SysArray {
             "%CC" => Self::Cc,
             "%CC_TOUCHED" => Self::CcTouched,
             "%POLY_AT" => Self::PolyAt,
+            "%GROUPS_SELECTED" => Self::GroupsSelected,
             _ => return None,
         })
     }
 
-    pub fn len(self) -> u32 {
+    pub fn len(self, groups: usize) -> u32 {
         match self {
+            Self::GroupsSelected => groups.clamp(1, 4096) as u32,
             Self::KeyDown | Self::PolyAt => 128,
             Self::Cc | Self::CcTouched => CC_SLOTS as u32,
         }
@@ -370,6 +375,14 @@ pub mod signal {
     pub const TIMER_BEAT: i32 = 2;
     pub const TRANSP_START: i32 = 3;
     pub const TRANSP_STOP: i32 = 4;
+}
+
+pub fn real_constant(name: &str) -> Option<f64> {
+    match name {
+        "~NI_MATH_PI" => Some(std::f64::consts::PI),
+        "~NI_MATH_E" => Some(std::f64::consts::E),
+        _ => None,
+    }
 }
 
 /// Constants whose numeric value carries meaning.
