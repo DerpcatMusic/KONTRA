@@ -30,6 +30,10 @@ pub enum ModTarget {
     Pitch,
     /// Sample start position (`playPos`), scaled by the zone's `start_mod` range.
     SampleStart,
+    /// Attack time of the group's volume AHDSR (`ahdsr_attack` on its slot).
+    Attack,
+    /// Release time of the group's volume AHDSR (`ahdsr_release` on its slot).
+    Release,
     /// Parameter of the module in `slot` (group FX or internal modulator).
     Module { param: String, slot: u8 },
 }
@@ -92,9 +96,11 @@ pub(crate) struct GroupModulation {
 pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
     let mut out = GroupModulation::default();
 
+    // Internal-modulator slot of the volume AHDSR, which module targets address.
+    let mut volume_env_slot = None;
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS_ID) {
         let mut skipped = 0;
-        for (_, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
+        for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
             let params = modulator.params()?;
             if std::env::var("DBG_INT").is_ok() { for t in &params.targets { eprintln!("INT {} flags={:02x?} {} i={:.3} inv={} tflags={:02x} shaper={}", params.name, params.unknown_flags, t.param, t.intensity, t.invert, t.unknown_flags, t.shaper.as_ref().is_some_and(|s| s.enabled)); } }
             // The first volume envelope of each kind; the voice multiplies them.
@@ -102,6 +108,7 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
             let volume_env = match params.modulator {
                 RawModulator::Ahdsr(env) if volume && out.volume_env.is_none() => {
                     out.volume_env = Some(env);
+                    volume_env_slot = Some(slot);
                     true
                 }
                 RawModulator::Flex(env) if volume && out.flex_env.is_none() => {
@@ -144,6 +151,12 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                         ("volume", None) => ModTarget::Volume,
                         ("pitch", None) => ModTarget::Pitch,
                         ("playPos", None) => ModTarget::SampleStart,
+                        ("ahdsr_attack", Some(slot)) if volume_env_slot == Some(slot.into()) => {
+                            ModTarget::Attack
+                        }
+                        ("ahdsr_release", Some(slot)) if volume_env_slot == Some(slot.into()) => {
+                            ModTarget::Release
+                        }
                         (_, Some(slot)) => ModTarget::Module {
                             param: target.param,
                             slot,

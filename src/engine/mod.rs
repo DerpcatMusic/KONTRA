@@ -816,11 +816,12 @@ impl Player {
             }
         });
         let base_level = zone.gain * gain;
-        let envelope = settings.envelope.unwrap_or(if settings.flex.is_some() {
+        let mut envelope = settings.envelope.unwrap_or(if settings.flex.is_some() {
             Ahdsr::UNITY
         } else {
             defaults
         });
+        settings.mods.scale_envelope(&mut envelope, &inputs);
         let mut voice = Voice {
             event,
             group: zone.group as u32,

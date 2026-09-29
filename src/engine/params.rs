@@ -6,7 +6,7 @@
 //! semantics, with their confidence, are in `audits/MODULATION.md`
 //! ("Runtime modulation and engine parameters").
 
-use super::GroupSettings;
+use super::{Ahdsr, GroupSettings};
 use crate::fx::{FxParam, Rack};
 use crate::import::{Group, ModAssignment, ModSource, ModTarget};
 use crate::ksp::{ENGINE_PAR_BASE, EnginePar};
@@ -50,6 +50,9 @@ pub(crate) enum Target {
     Volume,
     Pitch,
     Start,
+    /// Volume AHDSR attack or release time, fixed at note start.
+    Attack,
+    Release,
 }
 
 /// One external modulation assignment prepared for playback.
@@ -72,6 +75,8 @@ impl From<&ModAssignment> for Mod {
             ModTarget::Volume => Some(Target::Volume),
             ModTarget::Pitch => Some(Target::Pitch),
             ModTarget::SampleStart => Some(Target::Start),
+            ModTarget::Attack => Some(Target::Attack),
+            ModTarget::Release => Some(Target::Release),
             ModTarget::Module { .. } => None,
         };
         Self {
@@ -108,6 +113,8 @@ pub struct ModTable {
     voiced: Box<[u16]>,
     /// Sample-start assignments with a modelled source.
     starts: Box<[u16]>,
+    /// Envelope-time assignments with a modelled source.
+    times: Box<[u16]>,
 }
 
 impl From<&Group> for ModTable {
@@ -118,12 +125,13 @@ impl From<&Group> for ModTable {
                 .filter(|&i| mods[i as usize].route.is_some_and(|(_, t)| want(t)))
                 .collect::<Vec<_>>()
         };
-        let mut voiced = routed(|t| t != Target::Start);
+        let mut voiced = routed(|t| matches!(t, Target::Volume | Target::Pitch));
         // ponytail: extra assignments are ignored; no local group has more than 8.
         voiced.truncate(VOICE_MODS);
         Self {
             voiced: voiced.into(),
             starts: routed(|t| t == Target::Start).into(),
+            times: routed(|t| matches!(t, Target::Attack | Target::Release)).into(),
             mods,
         }
     }
@@ -207,7 +215,7 @@ impl ModTable {
                     };
                     semitones += 12.0 * m.intensity * v;
                 }
-                Target::Start => {}
+                Target::Start | Target::Attack | Target::Release => {}
             }
         }
         (gain.max(0.0), semitones)
@@ -221,6 +229,24 @@ impl ModTable {
             .filter_map(|m| Some(m.intensity.abs() * m.shape(input.read(m.route?.0))))
             .sum::<f32>()
             .min(1.0)
+    }
+
+    /// Scale the volume AHDSR's attack and release by their note-start
+    /// modulation, with the volume law: `1 - |i|·(1 - v)`. Stored shapers
+    /// (velocity 0 → 1, 127 → 0.59 on attack) read as time factors.
+    pub(crate) fn scale_envelope(&self, env: &mut Ahdsr, input: &Inputs) {
+        for m in self.times.iter().map(|&i| &self.mods[i as usize]) {
+            let Some((source, target)) = m.route else {
+                continue;
+            };
+            let v = m.shape(input.read(source));
+            let v = if m.intensity < 0.0 { 1.0 - v } else { v };
+            let factor = (1.0 - m.intensity.abs() * (1.0 - v)).max(0.0);
+            match target {
+                Target::Attack => env.attack *= factor,
+                _ => env.release *= factor,
+            }
+        }
     }
 }
 
@@ -718,6 +744,44 @@ mod tests {
         input.cc = &quiet;
         let (gain, _) = table.modulate(&mut values, &input, 4800, 48000.0);
         assert!((gain / expected - (-1.0f32).exp()).abs() < 1e-4, "{gain}");
+    }
+
+    #[test]
+    fn velocity_scales_envelope_attack_at_note_start() {
+        let group = Group {
+            mods: vec![ModAssignment {
+                name: "VEL_ATTACK".into(),
+                source: ModSource::Velocity,
+                target: ModTarget::Attack,
+                intensity: 1.0,
+                invert: false,
+                lag_ms: 0,
+                // Pacific's stored shaper: soft notes keep the attack, hard ones shorten it.
+                shaper: Some(ShaperCurve::Table(vec![1.0, 0.59])),
+            }],
+            ..Group::default()
+        };
+        let table = ModTable::from(&group);
+        let cc = [0; 128];
+        let attack = |velocity| {
+            let mut env = Ahdsr {
+                attack: 0.9,
+                ..Ahdsr::UNITY
+            };
+            let input = Inputs {
+                cc: &cc,
+                bend: 0.0,
+                pressure: 0,
+                note: 60,
+                velocity,
+            };
+            table.scale_envelope(&mut env, &input);
+            (env.attack, env.release)
+        };
+        assert_eq!(attack(0), (0.9, f32::INFINITY));
+        assert!((attack(127).0 - 0.9 * 0.59).abs() < 1e-5);
+        // Envelope times are not per-block voice modulation.
+        assert!(table.voiced.is_empty());
     }
 
     #[test]
