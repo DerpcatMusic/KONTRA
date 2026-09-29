@@ -21,7 +21,7 @@ Each group (0x04, v0x95) has the children `0x3B, 0x3C, 0x38, 0x4A`, in that orde
   data is one presence byte per slot, followed by the chunk when the byte is 1.
 - `0x3B` slot → `0x0D` BParInternalMod (v0x80/0x81) → child `0x07` BParEnv (v0x90,
   public `u32` kind: 0 = AHDSR, 1 = flex) → child `0x3F` AHDSR (all groups) or `0x40`
-  flex envelope (6,884 modulators, not decoded).
+  flex envelope (6,380 modulators in the 778 NKIs, decoded below).
 - `0x3C` slot → `0x0C` BParExternalMod (v0x100–0x102).
 - In both 0x0D and 0x0C, the fields are in the StructuredObject **private** data, and
   the public data is empty.
@@ -105,6 +105,30 @@ u32   category        2 in every record
 The fourth flag byte, the target flag bit 0x04 and the four trailing AHDSR booleans are
 set together (21,622 records, Afflatus). Their meaning is unknown.
 
+### Internal modulator census (high)
+
+Every one of the 229,184 internal modulators in the 778 NKIs is an envelope:
+
+| Modulator | Targets | Count | Libraries |
+|---|---|---|---|
+| ENV_AHDSR | volume | 220,758 | all |
+| ENV_FLEX | volume | 6,380 | Dolce 2,856, Afflatus 2,192, Pacific 580, CHORUS 504, Vista 248 |
+| ENV_AHDSR | filterCutoff | 563 | Dolce, Vista, Pacific, Una Corda |
+| ENV_AHDSR | eqGain2 + eqGain3 | 556 | Dolce, Vista, Pacific |
+
+**There is no LFO (or any other modulator kind) anywhere in the corpus**, so the LFO
+chunk layout cannot be discovered from local data and LFOs are not implemented. An
+LFO would not sit in the `0x07` BParEnv wrapper, so its group fails with a
+"modulation not imported" warning instead of being misread. No internal modulator
+targets pitch or pan. Every internal volume target stores intensity 1, no invert and
+no shaper (Afflatus, Vista, Solo checked), so intensity is not modelled for envelopes.
+
+Two volume envelopes in one group occur in 2,332 groups: Afflatus (2,192, AHDSR then
+flex, all `BRASS_Dyn*_Leg_*` legato-transition groups whose flex rises in 20 ms and
+falls to 0 over 680 ms) and Pacific (140, either order). Playback multiplies the first
+volume AHDSR and the first volume flex envelope; the Afflatus shape (a transition layer
+that fades out while held) is what that product gives.
+
 ## AHDSR envelope (0x3F, unstructured, v0x11, 77 bytes)
 
 `f32 attack_curve, f32 attack_ms, f32 decay_ms, f32 hold_ms, f32 release_ms, f32 sustain,
@@ -121,6 +145,49 @@ u8 unknown, 4 × (f32, f32, f32, u8) unknown`
 
 The decay/hold/release assignment rests on shared range ceilings and on musically
 consistent release times. It has not been checked against Kontakt's UI.
+
+Attack curve (engine): the attack glides `(1 - e^(-k t)) / (1 - e^(-k))` with
+`k = 5 * curve`, linear at 0. The sign follows the Kontakt manual (positive convex,
+negative concave), confidence high; the steepness 5 is a guess, confidence low.
+`$ENGINE_PAR_ATK_CURVE` decodes as `2x - 1`, confidence high: Solo's scripts set
+1000000, 750000 and 333333 where its presets store 1, 0.5 and -0.33. Solo stores
+curve 1.0 on 16,156 of its 20,590 volume envelopes (125 ms attacks), so the curve is
+audible there: a Solo Violin note is 7-12 dB louder over its first 10-40 ms than with
+the linear attack, and the Solo Pads (-0.33, 2.5 s attack) 5-8 dB softer over its
+first second.
+
+## Flex envelope (0x40, unstructured, v0x11/v0x12)
+
+```
+u8 0, u16 version
+u32 last          index of the last point (2, 3 or 4 locally)
+u32 unknown       sustain - 1 in every record (loop start?)
+u32 sustain       index of the point held while the key is down (last - 1 everywhere)
+(last + 1) × (f32 time_ms, f32 level, f32 curve)
+u16 unknown       v0x12 only (504 CHORUS records), always 1
+f32 × 3 unknown   (-1, 0, 1) in every record
+u8  unknown       0 or 1
+```
+
+All 6,380 records parse to the exact length.
+
+| Field | Confidence | Evidence |
+|---|---|---|
+| layout, point count | high | exact length for all 6,380 records at every point count |
+| time_ms | medium | 1-2000 ms; a delta from the previous point, not absolute: absolute readings would go backwards (140, 144, 664, 184), and deltas such as 438.687 + 185.313 sum to whole milliseconds |
+| level | medium | only 0, 0.986 and 1; read as linear gain. The last point is 0 everywhere. Attack layers go 1, 1, 0 (fade out while held), sustain layers 0, 1, 1, 0 (delayed fade-in) |
+| sustain | medium | always a point before the last, so every envelope has a release segment |
+| curve | low | 0.05-0.999, 0.5 = linear. Read as the segment's bulge: above 0.5 bulges above the straight line (fast rise, slow fall), so rising segments at 0.57 are slightly convex and releases at 0.37 fall fast at first. Engine curve = `±(2c - 1)`, signed by the segment's direction, through the attack's glide law |
+| unknown index, tail byte | - | if they were a loop enable and start, Vista's attack layers would re-trigger while held, and identical layers of different mic groups differ in the byte; playback ignores both |
+
+Playback: the envelope starts at 0, glides to each point in turn, holds at the
+sustain point until release, then glides from its current level through the remaining
+points (a release before the sustain point jumps straight there) and ends the voice
+after the last. A flex envelope with no AHDSR runs against a unity AHDSR (not the
+engine's default attack/release). Vista's main sustain groups carry only a flex
+envelope: their notes now start with the stored 72-140 ms attacks (attack layers) and
+200-300 ms delayed swells (sustain layers) instead of instantly
+(Vista 3 Cellos: -20 dB at 30 ms instead of 0 ms, -6 dB at 140 ms instead of 30 ms).
 
 ## Group fields
 
@@ -144,10 +211,12 @@ consistent release times. It has not been checked against Kontakt's UI.
 ## Engine-facing API (`src/modulation.rs`, re-exported from `import`)
 
 - `Group.volume_env: Option<Ahdsr>`: the first internal AHDSR whose targets include
-  `volume`. Groups with a second volume AHDSR or other internal modulators produce a
-  warning.
+  `volume`. `Group.flex_env: Option<FlexEnvelope>`: the first flex envelope on
+  `volume`. Groups with further internal modulators produce a warning.
 - `Group.mods: Vec<ModAssignment>`: one entry per external target. It holds `source`
-  (`ModSource`), `target` (`ModTarget::{Volume, Pitch, SampleStart, Module{param, slot}}`),
+  (`ModSource`), `target` (`ModTarget::{Volume, Pitch, SampleStart, Attack, Release,
+  Module{param, slot}}`; `Attack`/`Release` are `ahdsr_attack`/`ahdsr_release` on the
+  volume AHDSR's internal-modulator slot),
   `intensity`, `invert`, `lag_ms` and `shaper` (only when enabled), with `shape(x)`.
 - `Group::modulation(source, &target)`, `velocity_to_volume()` (largest stored intensity,
   0.0 = velocity-insensitive), `pitch_bend_range()` (semitones, `None` = no pitch bend) and
@@ -171,14 +240,32 @@ block the engine reads each source (0..1), shapes it, applies a one-pole lag
 | Volume | multiplicative: each entry scales by `1 - |i| * (1 - v)`; negative `i` uses `1 - v` | medium: matches stored crossfade shapers (layers sum to about 1), unverified against Kontakt |
 | Pitch | `12 * i * v` semitones, bend mapped to -1..1 | high for the 2-semitone stored range (i = 0.1667) |
 | Sample start | `i * v * zone.start_mod` frames, fixed at note start | medium |
+| Attack, Release (volume AHDSR) | time scaled by the volume law `1 - |i| * (1 - v)`, fixed at note start | low (see below) |
 
 Sources: velocity, key, constant, MIDI CC (live, per channel), pitch bend, channel
 pressure. Not applied: Script/RTC, random, release velocity, poly aftertouch,
-`Unassigned`, and `Module` targets (effect and internal-modulator parameters); no pan
-target exists in the local corpus. Velocity → volume always goes through the shaper.
-The decoded `invert` flag is **ignored**: Afflatus sets it on rising velocity/CC
-shapers, Vista on some bell-shaped crossfade layers but not their siblings, Areia and
-Solo almost never; applying it silences or inverts layers that clearly play upright.
+`Unassigned`, and the remaining `Module` targets (effect parameters); no pan target
+exists in the local corpus. Velocity → volume always goes through the shaper.
+
+Envelope-time targets: 953 external assignments drive `ahdsr_attack` (VEL, PB, RTC,
+KP) or `ahdsr_release` (PB), all in Pacific, CHORUS, Vista and Una Corda. The `slot` is
+the internal-modulator slot (high: Pacific groups ordered FLEX, AHDSR address the
+AHDSR as slot 1, groups with the AHDSR alone as slot 0). Their shapers map into
+0.59..1 (Pacific VEL_ATTACK: velocity 0 → 1, 127 → 0.59; PB_ATTACK release: 0.81 at
+rest, 1 at full bend), which reads naturally as a time factor, so they scale the
+stored time. Whether Kontakt scales the time or the normalized knob value is
+unverified. Solo has none; Vista's are RTC-driven (not modelled), so no validation
+library exercises them.
+
+The decoded `invert` flag stays **ignored**. Vista Full Strings Sustains is decisive:
+its four CC100 crossfade layers (`susdyn1`-`4`) carry bell shapers peaking at
+CC 0.26, 0.44, 0.78 and a ramp from 0.56, so they play upright and sum to about 1;
+the `cl` (close) and `dc` mic copies of layer 3 store the identical shaper, one with
+invert set and one without, and layer 1's `BALANCE_COMP` shaper likewise differs only
+in the flag between siblings. No reading of the flag (after the shaper, before it,
+or as a sign on intensity) makes both copies play the same, so it cannot be Kontakt's
+volume inversion as stored. Afflatus sets it on rising velocity/CC shapers, Areia and
+Solo almost never. Applying it silences or inverts layers that clearly play upright.
 The GM reset defaults hold before any input (CC7 127, CC10 64, CC11 127, rest 0), and
 controllers scripts set while loading (Areia sets CC110-113 in
 `on persistence_changed`) are applied on install and after resets.
@@ -193,6 +280,7 @@ changes ramped over the block by the voice gain ramp):
 | TUNE | group, instrument | ±36 semitones linear | NI docs, unverified |
 | OUTPUT_CHANNEL | group | `-1` instrument, 1000+b bus b | Areia init |
 | ATTACK, HOLD | group, volume-AHDSR slot | ms = 2 * ((1 + 7500.01)^x - 1) | Areia 465229 = stored 125.013 ms |
+| ATK_CURVE | same | 2x - 1 | Solo 750000/333333 where presets store 0.5/-0.33 |
 | DECAY, RELEASE | same | ms = 2 * ((1 + 12500.02)^x - 1) | 512668 = 250.001 ms, 1e6 = 25000.04 ms |
 | SUSTAIN | same | linear | low |
 | MOD_TARGET_INTENSITY | group, `find_mod` slot, target (generic, -1 = 0) | i = x^2 | Areia 704316 where presets store 0.4961 |
@@ -201,8 +289,8 @@ changes ramped over the block by the voice gain ramp):
 | SEND/INSERT_EFFECT_OUTPUT_GAIN, SEND_EFFECT_DRY_LEVEL, SENDLEVEL_0..7 | same | volume law | Areia |
 
 `find_mod`/`find_target` resolve by decoded names; indices are stable positions in
-`Group.modulators` and its target list. Everything else (ATK_CURVE, effect-specific
-parameters) is stored by the KSP runtime, read back unchanged, and listed by
+`Group.modulators` and its target list. Everything else (effect-specific
+parameters, INTMOD_*, LFO_*) is stored by the KSP runtime, read back unchanged, and listed by
 `ksp-run`. On init, writes go to a setup engine that answers reads and records them
 (`Runtime::init_engine_pars`); the playing engine replays them when the scripts,
 bank or effects are installed. Up to 4096 writes queue per render (Areia bursts reach
@@ -221,5 +309,8 @@ CHORUS and Pacific groups) have none stored.
 - How Kontakt combines intensity, invert and shaper for volume and pitch (the
   multiplicative model above is inferred from stored crossfades). No Kontakt
   reference renders are available.
-- The 0x40 flex envelope, 0x4A dynamics, the source module, internal-modulator
-  bypass, the extra AHDSR flag and records, and the ext-mod unknown bytes and id.
+- The attack and flex curve steepness, the flex level scale beyond 0/1 and its
+  unknown index and tail, the envelope-time modulation law, 0x4A dynamics, the source
+  module, internal-modulator bypass, the extra AHDSR flag and records, and the
+  ext-mod unknown bytes and id.
+- LFOs: none in the corpus, so neither their layout nor their behaviour.
