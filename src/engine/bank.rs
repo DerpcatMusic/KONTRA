@@ -163,14 +163,22 @@ impl Bank {
             let resident: u64 = spans.iter().map(|s| s.end - s.start).sum();
             bytes += resident as usize * size_of::<Frame>();
             ensure!(bytes <= MEMORY_LIMIT, "Resident sample data exceeds the {} MiB bank limit", MEMORY_LIMIT >> 20);
-            let spans = spans
+            let read = spans
                 .into_iter()
                 .map(|range| {
                     let mut data = vec![[0.0; 2]; (range.end - range.start) as usize].into_boxed_slice();
                     reader.read(range.start, &mut data)?;
                     Ok(Span { start: range.start, data })
                 })
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<Vec<_>>>();
+            let (spans, streamed_sample) = match read {
+                Ok(spans) => (spans, streamed_sample),
+                Err(e) => {
+                    bytes -= resident as usize * size_of::<Frame>();
+                    builder.drop_sample(id, &e);
+                    (Vec::new(), false)
+                }
+            };
             let sample = SampleData { rate: reader.rate, spans, streamed: streamed_sample };
             streamed.push(streamed_sample.then_some(source));
             samples.push(sample);
@@ -349,7 +357,20 @@ impl Builder {
         (merged.iter().map(|r| r.start..r.end.min(frames)).filter(|r| !r.is_empty()).collect(), true)
     }
 
+    /// Skip every zone of a sample whose data turned out to be damaged.
+    fn drop_sample(&mut self, id: usize, error: &anyhow::Error) {
+        let mut kept = self.plays.iter().map(|p| p.sample as usize != id);
+        let before = self.zones.len();
+        self.zones.retain(|_| kept.next().unwrap_or(true));
+        self.plays.retain(|p| p.sample as usize != id);
+        self.issues.skipped += before - self.zones.len();
+        self.issues.note(format_args!("{error:#}"));
+    }
+
     fn finish(self, samples: Vec<SampleData>, streamer: Option<Streamer>, bytes: usize) -> Result<Bank> {
+        if self.zones.is_empty() && self.issues.skipped > 0 {
+            bail!("No playable zones: {} skipped ({})", self.issues.skipped, self.issues.notes.join("; "));
+        }
         let mut plays = self.plays;
         for play in &mut plays {
             let spans = &samples[play.sample as usize].spans;

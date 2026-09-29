@@ -340,13 +340,20 @@ fn damaged_zones_are_skipped_not_fatal() {
     std::fs::create_dir_all(&dir).unwrap();
     let good = dir.join("good.wav");
     write_wav(&good, 1000);
+    // Truncated data: the header opens but decoding fails partway.
+    let truncated = dir.join("truncated.wav");
+    write_wav(&truncated, 4000);
+    let file = std::fs::OpenOptions::new().write(true).open(&truncated).unwrap();
+    file.set_len(44 + 2000 * 8).unwrap();
     let zones = vec![
         Zone { sample: good.clone(), ..Zone::default() },
         Zone { sample: dir.join("absent.wav"), ..Zone::default() },
         Zone { sample: good, available: false, ..Zone::default() },
+        Zone { sample: truncated.clone(), ..Zone::default() },
+        Zone { sample: truncated, low_key: 70, ..Zone::default() },
     ];
     let bank = Bank::load(&instrument(vec![Group::default()], zones)).unwrap();
-    assert_eq!((bank.zones().len(), bank.skipped_zones), (1, 2));
+    assert_eq!((bank.zones().len(), bank.skipped_zones), (1, 4));
     std::fs::remove_dir_all(dir).unwrap();
 }
 
