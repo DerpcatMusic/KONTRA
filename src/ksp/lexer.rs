@@ -120,10 +120,6 @@ impl Interner {
         sym
     }
 
-    pub fn get(&self, s: &str) -> Option<Sym> {
-        self.map.get(s).copied()
-    }
-
     pub fn name(&self, sym: Sym) -> &str {
         &self.names[sym as usize]
     }
@@ -238,7 +234,8 @@ pub fn lex(source: &str) -> Result<Tokens> {
                         .map_err(|_| anyhow::anyhow!("Invalid real literal at line {line}"))?;
                     ensure!(n.is_finite(), "Nonfinite real literal at line {line}");
                     out.reals.push(n);
-                    push(&mut out, Tok::Real(out.reals.len() as u32 - 1), line);
+                    let real = out.reals.len() as u32 - 1;
+                    push(&mut out, Tok::Real(real), line);
                 } else {
                     let n = if let Some(hex) = digits.strip_suffix(['h', 'H']) {
                         u32::from_str_radix(hex, 16).ok().map(|n| n as i32)

@@ -31,7 +31,6 @@ pub enum Ret {
 }
 
 pub struct Sig {
-    pub name: &'static str,
     pub args: &'static [Arg],
     /// Trailing optional argument count.
     pub optional: u8,
@@ -48,7 +47,7 @@ macro_rules! builtins {
             }
             pub fn sig(self) -> Sig {
                 match self {
-                    $(Self::$id => Sig { name: $name, args: &[$(Arg::$arg),*], optional: $opt, ret: Ret::$ret },)*
+                    $(Self::$id => Sig { args: &[$(Arg::$arg),*], optional: $opt, ret: Ret::$ret },)*
                 }
             }
         }
@@ -61,6 +60,11 @@ builtins! {
     Min "min" [N N] 0 Num;
     Max "max" [N N] 0 Num;
     InRange "in_range" [N N N] 0 Int;
+    // Real forms of the `N` builtins above; selected by the compiler, not callable by name.
+    AbsReal "#abs" [R] 0 Real;
+    MinReal "#min" [R R] 0 Real;
+    MaxReal "#max" [R R] 0 Real;
+    InRangeReal "#in_range" [R R R] 0 Int;
     ShLeft "sh_left" [I I] 0 Int;
     ShRight "sh_right" [I I] 0 Int;
     Random "random" [I I] 0 Int;
@@ -297,8 +301,6 @@ pub enum SysArray {
 }
 
 impl SysArray {
-    pub const ALL: [Self; 4] = [Self::KeyDown, Self::Cc, Self::CcTouched, Self::PolyAt];
-
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "%KEY_DOWN" => Self::KeyDown,
@@ -514,8 +516,6 @@ pub const CONTROL_PAR_MIN_VALUE: i32 = SYMBOL_BASE + 10;
 pub const CONTROL_PAR_MAX_VALUE: i32 = SYMBOL_BASE + 11;
 pub const CONTROL_PAR_PICTURE: i32 = SYMBOL_BASE + 12;
 pub const CONTROL_PAR_DEFAULT_VALUE: i32 = SYMBOL_BASE + 13;
-pub const CONTROL_PAR_SELECTED_ITEM_IDX: i32 = SYMBOL_BASE + 14;
-pub const CONTROL_PAR_NUM_ITEMS: i32 = SYMBOL_BASE + 15;
 
 /// Engine parameters are published with stable IDs so an engine can map them once.
 pub const ENGINE_PAR_BASE: i32 = 0x0200_0000;

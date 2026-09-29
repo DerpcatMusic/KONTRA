@@ -241,10 +241,6 @@ impl Program {
         self.callbacks[cb as usize]
     }
 
-    pub fn has_init(&self) -> bool {
-        self.callback(Callback::Init).is_some()
-    }
-
     pub fn symbol_name(&self, value: i32) -> Option<&str> {
         builtins::symbol_name(value).or_else(|| {
             let i = usize::try_from(value.wrapping_sub(AUTO_SYMBOL_BASE)).ok()?;
@@ -365,8 +361,8 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
     Ok(c.p)
 }
 
-impl Compiler<'_> {
-    fn name(&self, sym: Sym) -> &str {
+impl<'a> Compiler<'a> {
+    fn name(&self, sym: Sym) -> &'a str {
         self.syms.name(sym)
     }
 
@@ -1111,6 +1107,13 @@ impl Compiler<'_> {
             let v = self.var(*sym).unwrap_or_default();
             ensure!(Some(self.p.vars[v as usize].ty) == num, "search value type must match the array");
         }
+        let b = match (b, num) {
+            (Builtin::Abs, Some(Ty::Real)) => Builtin::AbsReal,
+            (Builtin::Min, Some(Ty::Real)) => Builtin::MinReal,
+            (Builtin::Max, Some(Ty::Real)) => Builtin::MaxReal,
+            (Builtin::InRange, Some(Ty::Real)) => Builtin::InRangeReal,
+            _ => b,
+        };
         self.emit(Op::Builtin(b, args.len() as u8));
         let ret = match sig.ret {
             Ret::Void => None,

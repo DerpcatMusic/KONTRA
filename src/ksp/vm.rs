@@ -95,7 +95,7 @@ pub struct Thread {
     pub pc: u32,
     pub depth: u8,
     /// Bumped whenever a pending timer for this thread becomes stale.
-    pub gen: u32,
+    pub generation: u32,
     pub live: bool,
     pub waiting: bool,
     pub calls: [u32; MAX_CALL_DEPTH],
@@ -107,7 +107,7 @@ impl Default for Thread {
         Self {
             pc: 0,
             depth: 0,
-            gen: 0,
+            generation: 0,
             live: false,
             waiting: false,
             calls: [0; MAX_CALL_DEPTH],
@@ -235,7 +235,7 @@ pub struct Listener {
     pub beats: i32,
     pub transport: bool,
     /// Bumped when the timer changes so stale timer entries are dropped.
-    pub gen: u32,
+    pub generation: u32,
 }
 
 /// Polyphonic rows: one per event slot plus a scratch row for other callbacks.

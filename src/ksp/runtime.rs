@@ -37,7 +37,7 @@ pub type Persisted = BTreeMap<String, Value>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Event {
-    gen: u16,
+    generation: u16,
     pub live: bool,
     pub note: i32,
     pub velocity: i32,
@@ -74,7 +74,7 @@ pub struct Event {
 
 impl Event {
     const EMPTY: Self = Self {
-        gen: 0,
+        generation: 0,
         live: false,
         note: 0,
         velocity: 0,
@@ -123,19 +123,19 @@ impl Events {
     fn alloc(&mut self) -> Option<i32> {
         let i = self.free.pop_front()?;
         let e = &mut self.slots[i as usize];
-        let gen = e.gen % 0x7FFF + 1;
-        *e = Event { gen, live: true, ..Event::EMPTY };
-        Some(i32::from(gen) << EVENT_INDEX_BITS | i as i32)
+        let generation = e.generation % 0x7FFF + 1;
+        *e = Event { generation, live: true, ..Event::EMPTY };
+        Some(i32::from(generation) << EVENT_INDEX_BITS | i as i32)
     }
 
     pub fn get(&self, id: i32) -> Option<&Event> {
         let e = self.slots.get(Event::index(id))?;
-        (id > 0 && i32::from(e.gen) == id >> EVENT_INDEX_BITS).then_some(e)
+        (id > 0 && i32::from(e.generation) == id >> EVENT_INDEX_BITS).then_some(e)
     }
 
     pub fn get_mut(&mut self, id: i32) -> Option<&mut Event> {
         let e = self.slots.get_mut(Event::index(id))?;
-        (id > 0 && i32::from(e.gen) == id >> EVENT_INDEX_BITS).then_some(e)
+        (id > 0 && i32::from(e.generation) == id >> EVENT_INDEX_BITS).then_some(e)
     }
 
     fn free(&mut self, id: i32) {
@@ -164,7 +164,7 @@ impl Events {
             let marks = (id & !b::MARKS_FLAG) as u32;
             for (i, e) in self.slots.iter().enumerate() {
                 if e.live && (id == b::ALL_EVENTS || e.marks & marks != 0) {
-                    out.push(i32::from(e.gen) << EVENT_INDEX_BITS | i as i32);
+                    out.push(i32::from(e.generation) << EVENT_INDEX_BITS | i as i32);
                 }
             }
         } else if self.get(id).is_some() {
@@ -184,9 +184,9 @@ pub enum Work {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum TimerKind {
-    Resume { thread: u16, gen: u32 },
+    Resume { thread: u16, generation: u32 },
     Release { event: i32, slot: u8 },
-    Listener { slot: u8, gen: u32 },
+    Listener { slot: u8, generation: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -708,17 +708,17 @@ impl Runtime {
             self.env.timers.pop();
             self.env.offset = t.at.saturating_sub(self.env.now) as u32;
             match t.kind {
-                TimerKind::Resume { thread, gen } => {
+                TimerKind::Resume { thread, generation } => {
                     let th = &mut self.threads[thread as usize];
-                    if th.live && th.gen == gen {
+                    if th.live && th.generation == generation {
                         th.waiting = false;
                         self.resume(engine, thread);
                     }
                 }
                 TimerKind::Release { event, slot } => self.env.queue(Work::Release { event, slot }),
-                TimerKind::Listener { slot, gen } => {
+                TimerKind::Listener { slot, generation } => {
                     let l = self.states[slot as usize].listener;
-                    if l.gen == gen {
+                    if l.generation == generation {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Listener));
                         ctx.signal = if l.timer_us > 0 { b::signal::TIMER_MS } else { b::signal::TIMER_BEAT };
                         self.spawn_cb(engine, slot, Callback::Listener, ctx);
@@ -740,7 +740,7 @@ impl Runtime {
             return;
         };
         let at = from + self.env.samples(us).max(1);
-        self.env.timer(at, TimerKind::Listener { slot, gen: l.gen });
+        self.env.timer(at, TimerKind::Listener { slot, generation: l.generation });
     }
 
     // ---- Scheduling ------------------------------------------------------------------
@@ -790,7 +790,7 @@ impl Runtime {
                 continue;
             };
             let t = &mut self.threads[i];
-            t.gen = t.gen.wrapping_add(1);
+            t.generation = t.generation.wrapping_add(1);
             t.waiting = false;
             if mode == 0 {
                 self.resume(engine, i as u16);
@@ -971,7 +971,7 @@ impl Runtime {
             ctx.poly_row = POLY_ROWS - 1;
         }
         let t = &mut self.threads[i as usize];
-        *t = Thread { pc: entry, live: true, gen: t.gen.wrapping_add(1), ctx, ..Thread::default() };
+        *t = Thread { pc: entry, live: true, generation: t.generation.wrapping_add(1), ctx, ..Thread::default() };
         self.resume(engine, i);
     }
 
@@ -997,8 +997,8 @@ impl Runtime {
             Ok(Yield::Wait(at)) => {
                 let t = &mut self.threads[i as usize];
                 t.waiting = true;
-                let gen = t.gen;
-                self.env.timer(at, TimerKind::Resume { thread: i, gen });
+                let generation = t.generation;
+                self.env.timer(at, TimerKind::Resume { thread: i, generation });
                 self.yielded(i);
             }
             Ok(Yield::OutOfFuel) if budget == CALLBACK_FUEL => {
@@ -1008,9 +1008,9 @@ impl Runtime {
             }
             Ok(Yield::OutOfFuel) => {
                 // Block budget spent: continue at the start of the next block.
-                let gen = self.threads[i as usize].gen;
+                let generation = self.threads[i as usize].generation;
                 let at = self.env.clock();
-                self.env.timer(at, TimerKind::Resume { thread: i, gen });
+                self.env.timer(at, TimerKind::Resume { thread: i, generation });
             }
             Err(f) => {
                 let pc = self.threads[i as usize].pc;
@@ -1024,7 +1024,7 @@ impl Runtime {
         self.yielded(i);
         let t = &mut self.threads[i as usize];
         t.live = false;
-        t.gen = t.gen.wrapping_add(1);
+        t.generation = t.generation.wrapping_add(1);
         self.free_threads.push(i);
     }
 

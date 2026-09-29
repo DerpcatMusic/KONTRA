@@ -6,7 +6,7 @@ use super::compile::{Callback, Ty, VarId};
 use super::engine::{EnginePar, Fade, GroupMask, VoicePar};
 use super::runtime::{read_value, write_value};
 use super::ui::{MenuItem, Prop};
-use super::vm::{Exec, Fault, Forward, Kind, Machine, Step};
+use super::vm::{Exec, Fault, Kind, Machine, Step};
 use super::{KeyState, Value};
 use std::fmt::Write as _;
 
@@ -543,7 +543,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 }
                 _ => l.transport = value != 0,
             }
-            l.gen = l.gen.wrapping_add(1);
+            l.generation = l.generation.wrapping_add(1);
             let name = match signal {
                 b::signal::TIMER_MS => "$NI_SIGNAL_TIMER_MS",
                 b::signal::TIMER_BEAT => "$NI_SIGNAL_TIMER_BEAT",
@@ -583,16 +583,18 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             push_int(m, 1)
         }
         FindMod | FindTarget => {
-            let name = m.stk.strs.pop();
-            let found = if f == FindMod {
+            let (g, module) = if f == FindMod {
                 let [g] = ints(m);
-                usize::try_from(g).ok().and_then(|g| m.engine.find_mod(g, name))
+                (g, 0)
             } else {
                 let [g, module] = ints(m);
-                match (usize::try_from(g), usize::try_from(module)) {
-                    (Ok(g), Ok(module)) => m.engine.find_target(g, module, name),
-                    _ => None,
-                }
+                (g, module)
+            };
+            let name = m.stk.strs.pop();
+            let found = match (usize::try_from(g), usize::try_from(module)) {
+                (Ok(g), _) if f == FindMod => m.engine.find_mod(g, name),
+                (Ok(g), Ok(module)) => m.engine.find_target(g, module, name),
+                _ => None,
             };
             if found.is_none() {
                 m.env.note("find_mod/find_target: modulator unknown to the engine; returned 0");
@@ -772,8 +774,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         AddMenuItem => {
             let [value] = ints(m);
-            let text = m.stk.strs.pop();
             let v = m.stk.var();
+            let text = m.stk.strs.pop();
             let c = m.slot.ui.control_of(v).ok_or(Fault("Command requires a declared UI control"))?;
             let menu = &mut m.slot.ui.controls[c].menu;
             if menu.len() >= 4096 {
@@ -1060,10 +1062,6 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             Ok(Step::Next)
         }
     }
-    .map(|step| {
-        let _ = Forward::None;
-        step
-    })
 }
 
 fn allow(groups: &mut GroupMask, group: i32, allowed: bool) {

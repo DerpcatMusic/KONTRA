@@ -147,10 +147,6 @@ impl Ui {
         self.control(self.var_ids[v as usize])
     }
 
-    pub fn note(&mut self, text: impl Into<Cow<'static, str>>) {
-        self.diagnostics.insert(text.into());
-    }
-
     pub fn interface(&self, prog: &Program, mem: &Memory) -> Interface {
         let controls = self
             .controls
