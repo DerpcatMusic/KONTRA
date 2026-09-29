@@ -539,6 +539,7 @@ fn instrument(groups: Vec<Group>, zones: Vec<Zone>) -> Instrument {
         voice_limit: None,
         voice_groups: Vec::new(),
         fx: Default::default(),
+        script_state: Vec::new(),
     }
 }
 

@@ -54,8 +54,9 @@ fn main() -> Result<()> {
     println!("{}",serde_json::to_string_pretty(&report)?);
   },
   Some("render") => render(&args[2..])?,
+  Some("ksp-run") => ksp_run(Path::new(args.get(2).context("ksp-run requires an NKI path")?),&args[3..])?,
   Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto bench [voices=1000]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000]"),
  }
  Ok(())
 }
@@ -239,4 +240,52 @@ fn inspect_mods(path: &Path) -> Result<serde_json::Value> {
         "warnings": instrument.warnings,
         "kontakt_behavior_verified": false,
     }))
+}
+
+/// Run an instrument's scripts against a logging engine: `on init`, then each note as
+/// `note[@on_ms[-off_ms]][:velocity]`. Without times, notes are 400 ms apart and overlap
+/// by 100 ms (legato). Prints the engine calls as JSON; script source is never printed.
+fn ksp_run(path:&Path,notes:&[String])->Result<()> {
+    use kontakto::ksp::{EngineCall,LogEngine,Runtime};
+    const RATE:f64=48_000.0;const BLOCK:u32=128;
+    let instrument=import::read(path)?;
+    let mut engine=LogEngine::new(instrument.groups.iter().map(|g|g.name.clone()).collect(),RATE);
+    let start=std::time::Instant::now();
+    let (mut rt,init_errors)=Runtime::with_scripts(&instrument.scripts,&mut engine,8,instrument.script_state.clone());
+    let init_ms=start.elapsed().as_secs_f64()*1e3;
+    let init_engine_pars=engine.calls.iter().filter(|c|matches!(c,EngineCall::SetEnginePar{..})).count();
+    engine.calls.clear();
+    let ms=|s:&str|s.parse::<f64>().map(|ms|(ms*RATE/1e3) as u64);
+    let mut input=Vec::new();
+    for (i,spec) in notes.iter().enumerate() {
+        let (spec,velocity)=spec.split_once(':').map_or((spec.as_str(),Ok(100)),|(s,v)|(s,v.parse::<u8>()));
+        let (note,times)=spec.split_once('@').map_or((spec,None),|(n,t)|(n,Some(t)));
+        let note:u8=note.parse().with_context(||format!("Bad note {spec}"))?;
+        ensure!(note<128,"MIDI note must be 0..127");
+        let (on,off)=match times.map(|t|t.split_once('-').map_or((t,None),|(a,b)|(a,Some(b)))) {
+            Some((on,off))=>{let on=ms(on)?;(on,off.map(ms).transpose()?.unwrap_or(on+(0.4*RATE) as u64))},
+            None=>{let on=(i as f64*0.4*RATE) as u64;(on,on+(0.5*RATE) as u64)},
+        };
+        ensure!(off>on,"Note-off must follow note-on");
+        input.push((on,1,note,velocity?));input.push((off,0,note,0));
+    }
+    input.sort();
+    let end=input.last().map_or(0,|e|e.0)+(2.0*RATE) as u64;
+    let mut next=input.iter().peekable();
+    while rt.now()<end {
+        engine.block_start=rt.now();
+        while let Some(&&(time,on,note,velocity))=next.peek().filter(|e|e.0<rt.now()+u64::from(BLOCK)) {
+            let at=(time-rt.now()) as u32;
+            if on==1 {rt.note_on(&mut engine,at,note,velocity);} else {rt.note_off(&mut engine,at,note);}
+            next.next();
+        }
+        rt.process(&mut engine,BLOCK);
+    }
+    let report=serde_json::json!({
+        "instrument":instrument.name,"groups":instrument.groups.len(),"slots":rt.slots(),
+        "init_errors":init_errors,"init_ms":(init_ms*10.0).round()/10.0,"init_engine_pars":init_engine_pars,
+        "diagnostics":rt.diagnostics(),"sample_rate":RATE,"calls":engine.calls,
+    });
+    println!("{}",serde_json::to_string_pretty(&report)?);
+    Ok(())
 }

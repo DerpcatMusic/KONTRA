@@ -98,6 +98,9 @@ pub struct Instrument {
     /// Program-wide polyphony limit, when stored.
     pub voice_limit: Option<VoiceLimit>,
     pub voice_groups: Vec<Option<VoiceLimit>>,
+    /// Persistent variable values saved with each script, parallel to `scripts`.
+    #[serde(skip)]
+    pub script_state: Vec<crate::ksp::Persisted>,
 }
 
 /// ni-file is a research parser with panic paths. Keep those off the host thread.
@@ -286,10 +289,11 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         });
     }
     let mut scripts = Vec::new();
+    let mut script_state = Vec::new();
     for c in &p.0.children {
         if c.id == 6 {
             let s = BParScript::try_from(c)?.params().context("Script parameters")?;
-            if !s.bypass && let Some(text) = s.text.filter(|s| !s.trim().is_empty()) { scripts.push(text); }
+            if !s.bypass && let Some(text) = s.text.filter(|s| !s.trim().is_empty()) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
         }
     }
     if !scripts.is_empty() { warnings.push(format!("{} active KSP script(s): manual group playback only; scripted legato and round robin are not emulated; interface initialization is a preview only", scripts.len())); }
@@ -382,7 +386,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         Ok(v) => v.map_or((None, Vec::new()), |(limit, groups)| (Some(limit), groups)),
         Err(e) => { warnings.push(format!("Voice groups ignored: {e:#}")); (None, Vec::new()) }
     };
-    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx })
+    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state })
 }
 
 /// VoiceGroups chunk (0x32, v0x60): program limit, a 128-bit presence mask, then one

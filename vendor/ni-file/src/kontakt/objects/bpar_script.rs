@@ -29,13 +29,15 @@ pub struct BParScriptParams {
     pub password_hash: Vec<u8>,
     pub description: Option<String>,
     pub textfile_name: Option<String>,
+    /// Saved values of persistent variables, one `"<name> <value...>"` entry each.
+    pub persistent: Vec<String>,
 }
 
 impl BParScript {
     pub fn params(&self) -> Result<BParScriptParams, Error> {
         let mut reader = Cursor::new(&self.0.public_data);
 
-        Ok(BParScriptParams {
+        let mut params = BParScriptParams {
             text: {
                 let length = reader.read_u32_le()?;
                 if length == u32::MAX { None } else {
@@ -52,7 +54,21 @@ impl BParScript {
             password_hash: { let length = reader.read_u32_le()?; reader.read_bytes(length as usize)? },
             description: reader.read_optional_sized_utf8()?,
             textfile_name: reader.read_optional_sized_utf8()?,
-        })
+            persistent: Vec::new(),
+        };
+        // Older scripts end here; a damaged table is dropped rather than failing the script.
+        let mut entries = || -> Result<Vec<String>, Error> {
+            let count = reader.read_u32_le()? as usize;
+            let mut out = Vec::with_capacity(count.min(65536));
+            for _ in 0..count {
+                let length = reader.read_u32_le()? as usize;
+                let bytes = reader.read_bytes(length)?;
+                out.push(String::from_utf8_lossy(&bytes).into_owned());
+            }
+            Ok(out)
+        };
+        params.persistent = entries().unwrap_or_default();
+        Ok(params)
     }
 }
 
