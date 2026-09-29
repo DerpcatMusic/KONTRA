@@ -301,8 +301,8 @@ about 320 per note); overflow is counted as dropped commands.
 All 778 NKIs import with no modulation errors. Stored pitch-bend range is 2 semitones
 in every group that has one (1.92 in 168 Dolce groups). `cc_volume` is CC 111/110
 (Areia, Solo, Dolce, CHORUS), 11 (Afflatus, Pacific) or 100/101 (Vista, Pacific,
-CHORUS). Most groups have a volume AHDSR; the ones without it (Vista, some Dolce,
-CHORUS and Pacific groups) have none stored.
+CHORUS). Most groups have a volume AHDSR; most of the ones without it (Vista, some
+Dolce, CHORUS and Pacific groups) have a volume flex envelope instead.
 
 ## Not verified
 
