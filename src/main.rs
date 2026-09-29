@@ -778,7 +778,10 @@ fn ksp_run(path:&Path,notes:&[String])->Result<()> {
     let start=std::time::Instant::now();
     let (mut rt,init_errors)=Runtime::with_scripts(&instrument.scripts,&mut engine,8,instrument.script_state.clone());
     let init_ms=start.elapsed().as_secs_f64()*1e3;
-    let init_engine_pars=engine.calls.iter().filter(|c|matches!(c,EngineCall::SetEnginePar{..})).count();
+    // Writes per parameter name: which engine parameters the scripts drive.
+    let mut init_engine_pars=std::collections::BTreeMap::<&str,usize>::new();
+    for call in &engine.calls {if let EngineCall::SetEnginePar{par,..}=call {*init_engine_pars.entry(par).or_default()+=1;}}
+    let init_engine_pars=serde_json::json!(init_engine_pars);
     engine.calls.clear();
     let input=parse_notes(notes.iter().map(String::as_str))?;
     let end=input.last().map_or(0,|e|e.0)+(2.0*RATE) as u64;
