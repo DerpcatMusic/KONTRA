@@ -15,7 +15,7 @@ use std::{
     fs::File,
     io::{self, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 use symphonia::core::{
     audio::SampleBuffer,
@@ -188,8 +188,9 @@ impl Pcm {
 
 /// Frames per [`Packed`] block.
 const BLOCK: usize = 64;
-/// Block header: two bit widths, then per channel the first two samples.
-const HEADER: usize = 2 + 4 * 4;
+/// Block header: two bit widths, then per channel the first two samples as
+/// 24-bit integers.
+const HEADER: usize = 2 + 4 * 3;
 
 /// Lossless 16/24-bit PCM in independently decodable blocks of [`BLOCK`]
 /// frames. Per channel, each sample is predicted from the two before it
@@ -248,8 +249,8 @@ impl Packed {
             }
             data.extend(widths);
             for x in &block {
-                data.extend(x[0].to_le_bytes());
-                data.extend(x[1].to_le_bytes());
+                data.extend(&x[0].to_le_bytes()[..3]);
+                data.extend(&x[1].to_le_bytes()[..3]);
             }
             for (r, &w) in residuals.iter().zip(&widths) {
                 let (mask, mut acc, mut bits) = ((1u64 << w) - 1, 0u64, 0);
@@ -308,7 +309,7 @@ impl Packed {
     #[inline(always)]
     fn block(&self, index: usize, len: usize, out: &mut [[i32; BLOCK]; 2]) {
         let data = &self.data[self.offsets[index] as usize..];
-        let word = |at: usize| i32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+        let word = |at: usize| i32::from_le_bytes([0, data[at], data[at + 1], data[at + 2]]) >> 8;
         let mut at = HEADER;
         let n = len.max(2) - 2;
         for (c, x) in out.iter_mut().enumerate() {
@@ -321,9 +322,9 @@ impl Packed {
             // Every field's eight-byte read stays in bounds: blocks are
             // followed by the next block or the zero tail.
             assert!((n.saturating_sub(1) * w as usize) / 8 + 8 <= bits.len());
-            let (mut prev, mut delta) = (word(6 + 8 * c), 0);
-            delta = prev.wrapping_sub(word(2 + 8 * c)).wrapping_add(delta);
-            (x[0], x[1]) = (word(2 + 8 * c), prev);
+            let (first, mut prev) = (word(2 + 6 * c), word(5 + 6 * c));
+            let mut delta = prev.wrapping_sub(first);
+            (x[0], x[1]) = (first, prev);
             for (i, y) in x[2..2 + n].iter_mut().enumerate() {
                 let bit = i * w as usize;
                 // SAFETY: `bit / 8 + 8 <= bits.len()` by the assertion above.
@@ -384,43 +385,53 @@ pub struct Source {
 /// Resolves sample paths, caching archive indexes and library keys.
 #[derive(Default)]
 pub struct Sources {
-    archives: HashMap<PathBuf, (Archive, File)>,
-    keys: HashMap<PathBuf, Option<Arc<LibraryKey>>>,
+    archives: HashMap<PathBuf, Indexed>,
+}
+
+/// An archive's directory, open file and (once needed) library key.
+struct Indexed {
+    index: Archive,
+    file: File,
+    key: OnceLock<Result<Option<Arc<LibraryKey>>, String>>,
 }
 
 impl Sources {
     pub fn source(&mut self, path: &Path) -> Result<Source> {
-        self.source_in(path, None)
+        self.prepare(path)?;
+        self.resolve(path)
     }
 
-    /// Like [`Sources::source`]; `known` is the archive and member entry the
-    /// importer already validated, which skips re-reading the archive index.
-    pub fn source_in(&mut self, path: &Path, known: Option<&(PathBuf, Entry)>) -> Result<Source> {
-        let (archive, entry) = match known {
-            Some((archive, entry)) => (archive.clone(), entry.clone()),
-            None => {
-                let Some((archive, member)) = crate::import::archive_member(path) else {
-                    return Ok(Source {
-                        path: path.into(),
-                        file: path.into(),
-                        offset: 0,
-                        len: None,
-                        key: None,
-                    });
-                };
-                if !self.archives.contains_key(&archive) {
-                    let mut file = File::open(&archive)?;
-                    let index = Archive::read_index(&mut file)
-                        .with_context(|| format!("Archive {}", archive.display()))?;
-                    self.archives.insert(archive.clone(), (index, file));
-                }
-                let (index, file) = &self.archives[&archive];
-                let entry = index
-                    .member(FileAt { file, pos: 0 }, &member)?
-                    .context("Archive member not found")?;
-                (archive, entry)
-            }
+    /// Read the directory of the archive holding `path`, once per archive.
+    fn prepare(&mut self, path: &Path) -> Result<()> {
+        if let Some((archive, _)) = crate::import::archive_member(path)
+            && !self.archives.contains_key(&archive)
+        {
+            let mut file = File::open(&archive)?;
+            let index = Archive::read_index(&mut file)
+                .with_context(|| format!("Archive {}", archive.display()))?;
+            let key = OnceLock::new();
+            self.archives.insert(archive, Indexed { index, file, key });
+        }
+        Ok(())
+    }
+
+    /// The source of `path`, whose archive [`Sources::prepare`] has read.
+    /// Only reads the member's header, so threads may resolve many at once.
+    fn resolve(&self, path: &Path) -> Result<Source> {
+        let Some((archive, member)) = crate::import::archive_member(path) else {
+            return Ok(Source {
+                path: path.into(),
+                file: path.into(),
+                offset: 0,
+                len: None,
+                key: None,
+            });
         };
+        let indexed = self.archives.get(&archive).context("Archive not prepared")?;
+        let entry = indexed
+            .index
+            .member(FileAt { file: &indexed.file, pos: 0 }, &member)?
+            .context("Archive member not found")?;
         ensure!(
             entry.valid,
             "{}",
@@ -428,13 +439,14 @@ impl Sources {
         );
         let key = if entry.encoded && entry.key_index != 0xff {
             ensure!(entry.key_index == 0x100, "Unsupported legacy NKX cipher");
-            if !self.keys.contains_key(&archive) {
-                let key = crate::import::library_key(&archive)?.map(Arc::new);
-                self.keys.insert(archive.clone(), key);
-            }
+            let key = indexed.key.get_or_init(|| {
+                crate::import::library_key(&archive)
+                    .map(|key| key.map(Arc::new))
+                    .map_err(|e| format!("{e:#}"))
+            });
             Some(
-                self.keys[&archive]
-                    .clone()
+                key.clone()
+                    .map_err(anyhow::Error::msg)?
                     .context("Encrypted archive member needs local library access data")?,
             )
         } else {
@@ -862,7 +874,9 @@ mod tests {
                 .collect();
             // Silence packs to headers only; the extremes use the widest residuals.
             let edges: Vec<Frame> = (0..130).map(|i| [0.0, if i % 2 == 0 { -1.0 } else { q(peak * 2 - 1) }]).collect();
-            for frames in [frames, edges] {
+            // Full-scale block headers, zero residuals.
+            let flat: Vec<Frame> = vec![[-1.0, q(peak * 2 - 1)]; 131];
+            for frames in [frames, edges, flat] {
                 let pcm = Pcm::pack(&frames, true);
                 assert!(matches!(pcm, Pcm::Packed(_)) || frames.len() == 130);
                 let n = frames.len();

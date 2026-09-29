@@ -436,7 +436,6 @@ fn performance_controls_edit_the_script() {
             script_state: Vec::new(),
             kontakt_sample_bytes: 0.0,
             kontakt_preload: 0,
-            archive_members: Default::default(),
         }));
     }
     let value = |n: usize| {

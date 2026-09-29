@@ -214,18 +214,12 @@ impl Bank {
                 })
             })
             .collect();
+        // Resolved on this thread: sources outlive loading, and allocating
+        // them on workers fragments their heap arenas (18 MiB more RSS on
+        // Vista 5 Violins). Import just read each member header, so these
+        // reads come from the page cache.
         let mut sources = audio::Sources::default();
-        let members = std::mem::take(
-            &mut *instrument
-                .archive_members
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()),
-        );
-        let resolved: Vec<_> = paths
-            .iter()
-            .map(|path| sources.source_in(path, members.get(*path)))
-            .collect();
-        drop(members);
+        let resolved: Vec<_> = paths.iter().map(|path| sources.source(path)).collect();
         let opened = parallel(resolved, |_: &mut (), source| {
             let source = source?;
             anyhow::Ok((source.open()?, source))
