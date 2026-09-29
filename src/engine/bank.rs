@@ -51,6 +51,33 @@ impl Default for GroupSettings {
     }
 }
 
+impl From<&Group> for GroupSettings {
+    /// Kontakt applies velocity and pitch bend only through modulation
+    /// assignments: none stored means velocity and bend do nothing.
+    fn from(group: &Group) -> Self {
+        Self {
+            envelope: group.volume_env.as_ref().map(Ahdsr::from),
+            velocity_intensity: group.velocity_to_volume(),
+            bend_range: group.pitch_bend_range().unwrap_or(0.0),
+            interp_quality: group.interp_quality,
+            voice_group: None,
+        }
+    }
+}
+
+impl From<&crate::import::Ahdsr> for Ahdsr {
+    // ponytail: attack curve is decoded but the voice envelope has one fixed shape.
+    fn from(env: &crate::import::Ahdsr) -> Self {
+        Self {
+            attack: env.attack_ms / 1000.0,
+            hold: env.hold_ms / 1000.0,
+            decay: env.decay_ms / 1000.0,
+            sustain: env.sustain.clamp(0.0, 1.0),
+            release: env.release_ms / 1000.0,
+        }
+    }
+}
+
 /// A sample's resident data: one or more spans of decoded frames.
 pub(crate) struct SampleData {
     pub rate: u32,
@@ -361,7 +388,7 @@ impl Builder {
                 issues.notes.join("; ")
             );
         }
-        let settings = groups.iter().map(|_| GroupSettings::default()).collect();
+        let settings = groups.iter().map(GroupSettings::from).collect();
         Ok(Self {
             groups,
             zones: kept,
@@ -383,7 +410,6 @@ impl Builder {
             self.polyphony = (limit.max_voices as usize).clamp(1, super::MAX_VOICES);
         }
         for (settings, group) in self.settings.iter_mut().zip(&self.groups) {
-            settings.interp_quality = group.interp_quality;
             settings.voice_group = group.voice_group.and_then(|v| u16::try_from(v).ok()).filter(|&v| {
                 self.voice_groups
                     .get(v as usize)

@@ -1,7 +1,7 @@
 use kontakto::{
     audio::Sample,
     engine::{Ahdsr, Bank, Engine, EventChange, MAX_VOICES, NoteEvent, PRELOAD_FRAMES, Rack},
-    import::{Group, Instrument, Loop, Resolver, VoiceLimit, Zone},
+    import::{Group, Instrument, Loop, ModAssignment, ModSource, ModTarget, Resolver, VoiceLimit, Zone},
 };
 use std::path::{Path, PathBuf};
 
@@ -194,10 +194,23 @@ fn every_group_layers_with_mute_solo_and_allow_mask() {
 
 #[test]
 fn release_triggers_fire_on_release_including_after_the_pedal() {
+    let velocity_volume = ModAssignment {
+        name: "VEL_VOLUME".into(),
+        source: ModSource::Velocity,
+        target: ModTarget::Volume,
+        intensity: 1.0,
+        invert: false,
+        lag_ms: 0,
+        shaper: None,
+    };
     let groups = vec![
-        Group::default(),
+        Group {
+            mods: vec![velocity_volume.clone()],
+            ..Group::default()
+        },
         Group {
             release_trigger: true,
+            mods: vec![velocity_volume],
             ..Group::default()
         },
     ];
