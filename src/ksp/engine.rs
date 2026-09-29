@@ -66,8 +66,9 @@ pub struct EnginePar {
 
 pub trait KspEngine {
     fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<EventId>;
-    /// Release a voice; release triggers may start in `groups`.
-    fn note_off(&mut self, at: u32, voice: EventId, groups: &GroupMask);
+    /// Release a voice. `event` is its note event now: release triggers use its
+    /// key, velocity and groups (whole-sample notes fired them at the start).
+    fn note_off(&mut self, at: u32, voice: EventId, event: &NoteSpec<'_>);
     fn fade(&mut self, at: u32, voice: EventId, fade: Fade);
     fn set_par(&mut self, at: u32, voice: EventId, par: VoicePar, value: i32);
     /// A controller that passed every slot: 0..127, 128 pitch bend (-8192..8191),
@@ -186,7 +187,7 @@ impl KspEngine for LogEngine {
         Some(self.next_voice)
     }
 
-    fn note_off(&mut self, at: u32, voice: EventId, _groups: &GroupMask) {
+    fn note_off(&mut self, at: u32, voice: EventId, _event: &NoteSpec<'_>) {
         self.calls.push(EngineCall::NoteOff {
             time: self.time(at),
             voice,

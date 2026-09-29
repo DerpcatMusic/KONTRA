@@ -21,7 +21,7 @@ mod voice;
 
 pub use bank::{Bank, GroupSettings, MEMORY_LIMIT, PRELOAD_FRAMES};
 pub use rack::{BUSES, Block, PartControls, RACK_SLOTS, Rack};
-pub use script::{MAX_COMMANDS, ScriptSetup};
+pub use script::{MAX_COMMANDS, ScriptSetup, load_scripts};
 pub use voice::Ahdsr;
 
 use crate::fx::FxProcessor;
@@ -352,9 +352,13 @@ impl Engine {
     /// Release the event's voices (note-off by id), firing release triggers.
     pub fn release_event(&mut self, id: EventId) {
         let defaults = self.defaults();
-        if let Some(bank) = self.bank.as_deref() {
+        let Some(bank) = self.bank.as_deref() else {
+            return;
+        };
+        if let Some((channel, note, velocity, false)) = self.player.release_voices(bank, id) {
             let allowed = self.player.allowed;
-            self.player.release_event(bank, id, &allowed, defaults);
+            let key = (channel, note, velocity);
+            self.player.trigger_release(bank, key, &allowed, defaults);
         }
     }
 
@@ -810,35 +814,45 @@ impl Player {
         }
     }
 
-    /// Release one event's voices; release triggers start in the groups of
-    /// `groups`. A held sustain pedal defers both, like a key release.
-    fn release_event(&mut self, bank: &Bank, id: EventId, groups: &GroupMask, defaults: Ahdsr) {
-        let mut trigger = None;
+    /// Release one event's voices; a held sustain pedal defers them like a key
+    /// release. Returns the first voice's channel, note, velocity and whether
+    /// it is itself a release trigger.
+    fn release_voices(&mut self, bank: &Bank, id: EventId) -> Option<(u8, u8, u8, bool)> {
+        let mut first = None;
         for v in self
             .voices
             .iter_mut()
             .filter(|v| v.event == id && !v.released)
         {
-            trigger.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger));
+            first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger));
             if self.sustain[v.channel as usize] {
                 v.held = false;
             } else {
                 v.release(bank, &mut self.free);
             }
         }
-        let Some((channel, note, velocity, false)) = trigger else {
-            return;
-        };
-        if self.sustain[channel as usize] {
+        first
+    }
+
+    /// Start the release-trigger zones for a key release, limited to `groups`;
+    /// a held sustain pedal defers them to pedal-up (with the engine's groups).
+    fn trigger_release(
+        &mut self,
+        bank: &Bank,
+        (channel, note, velocity): (u8, u8, u8),
+        groups: &GroupMask,
+        defaults: Ahdsr,
+    ) {
+        if self.sustain.get(channel as usize) == Some(&true) {
             self.pedal_releases[channel as usize][note as usize] = velocity;
-        } else {
-            let id = self.next_id();
-            let event = NoteEvent {
-                groups: Some(groups),
-                ..NoteEvent::new(channel, note, velocity)
-            };
-            self.start(bank, &event, id, true, defaults);
+            return;
         }
+        let id = self.next_id();
+        let event = NoteEvent {
+            groups: Some(groups),
+            ..NoteEvent::new(channel, note, velocity)
+        };
+        self.start(bank, &event, id, true, defaults);
     }
 
     fn cc(&mut self, bank: Option<&Bank>, channel: u8, cc: u8, value: u8, defaults: Ahdsr) {

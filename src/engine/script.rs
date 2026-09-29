@@ -5,8 +5,36 @@
 //! off the audio thread, where nothing can play.
 
 use super::{Ahdsr, Bank, EventChange, EventId, GroupMask, NoteEvent, Player};
-use crate::import::Group;
-use crate::ksp::{EnginePar, Fade, KspEngine, NoteSpec, VoicePar};
+use crate::import::{Group, Instrument};
+use crate::ksp::{EnginePar, Fade, KspEngine, NoteLength, NoteSpec, Persisted, Runtime, VoicePar};
+
+/// Script output buses, as Kontakt's default output section.
+const SCRIPT_OUTPUTS: usize = 8;
+
+/// Initialize an instrument's scripts off the audio thread (`on init` may take
+/// a while), restoring `persisted` values. `None` when it has no scripts.
+/// Failing slots stay in place, passing events through; their errors return.
+pub fn load_scripts(
+    instrument: &Instrument,
+    persisted: Vec<Persisted>,
+    rate: f64,
+) -> (Option<Box<Runtime>>, Vec<String>) {
+    if instrument.scripts.is_empty() {
+        return (None, Vec::new());
+    }
+    let mut setup = ScriptSetup {
+        groups: &instrument.groups,
+        rate,
+    };
+    let (rt, errors) =
+        Runtime::with_scripts(&instrument.scripts, &mut setup, SCRIPT_OUTPUTS, persisted);
+    let errors = errors
+        .into_iter()
+        .enumerate()
+        .filter_map(|(slot, e)| Some(format!("Script {}: {}", slot + 1, e?)))
+        .collect();
+    (Some(Box::new(rt)), errors)
+}
 
 /// Script engine calls one render can hold; the rest are dropped and counted.
 pub const MAX_COMMANDS: usize = 256;
@@ -29,10 +57,17 @@ pub(super) enum Kind {
         volume: f32,
         tune: f64,
         pan: f32,
+        /// Whole-sample notes (`play_note` duration 0) also fire release
+        /// triggers at once, which is how scripts play release samples.
+        whole: bool,
         groups: GroupMask,
     },
-    /// Release, with the groups its release triggers may start in.
-    Release(GroupMask),
+    /// Key release; `trigger` carries note, velocity and groups for release
+    /// triggers unless the note already fired them.
+    Release {
+        trigger: Option<(u8, u8)>,
+        groups: GroupMask,
+    },
     Fade(Fade),
     Change(EventChange),
     Controller {
@@ -72,13 +107,18 @@ impl KspEngine for Host<'_> {
             volume: 10f32.powf(n.volume_mdb as f32 / 20_000.0),
             tune: f64::from(n.tune_mc) / 100_000.0,
             pan: n.pan.clamp(-1000, 1000) as f32 / 1000.0,
+            whole: n.length == NoteLength::Sample,
             groups: *n.groups,
         };
         self.push(at, id, kind).then_some(id)
     }
 
-    fn note_off(&mut self, at: u32, voice: EventId, groups: &GroupMask) {
-        self.push(at, voice, Kind::Release(*groups));
+    fn note_off(&mut self, at: u32, voice: EventId, n: &NoteSpec<'_>) {
+        let kind = Kind::Release {
+            trigger: (n.length != NoteLength::Sample).then_some((n.note, n.velocity)),
+            groups: *n.groups,
+        };
+        self.push(at, voice, kind);
     }
 
     fn fade(&mut self, at: u32, voice: EventId, fade: Fade) {
@@ -142,6 +182,7 @@ impl Player {
                 volume,
                 tune,
                 pan,
+                whole,
                 ref groups,
             } => {
                 let event = NoteEvent {
@@ -155,8 +196,16 @@ impl Player {
                     pan,
                 };
                 self.start(bank, &event, id, false, defaults);
+                if whole {
+                    self.start(bank, &event, id, true, defaults);
+                }
             }
-            Kind::Release(groups) => self.release_event(bank, id, groups, defaults),
+            Kind::Release { trigger, groups } => {
+                self.release_voices(bank, id);
+                if let &Some((note, velocity)) = trigger {
+                    self.trigger_release(bank, (channel, note, velocity), groups, defaults);
+                }
+            }
             &Kind::Fade(Fade::In { duration_us }) => {
                 let frames = self.frames(duration_us as f32 * 1e-6);
                 for v in self.voices.iter_mut().filter(|v| v.event == id) {
@@ -195,7 +244,7 @@ impl KspEngine for ScriptSetup<'_> {
         None
     }
 
-    fn note_off(&mut self, _at: u32, _voice: EventId, _groups: &GroupMask) {}
+    fn note_off(&mut self, _at: u32, _voice: EventId, _event: &NoteSpec<'_>) {}
 
     fn fade(&mut self, _at: u32, _voice: EventId, _fade: Fade) {}
 

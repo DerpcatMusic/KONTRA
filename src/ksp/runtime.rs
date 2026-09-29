@@ -108,6 +108,22 @@ impl Event {
     pub fn index(id: i32) -> usize {
         (id as u32 & ((1 << EVENT_INDEX_BITS) - 1)) as usize
     }
+
+    /// The event as the engine sees it; `id` is its KSP event ID.
+    fn spec(&self, id: i32) -> NoteSpec<'_> {
+        NoteSpec {
+            event: id,
+            note: self.note.clamp(0, 127) as u8,
+            velocity: self.velocity.clamp(1, 127) as u8,
+            sample_offset_us: self.sample_offset_us,
+            length: self.length,
+            volume_mdb: self.volume,
+            tune_mc: self.tune,
+            pan: self.pan,
+            zone: self.zone,
+            groups: &self.groups,
+        }
+    }
 }
 
 /// Fixed pool of events. Freed events stay addressable until their slot is reused
@@ -1079,7 +1095,7 @@ impl Runtime {
                 };
                 if slot >= slots {
                     if let Some(v) = e.voice.take() {
-                        engine.note_off(self.env.offset, v, &e.groups);
+                        engine.note_off(self.env.offset, v, &e.spec(event));
                     }
                     return self.env.events.free(event);
                 }
@@ -1185,19 +1201,7 @@ impl Runtime {
             return;
         };
         e.at_engine = true;
-        let spec = NoteSpec {
-            event,
-            note: e.note.clamp(0, 127) as u8,
-            velocity: e.velocity.clamp(1, 127) as u8,
-            sample_offset_us: e.sample_offset_us,
-            length: e.length,
-            volume_mdb: e.volume,
-            tune_mc: e.tune,
-            pan: e.pan,
-            zone: e.zone,
-            groups: &e.groups,
-        };
-        let voice = engine.play_note(at, &spec);
+        let voice = engine.play_note(at, &e.spec(event));
         e.voice = voice;
         if let (Some(v), true) = (voice, e.fade_in_us > 0) {
             engine.fade(
