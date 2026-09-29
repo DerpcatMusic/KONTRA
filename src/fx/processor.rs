@@ -67,14 +67,13 @@ impl ProgramFx {
             .iter()
             .any(|fx| !fx.bypass && matches!(fx.params, Params::SendLevels(_)));
         // Unfed send slots would only ever process silence.
-        let sends: Vec<_> = match tapped {
-            true => self
-                .send
-                .slots
-                .iter()
+        let sends: Vec<_> = if tapped {
+            let active = self.send.slots.iter();
+            active
                 .filter_map(|fx| Some((fx.slot, build(fx)?)))
-                .collect(),
-            false => Vec::new(),
+                .collect()
+        } else {
+            Vec::new()
         };
         let insert = self
             .insert
@@ -133,7 +132,7 @@ impl FxProcessor {
     }
 
     /// Processes the program output in place. Once the input has been silent
-    /// longer than the longest tail, blocks pass through untouched.
+    /// for longer than every tail, blocks pass through untouched.
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         if self.is_empty() {
             return;
