@@ -3,7 +3,7 @@ use std::io::Cursor;
 use crate::{
     kontakt::{chunk::Chunk, KontaktError},
     read_bytes::ReadBytesExt,
-    Error,
+    Error, NIFileError,
 };
 
 use super::BParFX;
@@ -24,26 +24,23 @@ impl BParamArrayBParFX8 {
     pub fn read<R: ReadBytesExt>(mut reader: R, num_items: u32) -> Result<Self, Error> {
         let is_structured_data = reader.read_bool()?;
         let version = reader.read_u16_le()?;
-        let mut items = Vec::new();
-
-        assert!(!is_structured_data); // always false?
-
-        match version {
-            0x11 => {
-                panic!("Unsupported BParamArrayBParFX8: v11");
-            }
-            _ => {
-                for _ in 0..num_items {
-                    let has_item = reader.read_bool()?;
-                    if has_item {
-                        items.push(Some(Chunk::read(&mut reader)?));
-                    } else {
-                        items.push(None);
-                    }
-                }
-            }
+        if is_structured_data || !matches!(version, 0x10 | 0x12) {
+            return Err(NIFileError::Generic(format!(
+                "Unsupported BParamArrayBParFX8 v{version:x} (structured: {is_structured_data})"
+            )));
         }
-
+        let mut items = Vec::with_capacity(num_items as usize);
+        for _ in 0..num_items {
+            items.push(match reader.read_u8()? {
+                0 => None,
+                1 => Some(Chunk::read(&mut reader)?),
+                flag => {
+                    return Err(NIFileError::Generic(format!(
+                        "Invalid BParamArray slot flag {flag}"
+                    )))
+                }
+            });
+        }
         Ok(Self { version, items })
     }
 

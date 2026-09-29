@@ -43,6 +43,7 @@ pub struct Instrument {
     pub missing_samples: Vec<String>,
     #[serde(skip)]
     pub scripts: Vec<String>,
+    pub fx: crate::fx::ProgramFx,
 }
 
 /// ni-file is a research parser with panic paths. Keep those off the host thread.
@@ -102,6 +103,38 @@ pub fn read_multi(path:&Path)->Result<Multi> {
 }
 pub fn read_program(path:&Path,program:u32)->Result<Instrument> {
     std::panic::catch_unwind(||read_inner(path,program)).map_err(|_|anyhow::anyhow!("Malformed Kontakt program"))?
+}
+
+/// Effect racks of every program (slot, effects), with IR file names but no audio decoded.
+pub fn read_fx(path: &Path) -> Result<Vec<(u32, crate::fx::ProgramFx)>> {
+    std::panic::catch_unwind(|| -> Result<_> {
+        let c = chunks(path)?;
+        let programs = match c.find_first(0x28) {
+            Some(p) => vec![(0, Program::try_from(p)?)],
+            None => multi_programs(&c)?.1,
+        };
+        let files = other_files(&c)?;
+        programs
+            .into_iter()
+            .map(|(slot, p)| {
+                let mut fx = crate::fx::ProgramFx::read(&p)?;
+                fx.name_impulses(&files);
+                Ok((slot, fx))
+            })
+            .collect()
+    })
+    .map_err(|_| anyhow::anyhow!("Malformed Kontakt effects"))?
+}
+
+/// The preset's non-sample file table (IRs, the preset itself).
+fn other_files(c: &KontaktChunks) -> Result<HashMap<u32, String>> {
+    Ok(c.0.iter().find(|c| c.id == 0x4b).map(FNTableImpl::try_from).transpose()?.map(|t| t.other_filetable).unwrap_or_default())
+}
+
+/// The library resource container (`.nkr`) that `.../Resources/...` paths live in.
+fn resource_container(c: &KontaktChunks) -> Result<Option<String>> {
+    let table = c.0.iter().find(|c| c.id == 0x4b).map(FNTableImpl::try_from).transpose()?;
+    Ok(table.and_then(|t| t.special_filetable.into_values().find(|f| f.to_lowercase().ends_with(".nkr"))))
 }
 
 /// Inspect scripts without sample resolution, so compatibility rescans do not reopen sample archives.
@@ -246,8 +279,27 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
     }
     for (archive,index) in &resolver.archives {warnings.extend(index.issues.iter().map(|issue|format!("{}: {issue}",archive.display())));}
     if c.find_first(3).is_some(){warnings.push("Multi routing, master processing and multi scripts are not restored; parts use manual playback".into());}
+    let fx = match crate::fx::ProgramFx::read(&p) {
+        Ok(mut fx) => {
+            fx.name_impulses(&other_files(&c)?);
+            let mut decoder = crate::audio::Decoder::default();
+            let container = resource_container(&c)?;
+            fx.load_impulses(|name, max_frames| {
+                // Kontakt maps any `<dir>/Resources/...` path into the resource container.
+                let ir = match (resolver.resolve(parent, name)?, &container, name.find("Resources/")) {
+                    (Some(ir), ..) => Some(ir),
+                    (None, Some(nkr), Some(at)) => resolver.resolve(parent, &format!("{nkr}/{}", &name[at..]))?,
+                    _ => None,
+                };
+                decoder.decode(&ir.context("file missing or its archive member is damaged")?, max_frames)
+            });
+            warnings.extend(fx.warnings());
+            fx
+        }
+        Err(e) => { warnings.push(format!("Effects were not imported: {e:#}")); Default::default() }
+    };
     warnings.sort(); warnings.dedup(); missing_samples.sort(); missing_samples.dedup();
-    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts })
+    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, fx })
 }
 
 pub struct Resolver { root: PathBuf, index: Option<HashMap<String, Vec<PathBuf>>>, archives: HashMap<PathBuf,ni_file::nkr::Archive> }
