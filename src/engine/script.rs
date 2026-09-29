@@ -34,6 +34,7 @@ pub fn load_scripts(
         .enumerate()
         .filter_map(|(slot, e)| Some(format!("Script {}: {}", slot + 1, e?)))
         .collect();
+    crate::audio::trim_heap();
     (Some(Box::new(rt)), errors)
 }
 

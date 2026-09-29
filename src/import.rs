@@ -109,8 +109,10 @@ pub struct Instrument {
     pub kontakt_preload: i32,
     /// Archive and validated entry of every resolved archive member, so
     /// loading does not index the archives again.
+    /// Taken by the first [`crate::engine::Bank::load`], so an instrument
+    /// kept for display does not hold them.
     #[serde(skip)]
-    pub archive_members: HashMap<PathBuf, (PathBuf, ni_file::nkr::Entry)>,
+    pub archive_members: std::sync::Mutex<HashMap<PathBuf, (PathBuf, ni_file::nkr::Entry)>>,
 }
 
 /// ni-file is a research parser with panic paths. Keep those off the host thread.
@@ -399,7 +401,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         Ok(v) => v.map_or((None, Vec::new()), |(limit, groups)| (Some(limit), groups)),
         Err(e) => { warnings.push(format!("Voice groups ignored: {e:#}")); (None, Vec::new()) }
     };
-    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state, kontakt_sample_bytes: program.num_bytes_samples_total, kontakt_preload: program.dfd_channel_preload_size, archive_members: resolver.members })
+    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state, kontakt_sample_bytes: program.num_bytes_samples_total, kontakt_preload: program.dfd_channel_preload_size, archive_members: std::sync::Mutex::new(resolver.members) })
 }
 
 /// VoiceGroups chunk (0x32, v0x60): program limit, a 128-bit presence mask, then one

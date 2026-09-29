@@ -17,12 +17,14 @@ use std::{collections::HashMap, num::NonZero, ops::Range, path::PathBuf, sync::M
 pub const MEMORY_LIMIT: usize = 1 << 30;
 /// Frames of every sample kept in RAM past the furthest start offset
 /// (Kontakt's DFD preload). Voices start from this instantly while the
-/// streamer fetches the rest; 8192 frames is ≈170 ms at 48 kHz (48 KiB per
-/// 24-bit stereo sample). Shrinks toward [`MIN_PRELOAD`] to fit the budget.
-pub const PRELOAD_FRAMES: u64 = 8192;
-/// Smallest preload the budget may force: ≈43 ms at 48 kHz, several times
-/// the streamer's time to first data on an SSD.
-pub const MIN_PRELOAD: u64 = 2048;
+/// streamer fetches the rest; 2048 frames is ≈43 ms at 48 kHz (12 KiB per
+/// 24-bit stereo sample, a fifth of Kontakt's 60 KB default). Measured on
+/// NVMe with a cold page cache (audits/PERFORMANCE.md): no underruns at
+/// 1000 streaming voices and 256 note starts per second; 1024 frames
+/// underruns. Shrinks toward [`MIN_PRELOAD`] to fit the budget.
+pub const PRELOAD_FRAMES: u64 = 2048;
+/// Smallest preload the budget may force: ≈21 ms at 48 kHz.
+pub const MIN_PRELOAD: u64 = 1024;
 /// Voices per instrument when the program stores no limit.
 const DEFAULT_POLYPHONY: usize = 512;
 
@@ -181,10 +183,17 @@ impl Bank {
             })
             .collect();
         let mut sources = audio::Sources::default();
+        let members = std::mem::take(
+            &mut *instrument
+                .archive_members
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
         let resolved: Vec<_> = paths
             .iter()
-            .map(|path| sources.source_in(path, instrument.archive_members.get(*path)))
+            .map(|path| sources.source_in(path, members.get(*path)))
             .collect();
+        drop(members);
         let opened = parallel(resolved, |_: &mut (), source| {
             let source = source?;
             anyhow::Ok((source.open()?, source))
@@ -276,6 +285,7 @@ impl Bank {
         );
         let mut bank = builder.finish(samples, streamer, bytes)?;
         bank.preload = preload;
+        audio::trim_heap();
         Ok(bank)
     }
 

@@ -27,6 +27,21 @@ use symphonia::core::{
     probe::Hint,
 };
 
+/// Return freed heap memory to the system. Loading allocates and frees far
+/// more than it keeps (decompressed presets, parse trees, decode buffers on
+/// every core), and glibc keeps freed pages of its per-thread arenas
+/// resident; call once a load finished. A no-op elsewhere.
+pub fn trim_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        // SAFETY: glibc's malloc_trim is thread-safe and has no preconditions.
+        unsafe { malloc_trim(0) };
+    }
+}
+
 /// One stereo frame. Mono sources are duplicated to both channels.
 pub type Frame = [f32; 2];
 
