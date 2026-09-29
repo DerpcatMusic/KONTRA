@@ -210,7 +210,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
 }
 
 /// One preset row: click to open, drag onto the rack.
-fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &PathBuf) -> El {
+fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &std::path::Path) -> El {
     let id = format!("instrument-{n}");
     let text = path.to_string_lossy();
     let loaded = cx.selection.parts.iter().any(|p| p.path == text);

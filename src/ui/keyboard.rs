@@ -150,7 +150,7 @@ fn key(
         (false, false) => Color::oklch(0.95, 0., 0.),
     };
     let mut parts = vec![spacer()];
-    if note % 12 == 0 {
+    if note.is_multiple_of(12) {
         parts.push(
             caption(name.clone())
                 .text_size(9)
@@ -159,7 +159,7 @@ fn key(
                 .shrink(0),
         );
     }
-    let band = mark.map_or(Color::oklcha(0., 0., 0., 0.), |c| c);
+    let band = mark.unwrap_or(Color::oklcha(0., 0., 0., 0.));
     parts.push(
         block(Len::Pct(100.), if black { 3 } else { 4 })
             .fill(band)
@@ -236,6 +236,6 @@ mod tests {
             "BLACK shows a plain key"
         );
         assert!(color("$KEY_COLOR_DEFAULT").unwrap().is_some());
-        assert!(MAX_OCTAVE * 12 + OCTAVES * 12 <= 128);
+        const { assert!(MAX_OCTAVE * 12 + OCTAVES * 12 <= 128) };
     }
 }

@@ -38,9 +38,11 @@ fn center(ui: &Ui, id: &str) -> Point {
     Point::new(r.x + r.size.width / 2., r.y + r.size.height / 2.)
 }
 
+type Build = Box<dyn FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El>;
+
 struct Harness {
     ui: Ui,
-    build: Box<dyn FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El>,
+    build: Build,
     bridge: Bridge<SamplerParams>,
     size: Size,
 }

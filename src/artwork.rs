@@ -91,7 +91,7 @@ pub fn performance(
     for folder in instrument.path.ancestors().skip(1).take(4) {
         for relative in ["Resources/pictures", "resources/pictures", "pictures"] {
             if let Ok(entries) = std::fs::read_dir(folder.join(relative)) {
-                for file in entries.flatten().filter(|e| {
+                if let Some(file) = entries.flatten().find(|e| {
                     e.file_name()
                         .to_string_lossy()
                         .eq_ignore_ascii_case(&filename)
