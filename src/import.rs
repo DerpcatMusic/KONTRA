@@ -86,7 +86,7 @@ impl Default for Zone {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct Instrument {
     pub path: PathBuf,
     pub name: String,
@@ -103,6 +103,16 @@ pub struct Instrument {
     /// Persistent variable values saved with each script, parallel to `scripts`.
     #[serde(skip)]
     pub script_state: Vec<crate::ksp::Persisted>,
+    /// Kontakt's own figures saved in the program: total sample bytes and
+    /// per-instrument DFD preload override (0 = the global default).
+    pub kontakt_sample_bytes: f64,
+    pub kontakt_preload: i32,
+    /// Archive and validated entry of every resolved archive member, so
+    /// loading does not index the archives again.
+    /// Taken by the first [`crate::engine::Bank::load`], so an instrument
+    /// kept for display does not hold them.
+    #[serde(skip)]
+    pub archive_members: std::sync::Mutex<HashMap<PathBuf, (PathBuf, ni_file::nkr::Entry)>>,
 }
 
 /// ni-file is a research parser with panic paths. Keep those off the host thread.
@@ -304,8 +314,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
     let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
     let mut resolver = Resolver::new(root);
     let mut missing_samples = Vec::new();
-    let mut paths = HashMap::new();
-    let mut unavailable = std::collections::HashSet::new();
+    let (mut names, mut order, mut zone_ids) = (HashMap::new(), Vec::new(), Vec::new());
     let data = &p.0.find_first(0x34).context("Missing zone list")?.data;
     let mut r = Cursor::new(data);
     let count = u32le(&mut r)? as usize;
@@ -333,12 +342,11 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         // Six bytes, 00 01 ff ff ff ff in every local v0x9a zone; meaning unknown.
         if so.version >= 0x9a { let mut unknown=[0;6]; z.read_exact(&mut unknown)?; }
         let file_id = i32le(&mut z)?;
-        if let std::collections::hash_map::Entry::Vacant(entry)=paths.entry(file_id) {
-            let name=table.get(&(file_id as u32)).context("Zone sample ID is absent from file table")?;
-            let resolved=resolver.resolve(parent,name)?;
-            if resolved.is_none(){missing_samples.push(name.clone());unavailable.insert(file_id);}
-            entry.insert(resolved.unwrap_or_else(||parent.join(name)));
+        if let std::collections::hash_map::Entry::Vacant(entry)=names.entry(file_id) {
+            entry.insert(table.get(&(file_id as u32)).context("Zone sample ID is absent from file table")?.as_str());
+            order.push(file_id);
         }
+        zone_ids.push(file_id);
         ensure!([lk,hk,lv,hv,root].iter().chain(&fades).all(|v| (0..=127).contains(v)) && lk <= hk && lv <= hv, "Invalid zone mapping");
         let [fade_low_velocity, fade_high_velocity, fade_low_key, fade_high_key] = fades.map(|v| v as u8);
         ensure!(start >= 0 && end <= 0 && gain.is_finite() && pan.is_finite() && tune.is_finite() && tune > 0.0, "Invalid zone {} v{:x}: start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}",zones.len(),so.version);
@@ -357,13 +365,23 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
                 break;
             }
         }
-        zones.push(Zone { group, sample: paths.get(&file_id).with_context(||format!("Zone {} v{:x}: sample id {} missing from file table ({} entries); public {:?}",zones.len(),so.version,file_id,paths.len(),&so.public_data[..so.public_data.len().min(64)]))?.clone(),
-            available: !unavailable.contains(&file_id), low_key: lk as u8, high_key: hk as u8, root: root as u8, low_velocity: lv as u8, high_velocity: hv as u8,
+        // Samples resolve in one batch after the zone list.
+        zones.push(Zone { group, sample: PathBuf::new(), available: true, low_key: lk as u8, high_key: hk as u8, root: root as u8, low_velocity: lv as u8, high_velocity: hv as u8,
             fade_low_velocity, fade_high_velocity, fade_low_key, fade_high_key, start_mod,
             start: start as usize, end, gain: gain * program.volume, pan: (pan + program.pan).clamp(-1.0,1.0),
             tune: tune as f64 * program.tune as f64 * 2f64.powf(program.transpose as f64 / 12.0), loop_range });
     }
-    for (archive,index) in &resolver.archives {warnings.extend(index.issues.iter().map(|issue|format!("{}: {issue}",archive.display())));}
+    let resolved = resolver.resolve_all(parent, &order.iter().map(|id| names[id]).collect::<Vec<_>>())?;
+    let mut paths = HashMap::new();
+    for (id, resolved) in order.iter().zip(resolved) {
+        if resolved.is_none() { missing_samples.push(names[id].to_string()); }
+        paths.insert(*id, resolved.ok_or_else(|| parent.join(names[id])));
+    }
+    for (zone, id) in zones.iter_mut().zip(&zone_ids) {
+        let (Ok(path) | Err(path)) = &paths[id];
+        (zone.sample, zone.available) = (path.clone(), paths[id].is_ok());
+    }
+    for (archive,(index,_)) in &resolver.archives {warnings.extend(index.issues.iter().map(|issue|format!("{}: {issue}",archive.display())));}
     if c.find_first(3).is_some(){warnings.push("Multi routing, master processing and multi scripts are not restored; parts use manual playback".into());}
     let fx = match crate::fx::ProgramFx::read(&p) {
         Ok(mut fx) => {
@@ -391,7 +409,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         Ok(v) => v.map_or((None, Vec::new()), |(limit, groups)| (Some(limit), groups)),
         Err(e) => { warnings.push(format!("Voice groups ignored: {e:#}")); (None, Vec::new()) }
     };
-    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state })
+    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state, kontakt_sample_bytes: program.num_bytes_samples_total, kontakt_preload: program.dfd_channel_preload_size, archive_members: std::sync::Mutex::new(resolver.members) })
 }
 
 /// VoiceGroups chunk (0x32, v0x60): program limit, a 128-bit presence mask, then one
@@ -421,28 +439,54 @@ fn voice_groups(data: &[u8]) -> Result<(VoiceLimit, Vec<Option<VoiceLimit>>)> {
 pub struct Resolver {
     root: PathBuf,
     index: Option<HashMap<String, Vec<PathBuf>>>,
-    archives: HashMap<PathBuf, ni_file::nkr::Archive>,
+    /// Lazily indexed archives with an open handle for member headers.
+    archives: HashMap<PathBuf, (ni_file::nkr::Archive, File)>,
+    /// Canonical path of each archive: canonicalizing per member costs a
+    /// path walk per component, which dominated large imports.
+    canonical: HashMap<PathBuf, PathBuf>,
+    is_file: HashMap<PathBuf, bool>,
+    /// Member entries validated ahead by [`Resolver::resolve_all`].
+    checked: HashMap<(PathBuf, String), Option<ni_file::nkr::Entry>>,
+    /// Every resolved archive member: its archive and validated entry, so
+    /// loading samples does not index the archives again.
+    pub members: HashMap<PathBuf, (PathBuf, ni_file::nkr::Entry)>,
     /// Archive members found zero-filled so far: an interrupted download
     /// preallocates the archive and leaves the unfetched rest as zeros.
     pub undownloaded: usize,
 }
 impl Resolver {
-    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), undownloaded: 0 } }
+    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), canonical: HashMap::new(), is_file: HashMap::new(), checked: HashMap::new(), members: HashMap::new(), undownloaded: 0 } }
     pub fn resolve(&mut self, parent: &Path, name: &str) -> Result<Option<PathBuf>> {
         let name = name.replace('\\', "/");
         let direct = parent.join(&name);
-        if direct.is_file() { return Ok(Some(direct.canonicalize()?)); }
-        if let Some((archive, member)) = archive_member(&direct) {
+        // Archive members first: a path inside an archive file is never a file itself.
+        if let Some((archive, member)) = self.archive_member(&direct) {
             if !self.archives.contains_key(&archive) {
-                self.archives.insert(archive.clone(), ni_file::nkr::Archive::read(File::open(&archive)?).with_context(|| format!("Archive {}", archive.display()))?);
+                let mut file = File::open(&archive)?;
+                let index = ni_file::nkr::Archive::read_index(&mut file).with_context(|| format!("Archive {}", archive.display()))?;
+                self.archives.insert(archive.clone(), (index, file));
             }
-            match self.archives[&archive].find(&member) {
-                Some(entry) if entry.valid => return Ok(Some(archive.canonicalize()?.join(&entry.name))),
+            let (index, file) = &self.archives[&archive];
+            let entry = match self.checked.remove(&(archive.clone(), member.clone())) {
+                Some(entry) => entry,
+                None => index.member(crate::audio::FileAt { file, pos: 0 }, &member)?,
+            };
+            match entry {
+                Some(entry) if entry.valid => {
+                    let canonical = match self.canonical.get(&archive) {
+                        Some(c) => c.clone(),
+                        None => self.canonical.entry(archive.clone()).or_insert(archive.canonicalize()?).clone(),
+                    };
+                    let path = canonical.join(&entry.name);
+                    self.members.insert(path.clone(), (canonical, entry));
+                    return Ok(Some(path));
+                }
                 Some(entry) if entry.issue == Some("Zero-filled NKX member header") => self.undownloaded += 1,
                 _ => {}
             }
             return Ok(None);
         }
+        if direct.is_file() { return Ok(Some(direct.canonicalize()?)); }
         let basename = name.rsplit('/').next().unwrap_or(&name).to_lowercase();
         let index = self.index.get_or_insert_with(|| {
             let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
@@ -461,6 +505,44 @@ impl Resolver {
             if candidates.len() == 1 { return Ok(Some(candidates[0].clone())); }
         }
         bail!("Ambiguous sample {name}: {} matching files", matches.len())
+    }
+    /// [`Resolver::resolve`] for every name, validating archive member
+    /// headers in parallel first: each is a random read, which a cold disk
+    /// serves far faster several at a time.
+    pub fn resolve_all(&mut self, parent: &Path, names: &[&str]) -> Result<Vec<Option<PathBuf>>> {
+        let mut jobs = Vec::new();
+        for name in names {
+            let Some((archive, member)) = self.archive_member(&parent.join(name.replace('\\', "/"))) else { continue };
+            if !self.archives.contains_key(&archive) {
+                let mut file = File::open(&archive)?;
+                let index = ni_file::nkr::Archive::read_index(&mut file).with_context(|| format!("Archive {}", archive.display()))?;
+                self.archives.insert(archive.clone(), (index, file));
+            }
+            jobs.push((archive, member));
+        }
+        let archives = &self.archives;
+        let checked = crate::engine::parallel(jobs, |_: &mut (), (archive, member)| {
+            let (index, file) = &archives[&archive];
+            let entry = index.member(crate::audio::FileAt { file, pos: 0 }, &member);
+            ((archive, member), entry)
+        });
+        for (key, entry) in checked {
+            self.checked.insert(key, entry?);
+        }
+        names.iter().map(|name| self.resolve(parent, name)).collect()
+    }
+
+    /// [`archive_member`], remembering which archive paths are files: one
+    /// stat per archive instead of one per member.
+    fn archive_member(&mut self, path: &Path) -> Option<(PathBuf, String)> {
+        for parent in path.ancestors().skip(1) {
+            if !parent.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr")) { continue; }
+            let is_file = *self.is_file.entry(parent.to_path_buf()).or_insert_with(|| parent.is_file());
+            if is_file {
+                return Some((parent.to_path_buf(), path.strip_prefix(parent).ok()?.to_string_lossy().replace('\\',"/")));
+            }
+        }
+        None
     }
 }
 

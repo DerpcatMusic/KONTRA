@@ -29,8 +29,14 @@ pub(crate) const RING: u64 = 8192;
 /// stream. Rings are touched only once used, so idle slots cost no RAM.
 pub(crate) const SLOTS: usize = super::MAX_VOICES;
 /// Streamer threads per bank, each serving an interleaved share of the
-/// slots, so one thread waiting on the disk does not stall every voice.
-const THREADS: usize = 2;
+/// slots, so one thread waiting on the disk does not stall every voice and
+/// the disk sees several requests at once. Idle threads sleep until a voice
+/// needs them, so extra threads cost nothing while silent.
+const THREADS: usize = 4;
+/// Slots with fewer frames than this buffered ahead of the voice are served
+/// before any other: a starting voice has only its preload to cover the
+/// time to its first streamed frames.
+const URGENT: u64 = 2 * CHUNK;
 /// Frames decoded per slot per streamer pass, so one voice cannot starve others.
 const CHUNK: u64 = 2048;
 const NO_SAMPLE: u32 = u32::MAX;
@@ -48,10 +54,20 @@ pub(crate) struct Slot {
     written: AtomicU64,
     /// `RING` frames in [`Shared::_rings`], which outlives every slot.
     ring: NonNull<AtomicU64>,
+    /// The serving thread's wake-up, in [`Shared::wakes`].
+    wake: NonNull<Wake>,
 }
 
-// SAFETY: `ring` points into memory owned by the `Shared` that owns the slot
-// and is only accessed through atomics.
+/// Wakes one streamer thread when one of its slots is configured.
+#[derive(Default)]
+struct Wake {
+    /// Bumped on every configuration, so a thread notices new voices mid-pass.
+    epoch: AtomicU32,
+    thread: std::sync::OnceLock<std::thread::Thread>,
+}
+
+// SAFETY: `ring` and `wake` point into memory owned by the `Shared` that owns
+// the slot; the ring is only accessed through atomics and `Wake` is `Sync`.
 unsafe impl Send for Slot {}
 unsafe impl Sync for Slot {}
 
@@ -68,8 +84,9 @@ const LOOPED: u64 = 2;
 const UNTIL_RELEASE: u64 = 4;
 
 impl Slot {
-    fn new(ring: NonNull<AtomicU64>) -> Self {
+    fn new(ring: NonNull<AtomicU64>, wake: NonNull<Wake>) -> Self {
         Self {
+            wake,
             seq: AtomicU32::new(0),
             sample: AtomicU32::new(NO_SAMPLE),
             config: Default::default(),
@@ -122,6 +139,15 @@ impl Slot {
         self.read.store(read, Ordering::Relaxed);
         let seq = seq.wrapping_add(2);
         self.seq.store(seq, Ordering::Release);
+        if sample != NO_SAMPLE {
+            // SAFETY: `wake` outlives the slot (see `Slot::wake`).
+            let wake = unsafe { self.wake.as_ref() };
+            wake.epoch.fetch_add(1, Ordering::Release);
+            // An atomic swap; a futex wake only when the thread sleeps idle.
+            if let Some(thread) = wake.thread.get() {
+                thread.unpark();
+            }
+        }
         tag(seq)
     }
 
@@ -199,6 +225,8 @@ pub(crate) struct Streamer {
 
 struct Shared {
     slots: Box<[Slot]>,
+    /// One per thread; slot `i` is served by thread `i % THREADS`.
+    wakes: Box<[Wake]>,
     /// Every slot's ring in one zeroed allocation: the kernel maps pages on
     /// first write, so rings no voice streamed into stay unbacked.
     _rings: Rings,
@@ -240,8 +268,11 @@ impl Streamer {
         let rings = Rings::new();
         // SAFETY: slot `i`'s ring starts in bounds of the allocation.
         let ring = |i: usize| unsafe { rings.0.add(i * RING as usize) };
+        let wakes: Box<[Wake]> = (0..THREADS).map(|_| Wake::default()).collect();
+        let wake = |i: usize| NonNull::from(&wakes[i % THREADS]);
         let shared = Arc::new(Shared {
-            slots: (0..SLOTS).map(|i| Slot::new(ring(i))).collect(),
+            slots: (0..SLOTS).map(|i| Slot::new(ring(i), wake(i))).collect(),
+            wakes,
             _rings: rings,
             stop: AtomicBool::new(false),
         });
@@ -253,7 +284,10 @@ impl Streamer {
                     .name("kontakto-stream".into())
                     .spawn(move || Worker::new(sources).run(&shared, stripe))
             })
-            .collect::<std::io::Result<_>>()?;
+            .collect::<std::io::Result<Vec<JoinHandle<()>>>>()?;
+        for (wake, thread) in shared.wakes.iter().zip(&threads) {
+            let _ = wake.thread.set(thread.thread().clone());
+        }
         Ok(Self { shared, threads })
     }
 
@@ -269,6 +303,7 @@ impl Drop for Streamer {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
         for thread in self.threads.drain(..) {
+            thread.thread().unpark();
             let _ = thread.join();
         }
     }
@@ -301,22 +336,40 @@ impl Worker {
     }
 
     /// Serve every `THREADS`th slot from `stripe`.
+    /// Each round first tops up slots about to run dry, then fills the rest
+    /// one chunk each, restarting as soon as a voice starts. With no voice
+    /// streaming the thread sleeps until one does.
     fn run(mut self, shared: &Shared, stripe: usize) {
         let slots = || shared.slots.iter().skip(stripe).step_by(THREADS);
+        let wake = &shared.wakes[stripe];
         let mut cursors: Vec<Cursor> = slots().map(|_| Cursor::default()).collect();
         while !shared.stop.load(Ordering::Acquire) {
-            let mut busy = false;
+            let epoch = wake.epoch.load(Ordering::Acquire);
+            let (mut busy, mut active) = (false, false);
             for (slot, cursor) in slots().zip(&mut cursors) {
-                busy |= self.serve(slot, cursor);
+                busy |= self.serve(slot, cursor, URGENT);
+                active |= cursor.config.is_some();
             }
-            if !busy {
-                std::thread::sleep(Duration::from_millis(1));
+            for (slot, cursor) in slots().zip(&mut cursors) {
+                if wake.epoch.load(Ordering::Acquire) != epoch {
+                    break;
+                }
+                busy |= self.serve(slot, cursor, RING);
+            }
+            if busy || wake.epoch.load(Ordering::Acquire) != epoch {
+                continue;
+            }
+            if active {
+                std::thread::park_timeout(Duration::from_millis(1));
+            } else {
+                std::thread::park();
             }
         }
     }
 
-    /// Decode one chunk ahead of the consumer; true if work was done.
-    fn serve(&mut self, slot: &Slot, cursor: &mut Cursor) -> bool {
+    /// Decode one chunk for a slot with fewer than `lead` frames buffered
+    /// ahead of its consumer; true if work was done.
+    fn serve(&mut self, slot: &Slot, cursor: &mut Cursor, lead: u64) -> bool {
         if let Some((seq, config)) = slot.snapshot(cursor.seq) {
             let reader = cursor
                 .reader
@@ -332,11 +385,8 @@ impl Worker {
         let Some(config) = cursor.config else {
             return false;
         };
-        let limit = slot
-            .read
-            .load(Ordering::Acquire)
-            .saturating_add(RING)
-            .min(config.map.len(config.wraps));
+        let read = slot.read.load(Ordering::Acquire);
+        let limit = read.saturating_add(lead.min(RING)).min(config.map.len(config.wraps));
         if cursor.next >= limit {
             return false;
         }

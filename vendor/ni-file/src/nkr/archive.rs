@@ -3,7 +3,7 @@
 use crate::{read_bytes::ReadBytesExt, Error};
 use std::{
     collections::{HashMap, HashSet},
-    io::{Read, Seek, SeekFrom},
+    io::{BufReader, Read, Seek, SeekFrom},
 };
 
 #[derive(Debug, Clone)]
@@ -16,31 +16,51 @@ pub struct Entry {
     pub encoded: bool,
     pub key_index: u32,
     pub valid: bool,
+    /// The member header was read and `issue`/`valid`/`offset`/`size` are final.
+    pub checked: bool,
 }
 #[derive(Debug)]
 pub struct Archive {
     pub entries: HashMap<String, Entry>,
+    /// Archive file length in bytes.
+    pub length: u64,
     pub issues: Vec<String>,
 }
 impl Archive {
-    pub fn read<R: Read + Seek>(mut reader: R) -> Result<Self, Error> {
+    /// Index every member and validate every member header.
+    pub fn read<R: Read + Seek>(reader: R) -> Result<Self, Error> {
+        let mut reader = BufReader::new(reader);
+        let mut archive = Self::read_index(&mut reader)?;
+        for e in archive.entries.values_mut() {
+            check(&mut reader, e, archive.length)?;
+        }
+        let invalid_headers = archive.entries.values().filter(|entry| !entry.valid).count();
+        if invalid_headers > 0 {
+            archive.issues.push(format!("{invalid_headers} archive members have missing/corrupt headers"));
+        }
+        Ok(archive)
+    }
+    /// Index member names only: headers are validated per member by
+    /// [`Archive::member`]. Reading a directory is sequential; every member
+    /// header is a random read, so skipping unused members saves most I/O.
+    pub fn read_index<R: Read + Seek>(reader: R) -> Result<Self, Error> {
+        let mut reader = BufReader::new(reader);
         let length = reader.seek(SeekFrom::End(0))?;
         let mut entries = HashMap::new();
         let mut visited = HashSet::new();
         let mut issues = Vec::new();
-        directory(
-            &mut reader,
-            0,
-            "",
-            length,
-            &mut visited,
-            &mut entries,
-            &mut issues,
-            0,
-        )?;
-        let invalid_headers=entries.values().filter(|entry|!entry.valid).count();
-        if invalid_headers>0 {issues.push(format!("{invalid_headers} archive members have missing/corrupt headers"));}
-        Ok(Self { entries, issues })
+        directory(&mut reader, 0, "", length, &mut visited, &mut entries, &mut issues, 0)?;
+        Ok(Self { entries, length, issues })
+    }
+    /// The entry for `name` with its header validated (read from `reader` if
+    /// the archive was indexed lazily).
+    pub fn member<R: Read + Seek>(&self, mut reader: R, name: &str) -> Result<Option<Entry>, Error> {
+        let Some(e) = self.find(name) else { return Ok(None) };
+        let mut e = e.clone();
+        if !e.checked {
+            check(&mut reader, &mut e, self.length)?;
+        }
+        Ok(Some(e))
     }
     pub fn find(&self, name: &str) -> Option<&Entry> {
         self.entries.get(&name.replace('\\', "/").to_lowercase())
@@ -108,15 +128,20 @@ fn directory<R: ReadBytesExt>(
     if count > 1_000_000 {
         return Err(invalid("Invalid NKX directory size"));
     }
+    let mut children = Vec::with_capacity(count as usize);
+    // Entries are contiguous after the 22-byte directory header: read them
+    // all before any seek elsewhere, tracking the position without syscalls.
+    let mut start = offset + 22;
     for _ in 0..count {
-        let start = r.stream_position()?;
         let size = r.read_u16_le()? as u64;
         let reference = r.read_u32_le()?;
         let kind = r.read_u16_le()?;
         if size < 8 || size % 2 != 0 || start + size > length {
             return Err(invalid("Invalid NKX entry length"));
         }
-        let bytes = r.read_bytes((size - 8) as usize)?;
+        // Bounded by the check above; `read_bytes` would seek and drop the read buffer.
+        let mut bytes = vec![0; (size - 8) as usize];
+        r.read_exact(&mut bytes)?;
         let words: Vec<_> = bytes
             .chunks_exact(2)
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
@@ -131,6 +156,10 @@ fn directory<R: ReadBytesExt>(
         } else {
             format!("{prefix}/{name}")
         };
+        children.push((kind, reference, full));
+        start += size;
+    }
+    for (kind, reference, full) in children {
         match kind {
             1 => directory(
                 r,
@@ -151,27 +180,65 @@ fn directory<R: ReadBytesExt>(
                 } else {
                     reference
                 } as u64;
-                let mut e=Entry{name:full.clone(),header_offset:file_offset,offset:file_offset,size:0,encoded:false,key_index:0xff,valid:false,issue:None};
-                e.issue=if file_offset+22>length {Some("Truncated NKX member header")} else {
-                    r.seek(SeekFrom::Start(file_offset))?;let mut header=[0;22];r.read_exact(&mut header)?;
-                    let magic=u32::from_le_bytes(header[..4].try_into().unwrap());
-                    let version=u16::from_le_bytes(header[4..6].try_into().unwrap());
-                    let header_size=match magic {0x2ae905fa=>22,0x4916e63c=>27,0x16ccf80a=>31,_=>0};
-                    if header.iter().all(|b|*b==0){Some("Zero-filled NKX member header")}
-                    else if header_size==0{Some("Invalid NKX member signature")}
-                    else if version!=0x110 && version!=0x111{Some("Unsupported NKX member version")}
-                    else if file_offset+header_size>length{Some("Truncated NKX member header")}
-                    else {
-                        e.offset=file_offset+header_size;e.encoded=magic==0x16ccf80a;e.key_index=u32::from_le_bytes(header[10..14].try_into().unwrap());
-                        r.seek(SeekFrom::Start(file_offset+if magic==0x2ae905fa{14}else{19}))?;e.size=r.read_u32_le()? as u64;
-                        if e.offset+e.size>length{Some("Truncated NKX member payload")}else{None}
-                    }
+                let e = Entry {
+                    name: full.clone(),
+                    header_offset: file_offset,
+                    offset: file_offset,
+                    size: 0,
+                    encoded: false,
+                    key_index: 0xff,
+                    valid: false,
+                    checked: false,
+                    issue: None,
                 };
-                e.valid=e.issue.is_none();entries.insert(full.to_lowercase(),e);
+                entries.insert(full.to_lowercase(), e);
             }
             _ => return Err(invalid("Unknown NKX entry kind")),
         }
-        r.seek(SeekFrom::Start(start + size))?;
     }
+    Ok(())
+}
+
+/// Read and validate a member header: one read of the longest header form.
+fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Error> {
+    let file_offset = e.header_offset;
+    e.checked = true;
+    e.issue = if file_offset + 22 > length {
+        Some("Truncated NKX member header")
+    } else {
+        r.seek(SeekFrom::Start(file_offset))?;
+        let mut header = [0; 31];
+        let n = (length - file_offset).min(31) as usize;
+        r.read_exact(&mut header[..n])?;
+        let magic = u32::from_le_bytes(header[..4].try_into().unwrap());
+        let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
+        let header_size = match magic {
+            0x2ae905fa => 22,
+            0x4916e63c => 27,
+            0x16ccf80a => 31,
+            _ => 0,
+        };
+        if header[..22].iter().all(|b| *b == 0) {
+            Some("Zero-filled NKX member header")
+        } else if header_size == 0 {
+            Some("Invalid NKX member signature")
+        } else if version != 0x110 && version != 0x111 {
+            Some("Unsupported NKX member version")
+        } else if file_offset + header_size > length {
+            Some("Truncated NKX member header")
+        } else {
+            e.offset = file_offset + header_size;
+            e.encoded = magic == 0x16ccf80a;
+            e.key_index = u32::from_le_bytes(header[10..14].try_into().unwrap());
+            let at = if magic == 0x2ae905fa { 14 } else { 19 };
+            e.size = u32::from_le_bytes(header[at..at + 4].try_into().unwrap()) as u64;
+            if e.offset + e.size > length {
+                Some("Truncated NKX member payload")
+            } else {
+                None
+            }
+        }
+    };
+    e.valid = e.issue.is_none();
     Ok(())
 }

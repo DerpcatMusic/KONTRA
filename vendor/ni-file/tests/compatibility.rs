@@ -192,6 +192,21 @@ fn plain_offsets_and_encrypted_members() {
 }
 
 #[test]
+fn key_stream_is_position_relative_across_wraps() {
+    use ni_file::nis::LibraryKey;
+    let key = LibraryKey::new([3; 32], [5; 16]);
+    let plain: Vec<u8> = (0..300_000u32).map(|i| (i * 31) as u8).collect();
+    let mut whole = plain.clone();
+    key.apply(&mut whole);
+    // Any split decrypts to the same bytes, including runs across the 64 KiB wrap.
+    for (at, len) in [(0, 1), (65_530, 20), (65_536, 65_536), (1_000, 200_000), (299_999, 1)] {
+        let mut part = whole[at..at + len].to_vec();
+        key.apply_at(at as u64, &mut part);
+        assert_eq!(part, &plain[at..at + len], "at {at}");
+    }
+}
+
+#[test]
 fn nkr_picture_resource_uses_its_22_byte_header() {
     let mut b=Vec::new();
     b.extend(0x5e70ac54u32.to_le_bytes());b.extend(0x111u16.to_le_bytes());b.extend([0;8]);b.extend(1u32.to_le_bytes());b.extend([0;4]);

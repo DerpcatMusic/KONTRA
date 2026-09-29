@@ -6,7 +6,10 @@
 //! cipher is position-relative, so any byte offset is addressable.
 
 use anyhow::{Context, Result, bail, ensure};
-use ni_file::{nis::LibraryKey, nkr::Archive};
+use ni_file::{
+    nis::LibraryKey,
+    nkr::{Archive, Entry},
+};
 use std::{
     collections::HashMap,
     fs::File,
@@ -24,19 +27,35 @@ use symphonia::core::{
     probe::Hint,
 };
 
+/// Return freed heap memory to the system. Loading allocates and frees far
+/// more than it keeps (decompressed presets, parse trees, decode buffers on
+/// every core), and glibc keeps freed pages of its per-thread arenas
+/// resident; call once a load finished. A no-op elsewhere.
+pub fn trim_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        // SAFETY: glibc's malloc_trim is thread-safe and has no preconditions.
+        unsafe { malloc_trim(0) };
+    }
+}
+
 /// One stereo frame. Mono sources are duplicated to both channels.
 pub type Frame = [f32; 2];
 
 /// Resident frames in the narrowest format that holds them exactly: 16- and
 /// 24-bit sources keep their own resolution (4 or 6 bytes per stereo frame
-/// instead of 8) and the voice kernel converts on the fly. Samples are
-/// interleaved left/right.
+/// instead of 8), losslessly [`Packed`] when that is clearly smaller, and
+/// the voice kernel converts on the fly. Samples are interleaved left/right.
 pub enum Pcm {
     F32(Box<[Frame]>),
     I16(Box<[i16]>),
     /// The top 16 bits and, in their own plane, the low byte: decoding stays
     /// an elementwise pass the compiler vectorizes.
     I24(Box<[i16]>, Box<[u8]>),
+    Packed(Packed),
 }
 
 const I16_SCALE: f32 = 32768.0;
@@ -53,8 +72,10 @@ impl Pcm {
         }
     }
 
-    /// Store `frames` in the narrowest exact format.
-    pub fn pack(frames: &[Frame]) -> Self {
+    /// Store `frames` in the narrowest exact format; `compress` allows
+    /// [`Packed`], which costs more to decode (for data voices loop in
+    /// indefinitely, leave it off).
+    pub fn pack(frames: &[Frame], compress: bool) -> Self {
         let samples = frames.as_flattened();
         // Chunked so the check vectorizes yet fails fast on wider data.
         let exact = |scale: f32| {
@@ -62,6 +83,13 @@ impl Pcm {
                 .chunks(256)
                 .all(|c| c.iter().fold(true, |ok, &x| ok & exact(x, scale)))
         };
+        // Encoding checks exactness itself and gives up at the first
+        // inexact block, so no separate scan precedes it.
+        for scale in [I16_SCALE, I24_SCALE] {
+            if compress && let Some(packed) = Packed::encode(frames, scale) {
+                return Self::Packed(packed);
+            }
+        }
         if exact(I16_SCALE) {
             return Self::I16(samples.iter().map(|&x| (x * I16_SCALE) as i16).collect());
         }
@@ -79,6 +107,7 @@ impl Pcm {
         match self {
             Self::F32(d) => d.len(),
             Self::I16(d) | Self::I24(d, _) => d.len() / 2,
+            Self::Packed(p) => p.frames,
         }
     }
 
@@ -91,6 +120,7 @@ impl Pcm {
             Self::F32(d) => size_of_val(&**d),
             Self::I16(d) => size_of_val(&**d),
             Self::I24(high, low) => size_of_val(&**high) + size_of_val(&**low),
+            Self::Packed(p) => p.bytes(),
         }
     }
 
@@ -124,6 +154,9 @@ impl Pcm {
 
     #[inline(always)]
     fn decode_body(&self, at: usize, out: &mut [Frame]) -> bool {
+        if let Self::Packed(p) = self {
+            return p.decode(at, out);
+        }
         let samples = 2 * at..2 * (at + out.len());
         let out = out.as_flattened_mut();
         match self {
@@ -147,15 +180,172 @@ impl Pcm {
                 }
                 _ => return false,
             },
+            Self::Packed(_) => unreachable!(),
         }
         true
+    }
+}
+
+/// Frames per [`Packed`] block.
+const BLOCK: usize = 64;
+/// Block header: two bit widths, then per channel the first two samples.
+const HEADER: usize = 2 + 4 * 4;
+
+/// Lossless 16/24-bit PCM in independently decodable blocks of [`BLOCK`]
+/// frames. Per channel, each sample is predicted from the two before it
+/// (`2x[n-1] - x[n-2]`) and the residuals are bit-packed at the block's
+/// widest: about two thirds of the raw size on orchestral recordings, so
+/// preloads and sample-start ranges take a third less RAM. Decoding a block
+/// is one sequential pass; voices read resident data only until streaming
+/// takes over.
+pub struct Packed {
+    frames: usize,
+    /// Integer full scale: 2^15 or 2^23.
+    scale: f32,
+    /// Start of each block in `data`.
+    offsets: Box<[u32]>,
+    /// Blocks, then eight zero bytes so every bit read is one unaligned u64 load.
+    data: Box<[u8]>,
+}
+
+impl Packed {
+    /// Pack `frames` if every sample is exact at `scale` and packing saves
+    /// at least a tenth.
+    fn encode(frames: &[Frame], scale: f32) -> Option<Self> {
+        let raw = frames.len() * if scale == I16_SCALE { 4 } else { 6 };
+        let blocks = frames.len().div_ceil(BLOCK);
+        if blocks == 0 || raw > u32::MAX as usize {
+            return None;
+        }
+        let mut data = Vec::with_capacity(raw * 3 / 4);
+        let mut offsets = Vec::with_capacity(blocks);
+        let mut block = [[0i32; BLOCK]; 2];
+        let mut residuals = [[0i32; BLOCK - 2]; 2];
+        for chunk in frames.chunks(BLOCK) {
+            offsets.push(data.len() as u32);
+            let mut inexact = false;
+            for i in 0..BLOCK {
+                // The last block repeats its final frame: cheap to pack.
+                let frame = chunk[i.min(chunk.len() - 1)];
+                for c in 0..2 {
+                    let q = frame[c] * scale;
+                    block[c][i] = q as i32;
+                    inexact |= !exact_at(q, scale);
+                }
+            }
+            if inexact {
+                return None;
+            }
+            let mut widths = [0u8; 2];
+            for c in 0..2 {
+                let (x, r) = (&block[c], &mut residuals[c]);
+                let mut magnitude = 0u32;
+                for i in 0..BLOCK - 2 {
+                    r[i] = x[i + 2].wrapping_sub(x[i + 1].wrapping_mul(2)).wrapping_add(x[i]);
+                    magnitude |= (r[i] ^ (r[i] >> 31)) as u32;
+                }
+                widths[c] = if magnitude == 0 { 0 } else { 33 - magnitude.leading_zeros() as u8 };
+            }
+            data.extend(widths);
+            for x in &block {
+                data.extend(x[0].to_le_bytes());
+                data.extend(x[1].to_le_bytes());
+            }
+            for (r, &w) in residuals.iter().zip(&widths) {
+                let (mask, mut acc, mut bits) = ((1u64 << w) - 1, 0u64, 0);
+                for &v in r {
+                    acc |= (v as u64 & mask) << bits;
+                    bits += u32::from(w);
+                    if bits >= 32 {
+                        data.extend((acc as u32).to_le_bytes());
+                        (acc, bits) = (acc >> 32, bits - 32);
+                    }
+                }
+                data.extend(&acc.to_le_bytes()[..bits.div_ceil(8) as usize]);
+            }
+            if data.len() + 8 >= raw * 9 / 10 {
+                return None;
+            }
+        }
+        data.extend([0; 8]);
+        Some(Self {
+            frames: frames.len(),
+            scale,
+            offsets: offsets.into(),
+            data: data.into(),
+        })
+    }
+
+    fn bytes(&self) -> usize {
+        size_of_val(&*self.offsets) + size_of_val(&*self.data)
+    }
+
+    /// Decode frames `[at, at + out.len())`; false if out of range.
+    #[inline(always)]
+    fn decode(&self, at: usize, out: &mut [Frame]) -> bool {
+        if at + out.len() > self.frames {
+            return false;
+        }
+        let mut block = [[0i32; BLOCK]; 2];
+        let (mut done, gain) = (0, 1.0 / self.scale);
+        while done < out.len() {
+            let frame = at + done;
+            let (index, skip) = (frame / BLOCK, frame % BLOCK);
+            let n = (BLOCK - skip).min(out.len() - done);
+            self.block(index, skip + n, &mut block);
+            for (i, o) in out[done..done + n].iter_mut().enumerate() {
+                *o = [
+                    block[0][skip + i] as f32 * gain,
+                    block[1][skip + i] as f32 * gain,
+                ];
+            }
+            done += n;
+        }
+        true
+    }
+
+    /// Decode frames `..len` of block `index` into `out`.
+    #[inline(always)]
+    fn block(&self, index: usize, len: usize, out: &mut [[i32; BLOCK]; 2]) {
+        let data = &self.data[self.offsets[index] as usize..];
+        let word = |at: usize| i32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+        let mut at = HEADER;
+        let n = len.max(2) - 2;
+        for (c, x) in out.iter_mut().enumerate() {
+            let w = u32::from(data[c]);
+            let bits = &data[at..];
+            at += ((BLOCK - 2) * w as usize).div_ceil(8);
+            // A `w`-bit field sign-extends by shifting it to the top and back.
+            let shift = 64 - w.max(1);
+            let keep = if w == 0 { 0 } else { u64::MAX };
+            // Every field's eight-byte read stays in bounds: blocks are
+            // followed by the next block or the zero tail.
+            assert!((n.saturating_sub(1) * w as usize) / 8 + 8 <= bits.len());
+            let (mut prev, mut delta) = (word(6 + 8 * c), 0);
+            delta = prev.wrapping_sub(word(2 + 8 * c)).wrapping_add(delta);
+            (x[0], x[1]) = (word(2 + 8 * c), prev);
+            for (i, y) in x[2..2 + n].iter_mut().enumerate() {
+                let bit = i * w as usize;
+                // SAFETY: `bit / 8 + 8 <= bits.len()` by the assertion above.
+                let raw = u64::from_le(unsafe { bits.as_ptr().add(bit / 8).cast::<u64>().read_unaligned() });
+                let r = ((((raw >> (bit % 8)) << shift) as i64 >> shift) as u64 & keep) as i32;
+                delta = delta.wrapping_add(r);
+                prev = prev.wrapping_add(delta);
+                *y = prev;
+            }
+        }
     }
 }
 
 /// Whether `x * scale` is an integer in `-scale..scale`.
 #[inline]
 fn exact(x: f32, scale: f32) -> bool {
-    let q = x * scale;
+    exact_at(x * scale, scale)
+}
+
+/// Whether `q` is an integer in `-scale..scale`.
+#[inline]
+fn exact_at(q: f32, scale: f32) -> bool {
     ((q as i32) as f32 == q) & (q >= -scale) & (q < scale)
 }
 
@@ -194,28 +384,43 @@ pub struct Source {
 /// Resolves sample paths, caching archive indexes and library keys.
 #[derive(Default)]
 pub struct Sources {
-    archives: HashMap<PathBuf, (Archive, Option<Arc<LibraryKey>>)>,
+    archives: HashMap<PathBuf, (Archive, File)>,
+    keys: HashMap<PathBuf, Option<Arc<LibraryKey>>>,
 }
 
 impl Sources {
     pub fn source(&mut self, path: &Path) -> Result<Source> {
-        let Some((archive, member)) = crate::import::archive_member(path) else {
-            return Ok(Source {
-                path: path.into(),
-                file: path.into(),
-                offset: 0,
-                len: None,
-                key: None,
-            });
+        self.source_in(path, None)
+    }
+
+    /// Like [`Sources::source`]; `known` is the archive and member entry the
+    /// importer already validated, which skips re-reading the archive index.
+    pub fn source_in(&mut self, path: &Path, known: Option<&(PathBuf, Entry)>) -> Result<Source> {
+        let (archive, entry) = match known {
+            Some((archive, entry)) => (archive.clone(), entry.clone()),
+            None => {
+                let Some((archive, member)) = crate::import::archive_member(path) else {
+                    return Ok(Source {
+                        path: path.into(),
+                        file: path.into(),
+                        offset: 0,
+                        len: None,
+                        key: None,
+                    });
+                };
+                if !self.archives.contains_key(&archive) {
+                    let mut file = File::open(&archive)?;
+                    let index = Archive::read_index(&mut file)
+                        .with_context(|| format!("Archive {}", archive.display()))?;
+                    self.archives.insert(archive.clone(), (index, file));
+                }
+                let (index, file) = &self.archives[&archive];
+                let entry = index
+                    .member(FileAt { file, pos: 0 }, &member)?
+                    .context("Archive member not found")?;
+                (archive, entry)
+            }
         };
-        if !self.archives.contains_key(&archive) {
-            let index = Archive::read(File::open(&archive)?)
-                .with_context(|| format!("Archive {}", archive.display()))?;
-            let key = crate::import::library_key(&archive)?.map(Arc::new);
-            self.archives.insert(archive.clone(), (index, key));
-        }
-        let (index, key) = &self.archives[&archive];
-        let entry = index.find(&member).context("Archive member not found")?;
         ensure!(
             entry.valid,
             "{}",
@@ -223,8 +428,13 @@ impl Sources {
         );
         let key = if entry.encoded && entry.key_index != 0xff {
             ensure!(entry.key_index == 0x100, "Unsupported legacy NKX cipher");
+            if !self.keys.contains_key(&archive) {
+                let key = crate::import::library_key(&archive)?.map(Arc::new);
+                self.keys.insert(archive.clone(), key);
+            }
             Some(
-                key.clone()
+                self.keys[&archive]
+                    .clone()
                     .context("Encrypted archive member needs local library access data")?,
             )
         } else {
@@ -280,6 +490,36 @@ impl Source {
             pos: 0,
             key: self.key.clone(),
         })
+    }
+}
+
+/// Read and Seek over a shared file with a private position: positional
+/// reads, so threads can share one handle and no seek is a syscall.
+pub(crate) struct FileAt<'a> {
+    pub file: &'a File,
+    pub pos: u64,
+}
+
+impl Read for FileAt<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        #[cfg(unix)]
+        let n = std::os::unix::fs::FileExt::read_at(self.file, buf, self.pos)?;
+        #[cfg(windows)]
+        let n = std::os::windows::fs::FileExt::seek_read(self.file, buf, self.pos)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for FileAt<'_> {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        self.pos = match to {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::Current(n) => self.pos.checked_add_signed(n),
+            SeekFrom::End(n) => self.file.metadata()?.len().checked_add_signed(n),
+        }
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before start"))?;
+        Ok(self.pos)
     }
 }
 
@@ -595,11 +835,106 @@ mod tests {
             ((0..1000).map(|i| [(i as f32).sin(), 1.0]).collect(), 8),
         ];
         for (frames, width) in cases {
-            let pcm = Pcm::pack(&frames);
+            let pcm = Pcm::pack(&frames, true);
             assert_eq!(pcm.bytes(), width * frames.len());
             let mut out = vec![[0.0; 2]; 900];
             assert_eq!(pcm.window(100, &mut out).unwrap(), &frames[100..]);
             assert!(pcm.window(101, &mut out).is_none());
+        }
+    }
+
+    #[test]
+    fn packed_pcm_round_trips_every_window() {
+        // Smooth signals with a little noise pack; 1000 frames leave a partial last block.
+        let mut seed = 1u32;
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 16) as i32 % 64 - 32
+        };
+        for scale in [I16_SCALE, I24_SCALE] {
+            let peak = scale as i32 / 2;
+            let q = |x: i32| x as f32 / scale;
+            let frames: Vec<Frame> = (0..1000)
+                .map(|i| {
+                    let x = ((i as f32 * 0.05).sin() * peak as f32) as i32;
+                    [q(x + noise()), q(-x / 3 + noise())]
+                })
+                .collect();
+            // Silence packs to headers only; the extremes use the widest residuals.
+            let edges: Vec<Frame> = (0..130).map(|i| [0.0, if i % 2 == 0 { -1.0 } else { q(peak * 2 - 1) }]).collect();
+            for frames in [frames, edges] {
+                let pcm = Pcm::pack(&frames, true);
+                assert!(matches!(pcm, Pcm::Packed(_)) || frames.len() == 130);
+                let n = frames.len();
+                for (at, len) in [(0, n), (1, 63), (63, 2), (64, 64), (100, n - 101), (n - 1, 1)] {
+                    let mut out = vec![[0.0; 2]; len];
+                    assert_eq!(pcm.window(at, &mut out).unwrap(), &frames[at..at + len], "at {at}");
+                }
+                assert!(pcm.window(frames.len(), &mut [[0.0; 2]; 1]).is_none());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod decode_bench {
+    use super::*;
+
+    /// Thread CPU seconds: immune to preemption on a busy machine.
+    fn cpu() -> f64 {
+        #[repr(C)]
+        struct Timespec {
+            s: i64,
+            ns: i64,
+        }
+        unsafe extern "C" {
+            fn clock_gettime(clock: i32, t: *mut Timespec) -> i32;
+        }
+        let mut t = Timespec { s: 0, ns: 0 };
+        // SAFETY: CLOCK_THREAD_CPUTIME_ID (3) writes one timespec.
+        unsafe { clock_gettime(3, &mut t) };
+        t.s as f64 + t.ns as f64 * 1e-9
+    }
+
+    /// Decode cost per voice-sized window, raw 24-bit against packed:
+    /// `cargo test --release --lib decode_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "linux")]
+    fn decode_speed() {
+        let mut seed = 1u32;
+        let frames: Vec<Frame> = (0..1 << 16)
+            .map(|i| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let n = (seed >> 16) as i32 % 512 - 256;
+                let x = ((i as f32 * 0.01).sin() * 4e6) as i32 + n;
+                [x as f32 / I24_SCALE, (x / 2) as f32 / I24_SCALE]
+            })
+            .collect();
+        let packed = Pcm::pack(&frames, true);
+        let raw = Pcm::pack(&frames, false);
+        assert!(matches!(packed, Pcm::Packed(_)) && matches!(raw, Pcm::I24(..)));
+        let mut out = vec![[0f32; 2]; 132];
+        for (name, pcm) in [("i24", &raw), ("packed", &packed)] {
+            let mut best = f64::MAX;
+            for _ in 0..40 {
+                let t = cpu();
+                let mut sum = 0.0;
+                for rep in 0..4 {
+                    for at in (rep..frames.len() - 200).step_by(128) {
+                        pcm.decode(at, &mut out);
+                        sum += out[0][0];
+                    }
+                }
+                best = best.min(cpu() - t);
+                assert!(sum.is_finite());
+            }
+            let calls = 4.0 * ((frames.len() - 200) / 128) as f64;
+            println!(
+                "{name}: {:.0} ns per 132-frame window, {} bytes",
+                best / calls * 1e9,
+                pcm.bytes()
+            );
         }
     }
 }

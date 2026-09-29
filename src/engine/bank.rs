@@ -17,12 +17,14 @@ use std::{collections::HashMap, num::NonZero, ops::Range, path::PathBuf, sync::M
 pub const MEMORY_LIMIT: usize = 1 << 30;
 /// Frames of every sample kept in RAM past the furthest start offset
 /// (Kontakt's DFD preload). Voices start from this instantly while the
-/// streamer fetches the rest; 8192 frames is ≈170 ms at 48 kHz (48 KiB per
-/// 24-bit stereo sample). Shrinks toward [`MIN_PRELOAD`] to fit the budget.
-pub const PRELOAD_FRAMES: u64 = 8192;
-/// Smallest preload the budget may force: ≈43 ms at 48 kHz, several times
-/// the streamer's time to first data on an SSD.
-pub const MIN_PRELOAD: u64 = 2048;
+/// streamer fetches the rest; 2048 frames is ≈43 ms at 48 kHz (12 KiB per
+/// 24-bit stereo sample, a fifth of Kontakt's 60 KB default). Measured on
+/// NVMe with a cold page cache (audits/PERFORMANCE.md): no underruns at
+/// 1000 streaming voices and 256 note starts per second; 1024 frames
+/// underruns. Shrinks toward [`MIN_PRELOAD`] to fit the budget.
+pub const PRELOAD_FRAMES: u64 = 2048;
+/// Smallest preload the budget may force: ≈21 ms at 48 kHz.
+pub const MIN_PRELOAD: u64 = 1024;
 /// Voices per instrument when the program stores no limit.
 const DEFAULT_POLYPHONY: usize = 512;
 
@@ -147,6 +149,9 @@ pub struct Bank {
     pub bytes: usize,
     /// Preload frames per sample the memory budget allowed.
     pub preload: u64,
+    /// Resident bytes the preload was planned for; [`Bank::bytes`] is less
+    /// where samples pack.
+    pub planned: usize,
     /// Zones dropped because their sample is missing, unreadable or out of bounds.
     pub skipped_zones: usize,
     /// First few reasons for skipped zones.
@@ -181,7 +186,17 @@ impl Bank {
             })
             .collect();
         let mut sources = audio::Sources::default();
-        let resolved: Vec<_> = paths.iter().map(|path| sources.source(path)).collect();
+        let members = std::mem::take(
+            &mut *instrument
+                .archive_members
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        let resolved: Vec<_> = paths
+            .iter()
+            .map(|path| sources.source_in(path, members.get(*path)))
+            .collect();
+        drop(members);
         let opened = parallel(resolved, |_: &mut (), source| {
             let source = source?;
             anyhow::Ok((source.open()?, source))
@@ -221,11 +236,11 @@ impl Bank {
             .iter()
             .map(|(_, r)| Pcm::frame_bytes(r.bits))
             .collect();
-        let (preload, plan) = builder.plan(&frame_bytes, budget)?;
+        let (preload, plan, planned) = builder.plan(&frame_bytes, budget)?;
         let jobs = readers.into_iter().zip(plan).collect();
         let decoded = parallel(
             jobs,
-            |buf: &mut Vec<Frame>, ((source, mut reader), (spans, streamed))| {
+            |buf: &mut Vec<Frame>, ((source, mut reader), (spans, streamed, looping))| {
                 let spans = spans
                     .into_iter()
                     .map(|range| {
@@ -234,7 +249,7 @@ impl Bank {
                         reader.read(range.start, buf)?;
                         Ok(Span {
                             start: range.start,
-                            data: Pcm::pack(buf),
+                            data: Pcm::pack(buf, !looping),
                         })
                     })
                     .collect::<Result<Vec<_>>>();
@@ -272,7 +287,8 @@ impl Bank {
             budget >> 20
         );
         let mut bank = builder.finish(samples, streamer, bytes)?;
-        bank.preload = preload;
+        (bank.preload, bank.planned) = (preload, planned);
+        audio::trim_heap();
         Ok(bank)
     }
 
@@ -306,7 +322,7 @@ impl Bank {
                 rate: s.rate,
                 spans: vec![Span {
                     start: 0,
-                    data: Pcm::pack(&s.frames),
+                    data: Pcm::pack(&s.frames, false),
                 }],
                 streamed: false,
             })
@@ -365,8 +381,9 @@ impl Issues {
     }
 }
 
-/// A sample's resident frame ranges and whether it streams beyond them.
-type Plan = (Vec<Range<u64>>, bool);
+/// A sample's resident frame ranges, whether it streams beyond them, and
+/// whether voices loop inside them indefinitely.
+type Plan = (Vec<Range<u64>>, bool, bool);
 
 /// Shared validation and indexing for loaded and in-memory banks.
 struct Builder {
@@ -457,7 +474,8 @@ impl Builder {
     /// The largest preload in `MIN_PRELOAD..=PRELOAD_FRAMES` whose resident
     /// data fits `budget`, and per sample the resident ranges and whether it
     /// streams. `frame_bytes[sample]` is its expected storage per frame.
-    fn plan(&self, frame_bytes: &[usize], budget: usize) -> Result<(u64, Vec<Plan>)> {
+    /// Also returns the planned bytes: packing may store less.
+    fn plan(&self, frame_bytes: &[usize], budget: usize) -> Result<(u64, Vec<Plan>, usize)> {
         let mut uses = vec![Vec::new(); frame_bytes.len()];
         for play in &self.plays {
             uses[play.sample as usize].push(play);
@@ -467,20 +485,21 @@ impl Builder {
             let mut bytes: usize = plan
                 .iter()
                 .zip(frame_bytes)
-                .map(|((ranges, _), size)| {
+                .map(|((ranges, ..), size)| {
                     size * ranges.iter().map(|r| r.end - r.start).sum::<u64>() as usize
                 })
                 .sum();
-            if plan.iter().any(|(_, streamed)| *streamed) {
+            if plan.iter().any(|(_, streamed, _)| *streamed) {
                 bytes += Streamer::BYTES;
             }
             (plan, bytes)
         };
         let (full, bytes) = plan(PRELOAD_FRAMES);
         if bytes <= budget {
-            return Ok((PRELOAD_FRAMES, full));
+            return Ok((PRELOAD_FRAMES, full, bytes));
         }
-        let (mut best, bytes) = plan(MIN_PRELOAD);
+        let (mut best, mut best_bytes) = plan(MIN_PRELOAD);
+        let bytes = best_bytes;
         ensure!(
             bytes <= budget,
             "Resident sample data needs {} MiB even at the minimum preload; the bank limit is {} MiB",
@@ -493,12 +512,12 @@ impl Builder {
             let mid = (fits + over) / 2;
             let (candidate, bytes) = plan(mid);
             if bytes <= budget {
-                (fits, best) = (mid, candidate);
+                (fits, best, best_bytes) = (mid, candidate, bytes);
             } else {
                 over = mid;
             }
         }
-        Ok((fits, best))
+        Ok((fits, best, best_bytes))
     }
 
     /// Skip every zone of a sample whose data turned out to be unreadable.
@@ -565,6 +584,7 @@ impl Builder {
             key_zones: key_zones.into_boxed_slice(),
             samples,
             preload: PRELOAD_FRAMES,
+            planned: bytes,
             voice_groups: self.voice_groups,
             polyphony: self.polyphony,
             streamer,
@@ -618,16 +638,18 @@ fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), 
 }
 
 /// Resident frame ranges of a sample played by `plays`, merged and sorted,
-/// and whether any zone path extends beyond them. Each zone keeps `preload`
-/// frames past its furthest start offset; loops ending within four preloads
-/// of the zone start stay resident, so short sustain loops never touch the
-/// disk. Data past the furthest frame any zone plays is never needed.
+/// whether any zone path extends beyond them, and whether a voice may loop in
+/// them. Each zone keeps `preload` frames past its furthest start offset;
+/// loops ending within four preloads of the zone start stay resident, so
+/// short sustain loops never touch the disk. Data past the furthest frame
+/// any zone plays is never needed.
 fn spans(plays: &[&ZonePlay], preload: u64) -> Plan {
-    let mut frames = 0;
+    let (mut frames, mut looping, mut any_loop) = (0, false, false);
     let mut ranges = Vec::with_capacity(plays.len());
     for play in plays {
         let map = &play.map;
         frames = frames.max(map.end);
+        any_loop |= map.looped.is_some();
         let head = preload + play.start_mod;
         if map.reverse {
             ranges.push(map.end.saturating_sub(head)..map.end);
@@ -638,6 +660,7 @@ fn spans(plays: &[&ZonePlay], preload: u64) -> Plan {
             .looped
             .filter(|l| l.end <= map.start + 4 * preload && map.start < l.end)
         {
+            looping = true;
             range.start = range.start.min(l.start - l.xfade);
             range.end = range
                 .end
@@ -661,18 +684,18 @@ fn spans(plays: &[&ZonePlay], preload: u64) -> Plan {
         .map(|r| r.end.min(frames) - r.start.min(frames))
         .sum();
     if frames <= 2 * preload || covered + preload >= frames {
-        return (std::iter::once(0..frames).collect(), false);
+        return (std::iter::once(0..frames).collect(), false, any_loop);
     }
     merged.retain_mut(|r| {
         r.end = r.end.min(frames);
         !r.is_empty()
     });
-    (merged, true)
+    (merged, true, looping)
 }
 
 /// Run `f` over `items` on every core, keeping order. Each worker owns one
 /// `S` scratch value across its items.
-fn parallel<T: Send, S: Default, R: Send>(
+pub(crate) fn parallel<T: Send, S: Default, R: Send>(
     items: Vec<T>,
     f: impl Fn(&mut S, T) -> R + Sync,
 ) -> Vec<R> {
