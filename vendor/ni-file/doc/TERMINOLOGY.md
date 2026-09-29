@@ -1,0 +1,34 @@
+# Terminology
+
+- `NI` abbreviation for Native Instruments.
+- `Patch/Instrument` A configuration of an instrument, including samples and settings.
+- `Preset` A pre-configured setting within a patch.
+- `Multi` A group of patches/instruments.
+- `NISound` / `NIS` most modern format for NI presets and instruments.
+- `Container` the structure of a NISound file.
+- `NKI` Native Instruments Kontakt Instrument
+- `NKS` Native Instruments Kontakt Secure Monolith (encrypted)
+- `NKX` Native Instruments Kontakt Xtra Secure Monolith (encrypted plus library key needed)
+- `NKM` Native Instruments Kontakt Multi
+- `NKB` Native Instruments Kontakt Bank
+- `NKP` Native Instruments Preset
+- `NKR` Native Instruments Resource
+- `NCW` Native Instruments Lossless Compression Audio File
+- `NKC` Native Instruments Cache
+- `NKSN` Native Instruments Snapshot
+- `GP` unknown namespace, perhaps 'General Purpose'?
+- `PA` product authentication namespace
+- `AB` AudioBlock?
+- `NISD` Native Instruments Sound Domain. (a domainID).
+- `StructuredObject` Generic structure for Kontakt patch chunks.
+- `K4PO` Kontakt 4 Public Object
+- `K4PL` Kontakt 4 Patch Library
+- `Chunk` a block of data in a Kontakt preset. Generally has an id and a length followed by the data.
+- `SER` Serializer/Deserializer
+- `Stream` an open pointer to a file or memory
+- `ReadContext` a more detailed structure containing the position in the context of the entire file with error data etc.
+- `factory` creates instances of classes (usually from chunks read from the file) based on id and version.
+- `SNPID` serial number product id. eg: 540 - older form of decryption
+- `UPID` Unique ProductID a (library?) uuid. eg: d67d59a2-0a55-4574-8577-99c5220b96fb - newer form of encryption
+- `HU` initialization vector
+- `JDX` decryption key

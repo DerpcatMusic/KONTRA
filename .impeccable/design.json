@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-29T12:31:25Z",
+  "title": "Design System: Kontakto",
+  "extensions": {
+    "colorMeta": {
+      "graphite-background": { "role": "neutral", "displayName": "Graphite Background", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(37% 0 0)", "oklch(48% 0 0)", "oklch(59% 0 0)", "oklch(70% 0 0)", "oklch(82% 0 0)", "oklch(95% 0 0)"] },
+      "graphite-surface": { "role": "neutral", "displayName": "Graphite Surface", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(37% 0 0)", "oklch(48% 0 0)", "oklch(59% 0 0)", "oklch(70% 0 0)", "oklch(82% 0 0)", "oklch(95% 0 0)"] },
+      "graphite-raised": { "role": "neutral", "displayName": "Graphite Raised", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(37% 0 0)", "oklch(48% 0 0)", "oklch(59% 0 0)", "oklch(70% 0 0)", "oklch(82% 0 0)", "oklch(95% 0 0)"] },
+      "graphite-field": { "role": "neutral", "displayName": "Graphite Field", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(37% 0 0)", "oklch(48% 0 0)", "oklch(59% 0 0)", "oklch(70% 0 0)", "oklch(82% 0 0)", "oklch(95% 0 0)"] },
+      "selection-neutral": { "role": "primary", "displayName": "Neutral Selection", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(37% 0 0)", "oklch(48% 0 0)", "oklch(59% 0 0)", "oklch(70% 0 0)", "oklch(82% 0 0)", "oklch(95% 0 0)"] },
+      "text-primary": { "role": "neutral", "displayName": "Primary Text", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(37% 0 0)", "oklch(48% 0 0)", "oklch(59% 0 0)", "oklch(70% 0 0)", "oklch(82% 0 0)", "oklch(95% 0 0)"] },
+      "text-muted": { "role": "neutral", "displayName": "Muted Text", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(37% 0 0)", "oklch(48% 0 0)", "oklch(59% 0 0)", "oklch(70% 0 0)", "oklch(82% 0 0)", "oklch(95% 0 0)"] },
+      "key-black": { "role": "neutral", "displayName": "Keyboard Black Key", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(37% 0 0)", "oklch(48% 0 0)", "oklch(59% 0 0)", "oklch(70% 0 0)", "oklch(82% 0 0)", "oklch(95% 0 0)"] },
+      "key-white": { "role": "neutral", "displayName": "Keyboard White Key", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(37% 0 0)", "oklch(48% 0 0)", "oklch(59% 0 0)", "oklch(70% 0 0)", "oklch(82% 0 0)", "oklch(95% 0 0)"] },
+      "status-error": { "role": "status", "displayName": "Compatibility Coral", "tonalRamp": ["oklch(15% 0.08 25)", "oklch(26% 0.08 25)", "oklch(37% 0.08 25)", "oklch(48% 0.08 25)", "oklch(59% 0.08 25)", "oklch(70% 0.08 25)", "oklch(82% 0.08 25)", "oklch(95% 0.08 25)"] }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Title", "purpose": "MUI title-scale text, with local wordmark and empty-state overrides." },
+      "body": { "displayName": "Body", "purpose": "Instrument names, messages, and everyday editor content." },
+      "control": { "displayName": "Control", "purpose": "Compact actions and inline compatibility errors." },
+      "label": { "displayName": "Label", "purpose": "Counts, status metadata, and secondary prompts." }
+    },
+    "breakpoints": [
+      { "name": "minimum-native-editor", "value": "900 × 640 logical px", "purpose": "Fixed-zoom native editor minimum; captured at this viewport and at 1180 × 780." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Selected View Tab",
+      "kind": "nav",
+      "refersTo": "navigation-current",
+      "description": "Soft neutral fill marks the current workspace view.",
+      "html": "<button class=\"ds-tab-current\" aria-current=\"page\">Mapping</button>",
+      "css": ".ds-tab-current { background: #474747; color: #e8e8e8; border: 0; border-radius: 1px; padding: 4px 10px; font: 400 12px 'Noto Sans', sans-serif; } .ds-tab-current:hover { background: #474747; } .ds-tab-current:focus-visible { outline: 1px solid #808080; outline-offset: 1px; } .ds-tab-current:active { background: #3f3f3f; }"
+    },
+    {
+      "name": "Ghost Action",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "A text-led action for the compact toolbar and rack controls.",
+      "html": "<button class=\"ds-action\">MIDI thru</button>",
+      "css": ".ds-action { background: transparent; color: #e8e8e8; border: 0; border-radius: 1px; padding: 4px 8px; font: 400 12px 'Noto Sans', sans-serif; } .ds-action:hover { background: #303030; } .ds-action:focus-visible { outline: 1px solid #808080; outline-offset: 1px; } .ds-action:active { background: #252525; }"
+    },
+    {
+      "name": "Search Field",
+      "kind": "input",
+      "refersTo": "search-field",
+      "description": "A square, inset field for filtering libraries and instruments.",
+      "html": "<input class=\"ds-search\" aria-label=\"Search libraries and instruments\" placeholder=\"Search\">",
+      "css": ".ds-search { width: 100%; height: 28px; padding: 4px 8px; background: #101010; color: #e8e8e8; border: 0; border-radius: 0; font: 400 13px 'Noto Sans', sans-serif; } .ds-search::placeholder { color: #808080; } .ds-search:hover { background: #161616; } .ds-search:focus-visible { outline: 1px solid #808080; outline-offset: 0; }"
+    },
+    {
+      "name": "Rack Part Row",
+      "kind": "custom",
+      "refersTo": "rack-part-row",
+      "description": "A flat instrument row with its name, routing, level, and group controls.",
+      "html": "<section class=\"ds-part\"><header><span>01</span><strong>Vista - Harp</strong><button>M</button><button>S</button><button>Remove</button></header><div class=\"ds-part-controls\">MIDI 1　 Ch 1　 Out 1 <span>Level 0.0 dB　 Pan C</span></div></section>",
+      "css": ".ds-part { background: #252525; color: #e8e8e8; font: 400 13px 'Noto Sans', sans-serif; } .ds-part header { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 3px 8px; background: #303030; } .ds-part header span { color: #808080; font-size: 11px; } .ds-part header strong { flex: 1; font-weight: 400; } .ds-part button { background: transparent; color: #e8e8e8; border: 0; padding: 4px 6px; font: inherit; } .ds-part button:hover { background: #474747; } .ds-part button:focus-visible { outline: 1px solid #808080; } .ds-part-controls { display: flex; justify-content: space-between; padding: 6px 8px; font-size: 11px; color: #b8b8b8; }"
+    },
+    {
+      "name": "Piano Keybed",
+      "kind": "custom",
+      "refersTo": "keyboard-white",
+      "description": "A stable neutral keyboard with contrasting natural and sharp keys.",
+      "html": "<div class=\"ds-keybed\" aria-label=\"Piano keyboard\"><button class=\"ds-key-white\">C3</button><button class=\"ds-key-black\" aria-label=\"C sharp 3\"></button><button class=\"ds-key-white\"></button><button class=\"ds-key-white\"></button><button class=\"ds-key-black\" aria-label=\"D sharp 3\"></button><button class=\"ds-key-white\"></button></div>",
+      "css": ".ds-keybed { display: flex; align-items: flex-start; gap: 1px; height: 68px; background: #303030; } .ds-key-white { flex: 1; height: 68px; background: #ebebeb; color: #252525; border: 0; border-radius: 0; text-align: left; vertical-align: bottom; font: 400 9px 'Noto Sans', sans-serif; } .ds-key-black { flex: 0.7; height: 42px; margin: 0 -8px; z-index: 1; background: #0d0d0d; color: #e8e8e8; border: 0; border-radius: 0; } .ds-key-white:hover { background: #f3f3f3; } .ds-key-black:hover { background: #252525; } .ds-keybed button:focus-visible { outline: 1px solid #808080; outline-offset: -1px; }"
+    },
+    {
+      "name": "Compatibility Error",
+      "kind": "custom",
+      "refersTo": "load-error",
+      "description": "An actual load or missing-sample failure remains visible in the rack.",
+      "html": "<p class=\"ds-error\" role=\"status\">Load failed: missing sample data in archive.</p>",
+      "css": ".ds-error { margin: 0; padding: 5px 10px; color: #ff837b; background: transparent; font: 400 12px/1.4 'Noto Sans', sans-serif; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Graphite Rack",
+    "overview": "Kontakto is a dense, quiet instrument workstation: a dark continuous work area, a multi-instrument rack, a separate library browser, and a light piano bed. Neutral grays carry selection and panel hierarchy; color comes from the user's own library artwork or a real compatibility error.\n\nOne bundled sans face keeps instrument names and diagnostics direct and readable. Rack, Mapping, Groups, Info, and folder settings share the same shell, so browsing and inspection do not replace the instruments being assembled. Compatibility limits remain visible in context. Instrument view previews Vista Harp (47 controls) and Vista Cellos (48), preserving authored positions, labels, and hide state as disabled native glyphs over named local wallpaper, cropped 68px for Kontakt's header with Kontakto's title outside; manual gain/pan/audition stay live above with groups below, saved values and callbacks are shown unavailable, original skins and KSP runtime are not reproduced, and the resolved wallpaper maps only to a matching local picture or kind-4 NKR resource (never bundled). The right browser separates Instruments (NKI) from Multis (NKM) and lists whole preset files from the selected library; Instrument's library breadcrumb with Previous/Next traverses the whole preset set, raw groups remain in Groups, and each NKM expands embedded programs, including silent controller parts, into the rack while original routing, scripts, and resource behavior remain unsupported.",
+    "keyCharacteristics": [
+      "Flat graphite surfaces with thin rules and compact controls.",
+      "A persistent rack beside separate artwork and preset lists.",
+      "Neutral piano keys; local library artwork is the only decorative image."
+    ],
+    "rules": [
+      { "name": "The Neutral Selection Rule", "body": "Keep active states in the graphite family; use coral only when the instrument reports a real error.", "section": "colors" },
+      { "name": "The Bundled Face Rule", "body": "Use the bundled Noto Sans face across the editor; do not add a display or monospace family.", "section": "typography" },
+      { "name": "The Persistent Rack Rule", "body": "Keep the rack and the separate library/preset browser visible together as the user changes workspace views.", "section": "layout" },
+      { "name": "The Flat Plane Rule", "body": "Convey hierarchy with neutral fills and hairlines, not floating cards or decorative depth.", "section": "elevation" },
+      { "name": "The Square Edge Rule", "body": "Keep large surfaces and keys square; reserve the tiny control radius for compact actions.", "section": "shapes" }
+    ],
+    "dos": [
+      "**Do** keep the multi-instrument rack, library artwork, and separate preset list visible in the same editor shell.",
+      "**Do** use only locally discovered library artwork, preserve its aspect ratio, and leave it out of bundled product assets.",
+      "**Do** keep names, counts, load state, and compatibility limits readable inside the dense layout.",
+      "**Do** preserve the neutral keybed and bundled Noto Sans typography."
+    ],
+    "donts": [
+      "**Don't** add navy/gold color, invented or bundled artwork, or ornamental meters to the editor.",
+      "**Don't** replace the flat rack with nested rounded cards or large empty gaps.",
+      "**Don't** imply full KSP, DFD, or Kontakt parity; the Instrument notice describes the preview's limits."
+    ]
+  }
+}

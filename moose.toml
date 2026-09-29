@@ -1,0 +1,18 @@
+[vendor]
+name = "Derpcat"
+id = "audio.derpcat"
+url = "https://github.com/DerpcatMusic"
+au_manufacturer = "Dcat"
+
+[[plugin]]
+name = "Kontakto"
+bundle_id = "kontakto"
+crate = "kontakto"
+category = "instrument"
+fourcc = "Knto"
+vst3_subcategory = "Sampler"
+
+midi_input = true
+midi_output = true
+midi_input_ports = 4
+midi_output_ports = 1
