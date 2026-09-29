@@ -8,8 +8,8 @@
 mod builtins;
 mod calls;
 mod compile;
-mod idiom;
 pub mod engine;
+mod idiom;
 mod inventory;
 mod lexer;
 mod parser;
@@ -21,11 +21,11 @@ mod vm;
 mod tests;
 
 pub use engine::{
-    ENGINE_PAR_BASE, EngineCall, EnginePar, EventId, Fade, GroupMask, KspEngine, LogEngine, NoteLength, NoteSpec,
-    VoicePar, engine_par_name,
+    ENGINE_PAR_BASE, EngineCall, EnginePar, EventId, Fade, GroupMask, KspEngine, LogEngine,
+    NoteLength, NoteSpec, VoicePar, engine_par_name,
 };
 pub use inventory::requirements;
-pub use runtime::{MAX_SLOTS, Persisted, Runtime, settle_persistence};
+pub use runtime::{Live, MAX_SLOTS, Persisted, Runtime, settle_persistence};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -50,7 +50,7 @@ pub struct HostState {
     pub script_pressed: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct KeyState {
     pub name: String,
     pub color: Option<Value>,
@@ -58,7 +58,7 @@ pub struct KeyState {
     pub pressed: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Control {
     pub variable: String,
     pub kind: String,
@@ -66,7 +66,7 @@ pub struct Control {
     pub menu: Vec<(String, i32)>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Interface {
     pub performance: bool,
     pub width: i32,

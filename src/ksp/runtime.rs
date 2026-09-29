@@ -11,7 +11,7 @@ use super::builtins::{self as b, CC_SLOTS, SysArray};
 use super::compile::{self, Callback, Program, Setup, Ty, VarId};
 use super::engine::{EnginePar, EventId, Fade, GroupMask, KspEngine, NoteLength, NoteSpec};
 use super::vm::{self, Ctx, Forward, Kind, Machine, POLY_ROWS, SlotState, Stacks, Thread, Yield};
-use super::{HostState, Interface, Value};
+use super::{HostState, Interface, KeyState, Value};
 use anyhow::{Result, bail};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, VecDeque};
@@ -39,6 +39,17 @@ pub const INIT_FUEL: u64 = 1_000_000_000;
 
 /// Saved values of persistent variables, per script slot, keyed by variable name.
 pub type Persisted = BTreeMap<String, Value>;
+
+/// What the host shows of running scripts, refreshed in place by
+/// [`Runtime::refresh_live`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Live {
+    /// Script slot of `interface`: the last slot with a performance view.
+    pub slot: usize,
+    pub interface: Option<Interface>,
+    /// Every key; unset names and colors are empty.
+    pub keys: BTreeMap<u8, KeyState>,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Event {
@@ -688,7 +699,9 @@ impl Runtime {
         }
         // Nothing plays yet, so init's notes are dropped; controllers it sets
         // settle with `on persistence_changed`.
-        self.env.work.retain(|w| matches!(w, Work::Controller { .. }));
+        self.env
+            .work
+            .retain(|w| matches!(w, Work::Controller { .. }));
         Ok(())
     }
 
@@ -750,6 +763,79 @@ impl Runtime {
         self.states[slot]
             .ui
             .interface(&self.programs[slot], &self.states[slot].mem)
+    }
+
+    /// What the host shows while the scripts run, shaped for
+    /// [`refresh_live`](Self::refresh_live): every string has room to grow and
+    /// every key has an entry.
+    pub fn live(&self) -> Live {
+        let slot = (0..self.states.len())
+            .rev()
+            .find(|&s| self.states[s].ui.performance);
+        let mut interface = slot.map(|s| self.interface(s));
+        for c in interface.iter_mut().flat_map(|i| &mut i.controls) {
+            // Properties scripts often first set while running.
+            for name in ["$CONTROL_PAR_TEXT", "$CONTROL_PAR_PICTURE"] {
+                c.properties
+                    .entry(name.into())
+                    .or_insert_with(|| Value::Text(String::new()));
+            }
+            c.properties
+                .entry("$CONTROL_PAR_PICTURE_STATE".into())
+                .or_insert(Value::Int(0));
+            for v in c.properties.values_mut() {
+                each_text_in(v, &mut room);
+            }
+            c.menu.iter_mut().for_each(|(t, _)| room(t));
+        }
+        let text = || String::with_capacity(SNAPSHOT_SLACK);
+        let keys = (0..128)
+            .map(|n| {
+                let key = KeyState {
+                    name: text(),
+                    color: Some(Value::Text(text())),
+                    kind: Some(Value::Text(text())),
+                    pressed: false,
+                };
+                (n, key)
+            })
+            .collect();
+        let mut live = Live {
+            slot: slot.unwrap_or(0),
+            interface,
+            keys,
+        };
+        self.refresh_live(&mut live);
+        live
+    }
+
+    /// Copy control properties, values and keys into `live`, built by
+    /// [`live`](Self::live), in place and without allocating, so the audio
+    /// thread can refresh it for the host. Strings are cut to the room they
+    /// have; properties and menu items `live` lacks are skipped.
+    pub fn refresh_live(&self, live: &mut Live) {
+        if let Some(out) = &mut live.interface
+            && let Some(state) = self.states.get(live.slot)
+        {
+            state.ui.refresh(&self.programs[live.slot], &state.mem, out);
+        }
+        for (note, key) in &mut live.keys {
+            let host = self.env.host.keyboard.get(note);
+            copy_text(&mut key.name, host.map_or("", |k| &k.name));
+            fn text(v: Option<&Value>) -> &str {
+                match v {
+                    Some(Value::Text(s)) => s,
+                    _ => "",
+                }
+            }
+            if let Some(Value::Text(t)) = &mut key.color {
+                copy_text(t, text(host.and_then(|k| k.color.as_ref())));
+            }
+            if let Some(Value::Text(t)) = &mut key.kind {
+                copy_text(t, text(host.and_then(|k| k.kind.as_ref())));
+            }
+            key.pressed = host.is_some_and(|k| k.pressed);
+        }
     }
 
     /// Slot errors, runtime faults (with script line numbers) and service notes.
@@ -1457,19 +1543,36 @@ pub fn read_value(mem: &vm::Memory, var: &compile::Var) -> Value {
     }
 }
 
+/// Replace `t` with as much of `s` as fits its capacity, without allocating.
+pub(super) fn copy_text(t: &mut String, s: &str) {
+    if t != s {
+        t.clear();
+        t.push_str(&s[..s.floor_char_boundary(t.capacity())]);
+    }
+}
+
+/// Give a string room to grow before a refresh must cut it.
+fn room(t: &mut String) {
+    t.reserve(t.len().max(SNAPSHOT_SLACK));
+}
+
+fn each_text_in(value: &mut Value, f: &mut impl FnMut(&mut String)) {
+    match value {
+        Value::Text(t) => f(t),
+        Value::Array(items) => items.iter_mut().for_each(|v| each_text_in(v, f)),
+        _ => {}
+    }
+}
+
 /// Copy current values into a value shaped by [`read_value`], without reshaping it.
-fn refresh_value(mem: &vm::Memory, var: &compile::Var, value: &mut Value) {
+pub(super) fn refresh_value(mem: &vm::Memory, var: &compile::Var, value: &mut Value) {
     if var.poly {
         return;
     }
     let one = |i: usize, v: &mut Value| match (var.ty, v) {
         (Ty::Int, Value::Int(n)) => *n = mem.ints[i],
         (Ty::Real, Value::Real(n)) => *n = mem.reals[i],
-        (Ty::Str, Value::Text(t)) => {
-            let s = &mem.strs[i];
-            t.clear();
-            t.push_str(&s[..s.floor_char_boundary(t.capacity())]);
-        }
+        (Ty::Str, Value::Text(t)) => copy_text(t, &mem.strs[i]),
         _ => {}
     };
     let s = var.slot as usize;

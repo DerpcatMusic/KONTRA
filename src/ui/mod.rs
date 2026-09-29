@@ -66,6 +66,10 @@ struct EditorState {
     last_poll: Instant,
     /// Smoothed audio thread load, 0..1.
     cpu: f32,
+    /// Script control being dragged, with its unrounded value.
+    held: Option<(usize, f64)>,
+    /// Script menu showing its items.
+    menu: Option<usize>,
     started: Instant,
 }
 
@@ -314,6 +318,8 @@ fn build(
         root,
         last_poll: Instant::now() - Duration::from_secs(1),
         cpu: 0.,
+        held: None,
+        menu: None,
         started: Instant::now(),
     };
     move |ui, bridge| {

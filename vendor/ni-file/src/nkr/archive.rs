@@ -228,8 +228,10 @@ fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Er
             Some("Truncated NKX member header")
         } else {
             e.offset = file_offset + header_size;
-            e.encoded = magic == 0x16ccf80a;
             e.key_index = u32::from_le_bytes(header[10..14].try_into().unwrap());
+            // Members naming the library key (0x100) are encrypted whatever their
+            // header magic: Solo's shared NKR uses the 22-byte header.
+            e.encoded = magic == 0x16ccf80a || e.key_index == 0x100;
             let at = if magic == 0x2ae905fa { 14 } else { 19 };
             e.size = u32::from_le_bytes(header[at..at + 4].try_into().unwrap()) as u64;
             if e.offset + e.size > length {

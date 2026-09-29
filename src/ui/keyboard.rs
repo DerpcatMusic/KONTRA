@@ -210,7 +210,7 @@ fn key_color(value: &Value) -> Option<Option<Color>> {
         "PURPLE" => 315.,
         "MAGENTA" => 340.,
         "FUCHSIA" => 355.,
-        "NONE" => return None,
+        "" | "NONE" => return None,
         "WHITE" | "BLACK" | "INACTIVE" => return Some(None),
         _ => return Some(Some(accent())),
     };

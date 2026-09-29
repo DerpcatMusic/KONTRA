@@ -3712,7 +3712,6 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 [[package]]
 name = "vello"
 version = "0.10.0"
-source = "git+https://github.com/Matari-Audio/MUI#aa1f8f3cd9f2b33b16b7e6209c54ff6634d2bf04"
 dependencies = [
  "bytemuck",
  "futures-intrusive",

@@ -3,7 +3,7 @@ use crate::{
     engine::{Bank, Engine, MAX_BLOCK, PartControls, RACK_SLOTS, Rack, load_scripts},
     fx::FxProcessor,
     import::{self, Instrument},
-    ksp::{Interface, KeyState, Persisted, Runtime},
+    ksp::{Interface, KeyState, Live, Persisted, Runtime},
 };
 use crossbeam_queue::ArrayQueue;
 use moose::mui::mui::scene::Image;
@@ -90,6 +90,11 @@ pub struct Shared {
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
     snapshot_requests: ArrayQueue<(usize, Box<Vec<Persisted>>)>,
     snapshots: ArrayQueue<(usize, u64, Box<Vec<Persisted>>)>,
+    /// Live script views, lent and refreshed the same way.
+    live_requests: ArrayQueue<(usize, Box<Live>)>,
+    lives: ArrayQueue<(usize, u64, Box<Live>)>,
+    /// Edits of script controls from the performance view.
+    edits: ArrayQueue<Edit>,
     /// Host sample rate (`f64` bits) that effect processors are built for.
     rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
@@ -115,6 +120,8 @@ pub(crate) struct PartView {
     pub(crate) interface: Option<Arc<crate::ksp::Interface>>,
     pub(crate) interface_status: String,
     pub(crate) wallpaper: Option<Arc<Image>>,
+    /// Control pictures the scripts name, by name.
+    pub(crate) pictures: Arc<HashMap<String, Arc<artwork::Picture>>>,
     pub(crate) wallpaper_status: String,
     pub(crate) attempted: Option<(String, u32)>,
     pub(crate) instrument: Option<Arc<Instrument>>,
@@ -129,9 +136,13 @@ pub(crate) struct PartView {
     pub(crate) script_epoch: u64,
     /// Snapshot buffer for this slot's runtime while the loader holds it.
     pub(crate) snapshot: Option<Box<Vec<Persisted>>>,
+    /// Live view buffer for this slot's runtime while the loader holds it.
+    pub(crate) live: Option<Box<Live>>,
+    /// Script slot that `interface` belongs to.
+    pub(crate) script_slot: usize,
     /// Samples are being read for this slot.
     pub(crate) loading: bool,
-    /// Keyboard colors and names the scripts set during init.
+    /// Keyboard colors and names the scripts set, kept current while they run.
     pub(crate) keys: Arc<BTreeMap<u8, KeyState>>,
 }
 #[derive(Clone)]
@@ -152,6 +163,9 @@ impl Default for Shared {
             discard: ArrayQueue::new(64),
             snapshot_requests: ArrayQueue::new(2 * RACK_SLOTS),
             snapshots: ArrayQueue::new(2 * RACK_SLOTS),
+            live_requests: ArrayQueue::new(2 * RACK_SLOTS),
+            lives: ArrayQueue::new(2 * RACK_SLOTS),
+            edits: ArrayQueue::new(256),
             rate: AtomicU64::new(48000f64.to_bits()),
             key_owners: std::array::from_fn(|_| AtomicU64::new(128)),
             keyboard: ArrayQueue::new(256),
@@ -203,6 +217,14 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
             .unwrap_or_default()
     })
 }
+/// A script control edit for the runtime of `part` tagged `epoch`.
+struct Edit {
+    part: usize,
+    epoch: u64,
+    slot: usize,
+    control: usize,
+    value: i32,
+}
 /// Loader-built state for one rack slot, installed by the audio thread.
 enum Handoff {
     /// A new instrument, or an empty slot, with its effects and initialized scripts.
@@ -251,17 +273,48 @@ fn scripts(
         .map(Box::new);
     (script, snapshot, errors)
 }
-/// Epoch for a runtime about to be handed off from `slot`; forgets the old runtime's snapshot.
-fn next_epoch(view: &mut View, slot: usize, snapshot: Option<Box<Vec<Persisted>>>) -> u64 {
+/// Epoch for `script`, about to be handed off from `slot`; forgets the old runtime's buffers.
+fn next_epoch(
+    view: &mut View,
+    slot: usize,
+    snapshot: Option<Box<Vec<Persisted>>>,
+    script: Option<&Runtime>,
+) -> u64 {
     view.script_epoch += 1;
     let v = &mut view.parts[slot];
     v.script_epoch = view.script_epoch;
     v.snapshot = snapshot;
+    v.live = script.map(|rt| Box::new(rt.live()));
     view.script_epoch
 }
 impl Shared {
     fn rate(&self) -> f64 {
         f64::from_bits(self.rate.load(Ordering::Acquire))
+    }
+
+    /// Set script control `control` of `part`'s performance view and run its
+    /// `on ui_control`; the view shows the value until the scripts report back.
+    pub(crate) fn edit_control(&self, part: usize, control: usize, value: i32) {
+        let mut view = self.view.lock().unwrap();
+        let v = &mut view.parts[part];
+        let edit = Edit {
+            part,
+            epoch: v.script_epoch,
+            slot: v.script_slot,
+            control,
+            value,
+        };
+        if self.edits.push(edit).is_err() {
+            return;
+        }
+        if let Some(c) = v
+            .interface
+            .as_mut()
+            .and_then(|i| Arc::make_mut(i).controls.get_mut(control))
+        {
+            c.properties
+                .insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::Int(value));
+        }
     }
 
     /// Ask the loader to replace the rack with the multi at `path`.
@@ -409,7 +462,7 @@ impl BackgroundTask for Load {
                 let (script, snapshot, _) =
                     scripts(&instrument, &part.script_state, params.shared.rate());
                 let mut view = params.shared.view.lock().unwrap();
-                let epoch = next_epoch(&mut view, slot, snapshot);
+                let epoch = next_epoch(&mut view, slot, snapshot, script.as_deref());
                 view.parts[slot].script_state = part.script_state.clone();
                 let _ = params.shared.ready.force_push((
                     slot,
@@ -429,6 +482,7 @@ impl BackgroundTask for Load {
                 v.loading = true;
                 v.script_epoch = 0;
                 v.snapshot = None;
+                v.live = None;
                 v.instrument
                     .as_ref()
                     .filter(|i| i.path == Path::new(&part.path) && v.program == part.program)
@@ -470,22 +524,34 @@ impl BackgroundTask for Load {
                                 .is_none_or(|i| i.path != instrument.path)
                     };
                     let parsed = needs_art.then(|| script_interface(script.as_deref()));
-                    let art = parsed.as_ref().map(|(interface, ..)| {
-                        artwork::performance(
+                    let art = parsed.as_ref().map(|parsed| {
+                        let interface = parsed.interface.as_deref();
+                        let wallpaper = artwork::performance(
                             &instrument,
-                            interface.as_ref().map(|u| u.wallpaper.as_str()),
-                        )
+                            interface.map(|u| u.wallpaper.as_str()),
+                        );
+                        let names =
+                            interface
+                                .into_iter()
+                                .flat_map(|u| &u.controls)
+                                .filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+                                    Some(crate::ksp::Value::Text(name)) => Some(name.as_str()),
+                                    _ => None,
+                                });
+                        (wallpaper, artwork::pictures(&instrument.path, names))
                     });
                     let mut view = params.shared.view.lock().unwrap();
                     let v = &mut view.parts[slot];
                     v.instrument = Some(instrument.clone());
                     v.program = part.program;
-                    if let Some((interface, status, keys)) = parsed {
-                        v.interface = interface;
-                        v.interface_status = status;
-                        v.keys = keys;
+                    if let Some(parsed) = parsed {
+                        v.interface = parsed.interface;
+                        v.script_slot = parsed.slot;
+                        v.interface_status = parsed.status;
+                        v.keys = parsed.keys;
                     }
-                    if let Some(art) = art {
+                    if let Some((art, pictures)) = art {
+                        v.pictures = Arc::new(pictures);
                         match art {
                             Ok(image) => {
                                 v.wallpaper = image;
@@ -541,7 +607,7 @@ impl BackgroundTask for Load {
             match result {
                 Ok((instrument, bank, script, snapshot)) => {
                     let epoch = if script.is_some() {
-                        next_epoch(&mut view, slot, snapshot)
+                        next_epoch(&mut view, slot, snapshot, script.as_deref())
                     } else {
                         0
                     };
@@ -621,8 +687,29 @@ impl BackgroundTask for Load {
                 p.script_state = json;
             }
         }
+        // Show what the scripts changed since the last round.
+        while let Some((slot, epoch, live)) = params.shared.lives.pop() {
+            let mut view = params.shared.view.lock().unwrap();
+            let v = &mut view.parts[slot];
+            if epoch == 0 || epoch != v.script_epoch {
+                continue;
+            }
+            if v.interface.as_deref() != live.interface.as_ref() {
+                v.interface = live.interface.clone().map(Arc::new);
+            }
+            if *v.keys != live.keys {
+                v.keys = Arc::new(live.keys.clone());
+            }
+            v.script_slot = live.slot;
+            v.live = Some(live);
+        }
         for slot in 0..RACK_SLOTS {
             let mut view = params.shared.view.lock().unwrap();
+            if let Some(live) = view.parts[slot].live.take()
+                && let Err((_, live)) = params.shared.live_requests.push((slot, live))
+            {
+                view.parts[slot].live = Some(live);
+            }
             if let Some(snapshot) = view.parts[slot].snapshot.take()
                 && let Err((_, snapshot)) = params.shared.snapshot_requests.push((slot, snapshot))
             {
@@ -776,6 +863,21 @@ impl PluginLogic for Sampler {
                 },
             };
             let _ = p.shared.discard.push(retired);
+        }
+        while let Some(e) = p.shared.edits.pop() {
+            if e.epoch != 0 && e.epoch == s.script_epoch[e.part] {
+                s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
+            }
+        }
+        // Refresh lent live views in place; the loader shows them.
+        while !p.shared.lives.is_full() {
+            let Some((slot, mut live)) = p.shared.live_requests.pop() else {
+                break;
+            };
+            if let Some(rt) = s.rack.parts[slot].script() {
+                rt.refresh_live(&mut live);
+            }
+            let _ = p.shared.lives.push((slot, s.script_epoch[slot], live));
         }
         // Refresh lent persistence snapshots in place; the loader saves them.
         while !p.shared.snapshots.is_full() {
@@ -954,20 +1056,25 @@ impl PluginLogic for Sampler {
     }
 }
 /// What the UI shows of initialized scripts: the performance view (the last slot with one),
-/// their issues, and the keyboard colors they set.
-pub(crate) fn script_interface(
-    rt: Option<&Runtime>,
-) -> (Option<Arc<Interface>>, String, Arc<BTreeMap<u8, KeyState>>) {
+/// its script slot, their issues, and the keyboard the scripts set.
+pub(crate) fn script_interface(rt: Option<&Runtime>) -> ScriptView {
     let Some(rt) = rt else {
-        return (None, String::new(), Arc::default());
+        return ScriptView::default();
     };
-    let interface = (0..rt.slots())
-        .map(|slot| rt.interface(slot))
-        .filter(|ui| ui.performance)
-        .last()
-        .map(Arc::new);
-    let keys = Arc::new(rt.host().keyboard.clone());
-    (interface, rt.diagnostics().join("\n"), keys)
+    let live = rt.live();
+    ScriptView {
+        interface: live.interface.map(Arc::new),
+        slot: live.slot,
+        status: rt.diagnostics().join("\n"),
+        keys: Arc::new(live.keys),
+    }
+}
+#[derive(Default)]
+pub(crate) struct ScriptView {
+    pub(crate) interface: Option<Arc<Interface>>,
+    pub(crate) slot: usize,
+    pub(crate) status: String,
+    pub(crate) keys: Arc<BTreeMap<u8, KeyState>>,
 }
 
 moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
@@ -1015,6 +1122,68 @@ mod tests {
             midi_thru: true,
         };
         assert!(Selection::deserialize(&state.serialize()).unwrap() == state);
+    }
+    #[test]
+    fn control_edits_run_the_script_and_report_back() {
+        let script = "on init\nmake_perfview\ndeclare ui_switch $legato\nmake_persistent($legato)\ndeclare ui_label $l(1,1)\nend on\non ui_control($legato)\nset_text($l, \"Legato\")\nset_key_color(36, $KEY_COLOR_BLUE)\nend on";
+        let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
+        let (rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let p = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            let epoch = next_epoch(&mut view, 0, Some(Box::new(rt.persistence())), Some(&rt));
+            let parsed = script_interface(Some(&rt));
+            view.parts[0].interface = parsed.interface;
+            dsp.script_epoch[0] = epoch;
+        }
+        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+
+        p.shared.edit_control(0, 0, 1);
+        let shown = p.shared.view.lock().unwrap().parts[0]
+            .interface
+            .clone()
+            .unwrap();
+        assert_eq!(
+            shown.controls[0].properties["$CONTROL_PAR_VALUE"],
+            crate::ksp::Value::Int(1),
+            "the view shows an edit at once"
+        );
+        let live = p.shared.view.lock().unwrap().parts[0].live.take().unwrap();
+        p.shared.live_requests.push((0, live)).ok().unwrap();
+
+        let mut outputs = vec![vec![0f32; 64]; 2];
+        let mut refs: Vec<_> = outputs.iter_mut().map(|o| o.as_mut_slice()).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 64);
+        let transport = TransportInfo::default();
+        let mut midi_out = EventList::with_capacity(4);
+        let mut cx = ProcessContext::new(&transport, 48000., 64, &mut midi_out);
+        Sampler::process(
+            &mut dsp,
+            &p,
+            &mut buffer,
+            &EventList::with_capacity(1),
+            &mut cx,
+        );
+
+        let (slot, epoch, live) = p.shared.lives.pop().expect("the live view comes back");
+        assert_eq!((slot, epoch), (0, dsp.script_epoch[0]));
+        let interface = live.interface.as_ref().unwrap();
+        assert_eq!(
+            interface.controls[1].properties["$CONTROL_PAR_TEXT"],
+            crate::ksp::Value::Text("Legato".into())
+        );
+        assert_eq!(
+            live.keys[&36].color,
+            Some(crate::ksp::Value::Text("$KEY_COLOR_BLUE".into()))
+        );
+        let saved = dsp.rack.parts[0].script().unwrap().persistence();
+        assert_eq!(
+            saved[0]["$legato"],
+            crate::ksp::Value::Int(1),
+            "edits persist"
+        );
     }
     #[test]
     fn process_routes_bus_and_midi_thru() {
