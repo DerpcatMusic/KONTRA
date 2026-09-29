@@ -411,6 +411,7 @@ fn envelope_follows_group_ahdsr() {
     .unwrap();
     bank.settings[0].envelope = Some(Ahdsr {
         attack: 0.01,
+        curve: 0.0,
         hold: 0.0,
         decay: 0.05,
         sustain: 0.5,

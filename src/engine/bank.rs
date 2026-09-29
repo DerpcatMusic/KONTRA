@@ -67,10 +67,10 @@ impl From<&Group> for GroupSettings {
 }
 
 impl From<&crate::import::Ahdsr> for Ahdsr {
-    // ponytail: attack curve is decoded but the voice envelope has one fixed shape.
     fn from(env: &crate::import::Ahdsr) -> Self {
         Self {
             attack: env.attack_ms / 1000.0,
+            curve: env.attack_curve,
             hold: env.hold_ms / 1000.0,
             decay: env.decay_ms / 1000.0,
             sustain: env.sustain.clamp(0.0, 1.0),

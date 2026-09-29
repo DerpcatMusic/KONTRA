@@ -563,6 +563,7 @@ impl Engine {
     fn defaults(&self) -> Ahdsr {
         Ahdsr {
             attack: self.attack,
+            curve: 0.0,
             hold: 0.0,
             decay: 0.0,
             sustain: 1.0,

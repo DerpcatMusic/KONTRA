@@ -247,6 +247,7 @@ mod id {
     pub const SUSTAIN: i32 = B + 8;
     pub const RELEASE: i32 = B + 9;
     pub const HOLD: i32 = B + 10;
+    pub const ATK_CURVE: i32 = B + 11;
     pub const MOD_TARGET_INTENSITY: i32 = B + 16;
     pub const MOD_TARGET_MP_INTENSITY: i32 = B + 17;
     pub const EFFECT_BYPASS: i32 = B + 22;
@@ -274,6 +275,8 @@ pub(crate) enum GroupPar {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Stage {
     Attack,
+    /// Attack curve, -1..=1.
+    Curve,
     Hold,
     Decay,
     Sustain,
@@ -340,11 +343,12 @@ impl Address {
                     _ => return None,
                 }
             }
-            id::ATTACK | id::DECAY | id::SUSTAIN | id::RELEASE | id::HOLD => {
+            id::ATTACK | id::ATK_CURVE | id::DECAY | id::SUSTAIN | id::RELEASE | id::HOLD => {
                 let g = group()?;
                 modulator(g)?.volume_env.then_some(())?;
                 let stage = match par.id {
                     id::ATTACK => Stage::Attack,
+                    id::ATK_CURVE => Stage::Curve,
                     id::HOLD => Stage::Hold,
                     id::DECAY => Stage::Decay,
                     id::SUSTAIN => Stage::Sustain,
@@ -397,6 +401,8 @@ impl Address {
             },
             Self::Envelope(_, stage) => match stage {
                 Stage::Sustain => x,
+                // Solo sets 1000000, 750000 and 333333 where its presets store 1, 0.5, -0.33.
+                Stage::Curve => 2.0 * x - 1.0,
                 Stage::Attack | Stage::Hold => time(x, SHORT),
                 Stage::Decay | Stage::Release => time(x, LONG),
             },
@@ -423,6 +429,7 @@ impl Address {
             },
             Self::Envelope(_, stage) => match stage {
                 Stage::Sustain => v,
+                Stage::Curve => (v + 1.0) * 0.5,
                 Stage::Attack | Stage::Hold => time_value(v, SHORT),
                 Stage::Decay | Stage::Release => time_value(v, LONG),
             },
@@ -485,13 +492,14 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             else {
                 return false;
             };
-            *match stage {
-                Stage::Attack => &mut env.attack,
-                Stage::Hold => &mut env.hold,
-                Stage::Decay => &mut env.decay,
-                Stage::Sustain => &mut env.sustain,
-                Stage::Release => &mut env.release,
-            } = value.max(0.0);
+            match stage {
+                Stage::Curve => env.curve = value.clamp(-1.0, 1.0),
+                Stage::Attack => env.attack = value.max(0.0),
+                Stage::Hold => env.hold = value.max(0.0),
+                Stage::Decay => env.decay = value.max(0.0),
+                Stage::Sustain => env.sustain = value.clamp(0.0, 1.0),
+                Stage::Release => env.release = value.max(0.0),
+            }
         }
         Address::Intensity { group, index, .. } => {
             let m = settings
@@ -523,6 +531,7 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
             let env = settings.get(g as usize)?.envelope?;
             Some(match stage {
                 Stage::Attack => env.attack,
+                Stage::Curve => env.curve,
                 Stage::Hold => env.hold,
                 Stage::Decay => env.decay,
                 Stage::Sustain => env.sustain,
@@ -593,6 +602,7 @@ mod tests {
             (id::SUSTAIN, "SUSTAIN"),
             (id::RELEASE, "RELEASE"),
             (id::HOLD, "HOLD"),
+            (id::ATK_CURVE, "ATK_CURVE"),
             (id::MOD_TARGET_INTENSITY, "MOD_TARGET_INTENSITY"),
             (id::MOD_TARGET_MP_INTENSITY, "MOD_TARGET_MP_INTENSITY"),
             (id::EFFECT_BYPASS, "EFFECT_BYPASS"),
@@ -626,6 +636,11 @@ mod tests {
         assert!((attack.decode(465_229) - 0.125_013).abs() < 1e-4);
         assert!((release.decode(512_668) - 0.250_001).abs() < 1e-4);
         assert!((release.decode(1_000_000) - 25.000_04).abs() < 1e-3);
+        // Solo sets these where its presets store attack curves 0.5 and -0.33.
+        let curve = Address::Envelope(0, Stage::Curve);
+        assert_eq!(curve.decode(750_000), 0.5);
+        assert!((curve.decode(333_333) + 0.333_33).abs() < 1e-5);
+        assert_eq!(curve.encode(1.0), 1_000_000);
         assert_eq!(release.encode(0.250_001), 512_668);
         // Areia's send level, stored as 0.25 (−12 dB).
         let send = Address::Fx(Rack::Insert, 7, FxParam::SendLevel(0));

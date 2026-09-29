@@ -26,6 +26,9 @@ const OFFLINE_WAIT: Duration = Duration::from_secs(5);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ahdsr {
     pub attack: f32,
+    /// Attack shape, -1..=1: 0 is linear, positive convex (fast rise),
+    /// negative concave (slow start).
+    pub curve: f32,
     pub hold: f32,
     pub decay: f32,
     /// Linear sustain level, 0–1.
@@ -43,13 +46,15 @@ enum Stage {
     Done,
 }
 
-/// Linear attack, then exponential decay and release (−60 dB over the stage
+/// Curved attack, then exponential decay and release (−60 dB over the stage
 /// time, like Kontakt's AHDSR).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Envelope {
     stage: Stage,
     level: f32,
-    attack: f32,
+    /// Attack step `level = level * attack.0 + attack.1`: a one-pole glide
+    /// whose target lies past 1 (convex) or below 0 (concave), or a line.
+    attack: (f32, f32),
     hold: u32,
     decay: f32,
     sustain: f32,
@@ -65,16 +70,32 @@ fn exp_coef(seconds: f32, rate: f32) -> f32 {
     }
 }
 
+/// Exponent of the attack curve at |curve| = 1: `(1 - e^(-k t)) / (1 - e^(-k))`
+/// with `k = CURVE_STEEPNESS * curve`. Kontakt's exact law is unverified.
+const CURVE_STEEPNESS: f32 = 5.0;
+
+/// Per-frame attack step reaching 1 after `seconds`, bent by `curve`.
+fn attack_step(seconds: f32, curve: f32, rate: f32) -> (f32, f32) {
+    if seconds <= 0.0 {
+        return (1.0, 1.0);
+    }
+    let dt = 1.0 / (seconds * rate);
+    let k = CURVE_STEEPNESS * curve.clamp(-1.0, 1.0);
+    if k.abs() < 1e-3 {
+        return (1.0, dt);
+    }
+    // The shape is a one-pole glide toward `target`, reached asymptotically.
+    let target = 1.0 / -(-k).exp_m1();
+    let mul = (-k * dt).exp();
+    (mul, target * (1.0 - mul))
+}
+
 impl Envelope {
     pub fn new(p: &Ahdsr, rate: f32) -> Self {
         Self {
             stage: Stage::Attack,
             level: 0.0,
-            attack: if p.attack > 0.0 {
-                1.0 / (p.attack * rate)
-            } else {
-                1.0
-            },
+            attack: attack_step(p.attack, p.curve, rate),
             hold: (p.hold.max(0.0) * rate) as u32,
             decay: exp_coef(p.decay, rate),
             sustain: p.sustain.clamp(0.0, 1.0),
@@ -101,7 +122,7 @@ impl Envelope {
                 Stage::Attack => {
                     let mut n = 0;
                     for o in rest.iter_mut() {
-                        self.level = (self.level + self.attack).min(1.0);
+                        self.level = (self.level * self.attack.0 + self.attack.1).min(1.0);
                         *o = self.level;
                         n += 1;
                         if self.level >= 1.0 {
@@ -658,6 +679,7 @@ mod tests {
         let rate = 1000.0;
         let p = Ahdsr {
             attack: 0.01,
+            curve: 0.0,
             hold: 0.005,
             decay: 0.1,
             sustain: 0.5,
@@ -685,5 +707,45 @@ mod tests {
         );
         env.render(&mut out[..100]);
         assert!(env.done());
+    }
+
+    #[test]
+    fn attack_curve_bends_and_keeps_its_time() {
+        let rate = 1000.0;
+        let attack = |curve| {
+            let p = Ahdsr {
+                attack: 0.1,
+                curve,
+                hold: 0.0,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            };
+            let mut out = [0.0; 120];
+            Envelope::new(&p, rate).render(&mut out);
+            out
+        };
+        // (1 - e^(-k t)) / (1 - e^(-k)), k = 5 · curve.
+        let expected = |k: f32, t: f32| (-k * t).exp_m1() / (-k).exp_m1();
+        for curve in [-1.0, -0.33, 0.0, 0.5, 1.0] {
+            let out = attack(curve);
+            for frame in [19, 49, 79] {
+                let t = (frame + 1) as f32 / 100.0;
+                let want = if curve == 0.0 {
+                    t
+                } else {
+                    expected(5.0 * curve, t)
+                };
+                assert!(
+                    (out[frame] - want).abs() < 1e-3,
+                    "curve {curve} at {t}: {} vs {want}",
+                    out[frame]
+                );
+            }
+            let peak = out.iter().position(|&x| x == 1.0).unwrap();
+            assert!((99..=100).contains(&peak), "curve {curve} peaks at {peak}");
+        }
+        // Positive is convex (fast rise), negative concave (slow start).
+        assert!(attack(1.0)[19] > 0.6 && attack(-1.0)[49] < 0.08);
     }
 }
