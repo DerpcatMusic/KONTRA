@@ -1,33 +1,35 @@
 //! Kontakt effect chains: parsing from program chunks and real-time DSP.
 //!
-//! Real-time contract: all allocation happens in `prepare`; `process` never
-//! allocates, locks or panics, and accepts any block length (it splits blocks
-//! longer than `max_block`).
+//! Ownership: [`ProgramFx`] and its parts are an immutable description,
+//! cheap to clone and share (impulse responses sit behind `Arc`).
+//! [`ProgramFx::processor`] builds an owned [`FxProcessor`] holding all DSP
+//! state; that call allocates everything, and [`FxProcessor::process`] never
+//! allocates, locks or panics.
 
 mod convolution;
 mod kind;
 pub mod params;
+mod processor;
 mod reverb;
 
 pub use kind::Kind;
 pub use params::Params;
+pub use processor::FxProcessor;
 
 use anyhow::{Context, Result, ensure};
-use convolution::Convolver;
 use ni_file::kontakt::{
     Chunk, StructuredObject,
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 use params::Impulse;
-use reverb::Reverb;
 use serde::Serialize;
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 /// Longest impulse response loaded (seconds at the IR's own rate).
 const MAX_IR_SECONDS: usize = 20;
 
 /// One slot of an 8-slot Kontakt effect rack.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Effect {
     /// Rack position 0..8; send levels address send slots by this index.
     pub slot: usize,
@@ -39,20 +41,16 @@ pub struct Effect {
     /// Linear level of the unprocessed signal added after the effect.
     pub dry_level: f32,
     pub params: Params,
-    #[serde(skip)]
-    runtime: Option<Runtime>,
 }
 
 /// An effect rack in slot order (empty slots omitted).
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Chain {
     pub slots: Vec<Effect>,
-    #[serde(skip)]
-    max_block: usize,
 }
 
 /// One of the 16 instrument buses (`BInsertBus`).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Bus {
     pub index: usize,
     pub name: String,
@@ -67,105 +65,14 @@ pub struct Bus {
 ///
 /// Signal flow: `insert` in series; a Send Levels slot in `insert` taps the
 /// signal at its position into the parallel `send` slots, whose returns are
-/// summed back; then `main`. Buses are parsed and preparable but not mixed
-/// here: group-to-bus routing belongs to the engine.
-#[derive(Debug, Default, Serialize)]
+/// summed back; then `main`. Buses are parsed but not mixed: group-to-bus
+/// routing is not decoded (see `audits/EFFECTS.md`).
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ProgramFx {
     pub insert: Chain,
     pub send: Chain,
     pub main: Chain,
     pub buses: Vec<Bus>,
-    #[serde(skip)]
-    send_buffers: Vec<[Vec<f32>; 2]>,
-}
-
-struct Runtime {
-    processor: Processor,
-    dry: [Vec<f32>; 2],
-}
-
-impl fmt::Debug for Runtime {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Runtime")
-    }
-}
-
-enum Processor {
-    Gain(f32),
-    Stereo(Stereo),
-    Reverb(Box<Reverb>),
-    Convolution(Box<[Convolver; 2]>),
-}
-
-/// Stereo Modeller: mid/side width then constant-sum balance.
-struct Stereo {
-    width: f32,
-    gains: [f32; 2],
-}
-
-impl Processor {
-    fn new(params: &Params, sample_rate: f32, max_block: usize) -> Option<Self> {
-        Some(match params {
-            Params::Gainer(p) => Processor::Gain(p.gain),
-            Params::StereoModeller(p) => Processor::Stereo(Stereo {
-                width: (1.0 + p.spread).clamp(0.0, 2.0),
-                gains: [(1.0 - p.pan).clamp(0.0, 1.0), (1.0 + p.pan).clamp(0.0, 1.0)],
-            }),
-            Params::Reverb(p) => Processor::Reverb(Box::new(Reverb::new(p, sample_rate))),
-            Params::Convolution(p) => {
-                let ir = prepare_ir(p, sample_rate)?;
-                Processor::Convolution(Box::new(ir.map(|ch| Convolver::new(&ch, max_block))))
-            }
-            _ => return None,
-        })
-    }
-
-    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        match self {
-            Processor::Gain(g) => {
-                for v in left.iter_mut() {
-                    *v *= *g;
-                }
-                for v in right.iter_mut() {
-                    *v *= *g;
-                }
-            }
-            Processor::Stereo(s) => {
-                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-                    let (mid, side) = (0.5 * (*l + *r), 0.5 * (*l - *r) * s.width);
-                    *l = (mid + side) * s.gains[0];
-                    *r = (mid - side) * s.gains[1];
-                }
-            }
-            Processor::Reverb(rv) => rv.process(left, right),
-            Processor::Convolution(conv) => {
-                conv[0].process(left);
-                conv[1].process(right);
-            }
-        }
-    }
-}
-
-/// Resamples (linear), trims and predelays the IR for `sample_rate`.
-fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]> {
-    let ir = &p.ir.as_ref()?.0;
-    let ratio = ir.rate as f32 / sample_rate;
-    let keep = p.late.length_ratio.clamp(0.0, 1.0);
-    let len = ((ir.frames.len() as f32 / ratio) * keep) as usize;
-    let pre = (p.predelay_ms.max(0.0) * 0.001 * sample_rate) as usize;
-    // ponytail: linear interpolation aliases slightly on rate changes; use a
-    // windowed-sinc resampler if IR brightness at 44.1k<->48k ever matters.
-    Some(std::array::from_fn(|ch| {
-        let mut out = vec![0.0; pre];
-        out.extend((0..len.max(1)).map(|i| {
-            let x = i as f32 * ratio;
-            let (j, frac) = (x as usize, x.fract());
-            let a = ir.frames.get(j).map_or(0.0, |f| f[ch]);
-            let b = ir.frames.get(j + 1).map_or(0.0, |f| f[ch]);
-            a + (b - a) * frac
-        }));
-        out
-    }))
 }
 
 impl Effect {
@@ -187,7 +94,6 @@ impl Effect {
             output_gain: state.output_gain,
             dry_level: state.dry_level,
             params: params::parse(kind, &object.public_data),
-            runtime: None,
         })
     }
 
@@ -198,44 +104,6 @@ impl Effect {
             Params::SendLevels(_) => true,
             Params::Convolution(c) => c.ir.is_some(),
             _ => false,
-        }
-    }
-
-    pub fn prepare(&mut self, sample_rate: f32, max_block: usize) {
-        self.runtime = (!self.bypass)
-            .then(|| Processor::new(&self.params, sample_rate, max_block))
-            .flatten()
-            .map(|processor| Runtime {
-                processor,
-                dry: if self.dry_level == 0.0 {
-                    Default::default()
-                } else {
-                    [vec![0.0; max_block], vec![0.0; max_block]]
-                },
-            });
-    }
-
-    /// `left.len()` must not exceed the prepared `max_block`.
-    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let Some(rt) = &mut self.runtime else { return };
-        let n = left.len().min(right.len());
-        let (left, right) = (&mut left[..n], &mut right[..n]);
-        let keep_dry = rt.dry[0].len() >= n && self.dry_level != 0.0;
-        if keep_dry {
-            rt.dry[0][..n].copy_from_slice(left);
-            rt.dry[1][..n].copy_from_slice(right);
-        }
-        rt.processor.process(left, right);
-        let (wet, dry) = (self.output_gain, self.dry_level);
-        if keep_dry {
-            for (out, input) in [(left, &rt.dry[0]), (right, &rt.dry[1])] {
-                for (y, x) in out.iter_mut().zip(input) {
-                    *y = *y * wet + *x * dry;
-                }
-            }
-        } else if wet != 1.0 {
-            left.iter_mut().for_each(|y| *y *= wet);
-            right.iter_mut().for_each(|y| *y *= wet);
         }
     }
 }
@@ -250,34 +118,7 @@ impl Chain {
             .filter_map(|(slot, item)| item.as_ref().map(|c| (slot, c)))
             .map(|(slot, c)| Effect::read(slot, c).with_context(|| format!("Effect slot {slot}")))
             .collect::<Result<_>>()?;
-        Ok(Self {
-            slots,
-            max_block: 0,
-        })
-    }
-
-    pub fn prepare(&mut self, sample_rate: f32, max_block: usize) {
-        self.max_block = max_block;
-        for fx in &mut self.slots {
-            fx.prepare(sample_rate, max_block);
-        }
-    }
-
-    /// Processes in place. Send Levels slots pass through here; only
-    /// [`ProgramFx`] routes sends. Unprepared chains pass through.
-    pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        if self.max_block == 0 {
-            return;
-        }
-        let n = left.len().min(right.len());
-        for (l, r) in left[..n]
-            .chunks_mut(self.max_block)
-            .zip(right[..n].chunks_mut(self.max_block))
-        {
-            for fx in &mut self.slots {
-                fx.process(l, r);
-            }
-        }
+        Ok(Self { slots })
     }
 
     fn effects(&self) -> impl Iterator<Item = &Effect> {
@@ -330,7 +171,6 @@ impl ProgramFx {
             send: racks.next().unwrap_or_default(),
             main: racks.next().unwrap_or_default(),
             buses,
-            send_buffers: Vec::new(),
         })
     }
 
@@ -434,82 +274,6 @@ impl ProgramFx {
             out.push("Instrument bus effects are parsed but bus routing is not applied".into());
         }
         out
-    }
-
-    /// Allocates all DSP state. Buses are left for the engine to prepare.
-    pub fn prepare(&mut self, sample_rate: f32, max_block: usize) {
-        let max_block = max_block.max(1);
-        self.insert.prepare(sample_rate, max_block);
-        self.send.prepare(sample_rate, max_block);
-        self.main.prepare(sample_rate, max_block);
-        self.send_buffers = self
-            .send
-            .slots
-            .iter()
-            .map(|_| [vec![0.0; max_block], vec![0.0; max_block]])
-            .collect();
-    }
-
-    /// Processes the program output in place.
-    pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let step = self.insert.max_block;
-        if step == 0 {
-            return;
-        }
-        let n = left.len().min(right.len());
-        for (l, r) in left[..n].chunks_mut(step).zip(right[..n].chunks_mut(step)) {
-            self.process_block(l, r);
-        }
-        self.main.process(&mut left[..n], &mut right[..n]);
-    }
-
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let n = left.len();
-        let Self {
-            insert,
-            send,
-            send_buffers,
-            ..
-        } = self;
-        for [l, r] in send_buffers.iter_mut() {
-            l[..n].fill(0.0);
-            r[..n].fill(0.0);
-        }
-        for fx in &mut insert.slots {
-            match &fx.params {
-                Params::SendLevels(levels) if !fx.bypass => {
-                    for (target, [bl, br]) in send.slots.iter().zip(send_buffers.iter_mut()) {
-                        let level =
-                            levels.sends.get(target.slot).copied().unwrap_or(0.0) * fx.output_gain;
-                        if level == 0.0 {
-                            continue;
-                        }
-                        for (b, x) in bl[..n].iter_mut().zip(&*left) {
-                            *b += x * level;
-                        }
-                        for (b, x) in br[..n].iter_mut().zip(&*right) {
-                            *b += x * level;
-                        }
-                    }
-                }
-                _ => fx.process(left, right),
-            }
-        }
-        // Bypassed or unimplemented send slots return nothing rather than
-        // doubling their input into the dry path.
-        for (fx, [bl, br]) in send.slots.iter_mut().zip(send_buffers.iter_mut()) {
-            if fx.runtime.is_none() {
-                continue;
-            }
-            let (bl, br) = (&mut bl[..n], &mut br[..n]);
-            fx.process(bl, br);
-            for (y, s) in left.iter_mut().zip(&*bl) {
-                *y += s;
-            }
-            for (y, s) in right.iter_mut().zip(&*br) {
-                *y += s;
-            }
-        }
     }
 }
 

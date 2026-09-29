@@ -1,6 +1,9 @@
 use kontakto::{
     audio::Sample,
-    engine::{Ahdsr, Bank, Engine, EventChange, MAX_VOICES, NoteEvent, PRELOAD_FRAMES, Rack},
+    engine::{
+        Ahdsr, Bank, Engine, EventChange, MAX_BLOCK, MAX_VOICES, NoteEvent, PRELOAD_FRAMES, Rack,
+    },
+    fx,
     import::{Group, Instrument, Loop, Resolver, VoiceLimit, Zone},
 };
 use std::path::{Path, PathBuf};
@@ -823,4 +826,104 @@ fn encrypted_una_corda_uses_local_access_data() {
     assert!(!bank.zones().is_empty());
     let (peak, _) = render_real(bank, 60);
     assert!(peak > 0.0001, "peak {peak}");
+}
+
+/// Gainer ×2 then a convolution whose IR is a unit impulse plus an echo.
+fn fx_description(echo: usize) -> fx::ProgramFx {
+    use fx::{Chain, Effect, Kind, Params, params};
+    let effect = |slot, kind, params| Effect {
+        slot,
+        kind,
+        version: 0,
+        bypass: false,
+        output_gain: 1.0,
+        dry_level: 0.0,
+        params,
+    };
+    let band = params::IrBand {
+        length_ratio: 1.0,
+        low_cut_hz: 20.0,
+        high_cut_hz: 20_000.0,
+    };
+    let mut ir = vec![[0.0; 2]; echo + 1];
+    (ir[0], ir[echo]) = ([1.0; 2], [0.5; 2]);
+    let convolution = params::Convolution {
+        unknown: [0.0; 2],
+        predelay_ms: 0.0,
+        early: band,
+        late: band,
+        unknown_9: 0.0,
+        flags: [false; 5],
+        curve_x: Vec::new(),
+        curve_db: Vec::new(),
+        ir_index: 0,
+        ir_file: None,
+        ir_error: None,
+        ir: Some(params::Impulse(std::sync::Arc::new(Sample {
+            rate: 48000,
+            frames: ir,
+        }))),
+    };
+    fx::ProgramFx {
+        insert: Chain {
+            slots: vec![
+                effect(
+                    0,
+                    Kind::Gainer,
+                    Params::Gainer(params::Gainer { gain: 2.0 }),
+                ),
+                effect(
+                    1,
+                    Kind::Convolution,
+                    Params::Convolution(Box::new(convolution)),
+                ),
+            ],
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn effects_process_the_output_and_tails_outlive_the_voices() {
+    const ECHO: usize = 2400;
+    let (mut dry, mut wet) = (engine(), engine());
+    wet.set_fx(fx_description(ECHO).processor(wet.rate() as f32, MAX_BLOCK));
+    let play = |e: &mut Engine| {
+        e.note_on(0, 60, 127);
+        let mut out = render(e, 4800);
+        e.note_off(0, 60);
+        out.extend(render(e, 4800));
+        out
+    };
+    let (dry_out, out) = (play(&mut dry), play(&mut wet));
+    for i in [100usize, 3000, 4799, 5000] {
+        for ch in 0..2 {
+            let echo = i.checked_sub(ECHO).map_or(0.0, |j| dry_out[j][ch]);
+            let want = 2.0 * dry_out[i][ch] + echo;
+            assert!(
+                (out[i][ch] - want).abs() < 1e-4,
+                "{i}/{ch}: {} vs {want}",
+                out[i][ch]
+            );
+        }
+    }
+    // The voice has ended, but the echo of its last moments still sounds.
+    assert_eq!(wet.active_voices(), 0);
+    let voice_end = dry_out.iter().rposition(|f| f[0] != 0.0).unwrap();
+    assert!(voice_end < 4800 + 200, "release ended at {voice_end}");
+    assert!(
+        out[voice_end + ECHO / 2][0] > 0.1,
+        "the tail stopped with the voices"
+    );
+    assert!(
+        out[voice_end + ECHO + 1..]
+            .iter()
+            .all(|f| f[0].abs() < 1e-6)
+    );
+
+    // A reset silences the tail.
+    wet.note_on(0, 60, 127);
+    render(&mut wet, 1000);
+    wet.reset(wet.rate());
+    assert!(render(&mut wet, 3000).iter().all(|f| f[0] == 0.0));
 }

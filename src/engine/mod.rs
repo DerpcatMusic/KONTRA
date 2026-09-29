@@ -1,8 +1,9 @@
 //! Sampler engine.
 //!
-//! Ownership: a [`Bank`] is built off the audio thread and never mutated once
-//! handed to an [`Engine`]; [`Engine::set_bank`] returns the previous bank so
-//! the caller frees it off the audio thread. Everything reachable from
+//! Ownership: a [`Bank`] and its [`FxProcessor`] are built off the audio
+//! thread. The bank is never mutated once handed to an [`Engine`];
+//! [`Engine::set_bank`] and [`Engine::set_fx`] return what they replace so the
+//! caller frees it off the audio thread. Everything reachable from
 //! [`Engine::render`] and the event methods is free of allocation, locks, I/O
 //! and panics; storage is preallocated in [`Engine::default`].
 
@@ -16,6 +17,7 @@ pub use bank::{Bank, GroupSettings, MEMORY_LIMIT, PRELOAD_FRAMES};
 pub use rack::{BUSES, Block, PartControls, RACK_SLOTS, Rack};
 pub use voice::Ahdsr;
 
+use crate::fx::FxProcessor;
 use map::FOREVER;
 use stream::Slot;
 use voice::{Context, Envelope, Fade, Scratch, Stream, Voice, balance};
@@ -107,6 +109,8 @@ pub enum EventChange {
 /// One instrument's playback state around an immutable [`Bank`].
 pub struct Engine {
     bank: Option<Box<Bank>>,
+    /// Program effects, applied to the whole output after the output stage.
+    fx: FxProcessor,
     player: Player,
     /// Envelope attack (s) for groups without their own envelope.
     pub attack: f32,
@@ -122,6 +126,7 @@ impl Default for Engine {
     fn default() -> Self {
         Self {
             bank: None,
+            fx: FxProcessor::default(),
             player: Player::new(48000.0),
             attack: 0.002,
             release: 0.15,
@@ -143,6 +148,13 @@ impl Engine {
         old
     }
 
+    /// Install the program effects, built for [`rate`](Self::rate) with
+    /// blocks of [`MAX_BLOCK`]; returns the previous processor for disposal
+    /// off the audio thread.
+    pub fn set_fx(&mut self, fx: FxProcessor) -> FxProcessor {
+        std::mem::replace(&mut self.fx, fx)
+    }
+
     pub fn bank(&self) -> Option<&Bank> {
         self.bank.as_deref()
     }
@@ -151,9 +163,12 @@ impl Engine {
         self.player.rate
     }
 
-    /// Stop all voices and reset MIDI state; keeps the bank and group mask.
+    /// Stop all voices, silence effect tails and reset MIDI state; keeps the
+    /// bank, effects and group mask. Effects stay built for their own rate:
+    /// replace them with [`set_fx`](Self::set_fx) when `rate` changes.
     pub fn reset(&mut self, rate: f64) {
         self.player.clear_voices(self.bank.as_deref());
+        self.fx.clear();
         self.player.reset_midi();
         self.player.rate = rate;
     }
@@ -282,6 +297,8 @@ impl Engine {
                 self.player.render(bank, l, r, self.blocking_streams);
             }
             self.player.output(l, r, self.cutoff);
+            // Runs without voices too, so reverb and convolution tails ring out.
+            self.fx.process(l, r);
         }
     }
 
