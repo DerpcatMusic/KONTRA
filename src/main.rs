@@ -519,9 +519,12 @@ fn bench_script(path: &Path, seconds: f64) -> Result<()> {
     engine.set_script(None);
     engine.reset(RATE);
     let direct = time_blocks(&mut engine, &input);
-    let (script, errors) = load_scripts(&instrument, instrument.script_state.clone(), RATE);
-    ensure!(errors.is_empty(), "Scripts failed to load: {errors:?}");
-    let runtime = time_runtime(*script.context("Instrument has no scripts")?, &input);
+    let fresh = || {
+        let (script, errors) = load_scripts(&instrument, instrument.script_state.clone(), RATE);
+        ensure!(errors.is_empty(), "Scripts failed to load: {errors:?}");
+        script.context("Instrument has no scripts")
+    };
+    let runtime = time_runtime(fresh, &input)?;
     let block_ns = MAX_BLOCK as f64 / RATE * 1e9;
     let report = |name: &str, (mean, p99, max, voices): (f64, f64, f64, usize)| {
         println!(
@@ -534,7 +537,7 @@ fn bench_script(path: &Path, seconds: f64) -> Result<()> {
         instrument.name,
         input.len() / 2
     );
-    report("runtime only (null engine)   ", runtime);
+    report("runtime only (best of 5 runs)", runtime);
     report("scripts + engine             ", scripted);
     report("no scripts, every group plays", direct);
     Ok(())
@@ -573,28 +576,35 @@ impl kontakto::ksp::KspEngine for NullEngine {
     }
 }
 
-/// Like [`time_blocks`], for the runtime alone against a [`NullEngine`].
-fn time_runtime(mut rt: kontakto::ksp::Runtime, input: &[NoteInput]) -> (f64, f64, f64, usize) {
-    let mut engine = NullEngine(0);
+/// Like [`time_blocks`], for the runtime alone against a [`NullEngine`]. The
+/// runtime is deterministic, so each block keeps its fastest of several runs:
+/// preemption by other processes drops out and real spikes remain.
+fn time_runtime(
+    fresh: impl Fn() -> Result<Box<kontakto::ksp::Runtime>>,
+    input: &[NoteInput],
+) -> Result<(f64, f64, f64, usize)> {
     let end = input.last().map_or(0, |e| e.0) + (2.0 * RATE) as u64;
-    let (mut times, mut next) = (Vec::new(), 0);
-    for frame in (0..end).step_by(MAX_BLOCK) {
-        let started = std::time::Instant::now();
-        while let Some(&(time, on, note, velocity)) =
-            input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64)
-        {
-            let at = (time - frame) as u32;
-            if on {
-                rt.note_on(&mut engine, at, note, velocity);
-            } else {
-                rt.note_off(&mut engine, at, note);
+    let mut best = vec![f64::MAX; end.div_ceil(MAX_BLOCK as u64) as usize];
+    for _ in 0..5 {
+        let (mut rt, mut engine, mut next) = (fresh()?, NullEngine(0), 0);
+        for (block, frame) in (0..end).step_by(MAX_BLOCK).enumerate() {
+            let started = std::time::Instant::now();
+            while let Some(&(time, on, note, velocity)) =
+                input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64)
+            {
+                let at = (time - frame) as u32;
+                if on {
+                    rt.note_on(&mut engine, at, note, velocity);
+                } else {
+                    rt.note_off(&mut engine, at, note);
+                }
+                next += 1;
             }
-            next += 1;
+            rt.process(&mut engine, MAX_BLOCK as u32);
+            best[block] = best[block].min(started.elapsed().as_nanos() as f64);
         }
-        rt.process(&mut engine, MAX_BLOCK as u32);
-        times.push(started.elapsed().as_nanos() as f64);
     }
-    summarize(times, 0)
+    Ok(summarize(best, 0))
 }
 
 fn summarize(mut times: Vec<f64>, voices: usize) -> (f64, f64, f64, usize) {

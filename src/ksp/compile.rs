@@ -110,6 +110,111 @@ pub enum Op {
     Builtin(Builtin, u8),
     Declare(VarId),
     InitArray(u32),
+    // Superinstructions written by `fuse` over the first op of a sequence.
+    /// `LdI a; PushI n; IAdd; StI a`.
+    AddVarImm(u32, i32),
+    /// `PushI n; IAdd`.
+    AddImm(i32),
+    /// `LdI a; LdIA v`, as `(v, a)`.
+    LdIAVar(VarId, u32),
+    /// `PushI n; <cmp>; JumpIfZero t`: pop x and jump to `t` unless `x cmp n`.
+    BrImm(Cmp, i32, u32),
+    /// `LdI a; PushI n; <cmp>; JumpIfZero t`.
+    BrVarImm(Cmp, u32, i32, u32),
+    /// The test of a loop the runtime can run natively: `loops[n]`.
+    Loop(u32),
+}
+
+/// Integer comparison of a fused branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cmp {
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+impl Cmp {
+    pub fn of(op: Op) -> Option<Self> {
+        Some(match op {
+            Op::IEq => Self::Eq,
+            Op::INe => Self::Ne,
+            Op::ILt => Self::Lt,
+            Op::IGt => Self::Gt,
+            Op::ILe => Self::Le,
+            Op::IGe => Self::Ge,
+            _ => return None,
+        })
+    }
+
+    #[inline(always)]
+    pub fn test(self, a: i32, b: i32) -> bool {
+        match self {
+            Self::Eq => a == b,
+            Self::Ne => a != b,
+            Self::Lt => a < b,
+            Self::Gt => a > b,
+            Self::Le => a <= b,
+            Self::Ge => a >= b,
+        }
+    }
+}
+
+/// Jump threading: a jump into an unconditional jump, or into a branch on a
+/// constant (the `PushI 0; JumpIfZero` a false `and` ends with), goes straight
+/// to the final target, and such a constant branch reached by falling through
+/// becomes a plain jump. Ops stay in place, so no other target moves.
+fn thread(code: &mut [Op]) {
+    let hop = |code: &[Op], t: u32| match code.get(t as usize..)? {
+        [Op::Jump(u), ..] => Some(*u),
+        [Op::PushI(k), Op::JumpIfZero(u), ..] => Some(if *k == 0 { *u } else { t + 2 }),
+        [Op::PushI(k), Op::JumpIfNonZero(u), ..] => Some(if *k != 0 { *u } else { t + 2 }),
+        _ => None,
+    };
+    // Bounded so a `while (1)` jumping to itself ends.
+    let last = |code: &[Op], mut t: u32| {
+        for _ in 0..16 {
+            match hop(code, t) {
+                Some(u) if u != t => t = u,
+                _ => break,
+            }
+        }
+        t
+    };
+    for i in 0..code.len() {
+        match code[i] {
+            Op::PushI(_) if let Some(t) = hop(code, i as u32) => code[i] = Op::Jump(last(code, t)),
+            Op::Jump(t) => code[i] = Op::Jump(last(code, t)),
+            Op::JumpIfZero(t) => code[i] = Op::JumpIfZero(last(code, t)),
+            Op::JumpIfNonZero(t) => code[i] = Op::JumpIfNonZero(last(code, t)),
+            _ => {}
+        }
+    }
+}
+
+/// Peephole superinstructions for the hottest sequences (loop tests,
+/// counters, indexed loads). Each is written over the first op of its
+/// sequence and skips the rest, which stay in place: jumps into the middle
+/// still land on the original ops, so no target moves.
+fn fuse(code: &mut [Op]) {
+    for i in 0..code.len() {
+        code[i] = match code[i..] {
+            [Op::LdI(a), Op::PushI(n), op, Op::JumpIfZero(t), ..]
+                if let Some(cmp) = Cmp::of(op) =>
+            {
+                Op::BrVarImm(cmp, a, n, t)
+            }
+            [Op::LdI(a), Op::PushI(n), Op::IAdd, Op::StI(b), ..] if a == b => Op::AddVarImm(a, n),
+            [Op::PushI(n), op, Op::JumpIfZero(t), ..] if let Some(cmp) = Cmp::of(op) => {
+                Op::BrImm(cmp, n, t)
+            }
+            [Op::LdI(a), Op::LdIA(v), ..] => Op::LdIAVar(v, a),
+            [Op::PushI(n), Op::IAdd, ..] => Op::AddImm(n),
+            _ => continue,
+        };
+    }
 }
 
 #[derive(Debug)]
@@ -218,6 +323,7 @@ pub struct Program {
     pub functions: Vec<u32>,
     pub inits: Vec<ArrayInit>,
     pub cases: Vec<CaseArm>,
+    pub loops: Vec<super::idiom::Loop>,
     callbacks: [Option<u32>; Callback::COUNT],
     /// Entry per `VarId` for `on ui_control`.
     pub ui_callbacks: Vec<Option<u32>>,
@@ -380,6 +486,15 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
             }
         }
     }
+    // Idioms first: they match loops by their unthreaded shape.
+    for at in 0..c.p.code.len() {
+        if let Some(l) = super::idiom::find(&c.p.code, at) {
+            c.p.code[at] = Op::Loop(c.p.loops.len() as u32);
+            c.p.loops.push(l);
+        }
+    }
+    thread(&mut c.p.code);
+    fuse(&mut c.p.code);
     Ok(c.p)
 }
 

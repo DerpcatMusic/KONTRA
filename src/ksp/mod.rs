@@ -8,6 +8,7 @@
 mod builtins;
 mod calls;
 mod compile;
+mod idiom;
 pub mod engine;
 mod inventory;
 mod lexer;
