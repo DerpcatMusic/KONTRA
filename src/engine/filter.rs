@@ -1097,15 +1097,34 @@ impl LaneFilter {
     fn dots_out_body(&mut self, left: &[f32], right: &[f32], [sl, sr]: [&mut [f32]; 2]) {
         sl.iter_mut().zip(left).for_each(|(o, x)| *o += x);
         sr.iter_mut().zip(right).for_each(|(o, x)| *o += x);
-        let [mut dl, mut dr] = self.d;
+        // Four sums a channel, of every fourth frame, so the adds overlap
+        // rather than wait on each other; the end state moves by the
+        // rounding of the regrouped sum (well under -120 dBFS).
+        let mut d = [[[0f32; LANE_STATES]; 4]; 2];
+        (d[0][0], d[1][0]) = (self.d[0], self.d[1]);
         let k = &self.tunings[self.tuning].k;
-        for ((l, r), k) in left.iter().zip(right).zip(k.iter()) {
+        let n = left.len().min(right.len()).min(k.len());
+        let at = |d: &mut [[f32; LANE_STATES]; 4], j: usize, x: f32, k: &States| {
             for q in 0..LANE_STATES {
-                dl[q] += k[q] * l;
-                dr[q] += k[q] * r;
+                d[j][q] += k[q] * x;
+            }
+        };
+        let whole = n / 4 * 4;
+        for ((k, l), r) in k[..whole].chunks_exact(4).zip(left.chunks_exact(4)).zip(right.chunks_exact(4)) {
+            for j in 0..4 {
+                at(&mut d[0], j, l[j], &k[j]);
+                at(&mut d[1], j, r[j], &k[j]);
             }
         }
-        self.d = [dl, dr];
+        for i in whole..n {
+            at(&mut d[0], i % 4, left[i], &k[i]);
+            at(&mut d[1], i % 4, right[i], &k[i]);
+        }
+        for (d, [a, b, c, e]) in self.d.iter_mut().zip(&d) {
+            for q in 0..LANE_STATES {
+                d[q] = (a[q] + b[q]) + (c[q] + e[q]);
+            }
+        }
     }
 
     /// Move the voice's state on by the block, its dotted input weighted
