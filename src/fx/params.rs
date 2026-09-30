@@ -3,10 +3,10 @@
 
 use super::Kind;
 use crate::audio::Sample;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Params {
     Gainer(Gainer),
@@ -24,13 +24,13 @@ pub enum Params {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Gainer {
     /// Linear gain (1.0011 and 2.0 locally).
     pub gain: f32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendLevels {
     /// Linear level into instrument send slot `n`.
     pub sends: Vec<f32>,
@@ -38,7 +38,7 @@ pub struct SendLevels {
     pub outputs: Vec<f32>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct StereoModeller {
     /// Stored 0.0 locally; read as offset from 100% width (-1 mono, +1 200%).
     pub spread: f32,
@@ -48,7 +48,7 @@ pub struct StereoModeller {
 }
 
 /// `BParFXFilter` with a filter type: normalized knobs, see `audits/EFFECTS.md`.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Filter {
     /// Kontakt's internal filter type id (stored twice).
     pub filter_type: i32,
@@ -60,12 +60,12 @@ pub struct Filter {
 
 /// `BParFXFilter` with an EQ type (22/23/24 = 1/2/3 bands), stored in
 /// physical units.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Eq {
     pub bands: Vec<EqBand>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct EqBand {
     pub freq_hz: f32,
     pub bandwidth_oct: f32,
@@ -77,7 +77,7 @@ pub const EQ_TYPES: std::ops::RangeInclusive<i32> = 22..=24;
 
 /// `BParFXGaloisReverb`: Kontakt's modern "Reverb" (`$EFFECT_TYPE_REVERB2`).
 /// Ten normalized values in `$ENGINE_PAR_RV2_*` order.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Reverb {
     /// 0 Room, 1 Hall.
     pub room_type: f32,
@@ -92,7 +92,7 @@ pub struct Reverb {
     pub stereo: f32,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct IrBand {
     pub length_ratio: f32,
     pub low_cut_hz: f32,
@@ -101,7 +101,7 @@ pub struct IrBand {
 
 /// `BParFXIRC`. The impulse response is an index into the preset's
 /// "other files" table, not an inline path.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Convolution {
     pub unknown: [f32; 2],
     pub predelay_ms: f32,
@@ -141,7 +141,29 @@ pub struct Field {
     pub value: Value,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+/// A [`Field`] read back (from the instrument cache), before its name is
+/// matched to its copy in the layouts.
+#[derive(Deserialize)]
+struct OwnedField {
+    name: String,
+    value: Value,
+}
+
+// By hand: derived, the `&'static str` would need `'de: 'static`.
+impl<'de> Deserialize<'de> for Field {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let f = OwnedField::deserialize(d)?;
+        let name = (super::kind::TABLE.iter())
+            .filter_map(|&(_, kind, _)| layout(kind))
+            .flatten()
+            .map(|&(name, _)| name)
+            .find(|&name| name == f.name)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown effect field {}", f.name)))?;
+        Ok(Self { name, value: f.value })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Value {
     Number(f32),

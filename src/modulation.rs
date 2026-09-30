@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use ni_file::kontakt::objects::{
     ExternalModArray32, Group as RawGroup, InternalModArray16, Modulator as RawModulator,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::import::Group;
 
@@ -22,7 +22,7 @@ const EXTERNAL_MODS_ID: u16 = 0x3C;
 const PITCH_SEMITONES_PER_INTENSITY: f32 = 12.0;
 
 /// Parameter driven by a modulation assignment.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ModTarget {
     /// Group amplitude (`volume`).
     Volume,
@@ -39,7 +39,7 @@ pub enum ModTarget {
 }
 
 /// One external source driving one parameter of a group.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModAssignment {
     /// KSP modulator name, e.g. `VEL_VOLUME`.
     pub name: String,
@@ -68,7 +68,7 @@ impl ModAssignment {
 
 /// A modulator as KSP addresses it: its position in `Group::modulators` is the
 /// `find_mod` index (internal modulators in slot order, then external ones).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Modulator {
     /// `find_mod` name, e.g. `ENV_AHDSR` or `VEL_VOLUME`.
     pub name: String,
@@ -95,7 +95,7 @@ pub(crate) struct GroupModulation {
 
 /// An internal AHDSR driving module parameters (filter cutoff, EQ gain...),
 /// not volume. Targets use `ModSource::Unassigned`; the envelope is the source.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModEnvelope {
     pub env: Ahdsr,
     pub targets: Vec<ModAssignment>,

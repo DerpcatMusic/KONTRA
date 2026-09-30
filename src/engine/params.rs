@@ -10,6 +10,7 @@ use super::{Ahdsr, GroupSettings, filter::Knob};
 use crate::fx::{FxParam, Rack};
 use crate::import::{Group, ModAssignment, ModSource, ModTarget};
 use crate::ksp::{ENGINE_PAR_BASE, EnginePar};
+use std::sync::Arc;
 
 /// Modulation values one voice tracks: its group's first volume and pitch
 /// assignments with a modelled source.
@@ -71,7 +72,8 @@ pub struct Mod {
     /// Lag time constant in seconds.
     lag: f32,
     /// Shaper sampled at the 128 MIDI steps; `None` is the identity.
-    curve: Option<Box<[f32; 128]>>,
+    /// Shared between equal shapers by [`share_curves`].
+    curve: Option<Arc<[f32; 128]>>,
 }
 
 impl From<&ModAssignment> for Mod {
@@ -91,7 +93,7 @@ impl From<&ModAssignment> for Mod {
             curve: m
                 .shaper
                 .as_ref()
-                .map(|_| Box::new(std::array::from_fn(|i| m.shape(i as f32 / 127.0)))),
+                .map(|_| Arc::new(std::array::from_fn(|i| m.shape(i as f32 / 127.0)))),
         }
     }
 }
@@ -314,6 +316,17 @@ impl ModTable {
                 _ => env.release *= factor,
             }
         }
+    }
+}
+
+/// Point equal shaper curves at one copy. Groups mostly repeat the same
+/// assignments, and voices spread over hundreds of groups otherwise read as
+/// many copies every block, each a cache miss (Mega Brass: 1128 curves, 33
+/// distinct).
+pub(crate) fn share_curves<'a>(tables: impl Iterator<Item = &'a mut ModTable>) {
+    let mut seen = std::collections::HashMap::new();
+    for curve in tables.flat_map(|t| t.mods.iter_mut()).filter_map(|m| m.curve.as_mut()) {
+        *curve = Arc::clone(seen.entry(curve.map(f32::to_bits)).or_insert_with(|| Arc::clone(curve)));
     }
 }
 
@@ -795,6 +808,18 @@ pub(crate) fn find_target(
 mod tests {
     use super::*;
     use crate::import::{Modulator, ShaperCurve};
+
+    #[test]
+    fn equal_curves_share_one_copy() {
+        let mut other = group();
+        other.mods[0].shaper = Some(ShaperCurve::Table(vec![0.5; 128]));
+        let mut tables = [&group(), &group(), &other].map(ModTable::from);
+        share_curves(tables.iter_mut());
+        let curve = |t: &ModTable| t.mods[0].curve.clone().unwrap();
+        assert!(Arc::ptr_eq(&curve(&tables[0]), &curve(&tables[1])));
+        assert!(!Arc::ptr_eq(&curve(&tables[0]), &curve(&tables[2])));
+        assert_eq!(tables[0], ModTable::from(&group()), "sharing changes no value");
+    }
 
     #[test]
     fn lagged_values_settle_exactly() {

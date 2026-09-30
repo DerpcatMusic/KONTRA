@@ -20,7 +20,7 @@ const SHAPER_TABLE_LEN: usize = 128;
 
 /// One parameter driven by a modulator.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ModTarget {
     /// Engine parameter id, e.g. `volume`, `pitch`, `playPos`, `eqGain1`.
     pub param: String,
@@ -46,7 +46,7 @@ pub struct ModTarget {
 
 /// Modulation shaper transfer curve.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ModShaper {
     /// Whether the shaper is applied; disabled shapers keep their curve.
     pub enabled: bool,
@@ -56,7 +56,7 @@ pub struct ModShaper {
 
 /// Shaper curve representation, matching Kontakt's table and graphical editors.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ShaperCurve {
     /// 128 output values for evenly spaced inputs.
     Table(Vec<f32>),
@@ -100,7 +100,7 @@ impl ShaperCurve {
 
 /// One node of a graphical shaper curve.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Breakpoint {
     /// Input position, 0..=1.
     pub x: f32,
@@ -112,7 +112,7 @@ pub struct Breakpoint {
 
 /// External modulation source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ModSource {
     PitchBend,
     PolyAftertouch,
@@ -145,7 +145,7 @@ pub struct ExternalMod(pub StructuredObject);
 
 /// Decoded external modulation assignment.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExternalModParams {
     /// KSP modulator name (`find_mod`), e.g. `VEL_VOLUME`.
     pub name: String,

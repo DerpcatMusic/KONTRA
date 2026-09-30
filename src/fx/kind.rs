@@ -1,9 +1,9 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Effect type, keyed by the effect object's serialization ID (the child of a
 /// `BParFX` slot). Names follow Kontakt's `BParFX*` class names; see
 /// `audits/EFFECTS.md` for how each was identified.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Kind {
     Delay,
     Chorus,
@@ -53,7 +53,7 @@ pub enum Kind {
     Unknown(u16),
 }
 
-const TABLE: &[(u16, Kind, &str)] = &[
+pub(super) const TABLE: &[(u16, Kind, &str)] = &[
     (0x10, Kind::Delay, "Delay (legacy)"),
     (0x11, Kind::Chorus, "Chorus (legacy)"),
     (0x12, Kind::Flanger, "Flanger (legacy)"),

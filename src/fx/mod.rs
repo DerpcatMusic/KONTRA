@@ -22,14 +22,14 @@ use ni_file::kontakt::{
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 use params::Impulse;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
 /// Longest impulse response loaded (seconds at the IR's own rate).
 const MAX_IR_SECONDS: usize = 20;
 
 /// One slot of an 8-slot Kontakt effect rack.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Effect {
     /// Rack position 0..8; send levels address send slots by this index.
     pub slot: usize,
@@ -44,13 +44,13 @@ pub struct Effect {
 }
 
 /// An effect rack in slot order (empty slots omitted).
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Chain {
     pub slots: Vec<Effect>,
 }
 
 /// One of the 16 instrument buses (`BInsertBus`).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bus {
     pub index: usize,
     pub name: String,
@@ -68,7 +68,7 @@ pub struct Bus {
 /// groups. Then `insert` in series; a Send Levels slot in `insert` taps the
 /// signal at its position into the parallel `send` slots, whose returns are
 /// summed back; then `main` (see `audits/EFFECTS.md`).
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProgramFx {
     pub insert: Chain,
     pub send: Chain,
@@ -224,7 +224,7 @@ impl ProgramFx {
             }))
     }
 
-    fn effects_mut(&mut self) -> impl Iterator<Item = &mut Effect> {
+    pub(crate) fn effects_mut(&mut self) -> impl Iterator<Item = &mut Effect> {
         [&mut self.insert, &mut self.send, &mut self.main]
             .into_iter()
             .chain(self.buses.iter_mut().map(|b| &mut b.chain))

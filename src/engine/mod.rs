@@ -226,6 +226,24 @@ impl Engine {
         old
     }
 
+    /// Replace the bank with `bank`, built from the same instrument with
+    /// other residency (the RAM-only fill finishing): playing voices carry
+    /// on from the new bank's data, and script-set group parameters stay.
+    /// A bank with other zones (a sample read in one load only) installs as
+    /// [`Engine::set_bank`] does. Returns the old bank for disposal off the
+    /// audio thread.
+    pub fn upgrade_bank(&mut self, mut bank: Box<Bank>) -> Option<Box<Bank>> {
+        let Some(old) = self.bank.as_deref_mut().filter(|old| {
+            old.zones().len() == bank.zones().len() && old.samples.len() == bank.samples.len()
+        }) else {
+            return self.set_bank(Some(bank));
+        };
+        // Swapped, not cloned: no allocation here.
+        std::mem::swap(&mut old.settings, &mut bank.settings);
+        self.player.rebind(old, &bank);
+        self.bank.replace(bank)
+    }
+
     /// Install the program effects, built for [`rate`](Self::rate) with
     /// blocks of [`MAX_BLOCK`]; returns the previous processor for disposal
     /// off the audio thread.
@@ -771,6 +789,36 @@ impl Player {
         }
     }
 
+    /// Move playing voices from `old` to `new`, which holds the same samples
+    /// with other residency: each finds its resident span and limit as at a
+    /// start, and streams through a slot of `new` from where it is.
+    fn rebind(&mut self, old: &Bank, new: &Bank) {
+        let slots = old.slots();
+        self.free.clear();
+        self.free.extend((0..new.slots().len() as u16).rev());
+        for v in &mut self.voices {
+            if let Some(stream) = v.stream.take() {
+                slots[stream.slot as usize].stop();
+            }
+            let sample = &new.samples[v.sample as usize];
+            let first = (v.pos as u64).saturating_sub(1);
+            v.span = (v.map.run(first, v.wraps))
+                .and_then(|run| sample.span_at(run.frame))
+                .unwrap_or(0);
+            let span = &sample.spans[v.span as usize];
+            v.limit = v.map.resident_limit(first, v.wraps, span.start, span.end());
+            // Paused, the next render configures it from the position, as
+            // when a muted voice returns; a loop reserves it as at a start.
+            let slot = if sample.streamed { self.free.pop() } else { None };
+            v.stream = slot.map(|slot| voice::Stream {
+                slot,
+                tag: 0,
+                trusted: 0,
+                paused: v.limit != FOREVER,
+            });
+        }
+    }
+
     fn remove(&mut self, bank: &Bank, index: usize) {
         let v = self.voices.swap_remove(index);
         if let Some(stream) = v.stream {
@@ -1014,28 +1062,21 @@ impl Player {
                     }
                 }
             }
-            let live = self
-                .voices
-                .iter()
-                .filter(|v| v.voice_group == Some(group) && !v.fade.dying())
-                .count();
-            if live >= rule.max_voices {
+            let (live, victim) = victim(
+                &self.voices,
+                |v| v.voice_group == Some(group),
+                rule.kill_mode,
+                rule.prefer_released,
+            );
+            if live >= rule.max_voices && let Some(i) = victim {
                 let fade = self.fade_frames(rule.fade);
-                if let Some(i) = victim(
-                    &self.voices,
-                    |v| v.voice_group == Some(group),
-                    rule.kill_mode,
-                    rule.prefer_released,
-                ) {
-                    self.voices[i].fade.start(0.0, fade, true);
-                }
-            }
-        }
-        if self.voices.iter().filter(|v| !v.fade.dying()).count() >= bank.polyphony {
-            let fade = self.fade_frames(STEAL_FADE);
-            if let Some(i) = victim(&self.voices, |_| true, 1, true) {
                 self.voices[i].fade.start(0.0, fade, true);
             }
+        }
+        let (live, victim) = victim(&self.voices, |_| true, 1, true);
+        if live >= bank.polyphony && let Some(i) = victim {
+            let fade = self.fade_frames(STEAL_FADE);
+            self.voices[i].fade.start(0.0, fade, true);
         }
         if self.voices.len() == MAX_VOICES {
             // Storage is full of fading voices: cut the quietest.
@@ -1332,29 +1373,36 @@ fn edge_gain(x: u8, lo: u8, hi: u8, fade_lo: u8, fade_hi: u8) -> f32 {
     ramp(i16::from(x) - i16::from(lo), fade_lo) * ramp(i16::from(hi) - i16::from(x), fade_hi)
 }
 
-/// Voice to steal: kill modes are Kontakt's (0 any, 1 oldest, 2 newest,
-/// 3 highest, 4 lowest); released voices go first when preferred.
+/// Voices `filter` keeps that are not fading out, and the one to steal:
+/// kill modes are Kontakt's (0 any, 1 oldest, 2 newest, 3 highest, 4
+/// lowest); released voices go first when preferred.
 fn victim(
     voices: &[Voice],
     filter: impl Fn(&Voice) -> bool,
     mode: i16,
     prefer_released: bool,
-) -> Option<usize> {
-    voices
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| !v.fade.dying() && filter(v))
-        .min_by_key(|(_, v)| {
-            let rank = u8::from(prefer_released && !v.released);
-            let key = match mode {
-                2 => u64::MAX - v.age,
-                3 => u64::from(127 - v.note),
-                4 => u64::from(v.note),
-                _ => v.age,
-            };
-            (rank, key)
-        })
-        .map(|(i, _)| i)
+) -> (usize, Option<usize>) {
+    // One pass counts and picks: at the voice limit, every note start
+    // scans every voice.
+    let mut live = 0;
+    let mut best: Option<((u8, u64), usize)> = None;
+    for (i, v) in voices.iter().enumerate() {
+        if v.fade.dying() || !filter(v) {
+            continue;
+        }
+        live += 1;
+        let rank = u8::from(prefer_released && !v.released);
+        let key = match mode {
+            2 => u64::MAX - v.age,
+            3 => u64::from(127 - v.note),
+            4 => u64::from(v.note),
+            _ => v.age,
+        };
+        if best.is_none_or(|(b, _)| (rank, key) < b) {
+            best = Some(((rank, key), i));
+        }
+    }
+    (live, best.map(|(_, i)| i))
 }
 
 impl Bank {
