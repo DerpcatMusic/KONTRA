@@ -212,7 +212,7 @@ struct Pictures {
     /// Containers to try in order, opened on first use.
     containers: Vec<PathBuf>,
     open: Vec<(File, ni_file::nkr::Archive)>,
-    key: Option<Option<ni_file::nis::LibraryKey>>,
+    key: Option<Option<std::sync::Arc<dyn ni_file::nis::LibraryKey>>>,
     instrument: PathBuf,
 }
 
@@ -294,13 +294,14 @@ impl Pictures {
                 return Err(format!("{file} exceeds 32 MiB"));
             }
             let key = match &self.key {
+                _ if !entry.encoded || entry.key_index == 0xff => &None,
                 Some(key) => key,
                 None => self.key.insert(
-                    crate::import::library_key(&self.instrument).map_err(|e| e.to_string())?,
+                    crate::access::library_key(&self.instrument).map_err(|e| e.to_string())?,
                 ),
             };
             return archive
-                .read_entry_with_key(f, &member, key.as_ref())
+                .read_entry_with_key(f, &member, key.as_deref())
                 .map(Some)
                 .map_err(|e| e.to_string());
         }

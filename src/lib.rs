@@ -1,5 +1,9 @@
 pub mod ksp;
 pub mod import;
+// Encrypted library content: the `library-access` feature (off by default).
+#[cfg_attr(feature = "library-access", path = "access.rs")]
+#[cfg_attr(not(feature = "library-access"), path = "no_access.rs")]
+mod access;
 mod cache;
 pub mod modulation;
 pub mod audio;
