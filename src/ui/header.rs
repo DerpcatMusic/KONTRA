@@ -37,6 +37,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         many => format!("Loading {} instruments…", many.len()),
     };
 
+    let roomy = ui.scene().and_then(|s| s.surface("activity")).is_none_or(|s| s.frame.size.width >= TEXT * 8.);
     let (browser, browser_el) = icon_button(
         ui,
         "toggle-browser",
@@ -115,7 +116,15 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             .text_weight(Weight::BOLD)
             .fill(Role::Ink)
             .shrink(0),
-        caption(activity).fill(Role::Dim).lines(1).flex(1).min_w(0),
+        // Squeezed to a letter or two, it says nothing: the loading bar and
+        // the parts' own headers carry it, and the words stay in a tip.
+        caption(if roomy { activity.clone() } else { String::new() })
+            .fill(Role::Dim)
+            .lines(1)
+            .flex(1)
+            .min_w(0)
+            .when(!activity.is_empty(), |e| e.tip(activity))
+            .id("activity"),
         stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
         // Heard voices; scripts start and mute crossfade layers and mic
         // positions too, which cost next to nothing.
