@@ -251,6 +251,72 @@ fn release_triggers_fire_on_release_including_after_the_pedal() {
     );
 }
 
+/// A release-trigger group with T = 1000 ms and RTC_VOLUME at full intensity
+/// without a shaper: the release plays at the counter's remaining share,
+/// 1 - held / T.
+fn counted_release() -> Group {
+    Group {
+        release_trigger: true,
+        release_counter_ms: 1000,
+        mods: vec![ModAssignment {
+            name: "RTC_VOLUME".into(),
+            source: ModSource::ReleaseTriggerCounter,
+            target: ModTarget::Volume,
+            intensity: 1.0,
+            invert: false,
+            lag_ms: 0,
+            shaper: None,
+        }],
+        ..Group::default()
+    }
+}
+
+#[test]
+fn release_trigger_counter_scales_release_volume_by_held_time() {
+    let mut e = engine_with(layered(vec![counted_release()], &[0.4]));
+    let mut release_after = |held: usize, pedal: bool| {
+        e.cc(0, 120, 0);
+        render(&mut e, 480);
+        e.cc(0, 64, if pedal { 127 } else { 0 });
+        e.note_on(0, 60, 100);
+        render(&mut e, held);
+        e.note_off(0, 60);
+        if pedal {
+            // The counter stops at the key release, not at pedal up.
+            render(&mut e, 24000);
+            e.cc(0, 64, 0);
+        }
+        last(&mut e, 200)[0]
+    };
+    let short = release_after(480, false);
+    let half = release_after(24000, false);
+    let long = release_after(96000, false);
+    assert!((short - 0.4 * 0.99).abs() < 1e-4, "10 ms held: {short}");
+    assert!((half - 0.2).abs() < 1e-4, "500 ms held: {half}");
+    assert!(long.abs() < 1e-6, "held past T: {long}");
+    let pedalled = release_after(24000, true);
+    assert!((pedalled - 0.2).abs() < 1e-4, "pedal-deferred: {pedalled}");
+}
+
+#[test]
+fn reset_rls_trig_counter_restarts_the_count() {
+    let mut i = instrument(vec![counted_release()], Vec::new());
+    i.scripts = vec![
+        "on init\nend on\non note\nwait(500000)\nreset_rls_trig_counter($EVENT_NOTE)\nend on"
+            .into(),
+    ];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut e = engine_with(layered(i.groups, &[0.4]));
+    assert!(e.set_script(rt).is_none());
+    e.note_on(0, 60, 100);
+    render(&mut e, 28800);
+    e.note_off(0, 60);
+    // Held 600 ms, counted from the reset at 500 ms: 100 ms.
+    let out = last(&mut e, 200)[0];
+    assert!((out - 0.4 * 0.9).abs() < 1e-3, "{out}");
+}
+
 fn sine(period: f32, frames: usize) -> Sample {
     Sample {
         rate: 48000,

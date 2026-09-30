@@ -733,7 +733,7 @@ mod tests {
             ("Solo Pads (2 filters, stereo modeller)", "Solo/Instruments/03 Sound Design/Solo - 01 Pads.nki", ""),
         ];
         let cc = [64u8; 128];
-        let input = Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100 };
+        let input = Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
         for (name, path, group) in cases {
             let instrument = read(&std::path::Path::new(LIBRARY_ROOT).join(path)).unwrap();
             let g = instrument
@@ -787,7 +787,7 @@ mod tests {
         f.matrix = f.mix();
         let table = ModTable::default();
         let cc = [0u8; 128];
-        let input = Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100 };
+        let input = Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
         let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
         let mut ctl = [0.0; MAX_BLOCK];
         let mut run = |f: &GroupFilter| {

@@ -18,6 +18,9 @@ pub struct Group {
     pub key_tracking: bool,
     pub reverse: bool,
     pub release_trigger: bool,
+    /// Release-trigger counter start `T` in ms (Source module): the counter
+    /// counts down from it while the key is held; 0 disables it.
+    pub release_counter_ms: i32,
     pub muted: bool,
     pub channel: i16,
     pub soloed: bool,
@@ -43,7 +46,7 @@ pub struct Group {
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
-            release_trigger: false, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), voice_group: None, interp_quality: 0 }
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), voice_group: None, interp_quality: 0 }
     }
 }
 
@@ -274,7 +277,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         let v = g.params().with_context(|| format!("Group {} version {:x}", groups.len(),g.0.version))?;
         ensure!(v.volume.is_finite() && v.pan.is_finite() && v.tune.is_finite() && v.tune > 0.0, "Invalid group gain/tuning");
         if !v.start_criteria.items.is_empty() { warnings.push(format!("{}: native group start conditions are not implemented", v.name)); }
-        if v.release_trigger_note_monophonic || v.rls_trig_counter!=0 {warnings.push("Release-trigger monophony/counter behavior is not imported".into());}
+        if v.release_trigger_note_monophonic {warnings.push("Release-trigger note monophony is not imported".into());}
         let modulation = match crate::modulation::read_group(g) {
             Ok(modulation) => modulation,
             Err(e) => {
@@ -300,6 +303,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
             key_tracking: v.key_tracking,
             reverse: v.reverse,
             release_trigger: v.release_trigger,
+            release_counter_ms: v.rls_trig_counter,
             muted: v.muted,
             channel: v.midi_channel,
             soloed: v.soloed,
