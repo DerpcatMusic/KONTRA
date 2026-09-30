@@ -176,7 +176,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     };
 
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
-    let tint = cx.tint(&library).unwrap_or(value_ink(0.));
+    let tint = cx.tint(&library).unwrap_or(part_color(slot));
     let compact = cx.state.editor.compact;
     let toolbar = toolbar(ui, cx, slot, group, &instrument);
     let envelope = panel(ui, cx, slot, group as u16, Graph::Envelope, &curves, tint, key.clone(), None);
@@ -390,11 +390,15 @@ fn panel(
     let handles = curves.handles(graph);
     let (title, empty) = match graph {
         Graph::Envelope => ("Envelope", "This group has no volume envelope; notes start and stop at once."),
-        Graph::Response => ("Filter · EQ", "This group has no filter or EQ."),
+        Graph::Response => ("Filter · EQ", "No filter or EQ · flat response"),
     };
     // The panel's reset, when any of its values is edited.
     let params: Vec<Param> = handles.iter().flat_map(|h| h.params().collect::<Vec<_>>()).collect();
     let mut actions = Vec::new();
+    // Says what the grey behind the curve is.
+    if heard.is_some() {
+        actions.push(caption("Grey: the part's output").fill(Role::Dim).lines(1).min_w(0).pad(edges(0., INSET - TIGHT, 0., 0.)));
+    }
     if params.iter().any(|&p| edited(p)) {
         let (hit, el) = action(ui, format!("{}-reset", graph.id()), "Reset", false);
         if hit {
@@ -582,6 +586,11 @@ fn draw(c: &Curves, graph: Graph, s: Size, tint: Color) -> Vec<Draw> {
             let zero = place(s, [0., viz::db_y(0.)]).y;
             out.push(Draw::fill(rect(0., zero, s.width, 1.), Role::Ink.alpha(0.18)));
             if c.response.is_empty() {
+                return out;
+            }
+            // No filter: the flat line in ink, no color to suggest one.
+            if c.handles(Graph::Response).is_empty() {
+                out.push(Draw::stroke(line(s, &c.response), Role::Ink.alpha(0.45), 1.5));
                 return out;
             }
             out.push(Draw::fill(area(s, &c.response), tint.with_alpha(0.14)));

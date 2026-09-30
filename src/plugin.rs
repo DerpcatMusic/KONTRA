@@ -3181,7 +3181,7 @@ end on"
 
         const BLOCK: usize = 256;
         let transport = TransportInfo::default();
-        let mut block = |dsp: &mut Dsp, note: bool| {
+        let block = |dsp: &mut Dsp, note: bool| {
             let mut events = EventList::with_capacity(2);
             if note {
                 events.push(Event::on_port(0, 0, EventBody::NoteOn { group: 0, channel: 0, note: 60, velocity: 127 }));

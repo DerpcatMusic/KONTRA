@@ -49,6 +49,9 @@ const DB: std::ops::RangeInclusive<f64> = -60.0..=6.0;
 pub struct State {
     /// Strips wide enough for their inserts.
     wide: bool,
+    /// A strip's width this frame: [`WIDTH`], or when wide as near [`WIDE`]
+    /// as the console has room for.
+    width: f64,
     spectrum: Spectrum,
     /// Each meter's peak hold, by meter id.
     holds: HashMap<String, Arc<Mutex<Hold>>>,
@@ -112,7 +115,7 @@ pub enum Strip {
 /// A bus's own color: evenly spread hues at one quiet lightness, so a
 /// part's routing label matches the strip it plays through.
 pub fn bus_color(n: usize) -> Color {
-    Color::oklch(0.7, 0.1, (n as f32 * 137.508 + 190.) % 360.)
+    Color::oklch(0.7, 0.1, golden_hue(190., n))
 }
 
 /// Host stereo port `n` as a DAW lists it: "1/2", "3/4".
@@ -158,6 +161,22 @@ fn in_use(cx: &Cx, n: usize) -> bool {
 }
 
 pub fn view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
+    // The console's room, as last laid out: wide strips narrow to fit it
+    // before anything scrolls.
+    let frame_of = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame.size);
+    let console = frame_of(ui, "mixer").map_or(Size::new(f64::INFINITY, f64::INFINITY), |s| {
+        Size::new(s.width - 2. * SPACE, s.height - 2. * SPACE)
+    });
+    let room = console.width;
+    let shown = |cx: &Cx, n: usize| n < cx.state.buses_shown || in_use(cx, n);
+    let strips = cx.selection.order.len().max(1) + (0..BUSES).filter(|&n| shown(cx, n)).count() + 1;
+    // The gap between the groups, the plus, the gap before the master, 1 px between strips.
+    let fixed = SPACE + CONTROL + 2. * TIGHT + SPACE + strips as f64;
+    cx.state.mixer.width = if cx.state.mixer.wide {
+        ((room - fixed) / strips as f64).clamp(WIDTH, WIDE).floor()
+    } else {
+        WIDTH
+    };
     let mut signals = Vec::new();
     for slot in cx.selection.order.clone() {
         signals.push(part_strip(ui, cx, slot as usize));
@@ -171,7 +190,6 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El 
                 .shrink(0),
         );
     }
-    let shown = |cx: &Cx, n: usize| n < cx.state.buses_shown || in_use(cx, n);
     let mut buses = Vec::new();
     for n in 0..BUSES {
         if shown(cx, n) {
@@ -198,24 +216,49 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El 
     buses.push(block(SPACE, Len::Pct(100.)).fill(Role::Background).shrink(0));
     buses.push(master);
     let buses = group("Buses", "st.1–st.16 to the host · Master".into(), buses);
-    let toolbar = toolbar(ui, cx);
-    let mut console = vec![signals, buses];
-    console.extend(analyser(ui, cx));
-    let console = row(console)
+    // The spectrum sits beside the strips when it has the room, below them
+    // when their faders keep theirs, and otherwise not at all: it never
+    // pushes past the window.
+    let used = ["mix-signals", "mix-buses"].iter().map(|id| frame_of(ui, id).map_or(0., |s| s.width)).sum::<f64>() + 2. * SPACE;
+    let beside = room - used;
+    let below = TEXT * 10.;
+    let place = if beside >= TEXT * 14. {
+        Some(true)
+    } else if console.height - below - SPACE >= TEXT * 30. {
+        Some(false)
+    } else {
+        None
+    };
+    let toolbar = toolbar(ui, cx, place.is_some());
+    // The strips scroll only when even narrow ones cannot all show.
+    let strips = row![signals.id("mix-signals"), buses.id("mix-buses")]
+        .gap(SPACE)
+        .align(Align::Stretch)
+        .flex(1)
+        .min_h(0)
+        .min_w(0)
+        .scroll()
+        .id("mix-strips");
+    let console = match (place, place.and_then(|_| analyser(cx))) {
+        (Some(true), Some(spectrum)) => row![strips, spectrum.w(beside.min(TEXT * 22.)).shrink(0)],
+        (_, Some(spectrum)) => col![strips, spectrum.h(below).shrink(0)],
+        _ => row![strips],
+    };
+    let console = console
         .gap(SPACE)
         .align(Align::Stretch)
         .pad(SPACE)
         .flex(1)
         .min_h(0)
         .min_w(0)
-        .scroll()
         .fill(Role::Background)
         .id("mixer");
     col![toolbar, rule(), console].gap(0).flex(1).min_h(0).min_w(0)
 }
 
-/// Strip width, and the spectrum and what it shows.
-fn toolbar(ui: &mut Ui, cx: &mut Cx) -> El {
+/// Strip width, and the spectrum and what it shows; `fits` false, that the
+/// window is too small for it.
+fn toolbar(ui: &mut Ui, cx: &mut Cx, fits: bool) -> El {
     let m = &mut cx.state.mixer;
     let (narrow_hit, narrow) = latch(ui, "mix-narrow", "Narrow", "Narrow strips: level and routing", !m.wide);
     let (wide_hit, wide) = latch(ui, "mix-wide", "Wide", "Wide strips: with the instrument's inserts", m.wide);
@@ -230,20 +273,18 @@ fn toolbar(ui: &mut Ui, cx: &mut Cx) -> El {
             m.spectrum = to;
         }
     }
+    let spectrum_on = m.spectrum != Spectrum::Off;
     let mode = crate::routing::Outputs::of(cx.selection.outputs).label();
     let (outputs_hit, outputs) = dropdown(ui, "mix-outputs", mode, "Outputs: routing to the host");
     if outputs_hit {
         menu::open_under(ui, cx, menu::Target::Routing, "mix-outputs");
     }
-    strip(vec![
-        section("Outputs"),
-        outputs,
-        section("Strips"),
-        segmented(vec![narrow, wide]),
-        spacer(),
-        section("Spectrum"),
-        segmented(vec![off, part, master]),
-    ])
+    let mut items = vec![section("Outputs"), outputs, section("Strips"), segmented(vec![narrow, wide]), spacer()];
+    if !fits && spectrum_on {
+        items.push(caption("No room for the spectrum").fill(Role::Dim).lines(1).min_w(0));
+    }
+    items.extend([section("Spectrum"), segmented(vec![off, part, master])]);
+    strip(items)
     .pad((INSET, TIGHT))
     .fill(Role::Surface)
 }
@@ -270,26 +311,20 @@ fn group(title: &str, subtitle: String, strips: Vec<El>) -> El {
     .shrink(0)
 }
 
-/// The spectrum beside the console: the selected part's output, or the
-/// master's. Only while it shows does the audio thread copy a signal.
-/// Scrolled out of view, it asks for nothing.
-fn analyser(ui: &Ui, cx: &mut Cx) -> Option<El> {
+/// The spectrum beside or below the strips: the selected part's output, or
+/// the master's. Only while it shows does the audio thread copy a signal.
+fn analyser(cx: &mut Cx) -> Option<El> {
     let chosen = cx.state.chosen().filter(|&s| cx.selection.parts.get(s).is_some_and(|p| !p.path.is_empty()));
     let source = match (cx.state.mixer.spectrum, chosen) {
         (Spectrum::Off, _) => return None,
         (Spectrum::Part, Some(slot)) => slot + 1,
         _ => SCOPE_MASTER,
     };
-    let frame = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
-    let seen = match (frame("mix-spectrum"), frame("mixer")) {
-        (Some(a), Some(b)) => a.x < b.x + b.size.width && a.x + a.size.width > b.x,
-        _ => true,
-    };
     let label = match source {
         SCOPE_MASTER => "Master".to_owned(),
         n => super::rack::name(cx, n - 1),
     };
-    let shape = if seen { cx.spectrum(source) } else { Default::default() };
+    let shape = cx.spectrum(source);
     Some(col![
         row![section("Spectrum")].align(Align::Center).pad(edges(0., 0., TIGHT, TIGHT)).h(CONTROL).shrink(0),
         col![
@@ -312,13 +347,12 @@ fn analyser(ui: &Ui, cx: &mut Cx) -> Option<El> {
         .fill(Role::Surface)
     ]
     .gap(0)
-    .w(TEXT * 22.)
-    .shrink(0)
+    .min_w(0)
     .id("mix-spectrum"))
 }
 
 /// The column every strip is built on: a colored top edge, then `rows`.
-fn frame(rows: Vec<El>, edge: Fill, selected: bool, wide: bool) -> El {
+fn frame(rows: Vec<El>, edge: Fill, selected: bool, width: f64) -> El {
     let mut items = vec![block(Len::Pct(100.), 2).fill(edge).shrink(0)];
     items.push(
         col(rows)
@@ -331,7 +365,7 @@ fn frame(rows: Vec<El>, edge: Fill, selected: bool, wide: bool) -> El {
     col(items)
         .gap(0)
         .align(Align::Stretch)
-        .w(if wide { WIDE } else { WIDTH })
+        .w(width)
         .fill(if selected { Role::Raised } else { Role::Surface })
         .shrink(0)
 }
@@ -426,7 +460,7 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     ]);
     let edge = Fill::from(part_color(slot));
     let label = super::rack::name(cx, slot);
-    frame(rows, edge, cx.state.chosen() == Some(slot), wide)
+    frame(rows, edge, cx.state.chosen() == Some(slot), cx.state.mixer.width)
         .a11y(A11y::Group)
         .named(label)
         .id(id)
@@ -516,7 +550,7 @@ fn bus_strip(ui: &mut Ui, cx: &mut Cx, n: usize) -> El {
         port_el,
     ]);
     let label = crate::routing::label(&cx.selection, n);
-    frame(rows, bus_color(n).into(), false, wide)
+    frame(rows, bus_color(n).into(), false, cx.state.mixer.width)
         .when(over, |e| e.stroke(accent()).stroke_width(1))
         .a11y(A11y::Group)
         .named(label)
@@ -559,7 +593,7 @@ fn master_strip(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) ->
         .h(CONTROL - 2.)
         .shrink(0),
     ]);
-    frame(rows, Role::Ink.alpha(0.5), false, wide)
+    frame(rows, Role::Ink.alpha(0.5), false, cx.state.mixer.width)
         .a11y(A11y::Group)
         .named("Master")
         .id("master-strip")
@@ -846,7 +880,7 @@ fn meter_held(ui: &mut Ui, cx: &mut Cx, id: &str, meter: Meter) -> El {
             draw.push(Draw::fill(rect(x, top, bar, h), Role::Ink.alpha(0.16)));
             let u = meter_scale(level);
             let (hot_at, clip_at) = (54. / 66., 60. / 66.);
-            for (from, to, color) in [(0., hot_at, signal()), (hot_at, clip_at, Color::oklch(0.84, 0.16, 88.)), (clip_at, 1., clip)] {
+            for (from, to, color) in [(0., hot_at, signal()), (hot_at, clip_at, Color::oklch(0.86, 0.16, 100.)), (clip_at, 1., clip)] {
                 if u > from {
                     let to = u.min(to);
                     draw.push(Draw::fill(rect(x, y(to), bar, y(from) - y(to)), color));
