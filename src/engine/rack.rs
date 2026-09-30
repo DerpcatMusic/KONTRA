@@ -16,9 +16,14 @@ pub struct PartControls {
     pub channel: i16,
     pub gain: f32,
     pub pan: f32,
+    /// Semitones, cents as the fraction, within ±[`TUNE_RANGE`].
+    pub tune: f32,
     pub mute: bool,
     pub solo: bool,
 }
+
+/// How far a part tunes, in semitones either way.
+pub const TUNE_RANGE: f32 = 36.0;
 
 impl Default for PartControls {
     fn default() -> Self {
@@ -28,6 +33,7 @@ impl Default for PartControls {
             channel: -1,
             gain: 1.0,
             pan: 0.0,
+            tune: 0.0,
             mute: false,
             solo: false,
         }
@@ -162,6 +168,7 @@ impl Rack {
         let solo = self.controls.iter().any(|c| c.solo);
         for (engine, c) in self.parts.iter_mut().zip(&self.controls) {
             let [left, right] = &mut self.part;
+            engine.tune = c.tune;
             engine.render(&mut left[..n], &mut right[..n]);
             if c.mute || (solo && !c.solo) {
                 continue;

@@ -735,9 +735,7 @@ impl Unit {
             Self::Hertz if value >= 1000. => format!("{:.1} kHz", value / 1000.),
             Self::Hertz => format!("{value:.0} Hz"),
             Self::Percent => format!("{value:.0} %"),
-            Self::Semitones if value.abs() < 0.005 => "0 st".into(),
-            Self::Semitones if value.fract() == 0. => format!("{value:+.0} st"),
-            Self::Semitones => format!("{value:+.2} st"),
+            Self::Semitones => tune_text(value),
             Self::Pan => pan_text(value),
         }
     }

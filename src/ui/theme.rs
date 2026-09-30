@@ -729,6 +729,18 @@ pub fn pan_text(pan: f64) -> String {
     }
 }
 
+/// Semitones, signed, with cents when there are any: "0 st", "+3 st", "-1.25 st".
+pub fn tune_text(semitones: f64) -> String {
+    let cents = (semitones * 100.).round();
+    if cents == 0. {
+        "0 st".into()
+    } else if cents % 100. == 0. {
+        format!("{:+.0} st", cents / 100.)
+    } else {
+        format!("{:+.2} st", cents / 100.)
+    }
+}
+
 pub fn db_text(db: f64) -> String {
     if db <= -59.95 {
         "-inf dB".into()
@@ -815,5 +827,8 @@ mod tests {
         assert_eq!(pan_text(0.4), "R 40");
         assert_eq!(db_text(-60.), "-inf dB");
         assert_eq!(db_text(-3.04), "-3.0 dB");
+        assert_eq!(tune_text(0.001), "0 st");
+        assert_eq!(tune_text(-12.), "-12 st");
+        assert_eq!(tune_text(1.25), "+1.25 st");
     }
 }

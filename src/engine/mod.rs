@@ -24,7 +24,7 @@ mod voice;
 pub(crate) use bank::parallel;
 pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
-pub use rack::{BUSES, Block, PartControls, RACK_SLOTS, Rack};
+pub use rack::{BUSES, Block, PartControls, RACK_SLOTS, Rack, TUNE_RANGE};
 pub use script::{MAX_COMMANDS, ScriptSetup, load_scripts};
 pub use voice::{Ahdsr, Flex, FlexPoint};
 
@@ -160,6 +160,9 @@ pub struct Engine {
     pub cutoff: f32,
     /// Offline rendering: wait for streamed data instead of playing silence.
     pub blocking_streams: bool,
+    /// The part's own tune in semitones (cents as the fraction), over the
+    /// instrument's and the groups'.
+    pub tune: f32,
 }
 
 impl Default for Engine {
@@ -176,6 +179,7 @@ impl Default for Engine {
             release: 0.15,
             cutoff: 20000.0,
             blocking_streams: false,
+            tune: 0.0,
         }
     }
 }
@@ -547,9 +551,9 @@ impl Engine {
                     .flatten()
                     .fold(len, |end, at| end.min(at as usize - base));
                 if let Some(bank) = self.bank.as_deref() {
-                    let blocking = self.blocking_streams;
+                    let (blocking, tune) = (self.blocking_streams, self.tune);
                     let out = (&mut l[pos..end], &mut r[pos..end]);
-                    self.player.render(bank, out, &mut self.fx, pos, blocking);
+                    self.player.render(bank, out, &mut self.fx, pos, blocking, tune);
                 }
                 pos = end;
             }
@@ -1063,6 +1067,7 @@ impl Player {
         fx: &mut FxProcessor,
         offset: usize,
         blocking: bool,
+        tune: f32,
     ) {
         let cx = Context {
             bank,
@@ -1070,7 +1075,7 @@ impl Player {
             cc: &self.cc,
             bend: &self.bend,
             pressure: &self.pressure,
-            tune: self.instrument.2,
+            tune: self.instrument.2 + tune,
             rate: self.rate as f32,
             blocking,
         };

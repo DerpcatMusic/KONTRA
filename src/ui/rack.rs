@@ -252,12 +252,18 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let mut pan = f64::from(part.pan);
     let (_, pan_el) = fader(ui, &format!("pan-{slot}"), "Pan", &mut pan, -1.0..=1.0, Fader::PAN.length(track), pan_text);
     part.pan = pan as f32;
+    let mut tune = f64::from(part.tune);
+    let range = f64::from(crate::engine::TUNE_RANGE);
+    let kind = Fader { widest: "+00.00 st", ..Fader::PAN }.length(track);
+    let (_, tune_el) = fader(ui, &format!("tune-{slot}"), "Tune", &mut tune, -range..=range, kind, tune_text);
+    // Cents are the finest step.
+    part.tune = ((tune * 100.).round() / 100.) as f32;
     if remove {
         cx.remove(slot);
     }
 
     // Row labels share one width, so both rows' controls start in line.
-    let label = |text: &str| section(text).reserve("MIDI").shrink(0);
+    let label = |text: &str| section(text).reserve("TUNE").shrink(0);
     let identity = col![
         row![title, prev_el, next_el].gap(TIGHT).align(Align::Center).h(CONTROL),
         row![caption(facts).fill(Role::Dim).lines(1).min_w(0)]
@@ -279,7 +285,8 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .shrink(0);
     let faders = col![
         cluster(vec![label("Vol"), gain_el]).h(CONTROL),
-        cluster(vec![label("Pan"), pan_el]).h(CONTROL)
+        cluster(vec![label("Pan"), pan_el]).h(CONTROL),
+        cluster(vec![label("Tune"), tune_el]).h(CONTROL)
     ]
     .gap(TIGHT)
     .shrink(0);

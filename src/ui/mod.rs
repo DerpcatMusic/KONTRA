@@ -434,6 +434,12 @@ fn sanitize(selection: &mut Selection) {
         } else {
             0.
         };
+        let tune = crate::engine::TUNE_RANGE;
+        part.tune = if part.tune.is_finite() {
+            part.tune.clamp(-tune, tune)
+        } else {
+            0.
+        };
     }
     let mut seen = [false; RACK_SLOTS];
     let parts = &selection.parts;

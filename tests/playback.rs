@@ -898,6 +898,37 @@ fn rack_routes_layers_mutes_solos_and_releases_after_channel_changes() {
     assert_eq!(rack_frame(&mut rack, 21), [1.0, 0.5]);
 }
 
+/// A part's tune transposes everything it plays, running voices included,
+/// in semitones and cents.
+#[test]
+fn rack_part_tune_transposes_in_semitones_and_cents() {
+    let ramp = || Sample {
+        rate: 48000,
+        frames: (0..1000).map(|i| [i as f32 / 1000.0; 2]).collect(),
+    };
+    let bank = || {
+        Bank::from_samples(vec![Group::default()], vec![Zone::default()], vec![(PathBuf::new(), ramp())])
+            .unwrap()
+    };
+    let mut rack = Rack::default();
+    rack.parts[0] = engine_with(bank());
+    rack.controls[0].tune = 12.0;
+    rack.note_on(0, 60, 127);
+    assert!((rack_frame(&mut rack, 11)[0] - 0.02).abs() < 1e-6, "an octave up steps two frames");
+    // Down an octave, while the voice plays: half a frame a frame.
+    rack.controls[0].tune = -12.0;
+    let before = rack_frame(&mut rack, 1)[0];
+    let after = rack_frame(&mut rack, 10)[0];
+    assert!((after - before - 0.005).abs() < 1e-5, "{before} → {after}");
+    // Cents: +7 st 2 ct is the fifth's ratio to within a cent.
+    let mut rack = Rack::default();
+    rack.parts[0] = engine_with(bank());
+    rack.controls[0].tune = 7.02;
+    rack.note_on(0, 60, 127);
+    let at = rack_frame(&mut rack, 101)[0] * 1000.0;
+    assert!((at - 150.0).abs() < 0.2, "a fifth steps 1.5 frames: {at}");
+}
+
 #[test]
 fn rack_midi_ports_audio_buses_and_route_changes_are_isolated() {
     let mut rack = Rack::default();

@@ -1,6 +1,6 @@
 use crate::artwork;
 use crate::{
-    engine::{Bank, Engine, MAX_BLOCK, PartControls, RACK_SLOTS, Rack, load_scripts},
+    engine::{Bank, Engine, MAX_BLOCK, PartControls, RACK_SLOTS, Rack, TUNE_RANGE, load_scripts},
     fx::FxProcessor,
     import::{self, Instrument},
     ksp::{Interface, KeyState, Live, Persisted, Runtime},
@@ -27,6 +27,8 @@ pub struct Part {
     pub channel: i16,
     pub gain: f32,
     pub pan: f32,
+    /// Semitones, cents as the fraction.
+    pub tune: f32,
     pub mute: bool,
     pub solo: bool,
     pub program: u32,
@@ -48,6 +50,7 @@ impl Default for Part {
             channel: -1,
             gain: 0.,
             pan: 0.,
+            tune: 0.,
             mute: false,
             solo: false,
             script_state: String::new(),
@@ -222,6 +225,11 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
                 },
                 pan: if p.pan.is_finite() {
                     p.pan.clamp(-1., 1.)
+                } else {
+                    0.
+                },
+                tune: if p.tune.is_finite() {
+                    p.tune.clamp(-TUNE_RANGE, TUNE_RANGE)
                 } else {
                     0.
                 },
@@ -1131,6 +1139,7 @@ mod tests {
                     channel: 2,
                     gain: -9.,
                     pan: 0.25,
+                    tune: -3.5,
                     mute: true,
                     ..Default::default()
                 },
@@ -1145,6 +1154,7 @@ mod tests {
             midi_thru: true,
         };
         assert!(Selection::deserialize(&state.serialize()).unwrap() == state);
+        assert_eq!(rack_controls(&state)[0].tune, -3.5, "the part's tune reaches the engine");
     }
     #[test]
     fn control_edits_run_the_script_and_report_back() {
