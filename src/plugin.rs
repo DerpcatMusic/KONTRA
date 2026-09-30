@@ -769,7 +769,13 @@ impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
     fn run(self, params: &SamplerParams) {
-        while params.shared.discard.pop().is_some() {}
+        let mut freed = false;
+        while params.shared.discard.pop().is_some() {
+            freed = true;
+        }
+        if freed {
+            crate::audio::trim_heap();
+        }
         let requested = { params.shared.multi_request.lock().unwrap().take() };
         if let Some(path) = requested {
             let before = params.selection.read().unwrap().clone();
@@ -898,12 +904,17 @@ impl BackgroundTask for Load {
                 ));
                 continue;
             }
+            let loaded = {
+                let view = params.shared.view.lock().unwrap();
+                let v = &view.parts[slot];
+                v.attempted.as_ref() == Some(&target) && v.streaming == streaming
+            };
+            if loaded {
+                continue;
+            }
             let cached = {
                 let mut view = params.shared.view.lock().unwrap();
                 let v = &mut view.parts[slot];
-                if v.attempted.as_ref() == Some(&target) && v.streaming == streaming {
-                    continue;
-                }
                 (v.attempted, v.streaming) = (Some(target.clone()), streaming);
                 v.status = "Loading samples…".into();
                 params.shared.load_progress[slot].store(0, Ordering::Relaxed);
@@ -939,7 +950,7 @@ impl BackgroundTask for Load {
                 let instrument = if let Some(i) = cached {
                     i
                 } else {
-                    Arc::new(import::read_program(Path::new(&part.path), part.program)?)
+                    import::shared_program(Path::new(&part.path), part.program)?
                 };
                 // Progress by phase: parsed 5%, scripts 10%, the bank the rest.
                 let progress = &params.shared.load_progress[slot];
@@ -1010,21 +1021,15 @@ impl BackgroundTask for Load {
                         c.group = group as u32;
                     }
                 }
-                let resident: usize = params
-                    .shared
-                    .view
-                    .lock()
-                    .unwrap()
-                    .parts
-                    .iter()
-                    .enumerate()
-                    .filter(|(n, _)| *n != slot)
-                    .map(|(_, p)| p.bytes)
-                    .sum();
-                // The part gets what the 2 GiB rack has left; a tight budget
-                // streams more instead of failing.
+                // Samples resident in the whole process (every part and
+                // plugin instance, shared data once) but this part's own,
+                // about to be replaced.
+                let own = params.shared.view.lock().unwrap().parts[slot].bytes;
+                let resident = crate::engine::resident_bytes().saturating_sub(own);
+                // The part gets what the process budget has left; a tight
+                // budget streams more instead of failing.
                 let budget = crate::engine::MEMORY_LIMIT
-                    .min((2 * crate::engine::MEMORY_LIMIT).saturating_sub(resident));
+                    .min(crate::engine::memory_budget().saturating_sub(resident));
                 let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers);
                 // RAM only plays from a streaming bank while the RAM fills.
                 let bank = Box::new(Bank::load_counting(
@@ -1379,6 +1384,12 @@ impl PluginLogic for Sampler {
         let started = Instant::now();
         let rate = s.rack.parts[0].rate();
         let frames = b.num_samples();
+        // Offline, a render waits for the disk and keeps every tail; live,
+        // tails go before the deadline does.
+        let offline = cx.process_mode.is_offline();
+        for engine in &mut s.rack.parts {
+            engine.blocking_streams = offline;
+        }
         if s.until_poll <= frames {
             if let Some(tasks) = cx.tasks::<Load>() {
                 tasks.spawn_coalescing(Load);
@@ -1844,7 +1855,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     const RATE: f64 = 48000.;
     let p = Arc::new(SamplerParams::new());
     let ram_only = paths.iter().any(|p| p == "--ram-only");
-    let paths: Vec<_> = paths.iter().filter(|p| *p != "--ram-only").cloned().collect();
+    let paths: Vec<_> = paths.iter().filter(|p| !p.starts_with("--")).cloned().collect();
     let paths = &paths[..];
     let mut selection = p.selection.write().unwrap();
     if ram_only {
@@ -1985,16 +1996,16 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         let mean_audible = audible_blocks as f64 / times.len() as f64;
         let whole = (cpu_clock(2) - process_cpu) / start.elapsed().as_secs_f64();
         println!(
-            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core · RSS+swap {:.0} MiB · {} dropouts",
+            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core · RSS+swap {:.0} MiB, samples {:.0} MiB · {} dropouts",
             times.len(),
             cpu * 100.,
             whole * 100.,
             rss_mib(),
+            crate::engine::resident_bytes() as f64 / (1 << 20) as f64,
             p.shared.dropouts.load(Ordering::Relaxed),
         );
-        let (resident, freed) = (p.shared.view.lock().unwrap().parts.iter())
-            .fold((0, 0), |(r, f), v| (r + v.bytes, f + v.freed as usize));
-        println!("  smart memory: {} MiB resident · {} MiB freed", resident >> 20, freed >> 20);
+        let freed: u64 = p.shared.view.lock().unwrap().parts.iter().map(|v| v.freed).sum();
+        println!("  smart memory: {} MiB freed", freed >> 20);
         if counts.iter().any(|&c| c > 0.) {
             let mut sorted = counts.clone();
             sorted.sort_by(f64::total_cmp);
@@ -2059,6 +2070,40 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{alloc::{GlobalAlloc, Layout, System}, cell::Cell};
+
+    struct Counting;
+    thread_local! {
+        static COUNTING: Cell<bool> = const { Cell::new(false) };
+        static CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+    fn count() {
+        if COUNTING.with(Cell::get) {
+            CALLS.with(|n| n.set(n.get() + 1));
+        }
+    }
+    // SAFETY: forwards every call unchanged to the system allocator.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            count();
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            count();
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+    #[global_allocator]
+    static GLOBAL: Counting = Counting;
+
+    /// Allocations and frees `f` makes on this thread.
+    fn allocations(f: impl FnOnce()) -> usize {
+        let before = CALLS.with(Cell::get);
+        COUNTING.with(|c| c.set(true));
+        f();
+        COUNTING.with(|c| c.set(false));
+        CALLS.with(Cell::get) - before
+    }
     #[test]
     fn plugin_contract() {
         assert!(
@@ -2235,6 +2280,23 @@ mod tests {
             &mut cx,
         );
 
+        // Refreshing a lent view and snapshot neither allocates nor frees.
+        let events = EventList::with_capacity(1);
+        p.shared.edit_control(0, 0, 1);
+        Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
+        let (slot, _, live) = p.shared.lives.pop().unwrap();
+        p.shared.live_requests.push((slot, live)).ok().unwrap();
+        let saved = Box::new(dsp.rack.parts[0].script().unwrap().persistence());
+        p.shared.snapshot_requests.push((0, saved)).ok().unwrap();
+        // As if the scripts changed since: both refresh in full.
+        (dsp.live_seen[0], dsp.snapshot_seen[0]) = ((u64::MAX, 0), (u64::MAX, 0));
+        let calls = allocations(|| {
+            for _ in 0..4 {
+                Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
+            }
+        });
+        assert_eq!(calls, 0, "the audio thread allocated or freed");
+        assert!(p.shared.snapshots.pop().is_some(), "the snapshot comes back");
         let (slot, epoch, live) = p.shared.lives.pop().expect("the live view comes back");
         assert_eq!((slot, epoch), (0, dsp.script_epoch[0]));
         let interface = live.interface.as_ref().unwrap();
@@ -2410,6 +2472,40 @@ mod tests {
         assert_eq!(midi_out.get(0).unwrap().port, 0);
         assert_eq!(midi_out.get(0).unwrap().sample_offset, 16);
     }
+    /// Plugin instances in one process (as a DAW hosts them) and parts
+    /// within one hold a sample's frames once.
+    #[test]
+    #[ignore = "requires the owner's local Afflatus library"]
+    fn instances_share_sample_memory() {
+        let path = Path::new(import::LIBRARY_ROOT)
+            .join("Afflatus Chapter II Brass/Instruments/4. Experimental/Mega Brass.nki")
+            .to_string_lossy()
+            .into_owned();
+        let instance = |parts: usize| {
+            let p = SamplerParams::new();
+            let part = Part { path: path.clone(), ..Default::default() };
+            p.selection.write().unwrap().parts = std::iter::repeat_n(part, parts).collect();
+            Load.run(&p);
+            for v in &p.shared.view.lock().unwrap().parts[..parts] {
+                println!("  {}", v.status);
+            }
+            p
+        };
+        let mib = |b: usize| b as f64 / (1 << 20) as f64;
+        let first = instance(1);
+        let one = crate::engine::resident_bytes();
+        println!("1 instance, 1 part: samples {:.0} MiB, RSS {:.0} MiB", mib(one), rss_mib());
+        let second = instance(2);
+        let three = crate::engine::resident_bytes();
+        println!("2 instances, 3 parts: samples {:.0} MiB, RSS {:.0} MiB", mib(three), rss_mib());
+        let banks: usize = [&first, &second]
+            .iter()
+            .map(|p| p.shared.view.lock().unwrap().parts.iter().map(|v| v.bytes).sum::<usize>())
+            .sum();
+        assert!(banks > 2 * one, "three banks hold the samples");
+        assert!(three < one + one / 20, "{three} bytes resident for three copies of {one}");
+    }
+
     #[test]
     #[ignore = "requires the owner's local Vista library"]
     fn worker_loads_and_removes_real_rack_parts() {

@@ -155,7 +155,133 @@ pub(crate) struct SampleData {
 
 pub(crate) struct Span {
     pub start: u64,
-    pub data: Pcm,
+    /// Shared with every bank in the process holding the same frames
+    /// (see [`resident`]).
+    pub data: Arc<Frames>,
+}
+
+/// Decoded frames, counted in [`resident_bytes`] while they live.
+pub(crate) struct Frames(Pcm);
+
+static RESIDENT_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+impl Frames {
+    pub fn new(pcm: Pcm) -> Arc<Self> {
+        RESIDENT_BYTES.fetch_add(pcm.bytes(), Ordering::Relaxed);
+        Arc::new(Self(pcm))
+    }
+}
+
+impl Drop for Frames {
+    fn drop(&mut self) {
+        RESIDENT_BYTES.fetch_sub(self.0.bytes(), Ordering::Relaxed);
+    }
+}
+
+impl std::ops::Deref for Frames {
+    type Target = Pcm;
+    fn deref(&self) -> &Pcm {
+        &self.0
+    }
+}
+
+/// Decoded sample frames shared across banks: parts and plugin instances
+/// in one process that load the same sample hold one copy. Banks own the
+/// data; the registry only finds it, and forgets it when the last bank
+/// drops. Touched only while loading, never on the audio thread.
+pub(super) mod resident {
+    use super::{Arc, Frames, Mutex, Source, Span};
+    use std::{collections::HashMap, path::PathBuf, sync::Weak};
+
+    /// By sample path and packing (loops pack uncompressed): each span's
+    /// first frame and data.
+    type Registry = HashMap<(PathBuf, bool), Vec<(u64, Weak<Frames>)>>;
+    static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
+    static SOURCES: Mutex<Option<HashMap<PathBuf, Weak<Source>>>> = Mutex::new(None);
+
+    fn with<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
+        let mut lock = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+        f(lock.get_or_insert_default())
+    }
+
+    /// A live span of `key` holding all of `range`, nothing before `from`,
+    /// where the bank's previous span ends, and nothing past `limit`.
+    pub fn find(key: &(PathBuf, bool), range: &std::ops::Range<u64>, from: u64, limit: u64) -> Option<Span> {
+        with(|r| {
+            r.get(key)?.iter().find_map(|(start, data)| {
+                let data = data.upgrade()?;
+                let end = start + data.len() as u64;
+                (*start >= from && *start <= range.start && end >= range.end && end <= limit)
+                    .then_some(Span { start: *start, data })
+            })
+        })
+    }
+
+    /// Forget spans and sources every bank has dropped.
+    pub fn sweep() {
+        with(|r| {
+            r.retain(|_, spans| {
+                spans.retain(|(_, d)| d.strong_count() > 0);
+                !spans.is_empty()
+            })
+        });
+        let mut sources = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+        sources.get_or_insert_default().retain(|_, s| s.strong_count() > 0);
+    }
+
+    /// Where `path` streams from, one copy per process.
+    pub fn source((source, path): (Source, &PathBuf)) -> Arc<Source> {
+        let mut lock = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+        let sources = lock.get_or_insert_default();
+        if let Some(shared) = sources.get(path).and_then(Weak::upgrade) {
+            return shared;
+        }
+        let shared = Arc::new(source);
+        sources.insert(path.clone(), Arc::downgrade(&shared));
+        shared
+    }
+
+    pub fn insert(key: (PathBuf, bool), span: &Span) {
+        with(|r| {
+            let spans = r.entry(key).or_default();
+            spans.retain(|(_, d)| d.strong_count() > 0);
+            spans.push((span.start, Arc::downgrade(&span.data)));
+        })
+    }
+}
+
+/// Live slices banks share, by content.
+type Pool<T> = Mutex<Vec<std::sync::Weak<[T]>>>;
+static ZONES: Pool<Zone> = Mutex::new(Vec::new());
+static PLAYS: Pool<ZonePlay> = Mutex::new(Vec::new());
+static KEY_ZONES: Pool<u32> = Mutex::new(Vec::new());
+
+/// A live slice of `pool` equal to `items`, or `items` shared from now on.
+fn intern<T: PartialEq>(pool: &Pool<T>, items: Vec<T>) -> Arc<[T]> {
+    let mut pool = pool.lock().unwrap_or_else(|e| e.into_inner());
+    pool.retain(|w| w.strong_count() > 0);
+    if let Some(shared) = pool.iter().filter_map(std::sync::Weak::upgrade).find(|s| **s == *items) {
+        return shared;
+    }
+    let shared: Arc<[T]> = items.into();
+    pool.push(Arc::downgrade(&shared));
+    shared
+}
+
+/// Bytes of decoded sample data resident in this process, shared spans
+/// counted once.
+pub fn resident_bytes() -> usize {
+    RESIDENT_BYTES.load(Ordering::Relaxed)
+}
+
+/// Resident sample memory every part in the process may use together: a
+/// quarter of physical RAM, and no more than half of what is free now on
+/// top of what is already held, so a busy machine gets smaller preloads
+/// rather than swapping. Without `/proc/meminfo`, twice [`MEMORY_LIMIT`].
+pub fn memory_budget() -> usize {
+    ram_free().map_or(2 * MEMORY_LIMIT, |(free, total)| {
+        (total / 4).min(resident_bytes() + free / 2).max(MEMORY_LIMIT / 4)
+    })
 }
 
 impl SampleData {
@@ -176,7 +302,7 @@ impl Span {
 }
 
 /// Zone data resolved for playback.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct ZonePlay {
     pub sample: u32,
     pub map: PlayMap,
@@ -207,18 +333,21 @@ impl From<&VoiceLimit> for VoiceGroup {
 /// Everything a part needs to play, immutable once handed to an engine.
 pub struct Bank {
     groups: Vec<Group>,
-    zones: Vec<Zone>,
+    /// Zones, their playback and the zones on each key are the same for
+    /// every bank of one instrument: parts and instances share one copy
+    /// (17 MiB a part on Areia).
+    zones: Arc<[Zone]>,
     /// What voices play: [`Bank::base`] with the player's overrides on top.
     pub settings: Vec<GroupSettings>,
     /// The library's values as its scripts have set them, under the
     /// player's overrides (see `overrides.rs`).
     pub base: Vec<GroupSettings>,
-    pub(crate) plays: Vec<ZonePlay>,
+    pub(crate) plays: Arc<[ZonePlay]>,
     /// Per group: not muted and, when any group is soloed, soloed.
     pub(crate) playable: Vec<bool>,
     /// Zones mapped to key `k` are `key_zones[key_start[k]..key_start[k + 1]]`.
     key_start: [u32; 129],
-    key_zones: Box<[u32]>,
+    key_zones: Arc<[u32]>,
     pub(crate) samples: Vec<SampleData>,
     pub(crate) voice_groups: Vec<Option<VoiceGroup>>,
     pub(crate) polyphony: usize,
@@ -277,6 +406,7 @@ impl Bank {
         progress: &AtomicU32,
     ) -> Result<Self> {
         let mut issues = Issues::default();
+        resident::sweep();
         // Resolve each distinct sample once, then open them all in parallel.
         // By the path's bytes: a `Path` hashes one component at a time.
         let mut ids: HashMap<&std::ffi::OsStr, usize> = HashMap::new();
@@ -315,12 +445,13 @@ impl Bank {
             let source = source?;
             anyhow::Ok((source.open()?, source))
         });
-        let mut readers: Vec<(Source, SampleReader)> = Vec::new();
+        let mut readers: Vec<(Source, SampleReader, &PathBuf)> = Vec::new();
         let opened: Vec<Option<u32>> = opened
             .into_iter()
-            .map(|result| match result {
+            .zip(&paths)
+            .map(|(result, &path)| match result {
                 Ok((reader, source)) => {
-                    readers.push((source, reader));
+                    readers.push((source, reader, path));
                     Some(readers.len() as u32 - 1)
                 }
                 Err(e) => {
@@ -341,15 +472,18 @@ impl Bank {
                 }
             }
         }
-        let info = readers.iter().map(|(_, r)| (r.rate, r.frames)).collect();
+        let info = readers.iter().map(|(_, r, _)| (r.rate, r.frames)).collect();
         let mut builder =
             Builder::new(instrument.groups.clone(), zones, zone_samples, info, issues)?;
         builder.limits(instrument);
 
         let frame_bytes: Vec<_> = readers
             .iter()
-            .map(|(_, r)| Pcm::frame_bytes(r.bits))
+            .map(|(_, r, _)| Pcm::frame_bytes(r.bits))
             .collect();
+        // ponytail: a plan wider than another bank's spans (a roomier budget)
+        // reads its own copy; growing the shared spans in place, and moving
+        // the other banks onto them, would keep one.
         let mut layout = builder.plan(&frame_bytes, budget, controllers);
         let ram_only = (streaming == Streaming::RamOnly).then(|| {
             // ponytail: /proc/meminfo only; other systems get MEMORY_LIMIT until they have a probe.
@@ -374,18 +508,33 @@ impl Bank {
         let decoded = parallel(
             jobs,
             |(ints, buf): &mut (Vec<[i32; 2]>, Vec<Frame>),
-             ((source, mut reader), (spans, streamed, looping))| {
-                let spans = spans
-                    .into_iter()
-                    .map(|range| {
-                        let (start, len) = (range.start, (range.end - range.start) as usize);
-                        let data = reader.read_pcm(range, !looping, ints, buf)?;
-                        let span = (reads_from, LOAD_DONE as usize);
-                        advance(&read, frames_to_read, len, span);
-                        Ok(Span { start, data })
-                    })
-                    .collect::<Result<Vec<_>>>();
-                (spans, streamed, reader.rate, source)
+             ((source, mut reader, path), (spans, streamed, looping))| {
+                // Frames another bank holds are shared, not read again. A
+                // shared span may reach past the planned range: more is resident.
+                let key = (path.clone(), !looping);
+                let mut kept: Vec<Span> = Vec::with_capacity(spans.len());
+                let read_spans = || -> Result<()> {
+                    for range in spans {
+                        let len = (range.end - range.start) as usize;
+                        advance(&read, frames_to_read, len, (reads_from, LOAD_DONE as usize));
+                        let from = kept.last().map_or(0, Span::end);
+                        if !kept.is_empty() && range.end <= from {
+                            continue;
+                        }
+                        if let Some(span) = resident::find(&key, &range, from, u64::MAX) {
+                            kept.push(span);
+                            continue;
+                        }
+                        let range = range.start.max(from)..range.end;
+                        let data = Frames::new(reader.read_pcm(range.clone(), !looping, ints, buf)?);
+                        let span = Span { start: range.start, data };
+                        resident::insert(key.clone(), &span);
+                        kept.push(span);
+                    }
+                    Ok(())
+                };
+                let spans = read_spans().map(|()| kept);
+                (spans, streamed, reader.rate, (source, path))
             },
         );
         progress.store(LOAD_DONE, Ordering::Relaxed);
@@ -401,7 +550,7 @@ impl Bank {
                 }
             };
             bytes += spans.iter().map(|s| s.data.bytes()).sum::<usize>();
-            streamed.push(streamed_sample.then_some(source));
+            streamed.push(streamed_sample.then(|| resident::source(source)));
             samples.push(SampleData {
                 rate,
                 spans,
@@ -483,7 +632,7 @@ impl Bank {
                 rate: s.rate,
                 spans: vec![Span {
                     start: 0,
-                    data: Pcm::pack(&s.frames, false),
+                    data: Frames::new(Pcm::pack(&s.frames, false)),
                 }],
                 streamed: false,
             })
@@ -851,6 +1000,10 @@ impl Builder {
             );
         }
         let plays = self.plays;
+        // Samples are resolved: a playing bank never reads zones' paths,
+        // and 93k of them (Areia) are 14 MiB a part.
+        let mut zones = self.zones;
+        zones.iter_mut().for_each(|z| z.sample = PathBuf::new());
         let any_solo = self.groups.iter().any(|g| g.soloed);
         let playable = self
             .groups
@@ -862,8 +1015,7 @@ impl Builder {
         let mut key_zones = Vec::new();
         for note in 0..128u8 {
             key_start[note as usize] = key_zones.len() as u32;
-            let on_key = self
-                .zones
+            let on_key = zones
                 .iter()
                 .enumerate()
                 .filter(|(_, z)| (z.low_key..=z.high_key).contains(&note));
@@ -872,13 +1024,13 @@ impl Builder {
         key_start[128] = key_zones.len() as u32;
         Ok(Bank {
             groups: self.groups,
-            zones: self.zones,
+            zones: intern(&ZONES, zones),
             base: self.settings.clone(),
             settings: self.settings,
-            plays,
+            plays: intern(&PLAYS, plays),
             playable,
             key_start,
-            key_zones: key_zones.into_boxed_slice(),
+            key_zones: intern(&KEY_ZONES, key_zones),
             samples,
             preload: PRELOAD_FRAMES,
             planned: bytes,

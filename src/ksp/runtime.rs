@@ -15,6 +15,26 @@ use super::{HostState, Interface, KeyState, Value};
 use anyhow::{Result, bail};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, VecDeque};
+use std::sync::{Arc, Mutex, Weak};
+
+/// `source` compiled for `setup`, one copy per process while any runtime
+/// holds it: parts and plugin instances playing one instrument run the same
+/// code over their own memory.
+fn compiled(source: &str, setup: &Setup) -> Result<Arc<Program>> {
+    type Compiled = std::collections::HashMap<(Box<str>, usize, usize), Weak<Program>>;
+    static COMPILED: Mutex<Option<Compiled>> = Mutex::new(None);
+    let lock = || COMPILED.lock().unwrap_or_else(|e| e.into_inner());
+    let key = (Box::from(source), setup.groups, setup.outputs);
+    if let Some(p) = lock().get_or_insert_default().get(&key).and_then(Weak::upgrade) {
+        return Ok(p);
+    }
+    let program = Arc::new(compile::compile(source, setup)?);
+    let mut compiled = lock();
+    let compiled = compiled.get_or_insert_default();
+    compiled.retain(|_, p| p.strong_count() > 0);
+    compiled.insert(key, Arc::downgrade(&program));
+    Ok(program)
+}
 
 pub const MAX_SLOTS: usize = 5;
 pub const EVENT_CAPACITY: usize = 4096;
@@ -527,7 +547,9 @@ impl Env {
 }
 
 pub struct Runtime {
-    programs: Vec<Program>,
+    /// Compiled code, shared with every runtime that compiled the same
+    /// script (see [`compiled`]).
+    programs: Vec<Arc<Program>>,
     states: Vec<SlotState>,
     pub env: Env,
     stacks: Stacks,
@@ -638,10 +660,10 @@ impl Runtime {
             groups: engine.group_count(),
             outputs: self.outputs,
         };
-        let program = match compile::compile(source, &setup) {
+        let program = match compiled(source, &setup) {
             Ok(p) => p,
             Err(e) => {
-                self.programs.push(Program::default());
+                self.programs.push(Arc::default());
                 let mut state = SlotState::new(index, &self.programs[index as usize]);
                 state.error = Some(format!("{e:#}"));
                 self.states.push(state);

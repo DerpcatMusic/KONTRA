@@ -21,7 +21,8 @@
 //! ([`super::Engine::swap_heads`]): a played note never loses data.
 
 use super::bank::{
-    Bank, MIN_PRELOAD, PRELOAD_FRAMES, RAM_HEADROOM, Span, ZonePlay, parallel, ram_free, spans,
+    Bank, Frames, MIN_PRELOAD, PRELOAD_FRAMES, RAM_HEADROOM, Span, ZonePlay, parallel, ram_free, resident,
+    spans,
 };
 use super::stream::{RingUse, Streamer};
 use crate::{audio::Source, import::Zone};
@@ -128,14 +129,29 @@ impl Tracked {
         let preload = self.preload[tier as usize];
         let plays: Vec<_> = self.plays.iter().map(|(p, r)| (p, *r)).collect();
         let (ranges, _, looping) = spans(&plays, preload, cover);
-        let mut reader = source.open()?;
+        // Heads the same size other parts or instances hold are shared: a
+        // longer one is not, or shrinking would free nothing.
+        let key = (source.path().to_path_buf(), !looping);
+        let mut reader = None;
         let (mut ints, mut frames) = (Vec::new(), Vec::new());
+        let mut end = 0;
         let spans = ranges
             .into_iter()
             .map(|range| {
-                let start = range.start;
-                let data = reader.read_pcm(range, !looping, &mut ints, &mut frames)?;
-                Ok(Span { start, data })
+                let from = std::mem::replace(&mut end, range.end);
+                if let Some(span) = resident::find(&key, &range, from, range.end) {
+                    return Ok(span);
+                }
+                let reader = match &mut reader {
+                    Some(r) => r,
+                    None => reader.insert(source.open()?),
+                };
+                let span = Span {
+                    start: range.start,
+                    data: Frames::new(reader.read_pcm(range, !looping, &mut ints, &mut frames)?),
+                };
+                resident::insert(key.clone(), &span);
+                Ok(span)
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Head {
@@ -152,7 +168,7 @@ impl Tracked {
 pub struct Residency {
     usage: Arc<[AtomicU32]>,
     /// The streamer's: every tracked sample has one.
-    sources: Arc<[Option<Source>]>,
+    sources: Arc<[Option<Arc<Source>>]>,
     rings: Arc<RingUse>,
     samples: Vec<Tracked>,
     cover: u64,
@@ -402,7 +418,7 @@ mod tests {
             sample: 0,
             tier: Tier::Hot,
             bytes: data.bytes(),
-            spans: vec![Span { start: 0, data }],
+            spans: vec![Span { start: 0, data: Frames::new(data) }],
             applied: false,
         }];
         e.note_on(0, 60, 100);

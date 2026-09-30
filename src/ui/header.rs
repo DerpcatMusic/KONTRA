@@ -14,7 +14,8 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
     let disk = f32::from_bits(cx.state.meters.disk.load(Ordering::Relaxed));
     let voices = p.shared.voices.load(Ordering::Relaxed);
     let audible = p.shared.audible.load(Ordering::Relaxed);
-    let memory: usize = cx.view.parts.iter().map(|v| v.bytes).sum();
+    // Samples in RAM for the whole process: parts and instances sharing them count once.
+    let memory = crate::engine::resident_bytes();
     let freed: u64 = cx.view.parts.iter().map(|v| v.freed).sum();
 
     let loading: Vec<_> = cx
@@ -124,7 +125,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         )),
         // Sample heads sized by use and idle stream rings handed back.
         stat("RAM", megabytes(memory), "00000 MB").tip(format!(
-            "Smart memory: {} resident · {} freed",
+            "Smart memory: {} of samples resident, shared ones once · {} freed",
             megabytes(memory),
             megabytes(freed as usize)
         )),

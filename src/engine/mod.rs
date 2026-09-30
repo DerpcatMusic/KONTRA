@@ -24,7 +24,7 @@ mod stream;
 mod voice;
 
 pub(crate) use bank::parallel;
-pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming};
+pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, memory_budget, resident_bytes};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
 pub use residency::{Heads, Residency};
 pub use rack::{

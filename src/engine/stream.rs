@@ -264,7 +264,7 @@ fn tag(seq: u32) -> u16 {
 /// Streaming thread and the slots it serves; owned by a [`super::Bank`].
 pub(crate) struct Streamer {
     shared: Arc<Shared>,
-    sources: Arc<[Option<Source>]>,
+    sources: Arc<[Option<Arc<Source>>]>,
     threads: Vec<JoinHandle<()>>,
 }
 
@@ -342,7 +342,7 @@ unsafe impl Sync for Rings {}
 
 impl Streamer {
     /// `sources[i]` is `Some` for every sample that is not fully resident.
-    pub fn spawn(sources: Vec<Option<Source>>) -> std::io::Result<Self> {
+    pub fn spawn(sources: Vec<Option<Arc<Source>>>) -> std::io::Result<Self> {
         let rings = Rings::new();
         // SAFETY: slot `i`'s ring starts in bounds of the allocation.
         let ring = |i: usize| unsafe { rings.0.add(i * RING as usize) };
@@ -355,7 +355,7 @@ impl Streamer {
             stop: AtomicBool::new(false),
             rings: Arc::default(),
         });
-        let sources: Arc<[Option<Source>]> = sources.into();
+        let sources: Arc<[Option<Arc<Source>>]> = sources.into();
         let threads = (0..THREADS)
             .map(|stripe| {
                 let (shared, sources) = (shared.clone(), sources.clone());
@@ -378,7 +378,7 @@ impl Streamer {
         &self.shared.slots
     }
 
-    pub fn sources(&self) -> Arc<[Option<Source>]> {
+    pub fn sources(&self) -> Arc<[Option<Arc<Source>>]> {
         self.sources.clone()
     }
 
@@ -412,13 +412,13 @@ struct Cursor {
 }
 
 struct Worker {
-    sources: Arc<[Option<Source>]>,
+    sources: Arc<[Option<Arc<Source>>]>,
     frames: Vec<Frame>,
     partners: Vec<Frame>,
 }
 
 impl Worker {
-    fn new(sources: Arc<[Option<Source>]>) -> Self {
+    fn new(sources: Arc<[Option<Arc<Source>>]>) -> Self {
         let chunk = vec![[0.0; 2]; CHUNK as usize];
         Self {
             sources,

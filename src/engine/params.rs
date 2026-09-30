@@ -218,7 +218,9 @@ impl ModTable {
     ///
     /// Volume: each assignment scales amplitude by `1 - |i|·(1 - v)` for
     /// shaped value `v` (inverted, `1 - v`, when `i < 0`). Pitch: `12·i·v`
-    /// semitones, with pitch bend mapped back to -1..=1.
+    /// semitones, with pitch bend mapped back to -1..=1. The flag is true
+    /// when every live source has settled on its input: until the inputs
+    /// or the table change, another call returns the same.
     pub(crate) fn modulate(
         &self,
         values: &mut [f32; VOICE_MODS],

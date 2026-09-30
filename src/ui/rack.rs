@@ -623,6 +623,11 @@ fn facts(cx: &Cx, slot: usize) -> String {
     }
     if !v.loading && v.bytes > 0 {
         facts.push(megabytes(v.bytes));
+        // What the smart memory handed back, of what the part held.
+        let purged = (v.freed as usize * 100).checked_div(v.bytes + v.freed as usize).unwrap_or(0);
+        if purged > 0 {
+            facts.push(format!("{purged}% purged"));
+        }
     }
     if v.status.starts_with("Load failed") {
         facts.push("failed to load".into());
