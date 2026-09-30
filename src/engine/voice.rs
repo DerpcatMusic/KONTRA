@@ -160,6 +160,8 @@ pub(crate) struct Envelope {
     decay: f32,
     sustain: f32,
     release: f32,
+    /// The attack's or decay's [`edge`], NaN until a skip works it out.
+    edge: f32,
 }
 
 /// A block of envelope gain as a level times a per-frame decay (1 for a
@@ -213,13 +215,8 @@ fn glide(from: f32, to: f32, frames: f32, curve: f32) -> (f32, f32) {
 /// Write `x = x * mul + add` per frame into `out`, from `x` = `level`;
 /// returns the last value. Eight frames at a time from powers of the step,
 /// so the frames don't wait on each other as a frame-by-frame loop does.
-fn affine(out: &mut [f32], level: f32, (mul, add): (f32, f32)) -> f32 {
-    let (mut pow, mut off) = ([0f32; 8], [0f32; 8]);
-    let (mut p, mut o) = (1f32, 0f32);
-    for k in 0..8 {
-        (p, o) = (p * mul, o * mul + add);
-        (pow[k], off[k]) = (p, o);
-    }
+fn affine(out: &mut [f32], level: f32, step: (f32, f32)) -> f32 {
+    let (pow, off) = powers(step);
     let mut x = level;
     let (chunks, tail) = out.as_chunks_mut::<8>();
     for c in chunks {
@@ -234,6 +231,80 @@ fn affine(out: &mut [f32], level: f32, (mul, add): (f32, f32)) -> f32 {
     out.last().copied().unwrap_or(level)
 }
 
+/// The step taken 1..=8 times: frame `k` of an eight-frame chunk from `x`
+/// is `pow[k] * x + off[k]`.
+fn powers((mul, add): (f32, f32)) -> ([f32; 8], [f32; 8]) {
+    let (mut pow, mut off) = ([0f32; 8], [0f32; 8]);
+    let (mut p, mut o) = (1f32, 0f32);
+    for k in 0..8 {
+        (p, o) = (p * mul, o * mul + add);
+        (pow[k], off[k]) = (p, o);
+    }
+    (pow, off)
+}
+
+/// Levels a chunk can start from with no frame stopping a glide (see
+/// [`edge`]): below the edge for a rising test, above it for a falling one.
+#[derive(Clone, Copy)]
+enum Short {
+    Unknown,
+    Below(f32),
+    Above(f32),
+}
+
+impl Short {
+    fn holds(self, x: f32) -> bool {
+        match self {
+            Self::Unknown => false,
+            Self::Below(edge) => x < edge,
+            Self::Above(edge) => x > edge,
+        }
+    }
+}
+
+/// The level where a glide's `stop` test starts to hold in a chunk, for a
+/// test that holds from some level up (`rising`) or down. Frame `k` of a
+/// chunk from `x`, `pow[k] * x + off[k]` rounded, never falls as `x` rises
+/// when the powers are not negative, so neither does the test; a chunk from
+/// a level short of the edge has no frame that stops, and skipping it takes
+/// its last frame alone, the same value. Bisected over the finite floats in
+/// order: at most 32 tests of eight frames, once per stage. Never short
+/// (the far infinity) for a step it cannot vouch for.
+fn edge(step: (f32, f32), rising: bool, stop: &impl Fn(f32) -> bool) -> f32 {
+    let (never, always) = match rising {
+        true => (f32::NEG_INFINITY, f32::INFINITY),
+        false => (f32::INFINITY, f32::NEG_INFINITY),
+    };
+    let (pow, off) = powers(step);
+    if !(step.0 >= 0.0 && pow.iter().chain(&off).all(|v| v.is_finite())) {
+        return never;
+    }
+    let stops = |x: f32| pow.iter().zip(&off).any(|(&p, &o)| stop(p * x + o));
+    // The floats in order as integers (-0 just below +0, which tests alike).
+    let key = |x: f32| (x.to_bits() as i32) ^ ((x.to_bits() as i32 >> 31) & i32::MAX);
+    let float = |k: i32| f32::from_bits((k ^ ((k >> 31) & i32::MAX)) as u32);
+    // `short` never stops; `far` does.
+    let (mut short, mut far) = match rising {
+        true => (key(f32::MIN), key(f32::MAX)),
+        false => (key(f32::MAX), key(f32::MIN)),
+    };
+    if stops(float(short)) {
+        return never;
+    }
+    if !stops(float(far)) {
+        return always;
+    }
+    while short.abs_diff(far) > 1 {
+        let mid = ((i64::from(short) + i64::from(far)) / 2) as i32;
+        if stops(float(mid)) {
+            far = mid;
+        } else {
+            short = mid;
+        }
+    }
+    float(far)
+}
+
 /// [`affine`] over `len` frames into `out`, or without writing them when
 /// `out` is `None`: the same values either way, from the same eight-frame
 /// powers, so an envelope that skips frames lands where one that renders
@@ -245,6 +316,7 @@ fn affine_until(
     level: f32,
     step: (f32, f32),
     stop: impl Fn(f32) -> bool,
+    short: Short,
 ) -> (f32, Option<usize>) {
     if let Some(out) = out {
         let out = &mut out[..len];
@@ -254,15 +326,14 @@ fn affine_until(
             None => (last, None),
         };
     }
-    let (mul, add) = step;
-    let (mut pow, mut off) = ([0f32; 8], [0f32; 8]);
-    let (mut p, mut o) = (1f32, 0f32);
-    for k in 0..8 {
-        (p, o) = (p * mul, o * mul + add);
-        (pow[k], off[k]) = (p, o);
-    }
+    let (pow, off) = powers(step);
     let mut x = level;
     for chunk in 0..len / 8 {
+        // No frame of the chunk can stop: its last is all that is needed.
+        if short.holds(x) {
+            x = pow[7] * x + off[7];
+            continue;
+        }
         let c: [f32; 8] = std::array::from_fn(|k| pow[k] * x + off[k]);
         // Every frame is tested, as `position` would: a chunk's end alone
         // could step back over the threshold by a rounding.
@@ -304,7 +375,7 @@ fn decay_until_silent(len: usize, level: f32, mul: f32) -> (f32, Option<usize>) 
         }
         x = last;
     }
-    let (x, end) = affine_until(None, len % 8, x, (mul, 0.0), |x| x < SILENT);
+    let (x, end) = affine_until(None, len % 8, x, (mul, 0.0), |x| x < SILENT, Short::Unknown);
     (x, end.map(|k| len / 8 * 8 + k))
 }
 
@@ -335,6 +406,7 @@ impl Envelope {
             decay: exp_coef(p.decay, rate),
             sustain: p.sustain.clamp(0.0, 1.0),
             release: exp_coef(p.release, rate),
+            edge: f32::NAN,
         }
     }
 
@@ -348,6 +420,7 @@ impl Envelope {
             decay: 0.0,
             sustain: 0.0,
             release: 0.0,
+            edge: f32::NAN,
         }
     }
 
@@ -410,6 +483,14 @@ impl Envelope {
         self.run(Some(out), len, flex, rate);
     }
 
+    /// The current stage's [`edge`], worked out once.
+    fn edge(&mut self, step: (f32, f32), rising: bool, stop: &impl Fn(f32) -> bool) -> f32 {
+        if self.edge.is_nan() {
+            self.edge = edge(step, rising, stop);
+        }
+        self.edge
+    }
+
     /// The stage machine over `len` frames, writing them to `out` if given.
     fn run(&mut self, mut out: Option<&mut [f32]>, len: usize, flex: Option<&Flex>, rate: f32) {
         let mut i = 0;
@@ -418,8 +499,12 @@ impl Envelope {
             let mut rest = out.as_deref_mut().map(|o| &mut o[i..]);
             let written = match self.stage {
                 Stage::Attack => {
-                    let (level, peak) =
-                        affine_until(rest.as_deref_mut(), n, self.level, self.step, |x| x >= 1.0);
+                    let stop = |x: f32| x >= 1.0;
+                    let short = match rest {
+                        Some(_) => Short::Unknown,
+                        None => Short::Below(self.edge(self.step, true, &stop)),
+                    };
+                    let (level, peak) = affine_until(rest.as_deref_mut(), n, self.level, self.step, stop, short);
                     self.level = level;
                     match peak {
                         Some(peak) => {
@@ -441,6 +526,7 @@ impl Envelope {
                     self.left -= m as u32;
                     if self.left == 0 {
                         self.stage = Stage::Decay;
+                        self.edge = f32::NAN;
                     }
                     m
                 }
@@ -459,7 +545,7 @@ impl Envelope {
                 Stage::Point(i) => {
                     let m = n.min(self.left as usize);
                     (self.level, _) =
-                        affine_until(rest.as_deref_mut(), m, self.level, self.step, |_| false);
+                        affine_until(rest.as_deref_mut(), m, self.level, self.step, |_| false, Short::Unknown);
                     self.left -= m as u32;
                     if self.left == 0 {
                         let point = flex.and_then(|f| Some((f.sustain, f.points.get(i as usize)?)));
@@ -484,8 +570,12 @@ impl Envelope {
                 Stage::Decay => {
                     let sustain = self.sustain;
                     let step = (self.decay, sustain * (1.0 - self.decay));
-                    let (level, end) =
-                        affine_until(rest, n, self.level, step, |x| x - sustain <= SILENT);
+                    let stop = |x: f32| x - sustain <= SILENT;
+                    let short = match rest {
+                        Some(_) => Short::Unknown,
+                        None => Short::Above(self.edge(step, false, &stop)),
+                    };
+                    let (level, end) = affine_until(rest, n, self.level, step, stop, short);
                     self.level = level;
                     match end {
                         Some(end) => {
@@ -504,7 +594,9 @@ impl Envelope {
                 }
                 Stage::Release => {
                     let (level, end) = match rest {
-                        Some(rest) => affine_until(Some(rest), n, self.level, (self.release, 0.0), |x| x < SILENT),
+                        Some(rest) => {
+                            affine_until(Some(rest), n, self.level, (self.release, 0.0), |x| x < SILENT, Short::Unknown)
+                        }
                         None => decay_until_silent(n, self.level, self.release),
                     };
                     self.level = level;
@@ -1766,6 +1858,9 @@ mod tests {
             (Envelope::new(&ahdsr(0.0), rate), None),
             (Envelope::new(&ahdsr(0.8), rate), None),
             (Envelope::new(&ahdsr(-0.6), rate), None),
+            (Envelope::new(&Ahdsr { sustain: 0.0, ..ahdsr(1.0) }, rate), None),
+            (Envelope::new(&Ahdsr { attack: 1e-7, decay: 0.0, ..ahdsr(-1.0) }, rate), None),
+            (Envelope::new(&Ahdsr { attack: 0.3, sustain: 1.0, ..ahdsr(0.3) }, rate), None),
             (Envelope::flex(), Some(&flex)),
         ];
         for (start, flex) in cases {
@@ -1784,6 +1879,42 @@ mod tests {
                 assert_eq!((rendered.stage, rendered.left), (skipped.stage, skipped.left), "block {block}");
             }
             assert!(skipped.done());
+        }
+    }
+
+    /// No frame of a chunk from a level short of a glide's edge stops it,
+    /// and one from the edge does: checked frame by frame.
+    #[test]
+    fn edges_leave_no_stopping_frame_short_of_them() {
+        let rate = 48_000.0;
+        let frames = |x: f32, (pow, off): ([f32; 8], [f32; 8])| std::array::from_fn::<f32, 8, _>(|k| pow[k] * x + off[k]);
+        let mut seed = 7u32;
+        let mut level = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1 << 24) as f32 * 1.5
+        };
+        let attacks = [1.0, 3.7, 100.0, 4800.0, 480_000.0]
+            .into_iter()
+            .flat_map(|n| [-1.0, -0.3, 0.0, 0.5, 1.0].map(|c| glide(0.0, 1.0, n, c)));
+        let decays = [0.0, 0.001, 0.07, 30.0]
+            .into_iter()
+            .flat_map(|t| [0.0, 0.4, 1.0].map(|s| (exp_coef(t, rate), s)));
+        let mut cases: Vec<((f32, f32), bool, Box<dyn Fn(f32) -> bool>)> = Vec::new();
+        cases.extend(attacks.map(|step| (step, true, Box::new(|x: f32| x >= 1.0) as Box<dyn Fn(f32) -> bool>)));
+        cases.extend(decays.map(|(d, s)| ((d, s * (1.0 - d)), false, Box::new(move |x: f32| x - s <= SILENT) as _)));
+        for (step, rising, stop) in &cases {
+            let e = edge(*step, *rising, stop);
+            let short = if *rising { Short::Below(e) } else { Short::Above(e) };
+            let stops = |x: f32| frames(x, powers(*step)).into_iter().any(|y| stop(y));
+            if e.is_finite() {
+                let before = if *rising { e.next_down() } else { e.next_up() };
+                assert!(short.holds(before) && !stops(before), "{step:?}");
+                assert!(!short.holds(e) && stops(e), "{step:?}");
+            }
+            for _ in 0..2000 {
+                let x = level();
+                assert!(!short.holds(x) || !stops(x), "{step:?} from {x}");
+            }
         }
     }
 
