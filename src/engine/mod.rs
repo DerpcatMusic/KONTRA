@@ -1507,3 +1507,65 @@ impl Bank {
         self.streamer.as_ref().map_or(&[], |s| s.slots())
     }
 }
+
+/// Real-time pacing for the offline harnesses (`audit-patch`,
+/// `bench-stream`, `render --realtime`, the plugin bench), which play
+/// through the engine on a plain thread standing in for a host's audio
+/// callback. A host catches up after a late callback by at most its device
+/// buffer, the rest being a dropout; a harness that caught up on every
+/// missed block would, after the thread was descheduled a while on a busy
+/// machine, render back to back faster than real time, outrun the streams
+/// and count the machine's stall as the engine's underruns.
+pub struct Pace {
+    start: std::time::Instant,
+}
+
+impl Pace {
+    /// Lateness caught up by rendering back to back, as a device buffer
+    /// would absorb; beyond it the schedule moves on.
+    pub const CATCH_UP: std::time::Duration = std::time::Duration::from_millis(20);
+
+    pub fn start() -> Self {
+        Self { start: std::time::Instant::now() }
+    }
+
+    /// Sleep until audio time `at` (from the start) is due and return how
+    /// late it already was. Later than [`Pace::CATCH_UP`], the schedule
+    /// shifts by the lateness: playback resumes at real-time pace from now.
+    pub fn until(&mut self, at: std::time::Duration) -> std::time::Duration {
+        let (due, now) = (self.start + at, std::time::Instant::now());
+        if let Some(wait) = due.checked_duration_since(now) {
+            std::thread::sleep(wait);
+            return std::time::Duration::ZERO;
+        }
+        let late = now - due;
+        if late > Self::CATCH_UP {
+            self.start += late;
+        }
+        late
+    }
+}
+
+#[cfg(test)]
+mod pace_tests {
+    use super::Pace;
+    use std::time::Duration;
+
+    /// A stall longer than a device buffer is not caught up faster than
+    /// real time: the next block is due a block after the stall, not at once.
+    #[test]
+    fn a_stall_is_not_caught_up_back_to_back() {
+        let block = Duration::from_millis(3);
+        let mut pace = Pace::start();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(pace.until(block) >= Duration::from_millis(190));
+        let resumed = std::time::Instant::now();
+        assert_eq!(pace.until(block * 2), Duration::ZERO);
+        assert!(resumed.elapsed() >= Duration::from_millis(2));
+        // Short lateness is caught up, as a device buffer absorbs it.
+        let mut pace = Pace::start();
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(pace.until(block) > Duration::ZERO);
+        assert!(pace.until(block * 2) > Duration::ZERO);
+    }
+}

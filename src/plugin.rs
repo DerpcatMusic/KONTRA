@@ -1948,7 +1948,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         let (mut times, mut cpus) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
         let (mut counts, mut cycle_counts) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
         let (mut voices, mut cpu, mut voice_blocks, mut audible_blocks) = (0, 0f32, 0usize, 0usize);
-        let start = Instant::now();
+        let (start, mut pace) = (Instant::now(), crate::engine::Pace::start());
         for b in 0..blocks {
             events.clear();
             let frame = b * FRAMES;
@@ -1980,9 +1980,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             (voices, voice_blocks) = (voices.max(now), voice_blocks + now as usize);
             audible_blocks += dsp.rack.parts.iter().map(|e| e.audible_voices()).sum::<usize>();
             cpu = cpu.max(f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32));
-            if let Some(wait) = (start + block * (b + 1) as u32).checked_duration_since(Instant::now()) {
-                std::thread::sleep(wait);
-            }
+            pace.until(block * (b + 1) as u32);
         }
         if playing {
             let mut off = EventList::with_capacity(64);
