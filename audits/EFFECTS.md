@@ -201,21 +201,65 @@ by type: 22 (1-band EQ) 12,340; 23 (2-band) 5,720; 24 (3-band) 1,401; 3: 556; 2:
 Una Corda, Solo, Vista, Pacific and Areia have tens to hundreds.
 
 DSP (`src/engine/filter.rs`): per-voice stereo TPT SVF sections (Simper), coefficients at
-control rate (32 frames, or once per block without modulation), denormal flush per block.
-Filterless groups keep the old render path (no per-voice cost beyond a `None` check).
+control rate (32 frames, or once per block without modulation), recomputed only when a
+section's modulated knobs change, denormal flush per block. Bypassed units and EQ bands
+within 0.01 dB of flat are skipped (state cleared). Groups without filters, EQs, Stereo
+Modellers or Inverters keep the old render path (no per-voice cost beyond a `None` check).
 
 | Law | Value | Confidence |
 |---|---|---|
 | type -> response | 2 LP, 3 HP, 4 BP (1 SVF); 5 LP, 6 HP, 7 BP, 8 notch (2 SVFs); 9 LP (3); 52 LP, 53 BP, 54 HP (1); 55 LP, 56 BP, 57 HP (2) | medium for 2..9 (KSP `$FILTER_TYPE_*` order), low for 5x |
 | cutoff | `43.6 Hz * 2^(8.96 x)` | medium (matches 2827 Hz at the typical stored 0.68) |
-| resonance | `Q = 0.707 + 28 x` | low |
+| resonance | `Q = 0.707 * 28^x` | low |
 | EQ freq | `20 Hz * 10^(3 x)` | medium |
 | EQ bandwidth | `0.3 + 2.7 x` octaves, `Q = 1/(2 sinh(ln2/2 * bw))` | low |
 | EQ gain | `18 (2x - 1)` dB, bell `A = 10^(dB/40)` | medium |
-| modulation | internal AHDSRs, velocity/key/CC sources add to the normalized knob; `$ENGINE_PAR_CUTOFF`/`RESONANCE` = x/1e6 | medium |
+| modulation | internal AHDSRs, velocity/key/CC sources add to the normalized knob, negated when the invert button is on; `$ENGINE_PAR_CUTOFF`/`RESONANCE`/`FREQ1..3`/`BW1..3`/`GAIN1..3` = x/1e6 | medium |
+| output gain | per slot, linear; `$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN` (and the racks' output gain and dry level) = `16 x^3` (+24 dB): Afflatus 2 Horns sets 396851 on a group slot storing 1.0000056, and 125919 on a send storing 0.0319443 | high |
+| Stereo Modeller | spread `2x - 1` (Afflatus sets 434210, stores -0.13158; Solo 500000 stores 0), side scaled by `1 + spread`, then the rack's pan law (far side `1 - |pan|`); `$ENGINE_PAR_STEREO_PAN` assumed `2x - 1` | medium |
 
-Not implemented: ladder, 1-pole and Versatile types (warned on import), types 51 and 19,
-EQ engine pars (no local script uses them), script bypass of group FX, the amp split point
-(filters run after the amp envelope), group Inverter gain trims and group Stereo Modeller pan.
-Open: the invert flag of EQ gain envelopes (Vista Cellos group 16 boosts 3-12 kHz by ~7 dB
-at onset with a non-inverted envelope, which looks too strong).
+Channel mixing: group Stereo Modellers (on every Vista group, e.g. Cellos pan -0.47, gain
+1.26; also Solo, Afflatus, Pacific, Una Corda, Areia), Inverters and every active slot's
+output gain are linear and act on both channels alike, as the filters do, so they compose
+into one 2x2 matrix applied after the filters (ramped over a block when a script changes
+it). Inverters are gain trims across the corpus (Vista 1.005, Dolce 0.5..1.59, Una Corda
+2.0 on 281 groups): their two flags (layout `flag_0, flag_1`, meaning unverified) are false
+on every active instance but one in Una Corda, which is warned about. Group slots store
+`dry_level` 1.0 everywhere; it is ignored (adding it would double the signal). Bypassed
+filters, EQs and mixers are kept so `$ENGINE_PAR_EFFECT_BYPASS` (group >= 0) switches them.
+
+Filter types used in the corpus (all 44,497 group slots): 2, 3, 6, 52, 54, 55, 57 and EQs
+22..24. Directions check out: 3 is HP (cutoff 0 with a sweep envelope), 2 LP (Harp
+envelope), 52 LP (Solo opens it with cutoff 1e6), 54/57 HP and 55 LP (Areia's stored open
+values). No slot uses a ladder or 1-pole type beyond these, so none is modelled. Type 19
+(Una Corda "Room Noise Hiss", bypassed, 13 floats: cutoff, resonance, three types, three
+bypasses, two shifts, two resonances, gain) is the Versatile filter the script names;
+type 51 (Una Corda RESONANCE groups, bypassed, 2 floats) is unknown. Both pass through
+and are warned about if enabled.
+
+EQ gain envelope invert (Vista legato groups: AHDSR attack 0, decay ~139 ms, sustain 0,
+intensity 1 on eqGain2/3 of a 0 dB EQ): the flag is read correctly, not backwards. Vista
+stores invert on 50 of 64 such routes; mic siblings with identical shapers differ only in
+the flag (Cellos `dc legatodyn1` inverted, `cl legatodyn1` not), and the flag byte
+(`0x12`) is the same on all. Group 16 (`cl legatodyn1`), the +7 dB treble case, is one of
+the 14 outliers; flipping the reading would make the other 50 boost instead. Kontakt's
+default is non-inverted, so the designers pressed invert on most routes, which reads as a
+cut at onset. The volume invert flag stays ignored (MODULATION.md): there its siblings
+disagree without a sign change being audible.
+
+Cost (`cargo test --release --no-default-features --lib engine::filter::tests::bench --
+--ignored --nocapture`, per voice, 128-frame stereo blocks of noise at 48 kHz, load ~12,
+three alternating runs each):
+
+| Group | Before ns/block | After ns/block | 100 voices after |
+|---|---|---|---|
+| Vista Cellos legato (EQ3, HP, 2 envelopes) | 2,796..2,922 | 806..916 | 3.1% of the block |
+| Vista Cellos sustain (Stereo Modeller only) | not applied | 41..59 | 0.2% |
+| Vista Harp (LP, envelope) | 1,027..1,060 | 1,013..1,031 | 3.8% |
+| Solo Pads (2 filters, Stereo Modeller) | 1,212..1,314 | 1,322..1,387 | 5.0% (the Stereo Modeller is new work) |
+
+Not implemented: ladder, 1-pole and Versatile types (warned on import), type 51, pseudo
+stereo and Inverter flags (warned), the amp split point (filters run after the amp
+envelope), `get_engine_par_disp` strings (still the raw value; Kontakt's formats are not
+recorded locally). Group SolidGeq (Una Corda), Surround Panner and Skreamer (Afflatus)
+still pass through with a warning.
