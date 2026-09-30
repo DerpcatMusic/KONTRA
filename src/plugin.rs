@@ -77,6 +77,9 @@ pub struct Selection {
     /// height; 0 is the default.
     pub browser_width: f32,
     pub browser_split: f32,
+    /// What plays behind a part's controls: 0 plain, 1 its library's
+    /// color, 2 its library's artwork.
+    pub appearance: u8,
 }
 
 #[derive(Params)]
@@ -1303,6 +1306,7 @@ mod tests {
             qwerty: true,
             browser_width: 300.,
             browser_split: 0.4,
+            appearance: 2,
         };
         assert!(Selection::deserialize(&state.serialize()).unwrap() == state);
         assert_eq!(rack_controls(&state)[0].tune, -3.5, "the part's tune reaches the engine");

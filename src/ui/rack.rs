@@ -33,7 +33,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         panels.push(header(ui, cx, slot));
         if !cx.selection.parts[slot].collapsed {
             panels.extend(instrument::notices(cx, slot));
-            panels.push(instrument::stage(ui, cx, slot));
+            let stage = instrument::stage(ui, cx, slot);
+            panels.push(behind(cx, slot, stage));
         }
         panels.push(rule());
     }
@@ -48,6 +49,31 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         .min_h(0)
         .scroll()
         .id("rack-scroll")
+}
+
+/// A part's controls over what the appearance puts behind them.
+fn behind(cx: &mut Cx, slot: usize, stage: El) -> El {
+    let look = super::Appearance::of(cx.selection.appearance);
+    if look == super::Appearance::Plain {
+        return stage;
+    }
+    let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
+    match look {
+        super::Appearance::Color => match cx.state.tint(cx.view, &library) {
+            Some(tint) => stage.fill(Color::oklch(0.225, 0.026, tint.hue())),
+            None => stage,
+        },
+        _ => match cx.state.backdrop(cx.view, &library) {
+            Some(image) => stack![
+                block(Len::Pct(100.), Len::Pct(100.))
+                    .fill(Fill::Image(image, moose::mui::mui::scene::Fit::Cover)),
+                stage
+            ]
+            .w(Len::Pct(100.))
+            .clip(),
+            None => stage,
+        },
+    }
 }
 
 /// Where presets are dropped to be added, and a button that finds one.

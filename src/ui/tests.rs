@@ -544,7 +544,7 @@ fn screenshot() {
         .map(Arc::new)
         .collect();
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 13] = [
+    let states: [(&str, bool, &[&str]); 15] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -558,6 +558,8 @@ fn screenshot() {
         ("collapsed", true, &["toggle-browser", "keyboard-toggle"]),
         ("error", true, &[]),
         ("playing", true, &["qwerty"]),
+        ("color", true, &[]),
+        ("artwork", true, &[]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
@@ -610,6 +612,11 @@ fn screenshot() {
                     };
                 }
             }
+            p.selection.write().unwrap().appearance = match state {
+                "color" => 1,
+                "artwork" => 2,
+                _ => 0,
+            };
             if state == "playing" {
                 // Keys sounding, soft to hard, on screen and from the host.
                 for (note, velocity) in [(48, 40), (52, 127)] {

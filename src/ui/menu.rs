@@ -49,6 +49,7 @@ pub enum Command {
     Browser,
     Keyboard,
     Panic,
+    Appearance(super::Appearance),
     /// Set a script control to a value.
     Script {
         part: usize,
@@ -223,6 +224,15 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 items.extend([act("Save multi…", "", Command::SaveMulti), Item::Rule]);
             }
             items.push(act("All notes off", "", Command::Panic));
+            items.extend([Item::Rule, Item::Info("Appearance".into())]);
+            let now = super::Appearance::of(cx.selection.appearance);
+            for (look, label) in [
+                (super::Appearance::Plain, "Plain"),
+                (super::Appearance::Color, "Library color"),
+                (super::Appearance::Artwork, "Library artwork"),
+            ] {
+                items.push(check(label, now == look, Command::Appearance(look)));
+            }
             items
         }
     }
@@ -395,6 +405,7 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             }
         }
         Command::Browser => cx.state.browser ^= true,
+        Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::Keyboard => cx.state.keyboard ^= true,
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
         Command::Script {

@@ -217,6 +217,26 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     }
 }
 
+/// What plays behind a part's controls, from [`Selection::appearance`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Appearance {
+    Plain = 0,
+    /// A deep, dark shade of its library's color.
+    Color = 1,
+    /// Its library's artwork, blurred, drained and darkened.
+    Artwork = 2,
+}
+
+impl Appearance {
+    fn of(saved: u8) -> Self {
+        match saved {
+            1 => Self::Color,
+            2 => Self::Artwork,
+            _ => Self::Plain,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Rack,
@@ -262,8 +282,9 @@ struct EditorState {
     cursor: Option<String>,
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
-    /// Each library's color, from its artwork, worked out once.
+    /// Each library's color and backdrop, from its artwork, worked out once.
     tints: HashMap<String, Option<Color>>,
+    backdrops: HashMap<String, Option<Arc<Image>>>,
     started: Instant,
     /// The computer keyboard's octave, velocity and held keys.
     computer: Arc<computer::Computer>,
@@ -287,6 +308,16 @@ impl EditorState {
                 let hue = crate::artwork::tint(view.artwork.get(library)?)?;
                 Some(Color::oklch(0.66, 0.11, hue))
             })
+    }
+}
+
+impl EditorState {
+    /// `library`'s artwork made a backdrop, once.
+    fn backdrop(&mut self, view: &View, library: &str) -> Option<Arc<Image>> {
+        self.backdrops
+            .entry(library.to_owned())
+            .or_insert_with(|| crate::artwork::backdrop(view.artwork.get(library)?).map(Arc::new))
+            .clone()
     }
 }
 
@@ -631,6 +662,7 @@ fn build(
         cursor: None,
         renaming: None,
         tints: HashMap::new(),
+        backdrops: HashMap::new(),
         started: Instant::now(),
         computer,
         gliss: None,

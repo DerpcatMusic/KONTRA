@@ -360,6 +360,64 @@ fn decode(bytes: &[u8]) -> Option<Image> {
     };
     Image::rgba(info.width, info.height, rgba)
 }
+/// The artwork as a backdrop to play over: shrunk to a few dozen pixels
+/// (which blurs it once scaled back up), blurred again, mostly drained of
+/// color and darkened well below the text drawn on it.
+pub fn backdrop(image: &Image) -> Option<Image> {
+    const W: usize = 48;
+    let (sw, sh) = (image.width as usize, image.height as usize);
+    if sw == 0 || sh == 0 {
+        return None;
+    }
+    let h = (W * sh / sw).clamp(1, W);
+    // Area average into W x h.
+    let mut px = vec![[0f32; 3]; W * h];
+    let mut n = vec![0f32; W * h];
+    for (i, c) in image.rgba.as_chunks::<4>().0.iter().enumerate() {
+        let (x, y) = (i % sw, i / sw);
+        let at = (y * h / sh) * W + x * W / sw;
+        for k in 0..3 {
+            px[at][k] += f32::from(c[k]);
+        }
+        n[at] += 1.;
+    }
+    for (p, n) in px.iter_mut().zip(&n) {
+        p.iter_mut().for_each(|v| *v /= n.max(1.));
+    }
+    // Two passes of a 3x3 box.
+    for _ in 0..2 {
+        let from = px.clone();
+        for y in 0..h {
+            for x in 0..W {
+                let mut sum = [0f32; 3];
+                let mut count = 0.;
+                for (dx, dy) in (-1i32..=1).flat_map(|dx| (-1i32..=1).map(move |dy| (dx, dy))) {
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if (0..W as i32).contains(&nx) && (0..h as i32).contains(&ny) {
+                        let q = from[ny as usize * W + nx as usize];
+                        (0..3).for_each(|k| sum[k] += q[k]);
+                        count += 1.;
+                    }
+                }
+                px[y * W + x] = sum.map(|v| v / count);
+            }
+        }
+    }
+    // Every backdrop settles at the same dim average, bright artwork or dark.
+    let luma = |[r, g, b]: [f32; 3]| 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let mean = px.iter().map(|p| luma(*p)).sum::<f32>() / px.len() as f32;
+    let gain = (30. / mean.max(1.)).min(1.);
+    let rgba = px
+        .iter()
+        .flat_map(|&[r, g, b]| {
+            let luma = luma([r, g, b]);
+            let tone = |c: f32| ((luma + (c - luma) * 0.45) * gain).round().clamp(0., 255.) as u8;
+            [tone(r), tone(g), tone(b), 255]
+        })
+        .collect::<Vec<u8>>();
+    Image::rgba(W as u32, h as u32, rgba)
+}
+
 /// The artwork's identity color as an OKLCH hue in degrees: the most
 /// common hue among its colorful pixels, ignoring near-black, near-white and
 /// grey. `None` for artwork without a clear color.
@@ -474,6 +532,16 @@ mod tests {
         assert_eq!(super::Layout::parse("").frames, 1);
         assert_eq!(super::png_name("../x"), None);
         assert_eq!(super::png_name("knob").as_deref(), Some("knob.png"));
+    }
+
+    #[test]
+    fn backdrops_settle_dim_and_small() {
+        let bright = super::Image::rgba(300, 100, [250u8, 200, 40, 255].repeat(300 * 100)).unwrap();
+        let b = super::backdrop(&bright).unwrap();
+        assert_eq!((b.width, b.height), (48, 16));
+        let px = &b.rgba[..4];
+        assert!(px[0] < 45 && px[1] < 40, "darkened: {px:?}");
+        assert!(px[0] - px[2] < 25, "mostly drained of color: {px:?}");
     }
 
     #[test]
