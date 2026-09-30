@@ -1,9 +1,12 @@
-//! Sixteen independently routed engines mixed onto eight stereo buses.
+//! Sixteen independently routed engines mixed onto sixteen stereo output
+//! buses (Kontakt's st.1…st.16), each with its own fader and host port.
 
 use super::{Engine, MAX_BLOCK, voice::balance};
 
 pub const RACK_SLOTS: usize = 16;
-pub const BUSES: usize = 8;
+pub const BUSES: usize = 16;
+/// [`PartControls::aux`] when the part sends nowhere.
+pub const NO_AUX: u8 = u8::MAX;
 
 /// One stereo block: `[left, right]`.
 pub type Block = [[f32; MAX_BLOCK]; 2];
@@ -20,6 +23,64 @@ pub struct PartControls {
     pub tune: f32,
     pub mute: bool,
     pub solo: bool,
+    /// Bus the part also sends to, post-fader, or [`NO_AUX`].
+    pub aux: u8,
+    /// Linear gain of that send.
+    pub aux_gain: f32,
+}
+
+/// An output bus's fader: what it does to everything routed to it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BusControls {
+    /// Linear.
+    pub gain: f32,
+    /// Balance, −1..=1.
+    pub pan: f32,
+    pub mute: bool,
+    pub solo: bool,
+    /// Host stereo output port (0..[`BUSES`]) the bus plays through.
+    pub port: u8,
+}
+
+impl BusControls {
+    /// Unity, centred, on host port `port`.
+    pub fn on(port: u8) -> Self {
+        Self {
+            gain: 1.0,
+            pan: 0.0,
+            mute: false,
+            solo: false,
+            port,
+        }
+    }
+}
+
+/// Everything the mixer sets, handed to the audio thread in one piece.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mix {
+    pub parts: [PartControls; RACK_SLOTS],
+    pub buses: [BusControls; BUSES],
+}
+
+impl Default for Mix {
+    fn default() -> Self {
+        Self {
+            parts: [PartControls::default(); RACK_SLOTS],
+            buses: std::array::from_fn(|n| BusControls::on(n as u8)),
+        }
+    }
+}
+
+/// Absolute sample peaks `[left, right]` since last taken: parts post-fader,
+/// buses post-fader.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Peaks {
+    pub parts: [[f32; 2]; RACK_SLOTS],
+    pub buses: [[f32; 2]; BUSES],
+}
+
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0, |m, v| m.max(v.abs()))
 }
 
 /// How far a part tunes, in semitones either way.
@@ -36,6 +97,8 @@ impl Default for PartControls {
             tune: 0.0,
             mute: false,
             solo: false,
+            aux: NO_AUX,
+            aux_gain: 0.0,
         }
     }
 }
@@ -50,6 +113,9 @@ impl PartControls {
 pub struct Rack {
     pub parts: [Engine; RACK_SLOTS],
     pub controls: [PartControls; RACK_SLOTS],
+    pub bus_controls: [BusControls; BUSES],
+    /// Accumulated by [`render`](Self::render); take them to publish.
+    pub peaks: Peaks,
     part: Block,
     buses: [Block; BUSES],
 }
@@ -59,6 +125,8 @@ impl Default for Rack {
         Self {
             parts: std::array::from_fn(|_| Engine::default()),
             controls: [PartControls::default(); RACK_SLOTS],
+            bus_controls: Mix::default().buses,
+            peaks: Peaks::default(),
             part: [[0.0; MAX_BLOCK]; 2],
             buses: [[[0.0; MAX_BLOCK]; 2]; BUSES],
         }
@@ -72,7 +140,12 @@ impl Rack {
         }
     }
 
-    pub fn set_controls(&mut self, controls: [PartControls; RACK_SLOTS]) {
+    pub fn set_controls(&mut self, mix: Mix) {
+        let Mix {
+            parts: controls,
+            buses,
+        } = mix;
+        self.bus_controls = buses;
         for ((engine, old), new) in self.parts.iter_mut().zip(&self.controls).zip(&controls) {
             if (old.port, old.channel) != (new.port, new.channel) {
                 let rate = engine.rate();
@@ -158,7 +231,8 @@ impl Rack {
         }
     }
 
-    /// Render `frames` (at most [`MAX_BLOCK`]) into the bus blocks.
+    /// Render `frames` (at most [`MAX_BLOCK`]) into the bus blocks, after
+    /// each bus's fader; [`BusControls::port`] says where each one plays.
     pub fn render(&mut self, frames: usize) -> &[Block; BUSES] {
         let n = frames.min(MAX_BLOCK);
         for bus in &mut self.buses {
@@ -166,7 +240,12 @@ impl Rack {
             bus[1][..n].fill(0.0);
         }
         let solo = self.controls.iter().any(|c| c.solo);
-        for (engine, c) in self.parts.iter_mut().zip(&self.controls) {
+        for ((engine, c), meter) in self
+            .parts
+            .iter_mut()
+            .zip(&self.controls)
+            .zip(&mut self.peaks.parts)
+        {
             let [left, right] = &mut self.part;
             engine.tune = c.tune;
             engine.render(&mut left[..n], &mut right[..n]);
@@ -174,13 +253,51 @@ impl Rack {
                 continue;
             }
             let [gl, gr] = balance(c.gain, c.pan);
-            let [bus_l, bus_r] = &mut self.buses[(c.output as usize).min(BUSES - 1)];
-            for (out, x) in bus_l[..n].iter_mut().zip(&left[..n]) {
-                *out += x * gl;
+            let (left, right) = (&mut left[..n], &mut right[..n]);
+            for x in left.iter_mut() {
+                *x *= gl;
             }
-            for (out, x) in bus_r[..n].iter_mut().zip(&right[..n]) {
-                *out += x * gr;
+            for x in right.iter_mut() {
+                *x *= gr;
             }
+            *meter = [meter[0].max(peak(left)), meter[1].max(peak(right))];
+            let aux = (c.aux as usize) < BUSES && c.aux != c.output && c.aux_gain != 0.0;
+            for (bus, gain) in [(c.output as usize, 1.0), (c.aux as usize, c.aux_gain)]
+                .into_iter()
+                .take(1 + usize::from(aux))
+            {
+                let [bus_l, bus_r] = &mut self.buses[bus.min(BUSES - 1)];
+                for (out, x) in bus_l[..n].iter_mut().zip(&*left) {
+                    *out += x * gain;
+                }
+                for (out, x) in bus_r[..n].iter_mut().zip(&*right) {
+                    *out += x * gain;
+                }
+            }
+        }
+        let solo = self.bus_controls.iter().any(|c| c.solo);
+        for ((bus, c), meter) in self
+            .buses
+            .iter_mut()
+            .zip(&self.bus_controls)
+            .zip(&mut self.peaks.buses)
+        {
+            let [gl, gr] = if c.mute || (solo && !c.solo) {
+                [0.0; 2]
+            } else {
+                balance(c.gain, c.pan)
+            };
+            for (x, g) in bus.iter_mut().zip([gl, gr]) {
+                if g != 1.0 {
+                    for x in &mut x[..n] {
+                        *x *= g;
+                    }
+                }
+            }
+            *meter = [
+                meter[0].max(peak(&bus[0][..n])),
+                meter[1].max(peak(&bus[1][..n])),
+            ];
         }
         &self.buses
     }

@@ -1,6 +1,9 @@
 use crate::artwork;
 use crate::{
-    engine::{Bank, Engine, MAX_BLOCK, PartControls, RACK_SLOTS, Rack, TUNE_RANGE, load_scripts},
+    engine::{
+        BUSES, Bank, BusControls, Engine, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Rack,
+        TUNE_RANGE, load_scripts,
+    },
     fx::FxProcessor,
     import::{self, Instrument},
     ksp::{Interface, KeyState, Live, Persisted, Runtime},
@@ -39,6 +42,10 @@ pub struct Part {
     pub name: String,
     /// The rack shows only the part's header, not its performance view.
     pub collapsed: bool,
+    /// Output bus (0..[`BUSES`]) the part also sends to, post-fader; -1 for none.
+    pub aux: i16,
+    /// Level of that send in dB (-60..=6).
+    pub aux_gain: f32,
 }
 impl Default for Part {
     fn default() -> Self {
@@ -57,6 +64,48 @@ impl Default for Part {
             script_state: String::new(),
             name: String::new(),
             collapsed: false,
+            aux: -1,
+            aux_gain: 0.,
+        }
+    }
+}
+/// One of the rack's stereo output buses (Kontakt's st.1…st.16). Parts pick
+/// one with [`Part::output`]; the bus's fader follows and it plays through
+/// host output port `port`. Buses the player never touched are not stored:
+/// [`Selection::bus`] fills in the defaults.
+#[derive(State, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Bus {
+    /// Empty shows "st.N".
+    pub name: String,
+    /// dB, -60..=6.
+    pub gain: f32,
+    /// -1..=1.
+    pub pan: f32,
+    pub mute: bool,
+    pub solo: bool,
+    /// Host stereo output port, 0..[`BUSES`]; -1 plays through the bus's own.
+    pub port: i16,
+}
+impl Default for Bus {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            gain: 0.,
+            pan: 0.,
+            mute: false,
+            solo: false,
+            port: -1,
+        }
+    }
+}
+impl Bus {
+    /// The name the mixer shows for bus `n`.
+    pub fn label(&self, n: usize) -> String {
+        if self.name.is_empty() {
+            format!("st.{}", n + 1)
+        } else {
+            self.name.clone()
         }
     }
 }
@@ -80,6 +129,36 @@ pub struct Selection {
     /// What plays behind a part's controls: 0 plain, 1 its library's
     /// color, 2 its library's artwork.
     pub appearance: u8,
+    /// Output buses by index; shorter than [`BUSES`] when the rest are default.
+    pub buses: Vec<Bus>,
+}
+impl Selection {
+    /// Output bus `n`, default when never set.
+    pub fn bus(&self, n: usize) -> Bus {
+        self.buses.get(n).cloned().unwrap_or_default()
+    }
+
+    /// Output bus `n` to edit, created with defaults up to it.
+    pub fn bus_mut(&mut self, n: usize) -> &mut Bus {
+        let n = n.min(BUSES - 1);
+        if self.buses.len() <= n {
+            self.buses.resize(n + 1, Bus::default());
+        }
+        &mut self.buses[n]
+    }
+
+    /// Kontakt's auto-increment for a new part: the first MIDI port and
+    /// channel (A1…A16, then B1…, up to D16) no loaded part listens on
+    /// explicitly; omni on port A when all are taken.
+    pub fn next_input(&self) -> (u8, i16) {
+        let taken = |port: u8, channel: i16| {
+            (self.parts.iter()).any(|p| !p.path.is_empty() && p.port == port && p.channel == channel)
+        };
+        (0..4u8)
+            .flat_map(|port| (0..16i16).map(move |channel| (port, channel)))
+            .find(|&(port, channel)| !taken(port, channel))
+            .unwrap_or((0, -1))
+    }
 }
 
 #[derive(Params)]
@@ -131,7 +210,9 @@ pub struct Shared {
     /// last moved, on screen or by incoming MIDI.
     pub(crate) bend: AtomicU32,
     pub(crate) modulation: AtomicU32,
-    pub(crate) controls: ArrayQueue<[PartControls; RACK_SLOTS]>,
+    pub(crate) controls: ArrayQueue<Mix>,
+    /// Peak meters the audio thread keeps current; read them at paint time.
+    pub meters: Meters,
     generation: [AtomicU64; RACK_SLOTS],
     /// Per slot, how far its bank load is, out of [`crate::engine::LOAD_DONE`].
     pub(crate) load_progress: [AtomicU32; RACK_SLOTS],
@@ -212,6 +293,7 @@ impl Default for Shared {
             bend: AtomicU32::new(8192),
             modulation: AtomicU32::new(0),
             controls: ArrayQueue::new(1),
+            meters: Meters::default(),
             generation: std::array::from_fn(|_| AtomicU64::new(0)),
             load_progress: std::array::from_fn(|_| AtomicU32::new(0)),
             audition: AtomicBool::new(false),
@@ -236,6 +318,58 @@ impl Default for Shared {
         }
     }
 }
+/// Peak meters, `[left, right]` as `f32` bits: absolute sample peaks falling
+/// 20 dB a second, 0 once below -80 dB. The audio thread stores each once a
+/// block; any number of readers may [`read`](Meters::read) them at paint time.
+#[derive(Default)]
+pub struct Meters {
+    /// Rack slots, after the part's gain, pan, mute and solo.
+    pub parts: [[AtomicU32; 2]; RACK_SLOTS],
+    /// Output buses, after their faders.
+    pub buses: [[AtomicU32; 2]; BUSES],
+    /// Everything sent to the host, after the Volume parameter.
+    pub master: [AtomicU32; 2],
+}
+impl Meters {
+    pub fn read(meter: &[AtomicU32; 2]) -> [f32; 2] {
+        meter
+            .each_ref()
+            .map(|m| f32::from_bits(m.load(Ordering::Relaxed)))
+    }
+
+    /// Hold `peak` or let the shown level fall by `fall`.
+    fn publish(meter: &[AtomicU32; 2], peak: [f32; 2], fall: f32) {
+        for (m, peak) in meter.iter().zip(peak) {
+            let shown = f32::from_bits(m.load(Ordering::Relaxed)) * fall;
+            let level = if peak >= shown { peak } else { shown };
+            let level = if level < 1e-4 || !level.is_finite() { 0. } else { level };
+            m.store(level.to_bits(), Ordering::Relaxed);
+        }
+    }
+}
+fn db_gain(db: f32) -> f32 {
+    if db.is_finite() {
+        db_to_linear(db.clamp(-60., 6.))
+    } else {
+        1.
+    }
+}
+/// What the audio thread mixes by, from the persisted rack.
+pub(crate) fn mix(selection: &Selection) -> Mix {
+    Mix {
+        parts: rack_controls(selection),
+        buses: std::array::from_fn(|n| {
+            let b = selection.bus(n);
+            BusControls {
+                gain: db_gain(b.gain),
+                pan: if b.pan.is_finite() { b.pan.clamp(-1., 1.) } else { 0. },
+                mute: b.mute,
+                solo: b.solo,
+                port: if (0..BUSES as i16).contains(&b.port) { b.port as u8 } else { n as u8 },
+            }
+        }),
+    }
+}
 pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS] {
     std::array::from_fn(|n| {
         selection
@@ -243,13 +377,9 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
             .get(n)
             .map(|p| PartControls {
                 port: p.port.min(3),
-                output: p.output.min(7),
+                output: p.output.min(BUSES as u8 - 1),
                 channel: p.channel.clamp(-1, 15),
-                gain: if p.gain.is_finite() {
-                    db_to_linear(p.gain.clamp(-60., 6.))
-                } else {
-                    1.
-                },
+                gain: db_gain(p.gain),
                 pan: if p.pan.is_finite() {
                     p.pan.clamp(-1., 1.)
                 } else {
@@ -262,6 +392,8 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
                 },
                 mute: p.mute,
                 solo: p.solo,
+                aux: if (0..BUSES as i16).contains(&p.aux) { p.aux as u8 } else { NO_AUX },
+                aux_gain: db_gain(p.aux_gain),
             })
             .unwrap_or_default()
     })
@@ -590,7 +722,7 @@ impl BackgroundTask for Load {
         }
         {
             let current = params.selection.read().unwrap();
-            let _ = params.shared.controls.force_push(rack_controls(&current));
+            let _ = params.shared.controls.force_push(mix(&current));
             params
                 .shared
                 .midi_thru
@@ -931,16 +1063,14 @@ impl PluginLogic for Sampler {
     type Params = SamplerParams;
     type DspState = Dsp;
     fn bus_layouts() -> Vec<BusLayout> {
+        const NAMES: [&str; BUSES] = [
+            "st.1", "st.2", "st.3", "st.4", "st.5", "st.6", "st.7", "st.8", "st.9", "st.10",
+            "st.11", "st.12", "st.13", "st.14", "st.15", "st.16",
+        ];
         vec![
-            BusLayout::new()
-                .with_output("Main", ChannelConfig::Stereo)
-                .with_output("Out 2", ChannelConfig::Stereo)
-                .with_output("Out 3", ChannelConfig::Stereo)
-                .with_output("Out 4", ChannelConfig::Stereo)
-                .with_output("Out 5", ChannelConfig::Stereo)
-                .with_output("Out 6", ChannelConfig::Stereo)
-                .with_output("Out 7", ChannelConfig::Stereo)
-                .with_output("Out 8", ChannelConfig::Stereo),
+            NAMES
+                .into_iter()
+                .fold(BusLayout::new(), |l, name| l.with_output(name, ChannelConfig::Stereo)),
         ]
     }
     fn reset(s: &mut Dsp, p: &SamplerParams, c: &AudioConfig) {
@@ -1103,7 +1233,7 @@ impl PluginLogic for Sampler {
 
         let channels = b.num_output_channels();
         let thru = p.shared.midi_thru.load(Ordering::Relaxed);
-        let mut peak = 0f32;
+        let mut peak = [0f32; 2];
         let mut gains = [0f32; MAX_BLOCK];
         let (mut at, mut next) = (0, 0);
         loop {
@@ -1190,16 +1320,18 @@ impl PluginLogic for Sampler {
             for gain in &mut gains[..len] {
                 *gain = db_to_linear(p.volume.read());
             }
+            let ports = s.rack.bus_controls.map(|c| usize::from(c.port));
             let buses = s.rack.render(len);
             for channel in 0..channels {
                 b.output(channel)[at..at + len].fill(0.0);
             }
             for (bus, x) in buses.iter().enumerate() {
+                let port = ports[bus];
                 let route = cx
                     .bus_routing
-                    .output(bus)
+                    .output(port)
                     .map(|r| (r.channel_start(), r.channel_count()));
-                let (start, count) = route.unwrap_or(if bus == 0 {
+                let (start, count) = route.unwrap_or(if port == 0 {
                     (0, channels.min(2))
                 } else {
                     (0, 0)
@@ -1212,14 +1344,26 @@ impl PluginLogic for Sampler {
                         } else {
                             x[channel][i]
                         };
-                        *o = value * gain;
-                        peak = peak.max(o.abs());
+                        *o += value * gain;
+                        peak[channel] = peak[channel].max(o.abs());
                     }
                 }
             }
             at += len;
         }
-        cx.set_meter(P::Level, peak.min(1.0));
+        cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
+        if frames > 0 && rate > 0. {
+            let fall = 0.1f32.powf(frames as f32 / rate as f32);
+            let m = &p.shared.meters;
+            let peaks = std::mem::take(&mut s.rack.peaks);
+            for (meter, peak) in m.parts.iter().zip(peaks.parts) {
+                Meters::publish(meter, peak, fall);
+            }
+            for (meter, peak) in m.buses.iter().zip(peaks.buses) {
+                Meters::publish(meter, peak, fall);
+            }
+            Meters::publish(&m.master, peak, fall);
+        }
         let voices: usize = s.rack.parts.iter().map(Engine::active_voices).sum();
         p.shared.voices.store(voices as u64, Ordering::Relaxed);
         let dropouts: u64 = (s.rack.parts.iter())
@@ -1311,9 +1455,43 @@ mod tests {
             browser_width: 300.,
             browser_split: 0.4,
             appearance: 2,
+            buses: vec![
+                Bus::default(),
+                Bus {
+                    name: "Brass".into(),
+                    gain: -6.,
+                    pan: -0.5,
+                    mute: true,
+                    solo: true,
+                    port: 3,
+                },
+            ],
         };
         assert!(Selection::deserialize(&state.serialize()).unwrap() == state);
         assert_eq!(rack_controls(&state)[0].tune, -3.5, "the part's tune reaches the engine");
+        let mix = mix(&state);
+        assert_eq!(mix.buses[0], BusControls::on(0), "untouched buses play through their own port");
+        assert_eq!(mix.buses[15], BusControls::on(15));
+        assert_eq!((mix.buses[1].port, mix.buses[1].mute, mix.buses[1].solo), (3, true, true));
+        assert!((mix.buses[1].gain - db_to_linear(-6.)).abs() < 1e-6);
+        assert_eq!((state.bus(1).label(1), state.bus(7).label(7)), ("Brass".into(), "st.8".into()));
+    }
+    #[test]
+    fn new_parts_take_the_next_free_midi_channel() {
+        let part = |port, channel| Part {
+            path: "a.nki".into(),
+            port,
+            channel,
+            ..Default::default()
+        };
+        let mut rack = Selection::default();
+        assert_eq!(rack.next_input(), (0, 0), "the first part plays on A1");
+        rack.parts = vec![part(0, 0), part(0, -1), Part::default(), part(0, 2)];
+        assert_eq!(rack.next_input(), (0, 1), "omni and empty slots take no channel");
+        rack.parts = (0..16).map(|c| part(0, c)).collect();
+        assert_eq!(rack.next_input(), (1, 0), "A full: B1");
+        rack.parts = (0..64).map(|n| part(n as u8 / 16, n % 16)).collect();
+        assert_eq!(rack.next_input(), (0, -1), "all 64 taken: omni");
     }
     #[test]
     fn saved_multi_round_trips_through_the_browser_and_loader() {

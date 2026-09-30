@@ -257,9 +257,9 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         format!("output-{slot}"),
         "Output",
         &mut output,
-        1.0..=8.0,
+        1.0..=crate::engine::BUSES as f64,
         format!("st.{}", part.output + 1),
-        "st.8",
+        "st.16",
     );
     part.output = output.round() as u8 - 1;
     let (solo, solo_el) = latch(ui, format!("solo-{slot}"), "S", "Solo", part.solo);

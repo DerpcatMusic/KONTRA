@@ -1,7 +1,8 @@
 use kontakto::{
     audio::Sample,
     engine::{
-        Ahdsr, Bank, Engine, EventChange, MAX_BLOCK, MAX_VOICES, NoteEvent, PRELOAD_FRAMES, Rack,
+        Ahdsr, Bank, BusControls, Engine, EventChange, MAX_BLOCK, MAX_VOICES, Mix, NoteEvent,
+        PRELOAD_FRAMES, Rack,
         load_scripts,
     },
     fx,
@@ -933,6 +934,40 @@ fn rack_part_tune_transposes_in_semitones_and_cents() {
     assert!((at - 150.0).abs() < 0.2, "a fifth steps 1.5 frames: {at}");
 }
 
+/// Output buses: faders scale what reaches them, solo and mute work across
+/// buses, an aux send copies a part to a second bus post-fader, and the
+/// peaks follow each stage.
+#[test]
+fn rack_bus_faders_solos_sends_and_peaks() {
+    let mut rack = Rack::default();
+    rack.parts[0] = engine();
+    rack.parts[1] = engine();
+    rack.controls[1].output = 2;
+    rack.controls[1].gain = 0.5;
+    rack.controls[1].aux = 5;
+    rack.controls[1].aux_gain = 0.25;
+    rack.bus_controls[2].gain = 0.5;
+    rack.note_on(0, 60, 127);
+    let out = rack.render(21);
+    assert_eq!([out[0][0][20], out[0][1][20]], [0.5, 0.25]);
+    assert_eq!([out[2][0][20], out[2][1][20]], [0.125, 0.0625], "part 0.5 × bus 0.5");
+    assert_eq!([out[5][0][20], out[5][1][20]], [0.0625, 0.03125], "send 0.25 of the part's 0.25");
+    let peaks = std::mem::take(&mut rack.peaks);
+    assert_eq!(peaks.parts[0], [0.5, 0.25]);
+    assert_eq!(peaks.parts[1], [0.25, 0.125]);
+    assert_eq!(peaks.buses[2], [0.125, 0.0625]);
+    assert_eq!(peaks.parts[2], [0.0; 2], "an empty slot reads silent");
+    rack.bus_controls[2].solo = true;
+    let out = rack.render(1);
+    assert_eq!([out[0][0][0], out[5][0][0], out[2][0][0]], [0.0, 0.0, 0.125]);
+    rack.bus_controls[2].mute = true;
+    assert_eq!(rack_frame(&mut rack, 1), [0.0, 0.0]);
+    rack.bus_controls[2] = BusControls::on(2);
+    rack.bus_controls[0].pan = 1.0;
+    let out = rack.render(1);
+    assert_eq!([out[0][0][0], out[0][1][0]], [0.0, 0.25]);
+}
+
 #[test]
 fn rack_midi_ports_audio_buses_and_route_changes_are_isolated() {
     let mut rack = Rack::default();
@@ -949,7 +984,10 @@ fn rack_midi_ports_audio_buses_and_route_changes_are_isolated() {
     assert_eq!([out[3][0][99], out[3][1][99]], [0.5, 0.25]);
     let mut controls = rack.controls;
     controls[1].port = 2;
-    rack.set_controls(controls);
+    rack.set_controls(Mix {
+        parts: controls,
+        buses: rack.bus_controls,
+    });
     assert_eq!(rack_frame(&mut rack, 1), [0.0, 0.0]);
     rack.note_on_port(1, 0, 60, 127);
     assert_eq!(rack.parts[1].active_voices(), 0);
