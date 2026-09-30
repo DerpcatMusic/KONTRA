@@ -66,3 +66,10 @@ If ntfs3 also shows unmapped tails, boot Windows and run `chkdsk D: /scan` (read
 
 - Userspace decoding: the rejected record holds the only map from file offsets to clusters for about 80% of each affected file. Without raw device access those clusters cannot be located, so no decoder can reach them.
 - Password-free privilege paths: the user is not in `disk`, and `$MFT` is mode 000. The polkit actions `org.freedesktop.udisks2.open-device` and `filesystem-mount-system` both resolve to `auth_admin_keep` (wheel is the admin group, so a password is required). udisks also refuses a second mount of an already-mounted device.
+
+## Confirmed fix (2026-09-30)
+
+Remounted with `ntfs3`: `tools/ntfs_zero_scan.py` reports 0 unmapped files of
+21,602 (489.7 GB; the 2 zero probes are `.nkr` padding), and "01 Areia - 16
+Violins - Core Techniques" loads 49,152 of 49,152 zones. `/etc/fstab` now mounts
+MAIN_STORAGE, Gaming and Projects as `ntfs3` (backup at `/etc/fstab.bak-ntfs`).
