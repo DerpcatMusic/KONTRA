@@ -510,6 +510,32 @@ impl Router {
         r.arts().iter().position(wanted)
     }
 
+    /// The articulation a note-on would play, as far as the route knows,
+    /// and whether it is a keyswitch rather than a note.
+    pub fn articulation_of(&self, channel: u8, note: u8, velocity: u8) -> (Option<usize>, bool) {
+        let key = self.route.keys[note as usize & 127];
+        if key == NONE {
+            return (None, false);
+        }
+        match self.route.arts().iter().position(|a| a.key == key) {
+            Some(ks) => (Some(ks), true),
+            None => (self.pick(channel & 15, velocity), false),
+        }
+    }
+
+    /// The articulation script control `control` of script slot `slot` picks.
+    pub fn articulation_of_control(&self, slot: usize, control: usize) -> Option<usize> {
+        (self.route.arts()).iter().position(|a| a.control != u16::MAX && usize::from(a.slot) == slot && usize::from(a.control) == control)
+    }
+
+    /// Switch the scripts to articulation `to` before a note on `channel`,
+    /// unless they are there already.
+    pub fn select(&mut self, to: usize, channel: u8, e: &mut Engine) {
+        if to < self.route.count {
+            self.switch(to, channel & 15, &mut |o| apply(e, o));
+        }
+    }
+
     fn switch(&mut self, to: usize, channel: u8, out: &mut impl FnMut(Out)) {
         if self.current == Some(to) {
             return;
@@ -727,19 +753,24 @@ pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
 /// pan reach every part on the port, so a changed routing never sticks a
 /// note or a pedal. Returns the slots it reached, one bit each.
 pub fn dispatch(rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], port: u8, ev: In) -> u32 {
+    let reached = reach(rack, routers, port, ev);
+    dispatch_to(rack, routers, reached, ev);
+    reached
+}
+
+/// The slots [`dispatch`] sends `ev` to, one bit each.
+pub fn reach(rack: &Rack, routers: &[Router; RACK_SLOTS], port: u8, ev: In) -> u32 {
     let wide = match ev {
         In::NoteOff(..) | In::Bend(..) => true,
         In::Cc(_, cc, _) => !matches!(cc, 7 | 10),
         _ => false,
     };
-    let Rack { controls, .. } = rack;
     let mut reached = 0;
-    for (slot, (c, r)) in controls.iter().zip(routers.iter()).enumerate() {
+    for (slot, (c, r)) in rack.controls.iter().zip(routers.iter()).enumerate() {
         if if wide { c.port == port } else { r.hears(c, port, ev.channel()) } {
             reached |= 1 << slot;
         }
     }
-    dispatch_to(rack, routers, reached, ev);
     reached
 }
 

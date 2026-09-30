@@ -88,6 +88,13 @@ pub enum Command {
     KeepOriginal(usize),
     Mpe(usize, Zone),
     BendRange(usize, u8),
+    /// Auto-align timing on or off, and only while the transport plays.
+    AutoAlign,
+    AlignTransportOnly,
+    /// Set how late a part sounds by hand, ms; `None` goes back to what was measured.
+    Lateness(usize, Option<f32>),
+    ExcludeTiming(usize),
+    Remeasure(usize),
     /// Set a script control to a value.
     Script {
         part: usize,
@@ -217,6 +224,9 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 check("Load all into RAM", part.streaming == Some(Streaming::RamOnly), Command::PartStreaming(slot, Some(Streaming::RamOnly))),
                 Item::Rule,
             ]);
+            if cx.selection.auto_align {
+                timing_items(cx, slot, &mut items);
+            }
             if position.is_some_and(|p| p > 0) {
                 items.push(act("Move up", "", Command::Move(slot, -1)));
             }
@@ -376,7 +386,18 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 Item::Info("Performance".into()),
                 check("Disk streaming: Auto", rack == Streaming::Auto, Command::Streaming(Streaming::Auto)),
                 check("Load all into RAM", rack == Streaming::RamOnly, Command::Streaming(Streaming::RamOnly)),
+                Item::Rule,
+                check("Auto-align timing", cx.selection.auto_align, Command::AutoAlign),
             ]);
+            if cx.selection.auto_align {
+                let told = f32::from_bits(cx.p.shared.reported.load(std::sync::atomic::Ordering::Relaxed));
+                items.extend([
+                    check("Only while the transport plays", cx.selection.align_transport_only, Command::AlignTransportOnly),
+                    Item::Info(format!("Experimental · {told:.0} ms latency")),
+                ]);
+            } else {
+                items.push(Item::Info("Experimental".into()));
+            }
             items.extend([Item::Rule, Item::Info("Appearance".into())]);
             let now = super::Appearance::of(cx.selection.appearance);
             for (look, label) in [
@@ -394,6 +415,33 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             items
         }
     }
+}
+
+/// A part's timing under auto-align: how late it sounds and why, per
+/// articulation, and the player's say.
+fn timing_items(cx: &Cx, slot: usize, items: &mut Vec<Item>) {
+    let t = &cx.selection.parts[slot].timing;
+    let latest = t.latest();
+    items.push(Item::Info(format!("Timing −{latest:.0} ms · {}", t.basis())));
+    let status = &cx.view.parts[slot].timing_status;
+    if !status.is_empty() {
+        items.push(Item::Info(status.clone()));
+    }
+    if t.override_ms.is_none() && !t.exclude {
+        let ms = |d: &crate::timing::Delay, legato| d.ms(legato, 100).map_or("–".into(), |ms| format!("−{ms:.0}"));
+        for d in t.arts.iter().filter(|d| d.max().is_some()) {
+            let legato = if d.mono() { format!(", legato {} ms", ms(d, true)) } else { String::new() };
+            items.push(Item::Info(format!("{} {} ms{legato}", d.name, ms(d, false))));
+        }
+    }
+    items.extend([
+        act("Play 10 ms earlier", "", Command::Lateness(slot, Some((latest + 10.).min(crate::timing::MAX_MS)))),
+        act("Play 10 ms later", "", Command::Lateness(slot, Some((latest - 10.).max(0.)))),
+        check("As measured", t.override_ms.is_none(), Command::Lateness(slot, None)),
+        check("Exclude from alignment", t.exclude, Command::ExcludeTiming(slot)),
+        act("Measure again", "", Command::Remeasure(slot)),
+        Item::Rule,
+    ]);
 }
 
 /// "st.3", or "st.3 · Drums" once named.
@@ -598,6 +646,11 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
                 part.streaming = mode;
             }
         }
+        Command::AutoAlign => cx.selection.auto_align ^= true,
+        Command::AlignTransportOnly => cx.selection.align_transport_only ^= true,
+        Command::Lateness(slot, ms) => cx.selection.parts[slot].timing.override_ms = ms,
+        Command::ExcludeTiming(slot) => cx.selection.parts[slot].timing.exclude ^= true,
+        Command::Remeasure(slot) => cx.selection.parts[slot].timing.source.clear(),
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
         Command::Remap(part, row, to) => {
             if let Some(r) = cx.selection.parts.get_mut(part).and_then(|p| p.articulate.articulations.get_mut(row)) {

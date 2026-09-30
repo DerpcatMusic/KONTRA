@@ -632,6 +632,10 @@ fn facts(cx: &Cx, slot: usize) -> String {
     if v.status.starts_with("Load failed") {
         facts.push("failed to load".into());
     }
+    let timing = &cx.selection.parts[slot].timing;
+    if cx.selection.auto_align && !timing.exclude && !timing.source.is_empty() {
+        facts.push(format!("−{:.0} ms", timing.latest()));
+    }
     facts.retain(|f| !f.is_empty());
     facts.join(" · ")
 }

@@ -783,6 +783,25 @@ fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bo
         _ => 0,
     };
     p.selection.write().unwrap().sharp_artwork = state == "sharp";
+    if state.starts_with("timing") {
+        use crate::timing::{Delay, Timing};
+        let late = |name: &str, first: f32, legato: f32| Delay {
+            name: name.into(),
+            first: [Some(first); 3],
+            legato: [Some(legato); 3],
+        };
+        let mut selection = p.selection.write().unwrap();
+        selection.auto_align = true;
+        for part in &mut selection.parts {
+            part.timing = Timing {
+                source: crate::timing::source(&part.path, part.program),
+                loaded: late("", 45., 196.),
+                arts: vec![late("Legato", 45., 196.), late("Spiccato", 12., 12.), late("Pizzicato", 20., 20.)],
+                ..Timing::default()
+            };
+        }
+        p.shared.reported.store(196f32.to_bits(), Ordering::Relaxed);
+    }
     if state == "resized" {
         // The first part sized short: its controls clip and fade out.
         p.selection.write().unwrap().parts[0].height = 220.;
@@ -937,7 +956,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 30] = [
+    let states: [(&str, bool, &[&str]); 32] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         // Esc: no part selected, the keys show what each part plays.
@@ -973,6 +992,9 @@ fn screenshot() {
         // A value double-clicked into a field.
         ("sound-typing", true, &["tab-sound"]),
         ("mixer-wide", true, &["tab-mixer", "mix-wide"]),
+        // Auto-align on: the settings and a part's timing.
+        ("timing", true, &["app-menu"]),
+        ("timing-part", true, &["more-0"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();

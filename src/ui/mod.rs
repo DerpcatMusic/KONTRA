@@ -38,6 +38,7 @@ mod theme;
 mod viz;
 
 use crate::engine::RACK_SLOTS;
+pub(crate) use panel::{articulations, sections};
 use crate::import;
 use crate::plugin::{Load, Part, PartView, SamplerParams, Selection, View, mix};
 use moose::mui::{Bridge, MuiEditor, mui::prelude::*, mui::prelude::Color};
