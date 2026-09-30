@@ -1409,12 +1409,18 @@ fn entry(ui: &mut Ui, cx: &mut Cx, part: usize, e: &Entry) -> El {
             .flex(1),
     );
     if let Some(key) = &e.key {
+        // Neutral text; the keyboard's keyswitch color rides on a swatch.
         cells.push(
-            caption(key.clone())
-                .text_size(SMALL)
-                .text_weight(Weight::SEMIBOLD)
-                .fill(Fill::from(keyswitch()))
-                .reserve("C#-1"),
+            row![
+                block(SMALL * 0.6, SMALL * 0.6).fill(Fill::from(keyswitch())),
+                caption(key.clone())
+                    .text_size(SMALL)
+                    .fill(Role::Dim)
+                    .reserve("C#-1"),
+            ]
+            .gap(SPACE * 0.5)
+            .align(Align::Center)
+            .shrink(0),
         );
     }
     for item in &e.extras {
