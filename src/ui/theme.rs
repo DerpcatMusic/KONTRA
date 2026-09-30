@@ -85,6 +85,9 @@ pub fn value_ink(lift: f32) -> Color {
     Color::oklch(0.78 + 0.1 * lift, 0., 0.)
 }
 
+/// The bundled face (OFL), variable in weight and width.
+pub const NOTO_SANS: &[u8] = include_bytes!("../../assets/NotoSans.ttf");
+
 pub fn ui() -> Ui {
     Ui::new(Theme {
         palette: Palette {
@@ -111,7 +114,7 @@ pub fn ui() -> Ui {
         ..Theme::DEFAULT
     })
     .font(
-        Font::new(include_bytes!("../../assets/NotoSans.ttf").as_slice())
+        Font::new(NOTO_SANS)
             .expect("bundled Noto Sans"),
     )
 }
