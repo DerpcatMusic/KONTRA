@@ -178,6 +178,27 @@ pub fn read_program(path:&Path,program:u32)->Result<Instrument> {
     std::panic::catch_unwind(||read_inner(path,program)).map_err(|_|anyhow::anyhow!("Malformed Kontakt program"))?
 }
 
+/// [`read_program`], shared: parts and plugin instances in one process that
+/// load the same program hold one parsed copy while any of them lives.
+/// ponytail: a preset edited on disk meanwhile keeps its first parse until
+/// every part lets go; stamp entries as `cache.rs` does if that matters.
+pub fn shared_program(path: &Path, program: u32) -> Result<std::sync::Arc<Instrument>> {
+    use std::sync::{Arc, Mutex, Weak};
+    type Parsed = std::collections::HashMap<(PathBuf, u32), Weak<Instrument>>;
+    static PARSED: Mutex<Option<Parsed>> = Mutex::new(None);
+    let key = (std::fs::canonicalize(path).unwrap_or_else(|_| path.into()), program);
+    let lock = || PARSED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = lock().get_or_insert_default().get(&key).and_then(Weak::upgrade) {
+        return Ok(i);
+    }
+    let instrument = Arc::new(read_program(path, program)?);
+    let mut parsed = lock();
+    let parsed = parsed.get_or_insert_default();
+    parsed.retain(|_, i| i.strong_count() > 0);
+    parsed.insert(key, Arc::downgrade(&instrument));
+    Ok(instrument)
+}
+
 /// Effect racks of every program (slot, effects), with IR file names but no audio decoded.
 pub fn read_fx(path: &Path) -> Result<Vec<(u32, crate::fx::ProgramFx)>> {
     std::panic::catch_unwind(|| -> Result<_> {

@@ -910,7 +910,7 @@ impl BackgroundTask for Load {
                 let instrument = if let Some(i) = cached {
                     i
                 } else {
-                    Arc::new(import::read_program(Path::new(&part.path), part.program)?)
+                    import::shared_program(Path::new(&part.path), part.program)?
                 };
                 // Progress by phase: parsed 5%, scripts 10%, the bank the rest.
                 let progress = &params.shared.load_progress[slot];
