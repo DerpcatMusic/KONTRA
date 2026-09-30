@@ -126,6 +126,7 @@ const ANIMATION_MS: u64 = 33;
 impl Watch {
     fn changed(&mut self, p: &SamplerParams, meters: &Meters, computer: &computer::Computer) -> bool {
         let now = Instant::now();
+        p.shared.watched.store(true, Ordering::Relaxed);
         let due = |at: Option<Instant>, every: u64| {
             at.is_none_or(|t| now - t >= Duration::from_millis(every))
         };

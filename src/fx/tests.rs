@@ -190,6 +190,30 @@ fn tail_rings_through_silence_then_idles() {
     assert_eq!(block(1e-7)[0], 1e-7);
 }
 
+/// A tail sleeps once it is below −120 dBFS, which a quiet input reaches
+/// long before the IR ends: its chain costs nothing sooner, and what it
+/// skips is inaudible.
+#[test]
+fn quiet_tails_sleep_sooner() {
+    // A second of −60 dB/s decay.
+    let ir: Vec<f32> = (0..48_000).map(|k| 0.001f32.powf(k as f32 / SR) * 1e-5).collect();
+    // Frames until the chain sleeps (and passes its silent input through).
+    let rings = |click: f32| {
+        let mut c = chain(vec![convolution(&ir)]);
+        let mut l = vec![0.0; ir.len() + 64];
+        l[0] = click;
+        let mut r = l.clone();
+        for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
+            c.process(l, r);
+        }
+        l.iter().rposition(|&x| x != 0.0).map_or(0, |i| i + 1)
+    };
+    let (loud, quiet) = (rings(1.0), rings(1e-5));
+    assert!(loud >= ir.len() && quiet * 3 < loud, "quiet {quiet} frames, loud {loud}");
+    let rest = ir[quiet..].iter().map(|x| x.abs()).sum::<f32>() * 1e-5;
+    assert!(rest < 1e-6, "the skipped tail could reach {rest}");
+}
+
 fn chunk(id: u16, data: Vec<u8>) -> Vec<u8> {
     let mut out = id.to_le_bytes().to_vec();
     out.extend((data.len() as u32).to_le_bytes());

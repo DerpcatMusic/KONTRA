@@ -4,7 +4,7 @@ use super::{Effect, Params, ProgramFx, convolution::Convolver, params, reverb::R
 use std::ops::Range;
 
 /// Input at or below this level (−120 dBFS) counts as silence for tail tracking.
-const SILENCE: f32 = 1e-6;
+pub(super) const SILENCE: f32 = 1e-6;
 /// Kontakt's instrument buses.
 const BUSES: usize = 16;
 const NO_BUS: u8 = u8::MAX;
@@ -53,10 +53,48 @@ pub struct FxProcessor {
     /// Position in `buses` of each Kontakt bus, or [`NO_BUS`].
     bus_of: [u8; BUSES],
     max_block: usize,
-    /// Upper bound on the frames an effect keeps sounding after silent input.
-    tail: usize,
+    sleep: Sleep,
+}
+
+/// When a chain may stop processing: its input has been silent (−120 dBFS)
+/// for longer than its effects ring on the loudest input since it last
+/// slept, to below −120 dBFS. A quiet part's reverb sleeps sooner than a
+/// loud one's; the next input wakes it.
+#[derive(Clone, Copy, Default)]
+struct Sleep {
     /// Consecutive frames of silent input.
     silent: usize,
+    /// Frames the current tail rings for.
+    tail: usize,
+    /// Loudest input since the chain last slept.
+    peak: f32,
+}
+
+impl Sleep {
+    /// Nothing rings.
+    const ASLEEP: Self = Self { silent: 1, tail: 0, peak: 0.0 };
+
+    fn sleeping(&self) -> bool {
+        self.silent > self.tail
+    }
+
+    /// Count one input block; `tail(peak)` is how long the chain rings on
+    /// input that loud. True while the chain must process.
+    fn feed(&mut self, left: &[f32], right: &[f32], tail: impl Fn(f32) -> usize) -> bool {
+        let peak = left.iter().chain(right).fold(0f32, |m, x| m.max(x.abs()));
+        if peak > SILENCE {
+            (self.silent, self.peak) = (0, self.peak.max(peak));
+        } else {
+            if self.silent == 0 {
+                self.tail = tail(self.peak);
+            }
+            self.silent = self.silent.saturating_add(left.len());
+            if self.sleeping() {
+                self.peak = 0.0;
+            }
+        }
+        !self.sleeping()
+    }
 }
 
 enum Stage {
@@ -101,8 +139,7 @@ struct Bus {
     gains: [f32; 2],
     /// A voice rendered into `input` this block.
     fed: bool,
-    tail: usize,
-    silent: usize,
+    sleep: Sleep,
 }
 
 enum Dsp {
@@ -168,7 +205,6 @@ impl ProgramFx {
             .map(|(i, b)| {
                 bus_of[b.index] = i as u8;
                 let chain: Vec<_> = b.chain.slots.iter().filter_map(build).collect();
-                let tail = chain.iter().map(|s| s.dsp.tail()).sum();
                 Bus {
                     chain,
                     input: [zeros(max_block), zeros(max_block)],
@@ -176,26 +212,20 @@ impl ProgramFx {
                     pan: b.pan.clamp(-1.0, 1.0),
                     gains: balance(b.volume, b.pan),
                     fed: false,
-                    tail,
-                    silent: tail + 1,
+                    sleep: Sleep::ASLEEP,
                 }
             })
             .collect();
-        let mut fx = FxProcessor {
+        FxProcessor {
             insert,
             returns,
             main: self.main.slots.iter().filter_map(build).collect(),
             buses,
             bus_of,
             max_block,
-            tail: 0,
-            silent: 0,
-        };
-        // Series stages add their tails; summing the parallel sends too keeps
-        // this an upper bound. Nothing rings yet, so it starts asleep.
-        fx.tail = fx.slots().map(|s| s.dsp.tail()).sum();
-        fx.silent = fx.tail + 1;
-        fx
+            // Nothing rings yet.
+            sleep: Sleep::ASLEEP,
+        }
     }
 }
 
@@ -221,9 +251,9 @@ impl FxProcessor {
             .for_each(Dsp::clear);
         for bus in &mut self.buses {
             bus.input.iter_mut().for_each(|b| b.fill(0.0));
-            bus.silent = bus.tail + 1;
+            bus.sleep = Sleep::ASLEEP;
         }
-        self.silent = self.tail;
+        self.sleep = Sleep::ASLEEP;
     }
 
     /// Processes the program output in place. Once the input has been silent
@@ -234,13 +264,10 @@ impl FxProcessor {
         }
         let n = left.len().min(right.len());
         let (left, right) = (&mut left[..n], &mut right[..n]);
-        let quiet = left.iter().chain(&*right).all(|x| x.abs() <= SILENCE);
-        self.silent = if quiet {
-            self.silent.saturating_add(n)
-        } else {
-            0
-        };
-        if self.silent > self.tail {
+        let mut sleep = self.sleep;
+        let awake = sleep.feed(left, right, |peak| tail(self.slots(), peak));
+        self.sleep = sleep;
+        if !awake {
             return;
         }
         for (l, r) in left
@@ -268,18 +295,13 @@ impl FxProcessor {
     pub fn mix_buses(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len()).min(self.max_block);
         for bus in &mut self.buses {
-            if !bus.fed && bus.silent > bus.tail {
+            if !bus.fed && bus.sleep.sleeping() {
                 continue;
             }
             bus.fed = false;
             let [il, ir] = &mut bus.input;
             let (il, ir) = (&mut il[..n], &mut ir[..n]);
-            let quiet = il.iter().chain(&*ir).all(|x| x.abs() <= SILENCE);
-            bus.silent = if quiet {
-                bus.silent.saturating_add(n)
-            } else {
-                0
-            };
+            bus.sleep.feed(il, ir, |peak| tail(bus.chain.iter(), peak));
             for slot in &mut bus.chain {
                 slot.process(il, ir);
             }
@@ -551,12 +573,12 @@ impl Dsp {
         }
     }
 
-    /// Frames of output after the input falls silent.
-    fn tail(&self) -> usize {
+    /// Frames of output above −120 dBFS after input at most `peak` falls silent.
+    fn tail(&self, peak: f32) -> usize {
         match self {
             Dsp::Gain(_) | Dsp::Stereo { .. } => 0,
-            Dsp::Reverb(rv) => rv.tail(),
-            Dsp::Convolution(conv) => conv[0].ir_len(),
+            Dsp::Reverb(rv) => rv.tail(peak),
+            Dsp::Convolution(conv) => conv[0].tail(peak).max(conv[1].tail(peak)),
         }
     }
 
@@ -581,6 +603,14 @@ impl Dsp {
             }
         }
     }
+}
+
+/// Frames a chain of `slots` rings after input at most `peak`: series
+/// stages add their tails; summing the parallel sends too keeps this an
+/// upper bound. Slot gains are not followed, so the peak is taken 12 dB
+/// louder.
+fn tail<'a>(slots: impl Iterator<Item = &'a Slot>, peak: f32) -> usize {
+    slots.map(|s| s.dsp.tail(peak * 4.0)).sum()
 }
 
 fn zeros(len: usize) -> Box<[f32]> {

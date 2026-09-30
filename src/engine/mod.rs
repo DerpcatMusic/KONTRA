@@ -18,6 +18,7 @@ mod map;
 pub mod overrides;
 mod params;
 mod rack;
+mod residency;
 mod script;
 mod stream;
 mod voice;
@@ -25,6 +26,7 @@ mod voice;
 pub(crate) use bank::parallel;
 pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
+pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
@@ -34,6 +36,7 @@ pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 use crate::fx::FxProcessor;
 use crate::ksp::Runtime;
 use map::FOREVER;
+use std::sync::atomic::Ordering;
 use params::{Address, GroupPar, Write};
 use script::{Command, Host};
 use stream::Slot;
@@ -49,6 +52,14 @@ pub const MAX_BLOCK: usize = 128;
 pub const MAX_GROUPS: usize = 4096;
 /// Fade applied to voices stolen by the instrument polyphony limit.
 const STEAL_FADE: f32 = 0.005;
+/// Load (render time over block time) from which released voices too quiet
+/// to hear under the rest end early: at −80 dBFS here, rising to −50 dBFS
+/// at full load.
+const SHED_FROM: f32 = 0.7;
+/// Load from which the quietest released voices end, [`STEAL_PER_BLOCK`]
+/// a block, however loud.
+const STEAL_FROM: f32 = 0.9;
+const STEAL_PER_BLOCK: usize = 16;
 /// Seconds of ramp where a voice starts or ends mid-waveform.
 pub(crate) const DECLICK: f32 = 0.001;
 
@@ -188,6 +199,9 @@ pub struct Engine {
     pub tune: f32,
     /// The player's edits over the bank's values (see `overrides.rs`).
     overrides: overrides::Edits,
+    /// Recent render time over block time, set by the host: near the
+    /// deadline, released voices end early (see [`SHED_FROM`]).
+    pub load: f32,
 }
 
 impl Default for Engine {
@@ -206,6 +220,7 @@ impl Default for Engine {
             blocking_streams: false,
             tune: 0.0,
             overrides: overrides::Edits(Vec::with_capacity(overrides::MAX_OVERRIDES)),
+            load: 0.0,
         }
     }
 }
@@ -215,6 +230,7 @@ impl Engine {
     /// disposal off the audio thread.
     pub fn set_bank(&mut self, bank: Option<Box<Bank>>) -> Option<Box<Bank>> {
         self.player.clear_voices(self.bank.as_deref());
+        self.player.touch();
         self.commands.clear();
         self.writes.clear();
         let old = std::mem::replace(&mut self.bank, bank);
@@ -240,8 +256,33 @@ impl Engine {
         };
         // Swapped, not cloned: no allocation here.
         std::mem::swap(&mut old.settings, &mut bank.settings);
+        self.player.touch();
         self.player.rebind(old, &bank);
         self.bank.replace(bank)
+    }
+
+    /// Swap in heads the smart memory resized (see `residency.rs`), each
+    /// only while no voice plays its sample: a voice reads its sample's
+    /// head by index and limit. Applied heads then hold the replaced data,
+    /// to free off the audio thread; the rest wait for a later block.
+    pub fn swap_heads(&mut self, heads: &mut [residency::Head]) {
+        let Some(bank) = self.bank.as_deref_mut() else {
+            return;
+        };
+        let in_use = &mut self.player.in_use;
+        in_use.clear();
+        in_use.extend(self.player.voices.iter().map(|v| v.sample));
+        in_use.sort_unstable();
+        for head in heads {
+            let sample = head.sample();
+            if let Some(data) = bank.samples.get_mut(sample as usize)
+                && data.streamed
+                && in_use.binary_search(&sample).is_err()
+            {
+                std::mem::swap(&mut data.spans, &mut head.spans);
+                head.applied();
+            }
+        }
     }
 
     /// Install the program effects, built for [`rate`](Self::rate) with
@@ -303,6 +344,7 @@ impl Engine {
 
     /// Apply one engine parameter; false when nothing installed holds it.
     fn write(&mut self, address: Address, value: f32) -> bool {
+        self.player.touch();
         match address {
             Address::Fx(rack, slot, param) => self.fx.set_param(rack, slot, param, value),
             Address::Instrument(p) => {
@@ -472,6 +514,7 @@ impl Engine {
             return rt.pitch_bend(&mut host, 0, i32::from(value) - 8192);
         }
         self.player.bend[channel as usize] = (f32::from(value) - 8192.0) / 8192.0;
+        self.player.touch();
     }
 
     /// Channel pressure (mono aftertouch modulation), through the scripts.
@@ -481,6 +524,7 @@ impl Engine {
             return rt.channel_pressure(&mut host, 0, value);
         }
         self.player.pressure[channel as usize] = value;
+        self.player.touch();
     }
 
     /// A host edit of script control `control` in script slot `slot`: sets its
@@ -590,6 +634,7 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             rt.process(&mut host, n as u32);
         }
+        self.player.shed(self.load);
         let defaults = self.defaults();
         let (mut next, mut written) = (0, 0);
         for (block, (l, r)) in left[..n]
@@ -691,6 +736,8 @@ struct Player {
     voices: Vec<Voice>,
     /// Free stream slots of the current bank.
     free: Vec<u16>,
+    /// Samples voices play, gathered to swap heads safely.
+    in_use: Vec<u32>,
     /// Zones matched by the current note start, with crossfade gains.
     pending: Vec<(u32, f32)>,
     scratch: Scratch,
@@ -727,6 +774,9 @@ struct Player {
     tone: [f32; 2],
     underruns: u64,
     dropped_commands: u64,
+    /// Stamp of what modulation reads (see [`voice::Context::inputs`]):
+    /// bumped by every controller, bend, pressure and group write.
+    inputs: u32,
 }
 
 impl Player {
@@ -734,6 +784,7 @@ impl Player {
         let mut player = Self {
             voices: Vec::with_capacity(MAX_VOICES),
             free: Vec::with_capacity(stream::SLOTS),
+            in_use: Vec::with_capacity(MAX_VOICES),
             pending: Vec::with_capacity(MAX_VOICES),
             scratch: Scratch::default(),
             rate,
@@ -758,6 +809,7 @@ impl Player {
             tone: [0.0; 2],
             underruns: 0,
             dropped_commands: 0,
+            inputs: 0,
         };
         player.reset_midi();
         player
@@ -777,6 +829,12 @@ impl Player {
         self.pedal_releases = [[0; 128]; 16];
         (self.volume, self.pan) = (1.0, 0.0);
         self.tone = [0.0; 2];
+        self.touch();
+    }
+
+    /// Something modulation reads changed: settled voices modulate again.
+    fn touch(&mut self) {
+        self.inputs = self.inputs.wrapping_add(1);
     }
 
     fn clear_voices(&mut self, bank: Option<&Bank>) {
@@ -921,6 +979,9 @@ impl Player {
         let group = &bank.groups()[zone.group];
         let settings = &bank.settings[zone.group];
         let sample = &bank.samples[play.sample as usize];
+        // One writer, the audio thread: no read-modify-write needed.
+        let played = &bank.usage[play.sample as usize];
+        played.store(played.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
         self.make_room(bank, settings.voice_group);
 
         let key = if group.key_tracking {
@@ -1021,6 +1082,8 @@ impl Player {
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),
             mods,
+            modulated: (1.0, 0.0),
+            settled: None,
             stream,
             env: Envelope::new(&envelope, self.rate as f32),
             flex: settings.flex.as_ref().map(|_| Envelope::flex()),
@@ -1034,7 +1097,7 @@ impl Player {
             filter: VoiceFilter::new(settings.filter.as_deref(), &settings.mods, &inputs, self.rate as f32),
         };
         // Start at the voice's first-block gains, so it does not ramp in.
-        let (modulation, _) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
+        let (modulation, ..) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
         let pan = (zone.pan + settings.pan + ev.pan).clamp(-1.0, 1.0);
         voice.gains = balance(base_level * settings.gain * modulation * voice.volume, pan);
         if offset > 0 {
@@ -1170,6 +1233,7 @@ impl Player {
         let c = channel as usize;
         let value = value.min(127);
         self.cc[c][cc as usize] = value;
+        self.touch();
         match cc {
             // General MIDI volume curve: 127 is unity.
             7 => self.volume = (f32::from(value) / 127.0).powi(2),
@@ -1250,6 +1314,38 @@ impl Player {
         }
     }
 
+    /// Under `load`, fade out released voices: first those below a floor
+    /// that rises with the load, then near the deadline the quietest. Held
+    /// notes and muted voices (which cost next to nothing) are left alone.
+    fn shed(&mut self, load: f32) {
+        if load < SHED_FROM {
+            return;
+        }
+        let over = ((load - SHED_FROM) / (1.0 - SHED_FROM)).min(1.0);
+        let floor = 10f32.powf((-80.0 + 30.0 * over) / 20.0);
+        let steal = if load >= STEAL_FROM { STEAL_PER_BLOCK } else { 0 };
+        let fade = self.fade_frames(STEAL_FADE);
+        // The quietest released voices above the floor, loudest first.
+        let mut quietest = [(f32::INFINITY, 0); STEAL_PER_BLOCK];
+        for (i, v) in self.voices.iter_mut().enumerate() {
+            if !v.released || v.fade.dying() || v.gains == [0.0; 2] {
+                continue;
+            }
+            let level = v.level();
+            if level < floor {
+                v.fade.start(0.0, fade, true);
+            } else if steal > 0 && level < quietest[0].0 {
+                quietest[0] = (level, i);
+                quietest.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+            }
+        }
+        for &(level, i) in &quietest {
+            if level.is_finite() {
+                self.voices[i].fade.start(0.0, fade, true);
+            }
+        }
+    }
+
     /// Render every voice into `left`/`right`, or into its group's bus input
     /// at frame `offset` of the current block.
     fn render(
@@ -1271,6 +1367,7 @@ impl Player {
             tune: self.instrument.2 + tune,
             rate: self.rate as f32,
             blocking,
+            inputs: self.inputs,
         };
         let n = left.len();
         let mut i = 0;

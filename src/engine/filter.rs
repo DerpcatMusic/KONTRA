@@ -12,7 +12,7 @@
 use super::{
     MAX_BLOCK,
     params::{Inputs, Mod, ModTable},
-    voice::{Ahdsr, Envelope},
+    voice::{Ahdsr, Envelope, Phase},
 };
 use crate::fx::{
     Chain, Kind, Params,
@@ -726,16 +726,26 @@ impl VoiceFilter {
         for (value, (_, i)) in self.ext.iter_mut().zip(&f.ext) {
             table.mods[*i as usize].follow(value, input, n, rate);
         }
-        // Envelope levels at each control tick.
+        // Envelope levels at each control tick. External sources move once
+        // a block, so knobs change within one only while an envelope moves.
         let mut levels = [[0.0; MAX_BLOCK / CONTROL]; MAX_ENVS];
+        let mut moving = false;
         for (env, ticks) in self.envs.iter_mut().zip(&mut levels).take(f.envs.len()) {
+            if matches!(env.phase(), Phase::Sustain | Phase::Done) {
+                // Held: one level all block, and no pass over its frames.
+                env.skip(n, None, rate);
+                ticks.fill(env.level());
+                continue;
+            }
+            moving = true;
             env.render(&mut ctl[..n], None, rate);
             for (t, level) in ticks.iter_mut().enumerate().take(n.div_ceil(CONTROL)) {
                 *level = ctl[t * CONTROL];
             }
         }
-        let modulated = !f.envs.is_empty() || !f.ext.is_empty();
-        let step = if modulated { CONTROL } else { n };
+        // Held knobs filter the block in one pass: the same frames pair up
+        // (CONTROL is even), so the output is the same as tick by tick.
+        let step = if moving { CONTROL } else { n };
         for (t, start) in (0..n).step_by(step).enumerate().take_while(|_| !f.units.is_empty()) {
             let end = (start + step).min(n);
             let mut knobs: [[f32; KNOBS]; MAX_UNITS] = std::array::from_fn(|u| {

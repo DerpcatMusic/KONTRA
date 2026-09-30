@@ -269,6 +269,7 @@ impl Player {
             &Kind::Change(change) => self.change_event(id, change),
             &Kind::Controller { cc: 128, value } => {
                 self.bend[channel as usize] = value.clamp(-8192, 8191) as f32 / 8192.0;
+                self.touch();
             }
             &Kind::Controller { cc, value } if cc < 128 => {
                 let value = value.clamp(0, 127) as u8;
@@ -276,6 +277,7 @@ impl Player {
             }
             &Kind::Controller { cc: 129, value } => {
                 self.pressure[channel as usize] = value.clamp(0, 127) as u8;
+                self.touch();
             }
             // Other virtual controllers: nothing in the engine uses them.
             Kind::Controller { .. } => {}

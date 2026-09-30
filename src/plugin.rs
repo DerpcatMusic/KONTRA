@@ -2,7 +2,7 @@ use crate::articulate::{self, Articulate, In, Mpe, Route, Router};
 use crate::artwork;
 use crate::{
     engine::{
-        BUSES, Bank, BusControls, Engine, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Rack,
+        BUSES, Bank, BusControls, Engine, Heads, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Rack, Residency,
         Streaming, TUNE_RANGE, load_scripts,
         overrides::{Edits, Override, Probe},
     },
@@ -273,6 +273,10 @@ pub struct Shared {
     overrides: ArrayQueue<(usize, Override)>,
     /// Each slot's overrides as last sent (loader and editor threads only).
     sent: Mutex<[Vec<Override>; RACK_SLOTS]>,
+    /// Each slot's smart memory and the generation it serves (loader only).
+    residency: Mutex<[Option<(u64, Box<Residency>)>; RACK_SLOTS]>,
+    /// Resized heads back from the audio thread: slot, generation, heads.
+    heads: ArrayQueue<(usize, u64, Heads)>,
     generation: [AtomicU64; RACK_SLOTS],
     /// Per slot, how far its load is, out of [`crate::engine::LOAD_DONE`]:
     /// parse, scripts, then samples by frames read; only rises within a load.
@@ -289,12 +293,17 @@ pub struct Shared {
     pub(crate) voices: AtomicU64,
     /// Of those, the ones not muted by their scripts: the ones rendered.
     pub(crate) audible: AtomicU64,
+    /// Set by every editor display tick: an editor is open to show the
+    /// scripts' live views, which the audio thread otherwise need not copy.
+    pub(crate) watched: AtomicBool,
     /// Audio thread load (`f32` bits): render time over block time, peak-held.
     pub(crate) cpu: AtomicU64,
     /// Voice blocks whose streamed samples were not read in time (played
     /// silent) plus script engine calls dropped by a full queue, summed over
     /// the parts' engines since each was created.
     pub(crate) dropouts: AtomicU64,
+    /// Per slot, streamed frames that arrived late, for its smart memory.
+    underruns: [AtomicU64; RACK_SLOTS],
 }
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
@@ -312,6 +321,8 @@ pub(crate) struct PartView {
     pub(crate) status: String,
     pub(crate) active: String,
     pub(crate) bytes: usize,
+    /// Bytes the smart memory handed back so far.
+    pub(crate) freed: u64,
     /// Rate of the effects handed to the audio thread; 0 when none were.
     pub(crate) fx_rate: f64,
     /// `Part::script_state` the audio thread's runtime matches (loaded from or last saved).
@@ -341,6 +352,8 @@ pub(crate) struct View {
     pub(crate) files: Arc<Vec<PathBuf>>,
     pub(crate) parts: [PartView; RACK_SLOTS],
     pub(crate) status: String,
+    /// When an editor last showed the rack (see [`Shared::watched`]).
+    pub(crate) watched_at: Option<Instant>,
 }
 impl Default for Shared {
     fn default() -> Self {
@@ -364,6 +377,9 @@ impl Default for Shared {
             meters: Meters::default(),
             probe: Probe::default(),
             overrides: ArrayQueue::new(1024),
+            residency: Mutex::default(),
+            // One batch in flight per slot: never full.
+            heads: ArrayQueue::new(RACK_SLOTS),
             sent: Mutex::new(std::array::from_fn(|_| Vec::new())),
             generation: std::array::from_fn(|_| AtomicU64::new(0)),
             load_progress: std::array::from_fn(|_| AtomicU32::new(0)),
@@ -376,8 +392,10 @@ impl Default for Shared {
             multi_request: Mutex::new(None),
             voices: AtomicU64::new(0),
             audible: AtomicU64::new(0),
+            watched: AtomicBool::new(false),
             cpu: AtomicU64::new(0),
             dropouts: AtomicU64::new(0),
+            underruns: Default::default(),
             view: Mutex::new(View {
                 script_epoch: 0,
                 multi_status: String::new(),
@@ -386,6 +404,7 @@ impl Default for Shared {
                 files: Arc::default(),
                 parts: std::array::from_fn(|_| PartView::default()),
                 status: "Choose a library and select a preset".into(),
+                watched_at: None,
             }),
         }
     }
@@ -520,6 +539,8 @@ enum Handoff {
     /// The part's samples loaded whole (RAM only): replaces its streaming
     /// bank under the playing voices.
     Bank(Box<Bank>),
+    /// Sample heads the smart memory resized.
+    Heads(Heads),
 }
 /// What the audio thread replaced, freed on the loader thread.
 #[expect(dead_code, reason = "held only to be dropped off the audio thread")]
@@ -528,6 +549,7 @@ struct Retired {
     bank: Option<Box<Bank>>,
     fx: Option<FxProcessor>,
     script: Option<Box<Runtime>>,
+    heads: Option<Heads>,
 }
 /// Persistent script values to restore: the host's saved state, else the instrument's.
 fn persisted(saved: &str, i: &Instrument) -> Vec<Persisted> {
@@ -1031,10 +1053,15 @@ impl BackgroundTask for Load {
                     } else {
                         0
                     };
+                    let mut bank = bank;
+                    let residency = bank.as_mut().and_then(|b| b.take_residency());
+                    params.shared.residency.lock().unwrap()[slot] =
+                        residency.map(|r| (generation, r));
                     let v = &mut view.parts[slot];
                     v.script_state = part.script_state.clone();
                     v.active = instrument.name.clone();
                     v.bytes = bank.as_ref().map(|b| b.bytes).unwrap_or(0);
+                    v.freed = 0;
                     v.status = bank.as_deref().map(bank_status).unwrap_or_else(|| {
                         "Controller instrument · KSP playback unavailable".into()
                     });
@@ -1075,6 +1102,8 @@ impl BackgroundTask for Load {
                         let v = &mut view.parts[slot];
                         match bank {
                             Ok(bank) => {
+                                // Loaded whole: nothing left to resize.
+                                params.shared.residency.lock().unwrap()[slot] = None;
                                 (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
                                 let bank = Handoff::Bank(Box::new(bank));
                                 let _ = params.shared.ready.force_push((slot, generation, bank));
@@ -1167,9 +1196,17 @@ impl BackgroundTask for Load {
             v.script_slot = live.slot;
             v.live = Some(live);
         }
+        smart_memory(&params.shared);
+        if params.shared.watched.swap(false, Ordering::Relaxed) {
+            params.shared.view.lock().unwrap().watched_at = Some(Instant::now());
+        }
         for slot in 0..RACK_SLOTS {
             let mut view = params.shared.view.lock().unwrap();
-            if let Some(live) = view.parts[slot].live.take()
+            // Live views only while an editor shows them: refreshing script
+            // interfaces no one sees was most of an idle rack's audio work.
+            let shown = view.watched_at.is_some_and(|t| t.elapsed() < LIVE_WATCH);
+            if shown
+                && let Some(live) = view.parts[slot].live.take()
                 && let Err((_, live)) = params.shared.live_requests.push((slot, live))
             {
                 view.parts[slot].live = Some(live);
@@ -1210,6 +1247,8 @@ pub struct Dsp {
     /// The slots each on-screen key played on [`EVERY_PART`], one bit each:
     /// its note-off goes to those and no others.
     key_slots: KeySlots,
+    /// Recent load: rises with any block's, falls over some 50 blocks.
+    load: f32,
 }
 struct KeySlots([u32; 128]);
 impl Default for KeySlots {
@@ -1230,6 +1269,8 @@ type Lent<T> = (usize, (u64, u64), T, Refresh);
 /// several blocks rather than one long one.
 const REFRESH_BUDGET: usize = 16384;
 const SNAPSHOT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+/// Live views keep refreshing this long after the editor's last display tick.
+const LIVE_WATCH: std::time::Duration = std::time::Duration::from_secs(2);
 const LIVE_BUDGET: usize = 512;
 pub struct Sampler;
 
@@ -1254,6 +1295,34 @@ fn preview_velocity(e: &Engine, note: u8) -> u8 {
     zone.map_or(100, |z| {
         ((u16::from(z.low_velocity) + u16::from(z.high_velocity)) / 2).max(1) as u8
     })
+}
+
+/// One round of every part's smart memory (see `engine/residency.rs`):
+/// take back the heads the audio thread swapped, send the next ones, and
+/// show what is resident and what was freed.
+fn smart_memory(shared: &Shared) {
+    let mut residency = shared.residency.lock().unwrap();
+    while let Some((slot, generation, heads)) = shared.heads.pop() {
+        if let Some((current, r)) = &mut residency[slot]
+            && *current == generation
+        {
+            r.returned(heads);
+        }
+    }
+    for (slot, entry) in residency.iter_mut().enumerate() {
+        let Some((generation, r)) = entry else { continue };
+        if shared.generation[slot].load(Ordering::Acquire) != *generation {
+            *entry = None;
+            continue;
+        }
+        if let Some(heads) = r.poll(shared.underruns[slot].load(Ordering::Relaxed))
+            && let Err((.., Handoff::Heads(heads))) = shared.ready.push((slot, *generation, Handoff::Heads(heads)))
+        {
+            r.returned(heads);
+        }
+        let v = &mut shared.view.lock().unwrap().parts[slot];
+        (v.bytes, v.freed) = (r.resident(), r.freed() as u64);
+    }
 }
 
 fn bank_status(bank: &Bank) -> String {
@@ -1347,6 +1416,7 @@ impl PluginLogic for Sampler {
                         script: engine.set_script(script),
                         bank: engine.set_bank(bank),
                         fx: Some(engine.set_fx(fx)),
+                        heads: None,
                     }
                 }
                 Handoff::Fx(fx) if current => Retired {
@@ -1365,12 +1435,27 @@ impl PluginLogic for Sampler {
                         ..Retired::default()
                     }
                 }
+                Handoff::Heads(mut heads) if current => {
+                    engine.swap_heads(&mut heads);
+                    match p.shared.heads.push((slot, generation, heads)) {
+                        Ok(()) => Retired::default(),
+                        Err((.., heads)) => Retired {
+                            heads: Some(heads),
+                            ..Retired::default()
+                        },
+                    }
+                }
                 Handoff::Part {
                     bank, fx, script, ..
                 } => Retired {
                     bank,
                     fx: Some(fx),
                     script,
+                    heads: None,
+                },
+                Handoff::Heads(heads) => Retired {
+                    heads: Some(heads),
+                    ..Retired::default()
                 },
                 Handoff::Fx(fx) => Retired {
                     fx: Some(fx),
@@ -1624,12 +1709,19 @@ impl PluginLogic for Sampler {
             .map(|e| e.underruns() + e.dropped_commands())
             .sum();
         p.shared.dropouts.store(dropouts, Ordering::Relaxed);
+        for (e, late) in s.rack.parts.iter().zip(&p.shared.underruns) {
+            late.store(e.underruns(), Ordering::Relaxed);
+        }
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
             let load = (started.elapsed().as_secs_f64() * rate / frames as f64) as f32;
             p.shared
                 .cpu
                 .fetch_max(u64::from(load.to_bits()), Ordering::Relaxed);
+            s.load = load.max(s.load * 0.98 + load * 0.02);
+            for e in &mut s.rack.parts {
+                e.load = s.load;
+            }
         }
         ProcessStatus::Normal
     }
@@ -1690,14 +1782,15 @@ fn cpu_clock(clock: i32) -> f64 {
     }
 }
 /// This process's resident memory, MiB (Linux; 0 elsewhere).
+/// Memory the process holds, resident or swapped out: on a machine short
+/// of RAM the resident part alone says more about the others than about us.
 fn rss_mib() -> f64 {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| {
-            let line = s.lines().find(|l| l.starts_with("VmRSS:"))?;
-            line.split_whitespace().nth(1)?.parse::<f64>().ok()
-        })
-        .map_or(0., |kib| kib / 1024.)
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let kib = |field: &str| {
+        let line = status.lines().find(|l| l.starts_with(field))?;
+        line.split_whitespace().nth(1)?.parse::<f64>().ok()
+    };
+    kib("VmRSS:").unwrap_or(0.) / 1024. + kib("VmSwap:").unwrap_or(0.) / 1024.
 }
 /// This thread's user-space instruction or cycle count from the CPU's
 /// counters (Linux x86-64, where `perf_event_open` is allowed). Instructions
@@ -1892,11 +1985,16 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         let mean_audible = audible_blocks as f64 / times.len() as f64;
         let whole = (cpu_clock(2) - process_cpu) / start.elapsed().as_secs_f64();
         println!(
-            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core",
+            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core · RSS+swap {:.0} MiB · {} dropouts",
             times.len(),
             cpu * 100.,
-            whole * 100.
+            whole * 100.,
+            rss_mib(),
+            p.shared.dropouts.load(Ordering::Relaxed),
         );
+        let (resident, freed) = (p.shared.view.lock().unwrap().parts.iter())
+            .fold((0, 0), |(r, f), v| (r + v.bytes, f + v.freed as usize));
+        println!("  smart memory: {} MiB resident · {} MiB freed", resident >> 20, freed >> 20);
         if counts.iter().any(|&c| c > 0.) {
             let mut sorted = counts.clone();
             sorted.sort_by(f64::total_cmp);

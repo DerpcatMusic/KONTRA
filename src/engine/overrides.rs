@@ -176,6 +176,7 @@ impl Engine {
 
     /// Recompute what plays of `param` in `group` (or all) from the base.
     fn refresh(&mut self, group: Option<u16>, param: Param) {
+        self.player.touch();
         let Some(bank) = self.bank.as_deref_mut() else {
             return;
         };
