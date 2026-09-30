@@ -11,4 +11,4 @@ mod plugin;
 #[cfg(feature="plugin")]
 mod ui;
 #[cfg(feature="plugin")]
-pub use plugin::Plugin;
+pub use plugin::{Plugin, bench_host};

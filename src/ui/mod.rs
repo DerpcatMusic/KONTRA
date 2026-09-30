@@ -33,7 +33,7 @@ mod theme;
 
 use crate::engine::RACK_SLOTS;
 use crate::import;
-use crate::plugin::{Load, Part, PartView, SamplerParams, Selection, View, rack_controls};
+use crate::plugin::{Load, Part, PartView, SamplerParams, Selection, View, mix};
 use moose::mui::{Bridge, MuiEditor, mui::prelude::*, mui::prelude::Color};
 use moose::prelude::*;
 use std::collections::HashMap;
@@ -404,10 +404,13 @@ impl Cx<'_> {
     /// Add an instrument to the first free slot and show it.
     fn add(&mut self, path: String) {
         self.remember(&path);
+        let (port, channel) = self.selection.next_input();
         match add_part(
             &mut self.selection,
             Part {
                 path,
+                port,
+                channel,
                 ..Default::default()
             },
         ) {
@@ -526,7 +529,7 @@ fn sanitize(selection: &mut Selection) {
     for part in &mut selection.parts {
         part.channel = part.channel.clamp(-1, 15);
         part.port = part.port.min(3);
-        part.output = part.output.min(7);
+        part.output = part.output.min(crate::engine::BUSES as u8 - 1);
         part.gain = if part.gain.is_finite() {
             part.gain.clamp(-60., 6.)
         } else {
@@ -605,13 +608,18 @@ fn native_files(p: &SamplerParams, ui: &Ui, at: Point, paths: &[PathBuf], droppe
                     part.name.clear();
                     Some(slot)
                 }
-                None => add_part(
-                    &mut selection,
-                    Part {
-                        path,
-                        ..Default::default()
-                    },
-                ),
+                None => {
+                    let (port, channel) = selection.next_input();
+                    add_part(
+                        &mut selection,
+                        Part {
+                            path,
+                            port,
+                            channel,
+                            ..Default::default()
+                        },
+                    )
+                }
             };
             if let Some(slot) = slot {
                 p.shared.focus_request.store(slot as u64, Ordering::Relaxed);
@@ -726,7 +734,7 @@ fn build(
             let mut current = write(&p.selection);
             if *current == before {
                 *current = selection;
-                let _ = p.shared.controls.force_push(rack_controls(&current));
+                let _ = p.shared.controls.force_push(mix(&current));
                 p.shared
                     .midi_thru
                     .store(current.midi_thru, Ordering::Release);
