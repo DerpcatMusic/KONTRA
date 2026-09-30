@@ -15,6 +15,7 @@
 mod bank;
 pub(crate) mod filter;
 mod map;
+pub mod overrides;
 mod params;
 mod rack;
 mod script;
@@ -28,7 +29,7 @@ pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
 pub use script::{MAX_COMMANDS, ScriptSetup, load_scripts};
-pub use voice::{Ahdsr, Flex, FlexPoint};
+pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 
 use crate::fx::FxProcessor;
 use crate::ksp::Runtime;
@@ -185,6 +186,8 @@ pub struct Engine {
     /// The part's own tune in semitones (cents as the fraction), over the
     /// instrument's and the groups'.
     pub tune: f32,
+    /// The player's edits over the bank's values (see `overrides.rs`).
+    overrides: overrides::Edits,
 }
 
 impl Default for Engine {
@@ -202,6 +205,7 @@ impl Default for Engine {
             cutoff: 20000.0,
             blocking_streams: false,
             tune: 0.0,
+            overrides: overrides::Edits(Vec::with_capacity(overrides::MAX_OVERRIDES)),
         }
     }
 }
@@ -218,6 +222,7 @@ impl Engine {
         let slots = self.bank.as_deref().map_or(0, |b| b.slots().len());
         self.player.free.extend((0..slots as u16).rev());
         self.replay(Address::is_group);
+        self.refresh_overrides();
         old
     }
 
@@ -292,10 +297,8 @@ impl Engine {
                 }
                 true
             }
-            _ => self
-                .bank
-                .as_deref_mut()
-                .is_some_and(|bank| params::write(&mut bank.settings, address, value)),
+            _ => self.write_group(address, value),
+
         }
     }
 

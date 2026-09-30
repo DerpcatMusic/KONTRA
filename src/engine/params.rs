@@ -585,7 +585,7 @@ impl Address {
     }
 }
 
-const UNIT: f32 = 1_000_000.0;
+pub(super) const UNIT: f32 = 1_000_000.0;
 /// +12 dB, Kontakt's volume maximum.
 const MAX_GAIN: f32 = 3.981_071_7;
 /// Group and instrument tune span ±36 semitones.

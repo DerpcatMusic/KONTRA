@@ -78,7 +78,7 @@ fn filter_type(id: i32) -> Option<(Response, u8)> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Shape {
+pub(crate) enum Shape {
     Filter(Response),
     Eq,
 }
@@ -145,14 +145,99 @@ impl Knob {
 /// One filter or EQ of a group's insert rack.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Unit {
-    slot: u8,
-    shape: Shape,
+    pub(crate) slot: u8,
+    pub(crate) shape: Shape,
     /// 2-pole sections (EQ: bands).
-    sections: u8,
+    pub(crate) sections: u8,
     /// Normalized knobs; scripts write them.
-    knobs: [f32; KNOBS],
-    bypass: bool,
+    pub(crate) knobs: [f32; KNOBS],
+    pub(crate) bypass: bool,
     gain: f32,
+}
+
+impl Unit {
+    /// Section `b`'s knobs (clamped) from the unit's `knobs`, and whether
+    /// it is a flat EQ band (an identity).
+    fn key(&self, knobs: &[f32; KNOBS], b: usize) -> ([f32; 3], bool) {
+        let k = knobs.map(|k| k.clamp(0.0, 1.0));
+        match self.shape {
+            Shape::Filter(_) => ([k[0], k[1], 0.0], false),
+            Shape::Eq => {
+                let key = [k[3 * b], k[3 * b + 1], k[3 * b + 2]];
+                (key, (key[2] - 0.5).abs() < FLAT)
+            }
+        }
+    }
+}
+
+/// The analog prototype a TPT section discretizes: prewarped `g`, damping
+/// `k` and the mix `m` of its high, band and low outputs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Proto {
+    g: f32,
+    k: f32,
+    m: [f32; 3],
+}
+
+/// A filter's cutoff (Hz) and Q from its normalized knobs.
+pub(crate) fn filter_settings(cutoff: f32, resonance: f32) -> (f32, f32) {
+    (CUTOFF_MIN_HZ * (CUTOFF_OCTAVES * cutoff).exp2(), Q_MIN * Q_SPAN.powf(resonance))
+}
+
+/// An EQ band's frequency (Hz), bandwidth (octaves) and gain (dB) from its
+/// normalized knobs.
+pub(crate) fn band_settings(freq: f32, bandwidth: f32, gain: f32) -> (f32, f32, f32) {
+    (EQ_MIN_HZ * 10f32.powf(EQ_DECADES * freq), BW_MIN + BW_SPAN * bandwidth, GAIN_DB * (2.0 * gain - 1.0))
+}
+
+impl Proto {
+    fn filter(response: Response, hz: f32, q: f32, rate: f32) -> Self {
+        let g = (std::f32::consts::PI * hz.min(0.49 * rate) / rate).tan();
+        let k = 1.0 / q;
+        let m = match response {
+            Response::Low => [0.0, 0.0, 1.0],
+            Response::High => [1.0, -k, -1.0],
+            Response::Band => [0.0, 1.0, 0.0],
+            Response::Notch => [1.0, -k, 0.0],
+        };
+        Self { g, k, m }
+    }
+
+    /// Peaking EQ band: `gain_db` at `hz`, `bw` octaves wide.
+    fn bell(hz: f32, bw: f32, gain_db: f32, rate: f32) -> Self {
+        let g = (std::f32::consts::PI * hz.min(0.49 * rate) / rate).tan();
+        let a = 10f32.powf(gain_db / 40.0);
+        let q = 1.0 / (2.0 * (std::f32::consts::LN_2 * 0.5 * bw).sinh());
+        let k = 1.0 / (q * a);
+        Self { g, k, m: [1.0, k * (a * a - 1.0), 0.0] }
+    }
+
+    /// A unit's section from normalized knobs: `[cutoff, resonance, _]` or
+    /// `[freq, bandwidth, gain]`.
+    fn of(shape: Shape, key: [f32; 3], rate: f32) -> Self {
+        match shape {
+            Shape::Filter(response) => {
+                let (hz, q) = filter_settings(key[0], key[1]);
+                Self::filter(response, hz, q, rate)
+            }
+            Shape::Eq => {
+                let (hz, bw, db) = band_settings(key[0], key[1], key[2]);
+                Self::bell(hz, bw, db, rate)
+            }
+        }
+    }
+
+    /// `|H|` at `hz`. Trapezoidal integration is the bilinear transform, so
+    /// the section's response is its prototype's,
+    /// `(m0 (s² + k s + 1) + m1 s + m2) / (s² + k s + 1)`, at `s = jΩ` with
+    /// `Ω = tan(π f / rate) / g`.
+    pub(crate) fn gain(&self, hz: f32, rate: f32) -> f32 {
+        let w = (std::f32::consts::PI * hz.min(0.499 * rate) / rate).tan() / self.g;
+        let (re, im) = (1.0 - w * w, self.k * w);
+        let [m0, m1, m2] = self.m;
+        let (nr, ni) = (m0 * re + m2, m0 * im + m1 * w);
+        ((nr * nr + ni * ni) / (re * re + im * im).max(1e-30)).sqrt()
+    }
 }
 
 /// A channel-mixing slot: Stereo Modeller (`[spread, pan]`) or Inverter (`None`).
@@ -360,6 +445,26 @@ impl GroupFilter {
         m.map(|x| x * gain)
     }
 
+    /// Filters and EQs, in slot order.
+    pub(crate) fn units(&self) -> &[Unit] {
+        &self.units
+    }
+
+    /// Magnitude of the whole chain at `hz` with its knobs as set (no
+    /// modulation), bypassed units and flat bands left out as `process` does.
+    pub(crate) fn magnitude(&self, hz: f32, rate: f32) -> f32 {
+        let mut gain = 1.0;
+        for unit in self.units.iter().filter(|u| !u.bypass) {
+            for b in 0..unit.sections as usize {
+                let (key, flat) = unit.key(&unit.knobs, b);
+                if !flat {
+                    gain *= Proto::of(unit.shape, key, rate).gain(hz, rate);
+                }
+            }
+        }
+        gain
+    }
+
     /// A slot's stored parameter (`get_engine_par`).
     pub(crate) fn knob(&self, slot: u8, knob: Knob) -> Option<f32> {
         let unit = self.units.iter().find(|u| u.slot == slot);
@@ -408,28 +513,17 @@ struct Section {
 }
 
 impl Section {
+    #[cfg(test)]
     fn set(&mut self, response: Response, hz: f32, q: f32, rate: f32) {
-        let g = (std::f32::consts::PI * hz.min(0.49 * rate) / rate).tan();
-        let k = 1.0 / q;
-        let (m0, m1, m2) = match response {
-            Response::Low => (0.0, 0.0, 1.0),
-            Response::High => (1.0, -k, -1.0),
-            Response::Band => (0.0, 1.0, 0.0),
-            Response::Notch => (1.0, -k, 0.0),
-        };
-        self.coefficients(g, k, [m0, m1, m2]);
+        self.coefficients(Proto::filter(response, hz, q, rate));
     }
 
-    /// Peaking EQ band: `gain_db` at `hz`, `bw` octaves wide.
+    #[cfg(test)]
     fn set_bell(&mut self, hz: f32, bw: f32, gain_db: f32, rate: f32) {
-        let g = (std::f32::consts::PI * hz.min(0.49 * rate) / rate).tan();
-        let a = 10f32.powf(gain_db / 40.0);
-        let q = 1.0 / (2.0 * (std::f32::consts::LN_2 * 0.5 * bw).sinh());
-        let k = 1.0 / (q * a);
-        self.coefficients(g, k, [1.0, k * (a * a - 1.0), 0.0]);
+        self.coefficients(Proto::bell(hz, bw, gain_db, rate));
     }
 
-    fn coefficients(&mut self, g: f32, k: f32, m: [f32; 3]) {
+    fn coefficients(&mut self, Proto { g, k, m }: Proto) {
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
         self.c = [a1, a2, g * a2, m[0], m[1], m[2]];
@@ -657,35 +751,18 @@ impl VoiceFilter {
             }
             let mut s = 0;
             for (unit, knobs) in f.units.iter().zip(&knobs) {
-                let k = knobs.map(|k| k.clamp(0.0, 1.0));
                 for b in 0..unit.sections as usize {
                     let (section, tuned) = (&mut self.sections[s + b], &mut self.tuned[s + b]);
-                    let key = match unit.shape {
-                        Shape::Filter(_) => [k[0], k[1], 0.0],
-                        Shape::Eq => [k[3 * b], k[3 * b + 1], k[3 * b + 2]],
-                    };
+                    let (key, flat) = unit.key(knobs, b);
                     // Bypassed units and flat EQ bands are identities: skip
                     // them, restarting from rest when they return.
-                    if unit.bypass || (unit.shape == Shape::Eq && (key[2] - 0.5).abs() < FLAT) {
+                    if unit.bypass || flat {
                         section.s = [0.0; 4];
                         continue;
                     }
                     if key != *tuned {
                         *tuned = key;
-                        match unit.shape {
-                            Shape::Filter(response) => section.set(
-                                response,
-                                CUTOFF_MIN_HZ * (CUTOFF_OCTAVES * key[0]).exp2(),
-                                Q_MIN * Q_SPAN.powf(key[1]),
-                                rate,
-                            ),
-                            Shape::Eq => section.set_bell(
-                                EQ_MIN_HZ * 10f32.powf(EQ_DECADES * key[0]),
-                                BW_MIN + BW_SPAN * key[1],
-                                GAIN_DB * (2.0 * key[2] - 1.0),
-                                rate,
-                            ),
-                        }
+                        section.coefficients(Proto::of(unit.shape, key, rate));
                     }
                     section.process(&mut left[start..end], &mut right[start..end]);
                 }
@@ -774,8 +851,33 @@ mod tests {
         assert!(gain_db(s, 4.0).abs() < 0.05, "LP 25 Hz passes 4 Hz");
     }
 
+    /// The editor's response curve is the running section's: the analytic
+    /// `Proto::gain` matches a sine through the SVF.
+    #[test]
+    fn analytic_response_matches_the_running_section() {
+        for proto in [
+            Proto::filter(Response::Low, 1000.0, 4.0, RATE),
+            Proto::filter(Response::High, 300.0, Q_MIN, RATE),
+            Proto::filter(Response::Band, 2000.0, 2.0, RATE),
+            Proto::filter(Response::Notch, 800.0, 1.0, RATE),
+            Proto::bell(2500.0, 0.7, -9.0, RATE),
+        ] {
+            let mut s = Section::default();
+            s.coefficients(proto);
+            for hz in [60.0, 400.0, 1000.0, 2500.0, 9000.0] {
+                let analytic = 20.0 * proto.gain(hz, RATE).log10();
+                // Deep in a notch the measurement reads its own noise floor.
+                if analytic > -40.0 {
+                    let measured = gain_db(s, hz);
+                    assert!((analytic - measured).abs() < 0.1, "{proto:?} at {hz}: {analytic} vs {measured}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn eq_bell_reaches_its_gain_at_the_center() {
+
         let mut s = Section::default();
         for db in [-12.0, 6.0, 18.0] {
             s.set_bell(2000.0, 1.0, db, RATE);
