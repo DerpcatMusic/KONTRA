@@ -235,7 +235,8 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         part.mute = !part.mute;
     }
     let mut gain = f64::from(part.gain);
-    let track = TEXT * 8.;
+    // Short tracks leave the name room in a narrow rack.
+    let track = TEXT * 6.;
     let (_, gain_el) = fader(ui, &format!("volume-{slot}"), "Volume", &mut gain, -60.0..=6.0, Fader::LEVEL.length(track), db_text);
     part.gain = gain as f32;
     let mut pan = f64::from(part.pan);
@@ -255,7 +256,7 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     ]
     .gap(TIGHT)
     .flex(1)
-    .min_w(0);
+    .min_w(TEXT * 10.);
     let routing = col![
         cluster(vec![label("MIDI"), port_el, channel_el]).h(CONTROL),
         cluster(vec![label("Out"), output_el]).h(CONTROL)

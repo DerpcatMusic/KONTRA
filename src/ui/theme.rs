@@ -433,7 +433,8 @@ pub struct Fader {
     pub widest: &'static str,
     /// Up and down rather than sideways.
     pub vertical: bool,
-    /// A fixed track length; `None` takes the room it is given.
+    /// A preferred track length, shrinking when crowded; `None` takes the
+    /// room it is given.
     pub length: Option<f64>,
 }
 
@@ -631,15 +632,16 @@ pub fn fader(
         col![text, track_el].gap(TIGHT).align(Align::Center).shrink(0)
     } else {
         let track_el = match length {
-            Some(w) => track_el.w(w).shrink(0),
+            // A preferred length that gives way in a crowded row.
+            Some(w) => track_el.w(w).min_w(CONTROL * 2.),
             None => track_el.flex(1).min_w(CONTROL * 2.),
         }
         .h(CONTROL - TIGHT);
         row![track_el, text.justify(Justify::End)]
             .gap(SPACE)
             .align(Align::Center)
-            .when(length.is_some(), |e| e.shrink(0))
-            .when(length.is_none(), |e| e.flex(1).min_w(0))
+            .when(length.is_none(), |e| e.flex(1))
+            .min_w(0)
     };
     (value.to_bits() != before.to_bits(), el)
 }

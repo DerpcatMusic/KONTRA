@@ -177,6 +177,13 @@ fn read(
         return None;
     }
     let picture_name = text("PICTURE");
+    // A logo that opens a credits page is branding, not a control.
+    if [picture_name, c.variable.as_str()]
+        .iter()
+        .any(|n| n.to_lowercase().contains("logo"))
+    {
+        return None;
+    }
     let picture = pictures.get(picture_name);
     let knob = ["knob", "dial", "rotary"]
         .iter()
