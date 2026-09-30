@@ -156,9 +156,27 @@ impl Partitioned {
     }
 }
 
-/// `acc += a * b` over spectra; a plain zip loop so LLVM vectorizes it.
+/// `acc += a * b` over spectra. Uses an AVX2 build when the CPU has it:
+/// the same operations in the same order (no FMA), so the same result.
 #[inline]
 fn mac(acc: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the running CPU supports AVX2.
+        return unsafe { mac_avx2(acc, a, b) };
+    }
+    mac_body(acc, a, b);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn mac_avx2(acc: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
+    mac_body(acc, a, b);
+}
+
+/// A plain zip loop so LLVM vectorizes it.
+#[inline(always)]
+fn mac_body(acc: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
     for ((acc, a), b) in acc.iter_mut().zip(a).zip(b) {
         acc.re += a.re * b.re - a.im * b.im;
         acc.im += a.re * b.im + a.im * b.re;
@@ -303,5 +321,30 @@ mod tests {
             let want = h.get(i).copied().unwrap_or(0.0);
             assert!((v - want).abs() < 1e-6, "{i}: {v}");
         }
+    }
+
+    /// Cost of a 3 s IR in 128-frame blocks, and a hash of the output bits
+    /// to compare builds: `cargo test --release --lib convolution_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn convolution_speed() {
+        let h: Vec<f32> = noise(144_000, 7)
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v * (-(i as f32) / 30_000.0).exp())
+            .collect();
+        let x = noise(48_000 * 4, 3);
+        let (mut best, mut hash) = (f64::MAX, 0u64);
+        for _ in 0..5 {
+            let mut conv = Convolver::new(&h, 128);
+            let mut y = x.clone();
+            let t = std::time::Instant::now();
+            for chunk in y.chunks_mut(128) {
+                conv.process(chunk);
+            }
+            best = best.min(t.elapsed().as_secs_f64());
+            hash = y.iter().fold(0, |h, v| (h ^ u64::from(v.to_bits())).wrapping_mul(0x100_0000_01b3));
+        }
+        println!("{:.1} µs per 128-frame block · output hash {hash:016x}", best / (x.len() / 128) as f64 * 1e6);
     }
 }
