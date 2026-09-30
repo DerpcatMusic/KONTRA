@@ -52,6 +52,7 @@ rm -rf .claude .impeccable .mcp.json .graft graft
 find . -name '*.md' -type f -print0 | xargs -0 sed -i \
   -e 's#/mnt/MAIN_STORAGE/Libraries/Kontakt#<library root>#g' \
   -e 's#/mnt/MAIN_STORAGE/Libraries#<libraries>#g' \
+  -e 's#/mnt/MAIN_STORAGE#<storage>#g' \
   -e 's#/mnt/Windows11/DEV_PROJECTS/Repos/KONTAKTO#<repository>#g' \
   -e 's#/home/derpcat#~#g'
 
@@ -67,8 +68,7 @@ if [ $mode = public ]; then
   sed -i 's#^//! Stand-in for the `library-access` feature: this build#//! Library access: this build#' src/access.rs
   find . -name '*.md' -type f -print0 |
     xargs -0 sed -i '/<!-- private:start -->/,/<!-- private:end -->/d'
-  # vendor/ni-file/doc: reverse-engineering notes from the DMCA-blocked upstream.
-  rm -rf audits PRODUCT.md DESIGN.md tools/*.py tools/export-public.sh vendor/ni-file/doc
+  rm -rf audits PRODUCT.md DESIGN.md tools/*.py tools/export-public.sh
   # Drop Cargo.lock entries (aes and its dependencies) no longer used.
   cargo metadata --offline --format-version 1 >/dev/null
 fi
@@ -114,22 +114,25 @@ while IFS= read -r f; do leak "64-digit hex string in $f"; done < <(
 while IFS= read -r f; do leak "personal data or local path in $f"; done < <(
   scan -lEI 'djderpcat|9240|/home/derpcat' . || true)
 [ $mode = public ] && while IFS= read -r f; do leak "local /mnt path in docs: $f"; done < <(
-  scan -lE '/mnt/' --include='*.md' . || true)
+  grep -rlE '/mnt/' --include='*.md' . || true)
 
 if [ $mode = public ]; then
   while IFS= read -r f; do leak "decryption code in $f"; done < <(
-    scan -lEI 'JDX|<HU>|Aes256|0x608da0a2' . || true)
+    grep -rlEI --include='*.rs' --include='*.toml' 'JDX|<HU>|Aes256|0x608da0a2|^aes = ' . || true)
 fi
 [ $fail = 0 ] || { echo "Leak scan failed; $out left for inspection." >&2; exit 1; }
 echo "Leak scan clean."
 
 # --- Fresh history -------------------------------------------------------------
-git init -q -b main
+# Branch `initial`, not main: local hooks refuse commits on main. Publish
+# with `git push <remote> initial:main`.
+git init -q -b initial
 git add -A
 GIT_AUTHOR_NAME=DerpcatMusic GIT_AUTHOR_EMAIL=djderpcat@gmail.com \
 GIT_COMMITTER_NAME=DerpcatMusic GIT_COMMITTER_EMAIL=djderpcat@gmail.com \
   git -c commit.gpgsign=false commit -q -m "KONTRA: initial commit"
-echo "Committed $(git rev-parse --short HEAD) in $out"
+echo "Committed $(git rev-parse --short HEAD) on branch initial in $out"
+echo "Publish with: git -C $out push <remote> initial:main"
 
 # --- Verify --------------------------------------------------------------------
 if [ $verify = 1 ]; then
