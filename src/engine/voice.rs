@@ -160,6 +160,8 @@ pub(crate) struct Envelope {
     decay: f32,
     sustain: f32,
     release: f32,
+    /// The attack's or decay's [`edge`], NaN until a skip works it out.
+    edge: f32,
 }
 
 /// A block of envelope gain as a level times a per-frame decay (1 for a
@@ -213,13 +215,8 @@ fn glide(from: f32, to: f32, frames: f32, curve: f32) -> (f32, f32) {
 /// Write `x = x * mul + add` per frame into `out`, from `x` = `level`;
 /// returns the last value. Eight frames at a time from powers of the step,
 /// so the frames don't wait on each other as a frame-by-frame loop does.
-fn affine(out: &mut [f32], level: f32, (mul, add): (f32, f32)) -> f32 {
-    let (mut pow, mut off) = ([0f32; 8], [0f32; 8]);
-    let (mut p, mut o) = (1f32, 0f32);
-    for k in 0..8 {
-        (p, o) = (p * mul, o * mul + add);
-        (pow[k], off[k]) = (p, o);
-    }
+fn affine(out: &mut [f32], level: f32, step: (f32, f32)) -> f32 {
+    let (pow, off) = powers(step);
     let mut x = level;
     let (chunks, tail) = out.as_chunks_mut::<8>();
     for c in chunks {
@@ -234,6 +231,80 @@ fn affine(out: &mut [f32], level: f32, (mul, add): (f32, f32)) -> f32 {
     out.last().copied().unwrap_or(level)
 }
 
+/// The step taken 1..=8 times: frame `k` of an eight-frame chunk from `x`
+/// is `pow[k] * x + off[k]`.
+fn powers((mul, add): (f32, f32)) -> ([f32; 8], [f32; 8]) {
+    let (mut pow, mut off) = ([0f32; 8], [0f32; 8]);
+    let (mut p, mut o) = (1f32, 0f32);
+    for k in 0..8 {
+        (p, o) = (p * mul, o * mul + add);
+        (pow[k], off[k]) = (p, o);
+    }
+    (pow, off)
+}
+
+/// Levels a chunk can start from with no frame stopping a glide (see
+/// [`edge`]): below the edge for a rising test, above it for a falling one.
+#[derive(Clone, Copy)]
+enum Short {
+    Unknown,
+    Below(f32),
+    Above(f32),
+}
+
+impl Short {
+    fn holds(self, x: f32) -> bool {
+        match self {
+            Self::Unknown => false,
+            Self::Below(edge) => x < edge,
+            Self::Above(edge) => x > edge,
+        }
+    }
+}
+
+/// The level where a glide's `stop` test starts to hold in a chunk, for a
+/// test that holds from some level up (`rising`) or down. Frame `k` of a
+/// chunk from `x`, `pow[k] * x + off[k]` rounded, never falls as `x` rises
+/// when the powers are not negative, so neither does the test; a chunk from
+/// a level short of the edge has no frame that stops, and skipping it takes
+/// its last frame alone, the same value. Bisected over the finite floats in
+/// order: at most 32 tests of eight frames, once per stage. Never short
+/// (the far infinity) for a step it cannot vouch for.
+fn edge(step: (f32, f32), rising: bool, stop: &impl Fn(f32) -> bool) -> f32 {
+    let (never, always) = match rising {
+        true => (f32::NEG_INFINITY, f32::INFINITY),
+        false => (f32::INFINITY, f32::NEG_INFINITY),
+    };
+    let (pow, off) = powers(step);
+    if !(step.0 >= 0.0 && pow.iter().chain(&off).all(|v| v.is_finite())) {
+        return never;
+    }
+    let stops = |x: f32| pow.iter().zip(&off).any(|(&p, &o)| stop(p * x + o));
+    // The floats in order as integers (-0 just below +0, which tests alike).
+    let key = |x: f32| (x.to_bits() as i32) ^ ((x.to_bits() as i32 >> 31) & i32::MAX);
+    let float = |k: i32| f32::from_bits((k ^ ((k >> 31) & i32::MAX)) as u32);
+    // `short` never stops; `far` does.
+    let (mut short, mut far) = match rising {
+        true => (key(f32::MIN), key(f32::MAX)),
+        false => (key(f32::MAX), key(f32::MIN)),
+    };
+    if stops(float(short)) {
+        return never;
+    }
+    if !stops(float(far)) {
+        return always;
+    }
+    while short.abs_diff(far) > 1 {
+        let mid = ((i64::from(short) + i64::from(far)) / 2) as i32;
+        if stops(float(mid)) {
+            far = mid;
+        } else {
+            short = mid;
+        }
+    }
+    float(far)
+}
+
 /// [`affine`] over `len` frames into `out`, or without writing them when
 /// `out` is `None`: the same values either way, from the same eight-frame
 /// powers, so an envelope that skips frames lands where one that renders
@@ -245,6 +316,7 @@ fn affine_until(
     level: f32,
     step: (f32, f32),
     stop: impl Fn(f32) -> bool,
+    short: Short,
 ) -> (f32, Option<usize>) {
     if let Some(out) = out {
         let out = &mut out[..len];
@@ -254,15 +326,14 @@ fn affine_until(
             None => (last, None),
         };
     }
-    let (mul, add) = step;
-    let (mut pow, mut off) = ([0f32; 8], [0f32; 8]);
-    let (mut p, mut o) = (1f32, 0f32);
-    for k in 0..8 {
-        (p, o) = (p * mul, o * mul + add);
-        (pow[k], off[k]) = (p, o);
-    }
+    let (pow, off) = powers(step);
     let mut x = level;
     for chunk in 0..len / 8 {
+        // No frame of the chunk can stop: its last is all that is needed.
+        if short.holds(x) {
+            x = pow[7] * x + off[7];
+            continue;
+        }
         let c: [f32; 8] = std::array::from_fn(|k| pow[k] * x + off[k]);
         // Every frame is tested, as `position` would: a chunk's end alone
         // could step back over the threshold by a rounding.
@@ -304,7 +375,7 @@ fn decay_until_silent(len: usize, level: f32, mul: f32) -> (f32, Option<usize>) 
         }
         x = last;
     }
-    let (x, end) = affine_until(None, len % 8, x, (mul, 0.0), |x| x < SILENT);
+    let (x, end) = affine_until(None, len % 8, x, (mul, 0.0), |x| x < SILENT, Short::Unknown);
     (x, end.map(|k| len / 8 * 8 + k))
 }
 
@@ -335,6 +406,7 @@ impl Envelope {
             decay: exp_coef(p.decay, rate),
             sustain: p.sustain.clamp(0.0, 1.0),
             release: exp_coef(p.release, rate),
+            edge: f32::NAN,
         }
     }
 
@@ -348,6 +420,7 @@ impl Envelope {
             decay: 0.0,
             sustain: 0.0,
             release: 0.0,
+            edge: f32::NAN,
         }
     }
 
@@ -410,6 +483,14 @@ impl Envelope {
         self.run(Some(out), len, flex, rate);
     }
 
+    /// The current stage's [`edge`], worked out once.
+    fn edge(&mut self, step: (f32, f32), rising: bool, stop: &impl Fn(f32) -> bool) -> f32 {
+        if self.edge.is_nan() {
+            self.edge = edge(step, rising, stop);
+        }
+        self.edge
+    }
+
     /// The stage machine over `len` frames, writing them to `out` if given.
     fn run(&mut self, mut out: Option<&mut [f32]>, len: usize, flex: Option<&Flex>, rate: f32) {
         let mut i = 0;
@@ -418,8 +499,12 @@ impl Envelope {
             let mut rest = out.as_deref_mut().map(|o| &mut o[i..]);
             let written = match self.stage {
                 Stage::Attack => {
-                    let (level, peak) =
-                        affine_until(rest.as_deref_mut(), n, self.level, self.step, |x| x >= 1.0);
+                    let stop = |x: f32| x >= 1.0;
+                    let short = match rest {
+                        Some(_) => Short::Unknown,
+                        None => Short::Below(self.edge(self.step, true, &stop)),
+                    };
+                    let (level, peak) = affine_until(rest.as_deref_mut(), n, self.level, self.step, stop, short);
                     self.level = level;
                     match peak {
                         Some(peak) => {
@@ -441,6 +526,7 @@ impl Envelope {
                     self.left -= m as u32;
                     if self.left == 0 {
                         self.stage = Stage::Decay;
+                        self.edge = f32::NAN;
                     }
                     m
                 }
@@ -459,7 +545,7 @@ impl Envelope {
                 Stage::Point(i) => {
                     let m = n.min(self.left as usize);
                     (self.level, _) =
-                        affine_until(rest.as_deref_mut(), m, self.level, self.step, |_| false);
+                        affine_until(rest.as_deref_mut(), m, self.level, self.step, |_| false, Short::Unknown);
                     self.left -= m as u32;
                     if self.left == 0 {
                         let point = flex.and_then(|f| Some((f.sustain, f.points.get(i as usize)?)));
@@ -484,8 +570,12 @@ impl Envelope {
                 Stage::Decay => {
                     let sustain = self.sustain;
                     let step = (self.decay, sustain * (1.0 - self.decay));
-                    let (level, end) =
-                        affine_until(rest, n, self.level, step, |x| x - sustain <= SILENT);
+                    let stop = |x: f32| x - sustain <= SILENT;
+                    let short = match rest {
+                        Some(_) => Short::Unknown,
+                        None => Short::Above(self.edge(step, false, &stop)),
+                    };
+                    let (level, end) = affine_until(rest, n, self.level, step, stop, short);
                     self.level = level;
                     match end {
                         Some(end) => {
@@ -504,7 +594,9 @@ impl Envelope {
                 }
                 Stage::Release => {
                     let (level, end) = match rest {
-                        Some(rest) => affine_until(Some(rest), n, self.level, (self.release, 0.0), |x| x < SILENT),
+                        Some(rest) => {
+                            affine_until(Some(rest), n, self.level, (self.release, 0.0), |x| x < SILENT, Short::Unknown)
+                        }
                         None => decay_until_silent(n, self.level, self.release),
                     };
                     self.level = level;
@@ -755,6 +847,7 @@ impl Lanes {
         self.lanes.clear();
     }
 
+    #[inline(always)]
     pub fn add(&mut self, mut lane: Lane, class: u64, key: &FilterKey, voice: u16) {
         if lane.is_solo() {
             lane.shape = u64::from(voice);
@@ -957,6 +1050,7 @@ impl Voice {
     /// it: modulation, pitch and gain into [`Voice::plan`], and the [`Lane`]
     /// it can mix in. `bus` is the group's, with its gains when it only
     /// passes to the output through a fader at rest.
+    #[inline(always)]
     pub fn plan(&mut self, cx: &Context, n: usize, bus: Option<u8>, through: Option<[f32; 2]>) -> Option<Lane> {
         let group = &cx.bank.settings[self.group as usize];
         let inputs = cx.inputs(self.channel, self.note, self.velocity);
@@ -1083,7 +1177,11 @@ impl Voice {
             // leave it, so it returns as if it had played on. Muted a while,
             // it stops streaming too: disk reads and decoding for voices no
             // one hears were most of the streamers' work.
-            self.filter.rest();
+            // Once is enough: only rendering (which unmutes) moves it again,
+            // and its state is most of a muted voice's cache lines.
+            if self.muted == 0 {
+                self.filter.rest();
+            }
             self.muted = self.muted.saturating_add(n as u32);
             // Still in the resident head, resuming is a voice start as usual.
             if self.muted as f32 >= PAUSE_AFTER * cx.rate || (self.pos as u64) < self.limit {
@@ -1432,8 +1530,9 @@ fn hermite(q: &[Frame; 4], t: f32) -> Frame {
 
 /// The inner loop: resample `window` from `base` by `step` (32.32 fixed
 /// point), apply per-frame amplitude and ramped channel gains, and accumulate.
-/// Dispatches to an AVX2 kernel that works eight frames at a time when the
-/// CPU has it (3.2x the scalar loop at 1000 voices).
+/// Dispatches to an AVX-512 kernel that works sixteen frames at a time, or
+/// an AVX2 one that works eight (3.2x the scalar loop at 1000 voices), when
+/// the CPU has them.
 #[allow(clippy::too_many_arguments)]
 fn mix(
     window: &[Frame],
@@ -1457,11 +1556,113 @@ fn mix(
         return taps(window, base >> 32, step >> 32, amp, gains, delta, left, right);
     }
     #[cfg(target_arch = "x86_64")]
+    if crate::audio::avx512() && std::arch::is_x86_feature_detected!("fma") {
+        // SAFETY: the running CPU supports every feature `mix_avx512` is compiled for.
+        return unsafe { mix_avx512(window, base, step, amp, gains, delta, left, right) };
+    }
+    #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
         // SAFETY: the running CPU supports every feature `mix_avx2` is compiled for.
-        return unsafe { mix_avx2(window, base, step, amp, gains, delta, left, right) };
+        return unsafe { mix_avx2(window, base, step, amp, gains, delta, left, right, 0) };
     }
     mix_body(window, base, step, amp, gains, delta, left, right, 0);
+}
+
+/// [`mix_avx2`] sixteen frames a pass: each pair of rows (frames `k` and
+/// `k + 8`) shares a register through the same in-lane transpose, and one
+/// two-source permute per tap puts the sixteen frames back in order. The
+/// same arithmetic, element for element; the rest goes eight at a time.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx2,fma,avx512f,avx512bw,avx512vl")]
+fn mix_avx512(
+    window: &[Frame],
+    base: u64,
+    step: u64,
+    amp: &[f32],
+    gains: [f32; 2],
+    delta: [f32; 2],
+    left: &mut [f32],
+    right: &mut [f32],
+) {
+    use std::arch::x86_64::*;
+    let n = left.len().min(right.len()).min(amp.len());
+    let full = n / 16 * 16;
+    let fits = full > 0
+        && base >> 32 >= 1
+        && ((base + step * (full as u64 - 1)) >> 32) as usize + 3 <= window.len();
+    let done = if fits { full } else { 0 };
+    let frames = window.as_ptr().cast::<f32>();
+    let v = _mm512_set1_ps;
+    let lanes = _mm512_setr_ps(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0);
+    let lane_steps = _mm512_mullo_epi32(
+        _mm512_set1_epi32(step as u32 as i32),
+        _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+    );
+    // Quarter q of the transposed pair (a, b) holds frames 4q..4q+4 of rows
+    // (a) 0..4, (b) 4..8 in its low and high halves, and 8..16 above.
+    let low = _mm512_setr_epi32(0, 1, 2, 3, 16, 17, 18, 19, 8, 9, 10, 11, 24, 25, 26, 27);
+    let high = _mm512_setr_epi32(4, 5, 6, 7, 20, 21, 22, 23, 12, 13, 14, 15, 28, 29, 30, 31);
+    for i in (0..done).step_by(16) {
+        let p = base + step * i as u64;
+        // SAFETY: `fits` bounds every frame's taps j-1..=j+2 inside `window`,
+        // and i+16 <= n bounds `amp`, `left` and `right`.
+        unsafe {
+            let row = |k: u64| {
+                let j = |k: u64| ((p + step * k) >> 32) as usize;
+                let lo = _mm256_loadu_ps(frames.add(2 * (j(k) - 1)));
+                let hi = _mm256_loadu_ps(frames.add(2 * (j(k + 8) - 1)));
+                _mm512_castpd_ps(_mm512_insertf64x4(_mm512_castpd256_pd512(_mm256_castps_pd(lo)), _mm256_castps_pd(hi), 1))
+            };
+            let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
+            let (r4, r5, r6, r7) = (row(4), row(5), row(6), row(7));
+            let (t0, t1) = (_mm512_unpacklo_ps(r0, r1), _mm512_unpackhi_ps(r0, r1));
+            let (t2, t3) = (_mm512_unpacklo_ps(r2, r3), _mm512_unpackhi_ps(r2, r3));
+            let (t4, t5) = (_mm512_unpacklo_ps(r4, r5), _mm512_unpackhi_ps(r4, r5));
+            let (t6, t7) = (_mm512_unpacklo_ps(r6, r7), _mm512_unpackhi_ps(r6, r7));
+            let (s0, s1) = (_mm512_shuffle_ps(t0, t2, 0x44), _mm512_shuffle_ps(t0, t2, 0xEE));
+            let (s2, s3) = (_mm512_shuffle_ps(t1, t3, 0x44), _mm512_shuffle_ps(t1, t3, 0xEE));
+            let (s4, s5) = (_mm512_shuffle_ps(t4, t6, 0x44), _mm512_shuffle_ps(t4, t6, 0xEE));
+            let (s6, s7) = (_mm512_shuffle_ps(t5, t7, 0x44), _mm512_shuffle_ps(t5, t7, 0xEE));
+            // Tap k of channel c for all sixteen frames: column 2k + c.
+            let taps = [
+                [_mm512_permutex2var_ps(s0, low, s4), _mm512_permutex2var_ps(s1, low, s5)],
+                [_mm512_permutex2var_ps(s2, low, s6), _mm512_permutex2var_ps(s3, low, s7)],
+                [_mm512_permutex2var_ps(s0, high, s4), _mm512_permutex2var_ps(s1, high, s5)],
+                [_mm512_permutex2var_ps(s2, high, s6), _mm512_permutex2var_ps(s3, high, s7)],
+            ];
+            let frac = _mm512_add_epi32(_mm512_set1_epi32(p as u32 as i32), lane_steps);
+            let t = _mm512_mul_ps(
+                _mm512_cvtepi32_ps(_mm512_srli_epi32(frac, 8)),
+                v(1.0 / (1 << 24) as f32),
+            );
+            let a = _mm512_loadu_ps(amp.as_ptr().add(i));
+            let fi = _mm512_add_ps(v(i as f32), lanes);
+            for (c, out) in [left.as_mut_ptr(), right.as_mut_ptr()].into_iter().enumerate() {
+                let (xm1, x0, x1, x2) = (taps[0][c], taps[1][c], taps[2][c], taps[3][c]);
+                let c1 = _mm512_mul_ps(v(0.5), _mm512_sub_ps(x1, xm1));
+                let c2 = _mm512_sub_ps(
+                    _mm512_add_ps(
+                        _mm512_sub_ps(xm1, _mm512_mul_ps(v(2.5), x0)),
+                        _mm512_mul_ps(v(2.0), x1),
+                    ),
+                    _mm512_mul_ps(v(0.5), x2),
+                );
+                let c3 = _mm512_add_ps(
+                    _mm512_mul_ps(v(0.5), _mm512_sub_ps(x2, xm1)),
+                    _mm512_mul_ps(v(1.5), _mm512_sub_ps(x0, x1)),
+                );
+                let y = _mm512_add_ps(_mm512_mul_ps(c3, t), c2);
+                let y = _mm512_add_ps(_mm512_mul_ps(y, t), c1);
+                let y = _mm512_add_ps(_mm512_mul_ps(y, t), x0);
+                let gain = _mm512_add_ps(v(gains[c]), _mm512_mul_ps(v(delta[c]), fi));
+                let o = out.add(i);
+                let sum = _mm512_mul_ps(_mm512_mul_ps(y, a), gain);
+                _mm512_storeu_ps(o, _mm512_add_ps(_mm512_loadu_ps(o), sum));
+            }
+        }
+    }
+    mix_avx2(window, base, step, amp, gains, delta, left, right, done);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1561,6 +1762,7 @@ fn mix_avx2(
     delta: [f32; 2],
     left: &mut [f32],
     right: &mut [f32],
+    from: usize,
 ) {
     use std::arch::x86_64::*;
     let n = left.len().min(right.len()).min(amp.len());
@@ -1569,11 +1771,12 @@ fn mix_avx2(
     // channel, and the Hermite runs across the eight frames at once. The
     // arithmetic matches `mix_body` operation for operation, so the output
     // is bit-identical whichever path a frame takes.
-    let full = n / 8 * 8;
-    let fits = full > 0
+    // From frame `from` on, eight at a time.
+    let full = from + n.saturating_sub(from) / 8 * 8;
+    let fits = full > from
         && base >> 32 >= 1
         && ((base + step * (full as u64 - 1)) >> 32) as usize + 3 <= window.len();
-    let done = if fits { full } else { 0 };
+    let done = if fits { full } else { from };
     let frames = window.as_ptr().cast::<f32>();
     let v = _mm256_set1_ps;
     let lanes = _mm256_setr_ps(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0);
@@ -1581,7 +1784,7 @@ fn mix_avx2(
         _mm256_set1_epi32(step as u32 as i32),
         _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7),
     );
-    for i in (0..done).step_by(8) {
+    for i in (from..done).step_by(8) {
         let p = base + step * i as u64;
         // SAFETY: `fits` bounds every frame's taps j-1..=j+2 inside `window`,
         // and i+8 <= n bounds `amp`, `left` and `right`.
@@ -1693,21 +1896,80 @@ mod tests {
             (2.0, 128, 700, 1.0),
             (3.0, 77, 700, 1.0),
             (1.0, 128, 132, 1.0),
+            // Sixteen at a time, then eight, then single frames.
+            (0.8123, 31, 700, 1.7),
+            (1.9, 16, 40, 1.2),
+            (0.5, 128, 67, 1.9),
         ] {
             let step = (step * FIXED_ONE) as u64;
             let base = (base * FIXED_ONE) as u64;
-            let run = |simd: bool| {
+            type Kernel = fn(&[Frame], u64, u64, &[f32], [f32; 2], [f32; 2], &mut [f32], &mut [f32]);
+            // Every kernel this CPU runs, not only the one dispatch picks.
+            let mut kernels: Vec<Kernel> = vec![mix];
+            #[cfg(target_arch = "x86_64")]
+            {
+                use std::arch::is_x86_feature_detected as has;
+                if has!("avx2") && has!("fma") {
+                    // SAFETY: the running CPU supports AVX2 and FMA.
+                    kernels.push(|w, b, s, a, g, d, l, r| unsafe { mix_avx2(w, b, s, a, g, d, l, r, 0) });
+                }
+                if crate::audio::avx512() && has!("fma") {
+                    // SAFETY: the running CPU supports AVX-512 F, BW and VL, AVX2 and FMA.
+                    kernels.push(|w, b, s, a, g, d, l, r| unsafe { mix_avx512(w, b, s, a, g, d, l, r) });
+                }
+            }
+            let run = |kernel: Option<Kernel>| {
                 let (mut l, mut r) = (vec![0.25; n], vec![-0.5; n]);
                 let args = (&window[..len], base, step, &amp[..n], [0.7, 0.3], [0.001, -0.002]);
-                if simd {
-                    mix(args.0, args.1, args.2, args.3, args.4, args.5, &mut l, &mut r);
-                } else {
-                    mix_body(args.0, args.1, args.2, args.3, args.4, args.5, &mut l, &mut r, 0);
+                match kernel {
+                    Some(k) => k(args.0, args.1, args.2, args.3, args.4, args.5, &mut l, &mut r),
+                    None => mix_body(args.0, args.1, args.2, args.3, args.4, args.5, &mut l, &mut r, 0),
                 }
                 (l, r)
             };
-            assert_eq!(run(true), run(false), "step {step:#x}, {n} frames");
+            for kernel in kernels {
+                assert_eq!(run(Some(kernel)), run(None), "step {step:#x}, {n} frames");
+            }
         }
+    }
+
+    /// Nanoseconds per 128-frame block of each mix kernel, best of many:
+    /// `cargo test --release --lib mix_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(target_arch = "x86_64")]
+    fn mix_speed() {
+        use std::arch::is_x86_feature_detected as has;
+        let window: Vec<Frame> = (0..WINDOW).map(|i| [(i as f32 * 0.37).sin(), (i as f32 * 0.11).cos()]).collect();
+        let amp = [0.9f32; MAX_BLOCK];
+        let (mut l, mut r) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+        let base = (1.3 * FIXED_ONE) as u64;
+        type Kernel = fn(&[Frame], u64, u64, &[f32], [f32; 2], [f32; 2], &mut [f32], &mut [f32]);
+        let mut kernels: Vec<(&str, Kernel)> =
+            vec![("scalar", |w, b, s, a, g, d, l, r| mix_body(w, b, s, a, g, d, l, r, 0))];
+        if has!("avx2") && has!("fma") {
+            // SAFETY: the running CPU supports AVX2 and FMA.
+            kernels.push(("avx2", |w, b, s, a, g, d, l, r| unsafe { mix_avx2(w, b, s, a, g, d, l, r, 0) }));
+        }
+        if crate::audio::avx512() && has!("fma") {
+            // SAFETY: the running CPU supports AVX-512 F, BW and VL, AVX2 and FMA.
+            kernels.push(("avx512", |w, b, s, a, g, d, l, r| unsafe { mix_avx512(w, b, s, a, g, d, l, r) }));
+        }
+        for step in [0.53, 1.06, 1.87] {
+            let step = (step * FIXED_ONE) as u64;
+            for (name, kernel) in &kernels {
+                let mut best = f64::MAX;
+                for _ in 0..200 {
+                    let t = std::time::Instant::now();
+                    for _ in 0..100 {
+                        kernel(&window, base, step, &amp, [0.7, 0.3], [0.0; 2], &mut l, &mut r);
+                    }
+                    best = best.min(t.elapsed().as_secs_f64() / 100.0);
+                }
+                println!("step {:.2} {name}: {:.0} ns per block", step as f64 / FIXED_ONE, best * 1e9);
+            }
+        }
+        assert!(l[0].is_finite());
     }
 
     #[test]
@@ -1764,6 +2026,9 @@ mod tests {
             (Envelope::new(&ahdsr(0.0), rate), None),
             (Envelope::new(&ahdsr(0.8), rate), None),
             (Envelope::new(&ahdsr(-0.6), rate), None),
+            (Envelope::new(&Ahdsr { sustain: 0.0, ..ahdsr(1.0) }, rate), None),
+            (Envelope::new(&Ahdsr { attack: 1e-7, decay: 0.0, ..ahdsr(-1.0) }, rate), None),
+            (Envelope::new(&Ahdsr { attack: 0.3, sustain: 1.0, ..ahdsr(0.3) }, rate), None),
             (Envelope::flex(), Some(&flex)),
         ];
         for (start, flex) in cases {
@@ -1782,6 +2047,42 @@ mod tests {
                 assert_eq!((rendered.stage, rendered.left), (skipped.stage, skipped.left), "block {block}");
             }
             assert!(skipped.done());
+        }
+    }
+
+    /// No frame of a chunk from a level short of a glide's edge stops it,
+    /// and one from the edge does: checked frame by frame.
+    #[test]
+    fn edges_leave_no_stopping_frame_short_of_them() {
+        let rate = 48_000.0;
+        let frames = |x: f32, (pow, off): ([f32; 8], [f32; 8])| std::array::from_fn::<f32, 8, _>(|k| pow[k] * x + off[k]);
+        let mut seed = 7u32;
+        let mut level = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1 << 24) as f32 * 1.5
+        };
+        let attacks = [1.0, 3.7, 100.0, 4800.0, 480_000.0]
+            .into_iter()
+            .flat_map(|n| [-1.0, -0.3, 0.0, 0.5, 1.0].map(|c| glide(0.0, 1.0, n, c)));
+        let decays = [0.0, 0.001, 0.07, 30.0]
+            .into_iter()
+            .flat_map(|t| [0.0, 0.4, 1.0].map(|s| (exp_coef(t, rate), s)));
+        let mut cases: Vec<((f32, f32), bool, Box<dyn Fn(f32) -> bool>)> = Vec::new();
+        cases.extend(attacks.map(|step| (step, true, Box::new(|x: f32| x >= 1.0) as Box<dyn Fn(f32) -> bool>)));
+        cases.extend(decays.map(|(d, s)| ((d, s * (1.0 - d)), false, Box::new(move |x: f32| x - s <= SILENT) as _)));
+        for (step, rising, stop) in &cases {
+            let e = edge(*step, *rising, stop);
+            let short = if *rising { Short::Below(e) } else { Short::Above(e) };
+            let stops = |x: f32| frames(x, powers(*step)).into_iter().any(|y| stop(y));
+            if e.is_finite() {
+                let before = if *rising { e.next_down() } else { e.next_up() };
+                assert!(short.holds(before) && !stops(before), "{step:?}");
+                assert!(!short.holds(e) && stops(e), "{step:?}");
+            }
+            for _ in 0..2000 {
+                let x = level();
+                assert!(!short.holds(x) || !stops(x), "{step:?} from {x}");
+            }
         }
     }
 

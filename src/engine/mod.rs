@@ -1500,10 +1500,8 @@ impl Player {
                             rendered
                         }
                     };
-                    lf.dots_out(sl, sr);
+                    lf.dots_out(sl, sr, [&mut *ol, &mut *or]);
                     lf.end(&mut voice.filter, [1.0; 2]);
-                    ol.iter_mut().zip(sl.iter()).for_each(|(o, x)| *o += x);
-                    or.iter_mut().zip(sr.iter()).for_each(|(o, x)| *o += x);
                     self.underruns += u64::from(underrun);
                     if !alive {
                         self.dead.push(first);

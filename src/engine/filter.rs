@@ -709,6 +709,7 @@ impl VoiceFilter {
     }
 
     /// Move the external sources on over `n` frames, before [`process`](Self::process).
+    #[inline(always)]
     pub fn follow(&mut self, f: &GroupFilter, table: &ModTable, input: &Inputs, n: usize, rate: f32) {
         for (value, (_, i)) in self.ext.iter_mut().zip(&f.ext) {
             table.mods[*i as usize].follow(value, input, n, rate);
@@ -718,6 +719,7 @@ impl VoiceFilter {
     /// Work out this block's [`FilterKey`] into `held` when the filter is
     /// held: no module envelopes and the matrix reached, with at most four
     /// active sections. Tunes the sections it keeps. Returns the key's hash.
+    #[inline(always)]
     pub fn hold(&mut self, f: &GroupFilter, table: &ModTable, rate: f32) -> Option<u64> {
         if !f.envs.is_empty() || self.matrix != f.matrix {
             return None;
@@ -1075,33 +1077,54 @@ impl LaneFilter {
     }
 
     /// Dot a voice's own filter input, `left`/`right`, with how each frame
-    /// reaches the end state.
-    pub fn dots_out(&mut self, left: &[f32], right: &[f32]) {
+    /// reaches the end state, and add it to the run's input `sum`.
+    pub fn dots_out(&mut self, left: &[f32], right: &[f32], sum: [&mut [f32]; 2]) {
         #[cfg(target_arch = "x86_64")]
         if std::arch::is_x86_feature_detected!("avx2") {
             // SAFETY: the running CPU supports AVX2.
-            return unsafe { self.dots_out_avx2(left, right) };
+            return unsafe { self.dots_out_avx2(left, right, sum) };
         }
-        self.dots_out_body(left, right);
+        self.dots_out_body(left, right, sum);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    fn dots_out_avx2(&mut self, left: &[f32], right: &[f32]) {
-        self.dots_out_body(left, right);
+    fn dots_out_avx2(&mut self, left: &[f32], right: &[f32], sum: [&mut [f32]; 2]) {
+        self.dots_out_body(left, right, sum);
     }
 
     #[inline(always)]
-    fn dots_out_body(&mut self, left: &[f32], right: &[f32]) {
-        let [mut dl, mut dr] = self.d;
+    fn dots_out_body(&mut self, left: &[f32], right: &[f32], [sl, sr]: [&mut [f32]; 2]) {
+        sl.iter_mut().zip(left).for_each(|(o, x)| *o += x);
+        sr.iter_mut().zip(right).for_each(|(o, x)| *o += x);
+        // Four sums a channel, of every fourth frame, so the adds overlap
+        // rather than wait on each other; the end state moves by the
+        // rounding of the regrouped sum (well under -120 dBFS).
+        let mut d = [[[0f32; LANE_STATES]; 4]; 2];
+        (d[0][0], d[1][0]) = (self.d[0], self.d[1]);
         let k = &self.tunings[self.tuning].k;
-        for ((l, r), k) in left.iter().zip(right).zip(k.iter()) {
+        let n = left.len().min(right.len()).min(k.len());
+        let at = |d: &mut [[f32; LANE_STATES]; 4], j: usize, x: f32, k: &States| {
             for q in 0..LANE_STATES {
-                dl[q] += k[q] * l;
-                dr[q] += k[q] * r;
+                d[j][q] += k[q] * x;
+            }
+        };
+        let whole = n / 4 * 4;
+        for ((k, l), r) in k[..whole].chunks_exact(4).zip(left.chunks_exact(4)).zip(right.chunks_exact(4)) {
+            for j in 0..4 {
+                at(&mut d[0], j, l[j], &k[j]);
+                at(&mut d[1], j, r[j], &k[j]);
             }
         }
-        self.d = [dl, dr];
+        for i in whole..n {
+            at(&mut d[0], i % 4, left[i], &k[i]);
+            at(&mut d[1], i % 4, right[i], &k[i]);
+        }
+        for (d, [a, b, c, e]) in self.d.iter_mut().zip(&d) {
+            for q in 0..LANE_STATES {
+                d[q] = (a[q] + b[q]) + (c[q] + e[q]);
+            }
+        }
     }
 
     /// Move the voice's state on by the block, its dotted input weighted
