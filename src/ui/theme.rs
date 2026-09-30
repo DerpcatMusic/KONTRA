@@ -161,21 +161,20 @@ pub fn stat(label: &str, value: String, widest: &str) -> El {
 
 // Controls.
 
+/// A lift `steps` above the surface, opaque. Text grounds on its parent's
+/// fill ignoring alpha, so a translucent ink wash under text would read as
+/// a light ground and turn the text dark: anything text sits on is opaque.
+pub fn lift(steps: i32) -> Fill {
+    Role::Level(steps).into()
+}
+
 /// The states every flat control shares: a faint lift on hover, a deeper one
 /// while pressed, a 1 px accent ring for keyboard focus.
 pub fn interactive(el: El, selected: bool) -> El {
-    el.on(State::Hover, move |s| {
-        if selected {
-            s
-        } else {
-            s.fill(Role::Ink.alpha(0.06))
-        }
-    })
-    .on(State::Press, |s| s.fill(Role::Ink.alpha(0.11)))
-    .on(State::FocusVisible, |s| {
-        s.stroke(Role::Primary.alpha(0.9)).stroke_width(1)
-    })
-    .animate_with(quick())
+    el.on(State::Hover, move |s| if selected { s } else { s.fill(lift(1)) })
+        .on(State::Press, |s| s.fill(lift(2)))
+        .on(State::FocusVisible, |s| s.stroke(Role::Primary.alpha(0.9)).stroke_width(1))
+        .animate_with(quick())
 }
 
 /// A text button. `selected` raises it on a neutral surface and inks its text.
@@ -381,7 +380,7 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool,
     .focusable()
     .a11y(A11y::Button)
     .named(label.to_owned())
-    .on(State::FocusVisible, |s| s.fill(Role::Ink.alpha(0.06)))
+    .on(State::FocusVisible, |s| s.fill(lift(1)))
     .id(id)
     .shrink(0);
     (hit, el)
@@ -766,21 +765,23 @@ pub fn db_text(db: f64) -> String {
     }
 }
 
-/// A flat notice with a colored edge. `role` is Warning or Danger.
+/// A notice: ink text on an opaque raised ground, and a 2 px edge in
+/// `role` (Warning or Danger) that carries the severity. The color never
+/// reaches the text, so it reads on any theme.
 pub fn banner(role: Role, text: impl Into<String>) -> El {
     row![
-        block(2, Len::Pct(100.)).fill(role.alpha(1.)),
+        block(2, Len::Pct(100.)).fill(role),
         body(text.into())
             .text_size(TEXT)
             .fill(Role::Ink)
-            .lines(2)
+            .lines(3)
             .flex(1)
             .min_w(0)
     ]
     .gap(SPACE)
     .align(Align::Stretch)
-    .pad((INSET, SPACE))
-    .fill(Role::Ink.alpha(0.04))
+    .pad(edges(SPACE, INSET, SPACE, 0.))
+    .fill(Role::Raised)
     .shrink(0)
 }
 
