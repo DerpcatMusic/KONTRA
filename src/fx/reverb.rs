@@ -15,6 +15,10 @@ const MAX_PREDELAY_MS: f32 = 250.0;
 const ALLPASS_MS: [f32; 2] = [4.77, 3.59];
 /// Tiny DC bias keeping decaying feedback out of subnormal floats (slow on x86).
 const ANTI_DENORMAL: f32 = 1e-20;
+/// Frames between exact LFO values; in between they are interpolated
+/// linearly. At 0.7 Hz that is off by under 3e-7 of the swing: a
+/// modulated delay off by a hundred-thousandth of a frame.
+const LFO_STEP: usize = 16;
 
 /// Power-of-two ring buffer; `mask` wraps indices without branches.
 struct Line {
@@ -72,6 +76,8 @@ pub struct Reverb {
     mod_depth: f32,
     lfo_phase: f32,
     lfo_step: f32,
+    /// `lfo_phase.sin_cos()`.
+    lfo: [f32; 2],
     input_coef: f32,
     input_state: [f32; 2],
     shelf_coef: f32,
@@ -118,6 +124,7 @@ impl Reverb {
             mod_depth,
             lfo_phase: 0.0,
             lfo_step: TAU * 0.7 / sample_rate,
+            lfo: [0.0, 1.0],
             input_coef: one_pole(20_000.0 * 0.025f32.powf(n(p.high_cut)), sample_rate),
             input_state: [0.0; 2],
             shelf_coef: one_pole(250.0, sample_rate),
@@ -147,15 +154,33 @@ impl Reverb {
 
     /// Replaces `left`/`right` with the wet (100%) reverb signal.
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let [wl, wr] = self.tick([*l, *r]);
-            *l = wl;
-            *r = wr;
+        for (left, right) in left.chunks_mut(LFO_STEP).zip(right.chunks_mut(LFO_STEP)) {
+            let from = self.lfo;
+            for _ in 0..left.len() {
+                self.advance_lfo();
+            }
+            let (sin, cos) = self.lfo_phase.sin_cos();
+            self.lfo = [sin, cos];
+            let n = left.len() as f32;
+            let slope = [(sin - from[0]) / n, (cos - from[1]) / n];
+            for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+                let t = (i + 1) as f32;
+                let lfo = [from[0] + slope[0] * t, from[1] + slope[1] * t];
+                [*l, *r] = self.tick([*l, *r], lfo);
+            }
         }
     }
 
+    fn advance_lfo(&mut self) {
+        self.lfo_phase += self.lfo_step;
+        if self.lfo_phase > TAU {
+            self.lfo_phase -= TAU;
+        }
+    }
+
+    /// One frame; `[sin, cos]` of the LFO phase.
     #[inline]
-    fn tick(&mut self, input: [f32; 2]) -> [f32; 2] {
+    fn tick(&mut self, input: [f32; 2], [sin, cos]: [f32; 2]) -> [f32; 2] {
         let pos = self.pos;
         self.pos = pos.wrapping_add(1);
 
@@ -178,11 +203,6 @@ impl Reverb {
         }
 
         // Quadrature LFOs on alternate lines decorrelate modes without pitch wobble.
-        self.lfo_phase += self.lfo_step;
-        if self.lfo_phase > TAU {
-            self.lfo_phase -= TAU;
-        }
-        let (sin, cos) = self.lfo_phase.sin_cos();
         let mut taps = [0.0; LINES];
         for (i, tap) in taps.iter_mut().enumerate() {
             let lfo = match i % 4 {
@@ -290,6 +310,29 @@ mod tests {
             l.fill(0.0);
             r.fill(0.0);
         }
+    }
+
+    /// The interpolated LFO against an exact one every frame: within
+    /// -100 dB of the peak.
+    #[test]
+    fn interpolated_lfo_matches_exact() {
+        let mut p = params(0.6);
+        p.modulation = 1.0;
+        let (mut fast, mut exact) = (Reverb::new(&p, 48_000.0), Reverb::new(&p, 48_000.0));
+        let input: Vec<f32> = (0..96_000).map(|i| (i as f32 * 0.05).sin() * (i as f32 * 0.0007).cos()).collect();
+        let (mut l, mut r) = (input.clone(), input.clone());
+        for (l, r) in l.chunks_mut(100).zip(r.chunks_mut(100)) {
+            fast.process(l, r);
+        }
+        let (mut worst, mut peak) = (0f32, 0f32);
+        for (i, &x) in input.iter().enumerate() {
+            exact.advance_lfo();
+            let (sin, cos) = exact.lfo_phase.sin_cos();
+            let [el, er] = exact.tick([x, x], [sin, cos]);
+            worst = worst.max((el - l[i]).abs()).max((er - r[i]).abs());
+            peak = peak.max(el.abs());
+        }
+        assert!(worst < 1e-5 * peak, "worst {worst} of peak {peak}");
     }
 
     #[test]
