@@ -108,21 +108,23 @@ pub fn modulation(p: &Arc<SamplerParams>, group: &Group, index: u16, watch: u64)
         line(vec![
             caption(source).text_size(TEXT).lines(1).shrink(0).reserve("Release velocity".to_owned()),
             glyph(Icon::Right, TEXT, Role::Dim.alpha(1.)),
-            caption(target_name(&m.target)).text_size(TEXT).lines(1).flex(1).min_w(0),
+            caption(target_name(&m.target)).text_size(TEXT).lines(1).min_w(0).reserve("Resonance · slot 8".to_owned()),
             depth(m, p.clone(), watch, index),
             caption(if m.invert { format!("{} inv", percent(m.intensity)) } else { percent(m.intensity) })
                 .fill(Role::Dim)
                 .lines(1)
                 .shrink(0)
                 .reserve("-100% inv".to_owned()),
+            spacer(),
         ])
         .tip(format!("{} · lag {} ms{}", m.name, m.lag_ms, if m.shaper.is_some() { " · shaped" } else { "" }))
     };
-    for m in &group.mods {
+    // An assignment at no depth drives nothing: left out.
+    for m in group.mods.iter().filter(|m| m.intensity != 0.) {
         rows.push(assignment(m, source_name(&m.source)));
     }
     for (n, e) in group.envelopes.iter().enumerate() {
-        for m in &e.targets {
+        for m in e.targets.iter().filter(|m| m.intensity != 0.) {
             rows.push(assignment(m, format!("Envelope {}", n + 1)));
         }
     }

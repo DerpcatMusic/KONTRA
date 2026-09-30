@@ -321,7 +321,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Route to…", "", Command::StripRoute(strip)),
             ];
             if let Strip::Part(slot) = strip {
-                items.insert(0, act("Edit sound", "", Command::EditSound(slot)));
+                items.extend([Item::Rule, act("Edit sound", "", Command::EditSound(slot))]);
             }
             items
         }

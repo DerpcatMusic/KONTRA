@@ -341,7 +341,7 @@ fn value_field(ui: &mut Ui, cx: &mut Cx, slot: usize, group: u16, p: Param, v: f
         let field = text_edit(ui, edit_id.as_str(), text, TextOpts::default());
         let cancel = ui.keys(edit_id.as_str()).iter().any(|k| k.key == moose::mui::mui::prelude::Key::Escape);
         let done = field.changed.submitted || (existed && !ui.focused(edit_id.as_str()));
-        let el = field.el.h(CONTROL - TIGHT).w(TEXT * 6.).shrink(0).named(format!("{} value", viz::label(p)));
+        let el = field.el.h(CONTROL - TIGHT).w(TEXT * 6.).radius(0).shrink(0).named(format!("{} value", viz::label(p)));
         if cancel || done {
             let text = state.typing.take().map(|(_, t)| t).unwrap_or_default();
             let scope = state.one_group.then_some(group);
@@ -611,14 +611,15 @@ fn lower(ui: &mut Ui, cx: &mut Cx, group: u32, instrument: &crate::import::Instr
     }
     let g = &instrument.groups[group as usize];
     let watch = Probe::watching(cx.state.selected, group as usize);
+    let bar = row![segmented(latches), spacer()].pad(edges(TIGHT, INSET, TIGHT, INSET)).shrink(0);
     let body = match now {
-        Lower::Zones => return col![section_bar("", vec![segmented(latches)]), zones(cx, group, instrument, tint)].gap(0).shrink(0),
+        Lower::Zones => return col![bar, zones(cx, group, instrument, tint)].gap(0).shrink(0),
         Lower::Modulation => chain::modulation(cx.p, g, group as u16, watch),
         Lower::Effects => chain::effects(instrument, g),
     };
     col![
-        section_bar("", vec![segmented(latches)]),
-        col![body].pad(edges(0., INSET, SPACE, INSET)).max_size(Size::new(f64::INFINITY, CONTROL * 5.)).scroll()
+        bar,
+        col![body].pad(edges(0., INSET, SPACE, INSET)).max_size(Size::new(1e5, CONTROL * 5.)).scroll()
     ]
     .gap(0)
     .shrink(0)

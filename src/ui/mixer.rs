@@ -49,10 +49,19 @@ const DB: std::ops::RangeInclusive<f64> = -60.0..=6.0;
 pub struct State {
     /// Strips wide enough for their inserts.
     wide: bool,
-    /// The spectrum shows the master, not the selected part.
-    master_spectrum: bool,
+    spectrum: Spectrum,
     /// Each meter's peak hold, by meter id.
     holds: HashMap<String, Arc<Mutex<Hold>>>,
+}
+
+/// What the mixer's spectrum shows.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Spectrum {
+    Off,
+    /// The selected part; the master when none is.
+    #[default]
+    Part,
+    Master,
 }
 
 /// A meter's peak hold: per side, the level held and when.
@@ -170,12 +179,6 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El 
         buses.push(col![more_el, spacer()].pad(TIGHT).fill(Role::Surface).shrink(0));
     }
     let master = master_strip(ui, cx, bridge);
-    let wide = cx.state.mixer.wide;
-    let (narrow_hit, narrow) = latch(ui, "mix-narrow", "Narrow", "Narrow strips: level and routing", !wide);
-    let (wide_hit, wide_el) = latch(ui, "mix-wide", "Wide", "Wide strips: with the instrument's inserts", wide);
-    if narrow_hit || wide_hit {
-        cx.state.mixer.wide = wide_hit;
-    }
     let signals = group(
         "Signals",
         match count {
@@ -183,13 +186,14 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El 
             n => format!("{n} instruments · MIDI in to a bus"),
         },
         signals,
-        vec![segmented(vec![narrow, wide_el])],
     );
     buses.push(block(SPACE, Len::Pct(100.)).fill(Role::Background).shrink(0));
     buses.push(master);
-    let buses = group("Buses", "st.1–st.16 to the host · Master".into(), buses, vec![]);
-    let analyser = analyser(ui, cx);
-    row![signals, buses, analyser]
+    let buses = group("Buses", "st.1–st.16 to the host · Master".into(), buses);
+    let toolbar = toolbar(ui, cx);
+    let mut console = vec![signals, buses];
+    console.extend(analyser(ui, cx));
+    let console = row(console)
         .gap(SPACE)
         .align(Align::Stretch)
         .pad(SPACE)
@@ -198,18 +202,41 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El 
         .min_w(0)
         .scroll()
         .fill(Role::Background)
-        .id("mixer")
+        .id("mixer");
+    col![toolbar, rule(), console].gap(0).flex(1).min_h(0).min_w(0)
 }
 
-/// A titled run of strips, hairlines between them, `actions` at the right.
-fn group(title: &str, subtitle: String, strips: Vec<El>, actions: Vec<El>) -> El {
-    let mut head = vec![section(title), caption(subtitle).fill(Role::Dim).lines(1).min_w(0)];
-    if !actions.is_empty() {
-        head.push(spacer());
-        head.extend(actions);
+/// Strip width, and the spectrum and what it shows.
+fn toolbar(ui: &mut Ui, cx: &mut Cx) -> El {
+    let m = &mut cx.state.mixer;
+    let (narrow_hit, narrow) = latch(ui, "mix-narrow", "Narrow", "Narrow strips: level and routing", !m.wide);
+    let (wide_hit, wide) = latch(ui, "mix-wide", "Wide", "Wide strips: with the instrument's inserts", m.wide);
+    if narrow_hit || wide_hit {
+        m.wide = wide_hit;
     }
+    let (off_hit, off) = latch(ui, "mix-spectrum-off", "Off", "No spectrum", m.spectrum == Spectrum::Off);
+    let (part_hit, part) = latch(ui, "mix-spectrum-part", "Part", "The selected part's output", m.spectrum == Spectrum::Part);
+    let (master_hit, master) = latch(ui, "mix-spectrum-master", "Master", "Everything sent to the host", m.spectrum == Spectrum::Master);
+    for (hit, to) in [(off_hit, Spectrum::Off), (part_hit, Spectrum::Part), (master_hit, Spectrum::Master)] {
+        if hit {
+            m.spectrum = to;
+        }
+    }
+    strip(vec![
+        section("Strips"),
+        segmented(vec![narrow, wide]),
+        spacer(),
+        section("Spectrum"),
+        segmented(vec![off, part, master]),
+    ])
+    .pad((INSET, TIGHT))
+    .fill(Role::Surface)
+}
+
+/// A titled run of strips, hairlines between them.
+fn group(title: &str, subtitle: String, strips: Vec<El>) -> El {
     col![
-        row(head)
+        row![section(title), caption(subtitle).fill(Role::Dim).lines(1)]
             .gap(SPACE)
             .align(Align::Center)
             .pad(edges(0., 0., TIGHT, TIGHT))
@@ -230,29 +257,26 @@ fn group(title: &str, subtitle: String, strips: Vec<El>, actions: Vec<El>) -> El
 
 /// The spectrum beside the console: the selected part's output, or the
 /// master's. Only while it shows does the audio thread copy a signal.
-fn analyser(ui: &mut Ui, cx: &mut Cx) -> El {
+/// Scrolled out of view, it asks for nothing.
+fn analyser(ui: &Ui, cx: &mut Cx) -> Option<El> {
     let chosen = cx.state.chosen().filter(|&s| cx.selection.parts.get(s).is_some_and(|p| !p.path.is_empty()));
-    let master = cx.state.mixer.master_spectrum || chosen.is_none();
-    let (part_hit, part_el) = latch(ui, "mix-spectrum-part", "Part", "The selected part's output", !master);
-    let (master_hit, master_el) = latch(ui, "mix-spectrum-master", "Master", "Everything sent to the host", master);
-    if part_hit || master_hit {
-        cx.state.mixer.master_spectrum = master_hit;
-    }
-    let source = match chosen {
-        Some(slot) if !master => slot + 1,
+    let source = match (cx.state.mixer.spectrum, chosen) {
+        (Spectrum::Off, _) => return None,
+        (Spectrum::Part, Some(slot)) => slot + 1,
         _ => SCOPE_MASTER,
+    };
+    let frame = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
+    let seen = match (frame("mix-spectrum"), frame("mixer")) {
+        (Some(a), Some(b)) => a.x < b.x + b.size.width && a.x + a.size.width > b.x,
+        _ => true,
     };
     let label = match source {
         SCOPE_MASTER => "Master".to_owned(),
         n => super::rack::name(cx, n - 1),
     };
-    let shape = cx.spectrum(source);
-    col![
-        row![section("Spectrum"), spacer(), segmented(vec![part_el, master_el])]
-            .gap(SPACE)
-            .align(Align::Center)
-            .h(CONTROL)
-            .shrink(0),
+    let shape = if seen { cx.spectrum(source) } else { Default::default() };
+    Some(col![
+        row![section("Spectrum")].align(Align::Center).pad(edges(0., 0., TIGHT, TIGHT)).h(CONTROL).shrink(0),
         col![
             row![
                 block(TIGHT * 2., TIGHT * 2.)
@@ -275,7 +299,7 @@ fn analyser(ui: &mut Ui, cx: &mut Cx) -> El {
     .gap(0)
     .w(TEXT * 22.)
     .shrink(0)
-    .id("mix-spectrum")
+    .id("mix-spectrum"))
 }
 
 /// The column every strip is built on: a colored top edge, then `rows`.
@@ -321,6 +345,7 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         menu::open(ui, cx, menu::Target::Strip(Strip::Part(slot)));
     }
     let name = strip_name(ui, cx, Strip::Part(slot));
+    let wide = cx.state.mixer.wide;
 
     let part = cx.selection.parts[slot].clone();
     let (input, input_el) = route(
@@ -330,6 +355,7 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         None,
         input_text(part.port, part.channel),
         "MIDI input",
+        wide,
     );
     if input {
         menu::open_under(ui, cx, menu::Target::Midi(slot), &format!("mix-in-{slot}"));
@@ -346,13 +372,12 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         cx.selection.bus(part.aux as usize).label(part.aux as usize)
     };
     let aux_chip = (part.aux >= 0).then(|| bus_color(part.aux as usize));
-    let (aux, aux_el) = route(ui, &format!("mix-aux-{slot}"), Icon::Right, aux_chip, aux_text, "Aux send");
+    let (aux, aux_el) = route(ui, &format!("mix-aux-{slot}"), Icon::Right, aux_chip, aux_text, "Aux send", wide);
     if aux {
         menu::open_under(ui, cx, menu::Target::Aux(slot), &format!("mix-aux-{slot}"));
     }
     let mut aux_gain = f64::from(part.aux_gain);
     let send_el = send_level(ui, &format!("mix-send-{slot}"), &mut aux_gain, part.aux >= 0);
-    let wide = cx.state.mixer.wide;
     let inserts = wide.then(|| chain::inserts(instrument::instrument_of(cx, slot).map(|i| &**i), INSERTS));
     let out = usize::from(part.output);
     let (output, output_el) = route(
@@ -362,6 +387,7 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         Some(bus_color(out)),
         cx.selection.bus(out).label(out),
         "Output",
+        wide,
     );
     if output {
         menu::open_under(ui, cx, menu::Target::Output(slot), &format!("mix-out-{slot}"));
@@ -421,6 +447,7 @@ fn bus_strip(ui: &mut Ui, cx: &mut Cx, n: usize) -> El {
         }
     }
     let name = strip_name(ui, cx, Strip::Bus(n));
+    let wide = cx.state.mixer.wide;
     let bus = cx.selection.bus(n);
     let sources = cx
         .selection
@@ -457,6 +484,7 @@ fn bus_strip(ui: &mut Ui, cx: &mut Cx, n: usize) -> El {
         Some(bus_color(n)),
         format!("Out {}", port_text(port)),
         "Host output",
+        wide,
     );
     if to {
         menu::open_under(ui, cx, menu::Target::BusPort(n), &format!("bus-port-{n}"));
@@ -468,7 +496,6 @@ fn bus_strip(ui: &mut Ui, cx: &mut Cx, n: usize) -> El {
         bus.solo = solo;
         bus.mute = mute;
     }
-    let wide = cx.state.mixer.wide;
     let mut rows = vec![name, sources_el];
     rows.extend(wide.then(|| blank(INSERT_ROWS)));
     rows.extend([
@@ -653,15 +680,19 @@ pub fn reset(cx: &mut Cx, strip: Strip) {
 /// A routing field: an icon, the target's color on its left edge, and
 /// what it points at. Opens a menu. [`route`](super::theme::route) with a
 /// color, for the labels that name a bus.
-fn route(ui: &mut Ui, id: &str, icon: Icon, chip: Option<Color>, text: String, name: &str) -> (bool, El) {
+/// A caret marks it a menu where a wide strip has the room.
+fn route(ui: &mut Ui, id: &str, icon: Icon, chip: Option<Color>, text: String, name: &str, caret: bool) -> (bool, El) {
     let hit = ui.get(id).activated();
     let edge = chip.map_or(Role::Ink.alpha(0.), Fill::from);
-    let el = row![
+    let mut cells = vec![
         block(2, Len::Pct(100.)).fill(edge).shrink(0),
         glyph(icon, TEXT, Role::Ink.alpha(0.72)),
         body(text.clone()).text_size(SMALL).lines(1).flex(1).min_w(0),
-        glyph(Icon::Down, TIGHT * 2.5, Role::Ink.alpha(0.45))
-    ]
+    ];
+    if caret {
+        cells.push(glyph(Icon::Down, TIGHT * 2.5, Role::Ink.alpha(0.45)));
+    }
+    let el = row(cells)
     .gap(TIGHT)
     .align(Align::Center)
     .pad(edges(0., TIGHT, 0., 0.))
@@ -737,7 +768,7 @@ fn channel(ui: &mut Ui, cx: &mut Cx, id: &str, name: &str, db: &mut f64, reset: 
         }
         let top = y(s.height, at);
         if at > 0. {
-            let fill: Fill = if live { accent().with_alpha(0.7).into() } else { Role::Ink.alpha(0.3) };
+            let fill: Fill = if live { Role::Ink.alpha(0.55) } else { Role::Ink.alpha(0.25) };
             d.push(Draw::fill(rect(mid - 1., top, 2., s.height - THUMB.1 / 2. - top), fill));
         }
         let (w, h) = THUMB;

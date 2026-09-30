@@ -111,17 +111,24 @@ impl Analyser {
         let power = |k: usize| self.bins.get(k).map_or(0., |c| c.norm_sqr());
         let bin_hz = rate / SIZE as f32;
         let step = 1000f32.powf(0.5 / (BANDS - 1) as f32);
+        let bands: Vec<f32> = (0..BANDS)
+            .map(|i| {
+                let hz = band_hz(i);
+                let (lo, hi) = ((hz / step / bin_hz) as usize, (hz * step / bin_hz).ceil() as usize);
+                if hi <= lo + 1 {
+                    // Narrower than a bin: between the two nearest.
+                    let at = hz / bin_hz;
+                    let (k, t) = (at.floor() as usize, at.fract());
+                    power(k) * (1. - t) + power(k + 1) * t
+                } else {
+                    (lo..hi).map(power).fold(0., f32::max)
+                }
+            })
+            .collect();
         for i in 0..BANDS {
             let hz = band_hz(i);
-            let (lo, hi) = ((hz / step / bin_hz) as usize, (hz * step / bin_hz).ceil() as usize);
-            let p = if hi <= lo + 1 {
-                // Narrower than a bin: between the two nearest.
-                let at = hz / bin_hz;
-                let (k, t) = (at.floor() as usize, at.fract());
-                power(k) * (1. - t) + power(k + 1) * t
-            } else {
-                (lo..hi).map(power).fold(0., f32::max)
-            };
+            // A quarter octave or so across neighbours: a smooth line, not bins.
+            let p = 0.5 * bands[i] + 0.25 * (bands[i.saturating_sub(1)] + bands[(i + 1).min(BANDS - 1)]);
             let db = 10. * (p.max(1e-20)).log10() + 20. * norm.log10() + TILT * (hz / 1000.).log2();
             let db = db.max(FLOOR_DB);
             let level = &mut self.level[i];
@@ -209,8 +216,8 @@ mod tests {
         }
         let i = (0..BANDS).max_by(|&x, &y| a.level[x].total_cmp(&a.level[y])).unwrap();
         assert!((band_hz(i) / hz).log2().abs() < 0.1, "peak at {} Hz", band_hz(i));
-        // -6 dBFS, no tilt at 1 kHz.
-        assert!((a.level[i] + 6.).abs() < 1.5, "{} dB", a.level[i]);
+        // -6 dBFS, no tilt at 1 kHz, a little under once spread over its neighbours.
+        assert!((-10.0..=-5.0).contains(&a.level[i]), "{} dB", a.level[i]);
         assert!(a.level[0] < -60., "20 Hz reads {}", a.level[0]);
         assert!(a.busy());
     }
