@@ -132,7 +132,7 @@ fn the_computer_keyboard_plays_while_switched_on() {
         mods: Mods::default(),
     };
     let computer = h.computer.clone();
-    let mut send = |h: &mut Harness, e: KeyEvent| computer.key(&h.ui, &p, &e);
+    let send = |h: &mut Harness, e: KeyEvent| computer.key(&h.ui, &p, &e);
     assert!(!send(&mut h, key(1, "a", true)), "off, keys pass through");
     h.press("qwerty");
     assert!(read(&p.selection).qwerty, "the top bar switches it on");
@@ -396,12 +396,70 @@ fn favorites_star_from_the_row_or_the_menu_and_lead_the_browser() {
     h.press("star-1");
     assert_eq!(favorites(&p), ["/virtual/Library/Piano.nki"], "a second star unsets it");
 
-    // Back at the libraries, the favorite leads the list and loads.
-    h.press("library-back");
+    // Favorites, above the libraries, lists it; Enter there loads it.
+    h.press("source-favorites");
+    assert_eq!(h.ui.focus_key(), Some("instrument-0"), "Enter on an entry moves on to its presets");
     h.press("instrument-0");
     let selection = p.selection.read().unwrap().clone();
     assert!(selection.parts[0].path.ends_with("Piano.nki"));
     assert_eq!(selection.recent, ["/virtual/Library/Piano.nki"], "loading records it");
+}
+
+/// The browser's two panes: the arrows walk each, Tab crosses between
+/// them, the search filters the chosen library, and a second click on it
+/// widens the search to every library.
+#[test]
+fn the_split_browser_walks_both_panes() {
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        v.root = "/virtual".into();
+        v.files = Arc::new(vec![
+            "/virtual/Keys/Grand Piano.nki".into(),
+            "/virtual/Keys/Organ.nki".into(),
+            "/virtual/Toys/Toy Piano.nki".into(),
+        ]);
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let shown = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
+    let key = |key: Key| Input {
+        keys: vec![KeyPress { key, mods: Mods::default() }],
+        ..Default::default()
+    };
+    assert!(!shown(&h, "instrument-0"), "nothing chosen, nothing listed");
+    h.ui.focus("library-0");
+    h.tick(key(Key::Down));
+    h.idle(2);
+    assert_eq!(h.ui.focus_key(), Some("library-1"), "Down walks the libraries");
+    assert!(shown(&h, "instrument-0") && !shown(&h, "instrument-1"), "and lists the one it lands on");
+    h.tick(key(Key::Tab));
+    h.idle(2);
+    assert_eq!(h.ui.focus_key(), Some("instrument-0"), "Tab crosses to the presets");
+    h.tick(key(Key::Tab));
+    h.idle(2);
+    assert_eq!(h.ui.focus_key(), Some("library-1"), "and back to the library");
+    h.tick(key(Key::Up));
+    h.idle(2);
+    assert!(shown(&h, "instrument-1"), "Keys lists both its presets");
+    h.ui.focus("search");
+    h.tick(Input { text: "organ".into(), ..Default::default() });
+    h.idle(2);
+    assert!(shown(&h, "instrument-0") && !shown(&h, "instrument-1"), "the search filters them");
+    h.tick(key(Key::Enter));
+    h.idle(3);
+    assert!(read(&p.selection).parts[0].path.ends_with("Organ.nki"), "Enter loads");
+
+    // The divider and the browser's edge drag, and are kept once let go.
+    for (id, dx, dy) in [("browser-split", 0., 40.), ("splitter", 30., 0.)] {
+        let at = center(&h.ui, id);
+        for (step, down) in [(0., true), (0.5, true), (1., true), (1., false)] {
+            h.tick(pointer(Point::new(at.x + dx * step, at.y + dy * step), down));
+        }
+        h.idle(2);
+    }
+    let s = read(&p.selection).clone();
+    assert!(s.browser_split as f64 > browser::SPLIT, "{}", s.browser_split);
+    assert!(s.browser_width as f64 > SIDEBAR, "{}", s.browser_width);
 }
 
 #[test]
@@ -492,7 +550,7 @@ fn screenshot() {
         ("mapping", true, &["tab-mapping"]),
         ("rack", true, &["tab-rack"]),
         ("info", true, &["tab-info"]),
-        ("library", false, &["library-0"]),
+        ("library", false, &["library-1"]),
         ("multis", false, &["picker-multis"]),
         ("settings", true, &["app-menu", "menu-item-3"]),
         ("menu", true, &["app-menu"]),

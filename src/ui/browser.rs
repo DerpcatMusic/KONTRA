@@ -1,7 +1,9 @@
-//! The browser: every library as a card, one library's presets under a
-//! sticky header, or search results across all libraries, grouped by library.
-//! Click selects, double-click or Enter loads, drag drops onto the rack,
-//! right-click offers the rest; the arrows walk the list.
+//! The browser, split like Bitwig's: the libraries above, with Favorites and
+//! Recent over them, and the chosen one's presets below, grouped by folder.
+//! The search filters the presets below (every library when none is
+//! chosen). Click selects, double-click or Enter loads, drag drops onto the
+//! rack, right-click offers the rest; the arrows walk each pane and Tab
+//! crosses between them. The divider and the browser's edge both drag.
 
 use super::{Cx, RackDrag, menu, theme::*};
 use crate::import;
@@ -10,6 +12,19 @@ use moose::mui::mui::scene::Fit;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// What the lower pane lists.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Source {
+    Favorites,
+    Recent,
+    Library(String),
+}
+
+/// The upper pane's share of the browser's height.
+pub const SPLIT: f64 = 0.36;
+pub const SPLIT_MIN: f64 = 0.14;
+pub const SPLIT_MAX: f64 = 0.7;
+
 pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let view = cx.view;
     let multis = cx.state.multis;
@@ -17,13 +32,20 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     for file in view.files.iter().filter(|f| import::is_multi(f) == multis) {
         libraries.entry(cx.library_of(file)).or_default().push(file);
     }
+    // Favorites and recents of the kind picked.
+    let kind = |paths: &[String]| -> Vec<PathBuf> {
+        paths
+            .iter()
+            .map(PathBuf::from)
+            .filter(|p| import::is_multi(p) == multis)
+            .collect()
+    };
+    let (favorites, recent) = (kind(&cx.selection.favorites), kind(&cx.selection.recent));
 
     let (hide, hide_el) = icon_button(ui, "browser-hide", Icon::Left, "Hide the browser", false);
     if hide {
         cx.state.browser = false;
     }
-    let search = search_field(ui, cx, multis);
-
     let mut kinds = Vec::new();
     for (multi, label, id) in [
         (false, "Instruments", "picker-instruments"),
@@ -36,148 +58,185 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         kinds.push(el);
     }
 
-    let needle = cx.state.search.to_lowercase();
-    let mut items = Vec::new();
-    // Presets in the order they are listed, for the arrow keys.
-    let mut listed: Vec<PathBuf> = Vec::new();
-    let mut heading = None;
-    let mut count = view.files.len();
-    let open = cx
-        .state
-        .library
-        .clone()
-        .filter(|l| libraries.contains_key(l));
-    if !needle.is_empty() {
-        count = 0;
-        for (name, files) in &libraries {
-            let hits: Vec<_> = files
-                .iter()
-                .filter(|f| stem(f).to_lowercase().contains(&needle))
-                .collect();
-            if hits.is_empty() {
-                continue;
-            }
-            count += hits.len();
-            let mut group = vec![group_heading(&library_label(name), hits.len())];
-            for path in hits {
-                group.push(preset(ui, cx, listed.len(), path));
-                listed.push((*path).clone());
-            }
-            items.push(col(group).gap(0).shrink(0));
+    // The upper pane: the two pseudo-entries, then every library.
+    let mut sources = vec![
+        ("source-favorites".to_owned(), Source::Favorites),
+        ("source-recent".to_owned(), Source::Recent),
+    ];
+    for (idx, name) in libraries.keys().enumerate() {
+        sources.push((format!("library-{idx}"), Source::Library(name.clone())));
+    }
+    if cx.state.source.as_ref().is_some_and(|s| !sources.iter().any(|(_, t)| t == s)) {
+        cx.state.source = None;
+    }
+    // Enter on an entry opens it and moves on to its presets.
+    let mut enter = false;
+    let mut rows = Vec::new();
+    for (n, (id, source)) in sources.iter().enumerate() {
+        let r = ui.get(id.as_str());
+        if r.clicked_with(Button::Primary) {
+            // A second click lets the library go: the search spans them all.
+            cx.state.source = (cx.state.source.as_ref() != Some(source)).then(|| source.clone());
+            cx.state.cursor = None;
         }
-        if count == 0 {
-            items.push(hint("Nothing matches that search."));
+        if r.key_activated {
+            cx.state.source = Some(source.clone());
+            cx.state.cursor = None;
+            enter = true;
         }
-    } else if let Some(open) = open {
-        let (back, back_el) = icon_button(ui, "library-back", Icon::Left, "All libraries", false);
-        if back {
-            cx.state.library = None;
-        }
-        count = libraries[&open].len();
-        // The library's header stays put while its presets scroll.
-        let mut top = vec![
-            row![
-                back_el,
-                body(library_label(&open))
-                    .text_size(TEXT + 1.)
-                    .text_weight(Weight::SEMIBOLD)
-                    .lines(1)
-                    .flex(1)
-                    .min_w(0),
-            ]
-            .gap(TIGHT)
-            .align(Align::Center)
-            .pad((TIGHT, TIGHT))
-            .shrink(0),
-        ];
-        if let Some(image) = view.artwork.get(&open) {
-            top.push(artwork(image, CONTROL * 3.));
-        }
-        top.push(rule());
-        heading = Some(col(top).gap(0).shrink(0));
-        // Subfolders become sections whose headings stick while they scroll.
-        let mut folders: Vec<(String, Vec<&PathBuf>)> = Vec::new();
-        for path in &libraries[&open] {
-            let here = subfolder(&view.root, &open, path);
-            match folders.last_mut() {
-                Some((folder, paths)) if *folder == here => paths.push(path),
-                _ => folders.push((here, vec![path])),
+        if ui.focused(id.as_str()) {
+            let step = ui.shortcuts().iter().fold(0i32, |at, k| match k.key {
+                Key::Down => at + 1,
+                Key::Up => at - 1,
+                _ => at,
+            });
+            if step != 0 {
+                let next = (n as i32 + step).clamp(0, sources.len() as i32 - 1) as usize;
+                cx.state.source = Some(sources[next].1.clone());
+                cx.state.cursor = None;
+                ui.focus(sources[next].0.clone());
             }
         }
-        for (folder, paths) in folders {
-            let mut group = Vec::new();
-            if !folder.is_empty() {
-                group.push(group_heading(&folder, paths.len()));
-            }
-            for path in paths {
-                group.push(preset(ui, cx, listed.len(), path));
-                listed.push(path.clone());
-            }
-            items.push(col(group).gap(0).shrink(0));
-        }
-    } else {
-        // Starred, then lately opened, over the libraries: the kind picked.
-        let kind = |paths: &[String]| -> Vec<String> {
-            paths
-                .iter()
-                .filter(|p| crate::import::is_multi(Path::new(p)) == multis)
-                .cloned()
-                .collect()
+        let (label, count, thumb) = match source {
+            Source::Favorites => ("Favorites".to_owned(), favorites.len(), symbol(Icon::Star)),
+            Source::Recent => ("Recent".to_owned(), recent.len(), symbol(Icon::Recent)),
+            Source::Library(name) => (
+                library_label(name),
+                libraries[name].len(),
+                match view.artwork.get(name) {
+                    Some(image) => block(THUMB.0, THUMB.1)
+                        .fill(Fill::Image(image.clone(), Fit::Cover))
+                        .shrink(0),
+                    None => symbol(Icon::Sidebar),
+                },
+            ),
         };
-        let lists = [
-            ("Favorites", kind(&cx.selection.favorites)),
-            ("Recent", kind(&cx.selection.recent)),
-        ];
-        let listed_any = lists.iter().any(|(_, paths)| !paths.is_empty());
-        for (title, paths) in lists.into_iter().filter(|(_, paths)| !paths.is_empty()) {
-            let mut group = vec![group_heading(title, paths.len())];
-            for path in paths.iter().map(PathBuf::from) {
-                group.push(preset(ui, cx, listed.len(), &path));
-                listed.push(path);
-            }
-            items.push(col(group).gap(0).shrink(0));
-        }
-        if listed_any {
-            items.push(group_heading("Libraries", libraries.len()));
-        }
-        let mut cards = Vec::new();
-        for (idx, (name, files)) in libraries.iter().enumerate() {
-            let id = format!("library-{idx}");
-            if ui.get(id.as_str()).activated() {
-                cx.state.library = Some(name.clone());
-            }
-            cards.push(card(view.artwork.get(name), name, files.len(), id));
-        }
-        if !cards.is_empty() {
-            items.push(grid(2, cards).gap(SPACE).min_col(SIDEBAR_MIN).pad(SPACE).shrink(0));
-        }
-        if libraries.is_empty() {
-            items.push(hint(if view.files.is_empty() {
-                "No libraries found. Choose the folder that holds your Kontakt libraries from the menu (top right)."
-            } else if multis {
-                "No multis in these libraries."
-            } else {
-                "No instruments in these libraries."
-            }));
+        let chosen = cx.state.source.as_ref() == Some(source);
+        rows.push(source_row(id, label, count, thumb, chosen));
+        if n == 1 {
+            rows.push(rule().pad((TIGHT, INSET)));
         }
     }
-    walk(ui, cx, &listed);
+    if libraries.is_empty() {
+        rows.push(hint(if view.files.is_empty() {
+            "No libraries found. Choose the folder that holds your Kontakt libraries from the menu (top right)."
+        } else if multis {
+            "No multis in these libraries."
+        } else {
+            "No instruments in these libraries."
+        }));
+    }
 
-    let list_id = format!(
-        "browser-{}-{multis}-{needle}",
-        cx.state.library.as_deref().unwrap_or("")
-    );
+    // The lower pane: the chosen source's presets, the search filtering them.
+    let search = search_field(ui, cx, multis);
+    let needle = cx.state.search.to_lowercase();
+    let matches = |p: &Path| needle.is_empty() || stem(p).to_lowercase().contains(&needle);
+    let mut groups: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    let mut push = |group: String, path: PathBuf| match groups.last_mut() {
+        Some((g, paths)) if *g == group => paths.push(path),
+        _ => groups.push((group, vec![path])),
+    };
+    let empty = match &cx.state.source {
+        Some(Source::Favorites) => {
+            favorites.into_iter().filter(|p| matches(p)).for_each(|p| push(String::new(), p));
+            "Star a preset to keep it here."
+        }
+        Some(Source::Recent) => {
+            recent.into_iter().filter(|p| matches(p)).for_each(|p| push(String::new(), p));
+            "Presets you open show up here."
+        }
+        Some(Source::Library(name)) => {
+            for path in libraries[name].iter().filter(|p| matches(p)) {
+                push(subfolder(&view.root, name, path), (*path).clone());
+            }
+            "Nothing here matches that search."
+        }
+        None if !needle.is_empty() => {
+            for (name, files) in &libraries {
+                for path in files.iter().filter(|p| matches(p)) {
+                    push(library_label(name), (*path).clone());
+                }
+            }
+            "Nothing matches that search."
+        }
+        None => "Choose a library above, or search them all.",
+    };
+    let mut items = Vec::new();
+    let mut listed: Vec<PathBuf> = Vec::new();
+    for (group, paths) in groups {
+        let mut section = Vec::new();
+        if !group.is_empty() {
+            section.push(group_heading(&group, paths.len()));
+        }
+        for path in paths {
+            section.push(preset(ui, cx, listed.len(), &path));
+            listed.push(path);
+        }
+        items.push(col(section).gap(0).shrink(0));
+    }
+    if listed.is_empty() && !libraries.is_empty() {
+        items.push(hint(empty));
+    }
+    walk(ui, cx, &listed);
+    let into_presets = || {
+        if listed.is_empty() {
+            "search".to_owned()
+        } else {
+            "instrument-0".to_owned()
+        }
+    };
+    if enter {
+        ui.focus(into_presets());
+    }
+    // Tab crosses the panes: into the presets at the cursor, back to the
+    // chosen entry. The Ui has moved the focus on by now; this overrides it.
+    let tabbed = ui
+        .focus_key()
+        .is_some_and(|k| ui.keys(k.to_owned()).iter().any(|k| k.key == Key::Tab));
+    if tabbed {
+        match cx.state.pane {
+            Some(Pane::Sources) => {
+                let at = cx.state.cursor.as_ref().and_then(|c| {
+                    listed.iter().position(|p| p.to_string_lossy() == c.as_str())
+                });
+                ui.focus(at.map_or_else(into_presets, |n| format!("instrument-{n}")));
+            }
+            Some(Pane::Presets) => {
+                let chosen = sources.iter().find(|(_, s)| Some(s) == cx.state.source.as_ref());
+                if let Some((id, _)) = chosen.or(sources.first()) {
+                    ui.focus(id.clone());
+                }
+            }
+            None => {}
+        }
+    }
+    cx.state.pane = ui.focus_key().and_then(pane_of);
+
+    let split = split_divider(ui, cx);
+    let source_key = match &cx.state.source {
+        Some(Source::Library(name)) => name.as_str(),
+        Some(Source::Favorites) => "*favorites",
+        Some(Source::Recent) => "*recent",
+        None => "",
+    };
+    let list_id = format!("browser-{source_key}-{multis}-{needle}");
     col![
         section_bar(
             "Browser",
-            vec![caption(count.to_string()).text_size(SMALL).fill(Role::Dim), hide_el]
+            vec![caption(listed.len().to_string()).text_size(SMALL).fill(Role::Dim), hide_el]
         ),
-        col![search, row(kinds).gap(INSET + TIGHT).shrink(0)]
-            .gap(TIGHT)
-            .pad(edges(0., INSET, 0., INSET))
-            .shrink(0),
+        row(kinds).gap(INSET + TIGHT).pad(edges(0., INSET, 0., INSET)).shrink(0),
         rule(),
-        heading.unwrap_or_else(|| block(0, 0)),
+        col(rows)
+            .gap(0)
+            .align(Align::Stretch)
+            .pad((TIGHT, 0))
+            .h(Len::Pct(cx.state.split * 100.))
+            .shrink(0)
+            .scroll()
+            .id(format!("browser-sources-{multis}")),
+        split,
+        col![search].pad(edges(SPACE, INSET, SPACE, INSET)).shrink(0),
         col(items)
             .gap(0)
             .align(Align::Stretch)
@@ -192,6 +251,98 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     .shrink(0)
     .fill(Role::Surface)
     .clip()
+    .id("browser")
+}
+
+/// The pane a focused id sits in, for Tab to cross from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Sources,
+    Presets,
+}
+
+fn pane_of(id: &str) -> Option<Pane> {
+    if id.starts_with("library-") || id.starts_with("source-") {
+        Some(Pane::Sources)
+    } else if id.starts_with("instrument-") || id.starts_with("star-") || id == "search" {
+        Some(Pane::Presets)
+    } else {
+        None
+    }
+}
+
+/// A library thumbnail's size in the upper pane.
+const THUMB: (f64, f64) = (TEXT * 3., TEXT * 1.75);
+
+/// A pseudo-entry's mark where a library shows its artwork.
+fn symbol(icon: Icon) -> El {
+    stack![glyph(icon, TEXT, Role::Ink.alpha(0.6)).centered()]
+        .w(THUMB.0)
+        .h(THUMB.1)
+        .fill(Role::Field)
+        .shrink(0)
+}
+
+/// One entry of the upper pane: an accent edge when chosen, the thumbnail,
+/// the name, how many presets.
+fn source_row(id: &str, label: String, count: usize, thumb: El, chosen: bool) -> El {
+    let el = row![
+        block(2, THUMB.1).fill(if chosen { Fill::from(accent()) } else { Role::Ink.alpha(0.) }),
+        thumb,
+        body(label.clone())
+            .text_size(TEXT)
+            .fill(if chosen { Role::Ink } else { Role::Dim })
+            .lines(1)
+            .flex(1)
+            .min_w(0),
+        caption(count.to_string()).text_size(SMALL).fill(Role::Dim),
+    ]
+    .gap(SPACE)
+    .align(Align::Center)
+    .pad(edges(TIGHT, INSET, TIGHT, 0.))
+    .when(chosen, |e| e.fill(Role::Raised))
+    .focusable()
+    .a11y(A11y::Button)
+    .named(format!("{label}, {count} presets"))
+    .tip(if chosen { "Click again to search every library" } else { "Show its presets below" })
+    .id(id.to_owned())
+    .shrink(0);
+    interactive(el, chosen)
+}
+
+/// The divider between the panes: drag it to share out the height, double-
+/// click to reset. The saved state takes it when let go.
+fn split_divider(ui: &mut Ui, cx: &mut Cx) -> El {
+    let id = "browser-split";
+    let r = ui.get(id);
+    let height = ui
+        .scene()
+        .and_then(|s| s.surface("browser"))
+        .map_or(600., |s| s.frame.size.height);
+    if r.dragged {
+        cx.state.split = (cx.state.split + r.drag_delta.y / height.max(1.)).clamp(SPLIT_MIN, SPLIT_MAX);
+    }
+    if r.double_clicked {
+        cx.state.split = SPLIT;
+    }
+    if r.released || r.double_clicked {
+        cx.selection.browser_split = cx.state.split as f32;
+    }
+    let lift = ui.state(id).hover.max(if r.held { 1. } else { 0. }) as f32;
+    canvas(move |s| {
+        let t = if lift > 0.5 { 2. } else { 1. };
+        vec![Draw::fill(
+            rect(0., ((s.height - t) / 2.).round(), s.width, t),
+            Role::Ink.alpha(0.08 + 0.25 * lift),
+        )]
+    })
+    .w(Len::Pct(100.))
+    .h(5)
+    .shrink(0)
+    .cursor(Cursor::ResizeV)
+    .tip("Drag to share out the height, double-click to reset")
+    .named("Resize the library list")
+    .id(id)
 }
 
 /// The search field with its glyph, placeholder and clear button. The arrows
@@ -278,49 +429,6 @@ fn walk(ui: &mut Ui, cx: &mut Cx, listed: &[PathBuf]) {
             }
         }
     }
-}
-
-/// A library as a card: its artwork over its name and preset count.
-fn card(image: Option<&std::sync::Arc<Image>>, name: &str, presets: usize, id: String) -> El {
-    let mut parts = Vec::new();
-    match image {
-        Some(image) => parts.push(artwork(image, CONTROL * 2.5)),
-        None => parts.push(
-            row![section(&library_label(name))]
-                .align(Align::Center)
-                .justify(Justify::Center)
-                .pad((SPACE, 0))
-                .h(CONTROL * 2.5)
-                .fill(Role::Field)
-                .shrink(0),
-        ),
-    }
-    parts.push(
-        row![
-            body(library_label(name))
-                .text_size(TEXT)
-                .lines(1)
-                .flex(1)
-                .min_w(0),
-            caption(presets.to_string()).text_size(SMALL).fill(Role::Dim)
-        ]
-        .align(Align::Center)
-        .gap(SPACE)
-        .pad((SPACE, TIGHT)),
-    );
-    let el = col(parts)
-        .gap(0)
-        .fill(Role::Raised)
-        .clip()
-        .focusable()
-        .a11y(A11y::Button)
-        .named(format!("{name}, {presets} presets"))
-        .tip(name.to_owned())
-        .id(id)
-        .shrink(0);
-    el.on(State::Hover, |s| s.fill(Role::Level(3)))
-        .on(State::FocusVisible, |s| s.stroke(Role::Primary.alpha(0.9)).stroke_width(1))
-        .animate_with(quick())
 }
 
 /// A list section's heading: it sticks to the top while its section scrolls.
@@ -412,12 +520,6 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
     interactive(el, cursor)
 }
 
-fn artwork(image: &std::sync::Arc<Image>, height: f64) -> El {
-    block(Len::Pct(100.), height)
-        .fill(Fill::Image(image.clone(), Fit::Cover))
-        .shrink(0)
-}
-
 /// The folders between a library and a preset, without "Instruments"/"Multis".
 fn subfolder(root: &str, library: &str, path: &Path) -> String {
     let folder = path
@@ -433,11 +535,9 @@ fn subfolder(root: &str, library: &str, path: &Path) -> String {
 }
 
 fn hint(text: &str) -> El {
-    body(text)
-        .fill(Role::Dim)
-        .text_size(TEXT)
-        .lines(4)
-        .pad((INSET, SPACE))
+    col![body(text).fill(Role::Dim).text_size(TEXT).lines(4)]
+        .pad(edges(SPACE, INSET, SPACE, INSET))
+        .shrink(0)
 }
 
 fn stem(path: &Path) -> String {

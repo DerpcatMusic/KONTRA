@@ -258,6 +258,8 @@ pub enum Icon {
     StarFilled,
     /// Three keys of a piano: the computer keyboard playing notes.
     Keys,
+    /// A clock face: what was opened lately.
+    Recent,
 }
 
 /// `icon` in `ink`, `size` points square.
@@ -325,6 +327,10 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                     black(8.6),
                 ]
             }
+            Icon::Recent => vec![
+                Draw::stroke(arc(ox + 8. * u, oy + 8. * u, 5.5 * u, 0., 2. * PI), ink.clone(), weight),
+                line(&[(8., 5.), (8., 8.), (10.5, 9.5)]),
+            ],
             Icon::Star | Icon::StarFilled => {
                 // Five points round (8, 8.6), alternating outer and inner radii.
                 let points = (0..10).map(|n| {

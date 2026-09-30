@@ -225,8 +225,12 @@ enum Tab {
 /// Editor-only state that outlives a frame but not the window.
 struct EditorState {
     search: String,
-    /// The library open in the browser; `None` lists every library.
-    library: Option<String>,
+    /// What the browser's lower pane lists; `None` searches every library.
+    source: Option<browser::Source>,
+    /// The browser pane that last held the focus, and the upper pane's
+    /// share of the height.
+    pane: Option<browser::Pane>,
+    split: f64,
     multis: bool,
     tab: Tab,
     settings: bool,
@@ -593,14 +597,22 @@ fn build(
     }
     let mut state = EditorState {
         search: String::new(),
-        library: None,
+        source: None,
+        pane: None,
+        split: match read(&params.selection).browser_split {
+            s if s > 0. => f64::from(s).clamp(browser::SPLIT_MIN, browser::SPLIT_MAX),
+            _ => browser::SPLIT,
+        },
         multis: false,
         tab: Tab::Rack,
         settings: false,
         saving: None,
         save_error: String::new(),
         browser: true,
-        sidebar: SIDEBAR,
+        sidebar: match read(&params.selection).browser_width {
+            w if w > 0. => f64::from(w).clamp(SIDEBAR_MIN, SIDEBAR_MAX),
+            _ => SIDEBAR,
+        },
         keyboard: true,
         octave: 2,
         keyboard_for: None,
@@ -664,7 +676,7 @@ fn build(
             .state
             .browser
             .then(|| browser::sidebar(ui, &mut cx).w(browser_w));
-        let splitter = cx.state.browser.then(|| splitter(ui, cx.state, browser_w));
+        let splitter = cx.state.browser.then(|| splitter(ui, &mut cx, browser_w));
         let main = main_view(ui, &mut cx);
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
@@ -729,13 +741,18 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
 
 /// The handle between the browser and the rest: drag to resize, double-click
 /// to restore the width.
-fn splitter(ui: &mut Ui, state: &mut EditorState, width: f64) -> El {
+fn splitter(ui: &mut Ui, cx: &mut Cx, width: f64) -> El {
     let r = ui.get("splitter");
+    let state = &mut *cx.state;
     if r.dragged {
         state.sidebar = (width + r.drag_delta.x).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
     }
     if r.double_clicked {
         state.sidebar = SIDEBAR;
+    }
+    // Saved once let go, not on every step of the drag.
+    if r.released || r.double_clicked {
+        cx.selection.browser_width = state.sidebar as f32;
     }
     let lift = ui.state("splitter").hover.max(if r.held { 1. } else { 0. }) as f32;
     canvas(move |s| {

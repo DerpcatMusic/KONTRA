@@ -73,6 +73,10 @@ pub struct Selection {
     pub recent: Vec<String>,
     /// The computer keyboard plays notes.
     pub qwerty: bool,
+    /// The browser's width in points and its upper pane's share of the
+    /// height; 0 is the default.
+    pub browser_width: f32,
+    pub browser_split: f32,
 }
 
 #[derive(Params)]
@@ -1297,6 +1301,8 @@ mod tests {
             favorites: vec!["/libraries/Solo/a.nki".into()],
             recent: vec!["second.nki".into(), "first.nkm".into()],
             qwerty: true,
+            browser_width: 300.,
+            browser_split: 0.4,
         };
         assert!(Selection::deserialize(&state.serialize()).unwrap() == state);
         assert_eq!(rack_controls(&state)[0].tune, -3.5, "the part's tune reaches the engine");
