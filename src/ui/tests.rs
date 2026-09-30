@@ -520,6 +520,205 @@ fn search_groups_results_by_library() {
     );
 }
 
+/// The owner's library instruments named in `names` (comma-separated stems).
+fn library_instruments(files: &[PathBuf], names: &str) -> Vec<Arc<import::Instrument>> {
+    names
+        .split(',')
+        .filter_map(|name| files.iter().find(|p| p.file_stem().is_some_and(|n| n == name)))
+        .filter_map(|p| import::read(p).ok())
+        .map(Arc::new)
+        .collect()
+}
+
+/// `i`'s scripts run, and `KONTAKTO_PRESS="$var=1,$other=2"` edits made
+/// (a page switch, say) as a player would.
+fn scripted(i: &import::Instrument) -> crate::plugin::ScriptView {
+    let Some(mut rt) = load_scripts(i, i.script_state.clone(), 48000.).0 else {
+        return script_interface(None);
+    };
+    let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
+    // A second of audio: listeners and waits run as they would once playing.
+    let mut run = |rt: &mut crate::ksp::Runtime| (0..100).for_each(|_| rt.process(&mut engine, 480));
+    run(&mut rt);
+    for press in std::env::var("KONTAKTO_PRESS").unwrap_or_default().split(',') {
+        let Some((var, value)) = press.split_once('=') else { continue };
+        let live = script_interface(Some(&rt));
+        let control = live
+            .interface
+            .as_ref()
+            .and_then(|u| u.controls.iter().position(|c| c.variable == var));
+        if let (Some(control), Ok(value)) = (control, value.parse()) {
+            let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
+            rt.ui_control(&mut engine, live.slot, control, value);
+        }
+        run(&mut rt);
+    }
+    script_interface(Some(&rt))
+}
+
+/// A plugin whose rack holds `instruments` (when `loaded`) as the loader
+/// leaves them: scripts run, pictures read. `state` stages the
+/// screenshots' special cases.
+fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bool, state: &str) -> Arc<SamplerParams> {
+    let root = Path::new(import::LIBRARY_ROOT);
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.artwork = artwork::scan(root, files);
+        view.files = Arc::new(files.to_vec());
+        view.root = import::LIBRARY_ROOT.into();
+        for (slot, i) in instruments.iter().enumerate().filter(|_| loaded) {
+            p.selection.write().unwrap().parts.push(Part {
+                path: i.path.to_string_lossy().into(),
+                group: i.first_playable_group().unwrap_or(0) as u32,
+                ..Default::default()
+            });
+            let script = scripted(i);
+            let (interface, keys) = (script.interface, script.keys);
+            // Control pictures, as the plugin loads them: they size controls.
+            let names = interface.iter().flat_map(|u| &u.controls).filter_map(|c| {
+                match c.properties.get("$CONTROL_PAR_PICTURE") {
+                    Some(crate::ksp::Value::Text(n)) => Some(n.as_str()),
+                    _ => None,
+                }
+            });
+            let pictures = Arc::new(artwork::pictures(&i.path, names));
+            view.parts[slot] = PartView {
+                pictures,
+                wallpaper: artwork::performance(i, interface.as_ref().map(|u| u.wallpaper.as_str()))
+                    .unwrap_or(None),
+                interface,
+                keys,
+                instrument: Some(i.clone()),
+                active: i.name.clone(),
+                bytes: 180 << 20,
+                loading: state == "error" && slot == 2,
+                status: if state == "error" && slot == 0 {
+                    "Load failed: missing sample data in archive".into()
+                } else {
+                    format!("{} groups · {} zones", i.groups.len(), i.zones.len())
+                },
+                ..Default::default()
+            };
+        }
+    }
+    p.selection.write().unwrap().appearance = match state {
+        "color" => 1,
+        "artwork" => 2,
+        _ => 0,
+    };
+    if state == "playing" {
+        // Keys sounding, soft to hard, on screen and from the host.
+        for (note, velocity) in [(48, 40), (52, 127)] {
+            p.shared.played[note].store(velocity, Ordering::Relaxed);
+        }
+        for (note, velocity) in [(55, 90), (58, 110), (61, 30)] {
+            p.shared.heard[note].store(velocity, Ordering::Relaxed);
+        }
+    }
+    p
+}
+
+/// Prints a library instrument's script controls as authored and as the
+/// panel reads them. `KONTAKTO_SHOT` names it; run with `--ignored --nocapture`.
+#[test]
+#[ignore]
+fn dump_panel() {
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let names = std::env::var("KONTAKTO_SHOT").unwrap_or_default();
+    for i in library_instruments(&files, &names) {
+        let script = scripted(&i);
+        for (note, k) in script.keys.iter() {
+            println!("key {note} {:?} {:?}", k.color, k.name);
+        }
+        let (lo, hi) = i.zones.iter().filter(|z| z.available).fold((127, 0), |(l, h), z| (z.low_key.min(l), z.high_key.max(h)));
+        println!("zones span {lo}..={hi}");
+        let Some(interface) = script.interface else { continue };
+        println!("== {} ({}x{})", i.name, interface.width, interface.height);
+        for (n, c) in interface.controls.iter().enumerate() {
+            let prop = |k: &str| c.properties.get(&format!("$CONTROL_PAR_{k}")).map(|v| format!("{v:?}")).unwrap_or_default();
+            println!(
+                "{n:3} {:12} {:28} x{} y{} w{} h{} hide{} text={} pic={} val={}",
+                c.kind, c.variable, prop("POS_X"), prop("POS_Y"), prop("WIDTH"), prop("HEIGHT"),
+                prop("HIDE"), prop("TEXT"), prop("PICTURE"), prop("VALUE")
+            );
+        }
+        let names = interface.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+            Some(crate::ksp::Value::Text(n)) => Some(n.as_str()),
+            _ => None,
+        });
+        let pictures = artwork::pictures(&i.path, names);
+        println!("{:#?}", panel::sections(&interface, &pictures));
+    }
+}
+
+/// What one frame costs, in microseconds: the view's build plus layout and
+/// paint-list resolve, and a CPU raster of the result (a stand-in for the
+/// GPU's share). `KONTAKTO_SHOT` picks the rack; run with `--ignored`.
+#[test]
+#[ignore]
+fn frame_cost() {
+    use moose::mui::mui::vello::{
+        self,
+        vello_cpu::{Pixmap, RenderContext, Resources},
+    };
+    use std::time::Instant;
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
+        "03 Areia - 6 Celli - Core Techniques,Vista - 3 Cellos,Una Corda Pure".into()
+    });
+    let instruments = library_instruments(&files, &chosen);
+    let p = racked(&files, &instruments, true, "perform");
+    let (w, hgt) = (1600u16, 1000u16);
+    let mut h = Harness::new(&p, f64::from(w), f64::from(hgt));
+    h.idle(10);
+    let mut raster = RenderContext::new(w, hgt);
+    let mut resources = Resources::default();
+    let mut cache = vello::Cache::default();
+    let mut pix = Pixmap::new(w, hgt);
+    let mut measure = |h: &mut Harness, label: &str, input: &mut dyn FnMut(usize) -> Input| {
+        let n = 120;
+        let (mut frame, mut paint) = (Vec::new(), Vec::new());
+        for i in 0..n {
+            let t = Instant::now();
+            h.tick(input(i));
+            frame.push(t.elapsed().as_secs_f64() * 1e6);
+            let t = Instant::now();
+            raster.reset();
+            vello::paint(
+                &mut vello::Cpu { ctx: &mut raster, resources: &mut resources, cache: &mut cache },
+                h.ui.scene().unwrap(),
+                vello::kurbo::Affine::IDENTITY,
+            )
+            .unwrap();
+            raster.flush();
+            raster.render(&mut pix, &mut resources);
+            paint.push(t.elapsed().as_secs_f64() * 1e6);
+        }
+        let median = |v: &mut Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            v[v.len() / 2]
+        };
+        println!(
+            "{label:>10}: build+layout {:>7.0} us   cpu paint {:>7.0} us",
+            median(&mut frame),
+            median(&mut paint)
+        );
+    };
+    measure(&mut h, "idle", &mut |_| Input::default());
+    let knob = center(&h.ui, "volume-0");
+    measure(&mut h, "dragging", &mut |i| {
+        pointer(Point::new(knob.x, knob.y - (i % 40) as f64), i % 60 != 59)
+    });
+    h.idle(3);
+    let shared = p.clone();
+    measure(&mut h, "keys", &mut |i| {
+        let note = 48 + (i % 24);
+        shared.shared.played[note].store(if i % 2 == 0 { 100 } else { 0 }, Ordering::Relaxed);
+        Input::default()
+    });
+}
+
 /// Renders the editor in its main states to `.impeccable/review/` (git-ignored)
 /// for a visual check. Uses the owner's library when present.
 #[test]
@@ -528,21 +727,11 @@ fn screenshot() {
         self,
         vello_cpu::{Pixmap, RenderContext, Resources},
     };
-    let root = Path::new(import::LIBRARY_ROOT);
-    let files = import::presets(root).unwrap_or_default();
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
     // KONTAKTO_SHOT="Name A,Name B" renders other instruments in the rack slots.
     let chosen = std::env::var("KONTAKTO_SHOT")
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
-    let instruments: Vec<_> = chosen
-        .split(',')
-        .filter_map(|name| {
-            files
-                .iter()
-                .find(|p| p.file_stem().is_some_and(|n| n == name))
-        })
-        .filter_map(|p| import::read(p).ok())
-        .map(Arc::new)
-        .collect();
+    let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
     let states: [(&str, bool, &[&str]); 15] = [
         ("empty", false, &[]),
@@ -564,68 +753,16 @@ fn screenshot() {
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
     let wanted = |state: &str| only.is_empty() || only.split(',').any(|s| s == state);
+    // KONTAKTO_WIDTHS="900,2000" renders those window widths instead.
+    let widths = std::env::var("KONTAKTO_WIDTHS").unwrap_or_else(|_| "1180,900".into());
+    let sizes: Vec<(u16, u16)> = widths
+        .split(',')
+        .filter_map(|w| w.trim().parse().ok())
+        .map(|w: u16| (w, if w < 1000 { 600 } else if w > 1500 { 1000 } else { 760 }))
+        .collect();
     for (state, loaded, presses) in states.into_iter().filter(|(s, ..)| wanted(s)) {
-        for (width, height) in [(1180u16, 760u16), (900, 600)] {
-            let p = Arc::new(SamplerParams::new());
-            {
-                let mut view = p.shared.view.lock().unwrap();
-                view.artwork = artwork::scan(root, &files);
-                view.files = Arc::new(files.clone());
-                view.root = import::LIBRARY_ROOT.into();
-                for (slot, i) in instruments.iter().enumerate().filter(|_| loaded) {
-                    p.selection.write().unwrap().parts.push(Part {
-                        path: i.path.to_string_lossy().into(),
-                        group: i.first_playable_group().unwrap_or(0) as u32,
-                        ..Default::default()
-                    });
-                    let script = script_interface(
-                        load_scripts(i, i.script_state.clone(), 48000.).0.as_deref(),
-                    );
-                    let (interface, keys) = (script.interface, script.keys);
-                    // Control pictures, as the plugin loads them: they size controls.
-                    let names = interface.iter().flat_map(|u| &u.controls).filter_map(|c| {
-                        match c.properties.get("$CONTROL_PAR_PICTURE") {
-                            Some(crate::ksp::Value::Text(n)) => Some(n.as_str()),
-                            _ => None,
-                        }
-                    });
-                    let pictures = Arc::new(artwork::pictures(&i.path, names));
-                    view.parts[slot] = PartView {
-                        pictures,
-                        wallpaper: artwork::performance(
-                            i,
-                            interface.as_ref().map(|u| u.wallpaper.as_str()),
-                        )
-                        .unwrap_or(None),
-                        interface,
-                        keys,
-                        instrument: Some(i.clone()),
-                        active: i.name.clone(),
-                        bytes: 180 << 20,
-                        loading: state == "error" && slot == 2,
-                        status: if state == "error" && slot == 0 {
-                            "Load failed: missing sample data in archive".into()
-                        } else {
-                            format!("{} groups · {} zones", i.groups.len(), i.zones.len())
-                        },
-                        ..Default::default()
-                    };
-                }
-            }
-            p.selection.write().unwrap().appearance = match state {
-                "color" => 1,
-                "artwork" => 2,
-                _ => 0,
-            };
-            if state == "playing" {
-                // Keys sounding, soft to hard, on screen and from the host.
-                for (note, velocity) in [(48, 40), (52, 127)] {
-                    p.shared.played[note].store(velocity, Ordering::Relaxed);
-                }
-                for (note, velocity) in [(55, 90), (58, 110), (61, 30)] {
-                    p.shared.heard[note].store(velocity, Ordering::Relaxed);
-                }
-            }
+        for &(width, height) in &sizes {
+            let p = racked(&files, &instruments, loaded, state);
             let mut h = Harness::new(&p, f64::from(width), f64::from(height));
             for id in presses {
                 h.press(id);
