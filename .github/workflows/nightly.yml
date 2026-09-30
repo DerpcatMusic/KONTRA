@@ -31,6 +31,7 @@ env:
   CARGO_INCREMENTAL: 0
   # The MOOSE revision Cargo.toml pins; cargo-moose must match it.
   MOOSE_REV: bffa4677d0b82119d38566ce7e932dc5c463d497
+  # Extra Cargo features for every build (tools/export-public.sh empties it).
   FEATURES: library-access
 
 jobs:
@@ -93,10 +94,10 @@ jobs:
         run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
       - name: CLAP and VST3 bundles
         shell: bash
-        run: cargo moose build --clap --vst3 --features "$FEATURES" --target ${{ matrix.target }}
+        run: cargo moose build --clap --vst3 ${FEATURES:+--features "$FEATURES"} --target ${{ matrix.target }}
       - name: Standalone
         shell: bash
-        run: cargo build --release --features "standalone,$FEATURES" --bin kontakto-standalone --target ${{ matrix.target }}
+        run: cargo build --release --features "standalone${FEATURES:+,$FEATURES}" --bin kontakto-standalone --target ${{ matrix.target }}
       - name: Stage
         shell: bash
         run: |

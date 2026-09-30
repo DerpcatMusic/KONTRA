@@ -66,6 +66,12 @@ if [ $mode = public ]; then
   grep -q 'library-access\|path = "no_access.rs"' src/lib.rs Cargo.toml &&
     { echo "library-access still referenced in src/lib.rs or Cargo.toml" >&2; exit 1; }
   sed -i 's#^//! Stand-in for the `library-access` feature: this build#//! Library access: this build#' src/access.rs
+  sed -i '/name: test (library-access)/,+1d; s/ --features library-access,standalone/ --features standalone/;
+          s/ --features library-access$//' .github/workflows/ci.yml
+  sed -i "s/^  FEATURES: library-access$/  FEATURES: ''/" .github/workflows/nightly.yml
+  sed -i '/export-public.sh empties it/d' .github/workflows/nightly.yml
+  grep -rq 'library-access' .github &&
+    { echo "library-access still referenced in .github/workflows" >&2; exit 1; }
   find . -name '*.md' -type f -print0 |
     xargs -0 sed -i '/<!-- private:start -->/,/<!-- private:end -->/d'
   rm -rf audits PRODUCT.md DESIGN.md tools/*.py tools/export-public.sh
