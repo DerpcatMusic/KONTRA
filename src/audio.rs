@@ -293,16 +293,14 @@ impl Packed {
                 data.extend(&q[2 + c].to_le_bytes()[..3]);
             }
             for (c, &w) in widths.iter().enumerate() {
-                let (mask, mut acc, mut bits) = ((1u64 << w) - 1, 0u64, 0);
-                for &v in residuals.iter().skip(c).step_by(2) {
-                    acc |= (v as u64 & mask) << bits;
-                    bits += u32::from(w);
-                    if bits >= 32 {
-                        data.extend((acc as u32).to_le_bytes());
-                        (acc, bits) = (acc >> 32, bits - 32);
-                    }
+                // Two zero fields round the channel up to whole groups of eight.
+                let mut channel = [0i32; BLOCK];
+                for (x, r) in channel.iter_mut().zip(residuals.as_chunks::<2>().0) {
+                    *x = r[c];
                 }
-                data.extend(&acc.to_le_bytes()[..bits.div_ceil(8) as usize]);
+                let end = data.len() + ((BLOCK - 2) * usize::from(w)).div_ceil(8);
+                pack_fields(&channel, w, &mut data);
+                data.truncate(end);
             }
             if data.len() + 8 >= raw * 9 / 10 {
                 return None;
@@ -375,6 +373,43 @@ impl Packed {
                 *y = prev;
             }
         }
+    }
+}
+
+/// Append `fields` as little-endian `width`-bit fields (0..=33), eight to
+/// every `width` bytes.
+fn pack_fields(fields: &[i32; BLOCK], width: u8, out: &mut Vec<u8>) {
+    // One copy per width: every shift and offset becomes a constant, and the
+    // eight fields of a group combine independently, not through one
+    // serial accumulator.
+    macro_rules! widths {
+        ($($w:literal)*) => {
+            match width {
+                $($w => pack_fixed::<$w>(fields, out),)*
+                _ => {}
+            }
+        };
+    }
+    widths!(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)
+}
+
+/// [`pack_fields`] at a fixed width.
+fn pack_fixed<const W: usize>(fields: &[i32; BLOCK], out: &mut Vec<u8>) {
+    let mask = (1u64 << W) - 1;
+    for group in fields.as_chunks::<8>().0 {
+        let mut words = [0u64; 5];
+        for (k, &v) in group.iter().enumerate() {
+            let (v, bit) = (v as u64 & mask, k * W);
+            words[bit / 64] |= v << (bit % 64);
+            if bit % 64 + W > 64 {
+                words[bit / 64 + 1] |= v >> (64 - bit % 64);
+            }
+        }
+        let mut bytes = [0u8; 40];
+        for (b, w) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words) {
+            *b = w.to_le_bytes();
+        }
+        out.extend_from_slice(&bytes[..W]);
     }
 }
 
@@ -1033,6 +1068,34 @@ mod tests {
                 }
                 assert!(pcm.window(frames.len(), &mut [[0.0; 2]; 1]).is_none());
             }
+        }
+    }
+
+    #[test]
+    fn packed_fields_match_a_serial_bit_writer() {
+        let mut seed = 7u32;
+        for width in 0..=33u8 {
+            let mut fields = [0i32; BLOCK];
+            for f in &mut fields[..BLOCK - 2] {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                *f = seed as i32;
+            }
+            let (mut serial, mut acc, mut bits) = (Vec::new(), 0u128, 0);
+            for &v in &fields[..BLOCK - 2] {
+                acc |= u128::from(v as u64 & ((1u64 << width) - 1)) << bits;
+                bits += u32::from(width);
+                while bits >= 8 {
+                    serial.push(acc as u8);
+                    (acc, bits) = (acc >> 8, bits - 8);
+                }
+            }
+            if bits > 0 {
+                serial.push(acc as u8);
+            }
+            let mut grouped = Vec::new();
+            pack_fields(&fields, width, &mut grouped);
+            grouped.truncate(serial.len());
+            assert_eq!(grouped, serial, "width {width}");
         }
     }
 }
