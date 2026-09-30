@@ -403,7 +403,7 @@ pub fn banner(image: &Image, w: u32, h: u32, blurred: bool) -> Option<Image> {
     const COLOR: f32 = 0.55;
     const PEAK: f32 = 96.;
     let crop = thumbnail(image, w, h)?;
-    let crop = if blurred { blur(&crop, (h / 12).max(2) as usize, 3)? } else { crop };
+    let crop = if blurred { blur(&crop, (h / 24).max(2) as usize, 3)? } else { crop };
     let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     let pixels = crop.rgba.as_chunks::<4>().0;
     let rgb = |c: &[u8; 4]| [0, 1, 2].map(|k| f32::from(c[k]));

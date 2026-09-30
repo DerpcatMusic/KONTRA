@@ -274,6 +274,23 @@ fn rack_interactions() {
         h.ui.scene().unwrap().surface("stage-0").is_some(),
         "and unfolds it"
     );
+    // The part's foot drags it down to its slim line, which folds it; a
+    // double-click on the foot unfolds it again.
+    let edge = |h: &Harness| center(&h.ui, "resize-0");
+    let at = edge(&h);
+    for dy in [0., -4., -400.] {
+        h.tick(pointer(Point::new(at.x, at.y + dy), true));
+    }
+    h.tick(pointer(Point::new(at.x, at.y - 400.), false));
+    h.idle(3);
+    assert!(parts(&p)[0].collapsed, "dragged to its slim line, a part folds");
+    let at = edge(&h);
+    for down in [true, false, true, false] {
+        h.tick(pointer(at, down));
+    }
+    h.idle(3);
+    let part = &parts(&p)[0];
+    assert!(!part.collapsed && part.height == 0., "a double-click unfolds it whole");
 
     // Lower on a key plays louder; dragging across the keys moves the note
     // along, and letting go stops it.
@@ -632,9 +649,33 @@ fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bo
     }
     p.selection.write().unwrap().appearance = match state {
         "color" => 1,
-        "artwork" => 2,
+        "artwork" | "sharp" | "sticky" => 2,
         _ => 0,
     };
+    p.selection.write().unwrap().sharp_artwork = state == "sharp";
+    if state == "resized" {
+        // The first part sized short: its controls clip and fade out.
+        p.selection.write().unwrap().parts[0].height = 220.;
+    }
+    if state == "loading" {
+        // One part reading its samples, one not yet read at all.
+        let mut view = p.shared.view.lock().unwrap();
+        for (slot, done) in [(1, 0.42), (2, 0.)] {
+            view.parts[slot].loading = true;
+            view.parts[slot].bytes = 0;
+            let done = (f64::from(crate::engine::LOAD_DONE) * done) as u32;
+            p.shared.load_progress[slot].store(done, Ordering::Relaxed);
+        }
+        view.parts[2].instrument = None;
+        view.parts[2].interface = None;
+    }
+    if state == "pressed" {
+        // Held on every kind of key: keyswitch red, unmapped grey, mapped
+        // green, white and black, soft to hard.
+        for (note, velocity) in [(2, 127), (3, 60), (30, 100), (32, 100), (48, 25), (61, 90), (64, 127), (66, 60)] {
+            p.shared.played[note].store(velocity, Ordering::Relaxed);
+        }
+    }
     if state == "playing" {
         // Keys sounding, soft to hard, on screen and from the host; a keyswitch.
         for (note, velocity) in [(15, 100), (48, 40), (52, 127)] {
@@ -762,7 +803,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 17] = [
+    let states: [(&str, bool, &[&str]); 22] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -780,6 +821,13 @@ fn screenshot() {
         ("artwork", true, &[]),
         ("folded", true, &["collapse-0", "collapse-1"]),
         ("mixer", true, &["tab-mixer"]),
+        ("sharp", true, &[]),
+        // Scrolled down: the parts above stack their headers at the top.
+        ("sticky", true, &[]),
+        // The first part dragged shorter: its controls clip.
+        ("resized", true, &[]),
+        ("loading", true, &[]),
+        ("pressed", true, &[]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
@@ -825,6 +873,11 @@ fn screenshot() {
                 h.press(id);
             }
             h.settle_art();
+            if state == "sticky" {
+                let at = center(&h.ui, "rack-view");
+                h.tick(Input { wheel: Vec2::new(0., 600.), ..pointer(at, false) });
+                h.idle(60);
+            }
             let scene = h.ui.scene().unwrap();
             let mut ctx = RenderContext::new(width, height);
             let mut resources = Resources::default();
@@ -857,7 +910,15 @@ fn screenshot() {
                 visible.push("search");
             }
             if loaded {
-                visible.extend(["tab-info", if state == "mixer" { "master-strip" } else { "header-0" }]);
+                visible.extend([
+                    "tab-info",
+                    match state {
+                        "mixer" => "master-strip",
+                        // Scrolled away, its header is stuck at the top.
+                        "sticky" => "stuck-0",
+                        _ => "header-0",
+                    },
+                ]);
             } else {
                 visible.push("rack-drop");
             }

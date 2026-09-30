@@ -51,6 +51,14 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             .collect()
     };
     let (favorites, recent) = (kind(&cx.selection.favorites), kind(&cx.selection.recent));
+    // How far each library's loading parts are, averaged.
+    let mut loading: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+    for (slot, part) in cx.selection.parts.iter().enumerate() {
+        if let Some(done) = super::rack::loading(cx, slot) {
+            let at = loading.entry(cx.library_of(Path::new(&part.path))).or_default();
+            (at.0, at.1) = (at.0 + done, at.1 + 1);
+        }
+    }
 
     let (hide, hide_el) = icon_button(ui, "browser-hide", Icon::Left, "Hide the browser", false);
     if hide {
@@ -122,7 +130,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             ),
         };
         let chosen = cx.state.source.as_ref() == Some(source);
-        rows.push(source_row(id, label, count, thumb, chosen));
+        let progress = match source {
+            Source::Library(name) => loading.get(name).map(|(sum, n)| sum / *n as f64),
+            _ => None,
+        };
+        rows.push(source_row(id, label, count, thumb, chosen, progress));
         if n == 1 {
             rows.push(rule().pad((TIGHT, INSET)));
         }
@@ -294,18 +306,27 @@ fn symbol(icon: Icon) -> El {
 }
 
 /// One entry of the upper pane: an accent edge when chosen, the thumbnail,
-/// the name, how many presets.
-fn source_row(id: &str, label: String, count: usize, thumb: El, chosen: bool) -> El {
+/// the name, how many presets; while one of its instruments loads, how far
+/// it is, and a thin bar under the name filling with it.
+fn source_row(id: &str, label: String, count: usize, thumb: El, chosen: bool, loading: Option<f64>) -> El {
+    let name = body(label.clone())
+        .text_size(TEXT)
+        .fill(if chosen || loading.is_some() { Role::Ink } else { Role::Dim })
+        .lines(1)
+        .min_w(0);
+    let named = format!("{label}, {count} presets");
+    let (name, count) = match loading {
+        Some(done) => (
+            col![name, progress_bar(done)].gap(3).align(Align::Start).flex(1).min_w(0),
+            super::rack::load_chip(done, false),
+        ),
+        None => (name.flex(1), caption(count.to_string()).text_size(SMALL).fill(Role::Dim)),
+    };
     let el = row![
         block(2, THUMB.1).fill(if chosen { Fill::from(accent()) } else { Role::Ink.alpha(0.) }),
         thumb,
-        body(label.clone())
-            .text_size(TEXT)
-            .fill(if chosen { Role::Ink } else { Role::Dim })
-            .lines(1)
-            .flex(1)
-            .min_w(0),
-        caption(count.to_string()).text_size(SMALL).fill(Role::Dim),
+        name,
+        count,
     ]
     .gap(SPACE)
     .align(Align::Center)
@@ -313,11 +334,25 @@ fn source_row(id: &str, label: String, count: usize, thumb: El, chosen: bool) ->
     .when(chosen, |e| e.fill(Role::Raised))
     .focusable()
     .a11y(A11y::Button)
-    .named(format!("{label}, {count} presets"))
+    .named(named)
     .tip(if chosen { "Click again to search every library" } else { "Show its presets below" })
     .id(id.to_owned())
     .shrink(0);
     interactive(el, chosen)
+}
+
+/// A thin track filling with the accent to `done` (0..1).
+fn progress_bar(done: f64) -> El {
+    canvas(move |s| {
+        vec![
+            Draw::fill(rect(0., 0., s.width, s.height), Role::Ink.alpha(0.12)),
+            Draw::fill(rect(0., 0., (s.width * done).max(s.height), s.height), accent()),
+        ]
+    })
+    .w(Len::Pct(100.))
+    .h(2)
+    .shrink(0)
+    .named("Load progress")
 }
 
 /// The divider between the panes: drag it to share out the height, double-
@@ -463,6 +498,9 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
     let star_id = format!("star-{n}");
     let text = path.to_string_lossy().into_owned();
     let loaded = cx.selection.parts.iter().any(|p| p.path == text);
+    let loading = (cx.selection.parts.iter().enumerate())
+        .filter(|(_, p)| p.path == text)
+        .find_map(|(slot, _)| super::rack::loading(cx, slot));
     if ui.get(star_id.as_str()).activated() {
         cx.toggle_favorite(&text);
     }
@@ -515,7 +553,10 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
             .lines(1)
             .flex(1)
             .min_w(0),
-        star
+        match loading {
+            Some(done) => super::rack::load_chip(done, false),
+            None => star,
+        }
     ]
     .gap(INSET - 1.)
     .align(Align::Center)

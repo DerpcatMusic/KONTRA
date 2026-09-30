@@ -319,6 +319,13 @@ struct EditorState {
     mapped: (std::sync::Weak<import::Instrument>, [bool; 128]),
     /// The browser's files by library: of which scan, root and kind.
     libraries: (std::sync::Weak<Vec<PathBuf>>, String, bool, Arc<Libraries>),
+    /// How far the rack is scrolled (where it glides to), a part to scroll
+    /// to once it is laid out, and a part's height while its edge is dragged.
+    rack_y: f64,
+    reveal: Option<usize>,
+    resizing: Option<(usize, f64)>,
+    /// Each part's notices and controls at their full height, as last laid out.
+    bodies: HashMap<usize, f64>,
     /// Each part's performance view as last read.
     panels: HashMap<usize, panel::Cache>,
     started: Instant,
@@ -384,9 +391,10 @@ impl Cx<'_> {
             .filter(|p| !p.path.is_empty())
     }
 
-    /// Select `slot` and unfold it.
+    /// Select `slot`, unfold it and scroll the rack to it.
     fn show(&mut self, slot: usize) {
         self.state.selected = slot;
+        self.state.reveal = Some(slot);
         self.state.notice.clear();
         self.state.renaming = None;
         if let Some(part) = self.selection.parts.get_mut(slot) {
@@ -706,6 +714,10 @@ fn build(
         art,
         mapped: (std::sync::Weak::new(), [false; 128]),
         libraries: Default::default(),
+        rack_y: 0.,
+        reveal: None,
+        resizing: None,
+        bodies: HashMap::new(),
         panels: HashMap::new(),
         started: Instant::now(),
         computer,
