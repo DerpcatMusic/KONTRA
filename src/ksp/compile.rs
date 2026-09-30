@@ -921,7 +921,8 @@ impl<'a> Compiler<'a> {
                         .map(|h| self.case_label(h))
                         .transpose()?
                         .unwrap_or(low);
-                    ensure!(low <= high, "Reversed case range at line {}", case.line);
+                    // Kontakt matches `case -1 to -50` as the range it names.
+                    let (low, high) = (low.min(high), low.max(high));
                     let arm = self.here();
                     self.p.cases.push(CaseArm { low, high, miss: 0 });
                     self.emit(Op::Case(self.p.cases.len() as u32 - 1));

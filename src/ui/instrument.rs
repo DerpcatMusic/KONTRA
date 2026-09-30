@@ -102,14 +102,26 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     if !sections.is_empty() {
         return panel::view(ui, cx, slot, &sections).id(format!("stage-{slot}"));
     }
+    // A script that failed to load says why, not only that nothing shows.
+    let failed = v
+        .interface_status
+        .lines()
+        .find(|l| {
+            l.starts_with("Slot ")
+                && l.split_once(": ").is_some_and(|(slot, error)| {
+                    !slot.contains(" line") && !error.starts_with("callback disabled")
+                })
+        });
     let text = if !loaded {
-        "Loading instrument…"
+        "Loading instrument…".to_owned()
+    } else if let (true, Some(error)) = (scripted, failed) {
+        format!("This instrument's script shows no controls. {}", sentence(error))
     } else if scripted {
-        "This instrument's script shows no controls."
+        "This instrument's script shows no controls.".to_owned()
     } else {
-        "This instrument has no performance controls. Play it from the keyboard."
+        "This instrument has no performance controls. Play it from the keyboard.".to_owned()
     };
-    row![caption(text).fill(Role::Dim).lines(2).min_w(0)]
+    row![caption(text).fill(Role::Dim).lines(3).min_w(0)]
         .align(Align::Center)
         .pad(INSET)
         .w(Len::Pct(100.))

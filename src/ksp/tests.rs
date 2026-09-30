@@ -658,3 +658,12 @@ fn variable_names_match_without_case() {
     assert_eq!(prop(&ui, 0, "$CONTROL_PAR_VALUE"), "1");
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "10");
 }
+
+#[test]
+fn reversed_case_ranges_and_effect_loads_compile() {
+    // Both from Una Corda: a descending `case` range and an effect load's async ID.
+    let source = "on init\ndeclare $v := -7\ndeclare $id\ndeclare ui_label $l(1,1)\nselect($v)\ncase -1 to -50\nset_text($l, \"in\")\nend select\n$id := set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, 1, -1, 1, 1)\nset_text($l, get_control_par_str(get_ui_id($l), $CONTROL_PAR_TEXT) & ($id # -1) & set_engine_par($ENGINE_PAR_VOLUME, 1, -1, -1, -1))\nend on";
+    let ui = initialize(source, 0, 0).unwrap();
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "in1-1");
+    assert!(ui.diagnostics.iter().all(|d| !d.contains("disabled")), "{:?}", ui.diagnostics);
+}

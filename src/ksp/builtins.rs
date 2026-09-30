@@ -147,7 +147,7 @@ builtins! {
     FindTarget "find_target" [I I S] 0 Int;
     GetEnginePar "get_engine_par" [I I I I] 0 Int;
     GetEngineParDisp "get_engine_par_disp" [I I I I] 0 Str;
-    SetEnginePar "set_engine_par" [I I I I I] 0 Void;
+    SetEnginePar "set_engine_par" [I I I I I] 0 Int;
     OutputChannelName "output_channel_name" [I] 0 Str;
     LoadIrSample "load_ir_sample" [S I I] 0 Int;
     // User interface.

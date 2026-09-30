@@ -723,7 +723,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                     .note("set_engine_par: parameter not implemented by the engine; value stored");
                 m.env.set_engine_par(p, value);
             }
-            Ok(Step::Next)
+            // Loading an effect is asynchronous: the script gets an ID that
+            // `on async_complete` reports. Other parameters apply at once.
+            let loads = ["$ENGINE_PAR_EFFECT_TYPE", "$ENGINE_PAR_EFFECT_SUBTYPE", "$ENGINE_PAR_SEND_EFFECT_TYPE"]
+                .iter()
+                .any(|n| b::engine_par_id(n) == Some(id));
+            let result = if loads { async_done(m, 1) } else { -1 };
+            push_int(m, result)
         }
         OutputChannelName => {
             let [n] = ints(m);
