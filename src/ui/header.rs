@@ -194,6 +194,24 @@ pub fn multi_path(root: &str, name: &str) -> std::path::PathBuf {
         .join(format!("{name}.{}", crate::import::SAVED_MULTI))
 }
 
+/// The library folder, or the default when none is set.
+pub fn root(cx: &Cx) -> String {
+    match cx.selection.root.as_str() {
+        "" => crate::import::LIBRARY_ROOT.to_owned(),
+        root => root.to_owned(),
+    }
+}
+
+/// Save the rack as a multi at `path`, named for its file, and scan again
+/// so the browser lists it.
+pub fn save_multi_as(cx: &mut Cx, path: &std::path::Path) -> anyhow::Result<()> {
+    let name = stem(&path.to_string_lossy());
+    crate::plugin::SavedMulti::of(&name, &cx.selection).save(path)?;
+    cx.selection.multi = path.to_string_lossy().into_owned();
+    super::lock(&cx.p.shared.view).root.clear();
+    Ok(())
+}
+
 /// The strip that names and saves the rack as a multi.
 pub fn save_multi(ui: &mut Ui, cx: &mut Cx) -> El {
     let Some(name) = cx.state.saving.as_mut() else {
@@ -216,25 +234,13 @@ pub fn save_multi(ui: &mut Ui, cx: &mut Cx) -> El {
             .chars()
             .filter(|c| !matches!(c, '/' | '\\' | ':'))
             .collect();
-        let root = match cx.selection.root.as_str() {
-            "" => crate::import::LIBRARY_ROOT.to_owned(),
-            root => root.to_owned(),
-        };
         let result = if name.is_empty() {
             Err(anyhow::anyhow!("Name the multi first"))
         } else {
-            let path = multi_path(&root, &name);
-            crate::plugin::SavedMulti::of(&name, &cx.selection)
-                .save(&path)
-                .map(|()| path)
+            save_multi_as(cx, &multi_path(&root(cx), &name))
         };
         match result {
-            Ok(path) => {
-                cx.selection.multi = path.to_string_lossy().into_owned();
-                cx.state.saving = None;
-                // Scan again so the browser lists it.
-                super::lock(&cx.p.shared.view).root.clear();
-            }
+            Ok(()) => cx.state.saving = None,
             Err(e) => cx.state.save_error = format!("{e:#}"),
         }
     }

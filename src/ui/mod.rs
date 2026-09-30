@@ -25,6 +25,7 @@ mod instrument;
 mod keyboard;
 mod menu;
 mod panel;
+mod picker;
 mod rack;
 #[cfg(test)]
 mod tests;
@@ -46,7 +47,8 @@ use theme::*;
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let meters = Arc::new(Meters::default());
     let computer = Arc::new(computer::Computer::default());
-    let build = build(&params, meters.clone(), computer.clone());
+    let picker = Arc::new(picker::Picker::default());
+    let build = build(&params, meters.clone(), computer.clone(), picker.clone());
     let drop_params = params.clone();
     let (cancel_params, cancel_computer) = (params.clone(), computer.clone());
     let (key_params, key_computer) = (params.clone(), computer.clone());
@@ -59,7 +61,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             cancel_params.shared.release_keyboard();
         })
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
-        .changed(move || watch.changed(&watch_params, &meters, &computer))
+        .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready())
         .fixed_zoom()
         .resizable((900, 600))
         .into_editor()
@@ -270,6 +272,8 @@ struct EditorState {
     gliss: Option<(u8, u8)>,
     /// The mod wheel's unrounded value while it is dragged.
     modulation: Option<f64>,
+    /// The system file dialog, answering on a later frame.
+    picker: Arc<picker::Picker>,
 }
 
 impl EditorState {
@@ -590,6 +594,7 @@ fn build(
     params: &Arc<SamplerParams>,
     meters: Arc<Meters>,
     computer: Arc<computer::Computer>,
+    picker: Arc<picker::Picker>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
     let mut root = read(&params.selection).root.clone();
     if root.is_empty() {
@@ -630,6 +635,7 @@ fn build(
         computer,
         gliss: None,
         modulation: None,
+        picker,
     };
     move |ui, bridge| {
         // The loader also runs from the audio thread; poll here so a stopped host still loads.
@@ -665,6 +671,7 @@ fn build(
             state: &mut state,
         };
         shortcuts(ui, &mut cx);
+        picked(&mut cx);
         let top = header::top_bar(ui, &mut cx, bridge);
         let settings = cx.state.settings.then(|| header::settings(ui, &mut cx));
         let saving = cx.state.saving.is_some().then(|| header::save_multi(ui, &mut cx));
@@ -715,6 +722,28 @@ fn build(
             .radius(0)
             .clip()
             .id("editor-root")
+    }
+}
+
+/// Take what a file dialog answered: a library folder to scan, or where
+/// to save the rack as a multi.
+fn picked(cx: &mut Cx) {
+    match cx.state.picker.take() {
+        Some(picker::Picked::Folder(path)) => {
+            let root = path.to_string_lossy().into_owned();
+            cx.state.root = root.clone();
+            cx.selection.root = root;
+            lock(&cx.p.shared.view).root.clear();
+        }
+        Some(picker::Picked::Multi(mut path)) => {
+            if !import::is_saved_multi(&path) {
+                path.as_mut_os_string().push(format!(".{}", import::SAVED_MULTI));
+            }
+            if let Err(e) = header::save_multi_as(cx, &path) {
+                cx.state.notice = format!("The multi was not saved: {e:#}");
+            }
+        }
+        None => {}
     }
 }
 

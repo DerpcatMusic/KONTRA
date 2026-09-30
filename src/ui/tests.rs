@@ -53,7 +53,7 @@ impl Harness {
         let computer = Arc::<computer::Computer>::default();
         let mut h = Self {
             ui: theme::ui(),
-            build: Box::new(build(p, Arc::default(), computer.clone())),
+            build: Box::new(build(p, Arc::default(), computer.clone(), Arc::default())),
             bridge: Bridge::new(p.clone()),
             size: Size::new(width, height),
             computer,

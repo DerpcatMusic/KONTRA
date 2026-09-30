@@ -361,7 +361,12 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Solo(slot) => cx.selection.parts[slot].solo ^= true,
         Command::Move(slot, by) => cx.move_by(slot, by),
         Command::Audition(note) => shared.audition(Some(note)),
-        Command::Folders => cx.state.settings = !cx.state.settings,
+        Command::Folders => {
+            let from = super::header::root(cx).into();
+            if !cx.state.picker.ask(super::picker::Ask::Folder { from }) {
+                cx.state.settings = !cx.state.settings;
+            }
+        }
         Command::Rescan => {
             cx.selection.root = cx.state.root.clone();
             shared
@@ -374,12 +379,20 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::SaveMulti => {
             // A saved multi offers its own name back; anything else starts blank.
             let current = &cx.selection.multi;
-            cx.state.saving = Some(if crate::import::is_saved_multi(Path::new(current)) {
+            let name = if crate::import::is_saved_multi(Path::new(current)) {
                 super::header::stem(current)
             } else {
                 String::new()
-            });
-            cx.state.save_error.clear();
+            };
+            let from = super::header::multi_path(&super::header::root(cx), "x")
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            let ask = super::picker::Ask::Multi { from, name: if name.is_empty() { "Multi".into() } else { name.clone() } };
+            if !cx.state.picker.ask(ask) {
+                cx.state.saving = Some(name);
+                cx.state.save_error.clear();
+            }
         }
         Command::Browser => cx.state.browser ^= true,
         Command::Keyboard => cx.state.keyboard ^= true,
