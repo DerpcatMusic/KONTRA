@@ -10,9 +10,10 @@
 //! set them; [`Bank::settings`](super::Bank) what voices play, the base with
 //! every override applied. Scripts write and read the base.
 
-use super::filter::Knob;
+use super::GroupSettings;
+use super::filter::{Knob, Shape};
 use super::params::{self, Address, Stage, UNIT};
-use super::{Bank, Engine};
+use super::Engine;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 
 /// Overrides one engine holds; further ones are ignored.
@@ -211,10 +212,10 @@ impl Engine {
 
     /// Publish what the editor watches: `group`'s envelope and filter
     /// values (playing and base) and this engine's first voices. Relaxed
-    /// stores only; no allocation.
-    pub fn publish(&self, group: usize, probe: &Probe) {
+    /// stores only; no allocation. False without a bank.
+    pub fn publish(&self, group: usize, probe: &Probe) -> bool {
         let Some(bank) = self.bank.as_deref() else {
-            return;
+            return false;
         };
         for (layer, settings) in probe.values.iter().zip([&bank.settings, &bank.base]) {
             let mut values = [f32::NAN; PROBE_VALUES];
@@ -245,13 +246,44 @@ impl Engine {
             });
             slot.store(tap, Relaxed);
         }
+        true
     }
 }
 
-impl Bank {
-    /// The base value of `param` in `group`, if the group has it.
-    pub fn base_value(&self, group: u16, param: Param) -> Option<f32> {
-        params::read(&self.base, param.address(group))
+impl Param {
+    /// This parameter's value in one group's settings, if it has it.
+    pub fn read(self, s: &GroupSettings) -> Option<f32> {
+        params::read(std::slice::from_ref(s), self.address(0))
+    }
+
+    pub fn write(self, s: &mut GroupSettings, value: f32) -> bool {
+        params::write(std::slice::from_mut(s), self.address(0), value)
+    }
+
+    /// The parameters a group has, each with its place in
+    /// [`Probe::values`]: the envelope's, then each filter's and EQ band's.
+    pub fn of_group(s: &GroupSettings) -> Vec<(usize, Self)> {
+        let mut out = Vec::new();
+        if s.envelope.is_some() {
+            out.extend(Self::ENVELOPE.into_iter().enumerate());
+        }
+        let units = s.filter.as_deref().map_or(&[][..], |f| f.units());
+        for (u, unit) in units.iter().enumerate().take(PROBE_UNITS) {
+            let at = 6 + u * KNOBS;
+            match unit.shape {
+                Shape::Filter(_) => {
+                    out.extend([(at, Self::Cutoff(unit.slot)), (at + 1, Self::Resonance(unit.slot))]);
+                }
+                Shape::Eq => {
+                    for b in 0..unit.sections {
+                        let k = at + 3 * b as usize;
+                        let slot = unit.slot;
+                        out.extend([(k, Self::Freq(slot, b)), (k + 1, Self::Bandwidth(slot, b)), (k + 2, Self::Gain(slot, b))]);
+                    }
+                }
+            }
+        }
+        out
     }
 }
 
@@ -349,6 +381,7 @@ impl Tap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::Bank;
     use crate::audio::Sample;
     use crate::import::{Group, Zone};
 

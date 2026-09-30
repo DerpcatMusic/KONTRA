@@ -4,6 +4,7 @@ use crate::{
     engine::{
         BUSES, Bank, BusControls, Engine, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Rack,
         Streaming, TUNE_RANGE, load_scripts,
+        overrides::{Edits, Override, Probe},
     },
     fx::FxProcessor,
     import::{self, Instrument},
@@ -55,6 +56,9 @@ pub struct Part {
     pub mpe: Mpe,
     /// Where the part's samples play from; `None` follows [`Selection::streaming`].
     pub streaming: Option<Streaming>,
+    /// The player's envelope, filter and EQ edits over the instrument's own
+    /// values; empty plays them as the library has them.
+    pub edits: Edits,
 }
 impl Part {
     /// Where the part's samples play from, given the rack's setting.
@@ -71,6 +75,14 @@ impl StateField for Streaming {
             1 => Streaming::RamOnly,
             _ => Streaming::Auto,
         })
+    }
+}
+impl StateField for Edits {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        serde_json::to_string(self).unwrap_or_default().write_field(buf);
+    }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        Some(serde_json::from_str(&String::read_field(cursor)?).unwrap_or_default())
     }
 }
 impl Default for Part {
@@ -96,6 +108,7 @@ impl Default for Part {
             articulate: Articulate::default(),
             mpe: Mpe::default(),
             streaming: None,
+            edits: Edits::default(),
         }
     }
 }
@@ -254,6 +267,12 @@ pub struct Shared {
     routes: ArrayQueue<[Route; RACK_SLOTS]>,
     /// Peak meters the audio thread keeps current; read them at paint time.
     pub meters: Meters,
+    /// The part and group the sound editor shows, as the audio thread plays it.
+    pub(crate) probe: Probe,
+    /// Override changes for the audio thread, by rack slot.
+    overrides: ArrayQueue<(usize, Override)>,
+    /// Each slot's overrides as last sent (loader and editor threads only).
+    sent: Mutex<[Vec<Override>; RACK_SLOTS]>,
     generation: [AtomicU64; RACK_SLOTS],
     /// Per slot, how far its load is, out of [`crate::engine::LOAD_DONE`]:
     /// parse, scripts, then samples by frames read; only rises within a load.
@@ -343,6 +362,9 @@ impl Default for Shared {
             controls: ArrayQueue::new(1),
             routes: ArrayQueue::new(1),
             meters: Meters::default(),
+            probe: Probe::default(),
+            overrides: ArrayQueue::new(1024),
+            sent: Mutex::new(std::array::from_fn(|_| Vec::new())),
             generation: std::array::from_fn(|_| AtomicU64::new(0)),
             load_progress: std::array::from_fn(|_| AtomicU32::new(0)),
             audition: AtomicBool::new(false),
@@ -568,6 +590,28 @@ impl Shared {
         }
     }
 
+    /// Send the audio thread what changed in the parts' edits since last
+    /// sent. A full queue leaves the slot to be sent again next time:
+    /// setting an override is idempotent.
+    pub(crate) fn sync_overrides(&self, selection: &Selection) {
+        let mut sent = self.sent.lock().unwrap();
+        for (slot, had) in sent.iter_mut().enumerate() {
+            let want = selection.parts.get(slot).map_or(&[][..], |p| &p.edits.0[..]);
+            if want == &had[..] {
+                continue;
+            }
+            let gone = had
+                .iter()
+                .filter(|o| !want.iter().any(|w| (w.group, w.param) == (o.group, o.param)))
+                .map(|o| Override { offset: 0.0, ..*o });
+            let new = want.iter().filter(|w| !had.contains(w)).copied();
+            let all = gone.chain(new).all(|o| self.overrides.push((slot, o)).is_ok());
+            if all {
+                *had = want.to_vec();
+            }
+        }
+    }
+
     /// Ask the loader to replace the rack with the multi at `path`.
     pub(crate) fn queue_multi(&self, path: String) {
         self.view.lock().unwrap().multi_status = "Loading multi…".into();
@@ -785,7 +829,9 @@ impl BackgroundTask for Load {
         }
         {
             let current = params.selection.read().unwrap();
+            params.shared.sync_overrides(&current);
             let _ = params.shared.controls.force_push(mix(&current));
+
             let _ = params.shared.routes.force_push(routes(&current));
             params
                 .shared
@@ -1264,6 +1310,11 @@ impl PluginLogic for Sampler {
             };
             let _ = p.shared.discard.push(retired);
         }
+        while let Some((slot, o)) = p.shared.overrides.pop() {
+            if let Some(engine) = s.rack.parts.get_mut(slot) {
+                engine.set_override(o);
+            }
+        }
         while let Some(e) = p.shared.edits.pop() {
             if e.epoch != 0 && e.epoch == s.script_epoch[e.part] {
                 s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
@@ -1459,6 +1510,11 @@ impl PluginLogic for Sampler {
                 Meters::publish(meter, peak, fall);
             }
             Meters::publish(&m.master, peak, fall);
+        }
+        let watch = p.shared.probe.watch.load(Ordering::Relaxed);
+        if let Some((slot, group)) = Probe::watched(watch).filter(|(slot, _)| *slot < RACK_SLOTS) {
+            let published = if s.rack.parts[slot].publish(group, &p.shared.probe) { watch } else { 0 };
+            p.shared.probe.published.store(published, Ordering::Relaxed);
         }
         let voices: usize = s.rack.parts.iter().map(Engine::active_voices).sum();
         p.shared.voices.store(voices as u64, Ordering::Relaxed);

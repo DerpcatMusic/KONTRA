@@ -32,6 +32,7 @@ mod rack;
 #[cfg(test)]
 mod tests;
 mod theme;
+mod viz;
 
 use crate::engine::RACK_SLOTS;
 use crate::import;
