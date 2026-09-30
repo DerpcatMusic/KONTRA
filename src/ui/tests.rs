@@ -747,7 +747,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 16] = [
+    let states: [(&str, bool, &[&str]); 17] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -764,6 +764,7 @@ fn screenshot() {
         ("color", true, &[]),
         ("artwork", true, &[]),
         ("folded", true, &["collapse-0", "collapse-1"]),
+        ("mixer", true, &["tab-mixer"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
@@ -778,6 +779,32 @@ fn screenshot() {
     for (state, loaded, presses) in states.into_iter().filter(|(s, ..)| wanted(s)) {
         for &(width, height) in &sizes {
             let p = racked(&files, &instruments, loaded, state);
+            if state == "mixer" {
+                // Mid-song: parts on two buses, one sending to a named third.
+                let mut selection = p.selection.write().unwrap();
+                for (slot, part) in selection.parts.iter_mut().enumerate() {
+                    part.output = [0, 0, 1][slot % 3];
+                    part.gain = [-3., 0.2, -10.][slot % 3];
+                    part.pan = [0., -0.1, 0.34][slot % 3];
+                }
+                if let Some(part) = selection.parts.get_mut(1) {
+                    (part.aux, part.aux_gain) = (2, -6.);
+                }
+                selection.bus_mut(2).name = "Hall".into();
+                selection.bus_mut(1).gain = -4.5;
+                drop(selection);
+                let m = &p.shared.meters;
+                for (meter, [l, r]) in m.parts.iter().zip([[0.5, 0.42], [0.9, 1.05], [0.05, 0.03]]) {
+                    meter[0].store(f32::to_bits(l), Ordering::Relaxed);
+                    meter[1].store(f32::to_bits(r), Ordering::Relaxed);
+                }
+                for (meter, [l, r]) in m.buses.iter().zip([[0.7, 0.6], [0.04, 0.03], [0.2, 0.25]]) {
+                    meter[0].store(f32::to_bits(l), Ordering::Relaxed);
+                    meter[1].store(f32::to_bits(r), Ordering::Relaxed);
+                }
+                m.master[0].store(0.3f32.to_bits(), Ordering::Relaxed);
+                m.master[1].store(0.28f32.to_bits(), Ordering::Relaxed);
+            }
             let mut h = Harness::new(&p, f64::from(width), f64::from(height));
             for id in presses {
                 h.press(id);
@@ -815,7 +842,7 @@ fn screenshot() {
                 visible.push("search");
             }
             if loaded {
-                visible.extend(["tab-info", "header-0"]);
+                visible.extend(["tab-info", if state == "mixer" { "master-strip" } else { "header-0" }]);
             } else {
                 visible.push("rack-drop");
             }
@@ -997,4 +1024,161 @@ fn library_is_the_first_folder_under_the_root() {
     assert_eq!(at("/libs/", "/libs//Solo/a.nki"), "Solo");
     assert_eq!(at("/libs", "/libsX/Solo/a.nki"), "");
     assert_eq!(at("/libs", "/other/a.nki"), "");
+}
+
+/// The window as pixels, RGBA, painted from the last frame's scene.
+fn pixels(ui: &Ui, width: u16, height: u16) -> Vec<u8> {
+    use moose::mui::mui::vello::{
+        self,
+        vello_cpu::{Pixmap, RenderContext, Resources},
+    };
+    let mut ctx = RenderContext::new(width, height);
+    let mut resources = Resources::default();
+    vello::paint(
+        &mut vello::Cpu {
+            ctx: &mut ctx,
+            resources: &mut resources,
+            cache: &mut vello::Cache::default(),
+        },
+        ui.scene().unwrap(),
+        vello::kurbo::Affine::IDENTITY,
+    )
+    .unwrap();
+    ctx.flush();
+    let mut pix = Pixmap::new(width, height);
+    ctx.render(&mut pix, &mut resources);
+    pix.take_unpremultiplied()
+        .iter()
+        .flat_map(|p| [p.r, p.g, p.b, p.a])
+        .collect()
+}
+
+fn two_parts() -> Arc<SamplerParams> {
+    let p = Arc::new(SamplerParams::new());
+    for name in ["Piano", "Strings"] {
+        p.selection.write().unwrap().parts.push(Part {
+            path: format!("/virtual/Library/{name}.nki"),
+            ..Default::default()
+        });
+    }
+    p
+}
+
+/// Routing from the mixer: menus pick a part's output, send and MIDI
+/// input and a bus's host port; a strip dropped on a bus routes it there.
+#[test]
+fn mixer_routing_edits() {
+    let p = two_parts();
+    let part = |p: &SamplerParams, n: usize| p.selection.read().unwrap().parts[n].clone();
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("tab-mixer");
+    let shows = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
+    assert!(shows(&h, "strip-0") && shows(&h, "strip-1") && shows(&h, "master-strip"));
+    assert!(shows(&h, "bus-0") && !shows(&h, "bus-2"), "only buses in use");
+
+    h.press("mix-out-0");
+    h.press("menu-item-2");
+    assert_eq!(part(&p, 0).output, 2, "the output menu routes");
+    assert!(shows(&h, "bus-2"), "a bus in use gets its strip");
+
+    // No send, a rule, then st.1…: the fourth bus.
+    h.press("mix-aux-1");
+    h.press("menu-item-5");
+    assert_eq!(part(&p, 1).aux, 3);
+    assert!(shows(&h, "bus-3"));
+
+    // Omni, channels 1–16, a rule, a heading, ports A–D.
+    h.press("mix-in-1");
+    h.press("menu-item-3");
+    h.press("mix-in-1");
+    h.press("menu-item-20");
+    assert_eq!((part(&p, 1).port, part(&p, 1).channel), (1, 2));
+
+    h.drag("mix-name-1", "bus-2");
+    assert_eq!(part(&p, 1).output, 2, "a strip dropped on a bus plays through it");
+
+    h.press("solo-mix-0");
+    h.press("mute-bus-2");
+    assert!(part(&p, 0).solo);
+    assert!(p.selection.read().unwrap().bus(2).mute);
+
+    h.press("bus-port-2");
+    h.press("menu-item-5");
+    assert_eq!(p.selection.read().unwrap().bus(2).port, 5);
+
+    assert!(!shows(&h, "bus-1"));
+    h.press("mix-add-bus");
+    assert!(shows(&h, "bus-1"), "+ shows the next bus");
+
+    // Right-click: Rename…, Reset, a rule, Route to…
+    p.selection.write().unwrap().parts[0].gain = -6.;
+    h.idle(2);
+    let at = center(&h.ui, "strip-0");
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input {
+            pointer: PointerInput {
+                pos: Some(at),
+                buttons,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    }
+    h.idle(2);
+    h.press("menu-item-1");
+    assert_eq!((part(&p, 0).gain, part(&p, 0).solo), (0., false), "Reset");
+    assert_eq!(part(&p, 0).output, 2, "and the routing stays");
+}
+
+/// A meter is a canvas that reads the audio thread's level as the scene is
+/// walked: the same tree, framed again, shows the new level. The editor
+/// asks for frames only while a meter moves.
+#[test]
+fn mixer_meters_paint_without_a_rebuild() {
+    let p = two_parts();
+    let (width, height) = (1180u16, 760u16);
+    let mut h = Harness::new(&p, f64::from(width), f64::from(height));
+    h.press("tab-mixer");
+    let root = (h.build)(&mut h.ui, &mut h.bridge);
+    h.ui.frame(root.clone(), Some(h.size), Input::default(), 0.).unwrap();
+    let quiet = pixels(&h.ui, width, height);
+    for m in &p.shared.meters.parts[0] {
+        m.store(0.8f32.to_bits(), Ordering::Relaxed);
+    }
+    h.ui.frame(root, Some(h.size), Input::default(), 0.).unwrap();
+    let loud = pixels(&h.ui, width, height);
+    let r = h.ui.scene().unwrap().surface("mix-fader-0-meter").unwrap().frame;
+    let x = (r.x + 1.) as usize;
+    let at = |y: usize| (y * usize::from(width) + x) * 4;
+    let lit = (r.y as usize..(r.y + r.size.height) as usize)
+        .filter(|&y| quiet[at(y)..at(y) + 4] != loud[at(y)..at(y) + 4])
+        .count();
+    assert!(lit as f64 > r.size.height / 2., "the meter shows the level: {lit} rows");
+
+    static DISK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let meters = Meters::default();
+    let mut watch = Watch {
+        disk_counter: Some(&DISK),
+        ..Watch::default()
+    };
+    let computer = computer::Computer::default();
+    let mut changed = || watch.changed(&p, &meters, &computer);
+    let settle = Duration::from_millis(ANIMATION_MS + 5);
+    let level = |v: f32| {
+        for m in &p.shared.meters.parts[0] {
+            m.store(v.to_bits(), Ordering::Relaxed);
+        }
+    };
+    level(0.);
+    changed();
+    std::thread::sleep(settle);
+    assert!(!changed(), "silent meters ask for nothing");
+    level(0.5);
+    std::thread::sleep(settle);
+    assert!(changed(), "a moving meter asks for a frame");
+    level(0.);
+    std::thread::sleep(settle);
+    assert!(changed(), "and one more to draw it empty");
+    std::thread::sleep(settle);
+    assert!(!changed(), "silent meters ask for nothing");
 }

@@ -24,6 +24,7 @@ mod header;
 mod instrument;
 mod keyboard;
 mod menu;
+mod mixer;
 mod panel;
 mod picker;
 mod rack;
@@ -247,6 +248,7 @@ impl Appearance {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Rack,
+    Mixer,
     Mapping,
     Info,
 }
@@ -289,6 +291,10 @@ struct EditorState {
     cursor: Option<String>,
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
+    /// A bus's name while it is being edited.
+    renaming_bus: Option<(usize, String)>,
+    /// Buses below this index show a mixer strip even when unused.
+    buses_shown: usize,
     /// Each library's color and backdrop, from its artwork, worked out once.
     tints: HashMap<String, Option<Color>>,
     backdrops: HashMap<String, Option<Arc<Image>>>,
@@ -712,6 +718,8 @@ fn build(
         menu: None,
         cursor: None,
         renaming: None,
+        renaming_bus: None,
+        buses_shown: 1,
         tints: HashMap::new(),
         backdrops: HashMap::new(),
         thumbs: HashMap::new(),
@@ -772,7 +780,7 @@ fn build(
             .browser
             .then(|| browser::sidebar(ui, &mut cx).w(browser_w));
         let splitter = cx.state.browser.then(|| splitter(ui, &mut cx, browser_w));
-        let main = main_view(ui, &mut cx);
+        let main = main_view(ui, &mut cx, bridge);
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
         let ghost = ghost(ui, &cx);
@@ -908,10 +916,11 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
 }
 
 /// View tabs over the rack, or over the selected part's mapping or details.
-fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
+fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
     let mut tabs = Vec::new();
     for (tab, label, id) in [
         (Tab::Rack, "Rack", "tab-rack"),
+        (Tab::Mixer, "Mixer", "tab-mixer"),
         (Tab::Mapping, "Mapping", "tab-mapping"),
         (Tab::Info, "Info", "tab-info"),
     ] {
@@ -936,6 +945,8 @@ fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
     let slot = cx.state.selected;
     if cx.state.tab == Tab::Rack {
         content.push(rack::view(ui, cx));
+    } else if cx.state.tab == Tab::Mixer {
+        content.push(mixer::view(ui, cx, bridge));
     } else if cx.part().is_none() {
         content.push(instrument::welcome(cx));
     } else {
