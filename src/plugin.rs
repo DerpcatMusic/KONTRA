@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -250,7 +250,7 @@ pub struct Shared {
     /// Edits of script controls from the performance view.
     edits: ArrayQueue<Edit>,
     /// Host sample rate (`f64` bits) that effect processors are built for.
-    rate: AtomicU64,
+    pub(crate) rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
     /// The velocity each key sounds at, 0 when silent: `played` on screen
     /// or from the computer keyboard, `heard` from the host's MIDI.
@@ -269,6 +269,10 @@ pub struct Shared {
     pub meters: Meters,
     /// The part and group the sound editor shows, as the audio thread plays it.
     pub(crate) probe: Probe,
+    /// One strip's signal for a spectrum on screen.
+    pub(crate) scope: Scope,
+    /// Blocks processed: a stopped host stops counting.
+    pub(crate) blocks: AtomicU64,
     /// Override changes for the audio thread, by rack slot.
     overrides: ArrayQueue<(usize, Override)>,
     /// Each slot's overrides as last sent (loader and editor threads only).
@@ -376,6 +380,8 @@ impl Default for Shared {
             routes: ArrayQueue::new(1),
             meters: Meters::default(),
             probe: Probe::default(),
+            scope: Scope::default(),
+            blocks: AtomicU64::new(0),
             overrides: ArrayQueue::new(1024),
             residency: Mutex::default(),
             // One batch in flight per slot: never full.
@@ -409,6 +415,53 @@ impl Default for Shared {
         }
     }
 }
+/// Samples [`Scope`] keeps: a spectrum's window and then some.
+pub(crate) const SCOPE: usize = 8192;
+/// [`Scope::source`] for everything sent to the host.
+pub(crate) const SCOPE_MASTER: usize = RACK_SLOTS + 1;
+
+/// One strip's post-fader signal, mono, for a spectrum drawn on the UI
+/// thread. The audio thread copies into the ring only while
+/// [`source`](Self::source) names a strip, which the editor sets while a
+/// spectrum shows and clears otherwise: closed, it costs one load a block.
+/// Lock-free: a reader may see a block half-written, which a spectrum
+/// cannot tell from the signal.
+pub(crate) struct Scope {
+    /// 0 for none, a rack slot + 1, or [`SCOPE_MASTER`].
+    pub(crate) source: AtomicUsize,
+    samples: [AtomicU32; SCOPE],
+    /// Samples written so far; the next goes at this, modulo [`SCOPE`].
+    written: AtomicUsize,
+}
+impl Default for Scope {
+    fn default() -> Self {
+        Self {
+            source: AtomicUsize::new(0),
+            samples: std::array::from_fn(|_| AtomicU32::new(0)),
+            written: AtomicUsize::new(0),
+        }
+    }
+}
+impl Scope {
+    fn push(&self, x: &[f32]) {
+        let mut at = self.written.load(Ordering::Relaxed);
+        for &v in x {
+            self.samples[at % SCOPE].store(v.to_bits(), Ordering::Relaxed);
+            at = at.wrapping_add(1);
+        }
+        self.written.store(at, Ordering::Release);
+    }
+
+    /// The latest `out.len()` samples (at most [`SCOPE`]), oldest first.
+    pub(crate) fn latest(&self, out: &mut [f32]) {
+        let end = self.written.load(Ordering::Acquire);
+        let start = end.wrapping_sub(out.len());
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = f32::from_bits(self.samples[start.wrapping_add(i) % SCOPE].load(Ordering::Relaxed));
+        }
+    }
+}
+
 /// Peak meters, `[left, right]` as `f32` bits: absolute sample peaks falling
 /// 20 dB a second, 0 once below -80 dB. The audio thread stores each once a
 /// block; any number of readers may [`read`](Meters::read) them at paint time.
@@ -420,6 +473,15 @@ pub struct Meters {
     pub buses: [[AtomicU32; 2]; BUSES],
     /// Everything sent to the host, after the Volume parameter.
     pub master: [AtomicU32; 2],
+    /// Set when a meter's peak reached 0 dBFS; the editor clears them.
+    pub clips: Clips,
+}
+/// A clip light per meter of [`Meters`].
+#[derive(Default)]
+pub struct Clips {
+    pub parts: [AtomicBool; RACK_SLOTS],
+    pub buses: [AtomicBool; BUSES],
+    pub master: AtomicBool,
 }
 impl Meters {
     pub fn read(meter: &[AtomicU32; 2]) -> [f32; 2] {
@@ -428,8 +490,11 @@ impl Meters {
             .map(|m| f32::from_bits(m.load(Ordering::Relaxed)))
     }
 
-    /// Hold `peak` or let the shown level fall by `fall`.
-    fn publish(meter: &[AtomicU32; 2], peak: [f32; 2], fall: f32) {
+    /// Hold `peak` or let the shown level fall by `fall`; light `clip` at 0 dBFS.
+    fn publish(meter: &[AtomicU32; 2], peak: [f32; 2], fall: f32, clip: &AtomicBool) {
+        if peak[0] >= 1.0 || peak[1] >= 1.0 {
+            clip.store(true, Ordering::Relaxed);
+        }
         for (m, peak) in meter.iter().zip(peak) {
             let shown = f32::from_bits(m.load(Ordering::Relaxed)) * fall;
             let level = if peak >= shown { peak } else { shown };
@@ -1373,6 +1438,10 @@ impl PluginLogic for Sampler {
         for lit in &p.shared.heard {
             lit.store(0, Ordering::Relaxed);
         }
+        // So are the sound editor's voice dots.
+        for tap in &p.shared.probe.voices {
+            tap.store(0, Ordering::Relaxed);
+        }
     }
     fn process(
         s: &mut Dsp,
@@ -1601,6 +1670,7 @@ impl PluginLogic for Sampler {
         let thru = p.shared.midi_thru.load(Ordering::Relaxed);
         let mut peak = [0f32; 2];
         let mut gains = [0f32; MAX_BLOCK];
+        let scope = p.shared.scope.source.load(Ordering::Relaxed);
         let (mut at, mut next) = (0, 0);
         loop {
             // Apply events due now; once the buffer is rendered, apply any stragglers.
@@ -1664,7 +1734,17 @@ impl PluginLogic for Sampler {
                 *gain = db_to_linear(p.volume.read());
             }
             let ports = s.rack.bus_controls.map(|c| usize::from(c.port));
+            s.rack.tap = scope.checked_sub(1).filter(|&slot| slot < RACK_SLOTS);
             let (buses, live) = s.rack.render_live(len);
+            if scope == SCOPE_MASTER {
+                let mut mono = [0f32; MAX_BLOCK];
+                for (_, x) in buses.iter().enumerate().filter(|(bus, _)| live[*bus]) {
+                    for (i, (m, gain)) in mono[..len].iter_mut().zip(&gains[..len]).enumerate() {
+                        *m += (x[0][i] + x[1][i]) * 0.5 * gain;
+                    }
+                }
+                p.shared.scope.push(&mono[..len]);
+            }
             for channel in 0..channels {
                 b.output(channel)[at..at + len].fill(0.0);
             }
@@ -1692,20 +1772,24 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
+            if s.rack.tap.is_some() {
+                p.shared.scope.push(&s.rack.tapped[..len]);
+            }
             at += len;
         }
+        p.shared.blocks.fetch_add(1, Ordering::Relaxed);
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
         if frames > 0 && rate > 0. {
             let fall = 0.1f32.powf(frames as f32 / rate as f32);
             let m = &p.shared.meters;
             let peaks = std::mem::take(&mut s.rack.peaks);
-            for (meter, peak) in m.parts.iter().zip(peaks.parts) {
-                Meters::publish(meter, peak, fall);
+            for ((meter, peak), clip) in m.parts.iter().zip(peaks.parts).zip(&m.clips.parts) {
+                Meters::publish(meter, peak, fall, clip);
             }
-            for (meter, peak) in m.buses.iter().zip(peaks.buses) {
-                Meters::publish(meter, peak, fall);
+            for ((meter, peak), clip) in m.buses.iter().zip(peaks.buses).zip(&m.clips.buses) {
+                Meters::publish(meter, peak, fall, clip);
             }
-            Meters::publish(&m.master, peak, fall);
+            Meters::publish(&m.master, peak, fall, &m.clips.master);
         }
         let watch = p.shared.probe.watch.load(Ordering::Relaxed);
         if let Some((slot, group)) = Probe::watched(watch).filter(|(slot, _)| *slot < RACK_SLOTS) {
