@@ -1,3 +1,4 @@
+use crate::articulate::{self, Articulate, In, Mpe, Route, Router};
 use crate::artwork;
 use crate::{
     engine::{
@@ -46,6 +47,9 @@ pub struct Part {
     pub aux: i16,
     /// Level of that send in dB (-60..=6).
     pub aux_gain: f32,
+    /// How notes pick the instrument's articulations, and its remapped keyswitches.
+    pub articulate: Articulate,
+    pub mpe: Mpe,
 }
 impl Default for Part {
     fn default() -> Self {
@@ -66,6 +70,8 @@ impl Default for Part {
             collapsed: false,
             aux: -1,
             aux_gain: 0.,
+            articulate: Articulate::default(),
+            mpe: Mpe::default(),
         }
     }
 }
@@ -212,6 +218,8 @@ pub struct Shared {
     pub(crate) bend: AtomicU32,
     pub(crate) modulation: AtomicU32,
     pub(crate) controls: ArrayQueue<Mix>,
+    /// Each slot's articulation and MPE routing, sent with [`Shared::controls`].
+    routes: ArrayQueue<[Route; RACK_SLOTS]>,
     /// Peak meters the audio thread keeps current; read them at paint time.
     pub meters: Meters,
     generation: [AtomicU64; RACK_SLOTS],
@@ -296,6 +304,7 @@ impl Default for Shared {
             bend: AtomicU32::new(8192),
             modulation: AtomicU32::new(0),
             controls: ArrayQueue::new(1),
+            routes: ArrayQueue::new(1),
             meters: Meters::default(),
             generation: std::array::from_fn(|_| AtomicU64::new(0)),
             load_progress: std::array::from_fn(|_| AtomicU32::new(0)),
@@ -356,6 +365,15 @@ fn db_gain(db: f32) -> f32 {
     } else {
         1.
     }
+}
+/// What each rack slot's MIDI goes through before its scripts.
+pub(crate) fn routes(selection: &Selection) -> [Route; RACK_SLOTS] {
+    std::array::from_fn(|n| {
+        selection
+            .parts
+            .get(n)
+            .map_or_else(Route::default, |p| Route::new(&p.path, &p.articulate, &p.mpe))
+    })
 }
 /// What the audio thread mixes by, from the persisted rack.
 pub(crate) fn mix(selection: &Selection) -> Mix {
@@ -727,6 +745,7 @@ impl BackgroundTask for Load {
         {
             let current = params.selection.read().unwrap();
             let _ = params.shared.controls.force_push(mix(&current));
+            let _ = params.shared.routes.force_push(routes(&current));
             params
                 .shared
                 .midi_thru
@@ -1043,6 +1062,7 @@ pub struct Dsp {
     /// while the scripts do not run they are current and need no refresh.
     live_seen: [(u64, u64); RACK_SLOTS],
     snapshot_seen: [(u64, u64); RACK_SLOTS],
+    routers: [Router; RACK_SLOTS],
 }
 /// A lent buffer being refreshed: slot, epoch and changes at the start,
 /// the buffer, progress.
@@ -1138,6 +1158,11 @@ impl PluginLogic for Sampler {
         if let Some(controls) = p.shared.controls.pop() {
             s.rack.set_controls(controls);
         }
+        if let Some(routes) = p.shared.routes.pop() {
+            for (r, route) in s.routers.iter_mut().zip(routes) {
+                r.set_route(route);
+            }
+        }
         // Retired banks, effects and scripts go back to the loader thread to be
         // freed; stop while it cannot take more.
         while !p.shared.discard.is_full() {
@@ -1194,6 +1219,7 @@ impl PluginLogic for Sampler {
         while let Some(e) = p.shared.edits.pop() {
             if e.epoch != 0 && e.epoch == s.script_epoch[e.part] {
                 s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
+                s.routers[e.part].forget();
             }
         }
         // Refresh lent live views and persistence snapshots in place, one at
@@ -1230,10 +1256,10 @@ impl PluginLogic for Sampler {
                 let _ = p.shared.snapshots.push((slot, seen.0, saved, at.changed));
             }
         }
-        for e in &mut s.rack.parts {
+        for (e, r) in s.rack.parts.iter_mut().zip(&s.routers) {
             e.attack = p.attack.value();
             e.release = p.release.value();
-            e.cutoff = p.cutoff.value();
+            e.cutoff = p.cutoff.value() * r.cutoff_scale();
         }
         if p.shared.panic.swap(false, Ordering::AcqRel) {
             while p.shared.keyboard.pop().is_some() {}
@@ -1250,14 +1276,14 @@ impl PluginLogic for Sampler {
             s.audition_left.fill(0);
         }
         while let Some((slot, play)) = p.shared.keyboard.pop() {
-            let e = &mut s.rack.parts[slot.min(RACK_SLOTS - 1)];
-            let channel = preview_channel(e);
-            match play {
-                Play::Note(note, 0) => e.note_off(channel, note),
-                Play::Note(note, velocity) => e.note_on(channel, note, velocity),
-                Play::Bend(value) => e.pitch_bend(channel, value),
-                Play::Mod(value) => e.cc(channel, 1, value),
-            }
+            let channel = preview_channel(&s.rack.parts[slot.min(RACK_SLOTS - 1)]);
+            let ev = match play {
+                Play::Note(note, 0) => In::NoteOff(channel, note),
+                Play::Note(note, velocity) => In::NoteOn(channel, note, velocity),
+                Play::Bend(value) => In::Bend(channel, value),
+                Play::Mod(value) => In::Cc(channel, 1, value),
+            };
+            articulate::play(&mut s.rack, &mut s.routers, slot, ev);
         }
         if p.shared.audition.swap(false, Ordering::AcqRel) {
             let slot = (p.shared.selected.load(Ordering::Relaxed) as usize).min(RACK_SLOTS - 1);
@@ -1302,48 +1328,23 @@ impl PluginLogic for Sampler {
                     out.port = 0;
                     cx.output_events.push(out);
                 }
-                match e.body {
-                    EventBody::NoteOn {
-                        channel,
-                        note,
-                        velocity,
-                        ..
-                    } => {
-                        // The on-screen keys light for what the host plays.
+                if let Some(ev) = In::from_event(&e.body) {
+                    // The on-screen keys and wheels follow what the host plays.
+                    let lit = |note: u8, velocity| {
                         if let Some(lit) = p.shared.heard.get(note as usize) {
                             lit.store(velocity, Ordering::Relaxed);
                         }
-                        s.rack.note_on_port(e.port, channel, note, velocity)
-                    }
-                    EventBody::NoteOff { channel, note, .. } => {
-                        if let Some(lit) = p.shared.heard.get(note as usize) {
-                            lit.store(0, Ordering::Relaxed);
+                    };
+                    match ev {
+                        In::NoteOn(_, note, velocity) => lit(note, velocity),
+                        In::NoteOff(_, note) => lit(note, 0),
+                        In::Bend(_, value) => p.shared.bend.store(u32::from(value), Ordering::Relaxed),
+                        In::Cc(_, 1, value) => {
+                            p.shared.modulation.store(u32::from(value), Ordering::Relaxed)
                         }
-                        s.rack.note_off_port(e.port, channel, note)
+                        _ => {}
                     }
-                    EventBody::PitchBend { channel, value, .. } => {
-                        // The on-screen wheels follow what is played.
-                        p.shared.bend.store(u32::from(value), Ordering::Relaxed);
-                        s.rack.pitch_bend_port(e.port, channel, value)
-                    }
-                    EventBody::ControlChange {
-                        channel, cc, value, ..
-                    } => {
-                        if cc == 1 {
-                            p.shared.modulation.store(u32::from(value), Ordering::Relaxed);
-                        }
-                        s.rack.cc_port(e.port, channel, cc, value)
-                    }
-                    EventBody::ChannelPressure {
-                        channel, pressure, ..
-                    } => s.rack.channel_pressure_port(e.port, channel, pressure),
-                    EventBody::Aftertouch {
-                        channel,
-                        note,
-                        pressure,
-                        ..
-                    } => s.rack.poly_pressure_port(e.port, channel, note, pressure),
-                    _ => {}
+                    articulate::dispatch(&mut s.rack, &mut s.routers, e.port, ev);
                 }
                 next += 1;
             }

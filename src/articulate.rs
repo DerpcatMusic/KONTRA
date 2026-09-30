@@ -21,6 +21,11 @@
 //! own [`Router`] per rack slot.
 
 use crate::engine::{Engine, Expression, PartControls, RACK_SLOTS, Rack};
+use moose::core::{
+    EventBody,
+    custom_state::{StateCursor, StateField},
+    midi,
+};
 use serde::{Deserialize, Serialize};
 
 /// Articulations a [`Route`] holds; lists longer than this route the rest as keyswitches.
@@ -180,6 +185,21 @@ pub enum Zone {
     Upper,
 }
 
+/// Kept in the host state as JSON, so fields added later load as their defaults.
+macro_rules! json_state {
+    ($($t:ty),*) => {$(
+        impl StateField for $t {
+            fn write_field(&self, buf: &mut Vec<u8>) {
+                serde_json::to_string(self).unwrap_or_default().write_field(buf);
+            }
+            fn read_field(cursor: &mut StateCursor) -> Option<Self> {
+                Some(serde_json::from_str(&String::read_field(cursor)?).unwrap_or_default())
+            }
+        }
+    )*};
+}
+json_state!(Articulate, Mpe);
+
 /// One articulation as the audio thread routes it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct Art {
@@ -322,6 +342,40 @@ pub enum In {
 }
 
 impl In {
+    /// A host event as a part takes it. Per-note MIDI 2.0 bodies (CLAP note
+    /// expressions) stay per key; the rest of MIDI 2.0 narrows to MIDI 1.0.
+    pub fn from_event(body: &EventBody) -> Option<Self> {
+        let unit = |v: u32| (f64::from(v) / f64::from(u32::MAX)) as f32;
+        let hi7 = |v: u32| (v >> 25) as u8;
+        Some(match *body {
+            EventBody::PerNotePitchBend { channel, note, value, .. } => {
+                Self::NoteTune(channel, note, midi::per_note_bend_semitones(value) as f32)
+            }
+            EventBody::PolyPressure2 { channel, note, pressure, .. } => {
+                Self::NotePressure(channel, note, hi7(pressure))
+            }
+            EventBody::PerNoteCC { channel, note, cc: 7, value, registered: true, .. } => {
+                Self::NoteGain(channel, note, unit(value) * midi::PER_NOTE_VOLUME_MAX_GAIN as f32)
+            }
+            EventBody::PerNoteCC { channel, note, cc: 10, value, registered: true, .. } => {
+                Self::NotePan(channel, note, unit(value) * 2.0 - 1.0)
+            }
+            EventBody::PerNoteCC { channel, note, cc: 74, value, registered: true, .. } => {
+                Self::NoteBrightness(channel, note, hi7(value))
+            }
+            EventBody::NoteOn { channel, note, velocity: 0, .. } => Self::NoteOff(channel, note),
+            EventBody::NoteOn { channel, note, velocity, .. } => Self::NoteOn(channel, note, velocity),
+            EventBody::NoteOff { channel, note, .. } => Self::NoteOff(channel, note),
+            EventBody::ControlChange { channel, cc, value, .. } => Self::Cc(channel, cc, value),
+            EventBody::PitchBend { channel, value, .. } => Self::Bend(channel, value),
+            EventBody::ChannelPressure { channel, pressure, .. } => Self::Pressure(channel, pressure),
+            EventBody::Aftertouch { channel, note, pressure, .. } => {
+                Self::PolyAt(channel, note, pressure)
+            }
+            _ => return Self::from_event(&midi::downconvert_to_midi1(body)?),
+        })
+    }
+
     fn channel(self) -> u8 {
         match self {
             Self::NoteOn(c, ..)
@@ -920,5 +974,44 @@ mod tests {
         r.input(In::NoteOff(0, 60), 0, &mut |o| out.push(o));
         r.input(In::NoteOn(0, 60, 100), 0, &mut |o| out.push(o));
         assert!(out.contains(&Out::Expression(60, Expression::default())));
+    }
+
+    #[test]
+    fn host_events_read_per_note_and_narrow_the_rest() {
+        let tune = midi::per_note_bend_from_semitones(-3.5);
+        let ev = |body| In::from_event(&body);
+        assert_eq!(
+            ev(EventBody::PerNotePitchBend { group: 0, channel: 1, note: 60, value: tune }),
+            Some(In::NoteTune(1, 60, -3.5))
+        );
+        // CLAP volume: unity gain is the wire's quarter point.
+        let gain = ev(EventBody::PerNoteCC { group: 0, channel: 0, note: 60, cc: 7, value: u32::MAX / 4, registered: true });
+        assert!(matches!(gain, Some(In::NoteGain(0, 60, g)) if (g - 1.0).abs() < 1e-3));
+        let pan = ev(EventBody::PerNoteCC { group: 0, channel: 0, note: 60, cc: 10, value: u32::MAX, registered: true });
+        assert!(matches!(pan, Some(In::NotePan(0, 60, p)) if (p - 1.0).abs() < 1e-3));
+        assert_eq!(
+            ev(EventBody::PolyPressure2 { group: 0, channel: 2, note: 61, pressure: u32::MAX }),
+            Some(In::NotePressure(2, 61, 127))
+        );
+        assert_eq!(
+            ev(EventBody::NoteOn2 { group: 0, channel: 0, note: 60, velocity: u16::MAX, attribute_type: 0, attribute: 0 }),
+            Some(In::NoteOn(0, 60, 127))
+        );
+        assert_eq!(ev(EventBody::NoteOn { group: 0, channel: 3, note: 60, velocity: 0 }), Some(In::NoteOff(3, 60)));
+        assert_eq!(ev(EventBody::PerNoteCC { group: 0, channel: 0, note: 60, cc: 7, value: 0, registered: false }), None);
+    }
+
+    #[test]
+    fn settings_survive_the_host_state() {
+        let mut a = areia();
+        a.mode = Mode::Velocity;
+        a.articulations[2].remap = Some(100);
+        let mpe = Mpe { zone: Zone::Upper, ..Mpe::default() };
+        let mut buf = Vec::new();
+        a.write_field(&mut buf);
+        mpe.write_field(&mut buf);
+        let mut c = StateCursor::new(&buf);
+        assert_eq!(Articulate::read_field(&mut c), Some(a));
+        assert_eq!(Mpe::read_field(&mut c), Some(mpe));
     }
 }
