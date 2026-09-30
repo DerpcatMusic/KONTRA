@@ -160,21 +160,23 @@ impl PlayMap {
         })
     }
 
-    /// First virtual frame whose data (or crossfade partner) lies outside the
-    /// resident span `[a, b)`; `FOREVER` if the whole path is resident.
-    pub fn resident_limit(&self, wraps: u64, a: u64, b: u64) -> u64 {
-        let mut v = 0;
+    /// First virtual frame from `from` on whose data (or crossfade partner)
+    /// lies outside the resident span `[a, b)`; `FOREVER` if the rest of the
+    /// path is resident.
+    pub fn resident_limit(&self, from: u64, wraps: u64, a: u64, b: u64) -> u64 {
+        let mut v = from;
         let mut skipped = false;
         while let Some(run) = self.run(v, wraps) {
             if let Some(i) = run.outside(a, b) {
                 return v + i;
             }
             v += run.len;
-            // Every wrapped cycle maps identically: after checking one, skip to the tail.
+            // Every wrapped cycle maps identically: after checking a whole
+            // one, skip to the tail.
             if let Some((_, first, len)) = self.cycle()
                 && !skipped
                 && wraps > 0
-                && v >= first + len
+                && v >= first.max(from) + len
             {
                 if wraps == FOREVER {
                     return FOREVER;
@@ -371,19 +373,25 @@ mod tests {
                 ] {
                     let frames = expand(&map, wraps, 400);
                     let inside = |f: u64| f >= a && f < b;
-                    let brute = frames
-                        .iter()
-                        .position(|(f, blend)| {
-                            !inside(*f) || blend.is_some_and(|(p, _)| !inside(p))
-                        })
-                        .map_or(FOREVER, |i| i as u64);
-                    let limit = map.resident_limit(wraps, a, b);
-                    let limit = if frames.len() == 400 && limit >= 400 {
-                        FOREVER
-                    } else {
-                        limit
-                    };
-                    assert_eq!(limit, brute, "{map:?} release {release} span {a}..{b}");
+                    for from in [0, 3, 7, 12, 25] {
+                        let brute = frames
+                            .iter()
+                            .skip(from)
+                            .position(|(f, blend)| {
+                                !inside(*f) || blend.is_some_and(|(p, _)| !inside(p))
+                            })
+                            .map_or(FOREVER, |i| (from + i) as u64);
+                        let limit = map.resident_limit(from as u64, wraps, a, b);
+                        let limit = if frames.len() == 400 && limit >= 400 {
+                            FOREVER
+                        } else {
+                            limit
+                        };
+                        assert_eq!(
+                            limit, brute,
+                            "{map:?} release {release} span {a}..{b} from {from}"
+                        );
+                    }
                 }
             }
         }

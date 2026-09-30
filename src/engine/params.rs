@@ -247,6 +247,36 @@ impl ModTable {
             .min(1.0)
     }
 
+    /// Lowest and highest [`ModTable::start_offset`] of notes in `keys` at
+    /// `velocities` with controllers held at `cc`, bend centred and no
+    /// pressure: where a zone's voices start until a controller moves.
+    pub(crate) fn start_offset_range(
+        &self,
+        cc: &[u8; 128],
+        keys: std::ops::RangeInclusive<u8>,
+        velocities: std::ops::RangeInclusive<u8>,
+    ) -> (f32, f32) {
+        let reads = |source| {
+            self.starts
+                .iter()
+                .any(|&i| self.mods[i as usize].route.is_some_and(|(s, _)| s == source))
+        };
+        // Only sources some start modulation reads need sweeping.
+        let one = |r: std::ops::RangeInclusive<u8>, source| {
+            if reads(source) { r } else { *r.start()..=*r.start() }
+        };
+        let velocities = one(velocities, Source::Velocity);
+        let (mut low, mut high) = (f32::MAX, f32::MIN);
+        for note in one(keys, Source::Key) {
+            for velocity in velocities.clone() {
+                let input = Inputs { cc, bend: 0.0, pressure: 0, note, velocity };
+                let x = self.start_offset(&input);
+                (low, high) = (low.min(x), high.max(x));
+            }
+        }
+        (low, high)
+    }
+
     /// Scale the volume AHDSR's attack and release by their note-start
     /// modulation, with the volume law: `1 - |i|·(1 - v)`. Stored shapers
     /// (velocity 0 → 1, 127 → 0.59 on attack) read as time factors.

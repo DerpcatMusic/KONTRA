@@ -730,6 +730,7 @@ impl BackgroundTask for Load {
                 let bank = Box::new(Bank::load_counting(
                     &instrument,
                     budget,
+                    script.as_deref().map_or(&[], |rt| &rt.init_controllers),
                     &params.shared.load_progress[slot],
                 )?);
                 Ok((instrument, Some(bank), script, snapshot))

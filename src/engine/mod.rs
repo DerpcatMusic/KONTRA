@@ -791,8 +791,16 @@ impl Player {
         let wraps = play
             .map
             .wraps(if release_trigger { offset } else { FOREVER });
-        let span = &sample.spans[play.span as usize];
-        let limit = play.map.resident_limit(wraps, span.start, span.end());
+        // The resident span holding the voice's first window frame (one
+        // before the start, for the cubic's left tap), if any does.
+        let first = offset.saturating_sub(1);
+        let span_index = play
+            .map
+            .run(first, wraps)
+            .and_then(|run| sample.span_at(run.frame))
+            .unwrap_or(0);
+        let span = &sample.spans[span_index as usize];
+        let limit = play.map.resident_limit(first, wraps, span.start, span.end());
         let stream = if sample.streamed {
             self.free.pop()
         } else {
@@ -807,20 +815,19 @@ impl Player {
                     trusted: 0,
                 }
             } else {
-                // An offset past the resident range streams from its first
-                // window frame (one before, for the cubic's left tap).
-                let from = limit.max(offset.saturating_sub(1));
+                // From the voice's start on (`limit >= first`): an offset past
+                // the resident range streams from there, not from the zone start.
                 let tag = bank.slots()[slot as usize].configure(
                     play.sample,
                     &play.map,
                     wraps,
-                    from,
+                    limit,
                     offset,
                 );
                 Stream {
                     slot,
                     tag,
-                    trusted: from,
+                    trusted: limit,
                 }
             }
         });
@@ -843,7 +850,7 @@ impl Player {
             release_trigger,
             age: self.clock,
             sample: play.sample,
-            span: play.span,
+            span: span_index,
             map: play.map,
             wraps,
             length: play.map.len(wraps),

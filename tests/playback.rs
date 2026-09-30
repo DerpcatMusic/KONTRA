@@ -699,7 +699,7 @@ fn streamed_playback_matches_ram_playback() {
         let instrument = instrument(vec![group.clone()], vec![zone.clone()]);
         let progress = std::sync::atomic::AtomicU32::new(0);
         let mut streamed =
-            Bank::load_counting(&instrument, kontakto::engine::MEMORY_LIMIT, &progress).unwrap();
+            Bank::load_counting(&instrument, kontakto::engine::MEMORY_LIMIT, &[], &progress).unwrap();
         assert_eq!(
             progress.into_inner(),
             kontakto::engine::LOAD_DONE,
@@ -1553,5 +1553,53 @@ fn tight_budgets_stream_start_offsets_instead_of_failing() {
         assert!(heard > 0.01);
         assert_eq!(a.underruns(), 0);
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A start offset the scripts pin with a controller (Areia's CC113) stays
+/// resident when the whole offset range does not fit: the voice starts from
+/// RAM, without waiting for the disk.
+#[test]
+fn tight_budgets_keep_the_scripted_start_offset_resident() {
+    let dir = std::env::temp_dir().join(format!("kontakto-reach-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, frames) = (dir.join("offset.wav"), 60_000);
+    write_wav_bits(&path, frames, 24);
+    let group = Group {
+        mods: vec![ModAssignment {
+            name: "CC_START".into(),
+            source: ModSource::MidiCc(113),
+            target: ModTarget::SampleStart,
+            intensity: 1.0,
+            invert: false,
+            lag_ms: 0,
+            shaper: None,
+        }],
+        ..Group::default()
+    };
+    let zone = Zone {
+        sample: path.clone(),
+        start_mod: Some(20_000),
+        ..Zone::default()
+    };
+    let instrument = instrument(vec![group.clone()], vec![zone.clone()]);
+    let full = Bank::load(&instrument).unwrap();
+    let progress = Default::default();
+    let bank =
+        Bank::load_counting(&instrument, full.planned - 5000 * 6, &[(113, 120)], &progress).unwrap();
+    assert_eq!(bank.preload, PRELOAD_FRAMES);
+    assert!(bank.warning.as_ref().unwrap().contains("controller settings"));
+    let decoded = kontakto::audio::decode(&path, frames).unwrap();
+    let ram = Bank::from_samples(vec![group], vec![zone], vec![(path.clone(), decoded)]).unwrap();
+    let (mut a, mut b) = (engine_with(bank), engine_with(ram));
+    for e in [&mut a, &mut b] {
+        e.cc(0, 113, 120);
+        e.note_on(0, 60, 100);
+    }
+    // Within the preload past the offset: no disk read is needed yet.
+    for block in 0..12 {
+        assert!(render(&mut a, 128) == render(&mut b, 128), "diverges in block {block}");
+    }
+    assert_eq!(a.underruns(), 0);
     std::fs::remove_dir_all(dir).unwrap();
 }

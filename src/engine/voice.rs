@@ -651,7 +651,8 @@ impl Voice {
         self.wraps = wraps;
         self.length = self.map.len(wraps);
         let span = self.span(bank);
-        self.limit = self.map.resident_limit(wraps, span.start, span.end());
+        let first = (self.pos as u64).saturating_sub(1);
+        self.limit = self.map.resident_limit(first, wraps, span.start, span.end());
         let slots = bank.slots();
         if self.limit == FOREVER {
             if let Some(stream) = self.stream.take() {
