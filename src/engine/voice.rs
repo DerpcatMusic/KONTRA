@@ -126,6 +126,30 @@ fn glide(from: f32, to: f32, frames: f32, curve: f32) -> (f32, f32) {
     (mul, target * (1.0 - mul))
 }
 
+/// Write `x = x * mul + add` per frame into `out`, from `x` = `level`;
+/// returns the last value. Eight frames at a time from powers of the step,
+/// so the frames don't wait on each other as a frame-by-frame loop does.
+fn affine(out: &mut [f32], level: f32, (mul, add): (f32, f32)) -> f32 {
+    let (mut pow, mut off) = ([0f32; 8], [0f32; 8]);
+    let (mut p, mut o) = (1f32, 0f32);
+    for k in 0..8 {
+        (p, o) = (p * mul, o * mul + add);
+        (pow[k], off[k]) = (p, o);
+    }
+    let mut x = level;
+    let (chunks, tail) = out.as_chunks_mut::<8>();
+    for c in chunks {
+        for k in 0..8 {
+            c[k] = pow[k] * x + off[k];
+        }
+        x = c[7];
+    }
+    for (k, t) in tail.iter_mut().enumerate() {
+        *t = pow[k] * x + off[k];
+    }
+    out.last().copied().unwrap_or(level)
+}
+
 impl Envelope {
     pub fn new(p: &Ahdsr, rate: f32) -> Self {
         let attack = p.attack * rate;
@@ -183,17 +207,15 @@ impl Envelope {
             let rest = &mut out[i..];
             let written = match self.stage {
                 Stage::Attack => {
-                    let mut n = 0;
-                    for o in rest.iter_mut() {
-                        self.level = (self.level * self.step.0 + self.step.1).min(1.0);
-                        *o = self.level;
-                        n += 1;
-                        if self.level >= 1.0 {
+                    self.level = affine(rest, self.level, self.step);
+                    match rest.iter().position(|&x| x >= 1.0) {
+                        Some(peak) => {
+                            (self.level, rest[peak]) = (1.0, 1.0);
                             self.stage = Stage::Hold;
-                            break;
+                            peak + 1
                         }
+                        None => rest.len(),
                     }
-                    n
                 }
                 Stage::Hold => {
                     let n = rest.len().min(self.left as usize);
@@ -218,10 +240,7 @@ impl Envelope {
                 }
                 Stage::Point(i) => {
                     let n = rest.len().min(self.left as usize);
-                    for o in &mut rest[..n] {
-                        self.level = self.level * self.step.0 + self.step.1;
-                        *o = self.level;
-                    }
+                    self.level = affine(&mut rest[..n], self.level, self.step);
                     self.left -= n as u32;
                     if self.left == 0 {
                         let point = flex.and_then(|f| Some((f.sustain, f.points.get(i as usize)?)));
@@ -242,35 +261,31 @@ impl Envelope {
                     n
                 }
                 Stage::Decay => {
-                    let mut n = 0;
-                    for o in rest.iter_mut() {
-                        self.level = self.sustain + (self.level - self.sustain) * self.decay;
-                        *o = self.level;
-                        n += 1;
-                        if self.level - self.sustain <= SILENT {
+                    let step = (self.decay, self.sustain * (1.0 - self.decay));
+                    self.level = affine(rest, self.level, step);
+                    match rest.iter().position(|&x| x - self.sustain <= SILENT) {
+                        Some(end) => {
                             self.level = self.sustain;
                             self.stage = Stage::Sustain;
-                            break;
+                            end + 1
                         }
+                        None => rest.len(),
                     }
-                    n
                 }
                 Stage::Sustain if self.level > SILENT => {
                     rest.fill(self.level);
                     rest.len()
                 }
                 Stage::Release => {
-                    let mut n = 0;
-                    for o in rest.iter_mut() {
-                        self.level *= self.release;
-                        *o = self.level;
-                        n += 1;
-                        if self.level < SILENT {
+                    self.level = affine(rest, self.level, (self.release, 0.0));
+                    match rest.iter().position(|&x| x < SILENT) {
+                        Some(end) => {
+                            self.level = rest[end];
                             self.stage = Stage::Done;
-                            break;
+                            end + 1
                         }
+                        None => rest.len(),
                     }
-                    n
                 }
                 Stage::Sustain | Stage::Done => {
                     self.stage = Stage::Done;
@@ -1006,6 +1021,22 @@ mod tests {
         );
         env.render(&mut out[..100], None, rate);
         assert!(env.done());
+    }
+
+    #[test]
+    fn affine_steps_match_frame_by_frame() {
+        for (mul, add) in [(1.0, 0.01), (0.9993, 0.0007), (1.02, -0.001), (0.0, 0.5)] {
+            for len in [0, 1, 7, 8, 9, 127, 128] {
+                let mut out = vec![0.0; len];
+                let last = affine(&mut out, 0.25, (mul, add));
+                let mut x = 0.25f32;
+                for (i, &o) in out.iter().enumerate() {
+                    x = x * mul + add;
+                    assert!((o - x).abs() <= 1e-5 * x.abs().max(1.0), "{mul} {add} at {i}: {o} vs {x}");
+                }
+                assert_eq!(last, out.last().copied().unwrap_or(0.25));
+            }
+        }
     }
 
     #[test]

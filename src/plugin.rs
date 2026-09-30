@@ -1584,6 +1584,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         &AudioConfig::new(RATE, FRAMES),
     );
     let none = EventList::with_capacity(0);
+    let (load_start, load_cpu) = (Instant::now(), cpu_clock(2));
     Load.run(&p);
     for _ in 0..4 {
         process(&mut dsp, &none);
@@ -1615,7 +1616,12 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     let mut events = EventList::with_capacity(64);
     // Idle instructions per block, so playing ones divide into a cost per voice.
     let (mut idle, mut idle_cycles) = (0., 0.);
-    println!("resident after load: {:.0} MiB", rss_mib());
+    println!(
+        "resident after load: {:.0} MiB · loaded in {:.2} s, {:.2} s CPU",
+        rss_mib(),
+        load_start.elapsed().as_secs_f64(),
+        cpu_clock(2) - load_cpu
+    );
     // Idle again after playing: voices and streams have ended and must cost nothing.
     for (phase, playing) in [("idle", false), ("playing", true), ("after", false)] {
         if phase != "idle" && notes == 0 {
