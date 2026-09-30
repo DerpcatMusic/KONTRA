@@ -3,11 +3,11 @@
 //! The head covers the first `TAIL_FACTOR * head_block` samples of the IR with
 //! small partitions and recomputes the current partial block on every call, so
 //! output has no added latency for any host block size. Tail stages follow,
-//! each with partitions [`STAGE_GROWTH`] times longer than the last (up to
-//! [`MAX_STAGE_BLOCK`]), computed once per stage block; a stage's natural
-//! one-block latency lines up exactly with its IR offset, which is never
-//! shorter than its block. Long partitions cut the spectral multiply-adds
-//! per frame from IR length / head block to a few dozen.
+//! each with partitions [`STAGE_GROWTH`] times longer than the last (within
+//! [`MAX_STAGE_GROWTH`] head blocks and [`MAX_STAGE_BLOCK`] frames),
+//! computed once per stage block; a stage's natural one-block latency lines
+//! up exactly with its IR offset, which is never shorter than its block.
+//! Longer partitions cut the spectral multiply-adds per frame.
 
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex, num_complex::Complex32};
 use std::sync::Arc;
@@ -16,9 +16,13 @@ use std::sync::Arc;
 const TAIL_FACTOR: usize = 16;
 /// Each further tail stage has partitions this many times longer…
 const STAGE_GROWTH: usize = 4;
-/// …up to this many frames: longer blocks would put ever larger FFTs into
-/// the one callback that completes them.
-const MAX_STAGE_BLOCK: usize = 16_384;
+/// …up to this many head blocks and this many frames. The callback that
+/// completes a stage block runs its FFTs; these bounds keep that spike near
+/// 2.5% of a callback's deadline (5 s IR at 32 and 128 frames, measured;
+/// 0.6% with one tail stage). At 512-frame head blocks one tail stage was
+/// cheaper on average, which the frame bound keeps.
+const MAX_STAGE_GROWTH: usize = 64;
+const MAX_STAGE_BLOCK: usize = 8_192;
 
 /// Uniformly partitioned overlap-add convolver (`FFTConvolver` scheme).
 struct Partitioned {
@@ -265,7 +269,7 @@ impl Convolver {
         let mut tails = Vec::new();
         let (mut start, mut size) = (split, block * TAIL_FACTOR);
         while start < ir.len() {
-            let next = (size * STAGE_GROWTH).min(MAX_STAGE_BLOCK);
+            let next = (size * STAGE_GROWTH).min(MAX_STAGE_BLOCK).min(MAX_STAGE_GROWTH * block);
             // A longer stage pays for its larger FFTs only over a few
             // partitions; short of that, this stage takes the rest.
             let end = if next > size && ir.len() >= 3 * next { next } else { ir.len() };
@@ -397,8 +401,8 @@ mod tests {
 
     #[test]
     fn long_ir_matches_direct_convolution_through_every_stage() {
-        // Head 32, stages 512, 2048, 8192 and the capped 16384 with three
-        // partitions (block 1); head 128, stages 2048, 8192, 16384 (block 100).
+        // Head 32, stages 512 and 2048 (block 1); head 128, stages 2048 and
+        // 8192 (block 100).
         let h: Vec<f32> = noise(60_000, 5)
             .iter()
             .enumerate()
@@ -409,7 +413,7 @@ mod tests {
         let peak = expected.iter().fold(0f32, |m, v| m.max(v.abs()));
         for block in [1, 100] {
             let mut conv = Convolver::new(&h, block);
-            assert_eq!(conv.tails.len(), if block == 1 { 4 } else { 3 });
+            assert_eq!(conv.tails.len(), 2);
             let mut y = x.clone();
             for chunk in y.chunks_mut(block) {
                 conv.process(chunk);
