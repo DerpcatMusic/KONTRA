@@ -188,8 +188,8 @@ impl Partitioned {
     }
 }
 
-/// `acc += a * b` over spectra. Uses an AVX2 build when the CPU has it:
-/// the same operations in the same order (no FMA), so the same result.
+/// `acc += a * b` over spectra. Uses AVX2 when the CPU has it: the same
+/// products and sums (no FMA), so the same result.
 #[inline]
 fn mac(acc: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
     #[cfg(target_arch = "x86_64")]
@@ -200,13 +200,32 @@ fn mac(acc: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
     mac_body(acc, a, b);
 }
 
+/// Four bins per step on interleaved re/im: `a * dup(b.re)` and
+/// `swap(a) * dup(b.im)` joined by one add-subtract give `a.re b.re - a.im
+/// b.im` and `a.im b.re + a.re b.im`, the scalar products (addition
+/// commutes exactly), without de-interleaving.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 fn mac_avx2(acc: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
-    mac_body(acc, a, b);
+    use std::arch::x86_64::*;
+    let n = acc.len().min(a.len()).min(b.len());
+    let (acc, a, b) = (&mut acc[..n], &a[..n], &b[..n]);
+    let mut acc4 = acc.chunks_exact_mut(4);
+    for ((y, a), b) in (&mut acc4).zip(a.chunks_exact(4)).zip(b.chunks_exact(4)) {
+        // SAFETY: each chunk is four `Complex32`s, eight contiguous f32.
+        unsafe {
+            let va = _mm256_loadu_ps(a.as_ptr().cast());
+            let vb = _mm256_loadu_ps(b.as_ptr().cast());
+            let re = _mm256_mul_ps(va, _mm256_moveldup_ps(vb));
+            let im = _mm256_mul_ps(_mm256_permute_ps::<0b1011_0001>(va), _mm256_movehdup_ps(vb));
+            let sum = _mm256_add_ps(_mm256_loadu_ps(y.as_ptr().cast()), _mm256_addsub_ps(re, im));
+            _mm256_storeu_ps(y.as_mut_ptr().cast(), sum);
+        }
+    }
+    let rest = n - n % 4;
+    mac_body(acc4.into_remainder(), &a[rest..], &b[rest..]);
 }
 
-/// A plain zip loop so LLVM vectorizes it.
 #[inline(always)]
 fn mac_body(acc: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
     for ((acc, a), b) in acc.iter_mut().zip(a).zip(b) {
@@ -398,6 +417,19 @@ mod tests {
             let err = y.iter().zip(&expected).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
             assert!(err < 1e-5 * peak, "block {block}: max error {err} of peak {peak}");
         }
+    }
+
+    #[test]
+    fn mac_matches_scalar_bit_for_bit() {
+        let spectrum = |seed| -> Vec<Complex32> {
+            noise(2 * 67, seed).chunks(2).map(|c| Complex32::new(c[0], c[1])).collect()
+        };
+        let (a, b, start) = (spectrum(1), spectrum(2), spectrum(3));
+        let (mut simd, mut scalar) = (start.clone(), start);
+        mac(&mut simd, &a, &b);
+        mac_body(&mut scalar, &a, &b);
+        let bits = |v: &[Complex32]| v.iter().flat_map(|c| [c.re.to_bits(), c.im.to_bits()]).collect::<Vec<_>>();
+        assert_eq!(bits(&simd), bits(&scalar));
     }
 
     #[test]
