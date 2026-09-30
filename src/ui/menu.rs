@@ -248,14 +248,14 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
         match item {
             Item::Rule => {
                 height += 2. * TIGHT + 1.;
-                rows.push(col![rule()].pad((TIGHT, 0)).shrink(0));
+                rows.push(col![rule()].pad((0, TIGHT)).shrink(0));
             }
             Item::Info(text) => {
                 height += ROW;
                 rows.push(
                     row![caption(text).fill(Role::Dim).lines(1).min_w(0)]
                         .align(Align::Center)
-                        .pad((0, SPACE))
+                        .pad((SPACE, 0))
                         .h(ROW)
                         .shrink(0),
                 );
@@ -287,7 +287,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                 ]
                 .gap(SPACE)
                 .align(Align::Center)
-                .pad((0, SPACE))
+                .pad((SPACE, 0))
                 .h(ROW)
                 .focusable()
                 .a11y(A11y::Button)

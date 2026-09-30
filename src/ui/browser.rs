@@ -275,7 +275,7 @@ fn card(image: Option<&std::sync::Arc<Image>>, name: &str, presets: usize, id: S
             row![section(&library_label(name))]
                 .align(Align::Center)
                 .justify(Justify::Center)
-                .pad((0, SPACE))
+                .pad((SPACE, 0))
                 .h(CONTROL * 2.5)
                 .fill(Role::Field)
                 .shrink(0),
@@ -292,7 +292,7 @@ fn card(image: Option<&std::sync::Arc<Image>>, name: &str, presets: usize, id: S
         ]
         .align(Align::Center)
         .gap(SPACE)
-        .pad((TIGHT, SPACE)),
+        .pad((SPACE, TIGHT)),
     );
     let el = col(parts)
         .gap(0)
@@ -317,7 +317,7 @@ fn group_heading(label: &str, count: usize) -> El {
     ]
     .gap(SPACE)
     .align(Align::Center)
-    .pad((TIGHT + 1., INSET))
+    .pad((INSET, TIGHT + 1.))
     .fill(Role::Surface)
     .sticky()
     .shrink(0)
@@ -364,7 +364,7 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
     ]
     .gap(INSET - 1.)
     .align(Align::Center)
-    .pad((TIGHT + 1., SPACE))
+    .pad((SPACE, TIGHT + 1.))
     .when(cursor, |e| e.fill(Role::Raised))
     .focusable()
     .a11y(A11y::Button)
@@ -400,7 +400,7 @@ fn hint(text: &str) -> El {
         .fill(Role::Dim)
         .text_size(TEXT)
         .lines(4)
-        .pad((SPACE, INSET))
+        .pad((INSET, SPACE))
 }
 
 fn stem(path: &Path) -> String {

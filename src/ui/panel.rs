@@ -101,6 +101,7 @@ const NOISE: &[&str] = &[
     "but", "button", "btn", "switch", "sw", "slider", "knob", "label", "lbl", "pic", "dark",
     "light", "big", "small", "toggle", "onoff", "bg", "img", "ver", "hor", "vert", "horiz",
     "k4", "bip", "clear", "empty", "of", "transparent", "select", "screen", "item", "byp",
+    "on", "off",
 ];
 
 /// Readable words from an identifier: `pyramid_but_classic_mix_1_of_2`
@@ -125,10 +126,14 @@ fn words(ident: &str, prefix: &str) -> Option<String> {
     Some(parts.iter().map(title).collect::<Vec<_>>().join(" "))
 }
 
-/// A variable name a person wrote, not an obfuscator's `$q5nsy`: words
-/// joined by `_`, or one word without digits.
+/// A variable name a person wrote, not an obfuscator's `$q5nsy` or
+/// `$zptkf`: words joined by `_`, or one word without digits that has
+/// vowels enough to say.
 fn readable(variable: &str) -> bool {
-    variable.contains('_') || !variable.chars().any(|c| c.is_ascii_digit())
+    let word = variable.trim_start_matches(['$', '~', '?', '%', '@', '!']);
+    let vowels = word.chars().filter(|c| "aeiouyAEIOUY".contains(*c)).count();
+    word.contains('_')
+        || !word.chars().any(|c| c.is_ascii_digit()) && vowels * 10 >= word.len() * 3
 }
 
 /// The first word most picture names share: the library's own prefix.
@@ -377,9 +382,17 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
             let mut lines = Vec::new();
             for line in column {
                 let switches = line.len() > 1 && line.iter().all(|i| i.face == Face::Toggle);
-                let els: Vec<El> = line.iter().map(|i| control(ui, cx, part, i)).collect();
+                // A lone field, fader or menu spans its column, so labels
+                // and values line up down the column.
+                let span = line.len() == 1
+                    && matches!(line[0].face, Face::Value | Face::Fader | Face::Menu | Face::Text);
+                let els: Vec<El> = line
+                    .iter()
+                    .map(|i| control(ui, cx, part, i))
+                    .map(|el| if span { el.flex(1).min_w(0) } else { el })
+                    .collect();
                 lines.push(if switches {
-                    segmented(els)
+                    row![segmented(els)]
                 } else {
                     row(els).gap(SPACE).align(Align::End).shrink(0)
                 });
@@ -388,7 +401,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
         }
         let body = row(columns).gap(INSET).align(Align::Start).shrink(0);
         out.push(match &section.title {
-            Some(t) => col![section_title(t), body].gap(SPACE).shrink(0),
+            Some(t) => col![section_title(t), body]
+                .gap(SPACE)
+                .align(Align::Stretch)
+                .shrink(0),
             None => body,
         });
     }
@@ -403,7 +419,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
 }
 
 fn section_title(title: &str) -> El {
-    col![section(title), rule()].gap(TIGHT).w(Len::Pct(100.))
+    col![section(title), rule()]
+        .gap(TIGHT)
+        .align(Align::Start)
+        .w(Len::Pct(100.))
 }
 
 /// What a knob or fader reads: the script's text when it says more than a
@@ -606,7 +625,8 @@ mod tests {
         assert_eq!(words("pyramid_but_classic_mix_1_of_2", "pyramid").as_deref(), Some("Classic Mix"));
         assert_eq!(words("$slider_controller_reverb_mix", "").as_deref(), Some("Controller Reverb Mix"));
         assert_eq!(words("K4_SLIDER_BIP_1", ""), None);
-        assert!(!readable("$q5nsy"));
+        assert!(!readable("$q5nsy") && !readable("$zptkf") && !readable("$ruqnf"));
+        assert!(readable("$vibrato") && readable("$mic_volume"));
         assert_eq!(clean("\t\t\t   Legato Rebowed"), "Legato Rebowed");
     }
 }

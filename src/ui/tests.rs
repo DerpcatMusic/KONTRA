@@ -304,7 +304,10 @@ fn screenshot() {
         ("collapsed", true, &["toggle-browser", "keyboard-toggle"]),
         ("error", true, &[]),
     ];
-    for (state, loaded, presses) in states {
+    // KONTAKTO_STATES="perform,rack" renders only those states.
+    let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
+    let wanted = |state: &str| only.is_empty() || only.split(',').any(|s| s == state);
+    for (state, loaded, presses) in states.into_iter().filter(|(s, ..)| wanted(s)) {
         for (width, height) in [(1180u16, 760u16), (900, 600)] {
             let p = Arc::new(SamplerParams::new());
             {

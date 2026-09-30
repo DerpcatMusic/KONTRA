@@ -686,7 +686,7 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
     Some(
         row![body(label).text_size(TEXT).lines(1).min_w(0)]
             .align(Align::Center)
-            .pad((TIGHT, SPACE))
+            .pad((SPACE, TIGHT))
             .max_size(Size::new(SIDEBAR, CONTROL * 2.))
             .fill(Role::Level(3))
             .stroke(accent())
@@ -714,7 +714,7 @@ fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
         row(tabs)
             .gap(INSET + TIGHT)
             .align(Align::Center)
-            .pad((0, INSET))
+            .pad((INSET, 0))
             .shrink(0)
             .fill(Role::Surface),
         rule(),

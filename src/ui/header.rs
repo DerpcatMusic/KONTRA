@@ -162,7 +162,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         ]
         .gap(SPACE)
         .align(Align::Center)
-        .pad((SPACE, INSET)),
+        .pad((INSET, SPACE)),
         rule()
     ]
     .gap(0)

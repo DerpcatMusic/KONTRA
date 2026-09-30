@@ -108,7 +108,7 @@ pub fn strip(items: Vec<El>) -> El {
     row(items)
         .gap(SPACE)
         .align(Align::Center)
-        .pad((TIGHT, SPACE))
+        .pad((SPACE, TIGHT))
         .shrink(0)
 }
 
@@ -191,7 +191,7 @@ pub fn action(ui: &mut Ui, id: impl Into<Id>, label: &str, selected: bool) -> (b
     ]
     .align(Align::Center)
     .justify(Justify::Center)
-    .pad((0, SPACE))
+    .pad((SPACE, 0))
     .h(CONTROL)
     .when(selected, |e| e.fill(Role::Raised))
     .focusable()
@@ -223,10 +223,10 @@ pub fn latch(ui: &mut Ui, id: impl Into<Id>, label: &str, name: &str, on: bool) 
     ]
     .gap(0)
     .align(Align::Center)
-    .pad((0, SPACE))
+    .pad((SPACE, 0))
     .min_w(CONTROL)
     .h(CONTROL)
-    .fill(if on { Role::Raised.alpha(1.) } else { Role::Ink.alpha(0.05) })
+    .fill(if on { Role::Raised } else { Role::Field })
     .focusable()
     .a11y(A11y::Toggle { on })
     .named(name.to_owned())
@@ -359,7 +359,7 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool,
     ]
     .gap(0)
     .align(Align::Center)
-    .pad((0, SPACE))
+    .pad((SPACE, 0))
     .h(CONTROL + SPACE)
     .focusable()
     .a11y(A11y::Button)
@@ -384,7 +384,7 @@ pub fn dropdown(ui: &mut Ui, id: impl Into<Id>, text: &str, name: &str) -> (bool
     ]
     .gap(TIGHT)
     .align(Align::Center)
-    .pad((0, SPACE))
+    .pad((SPACE, 0))
     .h(CONTROL)
     .min_w(CONTROL * 3.)
     .fill(Role::Field)
@@ -746,7 +746,7 @@ pub fn banner(role: Role, text: impl Into<String>) -> El {
     ]
     .gap(SPACE)
     .align(Align::Stretch)
-    .pad((SPACE, INSET))
+    .pad((INSET, SPACE))
     .fill(Role::Ink.alpha(0.04))
     .shrink(0)
 }

@@ -73,7 +73,7 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
             ));
         }
     }
-    (!out.is_empty()).then(|| col(out).gap(TIGHT).pad((SPACE, INSET)).shrink(0))
+    (!out.is_empty()).then(|| col(out).gap(TIGHT).pad((INSET, SPACE)).shrink(0))
 }
 
 /// Capitalize and end with a period.
