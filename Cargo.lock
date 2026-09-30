@@ -1523,6 +1523,7 @@ dependencies = [
  "anyhow",
  "clap-sys",
  "crossbeam-queue",
+ "dirs",
  "hound",
  "moose",
  "moose-clap",

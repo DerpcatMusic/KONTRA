@@ -224,7 +224,7 @@ impl ProgramFx {
             }))
     }
 
-    fn effects_mut(&mut self) -> impl Iterator<Item = &mut Effect> {
+    pub(crate) fn effects_mut(&mut self) -> impl Iterator<Item = &mut Effect> {
         [&mut self.insert, &mut self.send, &mut self.main]
             .into_iter()
             .chain(self.buses.iter_mut().map(|b| &mut b.chain))

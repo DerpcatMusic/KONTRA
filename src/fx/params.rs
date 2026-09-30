@@ -135,8 +135,7 @@ impl fmt::Debug for Impulse {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(try_from = "OwnedField")]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct Field {
     pub name: &'static str,
     pub value: Value,
@@ -150,16 +149,16 @@ struct OwnedField {
     value: Value,
 }
 
-impl TryFrom<OwnedField> for Field {
-    type Error = String;
-
-    fn try_from(f: OwnedField) -> Result<Self, String> {
+// By hand: derived, the `&'static str` would need `'de: 'static`.
+impl<'de> Deserialize<'de> for Field {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let f = OwnedField::deserialize(d)?;
         let name = (super::kind::TABLE.iter())
             .filter_map(|&(_, kind, _)| layout(kind))
             .flatten()
             .map(|&(name, _)| name)
             .find(|&name| name == f.name)
-            .ok_or_else(|| format!("unknown effect field {}", f.name))?;
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown effect field {}", f.name)))?;
         Ok(Self { name, value: f.value })
     }
 }

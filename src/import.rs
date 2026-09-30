@@ -7,7 +7,7 @@ pub const LIBRARY_ROOT: &str = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
 
 pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, ModSource, ModTarget, Modulator, ShaperCurve};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Group {
     pub name: String,
     /// Linear amplitude ratio.
@@ -51,7 +51,7 @@ impl Default for Group {
 }
 
 /// Kontakt voice-group (and program) polyphony limit.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, serde::Deserialize)]
 pub struct VoiceLimit {
     pub max_voices: u32,
     /// 0 any, 1 oldest, 2 newest, 3 highest, 4 lowest.
@@ -261,8 +261,19 @@ pub fn source_inventory(path:&Path)->Result<serde_json::Value>{
     }).map_err(|_|anyhow::anyhow!("Malformed source inventory"))?
 }
 
-fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
+/// Program `index` of `path`, from the on-disk cache when it is current.
+fn read_inner(path: &Path, index: u32) -> Result<Instrument> {
     let path = path.canonicalize()?;
+    let dir = crate::cache::dir();
+    if let Some(i) = dir.as_deref().and_then(|dir| crate::cache::load(dir, &path, index)) {
+        return Ok(i);
+    }
+    let instrument = parse(path, index)?;
+    if let Some(dir) = &dir { crate::cache::store(dir, &instrument.path, index, &instrument); }
+    Ok(instrument)
+}
+
+fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     let c = chunks(&path).context("Container decoding")?;
     let p = if let Some(p)=c.find_first(0x28) {ensure!(index==0,"NKI has only one instrument");Program::try_from(p)?}else{multi_programs(&c)?.1.into_iter().find(|(id,_)|*id==index).context("Multi program not found")?.1};
     let mut warnings = Vec::new();
