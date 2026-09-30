@@ -103,7 +103,6 @@ impl Ahdsr {
     }
 
     /// Holds 1 until the voice ends another way: the partner of a lone flex envelope.
-
     pub const UNITY: Self = Self {
         attack: 0.0,
         curve: 0.0,

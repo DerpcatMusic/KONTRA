@@ -1329,3 +1329,42 @@ fn editor_opens_while_parts_load() {
     );
     assert!(first < Duration::from_millis(500) && worst < Duration::from_millis(250));
 }
+
+/// Dragging the envelope's release handle left shortens the release as an
+/// override on the part (the instrument untouched); the panel's reset
+/// plays the library's again.
+#[test]
+fn sound_tab_drags_an_envelope_handle_into_the_override_layer() {
+    use crate::engine::overrides::Param;
+    let p = scripted_part("on init\nend on");
+    let env = crate::modulation::Ahdsr {
+        attack_curve: 0.0,
+        attack_ms: 10.0,
+        decay_ms: 500.0,
+        hold_ms: 0.0,
+        release_ms: 1000.0,
+        sustain: 0.5,
+        unknown_flag: 0,
+        unknown_tail: Vec::new(),
+    };
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let i = view.parts[0].instrument.as_mut().unwrap();
+        Arc::get_mut(i).unwrap().groups = vec![import::Group { volume_env: Some(env), ..Default::default() }];
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("tab-sound");
+    let frame = h.ui.scene().unwrap().surface("edit-envelope").expect("the envelope graph").frame;
+    // The release handle: the envelope's end, at the floor, inset by SPACE.
+    let at = Point::new(frame.x + frame.size.width - SPACE, frame.y + frame.size.height - SPACE);
+    for (x, down) in [(0., true), (-10., true), (-60., true), (-60., false)] {
+        h.tick(pointer(Point::new(at.x + x, at.y), down));
+    }
+    h.idle(2);
+    let offset = p.selection.read().unwrap().parts[0].edits.get(None, Param::Release);
+    assert!(offset < -0.01, "release moved down: {offset}");
+    let library = p.shared.view.lock().unwrap().parts[0].instrument.as_ref().unwrap().groups[0].volume_env.as_ref().unwrap().release_ms;
+    assert_eq!(library, 1000.0, "the instrument is untouched");
+    h.press("edit-envelope-reset");
+    assert!(p.selection.read().unwrap().parts[0].edits.0.is_empty(), "reset plays the library's");
+}
