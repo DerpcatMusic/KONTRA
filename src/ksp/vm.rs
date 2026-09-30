@@ -279,14 +279,16 @@ fn bool_int(b: bool) -> i32 {
 
 /// Memory index of an array element. Like Kontakt, an out-of-bounds access is
 /// reported but not fatal: reads yield zero/empty and writes are dropped.
-fn element(m: &mut Machine, v: VarId, index: i32) -> Option<usize> {
+/// `pc` is the running thread's, for the report's line.
+fn element(m: &mut Machine, pc: usize, v: VarId, index: i32) -> Option<usize> {
     let var = &m.prog.vars[v as usize];
     match u32::try_from(index) {
         Ok(i) if i < var.len.unwrap_or(1) => Some((var.slot + i) as usize),
         _ => {
             m.env.fault(
                 m.slot.index,
-                m.t.pc,
+                // `pc` is already past the faulting op, like a builtin's.
+                pc as u32,
                 "Array index out of bounds (read 0, write ignored)",
             );
             None
@@ -371,38 +373,38 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             }
             Op::LdIA(v) => {
                 let i = s.int();
-                let x = element(m, v, i).map_or(0, |e| m.slot.mem.ints[e]);
+                let x = element(m, *pc, v, i).map_or(0, |e| m.slot.mem.ints[e]);
                 m.stk.ints.push(x);
             }
             Op::StIA(v) => {
                 let value = s.int();
                 let i = s.int();
-                if let Some(e) = element(m, v, i) {
+                if let Some(e) = element(m, *pc, v, i) {
                     m.slot.mem.ints[e] = value;
                 }
             }
             Op::LdRA(v) => {
                 let i = s.int();
-                let x = element(m, v, i).map_or(0.0, |e| m.slot.mem.reals[e]);
+                let x = element(m, *pc, v, i).map_or(0.0, |e| m.slot.mem.reals[e]);
                 m.stk.reals.push(x);
             }
             Op::StRA(v) => {
                 let value = s.real();
                 let i = s.int();
-                if let Some(e) = element(m, v, i) {
+                if let Some(e) = element(m, *pc, v, i) {
                     m.slot.mem.reals[e] = value;
                 }
             }
             Op::LdSA(v) => {
                 let i = s.int();
-                match element(m, v, i) {
+                match element(m, *pc, v, i) {
                     Some(e) => m.stk.strs.push_str(&m.slot.mem.strs[e]),
                     None => m.stk.strs.push_str(""),
                 }
             }
             Op::StSA(v) => {
                 let i = s.int();
-                let e = element(m, v, i);
+                let e = element(m, *pc, v, i);
                 let text = m.stk.strs.pop();
                 if let Some(e) = e {
                     let dst = &mut m.slot.mem.strs[e];
@@ -556,7 +558,7 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             }
             Op::LdIAVar(v, a) => {
                 let i = mem.ints[a as usize];
-                let x = element(m, v, i).map_or(0, |e| m.slot.mem.ints[e]);
+                let x = element(m, *pc, v, i).map_or(0, |e| m.slot.mem.ints[e]);
                 m.stk.ints.push(x);
                 *pc += 1;
             }

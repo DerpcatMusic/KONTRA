@@ -335,6 +335,14 @@ pub const ALL_EVENTS: i32 = 0x3FFF_FFFE;
 pub const MARKS_FLAG: i32 = 0x2000_0000;
 pub const INST_ICON_ID: i32 = 0x3F00_0001;
 pub const INST_WALLPAPER_ID: i32 = 0x3F00_0002;
+/// The library tab's two pictures, copyright and description (Kontakt 7).
+pub const INST_LIB_LAST_ID: i32 = 0x3F00_0006;
+
+/// Instrument-level pseudo controls: the icon, wallpaper and library tab.
+/// Scripts style them like controls; only the wallpaper is used here.
+pub fn instrument_control(id: i32) -> bool {
+    (INST_ICON_ID..=INST_LIB_LAST_ID).contains(&id)
+}
 pub const FIRST_UI_ID: i32 = 32768;
 
 pub mod event_par {
@@ -421,6 +429,10 @@ pub fn constant(name: &str) -> Option<i32> {
         "$VCC_MONO_AT" => VCC_MONO_AT,
         "$INST_ICON_ID" => INST_ICON_ID,
         "$INST_WALLPAPER_ID" => INST_WALLPAPER_ID,
+        "$INST_LIB_PIC_ONE_ID" => INST_WALLPAPER_ID + 1,
+        "$INST_LIB_PIC_TWO_ID" => INST_WALLPAPER_ID + 2,
+        "$INST_LIB_COPYRIGHT_ID" => INST_WALLPAPER_ID + 3,
+        "$INST_LIB_DESCRIPTION_ID" => INST_LIB_LAST_ID,
         "$HIDE_PART_NOTHING" => 0,
         "$HIDE_WHOLE_CONTROL" => 1,
         "$HIDE_PART_BG" => 2,

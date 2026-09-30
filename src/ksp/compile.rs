@@ -5,7 +5,7 @@ use super::builtins::{self, Arg, Builtin, Ret, SysArray, SysVar};
 use super::lexer::{Interner, Sym, lex};
 use super::parser::{BinOp, Block, Declare, Expr, Stmt, StmtKind, UnOp, parse};
 use anyhow::{Context, Result, bail, ensure};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Per-array element ceiling (Kontakt's own limit) and per-script total.
 pub const MAX_ARRAY_LEN: u32 = 1_000_000;
@@ -380,11 +380,35 @@ struct Compiler<'a> {
     string_ids: HashMap<Sym, u32>,
     auto_ids: HashMap<Sym, i32>,
     fn_ids: HashMap<Sym, u32>,
+    /// Spellings of each variable name the script uses, by lowercased name.
+    spellings: HashMap<String, Vec<Sym>>,
+    /// Spellings resolved to a variable declared under another.
+    aliases: HashSet<Sym>,
     elements: u32,
     line: u32,
     /// Code before this index may be a jump target; peephole folding stops here.
     barrier: usize,
     calls: Vec<u32>,
+}
+
+/// Kontakt matches variable names without regard to case: Una Corda declares
+/// `$T3_swiNoiToEQ` and persists `$T3_swiNoiToEq`, Areia declares
+/// `$MAX_NUM_GROUPS` and sizes arrays with `$max_num_groups`. Every variable
+/// spelled more than one way, by lowercased name; Kontakt's own names (`%CC`,
+/// `$EVENT_NOTE`) keep their meaning and are left out.
+fn spellings(syms: &Interner) -> HashMap<String, Vec<Sym>> {
+    let mut out: HashMap<String, Vec<Sym>> = HashMap::new();
+    for sym in 0..syms.count() as Sym {
+        let name = syms.name(sym);
+        let builtin = SysArray::from_name(name).is_some()
+            || builtins::sys_var(name).is_some()
+            || builtins::constant(name).or_else(|| builtins::symbol(name)).is_some();
+        if !builtin && name.starts_with(['$', '%', '~', '?', '@', '!']) {
+            out.entry(name.to_ascii_lowercase()).or_default().push(sym);
+        }
+    }
+    out.retain(|_, v| v.len() > 1);
+    out
 }
 
 pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
@@ -398,6 +422,8 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
         string_ids: HashMap::new(),
         auto_ids: HashMap::new(),
         fn_ids: HashMap::new(),
+        spellings: spellings(&tokens.syms),
+        aliases: HashSet::new(),
         elements: 0,
         line: 0,
         barrier: 0,
@@ -435,7 +461,6 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
             c.declare_all(body)?;
         }
     }
-    c.alias_case_variants();
     let mut units: Vec<(usize, Unit)> = Vec::new();
     for (i, b) in blocks.iter().enumerate() {
         let unit = c.unit(b);
@@ -623,8 +648,9 @@ impl<'a> Compiler<'a> {
 
     fn declare(&mut self, d: &Declare) -> Result<()> {
         let name = self.name(d.name);
+        // A spelling taken as an alias yields to its own declaration.
         ensure!(
-            !self.var_ids.contains_key(&d.name),
+            !self.var_ids.contains_key(&d.name) || self.aliases.remove(&d.name),
             "Duplicate variable {name}"
         );
         ensure!(self.p.vars.len() < MAX_VARS, "KSP variable limit");
@@ -682,6 +708,12 @@ impl<'a> Compiler<'a> {
         });
         self.p.ui_callbacks.push(None);
         self.var_ids.insert(d.name, id);
+        for &s in self.spellings.get(&name.to_ascii_lowercase()).into_iter().flatten() {
+            if !self.var_ids.contains_key(&s) {
+                self.var_ids.insert(s, id);
+                self.aliases.insert(s);
+            }
+        }
         Ok(())
     }
 
@@ -724,33 +756,6 @@ impl<'a> Compiler<'a> {
         self.p.ui_callbacks.push(None);
         self.p.sys_arrays[a as usize] = Some(id);
         id
-    }
-
-    /// Kontakt matches variable names without regard to case: Una Corda declares
-    /// `$T3_swiNoiToEQ` and persists `$T3_swiNoiToEq`. Every spelling of a
-    /// declared name that the script uses resolves to the declared variable.
-    fn alias_case_variants(&mut self) {
-        let folded: HashMap<String, VarId> = self
-            .var_ids
-            .iter()
-            .map(|(&s, &v)| (self.name(s).to_ascii_lowercase(), v))
-            .collect();
-        for sym in 0..self.syms.count() as Sym {
-            let name = self.name(sym);
-            // Kontakt's own names (`%CC`, `$EVENT_NOTE`) keep their meaning.
-            let builtin = SysArray::from_name(name).is_some()
-                || builtins::sys_var(name).is_some()
-                || builtins::constant(name).or_else(|| builtins::symbol(name)).is_some();
-            if builtin
-                || self.var_ids.contains_key(&sym)
-                || !name.starts_with(['$', '%', '~', '?', '@', '!'])
-            {
-                continue;
-            }
-            if let Some(&v) = folded.get(&name.to_ascii_lowercase()) {
-                self.var_ids.insert(sym, v);
-            }
-        }
     }
 
     /// Resolve a variable reference to a declared or runtime-maintained variable.

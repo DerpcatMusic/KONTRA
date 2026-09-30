@@ -753,7 +753,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         // ---- User interface ------------------------------------------------------------
         SetControlPar => {
             let [id, p, value] = ints(m);
-            if matches!(id, b::INST_ICON_ID | b::INST_WALLPAPER_ID) {
+            if b::instrument_control(id) {
                 return Ok(Step::Next);
             }
             let c = control(m, id)?;
@@ -772,7 +772,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 m.slot.ui.wallpaper.push_str(text);
                 return Ok(Step::Next);
             }
-            if id == b::INST_ICON_ID || id == b::INST_WALLPAPER_ID {
+            if b::instrument_control(id) {
                 return Ok(Step::Next);
             }
             let c = m.slot.ui.control(id).ok_or(NO_CONTROL)?;
@@ -801,7 +801,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 m.stk.int();
             }
             let [id, p] = ints(m);
-            if matches!(id, b::INST_ICON_ID | b::INST_WALLPAPER_ID) {
+            if b::instrument_control(id) {
                 return push_int(m, 0);
             }
             let c = control(m, id)?;
@@ -825,6 +825,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 m.stk.int();
             }
             let [id, p] = ints(m);
+            if b::instrument_control(id) {
+                m.stk.strs.push_str("");
+                return Ok(Step::Next);
+            }
             let c = control(m, id)?;
             let control = &m.slot.ui.controls[c];
             let var = &m.prog.vars[control.var as usize];

@@ -651,12 +651,27 @@ fn live_view_follows_ui_control() {
 #[test]
 fn variable_names_match_without_case() {
     // Una Corda persists `$swiNoiToEq` after declaring `$swiNoiToEQ`; Kontakt runs it.
-    // A user `%cc_map` never captures Kontakt's `%CC`.
-    let source = "on init\ndeclare %cc[2]\ndeclare ui_switch $swiNoiToEQ\nmake_persistent($swiNoiToEq)\n$SWINOITOEQ := 1\ndeclare ui_label $l(1,1)\nset_text($l, $swinoitoeq & %CC[0])\nmake_perfview\nend on\non ui_control($swiNoiToEq)\nend on";
+    // Areia sizes arrays with `$max_num_groups` after declaring `$MAX_NUM_GROUPS`.
+    // A user `%cc` never captures Kontakt's `%CC`.
+    let source = "on init\ndeclare const $MAX_N := 2\ndeclare %cc[$max_n * 1]\ndeclare ui_switch $swiNoiToEQ\nmake_persistent($swiNoiToEq)\n$SWINOITOEQ := 1\ndeclare ui_label $l(1,1)\nset_text($l, $swinoitoeq & %CC[0])\nmake_perfview\nend on\non ui_control($swiNoiToEq)\nend on";
     let ui = initialize(source, 0, 0).unwrap();
     assert!(ui.performance);
     assert_eq!(prop(&ui, 0, "$CONTROL_PAR_VALUE"), "1");
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "10");
+}
+
+#[test]
+fn library_tab_ids_are_not_faults() {
+    let source = "on init\nset_control_par_str($INST_LIB_PIC_ONE_ID,$CONTROL_PAR_PICTURE,\"logo\")\nset_control_par_str($INST_LIB_DESCRIPTION_ID,$CONTROL_PAR_TEXT,\"Compiled\")\nset_control_par($INST_LIB_COPYRIGHT_ID,$CONTROL_PAR_HIDE,0)\nmessage(get_control_par_str($INST_LIB_PIC_TWO_ID,$CONTROL_PAR_TEXT))\nend on";
+    let ui = initialize(source, 0, 0).unwrap();
+    assert!(ui.diagnostics.iter().all(|d| !d.contains("ID does not")), "{:?}", ui.diagnostics);
+}
+
+#[test]
+fn faults_name_their_own_line() {
+    let source = "on init\ndeclare !names[2]\ndeclare ui_label $l(1,1)\nset_control_par(get_ui_id($l),$CONTROL_PAR_WIDTH,1)\nset_control_par(get_ui_id($l),$CONTROL_PAR_HEIGHT,1)\n\nset_text($l, \"a\" & !names[6])\nend on";
+    let ui = initialize(source, 0, 0).unwrap();
+    assert!(ui.diagnostics.iter().any(|d| d.contains("line 7:")), "{:?}", ui.diagnostics);
 }
 
 #[test]
