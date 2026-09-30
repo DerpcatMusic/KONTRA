@@ -275,11 +275,11 @@ fn selected_slot(p: &SamplerParams) -> usize {
     p.shared.selected.load(Ordering::Relaxed) as usize
 }
 
-/// A narrow rack moves the header's controls under the part name, so the
-/// name keeps a line of its own instead of truncating.
+/// Every header is the one compact line, open or folded, narrow or wide:
+/// the name shrinks before anything leaves the rack.
 #[test]
-fn a_narrow_header_gives_the_name_its_line() {
-    for (width, below) in [(900., true), (1180., false)] {
+fn a_header_is_one_line_at_any_width() {
+    for width in [900., 1180.] {
         let p = Arc::new(SamplerParams::new());
         p.selection.write().unwrap().parts.push(Part {
             path: "/virtual/Library/Una Corda Pure.nki".into(),
@@ -289,8 +289,10 @@ fn a_narrow_header_gives_the_name_its_line() {
         h.idle(2);
         let scene = h.ui.scene().unwrap();
         let frame = |id: &str| scene.surface(id).unwrap().frame;
-        let (name, port) = (frame("name-0"), frame("midi-0"));
-        assert_eq!(port.y > name.y + name.size.height, below, "at {width}");
+        let (header, name, port, remove) = (frame("header-0"), frame("name-0"), frame("midi-0"), frame("remove-0"));
+        assert!((header.size.height - (rack::SLIM - 1.)).abs() < 0.5, "at {width}: {header:?}");
+        assert!(port.y < name.y + name.size.height && name.y < port.y + port.size.height, "at {width}");
+        assert!(remove.x + remove.size.width <= header.x + header.size.width, "at {width}");
     }
 }
 
@@ -367,14 +369,21 @@ fn rack_interactions() {
     let part = &parts(&p)[0];
     assert!(part.pan > 0. && part.gain > 0. && part.tune > 0., "{} {} {}", part.pan, part.gain, part.tune);
 
+    let tall = |h: &Harness| h.ui.scene().unwrap().surface("part-0").unwrap().frame.size.height;
+    let open = tall(&h);
     h.press("collapse-0");
     assert!(parts(&p)[0].collapsed, "the chevron folds a part");
+    let folding = tall(&h);
+    assert!(folding < open - 1. && folding > rack::SLIM + 1., "it springs shut, not at once: {open} to {folding}");
+    h.idle(30);
     assert!(h.ui.scene().unwrap().surface("stage-0").is_none());
+    assert!((tall(&h) - rack::SLIM).abs() < 0.5, "to its header alone");
     h.press("collapse-0");
-    assert!(
-        h.ui.scene().unwrap().surface("stage-0").is_some(),
-        "and unfolds it"
-    );
+    let opening = tall(&h);
+    assert!(opening > rack::SLIM + 1. && opening < open - 1., "and springs open: {opening}");
+    h.idle(30);
+    assert!(h.ui.scene().unwrap().surface("stage-0").is_some(), "and unfolds it");
+    assert!((tall(&h) - open).abs() < 0.5);
     // The part's foot drags it down to its slim line, which folds it; a
     // double-click on the foot unfolds it again.
     let edge = |h: &Harness| center(&h.ui, "resize-0");
@@ -383,15 +392,35 @@ fn rack_interactions() {
         h.tick(pointer(Point::new(at.x, at.y + dy), true));
     }
     h.tick(pointer(Point::new(at.x, at.y - 400.), false));
-    h.idle(3);
+    h.idle(30);
     assert!(parts(&p)[0].collapsed, "dragged to its slim line, a part folds");
     let at = edge(&h);
     for down in [true, false, true, false] {
         h.tick(pointer(at, down));
     }
-    h.idle(3);
+    h.idle(30);
     let part = &parts(&p)[0];
     assert!(!part.collapsed && part.height == 0., "a double-click unfolds it whole");
+    // Dragged part way, it follows the pointer as it goes and stays there.
+    h.idle(60); // not a double click
+    let at = edge(&h);
+    h.tick(pointer(at, true));
+    let mut heights = Vec::new();
+    for dy in [-4., -12., -20.] {
+        h.tick(pointer(Point::new(at.x, at.y + dy), true));
+        h.tick(pointer(Point::new(at.x, at.y + dy), true));
+        heights.push(tall(&h));
+    }
+    h.tick(pointer(Point::new(at.x, at.y - 20.), false));
+    h.idle(30);
+    assert!(heights.windows(2).all(|w| w[1] < w[0] - 5.), "the height follows the drag: {heights:?}");
+    assert!((tall(&h) - heights[2]).abs() < 1. && heights[2] < open - 10., "and stays: {} of {open}", tall(&h));
+    assert!(!parts(&p)[0].collapsed && parts(&p)[0].height > 0., "{:?} {:?}", parts(&p)[0].collapsed, parts(&p)[0].height);
+    let at = edge(&h);
+    for down in [true, false, true, false] {
+        h.tick(pointer(at, down));
+    }
+    h.idle(30);
 
     // Lower on a key plays louder; dragging across the keys moves the note
     // along, and letting go stops it.
@@ -837,7 +866,12 @@ fn frame_cost() {
     let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
         "03 Areia - 6 Celli - Core Techniques,Vista - 3 Cellos,Una Corda Pure".into()
     });
-    let instruments = library_instruments(&files, &chosen);
+    let library = library_instruments(&files, &chosen);
+    // KONTAKTO_PARTS="1,4,8,16": the rack filled to each count, cycling the chosen.
+    let counts = std::env::var("KONTAKTO_PARTS").unwrap_or_else(|_| "1,4,8,16".into());
+    for count in counts.split(',').filter_map(|n| n.trim().parse::<usize>().ok()) {
+    println!("{count} parts");
+    let instruments: Vec<_> = library.iter().cycle().take(count).cloned().collect();
     let p = racked(&files, &instruments, true, "perform");
     let (w, hgt) = (1600u16, 1000u16);
     let mut h = Harness::new(&p, f64::from(w), f64::from(hgt));
@@ -886,6 +920,7 @@ fn frame_cost() {
         shared.shared.heard[note].store(if i % 2 == 0 { 100 } else { 0 }, Ordering::Relaxed);
         Input::default()
     });
+    }
 }
 
 /// Renders the editor in its main states to `.impeccable/review/` (git-ignored)
@@ -902,9 +937,11 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 25] = [
+    let states: [(&str, bool, &[&str]); 26] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
+        // Esc: no part selected, the keys show what each part plays.
+        ("unselected", true, &[]),
         ("mapping", true, &["tab-mapping"]),
         ("rack", true, &["tab-rack"]),
         ("info", true, &["tab-info"]),
@@ -987,6 +1024,9 @@ fn screenshot() {
             for id in presses {
                 h.press(id);
             }
+            if state == "unselected" {
+                h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+            }
             h.settle_art();
             // Springs (the browser drawer) come to rest.
             h.idle(30);
@@ -1032,7 +1072,7 @@ fn screenshot() {
                     match state {
                         "mixer" => "master-strip",
                         // Scrolled away, its header is stuck at the top.
-                        "sticky" => "stuck-0",
+                        "sticky" => "header-0",
                         _ => "header-0",
                     },
                 ]);
@@ -1661,4 +1701,49 @@ fn the_window_lets_go_of_a_glide_however_it_ends() {
     d.button(Button::Primary, false, mods);
     tick(&mut d, &mut s, 2);
     assert!(keys_down(&p).is_empty());
+}
+
+/// A clicked header marks its part and the keys play it alone; Esc, or a
+/// click on the rack off every part, lets go, and the keys then play every
+/// part as MIDI channel 1 would.
+#[test]
+fn the_keys_play_the_selected_part_or_every_part() {
+    let p = two_parts();
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(3);
+    let click = |h: &mut Harness, at: Point| {
+        h.tick(pointer(at, true));
+        h.tick(pointer(at, false));
+        h.idle(2);
+    };
+    let play = |h: &mut Harness| {
+        let at = key_spot(&h.ui, 60);
+        h.tick(pointer(at, true));
+        h.tick(pointer(at, true));
+        h.tick(pointer(at, false));
+        h.idle(2);
+        let sent: Vec<_> = std::iter::from_fn(|| p.shared.keyboard.pop()).collect();
+        sent.first().map(|(slot, _)| *slot)
+    };
+    let header = h.ui.scene().unwrap().surface("header-1").unwrap().frame;
+    click(&mut h, Point::new(header.x + header.size.width * 0.3, header.y + 4.));
+    assert_eq!(selected_slot(&p), 1);
+    assert_eq!(play(&mut h), Some(1), "the selected part plays");
+
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    h.idle(2);
+    assert_eq!(selected_slot(&p), crate::plugin::EVERY_PART, "Esc lets go");
+    assert!(h.ui.scene().unwrap().surface("part-ranges").is_some(), "the keys show each part's range");
+    assert_eq!(play(&mut h), Some(crate::plugin::EVERY_PART), "and every part plays");
+
+    let name = center(&h.ui, "name-0");
+    click(&mut h, name);
+    assert_eq!(selected_slot(&p), 0);
+    let body = center(&h.ui, "body-1");
+    click(&mut h, body);
+    assert_eq!(selected_slot(&p), 1, "a click on a part's controls' ground selects it");
+    // Below the rack's foot there is only the rack.
+    let foot = h.ui.scene().unwrap().surface("rack-drop").unwrap().frame;
+    click(&mut h, Point::new(foot.x + 40., foot.y + foot.size.height + 40.));
+    assert_eq!(selected_slot(&p), crate::plugin::EVERY_PART, "a click on the empty rack lets go");
 }

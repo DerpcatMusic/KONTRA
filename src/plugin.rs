@@ -479,6 +479,10 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
             .unwrap_or_default()
     })
 }
+/// The slot the on-screen keyboard plays when no part is selected: every
+/// part MIDI channel 1 on port A reaches, as if the host had sent it.
+pub(crate) const EVERY_PART: usize = RACK_SLOTS;
+
 /// What the on-screen keyboard and wheels send a part.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Play {
@@ -621,7 +625,7 @@ impl Shared {
         *self.multi_request.lock().unwrap() = Some(path);
     }
 
-    /// Start `note` on `slot` at `velocity` (1..=127) from the on-screen keyboard.
+    /// Start `note` on `slot` (or [`EVERY_PART`]) at `velocity` (1..=127) from the on-screen keyboard.
     /// A key already down (the mouse and a computer key on one note) is let
     /// go first: every note-on has its note-off, so one release stops it.
     pub(crate) fn press_key(&self, slot: usize, note: u8, velocity: u8) {
@@ -638,7 +642,7 @@ impl Shared {
     pub(crate) fn release_key(&self, note: u8) {
         let owner = self.key_owners[note as usize].swap(128, Ordering::AcqRel);
         self.played[note as usize].store(0, Ordering::Relaxed);
-        if owner < RACK_SLOTS as u64
+        if owner <= EVERY_PART as u64
             && self.keyboard.push((owner as usize, Play::Note(note, 0))).is_err()
         {
             self.panic.store(true, Ordering::Release);
@@ -1203,6 +1207,15 @@ pub struct Dsp {
     /// The channel each on-screen key started on, so its note-off follows it
     /// even if the part's instrument changed while the key was held.
     key_channels: KeyChannels,
+    /// The slots each on-screen key played on [`EVERY_PART`], one bit each:
+    /// its note-off goes to those and no others.
+    key_slots: KeySlots,
+}
+struct KeySlots([u32; 128]);
+impl Default for KeySlots {
+    fn default() -> Self {
+        Self([0; 128])
+    }
 }
 struct KeyChannels([u8; 128]);
 impl Default for KeyChannels {
@@ -1439,6 +1452,22 @@ impl PluginLogic for Sampler {
             s.audition_left.fill(0);
         }
         while let Some((slot, play)) = p.shared.keyboard.pop() {
+            if slot == EVERY_PART {
+                // As host MIDI on port A, channel 1 plays it.
+                let (rack, routers) = (&mut s.rack, &mut s.routers);
+                match play {
+                    Play::Note(note, 0) => {
+                        let slots = std::mem::take(&mut s.key_slots.0[note as usize & 127]);
+                        articulate::dispatch_to(rack, routers, slots, In::NoteOff(0, note));
+                    }
+                    Play::Note(note, velocity) => {
+                        s.key_slots.0[note as usize & 127] = articulate::dispatch(rack, routers, 0, In::NoteOn(0, note, velocity));
+                    }
+                    Play::Bend(value) => drop(articulate::dispatch(rack, routers, 0, In::Bend(0, value))),
+                    Play::Mod(value) => drop(articulate::dispatch(rack, routers, 0, In::Cc(0, 1, value))),
+                }
+                continue;
+            }
             let channel = preview_channel(&s.rack.parts[slot.min(RACK_SLOTS - 1)]);
             let ev = match play {
                 Play::Note(note, 0) => In::NoteOff(s.key_channels.0[note as usize & 127], note),
@@ -1451,8 +1480,10 @@ impl PluginLogic for Sampler {
             };
             articulate::play(&mut s.rack, &mut s.routers, slot, ev);
         }
-        if p.shared.audition.swap(false, Ordering::AcqRel) {
-            let slot = (p.shared.selected.load(Ordering::Relaxed) as usize).min(RACK_SLOTS - 1);
+        // With no part selected there is none to audition.
+        let selected = p.shared.selected.load(Ordering::Relaxed) as usize;
+        if p.shared.audition.swap(false, Ordering::AcqRel) && selected < RACK_SLOTS {
+            let slot = selected;
             let e = &mut s.rack.parts[slot];
             for channel in 0..16 {
                 e.cc(channel, 120, 0);
@@ -2157,6 +2188,57 @@ mod tests {
         run(&mut dsp, &chord);
         Sampler::reset(&mut dsp, &p, &AudioConfig::new(48000., 64));
         assert_eq!(lit(&p), 0, "a reset forgets them");
+    }
+    /// With no part selected the on-screen keys play like host MIDI on A1:
+    /// every part listening there sounds, omni ones included, and each
+    /// key's release reaches only the parts its press did.
+    #[test]
+    fn unselected_keys_play_every_part_midi_would() {
+        use crate::{audio::Sample, import::{Group, Loop, Zone}};
+        let mut dsp = Dsp::default();
+        let p = SamplerParams::new();
+        for (slot, channel) in [(0, -1), (1, -1), (2, 0), (3, 5)] {
+            let zone = Zone {
+                loop_range: Some(Loop { start: 0, end: 100, until_release: false, crossfade: 0 }),
+                ..Zone::default()
+            };
+            let sample = Sample { rate: 48000, frames: vec![[0.5, 0.25]; 100] };
+            let bank = Bank::from_samples(vec![Group::default()], vec![zone], vec![(PathBuf::new(), sample)]);
+            dsp.rack.parts[slot].set_bank(Some(Box::new(bank.unwrap())));
+            dsp.rack.controls[slot].channel = channel;
+        }
+        let mut outputs = vec![vec![0f32; 256]; 2];
+        let mut refs: Vec<_> = outputs.iter_mut().map(|o| o.as_mut_slice()).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 256);
+        let transport = TransportInfo::default();
+        let mut midi_out = EventList::with_capacity(4);
+        let mut cx = ProcessContext::new(&transport, 48000., 256, &mut midi_out);
+        let mut run = |dsp: &mut Dsp, events: &EventList, blocks: usize| {
+            for _ in 0..blocks {
+                Sampler::process(dsp, &p, &mut buffer, events, &mut cx);
+            }
+        };
+        let none = EventList::with_capacity(0);
+        let voices = |dsp: &Dsp| [0, 1, 2, 3].map(|s| dsp.rack.parts[s].active_voices() > 0);
+
+        p.shared.press_key(EVERY_PART, 60, 100);
+        run(&mut dsp, &none, 1);
+        assert_eq!(voices(&dsp), [true, true, true, false], "omni and channel 1 play, channel 6 does not");
+
+        // Channel 6 plays the same key from the host (on the omni parts
+        // too); the on-screen key's release stops only what it started.
+        let mut host = EventList::with_capacity(1);
+        host.push(Event::new(0, EventBody::NoteOn { group: 0, channel: 5, note: 60, velocity: 100 }));
+        run(&mut dsp, &host, 1);
+        p.shared.release_key(60);
+        run(&mut dsp, &none, 400);
+        let count = |dsp: &Dsp| [0, 1, 2, 3].map(|s| dsp.rack.parts[s].active_voices());
+        assert_eq!(count(&dsp), [1, 1, 0, 1]);
+
+        // A selected part plays alone.
+        p.shared.press_key(2, 64, 100);
+        run(&mut dsp, &none, 1);
+        assert_eq!(count(&dsp), [1, 1, 1, 1]);
     }
     #[test]
     fn process_routes_bus_and_midi_thru() {
