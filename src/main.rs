@@ -56,7 +56,7 @@ fn main() -> Result<()> {
   Some("render") => render(&args[2..])?,
   Some("voices") => voices(Path::new(args.get(2).context("voices requires an NKI path")?), args.get(3).map_or("60@0-3000,64@0-3000,67@0-3000", String::as_str))?,
   Some("ksp-run") => ksp_run(Path::new(args.get(2).context("ksp-run requires an NKI path")?),&args[3..])?,
-  Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(24))?,
+  Some("bench") => bench(&args[2..])?,
   Some("bench-load") => for p in &args[2..] {bench_load(Path::new(p))?},
   Some("audit-libraries") => audit_libraries(&args[2..])?,
   Some("audit-latency") => for p in &args[2..] {match kontakto::timing::audit(Path::new(p)) {Ok(v)=>println!("{}",serde_json::to_string(&v)?),Err(e)=>eprintln!("{p}: {e:#}")}},
@@ -64,7 +64,7 @@ fn main() -> Result<()> {
   Some("bench-stream") => bench_stream(Path::new(args.get(2).context("bench-stream requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(64),args.get(4).map(|s|s.parse()).transpose()?.unwrap_or(10.0))?,
   Some("bench-host") => kontakto::bench_host(&args[4..],args.get(2).context("bench-host <seconds> <notes> <instrument.nki>...")?.parse()?,args.get(3).context("bench-host <seconds> <notes> <instrument.nki>...")?.parse()?)?,
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]"),
  }
  Ok(())
 }
@@ -485,57 +485,58 @@ fn voices(path: &Path, notes: &str) -> Result<()> {
 
 /// Voices one core renders in real time: 48 kHz, 128-frame blocks, stereo,
 /// pitched looping voices with loop crossfades, playing a sample of `bits`
-/// resolution (resident as 16-bit, 24-bit or f32).
-fn bench(voices: usize, bits: i32) -> Result<()> {
-    ensure!(
-        (1..=MAX_VOICES).contains(&voices),
-        "voices must be 1..={MAX_VOICES}"
-    );
-    let frames: Vec<[f32; 2]> = (0..96000)
-        .map(|i| {
-            let scale = 2f32.powi(bits - 1);
-            let x = (i as f32 * 0.013).sin();
-            [x * 0.9, x * 0.6].map(|v| (v * scale).round() / scale)
+/// resolution (resident as 16-bit, 24-bit or f32). Every note plays `layers`
+/// zones, one per group and sample, as mic positions and stacked sections
+/// do; more voices than one engine holds spread over several, as a rack's
+/// parts. `--root` plays every note on its root at 48 kHz (no resampling).
+fn bench(args: &[String]) -> Result<()> {
+    let root = args.iter().any(|a| a == "--root");
+    let lanes = !args.iter().any(|a| a == "--no-lanes");
+    let mut args = args.iter().filter(|a| !a.starts_with("--"));
+    let mut next = |default: usize| -> Result<usize> { Ok(args.next().map(|s| s.parse()).transpose()?.unwrap_or(default)) };
+    let (voices, bits, layers) = (next(1000)?, next(24)? as i32, next(1)?.max(1));
+    ensure!(voices >= layers && voices % layers == 0, "voices must be a multiple of layers");
+    let sample = |layer: usize| {
+        let frames: Vec<[f32; 2]> = (0..96000)
+            .map(|i| {
+                let scale = 2f32.powi(bits - 1);
+                let x = (i as f32 * (0.013 + 0.001 * layer as f32)).sin();
+                [x * 0.9, x * 0.6].map(|v| (v * scale).round() / scale)
+            })
+            .collect();
+        (std::path::PathBuf::from(format!("layer {layer}")), Sample { rate: if root { 48000 } else { 44100 }, frames })
+    };
+    let groups: Vec<Group> = (0..layers).map(|l| Group { name: format!("bench {l}"), ..Group::default() }).collect();
+    let zones: Vec<Zone> = (0..layers)
+        .map(|l| Zone {
+            group: l,
+            sample: format!("layer {l}").into(),
+            low_velocity: 1,
+            loop_range: Some(Loop { start: 20000, end: 90000, until_release: false, crossfade: 2000 }),
+            ..Zone::default()
         })
         .collect();
-    let group = Group {
-        name: "bench".into(),
-        ..Group::default()
-    };
-    let zone = Zone {
-        low_velocity: 1,
-        loop_range: Some(Loop {
-            start: 20000,
-            end: 90000,
-            until_release: false,
-            crossfade: 2000,
-        }),
-        ..Zone::default()
-    };
-    let mut bank = Bank::from_samples(
-        vec![group],
-        vec![zone],
-        vec![(
-            Default::default(),
-            Sample {
-                rate: 44100,
-                frames,
-            },
-        )],
-    )?;
-    bank.set_polyphony(MAX_VOICES);
-    let mut engine = Engine::default();
-    engine.set_bank(Some(Box::new(bank)));
-    for i in 0..voices {
-        let mut event = NoteEvent::new((i % 16) as u8, 36 + (i % 48) as u8, 100);
-        event.tune = (i % 7) as f64 * 0.013;
-        engine.start_event(&event);
+    let mut engines: Vec<Engine> = Vec::new();
+    let notes = voices / layers;
+    let per_engine = MAX_VOICES / layers * layers;
+    for i in 0..notes {
+        if i * layers % per_engine == 0 {
+            let mut bank = Bank::from_samples(groups.clone(), zones.clone(), (0..layers).map(sample).collect())?;
+            bank.set_polyphony(MAX_VOICES);
+            let mut engine = Engine::default();
+            engine.set_bank(Some(Box::new(bank)));
+            engine.set_lanes(lanes);
+            engines.push(engine);
+        }
+        let key = if root { 60 } else { 36 + (i % 48) as u8 };
+        let mut event = NoteEvent::new((i % 16) as u8, key, 100);
+        if !root {
+            event.tune = (i % 7) as f64 * 0.013;
+        }
+        engines.last_mut().unwrap().start_event(&event);
     }
-    ensure!(
-        engine.active_voices() == voices,
-        "only {} voices started",
-        engine.active_voices()
-    );
+    let started: usize = engines.iter().map(Engine::active_voices).sum();
+    ensure!(started == voices, "only {started} voices started");
     let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
     // Best of several runs: the minimum is the least disturbed by other load.
     let seconds = 2.0;
@@ -545,18 +546,20 @@ fn bench(voices: usize, bits: i32) -> Result<()> {
     for _ in 0..7 {
         let started = std::time::Instant::now();
         for _ in 0..blocks {
-            engine.render(&mut left, &mut right);
-            checksum += left[0] + right[MAX_BLOCK - 1];
+            for engine in &mut engines {
+                engine.render(&mut left, &mut right);
+                checksum += left[0] + right[MAX_BLOCK - 1];
+            }
         }
         cpu = cpu.min(started.elapsed().as_secs_f64());
     }
-    ensure!(
-        engine.active_voices() == voices && checksum.is_finite(),
-        "voices ended during the benchmark"
-    );
+    let playing: usize = engines.iter().map(Engine::active_voices).sum();
+    ensure!(playing == voices && checksum.is_finite(), "voices ended during the benchmark");
     let realtime = seconds / cpu;
     println!(
-        "{voices} voices · {seconds} s audio in {cpu:.3} s (best of 7) · {realtime:.1}x real time · {:.0} voices per core",
+        "{voices} voices ({layers} layers, {} engines) · {seconds} s audio in {cpu:.3} s (best of 7) · {realtime:.1}x real time · {:.1}% of a core · {:.0} voices per core",
+        engines.len(),
+        100.0 / realtime,
         voices as f64 * realtime
     );
     Ok(())

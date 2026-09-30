@@ -306,6 +306,14 @@ impl FxProcessor {
         }
     }
 
+    /// The channel gains of bus `bus` when it only passes its input to the
+    /// instrument output through a fader at rest: no effects, no ramp this
+    /// block. Voices can mix straight to the output through them, the same sum.
+    pub fn bus_gains(&self, bus: u8) -> Option<[f32; 2]> {
+        let bus = self.buses.get(*self.bus_of.get(bus as usize)? as usize)?;
+        (bus.output < 0 && bus.chain.is_empty() && bus.gains == balance(bus.volume, bus.pan)).then_some(bus.gains)
+    }
+
     /// `frames` of Kontakt bus `bus`'s input for the current block (within
     /// `max_block`); `None` when the program has no such bus.
     /// Buses [`DIRECT`]` + c` are output channel `c`.

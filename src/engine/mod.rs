@@ -379,6 +379,12 @@ impl Engine {
         self.player.rate
     }
 
+    /// Mix voices that resample alike together (on by default; off renders
+    /// every voice alone, for comparison).
+    pub fn set_lanes(&mut self, on: bool) {
+        self.player.shared = on;
+    }
+
     /// Stop all voices, silence effect tails and reset MIDI state; keeps the
     /// bank, effects, scripts and group mask. Effects stay built for their own
     /// rate: replace them with [`set_fx`](Self::set_fx) when `rate` changes.
@@ -418,6 +424,11 @@ impl Engine {
                 streams: v.stream.is_some_and(|s| !s.paused),
                 gain: v.gains[0].abs().max(v.gains[1].abs()),
                 envelope: v.env.level() * v.flex.as_ref().map_or(1.0, |f| f.level()) * v.fade.value(),
+                sample: v.sample,
+                pos: v.pos,
+                step: v.step * v.tune * v.pitch.1,
+                filtered: self.bank.as_ref().is_some_and(|b| b.settings[v.group as usize].filter.is_some()),
+                phase: v.env.phase(),
             })
             .collect()
     }
@@ -683,7 +694,9 @@ impl Engine {
                 if let Some(bank) = self.bank.as_deref() {
                     let (blocking, tune) = (self.blocking_streams, self.tune);
                     let out = (&mut l[pos..end], &mut r[pos..end]);
-                    self.player.render(bank, out, &mut self.fx, pos, blocking, tune);
+                    // No writes left in the block: bus faders hold until it ends.
+                    let steady = written == self.writes.len();
+                    self.player.render(bank, out, &mut self.fx, pos, blocking, tune, steady);
                 }
                 pos = end;
             }
@@ -734,6 +747,14 @@ pub struct VoiceInfo {
     pub streams: bool,
     pub gain: f32,
     pub envelope: f32,
+    /// Sample, virtual position and source frames per output frame before
+    /// modulation: voices sharing a step and a position's fraction resample alike.
+    pub sample: u32,
+    pub pos: f64,
+    pub step: f64,
+    /// The group runs a per-voice filter or EQ.
+    pub filtered: bool,
+    pub phase: voice::Phase,
 }
 
 /// Engine state apart from the bank, so voices can mutate while the bank is borrowed.
@@ -746,6 +767,18 @@ struct Player {
     /// Zones matched by the current note start, with crossfade gains.
     pending: Vec<(u32, f32)>,
     scratch: Scratch,
+    /// The block's voices by lane.
+    lanes: voice::Lanes,
+    /// The group filter of the lanes being rendered, and the filtered
+    /// lanes by filter: `(class, lane)`.
+    lane_filter: filter::LaneFilter,
+    order: Vec<(u64, u16)>,
+    /// A filter's summed input and a voice's own: left, right, left, right.
+    filtered: Box<[[f32; MAX_BLOCK]; 4]>,
+    /// Voices that ended in the block.
+    dead: Vec<u16>,
+    /// Voices may share lanes.
+    shared: bool,
     rate: f64,
     sustain: [bool; 16],
     /// Keys latched by the sostenuto pedal (CC66).
@@ -792,6 +825,12 @@ impl Player {
             in_use: Vec::with_capacity(MAX_VOICES),
             pending: Vec::with_capacity(MAX_VOICES),
             scratch: Scratch::default(),
+            lanes: voice::Lanes::new(MAX_VOICES),
+            lane_filter: filter::LaneFilter::new(voice::WINDOW),
+            order: Vec::with_capacity(MAX_VOICES),
+            filtered: Box::new([[0.0; MAX_BLOCK]; 4]),
+            dead: Vec::with_capacity(MAX_VOICES),
+            shared: true,
             rate,
             sustain: [false; 16],
             sostenuto: [[false; 128]; 16],
@@ -1100,6 +1139,7 @@ impl Player {
             gains: [0.0; 2],
             muted: 0,
             filter: VoiceFilter::new(settings.filter.as_deref(), &settings.mods, &inputs, self.rate as f32),
+            plan: Default::default(),
         };
         // Start at the voice's first-block gains, so it does not ramp in.
         let (modulation, ..) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
@@ -1352,7 +1392,8 @@ impl Player {
     }
 
     /// Render every voice into `left`/`right`, or into its group's bus input
-    /// at frame `offset` of the current block.
+    /// at frame `offset` of the current block. `steady`: no bus fader moves
+    /// before the block ends.
     fn render(
         &mut self,
         bank: &Bank,
@@ -1361,6 +1402,7 @@ impl Player {
         offset: usize,
         blocking: bool,
         tune: f32,
+        steady: bool,
     ) {
         let cx = Context {
             bank,
@@ -1375,23 +1417,128 @@ impl Player {
             inputs: self.inputs,
         };
         let n = left.len();
-        let mut i = 0;
-        while i < self.voices.len() {
-            let voice = &mut self.voices[i];
+        // Plan every voice, then take them lane by lane: voices sharing one
+        // sum into its window, the rest (and lanes of one) render alone.
+        self.lanes.clear();
+        for (i, voice) in self.voices.iter_mut().enumerate() {
+            let bus = bank.settings[voice.group as usize].bus;
+            let through = bus.filter(|_| steady).and_then(|b| fx.bus_gains(b));
+            match voice.plan(&cx, n, bus, through).filter(|_| self.shared) {
+                Some(lane) => self.lanes.add(lane, voice.plan.class, &voice.filter.held, i as u16),
+                None => self.lanes.skip(i as u16),
+            }
+        }
+        self.dead.clear();
+        for (i, voice) in self.voices.iter_mut().enumerate() {
+            if self.lanes.shared(i as u16) {
+                continue;
+            }
             let bus = bank.settings[voice.group as usize].bus;
             let (alive, underrun) = match bus.and_then(|b| fx.bus_input(b, offset..offset + n)) {
-                Some((l, r)) => voice.render(&cx, &mut self.scratch, l, r),
-                None => voice.render(&cx, &mut self.scratch, left, right),
+                Some((l, r)) => voice.render(&cx, &mut self.scratch, l, r, false),
+                None => voice.render(&cx, &mut self.scratch, left, right, false),
             };
             self.underruns += u64::from(underrun);
-            if alive {
-                i += 1;
-            } else {
-                let v = self.voices.swap_remove(i);
-                if let Some(stream) = v.stream {
-                    cx.slots[stream.slot as usize].stop();
-                    self.free.push(stream.slot);
+            if !alive {
+                self.dead.push(i as u16);
+            }
+        }
+        for &(lane, _, first, _, count) in self.lanes.lanes.iter().filter(|l| l.1 == 0 && l.4 > 1) {
+            let Scratch { window, acc, amp, .. } = &mut self.scratch;
+            let acc = &mut acc[..lane.count(n)];
+            acc.fill([0.0; 2]);
+            for i in self.lanes.members(first, count) {
+                let (alive, underrun) = self.voices[i as usize].accumulate(&cx, window, acc, None);
+                self.underruns += u64::from(underrun);
+                if !alive {
+                    self.dead.push(i);
                 }
+            }
+            match lane.bus().and_then(|b| fx.bus_input(b, offset..offset + n)) {
+                Some((l, r)) => lane.mix(acc, amp, l, r),
+                None => lane.mix(acc, amp, left, right),
+            }
+        }
+        // Filtered lanes, even of one voice, by filter: each filter runs
+        // once, on the sum of its lanes.
+        self.order.clear();
+        let filtered = self.lanes.lanes.iter().enumerate().filter(|(_, l)| l.1 != 0);
+        self.order.extend(filtered.map(|(i, l)| (l.1, i as u16)));
+        self.order.sort_unstable();
+        let mut at = 0;
+        while let Some(&(class, head)) = self.order.get(at) {
+            let key = self.lanes.keys[head as usize];
+            let bus = self.lanes.lanes[head as usize].0.bus();
+            let lf = &mut self.lane_filter;
+            lf.prepare(&key, n);
+            let [out_l, out_r, solo_l, solo_r] = &mut *self.filtered;
+            let (ol, or) = (&mut out_l[..n], &mut out_r[..n]);
+            ol.fill(0.0);
+            or.fill(0.0);
+            let (sl, sr) = (&mut solo_l[..n], &mut solo_r[..n]);
+            // Equal hashes of unequal filters (or buses) split into runs.
+            while let Some(&(c, index)) = self.order.get(at) {
+                let (lane, _, first, _, count) = self.lanes.lanes[index as usize];
+                if c != class || self.lanes.keys[index as usize] != key || lane.bus() != bus {
+                    break;
+                }
+                at += 1;
+                if count == 1 {
+                    // Alone, the voice's own output moves its state on.
+                    let voice = &mut self.voices[first as usize];
+                    lf.begin(&voice.filter);
+                    sl.fill(0.0);
+                    sr.fill(0.0);
+                    let (alive, underrun) = match lane.is_solo() {
+                        true => voice.render(&cx, &mut self.scratch, sl, sr, true),
+                        false => {
+                            let Scratch { window, acc, amp, .. } = &mut self.scratch;
+                            let acc = &mut acc[..lane.count(n)];
+                            acc.fill([0.0; 2]);
+                            let rendered = voice.accumulate(&cx, window, acc, None);
+                            lane.mix(acc, amp, sl, sr);
+                            rendered
+                        }
+                    };
+                    lf.dots_out(sl, sr);
+                    lf.end(&mut voice.filter, [1.0; 2]);
+                    ol.iter_mut().zip(sl.iter()).for_each(|(o, x)| *o += x);
+                    or.iter_mut().zip(sr.iter()).for_each(|(o, x)| *o += x);
+                    self.underruns += u64::from(underrun);
+                    if !alive {
+                        self.dead.push(first);
+                    }
+                    continue;
+                }
+                let Scratch { window, acc, amp, .. } = &mut self.scratch;
+                let acc = &mut acc[..lane.count(n)];
+                acc.fill([0.0; 2]);
+                lane.curve(&mut amp[..n]);
+                lf.kernel(&amp[..n], lane.base(), lane.step(), acc.len());
+                for i in self.lanes.members(first, count) {
+                    let (alive, underrun) = self.voices[i as usize].accumulate(&cx, window, acc, Some(&mut *lf));
+                    self.underruns += u64::from(underrun);
+                    if !alive {
+                        self.dead.push(i);
+                    }
+                }
+                lane.mix(acc, amp, ol, or);
+            }
+            lf.finish(ol, or);
+            let (l, r) = match bus.and_then(|b| fx.bus_input(b, offset..offset + n)) {
+                Some((l, r)) => (l, r),
+                None => (&mut *left, &mut *right),
+            };
+            l.iter_mut().zip(ol.iter()).for_each(|(o, x)| *o += x);
+            r.iter_mut().zip(or.iter()).for_each(|(o, x)| *o += x);
+        }
+        // Highest first, so each swap brings in a voice that lives.
+        self.dead.sort_unstable_by(|a, b| b.cmp(a));
+        for &i in &self.dead {
+            let v = self.voices.swap_remove(i as usize);
+            if let Some(stream) = v.stream {
+                cx.slots[stream.slot as usize].stop();
+                self.free.push(stream.slot);
             }
         }
         self.now += n as u64;

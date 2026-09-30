@@ -2140,3 +2140,174 @@ fn overload_fades_released_voices_quietest_first() {
     render(&mut e, 4800);
     assert_eq!(e.active_voices(), 2, "held notes are never shed");
 }
+
+/// Voices that resample alike (same step and position fraction) sum in one
+/// lane before interpolating. Only the rounding of the sums moves: layered,
+/// panned, pitched and releasing voices stay within -120 dBFS of rendering
+/// each alone.
+#[test]
+fn lanes_match_voices_rendered_alone_within_120_db() {
+    let noise = |seed: u32, bits: i32| {
+        let mut x = seed;
+        let scale = 2f32.powi(bits - 1);
+        let frames = (0..20_000)
+            .map(|_| {
+                let mut next = || {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    ((x >> 8) as f32 / (1 << 23) as f32 - 1.0) * 0.99
+                };
+                [next(), next()].map(|v| (v * scale).round() / scale)
+            })
+            .collect();
+        Sample { rate: 48000, frames }
+    };
+    let play = |lanes: bool| {
+        let groups: Vec<Group> = (0..8)
+            .map(|g| Group { gain: 0.02 + 0.01 * g as f32, pan: g as f32 / 8.0 - 0.4, ..Group::default() })
+            .collect();
+        let zones = (0..8)
+            .map(|g| Zone {
+                group: g,
+                sample: PathBuf::from(g.to_string()),
+                loop_range: Some(Loop { start: 1000, end: 19_000, until_release: false, crossfade: 300 }),
+                ..Zone::default()
+            })
+            .collect();
+        // 16-bit, 24-bit and float storage.
+        let samples = (0..8).map(|g| (PathBuf::from(g.to_string()), noise(g as u32 + 1, [16, 24, 32][g % 3]))).collect();
+        let mut e = engine_with(Bank::from_samples(groups, zones, samples).unwrap());
+        (e.attack, e.release) = (0.005, 0.25);
+        e.set_lanes(lanes);
+        // On the root (whole steps), pitched, and an octave up.
+        for (note, velocity) in [(60, 100), (55, 90), (72, 127), (61, 60)] {
+            e.note_on(0, note, velocity);
+            render(&mut e, 1234);
+        }
+        let mut out = render(&mut e, 9000);
+        e.note_off(0, 60);
+        e.note_off(0, 55);
+        out.extend(render(&mut e, 6000));
+        e.note_off(0, 72);
+        e.note_off(0, 61);
+        out.extend(render(&mut e, 12_000));
+        out
+    };
+    let (alone, laned) = (play(false), play(true));
+    let peak = alone.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    let error = alone.iter().flatten().zip(laned.iter().flatten()).fold(0f32, |e, (a, b)| e.max((a - b).abs()));
+    assert!((0.5..=1.0).contains(&peak), "near full scale: {peak}");
+    assert!(error > 0.0, "lanes were taken");
+    assert!(error < 1e-6, "{:.1} dB", 20.0 * error.log10());
+}
+
+/// Voices whose group filters are held at equal settings, of any group,
+/// share one filter run on their sum, each voice's own state moving on
+/// alongside; lanes of them also resample once. EQs, low passes, Stereo
+/// Modellers, flat bands, velocity- and controller-driven knobs (moved
+/// mid-note), attacks and releases stay within -120 dBFS of filtering each
+/// voice alone.
+#[test]
+fn shared_filters_match_voices_filtered_alone_within_120_db() {
+    use fx::{Chain, Effect, Kind, Params, params};
+    let noise = |seed: u32| {
+        let mut x = seed;
+        let frames = (0..20_000)
+            .map(|_| {
+                let mut next = || {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    ((x >> 8) as f32 / (1 << 23) as f32 - 1.0) * 0.99
+                };
+                [next(), next()]
+            })
+            .collect();
+        Sample { rate: 48000, frames }
+    };
+    let effect = |slot: usize, params: Params| Effect {
+        slot,
+        kind: Kind::Filter,
+        version: 0,
+        bypass: false,
+        output_gain: 1.0,
+        dry_level: 0.0,
+        params,
+    };
+    let band = |freq_hz, gain_db| params::EqBand { freq_hz, bandwidth_oct: 1.0, gain_db };
+    let eq = |bands| Params::Eq(params::Eq { bands });
+    let low = |cutoff| Params::Filter(params::Filter { filter_type: 5, cutoff, resonance: 0.3 });
+    let knob = |source, param: &str, slot| ModAssignment {
+        name: String::new(),
+        source,
+        target: ModTarget::Module { param: param.into(), slot },
+        intensity: 0.3,
+        invert: false,
+        lag_ms: 20,
+        shaper: None,
+    };
+    let play = |lanes: bool| {
+        let chains = [
+            // Equal EQs and modellers across groups; one with a flat middle band.
+            vec![effect(0, eq(vec![band(400.0, -6.0), band(3000.0, 4.0)]))],
+            vec![effect(0, eq(vec![band(400.0, -6.0), band(3000.0, 4.0)]))],
+            vec![effect(0, eq(vec![band(400.0, -6.0), band(1000.0, 0.0), band(3000.0, 4.0)]))],
+            vec![
+                effect(0, eq(vec![band(400.0, -6.0), band(3000.0, 4.0)])),
+                effect(1, Params::StereoModeller(params::StereoModeller { spread: -0.4, pan: 0.3, pseudo_stereo: false })),
+            ],
+            vec![effect(0, low(0.6))],
+            vec![effect(0, low(0.5)), effect(1, eq(vec![band(200.0, 3.0)]))],
+            vec![effect(0, eq(vec![band(800.0, -9.0)]))],
+            vec![],
+        ];
+        let mods = |g: usize| match g {
+            4 => vec![knob(ModSource::Velocity, "filterCutoff", 0)],
+            6 => vec![knob(ModSource::MidiCc(1), "eqGain1", 0)],
+            _ => vec![],
+        };
+        let groups: Vec<Group> = chains
+            .into_iter()
+            .enumerate()
+            .map(|(g, slots)| Group {
+                gain: 0.02 + 0.01 * g as f32,
+                pan: g as f32 / 8.0 - 0.4,
+                fx: Chain { slots },
+                mods: mods(g),
+                ..Group::default()
+            })
+            .collect();
+        let zones = (0..8)
+            .map(|g| Zone {
+                group: g,
+                sample: PathBuf::from((g % 4).to_string()),
+                loop_range: Some(Loop { start: 1000, end: 19_000, until_release: false, crossfade: 300 }),
+                ..Zone::default()
+            })
+            .collect();
+        let samples = (0..4).map(|s| (PathBuf::from(s.to_string()), noise(s as u32 + 1))).collect();
+        let mut e = engine_with(Bank::from_samples(groups, zones, samples).unwrap());
+        (e.attack, e.release) = (0.005, 0.25);
+        e.set_lanes(lanes);
+        e.cc(0, 1, 30);
+        // On the root (whole steps), pitched, an octave up, and one note twice.
+        for (note, velocity) in [(60, 100), (55, 90), (72, 127), (61, 60), (60, 70)] {
+            e.note_on(0, note, velocity);
+            render(&mut e, 1234);
+        }
+        let mut out = render(&mut e, 5000);
+        // The controller glides one filter's knob for every voice at once.
+        e.cc(0, 1, 110);
+        out.extend(render(&mut e, 4000));
+        e.note_off(0, 60);
+        e.note_off(0, 55);
+        out.extend(render(&mut e, 6000));
+        e.note_off(0, 72);
+        e.note_off(0, 61);
+        out.extend(render(&mut e, 12_000));
+        out
+    };
+    let (alone, shared) = (play(false), play(true));
+    let peak = alone.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    let error = alone.iter().flatten().zip(shared.iter().flatten()).fold(0f32, |e, (a, b)| e.max((a - b).abs()));
+    assert!((0.5..=1.0).contains(&peak), "near full scale: {peak}");
+    assert!(error > 0.0, "filters were shared");
+    assert!(error < 1e-6, "{:.1} dB", 20.0 * error.log10());
+}

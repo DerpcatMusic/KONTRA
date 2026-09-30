@@ -18,6 +18,7 @@ use crate::fx::{
     Chain, Kind, Params,
     params::{EqBand, Value},
 };
+use crate::audio::Frame;
 use crate::import::{Group, ModAssignment, ModTarget};
 
 /// Frames between coefficient updates.
@@ -678,6 +679,10 @@ pub(crate) struct VoiceFilter {
     /// settings cost no coefficient math.
     tuned: [[f32; 3]; MAX_SECTIONS],
     matrix: Matrix,
+    /// The last [`VoiceFilter::hold`]: the filter, and its active sections
+    /// in order.
+    pub held: FilterKey,
+    slots: [u8; LANE_SECTIONS],
 }
 
 impl VoiceFilter {
@@ -688,6 +693,8 @@ impl VoiceFilter {
             sections: [Section::default(); MAX_SECTIONS],
             tuned: [[f32::NAN; 3]; MAX_SECTIONS],
             matrix: IDENTITY,
+            held: FilterKey::default(),
+            slots: [0; LANE_SECTIONS],
         };
         if let Some(f) = filter {
             for (env, (params, _)) in out.envs.iter_mut().zip(&f.envs) {
@@ -699,6 +706,53 @@ impl VoiceFilter {
             out.matrix = f.matrix;
         }
         out
+    }
+
+    /// Move the external sources on over `n` frames, before [`process`](Self::process).
+    pub fn follow(&mut self, f: &GroupFilter, table: &ModTable, input: &Inputs, n: usize, rate: f32) {
+        for (value, (_, i)) in self.ext.iter_mut().zip(&f.ext) {
+            table.mods[*i as usize].follow(value, input, n, rate);
+        }
+    }
+
+    /// Work out this block's [`FilterKey`] into `held` when the filter is
+    /// held: no module envelopes and the matrix reached, with at most four
+    /// active sections. Tunes the sections it keeps. Returns the key's hash.
+    pub fn hold(&mut self, f: &GroupFilter, table: &ModTable, rate: f32) -> Option<u64> {
+        if !f.envs.is_empty() || self.matrix != f.matrix {
+            return None;
+        }
+        let mut knobs: [[f32; KNOBS]; MAX_UNITS] =
+            std::array::from_fn(|u| f.units.get(u).map_or([0.0; KNOBS], |unit| unit.knobs));
+        for ((r, i), value) in f.ext.iter().zip(&self.ext) {
+            knobs[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * value;
+        }
+        let key = &mut self.held;
+        key.matrix = f.matrix;
+        let (mut s, mut active) = (0, 0);
+        for (unit, knobs) in f.units.iter().zip(&knobs) {
+            for b in 0..unit.sections as usize {
+                let (k, flat) = unit.key(knobs, b);
+                if unit.bypass || flat {
+                    continue;
+                }
+                if active == LANE_SECTIONS {
+                    return None;
+                }
+                if k != self.tuned[s + b] {
+                    self.tuned[s + b] = k;
+                    self.sections[s + b].coefficients(Proto::of(unit.shape, k, rate));
+                }
+                key.c[active] = self.sections[s + b].c;
+                self.slots[active] = (s + b) as u8;
+                active += 1;
+            }
+            s += unit.sections as usize;
+        }
+        key.active = active as u8;
+        // Sections past the active ones do not count.
+        key.c[active..].fill([0.0; 6]);
+        Some(key.hash())
     }
 
     pub fn release(&mut self) {
@@ -716,16 +770,12 @@ impl VoiceFilter {
         &mut self,
         f: &GroupFilter,
         table: &ModTable,
-        input: &Inputs,
         ctl: &mut [f32; MAX_BLOCK],
         left: &mut [f32],
         right: &mut [f32],
         rate: f32,
     ) {
         let n = left.len();
-        for (value, (_, i)) in self.ext.iter_mut().zip(&f.ext) {
-            table.mods[*i as usize].follow(value, input, n, rate);
-        }
         // Envelope levels at each control tick. External sources move once
         // a block, so knobs change within one only while an envelope moves.
         let mut levels = [[0.0; MAX_BLOCK / CONTROL]; MAX_ENVS];
@@ -782,6 +832,319 @@ impl VoiceFilter {
         if f.matrix != IDENTITY || self.matrix != IDENTITY {
             apply(self.matrix, f.matrix, left, right);
             self.matrix = f.matrix;
+        }
+    }
+}
+
+/// States per channel a [`LaneFilter`] tracks: two per active section.
+const LANE_STATES: usize = 8;
+const LANE_SECTIONS: usize = LANE_STATES / 2;
+type States = [f32; LANE_STATES];
+type Square = [[f64; LANE_STATES]; LANE_STATES];
+/// Filters a [`LaneFilter`] keeps worked out, most recent first to go.
+const TUNINGS: usize = 32;
+
+/// A voice's group filter for one block, when it is held (no module
+/// envelopes, the matrix reached): its active sections' coefficients in
+/// order and its matrix. Voices of any group whose filters are equal this
+/// block can share a [`LaneFilter`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct FilterKey {
+    c: [[f32; 6]; LANE_SECTIONS],
+    matrix: Matrix,
+    active: u8,
+}
+
+impl FilterKey {
+    /// Never 0 (a lane without a filter).
+    pub fn hash(&self) -> u64 {
+        let bits = self.c.iter().flatten().chain(&self.matrix).map(|x| x.to_bits());
+        let h = bits.fold(u64::from(self.active), |h, b| (h ^ u64::from(b)).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        h | 1 << 63
+    }
+}
+
+/// A filter worked out for blocks of `n` frames: the block's state
+/// transition `m = A^n`, and `k[i] = A^(n-1-i) B`, how an input at frame
+/// `i` reaches the end state.
+struct Tuning {
+    key: FilterKey,
+    n: usize,
+    m: [States; LANE_STATES],
+    k: Box<[States; MAX_BLOCK]>,
+}
+
+/// The group filter of voices with equal [`FilterKey`]s. Held, it is
+/// linear and time-invariant over the block, so it filters the voices' sum
+/// once, from the sum of their states. Each voice's own state moves on as
+/// filtering it alone would have moved it: by `M = A^n`, plus its input
+/// dotted with how each frame reaches the end state. For a lane of voices
+/// the input is its source frames, through the lane's interpolation and
+/// envelope curve (the kernel `g`). So a voice leaves its lane, or is
+/// muted, from its own state; only rounding differs from filtering voice
+/// by voice.
+pub(crate) struct LaneFilter {
+    /// Active sections in order, holding the summed state.
+    sections: [Section; LANE_SECTIONS],
+    active: usize,
+    matrix: Matrix,
+    tunings: Box<[Tuning]>,
+    /// The tuning in use, and the next to replace.
+    tuning: usize,
+    victim: usize,
+    /// The lane's kernel: each source frame's share of the end state.
+    g: Box<[States]>,
+    /// A voice's input dotted with how it reaches the end state, per channel.
+    d: [States; 2],
+}
+
+impl LaneFilter {
+    pub fn new(window: usize) -> Self {
+        let tuning = || Tuning {
+            key: FilterKey::default(),
+            n: 0,
+            m: [[0.0; LANE_STATES]; LANE_STATES],
+            k: Box::new([[0.0; LANE_STATES]; MAX_BLOCK]),
+        };
+        Self {
+            sections: [Section::default(); LANE_SECTIONS],
+            active: 0,
+            matrix: IDENTITY,
+            tunings: (0..TUNINGS).map(|_| tuning()).collect(),
+            tuning: 0,
+            victim: 0,
+            g: vec![[0.0; LANE_STATES]; window].into_boxed_slice(),
+            d: [[0.0; LANE_STATES]; 2],
+        }
+    }
+
+    /// Tune to `key` for a block of `n` frames, with no state yet.
+    pub fn prepare(&mut self, key: &FilterKey, n: usize) {
+        self.active = key.active as usize;
+        self.matrix = key.matrix;
+        for (section, c) in self.sections.iter_mut().zip(&key.c).take(self.active) {
+            (section.c, section.s) = (*c, [0.0; 4]);
+        }
+        match self.tunings.iter().position(|t| t.n == n && t.key == *key) {
+            Some(i) => self.tuning = i,
+            None => {
+                self.tuning = self.victim;
+                self.victim = (self.victim + 1) % TUNINGS;
+                self.tune(key, n);
+            }
+        }
+    }
+
+    /// Work out the tuning for `key` and `n` into the current slot.
+    fn tune(&mut self, key: &FilterKey, n: usize) {
+        // The cascade as one state-space system per channel, in f64. The
+        // input to section j is `p · s + q x`.
+        let mut a: Square = [[0.0; LANE_STATES]; LANE_STATES];
+        let mut b = [0f64; LANE_STATES];
+        let (mut p, mut q) = ([0f64; LANE_STATES], 1f64);
+        for (j, c) in key.c.iter().enumerate().take(key.active as usize) {
+            let [a1, a2, a3, m0, m1, m2] = c.map(f64::from);
+            let (b1, b2, b3) = (2.0 * a1 - 1.0, 2.0 * a2, 2.0 * a3);
+            let (own, input) = ([[b1, -b2], [b2, 1.0 - b3]], [b2, b3]);
+            for r in 0..2 {
+                let row = &mut a[2 * j + r];
+                for (x, p) in row.iter_mut().zip(&p).take(2 * j) {
+                    *x = input[r] * p;
+                }
+                row[2 * j..2 * j + 2].copy_from_slice(&own[r]);
+                b[2 * j + r] = input[r] * q;
+            }
+            let d = m0 + m1 * a2 + m2 * a3;
+            p.iter_mut().for_each(|p| *p *= d);
+            p[2 * j] += m1 * a1 + m2 * a2;
+            p[2 * j + 1] += m2 * (1.0 - a3) - m1 * a2;
+            q *= d;
+        }
+        let times = |x: &Square, y: &Square| -> Square {
+            std::array::from_fn(|r| std::array::from_fn(|c| (0..LANE_STATES).map(|i| x[r][i] * y[i][c]).sum()))
+        };
+        let t = &mut self.tunings[self.tuning];
+        let mut v = b;
+        for k in (0..n).rev() {
+            t.k[k] = v.map(|x| x as f32);
+            v = std::array::from_fn(|r| (0..LANE_STATES).map(|c| a[r][c] * v[c]).sum());
+        }
+        let mut m: Square = std::array::from_fn(|r| std::array::from_fn(|c| f64::from(u8::from(r == c))));
+        let (mut power, mut e) = (a, n);
+        while e > 0 {
+            if e & 1 == 1 {
+                m = times(&m, &power);
+            }
+            power = times(&power, &power);
+            e >>= 1;
+        }
+        (t.key, t.n, t.m) = (*key, n, m.map(|row| row.map(|x| x as f32)));
+    }
+
+    /// The kernel for a lane reading `count` source frames from `base` by
+    /// `step` (32.32) with envelope curve `amp`: each source frame's share
+    /// of the end state, through the cubic's taps as `mix` weighs them.
+    pub fn kernel(&mut self, amp: &[f32], base: u64, step: u64, count: usize) {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: the running CPU supports AVX2.
+            return unsafe { self.kernel_avx2(amp, base, step, count) };
+        }
+        self.kernel_body(amp, base, step, count);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    fn kernel_avx2(&mut self, amp: &[f32], base: u64, step: u64, count: usize) {
+        self.kernel_body(amp, base, step, count);
+    }
+
+    #[inline(always)]
+    fn kernel_body(&mut self, amp: &[f32], base: u64, step: u64, count: usize) {
+        let g = &mut self.g[..count];
+        g.fill([0.0; LANE_STATES]);
+        let k = &self.tunings[self.tuning].k;
+        let add = |g: &mut States, c: f32, k: &States| {
+            for q in 0..LANE_STATES {
+                g[q] += c * k[q];
+            }
+        };
+        const FRACTION: u64 = (1 << 32) - 1;
+        let whole = step & FRACTION == 0 && base & FRACTION == 0;
+        for (i, (&a, k)) in amp.iter().zip(k.iter()).enumerate() {
+            let p = base + step * i as u64;
+            let j = (p >> 32) as usize;
+            // Frames read `j - 1..=j + 2`, all inside the window.
+            let Some(taps) = g.get_mut(j - 1..j + 3) else {
+                break;
+            };
+            if whole {
+                add(&mut taps[1], a, k);
+                continue;
+            }
+            let t = ((p as u32) >> 8) as f32 * (1.0 / (1 << 24) as f32);
+            let (t2, t3) = (t * t, t * t * t);
+            let w = [
+                -0.5 * t + t2 - 0.5 * t3,
+                1.0 - 2.5 * t2 + 1.5 * t3,
+                0.5 * t + 2.0 * t2 - 1.5 * t3,
+                -0.5 * t2 + 0.5 * t3,
+            ];
+            for (g, w) in taps.iter_mut().zip(w) {
+                add(g, a * w, k);
+            }
+        }
+    }
+
+    /// Start on a voice: its state joins the sum.
+    pub fn begin(&mut self, voice: &VoiceFilter) {
+        for (section, slot) in self.sections.iter_mut().zip(&voice.slots).take(self.active) {
+            let s = voice.sections[*slot as usize].s;
+            section.s = std::array::from_fn(|i| section.s[i] + s[i]);
+        }
+        self.d = [[0.0; LANE_STATES]; 2];
+    }
+
+    /// Dot the voice's source frames `src`, from frame `at` of the lane's
+    /// window, with the kernel.
+    pub fn dots(&mut self, src: &[Frame], at: usize) {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: the running CPU supports AVX2.
+            return unsafe { self.dots_avx2(src, at) };
+        }
+        self.dots_body(src, at);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    fn dots_avx2(&mut self, src: &[Frame], at: usize) {
+        self.dots_body(src, at);
+    }
+
+    #[inline(always)]
+    fn dots_body(&mut self, src: &[Frame], at: usize) {
+        let [mut dl, mut dr] = self.d;
+        for (x, g) in src.iter().zip(&self.g[at..]) {
+            for q in 0..LANE_STATES {
+                dl[q] += g[q] * x[0];
+                dr[q] += g[q] * x[1];
+            }
+        }
+        self.d = [dl, dr];
+    }
+
+    /// Dot a voice's own filter input, `left`/`right`, with how each frame
+    /// reaches the end state.
+    pub fn dots_out(&mut self, left: &[f32], right: &[f32]) {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: the running CPU supports AVX2.
+            return unsafe { self.dots_out_avx2(left, right) };
+        }
+        self.dots_out_body(left, right);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    fn dots_out_avx2(&mut self, left: &[f32], right: &[f32]) {
+        self.dots_out_body(left, right);
+    }
+
+    #[inline(always)]
+    fn dots_out_body(&mut self, left: &[f32], right: &[f32]) {
+        let [mut dl, mut dr] = self.d;
+        let k = &self.tunings[self.tuning].k;
+        for ((l, r), k) in left.iter().zip(right).zip(k.iter()) {
+            for q in 0..LANE_STATES {
+                dl[q] += k[q] * l;
+                dr[q] += k[q] * r;
+            }
+        }
+        self.d = [dl, dr];
+    }
+
+    /// Move the voice's state on by the block, its dotted input weighted
+    /// `weights`.
+    pub fn end(&mut self, voice: &mut VoiceFilter, weights: [f32; 2]) {
+        let dim = 2 * self.active;
+        let m = &self.tunings[self.tuning].m;
+        let slots = voice.slots;
+        let at = |q: usize, c: usize| (slots[q / 2] as usize, 2 * c + q % 2);
+        let mut next = [[0f32; LANE_STATES]; 2];
+        for (c, w) in weights.iter().enumerate() {
+            let s: States = std::array::from_fn(|q| match q < dim {
+                true => {
+                    let (slot, i) = at(q, c);
+                    voice.sections[slot].s[i]
+                }
+                false => 0.0,
+            });
+            for q in 0..dim {
+                let x = (0..dim).map(|i| m[q][i] * s[i]).sum::<f32>() + w * self.d[c][q];
+                next[c][q] = if x.abs() < 1e-20 { 0.0 } else { x };
+            }
+        }
+        // Sections the lane skips are identities, at rest.
+        for s in &mut voice.sections {
+            s.s = [0.0; 4];
+        }
+        for (c, next) in next.iter().enumerate() {
+            for (q, x) in next.iter().enumerate().take(dim) {
+                let (slot, i) = at(q, c);
+                voice.sections[slot].s[i] = *x;
+            }
+        }
+    }
+
+    /// Filter the voices' summed output, from the summed state, and apply
+    /// the matrix.
+    pub fn finish(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for section in &mut self.sections[..self.active] {
+            section.process(left, right);
+        }
+        if self.matrix != IDENTITY {
+            apply(self.matrix, self.matrix, left, right);
         }
     }
 }
@@ -936,7 +1299,8 @@ mod tests {
             for _ in 0..BLOCKS {
                 l.iter_mut().chain(r.iter_mut()).for_each(|x| *x = noise());
                 let t = std::time::Instant::now();
-                voice.process(&filter, &table, &input, &mut ctl, &mut l, &mut r, RATE);
+                voice.follow(&filter, &table, &input, BLOCK, RATE);
+                voice.process(&filter, &table, &mut ctl, &mut l, &mut r, RATE);
                 let ns = t.elapsed().as_nanos();
                 (best, total) = (best.min(ns), total + ns);
             }
@@ -972,7 +1336,7 @@ mod tests {
             let (mut l, mut r) = ([0.0; 128], [0.0; 128]);
             for _ in 0..100 {
                 (l, r) = ([1.0; 128], [0.0; 128]);
-                voice.process(f, &table, &input, &mut ctl, &mut l, &mut r, RATE);
+                voice.process(f, &table, &mut ctl, &mut l, &mut r, RATE);
             }
             (l[127], r[127])
         };

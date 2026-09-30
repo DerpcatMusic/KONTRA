@@ -3,7 +3,7 @@
 use super::{
     DECLICK, EventId, MAX_BLOCK,
     bank::{Bank, Span},
-    filter::VoiceFilter,
+    filter::{FilterKey, LaneFilter, VoiceFilter},
     map::{FOREVER, PlayMap, Run},
     params::{Inputs, VOICE_MODS},
     stream::Slot,
@@ -162,6 +162,25 @@ pub(crate) struct Envelope {
     release: f32,
 }
 
+/// A block of envelope gain as a level times a per-frame decay (1 for a
+/// held level): voices of one decay share the block's curve.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    Flat(f32),
+    /// `(per-frame factor, level)`, as the release renders it.
+    Decay(f32, f32),
+}
+
+impl Shape {
+    fn times(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (Self::Flat(a), Self::Flat(b)) => Some(Self::Flat(a * b)),
+            (Self::Flat(a), Self::Decay(k, b)) | (Self::Decay(k, b), Self::Flat(a)) => Some(Self::Decay(k, a * b)),
+            (Self::Decay(..), Self::Decay(..)) => None,
+        }
+    }
+}
+
 /// Per-frame multiplier that reaches −60 dB after `seconds`.
 fn exp_coef(seconds: f32, rate: f32) -> f32 {
     if seconds > 0.0 {
@@ -263,6 +282,32 @@ fn affine_until(
     (x, None)
 }
 
+/// [`affine_until`] of a release (`x = x * mul`, `mul` in `[0, 1]`, from
+/// `x >= 0`) to below [`SILENT`], unwritten: the same values, but as
+/// the powers of `mul` only fall, so does each chunk's frames, and its last
+/// frame alone says whether the chunk reaches silence. One multiply per
+/// eight frames, as muted and laned voices only move on.
+fn decay_until_silent(len: usize, level: f32, mul: f32) -> (f32, Option<usize>) {
+    let mut p = 1f32;
+    let pow: [f32; 8] = std::array::from_fn(|_| {
+        p *= mul;
+        p
+    });
+    let mut x = level;
+    for chunk in 0..len / 8 {
+        // `pow[k] * x + 0.0` in `affine_until`: the same value.
+        let last = pow[7] * x;
+        if last < SILENT {
+            let c: [f32; 8] = std::array::from_fn(|k| pow[k] * x);
+            let k = c.iter().position(|&x| x < SILENT).unwrap_or(7);
+            return (c[k], Some(chunk * 8 + k));
+        }
+        x = last;
+    }
+    let (x, end) = affine_until(None, len % 8, x, (mul, 0.0), |x| x < SILENT);
+    (x, end.map(|k| len / 8 * 8 + k))
+}
+
 /// The first of `xs` where `stop` holds: eight at a time without a branch
 /// each, as the frames of a glide rarely stop.
 fn first(xs: &[f32], stop: &impl Fn(f32) -> bool) -> Option<usize> {
@@ -335,6 +380,20 @@ impl Envelope {
             Stage::Release => Phase::Release,
             Stage::Enter(_) | Stage::Point(_) => Phase::Flex,
             Stage::Done => Phase::Done,
+        }
+    }
+
+    /// The next `n` frames as one [`Shape`], when the stage holds for all
+    /// of them: a held level, or a release that does not end in them.
+    fn shape(&self, n: usize) -> Option<Shape> {
+        match self.stage {
+            Stage::Sustain if self.level > SILENT => Some(Shape::Flat(self.level)),
+            Stage::Hold if self.left as usize >= n => Some(Shape::Flat(self.level)),
+            // Twice the threshold: rounding cannot end it early.
+            Stage::Release if self.level * self.release.powi(n as i32) >= 2.0 * SILENT => {
+                Some(Shape::Decay(self.release, self.level))
+            }
+            _ => None,
         }
     }
 
@@ -444,8 +503,10 @@ impl Envelope {
                     n
                 }
                 Stage::Release => {
-                    let (level, end) =
-                        affine_until(rest, n, self.level, (self.release, 0.0), |x| x < SILENT);
+                    let (level, end) = match rest {
+                        Some(rest) => affine_until(Some(rest), n, self.level, (self.release, 0.0), |x| x < SILENT),
+                        None => decay_until_silent(n, self.level, self.release),
+                    };
                     self.level = level;
                     match end {
                         Some(end) => {
@@ -518,6 +579,11 @@ impl Fade {
         self.value
     }
 
+    /// Not ramping: one gain all block.
+    fn steady(&self) -> bool {
+        self.left == 0
+    }
+
     /// Advance over `frames` as [`Fade::apply`] would.
     fn skip(&mut self, frames: usize) {
         for _ in 0..frames.min(self.left as usize) {
@@ -559,6 +625,196 @@ pub(crate) struct Stream {
     pub trusted: u64,
     /// Stopped while the voice is muted; the slot stays the voice's.
     pub paused: bool,
+}
+
+/// Voices whose blocks resample alike: the same destination, step, fraction
+/// of the position and envelope curve. Resampling is linear, so their source
+/// frames sum at the source rate, weighted by their gains, and the lane
+/// interpolates once for all of them.
+/// Packed in two words, so it passes in registers: `route` holds the step
+/// (32.32, under 2^38), the bus plus one (0 for the output) at bit 48 and a
+/// set top bit; `shape` the fraction of the position and the decay's bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Lane {
+    route: std::num::NonZeroU64,
+    shape: u64,
+}
+
+impl Lane {
+    const STEP: u64 = (1 << 48) - 1;
+
+    /// `step` and `base` in 32.32; `base` in `[1, 2)`, the window
+    /// starting one frame before the position. `decay` is the bits of the
+    /// per-frame decay factor, 0 for a held gain.
+    fn new(bus: Option<u8>, step: u64, base: u64, decay: u32) -> Self {
+        let bus = bus.map_or(0, |b| u64::from(b) + 1);
+        Self {
+            route: Self::route(bus << 48 | (step & Self::STEP)),
+            shape: (base & 0xFFFF_FFFF) | u64::from(decay) << 32,
+        }
+    }
+
+    const SOLO: u64 = 1 << 62;
+
+    /// With the top bit set, never zero.
+    fn route(bits: u64) -> std::num::NonZeroU64 {
+        std::num::NonZeroU64::new(bits | 1 << 63).unwrap_or(std::num::NonZeroU64::MAX)
+    }
+
+    /// A voice alone in its lane, rendering itself: one per voice (see
+    /// [`Lanes::add`]).
+    fn solo(bus: Option<u8>) -> Self {
+        let bus = bus.map_or(0, |b| u64::from(b) + 1);
+        Self {
+            route: Self::route(Self::SOLO | bus << 48),
+            shape: 0,
+        }
+    }
+
+    pub fn is_solo(&self) -> bool {
+        self.route.get() & Self::SOLO != 0
+    }
+
+    pub fn bus(&self) -> Option<u8> {
+        ((self.route.get() >> 48) as u8).checked_sub(1)
+    }
+
+    pub fn step(&self) -> u64 {
+        self.route.get() & Self::STEP
+    }
+
+    pub fn base(&self) -> u64 {
+        (1 << 32) | (self.shape & 0xFFFF_FFFF)
+    }
+
+    fn decay(&self) -> u32 {
+        (self.shape >> 32) as u32
+    }
+
+    fn hash(&self) -> u64 {
+        (self.route.get() ^ self.shape.rotate_left(29)).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
+
+    /// Source frames one block of `n` frames reads.
+    pub fn count(&self, n: usize) -> usize {
+        ((self.base() + self.step() * (n as u64 - 1)) >> 32) as usize + 4
+    }
+
+    /// Resample the summed window `acc` into `left`/`right` with the
+    /// lane's envelope curve (`amp` is scratch).
+    pub fn mix(&self, acc: &[Frame], amp: &mut [f32], left: &mut [f32], right: &mut [f32]) {
+        let n = left.len();
+        self.curve(&mut amp[..n]);
+        mix(acc, self.base(), self.step(), &amp[..n], [1.0; 2], [0.0; 2], left, right);
+    }
+
+    /// The envelope's curve over the block, relative to the voices' weights.
+    pub fn curve(&self, amp: &mut [f32]) {
+        match self.decay() {
+            0 => amp.fill(1.0),
+            decay => _ = affine(amp, 1.0, (f32::from_bits(decay), 0.0)),
+        }
+    }
+}
+
+/// One block's voices by [`Lane`], in the order lanes first appear, each a
+/// chain of its voices: an open-addressed table, so grouping is linear in
+/// the voices, with no sort and no allocation.
+pub(crate) struct Lanes {
+    /// `(stamp, index into `lanes`)`; entries of older stamps are free.
+    table: Box<[(u32, u16)]>,
+    stamp: u32,
+    /// Each lane, its filter class ([`Plan::class`]), its first and last
+    /// voice and how many it has.
+    pub lanes: Vec<(Lane, u64, u16, u16, u16)>,
+    /// Each lane's filter, for classes other than 0.
+    pub keys: Box<[FilterKey]>,
+    /// The next voice of each voice's lane, and each voice's lane.
+    next: Box<[u16]>,
+    of: Box<[u16]>,
+}
+
+impl Lanes {
+    pub fn new(voices: usize) -> Self {
+        Self {
+            table: vec![(0, 0); (2 * voices).next_power_of_two()].into_boxed_slice(),
+            stamp: 0,
+            lanes: Vec::with_capacity(voices),
+            keys: vec![FilterKey::default(); voices].into_boxed_slice(),
+            next: vec![0; voices].into_boxed_slice(),
+            of: vec![0; voices].into_boxed_slice(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.stamp = self.stamp.wrapping_add(1);
+        if self.stamp == 0 {
+            self.table.fill((0, 0));
+            self.stamp = 1;
+        }
+        self.lanes.clear();
+    }
+
+    pub fn add(&mut self, mut lane: Lane, class: u64, key: &FilterKey, voice: u16) {
+        if lane.is_solo() {
+            lane.shape = u64::from(voice);
+        }
+        let mask = self.table.len() - 1;
+        let mut h = ((lane.hash() ^ class.wrapping_mul(0xD6E8_FEB8_6659_FD93)) >> 40) as usize & mask;
+        loop {
+            let (stamp, i) = self.table[h];
+            if stamp != self.stamp {
+                self.of[voice as usize] = self.lanes.len() as u16;
+                self.table[h] = (self.stamp, self.lanes.len() as u16);
+                if class != 0 {
+                    self.keys[self.lanes.len()] = *key;
+                }
+                self.lanes.push((lane, class, voice, voice, 1));
+                return;
+            }
+            let entry = &mut self.lanes[i as usize];
+            if entry.0 == lane && entry.1 == class && (class == 0 || self.keys[i as usize] == *key) {
+                self.of[voice as usize] = i;
+                self.next[entry.3 as usize] = voice;
+                (entry.3, entry.4) = (voice, entry.4 + 1);
+                return;
+            }
+            h = (h + 1) & mask;
+        }
+    }
+
+    /// `voice` has no lane this block.
+    pub fn skip(&mut self, voice: u16) {
+        self.of[voice as usize] = u16::MAX;
+    }
+
+    /// Whether `voice` renders in its lane this block: it shares it, or
+    /// its filter.
+    pub fn shared(&self, voice: u16) -> bool {
+        self.lanes.get(self.of[voice as usize] as usize).is_some_and(|l| l.4 > 1 || l.1 != 0)
+    }
+
+    /// The voices of the lane starting at `first`, `count` of them.
+    pub fn members(&self, first: u16, count: u16) -> impl Iterator<Item = u16> + '_ {
+        std::iter::successors(Some(first), |&v| Some(self.next[v as usize])).take(count as usize)
+    }
+}
+
+/// A voice's next block as [`Voice::plan`] works it out.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Plan {
+    pub n: usize,
+    /// Source frames per output frame, 32.32 fixed point.
+    pub step: u64,
+    pub target: [f32; 2],
+    pub muted: bool,
+    /// Output frames to the sample's end, when it ends within the block.
+    pub declick: Option<f32>,
+    /// Per-channel gain in its lane.
+    pub weights: [f32; 2],
+    /// The lane's group filter: 0 for none, else the hash of its key
+    /// ([`VoiceFilter::held`]) and bus.
+    pub class: u64,
 }
 
 /// One playing zone. Plain data; the engine owns the storage.
@@ -620,6 +876,7 @@ pub(crate) struct Voice {
     pub muted: u32,
     /// Group insert filter state (untouched when the group has none).
     pub filter: VoiceFilter,
+    pub plan: Plan,
 }
 
 /// Borrowed state shared by all voices of one render block.
@@ -663,6 +920,8 @@ pub(crate) struct Scratch {
     pub flex: [f32; MAX_BLOCK],
     /// A filtered voice's own output before it joins the mix.
     pub out: [[f32; MAX_BLOCK]; 2],
+    /// A lane's summed window.
+    pub acc: Box<[Frame]>,
 }
 
 impl Default for Scratch {
@@ -672,6 +931,7 @@ impl Default for Scratch {
             amp: [0.0; MAX_BLOCK],
             flex: [0.0; MAX_BLOCK],
             out: [[0.0; MAX_BLOCK]; 2],
+            acc: vec![[0.0; 2]; WINDOW].into_boxed_slice(),
         }
     }
 }
@@ -693,16 +953,11 @@ impl Voice {
         self.gains[0].max(self.gains[1]) * self.env.level() * flex * self.fade.value()
     }
 
-    /// Mix one block (at most [`MAX_BLOCK`] frames) into `left`/`right`.
-    /// Returns `(alive, underrun)`.
-    pub fn render(
-        &mut self,
-        cx: &Context,
-        scratch: &mut Scratch,
-        left: &mut [f32],
-        right: &mut [f32],
-    ) -> (bool, bool) {
-        let n = left.len().min(right.len()).min(MAX_BLOCK);
+    /// Work out one block (at most [`MAX_BLOCK`] frames) before rendering
+    /// it: modulation, pitch and gain into [`Voice::plan`], and the [`Lane`]
+    /// it can mix in. `bus` is the group's, with its gains when it only
+    /// passes to the output through a fader at rest.
+    pub fn plan(&mut self, cx: &Context, n: usize, bus: Option<u8>, through: Option<[f32; 2]>) -> Option<Lane> {
         let group = &cx.bank.settings[self.group as usize];
         let inputs = cx.inputs(self.channel, self.note, self.velocity);
         // Settled modulation (every controller at rest, as held ones soon
@@ -726,7 +981,75 @@ impl Voice {
             (self.base_pan + group.pan + self.pan + x.pan).clamp(-1.0, 1.0),
         );
         let muted = target == [0.0; 2] && self.gains == [0.0; 2];
+        // A sample ending mid-waveform ramps out over its last millisecond.
+        let end = ((self.length as f64 - self.pos) / step) as f32;
+        let declick = end < n as f32 + DECLICK * cx.rate;
+        let mut plan = Plan {
+            n,
+            // 32.32 fixed point: exact, cheap to index.
+            step: (step * FIXED_ONE) as u64,
+            target,
+            muted,
+            declick: declick.then_some(end),
+            weights: [0.0; 2],
+            class: 0,
+        };
+        // A filter held all block is linear and time-invariant: voices of
+        // any group with it at the same settings can share it.
+        let class = match &group.filter {
+            None => Some(0),
+            Some(_) if muted => None,
+            Some(f) => {
+                self.filter.follow(f, &group.mods, &inputs, n, cx.rate);
+                self.filter.hold(f, &group.mods, cx.rate).map(|hash| hash ^ bus.map_or(0, |b| u64::from(b) + 1) << 48)
+            }
+        };
+        let mut lane = None;
+        // One gain all block, before any filter: the voice's frames can be
+        // summed, weighted, with others resampled alike.
+        if let Some(class) = class.filter(|_| !muted && !declick && self.gains == target && self.fade.steady()) {
+            let flex = match &self.flex {
+                Some(env) => env.shape(n),
+                None => Some(Shape::Flat(1.0)),
+            };
+            if let Some(shape) = self.env.shape(n).zip(flex).and_then(|(a, b)| a.times(b)) {
+                let (level, decay) = match shape {
+                    Shape::Flat(level) => (level, 0),
+                    Shape::Decay(k, level) => (level, k.to_bits()),
+                };
+                let a = level * self.fade.value();
+                let first = self.pos as i64 - 1;
+                // Bus gains fold into the weights only ahead of no filter.
+                let through = through.filter(|_| class == 0);
+                let g = through.unwrap_or([1.0; 2]);
+                plan.weights = [a * target[0] * g[0], a * target[1] * g[1]];
+                plan.class = class;
+                let base = ((self.pos - first as f64) * FIXED_ONE) as u64;
+                lane = Some(Lane::new(bus.filter(|_| through.is_none()), plan.step, base, decay));
+            }
+        }
+        // Resampled its own way, a voice still shares its filter.
+        if let Some(class) = class.filter(|&c| c != 0 && lane.is_none()) {
+            plan.class = class;
+            lane = Some(Lane::solo(bus));
+        }
+        self.plan = plan;
+        lane
+    }
 
+    /// Mix the planned block into `left`/`right`, through the group's
+    /// filter unless `bare` (its lane filters). Returns `(alive, underrun)`.
+    pub fn render(
+        &mut self,
+        cx: &Context,
+        scratch: &mut Scratch,
+        left: &mut [f32],
+        right: &mut [f32],
+        bare: bool,
+    ) -> (bool, bool) {
+        let Plan { n, step, target, muted, declick, .. } = self.plan;
+        let group = &cx.bank.settings[self.group as usize];
+        let own = group.filter.as_ref().filter(|_| !bare);
         let amp = &mut scratch.amp[..n];
         let flex = &mut scratch.flex[..n];
         if muted {
@@ -744,18 +1067,14 @@ impl Voice {
                 amp.iter_mut().zip(flex.iter()).for_each(|(a, f)| *a *= f);
             }
             self.fade.apply(amp);
-            // A sample ending mid-waveform ramps out over its last millisecond.
-            let declick = DECLICK * cx.rate;
-            let end = ((self.length as f64 - self.pos) / step) as f32;
-            if end < n as f32 + declick {
+            if let Some(end) = declick {
+                let declick = DECLICK * cx.rate;
                 for (i, a) in amp.iter_mut().enumerate() {
                     *a *= ((end - i as f32) / declick).clamp(0.0, 1.0);
                 }
             }
         }
 
-        // 32.32 fixed point: exact, cheap to index.
-        let step = (step * FIXED_ONE) as u64;
         let mut underrun = false;
         if muted {
             // Muted all block, as scripts mute the crossfade layers and mic
@@ -771,26 +1090,13 @@ impl Voice {
                 self.pause(cx);
             }
         } else {
-            self.muted = 0;
-            self.resume(cx);
-            // The window starts one frame before the position for the cubic's left tap.
-            let first = self.pos as i64 - 1;
-            let base = ((self.pos - first as f64) * FIXED_ONE) as u64;
-            let count = ((base + step * (n as u64 - 1)) >> 32) as usize + 4;
-            let window = match self.resident_window(cx.bank, first, &mut scratch.window[..count]) {
-                Some(window) => window,
-                None => {
-                    let window = &mut scratch.window[..count];
-                    underrun = self.gather(cx, first, window);
-                    window
-                }
-            };
+            let (window, base) = self.window(cx, &mut scratch.window, &mut underrun);
             let delta = [
                 (target[0] - self.gains[0]) / n as f32,
                 (target[1] - self.gains[1]) / n as f32,
             ];
             let [out_l, out_r] = &mut scratch.out;
-            let (l, r) = match &group.filter {
+            let (l, r) = match own {
                 Some(_) => {
                     out_l[..n].fill(0.0);
                     out_r[..n].fill(0.0);
@@ -800,24 +1106,127 @@ impl Voice {
             };
             mix(window, base, step, amp, self.gains, delta, l, r);
             self.gains = target;
-            if let Some(filter) = &group.filter {
+            if let Some(filter) = own {
                 let (l, r) = (&mut out_l[..n], &mut out_r[..n]);
-                self.filter
-                    .process(filter, &group.mods, &inputs, &mut scratch.flex, l, r, cx.rate);
+                self.filter.process(filter, &group.mods, &mut scratch.flex, l, r, cx.rate);
                 left[..n].iter_mut().zip(l.iter()).for_each(|(o, x)| *o += x);
                 right[..n].iter_mut().zip(r.iter()).for_each(|(o, x)| *o += x);
             }
         }
+        (self.advance(cx), underrun)
+    }
 
-        self.pos += (step * n as u64) as f64 / FIXED_ONE;
+    /// Add the planned block's source frames, times its lane weights, to
+    /// `acc` (the lane's window): the lane resamples the sum once. Returns
+    /// `(alive, underrun)`.
+    pub fn accumulate(
+        &mut self,
+        cx: &Context,
+        buf: &mut [Frame],
+        acc: &mut [Frame],
+        filter: Option<&mut LaneFilter>,
+    ) -> (bool, bool) {
+        let Plan { n, target, weights, .. } = self.plan;
+        let group = &cx.bank.settings[self.group as usize];
+        // The lane renders the envelope's curve; the voice's own only moves on.
+        self.env.skip(n, None, cx.rate);
+        if let Some(env) = &mut self.flex {
+            env.skip(n, group.flex.as_ref(), cx.rate);
+        }
+        let (first, _, count) = self.reach();
+        self.muted = 0;
+        self.resume(cx);
+        // Resident frames add in straight from storage, never decoded to memory.
+        // Resident frames add in straight from storage, streamed ones from
+        // the ring: never copied to memory first.
+        let mut underrun = false;
+        let resident = self.resident(cx.bank, first, count);
+        if let Some(filter) = filter {
+            // The frames also move the voice's filter state on: decoded once.
+            filter.begin(&self.filter);
+            let mut add = |src: &[Frame], at: usize| {
+                accumulate(src, weights, &mut acc[at..]);
+                filter.dots(src, at);
+            };
+            if let Some((span, at)) = resident {
+                add(span.data.window(at, &mut buf[..count]).unwrap_or_default(), 0);
+            } else if let Some([a, b]) = self.streamed(cx, first, count) {
+                add(a, 0);
+                add(b, a.len());
+            } else {
+                underrun = self.gather(cx, first, &mut buf[..count]);
+                add(&buf[..count], 0);
+            }
+            filter.end(&mut self.filter, weights);
+        } else if !resident.is_some_and(|(span, at)| span.data.accumulate(at, weights, acc)) {
+            match self.streamed(cx, first, count) {
+                Some([a, b]) => {
+                    let (head, tail) = acc.split_at_mut(a.len());
+                    accumulate(a, weights, head);
+                    accumulate(b, weights, tail);
+                }
+                None => {
+                    underrun = self.gather(cx, first, &mut buf[..count]);
+                    accumulate(&buf[..count], weights, acc);
+                }
+            }
+        }
+        self.gains = target;
+        (self.advance(cx), underrun)
+    }
+
+    /// The `count` frames from `first` in the stream ring, as its two
+    /// runs, when all of them are streamed and published.
+    fn streamed<'b>(&mut self, cx: &Context<'b>, first: i64, count: usize) -> Option<[&'b [Frame]; 2]> {
+        let (Ok(v), Some(stream)) = (u64::try_from(first), self.stream.as_mut()) else {
+            return None;
+        };
+        let need = v + count as u64;
+        if v < self.limit || need > self.length {
+            return None;
+        }
+        let slot = &cx.slots[stream.slot as usize];
+        if let Some(end) = slot.published(stream.tag) {
+            stream.trusted = stream.trusted.max(end);
+        }
+        slot.runs(v, count).filter(|_| stream.trusted >= need)
+    }
+
+    /// The planned block's source frames: the first (one before the
+    /// position, the cubic's left tap), the position's offset from it
+    /// (32.32) and how many.
+    fn reach(&self) -> (i64, u64, usize) {
+        let first = self.pos as i64 - 1;
+        let base = ((self.pos - first as f64) * FIXED_ONE) as u64;
+        let count = ((base + self.plan.step * (self.plan.n as u64 - 1)) >> 32) as usize + 4;
+        (first, base, count)
+    }
+
+    /// The source frames the planned block reads (see [`Voice::reach`]) and
+    /// the position's offset into them.
+    fn window<'b>(&mut self, cx: &Context<'b>, buf: &'b mut [Frame], underrun: &mut bool) -> (&'b [Frame], u64) {
+        self.muted = 0;
+        self.resume(cx);
+        let (first, base, count) = self.reach();
+        let buf = &mut buf[..count];
+        if let Some((span, at)) = self.resident(cx.bank, first, count) {
+            // In range, so always `Some`.
+            return (span.data.window(at, buf).unwrap_or_default(), base);
+        }
+        *underrun = self.gather(cx, first, buf);
+        (buf, base)
+    }
+
+    /// Move past the planned block; whether the voice plays on.
+    fn advance(&mut self, cx: &Context) -> bool {
+        self.pos += (self.plan.step * self.plan.n as u64) as f64 / FIXED_ONE;
         if let Some(stream) = self.stream.filter(|s| !s.paused) {
             cx.slots[stream.slot as usize].release_below((self.pos as u64).saturating_sub(1));
         }
-        let alive = !self.env.done()
+        !self.env.done()
             && !self.flex.as_ref().is_some_and(Envelope::done)
             && !self.fade.finished()
-            && self.pos < self.length as f64;
-        (alive, underrun)
+            && self.pos < self.length as f64
     }
 
     /// Stop streaming while muted, keeping the slot.
@@ -840,25 +1249,20 @@ impl Voice {
         }
     }
 
-    /// Fast path: the window is one contiguous, unblended resident run,
-    /// borrowed when stored as f32 and otherwise decoded into `buf`.
-    fn resident_window<'b>(
-        &self,
-        bank: &'b Bank,
-        first: i64,
-        buf: &'b mut [Frame],
-    ) -> Option<&'b [Frame]> {
+    /// Fast path: the window of `count` frames from `first` is one
+    /// contiguous, unblended resident run: its span and offset there.
+    fn resident<'b>(&self, bank: &'b Bank, first: i64, count: usize) -> Option<(&'b Span, usize)> {
         let v = u64::try_from(first).ok()?;
-        let count = buf.len() as u64;
-        if v + count > self.limit {
+        if v + count as u64 > self.limit {
             return None;
         }
         let run = self.map.run(v, self.wraps)?;
-        if run.reverse || run.blend.is_some() || run.len < count {
+        if run.reverse || run.blend.is_some() || run.len < count as u64 {
             return None;
         }
         let span = self.span(bank);
-        span.data.window((run.frame - span.start) as usize, buf)
+        let at = run.frame.checked_sub(span.start)? as usize;
+        (at + count <= span.data.len()).then_some((span, at))
     }
 
     fn span<'b>(&self, bank: &'b Bank) -> &'b Span {
@@ -1041,12 +1445,108 @@ fn mix(
     left: &mut [f32],
     right: &mut [f32],
 ) {
+    // Whole steps from a whole position (a note on its root at the
+    // sample's rate, or octaves up): the cubic is its centre tap, exactly.
+    const FRACTION: u64 = (1 << 32) - 1;
+    if step & FRACTION == 0 && base & FRACTION == 0 {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: the running CPU supports AVX2.
+            return unsafe { taps_avx2(window, base >> 32, step >> 32, amp, gains, delta, left, right) };
+        }
+        return taps(window, base >> 32, step >> 32, amp, gains, delta, left, right);
+    }
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
         // SAFETY: the running CPU supports every feature `mix_avx2` is compiled for.
         return unsafe { mix_avx2(window, base, step, amp, gains, delta, left, right) };
     }
     mix_body(window, base, step, amp, gains, delta, left, right, 0);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx2")]
+fn taps_avx2(
+    window: &[Frame],
+    first: u64,
+    stride: u64,
+    amp: &[f32],
+    gains: [f32; 2],
+    delta: [f32; 2],
+    left: &mut [f32],
+    right: &mut [f32],
+) {
+    taps(window, first, stride, amp, gains, delta, left, right);
+}
+
+/// [`mix`] at a whole step from a whole position: frame `i` is window
+/// frame `first + i * stride`, the value the cubic takes there, and the
+/// gains apply in `mix_body`'s order, so the output is the same bit for bit.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn taps(
+    window: &[Frame],
+    first: u64,
+    stride: u64,
+    amp: &[f32],
+    gains: [f32; 2],
+    delta: [f32; 2],
+    left: &mut [f32],
+    right: &mut [f32],
+) {
+    let first = first as usize;
+    let n = left.len().min(right.len()).min(amp.len());
+    let frames = window.get(first..).unwrap_or_default();
+    let (left, right, amp) = (&mut left[..n], &mut right[..n], &amp[..n]);
+    if stride == 1 {
+        for (i, (((l, r), a), x)) in left.iter_mut().zip(right.iter_mut()).zip(amp).zip(frames).enumerate() {
+            let fi = i as f32;
+            *l += x[0] * a * (gains[0] + delta[0] * fi);
+            *r += x[1] * a * (gains[1] + delta[1] * fi);
+        }
+        return;
+    }
+    let frames = frames.iter().step_by(stride as usize);
+    for (i, (((l, r), a), x)) in left.iter_mut().zip(right.iter_mut()).zip(amp).zip(frames).enumerate() {
+        let fi = i as f32;
+        *l += x[0] * a * (gains[0] + delta[0] * fi);
+        *r += x[1] * a * (gains[1] + delta[1] * fi);
+    }
+}
+
+/// `acc += window · weights` per channel, over `acc`: one voice's share
+/// of its [`Lane`].
+fn accumulate(window: &[Frame], weights: [f32; 2], acc: &mut [Frame]) {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the running CPU supports AVX2.
+        return unsafe { accumulate_avx2(window, weights, acc) };
+    }
+    accumulate_body(window, weights, acc);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn accumulate_avx2(window: &[Frame], weights: [f32; 2], acc: &mut [Frame]) {
+    accumulate_body(window, weights, acc);
+}
+
+#[inline(always)]
+fn accumulate_body(window: &[Frame], weights: [f32; 2], acc: &mut [Frame]) {
+    let n = acc.len().min(window.len());
+    let (acc, window) = (acc[..n].as_flattened_mut(), window[..n].as_flattened());
+    let w: [f32; 16] = std::array::from_fn(|k| weights[k & 1]);
+    let (chunks, tail) = acc.as_chunks_mut::<16>();
+    let (xs, xtail) = window.as_chunks::<16>();
+    for (a, x) in chunks.iter_mut().zip(xs) {
+        for k in 0..16 {
+            a[k] += w[k] * x[k];
+        }
+    }
+    for (k, (a, x)) in tail.iter_mut().zip(xtail).enumerate() {
+        *a += w[k] * x;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1173,24 +1673,29 @@ fn mix_body(
 mod tests {
     use super::*;
 
-    /// The AVX2 kernel matches the scalar one bit for bit, at any step,
-    /// length and window slack (short windows fall back to scalar).
+    /// The AVX2 and centre-tap kernels match the scalar one bit for bit, at
+    /// any step, length and window slack (short windows fall back to scalar).
     #[test]
     fn simd_mix_matches_scalar_exactly() {
         let window: Vec<Frame> = (0..700)
             .map(|i| [(i as f32 * 0.37).sin(), (i as f32 * 0.11).cos()])
             .collect();
         let amp: Vec<f32> = (0..MAX_BLOCK).map(|i| 1.0 - i as f32 / 300.0).collect();
-        for (step, n, len) in [
-            (1.0, 128, 700),
-            (0.2718, 128, 700),
-            (1.3717, 77, 700),
-            (4.0, 128, 700),
-            (1.0, 128, 130),
-            (1.0, 7, 12),
+        // Whole steps from a whole position take the centre-tap path.
+        for (step, n, len, base) in [
+            (1.0, 128, 700, 1.3),
+            (0.2718, 128, 700, 1.3),
+            (1.3717, 77, 700, 1.3),
+            (4.0, 128, 700, 1.3),
+            (1.0, 128, 130, 1.3),
+            (1.0, 7, 12, 1.3),
+            (1.0, 128, 700, 1.0),
+            (2.0, 128, 700, 1.0),
+            (3.0, 77, 700, 1.0),
+            (1.0, 128, 132, 1.0),
         ] {
             let step = (step * FIXED_ONE) as u64;
-            let base = (1.3 * FIXED_ONE) as u64;
+            let base = (base * FIXED_ONE) as u64;
             let run = |simd: bool| {
                 let (mut l, mut r) = (vec![0.25; n], vec![-0.5; n]);
                 let args = (&window[..len], base, step, &amp[..n], [0.7, 0.3], [0.001, -0.002]);
