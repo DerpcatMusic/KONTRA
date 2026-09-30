@@ -298,8 +298,9 @@ fn visit(dir: &Path, depth: usize, vendor: Option<String>, out: &mut Vec<Candida
     if depth >= DEPTH || (l.audio >= SAMPLE_ONLY && l.presets == 0) {
         return;
     }
-    // Below the root, a folder that is not a library is a vendor's or a bundle's.
-    let vendor = (depth > 0).then(|| clean_name(&file_name(dir)).0).or(vendor);
+    // Below the root, the first folder that is not a library is its vendor;
+    // folders under it are bundles of that vendor.
+    let vendor = vendor.or_else(|| (depth > 0).then(|| clean_name(&file_name(dir)).0));
     for folder in &l.folders {
         let name = file_name(folder).to_lowercase();
         if !SKIP.contains(&name.as_str()) {
@@ -702,5 +703,125 @@ impl Scanner {
             stamp.fetch_add(1, Ordering::Relaxed);
         });
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh folder under the temp dir with `files` made in it.
+    fn tree(name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("kontra-library-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (file, text) in files {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn found(root: &Path, single: bool) -> Vec<(String, String, bool, usize)> {
+        let roots = [Root { path: root.to_string_lossy().into(), single }];
+        let (shelf, _) = scan(&roots, &Progress::default()).unwrap();
+        shelf.libraries.iter().map(|l| (l.name.clone(), l.vendor.clone(), l.registered, l.instruments)).collect()
+    }
+
+    const NICNT: &str =
+        "\u{0}\u{1}<ProductHints><Product><Name>Areia</Name><Company>Audio Imperia</Company></Product></ProductHints>";
+
+    #[test]
+    fn libraries_are_found_with_or_without_a_library_file() {
+        let root = tree(
+            "parent",
+            &[
+                ("Areia 1.2.0/Areia.nicnt", NICNT),
+                ("Areia 1.2.0/Instruments/Violins.nki", ""),
+                ("Areia 1.2.0/Instruments/Violas.nki", ""),
+                ("Areia 1.2.0/Samples/a.nkx", ""),
+                ("Una Corda Library/Una Corda.nki", ""),
+                ("Una Corda Library/Samples/c1.wav", ""),
+                // A vendor folder of a product and a bundle of one more.
+                ("Spitfire Audio/Olafur Arnalds Chamber Evolutions/Instruments/Evolutions.nki", ""),
+                ("Spitfire Audio/Bundle/Tundra/Tundra.nki", ""),
+                ("Spitfire Audio/Bundle/Tundra/Tundra.nkr", ""),
+                // Samples only: no presets anywhere, not a library.
+                ("Loose Samples/Samples/a.wav", ""),
+                ("Loose Samples/b.wav", ""),
+            ],
+        );
+        let mut got = found(&root, false);
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                ("Areia".into(), "Audio Imperia".into(), true, 2),
+                ("Olafur Arnalds Chamber Evolutions".into(), "Spitfire Audio".into(), false, 1),
+                ("Tundra".into(), "Spitfire Audio".into(), false, 1),
+                ("Una Corda".into(), String::new(), false, 1),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_sample_folder_is_no_library_and_a_single_root_is_one() {
+        let root = tree("samples", &[("Loose/Samples/a.wav", ""), ("Loose/b.ncw", "")]);
+        assert!(found(&root, false).is_empty());
+        let lib = tree("single", &[("Presets/Tape Choir.nki", ""), ("Presets/Samples/a.wav", "")]);
+        let got = found(&lib, true);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].3, 1);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(lib);
+    }
+
+    #[test]
+    fn folder_names_lose_versions_brackets_and_packaging() {
+        let cases = [
+            ("Areia 1.2.0 [Audio Imperia]", ("Areia", "Audio Imperia")),
+            ("Cinematic_Brass_Ensembles_v2.0.3", ("Cinematic Brass Ensembles", "")),
+            ("Una Corda Library", ("Una Corda", "")),
+            ("Tape Choir (KONTAKT)", ("Tape Choir", "")),
+            ("Kinder Piano 1.1", ("Kinder Piano", "")),
+            ("Kontakt", ("Kontakt", "")),
+        ];
+        for (folder, (name, vendor)) in cases {
+            assert_eq!(clean_name(folder), (name.to_owned(), vendor.to_owned()), "{folder}");
+        }
+    }
+
+    #[test]
+    fn roots_and_covers_survive_a_restart() {
+        let dir = tree("settings", &[]);
+        let path = dir.join("nested/settings.json");
+        let mut s = Settings::default();
+        s.roots.push(Root { path: "/libs".into(), single: false });
+        s.roots.push(Root { path: "/one".into(), single: true });
+        s.covers.insert("/libs/Areia".into(), Cover::Generated);
+        s.save(&path).unwrap();
+        assert_eq!(Settings::load(&path), Some(s));
+        assert_eq!(Settings::load(&dir.join("missing.json")), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn two_libraries_with_one_name_are_told_apart() {
+        let lib = |dir: &str, vendor: &str| Library {
+            dir: dir.into(),
+            name: "Piano".into(),
+            vendor: vendor.into(),
+            registered: false,
+            instruments: 1,
+            multis: 0,
+            hue: None,
+        };
+        let shelf = Shelf::new(vec![lib("/a/Piano", "Hollow Sun"), lib("/b/Piano", "Soniccouture")]);
+        let names: BTreeSet<_> = shelf.libraries.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert_eq!(shelf.of(Path::new("/b/Piano/Instruments/Grand.nki")).unwrap().vendor, "Soniccouture");
+        assert!(shelf.of(Path::new("/c/Other.nki")).is_none());
     }
 }
