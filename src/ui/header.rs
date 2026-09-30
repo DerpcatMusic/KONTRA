@@ -14,7 +14,8 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
     let disk = f32::from_bits(cx.state.meters.disk.load(Ordering::Relaxed));
     let voices = p.shared.voices.load(Ordering::Relaxed);
     let audible = p.shared.audible.load(Ordering::Relaxed);
-    let memory: usize = cx.view.parts.iter().map(|v| v.bytes).sum();
+    // Samples in RAM for the whole process: parts and instances sharing them count once.
+    let memory = crate::engine::resident_bytes();
 
     let loading: Vec<_> = cx
         .view

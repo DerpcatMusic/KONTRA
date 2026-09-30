@@ -685,6 +685,9 @@ fn facts(cx: &Cx, slot: usize, brief: bool) -> String {
     }
     if !v.loading && v.bytes > 0 {
         facts.push(megabytes(v.bytes));
+        if v.purged_percent > 0 {
+            facts.push(format!("{}% purged", v.purged_percent));
+        }
     }
     if v.status.starts_with("Load failed") {
         facts.push("failed to load".into());

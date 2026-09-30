@@ -336,6 +336,8 @@ pub(crate) struct PartView {
     pub(crate) purged: Vec<bool>,
     pub(crate) controllers: Vec<(u8, u8)>,
     pub(crate) purged_at: Option<Instant>,
+    /// Share of the bank's samples purged, in percent.
+    pub(crate) purged_percent: usize,
     /// The playing bank's streamer, kept by the banks purges rebuild.
     pub(crate) streamer: Option<Arc<crate::engine::Streamer>>,
 }
@@ -1045,6 +1047,7 @@ impl BackgroundTask for Load {
                     v.bytes = bank.as_ref().map(|b| b.bytes).unwrap_or(0);
                     v.usage = bank.as_ref().map(|b| b.usage.clone());
                     v.streamer = bank.as_ref().and_then(|b| b.streamer());
+                    v.purged_percent = 0;
                     (v.purged, v.controllers, v.purged_at) = (Vec::new(), controllers, None);
                     v.status = bank.as_deref().map(bank_status).unwrap_or_else(|| {
                         "Controller instrument · KSP playback unavailable".into()
@@ -1313,11 +1316,16 @@ fn purge(params: &SamplerParams, slot: usize) {
             bank.usage = usage;
             (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
             v.streamer = bank.streamer();
+            v.purged_percent = purged_percent(&bank);
             let _ = params.shared.ready.force_push((slot, generation, Handoff::Bank(Box::new(bank))));
         }
         // The playing bank carries on; this purge set is not retried.
         Err(e) => v.status += &format!(" · purge failed: {e:#}"),
     }
+}
+
+fn purged_percent(bank: &Bank) -> usize {
+    (bank.purged * 100).div_ceil(bank.sample_count().max(1))
 }
 
 fn bank_status(bank: &Bank) -> String {
@@ -1328,10 +1336,7 @@ fn bank_status(bank: &Bank) -> String {
         bank.bytes as f64 / 1048576.0
     );
     if bank.purged > 0 {
-        status += &format!(
-            " · {}% purged",
-            (bank.purged * 100).div_ceil(bank.sample_count().max(1))
-        );
+        status += &format!(" · {}% purged", purged_percent(bank));
     }
     if bank.skipped_zones > 0 {
         status += &format!(
