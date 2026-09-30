@@ -221,6 +221,7 @@ fn native_access(dir: &Path, wine: Option<&Path>) -> Vec<PathBuf> {
 
 /// `ContentDir` and `InstallDir` under `Native Instruments` in a `.reg`
 /// file: exported by `regedit`, or a Wine hive (`system.reg`, `user.reg`).
+#[cfg_attr(windows, allow(dead_code))]
 pub fn reg_file(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut inside = false;
@@ -246,6 +247,7 @@ pub fn reg_file(text: &str) -> Vec<String> {
 }
 
 /// A `.reg` string: `\\`, `\"` and Wine's `\x` escapes undone.
+#[cfg_attr(windows, allow(dead_code))]
 fn unescape(value: &str) -> String {
     let mut out = String::new();
     let mut chars = value.chars().peekable();
@@ -564,3 +566,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 }
+
