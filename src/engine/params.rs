@@ -301,6 +301,14 @@ mod id {
     pub const INSERT_EFFECT_OUTPUT_GAIN: i32 = B + 29;
     pub const SENDLEVEL_0: i32 = B + 30;
     pub const SENDLEVEL_7: i32 = B + 37;
+    pub const STEREO: i32 = B + 138;
+    pub const STEREO_PAN: i32 = B + 139;
+    pub const FREQ1: i32 = B + 157;
+    pub const FREQ3: i32 = B + 159;
+    pub const BW1: i32 = B + 160;
+    pub const BW3: i32 = B + 162;
+    pub const GAIN1: i32 = B + 163;
+    pub const GAIN3: i32 = B + 165;
 }
 
 /// KSP `$NI_BUS_OFFSET`: generic values from here address instrument buses.
@@ -342,7 +350,8 @@ pub(crate) enum Address {
         bipolar: bool,
     },
     Fx(Rack, u8, FxParam),
-    /// Cutoff or resonance of a group insert filter (normalized).
+    /// A group insert slot's filter/EQ knob (normalized), bypass, output
+    /// gain or Stereo Modeller setting.
     Filter(u16, u8, Knob),
 }
 
@@ -368,6 +377,9 @@ impl Address {
             })
         };
         let fx = |param| Some(Self::Fx(rack()?, u8::try_from(par.slot).ok()?, param));
+        let slot = |knob| Some(Self::Filter(group()?, u8::try_from(par.slot).ok()?, knob));
+        // Group inserts are addressed by group; the racks by `group == -1`.
+        let insert = |knob, param| if par.group >= 0 { slot(knob) } else { fx(param) };
         Some(match par.id {
             id::VOLUME | id::PAN | id::TUNE | id::OUTPUT_CHANNEL => {
                 let p = match par.id {
@@ -413,18 +425,18 @@ impl Address {
                     bipolar: par.id == id::MOD_TARGET_MP_INTENSITY,
                 }
             }
-            id::CUTOFF | id::RESONANCE => Self::Filter(
-                group()?,
-                u8::try_from(par.slot).ok()?,
-                if par.id == id::CUTOFF {
-                    Knob::Cutoff
-                } else {
-                    Knob::Resonance
-                },
-            ),
-            id::EFFECT_BYPASS | id::SEND_EFFECT_BYPASS => fx(FxParam::Bypass)?,
+            id::CUTOFF => slot(Knob::Cutoff)?,
+            id::RESONANCE => slot(Knob::Resonance)?,
+            id::FREQ1..=id::FREQ3 => slot(Knob::Freq((par.id - id::FREQ1) as u8))?,
+            id::BW1..=id::BW3 => slot(Knob::Bandwidth((par.id - id::BW1) as u8))?,
+            id::GAIN1..=id::GAIN3 => slot(Knob::Gain((par.id - id::GAIN1) as u8))?,
+            id::STEREO => slot(Knob::Spread)?,
+            id::STEREO_PAN => slot(Knob::Pan)?,
+            id::EFFECT_BYPASS => insert(Knob::Bypass, FxParam::Bypass)?,
+            id::INSERT_EFFECT_OUTPUT_GAIN => insert(Knob::Output, FxParam::Wet)?,
+            id::SEND_EFFECT_BYPASS => fx(FxParam::Bypass)?,
             id::SEND_EFFECT_DRY_LEVEL => fx(FxParam::Dry)?,
-            id::SEND_EFFECT_OUTPUT_GAIN | id::INSERT_EFFECT_OUTPUT_GAIN => fx(FxParam::Wet)?,
+            id::SEND_EFFECT_OUTPUT_GAIN => fx(FxParam::Wet)?,
             id::SENDLEVEL_0..=id::SENDLEVEL_7 => {
                 fx(FxParam::SendLevel((par.id - id::SENDLEVEL_0) as u8))?
             }
@@ -462,12 +474,17 @@ impl Address {
                 Stage::Decay | Stage::Release => time(x, LONG),
             },
             Self::Intensity { bipolar: true, .. } => 2.0 * x - 1.0,
+            Self::Filter(_, _, Knob::Bypass) => f32::from(value != 0),
+            Self::Filter(_, _, Knob::Output) => effect_gain(x),
+            // Afflatus sets 434210 where it stores spread -0.1316, Solo 500000 for 0.
+            Self::Filter(_, _, Knob::Spread | Knob::Pan) => 2.0 * x - 1.0,
             // Stored knobs are the KSP value / 1e6: Solo sets 1000000 and 0 where it stores 1 and 0.
             Self::Filter(..) => x,
             // Square law: Areia sets 704316 where its presets store 0.4961.
             Self::Intensity { .. } => x * x,
             Self::Fx(_, _, FxParam::Bypass) => f32::from(value != 0),
             Self::Fx(_, _, FxParam::Pan) => 2.0 * x - 1.0,
+            Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => effect_gain(x),
             Self::Fx(..) => volume(x),
         }
     }
@@ -478,7 +495,9 @@ impl Address {
             Self::Group(_, GroupPar::Output) => {
                 return if v >= 0.0 { BUS_OFFSET + v as i32 } else { -1 };
             }
-            Self::Fx(_, _, FxParam::Bypass) => return i32::from(v != 0.0),
+            Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) => {
+                return i32::from(v != 0.0);
+            }
             Self::Group(_, p) | Self::Instrument(p) => match p {
                 GroupPar::Volume => volume_value(v),
                 GroupPar::Pan => (v + 1.0) * 0.5,
@@ -490,8 +509,13 @@ impl Address {
                 Stage::Attack | Stage::Hold => time_value(v, SHORT),
                 Stage::Decay | Stage::Release => time_value(v, LONG),
             },
-            Self::Intensity { bipolar: true, .. } | Self::Fx(_, _, FxParam::Pan) => (v + 1.0) * 0.5,
+            Self::Intensity { bipolar: true, .. }
+            | Self::Fx(_, _, FxParam::Pan)
+            | Self::Filter(_, _, Knob::Spread | Knob::Pan) => (v + 1.0) * 0.5,
             Self::Intensity { .. } => v.abs().sqrt(),
+            Self::Filter(_, _, Knob::Output) | Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => {
+                (v.max(0.0) / EFFECT_MAX_GAIN).cbrt()
+            }
             Self::Filter(..) => v,
             Self::Fx(..) => volume_value(v),
         };
@@ -513,6 +537,15 @@ const TIME_BASE: f32 = 0.002;
 /// Kontakt's volume law: 630859 is 0 dB, 1000000 is +12 dB (cubic in amplitude).
 fn volume(x: f32) -> f32 {
     MAX_GAIN * x * x * x
+}
+
+/// +24 dB, the effect output gain and dry level maximum.
+const EFFECT_MAX_GAIN: f32 = 16.0;
+
+/// Effect output gain and dry level, cubic: Afflatus sets 396851 where it
+/// stores 1.0000056, and 125919 where it stores 0.0319443.
+fn effect_gain(x: f32) -> f32 {
+    EFFECT_MAX_GAIN * x * x * x
 }
 
 fn volume_value(gain: f32) -> f32 {
@@ -675,6 +708,14 @@ mod tests {
             (id::INSERT_EFFECT_OUTPUT_GAIN, "INSERT_EFFECT_OUTPUT_GAIN"),
             (id::SENDLEVEL_0, "SENDLEVEL_0"),
             (id::SENDLEVEL_7, "SENDLEVEL_7"),
+            (id::STEREO, "STEREO"),
+            (id::STEREO_PAN, "STEREO_PAN"),
+            (id::FREQ1, "FREQ1"),
+            (id::FREQ3, "FREQ3"),
+            (id::BW1, "BW1"),
+            (id::BW3, "BW3"),
+            (id::GAIN1, "GAIN1"),
+            (id::GAIN3, "GAIN3"),
         ] {
             assert_eq!(name(id), Some(format!("$ENGINE_PAR_{expected}").as_str()));
         }
@@ -698,6 +739,13 @@ mod tests {
         let release = Address::Envelope(0, Stage::Release);
         assert!((attack.decode(465_229) - 0.125_013).abs() < 1e-4);
         assert!((release.decode(512_668) - 0.250_001).abs() < 1e-4);
+        // Afflatus sets these on a group insert and its send; the presets store the gains.
+        let output = Address::Filter(0, 1, Knob::Output);
+        assert!((output.decode(396_851) - 1.000_005_6).abs() < 1e-4);
+        assert!((Address::Fx(Rack::Send, 0, FxParam::Wet).decode(125_919) - 0.031_944).abs() < 1e-5);
+        assert!((output.encode(1.0) - 396_851).abs() < 2);
+        let spread = Address::Filter(0, 0, Knob::Spread);
+        assert!((spread.decode(434_210) + 0.131_58).abs() < 1e-4);
         assert!((release.decode(1_000_000) - 25.000_04).abs() < 1e-3);
         // Solo sets these where its presets store attack curves 0.5 and -0.33.
         let curve = Address::Envelope(0, Stage::Curve);

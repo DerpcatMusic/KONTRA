@@ -696,6 +696,16 @@ pub const ENGINE_PARS: &[&str] = &[
     "$ENGINE_PAR_PITCH_TRACKING",
     "$ENGINE_PAR_GROUP_SOLO",
     "$ENGINE_PAR_GROUP_MUTE",
+    // EQ bands; appended so earlier ids keep their positions.
+    "$ENGINE_PAR_FREQ1",
+    "$ENGINE_PAR_FREQ2",
+    "$ENGINE_PAR_FREQ3",
+    "$ENGINE_PAR_BW1",
+    "$ENGINE_PAR_BW2",
+    "$ENGINE_PAR_BW3",
+    "$ENGINE_PAR_GAIN1",
+    "$ENGINE_PAR_GAIN2",
+    "$ENGINE_PAR_GAIN3",
 ];
 
 pub fn engine_par_id(name: &str) -> Option<i32> {

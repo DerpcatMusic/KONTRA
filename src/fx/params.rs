@@ -275,6 +275,7 @@ fn fields(r: &mut Reader, layout: &[(&'static str, Ty)]) -> Option<Params> {
 fn layout(kind: Kind) -> Option<&'static [(&'static str, Ty)]> {
     use Ty::{B, F};
     Some(match kind {
+        Kind::Inverter => &[("flag_0", B), ("flag_1", B)],
         Kind::Delay => &[
             ("time_ms", F),
             ("damping", F),
