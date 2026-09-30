@@ -206,7 +206,11 @@ impl From<&VoiceLimit> for VoiceGroup {
 pub struct Bank {
     groups: Vec<Group>,
     zones: Vec<Zone>,
+    /// What voices play: [`Bank::base`] with the player's overrides on top.
     pub settings: Vec<GroupSettings>,
+    /// The library's values as its scripts have set them, under the
+    /// player's overrides (see `overrides.rs`).
+    pub base: Vec<GroupSettings>,
     pub(crate) plays: Vec<ZonePlay>,
     /// Per group: not muted and, when any group is soloed, soloed.
     pub(crate) playable: Vec<bool>,
@@ -844,6 +848,7 @@ impl Builder {
         Ok(Bank {
             groups: self.groups,
             zones: self.zones,
+            base: self.settings.clone(),
             settings: self.settings,
             plays,
             playable,
