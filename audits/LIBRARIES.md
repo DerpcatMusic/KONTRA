@@ -10,14 +10,14 @@ Load = import + bank + script init. RSS is the child process after loading (peak
 | AGVC_Library | - | - | - | - | - | - | - | - | - | - | - | skipped: not a Kontakt library: Ample Sound format (170 .ascf, 2 .cf, 2 .dat): no NKI instruments to load |
 | AMH_Library | - | - | - | - | - | - | - | - | - | - | - | skipped: not a Kontakt library: Ample Sound format (150 .ascf, 1 .cf, 1 .dat): no NKI instruments to load |
 | Ample Sound | - | - | - | - | - | - | - | - | - | - | - | skipped: not a Kontakt library (1 .dat, 1 .exe): no NKI instruments to load |
-| Afflatus Chapter II Brass | Mega Brass | 30120/30120 | 28276 (28276) | 574.0 | 1280 | 590.0 (616.0) | 1800 | -27.5 | 0 | 0 | 6 | ok |
-| Areia 1.2.0 [Audio Imperia] | Areia - 16 16Vlns + 10Vls 8va - Col Legno | 93396/93396 | 45822 (45822) | 580.0 | 2048 | 866.0 (1136.0) | 3256 | -50.4 | 0 | 0 | 6 | ok |
-| Audio Imperia CHORUS | 03 Chorus - Women - Energetic Syllables | 73755/73755 | 20776 (20776) | 580.0 | 2048 | 634.0 (665.0) | 1979 | -8.6 | 0 | 0 | 4 | ok |
-| Audio Imperia Dolce | Dolce - 02 5 2nd Violins - Sustained | 30768/30768 | 14784 (14784) | 218.0 | 2048 | 275.0 (306.0) | 912 | -34.7 | 0 | 0 | 15 | ok |
-| Pacific Ensemble Strings | Pacific - Ens Strings - 16 Violins - Legato Sustains | 6856/6856 | 5344 (5344) | 150.0 | 2048 | 108.0 (122.0) | 287 | -34.6 | 0 | 0 | 4 | ok |
-| Performance Samples Vista | Vista - 5 Violins | 12528/12528 | 5128 (5128) | 139.0 | 2048 | 97.0 (109.0) | 479 | -32.9 | 0 | 0 | 3 | ok |
-| Solo | Solo - 09 Solo Cello - Trill Whole Tone | 23982/23982 | 11858 (11858) | 647.0 | 2048 | 650.0 (681.0) | 1140 | -18.1 | 0 | 0 | 3 | ok |
-| Una Corda Library | Una Corda Pure | 4402/4402 | 3946 (3945) | 137.0 | 2048 | 113.0 (144.0) | 253 | -22.8 | 0 | 0 | 6 | ok |
+| Afflatus Chapter II Brass | Mega Brass | 30120/30120 | 28276 (28276) | 574.0 | 1280 | 589.0 (607.0) | 671 | -27.5 | 0 | 0 | 6 | ok |
+| Areia 1.2.0 [Audio Imperia] | Areia - 16 16Vlns + 10Vls 8va - Col Legno | 93396/93396 | 45822 (45822) | 580.0 | 2048 | 867.0 (1137.0) | 3439 | -50.4 | 0 | 0 | 6 | ok |
+| Audio Imperia CHORUS | 03 Chorus - Women - Energetic Syllables | 73755/73755 | 20776 (20776) | 580.0 | 2048 | 631.0 (664.0) | 1745 | -8.6 | 0 | 0 | 4 | ok |
+| Audio Imperia Dolce | Dolce - 02 5 2nd Violins - Sustained | 30768/30768 | 14784 (14784) | 218.0 | 2048 | 275.0 (303.0) | 875 | -34.7 | 0 | 0 | 15 | ok |
+| Pacific Ensemble Strings | Pacific - Ens Strings - 16 Violins - Legato Sustains | 6856/6856 | 5344 (5344) | 150.0 | 2048 | 108.0 (122.0) | 301 | -34.6 | 0 | 0 | 4 | ok |
+| Performance Samples Vista | Vista - 5 Violins | 12528/12528 | 5128 (5128) | 139.0 | 2048 | 97.0 (108.0) | 1782 | -32.9 | 0 | 0 | 3 | ok |
+| Solo | Solo - 09 Solo Cello - Trill Whole Tone | 23982/23982 | 11858 (11858) | 647.0 | 2048 | 650.0 (677.0) | 1141 | -18.1 | 0 | 0 | 3 | ok |
+| Una Corda Library | Una Corda Pure | 4402/4402 | 3946 (3945) | 137.0 | 2048 | 113.0 (143.0) | 751 | -22.8 | 0 | 0 | 6 | ok |
 | Modo Drum | - | - | - | - | - | - | - | - | - | - | - | skipped: not a Kontakt library: IK Multimedia format (3 .pak): no NKI instruments to load |
 | EZDrummer | - | - | - | - | - | - | - | - | - | - | - | skipped: not a Kontakt library: Toontrack format (84 .png, 18 .s20, 13 .obw): no NKI instruments to load |
 | VWinds - Clarinets | - | - | - | - | - | - | - | - | - | - | - | skipped: not a Kontakt library: UVI format (25 .r2ruvi, 12 .ufs, 1 .pdf): no NKI instruments to load |
