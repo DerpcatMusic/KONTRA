@@ -1737,6 +1737,40 @@ fn ram_only_loads_samples_whole() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The RAM-only fill finishing mid-note: a voice started on the streamed
+/// bank carries on from the resident one, as if it had played from RAM
+/// all along; and the other way round, from RAM onto a stream.
+#[test]
+fn voices_carry_over_when_the_ram_fill_lands() {
+    let dir = std::env::temp_dir().join(format!("kontakto-fill-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, frames) = (dir.join("fill.wav"), 200_000);
+    write_wav_bits(&path, frames, 24);
+    let zone = Zone {
+        sample: path.clone(),
+        ..Zone::default()
+    };
+    let instrument = instrument(vec![Group::default()], vec![zone]);
+    let progress = Default::default();
+    let load = |streaming| Bank::load_counting(&instrument, 1, streaming, &[], &progress).unwrap();
+    for (from, to) in [(Streaming::Auto, Streaming::RamOnly), (Streaming::RamOnly, Streaming::Auto)] {
+        let (mut a, mut b) = (engine_with(load(from)), engine_with(load(Streaming::RamOnly)));
+        a.blocking_streams = true;
+        let note = NoteEvent::new(0, 60, 100);
+        a.start_event(&note).unwrap();
+        b.start_event(&note).unwrap();
+        for block in 0..400 {
+            if block == 150 {
+                assert!(a.upgrade_bank(Box::new(load(to))).is_some());
+                assert_eq!(a.voice_census().len(), 1, "the voice plays on");
+            }
+            assert!(render(&mut a, 128) == render(&mut b, 128), "{from:?} -> {to:?} diverges in block {block}");
+        }
+        assert_eq!(a.underruns(), 0);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A start offset the scripts pin with a controller (Areia's CC113) stays
 /// resident when the whole offset range does not fit: the voice starts from
 /// RAM, without waiting for the disk.

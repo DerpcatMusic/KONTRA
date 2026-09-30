@@ -221,6 +221,24 @@ impl Engine {
         old
     }
 
+    /// Replace the bank with `bank`, built from the same instrument with
+    /// other residency (the RAM-only fill finishing): playing voices carry
+    /// on from the new bank's data, and script-set group parameters stay.
+    /// A bank with other zones (a sample read in one load only) installs as
+    /// [`Engine::set_bank`] does. Returns the old bank for disposal off the
+    /// audio thread.
+    pub fn upgrade_bank(&mut self, mut bank: Box<Bank>) -> Option<Box<Bank>> {
+        let Some(old) = self.bank.as_deref_mut().filter(|old| {
+            old.zones().len() == bank.zones().len() && old.samples.len() == bank.samples.len()
+        }) else {
+            return self.set_bank(Some(bank));
+        };
+        // Swapped, not cloned: no allocation here.
+        std::mem::swap(&mut old.settings, &mut bank.settings);
+        self.player.rebind(old, &bank);
+        self.bank.replace(bank)
+    }
+
     /// Install the program effects, built for [`rate`](Self::rate) with
     /// blocks of [`MAX_BLOCK`]; returns the previous processor for disposal
     /// off the audio thread.
@@ -765,6 +783,36 @@ impl Player {
                 slots[stream.slot as usize].stop();
                 self.free.push(stream.slot);
             }
+        }
+    }
+
+    /// Move playing voices from `old` to `new`, which holds the same samples
+    /// with other residency: each finds its resident span and limit as at a
+    /// start, and streams through a slot of `new` from where it is.
+    fn rebind(&mut self, old: &Bank, new: &Bank) {
+        let slots = old.slots();
+        self.free.clear();
+        self.free.extend((0..new.slots().len() as u16).rev());
+        for v in &mut self.voices {
+            if let Some(stream) = v.stream.take() {
+                slots[stream.slot as usize].stop();
+            }
+            let sample = &new.samples[v.sample as usize];
+            let first = (v.pos as u64).saturating_sub(1);
+            v.span = (v.map.run(first, v.wraps))
+                .and_then(|run| sample.span_at(run.frame))
+                .unwrap_or(0);
+            let span = &sample.spans[v.span as usize];
+            v.limit = v.map.resident_limit(first, v.wraps, span.start, span.end());
+            // Paused, the next render configures it from the position, as
+            // when a muted voice returns; a loop reserves it as at a start.
+            let slot = if sample.streamed { self.free.pop() } else { None };
+            v.stream = slot.map(|slot| voice::Stream {
+                slot,
+                tag: 0,
+                trusted: 0,
+                paused: v.limit != FOREVER,
+            });
         }
     }
 

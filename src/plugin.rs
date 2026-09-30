@@ -491,6 +491,9 @@ enum Handoff {
         script: Option<Box<Runtime>>,
         epoch: u64,
     },
+    /// The part's samples loaded whole (RAM only): replaces its streaming
+    /// bank under the playing voices.
+    Bank(Box<Bank>),
 }
 /// What the audio thread replaced, freed on the loader thread.
 #[expect(dead_code, reason = "held only to be dropped off the audio thread")]
@@ -920,7 +923,7 @@ impl BackgroundTask for Load {
                     }
                 }
                 if instrument.zones.is_empty() {
-                    return Ok((instrument, None, script, snapshot));
+                    return Ok((instrument, None, script, snapshot, None));
                 }
                 // Every group plays; the stored group only selects what the mapping inspector shows.
                 if part.group == u32::MAX {
@@ -947,14 +950,17 @@ impl BackgroundTask for Load {
                 // streams more instead of failing.
                 let budget = crate::engine::MEMORY_LIMIT
                     .min((2 * crate::engine::MEMORY_LIMIT).saturating_sub(resident));
+                let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers);
+                // RAM only plays from a streaming bank while the RAM fills.
                 let bank = Box::new(Bank::load_counting(
                     &instrument,
                     budget,
-                    streaming,
-                    script.as_deref().map_or(&[], |rt| &rt.init_controllers),
+                    Streaming::Auto,
+                    controllers,
                     &params.shared.load_progress[slot],
                 )?);
-                Ok((instrument, Some(bank), script, snapshot))
+                let fill = (streaming == Streaming::RamOnly).then(|| (budget, controllers.to_vec()));
+                Ok((instrument, Some(bank), script, snapshot, fill))
             })();
             let current = params.selection.read().unwrap();
             if current.parts.get(slot).map(|p| (&p.path, p.program)) != Some((&target.0, target.1))
@@ -966,7 +972,7 @@ impl BackgroundTask for Load {
             let mut view = params.shared.view.lock().unwrap();
             view.parts[slot].loading = false;
             match result {
-                Ok((instrument, bank, script, snapshot)) => {
+                Ok((instrument, bank, script, snapshot, fill)) => {
                     let epoch = if script.is_some() {
                         next_epoch(&mut view, slot, snapshot, script.as_deref())
                     } else {
@@ -992,6 +998,40 @@ impl BackgroundTask for Load {
                             epoch,
                         },
                     ));
+                    // RAM only: the part plays, streaming, while every sample
+                    // loads whole; the resident bank then takes over and
+                    // playing voices carry on from it.
+                    // ponytail: the streaming bank stays resident until the fill
+                    // lands (its preload twice over at peak); fill per sample
+                    // into the playing bank if that peak matters.
+                    if let Some((budget, controllers)) = fill {
+                        v.status += " · loading into RAM…";
+                        drop(view);
+                        let bank = Bank::load_counting(
+                            &instrument,
+                            budget,
+                            Streaming::RamOnly,
+                            &controllers,
+                            &AtomicU32::new(0),
+                        );
+                        // Superseded while filling: the newer load has its own bank.
+                        if params.shared.generation[slot].load(Ordering::Acquire) != generation {
+                            continue;
+                        }
+                        let mut view = params.shared.view.lock().unwrap();
+                        let v = &mut view.parts[slot];
+                        match bank {
+                            Ok(bank) => {
+                                (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
+                                let bank = Handoff::Bank(Box::new(bank));
+                                let _ = params.shared.ready.force_push((slot, generation, bank));
+                            }
+                            Err(e) => {
+                                v.status = v.status.replace(" · loading into RAM…", "");
+                                v.status += &format!(" · RAM fill failed, streaming: {e:#}");
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     let v = &mut view.parts[slot];
@@ -1238,6 +1278,10 @@ impl PluginLogic for Sampler {
                     fx: Some(engine.set_fx(fx)),
                     ..Retired::default()
                 },
+                Handoff::Bank(bank) if current => Retired {
+                    bank: engine.upgrade_bank(bank),
+                    ..Retired::default()
+                },
                 Handoff::Script { script, epoch } if current => {
                     engine.reset(rate);
                     s.script_epoch[slot] = epoch;
@@ -1255,6 +1299,10 @@ impl PluginLogic for Sampler {
                 },
                 Handoff::Fx(fx) => Retired {
                     fx: Some(fx),
+                    ..Retired::default()
+                },
+                Handoff::Bank(bank) => Retired {
+                    bank: Some(bank),
                     ..Retired::default()
                 },
                 Handoff::Script { script, .. } => Retired {
