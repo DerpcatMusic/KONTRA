@@ -59,7 +59,7 @@ pub fn hairline() -> Fill {
 }
 
 /// A value's fill on a track or a knob: neutral, brighter than the track.
-fn value_ink(lift: f32) -> Color {
+pub fn value_ink(lift: f32) -> Color {
     Color::oklch(0.78 + 0.1 * lift, 0., 0.)
 }
 
@@ -533,7 +533,7 @@ impl Fader {
 
 /// Pointer, wheel and keys on a continuous control `id`: drag across
 /// `travel` px (Shift is fine), wheel and arrows step, double-click resets.
-fn drive(
+pub fn drive(
     ui: &mut Ui,
     id: &str,
     value: &mut f64,

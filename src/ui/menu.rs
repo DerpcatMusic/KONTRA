@@ -1,7 +1,8 @@
 //! Context menus: one open at a time, floated over everything where it was
 //! asked for, closed by a pick, a click elsewhere or Escape.
 
-use super::{Cx, theme::*};
+use super::{Cx, mixer::{self, Strip}, theme::*};
+use crate::engine::BUSES;
 use moose::mui::mui::prelude::*;
 use std::path::Path;
 
@@ -18,6 +19,13 @@ pub enum Target {
     App,
     /// A script menu in a part's performance controls.
     Script { part: usize, control: usize },
+    /// A mixer strip.
+    Strip(Strip),
+    /// A part's MIDI input, output bus and aux send; a bus's host port.
+    Input(usize),
+    Output(usize),
+    Aux(usize),
+    BusPort(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +58,16 @@ pub enum Command {
     Keyboard,
     Panic,
     Appearance(super::Appearance),
+    /// A part listens on a MIDI port and channel (-1 omni).
+    Input(usize, u8, i16),
+    Output(usize, u8),
+    /// A part's send bus, -1 for none.
+    Aux(usize, i16),
+    /// A bus's host port, -1 for its own.
+    BusPort(usize, i16),
+    StripRename(Strip),
+    StripReset(Strip),
+    StripRoute(Strip),
     /// Set a script control to a value.
     Script {
         part: usize,
@@ -211,6 +229,69 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 })
                 .collect()
         }
+        Target::Strip(strip) => {
+            let strip = *strip;
+            if let Strip::Part(slot) = strip
+                && cx.selection.parts.get(slot).is_none_or(|p| p.path.is_empty())
+            {
+                return Vec::new();
+            }
+            vec![
+                act("Rename…", "", Command::StripRename(strip)),
+                act("Reset", "", Command::StripReset(strip)),
+                Item::Rule,
+                act("Route to…", "", Command::StripRoute(strip)),
+            ]
+        }
+        Target::Input(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot) else {
+                return Vec::new();
+            };
+            let (slot, port, channel) = (*slot, part.port, part.channel);
+            let mut items = vec![Item::Info("MIDI port".into())];
+            for n in 0..4u8 {
+                let label = format!("Port {}", char::from(b'A' + n));
+                items.push(check(label, port == n, Command::Input(slot, n, channel)));
+            }
+            items.extend([Item::Rule, Item::Info("Channel".into())]);
+            items.push(check("Omni", channel < 0, Command::Input(slot, port, -1)));
+            for c in 0..16i16 {
+                items.push(check(format!("Channel {}", c + 1), channel == c, Command::Input(slot, port, c)));
+            }
+            items
+        }
+        Target::Output(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot) else {
+                return Vec::new();
+            };
+            (0..BUSES)
+                .map(|n| {
+                    let label = bus_item(cx, n);
+                    check(label, usize::from(part.output) == n, Command::Output(*slot, n as u8))
+                })
+                .collect()
+        }
+        Target::Aux(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot) else {
+                return Vec::new();
+            };
+            let mut items = vec![check("No send", part.aux < 0, Command::Aux(*slot, -1)), Item::Rule];
+            items.extend((0..BUSES).map(|n| {
+                check(bus_item(cx, n), part.aux == n as i16, Command::Aux(*slot, n as i16))
+            }));
+            items
+        }
+        Target::BusPort(n) => {
+            let bus = cx.selection.bus(*n);
+            let port = if bus.port < 0 { *n } else { bus.port as usize };
+            (0..BUSES)
+                .map(|k| {
+                    let label = format!("Host out {}", mixer::port_text(k));
+                    let to = if k == *n { -1 } else { k as i16 };
+                    check(label, port == k, Command::BusPort(*n, to))
+                })
+                .collect()
+        }
         Target::App => {
             let mut items = vec![
                 check("Browser", cx.state.browser, Command::Browser),
@@ -235,6 +316,15 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             }
             items
         }
+    }
+}
+
+/// "st.3", or "st.3 · Drums" once named.
+fn bus_item(cx: &Cx, n: usize) -> String {
+    let own = crate::plugin::Bus::default().label(n);
+    match cx.selection.bus(n).label(n) {
+        name if name == own => name,
+        name => format!("{own} · {name}"),
     }
 }
 
@@ -413,6 +503,32 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             control,
             value,
         } => shared.edit_control(part, control, value),
+        Command::Input(slot, port, channel) => {
+            if let Some(part) = cx.selection.parts.get_mut(slot) {
+                (part.port, part.channel) = (port, channel);
+            }
+        }
+        Command::Output(slot, n) => {
+            if let Some(part) = cx.selection.parts.get_mut(slot) {
+                part.output = n;
+            }
+        }
+        Command::Aux(slot, n) => {
+            if let Some(part) = cx.selection.parts.get_mut(slot) {
+                part.aux = n;
+            }
+        }
+        Command::BusPort(n, port) => cx.selection.bus_mut(n).port = port,
+        Command::StripRename(strip) => mixer::start_rename(cx, strip),
+        Command::StripReset(strip) => mixer::reset(cx, strip),
+        Command::StripRoute(strip) => open(
+            ui,
+            cx,
+            match strip {
+                Strip::Part(slot) => Target::Output(slot),
+                Strip::Bus(n) => Target::BusPort(n),
+            },
+        ),
     }
 }
 

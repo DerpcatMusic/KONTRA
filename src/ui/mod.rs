@@ -24,6 +24,7 @@ mod header;
 mod instrument;
 mod keyboard;
 mod menu;
+mod mixer;
 mod panel;
 mod picker;
 mod rack;
@@ -39,7 +40,7 @@ use moose::prelude::*;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use theme::*;
@@ -88,6 +89,8 @@ struct Meters {
     cpu: AtomicU32,
     /// Sample data read from disk, MB/s.
     disk: AtomicU32,
+    /// The mixer is on screen: its meters want frames while they move.
+    mixer: AtomicBool,
 }
 
 /// Decides, every display tick, whether anything the editor shows moved
@@ -109,6 +112,9 @@ struct Watch {
     disk_counter: Option<&'static AtomicU64>,
     poll_at: Option<Instant>,
     frame_at: Option<Instant>,
+    /// When the mixer's meters were last looked at, and whether any moved.
+    meter_at: Option<Instant>,
+    metering: bool,
 }
 
 /// Readouts and the loading line refresh this often at most.
@@ -197,8 +203,20 @@ impl Watch {
         if poll {
             self.poll_at = Some(now);
         }
+        // The mixer's meters paint from the audio thread's atomics as the
+        // scene is walked: frames only while one shows a level, and one more
+        // to draw them empty.
+        let mut meter = false;
+        if meters.mixer.load(Ordering::Relaxed) && due(self.meter_at, ANIMATION_MS) {
+            self.meter_at = Some(now);
+            let m = &p.shared.meters;
+            let live = (m.parts.iter().chain(&m.buses).chain([&m.master]))
+                .any(|m| crate::plugin::Meters::read(m) != [0.; 2]);
+            meter = live || self.metering;
+            self.metering = live;
+        }
         // The loading line sweeps until the first samples arrive.
-        moved || poll || animate
+        moved || poll || animate || meter
     }
 }
 
@@ -240,6 +258,7 @@ impl Appearance {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Rack,
+    Mixer,
     Mapping,
     Info,
 }
@@ -282,6 +301,10 @@ struct EditorState {
     cursor: Option<String>,
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
+    /// A bus's name while it is being edited.
+    renaming_bus: Option<(usize, String)>,
+    /// Buses below this index show a mixer strip even when unused.
+    buses_shown: usize,
     /// Each library's color and backdrop, from its artwork, worked out once.
     tints: HashMap<String, Option<Color>>,
     backdrops: HashMap<String, Option<Arc<Image>>>,
@@ -323,7 +346,7 @@ impl EditorState {
 
 /// One frame's inputs: the loader's view, the rack being edited, the editor state.
 struct Cx<'a> {
-    p: &'a SamplerParams,
+    p: &'a Arc<SamplerParams>,
     view: &'a View,
     selection: Selection,
     state: &'a mut EditorState,
@@ -669,6 +692,8 @@ fn build(
         menu: None,
         cursor: None,
         renaming: None,
+        renaming_bus: None,
+        buses_shown: 1,
         tints: HashMap::new(),
         backdrops: HashMap::new(),
         started: Instant::now(),
@@ -724,7 +749,7 @@ fn build(
             .browser
             .then(|| browser::sidebar(ui, &mut cx).w(browser_w));
         let splitter = cx.state.browser.then(|| splitter(ui, &mut cx, browser_w));
-        let main = main_view(ui, &mut cx);
+        let main = main_view(ui, &mut cx, bridge);
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
         let ghost = ghost(ui, &cx);
@@ -860,10 +885,11 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
 }
 
 /// View tabs over the rack, or over the selected part's mapping or details.
-fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
+fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
     let mut tabs = Vec::new();
     for (tab, label, id) in [
         (Tab::Rack, "Rack", "tab-rack"),
+        (Tab::Mixer, "Mixer", "tab-mixer"),
         (Tab::Mapping, "Mapping", "tab-mapping"),
         (Tab::Info, "Info", "tab-info"),
     ] {
@@ -886,8 +912,11 @@ fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
         content.push(banner(Role::Warning, cx.state.notice.clone()));
     }
     let slot = cx.state.selected;
+    cx.state.meters.mixer.store(cx.state.tab == Tab::Mixer, Ordering::Relaxed);
     if cx.state.tab == Tab::Rack {
         content.push(rack::view(ui, cx));
+    } else if cx.state.tab == Tab::Mixer {
+        content.push(mixer::view(ui, cx, bridge));
     } else if cx.part().is_none() {
         content.push(instrument::welcome(cx));
     } else {
