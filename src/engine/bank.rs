@@ -600,7 +600,8 @@ impl Builder {
                 issues.notes.join("; ")
             );
         }
-        let settings = groups.iter().map(GroupSettings::from).collect();
+        let mut settings: Vec<_> = groups.iter().map(GroupSettings::from).collect();
+        super::params::share_curves(settings.iter_mut().map(|s| &mut s.mods));
         Ok(Self {
             groups,
             zones: kept,
