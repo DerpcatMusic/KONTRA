@@ -72,21 +72,18 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     };
     let bar = row![
         section("Keyboard"),
-        caption(shown_range).text_size(11).reserve("C#-2 – C#-2"),
+        caption(shown_range).text_size(SMALL).reserve("C#-2 – C#-2"),
         caption(plays)
-            .text_size(11)
+            .text_size(SMALL)
             .fill(Role::Dim)
             .lines(1)
             .flex(1)
             .min_w(0),
-        down_el,
-        up_el,
-        toggle_el
+        cluster(vec![down_el, up_el, toggle_el])
     ]
-    .gap(GAP + HALF)
+    .gap(INSET)
     .align(Align::Center)
-    .pad(edges(0., GAP, 0., GAP + HALF))
-    .h(BAR)
+    .pad(edges(TIGHT, TIGHT, TIGHT, INSET))
     .shrink(0);
     if !open {
         return col![bar].gap(0).shrink(0).fill(Role::Surface);
@@ -137,9 +134,9 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     let strip = range_strip(looks, cx.state.octave);
     col![
         bar,
-        col![strip, row(octaves).gap(1).h(76).clip()]
-            .gap(2)
-            .pad(edges(0., GAP + HALF, GAP, GAP + HALF))
+        col![strip, row(octaves).gap(1).h(CONTROL * 3.).clip()]
+            .gap(1)
+            .pad(edges(0., INSET, SPACE, INSET))
     ]
     .gap(0)
     .shrink(0)
@@ -254,21 +251,27 @@ fn key(
     }
     let held = p.shared.key_owners[note as usize].load(Ordering::Relaxed) < 128;
     let name = note_name(note);
-    let face = match (held, look, black) {
-        (true, ..) => accent(),
-        (false, Look::Colored(c), false) => c,
-        (false, Look::Colored(c), true) => Color::oklch(c.lightness() * 0.62, c.chroma(), c.hue()),
-        (false, Look::Mapped, false) => Color::oklch(0.92, 0., 0.),
-        (false, Look::Mapped, true) => Color::oklch(0.17, 0., 0.),
-        (false, Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
-        (false, Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
+    let face = match (look, black) {
+        (Look::Colored(c), false) => c,
+        (Look::Colored(c), true) => Color::oklch(c.lightness() * 0.62, c.chroma(), c.hue()),
+        (Look::Mapped, false) => Color::oklch(0.92, 0., 0.),
+        (Look::Mapped, true) => Color::oklch(0.17, 0., 0.),
+        (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
+        (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
+    };
+    // A played key sinks: darker when white, lighter when black.
+    let face = if held {
+        let l = face.lightness();
+        Color::oklch(if black { l + 0.25 } else { l * 0.72 }, face.chroma(), face.hue())
+    } else {
+        face
     };
     let mut parts = vec![spacer()];
     if note.is_multiple_of(12) {
         parts.push(
             caption(name.clone())
-                .text_size(9)
-                .fill(Color::oklcha(0., 0., 0., 0.55))
+                .text_size(SMALL - 2.)
+                .fill(Color::oklch(0.38, 0., 0.))
                 .justify(Justify::Center)
                 .shrink(0),
         );

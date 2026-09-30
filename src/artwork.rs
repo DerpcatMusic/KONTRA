@@ -106,11 +106,6 @@ pub struct Picture {
     pub frames: Vec<Arc<Image>>,
     /// Stretches to the control; otherwise it keeps its own size.
     pub resizable: bool,
-    /// Per frame, a stretchable picture's nine pieces, row by row: corners
-    /// and edges keep the sidecar's fixed sizes. Empty when nothing is fixed.
-    pub pieces: Vec<[Option<Arc<Image>>; 9]>,
-    /// Fixed top, bottom, left and right edges, in picture pixels.
-    pub fixed: [u32; 4],
 }
 
 /// The control pictures named in `names` that the preset's library has.
@@ -135,33 +130,13 @@ pub fn pictures<'a>(
         if frames.is_empty() {
             continue;
         }
-        let pieces = if layout.resizable && layout.fixed.iter().any(|&f| f > 0) {
-            frames.iter().map(|f| nine(f, layout.fixed)).collect()
-        } else {
-            Vec::new()
-        };
         let picture = Picture {
             frames,
             resizable: layout.resizable,
-            pieces,
-            fixed: layout.fixed,
         };
         out.insert(name.to_owned(), Arc::new(picture));
     }
     out
-}
-
-/// `image` cut into three rows and columns at its fixed edges.
-fn nine(image: &Image, [top, bottom, left, right]: [u32; 4]) -> [Option<Arc<Image>>; 9] {
-    let (w, h) = (image.width, image.height);
-    let (left, right) = (left.min(w), right.min(w - left.min(w)));
-    let (top, bottom) = (top.min(h), bottom.min(h - top.min(h)));
-    let cols = [(0, left), (left, w - left - right), (w - right, right)];
-    let rows = [(0, top), (top, h - top - bottom), (h - bottom, bottom)];
-    std::array::from_fn(|i| {
-        let ((x, cw), (y, rh)) = (cols[i % 3], rows[i / 3]);
-        crop(image, x, y, cw, rh)
-    })
 }
 
 /// A copy of the `w` by `h` pixels at `x`, `y`; `None` when empty.
@@ -185,8 +160,6 @@ struct Layout {
     frames: u32,
     horizontal: bool,
     resizable: bool,
-    /// Top, bottom, left, right.
-    fixed: [u32; 4],
 }
 
 impl Layout {
@@ -195,7 +168,6 @@ impl Layout {
             frames: 1,
             horizontal: false,
             resizable: false,
-            fixed: [0; 4],
         };
         for (key, value) in text.lines().filter_map(|l| l.split_once(':')) {
             let value = value.trim();
@@ -205,10 +177,6 @@ impl Layout {
                 "number of animations" => layout.frames = number,
                 "horizontal animation" => layout.horizontal = yes,
                 "horizontal resizable" | "vertical resizable" => layout.resizable |= yes,
-                "fixed top" => layout.fixed[0] = number,
-                "fixed bottom" => layout.fixed[1] = number,
-                "fixed left" => layout.fixed[2] = number,
-                "fixed right" => layout.fixed[3] = number,
                 _ => {}
             }
         }
@@ -392,6 +360,64 @@ fn decode(bytes: &[u8]) -> Option<Image> {
     };
     Image::rgba(info.width, info.height, rgba)
 }
+/// The artwork's identity color as an OKLCH hue in degrees: the most
+/// common hue among its colorful pixels, ignoring near-black, near-white and
+/// grey. `None` for artwork without a clear color.
+pub fn tint(image: &Image) -> Option<f32> {
+    const BINS: usize = 36;
+    let mut weight = [0f32; BINS];
+    let mut sums = [(0f32, 0f32); BINS];
+    let pixels = image.rgba.chunks_exact(4);
+    // A few thousand samples decide it as well as every pixel would.
+    let step = (pixels.len() / 20_000).max(1);
+    for px in pixels.step_by(step) {
+        let [r, g, b, a] = [px[0], px[1], px[2], px[3]];
+        let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
+        if a < 128 || hi < 48 || lo > 208 || hi - lo < 40 {
+            continue;
+        }
+        let (l, a, b) = oklab(r, g, b);
+        let chroma = a.hypot(b);
+        let hue = b.atan2(a).to_degrees().rem_euclid(360.);
+        let bin = (hue / 360. * BINS as f32) as usize % BINS;
+        weight[bin] += chroma * l;
+        sums[bin].0 += chroma;
+        sums[bin].1 += hue * chroma;
+    }
+    let total: f32 = weight.iter().sum();
+    let (bin, top) = weight
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))?;
+    // One colored logo on a grey picture is not the library's color.
+    if total <= 0. || *top < total * 0.12 || *top < 1. {
+        return None;
+    }
+    let (chroma, hue) = sums[bin];
+    Some(hue / chroma)
+}
+
+/// sRGB bytes to OKLab.
+fn oklab(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let lin = |c: u8| {
+        let c = f32::from(c) / 255.;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let (r, g, b) = (lin(r), lin(g), lin(b));
+    let l = (0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    (
+        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
+        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
+        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -437,7 +463,6 @@ mod tests {
                 frames: 3,
                 horizontal: false,
                 resizable: false,
-                fixed: [0; 4],
             }
         );
         // A 1x3 strip: red, green, blue.
@@ -447,20 +472,23 @@ mod tests {
         assert_eq!(frames.len(), 3);
         assert_eq!(frames[1].rgba.as_ref(), &[0, 255, 0, 255]);
         assert_eq!(super::Layout::parse("").frames, 1);
-        // A 3x3 picture with one fixed pixel on every edge cuts into single pixels.
-        let rgba: Vec<u8> = (0..9u8).flat_map(|n| [n, 0, 0, 255]).collect();
-        let pieces = super::nine(&super::Image::rgba(3, 3, rgba).unwrap(), [1, 1, 1, 1]);
-        let firsts: Vec<u8> = pieces.iter().map(|p| p.as_ref().unwrap().rgba[0]).collect();
-        assert_eq!(firsts, (0..9).collect::<Vec<u8>>());
-        let edges = super::nine(
-            &super::Image::rgba(3, 3, vec![0; 36]).unwrap(),
-            [0, 0, 1, 1],
-        );
-        assert!(
-            edges[0].is_none() && edges[3].is_some(),
-            "no fixed rows, one middle row"
-        );
         assert_eq!(super::png_name("../x"), None);
         assert_eq!(super::png_name("knob").as_deref(), Some("knob.png"));
+    }
+
+    #[test]
+    fn tint_finds_the_dominant_color() {
+        let px = |rgb: [u8; 3], n: usize| rgb.into_iter().chain([255]).cycle().take(4 * n);
+        // Mostly black and white with a strong blue, and a little red.
+        let rgba: Vec<u8> = px([0, 0, 0], 400)
+            .chain(px([255, 255, 255], 300))
+            .chain(px([30, 80, 220], 250))
+            .chain(px([220, 30, 30], 50))
+            .collect();
+        let image = super::Image::rgba(1000, 1, rgba).unwrap();
+        let hue = super::tint(&image).unwrap();
+        assert!((250.0..275.0).contains(&hue), "blue, not {hue}");
+        let grey: Vec<u8> = px([128, 128, 128], 100).collect();
+        assert_eq!(super::tint(&super::Image::rgba(100, 1, grey).unwrap()), None);
     }
 }

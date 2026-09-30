@@ -51,9 +51,9 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             Fader {
                 reset: -12.,
                 ..Fader::LEVEL
-            },
+            }
+            .length(TEXT * 8.),
             db_text,
-            Some(96.),
         );
         *v = (db + 60.) / 66.;
         el
@@ -81,15 +81,15 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             menu::open_under(ui, cx, menu::Target::App, "app-menu");
             // Right-aligned under the button.
             if let Some(m) = cx.state.menu.as_mut() {
-                m.at.x -= 232. - CONTROL;
+                m.at.x -= menu::WIDTH - CONTROL;
             }
         }
     }
 
-    row![
+    strip(vec![
         browser_el,
         body("KONTAKTO")
-            .text_size(13)
+            .text_size(TEXT + 1.)
             .text_weight(Weight::BOLD)
             .fill(Role::Ink)
             .shrink(0),
@@ -97,43 +97,35 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
         stat("Voices", voices.to_string(), "000"),
         stat("RAM", megabytes(memory), "00000 MB"),
-        vrule().h(20),
-        row![section("Master"), master, meter_bar(level)]
-            .gap(GAP)
-            .align(Align::Center)
-            .shrink(0),
-        vrule().h(20),
-        row![thru_el, panic_el, more_el]
-            .gap(HALF)
-            .align(Align::Center)
-            .shrink(0),
-    ]
-    .gap(WIDE)
-    .align(Align::Center)
-    .pad(edges(0., GAP, 0., GAP))
-    .h(TOP_BAR)
-    .shrink(0)
+        vrule().h(CONTROL - TIGHT),
+        cluster(vec![section("Master"), master, meter_bar(level)]).gap(SPACE),
+        vrule().h(CONTROL - TIGHT),
+        cluster(vec![thru_el, panic_el, more_el]),
+    ])
+    .gap(INSET)
+    .pad((SPACE, SPACE))
     .fill(Role::Surface)
 }
 
-/// The master output level: a 4 px bar in dB, neutral until it nears clipping.
+/// The master output level: a thin bar in dB, neutral until it nears clipping.
 fn meter_bar(level: f32) -> El {
     let db = 20. * f64::from(level.max(1e-6)).log10();
     let unit = ((db + 60.) / 66.).clamp(0., 1.);
     let hot = db > -1.;
     canvas(move |s| {
-        let mid = (s.height / 2. - 2.).round();
-        let mut draw = vec![Draw::fill(rect(0., mid, s.width, 4.), Role::Ink.alpha(0.1))];
+        let t = TIGHT;
+        let mid = (s.height / 2. - t / 2.).round();
+        let mut draw = vec![Draw::fill(rect(0., mid, s.width, t), Role::Ink.alpha(0.1))];
         if unit > 0. {
             let fill = if hot { Role::Danger.alpha(1.) } else { Role::Ink.alpha(0.7) };
-            draw.push(Draw::fill(rect(0., mid, (unit * s.width).round(), 4.), fill));
+            draw.push(Draw::fill(rect(0., mid, (unit * s.width).round(), t), fill));
         }
         // Unity.
         let x = (60. / 66. * s.width).round();
-        draw.push(Draw::fill(rect(x, mid - 2., 1., 8.), Role::Ink.alpha(0.3)));
+        draw.push(Draw::fill(rect(x, mid - t / 2., 1., 2. * t), Role::Ink.alpha(0.3)));
         draw
     })
-    .w(48)
+    .w(CONTROL * 2.)
     .h(CONTROL)
     .shrink(0)
     .named("Output level")
@@ -146,7 +138,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     if scan {
         cx.selection.root = cx.state.root.clone();
         // Forget the scanned root so the loader scans again even when it is unchanged.
-        cx.p.shared.view.lock().unwrap().root.clear();
+        super::lock(&cx.p.shared.view).root.clear();
     }
     let (close, close_el) = icon_button(ui, "settings-close", Icon::Close, "Close", false);
     if close {
@@ -160,14 +152,13 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
                 .flex(1)
                 .min_w(0)
                 .h(CONTROL)
-                .radius(2)
                 .named("Library folder"),
             scan_el,
             close_el
         ]
-        .gap(GAP)
+        .gap(SPACE)
         .align(Align::Center)
-        .pad((GAP + HALF, GAP)),
+        .pad((SPACE, INSET)),
         rule()
     ]
     .gap(0)
@@ -175,12 +166,12 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     .fill(Role::Surface)
 }
 
-/// A 2 px line under the top bar. It fills as loading parts read their
+/// A line under the top bar. It fills as loading parts read their
 /// samples; before any sample is read, a segment sweeps across it.
 pub fn loading_bar(view: &View, p: &SamplerParams, started: Instant) -> El {
     let busy = view.parts.iter().any(|v| v.loading) || view.multi_status.starts_with("Loading");
     if !busy {
-        return block(Len::Pct(100.), 2).fill(hairline()).shrink(0);
+        return rule();
     }
     let fraction = load_fraction(view, p);
     let phase = (started.elapsed().as_secs_f64() / 1.4).fract();
@@ -192,12 +183,12 @@ pub fn loading_bar(view: &View, p: &SamplerParams, started: Instant) -> El {
             (-w + phase * (s.width + w), w)
         };
         vec![
-            Draw::fill(rect(0., 0., s.width, s.height), Role::Primary.alpha(0.15)),
-            Draw::fill(rect(x, 0., w, s.height), Role::Primary.alpha(1.)),
+            Draw::fill(rect(0., 0., s.width, s.height), Role::Ink.alpha(0.1)),
+            Draw::fill(rect(x, 0., w, s.height), Role::Ink.alpha(0.7)),
         ]
     })
     .w(Len::Pct(100.))
-    .h(2)
+    .h(1)
     .shrink(0)
     .named("Loading")
 }

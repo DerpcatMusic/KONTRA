@@ -79,20 +79,19 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             row![
                 back_el,
                 body(library_label(&open))
-                    .text_size(13)
+                    .text_size(TEXT + 1.)
                     .text_weight(Weight::SEMIBOLD)
                     .lines(1)
                     .flex(1)
                     .min_w(0),
             ]
-            .gap(HALF)
+            .gap(TIGHT)
             .align(Align::Center)
-            .pad(edges(0., GAP, 0., HALF))
-            .h(BAR + 4.)
+            .pad((TIGHT, TIGHT))
             .shrink(0),
         ];
         if let Some(image) = view.artwork.get(&open) {
-            top.push(artwork(image, 64.));
+            top.push(artwork(image, CONTROL * 3.));
         }
         top.push(rule());
         heading = Some(col(top).gap(0).shrink(0));
@@ -136,7 +135,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             cards.push(card(view.artwork.get(name), name, files.len(), id));
         }
         if !cards.is_empty() {
-            items.push(grid(2, cards).gap(GAP).min_col(200).pad((GAP, GAP)).shrink(0));
+            items.push(grid(2, cards).gap(SPACE).min_col(SIDEBAR_MIN).pad(SPACE).shrink(0));
         }
         if libraries.is_empty() {
             items.push(hint(if view.files.is_empty() {
@@ -157,18 +156,18 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     col![
         section_bar(
             "Browser",
-            vec![caption(count.to_string()).text_size(10).fill(Role::Dim), hide_el]
+            vec![caption(count.to_string()).text_size(SMALL).fill(Role::Dim), hide_el]
         ),
-        col![search, row(kinds).gap(WIDE + HALF).h(BAR).pad((HALF, 0))]
-            .gap(HALF)
-            .pad(edges(0., GAP + HALF, 0., GAP + HALF))
+        col![search, row(kinds).gap(INSET + TIGHT).shrink(0)]
+            .gap(TIGHT)
+            .pad(edges(0., INSET, 0., INSET))
             .shrink(0),
         rule(),
         heading.unwrap_or_else(|| block(0, 0)),
         col(items)
             .gap(0)
             .align(Align::Stretch)
-            .pad(edges(0., 0., GAP, 0.))
+            .pad(edges(0., 0., SPACE, 0.))
             .flex(1)
             .min_h(0)
             .scroll()
@@ -197,11 +196,12 @@ fn search_field(ui: &mut Ui, cx: &mut Cx, multis: bool) -> El {
         field
             .el
             .w(Len::Pct(100.))
-            .h(CONTROL + 4.)
-            .radius(2)
-            .pad(edges(0., CONTROL + HALF, 0., CONTROL + 2.))
+            .h(CONTROL + TIGHT)
+            .pad(edges(0., CONTROL + TIGHT, 0., CONTROL))
             .named("Search presets"),
-        glyph(Icon::Search, 14., Role::Ink.alpha(0.45)).at(GAP + 1., 7.),
+        glyph(Icon::Search, TEXT + 2., Role::Ink.alpha(0.45))
+            .anchor(Align::Start, Align::Center)
+            .offset(SPACE, 0.),
         row![
             caption(if multis {
                 "Search multis"
@@ -211,15 +211,15 @@ fn search_field(ui: &mut Ui, cx: &mut Cx, multis: bool) -> El {
             .fill(Role::Dim)
         ]
         .align(Align::Center)
-        .pad(edges(0., 0., 0., CONTROL + 6.))
-        .h(CONTROL + 4.)
+        .pad(edges(0., 0., 0., CONTROL + TIGHT))
+        .h(CONTROL + TIGHT)
         .when(!placeholder, |e| e.opacity(0.))
         .disabled(),
     ];
     if !cx.state.search.is_empty() {
-        layers.push(clear_el.anchor(Align::End, Align::Center).offset(-2., 0.));
+        layers.push(clear_el.anchor(Align::End, Align::Center));
     }
-    stack(layers).w(Len::Pct(100.)).h(CONTROL + 4.).shrink(0)
+    stack(layers).w(Len::Pct(100.)).h(CONTROL + TIGHT).shrink(0)
 }
 
 /// Up and Down move the cursor along `listed`, Enter loads it.
@@ -270,13 +270,13 @@ fn walk(ui: &mut Ui, cx: &mut Cx, listed: &[PathBuf]) {
 fn card(image: Option<&std::sync::Arc<Image>>, name: &str, presets: usize, id: String) -> El {
     let mut parts = Vec::new();
     match image {
-        Some(image) => parts.push(artwork(image, 56.)),
+        Some(image) => parts.push(artwork(image, CONTROL * 2.5)),
         None => parts.push(
-            row![caption(library_label(name).to_uppercase()).text_size(10).fill(Role::Dim).lines(1).min_w(0)]
+            row![section(&library_label(name))]
                 .align(Align::Center)
                 .justify(Justify::Center)
-                .pad((GAP, 0))
-                .h(56)
+                .pad((0, SPACE))
+                .h(CONTROL * 2.5)
                 .fill(Role::Field)
                 .shrink(0),
         ),
@@ -284,21 +284,19 @@ fn card(image: Option<&std::sync::Arc<Image>>, name: &str, presets: usize, id: S
     parts.push(
         row![
             body(library_label(name))
-                .text_size(12)
+                .text_size(TEXT)
                 .lines(1)
                 .flex(1)
                 .min_w(0),
-            caption(presets.to_string()).text_size(10).fill(Role::Dim)
+            caption(presets.to_string()).text_size(SMALL).fill(Role::Dim)
         ]
         .align(Align::Center)
-        .gap(GAP)
-        .pad((GAP + 2., 0))
-        .h(BAR),
+        .gap(SPACE)
+        .pad((TIGHT, SPACE)),
     );
     let el = col(parts)
         .gap(0)
         .fill(Role::Raised)
-        .radius(0)
         .clip()
         .focusable()
         .a11y(A11y::Button)
@@ -315,12 +313,11 @@ fn card(image: Option<&std::sync::Arc<Image>>, name: &str, presets: usize, id: S
 fn group_heading(label: &str, count: usize) -> El {
     row![
         section(label).flex(1),
-        caption(count.to_string()).text_size(10).fill(Role::Dim)
+        caption(count.to_string()).text_size(SMALL).fill(Role::Dim)
     ]
-    .gap(GAP)
+    .gap(SPACE)
     .align(Align::Center)
-    .pad(edges(0., WIDE - 2., 0., GAP + HALF))
-    .h(BAR - 2.)
+    .pad((TIGHT + 1., INSET))
     .fill(Role::Surface)
     .sticky()
     .shrink(0)
@@ -354,21 +351,20 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
         "Double-click to load, drag onto the rack"
     };
     let el = row![
-        block(2, 12).fill(if loaded {
+        block(1, TEXT).fill(if loaded {
             Fill::from(accent())
         } else {
             Role::Ink.alpha(0.)
         }),
         body(stem(path))
-            .text_size(12)
+            .text_size(TEXT)
             .fill(if loaded || cursor { Role::Ink } else { Role::Dim })
             .lines(1)
             .min_w(0)
     ]
-    .gap(GAP)
+    .gap(INSET - 1.)
     .align(Align::Center)
-    .pad(edges(0., GAP, 0., HALF + 2.))
-    .h(BAR - 2.)
+    .pad((TIGHT + 1., SPACE))
     .when(cursor, |e| e.fill(Role::Raised))
     .focusable()
     .a11y(A11y::Button)
@@ -402,9 +398,9 @@ fn subfolder(root: &str, library: &str, path: &Path) -> String {
 fn hint(text: &str) -> El {
     body(text)
         .fill(Role::Dim)
-        .text_size(12)
+        .text_size(TEXT)
         .lines(4)
-        .pad((WIDE, GAP + HALF))
+        .pad((SPACE, INSET))
 }
 
 fn stem(path: &Path) -> String {

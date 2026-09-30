@@ -1,25 +1,24 @@
-//! The selected instrument: its header, its script's performance view, its
-//! key/velocity mapping, details, and plain-spoken notices.
+//! A part's instrument: its performance controls, key/velocity mapping,
+//! details, and plain-spoken notices.
 
-use super::{Cx, Tab, theme::*};
-use crate::artwork::Picture;
-use crate::import::{self, Instrument};
-use crate::ksp::{Control, Interface, Value};
-use moose::mui::mui::geometry::Path as DrawPath;
+use super::{Cx, panel, theme::*};
+use crate::import::Instrument;
 use moose::mui::mui::prelude::*;
-use moose::mui::mui::scene::Fit;
-use std::collections::HashMap;
-use std::f64::consts::PI;
 use std::path::Path;
 use std::sync::Arc;
 
-/// The instrument loaded for the selected part, once it matches the part.
-pub(super) fn current<'a>(cx: &'a Cx) -> Option<&'a Arc<Instrument>> {
-    let part = cx.part()?;
-    let v = cx.part_view();
+/// The instrument loaded in `slot`, once it matches the part.
+pub(super) fn instrument_of<'a>(cx: &'a Cx, slot: usize) -> Option<&'a Arc<Instrument>> {
+    let part = cx.selection.parts.get(slot).filter(|p| !p.path.is_empty())?;
+    let v = &cx.view.parts[slot];
     v.instrument
         .as_ref()
         .filter(|i| i.path == Path::new(&part.path) && v.program == part.program)
+}
+
+/// The instrument loaded for the selected part.
+pub(super) fn current<'a>(cx: &'a Cx) -> Option<&'a Arc<Instrument>> {
+    instrument_of(cx, cx.state.selected)
 }
 
 /// The empty rack's view.
@@ -29,7 +28,7 @@ pub fn welcome(cx: &Cx) -> El {
         body("Choose a library on the left and click an instrument, or drag it onto the rack. Multis load the whole rack.")
             .fill(Role::Dim)
             .lines(3)
-            .max_size(Size::new(420., 200.)),
+            .max_size(Size::new(TEXT * 35., CONTROL * 3.)),
     ];
     if !cx.view.multi_status.is_empty() {
         lines.push(
@@ -38,266 +37,43 @@ pub fn welcome(cx: &Cx) -> El {
                 .lines(2),
         );
     }
-    col![spacer(), col(lines).gap(GAP).align(Align::Start), spacer()]
+    col![spacer(), col(lines).gap(SPACE).align(Align::Start), spacer()]
         .align(Align::Center)
-        .pad(WIDE * 2.)
+        .pad(INSET * 3.)
         .flex(1)
         .min_h(0)
 }
 
-/// Width of the library banner in the instrument header.
-const HEADER_ART: f64 = 112.;
-/// The header's two control rows.
-const HEADER_H: f64 = 2. * CONTROL + HALF + 2. * (GAP + 2.);
-
-/// Kontakt 8's instrument header: the library's banner, the name with preset
-/// stepping, what it is, and the part's routing, mute/solo, level and pan.
-pub fn header(ui: &mut Ui, cx: &mut Cx) -> El {
-    let Some(part) = cx.part().cloned() else {
-        return block(Len::Pct(100.), 0).shrink(0);
-    };
-    let slot = cx.state.selected;
-    let width = ui
-        .scene()
-        .and_then(|s| s.surface("center"))
-        .map_or(900., |s| s.frame.size.width);
-    let wide = width >= 760.;
-    let library = cx.library_of(Path::new(&part.path));
-    let multi = import::is_multi(Path::new(&part.path));
-    let siblings: Vec<_> = cx
-        .view
-        .files
-        .iter()
-        .filter(|path| import::is_multi(path) == multi && cx.library_of(path) == library)
-        .collect();
-    let index = siblings
-        .iter()
-        .position(|path| path.to_string_lossy() == part.path);
-    let (previous, prev_el) = icon_button(ui, "preset-prev", Icon::Left, "Previous preset", false);
-    let (next, next_el) = icon_button(ui, "preset-next", Icon::Right, "Next preset", false);
-    let target = index.and_then(|n| match (previous, next) {
-        (true, _) => n.checked_sub(1),
-        (_, true) => Some(n + 1).filter(|n| *n < siblings.len()),
-        _ => None,
-    });
-    if let Some(target) = target {
-        let path = siblings[target].to_string_lossy().into_owned();
-        cx.replace(slot, path);
-    }
-    let prev_el = prev_el.when(!index.is_some_and(|n| n > 0), |e| e.disabled().opacity(0.35));
-    let next_el = next_el.when(!index.is_some_and(|n| n + 1 < siblings.len()), |e| {
-        e.disabled().opacity(0.35)
-    });
-    let (audition, play_el) = icon_button(ui, "performance-play", Icon::Play, "Audition (Space)", false);
-    if audition {
-        cx.p.shared.audition(None);
-    }
-    let (more, more_el) = icon_button(ui, "part-more", Icon::More, "Part menu", false);
-    if more {
-        super::menu::open_under(ui, cx, super::menu::Target::Part(slot), "part-more");
-    }
-
-    let v = cx.part_view();
-    let loading = v.loading;
-    let instrument = current(cx).cloned();
-    let name = super::rack::name(cx, slot);
-    let mut facts = vec![library_label(&library)];
-    if let Some(i) = &instrument {
-        facts.push(format!("{} groups", i.groups.len()));
-        facts.push(format!("{} zones", i.zones.len()));
-    }
-    if loading {
-        let done = cx.p.shared.load_progress[slot].load(std::sync::atomic::Ordering::Relaxed);
-        let percent = f64::from(done) / f64::from(crate::engine::LOAD_DONE) * 100.;
-        facts.push(format!("loading samples {percent:.0}%"));
-    } else if v.bytes > 0 {
-        facts.push(megabytes(v.bytes));
-    }
-    facts.retain(|f| !f.is_empty());
-    let progress = loading.then(|| {
-        let done = cx.p.shared.load_progress[slot].load(std::sync::atomic::Ordering::Relaxed);
-        f64::from(done) / f64::from(crate::engine::LOAD_DONE)
-    });
-
-    let title = match cx.state.renaming.as_mut() {
-        Some(text) => {
-            let existed = ui.scene().and_then(|s| s.surface("rename")).is_some();
-            if !existed {
-                ui.focus("rename");
-            }
-            let field = text_edit(ui, "rename", text, TextOpts::default());
-            let cancel = ui.keys("rename").iter().any(|k| k.key == Key::Escape);
-            let done = field.changed.submitted || (existed && !ui.focused("rename"));
-            let el = field.el.h(CONTROL).radius(2).flex(1).min_w(0).named("Part name");
-            if cancel {
-                cx.state.renaming = None;
-            } else if done {
-                let text = cx.state.renaming.take().unwrap_or_default();
-                let text = text.trim();
-                let default = instrument.as_ref().map_or_else(|| super::header::stem(&part.path), |i| i.name.clone());
-                cx.selection.parts[slot].name = if text == default { String::new() } else { text.to_owned() };
-            }
-            el
-        }
-        None => {
-            if ui.get("instrument-name").double_clicked {
-                cx.state.renaming = Some(name.clone());
-            }
-            body(name.clone())
-                .text_size(16)
-                .text_weight(Weight::SEMIBOLD)
-                .lines(1)
-                .min_w(0)
-                .shrink(1)
-                .tip(format!("{name}\nDouble-click to rename"))
-                .named(name.clone())
-                .id("instrument-name")
-        }
-    };
-
-    let part = &mut cx.selection.parts[slot];
-    let mut channel = f64::from(part.channel + 1);
-    let port = char::from(b'A' + part.port.min(3));
-    let channel_text = if part.channel < 0 {
-        format!("{port} Omni")
-    } else {
-        format!("{port} {}", part.channel + 1)
-    };
-    let channel_el = number(ui, "header-channel", "MIDI", &mut channel, 0.0..=16.0, channel_text);
-    part.channel = channel.round() as i16 - 1;
-    let mut output = f64::from(part.output) + 1.;
-    let output_el = number(ui, "header-output", "Out", &mut output, 1.0..=8.0, format!("st.{}", part.output + 1));
-    part.output = output.round() as u8 - 1;
-    let (mute, mute_el) = letter_toggle(ui, "header-mute", "M", "Mute", part.mute);
-    if mute {
-        part.mute = !part.mute;
-    }
-    let (solo, solo_el) = letter_toggle(ui, "header-solo", "S", "Solo", part.solo);
-    if solo {
-        part.solo = !part.solo;
-    }
-    let track = if wide { 104. } else { 72. };
-    let mut gain = f64::from(part.gain);
-    let (_, gain_el) = fader(ui, "performance-gain", "Volume", &mut gain, -60.0..=6.0, Fader::LEVEL, db_text, Some(track));
-    part.gain = gain as f32;
-    let mut pan = f64::from(part.pan);
-    let (_, pan_el) = fader(ui, "performance-pan", "Pan", &mut pan, -1.0..=1.0, Fader::PAN, pan_text, Some(track));
-    part.pan = pan as f32;
-
-    let label = |text: &str| section(text).w(28).shrink(0);
-    let identity = col![
-        row![title, prev_el, next_el].gap(HALF).align(Align::Center).h(CONTROL),
-        row![caption(facts.join("  ·  ")).fill(Role::Dim).lines(1).min_w(0)]
-            .align(Align::Center)
-            .h(CONTROL)
-    ]
-    .gap(HALF)
-    .flex(1)
-    .min_w(0);
-    let routing = col![channel_el.h(CONTROL), output_el.h(CONTROL)]
-        .gap(HALF)
-        .align(Align::End)
-        .shrink(0);
-    let switches = col![row![mute_el, solo_el].gap(HALF).h(CONTROL).align(Align::Center), row![play_el].h(CONTROL).align(Align::Center)]
-        .gap(HALF)
-        .align(Align::Center)
-        .shrink(0);
-    let faders = col![
-        row![label("Vol"), gain_el].gap(HALF).align(Align::Center).h(CONTROL),
-        row![label("Pan"), pan_el].gap(HALF).align(Align::Center).h(CONTROL)
-    ]
-    .gap(HALF)
-    .shrink(0);
-
-    let mut strip = Vec::new();
-    if wide {
-        if let Some(image) = cx.view.artwork.get(&library) {
-            strip.push(
-                block(HEADER_ART, 2. * CONTROL + HALF)
-                    .fill(Fill::Image(image.clone(), Fit::Cover))
-                    .shrink(0),
-            );
-        }
-    }
-    strip.extend([
-        identity,
-        vrule().h(2. * CONTROL),
-        routing,
-        switches,
-        vrule().h(2. * CONTROL),
-        faders,
-        col![more_el, spacer()].h(2. * CONTROL + HALF).shrink(0),
-    ]);
-    let body = row(strip)
-        .gap(WIDE - HALF)
-        .align(Align::Center)
-        .pad(edges(GAP + 2., GAP, GAP + 2., WIDE))
-        .h(HEADER_H)
-        .shrink(0);
-    // The bottom edge doubles as this part's load progress, so loading never moves anything.
-    let edge = canvas(move |s| match progress {
-        Some(done) => vec![
-            Draw::fill(rect(0., 0., s.width, 2.), Role::Primary.alpha(0.18)),
-            Draw::fill(rect(0., 0., (s.width * done.clamp(0., 1.)).max(8.), 2.), accent()),
-        ],
-        None => vec![Draw::fill(rect(0., 1., s.width, 1.), hairline())],
-    })
-    .w(Len::Pct(100.))
-    .h(2)
-    .shrink(0);
-    col![body, edge]
-        .gap(0)
-        .fill(Role::Surface)
-        .shrink(0)
-        .id("instrument-header")
-}
-
-/// Load failures, missing samples and rack notices, in words a player can act on.
-pub fn notices(cx: &Cx) -> Vec<El> {
+/// Why `slot` is silent or incomplete, in words a player can act on.
+pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
+    let v = &cx.view.parts[slot];
     let mut out = Vec::new();
-    if !cx.state.notice.is_empty() {
-        out.push(banner(Role::Warning, cx.state.notice.clone()));
+    if let Some(reason) = v.status.strip_prefix("Load failed: ") {
+        let still = if v.active.is_empty() {
+            String::new()
+        } else {
+            format!(" Still playing: {}.", v.active)
+        };
+        out.push(banner(
+            Role::Danger,
+            format!("This instrument could not be loaded: {reason}.{still}"),
+        ));
     }
-    let v = cx.part_view();
-    if cx.part().is_some() {
-        if let Some(reason) = v.status.strip_prefix("Load failed: ") {
-            let still = if v.active.is_empty() {
-                String::new()
-            } else {
-                format!(" Still playing: {}.", v.active)
-            };
+    if let Some(i) = instrument_of(cx, slot) {
+        if let Some(w) = i.warnings.iter().find(|w| w.contains("read back as zeros")) {
+            out.push(banner(Role::Warning, sentence(w)));
+        } else if v.status.contains("zones skipped") || !i.missing_samples.is_empty() {
+            let silent = i.zones.iter().filter(|z| !z.available).count();
             out.push(banner(
-                Role::Danger,
-                format!("This instrument could not be loaded: {reason}.{still}"),
+                Role::Warning,
+                format!(
+                    "Some samples are missing{}, so parts of this instrument stay silent. Repair the library in Native Access or check its folder.",
+                    if silent > 0 { format!(" ({silent} zones)") } else { String::new() }
+                ),
             ));
         }
-        if let Some(i) = current(cx) {
-            if let Some(w) = i.warnings.iter().find(|w| w.contains("read back as zeros")) {
-                out.push(banner(Role::Warning, sentence(w)));
-            } else if v.status.contains("zones skipped") || !i.missing_samples.is_empty() {
-                let silent = i.zones.iter().filter(|z| !z.available).count();
-                out.push(banner(
-                    Role::Warning,
-                    format!(
-                        "Some samples are missing{}, so parts of this instrument stay silent. Repair the library in Native Access or check its folder.",
-                        if silent > 0 { format!(" ({silent} zones)") } else { String::new() }
-                    ),
-                ));
-            }
-        }
     }
-    if cx.state.tab == Tab::Rack && !cx.view.multi_status.is_empty() {
-        out.push(
-            caption(cx.view.multi_status.clone())
-                .fill(Role::Dim)
-                .lines(2)
-                .pad((WIDE, 0)),
-        );
-    }
-    if out.is_empty() {
-        return out;
-    }
-    vec![col(out).gap(GAP).pad((WIDE, GAP + HALF)).shrink(0)]
+    (!out.is_empty()).then(|| col(out).gap(TIGHT).pad((SPACE, INSET)).shrink(0))
 }
 
 /// Capitalize and end with a period.
@@ -314,644 +90,30 @@ fn sentence(text: &str) -> String {
     out
 }
 
-/// The instrument's own performance view, scaled to the space it has.
-pub fn perform(ui: &mut Ui, cx: &mut Cx) -> El {
-    let v = cx.part_view();
-    let loaded = current(cx).is_some();
-    let stage_size = ui
-        .scene()
-        .and_then(|s| s.surface("instrument-stage"))
-        .map(|s| (s.frame.size.width, s.frame.size.height));
-    let scripted = current(cx).is_some_and(|i| !i.scripts.is_empty());
-    let (interface, wallpaper) = (v.interface.clone(), v.wallpaper.clone());
-    let pictures = v.pictures.clone();
-    let content = match (interface, wallpaper) {
-        (Some(interface), wallpaper) if loaded => performance_view(
-            ui,
-            cx,
-            &interface,
-            &pictures,
-            wallpaper.as_ref(),
-            stage_size,
-        ),
-        (None, Some(image)) if loaded => block(Len::Pct(100.), Len::Pct(100.))
-            .fill(Fill::Image(image, Fit::Contain))
-            .named("Instrument wallpaper")
-            .id("instrument-wallpaper"),
-        _ => {
-            let text = if !loaded {
-                "Loading instrument…"
-            } else if scripted {
-                "This instrument's scripts run, but its performance view can't be shown yet."
-            } else {
-                "This instrument has no performance view. Play it from the keyboard below."
-            };
-            body(text).fill(Role::Dim).lines(3)
-        }
+/// `slot`'s performance controls, rebuilt natively, or a word on why there are none.
+pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
+    let v = &cx.view.parts[slot];
+    let loaded = instrument_of(cx, slot).is_some();
+    let scripted = instrument_of(cx, slot).is_some_and(|i| !i.scripts.is_empty());
+    let sections = match &v.interface {
+        Some(interface) if loaded => panel::sections(interface, &v.pictures),
+        _ => Vec::new(),
     };
-    col![
-        spacer(),
-        row![spacer(), content, spacer()].align(Align::Center),
-        spacer()
-    ]
-    .align(Align::Center)
-    .pad(WIDE)
-    .flex(1)
-    .min_h(0)
-    .min_w(0)
-    .clip()
-    .id("instrument-stage")
-}
-
-/// Kontakt's default control face and text, for controls without pictures.
-const KSP_PANEL: Color = Color::oklch(0.8, 0., 0.);
-const KSP_INK: Color = Color::oklch(0.14, 0., 0.);
-
-/// Pixels of vertical drag that sweep a control's whole range.
-const DRAG_TRAVEL: f64 = 200.;
-
-/// Kontakt's performance view height includes a 68 px header its wallpaper leaves out.
-const WALLPAPER_OFFSET: f64 = 68.;
-
-/// Authored KSP coordinates, scaled uniformly to fit `stage` (last frame's
-/// size). Knobs, sliders and value fields drag, buttons and switches toggle,
-/// menus open a list; every edit runs the script's `on ui_control`.
-fn performance_view(
-    ui: &mut Ui,
-    cx: &mut Cx,
-    interface: &Interface,
-    pictures: &HashMap<String, Arc<Picture>>,
-    image: Option<&Arc<Image>>,
-    stage: Option<(f64, f64)>,
-) -> El {
-    let (iw, ih) = (
-        f64::from(interface.width.max(1)),
-        f64::from(interface.height.max(1)),
-    );
-    let scale = stage
-        .map_or(1., |(w, h)| {
-            ((w - 2. * WIDE) / iw).min((h - 2. * WIDE) / ih)
-        })
-        .clamp(0.4, 2.);
-    // Snap to 1/32 steps: sub-pixel size changes between frames would otherwise
-    // shift every control each time the stage is measured.
-    let scale = (scale * 32.).floor() / 32.;
-    let (width, height) = (iw * scale, ih * scale);
-    let mut controls: Vec<Widget> = interface
-        .controls
-        .iter()
-        .enumerate()
-        .filter_map(|(n, c)| Widget::of(n, c, interface, pictures))
-        .collect();
-    // Kontakt's Z layers: back (-1), default, front (1); declaration order within one.
-    controls.sort_by_key(|w| w.z);
-    let part = cx.state.selected;
-    let mut open_menu = None;
-    for w in &mut controls {
-        if let Some(value) = w.interact(ui, cx.state, scale) {
-            cx.p.shared.edit_control(part, w.control, value);
-            w.set(f64::from(value));
-        }
-        if cx.state.ksp_menu == Some(w.control) && w.kind == Kind::Menu {
-            open_menu = Some(w.clone());
-        }
+    if !sections.is_empty() {
+        return panel::view(ui, cx, slot, &sections).id(format!("stage-{slot}"));
     }
-    if cx.state.ksp_menu.is_some() && open_menu.is_none() {
-        cx.state.ksp_menu = None;
-    }
-
-    let image = image.cloned();
-    let shapes = controls.clone();
-    let mut layers = vec![
-        canvas(move |_| {
-            let mut draw = Vec::new();
-            if let Some(image) = &image {
-                draw.push(Draw::image(
-                    0.,
-                    -WALLPAPER_OFFSET * scale,
-                    f64::from(image.width) * scale,
-                    f64::from(image.height) * scale,
-                    image.clone(),
-                ));
-            }
-            for w in &shapes {
-                w.draw(scale, &mut draw);
-            }
-            draw
-        })
-        .w(width)
-        .h(height)
-        .at(0, 0)
-        .id("instrument-wallpaper"),
-    ];
-    layers.extend(controls.iter().filter_map(|w| w.el(scale)));
-    if let Some(menu) = open_menu {
-        layers.push(menu_list(ui, cx, part, &menu, scale, height));
-    }
-    stack(layers)
-        .w(width)
-        .h(height)
-        .fill(Role::Field)
-        .radius(0)
-        .clip()
-        .shrink(0)
-        .named(format!("{} performance view", interface.title))
-        .id("ksp-preview")
-}
-
-/// An open script menu's items, below the menu or above it when there is no room.
-fn menu_list(ui: &mut Ui, cx: &mut Cx, part: usize, menu: &Widget, scale: f64, height: f64) -> El {
-    let row_h = (22. * scale).max(20.);
-    let (x, y, w, h) = (
-        menu.x * scale,
-        menu.y * scale,
-        (menu.w * scale).max(120.),
-        menu.h * scale,
-    );
-    let list_h = (menu.menu.len() as f64 * row_h + GAP).min(height - GAP);
-    let top = if y + h + list_h <= height {
-        y + h
+    let text = if !loaded {
+        "Loading instrument…"
+    } else if scripted {
+        "This instrument's script shows no controls."
     } else {
-        (y - list_h).max(0.)
+        "This instrument has no performance controls. Play it from the keyboard."
     };
-    let mut items = Vec::new();
-    for (n, (text, value)) in menu.menu.iter().enumerate() {
-        let id = format!("ksp-menu-{}-{n}", menu.control);
-        if ui.get(id.as_str()).activated() {
-            cx.p.shared.edit_control(part, menu.control, *value);
-            cx.state.ksp_menu = None;
-        }
-        let chosen = f64::from(*value) == menu.raw;
-        let (_, el) = action(ui, id.as_str(), &clean(text), chosen);
-        items.push(el.w(Len::Pct(100.)).h(row_h).shrink(0));
-    }
-    col(items)
-        .gap(0)
-        .align(Align::Stretch)
-        .pad(HALF)
-        .w(w)
-        .h(list_h)
-        .at(x, top)
-        .fill(Role::Raised)
-        .radius(2)
-        .scroll()
-        .id(format!("ksp-menu-{}", menu.control))
-}
-
-/// Text without glyphs from a library's private icon font, which ours can't
-/// draw. Leading spaces stay: scripts indent labels with them.
-fn clean(text: &str) -> String {
-    text.chars()
-        .filter(|c| !matches!(*c as u32, 0xE000..=0xF8FF) && !c.is_control())
-        .collect::<String>()
-        .trim_end()
-        .to_owned()
-}
-
-/// One visible script control, in authored pixels.
-#[derive(Clone)]
-struct Widget {
-    kind: Kind,
-    /// Index into `Interface::controls`.
-    control: usize,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    text: String,
-    raw: f64,
-    min: f64,
-    max: f64,
-    menu: Vec<(String, i32)>,
-    background: bool,
-    hide_text: bool,
-    /// The script's picture for the control, drawn in place of our shapes.
-    picture: Option<Arc<Picture>>,
-    /// `$CONTROL_PAR_PICTURE_STATE`: the frame a label shows.
-    picture_state: i32,
-    /// `$CONTROL_PAR_TEXT_ALIGNMENT`, when the script set it.
-    align: Option<Justify>,
-    /// `$CONTROL_PAR_TEXTPOS_X`/`_Y`: text offset right and down, in authored pixels.
-    text_x: f64,
-    text_y: f64,
-    /// `$CONTROL_PAR_MOUSE_BEHAVIOUR` < 0: the slider drags sideways. Kontakt
-    /// drags every other slider and knob vertically, whatever its shape.
-    horizontal: bool,
-    /// `$CONTROL_PAR_Z_LAYER`.
-    z: i32,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
-    Knob,
-    Slider,
-    Button,
-    Menu,
-    Label,
-    Value,
-    Other,
-}
-
-impl Widget {
-    fn of(
-        control: usize,
-        c: &Control,
-        interface: &Interface,
-        pictures: &HashMap<String, Arc<Picture>>,
-    ) -> Option<Self> {
-        let int = |name: &str| match c.properties.get(&format!("$CONTROL_PAR_{name}")) {
-            Some(Value::Int(n)) => Some(*n),
-            _ => None,
-        };
-        let text = |name: &str| match c.properties.get(&format!("$CONTROL_PAR_{name}")) {
-            Some(Value::Text(s)) => s.clone(),
-            _ => String::new(),
-        };
-        let hide = int("HIDE").unwrap_or(0);
-        if hide & 1 != 0 {
-            return None;
-        }
-        let kind = match c.kind.as_str() {
-            "ui_knob" => Kind::Knob,
-            "ui_slider" => Kind::Slider,
-            "ui_button" | "ui_switch" => Kind::Button,
-            "ui_menu" => Kind::Menu,
-            "ui_label" => Kind::Label,
-            "ui_value_edit" => Kind::Value,
-            "ui_panel" | "ui_mouse_area" => return None,
-            _ => Kind::Other,
-        };
-        let (x, y) = (int("POS_X").unwrap_or(0), int("POS_Y").unwrap_or(0));
-        let default_h = if kind == Kind::Knob { 52 } else { 18 };
-        let picture = pictures.get(&text("PICTURE")).cloned();
-        // Kontakt sizes a control to a picture that cannot stretch.
-        let (w, h) = match &picture {
-            Some(p) if !p.resizable => (p.frames[0].width as i32, p.frames[0].height as i32),
-            _ => (
-                int("WIDTH").unwrap_or(85),
-                int("HEIGHT").unwrap_or(default_h),
-            ),
-        };
-        if x < 0 || y < 0 || x >= interface.width || y >= interface.height || w <= 0 || h <= 0 {
-            return None;
-        }
-        let raw = match c.properties.get("$CONTROL_PAR_VALUE") {
-            Some(Value::Int(n)) => f64::from(*n),
-            Some(Value::Real(r)) => *r,
-            _ => 0.,
-        };
-        let (min, max) = match kind {
-            Kind::Button => (0, 1),
-            _ => (
-                int("MIN_VALUE").unwrap_or(0),
-                int("MAX_VALUE").unwrap_or(1_000_000),
-            ),
-        };
-        let mut label = clean(&text("TEXT"));
-        if label.is_empty() && kind == Kind::Knob {
-            label = c
-                .variable
-                .trim_start_matches(['$', '~', '?', '%', '@', '!'])
-                .replace('_', " ");
-        }
-        if label.is_empty() && picture.is_none() && matches!(kind, Kind::Button | Kind::Label) {
-            return None;
-        }
-        let w = if kind == Kind::Knob { w.max(40) } else { w };
-        let mut widget = Self {
-            kind,
-            control,
-            x: f64::from(x),
-            y: f64::from(y),
-            w: f64::from(w.min(interface.width - x)),
-            h: f64::from(h.min(interface.height - y)),
-            text: label,
-            raw,
-            min: f64::from(min),
-            max: f64::from(max),
-            menu: c.menu.clone(),
-            background: hide & 2 == 0,
-            hide_text: hide & 8 != 0,
-            picture,
-            picture_state: int("PICTURE_STATE").unwrap_or(0),
-            align: int("TEXT_ALIGNMENT").map(|a| match a {
-                1 => Justify::Center,
-                2 => Justify::End,
-                _ => Justify::Start,
-            }),
-            text_x: f64::from(int("TEXTPOS_X").unwrap_or(0)),
-            text_y: f64::from(int("TEXTPOS_Y").unwrap_or(0)),
-            horizontal: int("MOUSE_BEHAVIOUR").is_some_and(|m| m < 0),
-            z: int("Z_LAYER").unwrap_or(0).signum(),
-        };
-        widget.set(raw);
-        Some(widget)
-    }
-
-    /// Show `raw` as the value; menus and value fields say it.
-    fn set(&mut self, raw: f64) {
-        self.raw = raw;
-        match self.kind {
-            Kind::Menu => {
-                self.text = self
-                    .menu
-                    .iter()
-                    .find(|(_, v)| f64::from(*v) == raw)
-                    .map(|(t, _)| clean(t))
-                    .unwrap_or_default();
-            }
-            Kind::Value => self.text = format!("{raw}"),
-            _ => {}
-        }
-    }
-
-    /// The picture frame for the control's state: a switch's on/off, a
-    /// slider's position along its strip, a label's picture state.
-    fn frame(&self) -> Option<(&Picture, usize)> {
-        let picture = self.picture.as_deref()?;
-        let last = picture.frames.len() - 1;
-        let n = match self.kind {
-            Kind::Button => usize::from(self.raw >= 1.),
-            Kind::Slider | Kind::Value => (self.unit() * last as f64).round() as usize,
-            _ => usize::try_from(self.picture_state).unwrap_or(0),
-        };
-        Some((picture, n.min(last)))
-    }
-
-    /// 0..1 along the control's range.
-    fn unit(&self) -> f64 {
-        if self.max > self.min {
-            ((self.raw - self.min) / (self.max - self.min)).clamp(0., 1.)
-        } else {
-            0.
-        }
-    }
-
-    fn id(&self) -> String {
-        format!("ksp-control-{}", self.control)
-    }
-
-    /// This frame's pointer and keys on the control; the new value to send, if any.
-    /// Every drag is vertical unless the script asks otherwise, as in Kontakt.
-    fn interact(&self, ui: &mut Ui, state: &mut super::EditorState, scale: f64) -> Option<i32> {
-        let id = self.id();
-        let r = ui.get(id.as_str());
-        match self.kind {
-            Kind::Knob | Kind::Slider | Kind::Value => {
-                // Sub-step drag travel accumulates in `held` until the gesture ends.
-                let mut raw = match state.held {
-                    Some((c, v)) if c == self.control => v,
-                    _ => self.raw,
-                };
-                if r.pressed {
-                    raw = self.raw;
-                }
-                if r.dragged {
-                    let d = r.drag_delta;
-                    let travel = if self.horizontal {
-                        d.x / (self.w * scale).max(100.)
-                    } else {
-                        -d.y / DRAG_TRAVEL
-                    };
-                    let fine = if r.mods.shift { 0.1 } else { 1. };
-                    raw = (raw + travel * fine * (self.max - self.min)).clamp(self.min, self.max);
-                }
-                stepped(ui, &id, &mut raw, &(self.min..=self.max));
-                if r.held && !r.released {
-                    state.held = Some((self.control, raw));
-                } else if state.held.is_some_and(|(c, _)| c == self.control) {
-                    state.held = None;
-                }
-                let value = raw.round();
-                (value != self.raw).then_some(value as i32)
-            }
-            Kind::Button if r.activated() => Some(i32::from(self.raw < 1.)),
-            Kind::Menu if r.activated() => {
-                state.ksp_menu = (state.ksp_menu != Some(self.control)).then_some(self.control);
-                None
-            }
-            _ => None,
-        }
-    }
-
-    /// Shapes: panels, knob arcs, slider tracks.
-    fn draw(&self, scale: f64, out: &mut Vec<Draw>) {
-        let (x, y, w, h) = (
-            self.x * scale,
-            self.y * scale,
-            self.w * scale,
-            self.h * scale,
-        );
-        let panel = KSP_PANEL;
-        if let Some((picture, n)) = self.frame() {
-            match picture.pieces.get(n) {
-                Some(pieces) => nine(pieces, picture.fixed, scale, (x, y, w, h), out),
-                None => out.push(Draw::image(x, y, w, h, picture.frames[n].clone())),
-            }
-            return;
-        }
-        match self.kind {
-            Kind::Knob => {
-                let label = if self.text.is_empty() {
-                    0.
-                } else {
-                    14. * scale
-                };
-                let d = (h - label * 1.4).min(w).max(8.);
-                let (cx, cy, r) = (x + w / 2., y + d / 2., d / 2. - 2. * scale);
-                out.push(Draw::fill(circle(cx, cy, r), Color::oklch(0.22, 0., 0.)));
-                let (from, sweep) = (0.75 * PI, 1.5 * PI);
-                let stroke = (2.5 * scale).max(1.5);
-                out.push(Draw::stroke(
-                    arc(cx, cy, r - stroke, from, sweep),
-                    Color::oklcha(1., 0., 0., 0.14),
-                    stroke,
-                ));
-                if self.unit() > 0.001 {
-                    out.push(Draw::stroke(
-                        arc(cx, cy, r - stroke, from, sweep * self.unit()),
-                        accent(),
-                        stroke,
-                    ));
-                }
-                let a = from + sweep * self.unit();
-                let (inner, outer) = (r * 0.25, r - stroke * 2.);
-                out.push(Draw::stroke(
-                    DrawPath::polyline(
-                        [
-                            Point::new(cx + a.cos() * inner, cy + a.sin() * inner),
-                            Point::new(cx + a.cos() * outer, cy + a.sin() * outer),
-                        ],
-                        false,
-                    ),
-                    Color::oklch(0.95, 0., 0.),
-                    stroke * 0.8,
-                ));
-            }
-            Kind::Slider if w >= h => {
-                let t = (3. * scale).max(2.);
-                let mid = y + h / 2.;
-                out.push(Draw::fill(rect(x, mid - t / 2., w, t), panel));
-                out.push(Draw::fill(
-                    rect(x, mid - t / 2., w * self.unit(), t),
-                    accent(),
-                ));
-                out.push(Draw::fill(
-                    circle(x + w * self.unit(), mid, t * 1.8),
-                    Color::oklch(0.25, 0., 0.),
-                ));
-            }
-            Kind::Slider => {
-                let t = (3. * scale).max(2.);
-                let mid = x + w / 2.;
-                let top = y + h * (1. - self.unit());
-                out.push(Draw::fill(rect(mid - t / 2., y, t, h), panel));
-                out.push(Draw::fill(
-                    rect(mid - t / 2., top, t, y + h - top),
-                    accent(),
-                ));
-                out.push(Draw::fill(
-                    circle(mid, top, t * 1.8),
-                    Color::oklch(0.25, 0., 0.),
-                ));
-            }
-            Kind::Button => {
-                let fill = if self.raw >= 1. { accent() } else { panel };
-                if self.background || self.raw >= 1. {
-                    out.push(Draw::fill(rect(x, y, w, h), fill));
-                }
-            }
-            Kind::Menu | Kind::Value => {
-                if self.background {
-                    out.push(Draw::fill(rect(x, y, w, h), panel));
-                }
-                if self.kind == Kind::Menu && w > h * 2. {
-                    // A small caret at the right edge.
-                    let (cx, cy, r) = (x + w - h / 2., y + h / 2., (h * 0.16).max(2.));
-                    let caret = [
-                        (cx - r, cy - r / 2.),
-                        (cx + r, cy - r / 2.),
-                        (cx, cy + r / 2.),
-                    ];
-                    out.push(Draw::fill(
-                        DrawPath::polyline(caret.map(|(x, y)| Point::new(x, y)), true),
-                        KSP_INK,
-                    ));
-                }
-            }
-            Kind::Label if self.background && !self.text.is_empty() => {
-                out.push(Draw::fill(rect(x, y, w, h), panel));
-            }
-            Kind::Label => {}
-            Kind::Other => {
-                out.push(Draw::stroke(
-                    rect(x, y, w, h),
-                    Color::oklcha(1., 0., 0., 0.12),
-                    1.,
-                ));
-            }
-        }
-    }
-
-    /// The control's own element over the shapes: its text, and the target
-    /// the pointer and keyboard act on.
-    fn el(&self, scale: f64) -> Option<El> {
-        let (x, y, w, h) = (
-            self.x * scale,
-            self.y * scale,
-            self.w * scale,
-            self.h * scale,
-        );
-        let interactive = !matches!(self.kind, Kind::Label | Kind::Other);
-        let text = if self.hide_text { "" } else { &self.text };
-        if text.is_empty() && !interactive {
-            return None;
-        }
-        let size = (11. * scale).clamp(9., 16.);
-        // Kontakt's default face is dark ink; scripts design their panels for it.
-        let ink = KSP_INK;
-        let label = body(text.to_owned()).text_size(size).fill(ink).lines(1);
-        let content = match self.kind {
-            _ if text.is_empty() => spacer(),
-            Kind::Knob => col![spacer(), label].align(Align::Center),
-            Kind::Label => label.pad((HALF * scale, 0.)),
-            Kind::Button | Kind::Value => label.justify(Justify::Center),
-            Kind::Menu => label.pad(edges(0., self.h * scale, 0., HALF * scale)),
-            _ => label.pad((HALF * scale, 0.)),
-        };
-        let justify = match (self.kind, self.align) {
-            (Kind::Knob, _) => Justify::Center,
-            (_, Some(align)) => align,
-            (Kind::Button | Kind::Value, None) => Justify::Center,
-            _ => Justify::Start,
-        };
-        let el = row![content]
-            .justify(justify)
-            .align(Align::Center)
-            .pad(edges(self.text_y * scale, 0., 0., self.text_x * scale))
-            .w(w)
-            .h(h)
-            .at(x, y)
-            .clip()
-            .id(self.id());
-        let name = if self.text.is_empty() {
-            "Control".to_owned()
-        } else {
-            self.text.clone()
-        };
-        Some(match self.kind {
-            Kind::Label | Kind::Other => el.named(name),
-            Kind::Knob | Kind::Slider | Kind::Value => el
-                .focusable()
-                .a11y(A11y::Slider {
-                    value: self.raw,
-                    min: self.min,
-                    max: self.max,
-                })
-                .named(name)
-                .tip(format!("{}: {}", self.text, self.raw))
-                .radius(0)
-                .on(State::Hover, |s| s.fill(Color::oklcha(1., 0., 0., 0.06))),
-            Kind::Button => el
-                .focusable()
-                .a11y(A11y::Toggle { on: self.raw >= 1. })
-                .named(name)
-                .radius(0)
-                .on(State::Hover, |s| s.fill(Color::oklcha(1., 0., 0., 0.08))),
-            Kind::Menu => el
-                .focusable()
-                .a11y(A11y::Button)
-                .named(format!("{name} menu"))
-                .radius(0)
-                .on(State::Hover, |s| s.fill(Color::oklcha(1., 0., 0., 0.08))),
-        })
-    }
-}
-
-/// A stretchable picture's nine pieces over `(x, y, w, h)`: corners keep
-/// their size, edges stretch one way, the middle both.
-fn nine(
-    pieces: &[Option<Arc<Image>>; 9],
-    [top, bottom, left, right]: [u32; 4],
-    scale: f64,
-    (x, y, w, h): (f64, f64, f64, f64),
-    out: &mut Vec<Draw>,
-) {
-    let fit = |a: u32, b: u32, room: f64| {
-        let (a, b) = (f64::from(a) * scale, f64::from(b) * scale);
-        let shrink = if a + b > room { room / (a + b) } else { 1. };
-        (a * shrink, b * shrink)
-    };
-    let (l, r) = fit(left, right, w);
-    let (t, b) = fit(top, bottom, h);
-    let cols = [(x, l), (x + l, w - l - r), (x + w - r, r)];
-    let rows = [(y, t), (y + t, h - t - b), (y + h - b, b)];
-    for (i, piece) in pieces.iter().enumerate() {
-        let ((px, pw), (py, ph)) = (cols[i % 3], rows[i / 3]);
-        if let Some(piece) = piece.as_ref().filter(|_| pw > 0. && ph > 0.) {
-            out.push(Draw::image(px, py, pw, ph, piece.clone()));
-        }
-    }
+    row![caption(text).fill(Role::Dim).lines(2).min_w(0)]
+        .align(Align::Center)
+        .pad(INSET)
+        .w(Len::Pct(100.))
+        .id(format!("stage-{slot}"))
 }
 
 /// Groups on the left; the selected group's zones on a key × velocity grid.
@@ -1008,7 +170,7 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
             let w = f64::from(hi.saturating_sub(lo) + 1) / 128. * s.width;
             let h = (f64::from(hv.saturating_sub(lv) + 1) / 128. * s.height).max(1.);
             let fill = if available {
-                Role::Primary.alpha(0.35)
+                Role::Ink.alpha(0.35)
             } else {
                 Role::Danger.alpha(0.25)
             };
@@ -1027,8 +189,8 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
     .named("Selected group key and velocity mapping");
     row![
         col(groups)
-            .gap(2)
-            .w(220)
+            .gap(1)
+            .w(SIDEBAR_MIN)
             .shrink(0)
             .min_h(0)
             .scroll()
@@ -1044,13 +206,13 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
             ]
             .shrink(0)
         ]
-        .gap(GAP)
+        .gap(SPACE)
         .flex(1)
         .min_w(0)
         .min_h(0)
     ]
-    .gap(WIDE)
-    .pad(WIDE)
+    .gap(INSET)
+    .pad(INSET)
     .flex(1)
     .min_h(0)
 }
@@ -1079,11 +241,11 @@ pub fn info(cx: &Cx) -> El {
             rows.push(caption(v.status.clone()).fill(Role::Dim).lines(3));
         }
         if !i.warnings.is_empty() {
-            rows.push(section("Import notes").pad(edges(GAP, 0., 0., 0.)));
+            rows.push(section("Import notes").pad(edges(SPACE, 0., 0., 0.)));
             for w in &i.warnings {
                 rows.push(
                     body(w.as_str())
-                        .text_size(12)
+                        .text_size(TEXT)
                         .fill(Role::Dim)
                         .lines(6)
                         .shrink(0),
@@ -1093,9 +255,9 @@ pub fn info(cx: &Cx) -> El {
     }
     rows.push(section("Scripts"));
     rows.push(
-        body("Scripts play the groups they choose; long samples stream from disk. The performance view is a preview: its controls don't respond yet.")
+        body("Scripts play the groups they choose; long samples stream from disk. Performance controls are rebuilt from the script's layout and drive it directly.")
             .fill(Role::Dim)
-            .text_size(12)
+            .text_size(TEXT)
             .lines(4),
     );
     for line in v.interface_status.lines().filter(|l| !l.is_empty()) {
@@ -1106,8 +268,8 @@ pub fn info(cx: &Cx) -> El {
     }
     col(rows)
         .align(Align::Start)
-        .gap(GAP)
-        .pad(WIDE)
+        .gap(SPACE)
+        .pad(INSET)
         .flex(1)
         .min_h(0)
         .scroll()

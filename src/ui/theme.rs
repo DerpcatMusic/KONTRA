@@ -1,6 +1,10 @@
-//! The look: one accent, graphite neutrals, an 8 px grid, one bundled face,
-//! and the few controls every view shares: flat buttons, icon buttons, tabs,
-//! section bars and the Koda-style faders.
+//! The look and the parts every view is built from.
+//!
+//! One text size sets the scale: spacing and control sizes derive from it,
+//! and every strip, panel and field sizes itself to its content. Graphite
+//! neutrals, square edges, hairline separators, no shadows. The accent marks
+//! focus and the current view with a 1 px line; it never fills a surface or
+//! colors text.
 
 use moose::mui::mui::geometry::Path as DrawPath;
 use moose::mui::mui::prelude::*;
@@ -8,10 +12,28 @@ use moose::mui::mui::{layout::Insets, scene::TypeScale};
 use std::f64::consts::PI;
 use std::ops::RangeInclusive;
 
-/// The spacing grid. Everything pads and gaps by these.
-pub const GAP: f64 = 8.0;
-pub const HALF: f64 = 4.0;
-pub const WIDE: f64 = 16.0;
+/// Body text size. Everything below derives from it.
+pub const TEXT: f64 = 12.;
+/// Captions, readouts and section titles.
+pub const SMALL: f64 = TEXT - 1.;
+/// Between the parts of one control: a label and its value, a track and its readout.
+pub const TIGHT: f64 = TEXT / 3.;
+/// Between sibling controls.
+pub const SPACE: f64 = TEXT * 2. / 3.;
+/// Around a panel's content, and between panels' sections.
+pub const INSET: f64 = TEXT;
+/// A control's height: one line of text with room to aim at.
+pub const CONTROL: f64 = TEXT * 2.;
+/// A knob's diameter.
+pub const KNOB: f64 = CONTROL * 1.5;
+/// Pointer travel for a knob or a vertical fader's full span.
+pub const TRAVEL: f64 = KNOB * 5.;
+
+/// The browser's width when first shown, and how far it resizes, in lines
+/// of text it shows.
+pub const SIDEBAR: f64 = TEXT * 23.;
+pub const SIDEBAR_MIN: f64 = TEXT * 18.;
+pub const SIDEBAR_MAX: f64 = TEXT * 36.;
 
 /// Padding per side, in CSS order.
 pub fn edges(top: f64, right: f64, bottom: f64, left: f64) -> Insets {
@@ -23,18 +45,7 @@ pub fn edges(top: f64, right: f64, bottom: f64, left: f64) -> Insets {
     }
 }
 
-/// Fixed strip heights.
-pub const TOP_BAR: f64 = 40.0;
-/// A section's title bar, and a list row.
-pub const BAR: f64 = 28.0;
-/// A control's height: buttons, fields, faders.
-pub const CONTROL: f64 = 24.0;
-/// The browser's width when first shown, and how far it resizes.
-pub const SIDEBAR: f64 = 272.0;
-pub const SIDEBAR_MIN: f64 = 216.0;
-pub const SIDEBAR_MAX: f64 = 440.0;
-
-/// The accent's hue and chroma (OKLCH). Selection, focus, values, played keys.
+/// The accent's hue and chroma (OKLCH): focus, the current view, played keys.
 const ACCENT_HUE: f32 = 64.0;
 const ACCENT_CHROMA: f32 = 0.15;
 
@@ -42,9 +53,14 @@ pub fn accent() -> Color {
     Color::oklch(0.76, ACCENT_CHROMA, ACCENT_HUE)
 }
 
-/// The hairline every section boundary is drawn with.
+/// The hairline every boundary is drawn with.
 pub fn hairline() -> Fill {
     Role::Ink.alpha(0.08)
+}
+
+/// A value's fill on a track or a knob: neutral, brighter than the track.
+fn value_ink(lift: f32) -> Color {
+    Color::oklch(0.78 + 0.1 * lift, 0., 0.)
 }
 
 pub fn ui() -> Ui {
@@ -57,19 +73,19 @@ pub fn ui() -> Ui {
             step: 0.035,
             ..Palette::NEUTRAL
         },
-        // Kontakt 8's hardware-panel edges: square, 2 px where a hit area needs one.
+        // Hardware-panel edges: square everywhere.
         corners: Corners {
-            field: 2.,
+            field: 0.,
             box_: 0.,
-            selector: 2.,
-            ..Corners::DEFAULT
+            selector: 0.,
+            concave: 0.,
         },
-        text: 13.,
+        text: TEXT + 1.,
         control: 3.,
         type_scale: TypeScale {
-            title: 20.,
-            body: 13.,
-            caption: 11.,
+            title: TEXT * 5. / 3.,
+            body: TEXT + 1.,
+            caption: SMALL,
         },
         ..Theme::DEFAULT
     })
@@ -84,8 +100,69 @@ pub fn quick() -> Spring {
     Spring::new(0.12, 1.)
 }
 
-/// The interactive states every flat control shares: a faint lift on hover,
-/// a deeper one while pressed, an accent ring only for keyboard focus.
+// Layout parts.
+
+/// A strip of controls: a title bar, a toolbar, a header row. Its height is
+/// its tallest control plus a tight inset.
+pub fn strip(items: Vec<El>) -> El {
+    row(items)
+        .gap(SPACE)
+        .align(Align::Center)
+        .pad((TIGHT, SPACE))
+        .shrink(0)
+}
+
+/// Controls that belong together, closer than their neighbours.
+pub fn cluster(items: Vec<El>) -> El {
+    row(items).gap(TIGHT).align(Align::Center).shrink(0)
+}
+
+/// A horizontal hairline.
+pub fn rule() -> El {
+    block(Len::Pct(100.), 1).fill(hairline()).shrink(0)
+}
+
+/// A vertical hairline.
+pub fn vrule() -> El {
+    block(1, Len::Pct(100.)).fill(hairline()).shrink(0)
+}
+
+/// A small uppercase title.
+pub fn section(label: &str) -> El {
+    caption(label.to_uppercase())
+        .text_size(SMALL - 1.)
+        .fill(Role::Dim)
+        .text_weight(Weight::SEMIBOLD)
+        .lines(1)
+        .min_w(0)
+}
+
+/// A section's title bar: small caps on the left, `actions` on the right.
+pub fn section_bar(label: &str, actions: Vec<El>) -> El {
+    let mut items = vec![section(label), spacer()];
+    items.extend(actions);
+    row(items)
+        .gap(TIGHT)
+        .align(Align::Center)
+        .pad(edges(TIGHT, TIGHT, TIGHT, INSET))
+        .shrink(0)
+}
+
+/// A dim label beside an ink value that keeps its width as digits change.
+pub fn stat(label: &str, value: String, widest: &str) -> El {
+    row![
+        section(label),
+        caption(value).text_size(TEXT).reserve(widest.to_owned())
+    ]
+    .gap(TIGHT)
+    .align(Align::Center)
+    .shrink(0)
+}
+
+// Controls.
+
+/// The states every flat control shares: a faint lift on hover, a deeper one
+/// while pressed, a 1 px accent ring for keyboard focus.
 pub fn interactive(el: El, selected: bool) -> El {
     el.on(State::Hover, move |s| {
         if selected {
@@ -101,23 +178,21 @@ pub fn interactive(el: El, selected: bool) -> El {
     .animate_with(quick())
 }
 
-/// A quiet text button; `selected` raises it on a neutral fill. Text stays ink:
-/// the accent marks state, never words.
+/// A text button. `selected` raises it on a neutral surface and inks its text.
 pub fn action(ui: &mut Ui, id: impl Into<Id>, label: &str, selected: bool) -> (bool, El) {
     let id: Id = id.into();
     let hit = ui.get(id.clone()).activated();
     let el = row![
         body(label.to_owned())
-            .text_size(12)
+            .text_size(TEXT)
             .fill(if selected { Role::Ink } else { Role::Dim })
             .lines(1)
             .min_w(0)
     ]
     .align(Align::Center)
     .justify(Justify::Center)
-    .pad((GAP + 2., 0))
+    .pad((0, SPACE))
     .h(CONTROL)
-    .radius(2)
     .when(selected, |e| e.fill(Role::Raised))
     .focusable()
     .a11y(A11y::Button)
@@ -126,8 +201,46 @@ pub fn action(ui: &mut Ui, id: impl Into<Id>, label: &str, selected: bool) -> (b
     (hit, interactive(el, selected))
 }
 
-/// Line icons drawn on a 16-unit grid, so they stay crisp at any size and
-/// need no icon font.
+/// A switch with a word on it. Set, it sits raised with ink text over a 1 px
+/// accent line; clear, it is a dim word on a faint field.
+pub fn latch(ui: &mut Ui, id: impl Into<Id>, label: &str, name: &str, on: bool) -> (bool, El) {
+    let id: Id = id.into();
+    let hit = ui.get(id.clone()).activated();
+    let el = col![
+        spacer(),
+        body(label.to_owned())
+            .text_size(SMALL)
+            .text_weight(Weight::SEMIBOLD)
+            .fill(if on { Role::Ink } else { Role::Dim })
+            .lines(1)
+            .min_w(0),
+        spacer(),
+        block(Len::Pct(100.), 1).fill(if on {
+            Fill::from(accent())
+        } else {
+            Role::Ink.alpha(0.)
+        })
+    ]
+    .gap(0)
+    .align(Align::Center)
+    .pad((0, SPACE))
+    .min_w(CONTROL)
+    .h(CONTROL)
+    .fill(if on { Role::Raised.alpha(1.) } else { Role::Ink.alpha(0.05) })
+    .focusable()
+    .a11y(A11y::Toggle { on })
+    .named(name.to_owned())
+    .tip(name.to_owned())
+    .id(id);
+    (hit, interactive(el, on))
+}
+
+/// Switches that read as one control: a segmented row with hairline seams.
+pub fn segmented(items: Vec<El>) -> El {
+    row(items).gap(1).align(Align::Stretch).fill(hairline()).shrink(0)
+}
+
+/// Line icons drawn on a 16-unit square, crisp at any size, no icon font.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
     Left,
@@ -149,28 +262,44 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
         let u = s.width.min(s.height) / 16.;
         let (ox, oy) = ((s.width - 16. * u) / 2., (s.height - 16. * u) / 2.);
         let p = |x: f64, y: f64| Point::new(ox + x * u, oy + y * u);
+        let weight = 1.5 * u.max(0.75);
         let line = |pts: &[(f64, f64)]| {
             Draw::stroke(
                 DrawPath::polyline(pts.iter().map(|&(x, y)| p(x, y)), false),
                 ink.clone(),
-                1.5 * u.max(0.75),
+                weight,
             )
         };
-        let dot = |x: f64, y: f64| Draw::fill(rect(ox + (x - 1.) * u, oy + (y - 1.) * u, 2. * u, 2. * u), ink.clone());
+        let dot = |x: f64, y: f64| {
+            Draw::fill(
+                rect(ox + (x - 1.) * u, oy + (y - 1.) * u, 2. * u, 2. * u),
+                ink.clone(),
+            )
+        };
         match icon {
             Icon::Left => vec![line(&[(10., 4.), (6., 8.), (10., 12.)])],
             Icon::Right => vec![line(&[(6., 4.), (10., 8.), (6., 12.)])],
             Icon::Up => vec![line(&[(4., 10.), (8., 6.), (12., 10.)])],
             Icon::Down => vec![line(&[(4., 6.), (8., 10.), (12., 6.)])],
             Icon::More => vec![dot(3.5, 8.), dot(8., 8.), dot(12.5, 8.)],
-            Icon::Plus => vec![line(&[(8., 3.5), (8., 12.5)]), line(&[(3.5, 8.), (12.5, 8.)])],
-            Icon::Close => vec![line(&[(4.5, 4.5), (11.5, 11.5)]), line(&[(11.5, 4.5), (4.5, 11.5)])],
+            Icon::Plus => vec![
+                line(&[(8., 3.5), (8., 12.5)]),
+                line(&[(3.5, 8.), (12.5, 8.)]),
+            ],
+            Icon::Close => vec![
+                line(&[(4.5, 4.5), (11.5, 11.5)]),
+                line(&[(11.5, 4.5), (4.5, 11.5)]),
+            ],
             Icon::Sidebar => vec![
                 line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
                 line(&[(6.5, 3.5), (6.5, 12.5)]),
             ],
             Icon::Search => vec![
-                Draw::stroke(arc(ox + 7. * u, oy + 7. * u, 4. * u, 0., 2. * PI), ink.clone(), 1.5 * u.max(0.75)),
+                Draw::stroke(
+                    arc(ox + 7. * u, oy + 7. * u, 4. * u, 0., 2. * PI),
+                    ink.clone(),
+                    weight,
+                ),
                 line(&[(10., 10.), (13.5, 13.5)]),
             ],
             Icon::Play => vec![Draw::fill(
@@ -188,7 +317,7 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
     .shrink(0)
 }
 
-/// A square icon button. `on` holds it raised, like a toggle that is set.
+/// A square icon button. `on` holds it raised, like a set switch.
 pub fn icon_button(ui: &mut Ui, id: impl Into<Id>, icon: Icon, name: &str, on: bool) -> (bool, El) {
     let id: Id = id.into();
     let hit = ui.get(id.clone()).activated();
@@ -198,9 +327,8 @@ pub fn icon_button(ui: &mut Ui, id: impl Into<Id>, icon: Icon, name: &str, on: b
     } else {
         Role::Ink.alpha(0.6 + 0.4 * hover)
     };
-    let el = stack![glyph(icon, 16., ink).centered()]
+    let el = stack![glyph(icon, TEXT + TIGHT, ink).centered()]
         .square(CONTROL)
-        .radius(2)
         .when(on, |e| e.fill(Role::Raised))
         .focusable()
         .a11y(A11y::Button)
@@ -210,40 +338,7 @@ pub fn icon_button(ui: &mut Ui, id: impl Into<Id>, icon: Icon, name: &str, on: b
     (hit, interactive(el, on))
 }
 
-/// A small square switch with a letter: Mute and Solo. Set, it takes the
-/// accent fill; the letter then reads dark on it.
-pub fn letter_toggle(ui: &mut Ui, id: impl Into<Id>, letter: &str, name: &str, on: bool) -> (bool, El) {
-    let id: Id = id.into();
-    let hit = ui.get(id.clone()).activated();
-    let el = row![
-        caption(letter.to_owned())
-            .text_size(11)
-            .text_weight(Weight::SEMIBOLD)
-            .fill(if on {
-                Color::oklch(0.18, 0., 0.).into()
-            } else {
-                Role::Dim.alpha(1.)
-            })
-    ]
-    .align(Align::Center)
-    .justify(Justify::Center)
-    .square(20)
-    .radius(2)
-    .fill(if on { accent().into() } else { Role::Ink.alpha(0.05) })
-    .focusable()
-    .a11y(A11y::Toggle { on })
-    .named(name.to_owned())
-    .tip(name.to_owned())
-    .id(id);
-    (
-        hit,
-        el.on(State::Hover, move |s| if on { s } else { s.fill(Role::Ink.alpha(0.1)) })
-            .on(State::FocusVisible, |s| s.stroke(Role::Primary.alpha(0.9)).stroke_width(1))
-            .animate_with(quick()),
-    )
-}
-
-/// A view switch: ink when current, dim otherwise, with an accent underline.
+/// A view switch: ink when current with a 1 px accent underline, dim otherwise.
 pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool, El) {
     let id: Id = id.into();
     let hit = ui.get(id.clone()).activated();
@@ -251,21 +346,21 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool,
     let underline = if current {
         Fill::from(accent())
     } else {
-        Role::Ink.alpha(0.18 * hover)
+        Role::Ink.alpha(0.2 * hover)
     };
     let el = col![
         spacer(),
         body(label.to_owned())
-            .text_size(12)
+            .text_size(TEXT)
             .fill(if current { Role::Ink } else { Role::Dim })
             .lines(1),
         spacer(),
-        block(Len::Pct(100.), 2).fill(underline)
+        block(Len::Pct(100.), 1).fill(underline)
     ]
     .gap(0)
     .align(Align::Center)
-    .pad((0, GAP + 2.))
-    .h(Len::Pct(100.))
+    .pad((0, SPACE))
+    .h(CONTROL + SPACE)
     .focusable()
     .a11y(A11y::Button)
     .named(label.to_owned())
@@ -275,36 +370,30 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool,
     (hit, el)
 }
 
-/// A horizontal hairline.
-pub fn rule() -> El {
-    block(Len::Pct(100.), 1).fill(hairline()).shrink(0)
-}
-
-/// A vertical hairline.
-pub fn vrule() -> El {
-    block(1, Len::Pct(100.)).fill(hairline()).shrink(0)
-}
-
-/// A small uppercase label.
-pub fn section(label: &str) -> El {
-    caption(label.to_uppercase())
-        .text_size(10)
-        .fill(Role::Dim)
-        .text_weight(Weight::SEMIBOLD)
-        .lines(1)
-        .min_w(0)
-}
-
-/// A section's title bar: small caps on the left, `actions` on the right.
-pub fn section_bar(label: &str, actions: Vec<El>) -> El {
-    let mut items = vec![section(label), spacer()];
-    items.extend(actions);
-    row(items)
-        .gap(HALF)
-        .align(Align::Center)
-        .pad(edges(0., HALF, 0., GAP + HALF))
-        .h(BAR)
-        .shrink(0)
+/// A field that opens a list: the current choice and a caret.
+pub fn dropdown(ui: &mut Ui, id: impl Into<Id>, text: &str, name: &str) -> (bool, El) {
+    let id: Id = id.into();
+    let hit = ui.get(id.clone()).activated();
+    let el = row![
+        body(text.to_owned())
+            .text_size(SMALL)
+            .lines(1)
+            .flex(1)
+            .min_w(0),
+        glyph(Icon::Down, TEXT, Role::Dim.alpha(1.))
+    ]
+    .gap(TIGHT)
+    .align(Align::Center)
+    .pad((0, SPACE))
+    .h(CONTROL)
+    .min_w(CONTROL * 3.)
+    .fill(Role::Field)
+    .focusable()
+    .a11y(A11y::Button)
+    .named(format!("{name}: {text}"))
+    .tip(name.to_owned())
+    .id(id);
+    (hit, interactive(el, false))
 }
 
 /// A labelled number to drag, type or step.
@@ -319,55 +408,22 @@ pub fn number(
     let reserve = display.clone();
     let c = drag_value(ui, id, label, value, range).size(S);
     row![
-        caption(label).fill(Role::Dim).lines(1),
+        caption(label).fill(Role::Dim).lines(1).flex(1).min_w(0),
         c.el.value_text(display)
             .el()
-            .radius(2)
-            .min_w(40)
-            .h(CONTROL - 2.)
+            .h(CONTROL)
             .reserve(reserve)
+            .shrink(0)
     ]
-    .gap(HALF + 2.)
+    .gap(SPACE)
     .align(Align::Center)
     .shrink(0)
 }
 
-/// A bare number field for a table cell, `width` wide.
-pub fn field(
-    ui: &mut Ui,
-    id: impl Into<Id>,
-    name: &str,
-    value: &mut f64,
-    range: RangeInclusive<f64>,
-    display: String,
-    width: f64,
-) -> El {
-    drag_value(ui, id, name, value, range)
-        .size(S)
-        .value_text(display)
-        .el
-        .el()
-        .radius(2)
-        .w(width)
-        .h(CONTROL - 2.)
-        .shrink(0)
-}
-
-/// A dim label beside an ink value that keeps its width as digits change.
-pub fn stat(label: &str, value: String, widest: &str) -> El {
-    row![
-        section(label),
-        caption(value).text_size(12).reserve(widest.to_owned())
-    ]
-    .gap(HALF + 2.)
-    .align(Align::Center)
-    .shrink(0)
-}
-
-/// How a fader's fill runs.
+/// How a slider maps, marks and reads its value.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Fader {
-    /// Where the fill starts: the range's low end for a level, its middle for pan.
+    /// Where the fill starts: the low end for a level, the middle for pan.
     pub origin: f64,
     /// A marked value on the track: center for pan, unity for a level.
     pub detent: Option<f64>,
@@ -375,6 +431,10 @@ pub struct Fader {
     pub reset: f64,
     /// The widest readout, so the track keeps its length as the value changes.
     pub widest: &'static str,
+    /// Up and down rather than sideways.
+    pub vertical: bool,
+    /// A fixed track length; `None` takes the room it is given.
+    pub length: Option<f64>,
 }
 
 impl Fader {
@@ -383,19 +443,89 @@ impl Fader {
         detent: Some(0.),
         reset: 0.,
         widest: "R 100",
+        vertical: false,
+        length: None,
     };
     pub const LEVEL: Self = Self {
         origin: -60.,
         detent: Some(0.),
         reset: 0.,
         widest: "-60.0 dB",
+        vertical: false,
+        length: None,
     };
+
+    /// A plain slider over `range`, filled from its low end.
+    pub const fn over(range: &RangeInclusive<f64>, reset: f64, widest: &'static str) -> Self {
+        Self {
+            origin: *range.start(),
+            detent: None,
+            reset,
+            widest,
+            vertical: false,
+            length: None,
+        }
+    }
+
+    /// The same, bipolar: filled from and marked at the range's middle.
+    pub fn bipolar(range: &RangeInclusive<f64>, reset: f64, widest: &'static str) -> Self {
+        let mid = (range.start() + range.end()) / 2.;
+        Self {
+            origin: mid,
+            detent: Some(mid),
+            ..Self::over(range, reset, widest)
+        }
+    }
+
+    /// A track `length` long.
+    pub const fn length(self, length: f64) -> Self {
+        Self {
+            length: Some(length),
+            ..self
+        }
+    }
+
+    /// Up and down.
+    pub const fn vertical(self) -> Self {
+        Self {
+            vertical: true,
+            ..self
+        }
+    }
 }
 
-/// A Koda-style fader: a thin track with its detent marked, a fill from the
-/// origin to the value, a small square thumb, and a readout beside it. Drag
-/// sideways (Shift is fine), wheel or arrow keys step, double-click resets.
-/// `width` fixes the track; `None` lets it take the room it is given.
+/// Pointer, wheel and keys on a continuous control `id`: drag across
+/// `travel` px (Shift is fine), wheel and arrows step, double-click resets.
+fn drive(
+    ui: &mut Ui,
+    id: &str,
+    value: &mut f64,
+    range: &RangeInclusive<f64>,
+    travel: f64,
+    vertical: bool,
+    reset: f64,
+) -> bool {
+    let (lo, hi) = (*range.start(), *range.end());
+    let r = ui.get(id);
+    ui.drag(id, value, range.clone(), travel, vertical);
+    if let Some(wheel) = ui.wheel(id) {
+        let step = (hi - lo) / if r.mods.shift { 500. } else { 50. };
+        let dir = if wheel.y.abs() >= wheel.x.abs() {
+            -wheel.y
+        } else {
+            wheel.x
+        };
+        *value = (*value + dir.signum() * step).clamp(lo, hi);
+    }
+    stepped(ui, id, value, range);
+    if r.double_clicked {
+        *value = reset;
+    }
+    r.held
+}
+
+/// A Koda-style slider: a thin track with its detent marked, a neutral fill
+/// from the origin to the value, a small square thumb, and a readout.
 pub fn fader(
     ui: &mut Ui,
     id: &str,
@@ -403,56 +533,87 @@ pub fn fader(
     value: &mut f64,
     range: RangeInclusive<f64>,
     kind: Fader,
-    readout: fn(f64) -> String,
-    width: Option<f64>,
+    readout: impl Fn(f64) -> String,
 ) -> (bool, El) {
     let (lo, hi) = (*range.start(), *range.end());
     let before = *value;
+    let (vertical, length) = (kind.vertical, kind.length);
     let track = ui
         .scene()
         .and_then(|s| s.surface(id))
-        .map_or(96., |s| s.frame.size.width)
-        .max(24.);
-    let r = ui.get(id);
-    ui.drag(id, value, range.clone(), track - 6., false);
-    if let Some(wheel) = ui.wheel(id) {
-        let step = (hi - lo) / if r.mods.shift { 500. } else { 50. };
-        let dir = if wheel.y.abs() >= wheel.x.abs() { -wheel.y } else { wheel.x };
-        *value = (*value + dir.signum() * step).clamp(lo, hi);
-    }
-    stepped(ui, id, value, &range);
-    if r.double_clicked {
-        *value = kind.reset;
-    }
-    let state = ui.state(id);
-    let held = r.held;
+        .map_or(TRAVEL, |s| {
+            if vertical {
+                s.frame.size.height
+            } else {
+                s.frame.size.width
+            }
+        })
+        .max(CONTROL);
+    let held = drive(ui, id, value, &range, track - SPACE, vertical, kind.reset);
+    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
     let unit = |v: f64| ((v - lo) / (hi - lo)).clamp(0., 1.);
     let (at, from) = (unit(*value), unit(kind.origin));
     let detent = kind.detent.map(unit);
-    let lift = state.hover.max(if held { 1. } else { 0. }) as f32;
     let focused = ui.focus_visible(id);
     let track_el = canvas(move |s| {
-        let (w, h) = (s.width, s.height);
-        let inner = w - 6.;
-        let x = |u: f64| 3. + u * inner;
-        let mid = (h / 2.).round();
-        let mut draw = vec![Draw::fill(rect(3., mid - 1., inner, 2.), Role::Ink.alpha(0.14 + 0.06 * lift))];
-        let (a, b) = if x(at) < x(from) { (x(at), x(from)) } else { (x(from), x(at)) };
+        // Drawn along x; a vertical fader swaps the axes and runs bottom-up.
+        let (len, across) = if vertical {
+            (s.height, s.width)
+        } else {
+            (s.width, s.height)
+        };
+        let place = |along: f64, off: f64, l: f64, t: f64| {
+            if vertical {
+                rect(off, len - along - l, t, l)
+            } else {
+                rect(along, off, l, t)
+            }
+        };
+        let thumb_w = SPACE * 0.75;
+        let inner = len - thumb_w;
+        let x = |u: f64| thumb_w / 2. + u * inner;
+        let mid = (across / 2.).round();
+        let mut draw = vec![Draw::fill(
+            place(thumb_w / 2., mid - 1., inner, 2.),
+            Role::Ink.alpha(0.14 + 0.06 * lift),
+        )];
+        let (a, b) = if x(at) < x(from) {
+            (x(at), x(from))
+        } else {
+            (x(from), x(at))
+        };
         if b - a > 0.5 {
-            draw.push(Draw::fill(rect(a, mid - 1., b - a, 2.), accent()));
+            draw.push(Draw::fill(place(a, mid - 1., b - a, 2.), value_ink(0.)));
         }
         if let Some(d) = detent {
-            draw.push(Draw::fill(rect(x(d).round() - 0.5, mid - 5., 1., 10.), Role::Ink.alpha(0.4)));
+            draw.push(Draw::fill(
+                place(x(d).round() - 0.5, mid - TIGHT - 1., 1., 2. * TIGHT + 2.),
+                Role::Ink.alpha(0.4),
+            ));
         }
-        let thumb = Color::oklch(0.8 + 0.15 * lift, 0., 0.);
-        draw.push(Draw::fill(rect((x(at) - 3.).round(), mid - 5., 6., 10.), thumb));
+        draw.push(Draw::fill(
+            place(
+                (x(at) - thumb_w / 2.).round(),
+                mid - TIGHT - 1.,
+                thumb_w,
+                2. * TIGHT + 2.,
+            ),
+            value_ink(lift),
+        ));
         if focused {
-            draw.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), Role::Primary.alpha(0.9), 1.));
+            draw.push(Draw::stroke(
+                rect(0.5, 0.5, s.width - 1., s.height - 1.),
+                Role::Primary.alpha(0.9),
+                1.,
+            ));
         }
         draw
     })
-    .h(CONTROL - 4.)
-    .cursor(Cursor::ResizeH)
+    .cursor(if vertical {
+        Cursor::ResizeV
+    } else {
+        Cursor::ResizeH
+    })
     .focusable()
     .a11y(A11y::Slider {
         value: *value,
@@ -462,21 +623,95 @@ pub fn fader(
     .named(name.to_owned())
     .tip(format!("{name}: drag, Shift for fine, double-click to reset"))
     .id(id.to_owned());
-    let track_el = match width {
-        Some(w) => track_el.w(w).shrink(0),
-        None => track_el.flex(1).min_w(40),
+    let text = caption(readout(*value))
+        .text_size(SMALL)
+        .reserve(kind.widest);
+    let el = if vertical {
+        let track_el = track_el.w(CONTROL).h(length.unwrap_or(TRAVEL / 2.)).shrink(0);
+        col![text, track_el].gap(TIGHT).align(Align::Center).shrink(0)
+    } else {
+        let track_el = match length {
+            Some(w) => track_el.w(w).shrink(0),
+            None => track_el.flex(1).min_w(CONTROL * 2.),
+        }
+        .h(CONTROL - TIGHT);
+        row![track_el, text.justify(Justify::End)]
+            .gap(SPACE)
+            .align(Align::Center)
+            .when(length.is_some(), |e| e.shrink(0))
+            .when(length.is_none(), |e| e.flex(1).min_w(0))
     };
-    let el = row![
-        track_el,
-        caption(readout(*value))
-            .text_size(11)
-            .reserve(kind.widest)
-            .justify(Justify::End)
-    ]
-    .gap(GAP)
-    .align(Align::Center)
-    .when(width.is_some(), |e| e.shrink(0))
-    .when(width.is_none(), |e| e.flex(1).min_w(0));
+    (value.to_bits() != before.to_bits(), el)
+}
+
+/// A flat knob: a 270° track, a neutral arc from the origin to the value and
+/// a pointer. Drags vertically; wheel, arrows, double-click as a fader.
+pub fn dial(
+    ui: &mut Ui,
+    id: &str,
+    name: &str,
+    value: &mut f64,
+    range: RangeInclusive<f64>,
+    kind: Fader,
+) -> (bool, El) {
+    let (lo, hi) = (*range.start(), *range.end());
+    let before = *value;
+    let held = drive(ui, id, value, &range, TRAVEL, true, kind.reset);
+    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
+    let unit = |v: f64| ((v - lo) / (hi - lo)).clamp(0., 1.);
+    let (at, from) = (unit(*value), unit(kind.origin));
+    let focused = ui.focus_visible(id);
+    let el = canvas(move |s| {
+        let (cx, cy) = (s.width / 2., s.height / 2.);
+        let weight = TIGHT * 0.75;
+        let r = s.width.min(s.height) / 2. - weight;
+        let (start, sweep) = (0.75 * PI, 1.5 * PI);
+        let mut draw = vec![
+            Draw::fill(circle(cx, cy, r - weight * 1.5), Role::Raised.alpha(1.)),
+            Draw::stroke(
+                arc(cx, cy, r, start, sweep),
+                Role::Ink.alpha(0.14 + 0.06 * lift),
+                weight,
+            ),
+        ];
+        let (a, b) = if at < from { (at, from) } else { (from, at) };
+        if b - a > 0.002 {
+            draw.push(Draw::stroke(
+                arc(cx, cy, r, start + sweep * a, sweep * (b - a)),
+                value_ink(0.),
+                weight,
+            ));
+        }
+        let angle = start + sweep * at;
+        let (inner, outer) = (r * 0.2, r - weight * 2.);
+        draw.push(Draw::stroke(
+            DrawPath::polyline(
+                [
+                    Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner),
+                    Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer),
+                ],
+                false,
+            ),
+            value_ink(lift),
+            weight,
+        ));
+        if focused {
+            draw.push(Draw::stroke(circle(cx, cy, r + weight), Role::Primary.alpha(0.9), 1.));
+        }
+        draw
+    })
+    .square(KNOB)
+    .shrink(0)
+    .cursor(Cursor::ResizeV)
+    .focusable()
+    .a11y(A11y::Slider {
+        value: *value,
+        min: lo,
+        max: hi,
+    })
+    .named(name.to_owned())
+    .tip(format!("{name}: drag up or down, Shift for fine, double-click to reset"))
+    .id(id.to_owned());
     (value.to_bits() != before.to_bits(), el)
 }
 
@@ -503,27 +738,17 @@ pub fn banner(role: Role, text: impl Into<String>) -> El {
     row![
         block(2, Len::Pct(100.)).fill(role.alpha(1.)),
         body(text.into())
-            .text_size(12)
-            .fill(Color::oklch(0.86, 0., 0.))
+            .text_size(TEXT)
+            .fill(Role::Ink)
             .lines(2)
             .flex(1)
             .min_w(0)
     ]
-    .gap(GAP)
+    .gap(SPACE)
     .align(Align::Stretch)
-    .pad((GAP + HALF, GAP))
+    .pad((SPACE, INSET))
     .fill(Role::Ink.alpha(0.04))
     .shrink(0)
-}
-
-/// `text` cut to `max` characters with an ellipsis, so a label never wraps or spills.
-pub fn fit(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_owned();
-    }
-    let mut cut: String = text.chars().take(max.saturating_sub(1)).collect();
-    cut.truncate(cut.trim_end().len());
-    cut + "…"
 }
 
 pub fn note_name(note: u8) -> String {

@@ -16,6 +16,8 @@ pub enum Target {
     Key(u8),
     /// The editor's own menu in the top bar.
     App,
+    /// A script menu in a part's performance controls.
+    Script { part: usize, control: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +47,12 @@ pub enum Command {
     Browser,
     Keyboard,
     Panic,
+    /// Set a script control to a value.
+    Script {
+        part: usize,
+        control: usize,
+        value: i32,
+    },
 }
 
 enum Item {
@@ -76,8 +84,9 @@ fn check(label: impl Into<String>, on: bool, command: Command) -> Item {
     }
 }
 
-const WIDTH: f64 = 232.;
-const ROW: f64 = 26.;
+/// Wide enough for the longest built-in item beside its shortcut.
+pub const WIDTH: f64 = TEXT * 19.;
+const ROW: f64 = CONTROL + 2.;
 const ID: &str = "context-menu";
 
 /// Open a menu for `target` at the pointer.
@@ -95,7 +104,7 @@ pub fn open_under(ui: &Ui, cx: &mut Cx, target: Target, anchor: &str) {
     let at = ui
         .scene()
         .and_then(|s| s.surface(anchor))
-        .map(|s| Point::new(s.frame.x, s.frame.y + s.frame.size.height + 2.))
+        .map(|s| Point::new(s.frame.x, s.frame.y + s.frame.size.height + 1.))
         .unwrap_or_default();
     cx.state.menu = Some(Menu {
         target,
@@ -162,6 +171,37 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             items.push(act(format!("Audition {}", note_name(*note)), "", Command::Audition(*note)));
             items
         }
+        Target::Script { part, control } => {
+            let (part, control) = (*part, *control);
+            let Some(c) = cx
+                .view
+                .parts
+                .get(part)
+                .and_then(|v| v.interface.as_ref())
+                .and_then(|i| i.controls.get(control))
+            else {
+                return Vec::new();
+            };
+            let value = match c.properties.get("$CONTROL_PAR_VALUE") {
+                Some(crate::ksp::Value::Int(n)) => *n,
+                _ => 0,
+            };
+            c.menu
+                .iter()
+                .map(|(text, v)| {
+                    let label = super::panel::clean(text);
+                    check(
+                        label,
+                        *v == value,
+                        Command::Script {
+                            part,
+                            control,
+                            value: *v,
+                        },
+                    )
+                })
+                .collect()
+        }
         Target::App => vec![
             check("Browser", cx.state.browser, Command::Browser),
             check("Keyboard", cx.state.keyboard, Command::Keyboard),
@@ -202,25 +242,20 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
         return None;
     }
     let mut rows = Vec::new();
-    let mut height = 2. * HALF + 2.;
+    let mut height = 2. * TIGHT + 2.;
     let mut picked = None;
     for (n, item) in items.into_iter().enumerate() {
         match item {
             Item::Rule => {
-                height += 9.;
-                rows.push(
-                    block(Len::Pct(100.), 1)
-                        .fill(hairline())
-                        .shrink(0)
-                        .pad((HALF, 0)),
-                );
+                height += 2. * TIGHT + 1.;
+                rows.push(col![rule()].pad((TIGHT, 0)).shrink(0));
             }
             Item::Info(text) => {
                 height += ROW;
                 rows.push(
                     row![caption(text).fill(Role::Dim).lines(1).min_w(0)]
                         .align(Align::Center)
-                        .pad((GAP + HALF, 0))
+                        .pad((0, SPACE))
                         .h(ROW)
                         .shrink(0),
                 );
@@ -236,25 +271,24 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                 if ui.get(id.as_str()).activated() {
                     picked = Some(command);
                 }
-                let mark = if on {
-                    block(6, 6).fill(accent())
+                let mark = block(TIGHT * 1.5, TIGHT * 1.5).fill(if on {
+                    Role::Ink.alpha(1.)
                 } else {
-                    block(6, 6)
-                };
+                    Role::Ink.alpha(0.)
+                });
                 let el = row![
                     mark,
                     body(label.clone())
-                        .text_size(12)
+                        .text_size(TEXT)
                         .lines(1)
                         .flex(1)
                         .min_w(0),
                     caption(hint).fill(Role::Dim)
                 ]
-                .gap(GAP)
+                .gap(SPACE)
                 .align(Align::Center)
-                .pad((GAP + 2., 0))
+                .pad((0, SPACE))
                 .h(ROW)
-                .radius(2)
                 .focusable()
                 .a11y(A11y::Button)
                 .named(label)
@@ -269,9 +303,9 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
         run(ui, cx, command);
         return None;
     }
-    let x = menu.at.x.min(window.width - WIDTH - HALF).max(HALF);
-    let y = if menu.at.y + height > window.height - HALF {
-        (menu.at.y - height).max(HALF)
+    let x = menu.at.x.min(window.width - WIDTH - TIGHT).max(TIGHT);
+    let y = if menu.at.y + height > window.height - TIGHT {
+        (menu.at.y - height).max(TIGHT)
     } else {
         menu.at.y
     };
@@ -279,13 +313,13 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
         col(rows)
             .gap(0)
             .align(Align::Stretch)
-            .pad(HALF)
+            .pad(TIGHT)
             .w(WIDTH)
+            .max_size(Size::new(WIDTH, window.height - 2. * TIGHT))
+            .scroll()
             .fill(Role::Level(3))
-            .stroke(Role::Ink.alpha(0.12))
+            .stroke(Role::Ink.alpha(0.14))
             .stroke_width(1)
-            .radius(2)
-            .elevation(Elevation::Floating)
             .at(x, y)
             .appear(Appear::Slide(0., -4.))
             .a11y(A11y::Group)
@@ -306,8 +340,7 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Remove(slot) => cx.remove(slot),
         Command::Rename(slot) => {
             cx.show(slot);
-            cx.state.renaming = Some(super::rack::name(cx, slot));
-            ui.focus("rename");
+            cx.state.renaming = Some((slot, super::rack::name(cx, slot)));
         }
         Command::Mute(slot) => cx.selection.parts[slot].mute ^= true,
         Command::Solo(slot) => cx.selection.parts[slot].solo ^= true,
@@ -316,11 +349,21 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Folders => cx.state.settings = !cx.state.settings,
         Command::Rescan => {
             cx.selection.root = cx.state.root.clone();
-            shared.view.lock().unwrap().root.clear();
+            shared
+                .view
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .root
+                .clear();
         }
         Command::Browser => cx.state.browser ^= true,
         Command::Keyboard => cx.state.keyboard ^= true,
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
+        Command::Script {
+            part,
+            control,
+            value,
+        } => shared.edit_control(part, control, value),
     }
 }
 

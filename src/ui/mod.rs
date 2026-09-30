@@ -1,12 +1,13 @@
-//! The editor: a library browser, a rack of parts, the selected instrument's
-//! header and performance view, and a playable keyboard.
+//! The editor: a library browser, a Kontakt-style rack of parts with their
+//! performance controls rebuilt natively, and a playable keyboard.
 //!
 //! ```text
 //! ┌ top bar: wordmark · activity · meters · master · global actions ───────┐
-//! ├ browser ┆ rack strip ─────────────────────────────────────────────────┤
-//! │         ┆ instrument header: banner · name · facts · routing · faders  │
-//! │ (resize)┆ tabs ──────────────────────────────────────────────────────── │
-//! │         ┆ perform / mapping / rack / info                              │
+//! ├ browser ┆ tabs: rack · mapping · info ─────────────────────────────────┤
+//! │         ┆ part header: fold · name ‹ › · routing · S M · vol/pan · ✕  │
+//! │ (resize)┆   performance controls (sections, strips, knobs, faders)    │
+//! │         ┆ part header (folded) ─────────────────────────────────────── │
+//! │         ┆ add an instrument                                           │
 //! ├ keyboard dock (collapsible) ───────────────────────────────────────────┤
 //! ```
 //!
@@ -22,6 +23,7 @@ mod header;
 mod instrument;
 mod keyboard;
 mod menu;
+mod panel;
 mod rack;
 #[cfg(test)]
 mod tests;
@@ -30,11 +32,13 @@ mod theme;
 use crate::engine::RACK_SLOTS;
 use crate::import;
 use crate::plugin::{Load, Part, PartView, SamplerParams, Selection, View, rack_controls};
-use moose::mui::{Bridge, MuiEditor, mui::prelude::*};
+use moose::mui::{Bridge, MuiEditor, mui::prelude::*, mui::prelude::Color};
 use moose::prelude::*;
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use theme::*;
 
@@ -52,6 +56,20 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
         .fixed_zoom()
         .resizable((900, 600))
         .into_editor()
+}
+
+/// The lock's data even if a panicking thread held it: the editor shows what
+/// is there rather than taking the host down with it.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    l.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    l.write().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Decides, every display tick, whether anything the editor shows moved
@@ -86,16 +104,16 @@ impl Watch {
             (owner.load(Ordering::Relaxed) < 128).hash(&mut h);
         }
         let (loading, pending) = {
-            let view = p.shared.view.lock().unwrap();
+            let view = lock(&p.shared.view);
             fingerprint(&view, &mut h);
-            let selection = p.selection.read().unwrap();
+            let selection = read(&p.selection);
             let root = if selection.root.is_empty() {
                 import::LIBRARY_ROOT
             } else {
                 &selection.root
             };
             let pending = view.root != root
-                || p.shared.multi_request.lock().unwrap().is_some()
+                || lock(&p.shared.multi_request).is_some()
                 || (0..RACK_SLOTS).any(|n| {
                     let part = selection.parts.get(n);
                     let target = part.map_or((String::new(), 0), |p| (p.path.clone(), p.program));
@@ -139,9 +157,8 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
-    Perform,
-    Mapping,
     Rack,
+    Mapping,
     Info,
 }
 
@@ -168,19 +185,33 @@ struct EditorState {
     last_poll: Instant,
     /// Smoothed audio thread load, 0..1, as [`Watch`] last eased it.
     cpu: Arc<AtomicU32>,
-    /// Script control being dragged, with its unrounded value.
-    held: Option<(usize, f64)>,
-    /// Script menu showing its items.
-    ksp_menu: Option<usize>,
+    /// Script control being dragged: part, control, unrounded value.
+    held: Option<(usize, usize, f64)>,
     /// The context menu showing.
     menu: Option<menu::Menu>,
     /// The browser's keyboard cursor: a preset path.
     cursor: Option<String>,
     /// Presets opened this session, newest first.
     recent: Vec<String>,
-    /// The selected part's name while it is being edited.
-    renaming: Option<String>,
+    /// A part's name while it is being edited.
+    renaming: Option<(usize, String)>,
+    /// Each library's color, from its artwork, worked out once.
+    tints: HashMap<String, Option<Color>>,
     started: Instant,
+}
+
+impl EditorState {
+    /// `library`'s color: its artwork's dominant hue at a fixed, quiet
+    /// lightness and chroma, so every library reads alike.
+    fn tint(&mut self, view: &View, library: &str) -> Option<Color> {
+        *self
+            .tints
+            .entry(library.to_owned())
+            .or_insert_with(|| {
+                let hue = crate::artwork::tint(view.artwork.get(library)?)?;
+                Some(Color::oklch(0.66, 0.11, hue))
+            })
+    }
 }
 
 /// One frame's inputs: the loader's view, the rack being edited, the editor state.
@@ -215,12 +246,14 @@ impl Cx<'_> {
             .filter(|p| !p.path.is_empty())
     }
 
-    /// Show `slot` in the instrument view.
+    /// Select `slot` and unfold it.
     fn show(&mut self, slot: usize) {
         self.state.selected = slot;
-        self.state.tab = Tab::Perform;
         self.state.notice.clear();
         self.state.renaming = None;
+        if let Some(part) = self.selection.parts.get_mut(slot) {
+            part.collapsed = false;
+        }
     }
 
     fn remember(&mut self, path: &str) {
@@ -413,21 +446,15 @@ fn native_files(p: &SamplerParams, ui: &Ui, at: Point, paths: &[PathBuf], droppe
     if paths.is_empty() || !paths.iter().all(nki) {
         return false;
     }
-    let mut selection = p.selection.write().unwrap();
+    let mut selection = write(&p.selection);
     let inside = |id: &str| {
         ui.scene().and_then(|s| s.surface(id)).is_some_and(|s| {
             let r = s.frame;
             at.x >= r.x && at.x < r.x + r.size.width && at.y >= r.y && at.y < r.y + r.size.height
         })
     };
-    // A chip takes the file; so does the instrument area, for the part it shows.
-    let shown = p.shared.selected.load(Ordering::Relaxed) as usize;
-    let target = (0..selection.parts.len())
-        .find(|n| inside(&format!("part-{n}")))
-        .or_else(|| {
-            (inside("center") && selection.parts.get(shown).is_some_and(|p| !p.path.is_empty()))
-                .then_some(shown)
-        });
+    // A part's header takes the file in place of the part.
+    let target = (0..selection.parts.len()).find(|n| inside(&format!("header-{n}")));
     let free = RACK_SLOTS.saturating_sub(
         selection
             .parts
@@ -470,7 +497,7 @@ fn build(
     params: &Arc<SamplerParams>,
     cpu: Arc<AtomicU32>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
-    let mut root = params.selection.read().unwrap().root.clone();
+    let mut root = read(&params.selection).root.clone();
     if root.is_empty() {
         root = import::LIBRARY_ROOT.into();
     }
@@ -478,7 +505,7 @@ fn build(
         search: String::new(),
         library: None,
         multis: false,
-        tab: Tab::Perform,
+        tab: Tab::Rack,
         settings: false,
         browser: true,
         sidebar: SIDEBAR,
@@ -491,11 +518,11 @@ fn build(
         last_poll: Instant::now() - Duration::from_secs(1),
         cpu,
         held: None,
-        ksp_menu: None,
         menu: None,
         cursor: None,
         recent: Vec::new(),
         renaming: None,
+        tints: HashMap::new(),
         started: Instant::now(),
     };
     move |ui, bridge| {
@@ -507,14 +534,13 @@ fn build(
             state.last_poll = Instant::now();
         }
         let p = bridge.params().clone();
-        let view = p.shared.view.lock().unwrap().clone();
-        let mut selection = p.selection.read().unwrap().clone();
+        let view = lock(&p.shared.view).clone();
+        let mut selection = read(&p.selection).clone();
         let before = selection.clone();
         sanitize(&mut selection);
         let focus = p.shared.focus_request.swap(128, Ordering::Relaxed);
         if focus < RACK_SLOTS as u64 {
             state.selected = focus as usize;
-            state.tab = Tab::Perform;
             state.notice.clear();
         }
         state.selected = state.selected.min(selection.parts.len().saturating_sub(1));
@@ -551,7 +577,7 @@ fn build(
 
         let Cx { selection, .. } = cx;
         if selection != before {
-            let mut current = p.selection.write().unwrap();
+            let mut current = write(&p.selection);
             if *current == before {
                 *current = selection;
                 let _ = p.shared.controls.force_push(rack_controls(&current));
@@ -590,7 +616,7 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
     // A focused button takes Space for itself.
     let free = ui
         .focus_key()
-        .is_none_or(|k| k.starts_with("key-") || k.starts_with("part-"));
+        .is_none_or(|k| k.starts_with("key-") || k.starts_with("header-") || k.starts_with("name-"));
     let keys = ui.shortcuts().to_vec();
     let slot = cx.state.selected;
     let loaded = cx.part().is_some();
@@ -639,72 +665,58 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
     };
     let at = ui.local("editor-root")?;
     Some(
-        row![
-            block(2, 14).fill(accent()),
-            body(fit(&label, 40)).text_size(12).lines(1)
-        ]
-        .gap(GAP)
-        .align(Align::Center)
-        .pad((GAP, HALF + 1.))
-        .fill(Role::Level(3))
-        .stroke(Role::Ink.alpha(0.12))
-        .stroke_width(1)
-        .radius(2)
-        .elevation(Elevation::Floating)
-        .opacity(0.94)
-        .at(at.x + 14., at.y + 10.),
+        row![body(label).text_size(TEXT).lines(1).min_w(0)]
+            .align(Align::Center)
+            .pad((TIGHT, SPACE))
+            .max_size(Size::new(SIDEBAR, CONTROL * 2.))
+            .fill(Role::Level(3))
+            .stroke(accent())
+            .stroke_width(1)
+            .opacity(0.94)
+            .at(at.x + INSET, at.y + SPACE),
     )
 }
 
-/// Rack strip, instrument header, view tabs, notices and the current view.
+/// View tabs over the rack, or over the selected part's mapping or details.
 fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
-    let strip = rack::strip(ui, cx);
-    let empty = cx.selection.parts.iter().all(|p| p.path.is_empty());
-    let mut content = vec![strip, rule()];
-    if empty && cx.state.tab != Tab::Rack {
+    let mut tabs = Vec::new();
+    for (tab, label, id) in [
+        (Tab::Rack, "Rack", "tab-rack"),
+        (Tab::Mapping, "Mapping", "tab-mapping"),
+        (Tab::Info, "Info", "tab-info"),
+    ] {
+        let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
+        if hit {
+            cx.state.tab = tab;
+        }
+        tabs.push(el);
+    }
+    let mut content = vec![
+        row(tabs)
+            .gap(INSET + TIGHT)
+            .align(Align::Center)
+            .pad((0, INSET))
+            .shrink(0)
+            .fill(Role::Surface),
+        rule(),
+    ];
+    if !cx.state.notice.is_empty() {
+        content.push(banner(Role::Warning, cx.state.notice.clone()));
+    }
+    let slot = cx.state.selected;
+    if cx.state.tab == Tab::Rack {
+        content.push(rack::view(ui, cx));
+    } else if cx.part().is_none() {
         content.push(instrument::welcome(cx));
     } else {
-        content.push(instrument::header(ui, cx));
-        let mut tabs = Vec::new();
-        for (tab, label, id) in [
-            (Tab::Perform, "Perform", "tab-perform"),
-            (Tab::Mapping, "Mapping", "tab-mapping"),
-            (Tab::Rack, "Rack", "tab-rack"),
-            (Tab::Info, "Info", "tab-info"),
-        ] {
-            let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
-            if hit {
-                cx.state.tab = tab;
-            }
-            tabs.push(el);
-        }
-        content.push(
-            row(tabs)
-                .gap(WIDE + HALF)
-                .pad((WIDE, 0))
-                .h(BAR + 4.)
-                .shrink(0)
-                .fill(Role::Surface),
-        );
+        // The selected part's header stays on top of its mapping and details.
+        content.push(rack::header(ui, cx, slot));
         content.push(rule());
-        content.extend(instrument::notices(cx));
+        content.extend(instrument::notices(cx, slot));
         content.push(match cx.state.tab {
-            Tab::Perform => instrument::perform(ui, cx),
             Tab::Mapping => instrument::mapping(ui, cx),
-            Tab::Rack => rack::mixer(ui, cx),
-            Tab::Info => instrument::info(cx),
+            _ => instrument::info(cx),
         });
-    }
-    // Presets dropped on the instrument area replace the part it shows.
-    let hovered = ui.get("center").drop_target && ui.dragging::<RackDrag>().is_some();
-    if let Some(RackDrag::Instrument(path)) = ui.dropped_on::<RackDrag>("center") {
-        if cx.part().is_some() {
-            cx.replace(cx.state.selected, path);
-        } else if import::is_multi(Path::new(&path)) {
-            cx.p.shared.queue_multi(path);
-        } else {
-            cx.add(path);
-        }
     }
     col(content)
         .gap(0)
@@ -712,6 +724,5 @@ fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
         .min_w(0)
         .min_h(0)
         .fill(Role::Background)
-        .when(hovered, |e| e.stroke(accent()).stroke_width(1))
         .id("center")
 }

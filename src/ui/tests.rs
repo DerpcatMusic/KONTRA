@@ -136,13 +136,13 @@ fn rack_interactions() {
     h.press("instrument-1");
     assert_eq!(parts(&p).len(), 2, "clicking a preset adds it");
     h.press("instrument-0");
-    h.press("preset-next");
+    h.press("preset-next-0");
     assert_eq!(parts(&p).len(), 2, "clicking a loaded preset shows it");
     assert!(
         parts(&p)[0].path.ends_with("Strings.nki"),
         "next preset replaces the shown part"
     );
-    h.press("preset-prev");
+    h.press("preset-prev-0");
     assert!(parts(&p)[0].path.ends_with("Piano.nki"));
 
     h.press("picker-multis");
@@ -159,11 +159,11 @@ fn rack_interactions() {
     assert_eq!(parts(&p).len(), 2, "the rack stays until the multi loads");
     h.press("picker-instruments");
 
-    h.drag("part-1", "part-0");
+    h.drag("name-1", "header-0");
     assert_eq!(
         p.selection.read().unwrap().order,
         vec![1, 0],
-        "chips reorder by dragging"
+        "parts reorder by dragging their names"
     );
 
     h.press("tab-rack");
@@ -175,10 +175,13 @@ fn rack_interactions() {
     let part = &parts(&p)[0];
     assert_eq!((part.output, part.channel, part.port), (3, 1, 1));
 
-    h.press("part-0");
+    h.press("collapse-0");
+    assert!(parts(&p)[0].collapsed, "the chevron folds a part");
+    assert!(h.ui.scene().unwrap().surface("stage-0").is_none());
+    h.press("collapse-0");
     assert!(
-        h.ui.scene().unwrap().surface("instrument-stage").is_some(),
-        "a chip opens the instrument view"
+        h.ui.scene().unwrap().surface("stage-0").is_some(),
+        "and unfolds it"
     );
 
     let key = center(&h.ui, "key-60");
@@ -217,11 +220,11 @@ fn rack_interactions() {
         &vec![PathBuf::from("full.nki"); RACK_SLOTS],
         true
     ));
-    let at = center(ui, "part-1");
+    let at = center(ui, "header-1");
     assert!(native_files(&p, ui, at, &files, true));
     assert!(
         parts(&p)[1].path.ends_with("Native.nki"),
-        "a file dropped on a chip replaces it"
+        "a file dropped on a header replaces its part"
     );
     let multi = [PathBuf::from("/external/Multi.nkm")];
     let before = p.selection.read().unwrap().clone();
@@ -372,12 +375,14 @@ fn screenshot() {
                 u32::from(width),
                 u32::from(height),
             );
-            let mut visible = vec!["octave-up", "rack-drop", "panic"];
+            let mut visible = vec!["octave-up", "panic"];
             if state != "collapsed" {
                 visible.push("search");
             }
             if loaded {
-                visible.extend(["tab-info", "performance-play", "part-0"]);
+                visible.extend(["tab-info", "header-0"]);
+            } else {
+                visible.push("rack-drop");
             }
             for id in visible {
                 let r = scene
@@ -453,12 +458,12 @@ fn performance_controls_edit_the_script() {
     };
     let mut h = Harness::new(&p, 1180., 760.);
 
-    h.press("ksp-control-0");
+    h.press("ksp-0-0");
     assert_eq!(value(0), crate::ksp::Value::Int(1), "a switch toggles on");
-    h.press("ksp-control-0");
+    h.press("ksp-0-0");
     assert_eq!(value(0), crate::ksp::Value::Int(0), "and off");
 
-    let knob = center(&h.ui, "ksp-control-1");
+    let knob = center(&h.ui, "ksp-0-1");
     for y in [0., -10., -60.] {
         h.tick(pointer(Point::new(knob.x, knob.y + y), true));
     }
@@ -469,8 +474,8 @@ fn performance_controls_edit_the_script() {
     };
     assert!(dragged > 10, "dragging a knob up raises it, got {dragged}");
 
-    h.press("ksp-control-2");
-    h.press("ksp-menu-2-1");
+    h.press("ksp-0-2");
+    h.press("menu-item-1");
     assert_eq!(
         value(2),
         crate::ksp::Value::Int(1),
