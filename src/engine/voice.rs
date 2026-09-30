@@ -178,6 +178,9 @@ const CURVE_STEEPNESS: f32 = 5.0;
 /// Per-frame step from `from` to `to` over `frames` (at least 1), bent by
 /// `curve`.
 fn glide(from: f32, to: f32, frames: f32, curve: f32) -> (f32, f32) {
+    // A sub-frame attack (Areia's legato sets ~0.1 µs) would overflow the
+    // curved step to inf and the level to NaN: silence.
+    let frames = frames.max(1.0);
     let k = CURVE_STEEPNESS * curve.clamp(-1.0, 1.0);
     if k.abs() < 1e-3 {
         return (1.0, (to - from) / frames);
@@ -1312,6 +1315,16 @@ mod tests {
         let fast = Ahdsr { curve: 1.0, decay: 0.0, ..env }.trace(100);
         assert!(fast[0][25] > 0.5);
         assert_eq!(fast[1], vec![0.25]);
+    }
+
+    #[test]
+    fn sub_frame_curved_attack_is_instant_not_nan() {
+        for curve in [-1.0, 1.0] {
+            let p = Ahdsr { attack: 1e-7, curve, hold: 0.0, decay: 0.0, sustain: 1.0, release: 0.3 };
+            let mut out = [0.0; 8];
+            Envelope::new(&p, 48_000.0).render(&mut out, None, 48_000.0);
+            assert!(out[2..].iter().all(|&x| x == 1.0), "{curve}: {out:?}");
+        }
     }
 
     #[test]
