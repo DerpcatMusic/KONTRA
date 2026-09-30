@@ -223,8 +223,10 @@ impl Packed {
         }
         let mut data = Vec::with_capacity(raw * 3 / 4);
         let mut offsets = Vec::with_capacity(blocks);
-        let mut block = [[0i32; BLOCK]; 2];
-        let mut residuals = [[0i32; BLOCK - 2]; 2];
+        // Interleaved throughout: both channels in the same pass, which
+        // vectorizes.
+        let mut q = [0i32; 2 * BLOCK];
+        let mut residuals = [0i32; 2 * (BLOCK - 2)];
         let mut pad: [Frame; BLOCK];
         for chunk in frames.chunks(BLOCK) {
             offsets.push(data.len() as u32);
@@ -237,36 +239,36 @@ impl Packed {
                     &pad
                 }
             };
-            // Branch-free per channel, so it vectorizes.
-            let mut inexact = false;
-            for (c, x) in block.iter_mut().enumerate() {
-                for (x, frame) in x.iter_mut().zip(src) {
-                    let q = frame[c] * scale;
-                    *x = q as i32;
-                    inexact |= !exact_at(q, scale);
-                }
+            // In f64, adding 2^52 + 2^51 leaves an integer exactly and its
+            // two's complement in the low bits, and rounds away any fraction:
+            // an exactness test and conversion that vectorize, unlike `as`.
+            const ROUND: f64 = 6755399441055744.0;
+            let (scale, mut inexact) = (f64::from(scale), false);
+            for (q, &x) in q.iter_mut().zip(src.as_flattened()) {
+                let (x, t) = (f64::from(x) * scale, f64::from(x) * scale + ROUND);
+                *q = t.to_bits() as i32;
+                inexact |= !((t - ROUND == x) & (x >= -scale) & (x < scale));
             }
             if inexact {
                 return None;
             }
-            let mut widths = [0u8; 2];
-            for c in 0..2 {
-                let (x, r) = (&block[c], &mut residuals[c]);
-                let mut magnitude = 0u32;
-                for i in 0..BLOCK - 2 {
-                    r[i] = x[i + 2].wrapping_sub(x[i + 1].wrapping_mul(2)).wrapping_add(x[i]);
-                    magnitude |= (r[i] ^ (r[i] >> 31)) as u32;
+            let mut magnitude = [0u32; 2];
+            for (i, r) in residuals.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                for c in 0..2 {
+                    let at = 2 * i + c;
+                    r[c] = q[at + 4].wrapping_sub(q[at + 2].wrapping_mul(2)).wrapping_add(q[at]);
+                    magnitude[c] |= (r[c] ^ (r[c] >> 31)) as u32;
                 }
-                widths[c] = if magnitude == 0 { 0 } else { 33 - magnitude.leading_zeros() as u8 };
             }
+            let widths = magnitude.map(|m| if m == 0 { 0 } else { 33 - m.leading_zeros() as u8 });
             data.extend(widths);
-            for x in &block {
-                data.extend(&x[0].to_le_bytes()[..3]);
-                data.extend(&x[1].to_le_bytes()[..3]);
+            for c in 0..2 {
+                data.extend(&q[c].to_le_bytes()[..3]);
+                data.extend(&q[2 + c].to_le_bytes()[..3]);
             }
-            for (r, &w) in residuals.iter().zip(&widths) {
+            for (c, &w) in widths.iter().enumerate() {
                 let (mask, mut acc, mut bits) = ((1u64 << w) - 1, 0u64, 0);
-                for &v in r {
+                for &v in residuals.iter().skip(c).step_by(2) {
                     acc |= (v as u64 & mask) << bits;
                     bits += u32::from(w);
                     if bits >= 32 {
@@ -980,6 +982,13 @@ mod decode_bench {
                 [x as f32 / I24_SCALE, (x / 2) as f32 / I24_SCALE]
             })
             .collect();
+        let mut best = f64::MAX;
+        for _ in 0..20 {
+            let t = cpu();
+            assert!(matches!(Pcm::pack(&frames, true), Pcm::Packed(_)));
+            best = best.min(cpu() - t);
+        }
+        println!("pack: {:.2} ns per frame", best / frames.len() as f64 * 1e9);
         let packed = Pcm::pack(&frames, true);
         let raw = Pcm::pack(&frames, false);
         assert!(matches!(packed, Pcm::Packed(_)) && matches!(raw, Pcm::I24(..)));
