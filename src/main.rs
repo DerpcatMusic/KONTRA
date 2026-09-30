@@ -502,6 +502,9 @@ fn bench_load(path: &Path) -> Result<()> {
         bank.zones().len(),
         bank.skipped_zones,
     );
+    if let Some(warning) = &bank.warning {
+        eprintln!("{name}: {warning}");
+    }
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(bank)));
     let started = std::time::Instant::now();

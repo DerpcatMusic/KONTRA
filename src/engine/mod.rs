@@ -807,17 +807,20 @@ impl Player {
                     trusted: 0,
                 }
             } else {
+                // An offset past the resident range streams from its first
+                // window frame (one before, for the cubic's left tap).
+                let from = limit.max(offset.saturating_sub(1));
                 let tag = bank.slots()[slot as usize].configure(
                     play.sample,
                     &play.map,
                     wraps,
-                    limit,
+                    from,
                     offset,
                 );
                 Stream {
                     slot,
                     tag,
-                    trusted: limit,
+                    trusted: from,
                 }
             }
         });

@@ -1503,3 +1503,55 @@ fn steady_scripted_playback_with_diagnostics_does_not_allocate() {
     let whole = "0123456789012345678901234567890123456789".repeat(2);
     assert_eq!(snapshot[0]["@log"], Value::Text(whole));
 }
+
+/// Areia 16 Violins keeps a 12000-frame start-offset range for each of
+/// 24576 samples: 1.8 GiB resident. Tight budgets shed resident
+/// start-offset range, then preload, then load over budget: never fail.
+/// Offsets past the resident range stream and play as they do from RAM.
+#[test]
+fn tight_budgets_stream_start_offsets_instead_of_failing() {
+    let dir = std::env::temp_dir().join(format!("kontakto-cover-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, frames) = (dir.join("offset.wav"), 60_000);
+    write_wav_bits(&path, frames, 24);
+    let zone = Zone {
+        sample: path.clone(),
+        start_mod: Some(20_000),
+        ..Zone::default()
+    };
+    let instrument = instrument(vec![Group::default()], vec![zone.clone()]);
+    let full = Bank::load(&instrument).unwrap();
+    assert_eq!(full.warning, None);
+    // Room for the preload but only part of the start-offset range.
+    let capped = Bank::load_within(&instrument, full.planned - 10_000 * 6).unwrap();
+    assert!(capped.preload >= 1024 && capped.cover < 20_000);
+    assert!(capped.warning.as_ref().unwrap().contains("offsets"));
+    let starved = Bank::load_within(&instrument, 1).unwrap();
+    assert_eq!(starved.cover, 0);
+    assert!(starved.warning.as_ref().unwrap().contains("over"));
+    for bank in [capped, starved] {
+        let decoded = kontakto::audio::decode(&path, frames).unwrap();
+        let ram = Bank::from_samples(
+            vec![Group::default()],
+            vec![zone.clone()],
+            vec![(path.clone(), decoded)],
+        )
+        .unwrap();
+        let (mut a, mut b) = (engine_with(bank), engine_with(ram));
+        a.blocking_streams = true;
+        let mut note = NoteEvent::new(0, 60, 100);
+        // 17640 frames: past both banks' resident offset range.
+        note.offset_us = 400_000;
+        a.start_event(&note).unwrap();
+        b.start_event(&note).unwrap();
+        let mut heard = 0f32;
+        for block in 0..200 {
+            let (x, y) = (render(&mut a, 128), render(&mut b, 128));
+            assert!(x == y, "diverges in block {block}");
+            heard = x.iter().fold(heard, |m, f| m.max(f[0].abs()));
+        }
+        assert!(heard > 0.01);
+        assert_eq!(a.underruns(), 0);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
