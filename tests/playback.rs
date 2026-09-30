@@ -318,6 +318,26 @@ fn reset_rls_trig_counter_restarts_the_count() {
     assert!((out - 0.4 * 0.9).abs() < 1e-3, "{out}");
 }
 
+/// Pacific's release groups send the counter to sample start (RTC_PITCH): the
+/// release skips the sustain pre-roll its sample opens with. Dropping this
+/// route made the library audit about 4 dB louder, not more correct.
+#[test]
+fn release_trigger_counter_moves_release_sample_start() {
+    let mut group = counted_release();
+    group.mods[0].name = "RTC_PITCH".into();
+    group.mods[0].target = ModTarget::SampleStart;
+    let zone = Zone { start_mod: Some(1000), ..Zone::default() };
+    let ramp = Sample { rate: 48000, frames: (0..2000).map(|i| [i as f32 / 2000.0; 2]).collect() };
+    let bank = Bank::from_samples(vec![group], vec![zone], vec![(PathBuf::new(), ramp)]).unwrap();
+    let mut e = engine_with(bank);
+    e.note_on(0, 60, 100);
+    render(&mut e, 24000);
+    e.note_off(0, 60);
+    // Held 500 ms of T = 1000: x = 0.5, so 500 of the 1000 start-mod frames.
+    let out = render(&mut e, 60)[59][0];
+    assert!((out - 559.0 / 2000.0).abs() < 2e-3, "{out}");
+}
+
 fn sine(period: f32, frames: usize) -> Sample {
     Sample {
         rate: 48000,

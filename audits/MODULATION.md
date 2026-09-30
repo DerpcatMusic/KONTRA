@@ -351,6 +351,18 @@ Why this reading (medium confidence):
   after long notes about 2 dB quieter) and fall in 348 (Pacific `T` = 1,500: releases
   after short notes quieter).
 
+Level effect (library audit, `audit-patch`, 0.7 s notes): applying the counter took
+Pacific 16 Violins Legato Sustains from -34.6 to -38.5 dBFS, Dolce 2nd Violins -34.7 to
+-36.4, CHORUS -8.6 to -9.2, Vista 5 Violins -32.9 to -33.1; with the counter source
+dropped each returns to its old level (Dolce -34.8). In Pacific it is all sample start:
+its release samples open with about 0.5 s of sustain at -33 dB (above the held note's
+-38 dB) before the release decays, and the counter's RTC_PITCH (intensity 0.50, shaper
+1 up to x = 0.44, 0.42 at x = 1) skips 0.55 of the 47,130-frame start range there.
+Forcing that offset back to the old 2,780 frames gives -34.5. The old level replayed
+the pre-roll after every note-off. Held 0.7 s of `T` = 1,500, both counter directions
+give the same skip (shaper 0.98 against 1.0), so this level does not hinge on the
+unverified direction.
+
 Unverified: that the source is normalised by `T` (rather than by a fixed range), the
 direction (no Kontakt render to compare), millisecond quantisation of the counter,
 and the invert flag, which stays ignored as for every other source. The counter is
