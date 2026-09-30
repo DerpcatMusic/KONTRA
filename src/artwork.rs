@@ -619,6 +619,15 @@ mod tests {
     }
 
     #[test]
+    fn banners_fade_right_and_stay_dim() {
+        let white = super::Image::rgba(40, 10, vec![255u8; 40 * 10 * 4]).unwrap();
+        let b = super::banner(&white, 20, 4).unwrap();
+        let px = b.rgba.as_chunks::<4>().0;
+        assert_eq!((px[0][3], px[19][3]), (255, 0), "opaque at the left, gone at the right");
+        assert!(px.iter().all(|p| p[..3].iter().all(|&c| c < 110)), "white artwork dims under a title");
+    }
+
+    #[test]
     fn backdrops_settle_dim_and_small() {
         let bright = super::Image::rgba(300, 100, [250u8, 200, 40, 255].repeat(300 * 100)).unwrap();
         let b = super::backdrop(&bright).unwrap();
