@@ -1,0 +1,28 @@
+# Vendored from moose bffa467 with KONTRA's output port name patch; see vendor/MOOSE-PATCHES.md.
+[package]
+name = "moose-clap"
+version = "7.0.0"
+repository = "https://github.com/Matari-Audio/moose"
+homepage = "https://github.com/Matari-Audio/moose"
+edition = "2024"
+license = "LicenseRef-TruceLicense-1.0"
+rust-version = "1.92"
+description = "CLAP format wrapper for moose"
+
+[dependencies]
+moose-core = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497" }
+moose-params = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497" }
+clap-sys = "0.5"
+log = "0.4"
+# Wait-free bounded MPMC queue. Used for the GUI → audio param change
+# handoff and the host/editor → audio state-load handoff so the audio
+# thread is the only one that ever holds `&mut Plugin`.
+crossbeam-queue = "0.3"
+
+# macOS-only: anchor the editor's child NSView to the parent's
+# top in unflipped Cocoa coordinates so the editor doesn't render
+# in the bottom-left of any extra plugin-window space Reaper
+# leaves around it. Pure `msg_send!` against AppKit.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
