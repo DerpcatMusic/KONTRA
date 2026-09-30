@@ -278,7 +278,7 @@ fn lag_factor(lag: f32, frames: usize, rate: f32) -> f32 {
 // ---- Engine parameters ------------------------------------------------------------
 
 /// `$ENGINE_PAR_*` ids, as positions in the runtime's engine parameter table.
-mod id {
+pub mod id {
     use super::ENGINE_PAR_BASE as B;
     pub const VOLUME: i32 = B;
     pub const PAN: i32 = B + 1;

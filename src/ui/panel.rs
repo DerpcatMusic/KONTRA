@@ -69,6 +69,10 @@ pub struct Item {
     name: String,
     /// The script's own value text (`$CONTROL_PAR_LABEL`).
     label: String,
+    /// The unit the script gave the knob (`set_knob_unit`).
+    unit: Option<Unit>,
+    /// A switch that turns on or off whatever sits beside it.
+    enable: bool,
     raw: f64,
     min: f64,
     max: f64,
@@ -102,9 +106,95 @@ pub fn clean(text: &str) -> String {
 const NOISE: &[&str] = &[
     "but", "button", "btn", "switch", "sw", "slider", "knob", "label", "lbl", "pic", "dark",
     "light", "big", "small", "toggle", "onoff", "bg", "img", "ver", "hor", "vert", "horiz",
-    "k4", "bip", "clear", "empty", "of", "transparent", "select", "screen", "item", "byp",
-    "on", "off", "fdr", "knb", "sli", "swi", "mnu", "gi", "gui", "tab", "dropdown", "arrow",
+    "vertical", "horizontal", "bip", "clear", "empty", "of", "transparent", "select",
+    "screen", "item", "byp", "on", "off", "fdr", "knb", "sli", "swi", "mnu", "gi", "gui", "tab",
+    "dropdown", "arrow", "bypass", "enable", "ui",
 ];
+
+/// Words that make a switch an on/off for something beside it.
+const ENABLE: &[&str] = &["onoff", "byp", "bypass", "enable", "on", "off"];
+
+/// Words scripts shorten for want of pixels, spelled out. A trailing period
+/// marks an abbreviation too ("Rel. Off.").
+const ABBREVIATIONS: &[(&str, &str)] = &[
+    ("amt", "Amount"),
+    ("art", "Articulation"),
+    ("artic", "Articulation"),
+    ("att", "Attack"),
+    ("atk", "Attack"),
+    ("ctrl", "Control"),
+    ("dec", "Decay"),
+    ("def", "Default"),
+    ("dyn", "Dynamics"),
+    ("env", "Envelope"),
+    ("expr", "Expression"),
+    ("freq", "Frequency"),
+    ("infl", "Influence"),
+    ("leg", "Legato"),
+    ("lvl", "Level"),
+    ("off", "Offset"),
+    ("pizz", "Pizzicato"),
+    ("rel", "Release"),
+    ("res", "Resonance"),
+    ("rev", "Reverb"),
+    ("rnd", "Random"),
+    ("rvrb", "Reverb"),
+    ("sens", "Sensitivity"),
+    ("spd", "Speed"),
+    ("stac", "Staccato"),
+    ("sus", "Sustain"),
+    ("thresh", "Threshold"),
+    ("trem", "Tremolo"),
+    ("tun", "Tune"),
+    ("vel", "Velocity"),
+    ("vol", "Volume"),
+];
+
+/// `name` with its abbreviations spelled out: "Rel Vol" is "Release Volume".
+/// "Off" only counts with its period; alone it is a state.
+fn spell_out(name: &str) -> String {
+    name.split(' ')
+        .map(|word| {
+            let dotted = word.len() > 2 && word.ends_with('.');
+            let bare = word.trim_end_matches('.').to_lowercase();
+            ABBREVIATIONS
+                .iter()
+                .find(|(short, _)| *short == bare && (dotted || bare != "off"))
+                .map_or(word, |(_, long)| long)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A label that shows a value, not a name: "0.0 dB", "20.0 ms", "63 %", "OFF".
+fn is_readout(text: &str) -> bool {
+    let t = text.trim();
+    if matches!(t.to_lowercase().as_str(), "off" | "on" | "-inf" | "-inf db" | "def.") {
+        return true;
+    }
+    match leading_number(t) {
+        Some((_, rest)) => rest.is_empty() || unit_token(rest),
+        None => false,
+    }
+}
+
+/// A leading number and what follows it, trimmed: "25000.0" is (25000, "").
+fn leading_number(text: &str) -> Option<(f64, &str)> {
+    let t = text.trim();
+    let end = t
+        .char_indices()
+        .find(|&(i, c)| !(c.is_ascii_digit() || c == '.' || (i == 0 && matches!(c, '-' | '+'))))
+        .map_or(t.len(), |(i, _)| i);
+    let value = t[..end].parse::<f64>().ok()?;
+    Some((value, t[end..].trim()))
+}
+
+fn unit_token(text: &str) -> bool {
+    matches!(
+        text.to_lowercase().as_str(),
+        "db" | "ms" | "s" | "hz" | "khz" | "%" | "st" | "ct" | "cents" | "x" | "bpm"
+    )
+}
 
 /// `sliUCVol` as `sli UC Vol`: camel-case humps are words.
 fn humps(ident: &str) -> String {
@@ -124,21 +214,31 @@ fn humps(ident: &str) -> String {
     out
 }
 
-/// Readable words from an identifier: `pyramid_but_classic_mix_1_of_2`
-/// becomes "Classic Mix" when `prefix` is "pyramid". None when nothing is left.
-fn words(ident: &str, prefix: &str) -> Option<String> {
+/// The words of an identifier that may say what it does, lowercase: humps
+/// and separators split, look-words and numbering dropped, trailing digits
+/// cut (`onoff0`, `space2`).
+fn raw_words(ident: &str) -> Vec<String> {
     // A letter and digits (`t1`, `k4`) number a page or a skin, not a function.
     let numbering = |w: &str| {
         let mut c = w.chars();
         c.next().is_some_and(|f| f.is_alphabetic()) && c.all(|d| d.is_ascii_digit()) && w.len() > 1
     };
-    let parts: Vec<String> = humps(ident.trim_start_matches(['$', '~', '?', '%', '@', '!']))
+    humps(ident.trim_start_matches(['$', '~', '?', '%', '@', '!']))
         .split(['_', '-', ' ', '.'])
         .map(str::to_lowercase)
-        .filter(|w| !w.is_empty() && w != prefix)
-        .filter(|w| !NOISE.contains(&w.as_str()) && !w.chars().all(|c| c.is_ascii_digit()))
         .filter(|w| !numbering(w))
-        .collect();
+        .map(|w| w.trim_end_matches(|c: char| c.is_ascii_digit()).to_owned())
+        .filter(|w| !w.is_empty() && !NOISE.contains(&w.as_str()))
+        .collect()
+}
+
+/// Readable words from an identifier: `pyramid_but_classic_mix_1_of_2`
+/// becomes "Classic Mix" when "pyramid" is a library prefix, and `Mas_sliDyn`
+/// "Dynamics" when "mas" is. None when nothing is left.
+fn words(ident: &str, prefixes: &[String]) -> Option<String> {
+    let mut parts = raw_words(ident);
+    let lead = parts.iter().take_while(|w| prefixes.contains(w)).count();
+    parts.drain(..lead);
     if parts.is_empty() {
         return None;
     }
@@ -148,7 +248,7 @@ fn words(ident: &str, prefix: &str) -> Option<String> {
             .map(|f| f.to_uppercase().chain(c).collect::<String>())
             .unwrap_or_default()
     };
-    Some(parts.iter().map(title).collect::<Vec<_>>().join(" "))
+    Some(spell_out(&parts.iter().map(title).collect::<Vec<_>>().join(" ")))
 }
 
 /// A variable name a person wrote, not an obfuscator's `$q5nsy` or
@@ -161,24 +261,41 @@ fn readable(variable: &str) -> bool {
         || !word.chars().any(|c| c.is_ascii_digit()) && vowels * 10 >= word.len() * 3
 }
 
-/// The first word most picture names share: the library's own prefix.
-fn picture_prefix(interface: &Interface) -> String {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut total = 0;
-    for c in &interface.controls {
-        if let Some(Value::Text(p)) = c.properties.get("$CONTROL_PAR_PICTURE")
-            && let Some(first) = p.split(['_', '-']).next().filter(|f| !f.is_empty())
-        {
-            *counts.entry(first.to_lowercase()).or_default() += 1;
+/// The library's own prefixes: the first word most picture names share
+/// ("pyramid", "uc"), and the one most readable variable names share
+/// ("mas"). They say whose control it is, never what it does.
+fn prefixes(interface: &Interface) -> Vec<String> {
+    let leading = |names: &mut dyn Iterator<Item = String>| {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut total = 0;
+        for first in names {
+            *counts.entry(first).or_default() += 1;
             total += 1;
         }
-    }
-    counts
-        .into_iter()
-        .max_by_key(|(_, n)| *n)
-        .filter(|(_, n)| *n * 2 > total && *n > 2)
-        .map(|(p, _)| p)
-        .unwrap_or_default()
+        counts
+            .into_iter()
+            .max_by_key(|(_, n)| *n)
+            .filter(|(_, n)| *n * 2 > total && *n > 2)
+            .map(|(p, _)| p)
+    };
+    // A picture's first word that says anything: `gi_uc_knb` leads with "uc".
+    let pictures = &mut interface.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+        Some(Value::Text(p)) => raw_words(p).into_iter().next(),
+        _ => None,
+    });
+    // A variable's very first word, as written: `$label_art_x` leads with a
+    // look-word, so its "art" is never taken for a prefix.
+    let variables = &mut interface
+        .controls
+        .iter()
+        .map(|c| c.variable.as_str())
+        .filter(|v| readable(v))
+        .filter_map(|v| {
+            let first = humps(v.trim_start_matches(['$', '~', '?', '%', '@', '!']));
+            let first = first.split(['_', '-', ' ', '.']).next()?.to_lowercase();
+            raw_words(&first).into_iter().next().filter(|w| *w == first)
+        });
+    leading(pictures).into_iter().chain(leading(variables)).collect()
 }
 
 /// A control read for what it is, before it has a name.
@@ -258,17 +375,29 @@ fn read(
     };
     let own = clean(text("TEXT"));
     let mentions_pan = |s: &str| s.to_lowercase().split(['_', ' ', '$']).any(|w| w == "pan");
+    // A range around zero (Una Corda's Color, -40 to 40) is bipolar too.
     let bipolar = matches!(face, Face::Knob | Face::Fader | Face::VFader)
         && (picture_name.to_lowercase().contains("bip")
             || mentions_pan(&own)
-            || mentions_pan(&c.variable));
+            || mentions_pan(&c.variable)
+            || (min < 0. && min == -max));
     let reset = int("DEFAULT_VALUE").unwrap_or(if bipolar { (min + max) / 2. } else { min });
+    let enable = face == Face::Toggle
+        && own.is_empty()
+        && [picture_name, c.variable.as_str()].iter().any(|n| {
+            humps(n)
+                .to_lowercase()
+                .split(['_', '-', ' ', '.', '$'])
+                .any(|w| ENABLE.contains(&w.trim_end_matches(|c: char| c.is_ascii_digit())))
+        });
     let item = Item {
         control,
         face,
         bipolar,
-        name: own,
+        name: spell_out(&own),
         label: clean(text("LABEL")),
+        unit: Unit::of_knob(text("UNIT")),
+        enable,
         raw,
         min,
         max,
@@ -280,15 +409,16 @@ fn read(
 
 /// Visible controls, named, with the labels that named them taken out.
 fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec<Item> {
-    let prefix = picture_prefix(interface);
+    let prefixes = prefixes(interface);
     let mut read: Vec<(Item, String)> = interface
         .controls
         .iter()
         .enumerate()
         .filter_map(|(n, c)| read(n, c, interface, pictures))
-        // A label that is only a number is a readout; ours show the value.
+        // A label that shows a value ("0.0 dB", "63") is a readout; ours
+        // show the value, and it names nothing.
         .filter(|(i, _)| {
-            i.face != Face::Text || i.name.chars().any(char::is_alphabetic)
+            i.face != Face::Text || i.name.chars().any(char::is_alphabetic) && !is_readout(&i.name)
         })
         .collect();
     // Continuous controls take the label nearest them first, then switches.
@@ -331,8 +461,8 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
         let variable = &interface.controls[item.control].variable;
         // A picture that says no more than a couple of letters ("Uc") yields
         // to a readable variable name.
-        let from_picture = words(picture, &prefix);
-        let from_variable = readable(variable).then(|| words(variable, "")).flatten();
+        let from_picture = words(picture, &prefixes);
+        let from_variable = readable(variable).then(|| words(variable, &prefixes)).flatten();
         item.name = match from_picture {
             Some(p) if p.len() <= 3 && from_variable.is_some() => from_variable,
             Some(p) => Some(p),
@@ -341,12 +471,28 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
             .or_else(|| item.bipolar.then(|| "Pan".to_owned()))
             .unwrap_or_default();
     }
-    let kept: Vec<Item> = read
+    let mut kept: Vec<Item> = read
         .into_iter()
         .enumerate()
         .filter(|(n, (i, _))| !taken[*n] && (!i.name.is_empty() || i.face == Face::Menu))
         .map(|(_, (i, _))| i)
         .collect();
+    // An on/off switch against another reads "On" beside it: Solo's
+    // articulation rows are "Sustained · On", not "Sustained · Articulation".
+    let beside: Vec<bool> = kept
+        .iter()
+        .map(|i| {
+            i.enable
+                && kept.iter().any(|o| {
+                    !std::ptr::eq(i, o) && o.face == Face::Toggle && !o.enable && touching(&i.at, &o.at)
+                })
+        })
+        .collect();
+    for (item, beside) in kept.iter_mut().zip(beside) {
+        if beside {
+            item.name = "On".into();
+        }
+    }
     // A one-letter switch reads only beside its siblings (a strip's M and S);
     // alone, like Vista's corner "B", it is a mark, not a control.
     kept.iter()
@@ -537,20 +683,163 @@ fn section_title(title: &str) -> El {
         .w(Len::Pct(100.))
 }
 
-/// What a knob or fader reads: the script's own text, as Kontakt shows it
-/// (Vista's "0.0" is decibels, not a raw value), else pan or a percentage.
+/// What a continuous control's value is measured in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Unit {
+    Decibels,
+    Millis,
+    Hertz,
+    Percent,
+    Semitones,
+    Pan,
+}
+
+impl Unit {
+    /// The unit a script gave its knob: `$KNOB_UNIT_DB` and so on.
+    fn of_knob(unit: &str) -> Option<Self> {
+        Some(match unit.trim_start_matches('$').strip_prefix("KNOB_UNIT_")? {
+            "DB" => Self::Decibels,
+            "MS" => Self::Millis,
+            "HZ" => Self::Hertz,
+            "PERCENT" => Self::Percent,
+            "ST" => Self::Semitones,
+            _ => return None,
+        })
+    }
+
+    /// The unit a name implies, by its last word that implies one: a
+    /// "Release Volume" is a level, not a time.
+    fn of_name(name: &str) -> Option<Self> {
+        name.split_whitespace().rev().find_map(|w| {
+            Some(match w.trim_end_matches('.').to_lowercase().as_str() {
+                "volume" | "gain" | "level" | "send" => Self::Decibels,
+                "attack" | "hold" | "decay" | "release" | "time" | "delay" | "predelay" => Self::Millis,
+                "cutoff" | "frequency" => Self::Hertz,
+                "tune" | "transpose" | "pitch" | "detune" => Self::Semitones,
+                "pan" | "balance" => Self::Pan,
+                "width" | "mix" | "amount" | "dynamics" | "expression" | "depth" | "speed" => Self::Percent,
+                _ => return None,
+            })
+        })
+    }
+
+    /// `value` in this unit: "0.0 dB", "120 ms", "1.2 kHz", "+3 st", "L 20".
+    fn format(self, value: f64) -> String {
+        match self {
+            Self::Decibels if !value.is_finite() || value <= -120. => "-inf dB".into(),
+            // Kontakt shows 0.0, never -0.0.
+            Self::Decibels => format!("{:.1} dB", (value * 10.).round() / 10. + 0.),
+            Self::Millis if value >= 1000. => format!("{:.2} s", value / 1000.),
+            Self::Millis if value >= 100. => format!("{value:.0} ms"),
+            Self::Millis => format!("{value:.1} ms"),
+            Self::Hertz if value >= 1000. => format!("{:.1} kHz", value / 1000.),
+            Self::Hertz => format!("{value:.0} Hz"),
+            Self::Percent => format!("{value:.0} %"),
+            Self::Semitones if value.abs() < 0.005 => "0 st".into(),
+            Self::Semitones if value.fract() == 0. => format!("{value:+.0} st"),
+            Self::Semitones => format!("{value:+.2} st"),
+            Self::Pan => pan_text(value),
+        }
+    }
+
+    /// The widest readout, so a fader keeps its length as values change.
+    fn widest(self) -> &'static str {
+        match self {
+            Self::Decibels => "-60.0 dB",
+            Self::Millis => "000.0 ms",
+            Self::Hertz => "00.0 kHz",
+            Self::Percent => "100 %",
+            Self::Semitones => "+00.00 st",
+            Self::Pan => "R 100",
+        }
+    }
+
+    /// The engine parameter a control in this unit drives when it spans
+    /// the engine's own 0 to 1,000,000: Vista's mic Volume is the group
+    /// volume, read by Kontakt's volume law.
+    fn engine_par(self, name: &str) -> Option<i32> {
+        use crate::engine::engine_par as id;
+        let says = |w: &str| name.to_lowercase().split(' ').any(|n| n == w);
+        Some(match self {
+            Self::Decibels => id::VOLUME,
+            Self::Hertz => id::CUTOFF,
+            Self::Semitones => id::TUNE,
+            Self::Pan => id::PAN,
+            Self::Millis if says("attack") => id::ATTACK,
+            Self::Millis if says("hold") => id::HOLD,
+            Self::Millis if says("decay") => id::DECAY,
+            Self::Millis if says("release") => id::RELEASE,
+            Self::Percent if says("width") => id::STEREO,
+            _ => return None,
+        })
+    }
+}
+
+/// The unit `item` reads in: the script's, else what its name says.
+fn unit_of(item: &Item) -> Option<Unit> {
+    item.unit.or_else(|| Unit::of_name(&item.name))
+}
+
+/// What a knob or fader reads, always with its unit. The script's own text
+/// when it says something ("-inf dB", "OFF", "63 %"); a bare number from it
+/// (Vista's "0.0") gets the unit its name or knob gives; failing that, a
+/// control over the engine's range reads by the engine's law; else pan, a
+/// signed percentage around a bipolar middle, or a percentage.
 fn readout(item: &Item, value: f64) -> String {
-    let unit = if item.max > item.min {
-        ((value - item.min) / (item.max - item.min)).clamp(0., 1.)
-    } else {
-        0.
-    };
-    if !item.label.is_empty() {
-        item.label.clone()
-    } else if item.bipolar {
-        pan_text(unit * 2. - 1.)
-    } else {
-        format!("{:.0} %", unit * 100.)
+    let unit = unit_of(item);
+    let label = item.label.trim();
+    match leading_number(label) {
+        _ if label.is_empty() => {}
+        Some((n, "")) => {
+            if let Some(u) = unit.filter(|u| *u != Unit::Pan) {
+                return u.format(n);
+            }
+        }
+        // "0%" reads "0 %".
+        Some((_, rest)) if unit_token(rest) => {
+            let digits = &label[..label.len() - rest.len()];
+            return format!("{} {rest}", digits.trim_end());
+        }
+        _ => return label.to_owned(),
+    }
+    if item.min == 0. && item.max == 1_000_000. {
+        let law = unit.and_then(|u| Some((u, u.engine_par(&item.name)?)));
+        if let Some((u, shown)) =
+            law.and_then(|(u, id)| Some((u, crate::engine::engine_par_display(id, value.round() as i32)?)))
+        {
+            return match shown {
+                crate::engine::Disp::Gain(_) => format!("{shown} dB"),
+                crate::engine::Disp::Pan(_) => shown.to_string(),
+                crate::engine::Disp::Num(v, _) => u.format(f64::from(v)),
+            };
+        }
+    }
+    let span = item.max - item.min;
+    let at = if span > 0. { ((value - item.min) / span).clamp(0., 1.) } else { 0. };
+    match unit {
+        Some(Unit::Pan) => pan_text(at * 2. - 1.),
+        _ if item.bipolar => match ((at * 2. - 1.) * 100.).round() {
+            0. => "0 %".into(),
+            n => format!("{n:+.0} %"),
+        },
+        _ => format!("{:.0} %", at * 100.),
+    }
+}
+
+/// The widest `item` reads, for its fader's length.
+fn widest(item: &Item) -> &'static str {
+    match unit_of(item) {
+        Some(u) => u.widest(),
+        None if item.bipolar => "+100 %",
+        None => "100 %",
+    }
+}
+
+/// A value field's text: whole numbers, signed semitones for a transpose.
+fn value_text(item: &Item) -> String {
+    match unit_of(item) {
+        Some(Unit::Semitones) => Unit::Semitones.format(item.raw),
+        _ => format!("{}", item.raw),
     }
 }
 
@@ -568,9 +857,9 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
                 _ => item.raw,
             };
             let kind = if item.bipolar {
-                Fader::bipolar(&range, item.reset, "R 100")
+                Fader::bipolar(&range, item.reset, widest(item))
             } else {
-                Fader::over(&range, item.reset, "100 %")
+                Fader::over(&range, item.reset, widest(item))
             };
             let (_, el) = match item.face {
                 Face::Knob => dial(ui, &id, name, &mut value, range, kind),
@@ -650,7 +939,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
         }
         Face::Value => {
             let mut value = item.raw;
-            let el = number(ui, id.as_str(), name, &mut value, range, format!("{}", item.raw));
+            let el = number(ui, id.as_str(), name, &mut value, range, value_text(item));
             if value.round() != item.raw {
                 cx.p.shared.edit_control(part, item.control, value.round() as i32);
             }
@@ -751,7 +1040,7 @@ mod tests {
             .flat_map(|s| s.columns.iter().flatten())
             .map(|r| r.iter().map(|i| i.name.as_str()).collect())
             .collect();
-        assert_eq!(names, [vec!["Legato", "Port"], vec!["Vel"]]);
+        assert_eq!(names, [vec!["Legato", "Port"], vec!["Velocity"]]);
         // A knob far below the row is a band of its own, not a column under it.
         let mut interface = interface;
         interface.controls.push(control("ui_knob", "$tone", &with(at(20, 200, 32, 40), &[text("Tone")])));
@@ -761,13 +1050,98 @@ mod tests {
 
     #[test]
     fn names_come_from_pictures_and_variables() {
-        assert_eq!(words("pyramid_but_classic_mix_1_of_2", "pyramid").as_deref(), Some("Classic Mix"));
-        assert_eq!(words("$slider_controller_reverb_mix", "").as_deref(), Some("Controller Reverb Mix"));
-        assert_eq!(words("K4_SLIDER_BIP_1", ""), None);
-        assert_eq!(words("$T1_sliUCVol", "").as_deref(), Some("Uc Vol"));
-        assert_eq!(words("gi_uc_knb_127", ""), Some("Uc".into()));
+        let pyramid = ["pyramid".to_owned()];
+        assert_eq!(words("pyramid_but_classic_mix_1_of_2", &pyramid).as_deref(), Some("Classic Mix"));
+        assert_eq!(words("$slider_controller_reverb_mix", &[]).as_deref(), Some("Controller Reverb Mix"));
+        assert_eq!(words("K4_SLIDER_BIP_1", &[]), None);
+        assert_eq!(words("$T1_sliUCVol", &[]).as_deref(), Some("Uc Volume"));
+        assert_eq!(words("gi_uc_knb_127", &[]), Some("Uc".into()));
+        assert_eq!(words("gi_uc_btn_space2", &["uc".into()]).as_deref(), Some("Space"));
+        assert_eq!(words("$switch_art_onoff0", &[]).as_deref(), Some("Articulation"));
         assert!(!readable("$q5nsy") && !readable("$zptkf") && !readable("$ruqnf"));
         assert!(readable("$vibrato") && readable("$mic_volume"));
         assert_eq!(clean("\t\t\t   Legato Rebowed"), "Legato Rebowed");
+        assert_eq!(spell_out("Rel Vol"), "Release Volume");
+        assert_eq!(spell_out("Atk Thresh"), "Attack Threshold");
+        assert_eq!(spell_out("Rel. Off."), "Release Offset");
+        assert_eq!(spell_out("Mute Off"), "Mute Off", "a bare Off is a state");
+        assert!(is_readout("0.0 dB") && is_readout("20.0 ms") && is_readout("63") && is_readout("OFF"));
+        assert!(!is_readout("Dynamics") && !is_readout("C-1 Legato"));
+    }
+
+    /// Una Corda's and Solo's script-internal names come out as words a
+    /// player would use: library prefixes, numbering and on/off suffixes go,
+    /// abbreviations are spelled out, an on/off switch beside its
+    /// articulation reads "On".
+    #[test]
+    fn library_prefixes_and_abbreviations_leave_the_names() {
+        let pic = |p: &str| ("PICTURE", Value::Text(p.into()));
+        let una_corda = [
+            ("ui_switch", "$Mas_swiTab1", "gi_uc_btn_tab_workbench", 10),
+            ("ui_switch", "$Mas_swiTab2", "gi_uc_btn_tab_response", 120),
+            ("ui_slider", "$Mas_sliColor", "gi_uc_knb_127", 240),
+            ("ui_slider", "$Mas_sliDyn", "gi_uc_knb_127", 360),
+            ("ui_switch", "$Mas_swiSpace", "gi_uc_btn_space2", 480),
+        ];
+        let controls = una_corda
+            .iter()
+            .map(|(kind, var, p, x)| control(kind, var, &with(at(*x, 10, 60, 60), &[pic(p)])))
+            .collect();
+        let interface = Interface { width: 632, height: 200, controls, ..Default::default() };
+        let names: Vec<String> = items(&interface, &HashMap::new()).into_iter().map(|i| i.name).collect();
+        assert_eq!(names, ["Workbench", "Response", "Color", "Dynamics", "Space"]);
+
+        let controls = vec![
+            control("ui_label", "$label_art_select2", &with(at(10, 10, 100, 18), &[("TEXT", Value::Text("\t\tSustained".into()))])),
+            control("ui_switch", "$switch_art_select_transparent2", &with(at(10, 10, 100, 18), &[pic("empty")])),
+            control("ui_switch", "$switch_art_onoff2", &with(at(110, 10, 18, 18), &[pic("pyramid_but_screen_item_byp")])),
+            control("ui_knob", "$lfw", &with(at(10, 60, 40, 40), &[("TEXT", Value::Text("Rel Vol".into()))])),
+        ];
+        let interface = Interface { width: 632, height: 200, controls, ..Default::default() };
+        let names: Vec<String> = items(&interface, &HashMap::new()).into_iter().map(|i| i.name).collect();
+        assert_eq!(names, ["Sustained", "On", "Release Volume"]);
+    }
+
+    /// Every knob and fader reads with its unit, never a bare number.
+    #[test]
+    fn values_read_with_their_units() {
+        let item = |name: &str, label: &str, min: f64, max: f64| Item {
+            control: 0,
+            face: Face::Knob,
+            bipolar: min < 0. && min == -max,
+            name: name.into(),
+            label: label.into(),
+            unit: None,
+            enable: false,
+            raw: 0.,
+            min,
+            max,
+            reset: 0.,
+            at: Rect::default(),
+        };
+        // Vista's mic Volume: the script's "0.0" is decibels.
+        assert_eq!(readout(&item("Volume", "0.0", 0., 1e6), 630_000.), "0.0 dB");
+        // Without a label, by the engine's volume law, live as it moves.
+        assert_eq!(readout(&item("Volume", "", 0., 1e6), 630_000.), "0.0 dB");
+        assert_eq!(readout(&item("Volume", "", 0., 1e6), 0.), "-inf dB");
+        assert_eq!(readout(&item("Pan", "", 0., 1e6), 250_000.), "L 50");
+        assert_eq!(readout(&item("Attack", "", 0., 1e6), 0.), "0.0 ms");
+        assert_eq!(readout(&item("Cutoff", "", 0., 1e6), 1e6), "21.7 kHz");
+        assert_eq!(readout(&item("Tune", "", 0., 1e6), 1e6), "+36 st");
+        // Pacific's Release knob says "25000.0" in milliseconds.
+        let mut release = item("Release", "25000.0", 0., 1e6);
+        release.unit = Unit::of_knob("$KNOB_UNIT_MS");
+        assert_eq!(readout(&release, 1e6), "25.00 s");
+        // What the script says in words stays; "0%" gets its space.
+        assert_eq!(readout(&item("Space", "-inf dB", 0., 5e5), 0.), "-inf dB");
+        assert_eq!(readout(&item("Amount", "OFF", 0., 6.), 0.), "OFF");
+        assert_eq!(readout(&item("Dynamics", "0%", -200., 200.), 0.), "0 %");
+        // Una Corda's Color, -40 to 40, a bare "0": signed around its middle.
+        assert_eq!(readout(&item("Color", "0", -40., 40.), 0.), "0 %");
+        assert_eq!(readout(&item("Color", "", -40., 40.), 20.), "+50 %");
+        assert_eq!(readout(&item("Reverb", "", 0., 127.), 80.), "63 %");
+        assert_eq!(Unit::Hertz.format(1234.), "1.2 kHz");
+        assert_eq!(Unit::Millis.format(120.), "120 ms");
+        assert_eq!(Unit::Semitones.format(3.), "+3 st");
     }
 }
