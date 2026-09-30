@@ -2092,3 +2092,31 @@ fn decaying_tails_flush_denormals_to_zero() {
     let subnormal = out.iter().flatten().filter(|x| x.is_subnormal()).count();
     assert_eq!(subnormal, 0);
 }
+
+#[test]
+fn overload_fades_released_voices_quietest_first() {
+    // Every key plays a loud group and one at −70 dB; releases ring on.
+    let quiet = Group {
+        gain: 3e-4,
+        ..Group::default()
+    };
+    let mut e = engine_with(layered(vec![Group::default(), quiet], &[0.5, 0.5]));
+    e.release = 10.0;
+    e.note_on(0, 60, 127);
+    e.note_on(0, 62, 127);
+    render(&mut e, 480);
+    e.note_off(0, 60);
+    render(&mut e, 480);
+    assert_eq!(e.active_voices(), 4, "no load: releases ring");
+    e.load = 0.85;
+    render(&mut e, 64);
+    assert_eq!(e.active_voices(), 4, "fading, not cut");
+    render(&mut e, 480);
+    assert_eq!(e.active_voices(), 3, "the inaudible release ended");
+    e.load = 1.0;
+    render(&mut e, 480);
+    assert_eq!(e.active_voices(), 2, "near the deadline the quietest release goes too");
+    e.load = 0.0;
+    render(&mut e, 4800);
+    assert_eq!(e.active_voices(), 2, "held notes are never shed");
+}

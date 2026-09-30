@@ -684,6 +684,12 @@ pub(crate) fn balance(gain: f32, pan: f32) -> [f32; 2] {
 }
 
 impl Voice {
+    /// Peak gain the voice ended its last block at, sample aside.
+    pub fn level(&self) -> f32 {
+        let flex = self.flex.as_ref().map_or(1.0, Envelope::level);
+        self.gains[0].max(self.gains[1]) * self.env.level() * flex * self.fade.value()
+    }
+
     /// Mix one block (at most [`MAX_BLOCK`] frames) into `left`/`right`.
     /// Returns `(alive, underrun)`.
     pub fn render(

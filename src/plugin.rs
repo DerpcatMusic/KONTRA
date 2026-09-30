@@ -1211,6 +1211,8 @@ pub struct Dsp {
     live_seen: [(u64, u64); RACK_SLOTS],
     snapshot_seen: [(u64, u64); RACK_SLOTS],
     routers: [Router; RACK_SLOTS],
+    /// Recent load: rises with any block's, falls over some 50 blocks.
+    load: f32,
 }
 /// A lent buffer being refreshed: slot, epoch and changes at the start,
 /// the buffer, progress.
@@ -1594,6 +1596,10 @@ impl PluginLogic for Sampler {
             p.shared
                 .cpu
                 .fetch_max(u64::from(load.to_bits()), Ordering::Relaxed);
+            s.load = load.max(s.load * 0.98 + load * 0.02);
+            for e in &mut s.rack.parts {
+                e.load = s.load;
+            }
         }
         ProcessStatus::Normal
     }

@@ -49,6 +49,14 @@ pub const MAX_BLOCK: usize = 128;
 pub const MAX_GROUPS: usize = 4096;
 /// Fade applied to voices stolen by the instrument polyphony limit.
 const STEAL_FADE: f32 = 0.005;
+/// Load (render time over block time) from which released voices too quiet
+/// to hear under the rest end early: at −80 dBFS here, rising to −50 dBFS
+/// at full load.
+const SHED_FROM: f32 = 0.7;
+/// Load from which the quietest released voices end, [`STEAL_PER_BLOCK`]
+/// a block, however loud.
+const STEAL_FROM: f32 = 0.9;
+const STEAL_PER_BLOCK: usize = 16;
 /// Seconds of ramp where a voice starts or ends mid-waveform.
 pub(crate) const DECLICK: f32 = 0.001;
 
@@ -188,6 +196,9 @@ pub struct Engine {
     pub tune: f32,
     /// The player's edits over the bank's values (see `overrides.rs`).
     overrides: overrides::Edits,
+    /// Recent render time over block time, set by the host: near the
+    /// deadline, released voices end early (see [`SHED_FROM`]).
+    pub load: f32,
 }
 
 impl Default for Engine {
@@ -206,6 +217,7 @@ impl Default for Engine {
             blocking_streams: false,
             tune: 0.0,
             overrides: overrides::Edits(Vec::with_capacity(overrides::MAX_OVERRIDES)),
+            load: 0.0,
         }
     }
 }
@@ -595,6 +607,7 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             rt.process(&mut host, n as u32);
         }
+        self.player.shed(self.load);
         let defaults = self.defaults();
         let (mut next, mut written) = (0, 0);
         for (block, (l, r)) in left[..n]
@@ -1264,6 +1277,38 @@ impl Player {
                 let id = self.next_id();
                 let event = NoteEvent::new(channel, note, velocity);
                 self.start(bank, &event, id, true, defaults);
+            }
+        }
+    }
+
+    /// Under `load`, fade out released voices: first those below a floor
+    /// that rises with the load, then near the deadline the quietest. Held
+    /// notes and muted voices (which cost next to nothing) are left alone.
+    fn shed(&mut self, load: f32) {
+        if load < SHED_FROM {
+            return;
+        }
+        let over = ((load - SHED_FROM) / (1.0 - SHED_FROM)).min(1.0);
+        let floor = 10f32.powf((-80.0 + 30.0 * over) / 20.0);
+        let steal = if load >= STEAL_FROM { STEAL_PER_BLOCK } else { 0 };
+        let fade = self.fade_frames(STEAL_FADE);
+        // The quietest released voices above the floor, loudest first.
+        let mut quietest = [(f32::INFINITY, 0); STEAL_PER_BLOCK];
+        for (i, v) in self.voices.iter_mut().enumerate() {
+            if !v.released || v.fade.dying() || v.gains == [0.0; 2] {
+                continue;
+            }
+            let level = v.level();
+            if level < floor {
+                v.fade.start(0.0, fade, true);
+            } else if steal > 0 && level < quietest[0].0 {
+                quietest[0] = (level, i);
+                quietest.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+            }
+        }
+        for &(level, i) in &quietest {
+            if level.is_finite() {
+                self.voices[i].fade.start(0.0, fade, true);
             }
         }
     }
