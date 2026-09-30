@@ -21,13 +21,18 @@ components below. Crate licenses were listed with
 
 ## Format references (not vendored)
 
-The NKX/NKR archive layout and the resource keystream were implemented
-from the descriptions in [nkxtract](https://github.com/maxton/nkxtract)
-(`ca40dbf`) and [unnks](https://github.com/JimiHFord/unnks) (`eb59538`).
-Both are **GPL-3.0**. No source files were copied. The encoded-offset
-constant in `vendor/ni-file/src/nkr/archive.rs` and the keystream in
-`src/access.rs` implement the same algorithm, so a lawyer should confirm
-that they are not derivative works before a public release.
+The NKX/NKR archive layout was implemented with
+[nkxtract](https://github.com/maxton/nkxtract) (`ca40dbf`) and
+[unnks](https://github.com/JimiHFord/unnks) (`eb59538`) as references.
+Both are **GPL-3.0**, and no files from them are included. The
+encoded-offset constant in `vendor/ni-file/src/nkr/archive.rs` is the
+same as nkxtract's.
+<!-- private:start -->
+The keystream in `src/access.rs` (the `library-access` feature) uses the
+same algorithm and constants as nkxtract's `Nks.cs`.
+<!-- private:end -->
+Before a public release, get legal advice on whether these parts are
+derivative works of the GPL-3.0 references.
 
 ## Vendored and patched
 
