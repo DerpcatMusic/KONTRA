@@ -709,8 +709,8 @@ impl<'a> Compiler<'a> {
         self.p.ui_callbacks.push(None);
         self.var_ids.insert(d.name, id);
         for &s in self.spellings.get(&name.to_ascii_lowercase()).into_iter().flatten() {
-            if !self.var_ids.contains_key(&s) {
-                self.var_ids.insert(s, id);
+            if let std::collections::hash_map::Entry::Vacant(e) = self.var_ids.entry(s) {
+                e.insert(id);
                 self.aliases.insert(s);
             }
         }
