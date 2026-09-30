@@ -64,11 +64,24 @@ Sampler developer guide and the Vital user guide.
    library's curve stays drawn faintly under the edited one, so "what I
    changed" can be read at a glance.
 
+7. **Spectrum** (the Pro-Q pattern). Behind the response, the part's
+   post-fader output; beside the mixer, the selected part's or the master's.
+   The audio thread copies one strip into a lock-free ring only while a
+   spectrum shows (`plugin::Scope`); the UI thread transforms it (realfft,
+   4096 points, at most 30 times a second) into smoothed log bands with a
+   falling peak hold.
+8. **Modulation and effects lists** under the graphs (Koda's Modulation and
+   Routing, read-only): each source to its target with its depth and, for
+   the wheels, velocity and key, its value now; the group's inserts and the
+   instrument's chains with bypass and whether KONTRA plays them. Wide mixer
+   strips list the instrument's inserts.
+
 ## Not adopted (yet)
 
-- **Spectrum overlay**: it needs an FFT tap on the audio thread per part and
-  a ring buffer to the UI. It is not cheap enough for this pass.
 - **Modulation rings and routing graphs**: KONTRA models modulation as
-  imported tables. Nothing edits them yet.
+  imported tables. Nothing edits them yet, so the lists above are read-only.
+- **Bypass toggles**: an effect's bypass is shown, not switched; switching
+  needs an engine path for it.
+- **Gain reduction**: no compressor has DSP here yet.
 - **Waveform and loop lane editing**: this is a builder's view, not a
   player's.

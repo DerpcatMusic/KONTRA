@@ -999,10 +999,10 @@ fn screenshot() {
                     selection.parts[0].edits.set(Override { group: None, param, offset });
                 }
             }
-            if state.starts_with("mixer") || state.starts_with("sound") {
-                // A chord with a little noise under it, for the spectrum.
-                let mut seed = 1u32;
-                let signal: Vec<f32> = (0..crate::plugin::SCOPE)
+            // A chord with a little noise under it, for the spectrum.
+            let heard = state.starts_with("mixer") || state.starts_with("sound");
+            let mut seed = 1u32;
+            let signal: Vec<f32> = (0..crate::plugin::SCOPE)
                     .map(|n| {
                         seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                         let noise = (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
@@ -1014,6 +1014,7 @@ fn screenshot() {
                             + 0.004 * noise
                     })
                     .collect();
+            if heard {
                 p.shared.scope.push(&signal);
             }
             if state.starts_with("mixer") {
@@ -1056,10 +1057,11 @@ fn screenshot() {
                     h.tick(pointer(at, down));
                 }
             }
-            // The spectrum eases in over a few of its looks.
-            if state.starts_with("mixer") || state.starts_with("sound") {
+            // The spectrum eases in over a few of its looks, the signal still coming.
+            if heard {
                 for _ in 0..10 {
                     std::thread::sleep(Duration::from_millis(35));
+                    p.shared.scope.push(&signal);
                     h.idle(1);
                 }
             }

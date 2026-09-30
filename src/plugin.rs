@@ -452,13 +452,15 @@ impl Scope {
         self.written.store(at, Ordering::Release);
     }
 
-    /// The latest `out.len()` samples (at most [`SCOPE`]), oldest first.
-    pub(crate) fn latest(&self, out: &mut [f32]) {
+    /// The latest `out.len()` samples (at most [`SCOPE`]), oldest first,
+    /// and the count written so far (which stops when the host does).
+    pub(crate) fn latest(&self, out: &mut [f32]) -> usize {
         let end = self.written.load(Ordering::Acquire);
         let start = end.wrapping_sub(out.len());
         for (i, o) in out.iter_mut().enumerate() {
             *o = f32::from_bits(self.samples[start.wrapping_add(i) % SCOPE].load(Ordering::Relaxed));
         }
+        end
     }
 }
 

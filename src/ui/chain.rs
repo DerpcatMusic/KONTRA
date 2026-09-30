@@ -148,7 +148,7 @@ pub fn detail(e: &Effect) -> String {
         Params::Convolution(c) => c
             .ir_file
             .as_deref()
-            .map(|f| super::header::stem(f))
+            .map(super::header::stem)
             .unwrap_or_else(|| "No impulse".into()),
         Params::Filter(f) => {
             let (hz, _) = crate::engine::filter::filter_settings(f.cutoff, f.resonance);

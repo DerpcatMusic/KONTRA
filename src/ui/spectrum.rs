@@ -44,6 +44,8 @@ pub struct Analyser {
     /// Which [`Scope::source`] the bands show.
     source: usize,
     at: Option<Instant>,
+    /// The ring's count as last seen, and when it last moved.
+    written: (usize, Instant),
     /// Band levels and peaks in dB, and when each peak was set.
     level: Vec<f32>,
     peak: Vec<f32>,
@@ -66,6 +68,7 @@ impl Default for Analyser {
             scratch,
             source: 0,
             at: None,
+            written: (0, Instant::now()),
             level: vec![FLOOR_DB; BANDS],
             peak: vec![FLOOR_DB; BANDS],
             peak_at: vec![Instant::now(); BANDS],
@@ -99,7 +102,13 @@ impl Analyser {
         }
         let dt = self.at.map_or(0., |t| (now - t).as_secs_f32().min(0.25));
         self.at = Some(now);
-        scope.latest(&mut self.input);
+        let written = scope.latest(&mut self.input);
+        if written != self.written.0 {
+            self.written = (written, now);
+        } else if now - self.written.1 > Duration::from_millis(250) {
+            // The host stopped: what is left in the ring is not playing.
+            self.input.fill(0.);
+        }
         for (x, w) in self.input.iter_mut().zip(&self.window) {
             *x *= w;
         }
