@@ -118,10 +118,7 @@ impl Mod {
     /// Advance a live source's lagged `value` over `frames`.
     pub(crate) fn follow(&self, value: &mut f32, input: &Inputs, frames: usize, rate: f32) {
         if let Some((source, _)) = self.route.filter(|(s, _)| s.live()) {
-            let x = self.shape(input.read(source));
-            if x != *value {
-                *value += (x - *value) * lag_factor(self.lag, frames, rate);
-            }
+            approach(value, self.shape(input.read(source)), self.lag, frames, rate);
         }
     }
 }
@@ -232,11 +229,7 @@ impl ModTable {
                 continue;
             };
             if source.live() {
-                let x = m.shape(input.read(source));
-                // Settled (as a held controller soon is): no step, and no exp.
-                if x != *value {
-                    *value += (x - *value) * lag_factor(m.lag, frames, rate);
-                }
+                approach(value, m.shape(input.read(source)), m.lag, frames, rate);
             }
             match target {
                 Target::Volume => {
@@ -321,6 +314,17 @@ impl ModTable {
                 _ => env.release *= factor,
             }
         }
+    }
+}
+
+/// Move a lagged `value` toward `x` over `frames`. Settled (as a held
+/// controller soon is) it costs no exp: within 1e-6 it lands on `x`, which
+/// steps smaller than half a float's spacing would never reach.
+fn approach(value: &mut f32, x: f32, lag: f32, frames: usize, rate: f32) {
+    if (x - *value).abs() <= 1e-6 {
+        *value = x;
+    } else {
+        *value += (x - *value) * lag_factor(lag, frames, rate);
     }
 }
 
@@ -791,6 +795,17 @@ pub(crate) fn find_target(
 mod tests {
     use super::*;
     use crate::import::{Modulator, ShaperCurve};
+
+    #[test]
+    fn lagged_values_settle_exactly() {
+        // A long lag over short blocks steps less than half the float
+        // spacing near the target: without the snap it never arrives.
+        let mut value = 0.2f32;
+        for _ in 0..2000 {
+            approach(&mut value, 0.7, 0.01, 128, 48000.0);
+        }
+        assert_eq!(value, 0.7);
+    }
 
     #[test]
     fn ids_match_the_runtime_table() {
