@@ -959,9 +959,10 @@ impl BackgroundTask for Load {
             if epoch == 0 || epoch != v.script_epoch {
                 continue;
             }
-            // Unchanged: the saved JSON already holds it. Serializing megabytes
-            // of script tables ten times a second was most of the loader's time.
-            if !changed {
+            // Unchanged: the saved JSON already holds it, unless nothing is
+            // saved yet. Serializing megabytes of script tables ten times a
+            // second was most of the loader's time.
+            if !changed && !v.script_state.is_empty() {
                 v.snapshot = Some(snapshot);
                 continue;
             }
@@ -974,15 +975,18 @@ impl BackgroundTask for Load {
             if json == v.script_state {
                 continue;
             }
-            let path = v.instrument.as_ref().map(|i| i.path.clone());
-            let program = v.program;
+            // The part as the rack names it: the instrument's own path is
+            // canonical, and a relative or symlinked part path never matched
+            // it, so the saved values never reached the part and the next
+            // round rebuilt its scripts from stale ones, ten times a second.
+            let target = v.attempted.clone();
             v.script_state = json.clone();
             drop(view);
             let mut current = params.selection.write().unwrap();
             if let Some(p) = current
                 .parts
                 .get_mut(slot)
-                .filter(|p| path.as_deref() == Some(Path::new(&p.path)) && p.program == program)
+                .filter(|p| target.as_ref() == Some(&(p.path.clone(), p.program)))
             {
                 p.script_state = json;
             }
@@ -1453,6 +1457,10 @@ moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 /// This thread's CPU time in seconds (Linux), which a busy machine's
 /// preemption does not inflate the way wall time does; 0 elsewhere.
 fn thread_cpu() -> f64 {
+    cpu_clock(3)
+}
+/// CPU seconds of `clock`: 2 is the whole process, 3 this thread (Linux).
+fn cpu_clock(clock: i32) -> f64 {
     #[cfg(target_os = "linux")]
     {
         #[repr(C)]
@@ -1464,12 +1472,25 @@ fn thread_cpu() -> f64 {
             fn clock_gettime(clock: i32, t: *mut Timespec) -> i32;
         }
         let mut t = Timespec { s: 0, ns: 0 };
-        // SAFETY: clock_gettime writes one timespec for CLOCK_THREAD_CPUTIME_ID (3).
-        unsafe { clock_gettime(3, &mut t) };
+        // SAFETY: clock_gettime writes one timespec for a CPU-time clock.
+        unsafe { clock_gettime(clock, &mut t) };
         t.s as f64 + t.ns as f64 * 1e-9
     }
     #[cfg(not(target_os = "linux"))]
-    0.0
+    {
+        let _ = clock;
+        0.0
+    }
+}
+/// This process's resident memory, MiB (Linux; 0 elsewhere).
+fn rss_mib() -> f64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            let line = s.lines().find(|l| l.starts_with("VmRSS:"))?;
+            line.split_whitespace().nth(1)?.parse::<f64>().ok()
+        })
+        .map_or(0., |kib| kib / 1024.)
 }
 /// This thread's user-space instruction or cycle count from the CPU's
 /// counters (Linux x86-64, where `perf_event_open` is allowed). Instructions
@@ -1585,13 +1606,18 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     let every = (RATE / notes.max(1) as f64) as usize;
     let (mut held, mut started) = (std::collections::VecDeque::new(), 0usize);
     let mut events = EventList::with_capacity(64);
-    for (phase, playing) in [("idle", false), ("playing", true)] {
-        if playing && notes == 0 {
+    // Idle instructions per block, so playing ones divide into a cost per voice.
+    let mut idle = 0.;
+    println!("resident after load: {:.0} MiB", rss_mib());
+    // Idle again after playing: voices and streams have ended and must cost nothing.
+    for (phase, playing) in [("idle", false), ("playing", true), ("after", false)] {
+        if phase != "idle" && notes == 0 {
             break;
         }
+        let process_cpu = cpu_clock(2);
         let (mut times, mut cpus) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
         let mut counts = Vec::with_capacity(blocks);
-        let (mut voices, mut cpu) = (0, 0f32);
+        let (mut voices, mut cpu, mut voice_blocks) = (0, 0f32, 0usize);
         let start = Instant::now();
         for b in 0..blocks {
             events.clear();
@@ -1619,7 +1645,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             times.push(wall);
             cpus.push(cpu_ms);
             counts.push(millions);
-            voices = voices.max(p.shared.voices.load(Ordering::Relaxed));
+            let now = p.shared.voices.load(Ordering::Relaxed);
+            (voices, voice_blocks) = (voices.max(now), voice_blocks + now as usize);
             cpu = cpu.max(f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32));
             if let Some(wait) = (start + block * (b + 1) as u32).checked_duration_since(Instant::now()) {
                 std::thread::sleep(wait);
@@ -1633,14 +1660,29 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             process(&mut dsp, &off);
         }
         let deadline = FRAMES as f64 / RATE * 1e3;
-        println!("{phase}: {} blocks · peak {voices} voices · peak reported CPU {:.1}%", times.len(), cpu * 100.);
+        let mean_voices = voice_blocks as f64 / times.len() as f64;
+        let whole = (cpu_clock(2) - process_cpu) / start.elapsed().as_secs_f64();
+        println!(
+            "{phase}: {} blocks · mean {mean_voices:.0}, peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core",
+            times.len(),
+            cpu * 100.,
+            whole * 100.
+        );
         if counts.iter().any(|&c| c > 0.) {
             let mut sorted = counts.clone();
             sorted.sort_by(f64::total_cmp);
             let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
             let mean = counts.iter().sum::<f64>() / counts.len() as f64;
+            let per_voice = if playing && mean_voices >= 1. {
+                format!(" · {:.1} k per voice", (mean - idle) * 1e3 / mean_voices)
+            } else {
+                if phase == "idle" {
+                    idle = mean;
+                }
+                String::new()
+            };
             println!(
-                "  instructions: mean {mean:.3} M/block · p50 {:.3} · p99 {:.3} · max {:.3}",
+                "  instructions: mean {mean:.3} M/block · p50 {:.3} · p99 {:.3} · max {:.3}{per_voice}",
                 at(0.5),
                 at(0.99),
                 at(1.0)
@@ -1957,8 +1999,10 @@ mod tests {
                 group: 0,
                 ..Default::default()
             },
+            // Not canonical, as relative or symlinked paths are not: saved
+            // script values must still reach the part.
             Part {
-                path,
+                path: path.replacen("/Instruments/", "/Instruments/../Instruments/", 1),
                 group: 1,
                 output: 1,
                 ..Default::default()
