@@ -350,8 +350,9 @@ fn rack_interactions() {
     h.press("tab-rack");
     h.press("mute-0");
     assert!(parts(&p)[0].mute);
-    // The routing menus: output st.4, channel 2, then port B (after a rule and a heading).
-    for (menu, item) in [("output-0", 3), ("midi-0", 2), ("midi-0", 20)] {
+    // The routing menus: output st.4 (after Automatic and a rule), channel 2,
+    // then port B (after a rule and a heading).
+    for (menu, item) in [("output-0", 5), ("midi-0", 2), ("midi-0", 20)] {
         h.press(menu);
         h.press(&format!("menu-item-{item}"));
     }
@@ -783,6 +784,25 @@ fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bo
         _ => 0,
     };
     p.selection.write().unwrap().sharp_artwork = state == "sharp";
+    if state.starts_with("timing") {
+        use crate::timing::{Delay, Timing};
+        let late = |name: &str, first: f32, legato: f32| Delay {
+            name: name.into(),
+            first: [Some(first); 3],
+            legato: [Some(legato); 3],
+        };
+        let mut selection = p.selection.write().unwrap();
+        selection.auto_align = true;
+        for part in &mut selection.parts {
+            part.timing = Timing {
+                source: crate::timing::source(&part.path, part.program),
+                loaded: late("", 45., 196.),
+                arts: vec![late("Legato", 45., 196.), late("Spiccato", 12., 12.), late("Pizzicato", 20., 20.)],
+                ..Timing::default()
+            };
+        }
+        p.shared.reported.store(196f32.to_bits(), Ordering::Relaxed);
+    }
     if state == "resized" {
         // The first part sized short: its controls clip and fade out.
         p.selection.write().unwrap().parts[0].height = 220.;
@@ -937,7 +957,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 26] = [
+    let states: [(&str, bool, &[&str]); 32] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         // Esc: no part selected, the keys show what each part plays.
@@ -968,6 +988,14 @@ fn screenshot() {
         // Edited: the library's curves stay drawn faintly under the edits.
         ("sound-edited", true, &["tab-sound"]),
         ("sound-compact", true, &["tab-sound", "edit-compact"]),
+        ("sound-modulation", true, &["tab-sound", "edit-lower-Modulation"]),
+        ("sound-effects", true, &["tab-sound", "edit-lower-Effects"]),
+        // A value double-clicked into a field.
+        ("sound-typing", true, &["tab-sound"]),
+        ("mixer-wide", true, &["tab-mixer", "mix-wide"]),
+        // Auto-align on: the settings and a part's timing.
+        ("timing", true, &["app-menu"]),
+        ("timing-part", true, &["more-0"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
@@ -994,7 +1022,26 @@ fn screenshot() {
                     selection.parts[0].edits.set(Override { group: None, param, offset });
                 }
             }
-            if state == "mixer" {
+            // A chord with a little noise under it, for the spectrum.
+            let heard = state.starts_with("mixer") || state.starts_with("sound");
+            let mut seed = 1u32;
+            let signal: Vec<f32> = (0..crate::plugin::SCOPE)
+                    .map(|n| {
+                        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        let noise = (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+                        let t = n as f32 / 48_000.;
+                        [(110., 0.3), (220., 0.2), (330., 0.12), (440., 0.1), (880., 0.05), (1760., 0.02), (3520., 0.008)]
+                            .iter()
+                            .map(|(hz, a)| a * (std::f32::consts::TAU * hz * t).sin())
+                            .sum::<f32>()
+                            + 0.004 * noise
+                    })
+                    .collect();
+            if heard {
+                p.shared.scope.push(&signal);
+            }
+            if state.starts_with("mixer") {
+                p.shared.meters.clips.parts[1].store(true, Ordering::Relaxed);
                 // Mid-song: parts on two buses, one sending to a named third.
                 let mut selection = p.selection.write().unwrap();
                 for (slot, part) in selection.parts.iter_mut().enumerate() {
@@ -1026,6 +1073,20 @@ fn screenshot() {
             }
             if state == "unselected" {
                 h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+            }
+            if state == "sound-typing" {
+                let at = center(&h.ui, "edit-envelope-value-Release");
+                for down in [true, false, true, false] {
+                    h.tick(pointer(at, down));
+                }
+            }
+            // The spectrum eases in over a few of its looks, the signal still coming.
+            if heard {
+                for _ in 0..10 {
+                    std::thread::sleep(Duration::from_millis(35));
+                    p.shared.scope.push(&signal);
+                    h.idle(1);
+                }
             }
             h.settle_art();
             // Springs (the browser drawer) come to rest.
@@ -1071,6 +1132,8 @@ fn screenshot() {
                     "tab-info",
                     match state {
                         "mixer" => "master-strip",
+                        // Wide strips scroll at 900: the toolbar stays.
+                        "mixer-wide" => "mix-wide",
                         // Scrolled away, its header is stuck at the top.
                         "sticky" => "header-0",
                         _ => "header-0",
@@ -1309,9 +1372,11 @@ fn mixer_routing_edits() {
     assert!(shows(&h, "strip-0") && shows(&h, "strip-1") && shows(&h, "master-strip"));
     assert!(shows(&h, "bus-0") && !shows(&h, "bus-2"), "only buses in use");
 
+    // Automatic, a rule, then st.1…: the third bus, picked by hand.
     h.press("mix-out-0");
-    h.press("menu-item-2");
+    h.press("menu-item-4");
     assert_eq!(part(&p, 0).output, 2, "the output menu routes");
+    assert!(part(&p, 0).output_manual, "and the route sticks");
     assert!(shows(&h, "bus-2"), "a bus in use gets its strip");
 
     // No send, a rule, then st.1…: the fourth bus.
@@ -1506,6 +1571,22 @@ fn sound_tab_drags_an_envelope_handle_into_the_override_layer() {
     assert_eq!(library, 1000.0, "the instrument is untouched");
     h.press("edit-envelope-reset");
     assert!(p.selection.read().unwrap().parts[0].edits.0.is_empty(), "reset plays the library's");
+
+    // A value double-clicked takes one typed in.
+    h.idle(60);
+    let at = center(&h.ui, "edit-envelope-value-Attack");
+    for down in [true, false, true, false] {
+        h.tick(pointer(at, down));
+    }
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("edit-envelope-value-Attack-edit").is_some(), "a field to type in");
+    h.tick(Input { keys: vec![KeyPress { key: Key::Char('a'), mods: Mods { ctrl: true, ..Default::default() } }], ..Default::default() });
+    h.tick(Input { text: "250 ms".into(), ..Default::default() });
+    h.tick(enter());
+    h.idle(3);
+    let edits = p.selection.read().unwrap().parts[0].edits.clone();
+    let attack = Param::Attack.apply(0.01, edits.offset(0, Param::Attack));
+    assert!((attack - 0.25).abs() < 0.01, "the attack plays {attack} s");
 }
 
 fn key_spot(ui: &Ui, note: u8) -> Point {
@@ -1529,8 +1610,10 @@ fn key_tops(ui: &Ui, notes: std::ops::Range<u8>) -> Vec<[u8; 3]> {
         .collect()
 }
 
-fn glows(c: [u8; 3]) -> bool {
-    i32::from(c[0]) - i32::from(c[2]) > 30
+/// Whether a key top is lit: the neutral LED darkens a light key well
+/// away from `rest`, a white key's unlit top.
+fn glows(c: [u8; 3], rest: [u8; 3]) -> bool {
+    c.iter().zip(rest).map(|(&a, b)| i32::from(a.abs_diff(b))).sum::<i32>() > 60
 }
 
 /// A drag across the keys moves the sound and the light together, one note
@@ -1541,6 +1624,7 @@ fn a_glide_lights_what_sounds_and_lets_go_anywhere() {
     let p = Arc::new(SamplerParams::new());
     let mut h = Harness::new(&p, 1180., 760.);
     let rest = key_tops(&h.ui, 60..61)[0];
+    let rests = key_tops(&h.ui, 48..84);
     for note in [60, 64] {
         let at = key_spot(&h.ui, note);
         for _ in 0..40 {
@@ -1549,7 +1633,7 @@ fn a_glide_lights_what_sounds_and_lets_go_anywhere() {
     }
     assert_eq!(keys_down(&p), [64], "one note sounds: the one under the pointer");
     let tops = key_tops(&h.ui, 60..65);
-    assert!(glows(tops[4]), "and it is the one lit");
+    assert!(glows(tops[4], rest), "and it is the one lit");
     assert!(
         tops[0].iter().zip(rest).all(|(a, b)| a.abs_diff(b) <= 2),
         "the key the drag began on is at rest, not pressed: {:?} vs {rest:?}",
@@ -1563,7 +1647,7 @@ fn a_glide_lights_what_sounds_and_lets_go_anywhere() {
     h.tick(pointer(away, false));
     h.idle(40);
     assert!(keys_down(&p).is_empty(), "let go off the keys, it stops");
-    assert!(!key_tops(&h.ui, 48..84).into_iter().any(glows), "and nothing stays lit");
+    assert!(!key_tops(&h.ui, 48..84).into_iter().zip(rests).any(|(c, r)| glows(c, r)), "and nothing stays lit");
     let sent: Vec<_> = std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(_, play)| play).collect();
     assert!(
         matches!(sent[..], [Play::Note(60, _), Play::Note(60, 0), Play::Note(64, _), Play::Note(64, 0)]),
@@ -1746,4 +1830,16 @@ fn the_keys_play_the_selected_part_or_every_part() {
     let foot = h.ui.scene().unwrap().surface("rack-drop").unwrap().frame;
     click(&mut h, Point::new(foot.x + 40., foot.y + foot.size.height + 40.));
     assert_eq!(selected_slot(&p), crate::plugin::EVERY_PART, "a click on the empty rack lets go");
+}
+
+/// Part and bus hues skip orange, start where they always did, and stay apart.
+#[test]
+fn hue_walks_skip_orange() {
+    use super::theme::{golden_hue, orange};
+    for from in [250., 190.] {
+        assert!((golden_hue(from, 0) - from).abs() < 0.01);
+        let hues: Vec<f32> = (0..16).map(|n| golden_hue(from, n)).collect();
+        assert!(hues.iter().all(|&h| !orange(h)), "{hues:?}");
+        assert!(hues.windows(2).all(|w| (w[0] - w[1]).rem_euclid(360.).min((w[1] - w[0]).rem_euclid(360.)) > 60.));
+    }
 }

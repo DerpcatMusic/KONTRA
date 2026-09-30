@@ -6,8 +6,10 @@ use crate::{
         Streaming, TUNE_RANGE, load_scripts,
         overrides::{Edits, Override, Probe},
     },
-    fx::FxProcessor,
+    fx::{DIRECT, FxProcessor, OUTS},
+    routing,
     import::{self, Instrument},
+    timing::{self, Align, Holds, Plan, Timing},
     ksp::{Interface, KeyState, Live, Persisted, Refresh, Runtime},
 };
 use crossbeam_queue::ArrayQueue;
@@ -18,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -59,6 +61,17 @@ pub struct Part {
     /// The player's envelope, filter and EQ edits over the instrument's own
     /// values; empty plays them as the library has them.
     pub edits: Edits,
+    /// How late the part sounds, measured, and the player's override (see
+    /// [`Selection::auto_align`]).
+    pub timing: Timing,
+    /// The player picked [`Part::output`]: automatic routing leaves it.
+    pub output_manual: bool,
+    /// Per output channel the instrument plays to past its own output (a
+    /// mic mixer's "Out 2"), the bus it goes to, -1 with the part; kept by
+    /// "One per mic" routing (`routing.rs`), empty otherwise.
+    pub mic_buses: Vec<i16>,
+    /// What plays on each of those channels, as the library names it.
+    pub mic_names: Vec<String>,
 }
 impl Part {
     /// Where the part's samples play from, given the rack's setting.
@@ -78,6 +91,14 @@ impl StateField for Streaming {
     }
 }
 impl StateField for Edits {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        serde_json::to_string(self).unwrap_or_default().write_field(buf);
+    }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        Some(serde_json::from_str(&String::read_field(cursor)?).unwrap_or_default())
+    }
+}
+impl StateField for Timing {
     fn write_field(&self, buf: &mut Vec<u8>) {
         serde_json::to_string(self).unwrap_or_default().write_field(buf);
     }
@@ -109,6 +130,10 @@ impl Default for Part {
             mpe: Mpe::default(),
             streaming: None,
             edits: Edits::default(),
+            timing: Timing::default(),
+            output_manual: false,
+            mic_buses: Vec::new(),
+            mic_names: Vec::new(),
         }
     }
 }
@@ -182,6 +207,15 @@ pub struct Selection {
     /// Where samples play from, for parts that do not choose
     /// ([`Part::streaming`]); a change reloads the parts it affects.
     pub streaming: Streaming,
+    /// Auto-align timing (experimental): each part's articulations are
+    /// measured, the latest is reported to the host as latency, and notes
+    /// are held back so every attack lands on the grid (`timing.rs`).
+    pub auto_align: bool,
+    /// Hold notes back only while the host's transport plays: played live
+    /// with it stopped, a part sounds as late as its library does.
+    pub align_transport_only: bool,
+    /// How parts are routed to buses and host ports ([`routing::Outputs`]).
+    pub outputs: u8,
 }
 impl Selection {
     /// Output bus `n`, default when never set.
@@ -213,6 +247,7 @@ impl Selection {
 }
 
 #[derive(Params)]
+#[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision")]
 pub struct SamplerParams {
     #[param(name="Volume",range="linear(-60, 6)",default=-12.0,unit="dB",smooth="exp(5)")]
     pub volume: FloatParam,
@@ -237,6 +272,18 @@ pub struct SamplerParams {
 }
 pub(crate) use SamplerParamsParamId as P;
 
+impl SamplerParams {
+    /// Host output port `index`'s name, as last published (`routing.rs`).
+    fn port_name(&self, index: u32) -> Option<String> {
+        let names = self.shared.port_names.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        names.published.get(index as usize).cloned()
+    }
+
+    fn port_names_revision(&self) -> u64 {
+        self.shared.port_names_revision.load(Ordering::Acquire)
+    }
+}
+
 pub struct Shared {
     ready: ArrayQueue<(usize, u64, Handoff)>,
     discard: ArrayQueue<Retired>,
@@ -250,7 +297,7 @@ pub struct Shared {
     /// Edits of script controls from the performance view.
     edits: ArrayQueue<Edit>,
     /// Host sample rate (`f64` bits) that effect processors are built for.
-    rate: AtomicU64,
+    pub(crate) rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
     /// The velocity each key sounds at, 0 when silent: `played` on screen
     /// or from the computer keyboard, `heard` from the host's MIDI.
@@ -269,6 +316,10 @@ pub struct Shared {
     pub meters: Meters,
     /// The part and group the sound editor shows, as the audio thread plays it.
     pub(crate) probe: Probe,
+    /// One strip's signal for a spectrum on screen.
+    pub(crate) scope: Scope,
+    /// Blocks processed: a stopped host stops counting.
+    pub(crate) blocks: AtomicU64,
     /// Override changes for the audio thread, by rack slot.
     overrides: ArrayQueue<(usize, Override)>,
     /// Each slot's overrides as last sent (loader and editor threads only).
@@ -304,6 +355,28 @@ pub struct Shared {
     pub(crate) dropouts: AtomicU64,
     /// Per slot, streamed frames that arrived late, for its smart memory.
     underruns: [AtomicU64; RACK_SLOTS],
+    /// The timing plan for the audio thread; the latest wins.
+    plan: ArrayQueue<Plan>,
+    /// Loader only: the plan last sent, and a new latency waiting to settle.
+    published: Mutex<(Option<Plan>, Option<(f32, Instant)>)>,
+    /// Timing measurements running and finished.
+    measure: Arc<Measure>,
+    /// The latency the host is told, ms (`f32` bits); 0 while auto-align is off.
+    pub(crate) reported: AtomicU32,
+    /// What each part's instrument plays past its own output ([`routing::Mics`]),
+    /// published by the audio thread.
+    mics: [[AtomicU16; OUTS]; RACK_SLOTS],
+    /// Host port names; the loader publishes, the host's main thread reads.
+    port_names: Mutex<routing::PortNames>,
+    /// Bumped with each publication: format wrappers poll it and tell the host.
+    port_names_revision: AtomicU64,
+}
+/// Parts' timing measurements, each on a thread of its own.
+#[derive(Default)]
+struct Measure {
+    busy: [AtomicBool; RACK_SLOTS],
+    /// Slot and what was measured, or why it could not be.
+    done: Mutex<Vec<(usize, String, Result<Timing, String>)>>,
 }
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
@@ -341,6 +414,8 @@ pub(crate) struct PartView {
     pub(crate) loading: bool,
     /// Keyboard colors and names the scripts set, kept current while they run.
     pub(crate) keys: Arc<BTreeMap<u8, KeyState>>,
+    /// Why the part's timing could not be measured.
+    pub(crate) timing_status: String,
 }
 #[derive(Clone)]
 pub(crate) struct View {
@@ -376,6 +451,8 @@ impl Default for Shared {
             routes: ArrayQueue::new(1),
             meters: Meters::default(),
             probe: Probe::default(),
+            scope: Scope::default(),
+            blocks: AtomicU64::new(0),
             overrides: ArrayQueue::new(1024),
             residency: Mutex::default(),
             // One batch in flight per slot: never full.
@@ -396,6 +473,13 @@ impl Default for Shared {
             cpu: AtomicU64::new(0),
             dropouts: AtomicU64::new(0),
             underruns: Default::default(),
+            plan: ArrayQueue::new(1),
+            published: Mutex::default(),
+            measure: Arc::default(),
+            reported: AtomicU32::new(0),
+            mics: Default::default(),
+            port_names: Mutex::default(),
+            port_names_revision: AtomicU64::new(0),
             view: Mutex::new(View {
                 script_epoch: 0,
                 multi_status: String::new(),
@@ -409,6 +493,55 @@ impl Default for Shared {
         }
     }
 }
+/// Samples [`Scope`] keeps: a spectrum's window and then some.
+pub(crate) const SCOPE: usize = 8192;
+/// [`Scope::source`] for everything sent to the host.
+pub(crate) const SCOPE_MASTER: usize = RACK_SLOTS + 1;
+
+/// One strip's post-fader signal, mono, for a spectrum drawn on the UI
+/// thread. The audio thread copies into the ring only while
+/// [`source`](Self::source) names a strip, which the editor sets while a
+/// spectrum shows and clears otherwise: closed, it costs one load a block.
+/// Lock-free: a reader may see a block half-written, which a spectrum
+/// cannot tell from the signal.
+pub(crate) struct Scope {
+    /// 0 for none, a rack slot + 1, or [`SCOPE_MASTER`].
+    pub(crate) source: AtomicUsize,
+    samples: [AtomicU32; SCOPE],
+    /// Samples written so far; the next goes at this, modulo [`SCOPE`].
+    written: AtomicUsize,
+}
+impl Default for Scope {
+    fn default() -> Self {
+        Self {
+            source: AtomicUsize::new(0),
+            samples: std::array::from_fn(|_| AtomicU32::new(0)),
+            written: AtomicUsize::new(0),
+        }
+    }
+}
+impl Scope {
+    pub(crate) fn push(&self, x: &[f32]) {
+        let mut at = self.written.load(Ordering::Relaxed);
+        for &v in x {
+            self.samples[at % SCOPE].store(v.to_bits(), Ordering::Relaxed);
+            at = at.wrapping_add(1);
+        }
+        self.written.store(at, Ordering::Release);
+    }
+
+    /// The latest `out.len()` samples (at most [`SCOPE`]), oldest first,
+    /// and the count written so far (which stops when the host does).
+    pub(crate) fn latest(&self, out: &mut [f32]) -> usize {
+        let end = self.written.load(Ordering::Acquire);
+        let start = end.wrapping_sub(out.len());
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = f32::from_bits(self.samples[start.wrapping_add(i) % SCOPE].load(Ordering::Relaxed));
+        }
+        end
+    }
+}
+
 /// Peak meters, `[left, right]` as `f32` bits: absolute sample peaks falling
 /// 20 dB a second, 0 once below -80 dB. The audio thread stores each once a
 /// block; any number of readers may [`read`](Meters::read) them at paint time.
@@ -420,6 +553,15 @@ pub struct Meters {
     pub buses: [[AtomicU32; 2]; BUSES],
     /// Everything sent to the host, after the Volume parameter.
     pub master: [AtomicU32; 2],
+    /// Set when a meter's peak reached 0 dBFS; the editor clears them.
+    pub clips: Clips,
+}
+/// A clip light per meter of [`Meters`].
+#[derive(Default)]
+pub struct Clips {
+    pub parts: [AtomicBool; RACK_SLOTS],
+    pub buses: [AtomicBool; BUSES],
+    pub master: AtomicBool,
 }
 impl Meters {
     pub fn read(meter: &[AtomicU32; 2]) -> [f32; 2] {
@@ -428,8 +570,11 @@ impl Meters {
             .map(|m| f32::from_bits(m.load(Ordering::Relaxed)))
     }
 
-    /// Hold `peak` or let the shown level fall by `fall`.
-    fn publish(meter: &[AtomicU32; 2], peak: [f32; 2], fall: f32) {
+    /// Hold `peak` or let the shown level fall by `fall`; light `clip` at 0 dBFS.
+    fn publish(meter: &[AtomicU32; 2], peak: [f32; 2], fall: f32, clip: &AtomicBool) {
+        if peak[0] >= 1.0 || peak[1] >= 1.0 {
+            clip.store(true, Ordering::Relaxed);
+        }
         for (m, peak) in meter.iter().zip(peak) {
             let shown = f32::from_bits(m.load(Ordering::Relaxed)) * fall;
             let level = if peak >= shown { peak } else { shown };
@@ -494,6 +639,10 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
                 solo: p.solo,
                 aux: if (0..BUSES as i16).contains(&p.aux) { p.aux as u8 } else { NO_AUX },
                 aux_gain: db_gain(p.aux_gain),
+                outs: std::array::from_fn(|c| match p.mic_buses.get(c) {
+                    Some(&b) if (0..BUSES as i16).contains(&b) => b as u8,
+                    _ => NO_AUX,
+                }),
             })
             .unwrap_or_default()
     })
@@ -865,6 +1014,7 @@ impl BackgroundTask for Load {
                 }
             }
         }
+        route(params);
         {
             let current = params.selection.read().unwrap();
             params.shared.sync_overrides(&current);
@@ -1202,6 +1352,7 @@ impl BackgroundTask for Load {
             v.live = Some(live);
         }
         smart_memory(&params.shared);
+        align(params);
         if params.shared.watched.swap(false, Ordering::Relaxed) {
             params.shared.view.lock().unwrap().watched_at = Some(Instant::now());
         }
@@ -1232,7 +1383,8 @@ impl BackgroundTask for Load {
 }
 #[derive(Default)]
 pub struct Dsp {
-    rack: Rack,
+    /// Boxed: the rack is ~300 KB, too big for a host thread's stack.
+    rack: Box<Rack>,
     until_poll: usize,
     audition_left: [usize; RACK_SLOTS],
     /// Epoch of each slot's installed runtime, returned with its persistence snapshots.
@@ -1254,6 +1406,8 @@ pub struct Dsp {
     key_slots: KeySlots,
     /// Recent load: rises with any block's, falls over some 50 blocks.
     load: f32,
+    /// Notes held back so every part's attacks land on the grid.
+    align: Align,
 }
 struct KeySlots([u32; 128]);
 impl Default for KeySlots {
@@ -1330,6 +1484,167 @@ fn smart_memory(shared: &Shared) {
     }
 }
 
+/// Route parts as the mixer's "Outputs" choice says and publish the host
+/// port names once they settle.
+fn route(params: &SamplerParams) {
+    let shared = &params.shared;
+    let names = {
+        let mut current = params.selection.write().unwrap();
+        let mut routed = current.clone();
+        shared.reroute(&mut routed);
+        if routed != *current {
+            *current = routed;
+        }
+        routing::port_names(&current)
+    };
+    let mut ports = shared.port_names.lock().unwrap();
+    if ports.offer(names, Instant::now()) {
+        shared.port_names_revision.fetch_add(1, Ordering::Release);
+    }
+}
+impl Shared {
+    /// [`routing::apply`] with what the audio thread last saw the parts'
+    /// instruments route past their outputs, named from the instruments.
+    pub(crate) fn reroute(&self, selection: &mut Selection) {
+        let mics: routing::Mics = self.mics.each_ref().map(|m| m.each_ref().map(|c| c.load(Ordering::Relaxed)));
+        let view = self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        routing::apply(selection, &mics, |slot, code| {
+            let instrument = view.parts.get(slot).and_then(|v| v.instrument.as_deref());
+            let name = instrument.and_then(|i| match code {
+                0x100.. => i.groups.get(usize::from(code - 0x100)).map(|g| g.name.clone()),
+                b => i.fx.buses.iter().find(|x| x.index == usize::from(b - 1)).map(|x| x.name.clone()),
+            });
+            name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| match code {
+                0x100.. => "Direct".into(),
+                b => format!("Bus {b}"),
+            })
+        });
+    }
+}
+/// What an instrument routes to each output channel past its own output
+/// ([`routing::Mics`]): its first instrument bus there, else its first group.
+pub(crate) fn outs_of(engine: &Engine) -> [u16; OUTS] {
+    let mut outs = engine.fx().routed().map(|b| b.map_or(0, |b| 1 + u16::from(b)));
+    let settings = engine.bank().map_or(&[][..], |b| &b.settings[..]);
+    for (g, s) in settings.iter().enumerate() {
+        if let Some(c) = s.bus.and_then(|b| b.checked_sub(DIRECT))
+            && let Some(o) = outs.get_mut(usize::from(c))
+            && *o == 0
+        {
+            *o = 0x100 + g.min(0xfeff) as u16;
+        }
+    }
+    outs
+}
+/// How long a new latency must hold before the host hears of it: hosts
+/// restart processing for each change, and parts loading one by one would
+/// otherwise change it once per part.
+const LATENCY_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+/// Auto-align on the loader: keep finished measurements with their parts,
+/// measure parts not yet measured, and send the audio thread the plan.
+fn align(params: &SamplerParams) {
+    let shared = &params.shared;
+    let done = std::mem::take(&mut *shared.measure.done.lock().unwrap());
+    if !done.is_empty() {
+        let mut current = params.selection.write().unwrap();
+        let mut view = shared.view.lock().unwrap();
+        for (slot, source, result) in done {
+            let Some(p) = current.parts.get_mut(slot).filter(|p| timing::source(&p.path, p.program) == source) else {
+                continue;
+            };
+            match result {
+                Ok(t) => {
+                    p.timing = Timing { override_ms: p.timing.override_ms, exclude: p.timing.exclude, ..t };
+                    view.parts[slot].timing_status.clear();
+                }
+                // Not measured again until the part changes.
+                Err(e) => {
+                    p.timing.source = source;
+                    view.parts[slot].timing_status = format!("Timing not measured: {e}");
+                }
+            }
+        }
+    }
+    let selection = params.selection.read().unwrap().clone();
+    if selection.auto_align {
+        for (slot, part) in selection.parts.iter().enumerate().take(RACK_SLOTS) {
+            if part.path.is_empty() || part.timing.measured(&part.path, part.program) {
+                continue;
+            }
+            let instrument = {
+                let view = shared.view.lock().unwrap();
+                let v = &view.parts[slot];
+                let ready = v.attempted == Some((part.path.clone(), part.program)) && !v.loading && v.bytes > 0;
+                v.instrument.clone().filter(|i| ready && i.path == Path::new(&part.path) && v.program == part.program)
+            };
+            let Some(instrument) = instrument else { continue };
+            if shared.measure.busy[slot].swap(true, Ordering::AcqRel) {
+                continue;
+            }
+            let measure = shared.measure.clone();
+            let source = timing::source(&part.path, part.program);
+            let spawned = std::thread::Builder::new().name("kontra-timing".into()).spawn(move || {
+                let result = (|| -> anyhow::Result<Timing> {
+                    let budget = crate::engine::MEMORY_LIMIT.min(crate::engine::memory_budget());
+                    let mut e = timing::engine_for(&instrument, 48_000., budget)?;
+                    let arts = timing::found(&instrument, &e);
+                    let declared = timing::declared(e.script());
+                    let note = timing::probe_note(&instrument, &arts);
+                    let (loaded, arts) = timing::measure(&mut e, &arts, note);
+                    Ok(Timing { source: source.clone(), loaded, arts, declared, ..Timing::default() })
+                })();
+                measure.done.lock().unwrap().push((slot, source, result.map_err(|e| format!("{e:#}"))));
+                measure.busy[slot].store(false, Ordering::Release);
+            });
+            if spawned.is_err() {
+                shared.measure.busy[slot].store(false, Ordering::Release);
+            }
+        }
+    }
+    let plan = plan(&selection);
+    let mut published = shared.published.lock().unwrap();
+    let (sent, waiting) = &mut *published;
+    if *sent == Some(plan) {
+        *waiting = None;
+        return;
+    }
+    // The latency the host would be told.
+    let told = |p: &Plan| if p.on { p.latency_ms } else { 0. };
+    let now = Instant::now();
+    let settled = match (&sent, &waiting) {
+        (None, _) => true,
+        (Some(s), _) if told(s) == told(&plan) => true,
+        (_, Some((ms, since))) if *ms == told(&plan) => now.duration_since(*since) >= LATENCY_SETTLE,
+        _ => {
+            *waiting = Some((told(&plan), now));
+            false
+        }
+    };
+    if settled {
+        *sent = Some(plan);
+        *waiting = None;
+        let _ = shared.plan.force_push(plan);
+        shared.reported.store(told(&plan).to_bits(), Ordering::Relaxed);
+    }
+}
+/// What the audio thread aligns by, from the persisted rack.
+pub(crate) fn plan(selection: &Selection) -> Plan {
+    let parts = || selection.parts.iter().take(RACK_SLOTS).filter(|p| !p.path.is_empty());
+    let latency_ms = timing::reported_ms(parts().map(|p| p.timing.latest()));
+    Plan {
+        on: selection.auto_align,
+        transport_only: selection.align_transport_only,
+        latency_ms,
+        parts: std::array::from_fn(|n| {
+            selection.parts.get(n).filter(|p| !p.path.is_empty()).map_or_else(Holds::default, |p| {
+                let a = &p.articulate;
+                let names: Vec<&str> =
+                    if a.source == p.path { a.articulations.iter().map(|a| a.name.as_str()).collect() } else { Vec::new() };
+                Holds::of(&p.timing, &names, latency_ms)
+            })
+        }),
+    }
+}
 fn bank_status(bank: &Bank) -> String {
     let mut status = format!(
         "{} samples · {} streamed · {:.0} MB",
@@ -1369,9 +1684,14 @@ impl PluginLogic for Sampler {
             .store(c.sample_rate.to_bits(), Ordering::Release);
         s.until_poll = 0;
         s.audition_left.fill(0);
+        s.align.clear();
         // The voices are gone, and the host's releases for them may be too.
         for lit in &p.shared.heard {
             lit.store(0, Ordering::Relaxed);
+        }
+        // So are the sound editor's voice dots.
+        for tap in &p.shared.probe.voices {
+            tap.store(0, Ordering::Relaxed);
         }
     }
     fn process(
@@ -1394,12 +1714,25 @@ impl PluginLogic for Sampler {
             if let Some(tasks) = cx.tasks::<Load>() {
                 tasks.spawn_coalescing(Load);
             }
+            for (engine, mics) in s.rack.parts.iter().zip(&p.shared.mics) {
+                for (m, out) in mics.iter().zip(outs_of(engine)) {
+                    m.store(out, Ordering::Relaxed);
+                }
+            }
             s.until_poll = (rate * 0.1) as usize;
         } else {
             s.until_poll -= frames;
         }
         if let Some(controls) = p.shared.controls.pop() {
             s.rack.set_controls(controls);
+        }
+        if let Some(plan) = p.shared.plan.pop() {
+            s.align.plan = plan;
+        }
+        // Held back only while aligning; once not, what was held plays at once.
+        let holding = s.align.holding(cx.transport.playing);
+        if !holding && s.align.next_due().is_some() {
+            s.align.flush(&mut s.rack, &mut s.routers);
         }
         if let Some(routes) = p.shared.routes.pop() {
             for (r, route) in s.routers.iter_mut().zip(routes) {
@@ -1492,6 +1825,8 @@ impl PluginLogic for Sampler {
             if e.epoch != 0 && e.epoch == s.script_epoch[e.part] {
                 s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
                 s.routers[e.part].forget();
+                let picked = s.routers[e.part].articulation_of_control(e.slot, e.control);
+                s.align.picked(e.part, picked);
             }
         }
         // Refresh lent live views and persistence snapshots in place, one at
@@ -1601,6 +1936,7 @@ impl PluginLogic for Sampler {
         let thru = p.shared.midi_thru.load(Ordering::Relaxed);
         let mut peak = [0f32; 2];
         let mut gains = [0f32; MAX_BLOCK];
+        let scope = p.shared.scope.source.load(Ordering::Relaxed);
         let (mut at, mut next) = (0, 0);
         loop {
             // Apply events due now; once the buffer is rendered, apply any stragglers.
@@ -1639,16 +1975,28 @@ impl PluginLogic for Sampler {
                         }
                         _ => {}
                     }
-                    articulate::dispatch(&mut s.rack, &mut s.routers, e.port, ev);
+                    if holding {
+                        let arrived = s.align.clock + e.sample_offset as u64;
+                        s.align.arrive(&mut s.rack, &mut s.routers, e.port, ev, arrived, rate);
+                    } else {
+                        articulate::dispatch(&mut s.rack, &mut s.routers, e.port, ev);
+                    }
                 }
                 next += 1;
             }
             if at >= frames {
                 break;
             }
-            let due = events
+            let now = s.align.clock + at as u64;
+            let mut due = events
                 .get(next)
                 .map_or(frames, |e| (e.sample_offset as usize).min(frames));
+            if holding {
+                s.align.release(now, &mut s.rack, &mut s.routers);
+                if let Some(held) = s.align.next_due() {
+                    due = due.min(at + (held - now).min(frames as u64) as usize);
+                }
+            }
             let len = (due - at).min(MAX_BLOCK);
             for (e, left) in s.rack.parts.iter_mut().zip(&mut s.audition_left) {
                 if *left > 0 {
@@ -1664,7 +2012,17 @@ impl PluginLogic for Sampler {
                 *gain = db_to_linear(p.volume.read());
             }
             let ports = s.rack.bus_controls.map(|c| usize::from(c.port));
+            s.rack.tap = scope.checked_sub(1).filter(|&slot| slot < RACK_SLOTS);
             let (buses, live) = s.rack.render_live(len);
+            if scope == SCOPE_MASTER {
+                let mut mono = [0f32; MAX_BLOCK];
+                for (_, x) in buses.iter().enumerate().filter(|(bus, _)| live[*bus]) {
+                    for (i, (m, gain)) in mono[..len].iter_mut().zip(&gains[..len]).enumerate() {
+                        *m += (x[0][i] + x[1][i]) * 0.5 * gain;
+                    }
+                }
+                p.shared.scope.push(&mono[..len]);
+            }
             for channel in 0..channels {
                 b.output(channel)[at..at + len].fill(0.0);
             }
@@ -1692,20 +2050,25 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
+            if s.rack.tap.is_some() {
+                p.shared.scope.push(&s.rack.tapped[..len]);
+            }
             at += len;
         }
+        p.shared.blocks.fetch_add(1, Ordering::Relaxed);
+        s.align.clock += frames as u64;
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
         if frames > 0 && rate > 0. {
             let fall = 0.1f32.powf(frames as f32 / rate as f32);
             let m = &p.shared.meters;
             let peaks = std::mem::take(&mut s.rack.peaks);
-            for (meter, peak) in m.parts.iter().zip(peaks.parts) {
-                Meters::publish(meter, peak, fall);
+            for ((meter, peak), clip) in m.parts.iter().zip(peaks.parts).zip(&m.clips.parts) {
+                Meters::publish(meter, peak, fall, clip);
             }
-            for (meter, peak) in m.buses.iter().zip(peaks.buses) {
-                Meters::publish(meter, peak, fall);
+            for ((meter, peak), clip) in m.buses.iter().zip(peaks.buses).zip(&m.clips.buses) {
+                Meters::publish(meter, peak, fall, clip);
             }
-            Meters::publish(&m.master, peak, fall);
+            Meters::publish(&m.master, peak, fall, &m.clips.master);
         }
         let watch = p.shared.probe.watch.load(Ordering::Relaxed);
         if let Some((slot, group)) = Probe::watched(watch).filter(|(slot, _)| *slot < RACK_SLOTS) {
@@ -1738,6 +2101,10 @@ impl PluginLogic for Sampler {
     }
     fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
         crate::ui::editor(params)
+    }
+    /// Auto-align's latency: the latest part's attack (see `timing.rs`).
+    fn latency(s: &Dsp) -> u32 {
+        s.align.plan.latency(s.rack.parts[0].rate())
     }
 }
 /// What the UI shows of initialized scripts: the performance view (the last slot with one),
@@ -2176,9 +2543,15 @@ mod tests {
                     group: 3,
                     solo: true,
                     streaming: Some(Streaming::Auto),
+                    timing: Timing { override_ms: Some(120.), exclude: true, ..Default::default() },
+                    output: 3,
+                    output_manual: true,
+                    mic_buses: vec![-1, 4],
+                    mic_names: vec![String::new(), "Close".into()],
                     ..Default::default()
                 },
             ],
+            outputs: 2,
             order: vec![1, 0],
             midi_thru: true,
             favorites: vec!["/libraries/Solo/a.nki".into()],
@@ -2190,6 +2563,8 @@ mod tests {
             sharp_artwork: true,
             sticky_off: true,
             streaming: Streaming::RamOnly,
+            auto_align: true,
+            align_transport_only: true,
             buses: vec![
                 Bus::default(),
                 Bus {
@@ -2737,5 +3112,305 @@ mod tests {
                 .multi_status
                 .starts_with("Multi load failed")
         );
+    }
+
+    // ---- Auto-align ----------------------------------------------------
+
+    /// A bank whose zones answer velocities `low..=high` with `pad` frames of
+    /// silence, then a steady tone: an attack exactly `pad` frames late.
+    /// Keys 48..=72 only, so keyswitches below play nothing.
+    fn late_bank(zones: &[(u8, u8, usize)]) -> Box<Bank> {
+        use crate::{audio::Sample, import::{Group, Zone}};
+        let group = Group { name: "late".into(), ..Group::default() };
+        let (zones, samples) = zones
+            .iter()
+            .enumerate()
+            .map(|(n, &(low, high, pad))| {
+                let path = PathBuf::from(format!("{n}"));
+                let mut frames = vec![[0.0f32; 2]; pad];
+                frames.extend((0..9600).map(|i| {
+                    let x = (i as f32 * 0.03).sin() * 0.5 + 0.1;
+                    [x, x]
+                }));
+                let zone = Zone { sample: path.clone(), low_velocity: low, high_velocity: high, low_key: 48, high_key: 72, ..Zone::default() };
+                (zone, (path, Sample { rate: 48000, frames }))
+            })
+            .unzip();
+        Box::new(Bank::from_samples(vec![group], zones, samples).unwrap())
+    }
+
+    /// Render `frames` in blocks of 128 with note-ons `(frame, channel,
+    /// note, velocity)` on port 0, allocation-free; output channels, two per bus.
+    fn render_notes(dsp: &mut Dsp, p: &SamplerParams, notes: &[(usize, u8, u8, u8)], frames: usize) -> Vec<Vec<f32>> {
+        use moose::core::bus_routing::{BusActivation, BusRouting};
+        const BLOCK: usize = 128;
+        let mut out = vec![Vec::new(); 4];
+        let transport = TransportInfo::default();
+        for start in (0..frames).step_by(BLOCK) {
+            let mut events = EventList::with_capacity(8);
+            for &(at, channel, note, velocity) in notes.iter().filter(|n| (start..start + BLOCK).contains(&n.0)) {
+                events.push(Event::on_port(
+                    (at - start) as u32,
+                    0,
+                    EventBody::NoteOn { group: 0, channel, note, velocity },
+                ));
+            }
+            let mut block = vec![vec![0f32; BLOCK]; 4];
+            let mut refs: Vec<_> = block.iter_mut().map(|o| o.as_mut_slice()).collect();
+            let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, BLOCK);
+            let mut midi_out = EventList::with_capacity(4);
+            let mut routes = BusRouting::new();
+            routes.push_output(2, BusActivation::Active);
+            routes.push_output(2, BusActivation::Active);
+            let mut cx = ProcessContext::new(&transport, 48000., BLOCK, &mut midi_out).with_bus_routing(routes);
+            let calls = allocations(|| {
+                Sampler::process(dsp, p, &mut buffer, &events, &mut cx);
+            });
+            assert_eq!(calls, 0, "the audio thread allocated or freed, holding notes back");
+            for (o, b) in out.iter_mut().zip(&block) {
+                o.extend_from_slice(b);
+            }
+        }
+        out
+    }
+
+    fn first_sound(x: &[f32]) -> Option<usize> {
+        x.iter().position(|v| *v != 0.0)
+    }
+
+    fn attack(first_ms: f32) -> timing::Delay {
+        timing::Delay { first: [Some(first_ms); 3], legato: [Some(first_ms); 3], ..Default::default() }
+    }
+
+    /// A library's mic mixer sends its "Tree" bus to "Out 2" and its
+    /// "Close" group straight to "Out 3" (`$ENGINE_PAR_OUTPUT_CHANNEL`). In
+    /// "One per mic" each gets a bus and host port of its own, named after
+    /// it, and plays there; the rest stays on the part's own.
+    #[test]
+    fn mic_outputs_get_their_own_buses_and_ports() {
+        use crate::{audio::Sample, import::{Group, Instrument, Loop, Zone}};
+        use moose::core::bus_routing::{BusActivation, BusRouting};
+        let groups: Vec<Group> = ["Close", "Tree", "Main"].map(|n| Group { name: n.into(), ..Group::default() }).into();
+        let looped = Some(Loop { start: 0, end: 100, until_release: false, crossfade: 0 });
+        let zones = (0..3)
+            .map(|g| Zone { group: g, sample: PathBuf::from(g.to_string()), loop_range: looped.clone(), ..Zone::default() })
+            .collect();
+        let samples = [0.1f32, 0.2, 0.3]
+            .iter()
+            .enumerate()
+            .map(|(g, &v)| (PathBuf::from(g.to_string()), Sample { rate: 48000, frames: vec![[v, v]; 100] }))
+            .collect();
+        let mut i = Instrument { name: "Harp".into(), groups: groups.clone(), ..Default::default() };
+        i.fx.buses = vec![crate::fx::Bus { index: 0, name: "Tree".into(), volume: 1.0, pan: 0.0, output: -1, chain: Default::default() }];
+        i.scripts = vec!["on init
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, $NI_BUS_OFFSET, 1, -1, -1)
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, 1, -1, -1, $NI_BUS_OFFSET)
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, 2, 0, -1, -1)
+end on"
+            .into()];
+        let (rt, errors) = load_scripts(&i, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut dsp = Dsp::default();
+        let p = SamplerParams::new();
+        let e = &mut dsp.rack.parts[0];
+        e.set_bank(Some(Box::new(Bank::from_samples(groups, zones, samples).unwrap())));
+        e.set_script(rt);
+        let fx = i.fx.processor(e.rate() as f32, MAX_BLOCK);
+        e.set_fx(fx);
+
+        const BLOCK: usize = 256;
+        let transport = TransportInfo::default();
+        let block = |dsp: &mut Dsp, note: bool| {
+            let mut events = EventList::with_capacity(2);
+            if note {
+                events.push(Event::on_port(0, 0, EventBody::NoteOn { group: 0, channel: 0, note: 60, velocity: 127 }));
+            }
+            let mut out = vec![vec![0f32; BLOCK]; 8];
+            let mut refs: Vec<_> = out.iter_mut().map(|o| o.as_mut_slice()).collect();
+            let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, BLOCK);
+            let mut midi_out = EventList::with_capacity(4);
+            let mut routes = BusRouting::new();
+            for _ in 0..4 {
+                routes.push_output(2, BusActivation::Active);
+            }
+            let mut cx = ProcessContext::new(&transport, 48000., BLOCK, &mut midi_out).with_bus_routing(routes);
+            Sampler::process(dsp, &p, &mut buffer, &events, &mut cx);
+            out
+        };
+        // A block tells the loader what the instrument routes where.
+        block(&mut dsp, false);
+        p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(i));
+        let mut sel = Selection {
+            outputs: routing::Outputs::Mic as u8,
+            parts: vec![Part { path: "/lib/Harp.nki".into(), ..Default::default() }],
+            order: vec![0],
+            ..Default::default()
+        };
+        p.shared.reroute(&mut sel);
+        assert_eq!(sel.parts[0].mic_buses[..4], [-1, 1, 2, -1]);
+        assert_eq!(routing::port_names(&sel)[..4], ["Harp", "Harp Tree", "Harp Close", "st.4"]);
+
+        let _ = p.shared.controls.force_push(mix(&sel));
+        block(&mut dsp, true);
+        let out = block(&mut dsp, false);
+        let at = |ch: usize| out[ch][BLOCK - 1];
+        assert!(at(0) > 0. && at(2) > 0. && at(4) > 0., "{} {} {}", at(0), at(2), at(4));
+        assert!((at(2) - 2. * at(4)).abs() < 1e-5, "Tree (0.2) is twice Close (0.1): {} {}", at(2), at(4));
+        assert_eq!(at(6), 0.);
+
+        // Back to one per instrument: the mics play with the part again.
+        sel.outputs = routing::Outputs::Instrument as u8;
+        p.shared.reroute(&mut sel);
+        let _ = p.shared.controls.force_push(mix(&sel));
+        let out = block(&mut dsp, false);
+        assert!(out[2][BLOCK - 1] == 0. && out[4][BLOCK - 1] == 0.);
+        assert!(out[0][BLOCK - 1] > at(0));
+    }
+
+    /// Two parts 10 and 30 ms late: the host is told 30 ms, the first part's
+    /// notes wait 20, and both attacks land together, 30 ms after the note.
+    /// The wait is sample-exact: the held part renders bit for bit what it
+    /// renders unheld, 960 frames later.
+    #[test]
+    fn two_parts_with_different_attacks_land_together() {
+        let setup = |on: bool| {
+            let mut dsp = Dsp::default();
+            let p = SamplerParams::new();
+            for (slot, pad) in [(0, 480), (1, 1440)] {
+                dsp.rack.parts[slot].set_bank(Some(late_bank(&[(0, 127, pad)])));
+                dsp.rack.controls[slot].channel = slot as i16;
+                dsp.rack.controls[slot].output = slot as u8;
+            }
+            let selection = Selection {
+                auto_align: on,
+                parts: [10.0, 30.0]
+                    .map(|ms| Part {
+                        path: "late.nki".into(),
+                        timing: Timing { loaded: attack(ms), ..Default::default() },
+                        ..Default::default()
+                    })
+                    .into(),
+                ..Default::default()
+            };
+            let _ = p.shared.plan.force_push(plan(&selection));
+            (dsp, p)
+        };
+        let notes = [(100, 0, 60, 100), (100, 1, 60, 100)];
+        let (mut dsp, p) = setup(true);
+        let held = render_notes(&mut dsp, &p, &notes, 4096);
+        assert_eq!(Sampler::latency(&dsp), 1440, "reported through the plugin API");
+        let (mut dry, q) = setup(false);
+        let unheld = render_notes(&mut dry, &q, &notes, 4096);
+        assert_eq!(Sampler::latency(&dry), 0);
+        // Unheld, the attacks are 20 ms apart; held, both at note + 30 ms.
+        assert_eq!((first_sound(&unheld[0]), first_sound(&unheld[2])), (Some(100 + 480), Some(100 + 1440)));
+        assert_eq!((first_sound(&held[0]), first_sound(&held[2])), (Some(100 + 1440), Some(100 + 1440)));
+        assert_eq!(held[0][960..], unheld[0][..4096 - 960]);
+        assert_eq!(held[2], unheld[2]);
+    }
+
+    /// One part, two articulations on their own channels whose samples are
+    /// 5 and 40 ms late: each note waits by its own articulation's delay
+    /// and both attacks land on the grid, 40 ms after their notes.
+    #[test]
+    fn two_articulations_with_different_attacks_land_on_the_grid() {
+        let articulate = Articulate {
+            source: "arts.nki".into(),
+            mode: articulate::Mode::Channel,
+            articulations: ["Short", "Long"]
+                .iter()
+                .enumerate()
+                .map(|(n, name)| articulate::Articulation {
+                    name: (*name).into(),
+                    key: Some(24 + n as u8),
+                    channel: n as u8,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let selection = Selection {
+            auto_align: true,
+            parts: vec![Part {
+                path: "arts.nki".into(),
+                articulate: articulate.clone(),
+                timing: Timing {
+                    loaded: attack(40.0),
+                    arts: vec![
+                        timing::Delay { name: "Short".into(), ..attack(5.0) },
+                        timing::Delay { name: "Long".into(), ..attack(40.0) },
+                    ],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let play = |channel: u8, velocity: u8| {
+            let mut dsp = Dsp::default();
+            let p = SamplerParams::new();
+            // Soft notes play the 5 ms zone, loud ones the 40 ms zone.
+            dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 64, 240), (65, 127, 1920)])));
+            dsp.rack.controls[0].channel = -1;
+            dsp.routers[0].set_route(Route::new("arts.nki", &articulate, &Mpe::default()));
+            dsp.align.plan = plan(&selection);
+            assert_eq!(Sampler::latency(&dsp), 1920);
+            first_sound(&render_notes(&mut dsp, &p, &[(1000, channel, 60, velocity)], 6000)[0])
+        };
+        assert_eq!(play(0, 40), Some(1000 + 1920), "the short articulation waits 35 ms");
+        assert_eq!(play(1, 100), Some(1000 + 1920), "the long one not at all");
+    }
+
+    /// Off by default: nothing is held and the host is told nothing.
+    #[test]
+    fn auto_align_is_off_by_default() {
+        let p = plan(&Selection::default());
+        assert!(!p.on);
+        assert_eq!(p.latency(48000.), 0);
+    }
+
+    /// The loader measures a real part in the background and reports its
+    /// latest articulation to the audio thread.
+    #[test]
+    #[ignore = "requires the owner's local Pacific library"]
+    fn loader_measures_a_real_part() {
+        let p = SamplerParams::new();
+        let path = Path::new(import::LIBRARY_ROOT)
+            .join("Pacific Ensemble Strings")
+            .to_string_lossy()
+            .into_owned();
+        let nki = (import::presets(Path::new(&path)).unwrap().into_iter())
+            .map(|f| f.to_string_lossy().into_owned())
+            .find(|f| f.contains("Marcato") && f.ends_with(".nki"))
+            .unwrap();
+        {
+            let mut s = p.selection.write().unwrap();
+            s.auto_align = true;
+            s.parts = vec![Part { path: nki.clone(), ..Default::default() }];
+        }
+        let started = Instant::now();
+        loop {
+            Load.run(&p);
+            let t = p.selection.read().unwrap().parts[0].timing.clone();
+            if !t.source.is_empty() {
+                println!("{nki}: {} ms {} after {:?}", t.latest(), t.basis(), started.elapsed());
+                assert!(t.latest() > 20.0 && t.latest() < 200.0);
+                break;
+            }
+            assert!(started.elapsed().as_secs() < 120, "not measured");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Told the host once the figure has held for the debounce.
+        let told = Instant::now();
+        let plan = loop {
+            Load.run(&p);
+            if let Some(plan) = p.shared.plan.pop().filter(|p| p.latency_ms > 0.0) {
+                break plan;
+            }
+            assert!(told.elapsed() < LATENCY_SETTLE * 2, "never reported");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        assert!(plan.on && plan.latency_ms > 20.0);
+        assert!(told.elapsed() >= LATENCY_SETTLE - std::time::Duration::from_millis(200));
     }
 }

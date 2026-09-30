@@ -2,6 +2,7 @@
 //! buses (Kontakt's st.1…st.16), each with its own fader and host port.
 
 use super::{Engine, MAX_BLOCK, voice::balance};
+use crate::fx::OUTS;
 
 pub const RACK_SLOTS: usize = 16;
 pub const BUSES: usize = 16;
@@ -27,6 +28,9 @@ pub struct PartControls {
     pub aux: u8,
     /// Linear gain of that send.
     pub aux_gain: f32,
+    /// Per output channel the instrument plays to past its own output (a
+    /// mic mixer's "Out 2"), the bus it goes to; [`NO_AUX`] joins `output`.
+    pub outs: [u8; OUTS],
 }
 
 /// An output bus's fader: what it does to everything routed to it.
@@ -99,6 +103,7 @@ impl Default for PartControls {
             solo: false,
             aux: NO_AUX,
             aux_gain: 0.0,
+            outs: [NO_AUX; OUTS],
         }
     }
 }
@@ -116,6 +121,10 @@ pub struct Rack {
     pub bus_controls: [BusControls; BUSES],
     /// Accumulated by [`render`](Self::render); take them to publish.
     pub peaks: Peaks,
+    /// The slot whose post-fader signal [`render`](Self::render) copies to
+    /// `tapped` (mono) for a spectrum; `None` copies nothing.
+    pub tap: Option<usize>,
+    pub tapped: [f32; MAX_BLOCK],
     part: Block,
     buses: [Block; BUSES],
     /// Per bus, frames holding signal; beyond them it is all zeros.
@@ -129,6 +138,8 @@ impl Default for Rack {
             controls: [PartControls::default(); RACK_SLOTS],
             bus_controls: Mix::default().buses,
             peaks: Peaks::default(),
+            tap: None,
+            tapped: [0.0; MAX_BLOCK],
             part: [[0.0; MAX_BLOCK]; 2],
             buses: [[[0.0; MAX_BLOCK]; 2]; BUSES],
             written: [0; BUSES],
@@ -249,22 +260,46 @@ impl Rack {
             bus[1][..*written].fill(0.0);
             *written = 0;
         }
+        if self.tap.is_some() {
+            self.tapped[..n].fill(0.0);
+        }
         let solo = self.controls.iter().any(|c| c.solo);
-        for ((engine, c), meter) in self
+        for (slot, ((engine, c), meter)) in self
             .parts
             .iter_mut()
             .zip(&self.controls)
             .zip(&mut self.peaks.parts)
+            .enumerate()
         {
             let [left, right] = &mut self.part;
             engine.tune = c.tune;
             engine.render(&mut left[..n], &mut right[..n]);
             let (left, right) = (&mut left[..n], &mut right[..n]);
-            // Silent parts, idle instruments and empty slots, add nothing.
-            if c.mute || (solo && !c.solo) || (peak(left) == 0.0 && peak(right) == 0.0) {
+            if c.mute || (solo && !c.solo) {
                 continue;
             }
             let [gl, gr] = balance(c.gain, c.pan);
+            // Output channels past the instrument's own, after the part's fader.
+            for (out, l, r) in engine.fx().direct_outs(n) {
+                let bus = match c.outs[out] {
+                    NO_AUX => c.output,
+                    b => b,
+                } as usize;
+                let bus = bus.min(BUSES - 1);
+                self.written[bus] = n;
+                let [bus_l, bus_r] = &mut self.buses[bus];
+                for (o, x) in bus_l[..n].iter_mut().zip(l) {
+                    *o += x * gl;
+                }
+                for (o, x) in bus_r[..n].iter_mut().zip(r) {
+                    *o += x * gr;
+                }
+                *meter = [meter[0].max(peak(l) * gl), meter[1].max(peak(r) * gr)];
+            }
+            // Silent parts, idle instruments and empty slots, add nothing.
+            if peak(left) == 0.0 && peak(right) == 0.0 {
+                continue;
+            }
             for x in left.iter_mut() {
                 *x *= gl;
             }
@@ -272,6 +307,11 @@ impl Rack {
                 *x *= gr;
             }
             *meter = [meter[0].max(peak(left)), meter[1].max(peak(right))];
+            if self.tap == Some(slot) {
+                for ((t, l), r) in self.tapped[..n].iter_mut().zip(&*left).zip(&*right) {
+                    *t = (l + r) * 0.5;
+                }
+            }
             let aux = (c.aux as usize) < BUSES && c.aux != c.output && c.aux_gain != 0.0;
             for (bus, gain) in [(c.output as usize, 1.0), (c.aux as usize, c.aux_gain)]
                 .into_iter()
@@ -319,3 +359,4 @@ impl Rack {
         (&self.buses, self.written.map(|w| w > 0))
     }
 }
+

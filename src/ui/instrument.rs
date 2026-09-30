@@ -249,7 +249,7 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
 }
 
 /// What was loaded and what could not be.
-pub fn info(cx: &Cx) -> El {
+pub fn info(ui: &Ui, cx: &Cx) -> El {
     let v = cx.part_view();
     let mut rows = Vec::new();
     if let Some(i) = current(cx) {
@@ -273,9 +273,10 @@ pub fn info(cx: &Cx) -> El {
         }
         if !i.warnings.is_empty() {
             rows.push(section("Import notes").pad(edges(SPACE, 0., 0., 0.)));
-            for w in &i.warnings {
+            // A line apiece: text broken by a newline measures short.
+            for w in i.warnings.iter().flat_map(|w| w.lines()).filter(|l| !l.is_empty()) {
                 rows.push(
-                    body(w.as_str())
+                    body(w)
                         .text_size(TEXT)
                         .fill(Role::Dim)
                         .lines(6)
@@ -284,7 +285,7 @@ pub fn info(cx: &Cx) -> El {
             }
         }
     }
-    rows.push(section("Scripts"));
+    rows.push(section("Scripts").pad(edges(SPACE, 0., 0., 0.)));
     rows.push(
         body("Scripts play the groups they choose; long samples stream from disk. Performance controls are rebuilt from the script's layout and drive it directly.")
             .fill(Role::Dim)
@@ -297,9 +298,14 @@ pub fn info(cx: &Cx) -> El {
     if !v.wallpaper_status.is_empty() {
         rows.push(caption(v.wallpaper_status.clone()).fill(Role::Dim).lines(3));
     }
-    col(rows)
-        .align(Align::Start)
-        .gap(SPACE)
+    // Text in a scroll is measured without a width, so wraps short and
+    // overlaps what follows: the column takes the width it was last laid
+    // out at.
+    let mut text = col(rows).align(Align::Start).gap(SPACE);
+    if let Some(s) = ui.scene().and_then(|s| s.surface("details-scroll")) {
+        text = text.w((s.frame.size.width - 2. * INSET).max(0.));
+    }
+    col![text]
         .pad(INSET)
         .flex(1)
         .min_h(0)

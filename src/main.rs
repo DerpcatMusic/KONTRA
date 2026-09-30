@@ -59,6 +59,7 @@ fn main() -> Result<()> {
   Some("bench") => bench(&args[2..])?,
   Some("bench-load") => for p in &args[2..] {bench_load(Path::new(p))?},
   Some("audit-libraries") => audit_libraries(&args[2..])?,
+  Some("audit-latency") => for p in &args[2..] {match kontakto::timing::audit(Path::new(p)) {Ok(v)=>println!("{}",serde_json::to_string(&v)?),Err(e)=>eprintln!("{p}: {e:#}")}},
   Some("audit-patch") => audit_patch(Path::new(args.get(2).context("audit-patch requires an NKI path")?))?,
   Some("bench-stream") => bench_stream(Path::new(args.get(2).context("bench-stream requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(64),args.get(4).map(|s|s.parse()).transpose()?.unwrap_or(10.0))?,
   Some("bench-host") => kontakto::bench_host(&args[4..],args.get(2).context("bench-host <seconds> <notes> <instrument.nki>...")?.parse()?,args.get(3).context("bench-host <seconds> <notes> <instrument.nki>...")?.parse()?)?,

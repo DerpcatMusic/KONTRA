@@ -538,11 +538,11 @@ fn key(
         (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
         (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
     };
-    // A sounding key lights like an LED under its top edge: the accent,
-    // bright there and fading down the key, stronger the harder it is
-    // played. Lighter than the accent, so it reads on a red or orange key.
+    // A sounding key lights like an LED under its top edge: neutral, strong
+    // there and fading down the key, stronger the harder it is played. Dark
+    // on a light key, light on a dark one, so it reads on any key's color.
     let v = f32::from(lit) / 127.;
-    let light = Color::oklch(if black { 0.8 } else { 0.76 }, 0.19, accent().hue());
+    let light = Color::oklch(if face.lightness() > 0.6 { 0.3 } else { 0.95 }, 0., 0.);
     let strength = 0.55 + 0.45 * v;
     let led = block(Len::Pct(100.), Len::Pct(100.))
         .fill(Gradient::linear(

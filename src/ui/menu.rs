@@ -26,6 +26,8 @@ pub enum Target {
     Output(usize),
     Aux(usize),
     BusPort(usize),
+    /// The mixer's routing: the Outputs mode and the one-click actions.
+    Routing,
     /// A mixer strip.
     Strip(Strip),
     /// An articulation's keyswitch: remap it, or learn the key from MIDI
@@ -52,6 +54,8 @@ pub enum Command {
     Duplicate(usize),
     Remove(usize),
     Rename(usize),
+    /// Show a part's envelope, filter and effects in the Sound tab.
+    EditSound(usize),
     Mute(usize),
     Solo(usize),
     Move(usize, i32),
@@ -70,6 +74,15 @@ pub enum Command {
     Channel(usize, i16),
     Port(usize, u8),
     Output(usize, u8),
+    /// Route a part automatically again.
+    AutoOutput(usize),
+    /// The mixer's Outputs mode ([`crate::routing::Outputs`]).
+    Outputs(u8),
+    OwnOutputs,
+    OwnChannels,
+    AllOmni,
+    NameOutputs,
+    ResetRouting,
     Appearance(super::Appearance),
     StickyHeaders,
     ArtworkBlur,
@@ -86,6 +99,13 @@ pub enum Command {
     KeepOriginal(usize),
     Mpe(usize, Zone),
     BendRange(usize, u8),
+    /// Auto-align timing on or off, and only while the transport plays.
+    AutoAlign,
+    AlignTransportOnly,
+    /// Set how late a part sounds by hand, ms; `None` goes back to what was measured.
+    Lateness(usize, Option<f32>),
+    ExcludeTiming(usize),
+    Remeasure(usize),
     /// Set a script control to a value.
     Script {
         part: usize,
@@ -185,6 +205,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             let position = cx.selection.order.iter().position(|n| *n as usize == slot);
             let last = cx.selection.order.len().saturating_sub(1);
             let mut items = vec![
+                act("Edit sound", "", Command::EditSound(slot)),
                 act("Rename…", "", Command::Rename(slot)),
                 act("Duplicate", "Ctrl+D", Command::Duplicate(slot)),
                 Item::Rule,
@@ -214,6 +235,9 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 check("Load all into RAM", part.streaming == Some(Streaming::RamOnly), Command::PartStreaming(slot, Some(Streaming::RamOnly))),
                 Item::Rule,
             ]);
+            if cx.selection.auto_align {
+                timing_items(cx, slot, &mut items);
+            }
             if position.is_some_and(|p| p > 0) {
                 items.push(act("Move up", "", Command::Move(slot, -1)));
             }
@@ -311,23 +335,43 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             {
                 return Vec::new();
             }
-            vec![
+            let mut items = vec![
                 act("Rename…", "", Command::StripRename(strip)),
                 act("Reset", "", Command::StripReset(strip)),
                 Item::Rule,
                 act("Route to…", "", Command::StripRoute(strip)),
-            ]
+            ];
+            if let Strip::Part(slot) = strip {
+                items.extend([Item::Rule, act("Edit sound", "", Command::EditSound(slot))]);
+            }
+            items
         }
         Target::Output(slot) => {
             let Some(part) = cx.selection.parts.get(*slot) else {
                 return Vec::new();
             };
-            (0..BUSES)
-                .map(|n| {
-                    let label = bus_item(cx, n);
-                    check(label, usize::from(part.output) == n, Command::Output(*slot, n as u8))
-                })
-                .collect()
+            let mut items = vec![check("Automatic", !part.output_manual, Command::AutoOutput(*slot)), Item::Rule];
+            items.extend((0..BUSES).map(|n| {
+                let label = bus_item(cx, n);
+                check(label, part.output_manual && usize::from(part.output) == n, Command::Output(*slot, n as u8))
+            }));
+            items
+        }
+        Target::Routing => {
+            use crate::routing::Outputs;
+            let now = Outputs::of(cx.selection.outputs);
+            let mut items = vec![Item::Info("Outputs".into())];
+            items.extend(Outputs::ALL.map(|o| check(o.label(), now == o, Command::Outputs(o as u8))));
+            items.extend([
+                Item::Rule,
+                act("Give every instrument its own output", "", Command::OwnOutputs),
+                act("Name outputs after instruments", "", Command::NameOutputs),
+                act("Reset routing", "", Command::ResetRouting),
+                Item::Rule,
+                act("Give every instrument its own MIDI channel", "", Command::OwnChannels),
+                act("All Omni", "", Command::AllOmni),
+            ]);
+            items
         }
         Target::Aux(slot) => {
             let Some(part) = cx.selection.parts.get(*slot) else {
@@ -369,7 +413,18 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 Item::Info("Performance".into()),
                 check("Disk streaming: Auto", rack == Streaming::Auto, Command::Streaming(Streaming::Auto)),
                 check("Load all into RAM", rack == Streaming::RamOnly, Command::Streaming(Streaming::RamOnly)),
+                Item::Rule,
+                check("Auto-align timing", cx.selection.auto_align, Command::AutoAlign),
             ]);
+            if cx.selection.auto_align {
+                let told = f32::from_bits(cx.p.shared.reported.load(std::sync::atomic::Ordering::Relaxed));
+                items.extend([
+                    check("Only while the transport plays", cx.selection.align_transport_only, Command::AlignTransportOnly),
+                    Item::Info(format!("Experimental · {told:.0} ms latency")),
+                ]);
+            } else {
+                items.push(Item::Info("Experimental".into()));
+            }
             items.extend([Item::Rule, Item::Info("Appearance".into())]);
             let now = super::Appearance::of(cx.selection.appearance);
             for (look, label) in [
@@ -389,10 +444,37 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
     }
 }
 
+/// A part's timing under auto-align: how late it sounds and why, per
+/// articulation, and the player's say.
+fn timing_items(cx: &Cx, slot: usize, items: &mut Vec<Item>) {
+    let t = &cx.selection.parts[slot].timing;
+    let latest = t.latest();
+    items.push(Item::Info(format!("Timing −{latest:.0} ms · {}", t.basis())));
+    let status = &cx.view.parts[slot].timing_status;
+    if !status.is_empty() {
+        items.push(Item::Info(status.clone()));
+    }
+    if t.override_ms.is_none() && !t.exclude {
+        let ms = |d: &crate::timing::Delay, legato| d.ms(legato, 100).map_or("–".into(), |ms| format!("−{ms:.0}"));
+        for d in t.arts.iter().filter(|d| d.max().is_some()) {
+            let legato = if d.mono() { format!(", legato {} ms", ms(d, true)) } else { String::new() };
+            items.push(Item::Info(format!("{} {} ms{legato}", d.name, ms(d, false))));
+        }
+    }
+    items.extend([
+        act("Play 10 ms earlier", "", Command::Lateness(slot, Some((latest + 10.).min(crate::timing::MAX_MS)))),
+        act("Play 10 ms later", "", Command::Lateness(slot, Some((latest - 10.).max(0.)))),
+        check("As measured", t.override_ms.is_none(), Command::Lateness(slot, None)),
+        check("Exclude from alignment", t.exclude, Command::ExcludeTiming(slot)),
+        act("Measure again", "", Command::Remeasure(slot)),
+        Item::Rule,
+    ]);
+}
+
 /// "st.3", or "st.3 · Drums" once named.
 fn bus_item(cx: &Cx, n: usize) -> String {
     let own = crate::plugin::Bus::default().label(n);
-    match cx.selection.bus(n).label(n) {
+    match crate::routing::label(&cx.selection, n) {
         name if name == own => name,
         name => format!("{own} · {name}"),
     }
@@ -539,6 +621,10 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             cx.show(slot);
             cx.state.renaming = Some((slot, super::rack::name(cx, slot)));
         }
+        Command::EditSound(slot) => {
+            cx.show(slot);
+            cx.state.tab = super::Tab::Sound;
+        }
         Command::Mute(slot) => cx.selection.parts[slot].mute ^= true,
         Command::Solo(slot) => cx.selection.parts[slot].solo ^= true,
         Command::Move(slot, by) => cx.move_by(slot, by),
@@ -587,6 +673,11 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
                 part.streaming = mode;
             }
         }
+        Command::AutoAlign => cx.selection.auto_align ^= true,
+        Command::AlignTransportOnly => cx.selection.align_transport_only ^= true,
+        Command::Lateness(slot, ms) => cx.selection.parts[slot].timing.override_ms = ms,
+        Command::ExcludeTiming(slot) => cx.selection.parts[slot].timing.exclude ^= true,
+        Command::Remeasure(slot) => cx.selection.parts[slot].timing.source.clear(),
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
         Command::Remap(part, row, to) => {
             if let Some(r) = cx.selection.parts.get_mut(part).and_then(|p| p.articulate.articulations.get_mut(row)) {
@@ -609,7 +700,24 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::BendRange(slot, range) => cx.selection.parts[slot].mpe.bend_range = range,
         Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
         Command::Port(slot, port) => cx.selection.parts[slot].port = port,
-        Command::Output(slot, output) => cx.selection.parts[slot].output = output,
+        Command::Output(slot, output) => {
+            let part = &mut cx.selection.parts[slot];
+            (part.output, part.output_manual) = (output, true);
+        }
+        Command::AutoOutput(slot) => cx.selection.parts[slot].output_manual = false,
+        Command::Outputs(0) => crate::routing::to_stereo(&mut cx.selection),
+        Command::Outputs(mode) => cx.selection.outputs = mode,
+        Command::OwnOutputs => {
+            use crate::routing::Outputs;
+            if Outputs::of(cx.selection.outputs) == Outputs::Stereo {
+                cx.selection.outputs = Outputs::Instrument as u8;
+            }
+            cx.selection.parts.iter_mut().for_each(|p| p.output_manual = false);
+        }
+        Command::OwnChannels => crate::routing::own_channels(&mut cx.selection),
+        Command::AllOmni => crate::routing::all_omni(&mut cx.selection),
+        Command::NameOutputs => crate::routing::name_outputs(&mut cx.selection),
+        Command::ResetRouting => crate::routing::reset(&mut cx.selection),
         Command::Script {
             part,
             control,
