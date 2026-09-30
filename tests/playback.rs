@@ -1668,6 +1668,46 @@ fn tight_budgets_stream_start_offsets_instead_of_failing() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A voice muted a while stops streaming (scripts mute crossfade layers
+/// and mic positions no one hears) and streams again from where it is when
+/// heard: the same audio as a voice that never stopped, from RAM.
+#[test]
+fn muted_streamed_voices_pause_and_resume_exactly() {
+    let dir = std::env::temp_dir().join(format!("kontakto-mute-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, frames) = (dir.join("muted.wav"), 200_000);
+    write_wav_bits(&path, frames, 24);
+    let zone = Zone {
+        sample: path.clone(),
+        ..Zone::default()
+    };
+    let instrument = instrument(vec![Group::default()], vec![zone.clone()]);
+    let streamed = Bank::load_within(&instrument, 1).unwrap();
+    let decoded = kontakto::audio::decode(&path, frames).unwrap();
+    let ram = Bank::from_samples(vec![Group::default()], vec![zone], vec![(path, decoded)]).unwrap();
+    let (mut a, mut b) = (engine_with(streamed), engine_with(ram));
+    a.blocking_streams = true;
+    let note = NoteEvent::new(0, 60, 100);
+    let (id_a, id_b) = (a.start_event(&note).unwrap(), b.start_event(&note).unwrap());
+    let mut compare = |a: &mut Engine, b: &mut Engine, blocks: usize| {
+        for block in 0..blocks {
+            assert!(render(a, 128) == render(b, 128), "diverges in block {block}");
+        }
+    };
+    compare(&mut a, &mut b, 20);
+    a.change_event(id_a, EventChange::Volume(0.0));
+    b.change_event(id_b, EventChange::Volume(0.0));
+    // 300 ms muted: past the pause.
+    compare(&mut a, &mut b, 113);
+    assert!(!a.voice_census()[0].streams, "a muted voice stops streaming");
+    a.change_event(id_a, EventChange::Volume(1.0));
+    b.change_event(id_b, EventChange::Volume(1.0));
+    compare(&mut a, &mut b, 100);
+    assert!(a.voice_census()[0].streams);
+    assert_eq!(a.underruns(), 0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A start offset the scripts pin with a controller (Areia's CC113) stays
 /// resident when the whole offset range does not fit: the voice starts from
 /// RAM, without waiting for the disk.

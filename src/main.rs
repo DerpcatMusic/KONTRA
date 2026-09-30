@@ -54,6 +54,7 @@ fn main() -> Result<()> {
     println!("{}",serde_json::to_string_pretty(&report)?);
   },
   Some("render") => render(&args[2..])?,
+  Some("voices") => voices(Path::new(args.get(2).context("voices requires an NKI path")?), args.get(3).map_or("60@0-3000,64@0-3000,67@0-3000", String::as_str))?,
   Some("ksp-run") => ksp_run(Path::new(args.get(2).context("ksp-run requires an NKI path")?),&args[3..])?,
   Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(24))?,
   Some("bench-load") => for p in &args[2..] {bench_load(Path::new(p))?},
@@ -415,6 +416,68 @@ fn render(args: &[String]) -> Result<()> {
     }
     for warning in instrument.warnings {
         eprintln!("Compatibility: {warning}");
+    }
+    Ok(())
+}
+
+/// Which voices a chord keeps alive, through the scripts and effects as the
+/// plugin plays it: per group, how many, how loud (channel gain times
+/// envelope), how many are inaudible (below -96 dB) and how many stream.
+fn voices(path: &Path, notes: &str) -> Result<()> {
+    let instrument = import::read(path)?;
+    let (bank, scripts) = load(&instrument)?;
+    let mut engine = Engine::default();
+    engine.blocking_streams = true;
+    engine.set_bank(Some(Box::new(bank)));
+    engine.set_fx(instrument.fx.processor(engine.rate() as f32, MAX_BLOCK));
+    install_scripts(&mut engine, scripts);
+    let input = parse_notes(notes.split(','))?;
+    let last = input.last().map_or(0, |e| e.0);
+    let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+    let (mut frame, mut next) = (0u64, 0);
+    let mut reports = [0.1, 0.5, 1.0, 2.0].map(|s| (s * RATE) as u64).to_vec();
+    reports.extend([0.2, 1.0, 3.0].map(|s| last + (s * RATE) as u64));
+    for at in reports {
+        while frame < at {
+            while let Some(event) = input.get(next).filter(|e| e.0 <= frame) {
+                play(&mut engine, event);
+                next += 1;
+            }
+            let len = input
+                .get(next)
+                .map_or(MAX_BLOCK as u64, |e| e.0 - frame)
+                .min(at - frame)
+                .min(MAX_BLOCK as u64) as usize;
+            engine.render(&mut left[..len], &mut right[..len]);
+            frame += len as u64;
+        }
+        let census = engine.voice_census();
+        let level = |v: &kontakto::engine::VoiceInfo| v.gain * v.envelope;
+        let silent = census.iter().filter(|v| level(v) < 1.6e-5).count();
+        println!(
+            "{:.2} s: {} voices · {} below -96 dB · {} streaming",
+            seconds_of(frame),
+            census.len(),
+            silent,
+            census.iter().filter(|v| v.streams).count()
+        );
+        let mut groups: Vec<u32> = census.iter().map(|v| v.group).collect();
+        groups.sort_unstable();
+        groups.dedup();
+        for g in groups {
+            let of: Vec<_> = census.iter().filter(|v| v.group == g).collect();
+            let loudest = of.iter().map(|v| level(v)).fold(0f32, f32::max);
+            println!(
+                "  {:>3} × group {g} {:?}: loudest {:.1} dB · {} below -96 dB · {} released · {} release-triggered · gains 0: {}",
+                of.len(),
+                instrument.groups[g as usize].name,
+                20. * loudest.max(1e-12).log10(),
+                of.iter().filter(|v| level(v) < 1.6e-5).count(),
+                of.iter().filter(|v| v.released).count(),
+                of.iter().filter(|v| v.release_trigger).count(),
+                of.iter().filter(|v| v.gain == 0.).count(),
+            );
+        }
     }
     Ok(())
 }

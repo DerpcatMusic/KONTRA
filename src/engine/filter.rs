@@ -593,6 +593,11 @@ impl VoiceFilter {
         self.envs.iter_mut().for_each(|e| e.release(None));
     }
 
+    /// Clear the sections' state, as silent input leaves it.
+    pub fn rest(&mut self) {
+        self.sections.iter_mut().for_each(|s| s.s = [0.0; 4]);
+    }
+
     /// Filter one block (at most [`MAX_BLOCK`] frames) in place; `ctl` is scratch.
     #[allow(clippy::too_many_arguments)]
     pub fn process(

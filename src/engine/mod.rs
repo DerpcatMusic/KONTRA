@@ -313,6 +313,24 @@ impl Engine {
         self.player.voices.len()
     }
 
+    /// What each playing voice is, for diagnostics: group, whether it was
+    /// released or release-triggered, streams, and its channel gain and
+    /// envelope level at the end of the last block.
+    pub fn voice_census(&self) -> Vec<VoiceInfo> {
+        self.player
+            .voices
+            .iter()
+            .map(|v| VoiceInfo {
+                group: v.group,
+                released: v.released,
+                release_trigger: v.release_trigger,
+                streams: v.stream.is_some_and(|s| !s.paused),
+                gain: v.gains[0].abs().max(v.gains[1].abs()),
+                envelope: v.env.level() * v.flex.as_ref().map_or(1.0, |f| f.level()) * v.fade.value(),
+            })
+            .collect()
+    }
+
     /// Streamed frames that were not ready in time (played as silence).
     pub fn underruns(&self) -> u64 {
         self.player.underruns
@@ -608,6 +626,17 @@ impl Engine {
     }
 }
 
+/// One voice as [`Engine::voice_census`] reports it.
+#[derive(Clone, Copy, Debug)]
+pub struct VoiceInfo {
+    pub group: u32,
+    pub released: bool,
+    pub release_trigger: bool,
+    pub streams: bool,
+    pub gain: f32,
+    pub envelope: f32,
+}
+
 /// Engine state apart from the bank, so voices can mutate while the bank is borrowed.
 struct Player {
     voices: Vec<Voice>,
@@ -860,6 +889,7 @@ impl Player {
                     slot,
                     tag: 0,
                     trusted: 0,
+                    paused: false,
                 }
             } else {
                 // From the voice's start on (`limit >= first`): an offset past
@@ -875,6 +905,7 @@ impl Player {
                     slot,
                     tag,
                     trusted: limit,
+                    paused: false,
                 }
             }
         });
@@ -916,6 +947,7 @@ impl Player {
             base_pan: zone.pan,
             pan: ev.pan,
             gains: [0.0; 2],
+            muted: 0,
             filter: VoiceFilter::new(settings.filter.as_deref(), &settings.mods, &inputs, self.rate as f32),
         };
         // Start at the voice's first-block gains, so it does not ramp in.

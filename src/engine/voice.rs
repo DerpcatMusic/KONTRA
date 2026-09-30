@@ -22,6 +22,8 @@ const FIXED_ONE: f64 = (1u64 << 32) as f64;
 const SILENT: f32 = 1e-4;
 /// Offline renders wait at most this long for one streamed window.
 const OFFLINE_WAIT: Duration = Duration::from_secs(5);
+/// Seconds a voice stays muted before its stream pauses.
+const PAUSE_AFTER: f32 = 0.1;
 
 /// Attack-hold-decay-sustain-release amplitude envelope, times in seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -167,6 +169,11 @@ impl Envelope {
 
     pub fn done(&self) -> bool {
         self.stage == Stage::Done
+    }
+
+    /// The gain the envelope has reached.
+    pub fn level(&self) -> f32 {
+        self.level
     }
 
     /// Write one gain per frame; `flex` is the envelope's points, if it is one.
@@ -353,6 +360,8 @@ pub(crate) struct Stream {
     pub slot: u16,
     pub tag: u16,
     pub trusted: u64,
+    /// Stopped while the voice is muted; the slot stays the voice's.
+    pub paused: bool,
 }
 
 /// One playing zone. Plain data; the engine owns the storage.
@@ -406,6 +415,8 @@ pub(crate) struct Voice {
     pub pan: f32,
     /// Channel gains reached at the end of the last block.
     pub gains: [f32; 2],
+    /// Frames the voice has been muted for, to pause its stream.
+    pub muted: u32,
     /// Group insert filter state (untouched when the group has none).
     pub filter: VoiceFilter,
 }
@@ -506,52 +517,68 @@ impl Voice {
             }
         }
 
-        // The window starts one frame before the position for the cubic's left tap.
-        let first = self.pos as i64 - 1;
-        // 32.32 fixed point inside the window: exact, cheap to index.
-        let base = ((self.pos - first as f64) * FIXED_ONE) as u64;
-        let step = (step * FIXED_ONE) as u64;
-        let count = ((base + step * (n as u64 - 1)) >> 32) as usize + 4;
-        let mut underrun = false;
-        let window = match self.resident_window(cx.bank, first, &mut scratch.window[..count]) {
-            Some(window) => window,
-            None => {
-                let window = &mut scratch.window[..count];
-                underrun = self.gather(cx, first, window);
-                window
-            }
-        };
-
         let level = self.base_level * group.gain * modulation * self.volume;
         let target = balance(
             level,
             (self.base_pan + group.pan + self.pan).clamp(-1.0, 1.0),
         );
-        let delta = [
-            (target[0] - self.gains[0]) / n as f32,
-            (target[1] - self.gains[1]) / n as f32,
-        ];
-        let [out_l, out_r] = &mut scratch.out;
-        let (l, r) = match &group.filter {
-            Some(_) => {
-                out_l[..n].fill(0.0);
-                out_r[..n].fill(0.0);
-                (&mut out_l[..n], &mut out_r[..n])
+        // 32.32 fixed point: exact, cheap to index.
+        let step = (step * FIXED_ONE) as u64;
+        let mut underrun = false;
+        if target == [0.0; 2] && self.gains == [0.0; 2] {
+            // Muted all block, as scripts mute the crossfade layers and mic
+            // positions not heard: nothing to render. The voice keeps its
+            // place and envelope, and its filter rests as silence would
+            // leave it, so it returns as if it had played on. Muted a while,
+            // it stops streaming too: disk reads and decoding for voices no
+            // one hears were most of the streamers' work.
+            self.filter.rest();
+            self.muted = self.muted.saturating_add(n as u32);
+            // Still in the resident head, resuming is a voice start as usual.
+            if self.muted as f32 >= PAUSE_AFTER * cx.rate || (self.pos as u64) < self.limit {
+                self.pause(cx);
             }
-            None => (&mut left[..n], &mut right[..n]),
-        };
-        mix(window, base, step, amp, self.gains, delta, l, r);
-        self.gains = target;
-        if let Some(filter) = &group.filter {
-            let (l, r) = (&mut out_l[..n], &mut out_r[..n]);
-            self.filter
-                .process(filter, &group.mods, &inputs, &mut scratch.flex, l, r, cx.rate);
-            left[..n].iter_mut().zip(l.iter()).for_each(|(o, x)| *o += x);
-            right[..n].iter_mut().zip(r.iter()).for_each(|(o, x)| *o += x);
+        } else {
+            self.muted = 0;
+            self.resume(cx);
+            // The window starts one frame before the position for the cubic's left tap.
+            let first = self.pos as i64 - 1;
+            let base = ((self.pos - first as f64) * FIXED_ONE) as u64;
+            let count = ((base + step * (n as u64 - 1)) >> 32) as usize + 4;
+            let window = match self.resident_window(cx.bank, first, &mut scratch.window[..count]) {
+                Some(window) => window,
+                None => {
+                    let window = &mut scratch.window[..count];
+                    underrun = self.gather(cx, first, window);
+                    window
+                }
+            };
+            let delta = [
+                (target[0] - self.gains[0]) / n as f32,
+                (target[1] - self.gains[1]) / n as f32,
+            ];
+            let [out_l, out_r] = &mut scratch.out;
+            let (l, r) = match &group.filter {
+                Some(_) => {
+                    out_l[..n].fill(0.0);
+                    out_r[..n].fill(0.0);
+                    (&mut out_l[..n], &mut out_r[..n])
+                }
+                None => (&mut left[..n], &mut right[..n]),
+            };
+            mix(window, base, step, amp, self.gains, delta, l, r);
+            self.gains = target;
+            if let Some(filter) = &group.filter {
+                let (l, r) = (&mut out_l[..n], &mut out_r[..n]);
+                self.filter
+                    .process(filter, &group.mods, &inputs, &mut scratch.flex, l, r, cx.rate);
+                left[..n].iter_mut().zip(l.iter()).for_each(|(o, x)| *o += x);
+                right[..n].iter_mut().zip(r.iter()).for_each(|(o, x)| *o += x);
+            }
         }
 
         self.pos += (step * n as u64) as f64 / FIXED_ONE;
-        if let Some(stream) = &self.stream {
+        if let Some(stream) = self.stream.filter(|s| !s.paused) {
             cx.slots[stream.slot as usize].release_below((self.pos as u64).saturating_sub(1));
         }
         let alive = !self.env.done()
@@ -559,6 +586,26 @@ impl Voice {
             && !self.fade.finished()
             && self.pos < self.length as f64;
         (alive, underrun)
+    }
+
+    /// Stop streaming while muted, keeping the slot.
+    fn pause(&mut self, cx: &Context) {
+        if let Some(stream) = self.stream.as_mut().filter(|s| !s.paused && self.limit != FOREVER) {
+            cx.slots[stream.slot as usize].stop();
+            stream.paused = true;
+        }
+    }
+
+    /// Stream again from the position (never from behind it, which would
+    /// decode everything played while muted).
+    fn resume(&mut self, cx: &Context) {
+        if let Some(stream) = self.stream.as_mut().filter(|s| s.paused) {
+            let first = (self.pos as u64).saturating_sub(1);
+            let from = self.limit.max(first);
+            let slot = &cx.slots[stream.slot as usize];
+            stream.tag = slot.configure(self.sample, &self.map, self.wraps, from, first);
+            (stream.trusted, stream.paused) = (from, false);
+        }
     }
 
     /// Fast path: the window is one contiguous, unblended resident run,
@@ -675,6 +722,10 @@ impl Voice {
             }
             return;
         }
+        // A paused stream restarts on the new path when the voice is heard.
+        if self.stream.is_some_and(|s| s.paused) {
+            return;
+        }
         let (slot, trusted) = match self.stream {
             Some(stream) => (stream.slot, stream.trusted),
             None => match free.pop() {
@@ -690,6 +741,7 @@ impl Voice {
             slot,
             tag,
             trusted: from,
+            paused: false,
         });
     }
 }
