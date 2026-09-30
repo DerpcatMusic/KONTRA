@@ -1,7 +1,8 @@
 //! The rack: every part stacked Kontakt-style, each under its own header.
 //!
-//! A header names the part, steps its preset, routes it and mixes it; its
-//! chevron folds the part down to one slim line of it, its ✕ removes it.
+//! A header, one compact line, names the part, steps its preset, routes it
+//! and mixes it; its chevron folds the part down to the header alone (the
+//! height springs), its ✕ removes it.
 //! Below an open header sit the part's notices and performance controls,
 //! as much of them as the part's height shows: its foot drags to size it.
 //! With sticky headers on, parts scrolled out of view keep their headers
@@ -543,8 +544,10 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
         cx.remove(slot);
     }
 
+    // Narrow, the name keeps the room: the bar along the foot shows the load.
     let chip = match progress {
-        Some(done) => Some(load_chip(done, !narrow)),
+        Some(_) if narrow => None,
+        Some(done) => Some(load_chip(done, true)),
         None => failed.then(|| caption("Failed to load").text_size(SMALL - 1.).fill(Role::Dim).lines(1).shrink(0)),
     };
     let mut name_row = vec![title, prev_el, next_el];
@@ -677,7 +680,7 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .text_weight(Weight::SEMIBOLD)
         .fill(if muted { Role::Dim } else { Role::Ink })
         .lines(1)
-        .min_w(TEXT * 6.)
+        .min_w(0)
         .shrink(1)
         .cursor(Cursor::Grab)
         .tip(format!("{name}\n{facts}\nDrag to reorder · double-click to rename"))
