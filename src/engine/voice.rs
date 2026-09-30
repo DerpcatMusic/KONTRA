@@ -200,6 +200,21 @@ impl Envelope {
         self.level
     }
 
+    /// Advance over `out.len()` frames as [`Envelope::render`] would; `out`
+    /// is scratch. Held stages move without a pass over the frames.
+    pub fn skip(&mut self, out: &mut [f32], flex: Option<&Flex>, rate: f32) {
+        match self.stage {
+            Stage::Sustain if self.level > SILENT => {}
+            Stage::Hold if self.left as usize >= out.len() => {
+                self.left -= out.len() as u32;
+                if self.left == 0 {
+                    self.stage = Stage::Decay;
+                }
+            }
+            _ => self.render(out, flex, rate),
+        }
+    }
+
     /// Write one gain per frame; `flex` is the envelope's points, if it is one.
     pub fn render(&mut self, out: &mut [f32], flex: Option<&Flex>, rate: f32) {
         let mut i = 0;
@@ -346,6 +361,13 @@ impl Fade {
 
     pub fn value(&self) -> f32 {
         self.value
+    }
+
+    /// Advance as [`Fade::apply`] would; `amp` is scratch.
+    fn skip(&mut self, amp: &mut [f32]) {
+        if self.left > 0 {
+            self.apply(amp);
+        }
     }
 
     fn apply(&mut self, amp: &mut [f32]) {
@@ -506,15 +528,7 @@ impl Voice {
         right: &mut [f32],
     ) -> (bool, bool) {
         let n = left.len().min(right.len()).min(MAX_BLOCK);
-        let amp = &mut scratch.amp[..n];
         let group = &cx.bank.settings[self.group as usize];
-        self.env.render(amp, None, cx.rate);
-        if let Some(env) = &mut self.flex {
-            let flex = &mut scratch.flex[..n];
-            env.render(flex, group.flex.as_ref(), cx.rate);
-            amp.iter_mut().zip(flex.iter()).for_each(|(a, f)| *a *= f);
-        }
-
         let inputs = cx.inputs(self.channel, self.note, self.velocity);
         let (modulation, semitones) = group.mods.modulate(&mut self.mods, &inputs, n, cx.rate);
         let semitones = semitones + group.tune + cx.tune;
@@ -522,25 +536,43 @@ impl Voice {
             self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));
         }
         let step = (self.step * self.tune * self.pitch.1).min(MAX_STEP);
-        self.fade.apply(amp);
-        // A sample ending mid-waveform ramps out over its last millisecond.
-        let declick = DECLICK * cx.rate;
-        let end = ((self.length as f64 - self.pos) / step) as f32;
-        if end < n as f32 + declick {
-            for (i, a) in amp.iter_mut().enumerate() {
-                *a *= ((end - i as f32) / declick).clamp(0.0, 1.0);
-            }
-        }
-
         let level = self.base_level * group.gain * modulation * self.volume;
         let target = balance(
             level,
             (self.base_pan + group.pan + self.pan).clamp(-1.0, 1.0),
         );
+        let muted = target == [0.0; 2] && self.gains == [0.0; 2];
+
+        let amp = &mut scratch.amp[..n];
+        let flex = &mut scratch.flex[..n];
+        if muted {
+            // Unheard: the envelopes and fade only move on.
+            self.env.skip(amp, None, cx.rate);
+            if let Some(env) = &mut self.flex {
+                env.skip(flex, group.flex.as_ref(), cx.rate);
+            }
+            self.fade.skip(amp);
+        } else {
+            self.env.render(amp, None, cx.rate);
+            if let Some(env) = &mut self.flex {
+                env.render(flex, group.flex.as_ref(), cx.rate);
+                amp.iter_mut().zip(flex.iter()).for_each(|(a, f)| *a *= f);
+            }
+            self.fade.apply(amp);
+            // A sample ending mid-waveform ramps out over its last millisecond.
+            let declick = DECLICK * cx.rate;
+            let end = ((self.length as f64 - self.pos) / step) as f32;
+            if end < n as f32 + declick {
+                for (i, a) in amp.iter_mut().enumerate() {
+                    *a *= ((end - i as f32) / declick).clamp(0.0, 1.0);
+                }
+            }
+        }
+
         // 32.32 fixed point: exact, cheap to index.
         let step = (step * FIXED_ONE) as u64;
         let mut underrun = false;
-        if target == [0.0; 2] && self.gains == [0.0; 2] {
+        if muted {
             // Muted all block, as scripts mute the crossfade layers and mic
             // positions not heard: nothing to render. The voice keeps its
             // place and envelope, and its filter rests as silence would
