@@ -62,10 +62,10 @@ pub struct VoiceLimit {
     pub exclusion_group: i32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Loop { pub start: usize, pub end: usize, pub until_release: bool, pub crossfade: usize }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Zone {
     pub group: usize,
     pub sample: PathBuf,

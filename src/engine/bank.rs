@@ -253,6 +253,21 @@ mod resident {
     }
 }
 
+/// Live slices banks share, by content.
+type Pool<T> = Mutex<Vec<std::sync::Weak<[T]>>>;
+
+/// A live slice of `pool` equal to `items`, or `items` shared from now on.
+fn intern<T: PartialEq>(pool: &Pool<T>, items: Vec<T>) -> Arc<[T]> {
+    let mut pool = pool.lock().unwrap_or_else(|e| e.into_inner());
+    pool.retain(|w| w.strong_count() > 0);
+    if let Some(shared) = pool.iter().filter_map(std::sync::Weak::upgrade).find(|s| **s == *items) {
+        return shared;
+    }
+    let shared: Arc<[T]> = items.into();
+    pool.push(Arc::downgrade(&shared));
+    shared
+}
+
 /// Seconds since the loader first ticked [`clock`]; voices stamp their
 /// group's [`Bank::usage`] with it.
 pub static CLOCK: AtomicU32 = AtomicU32::new(0);
@@ -312,6 +327,7 @@ impl Span {
 }
 
 /// Zone data resolved for playback.
+#[derive(PartialEq)]
 pub(crate) struct ZonePlay {
     pub sample: u32,
     pub map: PlayMap,
@@ -342,18 +358,21 @@ impl From<&VoiceLimit> for VoiceGroup {
 /// Everything a part needs to play, immutable once handed to an engine.
 pub struct Bank {
     groups: Vec<Group>,
-    zones: Vec<Zone>,
+    /// Zones, their playback and the zones on each key are the same for
+    /// every bank of one instrument: parts and instances share one copy
+    /// (17 MiB a part on Areia).
+    zones: Arc<[Zone]>,
     /// What voices play: [`Bank::base`] with the player's overrides on top.
     pub settings: Vec<GroupSettings>,
     /// The library's values as its scripts have set them, under the
     /// player's overrides (see `overrides.rs`).
     pub base: Vec<GroupSettings>,
-    pub(crate) plays: Vec<ZonePlay>,
+    pub(crate) plays: Arc<[ZonePlay]>,
     /// Per group: not muted and, when any group is soloed, soloed.
     pub(crate) playable: Vec<bool>,
     /// Zones mapped to key `k` are `key_zones[key_start[k]..key_start[k + 1]]`.
     key_start: [u32; 129],
-    key_zones: Box<[u32]>,
+    key_zones: Arc<[u32]>,
     pub(crate) samples: Vec<SampleData>,
     pub(crate) voice_groups: Vec<Option<VoiceGroup>>,
     pub(crate) polyphony: usize,
@@ -1074,15 +1093,18 @@ impl Builder {
         key_start[128] = key_zones.len() as u32;
         let now = CLOCK.load(Ordering::Relaxed);
         let usage = (0..self.groups.len()).map(|_| AtomicU32::new(now)).collect();
+        static ZONES: Pool<Zone> = Mutex::new(Vec::new());
+        static PLAYS: Pool<ZonePlay> = Mutex::new(Vec::new());
+        static KEY_ZONES: Pool<u32> = Mutex::new(Vec::new());
         Ok(Bank {
             groups: self.groups,
-            zones,
+            zones: intern(&ZONES, zones),
             base: self.settings.clone(),
             settings: self.settings,
-            plays,
+            plays: intern(&PLAYS, plays),
             playable,
             key_start,
-            key_zones: key_zones.into_boxed_slice(),
+            key_zones: intern(&KEY_ZONES, key_zones),
             samples,
             preload: PRELOAD_FRAMES,
             planned: bytes,
