@@ -1652,10 +1652,14 @@ fn tight_budgets_stream_start_offsets_instead_of_failing() {
         note.offset_us = 400_000;
         a.start_event(&note).unwrap();
         b.start_event(&note).unwrap();
+        // Let the streamer fill its whole ring ahead before the first block:
+        // it must still keep the frame before the start (the cubic's left tap).
+        std::thread::sleep(std::time::Duration::from_millis(200));
         let mut heard = 0f32;
         for block in 0..200 {
             let (x, y) = (render(&mut a, 128), render(&mut b, 128));
-            assert!(x == y, "diverges in block {block}");
+            let at = x.iter().zip(&y).position(|(p, q)| p != q);
+            assert!(x == y, "diverges in block {block} at frame {at:?}");
             heard = x.iter().fold(heard, |m, f| m.max(f[0].abs()));
         }
         assert!(heard > 0.01);

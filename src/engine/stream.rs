@@ -102,7 +102,11 @@ impl Slot {
         unsafe { self.ring.add((v % RING) as usize).as_ref() }
     }
 
-    /// Audio thread: (re)start streaming `map` from virtual frame `from`.
+    /// Audio thread: (re)start streaming `map` from virtual frame `from`,
+    /// for a consumer whose lowest frame still read is `read` (as in
+    /// [`Slot::release_below`]: the frame before the voice position, its
+    /// cubic's left tap). The streamer fills up to `RING` frames past `read`,
+    /// so a `read` too high lets it overwrite that tap.
     /// Returns the tag the consumer must match in [`Slot::published`].
     pub fn configure(&self, sample: u32, map: &PlayMap, wraps: u64, from: u64, read: u64) -> u16 {
         let l = map.looped.unwrap_or(LoopMap {

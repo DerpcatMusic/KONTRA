@@ -869,7 +869,7 @@ impl Player {
                     &play.map,
                     wraps,
                     limit,
-                    offset,
+                    first,
                 );
                 Stream {
                     slot,
