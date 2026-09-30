@@ -1202,6 +1202,8 @@ impl BackgroundTask for Load {
 #[derive(Default)]
 pub struct Dsp {
     rack: Rack,
+    /// Share of the block's time processing took, smoothed.
+    load: f32,
     until_poll: usize,
     audition_left: [usize; RACK_SLOTS],
     /// Epoch of each slot's installed runtime, returned with its persistence snapshots.
@@ -1222,6 +1224,8 @@ type Lent<T> = (usize, (u64, u64), T, Refresh);
 /// Script values copied into a lent buffer per block: large tables take
 /// several blocks rather than one long one.
 const REFRESH_BUDGET: usize = 16384;
+/// Smoothed share of the block's time past which release tails are shed.
+const SHED_LOAD: f32 = 0.8;
 const SNAPSHOT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 const LIVE_BUDGET: usize = 512;
 pub struct Sampler;
@@ -1372,6 +1376,15 @@ impl PluginLogic for Sampler {
         let started = Instant::now();
         let rate = s.rack.parts[0].rate();
         let frames = b.num_samples();
+        // Offline, a render waits for the disk and keeps every tail; live,
+        // tails go before the deadline does.
+        let offline = cx.process_mode.is_offline();
+        for engine in &mut s.rack.parts {
+            engine.blocking_streams = offline;
+            if !offline && s.load > SHED_LOAD {
+                engine.shed_tails();
+            }
+        }
         if s.until_poll <= frames {
             if let Some(tasks) = cx.tasks::<Load>() {
                 tasks.spawn_coalescing(Load);
@@ -1666,6 +1679,7 @@ impl PluginLogic for Sampler {
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
             let load = (started.elapsed().as_secs_f64() * rate / frames as f64) as f32;
+            s.load += (load - s.load) * 0.2;
             p.shared
                 .cpu
                 .fetch_max(u64::from(load.to_bits()), Ordering::Relaxed);

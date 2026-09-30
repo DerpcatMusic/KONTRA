@@ -2162,3 +2162,31 @@ fn purged_groups_stream_exactly_and_carry_over() {
     assert_eq!(a.underruns(), 0);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// Under load the quieter release tails fade out over 10 ms, never cut:
+/// the loud tail and the held note play on.
+#[test]
+fn shed_tails_fade_the_quiet_ones() {
+    let mut e = engine();
+    e.release = 5.0;
+    for note in [60, 62, 64, 66] {
+        e.note_on(0, note, 100);
+    }
+    render(&mut e, 256);
+    // Released earlier, 62 and 64 have decayed further than 60.
+    e.note_off(0, 62);
+    e.note_off(0, 64);
+    render(&mut e, 24000);
+    e.note_off(0, 60);
+    let before = render(&mut e, 256);
+    e.shed_tails();
+    let after: Vec<Frame> = (0..8).flat_map(|_| render(&mut e, 128)).collect();
+    let released = |e: &Engine| e.voice_census().iter().filter(|v| v.released).count();
+    assert_eq!((e.active_voices(), released(&e)), (2, 1), "the quiet tails end, the loud one and the held note stay: {:?}", e.voice_census());
+    // No step larger than the fade's slope: a 10 ms ramp, not a cut.
+    let mut last = *before.last().unwrap();
+    for f in &after {
+        assert!((f[0] - last[0]).abs() < 0.01, "clicks: {last:?} -> {f:?}");
+        last = *f;
+    }
+}

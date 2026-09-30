@@ -23,6 +23,8 @@ mod stream;
 mod voice;
 
 pub(crate) use bank::parallel;
+/// Seconds a tail shed under load fades over.
+const TAIL_FADE: f32 = 0.01;
 pub use stream::Streamer;
 pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, clock, memory_budget, resident_bytes, trim};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
@@ -352,6 +354,26 @@ impl Engine {
 
     pub fn active_voices(&self) -> usize {
         self.player.voices.len()
+    }
+
+    /// Fade out, over 10 ms, the released voices quieter than the mean of
+    /// those still sounding: under a near deadline, tails are what is least
+    /// missed. Repeated while the load stays high, the quiet end goes first.
+    pub fn shed_tails(&mut self) {
+        let fade = self.player.fade_frames(TAIL_FADE);
+        let level = |v: &Voice| v.env.level() * v.fade.value() * v.gains[0].max(v.gains[1]);
+        let tail = |v: &&mut Voice| v.released && !v.fade.dying();
+        let voices = &mut self.player.voices;
+        let (count, sum) = (voices.iter_mut().filter(tail)).fold((0, 0.0), |(n, s), v| (n + 1, s + level(v)));
+        if count == 0 {
+            return;
+        }
+        let mean = sum / count as f32;
+        for v in voices.iter_mut().filter(tail) {
+            if level(v) < mean {
+                v.fade.start(0.0, fade, true);
+            }
+        }
     }
 
     /// Voices not muted: those rendered, and heard.
