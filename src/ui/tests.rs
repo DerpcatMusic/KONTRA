@@ -672,7 +672,7 @@ fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bo
     if state == "pressed" {
         // Held on every kind of key: keyswitch red, unmapped grey, mapped
         // green, white and black, soft to hard.
-        for (note, velocity) in [(2, 127), (3, 60), (30, 100), (32, 100), (48, 25), (61, 90), (64, 127), (66, 60)] {
+        for (note, velocity) in [(14, 127), (15, 60), (30, 100), (32, 100), (48, 25), (61, 90), (64, 127), (66, 60)] {
             p.shared.played[note].store(velocity, Ordering::Relaxed);
         }
     }
@@ -873,6 +873,8 @@ fn screenshot() {
                 h.press(id);
             }
             h.settle_art();
+            // Springs (the browser drawer) come to rest.
+            h.idle(30);
             if state == "sticky" {
                 let at = center(&h.ui, "rack-view");
                 h.tick(Input { wheel: Vec2::new(0., 600.), ..pointer(at, false) });

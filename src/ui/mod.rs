@@ -767,10 +767,17 @@ fn build(
             .state
             .sidebar
             .clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(window.width * 0.42));
-        let sidebar = cx
-            .state
-            .browser
-            .then(|| browser::sidebar(ui, &mut cx).w(browser_w));
+        // The drawer slides out from under the left edge and back; drawn
+        // only while any of it shows.
+        let open = ui.tween_with("sidebar-open", if cx.state.browser { 1. } else { 0. }, quick());
+        let sidebar = (open > 0.005).then(|| {
+            let drawer = browser::sidebar(ui, &mut cx).w(browser_w).h(Len::Pct(100.)).shrink(0);
+            stack![drawer.anchor(Align::End, Align::Start)]
+                .w((browser_w * open).round())
+                .h(Len::Pct(100.))
+                .shrink(0)
+                .clip()
+        });
         let splitter = cx.state.browser.then(|| splitter(ui, &mut cx, browser_w));
         let main = main_view(ui, &mut cx, bridge);
         let keys = keyboard::dock(ui, &mut cx);
