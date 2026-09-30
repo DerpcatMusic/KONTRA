@@ -327,11 +327,10 @@ fn render(args: &[String]) -> Result<()> {
     let (min_frames, max_frames) = ((4.0 * RATE) as u64, (60.0 * RATE) as u64);
     let (mut frame, mut next, mut voices_end, mut last_audible) = (0u64, 0, None, 0);
     let mut next_cc = 0;
-    let started = std::time::Instant::now();
+    let mut pace = kontakto::engine::Pace::start();
     loop {
         if realtime {
-            let due = started + std::time::Duration::from_secs_f64(seconds_of(frame));
-            std::thread::sleep(due.saturating_duration_since(std::time::Instant::now()));
+            pace.until(std::time::Duration::from_secs_f64(seconds_of(frame)));
         }
         while let Some(&(_, cc, value)) = ccs.get(next_cc).filter(|e| e.0 <= frame) {
             engine.cc(0, cc, value);
@@ -708,7 +707,7 @@ fn bench_stream(path: &Path, notes: usize, seconds: f64) -> Result<()> {
     let blocks = (seconds * RATE) as u64 / MAX_BLOCK as u64;
     let (mut held, mut started, mut voice_blocks, mut late, mut peak) =
         (std::collections::VecDeque::new(), 0, 0, 0, 0);
-    let (start, render_start, process_start) = (std::time::Instant::now(), cpu_time(THREAD), cpu_time(PROCESS));
+    let (mut pace, render_start, process_start) = (kontakto::engine::Pace::start(), cpu_time(THREAD), cpu_time(PROCESS));
     let mut render_cpu = 0.0;
     for b in 0..blocks {
         let frame = b * MAX_BLOCK as u64;
@@ -728,10 +727,8 @@ fn bench_stream(path: &Path, notes: usize, seconds: f64) -> Result<()> {
         render_cpu += cpu_time(THREAD) - before;
         voice_blocks += engine.active_voices();
         peak = peak.max(engine.active_voices());
-        let deadline = start + block * (b + 1) as u32;
-        match deadline.checked_duration_since(std::time::Instant::now()) {
-            Some(wait) => std::thread::sleep(wait),
-            None => late += 1,
+        if !pace.until(block * (b + 1) as u32).is_zero() {
+            late += 1;
         }
     }
     let underruns = engine.underruns();
@@ -1102,10 +1099,13 @@ fn libraries_table(rows: &[serde_json::Value]) -> String {
         v => v.to_string(),
     };
     for r in rows {
-        let status = match r["status"].as_str() {
+        let mut status = match r["status"].as_str() {
             Some("ok") => "ok".to_string(),
             _ => format!("{}: {}", s(&r["status"]), s(&r["reason"])),
         };
+        if let Some(ms) = r["stall_ms"].as_u64().filter(|&ms| ms > kontakto::engine::Pace::CATCH_UP.as_millis() as u64) {
+            status += &format!(" (render thread held off {ms} ms)");
+        }
         let pair = |a: &str, b: &str| if r[a].is_null() { "-".into() } else { format!("{}/{}", s(&r[a]), s(&r[b])) };
         t += &format!(
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
@@ -1177,7 +1177,8 @@ fn audit_patch(path: &Path) -> Result<()> {
     let blocks = (3.7 * RATE) as usize / MAX_BLOCK;
     let block = std::time::Duration::from_secs_f64(MAX_BLOCK as f64 / RATE);
     let (mut square, mut nonfinite, mut next) = (0f64, 0usize, 0);
-    let start = std::time::Instant::now();
+    let mut pace = kontakto::engine::Pace::start();
+    let mut stalled = std::time::Duration::ZERO;
     for b in 0..blocks {
         let frame = (b * MAX_BLOCK) as u64;
         while let Some(event) = input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64) {
@@ -1188,9 +1189,7 @@ fn audit_patch(path: &Path) -> Result<()> {
         for x in left.iter().chain(&right) {
             if x.is_finite() { square += f64::from(*x) * f64::from(*x) } else { nonfinite += 1 }
         }
-        if let Some(wait) = (start + block * (b as u32 + 1)).checked_duration_since(std::time::Instant::now()) {
-            std::thread::sleep(wait);
-        }
+        stalled = stalled.max(pace.until(block * (b as u32 + 1)));
     }
     let rms = (square / (blocks * MAX_BLOCK * 2) as f64).sqrt();
     if let Some(rt) = engine.script() {
@@ -1199,6 +1198,9 @@ fn audit_patch(path: &Path) -> Result<()> {
     row["rss_peak_mib"] = status("VmHWM:").into();
     row["rms_db"] = ((20.0 * rms.max(1e-12).log10() * 10.0).round() / 10.0).into();
     row["underruns"] = engine.underruns().into();
+    // The machine, not the engine: a render thread held off longer than a
+    // device buffer would be a host dropout. Reported, not caught up.
+    row["stall_ms"] = (stalled.as_millis() as u64).into();
     row["nonfinite"] = nonfinite.into();
     row["warnings"] = warnings.into();
     let failure = if nonfinite > 0 {
