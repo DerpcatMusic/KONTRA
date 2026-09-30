@@ -67,13 +67,12 @@ pub fn ui() -> Ui {
 pub fn action(ui: &mut Ui, id: impl Into<Id>, label: &str, selected: bool) -> (bool, El) {
     let b = button(ui, id, label)
         .size(S)
-        .variant(if selected {
-            Variant::Soft
-        } else {
-            Variant::Ghost
-        })
+        .variant(Variant::Ghost)
         .role(if selected { Role::Ink } else { Role::Dim });
-    (b.changed, b.el.el().radius(2).text_size(12))
+    // A raised surface, not a faded ink: text contrast is computed against the
+    // fill's base color, so a translucent ink fill would turn the label dark.
+    let el = b.el.el().radius(2).text_size(12);
+    (b.changed, el.when(selected, |e| e.fill(Role::Raised)))
 }
 
 /// A view switch: ink when current, dim otherwise, with an accent underline.

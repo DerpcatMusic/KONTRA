@@ -274,12 +274,15 @@ fn screenshot() {
     };
     let root = Path::new(import::LIBRARY_ROOT);
     let files = import::presets(root).unwrap_or_default();
-    let instruments: Vec<_> = ["Vista - Harp", "Vista - 3 Cellos", "Vista - 5 Violins"]
-        .iter()
+    // KONTAKTO_SHOT="Name A,Name B" renders other instruments in the rack slots.
+    let chosen = std::env::var("KONTAKTO_SHOT")
+        .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
+    let instruments: Vec<_> = chosen
+        .split(',')
         .filter_map(|name| {
             files
                 .iter()
-                .find(|p| p.file_stem().is_some_and(|n| n == *name))
+                .find(|p| p.file_stem().is_some_and(|n| n == name))
         })
         .filter_map(|p| import::read(p).ok())
         .map(Arc::new)

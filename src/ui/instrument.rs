@@ -439,7 +439,8 @@ struct Widget {
     picture_state: i32,
     /// `$CONTROL_PAR_TEXT_ALIGNMENT`, when the script set it.
     align: Option<Justify>,
-    /// `$CONTROL_PAR_TEXTPOS_Y`: text offset down, in authored pixels.
+    /// `$CONTROL_PAR_TEXTPOS_X`/`_Y`: text offset right and down, in authored pixels.
+    text_x: f64,
     text_y: f64,
     /// `$CONTROL_PAR_MOUSE_BEHAVIOUR` < 0: the slider drags sideways. Kontakt
     /// drags every other slider and knob vertically, whatever its shape.
@@ -546,6 +547,7 @@ impl Widget {
                 2 => Justify::End,
                 _ => Justify::Start,
             }),
+            text_x: f64::from(int("TEXTPOS_X").unwrap_or(0)),
             text_y: f64::from(int("TEXTPOS_Y").unwrap_or(0)),
             horizontal: int("MOUSE_BEHAVIOUR").is_some_and(|m| m < 0),
             z: int("Z_LAYER").unwrap_or(0).signum(),
@@ -741,7 +743,7 @@ impl Widget {
                     ];
                     out.push(Draw::fill(
                         DrawPath::polyline(caret.map(|(x, y)| Point::new(x, y)), true),
-                        Color::oklch(0.8, 0., 0.),
+                        KSP_INK,
                     ));
                 }
             }
@@ -794,7 +796,7 @@ impl Widget {
         let el = row![content]
             .justify(justify)
             .align(Align::Center)
-            .pad(edges(self.text_y * scale, 0., 0., 0.))
+            .pad(edges(self.text_y * scale, 0., 0., self.text_x * scale))
             .w(w)
             .h(h)
             .at(x, y)

@@ -186,15 +186,15 @@ fn key(
         .id(id)
 }
 
-/// What a script's `$KEY_COLOR_*` does to a key's band: `None` leaves the
-/// zone mapping's color, `Some(None)` shows a plain key (Kontakt's WHITE,
-/// BLACK and INACTIVE), `Some(color)` colors it.
+/// What a script's `$KEY_COLOR_*` does to a key: `None` leaves the zone
+/// mapping's look, `Some(None)` shows a plain key (Kontakt's DEFAULT, WHITE,
+/// BLACK, INACTIVE and anything unnamed), `Some(color)` colors it.
 fn key_color(value: &Value) -> Option<Option<Color>> {
     let name = match value {
         Value::Text(name) => name
             .trim_start_matches('$')
             .trim_start_matches("KEY_COLOR_"),
-        _ => return Some(Some(accent())),
+        _ => return Some(None),
     };
     let hue = match name {
         "RED" => 25.,
@@ -214,10 +214,10 @@ fn key_color(value: &Value) -> Option<Option<Color>> {
         "MAGENTA" => 340.,
         "FUCHSIA" => 355.,
         "" | "NONE" => return None,
-        "WHITE" | "BLACK" | "INACTIVE" => return Some(None),
-        _ => return Some(Some(accent())),
+        // DEFAULT, WHITE, BLACK, INACTIVE and unnamed values.
+        _ => return Some(None),
     };
-    Some(Some(Color::oklch(0.72, 0.16, hue)))
+    Some(Some(Color::oklch(0.68, 0.13, hue)))
 }
 
 #[cfg(test)]
@@ -238,7 +238,7 @@ mod tests {
             Some(None),
             "BLACK shows a plain key"
         );
-        assert!(color("$KEY_COLOR_DEFAULT").unwrap().is_some());
+        assert_eq!(color("$KEY_COLOR_DEFAULT"), Some(None), "DEFAULT is a plain key");
         const { assert!(MAX_OCTAVE * 12 + OCTAVES * 12 <= 128) };
     }
 }
