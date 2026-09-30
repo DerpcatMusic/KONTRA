@@ -822,6 +822,34 @@ mod tests {
     }
 
     #[test]
+    fn release_counter_moves_the_release_sample_start() {
+        // Pacific's RTC_PITCH: counter -> sample start at 0.5, shaped from 1
+        // (counter 0) down to 0.42 (counter 1). Dropping the route plays the
+        // release's loud onset, about 4 dB over the whole audit render.
+        let group = Group {
+            mods: vec![ModAssignment {
+                name: "RTC_PITCH".into(),
+                source: ModSource::ReleaseTriggerCounter,
+                target: ModTarget::SampleStart,
+                intensity: 0.5,
+                invert: false,
+                lag_ms: 0,
+                shaper: Some(ShaperCurve::Table((0..128).map(|i| 1.0 - 0.58 * i as f32 / 127.0).collect())),
+            }],
+            ..Group::default()
+        };
+        let table = ModTable::from(&group);
+        let cc = [0u8; 128];
+        let at = |counter| table.start_offset(&Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter });
+        // A 700 ms note under T = 1500 ms leaves 0.53 of the counter.
+        let x = release_counter(1500, 700.0);
+        assert!((x - 0.533).abs() < 1e-3);
+        assert!((at(x) - 0.5 * (1.0 - 0.58 * x)).abs() < 1e-2, "{}", at(x));
+        let (low, high) = table.start_offset_range(&cc, 60..=60, 100..=100);
+        assert!((low - 0.21).abs() < 1e-2 && (high - 0.5).abs() < 1e-3, "{low}..{high}");
+    }
+
+    #[test]
     fn lagged_values_settle_exactly() {
         // A long lag over short blocks steps less than half the float
         // spacing near the target: without the snap it never arrives.

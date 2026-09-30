@@ -370,7 +370,20 @@ kept per MIDI channel and key; `reset_rls_trig_counter` resets the key on the
 scripts' channel. `NO_SYS_SCRIPT_RLS_TRIG` is not modelled, so the key-down reset
 happens whether or not a script bypasses the system release script. Tests:
 `release_trigger_counter_scales_release_volume_by_held_time` and
-`reset_rls_trig_counter_restarts_the_count` in `tests/playback.rs`.
+`reset_rls_trig_counter_restarts_the_count` in `tests/playback.rs`, and
+`release_counter_moves_the_release_sample_start` in `src/engine/params.rs`.
+
+Level effect (`audits/LIBRARIES.md`, d9e3ae5 -> b9bf445, bisected to a270c54): Pacific
+-34.6 -> -38.5 dB, Dolce -34.7 -> -36.4, CHORUS -8.6 -> -9.2, Vista -32.9 -> -33.1.
+With the counter route dropped at HEAD they return to -34.6, -34.8, -8.6 and -32.9.
+Pacific carries no RTC volume: its release groups (`reldyn1..4`, `T` = 1,500) start
+from `0.5 * shape(x)` of a 47,130-frame start range, and that shaper stays in
+0.42..1. Every counter reading therefore skips 10k..24k frames, plus about 4k from PB
+and constant. Before a270c54 the route was dropped, so releases started about 4k
+frames in and replayed about 0.5 s of onset that is louder than the sustains (-33 dB
+per 100 ms against -38). No counter reading can reach that level, so the lower level
+is a correction. For the audit's 700 ms and 1,000 ms notes, both directions give
+shape >= 0.93 (about 26k frames).
 
 ## Corpus run (`kontakto inspect-mods` over every local NKI)
 
