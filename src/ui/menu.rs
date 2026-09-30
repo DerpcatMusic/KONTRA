@@ -4,6 +4,7 @@
 use super::{Cx, mixer::{self, Strip}, theme::*};
 use crate::engine::BUSES;
 use moose::mui::mui::prelude::*;
+use crate::articulate::Zone;
 use std::path::Path;
 
 /// What a menu is about.
@@ -27,6 +28,9 @@ pub enum Target {
     BusPort(usize),
     /// A mixer strip.
     Strip(Strip),
+    /// An articulation's keyswitch: remap it, or learn the key from MIDI
+    /// (keys held when learning started are ignored).
+    Keyswitch { part: usize, row: usize, learning: Option<u128> },
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +74,12 @@ pub enum Command {
     StripRename(Strip),
     StripReset(Strip),
     StripRoute(Strip),
+    /// Play an articulation's keyswitch from another key; `None` restores it.
+    Remap(usize, usize, Option<u8>),
+    Learn(usize, usize),
+    KeepOriginal(usize),
+    Mpe(usize, Zone),
+    BendRange(usize, u8),
     /// Set a script control to a value.
     Script {
         part: usize,
@@ -175,7 +185,18 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 check("Mute", part.mute, Command::Mute(slot)),
                 check("Solo", part.solo, Command::Solo(slot)),
                 Item::Rule,
+                Item::Info("MPE".into()),
             ];
+            for (zone, label) in [(Zone::Off, "MPE off"), (Zone::Lower, "Lower zone"), (Zone::Upper, "Upper zone")] {
+                items.push(check(label, part.mpe.zone == zone, Command::Mpe(slot, zone)));
+            }
+            if part.mpe.zone != Zone::Off {
+                for range in [2, 12, 24, 48] {
+                    let label = format!("Bend range ±{range}");
+                    items.push(check(label, part.mpe.bend_range == range, Command::BendRange(slot, range)));
+                }
+            }
+            items.push(Item::Rule);
             if position.is_some_and(|p| p > 0) {
                 items.push(act("Move up", "", Command::Move(slot, -1)));
             }
@@ -240,6 +261,29 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             items.extend([Item::Rule, Item::Info("Port".into())]);
             items.extend((0..4u8).map(|n| {
                 check(format!("Port {}", char::from(b'A' + n)), part.port == n, Command::Port(*slot, n))
+            }));
+            items
+        }
+        &Target::Keyswitch { part, row, learning } => {
+            let Some(a) = cx.selection.parts.get(part).map(|p| &p.articulate) else {
+                return Vec::new();
+            };
+            let Some((key, remap)) = a.articulations.get(row).and_then(|r| Some((r.key?, r.remap))) else {
+                return Vec::new();
+            };
+            let mut items = vec![
+                Item::Info(format!("{} · keyswitch {}", a.articulations[row].name, note_name(key))),
+                check(
+                    if learning.is_some() { "Press a key…" } else { "Learn from MIDI" },
+                    learning.is_some(),
+                    Command::Learn(part, row),
+                ),
+                check(format!("Original key {}", note_name(key)), remap.is_none(), Command::Remap(part, row, None)),
+                check("Original keys still switch", a.keep_original, Command::KeepOriginal(part)),
+                Item::Rule,
+            ];
+            items.extend((0..128u8).filter(|&n| n != key).map(|n| {
+                check(note_name(n), remap == Some(n), Command::Remap(part, row, Some(n)))
             }));
             items
         }
@@ -346,6 +390,18 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
     if ui.dismissed(&[ID, anchor]) {
         cx.state.menu = None;
         return None;
+    }
+    if let Target::Keyswitch { part, row, learning: Some(held) } = menu.target {
+        let shared = &cx.p.shared;
+        let down = |n: usize| {
+            use std::sync::atomic::Ordering::Relaxed;
+            shared.heard[n].load(Relaxed) > 0 || shared.played[n].load(Relaxed) > 0
+        };
+        if let Some(n) = (0..128).find(|&n| down(n) && held & 1 << n == 0) {
+            run(ui, cx, Command::Remap(part, row, Some(n as u8)));
+            cx.state.menu = None;
+            return None;
+        }
     }
     let items = items(cx, &menu.target);
     if items.is_empty() {
@@ -495,6 +551,25 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::Keyboard => cx.state.keyboard ^= true,
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
+        Command::Remap(part, row, to) => {
+            if let Some(r) = cx.selection.parts.get_mut(part).and_then(|p| p.articulate.articulations.get_mut(row)) {
+                r.remap = to.filter(|&to| Some(to) != r.key);
+            }
+        }
+        Command::Learn(part, row) => {
+            use std::sync::atomic::Ordering::Relaxed;
+            let down = |n: usize| shared.heard[n].load(Relaxed) > 0 || shared.played[n].load(Relaxed) > 0;
+            let held = (0..128).filter(|&n| down(n)).fold(0u128, |m, n| m | 1 << n);
+            let anchor = format!("art-key-{part}-{row}");
+            open_under(ui, cx, Target::Keyswitch { part, row, learning: Some(held) }, &anchor);
+        }
+        Command::KeepOriginal(part) => {
+            if let Some(p) = cx.selection.parts.get_mut(part) {
+                p.articulate.keep_original ^= true;
+            }
+        }
+        Command::Mpe(slot, zone) => cx.selection.parts[slot].mpe.zone = zone,
+        Command::BendRange(slot, range) => cx.selection.parts[slot].mpe.bend_range = range,
         Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
         Command::Port(slot, port) => cx.selection.parts[slot].port = port,
         Command::Output(slot, output) => cx.selection.parts[slot].output = output,

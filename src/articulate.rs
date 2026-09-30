@@ -34,6 +34,10 @@ const NONE: u8 = u8::MAX;
 /// Velocity of an injected keyswitch.
 const SWITCH_VELOCITY: u8 = 100;
 
+/// An articulation as an instrument's panel names it: name, keyswitch, and
+/// the script slot and control that pick it.
+pub type Found = (String, Option<u8>, Option<(u16, u16)>);
+
 /// How a part's notes pick their articulation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum Mode {
@@ -112,7 +116,7 @@ impl Articulate {
     /// Take `found` (name, keyswitch, control) as `source`'s list, keeping
     /// what the player set for rows of the same name. Channels default to
     /// the row's place, velocity ranges to an even split. True when changed.
-    pub fn sync(&mut self, source: &str, found: &[(String, Option<u8>, Option<(u16, u16)>)]) -> bool {
+    pub fn sync(&mut self, source: &str, found: &[Found]) -> bool {
         let same = self.source == source
             && self.articulations.len() == found.len()
             && (self.articulations.iter().zip(found))
@@ -145,11 +149,9 @@ impl Articulate {
     /// Spread 1..=127 evenly over the enabled articulations, soft to hard.
     pub fn split_velocities(&mut self) {
         let count = self.articulations.iter().filter(|a| a.enabled).count().max(1);
-        let mut n = 0;
-        for a in self.articulations.iter_mut().filter(|a| a.enabled) {
+        for (n, a) in self.articulations.iter_mut().filter(|a| a.enabled).enumerate() {
             a.low = (1 + n * 127 / count) as u8;
             a.high = ((n + 1) * 127 / count) as u8;
-            n += 1;
         }
     }
 }

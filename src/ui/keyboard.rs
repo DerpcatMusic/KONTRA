@@ -342,6 +342,17 @@ fn looks(cx: &mut Cx) -> [Look; 128] {
             looks[note.min(127) as usize] = look;
         }
     }
+    // A remapped keyswitch's color moves to the key that plays it.
+    if let Some(p) = cx.part().filter(|p| p.articulate.source == p.path) {
+        let a = &p.articulate;
+        for (from, to) in a.articulations.iter().filter_map(|r| Some((r.key? as usize & 127, r.remap? as usize & 127))) {
+            let look = looks[from];
+            if !a.keep_original {
+                looks[from] = if cx.state.mapped.1[from] { Look::Mapped } else { Look::Unmapped };
+            }
+            looks[to] = look;
+        }
+    }
     looks
 }
 

@@ -743,9 +743,7 @@ fn lists(read: &mut Vec<(Item, String)>) -> Vec<Item> {
     out
 }
 
-/// An articulation as a list row names it: name, keyswitch, and the script
-/// slot and control that pick it.
-pub type Found = (String, Option<u8>, Option<(u16, u16)>);
+pub use crate::articulate::Found;
 
 /// The articulations in `sections`: the rows of the first list of choices
 /// with keyswitches (else the longest list of choices), each keyswitch read
@@ -1058,6 +1056,7 @@ pub fn sections(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>)
 /// `part`'s script controls, rebuilt: bands top down, each a wrapping line
 /// of sections side by side.
 pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
+    sync(cx, part, sections);
     let mut bands: Vec<Vec<El>> = Vec::new();
     // Every section opens with a title rule when any has a title, so their
     // first rows share a line.
@@ -1110,6 +1109,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
         .gap(SPACE)
         .align(Align::Stretch)
         .shrink(0));
+    }
+    if let Some(el) = keyswitch_list(ui, cx, part) {
+        bands.resize_with(bands.len().max(1), Vec::new);
+        bands[0].push(el);
     }
     actions.resize_with(bands.len(), Vec::new);
     // A band's lone buttons sit at its far end.
@@ -1416,20 +1419,175 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
             el
         }
         Face::Text => caption(name.to_owned()).fill(Role::Dim).lines(1).min_w(0),
-        Face::List => col(item.list.iter().map(|e| entry(ui, cx, part, e)).collect::<Vec<_>>())
+        Face::List => {
+            let routed = routed(cx, part, &item.list);
+            let mut rows = Vec::new();
+            if routed {
+                rows.push(routing_bar(ui, cx, part));
+            }
+            rows.extend((item.list.iter().enumerate()).map(|(n, e)| entry(ui, cx, part, e, routed.then_some(n))));
+            list(rows, name)
+        }
+    }
+}
+
+/// A list's rows in a column of hairline seams.
+fn list(rows: Vec<El>, name: &str) -> El {
+    col(rows)
             .gap(1)
             .align(Align::Stretch)
             .fill(hairline())
             .min_w(CONTROL * 10.)
             .max_size(Size::new(CONTROL * 16., CONTROL * 100.))
             .named(name.to_owned())
-            .shrink(0),
+            .shrink(0)
+}
+
+/// Whether `list` is the articulation list `part` routes by.
+fn routed(cx: &Cx, part: usize, list: &[Entry]) -> bool {
+    cx.selection.parts.get(part).is_some_and(|p| {
+        let a = &p.articulate;
+        a.source == p.path
+            && a.articulations.len() == list.len()
+            && a.articulations.iter().zip(list).all(|(a, e)| a.name == e.name)
+    })
+}
+
+/// Keep `part`'s articulation setup in step with what its panel shows.
+fn sync(cx: &mut Cx, part: usize, sections: &[Section]) {
+    let v = &cx.view.parts[part];
+    let found = articulations(sections, v.script_slot, &v.keys);
+    if let Some(p) = cx.selection.parts.get_mut(part).filter(|p| !p.path.is_empty()) {
+        p.articulate.sync(&p.path.clone(), &found);
     }
+}
+
+/// What a performance view shows beyond its script's values: the part's
+/// articulation setup and the keys its scripts name.
+pub fn deps(cx: &Cx, slot: usize) -> u64 {
+    let mut h = DefaultHasher::new();
+    (Arc::as_ptr(&cx.view.parts[slot].keys) as usize).hash(&mut h);
+    if let Some(p) = cx.selection.parts.get(slot) {
+        format!("{:?}{:?}", p.articulate, p.mpe).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Above the articulation list: how its notes pick one.
+fn routing_bar(ui: &mut Ui, cx: &mut Cx, part: usize) -> El {
+    use crate::articulate::Mode;
+    let a = &cx.selection.parts[part].articulate;
+    let (now, fixed) = (a.mode, a.fixed_velocity);
+    let mut modes = Vec::new();
+    for (mode, label) in [(Mode::Keyswitch, "Keys"), (Mode::Channel, "Channel"), (Mode::Velocity, "Velocity")] {
+        let (hit, el) = action(ui, format!("art-mode-{part}-{label}"), label, mode == now);
+        if hit {
+            cx.selection.parts[part].articulate.mode = mode;
+        }
+        // Text grounds on its own fill, not the seams' hairline.
+        let el = if mode == now { el } else { el.fill(Role::Field) };
+        modes.push(el.tip(match mode {
+            Mode::Keyswitch => "Keyswitches pick the articulation",
+            Mode::Channel => "Each articulation plays on its own MIDI channel",
+            Mode::Velocity => "Each articulation plays in its own velocity range",
+        }));
+    }
+    let mut cells = vec![segmented(modes), spacer()];
+    if now == Mode::Velocity {
+        let mut v = f64::from(fixed);
+        let text = if fixed == 0 { "Scaled".to_owned() } else { format!("Vel {fixed}") };
+        let name = "Velocity played: scaled from the note's place in its range, or fixed";
+        cells.push(field(ui, format!("art-fixed-{part}"), name, &mut v, 0.0..=127.0, text, "Scaled"));
+        cx.selection.parts[part].articulate.fixed_velocity = v.round() as u8;
+    }
+    row(cells).gap(SPACE).align(Align::Center).pad(edges(0., TIGHT, 0., 0.)).h(CONTROL).fill(Role::Field).named("Articulation routing")
+}
+
+/// A small number to drag or type, inline in a list row.
+fn field(ui: &mut Ui, id: String, name: &str, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: String, widest: &str) -> El {
+    drag_value(ui, id, name, value, range)
+        .size(Xs)
+        .el
+        .value_text(text)
+        .el()
+        .h(STRIP - 4.)
+        .reserve(widest.to_owned())
+        .shrink(0)
+        .tip(name.to_owned())
+}
+
+/// A routed row's own settings: whether it takes part, and its channel or
+/// velocity range.
+fn routing_cells(ui: &mut Ui, cx: &mut Cx, part: usize, n: usize) -> Vec<El> {
+    use crate::articulate::Mode;
+    let a = &cx.selection.parts[part].articulate;
+    let (mode, art) = (a.mode, a.articulations[n].clone());
+    if mode == Mode::Keyswitch {
+        return Vec::new();
+    }
+    let mut cells = Vec::new();
+    let mut edited = art.clone();
+    // Channel or lowest velocity 0 leaves the articulation out.
+    if mode == Mode::Channel {
+        let mut ch = if art.enabled { f64::from(art.channel) + 1. } else { 0. };
+        let text = if art.enabled { format!("Ch {}", art.channel + 1) } else { "Off".into() };
+        let name = format!("{}: MIDI channel", art.name);
+        cells.push(field(ui, format!("art-ch-{part}-{n}"), &name, &mut ch, 0.0..=16.0, text, "Ch 16"));
+        edited.enabled = ch >= 1.;
+        edited.channel = (ch.round() as u8).clamp(1, 16) - 1;
+    } else {
+        // Where the range sits in 1..=127, and its ends.
+        let width = CONTROL * 2.;
+        let at = |v: u8| width * f64::from(v.saturating_sub(1)) / 126.;
+        let span = (at(art.high) - at(art.low)).max(2.);
+        cells.push(
+            row![block(at(art.low), 3), block(span, 3).fill(Fill::from(accent()))]
+                .w(width)
+                .h(3)
+                .fill(hairline())
+                .opacity(if art.enabled { 1. } else { 0.3 })
+                .shrink(0),
+        );
+        let (mut low, mut high) = (if art.enabled { f64::from(art.low) } else { 0. }, f64::from(art.high));
+        let text = if art.enabled { art.low.to_string() } else { "Off".into() };
+        let name = format!("{}: lowest velocity", art.name);
+        cells.push(field(ui, format!("art-low-{part}-{n}"), &name, &mut low, 0.0..=127.0, text, "Off"));
+        let name = format!("{}: highest velocity", art.name);
+        cells.push(field(ui, format!("art-high-{part}-{n}"), &name, &mut high, 1.0..=127.0, art.high.to_string(), "127"));
+        edited.enabled = low >= 1.;
+        edited.low = (low.round() as u8).max(1);
+        edited.high = (high.round() as u8).max(edited.low);
+    }
+    if edited != art {
+        cx.selection.parts[part].articulate.articulations[n] = edited;
+    }
+    cells
+}
+
+/// Articulations a panel without a list names on the keyboard, as a list.
+fn keyswitch_list(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
+    let a = &cx.selection.parts.get(part)?.articulate;
+    if a.articulations.is_empty() || a.articulations.iter().any(|a| a.control.is_some()) {
+        return None;
+    }
+    let entries: Vec<Entry> = (a.articulations.iter())
+        .map(|a| Entry {
+            control: None,
+            name: a.name.clone(),
+            on: false,
+            enable: None,
+            key: a.key.map(note_name),
+            extras: Vec::new(),
+        })
+        .collect();
+    let mut rows = vec![routing_bar(ui, cx, part)];
+    rows.extend(entries.iter().enumerate().map(|(n, e)| entry(ui, cx, part, e, Some(n))));
+    Some(col![section_title("Articulations"), list(rows, "Articulations")].gap(SPACE).align(Align::Stretch).shrink(0))
 }
 
 /// One row of a list: set, it is raised with an accent edge. Its check box
 /// turns the choice on or off; the keyswitch that picks it sits at the right.
-fn entry(ui: &mut Ui, cx: &mut Cx, part: usize, e: &Entry) -> El {
+fn entry(ui: &mut Ui, cx: &mut Cx, part: usize, e: &Entry, routed: Option<usize>) -> El {
     let set = |c: usize, was: bool| live(cx, part, c).map_or(was, |v| v >= 1.);
     let e = &Entry {
         on: e.control.map_or(e.on, |c| set(c, e.on)),
@@ -1459,20 +1617,41 @@ fn entry(ui: &mut Ui, cx: &mut Cx, part: usize, e: &Entry) -> El {
             .min_w(0)
             .flex(1),
     );
+    if let Some(n) = routed {
+        cells.extend(routing_cells(ui, cx, part, n));
+    }
+    let remap = routed.and_then(|n| cx.selection.parts[part].articulate.articulations[n].remap);
     if let Some(key) = &e.key {
         // Neutral text; the keyboard's keyswitch color rides on a swatch.
-        cells.push(
-            row![
-                block(SMALL * 0.6, SMALL * 0.6).fill(Fill::from(keyswitch())),
-                caption(key.clone())
-                    .text_size(SMALL)
-                    .fill(Role::Dim)
-                    .reserve("C#-1"),
-            ]
-            .gap(SPACE * 0.5)
-            .align(Align::Center)
-            .shrink(0),
-        );
+        // A remapped keyswitch shows the key that plays it, in ink.
+        let badge = row![
+            block(SMALL * 0.6, SMALL * 0.6).fill(Fill::from(keyswitch())),
+            caption(remap.map_or_else(|| key.clone(), note_name))
+                .text_size(SMALL)
+                .fill(if remap.is_some() { Role::Ink } else { Role::Dim })
+                .reserve("C#-1"),
+        ]
+        .gap(SPACE * 0.5)
+        .align(Align::Center)
+        .shrink(0);
+        cells.push(match routed {
+            Some(n) => {
+                let id = format!("art-key-{part}-{n}");
+                if ui.get(id.as_str()).activated() {
+                    let target = Target::Keyswitch { part, row: n, learning: None };
+                    menu::open_under(ui, cx, target, &id);
+                }
+                let tip = match remap {
+                    Some(to) => format!("{}: keyswitch {key}, played from {}", e.name, note_name(to)),
+                    None => format!("{}: keyswitch {key}. Click to remap", e.name),
+                };
+                interactive(
+                    badge.pad((TIGHT, 0)).h(STRIP - 2.).focusable().a11y(A11y::Button).named(tip.clone()).tip(tip).id(id),
+                    false,
+                )
+            }
+            None => badge,
+        });
     }
     for item in &e.extras {
         cells.push(control(ui, cx, part, item).h(STRIP - 2.));
