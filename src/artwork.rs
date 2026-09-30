@@ -390,6 +390,43 @@ pub fn thumbnail(image: &Image, w: u32, h: u32) -> Option<Image> {
     Image::rgba(w, h, rgba)
 }
 
+/// The artwork as a header banner, after Kontakt 8's: cropped to cover
+/// `w` x `h`, every banner brought to one dim level with its contrast and
+/// color held down so a white title reads over any of it, and fading from
+/// opaque at the left to nothing at the right.
+pub fn banner(image: &Image, w: u32, h: u32) -> Option<Image> {
+    // The level every banner sits at, how much of its contrast and color
+    // stays, and the brightest it gets (of 255).
+    const LEVEL: f32 = 52.;
+    const CONTRAST: f32 = 0.45;
+    const COLOR: f32 = 0.55;
+    const PEAK: f32 = 96.;
+    let crop = thumbnail(image, w, h)?;
+    let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let pixels = crop.rgba.as_chunks::<4>().0;
+    let rgb = |c: &[u8; 4]| [0, 1, 2].map(|k| f32::from(c[k]));
+    let mean = pixels.iter().map(|c| luma(rgb(c))).sum::<f32>() / pixels.len() as f32;
+    let gain = LEVEL / mean.max(1.);
+    let rgba = pixels
+        .iter()
+        .enumerate()
+        .flat_map(|(i, c)| {
+            let c = rgb(c);
+            let l = luma(c);
+            // Contrast around the level, then a soft knee under the peak;
+            // color only ever loses strength, dark artwork lifted or not.
+            let lit = LEVEL + (l * gain - LEVEL) * CONTRAST;
+            let lit = PEAK * (1. - (-lit.max(0.) / PEAK).exp()) * 1.3;
+            let [r, g, b] = c.map(|v| (lit + (v - l) * COLOR * gain.min(1.)).clamp(0., 255.) as u8);
+            let t = (i as u32 % w) as f32 / (w - 1).max(1) as f32;
+            let s = ((t - 0.1) / 0.9).clamp(0., 1.);
+            let fade = 1. - s * s * (3. - 2. * s);
+            [r, g, b, (255. * fade) as u8]
+        })
+        .collect::<Vec<u8>>();
+    Image::rgba(w, h, rgba)
+}
+
 /// The artwork as a backdrop to play over: shrunk to a few dozen pixels
 /// (which blurs it once scaled back up), blurred again, mostly drained of
 /// color and darkened well below the text drawn on it.

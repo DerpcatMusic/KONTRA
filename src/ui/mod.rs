@@ -293,6 +293,7 @@ struct EditorState {
     tints: HashMap<String, Option<Color>>,
     backdrops: HashMap<String, Option<Arc<Image>>>,
     thumbs: HashMap<String, Arc<Image>>,
+    banners: HashMap<String, Arc<Image>>,
     /// The keys the selected part's instrument maps, and which instrument.
     mapped: (std::sync::Weak<import::Instrument>, [bool; 128]),
     /// The browser's files by library: of which scan, root and kind.
@@ -337,6 +338,18 @@ impl EditorState {
         let t = Arc::new(crate::artwork::thumbnail(view.artwork.get(library)?, w, h)?);
         self.thumbs.insert(library.to_owned(), t.clone());
         Some(t)
+    }
+
+    /// `library`'s artwork as a header banner `size` (logical) at twice the
+    /// pixels, once; artwork still being scanned is looked for again.
+    fn banner(&mut self, view: &View, library: &str, size: (f64, f64)) -> Option<Arc<Image>> {
+        if let Some(b) = self.banners.get(library) {
+            return Some(b.clone());
+        }
+        let (w, h) = ((size.0 * 2.).round() as u32, (size.1 * 2.).round() as u32);
+        let b = Arc::new(crate::artwork::banner(view.artwork.get(library)?, w, h)?);
+        self.banners.insert(library.to_owned(), b.clone());
+        Some(b)
     }
 
     /// `library`'s artwork made a backdrop, once.
@@ -699,6 +712,7 @@ fn build(
         tints: HashMap::new(),
         backdrops: HashMap::new(),
         thumbs: HashMap::new(),
+        banners: HashMap::new(),
         mapped: (std::sync::Weak::new(), [false; 128]),
         libraries: Default::default(),
         panels: HashMap::new(),

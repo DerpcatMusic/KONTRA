@@ -1270,7 +1270,16 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
             } else {
                 Fader::over(&range, item.reset, widest(item))
             };
+            let pans = item.face != Face::Knob && unit_of(item) == Some(Unit::Pan);
             let (_, el) = match item.face {
+                // Every pan slider is the header's and the mixer's wedge.
+                _ if pans => {
+                    let (lo, span) = (*range.start(), range.end() - range.start());
+                    let mut pan = (value - lo) / span * 2. - 1.;
+                    let el = pan_wedge(ui, &id, &mut pan);
+                    value = lo + (pan + 1.) / 2. * span;
+                    (false, el)
+                }
                 Face::Knob => dial(ui, &id, name, &mut value, range, kind),
                 Face::VFader => fader(ui, &id, name, &mut value, range, kind.vertical(), |v| {
                     readout(item, v)
@@ -1300,6 +1309,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
                 .align(Align::Center)
                 .min_w(KNOB)
                 .shrink(0),
+                _ if pans => col![title, el].gap(TIGHT).align(Align::Center).shrink(0),
                 Face::VFader => col![el, title].gap(TIGHT).align(Align::Center).shrink(0),
                 // Names sit above, left; values at the right end.
                 _ => col![title, el.align_self(Align::Stretch)]

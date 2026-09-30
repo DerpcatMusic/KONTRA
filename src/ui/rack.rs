@@ -141,6 +141,10 @@ fn step_preset(cx: &Cx, slot: usize, by: isize) -> Option<String> {
 /// the name: about the controls' width plus a name's.
 const ONE_LINE: f64 = 860.;
 
+/// The header banner: the library's artwork fading out over this width, and
+/// taller than any header so covering one only ever crops it top and bottom.
+const BANNER: (f64, f64) = (TEXT * 36., TEXT * 7.);
+
 /// A part's header, after Koda's part strip: a thin bar with the library's
 /// color down its left edge. The fold, the name over what it is, preset
 /// stepping; MIDI and output routing, pan, gain and tune; solo and mute,
@@ -231,6 +235,7 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     });
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
     let tint = cx.state.tint(cx.view, &library);
+    let banner = cx.state.banner(cx.view, &library, BANNER);
 
     let part = &mut cx.selection.parts[slot];
     let mut gain = f64::from(part.gain);
@@ -328,7 +333,19 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     .shrink(0);
     let meter = col![meter_v(level)].pad((3, 0)).h(Len::Pct(100.)).shrink(0);
     let name = name(cx, slot);
-    col![row![edge, body, meter].gap(0).align(Align::Stretch), bar]
+    let line = row![edge, body, meter].gap(0).align(Align::Stretch);
+    let line = match banner {
+        Some(image) => stack![
+            block(BANNER.0, Len::Pct(100.))
+                .fill(Fill::Image(image, moose::mui::mui::scene::Fit::Cover))
+                .anchor(Align::Start, Align::Start),
+            line
+        ]
+        .w(Len::Pct(100.))
+        .clip(),
+        None => line,
+    };
+    col![line, bar]
         .gap(0)
         .fill(if selected { Role::Raised } else { Role::Surface })
         .when(over, |e| e.stroke(accent()).stroke_width(1))
