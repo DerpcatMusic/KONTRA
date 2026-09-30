@@ -714,6 +714,14 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
     }
 }
 
+/// Send `ev` through `r` to its part's engine `e`; notes in channel mode
+/// arrive on `home`.
+pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
+    r.scripted = e.script().is_some();
+    r.handles_pressure = e.script().is_some_and(|rt| rt.handles_poly_at());
+    r.input(ev, home, &mut |o| apply(e, o));
+}
+
 /// Send `ev`, from host MIDI port `port`, through each rack part's router
 /// that takes it. Releases, pitch bend and controllers other than volume and
 /// pan reach every part on the port, so a changed routing never sticks a
@@ -729,20 +737,14 @@ pub fn dispatch(rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], port: u8, e
         if !(if wide { c.port == port } else { r.hears(c, port, ev.channel()) }) {
             continue;
         }
-        r.scripted = e.script().is_some();
-        r.handles_pressure = e.script().is_some_and(|rt| rt.handles_poly_at());
-        let home = u8::try_from(c.channel).unwrap_or(0);
-        r.input(ev, home, &mut |o| apply(e, o));
+        feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
     }
 }
 
 /// Send `ev` to rack slot `slot` alone (the on-screen keyboard), through its router.
 pub fn play(rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], slot: usize, ev: In) {
     let slot = slot.min(RACK_SLOTS - 1);
-    let (e, r) = (&mut rack.parts[slot], &mut routers[slot]);
-    r.scripted = e.script().is_some();
-    r.handles_pressure = e.script().is_some_and(|rt| rt.handles_poly_at());
-    r.input(ev, ev.channel(), &mut |o| apply(e, o));
+    feed(&mut routers[slot], &mut rack.parts[slot], ev, ev.channel());
 }
 
 /// "C-1", "D#3", "Eb2" (Kontakt's names, C3 = 60) as a MIDI key.

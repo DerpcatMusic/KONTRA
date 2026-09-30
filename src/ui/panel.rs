@@ -1970,6 +1970,48 @@ mod tests {
                     _ => None,
                 }),
             );
+            // KONTAKTO_MODE=mpe: member channel bend and pressure, per note.
+            if std::env::var("KONTAKTO_MODE").is_ok_and(|m| m == "mpe") {
+                use crate::articulate::{Mpe, Zone, feed};
+                let note = std::env::var("KONTAKTO_NOTE").ok().and_then(|n| n.parse().ok()).unwrap_or(64);
+                let mut router = Router::default();
+                let mpe = Mpe { zone: Zone::Lower, ..Mpe::default() };
+                router.set_route(Route::new(&path.to_string_lossy(), &Articulate::default(), &mpe));
+                // Crossings per second and level of 0.5 s of the note, 0.2 s in.
+                let mut listen = |e: &mut Engine, router: &mut Router, before: &[In], after: &[In]| {
+                    quiet(e);
+                    for &ev in before {
+                        feed(router, e, ev, 0);
+                    }
+                    feed(router, e, In::NoteOn(1, note, 100), 0);
+                    for &ev in after {
+                        feed(router, e, ev, 0);
+                    }
+                    render(e, 0.2);
+                    let (mut l, mut r) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+                    let (mut crossings, mut energy, mut last, mut n) = (0, 0f64, 0f32, 0);
+                    for _ in 0..(0.5 * RATE / MAX_BLOCK as f64) as usize {
+                        e.render(&mut l, &mut r);
+                        for &x in &l {
+                            crossings += usize::from((x >= 0.) != (last >= 0.));
+                            energy += f64::from(x * x);
+                            last = x;
+                            n += 1;
+                        }
+                    }
+                    feed(router, e, In::NoteOff(1, note), 0);
+                    (crossings as f64 / 0.5, 10. * (energy / n as f64).max(1e-20).log10())
+                };
+                let plain = listen(&mut e, &mut router, &[In::Bend(1, 8192)], &[]);
+                let up = listen(&mut e, &mut router, &[In::Bend(1, 8192 + 2048)], &[]);
+                let soft = listen(&mut e, &mut router, &[In::Bend(1, 8192)], &[In::Pressure(1, 0)]);
+                let hard = listen(&mut e, &mut router, &[], &[In::Pressure(1, 127)]);
+                let handles = e.script().is_some_and(|rt| rt.handles_poly_at());
+                println!("== {name}: note {note}, scripts take poly_at: {handles}");
+                println!("  plain {:.0} crossings/s {:.1} dB; bent +12 st {:.0}/s (x{:.2})", plain.0, plain.1, up.0, up.0 / plain.0);
+                println!("  pressure 0: {:.1} dB, 127: {:.1} dB ({:+.1} dB)", soft.1, hard.1, hard.1 - soft.1);
+                continue;
+            }
             let mut found = articulations(&sections(&interface, &pictures), view.slot, &view.keys);
             // KONTAKTO_BY_CONTROL=1 switches by the list's controls, as a click does, not by key.
             if std::env::var("KONTAKTO_BY_CONTROL").is_ok() {
@@ -1990,6 +2032,7 @@ mod tests {
             let mut a = Articulate::default();
             a.sync(&path, &found);
             let mut router = Router::default();
+            let by_velocity = std::env::var("KONTAKTO_MODE").is_ok_and(|m| m == "velocity");
             let send = |e: &mut Engine, router: &mut Router, ev| router.input(ev, 0, &mut |o| apply(e, o));
             // Each articulation's groups, as its own keyswitch or click plays them.
             let mut groups: Vec<BTreeSet<String>> = Vec::new();
@@ -2029,18 +2072,21 @@ mod tests {
                 }
                 for staggered in [false, true] {
                     quiet(&mut e);
+                    // KONTAKTO_MODE=velocity splits by velocity (1..=63, 64..=127) on one channel.
                     let mut a = a.clone();
-                    a.mode = Mode::Channel;
+                    a.mode = if by_velocity { Mode::Velocity } else { Mode::Channel };
                     for (n, art) in a.articulations.iter_mut().enumerate() {
                         art.enabled = n == first || n == b;
                         art.channel = u8::from(n == b);
+                        (art.low, art.high) = if n == b { (64, 127) } else { (1, 63) };
                     }
+                    let (ch, soft) = if by_velocity { (0, 40) } else { (1, 100) };
                     router.set_route(Route::new(&path, &a, &Default::default()));
-                    send(&mut e, &mut router, In::NoteOn(0, note, 100));
+                    send(&mut e, &mut router, In::NoteOn(0, note, soft));
                     if staggered {
                         render(&mut e, 0.1);
                     }
-                    send(&mut e, &mut router, In::NoteOn(1, note + 4, 100));
+                    send(&mut e, &mut router, In::NoteOn(ch, note + 4, 100));
                     render(&mut e, 0.25);
                     let now = sounding(&e, &i);
                     let (has_a, has_b) = (!now.is_disjoint(&only_a), !now.is_disjoint(&only_b));
@@ -2057,7 +2103,7 @@ mod tests {
                         }
                     );
                     send(&mut e, &mut router, In::NoteOff(0, note));
-                    send(&mut e, &mut router, In::NoteOff(1, note + 4));
+                    send(&mut e, &mut router, In::NoteOff(ch, note + 4));
                 }
             }
             println!("  together in {together} of {pairs}");
