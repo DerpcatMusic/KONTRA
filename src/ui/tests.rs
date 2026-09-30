@@ -115,6 +115,25 @@ impl Harness {
     }
 }
 
+/// A narrow rack moves the header's controls under the part name, so the
+/// name keeps a line of its own instead of truncating.
+#[test]
+fn a_narrow_header_gives_the_name_its_line() {
+    for (width, below) in [(900., true), (1180., false)] {
+        let p = Arc::new(SamplerParams::new());
+        p.selection.write().unwrap().parts.push(Part {
+            path: "/virtual/Library/Una Corda Pure.nki".into(),
+            ..Default::default()
+        });
+        let mut h = Harness::new(&p, width, 600.);
+        h.idle(2);
+        let scene = h.ui.scene().unwrap();
+        let frame = |id: &str| scene.surface(id).unwrap().frame;
+        let (name, port) = (frame("name-0"), frame("port-0"));
+        assert_eq!(port.y > name.y + name.size.height, below, "at {width}");
+    }
+}
+
 #[test]
 fn rack_interactions() {
     let p = Arc::new(SamplerParams::new());

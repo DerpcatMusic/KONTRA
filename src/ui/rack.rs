@@ -128,10 +128,20 @@ fn field(
         .shrink(0)
 }
 
+/// Below this width a header's routing, switches and faders move under the
+/// name, which keeps the whole line: about the cluster's width plus a name's.
+const ONE_LINE: f64 = 720.;
+
 /// A part's header: fold, name and preset stepping over what it is; MIDI and
 /// output routing; solo and mute; level and pan; audition, menu and remove.
 pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let id = format!("header-{slot}");
+    // Last frame's width: the header spans the rack, so its own layout never
+    // changes it and the choice can't oscillate.
+    let narrow = ui
+        .scene()
+        .and_then(|s| s.surface(&id))
+        .is_some_and(|s| s.frame.size.width < ONE_LINE);
     let selected = cx.state.selected == slot;
     let r = ui.get(id.as_str());
     if r.clicked {
@@ -274,17 +284,17 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     .gap(TIGHT)
     .shrink(0);
     let actions = col![cluster(vec![more_el, remove_el]), spacer()].gap(TIGHT).shrink(0);
-    let body = row![
-        col![fold_el, spacer()].gap(TIGHT).shrink(0),
-        identity,
-        vrule(),
-        routing,
-        vrule(),
-        switches,
-        vrule(),
-        faders,
-        actions
-    ]
+    let fold_el = col![fold_el, spacer()].gap(TIGHT).shrink(0);
+    let body = if narrow {
+        // The name keeps the first line; the controls line up under it.
+        let controls = row![routing, vrule(), switches, vrule(), faders]
+            .gap(SPACE + TIGHT)
+            .align(Align::Stretch)
+            .shrink(0);
+        row![fold_el, col![row![identity, actions].gap(SPACE + TIGHT).align(Align::Stretch), controls].gap(SPACE).flex(1).min_w(0)]
+    } else {
+        row![fold_el, identity, vrule(), routing, vrule(), switches, vrule(), faders, actions]
+    }
     .gap(SPACE + TIGHT)
     .align(Align::Stretch)
     .pad((SPACE, SPACE))
