@@ -101,18 +101,41 @@ const NOISE: &[&str] = &[
     "but", "button", "btn", "switch", "sw", "slider", "knob", "label", "lbl", "pic", "dark",
     "light", "big", "small", "toggle", "onoff", "bg", "img", "ver", "hor", "vert", "horiz",
     "k4", "bip", "clear", "empty", "of", "transparent", "select", "screen", "item", "byp",
-    "on", "off",
+    "on", "off", "fdr", "knb", "sli", "swi", "mnu", "gi", "gui", "tab", "dropdown", "arrow",
 ];
+
+/// `sliUCVol` as `sli UC Vol`: camel-case humps are words.
+fn humps(ident: &str) -> String {
+    let c: Vec<char> = ident.chars().collect();
+    let mut out = String::with_capacity(ident.len() + 4);
+    for (i, &ch) in c.iter().enumerate() {
+        let upper = ch.is_ascii_uppercase();
+        let after_lower = i > 0 && c[i - 1].is_ascii_lowercase();
+        let acronym_end = i > 0
+            && c[i - 1].is_ascii_uppercase()
+            && c.get(i + 1).is_some_and(char::is_ascii_lowercase);
+        if upper && (after_lower || acronym_end) {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
+}
 
 /// Readable words from an identifier: `pyramid_but_classic_mix_1_of_2`
 /// becomes "Classic Mix" when `prefix` is "pyramid". None when nothing is left.
 fn words(ident: &str, prefix: &str) -> Option<String> {
-    let parts: Vec<String> = ident
-        .trim_start_matches(['$', '~', '?', '%', '@', '!'])
+    // A letter and digits (`t1`, `k4`) number a page or a skin, not a function.
+    let numbering = |w: &str| {
+        let mut c = w.chars();
+        c.next().is_some_and(|f| f.is_alphabetic()) && c.all(|d| d.is_ascii_digit()) && w.len() > 1
+    };
+    let parts: Vec<String> = humps(ident.trim_start_matches(['$', '~', '?', '%', '@', '!']))
         .split(['_', '-', ' ', '.'])
         .map(str::to_lowercase)
         .filter(|w| !w.is_empty() && w != prefix)
         .filter(|w| !NOISE.contains(&w.as_str()) && !w.chars().all(|c| c.is_ascii_digit()))
+        .filter(|w| !numbering(w))
         .collect();
     if parts.is_empty() {
         return None;
@@ -173,7 +196,8 @@ fn read(
         Some(Value::Text(s)) => s.as_str(),
         _ => "",
     };
-    if int("HIDE").is_some_and(|h| h as i32 & 1 != 0) {
+    // $HIDE_WHOLE_CONTROL; the other bits hide parts of a picture.
+    if int("HIDE").is_some_and(|h| h as i32 & 16 != 0) {
         return None;
     }
     let picture_name = text("PICTURE");
@@ -303,16 +327,42 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
             continue;
         }
         let variable = &interface.controls[item.control].variable;
-        item.name = words(picture, &prefix)
-            .or_else(|| readable(variable).then(|| words(variable, "")).flatten())
+        // A picture that says no more than a couple of letters ("Uc") yields
+        // to a readable variable name.
+        let from_picture = words(picture, &prefix);
+        let from_variable = readable(variable).then(|| words(variable, "")).flatten();
+        item.name = match from_picture {
+            Some(p) if p.len() <= 3 && from_variable.is_some() => from_variable,
+            Some(p) => Some(p),
+            None => from_variable,
+        }
             .or_else(|| item.bipolar.then(|| "Pan".to_owned()))
             .unwrap_or_default();
     }
-    read.into_iter()
+    let kept: Vec<Item> = read
+        .into_iter()
         .enumerate()
         .filter(|(n, (i, _))| !taken[*n] && (!i.name.is_empty() || i.face == Face::Menu))
         .map(|(_, (i, _))| i)
+        .collect();
+    // A one-letter switch reads only beside its siblings (a strip's M and S);
+    // alone, like Vista's corner "B", it is a mark, not a control.
+    kept.iter()
+        .filter(|i| {
+            i.face != Face::Toggle
+                || i.name.chars().filter(|c| c.is_alphanumeric()).count() > 1
+                || kept.iter().any(|o| {
+                    !std::ptr::eq(*i, o) && o.face == Face::Toggle && touching(&i.at, &o.at)
+                })
+        })
+        .cloned()
         .collect()
+}
+
+/// Side by side on one line, at most a spacing apart: one segmented control.
+fn touching(a: &Rect, b: &Rect) -> bool {
+    let (left, right) = if a.x <= b.x { (a, b) } else { (b, a) };
+    right.x - left.right() <= 2. && (a.y - b.y).abs() < a.h.min(b.h) / 2.
 }
 
 /// Groups of `items` whose horizontal extents touch within `gap`, left to right.
@@ -331,8 +381,19 @@ fn columns(mut items: Vec<Item>, gap: f64) -> Vec<Vec<Item>> {
     out.into_iter().map(|(_, g)| g).collect()
 }
 
+/// Which controls share a row: a row of switches, of knobs, of faders or of
+/// fields, never a mix, so each row has one height and one baseline.
+fn kind(face: Face) -> u8 {
+    match face {
+        Face::Toggle => 0,
+        Face::Knob | Face::VFader => 1,
+        Face::Fader => 2,
+        Face::Menu | Face::Value | Face::Text => 3,
+    }
+}
+
 /// Rows of a column: items whose vertical extents mostly overlap, top down,
-/// each left to right.
+/// each left to right, split by [`kind`].
 fn rows(mut items: Vec<Item>) -> Vec<Vec<Item>> {
     items.sort_by(|a, b| a.at.y.total_cmp(&b.at.y));
     let mut out: Vec<(f64, f64, Vec<Item>)> = Vec::new();
@@ -346,12 +407,17 @@ fn rows(mut items: Vec<Item>) -> Vec<Vec<Item>> {
             _ => out.push((top, bottom, vec![item])),
         }
     }
-    out.into_iter()
-        .map(|(_, _, mut row)| {
-            row.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
-            row
-        })
-        .collect()
+    let mut split = Vec::new();
+    for (_, _, mut row) in out {
+        row.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+        for k in 0..4 {
+            let part: Vec<Item> = row.iter().filter(|i| kind(i.face) == k).cloned().collect();
+            if !part.is_empty() {
+                split.push(part);
+            }
+        }
+    }
+    split
 }
 
 /// The interface's controls, grouped as they were drawn.
@@ -383,37 +449,48 @@ pub fn sections(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>)
 /// `part`'s script controls, rebuilt: sections side by side, wrapping.
 pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
     let mut out = Vec::new();
+    // Every section opens with a title rule when any has a title, so their
+    // first rows share a line.
+    let titled = sections.iter().any(|s| s.title.is_some());
     for section in sections {
         let mut columns = Vec::new();
         for column in &section.columns {
             let mut lines = Vec::new();
             for line in column {
-                let switches = line.len() > 1 && line.iter().all(|i| i.face == Face::Toggle);
-                // A lone field, fader or menu spans its column, so labels
-                // and values line up down the column.
-                let span = line.len() == 1
-                    && matches!(line[0].face, Face::Value | Face::Fader | Face::Menu | Face::Text);
+                let switches = line.len() > 1
+                    && line.iter().all(|i| i.face == Face::Toggle)
+                    && line.windows(2).all(|w| touching(&w[0].at, &w[1].at));
+                let knobs = kind(line[0].face) == 1;
+                // A lone field, fader, menu or switch spans its column, so
+                // labels, values and edges line up down the column.
+                let span = line.len() == 1 && kind(line[0].face) != 1;
                 let els: Vec<El> = line
                     .iter()
                     .map(|i| control(ui, cx, part, i))
                     .map(|el| if span { el.flex(1).min_w(0) } else { el })
                     .collect();
                 lines.push(if switches {
-                    row![segmented(els)]
+                    segmented(els.into_iter().map(|e| e.flex(1)).collect())
                 } else {
-                    row(els).gap(SPACE).align(Align::End).shrink(0)
+                    // Knob cells are centred stacks; their row is centred too.
+                    row(els)
+                        .gap(if knobs { INSET } else { SPACE })
+                        .align(Align::End)
+                        .justify(if knobs { Justify::Center } else { Justify::Start })
+                        .shrink(0)
                 });
             }
             columns.push(col(lines).gap(SPACE).align(Align::Stretch).shrink(0));
         }
         let body = row(columns).gap(INSET).align(Align::Start).shrink(0);
-        out.push(match &section.title {
-            Some(t) => col![section_title(t), body]
-                .gap(SPACE)
-                .align(Align::Stretch)
-                .shrink(0),
-            None => body,
-        });
+        out.push(match (&section.title, titled) {
+            (Some(t), _) => col![section_title(t), body],
+            (None, true) => col![section_title(""), body],
+            (None, false) => col![body],
+        }
+        .gap(SPACE)
+        .align(Align::Stretch)
+        .shrink(0));
     }
     row(out)
         .wrap()
@@ -432,15 +509,15 @@ fn section_title(title: &str) -> El {
         .w(Len::Pct(100.))
 }
 
-/// What a knob or fader reads: the script's text when it says more than a
-/// number, else pan or a percentage.
+/// What a knob or fader reads: the script's own text, as Kontakt shows it
+/// (Vista's "0.0" is decibels, not a raw value), else pan or a percentage.
 fn readout(item: &Item, value: f64) -> String {
     let unit = if item.max > item.min {
         ((value - item.min) / (item.max - item.min)).clamp(0., 1.)
     } else {
         0.
     };
-    if item.label.chars().any(|c| !c.is_ascii_digit() && c != '-' && c != '.') {
+    if !item.label.is_empty() {
         item.label.clone()
     } else if item.bipolar {
         pan_text(unit * 2. - 1.)
@@ -490,7 +567,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
             match item.face {
                 Face::Knob => col![
                     el,
-                    title.max_size(Size::new(KNOB * 2., CONTROL)),
+                    title.max_size(Size::new(KNOB * 3., CONTROL)),
                     caption(readout(item, value)).text_size(SMALL).lines(1)
                 ]
                 .gap(TIGHT)
@@ -498,9 +575,10 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
                 .min_w(KNOB)
                 .shrink(0),
                 Face::VFader => col![el, title].gap(TIGHT).align(Align::Center).shrink(0),
-                _ => col![title, el]
+                // Names sit above, left; values at the right end.
+                _ => col![title, el.align_self(Align::Stretch)]
                     .gap(TIGHT)
-                    .align(Align::Stretch)
+                    .align(Align::Start)
                     .min_w(CONTROL * 5.)
                     .shrink(0),
             }
@@ -601,7 +679,7 @@ mod tests {
         }
         // A numeric readout label and a hidden control drop out.
         controls.push(control("ui_label", "$f1", &with(at(20, 140, 30, 18), &[text("63 %")])));
-        controls.push(control("ui_knob", "$g1", &with(at(300, 30, 32, 40), &[text("Hidden"), ("HIDE", Value::Int(1))])));
+        controls.push(control("ui_knob", "$g1", &with(at(300, 30, 32, 40), &[text("Hidden"), ("HIDE", Value::Int(16))])));
         // A knob named by the label under it, in a section of its own.
         controls.push(control("ui_slider", "$h1", &at(400, 30, 60, 60)));
         controls.push(control("ui_label", "$i1", &with(at(398, 95, 70, 18), &[text("Dynamics")])));
@@ -628,10 +706,33 @@ mod tests {
     }
 
     #[test]
+    fn a_lone_letter_goes_and_a_row_holds_one_kind() {
+        let text = |t: &str| ("TEXT", Value::Text(t.into()));
+        let controls = vec![
+            // Vista's stray "B": one letter, no neighbour to explain it.
+            control("ui_switch", "$b", &with(at(300, 10, 20, 18), &[text("B")])),
+            // A button row with a slider floating in it (Solo Violin's Vel).
+            control("ui_switch", "$legato", &with(at(10, 10, 60, 18), &[text("Legato")])),
+            control("ui_switch", "$port", &with(at(72, 10, 60, 18), &[text("Port")])),
+            control("ui_slider", "$vel", &with(at(134, 10, 80, 18), &[text("Vel"), ("PICTURE", Value::Text("K4_SLIDER_1".into()))])),
+        ];
+        let interface = Interface { width: 400, height: 60, controls, ..Default::default() };
+        let s = sections(&interface, &HashMap::new());
+        let names: Vec<Vec<&str>> = s
+            .iter()
+            .flat_map(|s| s.columns.iter().flatten())
+            .map(|r| r.iter().map(|i| i.name.as_str()).collect())
+            .collect();
+        assert_eq!(names, [vec!["Legato", "Port"], vec!["Vel"]]);
+    }
+
+    #[test]
     fn names_come_from_pictures_and_variables() {
         assert_eq!(words("pyramid_but_classic_mix_1_of_2", "pyramid").as_deref(), Some("Classic Mix"));
         assert_eq!(words("$slider_controller_reverb_mix", "").as_deref(), Some("Controller Reverb Mix"));
         assert_eq!(words("K4_SLIDER_BIP_1", ""), None);
+        assert_eq!(words("$T1_sliUCVol", "").as_deref(), Some("Uc Vol"));
+        assert_eq!(words("gi_uc_knb_127", ""), Some("Uc".into()));
         assert!(!readable("$q5nsy") && !readable("$zptkf") && !readable("$ruqnf"));
         assert!(readable("$vibrato") && readable("$mic_volume"));
         assert_eq!(clean("\t\t\t   Legato Rebowed"), "Legato Rebowed");

@@ -396,7 +396,8 @@ pub fn dropdown(ui: &mut Ui, id: impl Into<Id>, text: &str, name: &str) -> (bool
     (hit, interactive(el, false))
 }
 
-/// A labelled number to drag, type or step.
+/// A labelled number to drag, type or step. Boxes share one width, so
+/// they line up down a column.
 pub fn number(
     ui: &mut Ui,
     id: impl Into<Id>,
@@ -413,6 +414,7 @@ pub fn number(
             .el()
             .h(CONTROL)
             .reserve(reserve)
+            .min_w(CONTROL * 2.)
             .shrink(0)
     ]
     .gap(SPACE)

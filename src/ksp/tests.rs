@@ -203,7 +203,7 @@ fn computed_ui_and_execution_limits() {
     assert_eq!(ui.wallpaper, "My UI");
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_POS_X"), "100");
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "Mic 2");
-    assert_eq!(prop(&ui, 1, "$CONTROL_PAR_HIDE"), "1");
+    assert_eq!(prop(&ui, 1, "$CONTROL_PAR_HIDE"), "16");
     assert!(
         initialize("on init\nwhile (1)\nend while\nend on", 0, 0)
             .unwrap_err()
@@ -634,7 +634,7 @@ fn live_view_follows_ui_control() {
     assert_eq!(prop(ui, 1, "$CONTROL_PAR_TEXT"), "Legato");
     assert_eq!(
         ui.controls[1].properties["$CONTROL_PAR_HIDE"],
-        Value::Int(1)
+        Value::Int(16)
     );
     assert_eq!(
         live.keys[&36].color,

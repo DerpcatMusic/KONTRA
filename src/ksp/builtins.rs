@@ -344,6 +344,7 @@ pub fn instrument_control(id: i32) -> bool {
     (INST_ICON_ID..=INST_LIB_LAST_ID).contains(&id)
 }
 pub const FIRST_UI_ID: i32 = 32768;
+pub const HIDE_WHOLE_CONTROL: i32 = 16;
 
 pub mod event_par {
     pub const PAR_0: i32 = 0;
@@ -433,12 +434,13 @@ pub fn constant(name: &str) -> Option<i32> {
         "$INST_LIB_PIC_TWO_ID" => INST_WALLPAPER_ID + 2,
         "$INST_LIB_COPYRIGHT_ID" => INST_WALLPAPER_ID + 3,
         "$INST_LIB_DESCRIPTION_ID" => INST_LIB_LAST_ID,
+        // Kontakt's own bits: Una Corda hides its tab pages with a literal 16.
         "$HIDE_PART_NOTHING" => 0,
-        "$HIDE_WHOLE_CONTROL" => 1,
-        "$HIDE_PART_BG" => 2,
-        "$HIDE_PART_VALUE" => 4,
-        "$HIDE_PART_TITLE" => 8,
-        "$HIDE_PART_MOD_LIGHT" => 16,
+        "$HIDE_PART_BG" => 1,
+        "$HIDE_PART_VALUE" => 2,
+        "$HIDE_PART_TITLE" => 4,
+        "$HIDE_PART_MOD_LIGHT" => 8,
+        "$HIDE_WHOLE_CONTROL" => HIDE_WHOLE_CONTROL,
         "$NI_CB_TYPE_INIT" => cb::INIT,
         "$NI_CB_TYPE_NOTE" => cb::NOTE,
         "$NI_CB_TYPE_RELEASE" => cb::RELEASE,

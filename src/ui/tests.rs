@@ -325,7 +325,16 @@ fn screenshot() {
                         load_scripts(i, i.script_state.clone(), 48000.).0.as_deref(),
                     );
                     let (interface, keys) = (script.interface, script.keys);
+                    // Control pictures, as the plugin loads them: they size controls.
+                    let names = interface.iter().flat_map(|u| &u.controls).filter_map(|c| {
+                        match c.properties.get("$CONTROL_PAR_PICTURE") {
+                            Some(crate::ksp::Value::Text(n)) => Some(n.as_str()),
+                            _ => None,
+                        }
+                    });
+                    let pictures = Arc::new(artwork::pictures(&i.path, names));
                     view.parts[slot] = PartView {
+                        pictures,
                         wallpaper: artwork::performance(
                             i,
                             interface.as_ref().map(|u| u.wallpaper.as_str()),
