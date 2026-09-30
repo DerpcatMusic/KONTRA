@@ -97,6 +97,11 @@ impl Computer {
         }
     }
 
+    /// The notes the held keys play.
+    pub fn notes(&self) -> Vec<u8> {
+        super::lock(&self.held).values().copied().collect()
+    }
+
     /// The octave the A key plays, as a note name's octave number.
     pub fn octave_c(&self) -> u8 {
         self.octave.load(Ordering::Relaxed) * 12

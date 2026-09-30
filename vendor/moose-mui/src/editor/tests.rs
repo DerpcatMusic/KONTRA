@@ -532,3 +532,15 @@ fn cancellation_reaches_editor_callback() {
     let editor=editor(&params).on_cancel(move |_|record.store(true,std::sync::atomic::Ordering::Relaxed));
     let shared=&mut *lock(&editor.shared);shared.view.cancel(&shared.ui);assert!(called.load(std::sync::atomic::Ordering::Relaxed));
 }
+
+#[test]
+fn closing_the_editor_cancels_the_apps_gestures() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let params = Arc::new(Synth::new());
+    let called = Arc::new(AtomicBool::new(false));
+    let record = called.clone();
+    let editor = editor(&params).on_cancel(move |_| record.store(true, Ordering::Relaxed));
+    let (mut editor, _h, _log) = open_with(&params, editor);
+    editor.close();
+    assert!(called.load(Ordering::Relaxed), "a held note is let go with the window");
+}

@@ -622,7 +622,10 @@ impl Shared {
     }
 
     /// Start `note` on `slot` at `velocity` (1..=127) from the on-screen keyboard.
+    /// A key already down (the mouse and a computer key on one note) is let
+    /// go first: every note-on has its note-off, so one release stops it.
     pub(crate) fn press_key(&self, slot: usize, note: u8, velocity: u8) {
+        self.release_key(note);
         let velocity = velocity.clamp(1, 127);
         self.key_owners[note as usize].store(slot as u64, Ordering::Release);
         self.played[note as usize].store(velocity, Ordering::Relaxed);
@@ -1485,6 +1488,8 @@ impl PluginLogic for Sampler {
                     match ev {
                         In::NoteOn(_, note, velocity) => lit(note, velocity),
                         In::NoteOff(_, note) => lit(note, 0),
+                        // All sound or all notes off: a host stopping sends these, not each note-off.
+                        In::Cc(_, 120 | 123, _) => (0..128).for_each(|n| lit(n, 0)),
                         In::Bend(_, value) => p.shared.bend.store(u32::from(value), Ordering::Relaxed),
                         In::Cc(_, 1, value) => {
                             p.shared.modulation.store(u32::from(value), Ordering::Relaxed)

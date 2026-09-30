@@ -103,14 +103,15 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     .align(Align::Center)
     .pad(edges(TIGHT, TIGHT, TIGHT, INSET))
     .shrink(0);
+    // Played even while folded away: a hidden keyboard still lets go.
+    let first_note = (cx.state.octave * 12) as u8;
+    play(ui, cx, first_note..first_note + (OCTAVES * 12) as u8);
     if !open {
         return col![bar].gap(0).shrink(0).fill(Role::Surface);
     }
 
     let slot = cx.state.selected;
-    let first_note = (cx.state.octave * 12) as u8;
-    let shown = first_note..first_note + (OCTAVES * 12) as u8;
-    play(ui, cx, shown);
+    let gliding = cx.state.gliss.is_some();
     let keys = cx.part_view().keys.clone();
     let mut octaves = Vec::new();
     for octave in cx.state.octave..cx.state.octave + OCTAVES {
@@ -122,7 +123,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
             let lit = cx.p.shared.played[note as usize]
                 .load(Ordering::Relaxed)
                 .max(cx.p.shared.heard[note as usize].load(Ordering::Relaxed));
-            key(ui, cx.p, note, black, looks[note as usize], lit, keys.get(&note))
+            key(ui, cx.p, note, black, looks[note as usize], lit, gliding, keys.get(&note))
         };
         let whites =
             row([0, 2, 4, 5, 7, 9, 11].map(|n| make(n, false).flex(1).min_w(0).h(Len::Pct(100.))))
@@ -359,7 +360,27 @@ fn looks(cx: &mut Cx) -> [Look; 128] {
 /// Mouse playing: a press starts the key under the pointer, dragging across
 /// the keys moves the note along (a glissando) and letting go stops it.
 /// Lower on a key plays louder, as on a real one.
+///
+/// Then whatever the keys hold that neither the glissando nor a held
+/// computer key accounts for is let go, every frame: a note whose release
+/// was lost (an editor dropped mid-drag, a window that never saw the
+/// button come up) cannot outlive the next frame.
 fn play(ui: &Ui, cx: &mut Cx, shown: std::ops::Range<u8>) {
+    glide(ui, cx, shown);
+    let shared = &cx.p.shared;
+    let sounding = cx.state.gliss.map(|(_, n)| n);
+    let typed = cx.state.computer.notes();
+    for note in 0..128u8 {
+        if shared.played[note as usize].load(Ordering::Relaxed) > 0
+            && sounding != Some(note)
+            && !typed.contains(&note)
+        {
+            shared.release_key(note);
+        }
+    }
+}
+
+fn glide(ui: &Ui, cx: &mut Cx, shown: std::ops::Range<u8>) {
     let shared = &cx.p.shared;
     let slot = cx.state.selected;
     for note in shown.clone() {
@@ -411,6 +432,7 @@ fn key(
     black: bool,
     look: Look,
     lit: u8,
+    gliding: bool,
     script: Option<&KeyState>,
 ) -> El {
     let id = format!("key-{note}");
@@ -462,16 +484,21 @@ fn key(
         None => name.clone(),
     };
     let text = col(parts).pad((2, 3)).align(Align::Center).w(Len::Pct(100.)).h(Len::Pct(100.));
+    // Only the LED says what sounds. A glissando's key keeps the pointer
+    // captured the whole drag, and MUI hovers and presses the captured
+    // key: left to it, the key the drag began on would stay pressed while
+    // the notes moved on. So no press look, and no hover while gliding.
     stack![led, text]
         .fill(face)
         .on(State::Hover, move |s| {
-            if held {
+            if held || gliding {
                 s
             } else {
                 let lift = if black { 0.12 } else { -0.06 };
                 s.fill(Color::oklch((face.lightness() + lift).clamp(0., 1.), face.chroma(), face.hue()))
             }
         })
+        .on(State::Press, |s| s)
         .focusable()
         .a11y(A11y::Button)
         .named(format!("Play {label}"))

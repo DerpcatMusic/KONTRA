@@ -61,15 +61,18 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let mut watch = Watch::default();
     MuiEditor::new(params, theme::ui(), (1180, 760), build)
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, ui, at, paths, dropped))
-        .on_cancel(move |_| {
-            cancel_computer.release(&cancel_params);
-            cancel_params.shared.release_keyboard();
-        })
+        .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready())
         .fixed_zoom()
         .resizable((900, 600))
         .into_editor()
+}
+
+/// Focus left or the window closes: every key the editor holds comes up.
+fn let_go(p: &SamplerParams, computer: &computer::Computer) {
+    computer.release(p);
+    p.shared.release_keyboard();
 }
 
 /// The lock's data even if a panicking thread held it: the editor shows what

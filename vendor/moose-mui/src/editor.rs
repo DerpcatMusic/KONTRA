@@ -257,6 +257,11 @@ impl<P: Params> Editor for MuiEditor<P> {
             s.view.bridge.close();
             // The bridge ended the host's gestures; these are the same edges.
             s.ui.close();
+            // KONTAKTO patch: and the app's own (a held note). The window's
+            // `WillClose` is not certain: a close that times out revokes its
+            // callbacks first.
+            let s = &mut *s;
+            s.view.cancel(&s.ui);
         }
         self.close_window();
     }
