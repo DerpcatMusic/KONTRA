@@ -141,11 +141,11 @@ fn picture_prefix(interface: &Interface) -> String {
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut total = 0;
     for c in &interface.controls {
-        if let Some(Value::Text(p)) = c.properties.get("$CONTROL_PAR_PICTURE") {
-            if let Some(first) = p.split(['_', '-']).next().filter(|f| !f.is_empty()) {
-                *counts.entry(first.to_lowercase()).or_default() += 1;
-                total += 1;
-            }
+        if let Some(Value::Text(p)) = c.properties.get("$CONTROL_PAR_PICTURE")
+            && let Some(first) = p.split(['_', '-']).next().filter(|f| !f.is_empty())
+        {
+            *counts.entry(first.to_lowercase()).or_default() += 1;
+            total += 1;
         }
     }
     counts
