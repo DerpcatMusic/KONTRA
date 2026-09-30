@@ -166,6 +166,15 @@ fn spell_out(name: &str) -> String {
         .join(" ")
 }
 
+/// A note name as Kontakt writes it: "C-1", "D#3", "G8".
+fn is_note(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|c| ('A'..='G').contains(&c)) && {
+        let rest = chars.as_str().trim_start_matches(['#', 'b']);
+        !rest.is_empty() && rest.trim_start_matches('-').chars().all(|c| c.is_ascii_digit())
+    }
+}
+
 /// A label that shows a value, not a name: "0.0 dB", "20.0 ms", "63 %", "OFF".
 fn is_readout(text: &str) -> bool {
     let t = text.trim();
@@ -421,37 +430,64 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
             i.face != Face::Text || i.name.chars().any(char::is_alphabetic) && !is_readout(&i.name)
         })
         .collect();
-    // Continuous controls take the label nearest them first, then switches.
-    let mut order: Vec<usize> = (0..read.len())
-        .filter(|&n| read[n].0.face != Face::Text && read[n].0.name.is_empty())
-        .collect();
-    order.sort_by_key(|&n| read[n].0.face == Face::Toggle);
-    let mut taken = vec![false; read.len()];
-    for n in order {
-        let c = read[n].0.at;
-        let (cx, cy) = c.center();
-        let best = read
+    // A label spanning two or more controls side by side under it heads
+    // them; it names none of them.
+    let heads = |l: &Rect| {
+        let under: Vec<Rect> = read
             .iter()
-            .enumerate()
-            .filter(|(m, (l, _))| l.face == Face::Text && !taken[*m])
-            .filter(|(_, (l, _))| {
-                let (lx, _) = l.at.center();
-                let beside = lx >= c.x - SPACE && lx <= c.right() + SPACE;
-                let below = l.at.y >= c.bottom() - c.h / 4. && l.at.y <= c.bottom() + LABEL_REACH;
-                let above = l.at.bottom() <= c.y + c.h / 4. && l.at.bottom() >= c.y - LABEL_REACH;
-                l.at.overlaps(&c) || beside && (below || above)
-            })
-            .min_by(|(_, (a, _)), (_, (b, _))| {
-                let d = |r: &Rect| {
-                    let (x, y) = r.center();
-                    (x - cx).hypot(y - cy)
-                };
-                d(&a.at).total_cmp(&d(&b.at))
-            })
-            .map(|(m, _)| m);
-        if let Some(m) = best {
+            .filter(|(c, _)| c.face != Face::Text)
+            .map(|(c, _)| c.at)
+            .filter(|c| c.x >= l.x - SPACE && c.right() <= l.right() + SPACE)
+            .filter(|c| c.y >= l.bottom() - 2. && c.y <= l.bottom() + LABEL_REACH)
+            .collect();
+        under.iter().any(|a| under.iter().any(|b| a.right() <= b.x))
+    };
+    // Where a label may sit to name control `c`: on it, under or over it
+    // within reach, or just right of it, level with it.
+    let names = |c: &Rect, l: &Rect| {
+        let (lx, ly) = l.center();
+        let beside = lx >= c.x - SPACE && lx <= c.right() + SPACE;
+        let below = l.y >= c.bottom() - c.h / 4. && l.y <= c.bottom() + LABEL_REACH;
+        let above = l.bottom() <= c.y + c.h / 4. && l.bottom() >= c.y - LABEL_REACH;
+        let right = l.x >= c.right() - c.w / 4. && l.x <= c.right() + SPACE && ly >= c.y && ly <= c.bottom();
+        l.overlaps(c) || beside && (below || above) || right
+    };
+    // A note name beside an articulation is its keyswitch, not a name.
+    let labels: Vec<usize> = (0..read.len())
+        .filter(|&m| read[m].0.face == Face::Text && !heads(&read[m].0.at))
+        .filter(|&m| !is_note(&read[m].0.name))
+        .collect();
+    // Continuous controls take labels first, then switches. Within each,
+    // the closest pairs go first, so a label under one knob and over the
+    // next goes to the one it is nearer, not to whichever came first.
+    let mut taken = vec![false; read.len()];
+    for switches in [false, true] {
+        let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+        for (n, (c, _)) in read.iter().enumerate() {
+            if c.face == Face::Text || !c.name.is_empty() || (c.face == Face::Toggle) != switches {
+                continue;
+            }
+            for &m in labels.iter().filter(|&&m| names(&c.at, &read[m].0.at)) {
+                pairs.push((apart(&c.at, &read[m].0.at), n, m));
+            }
+        }
+        pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, n, m) in pairs {
+            if taken[m] || !read[n].0.name.is_empty() {
+                continue;
+            }
             taken[m] = true;
-            read[n].0.name = read[m].0.name.clone();
+            // Text drawn along a slider is its value ("Default" on an output
+            // selector): it goes, and names nothing.
+            let (c, l) = (read[n].0.at, read[m].0.at);
+            let along = (l.right().min(c.right()) - l.x.max(c.x)).max(0.);
+            let on = read[n].0.face == Face::Fader
+                && along >= l.w * 0.75
+                && l.y >= c.y - 2.
+                && l.bottom() <= c.bottom() + 2.;
+            if !on {
+                read[n].0.name = read[m].0.name.clone();
+            }
         }
     }
     for (n, (item, picture)) in read.iter_mut().enumerate() {
@@ -505,6 +541,22 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
         })
         .cloned()
         .collect()
+}
+
+/// How far label `l` is from control `c`. Text centred on the control is
+/// nearest, the more of it the control covers; otherwise the distance
+/// between centres, a little further for a label over the control than
+/// under it, where names usually sit.
+fn apart(c: &Rect, l: &Rect) -> f64 {
+    let (lx, ly) = l.center();
+    if lx >= c.x && lx <= c.right() && ly >= c.y && ly <= c.bottom() {
+        let w = l.right().min(c.right()) - l.x.max(c.x);
+        let h = l.bottom().min(c.bottom()) - l.y.max(c.y);
+        return -(w * h) / (l.w * l.h);
+    }
+    let (cx, cy) = c.center();
+    let d = (cx - lx).hypot(cy - ly);
+    if ly < c.y { d * 1.25 } else { d }
 }
 
 /// Side by side on one line, at most a spacing apart: one segmented control.
@@ -1018,6 +1070,43 @@ mod tests {
         assert_eq!(s[1].title, None);
         assert_eq!(s[1].columns[0][0][0].name, "Dynamics");
         assert_eq!(s[1].columns[0][0][0].face, Face::Knob);
+    }
+
+    /// Afflatus's options page: names right of their knobs, an envelope
+    /// whose labels sit over its knobs and under the knob above, and a
+    /// heading over three switches.
+    #[test]
+    fn labels_go_to_the_control_they_belong_to() {
+        let text = |t: &str| ("TEXT", Value::Text(t.into()));
+        let label = |x, y, w, t: &str| control("ui_label", "$l", &with(at(x, y, w, 17), &[text(t)]));
+        let knob = |x, y, var: &str| control("ui_knob", var, &at(x, y, 32, 32));
+        let mut controls = vec![label(658, 82, 202, "Sustain MonoLeg PolyLeg")];
+        for (x, var) in [(659, "$sustain_on"), (729, "$mono_leg_on"), (799, "$poly_leg_on")] {
+            controls.push(control("ui_switch", var, &at(x, 99, 60, 32)));
+        }
+        controls.push(knob(772, 189, "$Rel_Offset"));
+        controls.push(label(806, 191, 58, "Release Offset"));
+        for (x, name) in [(647, "Attack"), (703, "Decay"), (759, "Sustain"), (815, "Release")] {
+            controls.push(label(x, 234, 56, name));
+            controls.push(knob(x + 13, 250, &format!("$Advanced_CO_{name}")));
+        }
+        let interface = Interface {
+            width: 900,
+            height: 300,
+            controls,
+            ..Default::default()
+        };
+        let named: Vec<(String, String)> = items(&interface, &HashMap::new())
+            .into_iter()
+            .map(|i| (interface.controls[i.control].variable.clone(), i.name))
+            .collect();
+        let name = |var: &str| named.iter().find(|(v, _)| v == var).map(|(_, n)| n.as_str());
+        assert_eq!(name("$Rel_Offset"), Some("Release Offset"));
+        assert_eq!(name("$Advanced_CO_Sustain"), Some("Sustain"));
+        assert_eq!(name("$Advanced_CO_Attack"), Some("Attack"));
+        assert_ne!(name("$mono_leg_on"), Some("Sustain MonoLeg PolyLeg"), "the heading names no switch");
+        assert_eq!(name("$l"), Some("Sustain MonoLeg PolyLeg"), "and stays a heading");
+        assert!(is_note("C-1") && is_note("D#3") && !is_note("Decay") && !is_note("A"));
     }
 
     #[test]
