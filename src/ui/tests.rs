@@ -803,7 +803,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 22] = [
+    let states: [(&str, bool, &[&str]); 25] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -828,6 +828,10 @@ fn screenshot() {
         ("resized", true, &[]),
         ("loading", true, &[]),
         ("pressed", true, &[]),
+        ("sound", true, &["tab-sound"]),
+        // Edited: the library's curves stay drawn faintly under the edits.
+        ("sound-edited", true, &["tab-sound"]),
+        ("sound-compact", true, &["tab-sound", "edit-compact"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
@@ -847,6 +851,13 @@ fn screenshot() {
     {
         for &(width, height) in &sizes {
             let p = racked(&files, &instruments, loaded, state);
+            if state == "sound-edited" {
+                use crate::engine::overrides::{Override, Param};
+                let mut selection = p.selection.write().unwrap();
+                for (param, offset) in [(Param::Release, -0.2), (Param::Attack, 0.15), (Param::Sustain, -0.2)] {
+                    selection.parts[0].edits.set(Override { group: None, param, offset });
+                }
+            }
             if state == "mixer" {
                 // Mid-song: parts on two buses, one sending to a named third.
                 let mut selection = p.selection.write().unwrap();

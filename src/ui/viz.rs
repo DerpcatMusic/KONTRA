@@ -29,31 +29,23 @@ pub struct Model {
 }
 
 impl Model {
-    /// `group` (index `index`) from the library, with the audio thread's
-    /// `probe` values (playing, base) when it publishes them, else the
-    /// part's `edits` applied here as the engine would.
-    pub fn new(group: &Group, index: u16, edits: &Edits, probe: Option<[[f32; PROBE_VALUES]; 2]>) -> Self {
+    /// `group` (index `index`) as its scripts left it (`probe`, the audio
+    /// thread's base values, when it publishes them; else the library's),
+    /// under the part's `edits` applied as the engine applies them.
+    pub fn new(group: &Group, index: u16, edits: &Edits, probe: Option<[f32; PROBE_VALUES]>) -> Self {
         let mut base = GroupSettings::from(group);
         let params = Param::of_group(&base);
-        let overlay = |s: &mut GroupSettings, values: &[f32; PROBE_VALUES]| {
+        if let Some(values) = &probe {
             for &(i, p) in &params {
                 if values[i].is_finite() {
-                    p.write(s, values[i]);
+                    p.write(&mut base, values[i]);
                 }
             }
-        };
-        if let Some([_, b]) = &probe {
-            overlay(&mut base, b);
         }
         let mut playing = base.clone();
-        match &probe {
-            Some([p, _]) => overlay(&mut playing, p),
-            None => {
-                for &(_, p) in &params {
-                    if let Some(v) = p.read(&base) {
-                        p.write(&mut playing, p.apply(v, edits.offset(index, p)));
-                    }
-                }
+        for &(_, p) in &params {
+            if let Some(v) = p.read(&base) {
+                p.write(&mut playing, p.apply(v, edits.offset(index, p)));
             }
         }
         Self { playing, base, params }
