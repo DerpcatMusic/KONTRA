@@ -568,29 +568,94 @@ impl Packed {
         let word = |at: usize| i32::from_le_bytes([0, data[at], data[at + 1], data[at + 2]]) >> 8;
         let mut at = HEADER;
         let n = len.max(2) - 2;
+        #[cfg(target_arch = "x86_64")]
+        let vbmi = avx512() && std::arch::is_x86_feature_detected!("avx512vbmi");
         for (c, x) in out.iter_mut().enumerate() {
-            let w = u32::from(data[c]);
+            let w = data[c];
             let bits = &data[at..];
-            at += ((BLOCK - 2) * w as usize).div_ceil(8);
-            // A `w`-bit field sign-extends by shifting it to the top and back.
-            let shift = 64 - w.max(1);
-            let keep = if w == 0 { 0 } else { u64::MAX };
-            // Every field's eight-byte read stays in bounds: blocks are
-            // followed by the next block or the zero tail.
-            assert!((n.saturating_sub(1) * w as usize) / 8 + 8 <= bits.len());
-            let (first, mut prev) = (word(2 + 6 * c), word(5 + 6 * c));
-            let mut delta = prev.wrapping_sub(first);
-            (x[0], x[1]) = (first, prev);
-            for (i, y) in x[2..2 + n].iter_mut().enumerate() {
-                let bit = i * w as usize;
-                // SAFETY: `bit / 8 + 8 <= bits.len()` by the assertion above.
-                let raw = u64::from_le(unsafe { bits.as_ptr().add(bit / 8).cast::<u64>().read_unaligned() });
-                let r = ((((raw >> (bit % 8)) << shift) as i64 >> shift) as u64 & keep) as i32;
-                delta = delta.wrapping_add(r);
-                prev = prev.wrapping_add(delta);
-                *y = prev;
+            at += ((BLOCK - 2) * usize::from(w)).div_ceil(8);
+            let before = [word(2 + 6 * c), word(5 + 6 * c)];
+            (x[0], x[1]) = (before[0], before[1]);
+            #[cfg(target_arch = "x86_64")]
+            if vbmi && w <= 25 {
+                // SAFETY: the running CPU supports every feature it is compiled for.
+                unsafe { integrate_avx512(bits, w, before, &mut x[2..2 + n]) };
+                continue;
             }
+            integrate(bits, w, before, &mut x[2..2 + n]);
         }
+    }
+}
+
+/// Unpack `out.len()` residuals of `w` bits from `bits` and integrate them
+/// twice onto the two samples `before`.
+#[inline(always)]
+fn integrate(bits: &[u8], w: u8, [first, mut prev]: [i32; 2], out: &mut [i32]) {
+    let w = u32::from(w);
+    // A `w`-bit field sign-extends by shifting it to the top and back.
+    let shift = 64 - w.max(1);
+    let keep = if w == 0 { 0 } else { u64::MAX };
+    // Every field's eight-byte read stays in bounds: blocks are followed by
+    // the next block or the zero tail.
+    assert!((out.len().saturating_sub(1) * w as usize) / 8 + 8 <= bits.len());
+    let mut delta = prev.wrapping_sub(first);
+    for (i, y) in out.iter_mut().enumerate() {
+        let bit = i * w as usize;
+        // SAFETY: `bit / 8 + 8 <= bits.len()` by the assertion above.
+        let raw = u64::from_le(unsafe { bits.as_ptr().add(bit / 8).cast::<u64>().read_unaligned() });
+        let r = ((((raw >> (bit % 8)) << shift) as i64 >> shift) as u64 & keep) as i32;
+        delta = delta.wrapping_add(r);
+        prev = prev.wrapping_add(delta);
+        *y = prev;
+    }
+}
+
+/// [`integrate`] sixteen residuals at a time, for widths up to 25 (a field
+/// then fits the four bytes from its first): sixteen fields are `2w` whole
+/// bytes, one byte permute puts each field's four in its lane, and the two
+/// running sums are prefix sums across lanes. Integer adds wrap alike in
+/// any order, so the samples are the same.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
+fn integrate_avx512(bits: &[u8], w: u8, [first, second]: [i32; 2], out: &mut [i32]) {
+    use std::arch::x86_64::*;
+    assert!(w <= 25 && (out.len().saturating_sub(1) * usize::from(w)) / 8 + 8 <= bits.len());
+    let w = i32::from(w);
+    let zero = _mm512_setzero_si512();
+    let lanes = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    let offsets = _mm512_mullo_epi32(lanes, _mm512_set1_epi32(w));
+    let index = _mm512_add_epi32(
+        _mm512_mullo_epi32(_mm512_srli_epi32::<3>(offsets), _mm512_set1_epi32(0x0101_0101)),
+        _mm512_set1_epi32(0x0302_0100),
+    );
+    let shift = _mm512_and_si512(offsets, _mm512_set1_epi32(7));
+    let top = _mm512_set1_epi32(32 - w);
+    let last = _mm512_set1_epi32(15);
+    let scan = |x: __m512i| {
+        let x = _mm512_add_epi32(x, _mm512_alignr_epi32::<15>(x, zero));
+        let x = _mm512_add_epi32(x, _mm512_alignr_epi32::<14>(x, zero));
+        let x = _mm512_add_epi32(x, _mm512_alignr_epi32::<12>(x, zero));
+        _mm512_add_epi32(x, _mm512_alignr_epi32::<8>(x, zero))
+    };
+    let mut delta = _mm512_set1_epi32(second.wrapping_sub(first));
+    let mut prev = _mm512_set1_epi32(second);
+    for (g, out) in out.chunks_mut(16).enumerate() {
+        // Field 16g starts on byte 2gw, eight or more before the end (the
+        // assertion); lanes past `out` read what they may and are dropped.
+        let start = 2 * g * w as usize;
+        let avail = (bits.len() - start).min(64);
+        // SAFETY: the mask keeps the load inside `bits`; the store writes
+        // `out.len()` lanes.
+        unsafe {
+            let bytes = _mm512_maskz_loadu_epi8(u64::MAX >> (64 - avail), bits.as_ptr().add(start).cast());
+            let fields = _mm512_srlv_epi32(_mm512_permutexvar_epi8(index, bytes), shift);
+            let r = _mm512_srav_epi32(_mm512_sllv_epi32(fields, top), top);
+            delta = _mm512_add_epi32(scan(r), delta);
+            prev = _mm512_add_epi32(scan(delta), prev);
+            _mm512_mask_storeu_epi32(out.as_mut_ptr(), u16::MAX >> (16 - out.len()), prev);
+        }
+        delta = _mm512_permutexvar_epi32(last, delta);
+        prev = _mm512_permutexvar_epi32(last, prev);
     }
 }
 
@@ -1349,6 +1414,34 @@ mod tests {
             pack_fields(&fields, width, &mut grouped);
             grouped.truncate(serial.len());
             assert_eq!(grouped, serial, "width {width}");
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn packed_residuals_integrate_alike_in_every_kernel() {
+        if !(avx512() && std::arch::is_x86_feature_detected!("avx512vbmi")) {
+            return;
+        }
+        let mut seed = 3u32;
+        let mut next = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            seed
+        };
+        for w in 0..=25u8 {
+            for n in [0, 1, 15, 16, 17, 33, BLOCK - 2] {
+                // Arbitrary fields, then only the bytes the fields and the
+                // last one's eight-byte read cover.
+                let len = (n.saturating_sub(1) * usize::from(w)) / 8 + 8;
+                let bits: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+                for before in [[next() as i32, next() as i32], [i32::MIN, i32::MAX], [0, 0]] {
+                    let (mut serial, mut wide) = (vec![0; n], vec![0; n]);
+                    integrate(&bits, w, before, &mut serial);
+                    // SAFETY: the CPU has the features (checked above).
+                    unsafe { integrate_avx512(&bits, w, before, &mut wide) };
+                    assert_eq!(serial, wide, "width {w}, {n} fields");
+                }
+            }
         }
     }
 }
