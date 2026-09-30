@@ -188,16 +188,40 @@ fn glide(from: f32, to: f32, frames: f32, curve: f32) -> (f32, f32) {
     (mul, target * (1.0 - mul))
 }
 
-/// Write `x = x * mul + add` per frame into `out`, from `x` = `level`;
-/// returns the last value. Eight frames at a time from powers of the step,
-/// so the frames don't wait on each other as a frame-by-frame loop does.
-fn affine(out: &mut [f32], level: f32, (mul, add): (f32, f32)) -> f32 {
+/// The first eight powers of the step `x = x * mul + add`: frame `k` of a
+/// run of eight is `pow[k] * x + off[k]`.
+fn powers((mul, add): (f32, f32)) -> ([f32; 8], [f32; 8]) {
     let (mut pow, mut off) = ([0f32; 8], [0f32; 8]);
     let (mut p, mut o) = (1f32, 0f32);
     for k in 0..8 {
         (p, o) = (p * mul, o * mul + add);
         (pow[k], off[k]) = (p, o);
     }
+    (pow, off)
+}
+
+/// Move `level` as [`affine`] would over up to `chunks` runs of eight
+/// frames, one step a run, stopping before a run that ends at or below
+/// `lo` or at or above `hi`: a stage may end in it, which only a
+/// frame-by-frame look can tell. Returns the level and the runs passed.
+fn affine_skip(level: f32, step: (f32, f32), chunks: usize, lo: f32, hi: f32) -> (f32, usize) {
+    let (pow, off) = powers(step);
+    let mut x = level;
+    for k in 0..chunks {
+        let next = pow[7] * x + off[7];
+        if next <= lo || next >= hi {
+            return (x, k);
+        }
+        x = next;
+    }
+    (x, chunks)
+}
+
+/// Write `x = x * mul + add` per frame into `out`, from `x` = `level`;
+/// returns the last value. Eight frames at a time from powers of the step,
+/// so the frames don't wait on each other as a frame-by-frame loop does.
+fn affine(out: &mut [f32], level: f32, step: (f32, f32)) -> f32 {
+    let (pow, off) = powers(step);
     let mut x = level;
     let (chunks, tail) = out.as_chunks_mut::<8>();
     for c in chunks {
@@ -278,16 +302,38 @@ impl Envelope {
     /// Advance over `out.len()` frames as [`Envelope::render`] would; `out`
     /// is scratch. Held stages move without a pass over the frames.
     pub fn skip(&mut self, out: &mut [f32], flex: Option<&Flex>, rate: f32) {
-        match self.stage {
-            Stage::Sustain if self.level > SILENT => {}
+        let chunks = out.len() / 8;
+        let (step, chunks, lo, hi) = match self.stage {
+            Stage::Sustain if self.level > SILENT => return,
             Stage::Hold if self.left as usize >= out.len() => {
                 self.left -= out.len() as u32;
                 if self.left == 0 {
                     self.stage = Stage::Decay;
                 }
+                return;
             }
-            _ => self.render(out, flex, rate),
+            // Glides step a run of eight at a time on the same arithmetic
+            // as `render`, which takes over for the run a stage may end in
+            // (the margins are far wider than rounding) and the tail.
+            Stage::Attack => (self.step, chunks, f32::NEG_INFINITY, 1.0 - 1e-3),
+            Stage::Decay => {
+                let step = (self.decay, self.sustain * (1.0 - self.decay));
+                (step, chunks, self.sustain + 2.0 * SILENT, f32::INFINITY)
+            }
+            Stage::Release => ((self.release, 0.0), chunks, 2.0 * SILENT, f32::INFINITY),
+            // A segment's last frame lands on its point in `render`.
+            Stage::Point(_) => {
+                let chunks = chunks.min(self.left.saturating_sub(1) as usize / 8);
+                (self.step, chunks, f32::NEG_INFINITY, f32::INFINITY)
+            }
+            _ => (self.step, 0, 0.0, 0.0),
+        };
+        let (level, runs) = affine_skip(self.level, step, chunks, lo, hi);
+        self.level = level;
+        if let Stage::Point(_) = self.stage {
+            self.left -= 8 * runs as u32;
         }
+        self.render(&mut out[8 * runs..], flex, rate);
     }
 
     /// Write one gain per frame; `flex` is the envelope's points, if it is one.
@@ -1160,6 +1206,41 @@ mod tests {
                     assert!((o - x).abs() <= 1e-5 * x.abs().max(1.0), "{mul} {add} at {i}: {o} vs {x}");
                 }
                 assert_eq!(last, out.last().copied().unwrap_or(0.25));
+            }
+        }
+    }
+
+    /// A muted voice's envelope skips to exactly where a heard one renders to.
+    #[test]
+    fn skip_lands_where_render_does() {
+        let rate = 48000.0;
+        let flex = Flex {
+            points: [
+                FlexPoint { seconds: 0.013, level: 1.0, curve: 0.4 },
+                FlexPoint { seconds: 0.05, level: 0.3, curve: -0.7 },
+                FlexPoint { seconds: 0.2, level: 0.0, curve: 0.0 },
+            ]
+            .into(),
+            sustain: 1,
+        };
+        let adsr = Ahdsr { attack: 0.021, curve: 0.6, hold: 0.004, decay: 0.05, sustain: 0.4, release: 0.06 };
+        let blocks = [512, 128, 37, 8, 1, 300, 512, 64, 7, 512];
+        for (p, points) in [(adsr, None), (Ahdsr { sustain: 0.0, ..adsr }, None), (adsr, Some(&flex))] {
+            let new = || if points.is_some() { Envelope::flex() } else { Envelope::new(&p, rate) };
+            let (mut heard, mut muted) = (new(), new());
+            let mut out = [0.0; 512];
+            for (i, &n) in blocks.iter().cycle().take(60).enumerate() {
+                if i == 25 {
+                    heard.release(points);
+                    muted.release(points);
+                }
+                heard.render(&mut out[..n], points, rate);
+                muted.skip(&mut out[..n], points, rate);
+                assert_eq!(
+                    (heard.level.to_bits(), heard.stage, heard.left),
+                    (muted.level.to_bits(), muted.stage, muted.left),
+                    "block {i}"
+                );
             }
         }
     }
