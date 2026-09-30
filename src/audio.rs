@@ -137,11 +137,7 @@ impl Pcm {
         if lo < -limit || hi >= limit {
             return None;
         }
-        let copy = |src: &[[i32; 2]; BLOCK], q: &mut [i32; 2 * BLOCK]| {
-            q.copy_from_slice(src.as_flattened());
-            true
-        };
-        if compress && let Some(packed) = Packed::encode(frames, scale, copy) {
+        if compress && let Some(packed) = Packed::encode(frames, scale, in_place) {
             return Some(Self::Packed(packed));
         }
         let samples = frames.as_flattened();
@@ -269,7 +265,7 @@ impl Packed {
     fn encode<T: Copy>(
         frames: &[[T; 2]],
         scale: f32,
-        quantize: impl Fn(&[[T; 2]; BLOCK], &mut [i32; 2 * BLOCK]) -> bool,
+        quantize: impl for<'a> Fn(&'a [[T; 2]; BLOCK], &'a mut [i32; 2 * BLOCK]) -> Option<&'a [i32; 2 * BLOCK]>,
     ) -> Option<Self> {
         let raw = frames.len() * if scale == I16_SCALE { 4 } else { 6 };
         let blocks = frames.len().div_ceil(BLOCK);
@@ -280,8 +276,7 @@ impl Packed {
         let mut offsets = Vec::with_capacity(blocks);
         // Interleaved throughout: both channels in the same pass, which
         // vectorizes.
-        let mut q = [0i32; 2 * BLOCK];
-        let mut residuals = [0i32; 2 * (BLOCK - 2)];
+        let mut scratch = [0i32; 2 * BLOCK];
         let mut pad: [[T; 2]; BLOCK];
         for chunk in frames.chunks(BLOCK) {
             offsets.push(data.len() as u32);
@@ -294,15 +289,15 @@ impl Packed {
                     &pad
                 }
             };
-            if !quantize(src, &mut q) {
-                return None;
-            }
+            let q = quantize(src, &mut scratch)?;
+            // Per channel, two zero fields round it up to whole groups of eight.
+            let mut residuals = [[0i32; BLOCK]; 2];
             let mut magnitude = [0u32; 2];
-            for (i, r) in residuals.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+            for (i, q) in q.as_chunks::<2>().0.windows(3).enumerate() {
                 for c in 0..2 {
-                    let at = 2 * i + c;
-                    r[c] = q[at + 4].wrapping_sub(q[at + 2].wrapping_mul(2)).wrapping_add(q[at]);
-                    magnitude[c] |= (r[c] ^ (r[c] >> 31)) as u32;
+                    let r = q[2][c].wrapping_sub(q[1][c].wrapping_mul(2)).wrapping_add(q[0][c]);
+                    residuals[c][i] = r;
+                    magnitude[c] |= (r ^ (r >> 31)) as u32;
                 }
             }
             let widths = magnitude.map(|m| if m == 0 { 0 } else { 33 - m.leading_zeros() as u8 });
@@ -311,14 +306,9 @@ impl Packed {
                 data.extend(&q[c].to_le_bytes()[..3]);
                 data.extend(&q[2 + c].to_le_bytes()[..3]);
             }
-            for (c, &w) in widths.iter().enumerate() {
-                // Two zero fields round the channel up to whole groups of eight.
-                let mut channel = [0i32; BLOCK];
-                for (x, r) in channel.iter_mut().zip(residuals.as_chunks::<2>().0) {
-                    *x = r[c];
-                }
+            for (channel, &w) in residuals.iter().zip(&widths) {
                 let end = data.len() + ((BLOCK - 2) * usize::from(w)).div_ceil(8);
-                pack_fields(&channel, w, &mut data);
+                pack_fields(channel, w, &mut data);
                 data.truncate(end);
             }
             if data.len() + 8 >= raw * 9 / 10 {
@@ -415,7 +405,11 @@ fn pack_fields(fields: &[i32; BLOCK], width: u8, out: &mut Vec<u8>) {
 /// [`pack_fields`] at a fixed width.
 fn pack_fixed<const W: usize>(fields: &[i32; BLOCK], out: &mut Vec<u8>) {
     let mask = (1u64 << W) - 1;
-    for group in fields.as_chunks::<8>().0 {
+    // Groups land in a stack buffer and append once: a length check per
+    // block rather than per group.
+    let mut packed = [0u8; BLOCK / 8 * 33];
+    let groups = fields.as_chunks::<8>().0.iter().zip(packed.chunks_exact_mut(W));
+    for (group, out) in groups {
         let mut words = [0u64; 5];
         for (k, &v) in group.iter().enumerate() {
             let (v, bit) = (v as u64 & mask, k * W);
@@ -428,13 +422,22 @@ fn pack_fixed<const W: usize>(fields: &[i32; BLOCK], out: &mut Vec<u8>) {
         for (b, w) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words) {
             *b = w.to_le_bytes();
         }
-        out.extend_from_slice(&bytes[..W]);
+        out.copy_from_slice(&bytes[..W]);
     }
+    out.extend_from_slice(&packed[..BLOCK / 8 * W]);
 }
 
-/// A block of float frames as integers at `scale`; false if any is not
-/// exactly one in `-scale..scale`.
-fn quantize(scale: f32) -> impl Fn(&[Frame; BLOCK], &mut [i32; 2 * BLOCK]) -> bool {
+/// Integer frames as they are: a copy would cost more than packing them,
+/// its stores stalling the loads of the residual pass.
+fn in_place<'a>(src: &'a [[i32; 2]; BLOCK], _: &'a mut [i32; 2 * BLOCK]) -> Option<&'a [i32; 2 * BLOCK]> {
+    src.as_flattened().first_chunk()
+}
+
+/// A block of float frames as integers at `scale` in `q`; `None` if any is
+/// not exactly one in `-scale..scale`.
+fn quantize(
+    scale: f32,
+) -> impl for<'a> Fn(&'a [Frame; BLOCK], &'a mut [i32; 2 * BLOCK]) -> Option<&'a [i32; 2 * BLOCK]> {
     // In f64, adding 2^52 + 2^51 leaves an integer exactly and its two's
     // complement in the low bits, and rounds away any fraction: an
     // exactness test and conversion that vectorize, unlike `as`.
@@ -447,7 +450,7 @@ fn quantize(scale: f32) -> impl Fn(&[Frame; BLOCK], &mut [i32; 2 * BLOCK]) -> bo
             *q = t.to_bits() as i32;
             inexact |= !((t - ROUND == x) & (x >= -scale) & (x < scale));
         }
-        !inexact
+        (!inexact).then_some(q)
     }
 }
 
@@ -1153,6 +1156,16 @@ mod decode_bench {
             best = best.min(cpu() - t);
         }
         println!("pack: {:.2} ns per frame", best / frames.len() as f64 * 1e9);
+        let ints: Vec<[i32; 2]> = (frames.iter())
+            .map(|f| f.map(|x| (x * I24_SCALE) as i32))
+            .collect();
+        let mut best = f64::MAX;
+        for _ in 0..40 {
+            let t = cpu();
+            assert!(matches!(Pcm::pack_ints(&ints, 24, true), Some(Pcm::Packed(_))));
+            best = best.min(cpu() - t);
+        }
+        println!("pack_ints: {:.2} ns per frame", best / frames.len() as f64 * 1e9);
         let packed = Pcm::pack(&frames, true);
         let raw = Pcm::pack(&frames, false);
         assert!(matches!(packed, Pcm::Packed(_)) && matches!(raw, Pcm::I24(..)));
