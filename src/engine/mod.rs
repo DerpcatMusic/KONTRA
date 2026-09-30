@@ -1419,7 +1419,7 @@ impl Player {
             let bus = bank.settings[voice.group as usize].bus;
             let through = bus.filter(|_| steady).and_then(|b| fx.bus_gains(b));
             match voice.plan(&cx, n, bus, through).filter(|_| self.shared) {
-                Some(lane) => self.lanes.add(lane, voice.plan.class, &voice.plan.key, i as u16),
+                Some(lane) => self.lanes.add(lane, voice.plan.class, &voice.filter.held, i as u16),
                 None => self.lanes.skip(i as u16),
             }
         }

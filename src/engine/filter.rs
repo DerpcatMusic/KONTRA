@@ -679,7 +679,9 @@ pub(crate) struct VoiceFilter {
     /// settings cost no coefficient math.
     tuned: [[f32; 3]; MAX_SECTIONS],
     matrix: Matrix,
-    /// The active sections of the last [`VoiceFilter::key`], in order.
+    /// The last [`VoiceFilter::hold`]: the filter, and its active sections
+    /// in order.
+    pub held: FilterKey,
     slots: [u8; LANE_SECTIONS],
 }
 
@@ -691,6 +693,7 @@ impl VoiceFilter {
             sections: [Section::default(); MAX_SECTIONS],
             tuned: [[f32::NAN; 3]; MAX_SECTIONS],
             matrix: IDENTITY,
+            held: FilterKey::default(),
             slots: [0; LANE_SECTIONS],
         };
         if let Some(f) = filter {
@@ -712,10 +715,10 @@ impl VoiceFilter {
         }
     }
 
-    /// This block's [`FilterKey`], when the filter is held: no module
-    /// envelopes and the matrix reached, with at most four active
-    /// sections. Tunes the sections it keeps.
-    pub fn key(&mut self, f: &GroupFilter, table: &ModTable, rate: f32) -> Option<FilterKey> {
+    /// Work out this block's [`FilterKey`] into `held` when the filter is
+    /// held: no module envelopes and the matrix reached, with at most four
+    /// active sections. Tunes the sections it keeps. Returns the key's hash.
+    pub fn hold(&mut self, f: &GroupFilter, table: &ModTable, rate: f32) -> Option<u64> {
         if !f.envs.is_empty() || self.matrix != f.matrix {
             return None;
         }
@@ -724,7 +727,8 @@ impl VoiceFilter {
         for ((r, i), value) in f.ext.iter().zip(&self.ext) {
             knobs[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * value;
         }
-        let mut key = FilterKey { matrix: f.matrix, ..FilterKey::default() };
+        let key = &mut self.held;
+        key.matrix = f.matrix;
         let (mut s, mut active) = (0, 0);
         for (unit, knobs) in f.units.iter().zip(&knobs) {
             for b in 0..unit.sections as usize {
@@ -746,7 +750,9 @@ impl VoiceFilter {
             s += unit.sections as usize;
         }
         key.active = active as u8;
-        Some(key)
+        // Sections past the active ones do not count.
+        key.c[active..].fill([0.0; 6]);
+        Some(key.hash())
     }
 
     pub fn release(&mut self) {

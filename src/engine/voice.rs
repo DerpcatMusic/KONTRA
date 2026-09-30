@@ -809,9 +809,9 @@ pub(crate) struct Plan {
     pub declick: Option<f32>,
     /// Per-channel gain in its lane.
     pub weights: [f32; 2],
-    /// The lane's group filter: 0 for none, else its key's hash.
+    /// The lane's group filter: 0 for none, else the hash of its key
+    /// ([`VoiceFilter::held`]) and bus.
     pub class: u64,
-    pub key: FilterKey,
 }
 
 /// One playing zone. Plain data; the engine owns the storage.
@@ -990,7 +990,6 @@ impl Voice {
             declick: declick.then_some(end),
             weights: [0.0; 2],
             class: 0,
-            key: FilterKey::default(),
         };
         // A filter held all block is linear and time-invariant: voices of
         // any group with it at the same settings can share it.
@@ -999,10 +998,7 @@ impl Voice {
             Some(_) if muted => None,
             Some(f) => {
                 self.filter.follow(f, &group.mods, &inputs, n, cx.rate);
-                self.filter.key(f, &group.mods, cx.rate).map(|key| {
-                    plan.key = key;
-                    key.hash() ^ bus.map_or(0, |b| u64::from(b) + 1) << 48
-                })
+                self.filter.hold(f, &group.mods, cx.rate).map(|hash| hash ^ bus.map_or(0, |b| u64::from(b) + 1) << 48)
             }
         };
         let mut lane = None;
