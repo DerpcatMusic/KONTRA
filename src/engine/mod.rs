@@ -18,6 +18,7 @@ mod map;
 pub mod overrides;
 mod params;
 mod rack;
+mod residency;
 mod script;
 mod stream;
 mod voice;
@@ -25,6 +26,7 @@ mod voice;
 pub(crate) use bank::parallel;
 pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
+pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
@@ -34,6 +36,7 @@ pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 use crate::fx::FxProcessor;
 use crate::ksp::Runtime;
 use map::FOREVER;
+use std::sync::atomic::Ordering;
 use params::{Address, GroupPar, Write};
 use script::{Command, Host};
 use stream::Slot;
@@ -256,6 +259,30 @@ impl Engine {
         self.player.touch();
         self.player.rebind(old, &bank);
         self.bank.replace(bank)
+    }
+
+    /// Swap in heads the smart memory resized (see `residency.rs`), each
+    /// only while no voice plays its sample: a voice reads its sample's
+    /// head by index and limit. Applied heads then hold the replaced data,
+    /// to free off the audio thread; the rest wait for a later block.
+    pub fn swap_heads(&mut self, heads: &mut [residency::Head]) {
+        let Some(bank) = self.bank.as_deref_mut() else {
+            return;
+        };
+        let in_use = &mut self.player.in_use;
+        in_use.clear();
+        in_use.extend(self.player.voices.iter().map(|v| v.sample));
+        in_use.sort_unstable();
+        for head in heads {
+            let sample = head.sample();
+            if let Some(data) = bank.samples.get_mut(sample as usize)
+                && data.streamed
+                && in_use.binary_search(&sample).is_err()
+            {
+                std::mem::swap(&mut data.spans, &mut head.spans);
+                head.applied();
+            }
+        }
     }
 
     /// Install the program effects, built for [`rate`](Self::rate) with
@@ -709,6 +736,8 @@ struct Player {
     voices: Vec<Voice>,
     /// Free stream slots of the current bank.
     free: Vec<u16>,
+    /// Samples voices play, gathered to swap heads safely.
+    in_use: Vec<u32>,
     /// Zones matched by the current note start, with crossfade gains.
     pending: Vec<(u32, f32)>,
     scratch: Scratch,
@@ -755,6 +784,7 @@ impl Player {
         let mut player = Self {
             voices: Vec::with_capacity(MAX_VOICES),
             free: Vec::with_capacity(stream::SLOTS),
+            in_use: Vec::with_capacity(MAX_VOICES),
             pending: Vec::with_capacity(MAX_VOICES),
             scratch: Scratch::default(),
             rate,
@@ -949,6 +979,9 @@ impl Player {
         let group = &bank.groups()[zone.group];
         let settings = &bank.settings[zone.group];
         let sample = &bank.samples[play.sample as usize];
+        // One writer, the audio thread: no read-modify-write needed.
+        let played = &bank.usage[play.sample as usize];
+        played.store(played.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
         self.make_room(bank, settings.voice_group);
 
         let key = if group.key_tracking {

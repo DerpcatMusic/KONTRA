@@ -15,6 +15,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
     let voices = p.shared.voices.load(Ordering::Relaxed);
     let audible = p.shared.audible.load(Ordering::Relaxed);
     let memory: usize = cx.view.parts.iter().map(|v| v.bytes).sum();
+    let freed: u64 = cx.view.parts.iter().map(|v| v.freed).sum();
 
     let loading: Vec<_> = cx
         .view
@@ -121,7 +122,12 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             "{voices} running, {} muted by the script",
             voices.saturating_sub(audible)
         )),
-        stat("RAM", megabytes(memory), "00000 MB"),
+        // Sample heads sized by use and idle stream rings handed back.
+        stat("RAM", megabytes(memory), "00000 MB").tip(format!(
+            "Smart memory: {} resident · {} freed",
+            megabytes(memory),
+            megabytes(freed as usize)
+        )),
         stat("Disk", format!("{disk:.1} MB/s"), "000.0 MB/s"),
         vrule().h(CONTROL - TIGHT),
         cluster(vec![section("Master"), master, meter_bar(level)]).gap(SPACE),

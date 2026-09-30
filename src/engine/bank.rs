@@ -4,6 +4,7 @@ use super::{
     map::{LoopMap, PlayMap},
     filter::GroupFilter,
     params::ModTable,
+    residency::{self, Residency},
     stream::Streamer,
     voice::{Ahdsr, Flex, FlexPoint},
 };
@@ -18,7 +19,7 @@ use std::{
     ops::Range,
     path::PathBuf,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU32, AtomicUsize, Ordering},
     },
 };
@@ -43,7 +44,7 @@ pub const MIN_PRELOAD: u64 = 1024;
 pub const FLOOR_PRELOAD: u64 = 256;
 /// Memory left to the rest of the system when samples load into RAM only:
 /// this much plus an eighth of physical memory.
-const RAM_HEADROOM: usize = 1 << 30;
+pub(super) const RAM_HEADROOM: usize = 1 << 30;
 
 /// Where sample data plays from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -175,6 +176,7 @@ impl Span {
 }
 
 /// Zone data resolved for playback.
+#[derive(Clone, Copy)]
 pub(crate) struct ZonePlay {
     pub sample: u32,
     pub map: PlayMap,
@@ -237,6 +239,11 @@ pub struct Bank {
     pub skipped_zones: usize,
     /// First few reasons for skipped zones.
     pub issues: Vec<String>,
+    /// Note starts per sample, counted by the audio thread for [`Residency`].
+    pub(crate) usage: Arc<[AtomicU32]>,
+    /// Smart memory for this bank's streamed samples, for the loader to take
+    /// ([`Bank::take_residency`]).
+    residency: Option<Box<Residency>>,
 }
 
 /// [`Bank::load_counting`]'s progress once every sample is read.
@@ -354,6 +361,11 @@ impl Bank {
         let (preload, whole, margin, planned) =
             (layout.preload, layout.whole, layout.margin, layout.bytes);
         let (cover, max_cover) = (layout.cover.min(layout.width), layout.width);
+        // Before a sample fails to read drops its zones, while the plays line
+        // up with the plan's.
+        let tracked = ram_only.is_none().then(|| {
+            residency::by_sample(&builder.plays, &builder.zones, &layout.reach, frame_bytes.len())
+        });
         let frames_to_read = (layout.plan.iter())
             .map(|(spans, ..)| spans.iter().map(|r| r.end - r.start).sum::<u64>() as usize)
             .sum();
@@ -404,6 +416,9 @@ impl Bank {
         };
         let mut bank = builder.finish(samples, streamer, bytes)?;
         (bank.preload, bank.planned, bank.cover) = (preload, planned, cover);
+        bank.residency = tracked
+            .and_then(|plays| Residency::new(&bank, plays, &frame_bytes, cover))
+            .map(Box::new);
         let mib = budget >> 20;
         let still = bank.streamed_samples();
         bank.warning = if let Some(needed) = ram_only.filter(|_| still > 0) {
@@ -477,6 +492,11 @@ impl Bank {
         builder.finish(samples, None, bytes)
     }
 
+    /// The smart memory manager for this bank, once (see `residency.rs`).
+    pub fn take_residency(&mut self) -> Option<Box<Residency>> {
+        self.residency.take()
+    }
+
     pub fn groups(&self) -> &[Group] {
         &self.groups
     }
@@ -542,6 +562,8 @@ struct Layout {
     cover: u64,
     /// The widest resident start-offset range any zone asks for.
     width: u64,
+    /// Per zone, the start offsets kept resident.
+    reach: Vec<(u64, u64)>,
     plan: Vec<Plan>,
     bytes: usize,
 }
@@ -684,6 +706,7 @@ impl Builder {
                 margin: 0,
                 cover,
                 width: reach.iter().map(|(lo, hi)| hi - lo).max().unwrap_or(0),
+                reach: reach.to_vec(),
                 plan,
                 bytes,
             }
@@ -834,6 +857,7 @@ impl Builder {
             .iter()
             .map(|g| !g.muted && (!any_solo || g.soloed))
             .collect();
+        let samples_usage = (0..samples.len()).map(|_| AtomicU32::new(0)).collect();
         let mut key_start = [0u32; 129];
         let mut key_zones = Vec::new();
         for note in 0..128u8 {
@@ -866,6 +890,8 @@ impl Builder {
             bytes,
             skipped_zones: self.issues.skipped,
             issues: self.issues.notes,
+            usage: samples_usage,
+            residency: None,
         })
     }
 }
@@ -919,7 +945,7 @@ fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), 
 /// loops ending within four preloads of the zone start stay resident, so
 /// short sustain loops never touch the disk. Data past the furthest frame
 /// any zone plays is never needed.
-fn spans(plays: &[(&ZonePlay, (u64, u64))], preload: u64, cover: u64) -> Plan {
+pub(super) fn spans(plays: &[(&ZonePlay, (u64, u64))], preload: u64, cover: u64) -> Plan {
     let (mut frames, mut looping, mut any_loop) = (0, false, false);
     let mut ranges = Vec::with_capacity(plays.len());
     for &(play, (lo, hi)) in plays {
@@ -971,7 +997,7 @@ fn spans(plays: &[(&ZonePlay, (u64, u64))], preload: u64, cover: u64) -> Plan {
 }
 
 /// Free (available) and total RAM in bytes, from `/proc/meminfo`.
-fn ram_free() -> Option<(usize, usize)> {
+pub(super) fn ram_free() -> Option<(usize, usize)> {
     let info = std::fs::read_to_string("/proc/meminfo").ok()?;
     let field = |name: &str| -> Option<usize> {
         let line = info.lines().find(|l| l.starts_with(name))?;

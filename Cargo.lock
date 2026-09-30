@@ -1525,6 +1525,7 @@ dependencies = [
  "crossbeam-queue",
  "dirs",
  "hound",
+ "libc",
  "moose",
  "moose-clap",
  "moose-standalone",
