@@ -30,9 +30,14 @@ struct Partitioned {
     ir: Vec<Complex32>,
     /// Ring of input block spectra, `bins` each; `current` is being filled.
     segments: Vec<Complex32>,
+    /// Which `segments` are all zeros (silent input): their products are
+    /// skipped, which leaves every sum as it was.
+    silent: Vec<bool>,
     current: usize,
     /// Sum of all but the newest partition, fixed for the current block.
     history: Vec<Complex32>,
+    /// Only silent segments went into `history`: it is all zeros.
+    quiet_history: bool,
     /// Next partition to add to `history`; lets callers spread the work.
     pending: usize,
     spectrum: Vec<Complex32>,
@@ -68,8 +73,10 @@ impl Partitioned {
             ifft,
             ir: spectra,
             segments: vec![Complex32::default(); count * bins],
+            silent: vec![true; count],
             current: 0,
             history: vec![Complex32::default(); bins],
+            quiet_history: true,
             pending: 1,
             spectrum: vec![Complex32::default(); bins],
             time,
@@ -83,7 +90,9 @@ impl Partitioned {
 
     fn clear(&mut self) {
         self.segments.fill(Complex32::default());
+        self.silent.fill(true);
         self.history.fill(Complex32::default());
+        self.quiet_history = true;
         self.input.fill(0.0);
         self.overlap.fill(0.0);
         (self.current, self.pending, self.fill) = (0, 1, 0);
@@ -99,33 +108,41 @@ impl Partitioned {
         while done < input.len() {
             let start = self.fill;
             let n = (input.len() - done).min(self.block - start);
-            self.input[start..start + n].copy_from_slice(&input[done..done + n]);
+            let fresh = &input[done..done + n];
+            self.input[start..start + n].copy_from_slice(fresh);
 
-            self.time[..self.block].copy_from_slice(&self.input);
-            self.time[self.block..].fill(0.0);
             let current = self.current * bins;
-            let _ = self.fft.process_with_scratch(
-                &mut self.time,
-                &mut self.segments[current..current + bins],
-                &mut self.scratch,
-            );
+            let segment = &mut self.segments[current..current + bins];
+            // The spectrum of a silent block is all zeros.
+            if self.input[..start + n].iter().any(|&x| x != 0.0) {
+                self.time[..self.block].copy_from_slice(&self.input);
+                self.time[self.block..].fill(0.0);
+                let _ = self.fft.process_with_scratch(&mut self.time, segment, &mut self.scratch);
+                self.silent[self.current] = false;
+            } else if !self.silent[self.current] {
+                segment.fill(Complex32::default());
+                self.silent[self.current] = true;
+            }
 
             if start == 0 {
                 self.accumulate(count);
             }
-            self.spectrum.copy_from_slice(&self.history);
-            mac(
-                &mut self.spectrum,
-                &self.ir[..bins],
-                &self.segments[current..current + bins],
-            );
-            self.spectrum[0].im = 0.0;
-            self.spectrum[bins - 1].im = 0.0;
-            let _ = self.ifft.process_with_scratch(
-                &mut self.spectrum,
-                &mut self.time,
-                &mut self.scratch,
-            );
+            if self.quiet_history && self.silent[self.current] {
+                // Nothing but zeros to transform back.
+                self.time.fill(0.0);
+            } else {
+                self.spectrum.copy_from_slice(&self.history);
+                if !self.silent[self.current] {
+                    mac(&mut self.spectrum, &self.ir[..bins], &self.segments[current..current + bins]);
+                }
+                self.spectrum[0].im = 0.0;
+                self.spectrum[bins - 1].im = 0.0;
+                let _ = self.ifft.process_with_scratch(
+                    &mut self.spectrum,
+                    &mut self.time,
+                    &mut self.scratch,
+                );
+            }
 
             let out = &mut output[done..done + n];
             let fresh = &self.time[start..start + n];
@@ -141,7 +158,10 @@ impl Partitioned {
                 self.input.fill(0.0);
                 self.overlap.copy_from_slice(&self.time[self.block..]);
                 self.current = (self.current + count - 1) % count;
-                self.history.fill(Complex32::default());
+                if !self.quiet_history {
+                    self.history.fill(Complex32::default());
+                    self.quiet_history = true;
+                }
                 self.pending = 1;
             }
         }
@@ -153,12 +173,16 @@ impl Partitioned {
         let (bins, count) = (self.bins, self.count());
         while self.pending < upto.min(count) {
             let i = self.pending;
-            let seg = (self.current + i) % count * bins;
-            mac(
-                &mut self.history,
-                &self.ir[i * bins..(i + 1) * bins],
-                &self.segments[seg..seg + bins],
-            );
+            let seg = (self.current + i) % count;
+            if !self.silent[seg] {
+                let seg = seg * bins;
+                mac(
+                    &mut self.history,
+                    &self.ir[i * bins..(i + 1) * bins],
+                    &self.segments[seg..seg + bins],
+                );
+                self.quiet_history = false;
+            }
             self.pending += 1;
         }
     }
@@ -333,7 +357,9 @@ mod tests {
             .enumerate()
             .map(|(i, v)| v * (-(i as f32) / 800.0).exp())
             .collect();
-        let x = noise(9000, 3);
+        let mut x = noise(9000, 3);
+        // A silent stretch: its blocks' spectra are skipped, then input resumes.
+        x[2000..6500].fill(0.0);
         let expected = direct(&x, &h);
         for block in [1, 37, 64, 128, 300] {
             let mut conv = Convolver::new(&h, block);
@@ -387,8 +413,10 @@ mod tests {
         }
     }
 
-    /// Cost of a 3 s IR in 128-frame blocks, and a hash of the output bits
-    /// to compare builds: `cargo test --release --lib convolution_speed -- --ignored --nocapture`
+    /// Cost of a 3 s IR in 128-frame blocks, on 4 s of noise and on 1 s of
+    /// noise then 3 s of silence (a ringing tail), and a hash of the output
+    /// bits to compare builds:
+    /// `cargo test --release --lib convolution_speed -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn convolution_speed() {
@@ -397,18 +425,22 @@ mod tests {
             .enumerate()
             .map(|(i, v)| v * (-(i as f32) / 30_000.0).exp())
             .collect();
-        let x = noise(48_000 * 4, 3);
-        let (mut best, mut hash) = (f64::MAX, 0u64);
-        for _ in 0..5 {
-            let mut conv = Convolver::new(&h, 128);
-            let mut y = x.clone();
-            let t = std::time::Instant::now();
-            for chunk in y.chunks_mut(128) {
-                conv.process(chunk);
+        let busy = noise(48_000 * 4, 3);
+        let mut tail = busy.clone();
+        tail[48_000..].fill(0.0);
+        for (name, x) in [("noise", busy), ("tail", tail)] {
+            let (mut best, mut hash) = (f64::MAX, 0u64);
+            for _ in 0..5 {
+                let mut conv = Convolver::new(&h, 128);
+                let mut y = x.clone();
+                let t = std::time::Instant::now();
+                for chunk in y.chunks_mut(128) {
+                    conv.process(chunk);
+                }
+                best = best.min(t.elapsed().as_secs_f64());
+                hash = y.iter().fold(0, |h, v| (h ^ u64::from(v.to_bits())).wrapping_mul(0x100_0000_01b3));
             }
-            best = best.min(t.elapsed().as_secs_f64());
-            hash = y.iter().fold(0, |h, v| (h ^ u64::from(v.to_bits())).wrapping_mul(0x100_0000_01b3));
+            println!("{name}: {:.1} µs per 128-frame block · output hash {hash:016x}", best / (x.len() / 128) as f64 * 1e6);
         }
-        println!("{:.1} µs per 128-frame block · output hash {hash:016x}", best / (x.len() / 128) as f64 * 1e6);
     }
 }
