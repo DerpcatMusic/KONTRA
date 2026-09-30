@@ -30,13 +30,17 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let view = cx.view;
     let multis = cx.state.multis;
     // Which library each file is in, worked out once per scan.
-    let (files, root, kind, grouped) = &mut cx.state.libraries;
-    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &view.files)) || *root != view.root || *kind != multis {
+    let (files, shelf, kind, grouped) = &mut cx.state.libraries;
+    let scanned = Arc::as_ptr(&view.shelf) as usize;
+    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &view.files)) || *shelf != scanned || *kind != multis {
         let mut by: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for (n, file) in view.files.iter().enumerate().filter(|(_, f)| import::is_multi(f) == multis) {
-            by.entry(super::library_of(&view.root, file)).or_default().push(n);
+            let library = super::library_of(&view.shelf, file);
+            if !library.is_empty() {
+                by.entry(library).or_default().push(n);
+            }
         }
-        (*files, *root, *kind, *grouped) = (Arc::downgrade(&view.files), view.root.clone(), multis, Arc::new(by));
+        (*files, *shelf, *kind, *grouped) = (Arc::downgrade(&view.files), scanned, multis, Arc::new(by));
     }
     let libraries: BTreeMap<String, Vec<&PathBuf>> = grouped
         .iter()
@@ -64,6 +68,10 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     if hide {
         cx.state.browser = false;
     }
+    let (add, add_el) = icon_button(ui, "libraries-add", Icon::Plus, "Add libraries, manage their folders", false);
+    if add {
+        menu::open_under(ui, cx, menu::Target::Libraries, "libraries-add");
+    }
     let mut kinds = Vec::new();
     for (multi, label, id) in [
         (false, "Instruments", "picker-instruments"),
@@ -84,6 +92,9 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     for (idx, name) in libraries.keys().enumerate() {
         sources.push((format!("library-{idx}"), Source::Library(name.clone())));
     }
+    // Which folder each row shows, for a picture dropped on one.
+    *super::lock(&cx.state.picker.rows) =
+        libraries.keys().map(|name| view.shelf.named(name).map(|l| l.dir.clone())).collect();
     if cx.state.source.as_ref().is_some_and(|s| !sources.iter().any(|(_, t)| t == s)) {
         cx.state.source = None;
     }
@@ -101,6 +112,9 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             cx.state.source = Some(source.clone());
             cx.state.cursor = None;
             enter = true;
+        }
+        if let (true, Source::Library(name)) = (r.clicked_with(Button::Secondary), source) {
+            menu::open(ui, cx, menu::Target::Library(name.clone()));
         }
         if ui.focused(id.as_str()) {
             let step = ui.shortcuts().iter().fold(0i32, |at, k| match k.key {
@@ -134,19 +148,22 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             Source::Library(name) => loading.get(name).map(|(sum, n)| sum / *n as f64),
             _ => None,
         };
-        rows.push(source_row(id, label, count, thumb, chosen, progress));
+        let about = match source {
+            Source::Library(name) => view.shelf.named(name).map(about),
+            _ => None,
+        };
+        rows.push(source_row(id, label, count, thumb, chosen, progress, about));
         if n == 1 {
             rows.push(rule().pad((TIGHT, INSET)));
         }
     }
-    if libraries.is_empty() {
-        rows.push(hint(if view.files.is_empty() {
-            "No libraries found. Choose the folder that holds your Kontakt libraries from the menu (top right)."
-        } else if multis {
-            "No multis in these libraries."
+    let scanning = cx.p.shared.libraries.scanning();
+    if libraries.is_empty() && scanning.is_none() {
+        if view.files.is_empty() {
+            rows.push(empty_state(ui, cx));
         } else {
-            "No instruments in these libraries."
-        }));
+            rows.push(hint(if multis { "No multis in these libraries." } else { "No instruments in these libraries." }));
+        }
     }
 
     // The lower pane: the chosen source's presets, the search filtering them.
@@ -168,8 +185,9 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             "Presets you open show up here."
         }
         Some(Source::Library(name)) => {
+            let dir = view.shelf.named(name).map(|l| l.dir.clone()).unwrap_or_default();
             for path in libraries[name].iter().filter(|p| matches(p)) {
-                push(subfolder(&view.root, name, path), (*path).clone());
+                push(subfolder(&dir, path), (*path).clone());
             }
             "Nothing here matches that search."
         }
@@ -184,6 +202,12 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         None => "Choose a library above, or search them all.",
     };
     let mut items = Vec::new();
+    if let Some(Source::Library(name)) = &cx.state.source
+        && let Some(library) = view.shelf.named(name)
+    {
+        let size = cx.p.shared.libraries.size(&library.dir);
+        items.push(library_heading(library, size));
+    }
     let mut listed: Vec<PathBuf> = Vec::new();
     for (group, paths) in groups {
         let mut section = Vec::new();
@@ -234,6 +258,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     cx.state.pane = ui.focus_key().and_then(pane_of);
 
+    let scan_line = scan_line(ui, cx, scanning);
     let split = split_divider(ui, cx);
     let source_key = match &cx.state.source {
         Some(Source::Library(name)) => name.as_str(),
@@ -245,9 +270,10 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     col![
         section_bar(
             "Browser",
-            vec![caption(listed.len().to_string()).text_size(SMALL).fill(Role::Dim), hide_el]
+            vec![caption(listed.len().to_string()).text_size(SMALL).fill(Role::Dim), add_el, hide_el]
         ),
         row(kinds).gap(INSET + TIGHT).pad(edges(0., INSET, 0., INSET)).shrink(0),
+        scan_line,
         rule(),
         col(rows)
             .gap(0)
@@ -308,7 +334,15 @@ fn symbol(icon: Icon) -> El {
 /// One entry of the upper pane: an accent edge when chosen, the thumbnail,
 /// the name, how many presets; while one of its instruments loads, how far
 /// it is, and a thin bar under the name filling with it.
-fn source_row(id: &str, label: String, count: usize, thumb: El, chosen: bool, loading: Option<f64>) -> El {
+fn source_row(
+    id: &str,
+    label: String,
+    count: usize,
+    thumb: El,
+    chosen: bool,
+    loading: Option<f64>,
+    about: Option<String>,
+) -> El {
     let name = body(label.clone())
         .text_size(TEXT)
         .fill(if chosen || loading.is_some() { Role::Ink } else { Role::Dim })
@@ -335,10 +369,93 @@ fn source_row(id: &str, label: String, count: usize, thumb: El, chosen: bool, lo
     .focusable()
     .a11y(A11y::Button)
     .named(named)
-    .tip(if chosen { "Click again to search every library" } else { "Show its presets below" })
+    .tip({
+        let verb = if chosen { "Click again to search every library" } else { "Show its presets below" };
+        match about {
+            Some(about) => format!("{about}\n{verb}, right-click for its cover"),
+            None => verb.to_owned(),
+        }
+    })
     .id(id.to_owned())
     .shrink(0);
     interactive(el, chosen)
+}
+
+/// A library's tooltip: its vendor, and whether it has a library file or
+/// was recognized by its folders.
+fn about(library: &crate::library::Library) -> String {
+    let mut out = library_label(&library.name);
+    if !library.vendor.is_empty() {
+        out += &format!(" by {}", library.vendor);
+    }
+    out += if library.registered { "\nHas a library file" } else { "\nFound by its folders, no library file" };
+    out
+}
+
+/// The chosen library over its presets: its name, vendor, how many
+/// instruments and multis, and its size on disk once measured.
+fn library_heading(library: &crate::library::Library, size: Option<u64>) -> El {
+    let plural = |n: usize, one: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") };
+    let mut facts = vec![plural(library.instruments, "instrument")];
+    if library.multis > 0 {
+        facts.push(plural(library.multis, "multi"));
+    }
+    facts.push(match size {
+        Some(bytes) if bytes >= 1 << 30 => format!("{:.1} GB", bytes as f64 / f64::from(1 << 30)),
+        Some(bytes) => format!("{:.0} MB", bytes as f64 / f64::from(1 << 20)),
+        None => "measuring size".into(),
+    });
+    let mut lines = vec![body(library_label(&library.name)).text_size(TEXT).lines(1).min_w(0)];
+    if !library.vendor.is_empty() {
+        lines.push(caption(library.vendor.clone()).fill(Role::Dim).lines(1).min_w(0));
+    }
+    lines.push(caption(facts.join(" · ")).fill(Role::Dim).lines(1).min_w(0));
+    col(lines).gap(2).align(Align::Start).pad(edges(TIGHT, INSET, SPACE, INSET)).shrink(0)
+}
+
+/// Under the tabs while libraries are looked for: how far, and a stop.
+fn scan_line(ui: &mut Ui, cx: &mut Cx, scanning: Option<(usize, usize)>) -> El {
+    let Some((folders, found)) = scanning else {
+        return block(0, 0);
+    };
+    let (stop, stop_el) = icon_button(ui, "scan-stop", Icon::Close, "Stop scanning", false);
+    if stop {
+        cx.p.shared.libraries.cancel();
+    }
+    let found = if found == 1 { "1 library".to_owned() } else { format!("{found} libraries") };
+    row![
+        caption(format!("Scanning · {folders} folders · {found}")).fill(Role::Dim).lines(1).flex(1).min_w(0),
+        stop_el
+    ]
+    .gap(SPACE)
+    .align(Align::Center)
+    .pad(edges(TIGHT, SPACE, 0., INSET))
+    .shrink(0)
+    .named("Library scan progress")
+}
+
+/// No libraries yet: how to add them, and the two ways to.
+fn empty_state(ui: &mut Ui, cx: &mut Cx) -> El {
+    let (many, many_el) = action(ui, "empty-add-many", "Add folder of libraries…", false);
+    let (one, one_el) = action(ui, "empty-add-one", "Add library folder…", false);
+    if many || one {
+        super::header::add_folder(cx, one);
+    }
+    col![
+        body("No libraries yet").text_size(TEXT).lines(1),
+        caption(
+            "Add the folder that holds your Kontakt libraries: each library in it is found, \
+             with or without a library file. Or add one library's own folder."
+        )
+        .fill(Role::Dim)
+        .lines(5),
+        many_el,
+        one_el,
+    ]
+    .gap(SPACE)
+    .align(Align::Start)
+    .pad(edges(SPACE, INSET, SPACE, INSET))
+    .shrink(0)
 }
 
 /// A thin track filling with the accent to `done` (0..1).
@@ -572,10 +689,8 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
 }
 
 /// The folders between a library and a preset, without "Instruments"/"Multis".
-fn subfolder(root: &str, library: &str, path: &Path) -> String {
-    let folder = path
-        .parent()
-        .and_then(|p| p.strip_prefix(Path::new(root).join(library)).ok());
+fn subfolder(library: &Path, path: &Path) -> String {
+    let folder = path.parent().and_then(|p| p.strip_prefix(library).ok());
     folder
         .into_iter()
         .flat_map(|f| f.components())

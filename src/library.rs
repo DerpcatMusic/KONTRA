@@ -117,7 +117,8 @@ pub struct Library {
 #[derive(Default, Debug)]
 pub struct Shelf {
     pub libraries: Vec<Library>,
-    by_dir: HashMap<PathBuf, usize>,
+    /// By folder, as text: looking a path up slices it, never parses it.
+    by_dir: HashMap<String, usize>,
     by_name: HashMap<String, usize>,
     /// Libraries found in each root, in the order of the roots.
     pub per_root: Vec<usize>,
@@ -141,14 +142,25 @@ impl Shelf {
             taken.insert(name.clone());
             library.name = name;
         }
-        let by_dir = libraries.iter().enumerate().map(|(n, l)| (l.dir.clone(), n)).collect();
+        let by_dir = (libraries.iter().enumerate())
+            .map(|(n, l)| (l.dir.to_string_lossy().trim_end_matches(['/', '\\']).to_owned(), n))
+            .collect();
         let by_name = libraries.iter().enumerate().map(|(n, l)| (l.name.clone(), n)).collect();
         Self { libraries, by_dir, by_name, per_root: Vec::new() }
     }
 
     /// The library `path` is in: the nearest library folder above it.
+    /// String slicing, not `Path` parsing: the browser asks for every preset
+    /// on each rebuild.
     pub fn of(&self, path: &Path) -> Option<&Library> {
-        path.ancestors().skip(1).find_map(|dir| self.by_dir.get(dir)).map(|&n| &self.libraries[n])
+        let mut at = path.to_str()?;
+        while let Some(cut) = at.rfind(['/', '\\']) {
+            at = &at[..cut];
+            if let Some(&n) = self.by_dir.get(at.trim_end_matches(['/', '\\'])) {
+                return Some(&self.libraries[n]);
+            }
+        }
+        None
     }
 
     pub fn named(&self, name: &str) -> Option<&Library> {
@@ -293,6 +305,11 @@ fn visit(dir: &Path, depth: usize, vendor: Option<String>, out: &mut Vec<Candida
             visit(folder, depth + 1, vendor.clone(), out, progress);
         }
     }
+}
+
+/// FNV-1a: the same on every machine and every run.
+fn fnv(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
 }
 
 fn file_name(path: &Path) -> String {
@@ -532,6 +549,43 @@ impl Scanner {
         self.rescan();
     }
 
+    /// Show `picture` (PNG or JPEG) as the cover of the library in `dir`:
+    /// copied into the app's data folder, so it stays when the original moves.
+    pub fn set_artwork(&self, dir: &Path, picture: &Path) -> Result<(), String> {
+        let ext = picture.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg") {
+            return Err("Choose a PNG or JPEG picture".into());
+        }
+        let size = std::fs::metadata(picture).map_err(|e| e.to_string())?.len();
+        if size > 32 << 20 {
+            return Err("The picture is over 32 MB".into());
+        }
+        let folder = data_dir().ok_or("No app data folder")?.join("artwork");
+        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        let file = folder.join(format!("{:016x}-{stamp}.{ext}", fnv(&dir.to_string_lossy())));
+        std::fs::copy(picture, &file).map_err(|e| e.to_string())?;
+        self.set_cover(dir, Some(Cover::Custom { file: file.to_string_lossy().into_owned(), stamp }));
+        Ok(())
+    }
+
+    /// The generated cover (`Some(Cover::Generated)`), or back to the
+    /// library's own artwork (`None`). A picture chosen before is deleted.
+    pub fn set_cover(&self, dir: &Path, cover: Option<Cover>) {
+        let key = dir.to_string_lossy().into_owned();
+        self.edit(|s| {
+            let old = match cover {
+                Some(cover) => s.covers.insert(key, cover),
+                None => s.covers.remove(&key),
+            };
+            if let Some(Cover::Custom { file, .. }) = old {
+                let _ = std::fs::remove_file(file);
+            }
+        });
+    }
+
     /// Ask for a new scan; the one running stops.
     pub fn rescan(&self) {
         self.wanted.fetch_add(1, Ordering::AcqRel);
@@ -589,6 +643,7 @@ impl Scanner {
             roots.push(Root { path: multis.to_string_lossy().into_owned(), single: true });
         }
         let done = self.done.clone();
+        let nothing = roots.is_empty();
         let work = {
             let (progress, done, stamp) = (progress.clone(), done.clone(), self.stamp.clone());
             move || {
@@ -616,7 +671,7 @@ impl Scanner {
             }
         };
         // Nothing to look through: done at once, no thread.
-        if roots.is_empty() {
+        if nothing {
             work();
         } else if std::thread::Builder::new().name("kontra-library-scan".into()).spawn(work).is_err() {
             progress.running.store(false, Ordering::Relaxed);

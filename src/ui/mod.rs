@@ -22,6 +22,7 @@ mod art;
 mod browser;
 mod chain;
 mod computer;
+mod cover;
 mod editor;
 mod header;
 mod instrument;
@@ -57,13 +58,13 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let picker = Arc::new(picker::Picker::default());
     let art = Arc::new(art::Art::default());
     let build = build(&params, meters.clone(), computer.clone(), picker.clone(), art.clone());
-    let drop_params = params.clone();
+    let (drop_params, drop_picker) = (params.clone(), picker.clone());
     let (cancel_params, cancel_computer) = (params.clone(), computer.clone());
     let (key_params, key_computer) = (params.clone(), computer.clone());
     let watch_params = params.clone();
     let mut watch = Watch::default();
     MuiEditor::new(params, theme::ui(), (1180, 760), build)
-        .on_files(move |ui, at, paths, dropped| native_files(&drop_params, ui, at, paths, dropped))
+        .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, ui, at, paths, dropped))
         .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready())
@@ -181,16 +182,13 @@ impl Watch {
         }
         computer.octave.load(Ordering::Relaxed).hash(&mut h);
         computer.velocity.load(Ordering::Relaxed).hash(&mut h);
+        // A scan's progress, a size measured, a setting changed.
+        p.shared.libraries.stamp().hash(&mut h);
         let (loading, pending) = {
             let view = lock(&p.shared.view);
             fingerprint(&view, &mut h);
             let selection = read(&p.selection);
-            let root = if selection.root.is_empty() {
-                import::LIBRARY_ROOT
-            } else {
-                &selection.root
-            };
-            let pending = view.root != root
+            let pending = view.scanned != p.shared.libraries.wanted()
                 || lock(&p.shared.multi_request).is_some()
                 || (0..RACK_SLOTS).any(|n| {
                     let (path, program) = selection
@@ -268,7 +266,7 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     fn at<T>(a: &Option<Arc<T>>) -> usize {
         a.as_ref().map_or(0, |a| Arc::as_ptr(a) as *const () as usize)
     }
-    (&view.status, &view.multi_status, &view.root).hash(h);
+    (&view.status, &view.multi_status, view.scanned).hash(h);
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
         (v.loading, v.bytes, &v.status, v.program, v.interface_status.len()).hash(h);
@@ -357,8 +355,8 @@ struct EditorState {
     art: Arc<art::Art>,
     /// The keys the selected part's instrument maps, and which instrument.
     mapped: (std::sync::Weak<import::Instrument>, [bool; 128]),
-    /// The browser's files by library: of which scan, root and kind.
-    libraries: (std::sync::Weak<Vec<PathBuf>>, String, bool, Arc<Libraries>),
+    /// The browser's files by library: of which scan, shelf and kind.
+    libraries: (std::sync::Weak<Vec<PathBuf>>, usize, bool, Arc<Libraries>),
     /// How far the rack is scrolled (where it glides to), a part to scroll
     /// to once it is laid out, and a part's height while its edge is dragged.
     rack_y: f64,
@@ -368,8 +366,8 @@ struct EditorState {
     resizing: Option<(usize, f64)>,
     /// Each part's notices and controls at their full height, as last laid out.
     bodies: HashMap<usize, f64>,
-    /// Each preset's neighbors in its library folder, of which scan and root.
-    neighbors: (std::sync::Weak<Vec<PathBuf>>, String, HashMap<String, [Option<String>; 2]>),
+    /// Each preset's neighbors in its library folder, of which scan and shelf.
+    neighbors: (std::sync::Weak<Vec<PathBuf>>, usize, HashMap<String, [Option<String>; 2]>),
     /// Each part's instrument and the keys it maps, for the keyboard's range strips.
     ranges: HashMap<usize, (std::sync::Weak<import::Instrument>, [bool; 128])>,
     /// Each part's performance view as last read.
@@ -424,6 +422,8 @@ type Libraries = std::collections::BTreeMap<String, Vec<usize>>;
 struct Cx<'a> {
     p: &'a Arc<SamplerParams>,
     view: &'a View,
+    /// The app's settings as this frame began: library folders and covers.
+    settings: Arc<crate::library::Settings>,
     selection: Selection,
     state: &'a mut EditorState,
 }
@@ -436,8 +436,20 @@ enum RackDrag {
 
 impl Cx<'_> {
     /// `library`'s artwork made into what the editor shows, once it is.
+    /// Its own artwork, unless the player chose a picture or the generated
+    /// cover for it; the generated cover when it has none.
     fn looks(&self, library: &str) -> Option<Arc<art::Looks>> {
-        self.state.art.get(library, self.view.artwork.get(library)?)
+        let found = self.view.shelf.named(library)?;
+        let artwork = self.view.artwork.get(library).cloned();
+        let cover = || cover::Spec::new(&found.name, &found.vendor, found.hue);
+        let dir = found.dir.to_string_lossy();
+        let source = match (self.settings.covers.get(dir.as_ref()), artwork) {
+            (Some(crate::library::Cover::Custom { file, stamp }), _) => art::Source::File(file.into(), *stamp),
+            (Some(crate::library::Cover::Generated), artwork) => art::Source::Cover(cover(), artwork),
+            (None, None) => art::Source::Cover(cover(), None),
+            (None, Some(image)) => art::Source::Image(image),
+        };
+        self.state.art.get(library, source)
     }
 
     /// `library`'s color: its artwork's dominant hue at a fixed, quiet
@@ -453,9 +465,9 @@ impl Cx<'_> {
         !self.selection.sharp_artwork
     }
 
-    /// The library folder a preset lives in, relative to the scanned root.
+    /// The library a preset lives in, by name.
     fn library_of(&self, path: &Path) -> String {
-        library_of(&self.view.root, path)
+        library_of(&self.view.shelf, path)
     }
 
     fn part_view(&self) -> &PartView {
@@ -600,15 +612,9 @@ impl Cx<'_> {
     }
 }
 
-/// String slicing, not `Path::strip_prefix`: the browser asks for every
-/// preset on each rebuild, and component parsing was most of an idle frame.
-fn library_of(root: &str, path: &Path) -> String {
-    path.to_str()
-        .and_then(|p| p.strip_prefix(root.trim_end_matches('/')))
-        .and_then(|rest| rest.strip_prefix('/'))
-        .and_then(|rest| rest.split('/').find(|c| !c.is_empty()))
-        .unwrap_or_default()
-        .to_owned()
+/// The name of the library `path` is in; empty outside every library.
+fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
+    shelf.of(path).map(|l| l.name.clone()).unwrap_or_default()
 }
 
 /// Put `part` in the first empty slot; `None` when the rack is full.
@@ -685,7 +691,36 @@ fn sanitize(selection: &mut Selection) {
 
 /// Files dragged in from the desktop: `.nki` into the slot under the pointer
 /// or free slots, one `.nkm` replaces the rack. Returns whether they are accepted.
-fn native_files(p: &SamplerParams, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> bool {
+fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> bool {
+    let inside = |id: &str| {
+        ui.scene().and_then(|s| s.surface(id)).is_some_and(|s| {
+            let r = s.frame;
+            at.x >= r.x && at.x < r.x + r.size.width && at.y >= r.y && at.y < r.y + r.size.height
+        })
+    };
+    // A picture on a library in the browser becomes its cover.
+    let picture = |p: &PathBuf| {
+        p.extension().is_some_and(|e| ["png", "jpg", "jpeg"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+    };
+    if paths.len() == 1 && picture(&paths[0]) {
+        let rows = lock(&picker.rows).clone();
+        let Some(library) = (rows.into_iter().enumerate())
+            .find_map(|(n, dir)| dir.filter(|_| inside(&format!("library-{n}"))))
+        else {
+            return false;
+        };
+        if dropped {
+            let _ = p.shared.libraries.set_artwork(&library, &paths[0]);
+        }
+        return true;
+    }
+    // A folder dropped on the browser is a folder of libraries to add.
+    if paths.len() == 1 && paths[0].is_dir() && inside("browser") {
+        if dropped {
+            p.shared.libraries.add_root(&paths[0], false);
+        }
+        return true;
+    }
     if paths.len() == 1 && import::is_multi(&paths[0]) {
         if dropped {
             p.shared.queue_multi(paths[0].to_string_lossy().into());
@@ -697,12 +732,6 @@ fn native_files(p: &SamplerParams, ui: &Ui, at: Point, paths: &[PathBuf], droppe
         return false;
     }
     let mut selection = write(&p.selection);
-    let inside = |id: &str| {
-        ui.scene().and_then(|s| s.surface(id)).is_some_and(|s| {
-            let r = s.frame;
-            at.x >= r.x && at.x < r.x + r.size.width && at.y >= r.y && at.y < r.y + r.size.height
-        })
-    };
     // A part's header takes the file in place of the part.
     let target = (0..selection.parts.len()).find(|n| inside(&format!("header-{n}")));
     let free = RACK_SLOTS.saturating_sub(
@@ -755,10 +784,6 @@ fn build(
     picker: Arc<picker::Picker>,
     art: Arc<art::Art>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
-    let mut root = read(&params.selection).root.clone();
-    if root.is_empty() {
-        root = import::LIBRARY_ROOT.into();
-    }
     let mut state = EditorState {
         search: String::new(),
         source: None,
@@ -783,7 +808,7 @@ fn build(
         selected: 0,
         unselected: false,
         notice: String::new(),
-        root,
+        root: String::new(),
         last_poll: Instant::now() - Duration::from_secs(1),
         meters,
         held: None,
@@ -841,6 +866,7 @@ fn build(
         let mut cx = Cx {
             p: &p,
             view: &view,
+            settings: p.shared.libraries.settings(),
             selection,
             state: &mut state,
         };
@@ -911,11 +937,11 @@ fn build(
 /// to save the rack as a multi.
 fn picked(cx: &mut Cx) {
     match cx.state.picker.take() {
-        Some(picker::Picked::Folder(path)) => {
-            let root = path.to_string_lossy().into_owned();
-            cx.state.root = root.clone();
-            cx.selection.root = root;
-            lock(&cx.p.shared.view).root.clear();
+        Some(picker::Picked::Folder(path, single)) => cx.p.shared.libraries.add_root(&path, single),
+        Some(picker::Picked::Artwork { library, picture }) => {
+            if let Err(e) = cx.p.shared.libraries.set_artwork(&library, &picture) {
+                cx.state.notice = format!("The picture was not used: {e}");
+            }
         }
         Some(picker::Picked::Multi(mut path)) => {
             if !import::is_saved_multi(&path) {

@@ -1,5 +1,5 @@
 use crate::articulate::{self, Articulate, In, Mpe, Route, Router};
-use crate::artwork;
+use crate::{artwork, library};
 use crate::{
     engine::{
         BUSES, Bank, BusControls, Engine, Heads, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Rack, Residency,
@@ -179,6 +179,8 @@ impl Bus {
 }
 #[derive(State, Default, Clone, PartialEq)]
 pub struct Selection {
+    /// The library folder projects once kept; the app's settings keep the
+    /// library folders now ([`library::Settings`]). Kept so old projects open.
     pub root: String,
     pub parts: Vec<Part>,
     pub order: Vec<u32>,
@@ -339,6 +341,8 @@ pub struct Shared {
     pub(crate) panic: AtomicBool,
     pub(crate) midi_thru: AtomicBool,
     pub(crate) multi_request: Mutex<Option<String>>,
+    /// The app's library folders and the scan of them.
+    pub(crate) libraries: library::Scanner,
     pub(crate) view: Mutex<View>,
     /// Voices sounding across the rack, reported by the audio thread.
     pub(crate) voices: AtomicU64,
@@ -423,7 +427,9 @@ pub(crate) struct View {
     pub(crate) script_epoch: u64,
     pub(crate) multi_status: String,
     pub(crate) artwork: HashMap<String, Arc<Image>>,
-    pub(crate) root: String,
+    /// The libraries found, and which scan found them ([`library::Scanner::wanted`]).
+    pub(crate) shelf: Arc<library::Shelf>,
+    pub(crate) scanned: u64,
     pub(crate) files: Arc<Vec<PathBuf>>,
     pub(crate) parts: [PartView; RACK_SLOTS],
     pub(crate) status: String,
@@ -467,6 +473,7 @@ impl Default for Shared {
             panic: AtomicBool::new(false),
             midi_thru: AtomicBool::new(false),
             multi_request: Mutex::new(None),
+            libraries: library::Scanner::default(),
             voices: AtomicU64::new(0),
             audible: AtomicU64::new(0),
             watched: AtomicBool::new(false),
@@ -484,7 +491,8 @@ impl Default for Shared {
                 script_epoch: 0,
                 multi_status: String::new(),
                 artwork: Default::default(),
-                root: String::new(),
+                shelf: Arc::default(),
+                scanned: 0,
                 files: Arc::default(),
                 parts: std::array::from_fn(|_| PartView::default()),
                 status: "Choose a library and select a preset".into(),
@@ -988,30 +996,19 @@ impl BackgroundTask for Load {
             .shared
             .midi_thru
             .store(selection.midi_thru, Ordering::Release);
-        let root = if selection.root.is_empty() {
-            import::LIBRARY_ROOT
-        } else {
-            &selection.root
-        };
-        if params.shared.view.lock().unwrap().root != root {
-            let result = import::presets(Path::new(root));
-            let artwork = result
-                .as_ref()
-                .ok()
-                .map(|f| artwork::scan(Path::new(root), f))
-                .unwrap_or_default();
+        // A finished library scan replaces what the browser lists.
+        let installed = params.shared.view.lock().unwrap().scanned;
+        if let Some((generation, scanned)) = params.shared.libraries.poll(installed) {
             let mut view = params.shared.view.lock().unwrap();
-            view.root = root.into();
-            view.artwork = artwork;
-            match result {
-                Ok(files) => {
-                    view.files = Arc::new(files);
-                    view.status = format!("{} presets", view.files.len());
+            view.scanned = generation;
+            match scanned {
+                Some(scanned) => {
+                    view.status = format!("{} libraries · {} presets", scanned.shelf.libraries.len(), scanned.files.len());
+                    view.shelf = scanned.shelf;
+                    view.files = scanned.files;
+                    view.artwork = scanned.artwork;
                 }
-                Err(e) => {
-                    view.files = Arc::default();
-                    view.status = format!("Scan failed: {e:#}");
-                }
+                None => view.status = "Library scan canceled".into(),
             }
         }
         route(params);
@@ -2941,7 +2938,6 @@ mod tests {
                 ..Default::default()
             },
         ];
-        p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
         Load.run(&p);
         assert!(
             p.shared.view.lock().unwrap().parts[0].wallpaper.is_some(),
@@ -3056,7 +3052,6 @@ mod tests {
     #[ignore = "requires the owner's local Chorus multi"]
     fn real_multi_opens_embedded_instruments() {
         let p = SamplerParams::new();
-        p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
         p.shared.queue_multi(format!(
             "{}/Audio Imperia CHORUS/Multis/10 Chorus - Ensemble - Traditional Syllables.nkm",
             import::LIBRARY_ROOT
@@ -3099,7 +3094,6 @@ mod tests {
     #[test]
     fn failed_multi_keeps_the_rack() {
         let p = SamplerParams::new();
-        p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
         let before = p.selection.read().unwrap().clone();
         p.shared.queue_multi("/missing.nkm".into());
         Load.run(&p);

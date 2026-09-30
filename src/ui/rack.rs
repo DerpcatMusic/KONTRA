@@ -384,8 +384,9 @@ fn step_preset(cx: &Cx, slot: usize, by: isize) -> Option<String> {
 fn neighbors(cx: &mut Cx, slot: usize) -> [Option<String>; 2] {
     let path = cx.selection.parts[slot].path.clone();
     let (files, root, known) = &mut cx.state.neighbors;
-    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &cx.view.files)) || *root != cx.view.root {
-        (*files, *root) = (Arc::downgrade(&cx.view.files), cx.view.root.clone());
+    let shelf = Arc::as_ptr(&cx.view.shelf) as usize;
+    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &cx.view.files)) || *root != shelf {
+        (*files, *root) = (Arc::downgrade(&cx.view.files), shelf);
         known.clear();
     }
     if let Some(found) = known.get(&path) {

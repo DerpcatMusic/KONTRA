@@ -254,7 +254,7 @@ pub fn render(spec: &Spec, w: u32, h: u32, title: bool) -> Option<Image> {
             }
         }
     }
-    let rgba = text
+    let rgba: Vec<u8> = text
         .coverage()
         .zip(label.coverage())
         .flat_map(|(t, l)| {
