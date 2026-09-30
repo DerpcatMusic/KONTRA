@@ -1011,28 +1011,21 @@ impl Player {
                     }
                 }
             }
-            let live = self
-                .voices
-                .iter()
-                .filter(|v| v.voice_group == Some(group) && !v.fade.dying())
-                .count();
-            if live >= rule.max_voices {
+            let (live, victim) = victim(
+                &self.voices,
+                |v| v.voice_group == Some(group),
+                rule.kill_mode,
+                rule.prefer_released,
+            );
+            if live >= rule.max_voices && let Some(i) = victim {
                 let fade = self.fade_frames(rule.fade);
-                if let Some(i) = victim(
-                    &self.voices,
-                    |v| v.voice_group == Some(group),
-                    rule.kill_mode,
-                    rule.prefer_released,
-                ) {
-                    self.voices[i].fade.start(0.0, fade, true);
-                }
-            }
-        }
-        if self.voices.iter().filter(|v| !v.fade.dying()).count() >= bank.polyphony {
-            let fade = self.fade_frames(STEAL_FADE);
-            if let Some(i) = victim(&self.voices, |_| true, 1, true) {
                 self.voices[i].fade.start(0.0, fade, true);
             }
+        }
+        let (live, victim) = victim(&self.voices, |_| true, 1, true);
+        if live >= bank.polyphony && let Some(i) = victim {
+            let fade = self.fade_frames(STEAL_FADE);
+            self.voices[i].fade.start(0.0, fade, true);
         }
         if self.voices.len() == MAX_VOICES {
             // Storage is full of fading voices: cut the quietest.
@@ -1329,29 +1322,36 @@ fn edge_gain(x: u8, lo: u8, hi: u8, fade_lo: u8, fade_hi: u8) -> f32 {
     ramp(i16::from(x) - i16::from(lo), fade_lo) * ramp(i16::from(hi) - i16::from(x), fade_hi)
 }
 
-/// Voice to steal: kill modes are Kontakt's (0 any, 1 oldest, 2 newest,
-/// 3 highest, 4 lowest); released voices go first when preferred.
+/// Voices `filter` keeps that are not fading out, and the one to steal:
+/// kill modes are Kontakt's (0 any, 1 oldest, 2 newest, 3 highest, 4
+/// lowest); released voices go first when preferred.
 fn victim(
     voices: &[Voice],
     filter: impl Fn(&Voice) -> bool,
     mode: i16,
     prefer_released: bool,
-) -> Option<usize> {
-    voices
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| !v.fade.dying() && filter(v))
-        .min_by_key(|(_, v)| {
-            let rank = u8::from(prefer_released && !v.released);
-            let key = match mode {
-                2 => u64::MAX - v.age,
-                3 => u64::from(127 - v.note),
-                4 => u64::from(v.note),
-                _ => v.age,
-            };
-            (rank, key)
-        })
-        .map(|(i, _)| i)
+) -> (usize, Option<usize>) {
+    // One pass counts and picks: at the voice limit, every note start
+    // scans every voice.
+    let mut live = 0;
+    let mut best: Option<((u8, u64), usize)> = None;
+    for (i, v) in voices.iter().enumerate() {
+        if v.fade.dying() || !filter(v) {
+            continue;
+        }
+        live += 1;
+        let rank = u8::from(prefer_released && !v.released);
+        let key = match mode {
+            2 => u64::MAX - v.age,
+            3 => u64::from(127 - v.note),
+            4 => u64::from(v.note),
+            _ => v.age,
+        };
+        if best.is_none_or(|(b, _)| (rank, key) < b) {
+            best = Some(((rank, key), i));
+        }
+    }
+    (live, best.map(|(_, i)| i))
 }
 
 impl Bank {
