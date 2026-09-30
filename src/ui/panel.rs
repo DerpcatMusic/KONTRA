@@ -79,6 +79,8 @@ pub struct Item {
 /// A titled cluster of controls: columns of rows, left to right, top down.
 #[derive(Clone, Debug)]
 pub struct Section {
+    /// Which band, top down: sections of one band share a line.
+    band: usize,
     title: Option<String>,
     columns: Vec<Vec<Vec<Item>>>,
 }
@@ -381,6 +383,23 @@ fn columns(mut items: Vec<Item>, gap: f64) -> Vec<Vec<Item>> {
     out.into_iter().map(|(_, g)| g).collect()
 }
 
+/// Groups of `items` whose vertical extents touch within `gap`, top down:
+/// bands split only where a gap runs the panel's whole width.
+fn bands(mut items: Vec<Item>, gap: f64) -> Vec<Vec<Item>> {
+    items.sort_by(|a, b| a.at.y.total_cmp(&b.at.y));
+    let mut out: Vec<(f64, Vec<Item>)> = Vec::new();
+    for item in items {
+        match out.last_mut() {
+            Some((bottom, group)) if item.at.y <= *bottom + gap => {
+                *bottom = bottom.max(item.at.bottom());
+                group.push(item);
+            }
+            _ => out.push((item.at.bottom(), vec![item])),
+        }
+    }
+    out.into_iter().map(|(_, g)| g).collect()
+}
+
 /// Which controls share a row: a row of switches, of knobs, of faders or of
 /// fields, never a mix, so each row has one height and one baseline.
 fn kind(face: Face) -> u8 {
@@ -422,9 +441,11 @@ fn rows(mut items: Vec<Item>) -> Vec<Vec<Item>> {
 
 /// The interface's controls, grouped as they were drawn.
 pub fn sections(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec<Section> {
-    columns(items(interface, pictures), SECTION_GAP)
+    bands(items(interface, pictures), SECTION_GAP)
         .into_iter()
-        .map(|mut group| {
+        .enumerate()
+        .flat_map(|(band, items)| columns(items, SECTION_GAP).into_iter().map(move |g| (band, g)))
+        .map(|(band, mut group)| {
             let top = group
                 .iter()
                 .filter(|i| i.face != Face::Text)
@@ -438,6 +459,7 @@ pub fn sections(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>)
                 .map(|(n, _)| n);
             let title = title.map(|n| group.remove(n).name);
             Section {
+                band,
                 title,
                 columns: columns(group, COLUMN_GAP).into_iter().map(rows).collect(),
             }
@@ -446,9 +468,10 @@ pub fn sections(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>)
         .collect()
 }
 
-/// `part`'s script controls, rebuilt: sections side by side, wrapping.
+/// `part`'s script controls, rebuilt: bands top down, each a wrapping line
+/// of sections side by side.
 pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
-    let mut out = Vec::new();
+    let mut bands: Vec<Vec<El>> = Vec::new();
     // Every section opens with a title rule when any has a title, so their
     // first rows share a line.
     let titled = sections.iter().any(|s| s.title.is_some());
@@ -483,7 +506,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
             columns.push(col(lines).gap(SPACE).align(Align::Stretch).shrink(0));
         }
         let body = row(columns).gap(INSET).align(Align::Start).shrink(0);
-        out.push(match (&section.title, titled) {
+        while bands.len() <= section.band {
+            bands.push(Vec::new());
+        }
+        bands[section.band].push(match (&section.title, titled) {
             (Some(t), _) => col![section_title(t), body],
             (None, true) => col![section_title(""), body],
             (None, false) => col![body],
@@ -492,10 +518,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
         .align(Align::Stretch)
         .shrink(0));
     }
-    row(out)
-        .wrap()
-        .gap(INSET * 2.)
-        .line_gap(INSET)
+    col(bands
+        .into_iter()
+        .filter(|b| !b.is_empty())
+        .map(|b| row(b).wrap().gap(INSET * 2.).line_gap(INSET).align(Align::Start).w(Len::Pct(100.)))
+        .collect::<Vec<_>>())
+        .gap(INSET)
         .align(Align::Start)
         .pad(INSET)
         .w(Len::Pct(100.))
@@ -716,7 +744,7 @@ mod tests {
             control("ui_switch", "$port", &with(at(72, 10, 60, 18), &[text("Port")])),
             control("ui_slider", "$vel", &with(at(134, 10, 80, 18), &[text("Vel"), ("PICTURE", Value::Text("K4_SLIDER_1".into()))])),
         ];
-        let interface = Interface { width: 400, height: 60, controls, ..Default::default() };
+        let interface = Interface { width: 400, height: 260, controls, ..Default::default() };
         let s = sections(&interface, &HashMap::new());
         let names: Vec<Vec<&str>> = s
             .iter()
@@ -724,6 +752,11 @@ mod tests {
             .map(|r| r.iter().map(|i| i.name.as_str()).collect())
             .collect();
         assert_eq!(names, [vec!["Legato", "Port"], vec!["Vel"]]);
+        // A knob far below the row is a band of its own, not a column under it.
+        let mut interface = interface;
+        interface.controls.push(control("ui_knob", "$tone", &with(at(20, 200, 32, 40), &[text("Tone")])));
+        let s = sections(&interface, &HashMap::new());
+        assert_eq!(s.iter().map(|s| s.band).collect::<Vec<_>>(), [0, 1]);
     }
 
     #[test]
