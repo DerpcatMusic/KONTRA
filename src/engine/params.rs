@@ -118,7 +118,10 @@ impl Mod {
     /// Advance a live source's lagged `value` over `frames`.
     pub(crate) fn follow(&self, value: &mut f32, input: &Inputs, frames: usize, rate: f32) {
         if let Some((source, _)) = self.route.filter(|(s, _)| s.live()) {
-            *value += (self.shape(input.read(source)) - *value) * lag_factor(self.lag, frames, rate);
+            let x = self.shape(input.read(source));
+            if x != *value {
+                *value += (x - *value) * lag_factor(self.lag, frames, rate);
+            }
         }
     }
 }
@@ -230,7 +233,10 @@ impl ModTable {
             };
             if source.live() {
                 let x = m.shape(input.read(source));
-                *value += (x - *value) * lag_factor(m.lag, frames, rate);
+                // Settled (as a held controller soon is): no step, and no exp.
+                if x != *value {
+                    *value += (x - *value) * lag_factor(m.lag, frames, rate);
+                }
             }
             match target {
                 Target::Volume => {
