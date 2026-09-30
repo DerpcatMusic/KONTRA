@@ -2,7 +2,7 @@ use crate::artwork;
 use crate::{
     engine::{
         BUSES, Bank, BusControls, Engine, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Rack,
-        TUNE_RANGE, load_scripts,
+        Streaming, TUNE_RANGE, load_scripts,
     },
     fx::FxProcessor,
     import::{self, Instrument},
@@ -49,6 +49,25 @@ pub struct Part {
     pub aux: i16,
     /// Level of that send in dB (-60..=6).
     pub aux_gain: f32,
+    /// Where the part's samples play from; `None` follows [`Selection::streaming`].
+    pub streaming: Option<Streaming>,
+}
+impl Part {
+    /// Where the part's samples play from, given the rack's setting.
+    pub fn streaming(&self, rack: Streaming) -> Streaming {
+        self.streaming.unwrap_or(rack)
+    }
+}
+impl StateField for Streaming {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        u8::from(*self == Streaming::RamOnly).write_field(buf);
+    }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        Some(match u8::read_field(cursor)? {
+            1 => Streaming::RamOnly,
+            _ => Streaming::Auto,
+        })
+    }
 }
 impl Default for Part {
     fn default() -> Self {
@@ -70,6 +89,7 @@ impl Default for Part {
             height: 0.,
             aux: -1,
             aux_gain: 0.,
+            streaming: None,
         }
     }
 }
@@ -140,6 +160,9 @@ pub struct Selection {
     pub sticky_off: bool,
     /// Output buses by index; shorter than [`BUSES`] when the rest are default.
     pub buses: Vec<Bus>,
+    /// Where samples play from, for parts that do not choose
+    /// ([`Part::streaming`]); a change reloads the parts it affects.
+    pub streaming: Streaming,
 }
 impl Selection {
     /// Output bus `n`, default when never set.
@@ -255,6 +278,8 @@ pub(crate) struct PartView {
     pub(crate) pictures: Arc<HashMap<String, Arc<artwork::Picture>>>,
     pub(crate) wallpaper_status: String,
     pub(crate) attempted: Option<(String, u32)>,
+    /// How the attempted load placed samples.
+    pub(crate) streaming: Streaming,
     pub(crate) instrument: Option<Arc<Instrument>>,
     pub(crate) status: String,
     pub(crate) active: String,
@@ -747,6 +772,7 @@ impl BackgroundTask for Load {
         for slot in 0..RACK_SLOTS {
             let part = selection.parts.get(slot).cloned().unwrap_or_default();
             let target = (part.path.clone(), part.program);
+            let streaming = part.streaming(selection.streaming);
             // The host restored different script values for a loaded part: rebuild only its scripts.
             let restore = {
                 let view = params.shared.view.lock().unwrap();
@@ -774,10 +800,10 @@ impl BackgroundTask for Load {
             let cached = {
                 let mut view = params.shared.view.lock().unwrap();
                 let v = &mut view.parts[slot];
-                if v.attempted.as_ref() == Some(&target) {
+                if v.attempted.as_ref() == Some(&target) && v.streaming == streaming {
                     continue;
                 }
-                v.attempted = Some(target.clone());
+                (v.attempted, v.streaming) = (Some(target.clone()), streaming);
                 v.status = "Loading samples…".into();
                 params.shared.load_progress[slot].store(0, Ordering::Relaxed);
                 v.loading = true;
@@ -793,6 +819,7 @@ impl BackgroundTask for Load {
             if part.path.is_empty() {
                 params.shared.view.lock().unwrap().parts[slot] = PartView {
                     attempted: Some(target),
+                    streaming,
                     ..Default::default()
                 };
                 let _ = params.shared.ready.force_push((
@@ -896,6 +923,7 @@ impl BackgroundTask for Load {
                 let bank = Box::new(Bank::load_counting(
                     &instrument,
                     budget,
+                    streaming,
                     script.as_deref().map_or(&[], |rt| &rt.init_controllers),
                     &params.shared.load_progress[slot],
                 )?);
@@ -1557,13 +1585,21 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     const FRAMES: usize = 512;
     const RATE: f64 = 48000.;
     let p = Arc::new(SamplerParams::new());
-    p.selection.write().unwrap().parts = paths
+    let ram_only = paths.iter().any(|p| p == "--ram-only");
+    let paths: Vec<_> = paths.iter().filter(|p| *p != "--ram-only").cloned().collect();
+    let paths = &paths[..];
+    let mut selection = p.selection.write().unwrap();
+    if ram_only {
+        selection.streaming = Streaming::RamOnly;
+    }
+    selection.parts = paths
         .iter()
         .map(|path| Part {
             path: path.clone(),
             ..Default::default()
         })
         .collect();
+    drop(selection);
     let mut dsp = Dsp::default();
     let transport = TransportInfo::default();
     let mut data = vec![vec![0f32; FRAMES]; 2 * BUSES];
@@ -1631,6 +1667,9 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         load_start.elapsed().as_secs_f64(),
         cpu_clock(2) - load_cpu
     );
+    for v in &p.shared.view.lock().unwrap().parts[..paths.len()] {
+        println!("  {}", v.status);
+    }
     // Idle again after playing: voices and streams have ended and must cost nothing.
     for (phase, playing) in [("idle", false), ("playing", true), ("after", false)] {
         if phase != "idle" && notes == 0 {
@@ -1791,6 +1830,7 @@ mod tests {
                     path: "second.nki".into(),
                     group: 3,
                     solo: true,
+                    streaming: Some(Streaming::Auto),
                     ..Default::default()
                 },
             ],
@@ -1804,6 +1844,7 @@ mod tests {
             appearance: 2,
             sharp_artwork: true,
             sticky_off: true,
+            streaming: Streaming::RamOnly,
             buses: vec![
                 Bus::default(),
                 Bus {

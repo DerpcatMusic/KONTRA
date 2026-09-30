@@ -2,7 +2,7 @@
 //! asked for, closed by a pick, a click elsewhere or Escape.
 
 use super::{Cx, mixer::{self, Strip}, theme::*};
-use crate::engine::BUSES;
+use crate::engine::{BUSES, Streaming};
 use moose::mui::mui::prelude::*;
 use std::path::Path;
 
@@ -58,6 +58,10 @@ pub enum Command {
     Browser,
     Keyboard,
     Panic,
+    /// Where the rack's samples play from.
+    Streaming(Streaming),
+    /// Where a part's samples play from; `None` follows the rack.
+    PartStreaming(usize, Option<Streaming>),
     /// A part's MIDI channel (-1 omni), its port (0..4), its output bus.
     Channel(usize, i16),
     Port(usize, u8),
@@ -176,6 +180,17 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 check("Solo", part.solo, Command::Solo(slot)),
                 Item::Rule,
             ];
+            // Where its samples play from, the rack's way unless it has its own.
+            let rack = match cx.selection.streaming {
+                Streaming::Auto => "Samples as the rack (streaming)",
+                Streaming::RamOnly => "Samples as the rack (all in RAM)",
+            };
+            items.extend([
+                check(rack, part.streaming.is_none(), Command::PartStreaming(slot, None)),
+                check("Stream from disk", part.streaming == Some(Streaming::Auto), Command::PartStreaming(slot, Some(Streaming::Auto))),
+                check("Load all into RAM", part.streaming == Some(Streaming::RamOnly), Command::PartStreaming(slot, Some(Streaming::RamOnly))),
+                Item::Rule,
+            ]);
             if position.is_some_and(|p| p > 0) {
                 items.push(act("Move up", "", Command::Move(slot, -1)));
             }
@@ -302,6 +317,13 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 items.extend([act("Save multi…", "", Command::SaveMulti), Item::Rule]);
             }
             items.push(act("All notes off", "", Command::Panic));
+            let rack = cx.selection.streaming;
+            items.extend([
+                Item::Rule,
+                Item::Info("Performance".into()),
+                check("Disk streaming: Auto", rack == Streaming::Auto, Command::Streaming(Streaming::Auto)),
+                check("Load all into RAM", rack == Streaming::RamOnly, Command::Streaming(Streaming::RamOnly)),
+            ]);
             items.extend([Item::Rule, Item::Info("Appearance".into())]);
             let now = super::Appearance::of(cx.selection.appearance);
             for (look, label) in [
@@ -494,6 +516,12 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Browser => cx.state.browser ^= true,
         Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::Keyboard => cx.state.keyboard ^= true,
+        Command::Streaming(mode) => cx.selection.streaming = mode,
+        Command::PartStreaming(slot, mode) => {
+            if let Some(part) = cx.selection.parts.get_mut(slot) {
+                part.streaming = mode;
+            }
+        }
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
         Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
         Command::Port(slot, port) => cx.selection.parts[slot].port = port,
