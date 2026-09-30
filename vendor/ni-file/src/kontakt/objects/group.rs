@@ -41,7 +41,25 @@ pub struct GroupParams {
     pub start_criteria: StartCriteriaList,
 }
 
+/// Group private data: 136 records of `(u32 8, u32 flags, u32 0)`, then 24
+/// bytes of unknown state, then the group insert effect rack. Fixed in all
+/// 224,868 local groups (Kontakt 5 to 7).
+const PRIVATE_RECORDS: usize = 136;
+const PRIVATE_TRAILER: usize = 24;
+
 impl Group {
+    /// The group insert effect rack (8 slots), stored in the private data.
+    pub fn insert_fx(&self) -> Result<super::BParamArrayBParFX8, Error> {
+        let data = &self.0.private_data;
+        let records = PRIVATE_RECORDS * 12;
+        if data.len() < records + PRIVATE_TRAILER
+            || data[..records].chunks(12).any(|r| r[..4] != [8, 0, 0, 0])
+        {
+            return Err(Error::Static("Unrecognized group private data"));
+        }
+        super::BParamArrayBParFX8::read(Cursor::new(&data[records + PRIVATE_TRAILER..]), 8)
+    }
+
     pub fn params(&self) -> Result<GroupParams, Error> {
         let mut reader = Cursor::new(&self.0.public_data);
 

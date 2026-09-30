@@ -111,7 +111,11 @@ impl Effect {
 
 impl Chain {
     fn read(chunk: &Chunk) -> Result<Self> {
-        let array = BParamArrayBParFX8::try_from(chunk)?;
+        Self::from_array(&BParamArrayBParFX8::try_from(chunk)?)
+    }
+
+    /// A rack from its parameter array (group racks live in private data).
+    pub fn from_array(array: &BParamArrayBParFX8) -> Result<Self> {
         let slots = array
             .items
             .iter()

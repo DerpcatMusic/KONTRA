@@ -3,6 +3,7 @@
 use super::{
     EventId, MAX_BLOCK,
     bank::{Bank, Span},
+    filter::VoiceFilter,
     map::{FOREVER, PlayMap, Run},
     params::{Inputs, VOICE_MODS},
     stream::Slot,
@@ -405,6 +406,8 @@ pub(crate) struct Voice {
     pub pan: f32,
     /// Channel gains reached at the end of the last block.
     pub gains: [f32; 2],
+    /// Group insert filter state (untouched when the group has none).
+    pub filter: VoiceFilter,
 }
 
 /// Borrowed state shared by all voices of one render block.
@@ -439,6 +442,8 @@ pub(crate) struct Scratch {
     pub window: Box<[Frame]>,
     pub amp: [f32; MAX_BLOCK],
     pub flex: [f32; MAX_BLOCK],
+    /// A filtered voice's own output before it joins the mix.
+    pub out: [[f32; MAX_BLOCK]; 2],
 }
 
 impl Default for Scratch {
@@ -447,6 +452,7 @@ impl Default for Scratch {
             window: vec![[0.0; 2]; WINDOW].into_boxed_slice(),
             amp: [0.0; MAX_BLOCK],
             flex: [0.0; MAX_BLOCK],
+            out: [[0.0; MAX_BLOCK]; 2],
         }
     }
 }
@@ -511,17 +517,24 @@ impl Voice {
             (target[0] - self.gains[0]) / n as f32,
             (target[1] - self.gains[1]) / n as f32,
         ];
-        mix(
-            window,
-            base,
-            step,
-            amp,
-            self.gains,
-            delta,
-            &mut left[..n],
-            &mut right[..n],
-        );
+        let [out_l, out_r] = &mut scratch.out;
+        let (l, r) = match &group.filter {
+            Some(_) => {
+                out_l[..n].fill(0.0);
+                out_r[..n].fill(0.0);
+                (&mut out_l[..n], &mut out_r[..n])
+            }
+            None => (&mut left[..n], &mut right[..n]),
+        };
+        mix(window, base, step, amp, self.gains, delta, l, r);
         self.gains = target;
+        if let Some(filter) = &group.filter {
+            let (l, r) = (&mut out_l[..n], &mut out_r[..n]);
+            self.filter
+                .process(filter, &group.mods, &inputs, &mut scratch.flex, l, r, cx.rate);
+            left[..n].iter_mut().zip(l.iter()).for_each(|(o, x)| *o += x);
+            right[..n].iter_mut().zip(r.iter()).for_each(|(o, x)| *o += x);
+        }
 
         self.pos += (step * n as u64) as f64 / FIXED_ONE;
         if let Some(stream) = &self.stream {
@@ -626,6 +639,7 @@ impl Voice {
         self.released = true;
         self.held = false;
         self.env.release(None);
+        self.filter.release();
         if let Some(env) = &mut self.flex {
             env.release(bank.settings[self.group as usize].flex.as_ref());
         }

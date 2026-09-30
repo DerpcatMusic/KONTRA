@@ -14,6 +14,8 @@ pub enum Params {
     StereoModeller(StereoModeller),
     Reverb(Reverb),
     Convolution(Box<Convolution>),
+    Filter(Filter),
+    Eq(Eq),
     /// Layout known, no DSP: named in serialization order.
     Fields(Vec<Field>),
     /// Layout not identified for this kind/length.
@@ -44,6 +46,34 @@ pub struct StereoModeller {
     pub pan: f32,
     pub pseudo_stereo: bool,
 }
+
+/// `BParFXFilter` with a filter type: normalized knobs, see `audits/EFFECTS.md`.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Filter {
+    /// Kontakt's internal filter type id (stored twice).
+    pub filter_type: i32,
+    /// 0..=1, `$ENGINE_PAR_CUTOFF` / 1e6.
+    pub cutoff: f32,
+    /// 0..=1, `$ENGINE_PAR_RESONANCE` / 1e6.
+    pub resonance: f32,
+}
+
+/// `BParFXFilter` with an EQ type (22/23/24 = 1/2/3 bands), stored in
+/// physical units.
+#[derive(Debug, Clone, Serialize)]
+pub struct Eq {
+    pub bands: Vec<EqBand>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct EqBand {
+    pub freq_hz: f32,
+    pub bandwidth_oct: f32,
+    pub gain_db: f32,
+}
+
+/// Filter type ids of the 1-, 2- and 3-band EQs.
+pub const EQ_TYPES: std::ops::RangeInclusive<i32> = 22..=24;
 
 /// `BParFXGaloisReverb`: Kontakt's modern "Reverb" (`$EFFECT_TYPE_REVERB2`).
 /// Ten normalized values in `$ENGINE_PAR_RV2_*` order.
@@ -115,7 +145,6 @@ pub struct Field {
 #[serde(untagged)]
 pub enum Value {
     Number(f32),
-    Integer(i32),
     Flag(bool),
 }
 
@@ -126,6 +155,7 @@ pub(super) fn parse(kind: Kind, data: &[u8]) -> Params {
         Kind::SendLevels => send_levels(&mut r),
         Kind::StereoModeller => stereo_modeller(&mut r),
         Kind::Convolution => convolution(&mut r),
+        Kind::Filter => filter(&mut r),
         Kind::Reverb => r.array().map(|[a, b, c, d, e, f, g, h, i, j]| {
             Params::Reverb(Reverb {
                 room_type: a,
@@ -161,6 +191,22 @@ fn stereo_modeller(r: &mut Reader) -> Option<Params> {
         pan: r.f32()?,
         pseudo_stereo: r.flag()?,
     }))
+}
+
+fn filter(r: &mut Reader) -> Option<Params> {
+    let filter_type = r.i32()?;
+    (r.i32()? == filter_type).then_some(())?;
+    if EQ_TYPES.contains(&filter_type) {
+        let bands = (21..filter_type)
+            .map(|_| {
+                let [freq_hz, bandwidth_oct, gain_db] = r.array()?;
+                Some(EqBand { freq_hz, bandwidth_oct, gain_db })
+            })
+            .collect::<Option<_>>()?;
+        return Some(Params::Eq(Eq { bands }));
+    }
+    let [cutoff, resonance] = r.array()?;
+    Some(Params::Filter(Filter { filter_type, cutoff, resonance }))
 }
 
 fn convolution(r: &mut Reader) -> Option<Params> {
@@ -207,7 +253,6 @@ fn convolution(r: &mut Reader) -> Option<Params> {
 #[derive(Clone, Copy)]
 enum Ty {
     F,
-    I,
     B,
 }
 
@@ -217,7 +262,6 @@ fn fields(r: &mut Reader, layout: &[(&'static str, Ty)]) -> Option<Params> {
         .map(|&(name, ty)| {
             let value = match ty {
                 Ty::F => Value::Number(r.f32()?),
-                Ty::I => Value::Integer(r.i32()?),
                 Ty::B => Value::Flag(r.flag()?),
             };
             Some(Field { name, value })
@@ -229,7 +273,7 @@ fn fields(r: &mut Reader, layout: &[(&'static str, Ty)]) -> Option<Params> {
 /// Names follow `$ENGINE_PAR_*` order where the value count matches it;
 /// `param_n`/`flag_n` mark positions whose meaning is not established.
 fn layout(kind: Kind) -> Option<&'static [(&'static str, Ty)]> {
-    use Ty::{B, F, I};
+    use Ty::{B, F};
     Some(match kind {
         Kind::Delay => &[
             ("time_ms", F),
@@ -270,12 +314,6 @@ fn layout(kind: Kind) -> Option<&'static [(&'static str, Ty)]> {
             ("speed_free", F),
             ("param_6", F),
             ("flag_7", B),
-        ],
-        Kind::Filter => &[
-            ("filter_type", I),
-            ("param_1", I),
-            ("cutoff", F),
-            ("resonance", F),
         ],
         Kind::Compressor => &[
             ("param_0", F),

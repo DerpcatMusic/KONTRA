@@ -86,7 +86,7 @@ All layouts match the byte length of every local instance (no instance falls bac
 | Chorus | 0x51 | `depth, speed, phase, speed_unit(-1), speed_free, param_5, flag_6(b)` | low |
 | Flanger | 0x51 | `depth, speed, phase, feedback, color, speed_unit(-1), speed_free, param_7, flag_8(b)` | low |
 | Phaser | 0x51 | `depth, param_1, speed, param_3, speed_unit(-1), speed_free, param_6, flag_7(b)` | low (speed identified by its free copy) |
-| Filter | 0x92 | `filter_type(i)=50, param_1(i)=50, cutoff, resonance` | low |
+| Filter / EQ | 0x92 | `type(i), type(i)` repeated, then EQ (types 22..24): `(type-21) x (freq, bandwidth, gain)`; any other type: `cutoff, resonance` (normalized) | high for layout (all local lengths match), see Group filters and EQs for laws |
 | Distortion | 0x60 | `param_0, drive, damping` | low |
 | Lo-Fi | 0x70 | `bits, frequency, noise_level, flag_3(b), noise_color` | medium |
 | Skreamer | 0x50 | `tone, drive, bass, bright, mix` (KSP order) | medium |
@@ -191,3 +191,31 @@ effects (and their IRs) are built too, so scripts can switch them on.
 
 
 No stored group output selector was found. Group children are only 0x38, 0x3b, 0x3c and 0x4a; `GroupParams` reads a fixed public-data prefix and `fx_idx_amp_split_point` is undocumented (likely the amp position in the old group insert chain, unverified). All 12,592 local buses output to the instrument (`output = -1`). Only Areia uses buses actively (convolution on Bus 1-5, distinct pans), and its scripts reference `$ENGINE_PAR_OUTPUT_CHANNEL` and `$NI_BUS_OFFSET`: routing is most likely script-set via `set_engine_par`. Unverified next step: dump group public/private bytes past `interp_quality` for Areia groups differing only by mic tag.
+
+## Group filters and EQs (2026-09-30)
+
+Group insert rack: group private data holds 136 x 12-byte records plus a 24-byte trailer,
+then `BParamArray<BParFX,8>` (read by `Group::insert_fx`). Local `BParFXFilter` instances
+by type: 22 (1-band EQ) 12,340; 23 (2-band) 5,720; 24 (3-band) 1,401; 3: 556; 2: 268;
+54: 64; 52: 55; 6: 24; 55/57: 20 each; 51: 12; 19: 2. Almost all are Afflatus; Dolce,
+Una Corda, Solo, Vista, Pacific and Areia have tens to hundreds.
+
+DSP (`src/engine/filter.rs`): per-voice stereo TPT SVF sections (Simper), coefficients at
+control rate (32 frames, or once per block without modulation), denormal flush per block.
+Filterless groups keep the old render path (no per-voice cost beyond a `None` check).
+
+| Law | Value | Confidence |
+|---|---|---|
+| type -> response | 2 LP, 3 HP, 4 BP (1 SVF); 5 LP, 6 HP, 7 BP, 8 notch (2 SVFs); 9 LP (3); 52 LP, 53 BP, 54 HP (1); 55 LP, 56 BP, 57 HP (2) | medium for 2..9 (KSP `$FILTER_TYPE_*` order), low for 5x |
+| cutoff | `43.6 Hz * 2^(8.96 x)` | medium (matches 2827 Hz at the typical stored 0.68) |
+| resonance | `Q = 0.707 + 28 x` | low |
+| EQ freq | `20 Hz * 10^(3 x)` | medium |
+| EQ bandwidth | `0.3 + 2.7 x` octaves, `Q = 1/(2 sinh(ln2/2 * bw))` | low |
+| EQ gain | `18 (2x - 1)` dB, bell `A = 10^(dB/40)` | medium |
+| modulation | internal AHDSRs, velocity/key/CC sources add to the normalized knob; `$ENGINE_PAR_CUTOFF`/`RESONANCE` = x/1e6 | medium |
+
+Not implemented: ladder, 1-pole and Versatile types (warned on import), types 51 and 19,
+EQ engine pars (no local script uses them), script bypass of group FX, the amp split point
+(filters run after the amp envelope), group Inverter gain trims and group Stereo Modeller pan.
+Open: the invert flag of EQ gain envelopes (Vista Cellos group 16 boosts 3-12 kHz by ~7 dB
+at onset with a non-inverted envelope, which looks too strong).

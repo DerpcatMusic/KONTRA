@@ -89,7 +89,16 @@ pub(crate) struct GroupModulation {
     pub flex_env: Option<FlexEnvelope>,
     pub mods: Vec<ModAssignment>,
     pub modulators: Vec<Modulator>,
+    pub envelopes: Vec<ModEnvelope>,
     pub warnings: Vec<String>,
+}
+
+/// An internal AHDSR driving module parameters (filter cutoff, EQ gain...),
+/// not volume. Targets use `ModSource::Unassigned`; the envelope is the source.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ModEnvelope {
+    pub env: Ahdsr,
+    pub targets: Vec<ModAssignment>,
 }
 
 /// Read internal and external modulators from a group's child chunks.
@@ -114,6 +123,28 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                     out.flex_env = Some(env);
                     false
                 }
+                RawModulator::Ahdsr(env) if !volume => {
+                    let targets: Vec<_> = params
+                        .targets
+                        .iter()
+                        .filter_map(|t| {
+                            Some(ModAssignment {
+                                name: params.name.clone(),
+                                source: ModSource::Unassigned,
+                                target: ModTarget::Module {
+                                    param: t.param.clone(),
+                                    slot: t.slot?,
+                                },
+                                intensity: t.intensity,
+                                invert: t.invert,
+                                lag_ms: t.lag_ms,
+                                shaper: t.shaper.clone().filter(|s| s.enabled).map(|s| s.curve),
+                            })
+                        })
+                        .collect();
+                    out.envelopes.push(ModEnvelope { env, targets });
+                    false
+                }
                 _ => {
                     skipped += 1;
                     false
@@ -128,7 +159,7 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
         }
         if skipped > 0 {
             out.warnings.push(
-                "Internal modulators other than the first volume AHDSR and flex envelopes are not applied".into(),
+                "Internal modulators other than AHDSR and the first flex volume envelope are not applied".into(),
             );
         }
     }
