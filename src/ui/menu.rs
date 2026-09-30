@@ -18,6 +18,10 @@ pub enum Target {
     App,
     /// A script menu in a part's performance controls.
     Script { part: usize, control: usize },
+    /// A part's MIDI input: its channel and port.
+    Midi(usize),
+    /// A part's output bus.
+    Output(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +53,10 @@ pub enum Command {
     Browser,
     Keyboard,
     Panic,
+    /// A part's MIDI channel (-1 omni), its port (0..4), its output bus.
+    Channel(usize, i16),
+    Port(usize, u8),
+    Output(usize, u8),
     Appearance(super::Appearance),
     /// Set a script control to a value.
     Script {
@@ -209,6 +217,26 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                         },
                     )
                 })
+                .collect()
+        }
+        Target::Midi(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot) else {
+                return Vec::new();
+            };
+            let mut items = vec![check("Omni", part.channel < 0, Command::Channel(*slot, -1))];
+            items.extend((0..16).map(|c| check(format!("Channel {}", c + 1), part.channel == c, Command::Channel(*slot, c))));
+            items.extend([Item::Rule, Item::Info("Port".into())]);
+            items.extend((0..4u8).map(|n| {
+                check(format!("Port {}", char::from(b'A' + n)), part.port == n, Command::Port(*slot, n))
+            }));
+            items
+        }
+        Target::Output(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot) else {
+                return Vec::new();
+            };
+            (0..crate::engine::BUSES as u8)
+                .map(|n| check(cx.selection.bus(n.into()).label(n.into()), part.output == n, Command::Output(*slot, n)))
                 .collect()
         }
         Target::App => {
@@ -408,6 +436,9 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::Keyboard => cx.state.keyboard ^= true,
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
+        Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
+        Command::Port(slot, port) => cx.selection.parts[slot].port = port,
+        Command::Output(slot, output) => cx.selection.parts[slot].output = output,
         Command::Script {
             part,
             control,

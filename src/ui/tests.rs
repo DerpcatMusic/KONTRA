@@ -173,7 +173,7 @@ fn a_narrow_header_gives_the_name_its_line() {
         h.idle(2);
         let scene = h.ui.scene().unwrap();
         let frame = |id: &str| scene.surface(id).unwrap().frame;
-        let (name, port) = (frame("name-0"), frame("port-0"));
+        let (name, port) = (frame("name-0"), frame("midi-0"));
         assert_eq!(port.y > name.y + name.size.height, below, "at {width}");
     }
 }
@@ -232,11 +232,24 @@ fn rack_interactions() {
     h.press("tab-rack");
     h.press("mute-0");
     assert!(parts(&p)[0].mute);
-    for (id, text) in [("output-0", "4"), ("channel-0", "2"), ("port-0", "2")] {
-        h.type_into(id, text);
+    // The routing menus: output st.4, channel 2, then port B (after a rule and a heading).
+    for (menu, item) in [("output-0", 3), ("midi-0", 2), ("midi-0", 20)] {
+        h.press(menu);
+        h.press(&format!("menu-item-{item}"));
     }
     let part = &parts(&p)[0];
     assert_eq!((part.output, part.channel, part.port), (3, 1, 1));
+    // Pan, gain and tune drag up; a double-click brings each back.
+    for id in ["pan-0", "volume-0", "tune-0"] {
+        let at = center(&h.ui, id);
+        for dy in [0., -5., -20.] {
+            h.tick(pointer(Point::new(at.x, at.y + dy), true));
+        }
+        h.tick(pointer(Point::new(at.x, at.y - 20.), false));
+        h.idle(30);
+    }
+    let part = &parts(&p)[0];
+    assert!(part.pan > 0. && part.gain > 0. && part.tune > 0., "{} {} {}", part.pan, part.gain, part.tune);
 
     h.press("collapse-0");
     assert!(parts(&p)[0].collapsed, "the chevron folds a part");
@@ -733,7 +746,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 15] = [
+    let states: [(&str, bool, &[&str]); 16] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -749,6 +762,7 @@ fn screenshot() {
         ("playing", true, &["qwerty"]),
         ("color", true, &[]),
         ("artwork", true, &[]),
+        ("folded", true, &["collapse-0", "collapse-1"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();

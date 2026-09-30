@@ -251,6 +251,7 @@ pub enum Icon {
     Close,
     Sidebar,
     Search,
+    #[allow(dead_code, reason = "the mixer's audition")]
     Play,
     Menu,
     /// A favorite not yet set, and set.
@@ -262,8 +263,10 @@ pub enum Icon {
     Recent,
     /// A five-pin DIN socket with an arrow in, or out: MIDI routing.
     MidiIn,
+    #[allow(dead_code, reason = "the mixer's routing")]
     MidiOut,
     /// A waveform with an arrow in, or out: audio routing.
+    #[allow(dead_code, reason = "the mixer's routing")]
     AudioIn,
     AudioOut,
     /// A tuning fork: tune.
@@ -510,14 +513,6 @@ pub struct Fader {
 }
 
 impl Fader {
-    pub const PAN: Self = Self {
-        origin: 0.,
-        detent: Some(0.),
-        reset: 0.,
-        widest: "R 100",
-        vertical: false,
-        length: None,
-    };
     pub const LEVEL: Self = Self {
         origin: -60.,
         detent: Some(0.),
@@ -863,7 +858,7 @@ pub fn pan_wedge(ui: &mut Ui, id: &str, pan: &mut f64) -> El {
         draw
     })
     .w(WEDGE)
-    .h(TIGHT * 1.75)
+    .h(TIGHT * 2.)
     .shrink(0);
     let el = col![
         caption(pan_short(at)).text_size(SMALL - 1.).fill(Role::Dim).reserve("R100"),
@@ -893,7 +888,7 @@ pub fn gain_knob(ui: &mut Ui, id: &str, db: &mut f64) -> El {
         let (start, sweep) = (0.75 * PI, 1.5 * PI);
         let mut draw = vec![
             Draw::fill(circle(cx, cy, r - weight - 0.5), Role::Raised.alpha(1.)),
-            Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.16 + 0.08 * lift), weight),
+            Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.24 + 0.08 * lift), weight),
         ];
         let (a, b) = if at < from { (at, from) } else { (from, at) };
         if b - a > 0.004 {
@@ -962,8 +957,8 @@ pub fn meter_v(level: impl Fn() -> [f32; 2] + 'static) -> El {
     canvas(move |s| {
         let bar = ((s.width - 1.) / 2.).floor().max(1.);
         let mut draw = vec![
-            Draw::fill(rect(0., 0., bar, s.height), Role::Ink.alpha(0.08)),
-            Draw::fill(rect(bar + 1., 0., bar, s.height), Role::Ink.alpha(0.08)),
+            Draw::fill(rect(0., 0., bar, s.height), Role::Ink.alpha(0.16)),
+            Draw::fill(rect(bar + 1., 0., bar, s.height), Role::Ink.alpha(0.16)),
         ];
         let y = |u: f64| s.height * (1. - u);
         let (hot_at, clip_at) = (54. / 66., 60. / 66.);
@@ -1033,7 +1028,7 @@ pub fn route(ui: &mut Ui, id: impl Into<Id>, icon: Icon, text: &str, widest: &st
     let id: Id = id.into();
     let hit = ui.get(id.clone()).activated();
     let el = row![
-        glyph(icon, TEXT + 1., Role::Ink.alpha(0.55)),
+        glyph(icon, TEXT + 2., Role::Ink.alpha(0.72)),
         caption(text.to_owned()).text_size(SMALL).lines(1).reserve(widest.to_owned()),
         glyph(Icon::Down, TIGHT * 2.5, Role::Ink.alpha(0.45))
     ]

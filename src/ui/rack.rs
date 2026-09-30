@@ -134,32 +134,15 @@ fn step_preset(cx: &Cx, slot: usize, by: isize) -> Option<String> {
     siblings.get(to).map(|p| p.to_string_lossy().into_owned())
 }
 
-/// A bare number field: drag, type or step it.
-fn field(
-    ui: &mut Ui,
-    id: String,
-    name: &str,
-    value: &mut f64,
-    range: std::ops::RangeInclusive<f64>,
-    display: String,
-    widest: &str,
-) -> El {
-    drag_value(ui, id, name, value, range)
-        .size(S)
-        .value_text(display)
-        .el
-        .el()
-        .h(CONTROL)
-        .reserve(widest.to_owned())
-        .shrink(0)
-}
+/// Below this width the routing and mix controls take a second line under
+/// the name: about the controls' width plus a name's.
+const ONE_LINE: f64 = 860.;
 
-/// Below this width a header's routing, switches and faders move under the
-/// name, which keeps the whole line: about the cluster's width plus a name's.
-const ONE_LINE: f64 = 720.;
-
-/// A part's header: fold, name and preset stepping over what it is; MIDI and
-/// output routing; solo and mute; level and pan; audition, menu and remove.
+/// A part's header, after Koda's part strip: a thin bar with the library's
+/// color down its left edge. The fold, the name over what it is, preset
+/// stepping; MIDI and output routing, pan, gain and tune; solo and mute,
+/// the activity dot, menu and remove; the part's meter at the right edge.
+/// Folded, it is one slim line.
 pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let id = format!("header-{slot}");
     // Last frame's width: the header spans the rack, so its own layout never
@@ -207,13 +190,8 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     if let Some(path) = before.clone().filter(|_| previous).or(after.clone().filter(|_| next)) {
         cx.replace(slot, path);
     }
-    let prev_el = prev_el.when(before.is_none(), |e| e.disabled().opacity(0.35));
-    let next_el = next_el.when(after.is_none(), |e| e.disabled().opacity(0.35));
-    let (audition, play_el) = icon_button(ui, format!("audition-{slot}"), Icon::Play, "Audition (Space)", false);
-    if audition {
-        cx.state.selected = slot;
-        cx.p.shared.audition(None);
-    }
+    let prev_el = prev_el.when(before.is_none(), |e| e.disabled().opacity(0.3));
+    let next_el = next_el.when(after.is_none(), |e| e.disabled().opacity(0.3));
     let more_id = format!("more-{slot}");
     let (more, more_el) = icon_button(ui, more_id.as_str(), Icon::More, "Part menu", false);
     if more {
@@ -221,8 +199,29 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     }
     let (remove, remove_el) = icon_button(ui, format!("remove-{slot}"), Icon::Close, "Remove from rack", false);
 
+    let midi_id = format!("midi-{slot}");
+    let output_id = format!("output-{slot}");
+    let part = &cx.selection.parts[slot];
+    let channel = if part.channel < 0 { "Omni".to_owned() } else { (part.channel + 1).to_string() };
+    // Port A is the usual one and goes unsaid.
+    let midi_text = if part.port == 0 {
+        channel
+    } else {
+        format!("{}{channel}", char::from(b'A' + part.port.min(3)))
+    };
+    let output_text = cx.selection.bus(part.output.into()).label(part.output.into());
+    let (midi, midi_el) = route(ui, midi_id.as_str(), Icon::MidiIn, &midi_text, "D16", "MIDI input");
+    if midi {
+        menu::open_under(ui, cx, menu::Target::Midi(slot), &midi_id);
+    }
+    let (output, output_el) = route(ui, output_id.as_str(), Icon::AudioOut, &output_text, "st.16", "Output");
+    if output {
+        menu::open_under(ui, cx, menu::Target::Output(slot), &output_id);
+    }
+
     let title = title(ui, cx, slot);
-    let facts = facts(cx, slot);
+    let full = facts(cx, slot, false);
+    let facts = if narrow { facts(cx, slot, true) } else { full.clone() };
     let progress = cx.view.parts[slot].loading.then(|| {
         let done = cx.p.shared.load_progress[slot].load(Ordering::Relaxed);
         f64::from(done) / f64::from(crate::engine::LOAD_DONE)
@@ -231,112 +230,88 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let tint = cx.state.tint(cx.view, &library);
 
     let part = &mut cx.selection.parts[slot];
-    // Ports count from 1 when typed, and read A to D.
-    let mut port = f64::from(part.port) + 1.;
-    let port_el = field(
-        ui,
-        format!("port-{slot}"),
-        "MIDI port",
-        &mut port,
-        1.0..=4.0,
-        char::from(b'A' + part.port.min(3)).to_string(),
-        "D",
-    );
-    part.port = port.round() as u8 - 1;
-    let mut channel = f64::from(part.channel + 1);
-    let channel_text = if part.channel < 0 {
-        "Omni".to_owned()
-    } else {
-        (part.channel + 1).to_string()
-    };
-    let channel_el = field(ui, format!("channel-{slot}"), "MIDI channel", &mut channel, 0.0..=16.0, channel_text, "Omni");
-    part.channel = channel.round() as i16 - 1;
-    let mut output = f64::from(part.output) + 1.;
-    let output_el = field(
-        ui,
-        format!("output-{slot}"),
-        "Output",
-        &mut output,
-        1.0..=crate::engine::BUSES as f64,
-        format!("st.{}", part.output + 1),
-        "st.16",
-    );
-    part.output = output.round() as u8 - 1;
-    let (solo, solo_el) = latch(ui, format!("solo-{slot}"), "S", "Solo", part.solo);
-    if solo {
-        part.solo = !part.solo;
-    }
-    let (mute, mute_el) = latch(ui, format!("mute-{slot}"), "M", "Mute", part.mute);
-    if mute {
-        part.mute = !part.mute;
-    }
     let mut gain = f64::from(part.gain);
-    // Short tracks leave the name room in a narrow rack.
-    let track = TEXT * 6.;
-    let (_, gain_el) = fader(ui, &format!("volume-{slot}"), "Volume", &mut gain, -60.0..=6.0, Fader::LEVEL.length(track), db_text);
+    let gain_el = gain_knob(ui, &format!("volume-{slot}"), &mut gain);
     part.gain = gain as f32;
     let mut pan = f64::from(part.pan);
-    let (_, pan_el) = fader(ui, &format!("pan-{slot}"), "Pan", &mut pan, -1.0..=1.0, Fader::PAN.length(track), pan_text);
+    let pan_el = pan_wedge(ui, &format!("pan-{slot}"), &mut pan);
     part.pan = pan as f32;
     let mut tune = f64::from(part.tune);
     let range = f64::from(crate::engine::TUNE_RANGE);
-    let kind = Fader { widest: "+00.00 st", ..Fader::PAN }.length(track);
-    let (_, tune_el) = fader(ui, &format!("tune-{slot}"), "Tune", &mut tune, -range..=range, kind, tune_text);
-    // Cents are the finest step.
-    part.tune = ((tune * 100.).round() / 100.) as f32;
+    let tune_el = tune_field(ui, &format!("tune-{slot}"), &mut tune, -range..=range);
+    part.tune = tune as f32;
+    let (mut solo, mut mute) = (part.solo, part.mute);
+    let switches = solo_mute(ui, &slot.to_string(), &mut solo, &mut mute);
+    (part.solo, part.mute) = (solo, mute);
+    let p = cx.p.clone();
+    let level = move || crate::plugin::Meters::read(&p.shared.meters.parts[slot]);
+    let p = cx.p.clone();
+    let dot = activity_dot(move || crate::plugin::Meters::read(&p.shared.meters.parts[slot]) != [0.; 2]);
     if remove {
         cx.remove(slot);
     }
 
-    // Row labels share one width, so both rows' controls start in line.
-    let label = |text: &str| section(text).reserve("TUNE").shrink(0);
-    let identity = col![
-        row![title, prev_el, next_el].gap(TIGHT).align(Align::Center).h(CONTROL),
-        row![caption(facts).fill(Role::Dim).lines(1).min_w(0)]
-            .align(Align::Center)
-            .h(CONTROL)
-    ]
-    .gap(TIGHT)
-    .flex(1)
-    .min_w(TEXT * 10.);
-    let routing = col![
-        cluster(vec![label("MIDI"), port_el, channel_el]).h(CONTROL),
-        cluster(vec![label("Out"), output_el]).h(CONTROL)
-    ]
-    .gap(TIGHT)
-    .shrink(0);
-    let switches = col![segmented(vec![solo_el, mute_el]), play_el]
-        .gap(TIGHT)
-        .align(Align::Center)
-        .shrink(0);
-    let faders = col![
-        cluster(vec![label("Vol"), gain_el]).h(CONTROL),
-        cluster(vec![label("Pan"), pan_el]).h(CONTROL),
-        cluster(vec![label("Tune"), tune_el]).h(CONTROL)
-    ]
-    .gap(TIGHT)
-    .shrink(0);
-    let actions = col![cluster(vec![more_el, remove_el]), spacer()].gap(TIGHT).shrink(0);
-    let fold_el = col![fold_el, spacer()].gap(TIGHT).shrink(0);
-    let body = if narrow {
-        // The name keeps the first line; the controls line up under it.
-        let controls = row![routing, vrule(), switches, vrule(), faders]
-            .gap(SPACE + TIGHT)
-            .align(Align::Stretch)
-            .shrink(0);
-        row![fold_el, col![row![identity, actions].gap(SPACE + TIGHT).align(Align::Stretch), controls].gap(SPACE).flex(1).min_w(0)]
+    let facts_el = |narrow: bool| {
+        caption(facts.to_uppercase())
+            .text_size(SMALL - 2.)
+            .text_weight(Weight::SEMIBOLD)
+            .fill(Role::Dim)
+            .lines(1)
+            .min_w(0)
+            .tip(full.clone())
+            .when(narrow, |e| e.flex(1))
+    };
+    let name_row = row![title, prev_el, next_el].gap(0).align(Align::Center).min_w(0);
+    // Folded and narrow, only the level stays in the line.
+    let mix = if collapsed && narrow {
+        gain_el
     } else {
-        row![fold_el, identity, vrule(), routing, vrule(), switches, vrule(), faders, actions]
-    }
-    .gap(SPACE + TIGHT)
-    .align(Align::Stretch)
-    .pad((SPACE, SPACE))
-    .flex(1)
-    .min_w(0);
-    // The library's color runs down the left edge; the bottom edge doubles
-    // as load progress, so loading moves nothing.
-    let edge = block(TIGHT - 1., Len::Pct(100.))
-        .fill(tint.map_or(Role::Ink.alpha(0.12), Fill::from))
+        cluster(vec![midi_el, output_el, pan_el, gain_el, tune_el]).gap(SPACE)
+    };
+    let tail = cluster(vec![switches, dot, more_el, remove_el]).gap(TIGHT + 1.);
+    let rows = match (collapsed, narrow) {
+        // Folded: one slim line, what it is beside its name.
+        (true, _) => vec![
+            row![name_row.shrink(1), facts_el(true)]
+                .gap(SPACE)
+                .align(Align::Center)
+                .flex(1)
+                .min_w(0),
+            mix,
+            tail,
+        ],
+        (false, false) => vec![
+            col![facts_el(false), name_row].gap(0).align(Align::Start).flex(1).min_w(0),
+            mix,
+            tail,
+        ],
+        (false, true) => vec![
+            col![
+                row![name_row.flex(1), tail].gap(SPACE).align(Align::Center),
+                row![facts_el(true), mix].gap(SPACE).align(Align::Center)
+            ]
+            .gap(2)
+            .align(Align::Stretch)
+            .flex(1)
+            .min_w(0),
+        ],
+    };
+    let mut line = vec![fold_el];
+    line.extend(rows);
+    let body = row(line)
+        .gap(SPACE)
+        .align(Align::Center)
+        .pad(edges(2., SPACE, 2., TIGHT))
+        .flex(1)
+        .min_w(0);
+    // The library's color runs down the left edge, the accent's when it has
+    // none and the part is selected; the bottom edge doubles as load progress.
+    let edge = block(3, Len::Pct(100.))
+        .fill(match tint {
+            Some(t) => Fill::from(t),
+            None if selected => accent().into(),
+            None => Role::Ink.alpha(0.12),
+        })
         .shrink(0);
     let bar = canvas(move |s| match progress {
         Some(done) => vec![
@@ -348,8 +323,9 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     .w(Len::Pct(100.))
     .h(1)
     .shrink(0);
+    let meter = col![meter_v(level)].pad((3, 0)).h(Len::Pct(100.)).shrink(0);
     let name = name(cx, slot);
-    col![row![edge, body].gap(0).align(Align::Stretch), bar]
+    col![row![edge, body, meter].gap(0).align(Align::Stretch), bar]
         .gap(0)
         .fill(if selected { Role::Raised } else { Role::Surface })
         .when(over, |e| e.stroke(accent()).stroke_width(1))
@@ -360,11 +336,14 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 }
 
 /// What the part is: its library, size, and load progress while loading.
-fn facts(cx: &Cx, slot: usize) -> String {
+/// `brief` leaves out the group and zone counts, for a narrow header.
+fn facts(cx: &Cx, slot: usize, brief: bool) -> String {
     let v = &cx.view.parts[slot];
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
-    let mut facts = vec![library_label(&library)];
-    if let Some(i) = instrument::instrument_of(cx, slot) {
+    // "Areia 1.2.0 [Audio Imperia]": the vendor in brackets goes.
+    let library = library_label(&library);
+    let mut facts = vec![library.split(" [").next().unwrap_or_default().to_owned()];
+    if let Some(i) = instrument::instrument_of(cx, slot).filter(|_| !brief) {
         facts.push(format!("{} groups · {} zones", i.groups.len(), i.zones.len()));
     }
     if v.loading {
@@ -378,7 +357,7 @@ fn facts(cx: &Cx, slot: usize) -> String {
         facts.push("failed to load".into());
     }
     facts.retain(|f| !f.is_empty());
-    facts.join("  ·  ")
+    facts.join(" · ")
 }
 
 /// The part's name, dragged to reorder and double-clicked to rename; a
@@ -395,7 +374,7 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         let field = text_edit(ui, edit_id.as_str(), text, TextOpts::default());
         let cancel = ui.keys(edit_id.as_str()).iter().any(|k| k.key == Key::Escape);
         let done = field.changed.submitted || (existed && !ui.focused(edit_id.as_str()));
-        let el = field.el.h(CONTROL).flex(1).min_w(0).named("Part name");
+        let el = field.el.h(STRIP).flex(1).min_w(0).named("Part name");
         if cancel {
             cx.state.renaming = None;
         } else if done {
@@ -423,7 +402,7 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     }
     let muted = cx.selection.parts[slot].mute;
     body(name.clone())
-        .text_size(TEXT + TIGHT)
+        .text_size(TEXT + 1.)
         .text_weight(Weight::SEMIBOLD)
         .fill(if muted { Role::Dim } else { Role::Ink })
         .lines(1)

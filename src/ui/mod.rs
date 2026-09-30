@@ -184,8 +184,15 @@ impl Watch {
                 });
             (view.parts.iter().any(|v| v.loading), pending)
         };
+        // Meters read their atomics as they are laid out: while any shows a
+        // level, frames run on the animation clock; the fall to silence
+        // changes the signature, so the last one draws them empty.
+        let m = &p.shared.meters;
+        let sounding = (m.parts.iter().chain(&m.buses).chain([&m.master]))
+            .any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
+        sounding.hash(&mut h);
         // Progress and the sweep redraw on the animation's own clock.
-        let animate = loading && due(self.frame_at, ANIMATION_MS);
+        let animate = (loading || sounding) && due(self.frame_at, ANIMATION_MS);
         if animate {
             self.frame_at = Some(now);
         }
@@ -323,7 +330,7 @@ impl EditorState {
 
 /// One frame's inputs: the loader's view, the rack being edited, the editor state.
 struct Cx<'a> {
-    p: &'a SamplerParams,
+    p: &'a Arc<SamplerParams>,
     view: &'a View,
     selection: Selection,
     state: &'a mut EditorState,
