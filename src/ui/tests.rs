@@ -839,7 +839,12 @@ fn screenshot() {
         .filter_map(|w| w.trim().parse().ok())
         .map(|w: u16| (w, if w < 1000 { 600 } else if w > 1500 { 1000 } else { 760 }))
         .collect();
-    for (state, loaded, presses) in states.into_iter().filter(|(s, ..)| wanted(s)) {
+    // Sticky headers need a second part to scroll past the first.
+    let sticky_ok = instruments.len() > 1;
+    for (state, loaded, presses) in states
+        .into_iter()
+        .filter(|(s, ..)| wanted(s) && (*s != "sticky" || sticky_ok))
+    {
         for &(width, height) in &sizes {
             let p = racked(&files, &instruments, loaded, state);
             if state == "mixer" {
