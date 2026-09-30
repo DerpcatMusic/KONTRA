@@ -837,7 +837,12 @@ fn frame_cost() {
     let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
         "03 Areia - 6 Celli - Core Techniques,Vista - 3 Cellos,Una Corda Pure".into()
     });
-    let instruments = library_instruments(&files, &chosen);
+    let library = library_instruments(&files, &chosen);
+    // KONTAKTO_PARTS="1,4,8,16": the rack filled to each count, cycling the chosen.
+    let counts = std::env::var("KONTAKTO_PARTS").unwrap_or_else(|_| "1,4,8,16".into());
+    for count in counts.split(',').filter_map(|n| n.trim().parse::<usize>().ok()) {
+    println!("{count} parts");
+    let instruments: Vec<_> = library.iter().cycle().take(count).cloned().collect();
     let p = racked(&files, &instruments, true, "perform");
     let (w, hgt) = (1600u16, 1000u16);
     let mut h = Harness::new(&p, f64::from(w), f64::from(hgt));
@@ -886,6 +891,7 @@ fn frame_cost() {
         shared.shared.heard[note].store(if i % 2 == 0 { 100 } else { 0 }, Ordering::Relaxed);
         Input::default()
     });
+    }
 }
 
 /// Renders the editor in its main states to `.impeccable/review/` (git-ignored)
