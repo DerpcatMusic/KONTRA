@@ -115,6 +115,10 @@ pub struct Shared {
     pub(crate) voices: AtomicU64,
     /// Audio thread load (`f32` bits): render time over block time, peak-held.
     pub(crate) cpu: AtomicU64,
+    /// Voice blocks whose streamed samples were not read in time (played
+    /// silent) plus script engine calls dropped by a full queue, summed over
+    /// the parts' engines since each was created.
+    pub(crate) dropouts: AtomicU64,
 }
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
@@ -183,6 +187,7 @@ impl Default for Shared {
             multi_request: Mutex::new(None),
             voices: AtomicU64::new(0),
             cpu: AtomicU64::new(0),
+            dropouts: AtomicU64::new(0),
             view: Mutex::new(View {
                 script_epoch: 0,
                 multi_status: String::new(),
@@ -1050,6 +1055,10 @@ impl PluginLogic for Sampler {
         cx.set_meter(P::Level, peak.min(1.0));
         let voices: usize = s.rack.parts.iter().map(Engine::active_voices).sum();
         p.shared.voices.store(voices as u64, Ordering::Relaxed);
+        let dropouts: u64 = (s.rack.parts.iter())
+            .map(|e| e.underruns() + e.dropped_commands())
+            .sum();
+        p.shared.dropouts.store(dropouts, Ordering::Relaxed);
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
             let load = (started.elapsed().as_secs_f64() * rate / frames as f64) as f32;

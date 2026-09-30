@@ -26,7 +26,11 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         .collect();
     let activity = match loading.as_slice() {
         [] if cx.view.multi_status.starts_with("Loading") => cx.view.multi_status.clone(),
-        [] => String::new(),
+        // Streamed audio played late or script calls lost; zero when all is well.
+        [] => match p.shared.dropouts.load(Ordering::Relaxed) {
+            0 => String::new(),
+            n => format!("{n} audio dropouts"),
+        },
         [one] => format!("Loading {one}…"),
         many => format!("Loading {} instruments…", many.len()),
     };
