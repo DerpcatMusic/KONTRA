@@ -56,19 +56,13 @@ name = "kontakto-standalone"
 path = "src/standalone.rs"
 required-features = ["standalone"]
 
-# panic stays "unwind" everywhere: a plugin must not abort the host, and the
-# importer catches parser panics.
+# panic stays "unwind": a plugin must not abort the host, and the importer
+# catches parser panics. Fat LTO with one codegen unit measured no faster than
+# ThinLTO on the synthetic and real-library benches, at four times the build.
+# For a trained build see tools/pgo.sh.
 [profile.release]
 panic = "unwind"
 lto = "thin"
-
-# Shipping builds: whole-program LTO, one codegen unit, no symbols. On a real
-# library (Barbarian Brass, 16 notes) 11% fewer instructions than plain release;
-# ThinLTO alone gets 6% at a quarter of the link time, so release keeps it.
-[profile.dist]
-inherits = "release"
-lto = "fat"
-codegen-units = 1
 strip = "symbols"
 
 [profile.dev]
