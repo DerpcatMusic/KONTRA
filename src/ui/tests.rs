@@ -853,9 +853,8 @@ fn screenshot() {
     }
 }
 
-#[test]
-fn performance_controls_edit_the_script() {
-    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_knob $vibrato(0, 100, 1)\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
+/// A rack of one part running `script`, its performance view read.
+fn scripted_part(script: &str) -> Arc<SamplerParams> {
     let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
     let (rt, errors) = crate::ksp::Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
     assert!(errors.iter().all(Option::is_none), "{errors:?}");
@@ -885,11 +884,44 @@ fn performance_controls_edit_the_script() {
             kontakt_preload: 0,
         }));
     }
-    let value = |n: usize| {
-        let view = p.shared.view.lock().unwrap();
-        view.parts[0].interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"]
-            .clone()
-    };
+    p
+}
+
+/// Control `n`'s value in part 0's performance view.
+fn control_value(p: &SamplerParams, n: usize) -> crate::ksp::Value {
+    let view = p.shared.view.lock().unwrap();
+    view.parts[0].interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"].clone()
+}
+
+/// Wide switches stacked at one pitch, one set, read as a list: each row
+/// named by its label, with its on/off as a check box and its keyswitch; a
+/// row the script hid below the fold comes back.
+#[test]
+fn an_articulation_list_picks_one_and_turns_rows_on() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $art0\nmove_control_px($art0, 10, 50)\nset_control_par(get_ui_id($art0), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art0), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $art1\nmove_control_px($art1, 10, 72)\nset_control_par(get_ui_id($art1), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art1), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $art2\nmove_control_px($art2, 10, 94)\nset_control_par(get_ui_id($art2), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art2), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $art3\nmove_control_px($art3, 10, 116)\nset_control_par(get_ui_id($art3), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art3), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name0(1,1)\nset_text($name0, \"Sustain\")\nmove_control_px($name0, 10, 50)\nset_control_par(get_ui_id($name0), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name0), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name1(1,1)\nset_text($name1, \"Staccato\")\nmove_control_px($name1, 10, 72)\nset_control_par(get_ui_id($name1), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name1), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name2(1,1)\nset_text($name2, \"Pizzicato\")\nmove_control_px($name2, 10, 94)\nset_control_par(get_ui_id($name2), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name2), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name3(1,1)\nset_text($name3, \"Tremolo\")\nmove_control_px($name3, 10, 116)\nset_control_par(get_ui_id($name3), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name3), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $onoff0\nmove_control_px($onoff0, 10, 50)\nset_control_par(get_ui_id($onoff0), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff0), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_switch $onoff1\nmove_control_px($onoff1, 10, 72)\nset_control_par(get_ui_id($onoff1), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff1), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_switch $onoff2\nmove_control_px($onoff2, 10, 94)\nset_control_par(get_ui_id($onoff2), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff2), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_switch $onoff3\nmove_control_px($onoff3, 10, 116)\nset_control_par(get_ui_id($onoff3), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff3), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_label $key0(1,1)\nset_text($key0, \"C#-0\")\nmove_control_px($key0, 90, 52)\ndeclare ui_label $key1(1,1)\nset_text($key1, \"C#-1\")\nmove_control_px($key1, 90, 74)\ndeclare ui_label $key2(1,1)\nset_text($key2, \"C#-2\")\nmove_control_px($key2, 90, 96)\ndeclare ui_label $key3(1,1)\nset_text($key3, \"C#-3\")\nmove_control_px($key3, 90, 118)\n$art0 := 1\nset_control_par(get_ui_id($art3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nset_control_par(get_ui_id($name3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nset_control_par(get_ui_id($onoff3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nset_control_par(get_ui_id($key3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nend on");
+    let mut h = Harness::new(&p, 1180., 760.);
+    let scene = h.ui.scene().unwrap();
+    for n in [0, 1, 2, 3] {
+        assert!(scene.surface(&format!("ksp-0-{n}")).is_some(), "row {n} is shown");
+        assert!(scene.surface(&format!("ksp-0-{}", n + 8)).is_some(), "row {n}'s check box");
+    }
+    // The labels and keyswitches are part of the rows, not controls.
+    assert!(scene.surface("ksp-0-4").is_none() && scene.surface("ksp-0-12").is_none());
+    h.press("ksp-0-2");
+    assert_eq!(control_value(&p, 2), crate::ksp::Value::Int(1), "a row picks its choice");
+    let check = center(&h.ui, "ksp-0-9");
+    h.tick(pointer(check, true));
+    h.tick(pointer(check, false));
+    h.idle(3);
+    assert_eq!(control_value(&p, 9), crate::ksp::Value::Int(1), "a check box turns its row on");
+    assert_eq!(control_value(&p, 1), crate::ksp::Value::Int(0), "and does not pick the row");
+}
+
+#[test]
+fn performance_controls_edit_the_script() {
+    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_knob $vibrato(0, 100, 1)\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
+    let p = scripted_part(script);
+    let value = |n: usize| control_value(&p, n);
     let mut h = Harness::new(&p, 1180., 760.);
 
     h.press("ksp-0-0");

@@ -33,6 +33,8 @@ enum Face {
     Menu,
     Value,
     Text,
+    /// A vertical list of exclusive choices: an articulation list.
+    List,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -78,6 +80,23 @@ pub struct Item {
     max: f64,
     reset: f64,
     at: Rect,
+    /// Hidden by its script: kept only as a scrolled-away row of a list.
+    hidden: bool,
+    /// A [`Face::List`]'s rows, top down.
+    list: Vec<Entry>,
+}
+
+/// One row of a list: a choice, its own on/off, the keyswitch that picks it.
+#[derive(Clone, Debug)]
+struct Entry {
+    /// The switch that picks it; none in a list of layers.
+    control: Option<usize>,
+    name: String,
+    on: bool,
+    enable: Option<(usize, bool)>,
+    key: Option<String>,
+    /// Fields and their letters on the row: a layer's velocity range.
+    extras: Vec<Item>,
 }
 
 /// A titled cluster of controls: columns of rows, left to right, top down.
@@ -86,6 +105,8 @@ pub struct Section {
     /// Which band, top down: sections of one band share a line.
     band: usize,
     title: Option<String>,
+    /// Lone buttons beside it ("Info"), shown at the end of its title.
+    actions: Vec<Item>,
     columns: Vec<Vec<Vec<Item>>>,
 }
 
@@ -325,9 +346,7 @@ fn read(
         _ => "",
     };
     // $HIDE_WHOLE_CONTROL; the other bits hide parts of a picture.
-    if int("HIDE").is_some_and(|h| h as i32 & 16 != 0) {
-        return None;
-    }
+    let hidden = int("HIDE").is_some_and(|h| h as i32 & 16 != 0);
     let picture_name = text("PICTURE");
     // A logo that opens a credits page is branding, not a control.
     if [picture_name, c.variable.as_str()]
@@ -357,7 +376,8 @@ fn read(
         h,
     };
     let (iw, ih) = (f64::from(interface.width), f64::from(interface.height));
-    if at.x < 0. || at.y < 0. || at.x >= iw || at.y >= ih || w <= 0. || h <= 0. {
+    // A list scrolls its rows off the panel's foot and hides them there.
+    if at.x < 0. || at.y < 0. || at.x >= iw || !hidden && at.y >= ih || w <= 0. || h <= 0. {
         return None;
     }
     let square = (0.6..=1.6).contains(&(w / h)) && w.min(h) >= 24.;
@@ -412,6 +432,8 @@ fn read(
         max,
         reset,
         at,
+        hidden,
+        list: Vec::new(),
     };
     Some((item, picture_name.to_owned()))
 }
@@ -430,6 +452,21 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
             i.face != Face::Text || i.name.chars().any(char::is_alphabetic) && !is_readout(&i.name)
         })
         .collect();
+    // Covers and masks shade a scrolled list's ends; they do nothing.
+    read.retain(|(i, picture)| {
+        let variable = interface.controls[i.control].variable.as_str();
+        ![picture.as_str(), variable]
+            .iter()
+            .any(|n| raw_words(n).iter().any(|w| matches!(w.as_str(), "cover" | "mask")))
+    });
+    let lists = lists(&mut read);
+    // A list shows whole, so its scroll bar goes, and a switch behind it
+    // is its picture; hidden controls go too.
+    read.retain(|(i, _)| {
+        !i.hidden
+            && !(matches!(i.face, Face::Fader | Face::VFader) && lists.iter().any(|l| scrolls(&l.at, &i.at)))
+            && !(i.face == Face::Toggle && lists.iter().any(|l| behind(&l.at, &i.at)))
+    });
     // A label spanning two or more controls side by side under it heads
     // them; it names none of them.
     let heads = |l: &Rect| {
@@ -529,9 +566,20 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
             item.name = "On".into();
         }
     }
+    // A vertical fader stands among its kind, a mixer's strips; alone it
+    // lies down, a compact fader and not a column of its own.
+    let tall: Vec<Rect> = kept.iter().filter(|i| i.face == Face::VFader).map(|i| i.at).collect();
+    for item in &mut kept {
+        if item.face == Face::VFader
+            && !tall.iter().any(|o| *o != item.at && (o.y - item.at.y).abs() <= 2. && o.h == item.at.h)
+        {
+            item.face = Face::Fader;
+        }
+    }
     // A one-letter switch reads only beside its siblings (a strip's M and S);
     // alone, like Vista's corner "B", it is a mark, not a control.
-    kept.iter()
+    let mut out: Vec<Item> = kept
+        .iter()
         .filter(|i| {
             i.face != Face::Toggle
                 || i.name.chars().filter(|c| c.is_alphanumeric()).count() > 1
@@ -540,7 +588,170 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
                 })
         })
         .cloned()
-        .collect()
+        .collect();
+    out.extend(lists);
+    out
+}
+
+/// Stacks of `key` switches of one width down one edge, one gap apart, top
+/// down, as indices into `read`; rows already `taken` left out. A row may
+/// be taller than the rest: Solo's legato spans two.
+fn stacks(read: &[(Item, String)], taken: &[bool], key: &dyn Fn(&Item) -> bool) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..read.len()).filter(|&n| !taken[n] && key(&read[n].0)).collect();
+    // A hidden row under a shown one is folded into it, not scrolled away.
+    let shown: Vec<Rect> = order.iter().map(|&n| &read[n].0).filter(|i| !i.hidden).map(|i| i.at).collect();
+    order.retain(|&n| !read[n].0.hidden || !shown.iter().any(|s| s.overlaps(&read[n].0.at)));
+    order.sort_by(|&a, &b| {
+        let (a, b) = (&read[a].0.at, &read[b].0.at);
+        (a.x.total_cmp(&b.x))
+            .then(a.w.total_cmp(&b.w))
+            .then(a.y.total_cmp(&b.y))
+    });
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    for n in order {
+        let at = read[n].0.at;
+        let joins = runs.last().is_some_and(|run| {
+            let last = read[run[run.len() - 1]].0.at;
+            let gap = |above: &Rect, below: &Rect| below.y - above.bottom();
+            let first = if run.len() > 1 { gap(&read[run[run.len() - 2]].0.at, &last) } else { gap(&last, &at) };
+            (last.x, last.w) == (at.x, at.w) && gap(&last, &at) == first && (0. ..=SPACE).contains(&first)
+        });
+        match runs.last_mut() {
+            Some(run) if joins => run.push(n),
+            _ => runs.push(vec![n]),
+        }
+    }
+    runs.retain(|run| run.len() >= 3 && run.iter().filter(|&&n| !read[n].0.hidden).count() >= 2);
+    runs
+}
+
+/// Vertical lists, taken out of `read`. First, choices: wide switches
+/// stacked one gap apart, an articulation list, one set or several. Then rows
+/// of on/off switches left over, each beside a name: a legato's layers.
+/// Each row takes the label on it for its name, the on/off switch on it,
+/// the note name beside it for its keyswitch, and the fields and letters on
+/// it ("L 1 H 64"); the rows' pictures and backgrounds go. Rows the script
+/// scrolled away and hid come back, so the list shows whole.
+fn lists(read: &mut Vec<(Item, String)>) -> Vec<Item> {
+    let mut taken = vec![false; read.len()];
+    let mut out = Vec::new();
+    let choice = |i: &Item| i.face == Face::Toggle && !i.enable && i.at.w >= i.at.h * 3.;
+    let enable = |i: &Item| i.face == Face::Toggle && i.enable;
+    for choices in [true, false] {
+        let key: &dyn Fn(&Item) -> bool = if choices { &choice } else { &enable };
+        for run in stacks(read, &taken, key) {
+            let mut t = taken.clone();
+            let (mut entries, mut at) = (Vec::new(), None::<Rect>);
+            for &n in &run {
+                let r = read[n].0.at;
+                let hidden = read[n].0.hidden;
+                let level = |o: &Rect| {
+                    let (_, y) = o.center();
+                    y >= r.y && y <= r.bottom()
+                };
+                // A hidden row's parts are hidden with it.
+                let find = |t: &[bool], want: &dyn Fn(&Item) -> bool| {
+                    (0..read.len()).find(|&m| m != n && !t[m] && read[m].0.hidden == hidden && want(&read[m].0))
+                };
+                let near = |o: &Rect, right: f64| o.x < right + LABEL_REACH && o.right() > r.x;
+                // Its name: a label on the row, level with it or starting with it.
+                let label = find(&t, &|i| {
+                    i.face == Face::Text
+                        && !is_note(&i.name)
+                        && i.name.chars().filter(|c| c.is_alphanumeric()).count() > 1
+                        && (level(&i.at) || (i.at.y - r.y).abs() <= TIGHT)
+                        && near(&i.at, r.right())
+                });
+                let name = label.map_or_else(|| read[n].0.name.clone(), |m| read[m].0.name.clone());
+                if name.is_empty() || !choices && label.is_none() {
+                    continue;
+                }
+                t[n] = true;
+                if let Some(m) = label {
+                    t[m] = true;
+                }
+                let right = label.map_or(r.right(), |m| read[m].0.at.right().max(r.right()));
+                // Rows of on/off switches may pick too, more than one at a
+                // time: Solo's layered articulations.
+                let (pick, switch) = if choices {
+                    (Some(n), find(&t, &|i| enable(i) && level(&i.at) && near(&i.at, right)))
+                } else {
+                    (find(&t, &|i| choice(i) && level(&i.at) && near(&i.at, right)), Some(n))
+                };
+                for m in [pick, switch].into_iter().flatten() {
+                    t[m] = true;
+                }
+                let key = find(&t, &|i| i.face == Face::Text && is_note(&i.name) && level(&i.at) && near(&i.at, right));
+                if let Some(m) = key {
+                    t[m] = true;
+                }
+                let mut found = Vec::new();
+                while let Some(m) = find(&t, &|i| {
+                    let letters = i.face == Face::Text && i.name.chars().filter(|c| c.is_alphanumeric()).count() <= 2;
+                    (letters || matches!(i.face, Face::Value | Face::Menu)) && level(&i.at) && near(&i.at, right)
+                }) {
+                    t[m] = true;
+                    found.push(m);
+                }
+                // Letters only name fields; alone they belong elsewhere.
+                if found.iter().all(|&m| read[m].0.face == Face::Text) {
+                    found.drain(..).for_each(|m| t[m] = false);
+                }
+                let mut extras: Vec<Item> = found.iter().map(|&m| read[m].0.clone()).collect();
+                extras.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+                if !hidden {
+                    let parts = [label, pick, switch, key].into_iter().flatten().map(|m| read[m].0.at);
+                    for o in parts.chain(extras.iter().map(|e| e.at)).chain([r]) {
+                        at = Some(match at {
+                            Some(a) => {
+                                let (x, y) = (a.x.min(o.x), a.y.min(o.y));
+                                Rect { x, y, w: a.right().max(o.right()) - x, h: a.bottom().max(o.bottom()) - y }
+                            }
+                            None => o,
+                        });
+                    }
+                }
+                entries.push(Entry {
+                    control: pick.map(|m| read[m].0.control),
+                    name,
+                    on: pick.is_some_and(|m| read[m].0.raw >= 1.),
+                    enable: switch.map(|m| (read[m].0.control, read[m].0.raw >= 1.)),
+                    key: key.map(|m| read[m].0.name.clone()),
+                    extras,
+                });
+            }
+            if entries.len() < 2 {
+                continue;
+            }
+            taken = t;
+            let first = read[run[0]].0.clone();
+            out.push(Item {
+                face: Face::List,
+                name: if choices { "Choices" } else { "Layers" }.into(),
+                at: at.unwrap_or(first.at),
+                list: entries,
+                ..first
+            });
+        }
+    }
+    let mut n = 0;
+    read.retain(|_| {
+        n += 1;
+        !taken[n - 1]
+    });
+    out
+}
+
+/// Whether switch `s` lies behind list `list`: a picture over half its rows.
+fn behind(list: &Rect, s: &Rect) -> bool {
+    let along = s.bottom().min(list.bottom()) - s.y.max(list.y);
+    along >= list.h / 2. && s.x < list.right() && s.right() > list.x
+}
+
+/// Whether slider `bar` scrolls list `list`: upright along its right edge.
+fn scrolls(list: &Rect, bar: &Rect) -> bool {
+    let along = bar.bottom().min(list.bottom()) - bar.y.max(list.y);
+    bar.h > bar.w && bar.x >= list.x && bar.x <= list.right() + SPACE && along >= bar.h / 2.
 }
 
 /// How far label `l` is from control `c`. Text centred on the control is
@@ -606,6 +817,7 @@ fn kind(face: Face) -> u8 {
         Face::Knob | Face::VFader => 1,
         Face::Fader => 2,
         Face::Menu | Face::Value | Face::Text => 3,
+        Face::List => 4,
     }
 }
 
@@ -627,7 +839,7 @@ fn rows(mut items: Vec<Item>) -> Vec<Vec<Item>> {
     let mut split = Vec::new();
     for (_, _, mut row) in out {
         row.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
-        for k in 0..4 {
+        for k in 0..5 {
             let part: Vec<Item> = row.iter().filter(|i| kind(i.face) == k).cloned().collect();
             if !part.is_empty() {
                 split.push(part);
@@ -639,7 +851,7 @@ fn rows(mut items: Vec<Item>) -> Vec<Vec<Item>> {
 
 /// The interface's controls, grouped as they were drawn.
 pub fn sections(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec<Section> {
-    bands(items(interface, pictures), SECTION_GAP)
+    let mut out = bands(items(interface, pictures), SECTION_GAP)
         .into_iter()
         .enumerate()
         .flat_map(|(band, items)| columns(items, SECTION_GAP).into_iter().map(move |g| (band, g)))
@@ -659,11 +871,29 @@ pub fn sections(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>)
             Section {
                 band,
                 title,
+                actions: Vec::new(),
                 columns: columns(group, COLUMN_GAP).into_iter().map(rows).collect(),
             }
         })
         .filter(|s| !s.columns.is_empty())
-        .collect()
+        .collect::<Vec<_>>();
+    // A lone untitled button ("Info") leaves the layout for the far end of
+    // its band, kept with the section before it, or else after it.
+    let lone = |s: &Section| {
+        s.title.is_none()
+            && matches!(s.columns.as_slice(), [c] if matches!(c.as_slice(), [r] if matches!(r.as_slice(), [i] if i.face == Face::Toggle)))
+    };
+    for n in (0..out.len()).rev() {
+        if !lone(&out[n]) {
+            continue;
+        }
+        let band = out[n].band;
+        if let Some(m) = (0..n).rev().chain(n + 1..out.len()).find(|&m| out[m].band == band && !lone(&out[m])) {
+            let s = out.remove(n);
+            out[if m > n { m - 1 } else { m }].actions.extend(s.columns.into_iter().flatten().flatten());
+        }
+    }
+    out
 }
 
 /// `part`'s script controls, rebuilt: bands top down, each a wrapping line
@@ -673,6 +903,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
     // Every section opens with a title rule when any has a title, so their
     // first rows share a line.
     let titled = sections.iter().any(|s| s.title.is_some());
+    let mut actions: Vec<Vec<El>> = Vec::new();
     for section in sections {
         let mut columns = Vec::new();
         for column in &section.columns {
@@ -707,6 +938,11 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
         while bands.len() <= section.band {
             bands.push(Vec::new());
         }
+        actions.resize_with(bands.len(), Vec::new);
+        for item in &section.actions {
+            let el = control(ui, cx, part, item).h(STRIP);
+            actions[section.band].push(el);
+        }
         bands[section.band].push(match (&section.title, titled) {
             (Some(t), _) => col![section_title(t), body],
             (None, true) => col![section_title(""), body],
@@ -716,10 +952,18 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, part: usize, sections: &[Section]) -> El {
         .align(Align::Stretch)
         .shrink(0));
     }
+    actions.resize_with(bands.len(), Vec::new);
+    // A band's lone buttons sit at its far end.
     col(bands
         .into_iter()
-        .filter(|b| !b.is_empty())
-        .map(|b| row(b).wrap().gap(INSET * 2.).line_gap(INSET).align(Align::Start).w(Len::Pct(100.)))
+        .zip(actions)
+        .filter(|(b, _)| !b.is_empty())
+        .map(|(b, a)| {
+            let line = row(b).wrap().gap(INSET * 2.).line_gap(INSET).align(Align::Start).flex(1).min_w(0);
+            let mut all = vec![line];
+            all.extend(a);
+            row(all).gap(TIGHT).align(Align::Start).w(Len::Pct(100.))
+        })
         .collect::<Vec<_>>())
         .gap(INSET)
         .align(Align::Start)
@@ -996,6 +1240,71 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
             el
         }
         Face::Text => caption(name.to_owned()).fill(Role::Dim).lines(1).min_w(0),
+        Face::List => col(item.list.iter().map(|e| entry(ui, cx, part, e)).collect::<Vec<_>>())
+            .gap(1)
+            .align(Align::Stretch)
+            .fill(hairline())
+            .min_w(CONTROL * 10.)
+            .max_size(Size::new(CONTROL * 16., CONTROL * 100.))
+            .named(name.to_owned())
+            .shrink(0),
+    }
+}
+
+/// One row of a list: set, it is raised with an accent edge. Its check box
+/// turns the choice on or off; the keyswitch that picks it sits at the right.
+fn entry(ui: &mut Ui, cx: &mut Cx, part: usize, e: &Entry) -> El {
+    // As in Kontakt, a click flips the switch; the script keeps one set.
+    let id = e.control.map(|c| format!("ksp-{part}-{c}"));
+    if let (Some(c), Some(id)) = (e.control, &id)
+        && ui.get(id.as_str()).activated()
+    {
+        cx.p.shared.edit_control(part, c, i32::from(!e.on));
+    }
+    let mut cells = vec![block(2, Len::Pct(100.)).fill(if e.on { Fill::from(accent()) } else { Role::Ink.alpha(0.) })];
+    if let Some((control, on)) = e.enable {
+        let (hit, el) = check(ui, format!("ksp-{part}-{control}"), &format!("{}: on", e.name), on);
+        if hit {
+            cx.p.shared.edit_control(part, control, i32::from(!on));
+        }
+        cells.push(el);
+    }
+    cells.push(
+        body(e.name.clone())
+            .text_size(TEXT)
+            .fill(if e.on { Role::Ink } else { Role::Dim })
+            .lines(1)
+            .min_w(0)
+            .flex(1),
+    );
+    if let Some(key) = &e.key {
+        cells.push(
+            caption(key.clone())
+                .text_size(SMALL)
+                .text_weight(Weight::SEMIBOLD)
+                .fill(Fill::from(keyswitch()))
+                .reserve("C#-1"),
+        );
+    }
+    for item in &e.extras {
+        cells.push(control(ui, cx, part, item).h(STRIP - 2.));
+    }
+    let el = row(cells)
+        .gap(SPACE)
+        .align(Align::Center)
+        .pad(edges(0., if e.extras.is_empty() { SPACE } else { 1. }, 0., 0.))
+        .h(STRIP)
+        .fill(if e.on { Role::Raised } else { Role::Field });
+    match id {
+        Some(id) => interactive(
+            el.focusable()
+                .a11y(A11y::Toggle { on: e.on })
+                .named(e.name.clone())
+                .tip(e.key.as_ref().map_or_else(|| e.name.clone(), |k| format!("{} · keyswitch {k}", e.name)))
+                .id(id),
+            e.on,
+        ),
+        None => el.named(e.name.clone()),
     }
 }
 
@@ -1205,6 +1514,8 @@ mod tests {
             max,
             reset: 0.,
             at: Rect::default(),
+            hidden: false,
+            list: Vec::new(),
         };
         // Vista's mic Volume: the script's "0.0" is decibels.
         assert_eq!(readout(&item("Volume", "0.0", 0., 1e6), 630_000.), "0.0 dB");

@@ -271,6 +271,8 @@ pub enum Icon {
     AudioOut,
     /// A tuning fork: tune.
     Fork,
+    /// A tick: a set check box.
+    Check,
 }
 
 /// `icon` in `ink`, `size` points square.
@@ -365,6 +367,7 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 line(&[(5., 1.5), (5., 7.8), (5.7, 9.7), (8., 10.8), (10.3, 9.7), (11., 7.8), (11., 1.5)]),
                 line(&[(8., 10.8), (8., 14.8)]),
             ],
+            Icon::Check => vec![line(&[(3.5, 8.5), (6.5, 11.5), (12.5, 4.5)])],
             Icon::Recent => vec![
                 Draw::stroke(arc(ox + 8. * u, oy + 8. * u, 5.5 * u, 0., 2. * PI), ink.clone(), weight),
                 line(&[(8., 5.), (8., 8.), (10.5, 9.5)]),
@@ -801,6 +804,31 @@ fn hot() -> Color {
 }
 fn clip() -> Color {
     Color::oklch(0.64, 0.21, 27.)
+}
+
+/// A keyswitch's red, on a key and on the badge that names it: crisp, not
+/// salmon.
+pub fn keyswitch() -> Color {
+    Color::oklch(0.6, 0.2, 25.)
+}
+
+/// A compact check box: a tick on the accent when set, an outline when
+/// clear. Returns whether it was clicked.
+pub fn check(ui: &mut Ui, id: impl Into<Id>, name: &str, on: bool) -> (bool, El) {
+    let id: Id = id.into();
+    let hit = ui.get(id.clone()).activated();
+    let size = TEXT + 2.;
+    let el = stack![glyph(Icon::Check, size, if on { Fill::from(Color::oklch(0.18, 0., 0.)) } else { Role::Ink.alpha(0.) })]
+        .square(size)
+        .fill(if on { Fill::from(accent()) } else { Role::Field.into() })
+        .when(!on, |e| e.stroke(Role::Ink.alpha(0.3)).stroke_width(1))
+        .focusable()
+        .a11y(A11y::Toggle { on })
+        .named(name.to_owned())
+        .tip(name.to_owned())
+        .id(id)
+        .shrink(0);
+    (hit, interactive(el, on))
 }
 
 /// Kontakt's pan, tight: "C", "L23", "R40".
