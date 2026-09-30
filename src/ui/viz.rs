@@ -95,10 +95,26 @@ fn span(seconds: f32) -> f32 {
 /// Width of the sustain plateau, in [`span`]'s units.
 const SUSTAIN: f32 = 1.4;
 
+fn widths(env: &Ahdsr) -> [f32; 5] {
+    [span(env.attack), span(env.hold), span(env.decay), SUSTAIN, span(env.release)]
+}
+
+/// How long `env` draws, in [`span`]'s units: two envelopes laid out over
+/// the longer one's share one time axis.
+pub fn envelope_width(env: &Ahdsr) -> f32 {
+    widths(env).iter().sum()
+}
+
+#[cfg(test)]
 pub fn envelope(env: &Ahdsr) -> EnvelopeShape {
+    envelope_over(env, envelope_width(env))
+}
+
+/// `env` laid out with `total` (at least its own width) as the full width.
+pub fn envelope_over(env: &Ahdsr, total: f32) -> EnvelopeShape {
     let [attack, decay, release] = env.trace(STAGE_POINTS);
-    let widths = [span(env.attack), span(env.hold), span(env.decay), SUSTAIN, span(env.release)];
-    let total: f32 = widths.iter().sum();
+    let widths = widths(env);
+    let total = total.max(widths.iter().sum());
     let mut line = Vec::new();
     let mut stages: [std::ops::Range<usize>; 5] = Default::default();
     let mut x0 = 0.;
@@ -236,7 +252,7 @@ pub fn label(p: Param) -> &'static str {
     }
 }
 
-fn hz_text(hz: f32) -> String {
+pub fn hz_text(hz: f32) -> String {
     if hz >= 1000. { format!("{:.2} kHz", hz / 1000.) } else { format!("{hz:.0} Hz") }
 }
 
@@ -257,6 +273,58 @@ pub fn readout(p: Param, v: f32) -> String {
         Param::Bandwidth(..) => format!("{:.2} oct", band_settings(0., v, 0.).1),
         Param::Gain(..) => format!("{:+.1} dB", band_settings(0., 0., v).2),
     }
+}
+
+/// The number [`readout`] shows for `v`, in its units (seconds for times).
+fn shown(p: Param, v: f32) -> f32 {
+    match p {
+        Param::Attack | Param::Hold | Param::Decay | Param::Release | Param::Curve => v,
+        Param::Sustain => 20. * v.max(1e-10).log10(),
+        Param::Cutoff(_) => filter_settings(v, 0.).0,
+        Param::Resonance(_) => v * 100.,
+        Param::Freq(..) => band_settings(v, 0., 0.).0,
+        Param::Bandwidth(..) => band_settings(0., v, 0.).1,
+        Param::Gain(..) => band_settings(0., 0., v).2,
+    }
+}
+
+/// What the player typed for `p` as its normalized value: a number in the
+/// readout's units, "ms" or "s" after a time (bare, milliseconds), "k" or
+/// "kHz" after a frequency, "-inf" for silence. None when it is not one.
+pub fn typed(p: Param, text: &str) -> Option<f32> {
+    let t = text.trim().to_lowercase();
+    let end = t.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+'))).unwrap_or(t.len());
+    let unit = t[end..].trim();
+    let n: f32 = match &t[..end] {
+        "-" if unit.starts_with("inf") => -200.,
+        number => number.parse().ok().filter(|n: &f32| n.is_finite())?,
+    };
+    let target = match p {
+        Param::Attack | Param::Hold | Param::Decay | Param::Release => match unit {
+            "" | "ms" => n / 1000.,
+            "s" | "sec" => n,
+            _ => return None,
+        },
+        Param::Cutoff(_) | Param::Freq(..) => match unit {
+            "" | "hz" => n,
+            "k" | "khz" => n * 1000.,
+            _ => return None,
+        },
+        _ => n,
+    };
+    // Every readout rises or falls with the knob: halve the knob's range.
+    let at = |n: f32| shown(p, p.value(n));
+    let rising = at(1.) >= at(0.);
+    let (mut lo, mut hi) = (0f32, 1f32);
+    for _ in 0..32 {
+        let mid = (lo + hi) / 2.;
+        if (at(mid) < target) == rising {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Some((lo + hi) / 2.)
 }
 
 /// The widest readout of `p`, so its field keeps its width.
@@ -290,6 +358,38 @@ mod tests {
         let a = &shape.line[shape.stages[0].clone()];
         let r = &shape.line[shape.stages[4].clone()];
         assert!(r[r.len() - 1][0] - r[0][0] > a[a.len() - 1][0] - a[0][0]);
+    }
+
+    #[test]
+    fn typed_values_land_where_their_readout_says() {
+        let near = |p: Param, text: &str, v: f32| {
+            let n = typed(p, text).unwrap_or_else(|| panic!("{text} unread"));
+            let got = p.value(n);
+            assert!((got - v).abs() <= v.abs() * 0.02 + 1e-3, "{text}: {got} for {v}");
+        };
+        near(Param::Attack, "250 ms", 0.25);
+        near(Param::Attack, "250", 0.25);
+        near(Param::Release, "1.5s", 1.5);
+        near(Param::Sustain, "-6 dB", 0.501);
+        assert!(Param::Sustain.value(typed(Param::Sustain, "-inf").unwrap()) < 1e-3);
+        let hz = |p: Param, text: &str| shown(p, p.value(typed(p, text).unwrap()));
+        assert!((hz(Param::Cutoff(0), "2k") / 2000. - 1.).abs() < 0.01);
+        assert!((hz(Param::Freq(0, 0), "440 Hz") / 440. - 1.).abs() < 0.01);
+        assert!((hz(Param::Gain(0, 0), "-3.5") + 3.5).abs() < 0.05);
+        assert_eq!(typed(Param::Attack, "fast"), None);
+        assert_eq!(typed(Param::Cutoff(0), "3 dB"), None);
+    }
+
+    #[test]
+    fn ghost_and_edit_share_a_time_axis() {
+        let short = Ahdsr { attack: 0.01, curve: 0., hold: 0., decay: 1., sustain: 0.5, release: 0.3 };
+        let long = Ahdsr { release: 6., ..short };
+        let total = envelope_width(&long);
+        let (a, b) = (envelope_over(&short, total), envelope_over(&long, total));
+        // The same attack and decay end at the same place; the short release ends early.
+        let end = |s: &EnvelopeShape, stage: usize| s.line[s.stages[stage].end - 1][0];
+        assert!((end(&a, 2) - end(&b, 2)).abs() < 1e-6);
+        assert!(end(&a, 4) < 0.99 && (end(&b, 4) - 1.).abs() < 1e-6);
     }
 
     #[test]

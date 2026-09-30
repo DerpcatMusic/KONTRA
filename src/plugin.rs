@@ -443,7 +443,7 @@ impl Default for Scope {
     }
 }
 impl Scope {
-    fn push(&self, x: &[f32]) {
+    pub(crate) fn push(&self, x: &[f32]) {
         let mut at = self.written.load(Ordering::Relaxed);
         for &v in x {
             self.samples[at % SCOPE].store(v.to_bits(), Ordering::Relaxed);

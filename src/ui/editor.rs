@@ -3,7 +3,7 @@
 //! (never the library), the group's zones, and the voices playing now.
 
 use super::viz::{self, Handle, Model};
-use super::{Cx, instrument, theme::*};
+use super::{Cx, chain, instrument, spectrum, theme::*};
 use crate::engine::Phase;
 use crate::engine::overrides::{Override, Param, Probe};
 use moose::mui::mui::geometry::Path as DrawPath;
@@ -28,9 +28,21 @@ impl Graph {
     }
 }
 
+/// What the expanded editor shows under the graphs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum Lower {
+    #[default]
+    Zones,
+    Modulation,
+    Effects,
+}
+
 /// The editor's state across frames.
 #[derive(Default)]
 pub struct State {
+    lower: Lower,
+    /// A value being typed in: which, and the text so far.
+    typing: Option<(Param, String)>,
     /// Edits apply to the shown group alone, not to every group.
     one_group: bool,
     /// Curves alone, without readouts and zones.
@@ -65,13 +77,16 @@ impl Curves {
         let edited = |p: Param| p.read(&model.playing) != p.read(&model.base);
         let env_edited = Param::ENVELOPE.iter().any(|&p| edited(p));
         let filter_edited = model.params.iter().any(|&(_, p)| !Param::ENVELOPE.contains(&p) && edited(p));
-        let envelope = model.playing.envelope.as_ref().map(viz::envelope);
+        // The library's envelope under the edited one, both over the longer.
+        let ghost = model.base.envelope.as_ref().filter(|_| env_edited);
+        let total = [model.playing.envelope.as_ref(), ghost].into_iter().flatten().map(viz::envelope_width).fold(0., f32::max);
+        let envelope = model.playing.envelope.as_ref().map(|e| viz::envelope_over(e, total));
         let envelope_handles = match (&envelope, &model.playing.envelope) {
             (Some(shape), Some(env)) => viz::envelope_handles(shape, env),
             _ => Vec::new(),
         };
         Self {
-            envelope_ghost: model.base.envelope.as_ref().filter(|_| env_edited).map(viz::envelope),
+            envelope_ghost: ghost.map(|e| viz::envelope_over(e, total)),
             envelope,
             envelope_handles,
             response: viz::response(&model.playing),
@@ -164,8 +179,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let tint = cx.tint(&library).unwrap_or(value_ink(0.));
     let compact = cx.state.editor.compact;
     let toolbar = toolbar(ui, cx, slot, group, &instrument);
-    let envelope = panel(ui, cx, slot, group as u16, Graph::Envelope, &curves, tint, key.clone());
-    let response = panel(ui, cx, slot, group as u16, Graph::Response, &curves, tint, key);
+    let envelope = panel(ui, cx, slot, group as u16, Graph::Envelope, &curves, tint, key.clone(), None);
+    // The part's own output, after its effects and fader, behind the response.
+    let heard = cx.spectrum(slot + 1);
+    let response = panel(ui, cx, slot, group as u16, Graph::Response, &curves, tint, key, Some(heard));
     let mut rows = vec![
         toolbar,
         rule(),
@@ -176,7 +193,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     ];
     if !compact {
         rows.push(rule());
-        rows.push(zones(cx, group, &instrument, tint));
+        rows.push(lower(ui, cx, group, &instrument, tint));
     }
     col(rows).gap(0).flex(1).min_h(0).min_w(0).id("sound-editor")
 }
@@ -263,11 +280,8 @@ fn interact(ui: &mut Ui, cx: &mut Cx, slot: usize, group: u16, curves: &Curves) 
         let model = &curves.model;
         let mut nudge = |p: Param, by: f32| {
             let Some(base) = p.read(&model.base) else { return };
-            let n = p.norm(base);
-            let total = edits.offset(group, p);
-            let to = (total + by).clamp(-n, 1. - n);
-            let own = edits.get(scope, p) + (to - total);
-            changed |= edits.set(Override { group: scope, param: p, offset: if own.abs() < 1e-6 { 0. } else { own } });
+            let to = p.norm(base) + edits.offset(group, p) + by;
+            changed |= set_norm(edits, scope, group, p, base, to);
         };
         if let (Some(h), true, Some(size)) = (grabbed, r.dragged, size) {
             let fine = if r.mods.shift { 0.1 } else { 1. };
@@ -298,6 +312,58 @@ fn interact(ui: &mut Ui, cx: &mut Cx, slot: usize, group: u16, curves: &Curves) 
     changed
 }
 
+/// Edit `p` (library value `base`) so `group` plays it at normalized `to`,
+/// through the edit of `scope` (one group, or all).
+fn set_norm(edits: &mut crate::engine::overrides::Edits, scope: Option<u16>, group: u16, p: Param, base: f32, to: f32) -> bool {
+    let n = p.norm(base);
+    let total = edits.offset(group, p);
+    let to = (to - n).clamp(-n, 1. - n);
+    let own = edits.get(scope, p) + (to - total);
+    edits.set(Override { group: scope, param: p, offset: if own.abs() < 1e-6 { 0. } else { own } })
+}
+
+/// A value's readout; double-clicked, a field to type it in. Enter or
+/// leaving the field sets it (a value the readout could show; anything
+/// else is ignored), Escape leaves it be.
+#[allow(clippy::too_many_arguments)]
+fn value_field(ui: &mut Ui, cx: &mut Cx, slot: usize, group: u16, p: Param, v: f32, changed: bool, model: &Model, graph: Graph) -> El {
+    let id = format!("{}-value-{p:?}", graph.id());
+    let edit_id = format!("{id}-edit");
+    let state = &mut cx.state.editor;
+    if ui.get(id.as_str()).double_clicked {
+        state.typing = Some((p, viz::readout(p, v)));
+    }
+    if let Some((_, text)) = state.typing.as_mut().filter(|(t, _)| *t == p) {
+        let existed = ui.scene().and_then(|s| s.surface(&edit_id)).is_some();
+        if !existed {
+            ui.focus(edit_id.as_str());
+        }
+        let field = text_edit(ui, edit_id.as_str(), text, TextOpts::default());
+        let cancel = ui.keys(edit_id.as_str()).iter().any(|k| k.key == moose::mui::mui::prelude::Key::Escape);
+        let done = field.changed.submitted || (existed && !ui.focused(edit_id.as_str()));
+        let el = field.el.h(CONTROL - TIGHT).w(TEXT * 6.).shrink(0).named(format!("{} value", viz::label(p)));
+        if cancel || done {
+            let text = state.typing.take().map(|(_, t)| t).unwrap_or_default();
+            let scope = state.one_group.then_some(group);
+            if done
+                && !cancel
+                && let (Some(to), Some(base)) = (viz::typed(p, &text), p.read(&model.base))
+            {
+                set_norm(&mut cx.selection.parts[slot].edits, scope, group, p, base, to);
+            }
+        }
+        return el;
+    }
+    caption(viz::readout(p, v))
+        .text_size(TEXT)
+        .fill(if changed { Role::Ink } else { Role::Dim })
+        .lines(1)
+        .shrink(0)
+        .reserve(viz::widest(p).to_owned())
+        .tip(format!("{}: double-click to type a value", viz::label(p)))
+        .id(id)
+}
+
 /// Undo `p`'s edits that reach `group`: its own and the all-groups one.
 fn reset(edits: &mut crate::engine::overrides::Edits, p: Param, group: u16) -> bool {
     let mut changed = false;
@@ -317,6 +383,7 @@ fn panel(
     curves: &Arc<Curves>,
     tint: Color,
     key: Key,
+    heard: Option<Arc<spectrum::Shape>>,
 ) -> El {
     let model = &curves.model;
     let edited = |p: Param| p.read(&model.playing) != p.read(&model.base);
@@ -388,10 +455,23 @@ fn panel(
     .h(Len::Pct(100.));
     let hint = match graph {
         Graph::Envelope => "Drag a handle to shape the envelope; double-click to restore it",
-        Graph::Response => "Drag a handle: across for frequency, up for gain or resonance; the wheel sets an EQ band's width; double-click to restore it",
+        Graph::Response => "Drag a handle: across for frequency, up for gain or resonance; the wheel sets an EQ band's width; double-click to restore it. Behind: what the part plays now",
     };
+    let mut layers = Vec::new();
+    if let Some(shape) = heard {
+        layers.push(
+            canvas(move |s| {
+                let mut out = Vec::new();
+                spectrum::draw(&mut out, &shape, |p| place(s, p));
+                out
+            })
+            .w(Len::Pct(100.))
+            .h(Len::Pct(100.)),
+        );
+    }
+    layers.extend([drawn, over]);
     rows.push(
-        col![stack![drawn, over]
+        col![stack(layers)
             .flex(1)
             .min_h(CONTROL * 3.)
             .fill(Role::Field)
@@ -446,18 +526,11 @@ fn panel(
             } else {
                 block(side, side).shrink(0)
             };
+            let value_el = value_field(ui, cx, slot, group, p, v, changed, &curves.model, graph);
             cells.push(
                 col![
                     section(viz::label(p)),
-                    row![
-                        caption(viz::readout(p, v))
-                            .text_size(TEXT)
-                            .fill(if changed { Role::Ink } else { Role::Dim })
-                            .lines(1)
-                            .shrink(0)
-                            .reserve(viz::widest(p).to_owned()),
-                        reset_el,
-                    ]
+                    row![value_el, reset_el]
                     .gap(TIGHT)
                     .align(Align::Center),
                 ]
@@ -521,6 +594,36 @@ fn draw(c: &Curves, graph: Graph, s: Size, tint: Color) -> Vec<Draw> {
     out
 }
 
+/// Under the graphs: the group's zones, what modulates it, or its effects.
+fn lower(ui: &mut Ui, cx: &mut Cx, group: u32, instrument: &crate::import::Instrument, tint: Color) -> El {
+    let now = cx.state.editor.lower;
+    let mut latches = Vec::new();
+    for (which, label, name) in [
+        (Lower::Zones, "Zones", "The group's zones and the voices playing"),
+        (Lower::Modulation, "Modulation", "What modulates the group, and by how much now"),
+        (Lower::Effects, "Effects", "The group's and the instrument's effects"),
+    ] {
+        let (hit, el) = latch(ui, format!("edit-lower-{which:?}"), label, name, now == which);
+        if hit {
+            cx.state.editor.lower = which;
+        }
+        latches.push(el);
+    }
+    let g = &instrument.groups[group as usize];
+    let watch = Probe::watching(cx.state.selected, group as usize);
+    let body = match now {
+        Lower::Zones => return col![section_bar("", vec![segmented(latches)]), zones(cx, group, instrument, tint)].gap(0).shrink(0),
+        Lower::Modulation => chain::modulation(cx.p, g, group as u16, watch),
+        Lower::Effects => chain::effects(instrument, g),
+    };
+    col![
+        section_bar("", vec![segmented(latches)]),
+        col![body].pad(edges(0., INSET, SPACE, INSET)).max_size(Size::new(f64::INFINITY, CONTROL * 5.)).scroll()
+    ]
+    .gap(0)
+    .shrink(0)
+}
+
 /// The group's zones on a key × velocity strip, with every voice of the
 /// part as a dot: the shown group's inked, the others' faint.
 fn zones(cx: &Cx, group: u32, instrument: &crate::import::Instrument, tint: Color) -> El {
@@ -560,7 +663,6 @@ fn zones(cx: &Cx, group: u32, instrument: &crate::import::Instrument, tint: Colo
     .clip()
     .named("Group key and velocity zones with the voices playing");
     col![
-        section_bar("Zones", vec![]),
         col![
             map,
             row![caption(note_name(0)).fill(Role::Dim), spacer(), caption(note_name(127)).fill(Role::Dim)].shrink(0)
