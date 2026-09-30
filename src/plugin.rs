@@ -1197,6 +1197,15 @@ pub struct Dsp {
     live_seen: [(u64, u64); RACK_SLOTS],
     snapshot_seen: [(u64, u64); RACK_SLOTS],
     routers: [Router; RACK_SLOTS],
+    /// The channel each on-screen key started on, so its note-off follows it
+    /// even if the part's instrument changed while the key was held.
+    key_channels: KeyChannels,
+}
+struct KeyChannels([u8; 128]);
+impl Default for KeyChannels {
+    fn default() -> Self {
+        Self([0; 128])
+    }
 }
 /// A lent buffer being refreshed: slot, epoch and changes at the start,
 /// the buffer, progress.
@@ -1429,8 +1438,11 @@ impl PluginLogic for Sampler {
         while let Some((slot, play)) = p.shared.keyboard.pop() {
             let channel = preview_channel(&s.rack.parts[slot.min(RACK_SLOTS - 1)]);
             let ev = match play {
-                Play::Note(note, 0) => In::NoteOff(channel, note),
-                Play::Note(note, velocity) => In::NoteOn(channel, note, velocity),
+                Play::Note(note, 0) => In::NoteOff(s.key_channels.0[note as usize & 127], note),
+                Play::Note(note, velocity) => {
+                    s.key_channels.0[note as usize & 127] = channel;
+                    In::NoteOn(channel, note, velocity)
+                }
                 Play::Bend(value) => In::Bend(channel, value),
                 Play::Mod(value) => In::Cc(channel, 1, value),
             };
