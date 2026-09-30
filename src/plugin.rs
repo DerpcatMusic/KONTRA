@@ -3,7 +3,7 @@ use crate::artwork;
 use crate::{
     engine::{
         BUSES, Bank, BusControls, Engine, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Rack,
-        TUNE_RANGE, load_scripts,
+        Streaming, TUNE_RANGE, load_scripts,
     },
     fx::FxProcessor,
     import::{self, Instrument},
@@ -41,8 +41,11 @@ pub struct Part {
     pub script_state: String,
     /// The name the player gave the part; empty shows the instrument's.
     pub name: String,
-    /// The rack shows only the part's header, not its performance view.
+    /// The rack shows only the part's header, one slim line of it.
     pub collapsed: bool,
+    /// The part's height in the rack, header and all, when the player sized
+    /// it; 0 shows all of its performance view.
+    pub height: f32,
     /// Output bus (0..[`BUSES`]) the part also sends to, post-fader; -1 for none.
     pub aux: i16,
     /// Level of that send in dB (-60..=6).
@@ -50,6 +53,25 @@ pub struct Part {
     /// How notes pick the instrument's articulations, and its remapped keyswitches.
     pub articulate: Articulate,
     pub mpe: Mpe,
+    /// Where the part's samples play from; `None` follows [`Selection::streaming`].
+    pub streaming: Option<Streaming>,
+}
+impl Part {
+    /// Where the part's samples play from, given the rack's setting.
+    pub fn streaming(&self, rack: Streaming) -> Streaming {
+        self.streaming.unwrap_or(rack)
+    }
+}
+impl StateField for Streaming {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        u8::from(*self == Streaming::RamOnly).write_field(buf);
+    }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        Some(match u8::read_field(cursor)? {
+            1 => Streaming::RamOnly,
+            _ => Streaming::Auto,
+        })
+    }
 }
 impl Default for Part {
     fn default() -> Self {
@@ -68,10 +90,12 @@ impl Default for Part {
             script_state: String::new(),
             name: String::new(),
             collapsed: false,
+            height: 0.,
             aux: -1,
             aux_gain: 0.,
             articulate: Articulate::default(),
             mpe: Mpe::default(),
+            streaming: None,
         }
     }
 }
@@ -135,8 +159,16 @@ pub struct Selection {
     /// What plays behind a part's controls: 0 plain, 1 its library's
     /// color, 2 its library's artwork.
     pub appearance: u8,
+    /// Library artwork behind parts and in their headers shows sharp, not blurred.
+    pub sharp_artwork: bool,
+    /// Part headers scroll away with their parts instead of stacking at the
+    /// rack's top and bottom edges.
+    pub sticky_off: bool,
     /// Output buses by index; shorter than [`BUSES`] when the rest are default.
     pub buses: Vec<Bus>,
+    /// Where samples play from, for parts that do not choose
+    /// ([`Part::streaming`]); a change reloads the parts it affects.
+    pub streaming: Streaming,
 }
 impl Selection {
     /// Output bus `n`, default when never set.
@@ -223,7 +255,8 @@ pub struct Shared {
     /// Peak meters the audio thread keeps current; read them at paint time.
     pub meters: Meters,
     generation: [AtomicU64; RACK_SLOTS],
-    /// Per slot, how far its bank load is, out of [`crate::engine::LOAD_DONE`].
+    /// Per slot, how far its load is, out of [`crate::engine::LOAD_DONE`]:
+    /// parse, scripts, then samples by frames read; only rises within a load.
     pub(crate) load_progress: [AtomicU32; RACK_SLOTS],
     pub(crate) audition: AtomicBool,
     pub(crate) audition_note: AtomicU64,
@@ -235,6 +268,8 @@ pub struct Shared {
     pub(crate) view: Mutex<View>,
     /// Voices sounding across the rack, reported by the audio thread.
     pub(crate) voices: AtomicU64,
+    /// Of those, the ones not muted by their scripts: the ones rendered.
+    pub(crate) audible: AtomicU64,
     /// Audio thread load (`f32` bits): render time over block time, peak-held.
     pub(crate) cpu: AtomicU64,
     /// Voice blocks whose streamed samples were not read in time (played
@@ -252,6 +287,8 @@ pub(crate) struct PartView {
     pub(crate) pictures: Arc<HashMap<String, Arc<artwork::Picture>>>,
     pub(crate) wallpaper_status: String,
     pub(crate) attempted: Option<(String, u32)>,
+    /// How the attempted load placed samples.
+    pub(crate) streaming: Streaming,
     pub(crate) instrument: Option<Arc<Instrument>>,
     pub(crate) status: String,
     pub(crate) active: String,
@@ -316,6 +353,7 @@ impl Default for Shared {
             midi_thru: AtomicBool::new(false),
             multi_request: Mutex::new(None),
             voices: AtomicU64::new(0),
+            audible: AtomicU64::new(0),
             cpu: AtomicU64::new(0),
             dropouts: AtomicU64::new(0),
             view: Mutex::new(View {
@@ -754,6 +792,7 @@ impl BackgroundTask for Load {
         for slot in 0..RACK_SLOTS {
             let part = selection.parts.get(slot).cloned().unwrap_or_default();
             let target = (part.path.clone(), part.program);
+            let streaming = part.streaming(selection.streaming);
             // The host restored different script values for a loaded part: rebuild only its scripts.
             let restore = {
                 let view = params.shared.view.lock().unwrap();
@@ -781,10 +820,10 @@ impl BackgroundTask for Load {
             let cached = {
                 let mut view = params.shared.view.lock().unwrap();
                 let v = &mut view.parts[slot];
-                if v.attempted.as_ref() == Some(&target) {
+                if v.attempted.as_ref() == Some(&target) && v.streaming == streaming {
                     continue;
                 }
-                v.attempted = Some(target.clone());
+                (v.attempted, v.streaming) = (Some(target.clone()), streaming);
                 v.status = "Loading samples…".into();
                 params.shared.load_progress[slot].store(0, Ordering::Relaxed);
                 v.loading = true;
@@ -800,6 +839,7 @@ impl BackgroundTask for Load {
             if part.path.is_empty() {
                 params.shared.view.lock().unwrap().parts[slot] = PartView {
                     attempted: Some(target),
+                    streaming,
                     ..Default::default()
                 };
                 let _ = params.shared.ready.force_push((
@@ -820,8 +860,12 @@ impl BackgroundTask for Load {
                 } else {
                     Arc::new(import::read_program(Path::new(&part.path), part.program)?)
                 };
+                // Progress by phase: parsed 5%, scripts 10%, the bank the rest.
+                let progress = &params.shared.load_progress[slot];
+                progress.fetch_max(crate::engine::LOAD_DONE / 20, Ordering::Relaxed);
                 let (script, snapshot, _) =
                     scripts(&instrument, &part.script_state, params.shared.rate());
+                progress.fetch_max(crate::engine::LOAD_DONE / 10, Ordering::Relaxed);
                 {
                     let needs_art = {
                         let view = params.shared.view.lock().unwrap();
@@ -903,6 +947,7 @@ impl BackgroundTask for Load {
                 let bank = Box::new(Bank::load_counting(
                     &instrument,
                     budget,
+                    streaming,
                     script.as_deref().map_or(&[], |rt| &rt.init_controllers),
                     &params.shared.load_progress[slot],
                 )?);
@@ -1414,6 +1459,8 @@ impl PluginLogic for Sampler {
         }
         let voices: usize = s.rack.parts.iter().map(Engine::active_voices).sum();
         p.shared.voices.store(voices as u64, Ordering::Relaxed);
+        let audible: usize = s.rack.parts.iter().map(Engine::audible_voices).sum();
+        p.shared.audible.store(audible as u64, Ordering::Relaxed);
         let dropouts: u64 = (s.rack.parts.iter())
             .map(|e| e.underruns() + e.dropped_commands())
             .sum();
@@ -1544,18 +1591,26 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     const FRAMES: usize = 512;
     const RATE: f64 = 48000.;
     let p = Arc::new(SamplerParams::new());
-    p.selection.write().unwrap().parts = paths
+    let ram_only = paths.iter().any(|p| p == "--ram-only");
+    let paths: Vec<_> = paths.iter().filter(|p| *p != "--ram-only").cloned().collect();
+    let paths = &paths[..];
+    let mut selection = p.selection.write().unwrap();
+    if ram_only {
+        selection.streaming = Streaming::RamOnly;
+    }
+    selection.parts = paths
         .iter()
         .map(|path| Part {
             path: path.clone(),
             ..Default::default()
         })
         .collect();
+    drop(selection);
     let mut dsp = Dsp::default();
     let transport = TransportInfo::default();
     let mut data = vec![vec![0f32; FRAMES]; 2 * BUSES];
     let mut outgoing = EventList::with_capacity(64);
-    let instructions = Counter::open(1);
+    let (instructions, cycles) = (Counter::open(1), Counter::open(0));
     let mut process = |dsp: &mut Dsp, events: &EventList| {
         let mut channels: Vec<_> = data.iter_mut().map(|v| v.as_mut_slice()).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, FRAMES);
@@ -1566,11 +1621,13 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         outgoing.clear();
         let mut cx = ProcessContext::new(&transport, RATE, FRAMES, &mut outgoing)
             .with_bus_routing(routing);
-        let count = || instructions.as_ref().map_or(0, Counter::read);
-        let (started, cpu, before) = (Instant::now(), thread_cpu(), count());
+        let count = |c: &Option<Counter>| c.as_ref().map_or(0, Counter::read);
+        let (started, cpu) = (Instant::now(), thread_cpu());
+        let before = (count(&instructions), count(&cycles));
         Sampler::process(dsp, &p, &mut buffer, events, &mut cx);
-        let millions = (count() - before) as f64 * 1e-6;
-        (started.elapsed().as_secs_f64() * 1e3, (thread_cpu() - cpu) * 1e3, millions)
+        let millions = (count(&instructions) - before.0) as f64 * 1e-6;
+        let spent = (count(&cycles) - before.1) as f64 * 1e-6;
+        (started.elapsed().as_secs_f64() * 1e3, (thread_cpu() - cpu) * 1e3, millions, spent)
     };
     Sampler::reset(
         &mut dsp,
@@ -1578,6 +1635,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         &AudioConfig::new(RATE, FRAMES),
     );
     let none = EventList::with_capacity(0);
+    let (load_start, load_cpu) = (Instant::now(), cpu_clock(2));
     Load.run(&p);
     for _ in 0..4 {
         process(&mut dsp, &none);
@@ -1608,8 +1666,16 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     let (mut held, mut started) = (std::collections::VecDeque::new(), 0usize);
     let mut events = EventList::with_capacity(64);
     // Idle instructions per block, so playing ones divide into a cost per voice.
-    let mut idle = 0.;
-    println!("resident after load: {:.0} MiB", rss_mib());
+    let (mut idle, mut idle_cycles) = (0., 0.);
+    println!(
+        "resident after load: {:.0} MiB · loaded in {:.2} s, {:.2} s CPU",
+        rss_mib(),
+        load_start.elapsed().as_secs_f64(),
+        cpu_clock(2) - load_cpu
+    );
+    for v in &p.shared.view.lock().unwrap().parts[..paths.len()] {
+        println!("  {}", v.status);
+    }
     // Idle again after playing: voices and streams have ended and must cost nothing.
     for (phase, playing) in [("idle", false), ("playing", true), ("after", false)] {
         if phase != "idle" && notes == 0 {
@@ -1617,8 +1683,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         }
         let process_cpu = cpu_clock(2);
         let (mut times, mut cpus) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
-        let mut counts = Vec::with_capacity(blocks);
-        let (mut voices, mut cpu, mut voice_blocks) = (0, 0f32, 0usize);
+        let (mut counts, mut cycle_counts) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
+        let (mut voices, mut cpu, mut voice_blocks, mut audible_blocks) = (0, 0f32, 0usize, 0usize);
         let start = Instant::now();
         for b in 0..blocks {
             events.clear();
@@ -1642,12 +1708,14 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
                 held.push_back(key);
                 started += 1;
             }
-            let (wall, cpu_ms, millions) = process(&mut dsp, &events);
+            let (wall, cpu_ms, millions, spent) = process(&mut dsp, &events);
+            cycle_counts.push(spent);
             times.push(wall);
             cpus.push(cpu_ms);
             counts.push(millions);
             let now = p.shared.voices.load(Ordering::Relaxed);
             (voices, voice_blocks) = (voices.max(now), voice_blocks + now as usize);
+            audible_blocks += dsp.rack.parts.iter().map(|e| e.audible_voices()).sum::<usize>();
             cpu = cpu.max(f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32));
             if let Some(wait) = (start + block * (b + 1) as u32).checked_duration_since(Instant::now()) {
                 std::thread::sleep(wait);
@@ -1662,9 +1730,10 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         }
         let deadline = FRAMES as f64 / RATE * 1e3;
         let mean_voices = voice_blocks as f64 / times.len() as f64;
+        let mean_audible = audible_blocks as f64 / times.len() as f64;
         let whole = (cpu_clock(2) - process_cpu) / start.elapsed().as_secs_f64();
         println!(
-            "{phase}: {} blocks · mean {mean_voices:.0}, peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core",
+            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core",
             times.len(),
             cpu * 100.,
             whole * 100.
@@ -1674,11 +1743,20 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             sorted.sort_by(f64::total_cmp);
             let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
             let mean = counts.iter().sum::<f64>() / counts.len() as f64;
+            let mean_cycles = cycle_counts.iter().sum::<f64>() / cycle_counts.len() as f64;
             let per_voice = if playing && mean_voices >= 1. {
-                format!(" · {:.1} k per voice", (mean - idle) * 1e3 / mean_voices)
+                let voice_frames = mean_voices * FRAMES as f64;
+                let audible_frames = mean_audible.max(1.) * FRAMES as f64;
+                format!(
+                    " · {:.1} k per voice · {:.1} instructions, {:.1} cycles per voice-frame · {:.1} cycles per audible voice-frame",
+                    (mean - idle) * 1e3 / mean_voices,
+                    (mean - idle) * 1e6 / voice_frames,
+                    (mean_cycles - idle_cycles) * 1e6 / voice_frames,
+                    (mean_cycles - idle_cycles) * 1e6 / audible_frames,
+                )
             } else {
                 if phase == "idle" {
-                    idle = mean;
+                    (idle, idle_cycles) = (mean, mean_cycles);
                 }
                 String::new()
             };
@@ -1758,6 +1836,7 @@ mod tests {
                     path: "second.nki".into(),
                     group: 3,
                     solo: true,
+                    streaming: Some(Streaming::Auto),
                     ..Default::default()
                 },
             ],
@@ -1769,6 +1848,9 @@ mod tests {
             browser_width: 300.,
             browser_split: 0.4,
             appearance: 2,
+            sharp_artwork: true,
+            sticky_off: true,
+            streaming: Streaming::RamOnly,
             buses: vec![
                 Bus::default(),
                 Bus {

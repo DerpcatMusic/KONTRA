@@ -22,7 +22,7 @@ mod stream;
 mod voice;
 
 pub(crate) use bank::parallel;
-pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES};
+pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
@@ -329,6 +329,11 @@ impl Engine {
 
     pub fn active_voices(&self) -> usize {
         self.player.voices.len()
+    }
+
+    /// Voices not muted: those rendered, and heard.
+    pub fn audible_voices(&self) -> usize {
+        self.player.voices.iter().filter(|v| v.gains != [0.0; 2]).count()
     }
 
     /// What each playing voice is, for diagnostics: group, whether it was

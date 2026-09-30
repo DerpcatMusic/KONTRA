@@ -1952,7 +1952,7 @@ mod tests {
             let i = crate::import::read(path).unwrap();
             let (script, _) = load_scripts(&i, i.script_state.clone(), RATE);
             let controllers = script.as_deref().map_or(Vec::new(), |rt| rt.init_controllers.clone());
-            let bank = Bank::load_counting(&i, MEMORY_LIMIT, &controllers, &Default::default()).unwrap();
+            let bank = Bank::load_counting(&i, MEMORY_LIMIT, Default::default(), &controllers, &Default::default()).unwrap();
             let mut e = Engine::default();
             e.blocking_streams = true;
             e.set_bank(Some(Box::new(bank)));

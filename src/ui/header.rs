@@ -13,6 +13,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
     let cpu = f32::from_bits(cx.state.meters.cpu.load(Ordering::Relaxed));
     let disk = f32::from_bits(cx.state.meters.disk.load(Ordering::Relaxed));
     let voices = p.shared.voices.load(Ordering::Relaxed);
+    let audible = p.shared.audible.load(Ordering::Relaxed);
     let memory: usize = cx.view.parts.iter().map(|v| v.bytes).sum();
 
     let loading: Vec<_> = cx
@@ -114,7 +115,12 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             .shrink(0),
         caption(activity).fill(Role::Dim).lines(1).flex(1).min_w(0),
         stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
-        stat("Voices", voices.to_string(), "000"),
+        // Heard voices; scripts start and mute crossfade layers and mic
+        // positions too, which cost next to nothing.
+        stat("Voices", audible.to_string(), "000").tip(format!(
+            "{voices} running, {} muted by the script",
+            voices.saturating_sub(audible)
+        )),
         stat("RAM", megabytes(memory), "00000 MB"),
         stat("Disk", format!("{disk:.1} MB/s"), "000.0 MB/s"),
         vrule().h(CONTROL - TIGHT),

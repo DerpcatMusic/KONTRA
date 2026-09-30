@@ -485,14 +485,12 @@ pub struct Resolver {
     /// path walk per component, which dominated large imports.
     canonical: HashMap<PathBuf, PathBuf>,
     is_file: HashMap<PathBuf, bool>,
-    /// Member entries validated ahead by [`Resolver::resolve_all`].
-    checked: HashMap<(PathBuf, String), Option<ni_file::nkr::Entry>>,
     /// Archive members whose header reads back as zeros: an interrupted download, or
     /// the kernel `ntfs` driver dropping the extents of a fragmented archive.
     pub undownloaded: std::collections::HashSet<PathBuf>,
 }
 impl Resolver {
-    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), canonical: HashMap::new(), is_file: HashMap::new(), checked: HashMap::new(), undownloaded: Default::default() } }
+    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), canonical: HashMap::new(), is_file: HashMap::new(), undownloaded: Default::default() } }
     pub fn resolve(&mut self, parent: &Path, name: &str) -> Result<Option<PathBuf>> {
         let name = name.replace('\\', "/");
         let direct = parent.join(&name);
@@ -504,22 +502,8 @@ impl Resolver {
                 self.archives.insert(archive.clone(), (index, file));
             }
             let (index, file) = &self.archives[&archive];
-            let entry = match self.checked.remove(&(archive.clone(), member.clone())) {
-                Some(entry) => entry,
-                None => index.member(crate::audio::FileAt { file, pos: 0 }, &member)?,
-            };
-            match entry {
-                Some(entry) if entry.valid => {
-                    let canonical = match self.canonical.get(&archive) {
-                        Some(c) => c.clone(),
-                        None => self.canonical.entry(archive.clone()).or_insert(archive.canonicalize()?).clone(),
-                    };
-                    return Ok(Some(canonical.join(&entry.name)));
-                }
-                Some(entry) if entry.issue == Some("Zero-filled NKX member header") => { self.undownloaded.insert(direct.clone()); }
-                _ => {}
-            }
-            return Ok(None);
+            let entry = index.member(crate::audio::FileAt { file, pos: 0 }, &member)?;
+            return self.member_path(&direct, &archive, entry);
         }
         if direct.is_file() { return Ok(Some(direct.canonicalize()?)); }
         let basename = name.rsplit('/').next().unwrap_or(&name).to_lowercase();
@@ -545,26 +529,44 @@ impl Resolver {
     /// headers in parallel first: each is a random read, which a cold disk
     /// serves far faster several at a time.
     pub fn resolve_all(&mut self, parent: &Path, names: &[&str]) -> Result<Vec<Option<PathBuf>>> {
-        let mut jobs = Vec::new();
-        for name in names {
-            let Some((archive, member)) = self.archive_member(&parent.join(name.replace('\\', "/"))) else { continue };
+        let (mut resolved, mut jobs, mut loose) = (vec![None; names.len()], Vec::new(), Vec::new());
+        for (i, name) in names.iter().enumerate() {
+            let direct = parent.join(name.replace('\\', "/"));
+            let Some((archive, member)) = self.archive_member(&direct) else { loose.push(i); continue };
             if !self.archives.contains_key(&archive) {
                 let mut file = File::open(&archive)?;
                 let index = ni_file::nkr::Archive::read_index(&mut file).with_context(|| format!("Archive {}", archive.display()))?;
                 self.archives.insert(archive.clone(), (index, file));
             }
-            jobs.push((archive, member));
+            jobs.push((i, direct, archive, member));
         }
         let archives = &self.archives;
-        let checked = crate::engine::parallel(jobs, |_: &mut (), (archive, member)| {
+        let checked = crate::engine::parallel(jobs, |_: &mut (), (i, direct, archive, member)| {
             let (index, file) = &archives[&archive];
             let entry = index.member(crate::audio::FileAt { file, pos: 0 }, &member);
-            ((archive, member), entry)
+            (i, direct, archive, entry)
         });
-        for (key, entry) in checked {
-            self.checked.insert(key, entry?);
+        for (i, direct, archive, entry) in checked {
+            resolved[i] = self.member_path(&direct, &archive, entry?)?;
         }
-        names.iter().map(|name| self.resolve(parent, name)).collect()
+        for i in loose {
+            resolved[i] = self.resolve(parent, names[i])?;
+        }
+        Ok(resolved)
+    }
+
+    /// The path of an archive member `direct` names, once its header is read.
+    fn member_path(&mut self, direct: &Path, archive: &Path, entry: Option<ni_file::nkr::Entry>) -> Result<Option<PathBuf>> {
+        match entry {
+            Some(entry) if entry.valid => {
+                if !self.canonical.contains_key(archive) {
+                    self.canonical.insert(archive.to_path_buf(), archive.canonicalize()?);
+                }
+                Ok(Some(self.canonical[archive].join(&entry.name)))
+            }
+            Some(entry) if entry.issue == Some("Zero-filled NKX member header") => { self.undownloaded.insert(direct.to_path_buf()); Ok(None) }
+            _ => Ok(None),
+        }
     }
 
     /// [`archive_member`], remembering which archive paths are files: one
@@ -572,7 +574,10 @@ impl Resolver {
     fn archive_member(&mut self, path: &Path) -> Option<(PathBuf, String)> {
         for parent in path.ancestors().skip(1) {
             if !parent.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr")) { continue; }
-            let is_file = *self.is_file.entry(parent.to_path_buf()).or_insert_with(|| parent.is_file());
+            let is_file = match self.is_file.get(parent) {
+                Some(&is_file) => is_file,
+                None => *self.is_file.entry(parent.to_path_buf()).or_insert(parent.is_file()),
+            };
             if is_file {
                 return Some((parent.to_path_buf(), path.strip_prefix(parent).ok()?.to_string_lossy().replace('\\',"/")));
             }

@@ -428,16 +428,25 @@ fn key(
         (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
         (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
     };
-    // A sounding key takes the accent whatever its color, brighter the
-    // harder it is played, ringed in a deeper amber so it reads even on
-    // an orange key.
-    let face = if held {
-        let a = accent();
-        let v = f32::from(lit) / 127.;
-        Color::oklch(a.lightness() * if black { 0.85 } else { 1. } + 0.06 * v, a.chroma() + 0.03, a.hue())
-    } else {
-        face
-    };
+    // A sounding key lights like an LED under its top edge: the accent,
+    // bright there and fading down the key, stronger the harder it is
+    // played. Lighter than the accent, so it reads on a red or orange key.
+    let v = f32::from(lit) / 127.;
+    let light = Color::oklch(if black { 0.8 } else { 0.76 }, 0.19, accent().hue());
+    let strength = 0.55 + 0.45 * v;
+    let led = block(Len::Pct(100.), Len::Pct(100.))
+        .fill(Gradient::linear(
+            180.,
+            [
+                (0., light.with_alpha(strength)),
+                (0.12, light.with_alpha(0.8 * strength)),
+                (0.55, light.with_alpha(0.3 * strength)),
+                (1., light.with_alpha(0.)),
+            ],
+        ))
+        .opacity(if held { 1. } else { 0. })
+        // Lit at once, fading out when let go.
+        .animate_with(if held { Spring::instant() } else { Spring::new(0.35, 1.) });
     let mut parts = vec![spacer()];
     if note.is_multiple_of(12) {
         parts.push(
@@ -452,12 +461,9 @@ fn key(
         Some(what) => format!("{name} · {what}"),
         None => name.clone(),
     };
-    col(parts)
-        .pad((2, 3))
+    let text = col(parts).pad((2, 3)).align(Align::Center).w(Len::Pct(100.)).h(Len::Pct(100.));
+    stack![led, text]
         .fill(face)
-        .when(held, |e| e.stroke(Color::oklch(0.45, 0.12, accent().hue())).stroke_width(2))
-        // Lit at once, fading out when let go.
-        .animate_with(if held { Spring::instant() } else { Spring::new(0.35, 1.) })
         .on(State::Hover, move |s| {
             if held {
                 s
@@ -466,7 +472,6 @@ fn key(
                 s.fill(Color::oklch((face.lightness() + lift).clamp(0., 1.), face.chroma(), face.hue()))
             }
         })
-        .align(Align::Center)
         .focusable()
         .a11y(A11y::Button)
         .named(format!("Play {label}"))

@@ -41,6 +41,21 @@ pub const MIN_PRELOAD: u64 = 1024;
 /// Last-resort preload for banks that still do not fit: ≈5 ms at 48 kHz.
 /// Streams may underrun under heavy load; the bank warns.
 pub const FLOOR_PRELOAD: u64 = 256;
+/// Memory left to the rest of the system when samples load into RAM only:
+/// this much plus an eighth of physical memory.
+const RAM_HEADROOM: usize = 1 << 30;
+
+/// Where sample data plays from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Streaming {
+    /// Preload sample starts and stream the rest from disk.
+    #[default]
+    Auto,
+    /// Load every sample whole: no disk reads or streaming while playing.
+    /// Samples that do not fit the free RAM stream as with `Auto`.
+    RamOnly,
+}
+
 /// Voices per instrument when the program stores no limit.
 const DEFAULT_POLYPHONY: usize = 512;
 
@@ -234,16 +249,19 @@ impl Bank {
     /// resident samples and stream buffers. The preload shrinks from
     /// [`PRELOAD_FRAMES`] toward [`MIN_PRELOAD`] until the bank fits.
     pub fn load_within(instrument: &Instrument, budget: usize) -> Result<Self> {
-        Self::load_counting(instrument, budget, &[], &AtomicU32::new(0))
+        Self::load_counting(instrument, budget, Streaming::Auto, &[], &AtomicU32::new(0))
     }
 
     /// [`Bank::load_within`], counting `progress` up to [`LOAD_DONE`] as
     /// samples are opened and then read. `controllers` are the values the
     /// scripts set in `on init` ([`crate::ksp::Runtime::init_controllers`]):
     /// a tight budget keeps resident only the start offsets they select.
+    /// [`Streaming::RamOnly`] loads samples whole past `budget`, as far as
+    /// free RAM allows.
     pub fn load_counting(
         instrument: &Instrument,
         budget: usize,
+        streaming: Streaming,
         controllers: &[(u8, u8)],
         progress: &AtomicU32,
     ) -> Result<Self> {
@@ -269,14 +287,19 @@ impl Bank {
         // reads come from the page cache.
         let mut sources = audio::Sources::default();
         let resolved: Vec<_> = paths.iter().map(|path| sources.source(path)).collect();
-        // Each sample is opened, then read: two steps apiece.
-        let (steps, done) = (2 * paths.len().max(1), AtomicUsize::new(0));
-        let step = || {
-            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            progress.store((n * LOAD_DONE as usize / steps) as u32, Ordering::Relaxed);
+        // Progress runs on from where the caller left it: opening every
+        // sample takes the first tenth of the rest, reading them the others
+        // by frames read. Only ever rises.
+        let base = progress.load(Ordering::Relaxed).min(LOAD_DONE) as usize;
+        let reads_from = base + (LOAD_DONE as usize - base) / 10;
+        let advance = |done: &AtomicUsize, of: usize, add: usize, (from, to): (usize, usize)| {
+            let n = done.fetch_add(add, Ordering::Relaxed) + add;
+            let at = from + (to - from) * n.min(of) / of.max(1);
+            progress.fetch_max(at as u32, Ordering::Relaxed);
         };
+        let opens = AtomicUsize::new(0);
         let opened = parallel(resolved, |_: &mut (), source| {
-            step();
+            advance(&opens, paths.len(), 1, (base, reads_from));
             let source = source?;
             anyhow::Ok((source.open()?, source))
         });
@@ -315,30 +338,40 @@ impl Bank {
             .iter()
             .map(|(_, r)| Pcm::frame_bytes(r.bits))
             .collect();
-        let layout = builder.plan(&frame_bytes, budget, controllers);
+        let mut layout = builder.plan(&frame_bytes, budget, controllers);
+        let ram_only = (streaming == Streaming::RamOnly).then(|| {
+            // ponytail: /proc/meminfo only; other systems get MEMORY_LIMIT until they have a probe.
+            let room = ram_free().map_or(MEMORY_LIMIT, |(free, total)| {
+                free.saturating_sub(RAM_HEADROOM + total / 8)
+            });
+            builder.keep_whole(&mut layout, &frame_bytes, room)
+        });
         let (preload, whole, margin, planned) =
             (layout.preload, layout.whole, layout.margin, layout.bytes);
         let (cover, max_cover) = (layout.cover.min(layout.width), layout.width);
+        let frames_to_read = (layout.plan.iter())
+            .map(|(spans, ..)| spans.iter().map(|r| r.end - r.start).sum::<u64>() as usize)
+            .sum();
+        let read = AtomicUsize::new(0);
         let jobs = readers.into_iter().zip(layout.plan).collect();
         let decoded = parallel(
             jobs,
-            |buf: &mut Vec<Frame>, ((source, mut reader), (spans, streamed, looping))| {
+            |(ints, buf): &mut (Vec<[i32; 2]>, Vec<Frame>),
+             ((source, mut reader), (spans, streamed, looping))| {
                 let spans = spans
                     .into_iter()
                     .map(|range| {
-                        buf.clear();
-                        buf.resize((range.end - range.start) as usize, [0.0; 2]);
-                        reader.read(range.start, buf)?;
-                        Ok(Span {
-                            start: range.start,
-                            data: Pcm::pack(buf, !looping),
-                        })
+                        let (start, len) = (range.start, (range.end - range.start) as usize);
+                        let data = reader.read_pcm(range, !looping, ints, buf)?;
+                        let span = (reads_from, LOAD_DONE as usize);
+                        advance(&read, frames_to_read, len, span);
+                        Ok(Span { start, data })
                     })
                     .collect::<Result<Vec<_>>>();
-                step();
                 (spans, streamed, reader.rate, source)
             },
         );
+        progress.store(LOAD_DONE, Ordering::Relaxed);
         let mut samples = Vec::with_capacity(decoded.len());
         let mut streamed = Vec::with_capacity(decoded.len());
         let mut bytes = 0;
@@ -367,7 +400,16 @@ impl Bank {
         let mut bank = builder.finish(samples, streamer, bytes)?;
         (bank.preload, bank.planned, bank.cover) = (preload, planned, cover);
         let mib = budget >> 20;
-        bank.warning = if planned > budget {
+        let still = bank.streamed_samples();
+        bank.warning = if let Some(needed) = ram_only.filter(|_| still > 0) {
+            Some(format!(
+                "Not enough free RAM to load every sample: {still} of {} still stream ({} MiB more needed)",
+                bank.samples.len(),
+                needed >> 20
+            ))
+        } else if ram_only.is_some() {
+            None
+        } else if planned > budget {
             Some(format!(
                 "Needs {} MiB resident at the smallest preload, over the {mib} MiB budget",
                 planned >> 20
@@ -694,6 +736,35 @@ impl Builder {
         floor
     }
 
+    /// Load samples whole instead of streaming them, smallest first, while
+    /// they fit `room` bytes. Returns the bytes the rest would need.
+    fn keep_whole(&self, layout: &mut Layout, frame_bytes: &[usize], room: usize) -> usize {
+        // Per sample: frames the zones play, and whether any loops.
+        let mut extent = vec![(0, false); frame_bytes.len()];
+        for play in &self.plays {
+            let e = &mut extent[play.sample as usize];
+            *e = (e.0.max(play.map.end), e.1 | play.map.looped.is_some());
+        }
+        let size = |i: usize| frame_bytes[i] * extent[i].0 as usize;
+        let resident = |plan: &Plan| plan.0.iter().map(|r| r.end - r.start).sum::<u64>() as usize;
+        let mut streamed: Vec<_> = (0..layout.plan.len()).filter(|&i| layout.plan[i].1).collect();
+        streamed.sort_by_key(|&i| size(i));
+        let mut room = room.saturating_sub(layout.bytes);
+        let mut needed = 0;
+        for i in streamed {
+            let more = size(i).saturating_sub(frame_bytes[i] * resident(&layout.plan[i]));
+            if more <= room {
+                room -= more;
+                layout.bytes += more;
+                layout.plan[i] = (std::iter::once(0..extent[i].0).collect(), false, extent[i].1);
+            } else {
+                needed += more - room.min(more);
+                room = 0;
+            }
+        }
+        needed
+    }
+
     /// Per zone, the lowest and highest start offset (frames) its voices
     /// take with `controllers` held and every other controller at 0, over
     /// its keys and velocities. Scripted `play_note` offsets are not known.
@@ -890,6 +961,17 @@ fn spans(plays: &[(&ZonePlay, (u64, u64))], preload: u64, cover: u64) -> Plan {
         !r.is_empty()
     });
     (merged, true, looping)
+}
+
+/// Free (available) and total RAM in bytes, from `/proc/meminfo`.
+fn ram_free() -> Option<(usize, usize)> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let field = |name: &str| -> Option<usize> {
+        let line = info.lines().find(|l| l.starts_with(name))?;
+        let kib: usize = line[name.len()..].trim().trim_end_matches("kB").trim().parse().ok()?;
+        Some(kib << 10)
+    };
+    Some((field("MemAvailable:")?, field("MemTotal:")?))
 }
 
 /// Run `f` over `items` on every core, keeping order. Each worker owns one
