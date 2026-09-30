@@ -215,6 +215,7 @@ impl Engine {
     /// disposal off the audio thread.
     pub fn set_bank(&mut self, bank: Option<Box<Bank>>) -> Option<Box<Bank>> {
         self.player.clear_voices(self.bank.as_deref());
+        self.player.touch();
         self.commands.clear();
         self.writes.clear();
         let old = std::mem::replace(&mut self.bank, bank);
@@ -240,6 +241,7 @@ impl Engine {
         };
         // Swapped, not cloned: no allocation here.
         std::mem::swap(&mut old.settings, &mut bank.settings);
+        self.player.touch();
         self.player.rebind(old, &bank);
         self.bank.replace(bank)
     }
@@ -303,6 +305,7 @@ impl Engine {
 
     /// Apply one engine parameter; false when nothing installed holds it.
     fn write(&mut self, address: Address, value: f32) -> bool {
+        self.player.touch();
         match address {
             Address::Fx(rack, slot, param) => self.fx.set_param(rack, slot, param, value),
             Address::Instrument(p) => {
@@ -472,6 +475,7 @@ impl Engine {
             return rt.pitch_bend(&mut host, 0, i32::from(value) - 8192);
         }
         self.player.bend[channel as usize] = (f32::from(value) - 8192.0) / 8192.0;
+        self.player.touch();
     }
 
     /// Channel pressure (mono aftertouch modulation), through the scripts.
@@ -481,6 +485,7 @@ impl Engine {
             return rt.channel_pressure(&mut host, 0, value);
         }
         self.player.pressure[channel as usize] = value;
+        self.player.touch();
     }
 
     /// A host edit of script control `control` in script slot `slot`: sets its
@@ -727,6 +732,9 @@ struct Player {
     tone: [f32; 2],
     underruns: u64,
     dropped_commands: u64,
+    /// Stamp of what modulation reads (see [`voice::Context::inputs`]):
+    /// bumped by every controller, bend, pressure and group write.
+    inputs: u32,
 }
 
 impl Player {
@@ -758,6 +766,7 @@ impl Player {
             tone: [0.0; 2],
             underruns: 0,
             dropped_commands: 0,
+            inputs: 0,
         };
         player.reset_midi();
         player
@@ -777,6 +786,12 @@ impl Player {
         self.pedal_releases = [[0; 128]; 16];
         (self.volume, self.pan) = (1.0, 0.0);
         self.tone = [0.0; 2];
+        self.touch();
+    }
+
+    /// Something modulation reads changed: settled voices modulate again.
+    fn touch(&mut self) {
+        self.inputs = self.inputs.wrapping_add(1);
     }
 
     fn clear_voices(&mut self, bank: Option<&Bank>) {
@@ -1021,6 +1036,8 @@ impl Player {
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),
             mods,
+            modulated: (1.0, 0.0),
+            settled: None,
             stream,
             env: Envelope::new(&envelope, self.rate as f32),
             flex: settings.flex.as_ref().map(|_| Envelope::flex()),
@@ -1034,7 +1051,7 @@ impl Player {
             filter: VoiceFilter::new(settings.filter.as_deref(), &settings.mods, &inputs, self.rate as f32),
         };
         // Start at the voice's first-block gains, so it does not ramp in.
-        let (modulation, _) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
+        let (modulation, ..) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
         let pan = (zone.pan + settings.pan + ev.pan).clamp(-1.0, 1.0);
         voice.gains = balance(base_level * settings.gain * modulation * voice.volume, pan);
         if offset > 0 {
@@ -1170,6 +1187,7 @@ impl Player {
         let c = channel as usize;
         let value = value.min(127);
         self.cc[c][cc as usize] = value;
+        self.touch();
         match cc {
             // General MIDI volume curve: 127 is unity.
             7 => self.volume = (f32::from(value) / 127.0).powi(2),
@@ -1271,6 +1289,7 @@ impl Player {
             tune: self.instrument.2 + tune,
             rate: self.rate as f32,
             blocking,
+            inputs: self.inputs,
         };
         let n = left.len();
         let mut i = 0;

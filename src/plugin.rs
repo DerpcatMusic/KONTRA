@@ -1840,10 +1840,12 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         let mean_audible = audible_blocks as f64 / times.len() as f64;
         let whole = (cpu_clock(2) - process_cpu) / start.elapsed().as_secs_f64();
         println!(
-            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core",
+            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core · RSS {:.0} MiB · {} dropouts",
             times.len(),
             cpu * 100.,
-            whole * 100.
+            whole * 100.,
+            rss_mib(),
+            p.shared.dropouts.load(Ordering::Relaxed),
         );
         if counts.iter().any(|&c| c > 0.) {
             let mut sorted = counts.clone();
