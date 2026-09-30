@@ -2,14 +2,17 @@
 
 use super::{
     DECLICK, EventId, MAX_BLOCK,
-    bank::{Bank, Span},
+    bank::{Bank, MIN_PRELOAD, Span},
     filter::VoiceFilter,
     map::{FOREVER, PlayMap, Run},
     params::{Inputs, VOICE_MODS},
     stream::Slot,
 };
 use crate::audio::Frame;
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::Ordering::Relaxed,
+    time::{Duration, Instant},
+};
 
 /// Highest playback increment (source frames per output frame): a 192 kHz
 /// sample three octaves up at 48 kHz.
@@ -24,6 +27,9 @@ const SILENT: f32 = 1e-4;
 const OFFLINE_WAIT: Duration = Duration::from_secs(5);
 /// Seconds a voice stays muted before its stream pauses.
 const PAUSE_AFTER: f32 = 0.1;
+/// Seconds a real-time voice may hold its start for streamed data it has no
+/// resident copy of (a purged sample, an offset past the resident range).
+pub(crate) const START_WAIT: f32 = 0.1;
 
 /// Attack-hold-decay-sustain-release amplitude envelope, times in seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -579,6 +585,8 @@ pub(crate) struct Voice {
     pub gains: [f32; 2],
     /// Frames the voice has been muted for, to pause its stream.
     pub muted: u32,
+    /// Frames the voice may still hold its start for its stream (0: started).
+    pub wait: u32,
     /// Group insert filter state (untouched when the group has none).
     pub filter: VoiceFilter,
 }
@@ -681,6 +689,23 @@ impl Voice {
             (self.base_pan + group.pan + self.pan + x.pan).clamp(-1.0, 1.0),
         );
         let muted = target == [0.0; 2] && self.gains == [0.0; 2];
+        // Heard: its group is in use, not to be purged.
+        if !muted && let Some(used) = cx.bank.usage.get(self.group as usize) {
+            used.store(super::bank::CLOCK.load(Relaxed), Relaxed);
+        }
+        // Late rather than gapped: a voice whose first frames are neither
+        // resident nor streamed yet holds (envelopes too) until they are, as
+        // long as START_WAIT allows. Offline renders wait on the disk anyway.
+        if self.wait > 0 && !muted {
+            // The smallest preload's worth ahead, as the planner counts it:
+            // what it trusts a stream to catch up within.
+            if cx.blocking || self.wait <= n as u32 || self.streamed_ahead(cx, MIN_PRELOAD) {
+                self.wait = 0;
+            } else {
+                self.wait -= n as u32;
+                return (true, false);
+            }
+        }
 
         let amp = &mut scratch.amp[..n];
         let flex = &mut scratch.flex[..n];
@@ -772,6 +797,23 @@ impl Voice {
             && !self.fade.finished()
             && self.pos < self.length as f64;
         (alive, underrun)
+    }
+
+    /// Whether `ahead` frames past the position are resident or published
+    /// by the stream.
+    fn streamed_ahead(&mut self, cx: &Context, ahead: u64) -> bool {
+        let need = (self.pos as u64 + ahead + 4).min(self.length);
+        if need <= self.limit {
+            return true;
+        }
+        self.resume(cx);
+        let Some(stream) = &mut self.stream else {
+            return true;
+        };
+        if let Some(end) = cx.slots[stream.slot as usize].published(stream.tag) {
+            stream.trusted = stream.trusted.max(end);
+        }
+        stream.trusted >= need
     }
 
     /// Stop streaming while muted, keeping the slot.

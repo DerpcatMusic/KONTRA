@@ -41,6 +41,8 @@ pub const MIN_PRELOAD: u64 = 1024;
 /// Last-resort preload for banks that still do not fit: ≈5 ms at 48 kHz.
 /// Streams may underrun under heavy load; the bank warns.
 pub const FLOOR_PRELOAD: u64 = 256;
+/// Cores a purge rebuild loads on.
+const PURGE_THREADS: usize = 2;
 /// Memory left to the rest of the system when samples load into RAM only:
 /// this much plus an eighth of physical memory.
 const RAM_HEADROOM: usize = 1 << 30;
@@ -204,13 +206,15 @@ mod resident {
     }
 
     /// A live span of `key` holding all of `range` and nothing before
-    /// `from`, where the bank's previous span ends.
+    /// `from`, where the bank's previous span ends, and at most twice its
+    /// size: a purged head must not keep a whole preload alive.
     pub fn find(key: &(PathBuf, bool), range: &std::ops::Range<u64>, from: u64) -> Option<Span> {
         with(|r| {
             r.get(key)?.iter().find_map(|(start, data)| {
                 let data = data.upgrade()?;
                 let end = start + data.len() as u64;
-                (*start >= from && *start <= range.start && end >= range.end)
+                let small = end - start <= 2 * (range.end - range.start);
+                (*start >= from && *start <= range.start && end >= range.end && small)
                     .then_some(Span { start: *start, data })
             })
         })
@@ -246,6 +250,31 @@ mod resident {
             spans.retain(|(_, d)| d.strong_count() > 0);
             spans.push((span.start, Arc::downgrade(&span.data)));
         })
+    }
+}
+
+/// Seconds since the loader first ticked [`clock`]; voices stamp their
+/// group's [`Bank::usage`] with it.
+pub static CLOCK: AtomicU32 = AtomicU32::new(0);
+
+/// Advance [`CLOCK`] to now and return it.
+pub fn clock() -> u32 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let now = START.get_or_init(std::time::Instant::now).elapsed().as_secs() as u32;
+    CLOCK.store(now, Ordering::Relaxed);
+    now
+}
+
+/// Give freed heap pages back to the system: a purge frees thousands of
+/// small spans the allocator would otherwise keep (300 MiB on Mega Brass).
+pub fn trim() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: glibc's malloc_trim takes a padding size and nothing else.
+    unsafe {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        malloc_trim(0);
     }
 }
 
@@ -328,7 +357,9 @@ pub struct Bank {
     pub(crate) samples: Vec<SampleData>,
     pub(crate) voice_groups: Vec<Option<VoiceGroup>>,
     pub(crate) polyphony: usize,
-    pub(crate) streamer: Option<Streamer>,
+    /// Shared by the banks one part rebuilds as it purges: voices keep
+    /// their streams across the switch.
+    pub(crate) streamer: Option<Arc<Streamer>>,
     /// Resident sample and stream-buffer bytes.
     pub bytes: usize,
     /// Preload frames per sample the memory budget allowed.
@@ -343,6 +374,11 @@ pub struct Bank {
     pub warning: Option<String>,
     /// Zones dropped because their sample is missing, unreadable or out of bounds.
     pub skipped_zones: usize,
+    /// Per group: the [`clock`] second a voice of it was last heard. Carried
+    /// from bank to bank of one part; the loader purges groups gone quiet.
+    pub usage: Arc<[AtomicU32]>,
+    /// Samples purged to a [`FLOOR_PRELOAD`] head: only unheard groups play them.
+    pub purged: usize,
     /// First few reasons for skipped zones.
     pub issues: Vec<String>,
 }
@@ -351,6 +387,11 @@ pub struct Bank {
 pub const LOAD_DONE: u32 = 1000;
 
 impl Bank {
+    /// The streamer, for [`Bank::load_purging`] to keep.
+    pub fn streamer(&self) -> Option<Arc<Streamer>> {
+        self.streamer.clone()
+    }
+
     /// Load every group of `instrument` within [`MEMORY_LIMIT`], streaming
     /// long samples from disk.
     pub fn load(instrument: &Instrument) -> Result<Self> {
@@ -376,6 +417,24 @@ impl Bank {
         streaming: Streaming,
         controllers: &[(u8, u8)],
         progress: &AtomicU32,
+    ) -> Result<Self> {
+        Self::load_purging(instrument, budget, streaming, controllers, progress, &[], None)
+    }
+
+    /// [`Bank::load_counting`] with the samples only `cold` groups play
+    /// purged: they keep [`FLOOR_PRELOAD`] frames past each reachable start
+    /// offset and stream the rest (a voice waits for its stream rather than
+    /// start with a gap). `cold` is indexed by group; missing entries are warm.
+    /// A `streamer` of an earlier bank of `instrument` is kept if it reads
+    /// the same samples.
+    pub fn load_purging(
+        instrument: &Instrument,
+        budget: usize,
+        streaming: Streaming,
+        controllers: &[(u8, u8)],
+        progress: &AtomicU32,
+        cold: &[bool],
+        streamer: Option<Arc<Streamer>>,
     ) -> Result<Self> {
         let mut issues = Issues::default();
         resident::sweep();
@@ -412,7 +471,10 @@ impl Bank {
             progress.fetch_max(at as u32, Ordering::Relaxed);
         };
         let opens = AtomicUsize::new(0);
-        let opened = parallel(resolved, |_: &mut (), source| {
+        // A purge rebuilds in the background while voices stream: two cores
+        // leave the streamers theirs.
+        let threads = if cold.is_empty() { usize::MAX } else { PURGE_THREADS };
+        let opened = parallel_on(threads, resolved, |_: &mut (), source| {
             advance(&opens, paths.len(), 1, (base, reads_from));
             let source = source?;
             anyhow::Ok((source.open()?, source))
@@ -456,7 +518,7 @@ impl Bank {
         // ponytail: a plan wider than another bank's spans (a roomier budget)
         // reads its own copy; growing the shared spans in place, and moving
         // the other banks onto them, would keep one.
-        let mut layout = builder.plan(&frame_bytes, budget, controllers);
+        let mut layout = builder.plan(&frame_bytes, budget, controllers, cold);
         let ram_only = (streaming == Streaming::RamOnly).then(|| {
             // ponytail: /proc/meminfo only; other systems get MEMORY_LIMIT until they have a probe.
             let room = ram_free().map_or(MEMORY_LIMIT, |(free, total)| {
@@ -472,7 +534,8 @@ impl Bank {
             .sum();
         let read = AtomicUsize::new(0);
         let jobs = readers.into_iter().zip(layout.plan).collect();
-        let decoded = parallel(
+        let decoded = parallel_on(
+            threads,
             jobs,
             |(ints, buf): &mut (Vec<[i32; 2]>, Vec<Frame>),
              ((source, mut reader, path), (spans, streamed, looping))| {
@@ -506,7 +569,8 @@ impl Bank {
         );
         progress.store(LOAD_DONE, Ordering::Relaxed);
         let mut samples = Vec::with_capacity(decoded.len());
-        let mut streamed = Vec::with_capacity(decoded.len());
+        let mut sources = Vec::with_capacity(decoded.len());
+        let mut any_streamed = false;
         let mut bytes = 0;
         for (id, (spans, streamed_sample, rate, source)) in decoded.into_iter().enumerate() {
             let (spans, streamed_sample) = match spans {
@@ -517,21 +581,26 @@ impl Bank {
                 }
             };
             bytes += spans.iter().map(|s| s.data.bytes()).sum::<usize>();
-            streamed.push(streamed_sample.then(|| resident::source(source)));
+            // Every sample's: a rebuilt bank may stream others through this streamer.
+            sources.push(resident::source(source));
+            any_streamed |= streamed_sample;
             samples.push(SampleData {
                 rate,
                 spans,
                 streamed: streamed_sample,
             });
         }
-        let streamer = if streamed.iter().any(Option::is_some) {
-            bytes += Streamer::BYTES;
-            Some(Streamer::spawn(streamed)?)
-        } else {
-            None
+        let streamer = match streamer.filter(|s| s.reads(&sources)) {
+            Some(streamer) => Some(streamer),
+            None if any_streamed => Some(Arc::new(Streamer::spawn(sources.into_iter().map(Some).collect())?)),
+            None => None,
         };
+        if streamer.is_some() {
+            bytes += Streamer::BYTES;
+        }
         let mut bank = builder.finish(samples, streamer, bytes)?;
         (bank.preload, bank.planned, bank.cover) = (preload, planned, cover);
+        bank.purged = layout.purged;
         let mib = budget >> 20;
         let still = bank.streamed_samples();
         bank.warning = if let Some(needed) = ram_only.filter(|_| still > 0) {
@@ -661,6 +730,8 @@ type Plan = (Vec<Range<u64>>, bool, bool);
 
 /// [`Builder::plan`]'s choice: per-sample plans and their expected bytes.
 struct Layout {
+    /// Samples given a [`FLOOR_PRELOAD`] head because only cold groups play them.
+    purged: usize,
     preload: u64,
     /// Every start offset is resident, not only those reachable.
     whole: bool,
@@ -781,17 +852,40 @@ impl Builder {
     /// keeps the largest value that fits, within 64 frames.
     /// `frame_bytes[sample]` is its expected storage per frame; packing may
     /// store less than planned.
-    fn plan(&self, frame_bytes: &[usize], budget: usize, controllers: &[(u8, u8)]) -> Layout {
+    fn plan(
+        &self,
+        frame_bytes: &[usize],
+        budget: usize,
+        controllers: &[(u8, u8)],
+        cold: &[bool],
+    ) -> Layout {
         let mut uses = vec![Vec::new(); frame_bytes.len()];
         for (i, play) in self.plays.iter().enumerate() {
             uses[play.sample as usize].push(i);
         }
         let all: Vec<_> = self.plays.iter().map(|p| (0, p.start_mod)).collect();
         let reachable = self.reachable(controllers);
+        // Samples no warm group plays: the smallest head at the offsets
+        // the controllers reach, whatever the budget.
+        let purged: Vec<Option<Plan>> = uses
+            .iter()
+            .map(|plays| {
+                let cold = |&i: &usize| cold.get(self.zones[i].group).copied().unwrap_or(false);
+                (!plays.is_empty() && plays.iter().all(cold)).then(|| {
+                    let plays: Vec<_> =
+                        plays.iter().map(|&i| (&self.plays[i], reachable[i])).collect();
+                    spans(&plays, FLOOR_PRELOAD, 0)
+                })
+            })
+            .collect();
         let plan = |reach: &[(u64, u64)], preload, cover| -> Layout {
             let plan: Vec<_> = uses
                 .iter()
-                .map(|plays| {
+                .zip(&purged)
+                .map(|(plays, purged)| {
+                    if let Some(plan) = purged {
+                        return plan.clone();
+                    }
                     let plays: Vec<_> = plays.iter().map(|&i| (&self.plays[i], reach[i])).collect();
                     spans(&plays, preload, cover)
                 })
@@ -807,6 +901,7 @@ impl Builder {
                 bytes += Streamer::BYTES;
             }
             Layout {
+                purged: purged.iter().filter(|p| p.is_some()).count(),
                 preload,
                 whole: reach == &all[..],
                 margin: 0,
@@ -945,7 +1040,7 @@ impl Builder {
     fn finish(
         self,
         samples: Vec<SampleData>,
-        streamer: Option<Streamer>,
+        streamer: Option<Arc<Streamer>>,
         bytes: usize,
     ) -> Result<Bank> {
         if self.zones.is_empty() && self.issues.skipped > 0 {
@@ -977,6 +1072,8 @@ impl Builder {
             key_zones.extend(on_key.map(|(i, _)| i as u32));
         }
         key_start[128] = key_zones.len() as u32;
+        let now = CLOCK.load(Ordering::Relaxed);
+        let usage = (0..self.groups.len()).map(|_| AtomicU32::new(now)).collect();
         Ok(Bank {
             groups: self.groups,
             zones,
@@ -997,6 +1094,8 @@ impl Builder {
             bytes,
             skipped_zones: self.issues.skipped,
             issues: self.issues.notes,
+            usage,
+            purged: 0,
         })
     }
 }
@@ -1118,8 +1217,18 @@ pub(crate) fn parallel<T: Send, S: Default, R: Send>(
     items: Vec<T>,
     f: impl Fn(&mut S, T) -> R + Sync,
 ) -> Vec<R> {
+    parallel_on(usize::MAX, items, f)
+}
+
+/// [`parallel`] on at most `threads` cores.
+fn parallel_on<T: Send, S: Default, R: Send>(
+    threads: usize,
+    items: Vec<T>,
+    f: impl Fn(&mut S, T) -> R + Sync,
+) -> Vec<R> {
     let threads = std::thread::available_parallelism()
         .map_or(1, NonZero::get)
+        .min(threads)
         .min(items.len());
     let len = items.len();
     let queue = Mutex::new(items.into_iter().enumerate());

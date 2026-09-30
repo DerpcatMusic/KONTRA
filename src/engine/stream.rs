@@ -262,9 +262,10 @@ fn tag(seq: u32) -> u16 {
 }
 
 /// Streaming thread and the slots it serves; owned by a [`super::Bank`].
-pub(crate) struct Streamer {
+pub struct Streamer {
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
+    sources: Arc<[Option<Arc<Source>>]>,
 }
 
 struct Shared {
@@ -308,7 +309,7 @@ unsafe impl Sync for Rings {}
 
 impl Streamer {
     /// `sources[i]` is `Some` for every sample that is not fully resident.
-    pub fn spawn(sources: Vec<Option<Arc<Source>>>) -> std::io::Result<Self> {
+    pub(crate) fn spawn(sources: Vec<Option<Arc<Source>>>) -> std::io::Result<Self> {
         let rings = Rings::new();
         // SAFETY: slot `i`'s ring starts in bounds of the allocation.
         let ring = |i: usize| unsafe { rings.0.add(i * RING as usize) };
@@ -332,15 +333,26 @@ impl Streamer {
         for (wake, thread) in shared.wakes.iter().zip(&threads) {
             let _ = wake.thread.set(thread.thread().clone());
         }
-        Ok(Self { shared, threads })
+        Ok(Self {
+            shared,
+            threads,
+            sources,
+        })
     }
 
-    pub fn slots(&self) -> &[Slot] {
+    pub(crate) fn slots(&self) -> &[Slot] {
         &self.shared.slots
     }
 
+    /// Whether this streamer reads `sources` (the same, interned, per sample).
+    pub(crate) fn reads(&self, sources: &[Arc<Source>]) -> bool {
+        self.sources.len() == sources.len()
+            && (self.sources.iter().zip(sources))
+                .all(|(a, b)| a.as_ref().is_some_and(|a| Arc::ptr_eq(a, b)))
+    }
+
     /// Bytes of ring memory.
-    pub const BYTES: usize = SLOTS * RING as usize * 8;
+    pub(crate) const BYTES: usize = SLOTS * RING as usize * 8;
 }
 
 impl Drop for Streamer {

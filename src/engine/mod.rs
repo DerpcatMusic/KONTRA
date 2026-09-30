@@ -23,7 +23,8 @@ mod stream;
 mod voice;
 
 pub(crate) use bank::parallel;
-pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, memory_budget, resident_bytes};
+pub use stream::Streamer;
+pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, clock, memory_budget, resident_bytes, trim};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
@@ -803,25 +804,48 @@ impl Player {
 
     /// Move playing voices from `old` to `new`, which holds the same samples
     /// with other residency: each finds its resident span and limit as at a
-    /// start, and streams through a slot of `new` from where it is.
+    /// start, and streams through a slot of `new` from where it is. With the
+    /// streamer shared (a purge), a stream that still holds every frame the
+    /// voice will need past its new resident range plays on untouched.
     fn rebind(&mut self, old: &Bank, new: &Bank) {
+        let shared = match (&old.streamer, &new.streamer) {
+            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+            _ => false,
+        };
         let slots = old.slots();
-        self.free.clear();
-        self.free.extend((0..new.slots().len() as u16).rev());
+        if !shared {
+            self.free.clear();
+            self.free.extend((0..new.slots().len() as u16).rev());
+        }
         for v in &mut self.voices {
-            if let Some(stream) = v.stream.take() {
-                slots[stream.slot as usize].stop();
-            }
             let sample = &new.samples[v.sample as usize];
             let first = (v.pos as u64).saturating_sub(1);
+            let was = v.limit;
             v.span = (v.map.run(first, v.wraps))
                 .and_then(|run| sample.span_at(run.frame))
                 .unwrap_or(0);
             let span = &sample.spans[v.span as usize];
             v.limit = v.map.resident_limit(first, v.wraps, span.start, span.end());
+            // The ring holds frames from `was` on: nothing below it is lost
+            // if the resident range still reaches it or the voice is past it.
+            let keep = shared
+                && v.stream.is_some_and(|s| !s.paused)
+                && was != FOREVER
+                && v.limit != FOREVER
+                && (v.limit >= was || first >= was);
+            if keep {
+                continue;
+            }
+            let slot = match v.stream.take() {
+                Some(stream) => {
+                    slots[stream.slot as usize].stop();
+                    shared.then_some(stream.slot)
+                }
+                None => None,
+            };
             // Paused, the next render configures it from the position, as
             // when a muted voice returns; a loop reserves it as at a start.
-            let slot = if sample.streamed { self.free.pop() } else { None };
+            let slot = slot.or_else(|| if sample.streamed { self.free.pop() } else { None });
             v.stream = slot.map(|slot| voice::Stream {
                 slot,
                 tag: 0,
@@ -1045,6 +1069,7 @@ impl Player {
             pan: ev.pan,
             gains: [0.0; 2],
             muted: 0,
+            wait: if limit == FOREVER { 0 } else { self.frames(voice::START_WAIT) },
             filter: VoiceFilter::new(settings.filter.as_deref(), &settings.mods, &inputs, self.rate as f32),
         };
         // Start at the voice's first-block gains, so it does not ramp in.

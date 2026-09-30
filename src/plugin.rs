@@ -330,6 +330,14 @@ pub(crate) struct PartView {
     pub(crate) loading: bool,
     /// Keyboard colors and names the scripts set, kept current while they run.
     pub(crate) keys: Arc<BTreeMap<u8, KeyState>>,
+    /// The playing bank's [`Bank::usage`], its purged groups, the scripts'
+    /// `on init` controllers it was planned for, and when it was last purged.
+    pub(crate) usage: Option<Arc<[AtomicU32]>>,
+    pub(crate) purged: Vec<bool>,
+    pub(crate) controllers: Vec<(u8, u8)>,
+    pub(crate) purged_at: Option<Instant>,
+    /// The playing bank's streamer, kept by the banks purges rebuild.
+    pub(crate) streamer: Option<Arc<crate::engine::Streamer>>,
 }
 #[derive(Clone)]
 pub(crate) struct View {
@@ -740,7 +748,13 @@ impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
     fn run(self, params: &SamplerParams) {
-        while params.shared.discard.pop().is_some() {}
+        let mut freed = false;
+        while params.shared.discard.pop().is_some() {
+            freed = true;
+        }
+        if freed {
+            crate::engine::trim();
+        }
         let requested = { params.shared.multi_request.lock().unwrap().take() };
         if let Some(path) = requested {
             let before = params.selection.read().unwrap().clone();
@@ -869,12 +883,18 @@ impl BackgroundTask for Load {
                 ));
                 continue;
             }
+            let loaded = {
+                let view = params.shared.view.lock().unwrap();
+                let v = &view.parts[slot];
+                v.attempted.as_ref() == Some(&target) && v.streaming == streaming
+            };
+            if loaded {
+                purge(params, slot);
+                continue;
+            }
             let cached = {
                 let mut view = params.shared.view.lock().unwrap();
                 let v = &mut view.parts[slot];
-                if v.attempted.as_ref() == Some(&target) && v.streaming == streaming {
-                    continue;
-                }
                 (v.attempted, v.streaming) = (Some(target.clone()), streaming);
                 v.status = "Loading samples…".into();
                 params.shared.load_progress[slot].store(0, Ordering::Relaxed);
@@ -969,7 +989,7 @@ impl BackgroundTask for Load {
                     }
                 }
                 if instrument.zones.is_empty() {
-                    return Ok((instrument, None, script, snapshot, None));
+                    return Ok((instrument, None, script, snapshot, None, Vec::new()));
                 }
                 // Every group plays; the stored group only selects what the mapping inspector shows.
                 if part.group == u32::MAX {
@@ -1000,7 +1020,8 @@ impl BackgroundTask for Load {
                     &params.shared.load_progress[slot],
                 )?);
                 let fill = (streaming == Streaming::RamOnly).then(|| (budget, controllers.to_vec()));
-                Ok((instrument, Some(bank), script, snapshot, fill))
+                let controllers = controllers.to_vec();
+                Ok((instrument, Some(bank), script, snapshot, fill, controllers))
             })();
             let current = params.selection.read().unwrap();
             if current.parts.get(slot).map(|p| (&p.path, p.program)) != Some((&target.0, target.1))
@@ -1012,7 +1033,7 @@ impl BackgroundTask for Load {
             let mut view = params.shared.view.lock().unwrap();
             view.parts[slot].loading = false;
             match result {
-                Ok((instrument, bank, script, snapshot, fill)) => {
+                Ok((instrument, bank, script, snapshot, fill, controllers)) => {
                     let epoch = if script.is_some() {
                         next_epoch(&mut view, slot, snapshot, script.as_deref())
                     } else {
@@ -1022,6 +1043,9 @@ impl BackgroundTask for Load {
                     v.script_state = part.script_state.clone();
                     v.active = instrument.name.clone();
                     v.bytes = bank.as_ref().map(|b| b.bytes).unwrap_or(0);
+                    v.usage = bank.as_ref().map(|b| b.usage.clone());
+                    v.streamer = bank.as_ref().and_then(|b| b.streamer());
+                    (v.purged, v.controllers, v.purged_at) = (Vec::new(), controllers, None);
                     v.status = bank.as_deref().map(bank_status).unwrap_or_else(|| {
                         "Controller instrument · KSP playback unavailable".into()
                     });
@@ -1225,6 +1249,73 @@ fn preview_velocity(e: &Engine, note: u8) -> u8 {
     })
 }
 
+/// Seconds a group goes unheard before its samples are purged: sooner when
+/// the process nears its memory budget. Nonzero overrides (benchmarks).
+pub(crate) static PURGE_AFTER: AtomicU32 = AtomicU32::new(0);
+
+/// Automatic purge: rebuild a loaded part's bank with the samples of groups
+/// no one has heard for a while cut to a small head, and those of purged
+/// groups heard again restored. Shared spans make a rebuild read only what
+/// changed; playing voices move onto the new bank.
+fn purge(params: &SamplerParams, slot: usize) {
+    let now = crate::engine::clock();
+    let (instrument, usage, purged, controllers, own, purged_at, streamer) = {
+        let view = params.shared.view.lock().unwrap();
+        let v = &view.parts[slot];
+        if v.loading || v.streaming == Streaming::RamOnly {
+            return;
+        }
+        let (Some(instrument), Some(usage)) = (v.instrument.clone(), v.usage.clone()) else {
+            return;
+        };
+        let streamer = v.streamer.clone();
+        (instrument, usage, v.purged.clone(), v.controllers.clone(), v.bytes, v.purged_at, streamer)
+    };
+    let resident = crate::engine::resident_bytes();
+    let budget = crate::engine::memory_budget();
+    let after = match PURGE_AFTER.load(Ordering::Relaxed) {
+        0 if resident > budget / 4 * 3 => 20,
+        0 => 120,
+        after => after,
+    };
+    let cold: Vec<bool> =
+        usage.iter().map(|u| now.saturating_sub(u.load(Ordering::Relaxed)) >= after).collect();
+    let was = |g: usize| purged.get(g).copied().unwrap_or(false);
+    let restore = (0..cold.len()).any(|g| was(g) && !cold[g]);
+    let newly = (0..cold.len()).any(|g| cold[g] && !was(g));
+    // Restores at once; purges at most every ten seconds.
+    if !restore && (!newly || purged_at.is_some_and(|t| t.elapsed().as_secs() < 10)) {
+        return;
+    }
+    let generation = params.shared.generation[slot].load(Ordering::Acquire);
+    let budget = crate::engine::MEMORY_LIMIT.min(budget.saturating_sub(resident.saturating_sub(own)));
+    let bank = Bank::load_purging(
+        &instrument,
+        budget,
+        Streaming::Auto,
+        &controllers,
+        &AtomicU32::new(0),
+        &cold,
+        streamer,
+    );
+    if params.shared.generation[slot].load(Ordering::Acquire) != generation {
+        return;
+    }
+    let mut view = params.shared.view.lock().unwrap();
+    let v = &mut view.parts[slot];
+    (v.purged, v.purged_at) = (cold, Some(Instant::now()));
+    match bank {
+        Ok(mut bank) => {
+            bank.usage = usage;
+            (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
+            v.streamer = bank.streamer();
+            let _ = params.shared.ready.force_push((slot, generation, Handoff::Bank(Box::new(bank))));
+        }
+        // The playing bank carries on; this purge set is not retried.
+        Err(e) => v.status += &format!(" · purge failed: {e:#}"),
+    }
+}
+
 fn bank_status(bank: &Bank) -> String {
     let mut status = format!(
         "{} samples · {} streamed · {:.0} MB",
@@ -1232,6 +1323,12 @@ fn bank_status(bank: &Bank) -> String {
         bank.streamed_samples(),
         bank.bytes as f64 / 1048576.0
     );
+    if bank.purged > 0 {
+        status += &format!(
+            " · {}% purged",
+            (bank.purged * 100).div_ceil(bank.sample_count().max(1))
+        );
+    }
     if bank.skipped_zones > 0 {
         status += &format!(
             " · {} zones skipped (missing or unreadable)",
@@ -1693,7 +1790,11 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     const RATE: f64 = 48000.;
     let p = Arc::new(SamplerParams::new());
     let ram_only = paths.iter().any(|p| p == "--ram-only");
-    let paths: Vec<_> = paths.iter().filter(|p| *p != "--ram-only").cloned().collect();
+    // `--purge-after=N`: purge groups unheard for N seconds, not automatically.
+    for after in paths.iter().filter_map(|p| p.strip_prefix("--purge-after=")) {
+        PURGE_AFTER.store(after.parse()?, Ordering::Relaxed);
+    }
+    let paths: Vec<_> = paths.iter().filter(|p| !p.starts_with("--")).cloned().collect();
     let paths = &paths[..];
     let mut selection = p.selection.write().unwrap();
     if ram_only {
@@ -1834,13 +1935,17 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         let mean_audible = audible_blocks as f64 / times.len() as f64;
         let whole = (cpu_clock(2) - process_cpu) / start.elapsed().as_secs_f64();
         println!(
-            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core · {:.0} MiB resident, samples {:.0} MiB",
+            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core · {:.0} MiB resident, samples {:.0} MiB · {} dropouts",
             times.len(),
             cpu * 100.,
             whole * 100.,
             rss_mib(),
             crate::engine::resident_bytes() as f64 / (1 << 20) as f64,
+            p.shared.dropouts.load(Ordering::Relaxed),
         );
+        for v in &p.shared.view.lock().unwrap().parts[..paths.len()] {
+            println!("  {}", v.status);
+        }
         if counts.iter().any(|&c| c > 0.) {
             let mut sorted = counts.clone();
             sorted.sort_by(f64::total_cmp);
