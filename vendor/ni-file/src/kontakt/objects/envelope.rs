@@ -19,7 +19,7 @@ const VERSION: u16 = 0x11;
 /// Versions:       0x11
 /// Kontakt 7:      BParEnv_AHDSR
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnvelopeAhdsr {
     /// Attack curve shape, -1..=1 (0 is linear).
     pub attack_curve: f32,
@@ -101,7 +101,7 @@ const FLEX_TAIL: usize = 13;
 
 /// One flex envelope breakpoint, reached from the previous one.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FlexPoint {
     /// Time from the previous point (the start at level 0 for the first) in milliseconds.
     pub time_ms: f32,
@@ -121,7 +121,7 @@ pub struct FlexPoint {
 /// Versions:       0x11, 0x12 (two more trailing bytes)
 /// Kontakt 7:      BParEnv_Flex
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnvelopeFlex {
     pub points: Vec<FlexPoint>,
     /// Index into `points` held while the key is down.
