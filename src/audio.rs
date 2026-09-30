@@ -89,7 +89,7 @@ impl Pcm {
         // Encoding checks exactness itself and gives up at the first
         // inexact block, so no separate scan precedes it.
         for scale in [I16_SCALE, I24_SCALE] {
-            if compress && let Some(packed) = Packed::encode(frames, scale) {
+            if compress && let Some(packed) = Packed::encode(frames, scale, quantize(scale)) {
                 return Self::Packed(packed);
             }
         }
@@ -104,6 +104,37 @@ impl Pcm {
             );
         }
         Self::F32(frames.into())
+    }
+
+    /// [`Pcm::pack`] for integer frames of a `bits`-deep source, skipping
+    /// the float round trip. `None` unless 16- or 24-bit and in range.
+    pub fn pack_ints(frames: &[[i32; 2]], bits: u16, compress: bool) -> Option<Self> {
+        let scale = match bits {
+            16 => I16_SCALE,
+            24 => I24_SCALE,
+            _ => return None,
+        };
+        let limit = scale as i32;
+        let (lo, hi) = frames.as_flattened().iter().fold((0, 0), |(lo, hi), &x| (x.min(lo), x.max(hi)));
+        if lo < -limit || hi >= limit {
+            return None;
+        }
+        let copy = |src: &[[i32; 2]; BLOCK], q: &mut [i32; 2 * BLOCK]| {
+            q.copy_from_slice(src.as_flattened());
+            true
+        };
+        if compress && let Some(packed) = Packed::encode(frames, scale, copy) {
+            return Some(Self::Packed(packed));
+        }
+        let samples = frames.as_flattened();
+        Some(if bits == 16 {
+            Self::I16(samples.iter().map(|&x| x as i16).collect())
+        } else {
+            Self::I24(
+                samples.iter().map(|&x| (x >> 8) as i16).collect(),
+                samples.iter().map(|&x| x as u8).collect(),
+            )
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -213,9 +244,14 @@ pub struct Packed {
 }
 
 impl Packed {
-    /// Pack `frames` if every sample is exact at `scale` and packing saves
-    /// at least a tenth.
-    fn encode(frames: &[Frame], scale: f32) -> Option<Self> {
+    /// Pack `frames` if `quantize` turns every block into integers at
+    /// `scale` (returning false if it cannot) and packing saves at least a
+    /// tenth.
+    fn encode<T: Copy>(
+        frames: &[[T; 2]],
+        scale: f32,
+        quantize: impl Fn(&[[T; 2]; BLOCK], &mut [i32; 2 * BLOCK]) -> bool,
+    ) -> Option<Self> {
         let raw = frames.len() * if scale == I16_SCALE { 4 } else { 6 };
         let blocks = frames.len().div_ceil(BLOCK);
         if blocks == 0 || raw > u32::MAX as usize {
@@ -227,11 +263,11 @@ impl Packed {
         // vectorizes.
         let mut q = [0i32; 2 * BLOCK];
         let mut residuals = [0i32; 2 * (BLOCK - 2)];
-        let mut pad: [Frame; BLOCK];
+        let mut pad: [[T; 2]; BLOCK];
         for chunk in frames.chunks(BLOCK) {
             offsets.push(data.len() as u32);
             // The last block repeats its final frame: cheap to pack.
-            let src: &[Frame; BLOCK] = match chunk.try_into() {
+            let src: &[[T; 2]; BLOCK] = match chunk.try_into() {
                 Ok(full) => full,
                 Err(_) => {
                     pad = [chunk[chunk.len() - 1]; BLOCK];
@@ -239,17 +275,7 @@ impl Packed {
                     &pad
                 }
             };
-            // In f64, adding 2^52 + 2^51 leaves an integer exactly and its
-            // two's complement in the low bits, and rounds away any fraction:
-            // an exactness test and conversion that vectorize, unlike `as`.
-            const ROUND: f64 = 6755399441055744.0;
-            let (scale, mut inexact) = (f64::from(scale), false);
-            for (q, &x) in q.iter_mut().zip(src.as_flattened()) {
-                let (x, t) = (f64::from(x) * scale, f64::from(x) * scale + ROUND);
-                *q = t.to_bits() as i32;
-                inexact |= !((t - ROUND == x) & (x >= -scale) & (x < scale));
-            }
-            if inexact {
+            if !quantize(src, &mut q) {
                 return None;
             }
             let mut magnitude = [0u32; 2];
@@ -349,6 +375,25 @@ impl Packed {
                 *y = prev;
             }
         }
+    }
+}
+
+/// A block of float frames as integers at `scale`; false if any is not
+/// exactly one in `-scale..scale`.
+fn quantize(scale: f32) -> impl Fn(&[Frame; BLOCK], &mut [i32; 2 * BLOCK]) -> bool {
+    // In f64, adding 2^52 + 2^51 leaves an integer exactly and its two's
+    // complement in the low bits, and rounds away any fraction: an
+    // exactness test and conversion that vectorize, unlike `as`.
+    const ROUND: f64 = 6755399441055744.0;
+    let scale = f64::from(scale);
+    move |src, q| {
+        let mut inexact = false;
+        for (q, &x) in q.iter_mut().zip(src.as_flattened()) {
+            let (x, t) = (f64::from(x) * scale, f64::from(x) * scale + ROUND);
+            *q = t.to_bits() as i32;
+            inexact |= !((t - ROUND == x) & (x >= -scale) & (x < scale));
+        }
+        !inexact
     }
 }
 
@@ -734,6 +779,33 @@ impl SampleReader {
         })
     }
 
+    /// Frames `range` stored as [`Pcm::pack`] would, straight from the
+    /// integers where the codec has them. `ints` and `frames` are scratch.
+    pub fn read_pcm(
+        &mut self,
+        range: std::ops::Range<u64>,
+        compress: bool,
+        ints: &mut Vec<[i32; 2]>,
+        frames: &mut Vec<Frame>,
+    ) -> Result<Pcm> {
+        let len = (range.end - range.start) as usize;
+        if let (Codec::Ncw(codec), Some(bits)) = (&mut self.codec, self.bits)
+            && !codec.float
+            && range.end <= self.frames
+        {
+            ints.clear();
+            ints.resize(len, [0; 2]);
+            codec.read_ints(range.start, ints)?;
+            if let Some(pcm) = Pcm::pack_ints(ints, bits, compress) {
+                return Ok(pcm);
+            }
+        }
+        frames.clear();
+        frames.resize(len, [0.0; 2]);
+        self.read(range.start, frames)?;
+        Ok(Pcm::pack(frames, compress))
+    }
+
     /// Fill `out` with frames from `start`. Frames past the end are silent;
     /// non-finite input decodes as silence.
     pub fn read(&mut self, start: u64, out: &mut [Frame]) -> Result<()> {
@@ -757,6 +829,24 @@ impl SampleReader {
 }
 
 impl NcwCodec {
+    /// Integer frames from `start`, all within the sample.
+    fn read_ints(&mut self, mut start: u64, mut out: &mut [[i32; 2]]) -> Result<()> {
+        const BLOCK: u64 = ncw::NcwReader::<BufReader<Bytes>>::FRAMES_PER_BLOCK as u64;
+        while !out.is_empty() {
+            let channels = self.reader.decode_block((start / BLOCK) as usize)?;
+            let (left, right) = (&channels[0], &channels[self.channels - 1]);
+            let offset = (start % BLOCK) as usize;
+            let n = left.len().saturating_sub(offset).min(out.len());
+            ensure!(n > 0, "NCW block shorter than declared");
+            for ((o, &l), &r) in out[..n].iter_mut().zip(&left[offset..]).zip(&right[offset..]) {
+                *o = [l, r];
+            }
+            out = &mut out[n..];
+            start += n as u64;
+        }
+        Ok(())
+    }
+
     fn read(&mut self, mut start: u64, mut out: &mut [Frame]) -> Result<()> {
         const BLOCK: u64 = ncw::NcwReader::<BufReader<Bytes>>::FRAMES_PER_BLOCK as u64;
         while !out.is_empty() {

@@ -287,14 +287,19 @@ impl Bank {
         // reads come from the page cache.
         let mut sources = audio::Sources::default();
         let resolved: Vec<_> = paths.iter().map(|path| sources.source(path)).collect();
-        // Each sample is opened, then read: two steps apiece.
-        let (steps, done) = (2 * paths.len().max(1), AtomicUsize::new(0));
-        let step = || {
-            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            progress.store((n * LOAD_DONE as usize / steps) as u32, Ordering::Relaxed);
+        // Progress runs on from where the caller left it: opening every
+        // sample takes the first tenth of the rest, reading them the others
+        // by frames read. Only ever rises.
+        let base = progress.load(Ordering::Relaxed).min(LOAD_DONE) as usize;
+        let reads_from = base + (LOAD_DONE as usize - base) / 10;
+        let advance = |done: &AtomicUsize, of: usize, add: usize, (from, to): (usize, usize)| {
+            let n = done.fetch_add(add, Ordering::Relaxed) + add;
+            let at = from + (to - from) * n.min(of) / of.max(1);
+            progress.fetch_max(at as u32, Ordering::Relaxed);
         };
+        let opens = AtomicUsize::new(0);
         let opened = parallel(resolved, |_: &mut (), source| {
-            step();
+            advance(&opens, paths.len(), 1, (base, reads_from));
             let source = source?;
             anyhow::Ok((source.open()?, source))
         });
@@ -344,26 +349,29 @@ impl Bank {
         let (preload, whole, margin, planned) =
             (layout.preload, layout.whole, layout.margin, layout.bytes);
         let (cover, max_cover) = (layout.cover.min(layout.width), layout.width);
+        let frames_to_read = (layout.plan.iter())
+            .map(|(spans, ..)| spans.iter().map(|r| r.end - r.start).sum::<u64>() as usize)
+            .sum();
+        let read = AtomicUsize::new(0);
         let jobs = readers.into_iter().zip(layout.plan).collect();
         let decoded = parallel(
             jobs,
-            |buf: &mut Vec<Frame>, ((source, mut reader), (spans, streamed, looping))| {
+            |(ints, buf): &mut (Vec<[i32; 2]>, Vec<Frame>),
+             ((source, mut reader), (spans, streamed, looping))| {
                 let spans = spans
                     .into_iter()
                     .map(|range| {
-                        buf.clear();
-                        buf.resize((range.end - range.start) as usize, [0.0; 2]);
-                        reader.read(range.start, buf)?;
-                        Ok(Span {
-                            start: range.start,
-                            data: Pcm::pack(buf, !looping),
-                        })
+                        let (start, len) = (range.start, (range.end - range.start) as usize);
+                        let data = reader.read_pcm(range, !looping, ints, buf)?;
+                        let span = (reads_from, LOAD_DONE as usize);
+                        advance(&read, frames_to_read, len, span);
+                        Ok(Span { start, data })
                     })
                     .collect::<Result<Vec<_>>>();
-                step();
                 (spans, streamed, reader.rate, source)
             },
         );
+        progress.store(LOAD_DONE, Ordering::Relaxed);
         let mut samples = Vec::with_capacity(decoded.len());
         let mut streamed = Vec::with_capacity(decoded.len());
         let mut bytes = 0;

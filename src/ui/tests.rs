@@ -1182,3 +1182,56 @@ fn mixer_meters_paint_without_a_rebuild() {
     std::thread::sleep(settle);
     assert!(!changed(), "silent meters ask for nothing");
 }
+
+/// The editor opens and paints while a big multi loads: nothing it builds
+/// waits on the loader. Progress only rises. Needs the libraries:
+/// `cargo test --release --lib editor_opens_while_parts_load -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn editor_opens_while_parts_load() {
+    use crate::plugin::Load;
+    use moose::prelude::BackgroundTask;
+    let root = Path::new(import::LIBRARY_ROOT);
+    let paths = [
+        "Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/01 Areia - 16 Violins - Core Techniques.nki",
+        "Afflatus Chapter II Brass/Instruments/4. Experimental/Mega Brass.nki",
+        "Audio Imperia CHORUS/Instruments/01 Multi Patches/01 Chorus - Women - Traditional Articulations.nki",
+    ];
+    let p = Arc::new(SamplerParams::new());
+    p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
+    p.selection.write().unwrap().parts = (paths.iter())
+        .map(|path| Part {
+            path: root.join(path).to_string_lossy().into(),
+            ..Default::default()
+        })
+        .collect();
+    let started = Instant::now();
+    let loader = {
+        let p = p.clone();
+        std::thread::spawn(move || Load.run(&p))
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    let opened = Instant::now();
+    let mut h = Harness::new(&p, 1180., 760.);
+    let first = opened.elapsed();
+    let (mut worst, mut frames, mut last) = (Duration::ZERO, 0, [0u32; 3]);
+    while !loader.is_finished() {
+        let t = Instant::now();
+        h.idle(1);
+        (worst, frames) = (worst.max(t.elapsed()), frames + 1);
+        for (slot, last) in last.iter_mut().enumerate() {
+            let now = p.shared.load_progress[slot].load(Ordering::Relaxed);
+            assert!(now >= *last, "slot {slot} progress fell from {last} to {now}");
+            *last = now;
+        }
+        std::thread::sleep(Duration::from_millis(16));
+    }
+    loader.join().unwrap();
+    println!(
+        "opened mid-load in {:.1} ms (3 frames); {frames} frames while loading, worst {:.1} ms; loads took {:.1} s",
+        first.as_secs_f64() * 1e3,
+        worst.as_secs_f64() * 1e3,
+        started.elapsed().as_secs_f64()
+    );
+    assert!(first < Duration::from_millis(500) && worst < Duration::from_millis(250));
+}

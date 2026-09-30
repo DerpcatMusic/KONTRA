@@ -238,7 +238,8 @@ pub struct Shared {
     /// Peak meters the audio thread keeps current; read them at paint time.
     pub meters: Meters,
     generation: [AtomicU64; RACK_SLOTS],
-    /// Per slot, how far its bank load is, out of [`crate::engine::LOAD_DONE`].
+    /// Per slot, how far its load is, out of [`crate::engine::LOAD_DONE`]:
+    /// parse, scripts, then samples by frames read; only rises within a load.
     pub(crate) load_progress: [AtomicU32; RACK_SLOTS],
     pub(crate) audition: AtomicBool,
     pub(crate) audition_note: AtomicU64,
@@ -831,8 +832,12 @@ impl BackgroundTask for Load {
                 } else {
                     Arc::new(import::read_program(Path::new(&part.path), part.program)?)
                 };
+                // Progress by phase: parsed 5%, scripts 10%, the bank the rest.
+                let progress = &params.shared.load_progress[slot];
+                progress.fetch_max(crate::engine::LOAD_DONE / 20, Ordering::Relaxed);
                 let (script, snapshot, _) =
                     scripts(&instrument, &part.script_state, params.shared.rate());
+                progress.fetch_max(crate::engine::LOAD_DONE / 10, Ordering::Relaxed);
                 {
                     let needs_art = {
                         let view = params.shared.view.lock().unwrap();
