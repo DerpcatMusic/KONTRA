@@ -705,9 +705,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 .or_else(|| m.env.engine_par(p))
                 .unwrap_or(0);
             if f == GetEnginePar {
-                push_int(m, v)
-            } else {
-                push_fmt(m, format_args!("{v}"))
+                return push_int(m, v);
+            }
+            // Shown by Kontakt's value law, as its own knobs show it.
+            match crate::engine::engine_par_display(p.id, v) {
+                Some(shown) => push_fmt(m, format_args!("{shown}")),
+                None => push_fmt(m, format_args!("{v}")),
             }
         }
         SetEnginePar => {

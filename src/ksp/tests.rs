@@ -660,6 +660,14 @@ fn variable_names_match_without_case() {
 }
 
 #[test]
+fn engine_par_display_follows_kontakt_laws() {
+    // Afflatus labels its mic faders `get_engine_par_disp(...) & " dB"`; it read "630000 dB".
+    let source = "on init\ndeclare ui_label $l(1,1)\nset_engine_par($ENGINE_PAR_VOLUME, 630000, -1, -1, -1)\nset_engine_par($ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN, 396851, -1, 1, 1)\nset_engine_par($ENGINE_PAR_SEND_EFFECT_DRY_LEVEL, 0, -1, 1, 0)\nset_engine_par($ENGINE_PAR_PAN, 250000, -1, -1, -1)\nset_text($l, get_engine_par_disp($ENGINE_PAR_VOLUME, -1, -1, -1) & \" dB|\" & get_engine_par_disp($ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN, -1, 1, 1) & \"|\" & get_engine_par_disp($ENGINE_PAR_SEND_EFFECT_DRY_LEVEL, -1, 1, 0) & \"|\" & get_engine_par_disp($ENGINE_PAR_PAN, -1, -1, -1) & \"|\" & get_engine_par($ENGINE_PAR_VOLUME, -1, -1, -1))\nend on";
+    let ui = initialize(source, 0, 0).unwrap();
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "0.0 dB|0.0|-inf|L 50|630000");
+}
+
+#[test]
 fn reversed_case_ranges_and_effect_loads_compile() {
     // Both from Una Corda: a descending `case` range and an effect load's async ID.
     let source = "on init\ndeclare $v := -7\ndeclare $id\ndeclare ui_label $l(1,1)\nselect($v)\ncase -1 to -50\nset_text($l, \"in\")\nend select\n$id := set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, 1, -1, 1, 1)\nset_text($l, get_control_par_str(get_ui_id($l), $CONTROL_PAR_TEXT) & ($id # -1) & set_engine_par($ENGINE_PAR_VOLUME, 1, -1, -1, -1))\nend on";

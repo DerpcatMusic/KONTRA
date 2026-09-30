@@ -561,6 +561,55 @@ fn time_value(seconds: f32, max: f32) -> f32 {
     (seconds.max(0.0) / TIME_BASE + 1.0).ln() / (1.0 + max / TIME_BASE).ln()
 }
 
+/// What `get_engine_par_disp` shows: the value in the unit scripts append
+/// themselves (`& " dB"`, `" ms"`, `" Hz"`, `" %"`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Disp {
+    /// Linear gain, shown in dB with one decimal, `-inf` at silence.
+    Gain(f32),
+    /// A number with this many decimals.
+    Num(f32, u8),
+    /// -1..=1, shown as `C`, `L 50`, `R 50`.
+    Pan(f32),
+}
+
+impl std::fmt::Display for Disp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Gain(g) if g <= 1e-6 => f.write_str("-inf"),
+            // 630000 is -0.01 dB: Kontakt shows 0.0, not -0.0.
+            Self::Gain(g) => write!(f, "{:.1}", (20.0 * g.log10() * 10.0).round() / 10.0 + 0.0),
+            Self::Num(v, d) => write!(f, "{:.*}", d as usize, v),
+            Self::Pan(p) => match (p.abs() * 100.0).round() {
+                n if n < 1.0 => f.write_str("C"),
+                n => write!(f, "{} {n:.0}", if p < 0.0 { "L" } else { "R" }),
+            },
+        }
+    }
+}
+
+/// Display of an engine parameter value by Kontakt's laws, the same the
+/// engine decodes with; `None` for parameters whose law is not modelled.
+pub fn display(id: i32, value: i32) -> Option<Disp> {
+    let x = (value as f32 / UNIT).clamp(0.0, 1.0);
+    Some(match id {
+        id::VOLUME | id::SENDLEVEL_0..=id::SENDLEVEL_7 => Disp::Gain(volume(x)),
+        id::INSERT_EFFECT_OUTPUT_GAIN | id::SEND_EFFECT_DRY_LEVEL | id::SEND_EFFECT_OUTPUT_GAIN => {
+            Disp::Gain(effect_gain(x))
+        }
+        id::SUSTAIN => Disp::Gain(x),
+        id::PAN => Disp::Pan(2.0 * x - 1.0),
+        id::TUNE => Disp::Num((2.0 * x - 1.0) * TUNE_RANGE, 2),
+        id::ATTACK | id::HOLD => Disp::Num(time(x, SHORT) * 1000.0, 1),
+        id::DECAY | id::RELEASE => Disp::Num(time(x, LONG) * 1000.0, 1),
+        // The filter's cutoff law (`filter.rs`): 43.6 Hz · 2^(8.96 x).
+        id::CUTOFF => Disp::Num(43.6 * (8.96 * x).exp2(), 1),
+        // Stereo Modeller spread: 0 % mono, 100 % as recorded, 200 % widest.
+        id::STEREO => Disp::Num(x * 200.0, 1),
+        _ => return None,
+    })
+}
+
 /// Set a group-level parameter (group, envelope or intensity); false for
 /// other addresses and missing groups.
 pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32) -> bool {
