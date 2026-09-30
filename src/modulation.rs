@@ -111,7 +111,6 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
         let mut skipped = 0;
         for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
             let params = modulator.params()?;
-            if std::env::var("DBG_INT").is_ok() { for t in &params.targets { eprintln!("INT {} flags={:02x?} {} i={:.3} inv={} tflags={:02x} shaper={}", params.name, params.unknown_flags, t.param, t.intensity, t.invert, t.unknown_flags, t.shaper.as_ref().is_some_and(|s| s.enabled)); } }
             // The first volume envelope of each kind; the voice multiplies them.
             let volume = params.targets.iter().any(|t| t.param == "volume");
             let volume_env = match params.modulator {

@@ -602,7 +602,8 @@ fn bench_stream(path: &Path, notes: usize, seconds: f64) -> Result<()> {
     let blocks = (seconds * RATE) as u64 / MAX_BLOCK as u64;
     let (mut held, mut started, mut voice_blocks, mut late, mut peak) =
         (std::collections::VecDeque::new(), 0, 0, 0, 0);
-    let start = std::time::Instant::now();
+    let (start, render_start, process_start) = (std::time::Instant::now(), cpu_time(THREAD), cpu_time(PROCESS));
+    let mut render_cpu = 0.0;
     for b in 0..blocks {
         let frame = b * MAX_BLOCK as u64;
         while started * every < frame + MAX_BLOCK as u64 {
@@ -616,7 +617,9 @@ fn bench_stream(path: &Path, notes: usize, seconds: f64) -> Result<()> {
             held.push_back(key);
             started += 1;
         }
+        let before = cpu_time(THREAD);
         engine.render(&mut left, &mut right);
+        render_cpu += cpu_time(THREAD) - before;
         voice_blocks += engine.active_voices();
         peak = peak.max(engine.active_voices());
         let deadline = start + block * (b + 1) as u32;
@@ -626,13 +629,44 @@ fn bench_stream(path: &Path, notes: usize, seconds: f64) -> Result<()> {
         }
     }
     let underruns = engine.underruns();
+    // Everything but the rendering thread is the streamer (and script timers).
+    let other = cpu_time(PROCESS) - process_start - (cpu_time(THREAD) - render_start);
     println!(
-        "{}: preload {preload} · {started} notes over {seconds} s ({notes} held) · {} voices mean, {peak} peak · {underruns} underruns ({:.3}%) · {late} late blocks",
+        "{}: preload {preload} · {started} notes over {seconds} s ({notes} held) · {} voices mean, {peak} peak · {underruns} underruns ({:.3}%) · {late} late blocks · render {:.1}% of a core, streamer {:.1}%",
         instrument.name,
         voice_blocks / blocks as usize,
-        underruns as f64 * 100.0 / voice_blocks.max(1) as f64
+        underruns as f64 * 100.0 / voice_blocks.max(1) as f64,
+        render_cpu * 100.0 / seconds,
+        other * 100.0 / seconds,
     );
     Ok(())
+}
+
+const PROCESS: i32 = 2;
+const THREAD: i32 = 3;
+
+/// CPU seconds of this process or thread (`CLOCK_*_CPUTIME_ID`); 0 off Linux.
+fn cpu_time(clock: i32) -> f64 {
+    #[cfg(target_os = "linux")]
+    {
+        #[repr(C)]
+        struct Timespec {
+            s: i64,
+            ns: i64,
+        }
+        unsafe extern "C" {
+            fn clock_gettime(clock: i32, t: *mut Timespec) -> i32;
+        }
+        let mut t = Timespec { s: 0, ns: 0 };
+        // SAFETY: clock_gettime writes one timespec for these clock ids.
+        unsafe { clock_gettime(clock, &mut t) };
+        t.s as f64 + t.ns as f64 * 1e-9
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = clock;
+        0.0
+    }
 }
 
 /// Engine stand-in that plays nothing, so timing isolates the runtime.

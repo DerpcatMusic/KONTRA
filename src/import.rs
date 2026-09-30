@@ -114,12 +114,6 @@ pub struct Instrument {
     /// per-instrument DFD preload override (0 = the global default).
     pub kontakt_sample_bytes: f64,
     pub kontakt_preload: i32,
-    /// Archive and validated entry of every resolved archive member, so
-    /// loading does not index the archives again.
-    /// Taken by the first [`crate::engine::Bank::load`], so an instrument
-    /// kept for display does not hold them.
-    #[serde(skip)]
-    pub archive_members: std::sync::Mutex<HashMap<PathBuf, (PathBuf, ni_file::nkr::Entry)>>,
 }
 
 /// ni-file is a research parser with panic paths. Keep those off the host thread.
@@ -427,7 +421,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         Ok(v) => v.map_or((None, Vec::new()), |(limit, groups)| (Some(limit), groups)),
         Err(e) => { warnings.push(format!("Voice groups ignored: {e:#}")); (None, Vec::new()) }
     };
-    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state, kontakt_sample_bytes: program.num_bytes_samples_total, kontakt_preload: program.dfd_channel_preload_size, archive_members: std::sync::Mutex::new(resolver.members) })
+    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state, kontakt_sample_bytes: program.num_bytes_samples_total, kontakt_preload: program.dfd_channel_preload_size })
 }
 
 /// VoiceGroups chunk (0x32, v0x60): program limit, a 128-bit presence mask, then one
@@ -465,15 +459,12 @@ pub struct Resolver {
     is_file: HashMap<PathBuf, bool>,
     /// Member entries validated ahead by [`Resolver::resolve_all`].
     checked: HashMap<(PathBuf, String), Option<ni_file::nkr::Entry>>,
-    /// Every resolved archive member: its archive and validated entry, so
-    /// loading samples does not index the archives again.
-    pub members: HashMap<PathBuf, (PathBuf, ni_file::nkr::Entry)>,
     /// Archive members found zero-filled so far: an interrupted download
     /// preallocates the archive and leaves the unfetched rest as zeros.
     pub undownloaded: usize,
 }
 impl Resolver {
-    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), canonical: HashMap::new(), is_file: HashMap::new(), checked: HashMap::new(), members: HashMap::new(), undownloaded: 0 } }
+    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), canonical: HashMap::new(), is_file: HashMap::new(), checked: HashMap::new(), undownloaded: 0 } }
     pub fn resolve(&mut self, parent: &Path, name: &str) -> Result<Option<PathBuf>> {
         let name = name.replace('\\', "/");
         let direct = parent.join(&name);
@@ -495,9 +486,7 @@ impl Resolver {
                         Some(c) => c.clone(),
                         None => self.canonical.entry(archive.clone()).or_insert(archive.canonicalize()?).clone(),
                     };
-                    let path = canonical.join(&entry.name);
-                    self.members.insert(path.clone(), (canonical, entry));
-                    return Ok(Some(path));
+                    return Ok(Some(canonical.join(&entry.name)));
                 }
                 Some(entry) if entry.issue == Some("Zero-filled NKX member header") => self.undownloaded += 1,
                 _ => {}
