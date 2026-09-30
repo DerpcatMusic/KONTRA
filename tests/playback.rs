@@ -2,7 +2,7 @@ use kontakto::{
     audio::Sample,
     engine::{
         Ahdsr, Bank, BusControls, Engine, EventChange, MAX_BLOCK, MAX_VOICES, Mix, NoteEvent,
-        PRELOAD_FRAMES, Rack,
+        PRELOAD_FRAMES, Rack, Streaming,
         load_scripts,
     },
     fx,
@@ -770,7 +770,7 @@ fn streamed_playback_matches_ram_playback() {
         let instrument = instrument(vec![group.clone()], vec![zone.clone()]);
         let progress = std::sync::atomic::AtomicU32::new(0);
         let mut streamed =
-            Bank::load_counting(&instrument, kontakto::engine::MEMORY_LIMIT, &[], &progress).unwrap();
+            Bank::load_counting(&instrument, kontakto::engine::MEMORY_LIMIT, Streaming::Auto, &[], &progress).unwrap();
         assert_eq!(
             progress.into_inner(),
             kontakto::engine::LOAD_DONE,
@@ -1708,6 +1708,35 @@ fn muted_streamed_voices_pause_and_resume_exactly() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// RAM only loads a sample whole even past the budget: nothing streams,
+/// and it plays as the streamed bank does.
+#[test]
+fn ram_only_loads_samples_whole() {
+    let dir = std::env::temp_dir().join(format!("kontakto-ram-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path, frames) = (dir.join("whole.wav"), 200_000);
+    write_wav_bits(&path, frames, 24);
+    let zone = Zone {
+        sample: path.clone(),
+        ..Zone::default()
+    };
+    let instrument = instrument(vec![Group::default()], vec![zone]);
+    let progress = Default::default();
+    let load = |streaming| Bank::load_counting(&instrument, 1, streaming, &[], &progress).unwrap();
+    let (streamed, whole) = (load(Streaming::Auto), load(Streaming::RamOnly));
+    assert_eq!((streamed.streamed_samples(), whole.streamed_samples()), (1, 0));
+    assert!(whole.warning.is_none() && whole.bytes >= frames as usize * 3);
+    let (mut a, mut b) = (engine_with(streamed), engine_with(whole));
+    a.blocking_streams = true;
+    let note = NoteEvent::new(0, 60, 100);
+    a.start_event(&note).unwrap();
+    b.start_event(&note).unwrap();
+    for block in 0..400 {
+        assert!(render(&mut a, 128) == render(&mut b, 128), "diverges in block {block}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A start offset the scripts pin with a controller (Areia's CC113) stays
 /// resident when the whole offset range does not fit: the voice starts from
 /// RAM, without waiting for the disk.
@@ -1738,7 +1767,7 @@ fn tight_budgets_keep_the_scripted_start_offset_resident() {
     let full = Bank::load(&instrument).unwrap();
     let progress = Default::default();
     let bank =
-        Bank::load_counting(&instrument, full.planned - 5000 * 6, &[(113, 120)], &progress).unwrap();
+        Bank::load_counting(&instrument, full.planned - 5000 * 6, Streaming::Auto, &[(113, 120)], &progress).unwrap();
     assert_eq!(bank.preload, PRELOAD_FRAMES);
     assert!(bank.warning.as_ref().unwrap().contains("controller settings"));
     let decoded = kontakto::audio::decode(&path, frames).unwrap();

@@ -204,6 +204,7 @@ fn load(instrument: &import::Instrument) -> Result<(Bank, Scripts)> {
     let bank = Bank::load_counting(
         instrument,
         kontakto::engine::MEMORY_LIMIT,
+        kontakto::engine::Streaming::Auto,
         controllers,
         &Default::default(),
     )?;
@@ -575,6 +576,7 @@ fn bench_load(path: &Path) -> Result<()> {
     let bank = match Bank::load_counting(
         &instrument,
         kontakto::engine::MEMORY_LIMIT,
+        kontakto::engine::Streaming::Auto,
         controllers,
         &Default::default(),
     ) {

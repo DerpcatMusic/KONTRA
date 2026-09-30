@@ -58,6 +58,8 @@ pub enum Command {
     Browser,
     Keyboard,
     Panic,
+    /// Load every sample into RAM instead of streaming, or back.
+    RamOnly,
     /// A part's MIDI channel (-1 omni), its port (0..4), its output bus.
     Channel(usize, i16),
     Port(usize, u8),
@@ -302,6 +304,8 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 items.extend([act("Save multi…", "", Command::SaveMulti), Item::Rule]);
             }
             items.push(act("All notes off", "", Command::Panic));
+            let ram = cx.selection.streaming == crate::engine::Streaming::RamOnly;
+            items.extend([Item::Rule, check("Load samples into RAM (no disk streaming)", ram, Command::RamOnly)]);
             items.extend([Item::Rule, Item::Info("Appearance".into())]);
             let now = super::Appearance::of(cx.selection.appearance);
             for (look, label) in [
@@ -494,6 +498,13 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Browser => cx.state.browser ^= true,
         Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::Keyboard => cx.state.keyboard ^= true,
+        Command::RamOnly => {
+            use crate::engine::Streaming;
+            cx.selection.streaming = match cx.selection.streaming {
+                Streaming::RamOnly => Streaming::Auto,
+                Streaming::Auto => Streaming::RamOnly,
+            };
+        }
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
         Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
         Command::Port(slot, port) => cx.selection.parts[slot].port = port,
