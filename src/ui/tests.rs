@@ -519,9 +519,13 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     let p = Arc::new(SamplerParams::new());
     // The library is scanned: nothing is pending for the loader.
     p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
-    let cpu = AtomicU32::new(0);
-    let mut watch = Watch::default();
-    let mut changed = || watch.changed(&p, &cpu);
+    static DISK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let meters = Meters::default();
+    let mut watch = Watch {
+        disk_counter: Some(&DISK),
+        ..Watch::default()
+    };
+    let mut changed = || watch.changed(&p, &meters);
     assert!(changed(), "the first tick builds");
     std::thread::sleep(Duration::from_millis(110));
     assert!(!changed(), "nothing moved: no rebuild, however long");
@@ -533,6 +537,17 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     p.shared.dropouts.store(1, Ordering::Relaxed);
     std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
     assert!(changed(), "so does a dropout");
+    // Samples read from disk move the disk readout, which then settles.
+    DISK.fetch_add(8 << 20, Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
+    assert!(changed(), "disk throughput shows");
+    assert!(f32::from_bits(meters.disk.load(Ordering::Relaxed)) > 1.);
+    for _ in 0..12 {
+        std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
+        changed();
+    }
+    std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
+    assert!(!changed(), "an idle disk reads 0 and rebuilds nothing");
     p.shared.view.lock().unwrap().parts[0].loading = true;
     assert!(changed(), "loading animates");
     assert!(!changed(), "at most every {ANIMATION_MS} ms");

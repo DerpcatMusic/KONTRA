@@ -15,7 +15,10 @@ use std::{
     fs::File,
     io::{self, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use symphonia::core::{
     audio::SampleBuffer,
@@ -535,6 +538,10 @@ impl Seek for FileAt<'_> {
     }
 }
 
+/// Sample bytes read from disk so far, streaming and loading alike: the
+/// editor's disk readout is its rate of change.
+pub static DISK_READ: AtomicU64 = AtomicU64::new(0);
+
 /// A byte window of a file, decrypted on the fly when keyed.
 struct Bytes {
     file: File,
@@ -548,6 +555,7 @@ impl Read for Bytes {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let room = self.len.saturating_sub(self.pos).min(buf.len() as u64) as usize;
         let n = self.file.read(&mut buf[..room])?;
+        DISK_READ.fetch_add(n as u64, Ordering::Relaxed);
         if let Some(key) = &self.key {
             key.apply_at(self.pos, &mut buf[..n]);
         }

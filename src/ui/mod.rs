@@ -37,14 +37,14 @@ use moose::prelude::*;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use theme::*;
 
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
-    let cpu = Arc::new(AtomicU32::new(0));
-    let build = build(&params, cpu.clone());
+    let meters = Arc::new(Meters::default());
+    let build = build(&params, meters.clone());
     let drop_params = params.clone();
     let cancel_params = params.clone();
     let watch_params = params.clone();
@@ -52,7 +52,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     MuiEditor::new(params, theme::ui(), (1180, 760), build)
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, ui, at, paths, dropped))
         .on_cancel(move |_| cancel_params.shared.release_keyboard())
-        .changed(move || watch.changed(&watch_params, &cpu))
+        .changed(move || watch.changed(&watch_params, &meters))
         .fixed_zoom()
         .resizable((900, 600))
         .into_editor()
@@ -72,6 +72,15 @@ fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     l.write().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The top bar's eased readouts, as [`Watch`] last sampled them: `f32` bits.
+#[derive(Default)]
+struct Meters {
+    /// Audio thread load, 0..1.
+    cpu: AtomicU32,
+    /// Sample data read from disk, MB/s.
+    disk: AtomicU32,
+}
+
 /// Decides, every display tick, whether anything the editor shows moved
 /// outside its own input: a readout, a held key, the loader's view. An idle
 /// editor then draws nothing at all.
@@ -82,7 +91,13 @@ struct Watch {
     /// they are looked at ten times a second, not every tick.
     readouts: u64,
     cpu: f32,
+    disk: f32,
+    /// When the readouts were last sampled, and the disk counter then.
     cpu_at: Option<Instant>,
+    disk_read: u64,
+    /// The disk counter to watch: [`crate::audio::DISK_READ`] unless a test
+    /// gives its own.
+    disk_counter: Option<&'static AtomicU64>,
     poll_at: Option<Instant>,
     frame_at: Option<Instant>,
 }
@@ -92,19 +107,35 @@ const READOUT_MS: u64 = 100;
 const ANIMATION_MS: u64 = 33;
 
 impl Watch {
-    fn changed(&mut self, p: &SamplerParams, cpu_out: &AtomicU32) -> bool {
+    fn changed(&mut self, p: &SamplerParams, meters: &Meters) -> bool {
         let now = Instant::now();
         let due = |at: Option<Instant>, every: u64| {
             at.is_none_or(|t| now - t >= Duration::from_millis(every))
         };
         if due(self.cpu_at, READOUT_MS) {
+            let since = self.cpu_at.map_or(0., |t| (now - t).as_secs_f32());
             self.cpu_at = Some(now);
             // The audio thread keeps its peak load; ease it down between looks.
             let peak = f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32);
             self.cpu = peak.max(self.cpu * 0.8);
-            cpu_out.store(self.cpu.to_bits(), Ordering::Relaxed);
+            meters.cpu.store(self.cpu.to_bits(), Ordering::Relaxed);
+            // Disk throughput since the last look, eased; idle settles on 0.
+            let counter = self.disk_counter.unwrap_or(&crate::audio::DISK_READ);
+            let read = counter.load(Ordering::Relaxed);
+            let rate = if since > 0. {
+                read.saturating_sub(self.disk_read) as f32 / 1_048_576. / since
+            } else {
+                0.
+            };
+            self.disk_read = read;
+            self.disk = self.disk * 0.5 + rate * 0.5;
+            if self.disk < 0.05 {
+                self.disk = 0.;
+            }
+            meters.disk.store(self.disk.to_bits(), Ordering::Relaxed);
             let mut h = DefaultHasher::new();
             ((self.cpu * 100.).round() as u32).hash(&mut h);
+            ((self.disk * 10.).round() as u32).hash(&mut h);
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
             self.readouts = h.finish();
@@ -199,8 +230,8 @@ struct EditorState {
     notice: String,
     root: String,
     last_poll: Instant,
-    /// Smoothed audio thread load, 0..1, as [`Watch`] last eased it.
-    cpu: Arc<AtomicU32>,
+    /// The top bar's readouts, as [`Watch`] last eased them.
+    meters: Arc<Meters>,
     /// Script control being dragged: part, control, unrounded value.
     held: Option<(usize, usize, f64)>,
     /// The context menu showing.
@@ -520,7 +551,7 @@ fn native_files(p: &SamplerParams, ui: &Ui, at: Point, paths: &[PathBuf], droppe
 
 fn build(
     params: &Arc<SamplerParams>,
-    cpu: Arc<AtomicU32>,
+    meters: Arc<Meters>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
     let mut root = read(&params.selection).root.clone();
     if root.is_empty() {
@@ -541,7 +572,7 @@ fn build(
         notice: String::new(),
         root,
         last_poll: Instant::now() - Duration::from_secs(1),
-        cpu,
+        meters,
         held: None,
         menu: None,
         cursor: None,

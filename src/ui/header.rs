@@ -10,7 +10,8 @@ use std::time::Instant;
 
 pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
     let p = cx.p;
-    let cpu = f32::from_bits(cx.state.cpu.load(Ordering::Relaxed));
+    let cpu = f32::from_bits(cx.state.meters.cpu.load(Ordering::Relaxed));
+    let disk = f32::from_bits(cx.state.meters.disk.load(Ordering::Relaxed));
     let voices = p.shared.voices.load(Ordering::Relaxed);
     let memory: usize = cx.view.parts.iter().map(|v| v.bytes).sum();
 
@@ -101,6 +102,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
         stat("Voices", voices.to_string(), "000"),
         stat("RAM", megabytes(memory), "00000 MB"),
+        stat("Disk", format!("{disk:.1} MB/s"), "000.0 MB/s"),
         vrule().h(CONTROL - TIGHT),
         cluster(vec![section("Master"), master, meter_bar(level)]).gap(SPACE),
         vrule().h(CONTROL - TIGHT),
