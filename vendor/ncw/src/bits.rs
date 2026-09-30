@@ -45,14 +45,32 @@ pub const BLOCK_BYTES: usize = 32 * crate::SAMPLES_PER_BLOCK / 8 + 8;
 /// loop; `data` past the body must be zero padding.
 pub fn unpack_block(data: &[u8; BLOCK_BYTES], bits: usize) -> [i32; crate::SAMPLES_PER_BLOCK] {
     debug_assert!((1..=32).contains(&bits));
-    let mask = (1u64 << bits) - 1;
-    std::array::from_fn(|i| {
-        let bit = i * bits;
-        // Never clamps (bit / 8 <= 2044); it lets the compiler drop the bounds check.
-        let byte = (bit / 8).min(BLOCK_BYTES - 8);
-        let word = u64::from_le_bytes(data[byte..byte + 8].try_into().unwrap_or_default());
-        sign_extend(((word >> (bit % 8)) & mask) as u32, bits)
-    })
+    // One copy per width: every shift and offset becomes a constant.
+    macro_rules! widths {
+        ($($b:literal)*) => {
+            match bits {
+                $($b => unpack_fixed::<$b>(data),)*
+                _ => [0; crate::SAMPLES_PER_BLOCK],
+            }
+        };
+    }
+    widths!(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)
+}
+
+/// [`unpack_block`] at a fixed width: eight values fill exactly `B` bytes.
+fn unpack_fixed<const B: usize>(data: &[u8; BLOCK_BYTES]) -> [i32; crate::SAMPLES_PER_BLOCK] {
+    let mask = (1u64 << B) - 1;
+    let mut out = [0; crate::SAMPLES_PER_BLOCK];
+    for (group, values) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+        for (k, value) in values.iter_mut().enumerate() {
+            let bit = k * B;
+            // Never clamps (at most 63 * 32 + 28); it drops the bounds check.
+            let byte = (group * B + bit / 8).min(BLOCK_BYTES - 8);
+            let word = u64::from_le_bytes(data[byte..byte + 8].try_into().unwrap_or_default());
+            *value = sign_extend(((word >> (bit % 8)) & mask) as u32, B);
+        }
+    }
+    out
 }
 
 /// Sign-extend the low `bits` bits of `raw` to an i32.

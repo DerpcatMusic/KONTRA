@@ -92,15 +92,16 @@ pub(crate) fn read_block<R: Read>(
     match block.bits.cmp(&0) {
         std::cmp::Ordering::Greater => {
             // Delta encoded: each value is the difference to the next sample.
+            let mut values = packed(reader)?;
             let mut current = block.base_value;
-            for delta in packed(reader)? {
-                out.push(current);
-                current = current.wrapping_add(delta);
+            for v in &mut values {
+                (*v, current) = (current, current.wrapping_add(*v));
             }
+            out.extend_from_slice(&values);
         }
         std::cmp::Ordering::Less => {
             // Bit truncated: raw samples packed at `bits` bits each.
-            out.extend(packed(reader)?);
+            out.extend_from_slice(&packed(reader)?);
         }
         std::cmp::Ordering::Equal => {
             // Legacy zero-width interpretation. Synthetic tests only: Kontakt
