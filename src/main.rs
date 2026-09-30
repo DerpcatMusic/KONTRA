@@ -920,7 +920,7 @@ fn libraries(root: &Path, depth: usize, out: &mut Vec<Library>) -> Result<()> {
                 }
             }
             let mut kinds: Vec<_> = kinds.into_iter().collect();
-            kinds.sort_by(|a, b| b.1.cmp(&a.1));
+            kinds.sort_by_key(|k| std::cmp::Reverse(k.1));
             let format = |x: &str| match x {
                 "ascf" | "cf" => "Ample Sound",
                 "ufs" | "r2ruvi" => "UVI",
@@ -1012,7 +1012,9 @@ fn heaviest(dir: &Path) -> Result<(std::path::PathBuf, usize)> {
     std::thread::scope(|s| {
         for _ in 0..std::thread::available_parallelism().map_or(4, |n| n.get()) {
             s.spawn(|| {
-                while let Some(path) = { let n = next.lock().unwrap().next(); n } {
+                // A call, so the lock is released before the import.
+                let take = || next.lock().unwrap().next();
+                while let Some(path) = take() {
                     if let Ok(i) = import::read(path) {
                         let weight = (i.zones.iter().filter(|z| z.available).count(), i.zones.len());
                         weights.lock().unwrap().push((weight, path));

@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use ni_file::{
     nis::LibraryKey,
-    nkr::{Archive, Entry},
+    nkr::Archive,
 };
 use std::{
     collections::HashMap,
@@ -225,15 +225,24 @@ impl Packed {
         let mut offsets = Vec::with_capacity(blocks);
         let mut block = [[0i32; BLOCK]; 2];
         let mut residuals = [[0i32; BLOCK - 2]; 2];
+        let mut pad: [Frame; BLOCK];
         for chunk in frames.chunks(BLOCK) {
             offsets.push(data.len() as u32);
+            // The last block repeats its final frame: cheap to pack.
+            let src: &[Frame; BLOCK] = match chunk.try_into() {
+                Ok(full) => full,
+                Err(_) => {
+                    pad = [chunk[chunk.len() - 1]; BLOCK];
+                    pad[..chunk.len()].copy_from_slice(chunk);
+                    &pad
+                }
+            };
+            // Branch-free per channel, so it vectorizes.
             let mut inexact = false;
-            for i in 0..BLOCK {
-                // The last block repeats its final frame: cheap to pack.
-                let frame = chunk[i.min(chunk.len() - 1)];
-                for c in 0..2 {
+            for (c, x) in block.iter_mut().enumerate() {
+                for (x, frame) in x.iter_mut().zip(src) {
                     let q = frame[c] * scale;
-                    block[c][i] = q as i32;
+                    *x = q as i32;
                     inexact |= !exact_at(q, scale);
                 }
             }
