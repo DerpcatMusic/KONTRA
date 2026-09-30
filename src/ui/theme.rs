@@ -254,6 +254,9 @@ pub enum Icon {
     Search,
     Play,
     Menu,
+    /// A favorite not yet set, and set.
+    Star,
+    StarFilled,
 }
 
 /// `icon` in `ink`, `size` points square.
@@ -311,6 +314,20 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 line(&[(3., 8.), (13., 8.)]),
                 line(&[(3., 11.5), (13., 11.5)]),
             ],
+            Icon::Star | Icon::StarFilled => {
+                // Five points round (8, 8.6), alternating outer and inner radii.
+                let points = (0..10).map(|n| {
+                    let r = if n % 2 == 0 { 6. } else { 2.6 };
+                    let a = -PI / 2. + f64::from(n) * PI / 5.;
+                    p(8. + r * a.cos(), 8.6 + r * a.sin())
+                });
+                let star = DrawPath::polyline(points, true);
+                vec![if icon == Icon::StarFilled {
+                    Draw::fill(star, ink.clone())
+                } else {
+                    Draw::stroke(star, ink.clone(), weight * 0.8)
+                }]
+            }
         }
     })
     .square(size)

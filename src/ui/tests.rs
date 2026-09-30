@@ -281,6 +281,49 @@ fn rack_interactions() {
 }
 
 #[test]
+fn favorites_star_from_the_row_or_the_menu_and_lead_the_browser() {
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        v.root = "/virtual".into();
+        v.files = Arc::new(vec![
+            "/virtual/Library/Piano.nki".into(),
+            "/virtual/Library/Strings.nki".into(),
+        ]);
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let favorites = |p: &SamplerParams| p.selection.read().unwrap().favorites.clone();
+
+    h.press("library-0");
+    h.press("star-1");
+    assert_eq!(favorites(&p), ["/virtual/Library/Strings.nki"]);
+    // Right-click the row: Load, Load into new slot, a rule, then favorites.
+    let at = center(&h.ui, "instrument-0");
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input {
+            pointer: PointerInput {
+                pos: Some(at),
+                buttons,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    }
+    h.idle(2);
+    h.press("menu-item-3");
+    assert_eq!(favorites(&p).len(), 2);
+    h.press("star-1");
+    assert_eq!(favorites(&p), ["/virtual/Library/Piano.nki"], "a second star unsets it");
+
+    // Back at the libraries, the favorite leads the list and loads.
+    h.press("library-back");
+    h.press("instrument-0");
+    let selection = p.selection.read().unwrap().clone();
+    assert!(selection.parts[0].path.ends_with("Piano.nki"));
+    assert_eq!(selection.recent, ["/virtual/Library/Piano.nki"], "loading records it");
+}
+
+#[test]
 fn search_groups_results_by_library() {
     let p = Arc::new(SamplerParams::new());
     {

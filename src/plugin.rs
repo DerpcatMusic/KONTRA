@@ -66,6 +66,10 @@ pub struct Selection {
     pub order: Vec<u32>,
     pub midi_thru: bool,
     pub multi: String,
+    /// Presets the player starred, in the order starred.
+    pub favorites: Vec<String>,
+    /// Presets opened lately, newest first.
+    pub recent: Vec<String>,
 }
 
 #[derive(Params)]
@@ -1193,6 +1197,8 @@ mod tests {
             ],
             order: vec![1, 0],
             midi_thru: true,
+            favorites: vec!["/libraries/Solo/a.nki".into()],
+            recent: vec!["second.nki".into(), "first.nkm".into()],
         };
         assert!(Selection::deserialize(&state.serialize()).unwrap() == state);
         assert_eq!(rack_controls(&state)[0].tune, -3.5, "the part's tune reaches the engine");

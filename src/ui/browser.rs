@@ -116,14 +116,28 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             items.push(col(group).gap(0).shrink(0));
         }
     } else {
-        if !cx.state.recent.is_empty() {
-            let recent: Vec<PathBuf> = cx.state.recent.iter().map(PathBuf::from).collect();
-            let mut group = vec![group_heading("Recent", recent.len())];
-            for path in &recent {
-                group.push(preset(ui, cx, listed.len(), path));
-                listed.push(path.clone());
+        // Starred, then lately opened, over the libraries: the kind picked.
+        let kind = |paths: &[String]| -> Vec<String> {
+            paths
+                .iter()
+                .filter(|p| crate::import::is_multi(Path::new(p)) == multis)
+                .cloned()
+                .collect()
+        };
+        let lists = [
+            ("Favorites", kind(&cx.selection.favorites)),
+            ("Recent", kind(&cx.selection.recent)),
+        ];
+        let listed_any = lists.iter().any(|(_, paths)| !paths.is_empty());
+        for (title, paths) in lists.into_iter().filter(|(_, paths)| !paths.is_empty()) {
+            let mut group = vec![group_heading(title, paths.len())];
+            for path in paths.iter().map(PathBuf::from) {
+                group.push(preset(ui, cx, listed.len(), &path));
+                listed.push(path);
             }
             items.push(col(group).gap(0).shrink(0));
+        }
+        if listed_any {
             items.push(group_heading("Libraries", libraries.len()));
         }
         let mut cards = Vec::new();
@@ -324,11 +338,32 @@ fn group_heading(label: &str, count: usize) -> El {
 }
 
 /// One preset row: click selects, double-click or Enter loads, drag drops it
-/// onto the rack, right-click opens its menu.
+/// onto the rack, right-click opens its menu. A star at its end, shown on
+/// hover and kept once set, makes it a favorite.
 fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
     let id = format!("instrument-{n}");
+    let star_id = format!("star-{n}");
     let text = path.to_string_lossy().into_owned();
     let loaded = cx.selection.parts.iter().any(|p| p.path == text);
+    if ui.get(star_id.as_str()).activated() {
+        cx.toggle_favorite(&text);
+    }
+    let favorite = cx.selection.favorites.contains(&text);
+    let hover = ui.state(id.as_str()).hover.max(ui.state(star_id.as_str()).hover);
+    let star_hover = ui.state(star_id.as_str()).hover as f32;
+    let star = stack![glyph(
+        if favorite { Icon::StarFilled } else { Icon::Star },
+        TEXT,
+        Role::Ink.alpha(if favorite { 0.85 } else { 0.4 + 0.5 * star_hover }),
+    )
+    .centered()]
+    .square(TEXT + 2.)
+    .focusable()
+    .a11y(A11y::Toggle { on: favorite })
+    .named(if favorite { "Remove from favorites" } else { "Add to favorites" })
+    .tip(if favorite { "Remove from favorites" } else { "Add to favorites" })
+    .id(star_id)
+    .when(!favorite && hover < 0.5, |e| e.opacity(0.));
     let r = ui.get(id.as_str());
     if r.clicked_with(Button::Primary) {
         cx.state.cursor = Some(text.clone());
@@ -360,7 +395,9 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
             .text_size(TEXT)
             .fill(if loaded || cursor { Role::Ink } else { Role::Dim })
             .lines(1)
-            .min_w(0)
+            .flex(1)
+            .min_w(0),
+        star
     ]
     .gap(INSET - 1.)
     .align(Align::Center)

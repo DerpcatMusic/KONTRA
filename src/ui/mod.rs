@@ -241,8 +241,6 @@ struct EditorState {
     menu: Option<menu::Menu>,
     /// The browser's keyboard cursor: a preset path.
     cursor: Option<String>,
-    /// Presets opened this session, newest first.
-    recent: Vec<String>,
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
     /// Each library's color, from its artwork, worked out once.
@@ -307,9 +305,21 @@ impl Cx<'_> {
     }
 
     fn remember(&mut self, path: &str) {
-        self.state.recent.retain(|p| p != path);
-        self.state.recent.insert(0, path.to_owned());
-        self.state.recent.truncate(6);
+        let recent = &mut self.selection.recent;
+        recent.retain(|p| p != path);
+        recent.insert(0, path.to_owned());
+        recent.truncate(6);
+    }
+
+    /// Star `path`, or unstar it.
+    fn toggle_favorite(&mut self, path: &str) {
+        let favorites = &mut self.selection.favorites;
+        match favorites.iter().position(|p| p == path) {
+            Some(at) => {
+                favorites.remove(at);
+            }
+            None => favorites.push(path.to_owned()),
+        }
     }
 
     /// Open a preset from the browser: a multi replaces the rack, an instrument
@@ -579,7 +589,6 @@ fn build(
         held: None,
         menu: None,
         cursor: None,
-        recent: Vec::new(),
         renaming: None,
         tints: HashMap::new(),
         started: Instant::now(),

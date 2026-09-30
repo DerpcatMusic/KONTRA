@@ -35,6 +35,7 @@ pub enum Command {
     OpenNew(String),
     Reveal(String),
     CopyPath(String),
+    Favorite(String),
     Duplicate(usize),
     Remove(usize),
     Rename(usize),
@@ -125,8 +126,14 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             if !multi {
                 items.push(act("Load into new slot", "", Command::OpenNew(path.clone())));
             }
+            let favorite = cx.selection.favorites.contains(path);
             items.extend([
                 Item::Rule,
+                act(
+                    if favorite { "Remove from favorites" } else { "Add to favorites" },
+                    "",
+                    Command::Favorite(path.clone()),
+                ),
                 act("Reveal in folder", "", Command::Reveal(path.clone())),
                 act("Copy path", "", Command::CopyPath(path.clone())),
             ]);
@@ -336,6 +343,7 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::OpenNew(path) => cx.add(path),
         Command::Reveal(path) => reveal(Path::new(&path)),
         Command::CopyPath(path) => ui.set_clipboard(path),
+        Command::Favorite(path) => cx.toggle_favorite(&path),
         Command::Duplicate(slot) => cx.duplicate(slot),
         Command::Remove(slot) => cx.remove(slot),
         Command::Rename(slot) => {
