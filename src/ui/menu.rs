@@ -12,6 +12,10 @@ use std::path::Path;
 pub enum Target {
     /// A preset in the browser, by path.
     Preset(String),
+    /// A library in the browser, by name.
+    Library(String),
+    /// The browser's add button: library folders.
+    Libraries,
     /// A rack slot.
     Part(usize),
     /// A key on the keyboard.
@@ -60,8 +64,18 @@ pub enum Command {
     Solo(usize),
     Move(usize, i32),
     Audition(u8),
+    /// Show or hide the library folders strip.
     Folders,
+    /// Add a library folder (`true`) or a folder of libraries.
+    AddFolder(bool),
+    ImportKontakt,
     Rescan,
+    CancelScan,
+    /// A library's cover, by its folder: a picture chosen for it, the
+    /// generated one, or back to its own artwork.
+    ChangeArtwork(String),
+    GeneratedCover(String),
+    ResetCover(String),
     SaveMulti,
     Browser,
     Keyboard,
@@ -174,6 +188,36 @@ pub fn open_under(ui: &Ui, cx: &mut Cx, target: Target, anchor: &str) {
 
 fn items(cx: &Cx, target: &Target) -> Vec<Item> {
     match target {
+        Target::Library(name) => {
+            let Some(library) = cx.view.shelf.named(name) else { return Vec::new() };
+            let dir = library.dir.to_string_lossy().into_owned();
+            let chosen = cx.settings.covers.get(&dir);
+            let own = cx.view.artwork.contains_key(name);
+            let mut items = vec![act("Change artwork…", "", Command::ChangeArtwork(dir.clone()))];
+            if own && chosen != Some(&crate::library::Cover::Generated) {
+                items.push(act("Use generated cover", "", Command::GeneratedCover(dir.clone())));
+            }
+            if chosen.is_some() {
+                items.push(act(if own { "Reset to its artwork" } else { "Reset cover" }, "", Command::ResetCover(dir.clone())));
+            }
+            items.extend([Item::Rule, act("Reveal in folder", "", Command::Reveal(dir.clone())), act("Copy path", "", Command::CopyPath(dir))]);
+            items
+        }
+        Target::Libraries => {
+            let mut items = vec![
+                act("Add folder of libraries…", "", Command::AddFolder(false)),
+                act("Add library folder…", "", Command::AddFolder(true)),
+                act("Import from Kontakt", "", Command::ImportKontakt),
+                Item::Rule,
+                act("Library folders…", "", Command::Folders),
+            ];
+            if cx.p.shared.libraries.scanning().is_some() {
+                items.push(act("Stop scanning", "", Command::CancelScan));
+            } else {
+                items.push(act("Rescan libraries", "", Command::Rescan));
+            }
+            items
+        }
         Target::Preset(path) => {
             let multi = crate::import::is_multi(Path::new(path));
             let mut items = vec![act(
@@ -399,7 +443,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 check("Browser", cx.state.browser, Command::Browser),
                 check("Keyboard", cx.state.keyboard, Command::Keyboard),
                 Item::Rule,
-                act("Library folder…", "", Command::Folders),
+                act("Library folders…", "", Command::Folders),
                 act("Rescan libraries", "", Command::Rescan),
                 Item::Rule,
             ];
@@ -629,21 +673,20 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Solo(slot) => cx.selection.parts[slot].solo ^= true,
         Command::Move(slot, by) => cx.move_by(slot, by),
         Command::Audition(note) => shared.audition(Some(note)),
-        Command::Folders => {
-            let from = super::header::root(cx).into();
-            if !cx.state.picker.ask(super::picker::Ask::Folder { from }) {
-                cx.state.settings = !cx.state.settings;
+        Command::Folders => cx.state.settings = !cx.state.settings,
+        Command::AddFolder(single) => super::header::add_folder(cx, single),
+        Command::ImportKontakt => shared.libraries.import_kontakt(),
+        Command::Rescan => shared.libraries.rescan(),
+        Command::CancelScan => shared.libraries.cancel(),
+        Command::ChangeArtwork(library) => {
+            if !cx.state.picker.ask(super::picker::Ask::Artwork { library: library.into() }) {
+                cx.state.notice = "No file dialog here: drop a PNG or JPEG onto the library instead.".into();
             }
         }
-        Command::Rescan => {
-            cx.selection.root = cx.state.root.clone();
-            shared
-                .view
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .root
-                .clear();
+        Command::GeneratedCover(library) => {
+            shared.libraries.set_cover(Path::new(&library), Some(crate::library::Cover::Generated))
         }
+        Command::ResetCover(library) => shared.libraries.set_cover(Path::new(&library), None),
         Command::SaveMulti => {
             // A saved multi offers its own name back; anything else starts blank.
             let current = &cx.selection.multi;

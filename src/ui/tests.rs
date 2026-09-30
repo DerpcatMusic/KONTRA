@@ -301,12 +301,12 @@ fn rack_interactions() {
     let p = Arc::new(SamplerParams::new());
     {
         let mut v = p.shared.view.lock().unwrap();
-        v.root = "/virtual".into();
         v.files = Arc::new(vec![
             "/virtual/Library/Piano.nki".into(),
             "/virtual/Library/Strings.nki".into(),
             "/virtual/Library/Ensemble.nkm".into(),
         ]);
+        v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
     }
     let mut h = Harness::new(&p, 1180., 760.);
     let parts = |p: &SamplerParams| p.selection.read().unwrap().parts.clone();
@@ -504,32 +504,33 @@ fn rack_interactions() {
     let ui = &h.ui;
     let files = vec![PathBuf::from("/external/Native.nki")];
     let at = Point::new(10., 10.);
-    assert!(native_files(&p, ui, at, &files, false));
+    assert!(native_files(&p, &Default::default(), ui, at, &files, false));
     assert!(parts(&p)[0].path.is_empty(), "hovering does not load");
-    assert!(native_files(&p, ui, at, &files, true));
+    assert!(native_files(&p, &Default::default(), ui, at, &files, true));
     assert!(
         parts(&p)[0].path.ends_with("Native.nki"),
         "a dropped file takes the free slot"
     );
-    assert!(!native_files(&p, ui, at, &[PathBuf::from("bad.wav")], true));
+    assert!(!native_files(&p, &Default::default(), ui, at, &[PathBuf::from("bad.wav")], true));
     assert!(!native_files(
         &p,
+        &Default::default(),
         ui,
         at,
         &vec![PathBuf::from("full.nki"); RACK_SLOTS],
         true
     ));
     let at = center(ui, "header-1");
-    assert!(native_files(&p, ui, at, &files, true));
+    assert!(native_files(&p, &Default::default(), ui, at, &files, true));
     assert!(
         parts(&p)[1].path.ends_with("Native.nki"),
         "a file dropped on a header replaces its part"
     );
     let multi = [PathBuf::from("/external/Multi.nkm")];
     let before = p.selection.read().unwrap().clone();
-    assert!(native_files(&p, ui, at, &multi, false));
+    assert!(native_files(&p, &Default::default(), ui, at, &multi, false));
     assert!(p.shared.multi_request.lock().unwrap().is_none());
-    assert!(native_files(&p, ui, at, &multi, true));
+    assert!(native_files(&p, &Default::default(), ui, at, &multi, true));
     assert_eq!(
         p.shared.multi_request.lock().unwrap().take().unwrap(),
         "/external/Multi.nkm"
@@ -542,11 +543,11 @@ fn favorites_star_from_the_row_or_the_menu_and_lead_the_browser() {
     let p = Arc::new(SamplerParams::new());
     {
         let mut v = p.shared.view.lock().unwrap();
-        v.root = "/virtual".into();
         v.files = Arc::new(vec![
             "/virtual/Library/Piano.nki".into(),
             "/virtual/Library/Strings.nki".into(),
         ]);
+        v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
     }
     let mut h = Harness::new(&p, 1180., 760.);
     let favorites = |p: &SamplerParams| p.selection.read().unwrap().favorites.clone();
@@ -589,12 +590,12 @@ fn the_split_browser_walks_both_panes() {
     let p = Arc::new(SamplerParams::new());
     {
         let mut v = p.shared.view.lock().unwrap();
-        v.root = "/virtual".into();
         v.files = Arc::new(vec![
             "/virtual/Keys/Grand Piano.nki".into(),
             "/virtual/Keys/Organ.nki".into(),
             "/virtual/Toys/Toy Piano.nki".into(),
         ]);
+        v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
     }
     let mut h = Harness::new(&p, 1180., 760.);
     let shown = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
@@ -642,9 +643,9 @@ fn the_split_browser_walks_both_panes() {
 fn save_multi_names_the_rack_and_writes_it_under_multis() {
     let root = std::env::temp_dir().join(format!("kontakto-save-{}", std::process::id()));
     let p = Arc::new(SamplerParams::new());
+    p.shared.libraries.add_root(&root, false);
     {
         let mut s = p.selection.write().unwrap();
-        s.root = root.to_string_lossy().into_owned();
         s.parts = vec![crate::plugin::Part {
             path: "/virtual/Keys/Piano.nki".into(),
             tune: -2.,
@@ -672,12 +673,12 @@ fn search_groups_results_by_library() {
     let p = Arc::new(SamplerParams::new());
     {
         let mut v = p.shared.view.lock().unwrap();
-        v.root = "/virtual".into();
         v.files = Arc::new(vec![
             "/virtual/Keys/Grand Piano.nki".into(),
             "/virtual/Keys/Organ.nki".into(),
             "/virtual/Toys/Toy Piano.nki".into(),
         ]);
+        v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
     }
     let mut h = Harness::new(&p, 1180., 760.);
     h.ui.focus("search");
@@ -732,17 +733,54 @@ fn scripted(i: &import::Instrument) -> crate::plugin::ScriptView {
     script_interface(Some(&rt))
 }
 
+/// The libraries in the folder of libraries `root`, found as a scan finds
+/// them, with the hues of their own pictures.
+fn shelved(root: &Path) -> (crate::library::Shelf, Vec<PathBuf>) {
+    let roots = [crate::library::Root { path: root.to_string_lossy().into(), single: false }];
+    let (mut shelf, files) = crate::library::scan(&roots, &Default::default()).unwrap();
+    for library in &mut shelf.libraries {
+        library.hue = artwork::own_hue(&library.dir);
+    }
+    (shelf, files)
+}
+
+/// Libraries with no artwork or library file, as empty presets in a
+/// temporary folder: they show generated covers.
+fn cover_libraries() -> PathBuf {
+    let root = std::env::temp_dir().join(format!("kontra-covers-{}", std::process::id()));
+    for (folder, presets) in [
+        ("Pacific Ensemble Strings/Instruments", 12),
+        ("Hollow Sun/Kinder Piano 1.1/Instruments", 3),
+        ("Cinematic_Brass_Ensembles_v2.0.3/Instruments", 8),
+        ("Glass Harmonica [Soundiron]/Instruments", 4),
+        ("Tape Choir (KONTAKT)", 6),
+        ("Spitfire Audio/Olafur Arnalds Chamber Evolutions/Instruments", 20),
+    ] {
+        let dir = root.join(folder);
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in 0..presets {
+            std::fs::write(dir.join(format!("Patch {n}.nki")), []).unwrap();
+        }
+    }
+    root
+}
+
 /// A plugin whose rack holds `instruments` (when `loaded`) as the loader
 /// leaves them: scripts run, pictures read. `state` stages the
 /// screenshots' special cases.
 fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bool, state: &str) -> Arc<SamplerParams> {
-    let root = Path::new(import::LIBRARY_ROOT);
     let p = Arc::new(SamplerParams::new());
     {
         let mut view = p.shared.view.lock().unwrap();
-        view.artwork = artwork::scan(root, files);
-        view.files = Arc::new(files.to_vec());
-        view.root = import::LIBRARY_ROOT.into();
+        let (shelf, files) = match state {
+            "no-libraries" => (crate::library::Shelf::default(), Vec::new()),
+            "covers" => shelved(&cover_libraries()),
+            _ => (shelved(Path::new(import::LIBRARY_ROOT)).0, files.to_vec()),
+        };
+        view.artwork = artwork::scan(&shelf.libraries);
+        view.shelf = Arc::new(shelf);
+        view.files = Arc::new(files);
+        view.scanned = p.shared.libraries.wanted();
         for (slot, i) in instruments.iter().enumerate().filter(|_| loaded) {
             p.selection.write().unwrap().parts.push(Part {
                 path: i.path.to_string_lossy().into(),
@@ -957,8 +995,12 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 32] = [
+    let states: [(&str, bool, &[&str]); 34] = [
         ("empty", false, &[]),
+        // Libraries with no artwork: generated covers; one chosen.
+        ("covers", false, &["library-2"]),
+        // No library folders yet: how to add them.
+        ("no-libraries", false, &[]),
         ("perform", true, &[]),
         // Esc: no part selected, the keys show what each part plays.
         ("unselected", true, &[]),
@@ -1278,7 +1320,7 @@ fn performance_controls_edit_the_script() {
 fn idle_editor_rebuilds_only_when_something_moves() {
     let p = Arc::new(SamplerParams::new());
     // The library is scanned: nothing is pending for the loader.
-    p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
+    p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
     static DISK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let meters = Meters::default();
     let mut watch = Watch {
@@ -1315,12 +1357,16 @@ fn idle_editor_rebuilds_only_when_something_moves() {
 }
 
 #[test]
-fn library_is_the_first_folder_under_the_root() {
-    let at = |root: &str, path: &str| library_of(root, Path::new(path));
-    assert_eq!(at("/libs", "/libs/Solo/Instruments/a.nki"), "Solo");
-    assert_eq!(at("/libs/", "/libs//Solo/a.nki"), "Solo");
-    assert_eq!(at("/libs", "/libsX/Solo/a.nki"), "");
-    assert_eq!(at("/libs", "/other/a.nki"), "");
+fn a_preset_is_in_the_nearest_library_above_it() {
+    use crate::library::{Library, Shelf};
+    let library = |dir: &str, name: &str| Library { dir: dir.into(), name: name.into(), ..Library::default() };
+    let shelf = Shelf::new(vec![library("/libs/Solo", "Solo"), library("/libs/Vendor/Areia", "Areia"), library("/libs/Solo/Extra", "Extra")]);
+    let at = |path: &str| library_of(&shelf, Path::new(path));
+    assert_eq!(at("/libs/Solo/Instruments/a.nki"), "Solo");
+    assert_eq!(at("/libs/Vendor/Areia/Instruments/x/a.nki"), "Areia");
+    assert_eq!(at("/libs/Solo/Extra/a.nki"), "Extra", "the nearer of two");
+    assert_eq!(at("/libs/SoloX/a.nki"), "");
+    assert_eq!(at("/other/a.nki"), "");
 }
 
 /// The window as pixels, RGBA, painted from the last frame's scene.
@@ -1497,7 +1543,7 @@ fn editor_opens_while_parts_load() {
         "Audio Imperia CHORUS/Instruments/01 Multi Patches/01 Chorus - Women - Traditional Articulations.nki",
     ];
     let p = Arc::new(SamplerParams::new());
-    p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
+    p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
     p.selection.write().unwrap().parts = (paths.iter())
         .map(|path| Part {
             path: root.join(path).to_string_lossy().into(),
