@@ -192,8 +192,9 @@ impl ProgramFx {
             silent: 0,
         };
         // Series stages add their tails; summing the parallel sends too keeps
-        // this an upper bound.
+        // this an upper bound. Nothing rings yet, so it starts asleep.
         fx.tail = fx.slots().map(|s| s.dsp.tail()).sum();
+        fx.silent = fx.tail + 1;
         fx
     }
 }

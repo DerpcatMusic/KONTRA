@@ -166,6 +166,9 @@ fn tail_rings_through_silence_then_idles() {
     let mut ir = vec![0.0; 300];
     ir[250] = 1.0;
     let mut c = chain(vec![convolution(&ir)]);
+    let (mut l, mut r) = (vec![1e-7; 64], vec![1e-7; 64]);
+    c.process(&mut l, &mut r);
+    assert_eq!(l[0], 1e-7, "a fresh chain has nothing ringing, so it sleeps");
     let mut block = |first: f32| {
         let mut l = vec![0.0; 64];
         l[0] = first;
