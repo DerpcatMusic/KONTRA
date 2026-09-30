@@ -1,6 +1,6 @@
-//! A playable keyboard. A band on each key shows what it does for the selected
-//! part: the accent where zones are mapped, the script's color where a script
-//! colored the key (keyswitches, usually).
+//! A playable keyboard in Kontakt's manner: keys that play samples are plain,
+//! keys that don't are dimmed, and keys a script colored (keyswitches, usually)
+//! wear that color on their whole face.
 
 use super::{Cx, theme::*};
 use crate::ksp::{KeyState, Value};
@@ -13,12 +13,13 @@ const OCTAVES: i16 = 7;
 const MAX_OCTAVE: i16 = (128 / 12) - OCTAVES;
 
 pub fn strip(ui: &mut Ui, cx: &mut Cx) -> El {
-    let marks = marks(cx);
+    let looks = looks(cx);
     // Center the keys on a newly shown instrument's range.
     let shown = cx.part().map(|p| (p.path.clone(), p.program));
     if shown != cx.state.keyboard_for && cx.part_view().instrument.is_some() {
-        if let Some(low) = marks.iter().position(Option::is_some) {
-            let high = marks.iter().rposition(Option::is_some).unwrap_or(low);
+        let used = |l: &Look| *l != Look::Unmapped;
+        if let Some(low) = looks.iter().position(used) {
+            let high = looks.iter().rposition(used).unwrap_or(low);
             let span = (high / 12 - low / 12) as i16 + 1;
             let first = low as i16 / 12 - ((OCTAVES - span) / 2).max(0);
             cx.state.octave = first.clamp(0, MAX_OCTAVE);
@@ -56,7 +57,7 @@ pub fn strip(ui: &mut Ui, cx: &mut Cx) -> El {
                 slot,
                 note,
                 black,
-                marks[note as usize],
+                looks[note as usize],
                 keys.get(&note),
             )
         };
@@ -91,7 +92,7 @@ pub fn strip(ui: &mut Ui, cx: &mut Cx) -> El {
         .gap(HALF)
         .align(Align::Center)
         .shrink(0),
-        row(octaves).gap(1).flex(1).min_w(0).h(80).radius(4).clip()
+        row(octaves).gap(1).flex(1).min_w(0).h(84).clip()
     ]
     .gap(WIDE)
     .align(Align::Center)
@@ -100,26 +101,33 @@ pub fn strip(ui: &mut Ui, cx: &mut Cx) -> El {
     .fill(Role::Surface)
 }
 
-/// The band color per note for the selected part.
-fn marks(cx: &Cx) -> [Option<Color>; 128] {
-    let mut marks = [None; 128];
+/// What a key does for the selected part.
+#[derive(Clone, Copy, PartialEq)]
+enum Look {
+    Unmapped,
+    Mapped,
+    Colored(Color),
+}
+
+fn looks(cx: &Cx) -> [Look; 128] {
+    let mut looks = [Look::Unmapped; 128];
     let v = cx.part_view();
     if cx.part().is_none() {
-        return marks;
+        return looks;
     }
     if let Some(i) = &v.instrument {
         for z in i.zones.iter().filter(|z| z.available) {
             for n in z.low_key.min(127)..=z.high_key.min(127) {
-                marks[n as usize] = Some(accent());
+                looks[n as usize] = Look::Mapped;
             }
         }
     }
     for (&note, state) in v.keys.iter() {
         if let Some(color) = state.color.as_ref().and_then(key_color) {
-            marks[note.min(127) as usize] = color;
+            looks[note.min(127) as usize] = color.map_or(Look::Mapped, Look::Colored);
         }
     }
-    marks
+    looks
 }
 
 fn key(
@@ -128,7 +136,7 @@ fn key(
     slot: usize,
     note: u8,
     black: bool,
-    mark: Option<Color>,
+    look: Look,
     script: Option<&KeyState>,
 ) -> El {
     let id = format!("key-{note}");
@@ -144,37 +152,32 @@ fn key(
     }
     let held = p.shared.key_owners[note as usize].load(Ordering::Relaxed) < 128;
     let name = note_name(note);
-    let face = match (held, black) {
-        (true, _) => accent(),
-        (false, true) => Color::oklch(0.2, 0., 0.),
-        (false, false) => Color::oklch(0.95, 0., 0.),
+    let face = match (held, look, black) {
+        (true, ..) => accent(),
+        (false, Look::Colored(c), false) => c,
+        (false, Look::Colored(c), true) => Color::oklch(c.lightness() * 0.62, c.chroma(), c.hue()),
+        (false, Look::Mapped, false) => Color::oklch(0.94, 0., 0.),
+        (false, Look::Mapped, true) => Color::oklch(0.17, 0., 0.),
+        (false, Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
+        (false, Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
     };
     let mut parts = vec![spacer()];
     if note.is_multiple_of(12) {
         parts.push(
             caption(name.clone())
                 .text_size(9)
-                .fill(Color::oklch(0.45, 0., 0.))
+                .fill(Color::oklcha(0., 0., 0., 0.55))
                 .justify(Justify::Center)
                 .shrink(0),
         );
     }
-    let band = mark.unwrap_or(Color::oklcha(0., 0., 0., 0.));
-    parts.push(
-        block(Len::Pct(100.), if black { 3 } else { 4 })
-            .fill(band)
-            .radius(1)
-            .shrink(0),
-    );
     let label = match script.map(|k| k.name.as_str()).filter(|n| !n.is_empty()) {
         Some(what) => format!("{name} · {what}"),
         None => name.clone(),
     };
     col(parts)
-        .gap(2)
         .pad((2, 3))
         .fill(face)
-        .radius(2)
         .align(Align::Center)
         .focusable()
         .a11y(A11y::Button)

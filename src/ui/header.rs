@@ -57,8 +57,8 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
 
     row![
         body("KONTAKTO").text_size(14).text_weight(Weight::BOLD),
-        caption(activity)
-            .fill(Role::Primary)
+        caption(fit(&activity, 60))
+            .fill(Role::Dim)
             .lines(1)
             .flex(1)
             .min_w(0),
@@ -68,7 +68,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         vrule().h(20),
         row![
             caption("Master").fill(Role::Dim),
-            master.radius(6).min_w(64)
+            master.radius(2).min_w(64)
         ]
         .gap(HALF)
         .align(Align::Center),
@@ -95,7 +95,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     row![
         caption("Library folder").fill(Role::Dim),
-        field.el.flex(1).min_w(0).radius(6).named("Library folder"),
+        field.el.flex(1).min_w(0).radius(2).named("Library folder"),
         scan_el
     ]
     .gap(GAP)

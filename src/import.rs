@@ -400,7 +400,7 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         Err(e) => { warnings.push(format!("Effects were not imported: {e:#}")); Default::default() }
     };
     if resolver.undownloaded > 0 {
-        warnings.push(format!("{} samples were never downloaded (their archive data is still zeros); repair the library in Native Access", resolver.undownloaded));
+        warnings.push(format!("{} samples read back as zeros from disk. The files may be fine: the Linux NTFS driver can return zeros for data it fails to map; try mounting the drive with ntfs3", resolver.undownloaded));
     }
     warnings.sort(); warnings.dedup(); missing_samples.sort(); missing_samples.dedup();
     let (voice_limit, voice_groups) = match p.0.find_first(0x32).map(|c| voice_groups(&c.data)).transpose() {

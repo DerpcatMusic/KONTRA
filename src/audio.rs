@@ -466,7 +466,7 @@ impl Source {
     pub fn open(&self) -> Result<SampleReader> {
         SampleReader::open(self).with_context(|| {
             let why = if self.is_unwritten() {
-                "library download is incomplete (its data is still zeros; repair it in Native Access)"
+                "its data reads back as zeros (a filesystem read problem or an incomplete download)"
             } else {
                 "decoding failed"
             };

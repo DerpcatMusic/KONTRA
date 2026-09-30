@@ -768,7 +768,7 @@ fn bank_status(bank: &Bank) -> String {
     );
     if bank.skipped_zones > 0 {
         status += &format!(
-            " · {} zones skipped (missing or incomplete download)",
+            " · {} zones skipped (missing or unreadable)",
             bank.skipped_zones
         );
     }

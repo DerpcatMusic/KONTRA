@@ -23,7 +23,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             .el
             .w(Len::Pct(100.))
             .h(32)
-            .radius(8)
+            .radius(0)
             .named("Search presets"),
         row![
             caption(if multis {
@@ -90,13 +90,13 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         // The library's header stays put while its presets scroll.
         let mut top = vec![row![back_el].shrink(0)];
         if let Some(image) = view.artwork.get(&open) {
-            top.push(artwork(image, 88.).radius(8).clip());
+            top.push(artwork(image, 88.).radius(0).clip());
         }
         top.push(
             row![
-                body(library_label(&open))
+                body(fit(&library_label(&open), 32))
                     .text_weight(Weight::SEMIBOLD)
-                    .lines(2)
+                    .lines(1)
                     .flex(1)
                     .min_w(0),
                 caption(libraries[&open].len().to_string()).fill(Role::Dim)
@@ -131,9 +131,9 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             }
             card.push(
                 row![
-                    body(library_label(name))
+                    body(fit(&library_label(name), 32))
                         .text_size(12)
-                        .lines(2)
+                        .lines(1)
                         .flex(1)
                         .min_w(0),
                     caption(files.len().to_string()).fill(Role::Dim)
@@ -146,7 +146,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                 col(card)
                     .gap(0)
                     .fill(Role::Surface)
-                    .radius(8)
+                    .radius(0)
                     .clip()
                     .focusable()
                     .a11y(A11y::Button)
@@ -214,7 +214,7 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &std::path::Path) -> El {
     let id = format!("instrument-{n}");
     let text = path.to_string_lossy();
     let loaded = cx.selection.parts.iter().any(|p| p.path == text);
-    let (hit, el) = action(ui, id.as_str(), &stem(path), loaded);
+    let (hit, el) = action(ui, id.as_str(), &fit(&stem(path), 36), loaded);
     if ui.get(id.as_str()).dragged {
         ui.start_drag(id.as_str(), RackDrag::Instrument(text.clone().into_owned()));
     }
@@ -228,8 +228,8 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &std::path::Path) -> El {
     };
     el.min_w(0)
         .w(Len::Pct(100.))
-        .lines(2)
-        .min_h(32)
+        .lines(1)
+        .min_h(28)
         .shrink(0)
         .tip(format!("{verb}: {}", path.display()))
 }

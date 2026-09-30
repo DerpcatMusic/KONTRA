@@ -29,23 +29,11 @@ fn drop_target(ui: &mut Ui, cx: &mut Cx, id: &str, slot: usize) {
 /// One chip per part, in rack order, then a drop target that adds.
 pub fn strip(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut chips = Vec::new();
-    for (position, slot) in cx
-        .selection
-        .order
-        .clone()
-        .into_iter()
-        .map(|n| n as usize)
-        .enumerate()
-    {
+    for slot in cx.selection.order.clone().into_iter().map(|n| n as usize) {
         let id = format!("part-{slot}");
         let name = name(cx, slot);
         let current = cx.state.selected == slot;
-        let (choose, el) = action(
-            ui,
-            id.as_str(),
-            &format!("{:02}  {name}", position + 1),
-            current,
-        );
+        let (choose, el) = action(ui, id.as_str(), &fit(&name, 30), current);
         if choose {
             cx.state.selected = slot;
             cx.state.library = Some(cx.library_of(Path::new(&cx.selection.parts[slot].path)));
@@ -91,7 +79,7 @@ pub fn strip(ui: &mut Ui, cx: &mut Cx) -> El {
         .pad((GAP + HALF, HALF + 2.))
         .stroke(Role::Ink.alpha(if dragging { 0.4 } else { 0.12 }))
         .stroke_width(1)
-        .radius(6)
+        .radius(2)
         .focusable()
         .a11y(A11y::Button)
         .named("Add to rack drop target")
@@ -237,7 +225,7 @@ pub fn mixer(ui: &mut Ui, cx: &mut Cx) -> El {
                 } else {
                     Role::Surface.alpha(1.)
                 })
-                .radius(8)
+                .radius(0)
                 .shrink(0),
         );
     }

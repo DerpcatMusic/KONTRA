@@ -46,6 +46,9 @@ pub fn welcome(cx: &Cx) -> El {
 }
 
 /// Name, library, size, preset stepping, part level and pan, audition.
+/// Width of the library banner in the instrument header.
+const HEADER_ART: f64 = 132.;
+
 pub fn header(ui: &mut Ui, cx: &mut Cx) -> El {
     let Some(part) = cx.part().cloned() else {
         return block(Len::Pct(100.), 0).shrink(0);
@@ -125,10 +128,20 @@ pub fn header(ui: &mut Ui, cx: &mut Cx) -> El {
         cx.p.shared.audition(None);
     }
 
-    row![
-        row![prev_el, next_el].gap(0).shrink(0),
+    // Kontakt's instrument header: the library's banner, then the name.
+    let banner = cx.view.artwork.get(&library).map(|image| {
+        block(HEADER_ART, 40)
+            .fill(Fill::Image(image.clone(), Fit::Cover))
+            .shrink(0)
+    });
+    let mut strip = vec![row![prev_el, next_el].gap(0).shrink(0)];
+    strip.extend(banner);
+    strip.extend([
         col![
-            title(name).text_weight(Weight::SEMIBOLD).lines(1),
+            body(fit(&name, 64))
+                .text_size(16)
+                .text_weight(Weight::SEMIBOLD)
+                .lines(1),
             caption(facts.join("  ·  ")).fill(Role::Dim).lines(1)
         ]
         .gap(2)
@@ -138,11 +151,13 @@ pub fn header(ui: &mut Ui, cx: &mut Cx) -> El {
         gain_el,
         pan_el,
         play_el.named("Audition the selected part"),
-    ]
-    .gap(WIDE)
-    .align(Align::Center)
-    .pad((WIDE, GAP + HALF))
-    .shrink(0)
+    ]);
+    row(strip)
+        .gap(GAP + HALF)
+        .align(Align::Center)
+        .pad((WIDE, GAP))
+        .fill(Role::Surface)
+        .shrink(0)
 }
 
 /// Load failures, missing samples and rack notices, in words a player can act on.
@@ -165,7 +180,7 @@ pub fn notices(cx: &Cx) -> Vec<El> {
             ));
         }
         if let Some(i) = current(cx) {
-            if let Some(w) = i.warnings.iter().find(|w| w.contains("never downloaded")) {
+            if let Some(w) = i.warnings.iter().find(|w| w.contains("read back as zeros")) {
                 out.push(banner(Role::Warning, sentence(w)));
             } else if v.status.contains("zones skipped") || !i.missing_samples.is_empty() {
                 let silent = i.zones.iter().filter(|z| !z.available).count();
@@ -256,6 +271,13 @@ pub fn perform(ui: &mut Ui, cx: &mut Cx) -> El {
     .id("instrument-stage")
 }
 
+/// Kontakt's default control face and text, for controls without pictures.
+const KSP_PANEL: Color = Color::oklch(0.8, 0., 0.);
+const KSP_INK: Color = Color::oklch(0.14, 0., 0.);
+
+/// Pixels of vertical drag that sweep a control's whole range.
+const DRAG_TRAVEL: f64 = 200.;
+
 /// Kontakt's performance view height includes a 68 px header its wallpaper leaves out.
 const WALLPAPER_OFFSET: f64 = 68.;
 
@@ -279,6 +301,9 @@ fn performance_view(
             ((w - 2. * WIDE) / iw).min((h - 2. * WIDE) / ih)
         })
         .clamp(0.4, 2.);
+    // Snap to 1/32 steps: sub-pixel size changes between frames would otherwise
+    // shift every control each time the stage is measured.
+    let scale = (scale * 32.).floor() / 32.;
     let (width, height) = (iw * scale, ih * scale);
     let mut controls: Vec<Widget> = interface
         .controls
@@ -335,7 +360,7 @@ fn performance_view(
         .w(width)
         .h(height)
         .fill(Role::Field)
-        .radius(8)
+        .radius(0)
         .clip()
         .shrink(0)
         .named(format!("{} performance view", interface.title))
@@ -376,7 +401,7 @@ fn menu_list(ui: &mut Ui, cx: &mut Cx, part: usize, menu: &Widget, scale: f64, h
         .h(list_h)
         .at(x, top)
         .fill(Role::Raised)
-        .radius(6)
+        .radius(2)
         .scroll()
         .id(format!("ksp-menu-{}", menu.control))
 }
@@ -416,6 +441,9 @@ struct Widget {
     align: Option<Justify>,
     /// `$CONTROL_PAR_TEXTPOS_Y`: text offset down, in authored pixels.
     text_y: f64,
+    /// `$CONTROL_PAR_MOUSE_BEHAVIOUR` < 0: the slider drags sideways. Kontakt
+    /// drags every other slider and knob vertically, whatever its shape.
+    horizontal: bool,
     /// `$CONTROL_PAR_Z_LAYER`.
     z: i32,
 }
@@ -519,6 +547,7 @@ impl Widget {
                 _ => Justify::Start,
             }),
             text_y: f64::from(int("TEXTPOS_Y").unwrap_or(0)),
+            horizontal: int("MOUSE_BEHAVIOUR").is_some_and(|m| m < 0),
             z: int("Z_LAYER").unwrap_or(0).signum(),
         };
         widget.set(raw);
@@ -569,6 +598,7 @@ impl Widget {
     }
 
     /// This frame's pointer and keys on the control; the new value to send, if any.
+    /// Every drag is vertical unless the script asks otherwise, as in Kontakt.
     fn interact(&self, ui: &mut Ui, state: &mut super::EditorState, scale: f64) -> Option<i32> {
         let id = self.id();
         let r = ui.get(id.as_str());
@@ -584,10 +614,10 @@ impl Widget {
                 }
                 if r.dragged {
                     let d = r.drag_delta;
-                    let travel = match self.kind {
-                        Kind::Slider if self.w >= self.h => d.x / (self.w * scale),
-                        Kind::Slider => -d.y / (self.h * scale),
-                        _ => -d.y / 200.,
+                    let travel = if self.horizontal {
+                        d.x / (self.w * scale).max(100.)
+                    } else {
+                        -d.y / DRAG_TRAVEL
                     };
                     let fine = if r.mods.shift { 0.1 } else { 1. };
                     raw = (raw + travel * fine * (self.max - self.min)).clamp(self.min, self.max);
@@ -618,7 +648,7 @@ impl Widget {
             self.w * scale,
             self.h * scale,
         );
-        let panel = Color::oklcha(0.16, 0.005, 260., 0.82);
+        let panel = KSP_PANEL;
         if let Some((picture, n)) = self.frame() {
             match picture.pieces.get(n) {
                 Some(pieces) => nine(pieces, picture.fixed, scale, (x, y, w, h), out),
@@ -633,9 +663,9 @@ impl Widget {
                 } else {
                     14. * scale
                 };
-                let d = (h - label).min(w).max(8.);
+                let d = (h - label * 1.4).min(w).max(8.);
                 let (cx, cy, r) = (x + w / 2., y + d / 2., d / 2. - 2. * scale);
-                out.push(Draw::fill(circle(cx, cy, r), panel));
+                out.push(Draw::fill(circle(cx, cy, r), Color::oklch(0.22, 0., 0.)));
                 let (from, sweep) = (0.75 * PI, 1.5 * PI);
                 let stroke = (2.5 * scale).max(1.5);
                 out.push(Draw::stroke(
@@ -674,7 +704,7 @@ impl Widget {
                 ));
                 out.push(Draw::fill(
                     circle(x + w * self.unit(), mid, t * 1.8),
-                    Color::oklch(0.95, 0., 0.),
+                    Color::oklch(0.25, 0., 0.),
                 ));
             }
             Kind::Slider => {
@@ -688,18 +718,18 @@ impl Widget {
                 ));
                 out.push(Draw::fill(
                     circle(mid, top, t * 1.8),
-                    Color::oklch(0.95, 0., 0.),
+                    Color::oklch(0.25, 0., 0.),
                 ));
             }
             Kind::Button => {
                 let fill = if self.raw >= 1. { accent() } else { panel };
                 if self.background || self.raw >= 1. {
-                    out.push(Draw::fill(rounded(x, y, w, h, 4. * scale), fill));
+                    out.push(Draw::fill(rect(x, y, w, h), fill));
                 }
             }
             Kind::Menu | Kind::Value => {
                 if self.background {
-                    out.push(Draw::fill(rounded(x, y, w, h, 4. * scale), panel));
+                    out.push(Draw::fill(rect(x, y, w, h), panel));
                 }
                 if self.kind == Kind::Menu && w > h * 2. {
                     // A small caret at the right edge.
@@ -715,10 +745,13 @@ impl Widget {
                     ));
                 }
             }
+            Kind::Label if self.background && !self.text.is_empty() => {
+                out.push(Draw::fill(rect(x, y, w, h), panel));
+            }
             Kind::Label => {}
             Kind::Other => {
                 out.push(Draw::stroke(
-                    rounded(x, y, w, h, 4. * scale),
+                    rect(x, y, w, h),
                     Color::oklcha(1., 0., 0., 0.12),
                     1.,
                 ));
@@ -741,23 +774,13 @@ impl Widget {
             return None;
         }
         let size = (11. * scale).clamp(9., 16.);
-        let ink = match self.kind {
-            Kind::Button if self.raw >= 1. => Color::oklch(0.18, 0., 0.),
-            _ => Color::oklch(0.93, 0., 0.),
-        };
+        // Kontakt's default face is dark ink; scripts design their panels for it.
+        let ink = KSP_INK;
         let label = body(text.to_owned()).text_size(size).fill(ink).lines(1);
-        // Text on a wallpaper needs its own ground to stay legible.
-        let pill = |text: El| {
-            row![text]
-                .pad((HALF * scale, 0.))
-                .fill(Color::oklcha(0.16, 0.005, 260., 0.72))
-                .radius(3)
-        };
         let content = match self.kind {
             _ if text.is_empty() => spacer(),
-            Kind::Label if self.picture.is_some() => label,
-            Kind::Knob => col![spacer(), pill(label)].align(Align::Center),
-            Kind::Label => pill(label),
+            Kind::Knob => col![spacer(), label].align(Align::Center),
+            Kind::Label => label.pad((HALF * scale, 0.)),
             Kind::Button | Kind::Value => label.justify(Justify::Center),
             Kind::Menu => label.pad(edges(0., self.h * scale, 0., HALF * scale)),
             _ => label.pad((HALF * scale, 0.)),
@@ -793,19 +816,19 @@ impl Widget {
                 })
                 .named(name)
                 .tip(format!("{}: {}", self.text, self.raw))
-                .radius(4)
+                .radius(0)
                 .on(State::Hover, |s| s.fill(Color::oklcha(1., 0., 0., 0.06))),
             Kind::Button => el
                 .focusable()
                 .a11y(A11y::Toggle { on: self.raw >= 1. })
                 .named(name)
-                .radius(4)
+                .radius(0)
                 .on(State::Hover, |s| s.fill(Color::oklcha(1., 0., 0., 0.08))),
             Kind::Menu => el
                 .focusable()
                 .a11y(A11y::Button)
                 .named(format!("{name} menu"))
-                .radius(4)
+                .radius(0)
                 .on(State::Hover, |s| s.fill(Color::oklcha(1., 0., 0., 0.08))),
         })
     }
@@ -840,23 +863,6 @@ fn nine(
 fn rect(x: f64, y: f64, w: f64, h: f64) -> DrawPath {
     DrawPath::polyline(
         [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].map(|(x, y)| Point::new(x, y)),
-        true,
-    )
-}
-
-fn rounded(x: f64, y: f64, w: f64, h: f64, r: f64) -> DrawPath {
-    let r = r.min(w / 2.).min(h / 2.);
-    let corner = |cx: f64, cy: f64, start: f64| {
-        (0..=6).map(move |n| {
-            let a = start + f64::from(n) * PI / 12.;
-            Point::new(cx + a.cos() * r, cy + a.sin() * r)
-        })
-    };
-    DrawPath::polyline(
-        corner(x + w - r, y + r, -PI / 2.)
-            .chain(corner(x + w - r, y + h - r, 0.))
-            .chain(corner(x + r, y + h - r, PI / 2.))
-            .chain(corner(x + r, y + r, PI)),
         true,
     )
 }
@@ -945,7 +951,7 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
     .flex(1)
     .min_h(0)
     .fill(Role::Field)
-    .radius(8)
+    .radius(0)
     .clip()
     .named("Selected group key and velocity mapping");
     row![

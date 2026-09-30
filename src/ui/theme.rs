@@ -40,10 +40,11 @@ pub fn ui() -> Ui {
             step: 0.035,
             ..Palette::NEUTRAL
         },
+        // Kontakt 8's hardware-panel edges: square, 2 px where a hit area needs one.
         corners: Corners {
-            field: 6.,
-            box_: 8.,
-            selector: 6.,
+            field: 2.,
+            box_: 0.,
+            selector: 2.,
             ..Corners::DEFAULT
         },
         text: 13.,
@@ -61,7 +62,8 @@ pub fn ui() -> Ui {
     )
 }
 
-/// A quiet text button; `selected` gives it the accent's soft fill.
+/// A quiet text button; `selected` raises it on a neutral fill. Text stays ink:
+/// the accent marks state, never words.
 pub fn action(ui: &mut Ui, id: impl Into<Id>, label: &str, selected: bool) -> (bool, El) {
     let b = button(ui, id, label)
         .size(S)
@@ -70,8 +72,8 @@ pub fn action(ui: &mut Ui, id: impl Into<Id>, label: &str, selected: bool) -> (b
         } else {
             Variant::Ghost
         })
-        .role(if selected { Role::Primary } else { Role::Ink });
-    (b.changed, b.el.el().radius(6).text_size(12))
+        .role(if selected { Role::Ink } else { Role::Dim });
+    (b.changed, b.el.el().radius(2).text_size(12))
 }
 
 /// A view switch: ink when current, dim otherwise, with an accent underline.
@@ -80,8 +82,8 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool,
         .size(S)
         .variant(Variant::Ghost)
         .role(if current { Role::Ink } else { Role::Dim });
-    let label = b.el.el().radius(6).text_size(12);
-    let line = block(Len::Pct(100.), 2).pill().fill(if current {
+    let label = b.el.el().radius(0).text_size(12);
+    let line = block(Len::Pct(100.), 2).fill(if current {
         Role::Primary.alpha(1.)
     } else {
         Role::Dim.alpha(0.)
@@ -128,7 +130,7 @@ pub fn number(
         caption(label).fill(Role::Dim),
         c.el.value_text(display)
             .el()
-            .radius(6)
+            .radius(2)
             .min_w(44)
             .reserve(reserve)
     ]
@@ -148,23 +150,32 @@ pub fn stat(label: &str, value: String, widest: &str) -> El {
     .shrink(0)
 }
 
-/// A soft, rounded notice. `role` is Warning or Danger.
+/// A flat notice with a colored edge. `role` is Warning or Danger.
 pub fn banner(role: Role, text: impl Into<String>) -> El {
     row![
-        block(3, Len::Pct(100.)).pill().fill(role.alpha(1.)),
+        block(2, Len::Pct(100.)).fill(role.alpha(1.)),
         body(text.into())
             .text_size(12)
-            .fill(Color::oklch(0.9, 0., 0.))
-            .lines(4)
+            .fill(Color::oklch(0.86, 0., 0.))
+            .lines(2)
             .flex(1)
             .min_w(0)
     ]
     .gap(GAP)
     .align(Align::Stretch)
     .pad((GAP + HALF, GAP))
-    .fill(role.alpha(0.12))
-    .radius(8)
+    .fill(Role::Ink.alpha(0.04))
     .shrink(0)
+}
+
+/// `text` cut to `max` characters with an ellipsis, so a label never wraps or spills.
+pub fn fit(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(max.saturating_sub(1)).collect();
+    cut.truncate(cut.trim_end().len());
+    cut + "…"
 }
 
 pub fn note_name(note: u8) -> String {
