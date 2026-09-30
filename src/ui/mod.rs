@@ -78,10 +78,18 @@ fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 #[derive(Default)]
 struct Watch {
     signature: u64,
+    /// The readouts' hash as last sampled: they move with every note, so
+    /// they are looked at ten times a second, not every tick.
+    readouts: u64,
     cpu: f32,
     cpu_at: Option<Instant>,
     poll_at: Option<Instant>,
+    frame_at: Option<Instant>,
 }
+
+/// Readouts and the loading line refresh this often at most.
+const READOUT_MS: u64 = 100;
+const ANIMATION_MS: u64 = 33;
 
 impl Watch {
     fn changed(&mut self, p: &SamplerParams, cpu_out: &AtomicU32) -> bool {
@@ -89,16 +97,20 @@ impl Watch {
         let due = |at: Option<Instant>, every: u64| {
             at.is_none_or(|t| now - t >= Duration::from_millis(every))
         };
-        // The audio thread keeps its peak load; ease it down ten times a second.
-        if due(self.cpu_at, 100) {
+        if due(self.cpu_at, READOUT_MS) {
             self.cpu_at = Some(now);
+            // The audio thread keeps its peak load; ease it down between looks.
             let peak = f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32);
             self.cpu = peak.max(self.cpu * 0.8);
             cpu_out.store(self.cpu.to_bits(), Ordering::Relaxed);
+            let mut h = DefaultHasher::new();
+            ((self.cpu * 100.).round() as u32).hash(&mut h);
+            p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
+            p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
+            self.readouts = h.finish();
         }
         let mut h = DefaultHasher::new();
-        ((self.cpu * 100.).round() as u32).hash(&mut h);
-        p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
+        self.readouts.hash(&mut h);
         p.shared.focus_request.load(Ordering::Relaxed).hash(&mut h);
         for owner in &p.shared.key_owners {
             (owner.load(Ordering::Relaxed) < 128).hash(&mut h);
@@ -115,28 +127,32 @@ impl Watch {
             let pending = view.root != root
                 || lock(&p.shared.multi_request).is_some()
                 || (0..RACK_SLOTS).any(|n| {
-                    let part = selection.parts.get(n);
-                    let target = part.map_or((String::new(), 0), |p| (p.path.clone(), p.program));
-                    view.parts[n].attempted.as_ref() != Some(&target)
-                        && !(target.0.is_empty() && view.parts[n].attempted.is_none())
+                    let (path, program) = selection
+                        .parts
+                        .get(n)
+                        .map_or(("", 0), |p| (p.path.as_str(), p.program));
+                    match &view.parts[n].attempted {
+                        Some((a, b)) => (a.as_str(), *b) != (path, program),
+                        None => !path.is_empty(),
+                    }
                 });
             (view.parts.iter().any(|v| v.loading), pending)
         };
-        if loading {
-            for progress in &p.shared.load_progress {
-                progress.load(Ordering::Relaxed).hash(&mut h);
-            }
+        // Progress and the sweep redraw on the animation's own clock.
+        let animate = loading && due(self.frame_at, ANIMATION_MS);
+        if animate {
+            self.frame_at = Some(now);
         }
         let signature = h.finish();
         let moved = signature != self.signature;
         self.signature = signature;
         // A stopped host runs no audio thread to start the loader: frames poll it.
-        let poll = pending && due(self.poll_at, 100);
+        let poll = pending && due(self.poll_at, READOUT_MS);
         if poll {
             self.poll_at = Some(now);
         }
         // The loading line sweeps until the first samples arrive.
-        moved || poll || loading
+        moved || poll || animate
     }
 }
 
@@ -359,12 +375,15 @@ impl Cx<'_> {
     }
 }
 
+/// String slicing, not `Path::strip_prefix`: the browser asks for every
+/// preset on each rebuild, and component parsing was most of an idle frame.
 fn library_of(root: &str, path: &Path) -> String {
-    path.strip_prefix(root)
-        .ok()
-        .and_then(|r| r.components().next())
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+    path.to_str()
+        .and_then(|p| p.strip_prefix(root.trim_end_matches('/')))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .and_then(|rest| rest.split('/').find(|c| !c.is_empty()))
         .unwrap_or_default()
+        .to_owned()
 }
 
 /// Put `part` in the first empty slot; `None` when the rack is full.

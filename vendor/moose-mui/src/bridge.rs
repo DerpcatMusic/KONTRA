@@ -35,6 +35,18 @@ pub struct Bridge<P: ?Sized = dyn Params> {
     /// Every parameter and meter as last seen, bit for bit: `changed`
     /// compares against it without hashing or allocating.
     seen: Box<[u64]>,
+    /// When `changed` last looked at the meters.
+    metered: Option<std::time::Instant>,
+}
+
+/// Meters rebuild the tree at most this often: a level moves every audio
+/// block, and a display tick per move kept a playing editor's thread busy.
+const METER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+
+/// A meter reading as the eye sees it: half-decibel steps down to -60 dB.
+fn meter_step(level: f32) -> u64 {
+    let db = 20.0 * level.max(1e-3).log10();
+    (db * 2.0).round() as i64 as u64
 }
 
 impl<P: Params + ?Sized> Bridge<P> {
@@ -51,6 +63,7 @@ impl<P: Params + ?Sized> Bridge<P> {
             open: Vec::new(),
             bound: Vec::new(),
             seen,
+            metered: None,
         }
     }
 
@@ -145,12 +158,22 @@ impl<P: Params + ?Sized> Bridge<P> {
                 .get_normalized(info.id)
                 .map_or(u64::MAX - 1, f64::to_bits)
         });
+        let params = self.infos.len();
+        for (seen, now) in self.seen.iter_mut().zip(values) {
+            changed |= *seen != now;
+            *seen = now;
+        }
+        let now = std::time::Instant::now();
+        if self.metered.is_some_and(|at| now - at < METER_INTERVAL) {
+            return changed;
+        }
+        self.metered = Some(now);
         let meters = self.meters.iter().map(|&id| {
             self.context
                 .as_ref()
-                .map_or(0, |c| u64::from(c.get_meter(id).to_bits()))
+                .map_or(0, |c| meter_step(c.get_meter(id)))
         });
-        for (seen, now) in self.seen.iter_mut().zip(values.chain(meters)) {
+        for (seen, now) in self.seen[params..].iter_mut().zip(meters) {
             changed |= *seen != now;
             *seen = now;
         }

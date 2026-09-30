@@ -508,6 +508,20 @@ fn sample_length_notes_stay_addressable_and_recycle() {
 }
 
 #[test]
+fn zone_id_is_zero_once_the_voice_is_gone() {
+    let script = "on init\ndeclare $id\nend on\non note\nif ($EVENT_NOTE = 60)\n$id := $EVENT_ID\nend if\nmessage(get_event_par($EVENT_ID, $EVENT_PAR_ZONE_ID))\nwait(1)\nmessage(get_event_par($id, $EVENT_PAR_ZONE_ID))\nend on";
+    let mut rig = Rig::new(&[script]);
+    rig.on(0, 60);
+    // No voice before the event reaches the engine.
+    assert_eq!(rig.rt.last_message(), "0");
+    rig.block(64);
+    assert_eq!(rig.rt.last_message(), "1");
+    // A later note sees the released one as gone.
+    rig.off(0, 60).block(64).on(0, 62).block(64);
+    assert_eq!(rig.rt.last_message(), "0");
+}
+
+#[test]
 fn release_callback_and_note_held() {
     let script = "on init\ndeclare $held\nend on\non note\n$held := $NOTE_HELD\nend on\non release\nplay_note(80, 100, 0, 0)\nmessage($held & \":\" & $NOTE_HELD)\nend on";
     let mut rig = Rig::new(&[script]);
