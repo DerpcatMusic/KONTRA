@@ -31,13 +31,34 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let build = build(&params);
     let drop_params = params.clone();
     let cancel_params = params.clone();
+    let changed = outside_changes(params.clone());
     MuiEditor::new(params, theme::ui(), (1180, 760), build)
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, ui, at, paths, dropped))
         .on_cancel(move |_| cancel_params.shared.release_keyboard())
-        .changed(|| true)
+        .changed(changed)
         .fixed_zoom()
         .resizable((900, 600))
         .into_editor()
+}
+
+/// When to rebuild for state outside the editor's own input: every tick
+/// while loading animates or the voice count moves, else at the loader's
+/// 100 ms poll, the fastest the view it publishes can change. Rebuilding
+/// every tick kept the UI thread at 15-30% of a core while idle.
+fn outside_changes(p: Arc<SamplerParams>) -> impl FnMut() -> bool + Send + 'static {
+    let (mut last, mut voices) = (Instant::now(), u64::MAX);
+    move || {
+        let now_voices = p.shared.voices.load(Ordering::Relaxed);
+        let busy = {
+            let view = p.shared.view.lock().unwrap();
+            view.parts.iter().any(|v| v.loading) || view.multi_status.starts_with("Loading")
+        };
+        if busy || now_voices != voices || last.elapsed() >= Duration::from_millis(100) {
+            (last, voices) = (Instant::now(), now_voices);
+            return true;
+        }
+        false
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -162,12 +183,15 @@ impl Cx<'_> {
     }
 }
 
+/// String slicing, not `Path::strip_prefix`: the browser asks for every
+/// preset on each rebuild, and component parsing was most of an idle frame.
 fn library_of(root: &str, path: &Path) -> String {
-    path.strip_prefix(root)
-        .ok()
-        .and_then(|r| r.components().next())
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+    path.to_str()
+        .and_then(|p| p.strip_prefix(root.trim_end_matches('/')))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .and_then(|rest| rest.split('/').find(|c| !c.is_empty()))
         .unwrap_or_default()
+        .to_owned()
 }
 
 /// Put `part` in the first empty slot; `None` when the rack is full.
