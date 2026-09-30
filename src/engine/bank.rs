@@ -18,7 +18,7 @@ use std::{
     ops::Range,
     path::PathBuf,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU32, AtomicUsize, Ordering},
     },
 };
@@ -154,7 +154,100 @@ pub(crate) struct SampleData {
 
 pub(crate) struct Span {
     pub start: u64,
-    pub data: Pcm,
+    /// Shared with every bank in the process holding the same frames
+    /// (see [`resident`]).
+    pub data: Arc<Frames>,
+}
+
+/// Decoded frames, counted in [`resident_bytes`] while they live.
+pub(crate) struct Frames(Pcm);
+
+static RESIDENT_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+impl Frames {
+    pub fn new(pcm: Pcm) -> Arc<Self> {
+        RESIDENT_BYTES.fetch_add(pcm.bytes(), Ordering::Relaxed);
+        Arc::new(Self(pcm))
+    }
+}
+
+impl Drop for Frames {
+    fn drop(&mut self) {
+        RESIDENT_BYTES.fetch_sub(self.0.bytes(), Ordering::Relaxed);
+    }
+}
+
+impl std::ops::Deref for Frames {
+    type Target = Pcm;
+    fn deref(&self) -> &Pcm {
+        &self.0
+    }
+}
+
+/// Decoded sample frames shared across banks: parts and plugin instances
+/// in one process that load the same sample hold one copy. Banks own the
+/// data; the registry only finds it, and forgets it when the last bank
+/// drops. Touched only while loading, never on the audio thread.
+mod resident {
+    use super::{Arc, Frames, Mutex, Span};
+    use std::{collections::HashMap, path::PathBuf, sync::Weak};
+
+    /// By sample path and packing (loops pack uncompressed): each span's
+    /// first frame and data.
+    type Registry = HashMap<(PathBuf, bool), Vec<(u64, Weak<Frames>)>>;
+    static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
+
+    fn with<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
+        let mut lock = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+        f(lock.get_or_insert_default())
+    }
+
+    /// A live span of `key` holding all of `range` and nothing before
+    /// `from`, where the bank's previous span ends.
+    pub fn find(key: &(PathBuf, bool), range: &std::ops::Range<u64>, from: u64) -> Option<Span> {
+        with(|r| {
+            r.get(key)?.iter().find_map(|(start, data)| {
+                let data = data.upgrade()?;
+                let end = start + data.len() as u64;
+                (*start >= from && *start <= range.start && end >= range.end)
+                    .then_some(Span { start: *start, data })
+            })
+        })
+    }
+
+    /// Forget spans every bank has dropped.
+    pub fn sweep() {
+        with(|r| {
+            r.retain(|_, spans| {
+                spans.retain(|(_, d)| d.strong_count() > 0);
+                !spans.is_empty()
+            })
+        })
+    }
+
+    pub fn insert(key: (PathBuf, bool), span: &Span) {
+        with(|r| {
+            let spans = r.entry(key).or_default();
+            spans.retain(|(_, d)| d.strong_count() > 0);
+            spans.push((span.start, Arc::downgrade(&span.data)));
+        })
+    }
+}
+
+/// Bytes of decoded sample data resident in this process, shared spans
+/// counted once.
+pub fn resident_bytes() -> usize {
+    RESIDENT_BYTES.load(Ordering::Relaxed)
+}
+
+/// Resident sample memory every part in the process may use together: a
+/// quarter of physical RAM, and no more than half of what is free now on
+/// top of what is already held, so a busy machine gets smaller preloads
+/// rather than swapping. Without `/proc/meminfo`, twice [`MEMORY_LIMIT`].
+pub fn memory_budget() -> usize {
+    ram_free().map_or(2 * MEMORY_LIMIT, |(free, total)| {
+        (total / 4).min(resident_bytes() + free / 2).max(MEMORY_LIMIT / 4)
+    })
 }
 
 impl SampleData {
@@ -270,6 +363,7 @@ impl Bank {
         progress: &AtomicU32,
     ) -> Result<Self> {
         let mut issues = Issues::default();
+        resident::sweep();
         // Resolve each distinct sample once, then open them all in parallel.
         // By the path's bytes: a `Path` hashes one component at a time.
         let mut ids: HashMap<&std::ffi::OsStr, usize> = HashMap::new();
@@ -308,12 +402,13 @@ impl Bank {
             let source = source?;
             anyhow::Ok((source.open()?, source))
         });
-        let mut readers: Vec<(Source, SampleReader)> = Vec::new();
+        let mut readers: Vec<(Source, SampleReader, &PathBuf)> = Vec::new();
         let opened: Vec<Option<u32>> = opened
             .into_iter()
-            .map(|result| match result {
+            .zip(&paths)
+            .map(|(result, &path)| match result {
                 Ok((reader, source)) => {
-                    readers.push((source, reader));
+                    readers.push((source, reader, path));
                     Some(readers.len() as u32 - 1)
                 }
                 Err(e) => {
@@ -334,15 +429,18 @@ impl Bank {
                 }
             }
         }
-        let info = readers.iter().map(|(_, r)| (r.rate, r.frames)).collect();
+        let info = readers.iter().map(|(_, r, _)| (r.rate, r.frames)).collect();
         let mut builder =
             Builder::new(instrument.groups.clone(), zones, zone_samples, info, issues)?;
         builder.limits(instrument);
 
         let frame_bytes: Vec<_> = readers
             .iter()
-            .map(|(_, r)| Pcm::frame_bytes(r.bits))
+            .map(|(_, r, _)| Pcm::frame_bytes(r.bits))
             .collect();
+        // ponytail: a plan wider than another bank's spans (a roomier budget)
+        // reads its own copy; growing the shared spans in place, and moving
+        // the other banks onto them, would keep one.
         let mut layout = builder.plan(&frame_bytes, budget, controllers);
         let ram_only = (streaming == Streaming::RamOnly).then(|| {
             // ponytail: /proc/meminfo only; other systems get MEMORY_LIMIT until they have a probe.
@@ -362,17 +460,32 @@ impl Bank {
         let decoded = parallel(
             jobs,
             |(ints, buf): &mut (Vec<[i32; 2]>, Vec<Frame>),
-             ((source, mut reader), (spans, streamed, looping))| {
-                let spans = spans
-                    .into_iter()
-                    .map(|range| {
-                        let (start, len) = (range.start, (range.end - range.start) as usize);
-                        let data = reader.read_pcm(range, !looping, ints, buf)?;
-                        let span = (reads_from, LOAD_DONE as usize);
-                        advance(&read, frames_to_read, len, span);
-                        Ok(Span { start, data })
-                    })
-                    .collect::<Result<Vec<_>>>();
+             ((source, mut reader, path), (spans, streamed, looping))| {
+                // Frames another bank holds are shared, not read again. A
+                // shared span may reach past the planned range: more is resident.
+                let key = (path.clone(), !looping);
+                let mut kept: Vec<Span> = Vec::with_capacity(spans.len());
+                let read_spans = || -> Result<()> {
+                    for range in spans {
+                        let len = (range.end - range.start) as usize;
+                        advance(&read, frames_to_read, len, (reads_from, LOAD_DONE as usize));
+                        let from = kept.last().map_or(0, Span::end);
+                        if !kept.is_empty() && range.end <= from {
+                            continue;
+                        }
+                        if let Some(span) = resident::find(&key, &range, from) {
+                            kept.push(span);
+                            continue;
+                        }
+                        let range = range.start.max(from)..range.end;
+                        let data = Frames::new(reader.read_pcm(range.clone(), !looping, ints, buf)?);
+                        let span = Span { start: range.start, data };
+                        resident::insert(key.clone(), &span);
+                        kept.push(span);
+                    }
+                    Ok(())
+                };
+                let spans = read_spans().map(|()| kept);
                 (spans, streamed, reader.rate, source)
             },
         );
@@ -468,7 +581,7 @@ impl Bank {
                 rate: s.rate,
                 spans: vec![Span {
                     start: 0,
-                    data: Pcm::pack(&s.frames, false),
+                    data: Frames::new(Pcm::pack(&s.frames, false)),
                 }],
                 streamed: false,
             })

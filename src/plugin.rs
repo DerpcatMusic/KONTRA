@@ -981,21 +981,15 @@ impl BackgroundTask for Load {
                         c.group = group as u32;
                     }
                 }
-                let resident: usize = params
-                    .shared
-                    .view
-                    .lock()
-                    .unwrap()
-                    .parts
-                    .iter()
-                    .enumerate()
-                    .filter(|(n, _)| *n != slot)
-                    .map(|(_, p)| p.bytes)
-                    .sum();
-                // The part gets what the 2 GiB rack has left; a tight budget
-                // streams more instead of failing.
+                // Samples resident in the whole process (every part and
+                // plugin instance, shared data once) but this part's own,
+                // about to be replaced.
+                let own = params.shared.view.lock().unwrap().parts[slot].bytes;
+                let resident = crate::engine::resident_bytes().saturating_sub(own);
+                // The part gets what the process budget has left; a tight
+                // budget streams more instead of failing.
                 let budget = crate::engine::MEMORY_LIMIT
-                    .min((2 * crate::engine::MEMORY_LIMIT).saturating_sub(resident));
+                    .min(crate::engine::memory_budget().saturating_sub(resident));
                 let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers);
                 // RAM only plays from a streaming bank while the RAM fills.
                 let bank = Box::new(Bank::load_counting(
@@ -1840,10 +1834,12 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         let mean_audible = audible_blocks as f64 / times.len() as f64;
         let whole = (cpu_clock(2) - process_cpu) / start.elapsed().as_secs_f64();
         println!(
-            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core",
+            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core · {:.0} MiB resident, samples {:.0} MiB",
             times.len(),
             cpu * 100.,
-            whole * 100.
+            whole * 100.,
+            rss_mib(),
+            crate::engine::resident_bytes() as f64 / (1 << 20) as f64,
         );
         if counts.iter().any(|&c| c > 0.) {
             let mut sorted = counts.clone();
@@ -2175,6 +2171,40 @@ mod tests {
         assert_eq!(midi_out.get(0).unwrap().port, 0);
         assert_eq!(midi_out.get(0).unwrap().sample_offset, 16);
     }
+    /// Plugin instances in one process (as a DAW hosts them) and parts
+    /// within one hold a sample's frames once.
+    #[test]
+    #[ignore = "requires the owner's local Afflatus library"]
+    fn instances_share_sample_memory() {
+        let path = Path::new(import::LIBRARY_ROOT)
+            .join("Afflatus Chapter II Brass/Instruments/4. Experimental/Mega Brass.nki")
+            .to_string_lossy()
+            .into_owned();
+        let instance = |parts: usize| {
+            let p = SamplerParams::new();
+            let part = Part { path: path.clone(), ..Default::default() };
+            p.selection.write().unwrap().parts = std::iter::repeat_n(part, parts).collect();
+            Load.run(&p);
+            for v in &p.shared.view.lock().unwrap().parts[..parts] {
+                println!("  {}", v.status);
+            }
+            p
+        };
+        let mib = |b: usize| b as f64 / (1 << 20) as f64;
+        let first = instance(1);
+        let one = crate::engine::resident_bytes();
+        println!("1 instance, 1 part: samples {:.0} MiB, RSS {:.0} MiB", mib(one), rss_mib());
+        let second = instance(2);
+        let three = crate::engine::resident_bytes();
+        println!("2 instances, 3 parts: samples {:.0} MiB, RSS {:.0} MiB", mib(three), rss_mib());
+        let banks: usize = [&first, &second]
+            .iter()
+            .map(|p| p.shared.view.lock().unwrap().parts.iter().map(|v| v.bytes).sum::<usize>())
+            .sum();
+        assert!(banks > 2 * one, "three banks hold the samples");
+        assert!(three < one + one / 20, "{three} bytes resident for three copies of {one}");
+    }
+
     #[test]
     #[ignore = "requires the owner's local Vista library"]
     fn worker_loads_and_removes_real_rack_parts() {
