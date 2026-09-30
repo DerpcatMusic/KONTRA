@@ -12,6 +12,7 @@ use ni_file::{
 };
 use std::{
     collections::HashMap,
+    ffi::OsString,
     fs::File,
     io::{self, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -497,7 +498,9 @@ pub struct Source {
 /// Resolves sample paths, caching archive indexes and library keys.
 #[derive(Default)]
 pub struct Sources {
-    archives: HashMap<PathBuf, Indexed>,
+    /// By the path's bytes: hashing a `Path` walks its components, one
+    /// hasher write each, and every sample looks its archive up.
+    archives: HashMap<OsString, Indexed>,
 }
 
 /// An archive's directory, open file and (once needed) library key.
@@ -508,29 +511,12 @@ struct Indexed {
 }
 
 impl Sources {
+    /// The source of `path`, reading its archive's directory once per archive.
     pub fn source(&mut self, path: &Path) -> Result<Source> {
-        self.prepare(path)?;
-        self.resolve(path)
-    }
-
-    /// Read the directory of the archive holding `path`, once per archive.
-    fn prepare(&mut self, path: &Path) -> Result<()> {
-        if let Some((archive, _)) = crate::import::archive_member(path)
-            && !self.archives.contains_key(&archive)
-        {
-            let mut file = File::open(&archive)?;
-            let index = Archive::read_index(&mut file)
-                .with_context(|| format!("Archive {}", archive.display()))?;
-            let key = OnceLock::new();
-            self.archives.insert(archive, Indexed { index, file, key });
-        }
-        Ok(())
-    }
-
-    /// The source of `path`, whose archive [`Sources::prepare`] has read.
-    /// Only reads the member's header, so threads may resolve many at once.
-    fn resolve(&self, path: &Path) -> Result<Source> {
-        let Some((archive, member)) = crate::import::archive_member(path) else {
+        // An archive already read is a file: no stat per member.
+        let archives = &self.archives;
+        let found = crate::import::archive_member_where(path, |p| archives.contains_key(p.as_os_str()) || p.is_file());
+        let Some((archive, member)) = found else {
             return Ok(Source {
                 path: path.into(),
                 file: path.into(),
@@ -539,7 +525,14 @@ impl Sources {
                 key: None,
             });
         };
-        let indexed = self.archives.get(&archive).context("Archive not prepared")?;
+        if !self.archives.contains_key(archive.as_os_str()) {
+            let mut file = File::open(&archive)?;
+            let index = Archive::read_index(&mut file)
+                .with_context(|| format!("Archive {}", archive.display()))?;
+            let key = OnceLock::new();
+            self.archives.insert(archive.clone().into(), Indexed { index, file, key });
+        }
+        let indexed = &self.archives[archive.as_os_str()];
         let entry = indexed
             .index
             .member(FileAt { file: &indexed.file, pos: 0 }, &member)?

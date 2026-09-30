@@ -267,14 +267,15 @@ impl Bank {
     ) -> Result<Self> {
         let mut issues = Issues::default();
         // Resolve each distinct sample once, then open them all in parallel.
-        let mut ids: HashMap<&PathBuf, usize> = HashMap::new();
+        // By the path's bytes: a `Path` hashes one component at a time.
+        let mut ids: HashMap<&std::ffi::OsStr, usize> = HashMap::new();
         let mut paths = Vec::new();
         let zone_ids: Vec<_> = instrument
             .zones
             .iter()
             .map(|zone| {
                 zone.available.then(|| {
-                    *ids.entry(&zone.sample).or_insert_with(|| {
+                    *ids.entry(zone.sample.as_os_str()).or_insert_with(|| {
                         paths.push(&zone.sample);
                         paths.len() - 1
                     })

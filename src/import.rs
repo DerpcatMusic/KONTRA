@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use ni_file::{NIFile, kontakt::{KontaktChunks, StructuredObject, objects::{Program, FNTableImpl, FileNameListPreK51, GroupList, BParScript, LoopArray}}, nis::schema::{Repository, NISObject}};
 use serde::Serialize;
-use std::{collections::HashMap, fs::File, io::{Cursor, Read}, path::{Path, PathBuf}};
+use std::{collections::HashMap, ffi::OsString, fs::File, io::{Cursor, Read}, path::{Path, PathBuf}};
 
 pub const LIBRARY_ROOT: &str = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
 
@@ -480,11 +480,13 @@ pub struct Resolver {
     root: PathBuf,
     index: Option<HashMap<String, Vec<PathBuf>>>,
     /// Lazily indexed archives with an open handle for member headers.
-    archives: HashMap<PathBuf, (ni_file::nkr::Archive, File)>,
+    archives: HashMap<OsString, (ni_file::nkr::Archive, File)>,
     /// Canonical path of each archive: canonicalizing per member costs a
     /// path walk per component, which dominated large imports.
-    canonical: HashMap<PathBuf, PathBuf>,
-    is_file: HashMap<PathBuf, bool>,
+    canonical: HashMap<OsString, PathBuf>,
+    /// These maps key paths by their bytes: hashing a `Path` walks its
+    /// components, one hasher write each, and every sample looks them up.
+    is_file: HashMap<OsString, bool>,
     /// Archive members whose header reads back as zeros: an interrupted download, or
     /// the kernel `ntfs` driver dropping the extents of a fragmented archive.
     pub undownloaded: std::collections::HashSet<PathBuf>,
@@ -496,12 +498,12 @@ impl Resolver {
         let direct = parent.join(&name);
         // Archive members first: a path inside an archive file is never a file itself.
         if let Some((archive, member)) = self.archive_member(&direct) {
-            if !self.archives.contains_key(&archive) {
+            if !self.archives.contains_key(archive.as_os_str()) {
                 let mut file = File::open(&archive)?;
                 let index = ni_file::nkr::Archive::read_index(&mut file).with_context(|| format!("Archive {}", archive.display()))?;
-                self.archives.insert(archive.clone(), (index, file));
+                self.archives.insert(archive.clone().into(), (index, file));
             }
-            let (index, file) = &self.archives[&archive];
+            let (index, file) = &self.archives[archive.as_os_str()];
             let entry = index.member(crate::audio::FileAt { file, pos: 0 }, &member)?;
             return self.member_path(&direct, &archive, entry);
         }
@@ -533,16 +535,16 @@ impl Resolver {
         for (i, name) in names.iter().enumerate() {
             let direct = parent.join(name.replace('\\', "/"));
             let Some((archive, member)) = self.archive_member(&direct) else { loose.push(i); continue };
-            if !self.archives.contains_key(&archive) {
+            if !self.archives.contains_key(archive.as_os_str()) {
                 let mut file = File::open(&archive)?;
                 let index = ni_file::nkr::Archive::read_index(&mut file).with_context(|| format!("Archive {}", archive.display()))?;
-                self.archives.insert(archive.clone(), (index, file));
+                self.archives.insert(archive.clone().into(), (index, file));
             }
             jobs.push((i, direct, archive, member));
         }
         let archives = &self.archives;
         let checked = crate::engine::parallel(jobs, |_: &mut (), (i, direct, archive, member)| {
-            let (index, file) = &archives[&archive];
+            let (index, file) = &archives[archive.as_os_str()];
             let entry = index.member(crate::audio::FileAt { file, pos: 0 }, &member);
             (i, direct, archive, entry)
         });
@@ -559,10 +561,10 @@ impl Resolver {
     fn member_path(&mut self, direct: &Path, archive: &Path, entry: Option<ni_file::nkr::Entry>) -> Result<Option<PathBuf>> {
         match entry {
             Some(entry) if entry.valid => {
-                if !self.canonical.contains_key(archive) {
-                    self.canonical.insert(archive.to_path_buf(), archive.canonicalize()?);
+                if !self.canonical.contains_key(archive.as_os_str()) {
+                    self.canonical.insert(archive.into(), archive.canonicalize()?);
                 }
-                Ok(Some(self.canonical[archive].join(&entry.name)))
+                Ok(Some(self.canonical[archive.as_os_str()].join(&entry.name)))
             }
             Some(entry) if entry.issue == Some("Zero-filled NKX member header") => { self.undownloaded.insert(direct.to_path_buf()); Ok(None) }
             _ => Ok(None),
@@ -572,17 +574,10 @@ impl Resolver {
     /// [`archive_member`], remembering which archive paths are files: one
     /// stat per archive instead of one per member.
     fn archive_member(&mut self, path: &Path) -> Option<(PathBuf, String)> {
-        for parent in path.ancestors().skip(1) {
-            if !parent.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr")) { continue; }
-            let is_file = match self.is_file.get(parent) {
-                Some(&is_file) => is_file,
-                None => *self.is_file.entry(parent.to_path_buf()).or_insert(parent.is_file()),
-            };
-            if is_file {
-                return Some((parent.to_path_buf(), path.strip_prefix(parent).ok()?.to_string_lossy().replace('\\',"/")));
-            }
-        }
-        None
+        archive_member_where(path, |parent| match self.is_file.get(parent.as_os_str()) {
+            Some(&is_file) => is_file,
+            None => *self.is_file.entry(parent.into()).or_insert(parent.is_file()),
+        })
     }
 }
 
@@ -607,8 +602,13 @@ fn f32le(r: &mut impl Read) -> Result<f32> { Ok(f32::from_bits(u32le(r)?)) }
 
 /// A virtual archive/member path is never extracted onto the library filesystem.
 pub fn archive_member(path: &Path) -> Option<(PathBuf, String)> {
+    archive_member_where(path, Path::is_file)
+}
+
+/// [`archive_member`], asking `is_file` of each archive-named ancestor.
+pub fn archive_member_where(path: &Path, mut is_file: impl FnMut(&Path) -> bool) -> Option<(PathBuf, String)> {
     for parent in path.ancestors().skip(1) {
-        if parent.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr")) && parent.is_file() {
+        if parent.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr")) && is_file(parent) {
             return Some((parent.to_path_buf(),path.strip_prefix(parent).ok()?.to_string_lossy().replace('\\',"/")));
         }
     }
