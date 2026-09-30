@@ -45,20 +45,34 @@ pub fn edges(top: f64, right: f64, bottom: f64, left: f64) -> Insets {
     }
 }
 
-/// The accent's hue and chroma (OKLCH): focus, the current view, played keys.
-const ACCENT_HUE: f32 = 64.0;
-const ACCENT_CHROMA: f32 = 0.15;
-
+/// The accent: focus and the current view. Light and achromatic, so the
+/// only colors on screen are the parts' own, the library's and real errors.
 pub fn accent() -> Color {
-    Color::oklch(0.76, ACCENT_CHROMA, ACCENT_HUE)
+    Color::oklch(0.86, 0., 0.)
 }
 
 /// Part `slot`'s color, down its header's edge and over the keys it plays:
 /// hues a golden angle apart, so no two parts look alike and neighbors
 /// least of all, at one quiet lightness and chroma. The first is blue.
 pub fn part_color(slot: usize) -> Color {
-    let hue = (250. + slot as f64 * 137.507_764) % 360.;
-    Color::oklch(0.7, 0.1, hue as f32)
+    Color::oklch(0.7, 0.1, golden_hue(250., slot))
+}
+
+/// Orange, amber and mustard: hues no color is drawn in.
+pub const ORANGE: std::ops::Range<f32> = 40.0..105.0;
+
+/// Whether `hue` (OKLCH degrees) falls in [`ORANGE`].
+pub fn orange(hue: f32) -> bool {
+    ORANGE.contains(&hue.rem_euclid(360.))
+}
+
+/// Step `n` of a walk a golden angle at a time from `from`, over the hue
+/// circle with [`ORANGE`] cut out, so steps stay far apart and none is orange.
+pub fn golden_hue(from: f32, n: usize) -> f32 {
+    let arc = 360. - (ORANGE.end - ORANGE.start);
+    let start = (from - ORANGE.end).rem_euclid(360.) * 360. / arc;
+    let t = (f64::from(start) + n as f64 * 137.507_764) % 360.;
+    (ORANGE.end + t as f32 * arc / 360.) % 360.
 }
 
 /// The hairline every boundary is drawn with.
@@ -75,9 +89,8 @@ pub fn ui() -> Ui {
     Ui::new(Theme {
         palette: Palette {
             neutral: Pigment::new(260.0, 0.008),
-            primary: Pigment::new(ACCENT_HUE, ACCENT_CHROMA),
-            secondary: Pigment::new(ACCENT_HUE, ACCENT_CHROMA),
-            tertiary: Pigment::new(ACCENT_HUE, ACCENT_CHROMA),
+            // Yellow, not amber: no orange anywhere.
+            warning: Pigment::new(105.0, 0.15),
             step: 0.035,
             ..Palette::NEUTRAL
         },
@@ -820,7 +833,7 @@ pub fn signal() -> Color {
     Color::oklch(0.8, 0.19, 145.)
 }
 fn hot() -> Color {
-    Color::oklch(0.84, 0.16, 88.)
+    Color::oklch(0.86, 0.16, 100.)
 }
 fn clip() -> Color {
     Color::oklch(0.64, 0.21, 27.)

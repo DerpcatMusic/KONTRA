@@ -440,9 +440,11 @@ impl Cx<'_> {
     }
 
     /// `library`'s color: its artwork's dominant hue at a fixed, quiet
-    /// lightness and chroma, so every library reads alike.
+    /// lightness and chroma, so every library reads alike. None when that
+    /// hue is orange: no color is drawn orange.
     fn tint(&self, library: &str) -> Option<Color> {
-        Some(Color::oklch(0.66, 0.11, self.looks(library)?.tint?))
+        let hue = self.looks(library)?.tint.filter(|&h| !theme::orange(h))?;
+        Some(Color::oklch(0.66, 0.11, hue))
     }
 
     /// Whether artwork shows blurred.
@@ -1047,7 +1049,7 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         content.push(match cx.state.tab {
             Tab::Mapping => instrument::mapping(ui, cx),
             Tab::Sound => editor::view(ui, cx),
-            _ => instrument::info(cx),
+            _ => instrument::info(ui, cx),
         });
     }
     cx.p.shared.scope.source.store(cx.state.scope, Ordering::Relaxed);
