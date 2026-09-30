@@ -1407,6 +1407,146 @@ pub(crate) struct ScriptView {
 
 moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 
+/// Host-shaped timing: the parts at `paths` in the rack, `Sampler::process`
+/// called at real-time pace for 512-frame blocks at 48 kHz on sixteen
+/// active stereo ports, with the loader running every 100 ms as the host's
+/// task does. First `seconds` idle, then `seconds` with `notes` held notes
+/// on every part, one replaced every `1 s / notes`. Prints block times.
+pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Result<()> {
+    use moose::core::bus_routing::{BusActivation, BusRouting};
+    use std::time::Duration;
+    const FRAMES: usize = 512;
+    const RATE: f64 = 48000.;
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts = paths
+        .iter()
+        .map(|path| Part {
+            path: path.clone(),
+            ..Default::default()
+        })
+        .collect();
+    let mut dsp = Dsp::default();
+    let transport = TransportInfo::default();
+    let mut data = vec![vec![0f32; FRAMES]; 2 * BUSES];
+    let mut outgoing = EventList::with_capacity(64);
+    let mut process = |dsp: &mut Dsp, events: &EventList| {
+        let mut channels: Vec<_> = data.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, FRAMES);
+        let mut routing = BusRouting::new();
+        for _ in 0..BUSES {
+            routing.push_output(2, BusActivation::Active);
+        }
+        outgoing.clear();
+        let mut cx = ProcessContext::new(&transport, RATE, FRAMES, &mut outgoing)
+            .with_bus_routing(routing);
+        let started = Instant::now();
+        Sampler::process(dsp, &p, &mut buffer, events, &mut cx);
+        started.elapsed()
+    };
+    Sampler::reset(
+        &mut dsp,
+        &p,
+        &AudioConfig::new(RATE, FRAMES),
+    );
+    let none = EventList::with_capacity(0);
+    Load.run(&p);
+    for _ in 0..4 {
+        process(&mut dsp, &none);
+        Load.run(&p);
+    }
+    let loaded = (dsp.rack.parts.iter().take(paths.len())).filter(|e| e.bank().is_some()).count();
+    anyhow::ensure!(loaded == paths.len(), "only {loaded} of {} parts loaded", paths.len());
+    let keys: Vec<u8> = {
+        let b = dsp.rack.parts[0].bank().unwrap();
+        let low = b.zones().iter().map(|z| z.low_key).min().unwrap_or(48);
+        let high = b.zones().iter().map(|z| z.high_key).max().unwrap_or(72);
+        // Keyswitches sit low: play the upper part of the range.
+        (low.max(36)..=high.min(96)).collect()
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let loader = {
+        let (p, stop) = (p.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                Load.run(&p);
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+    };
+    let block = Duration::from_secs_f64(FRAMES as f64 / RATE);
+    let blocks = (seconds * RATE) as usize / FRAMES;
+    let every = (RATE / notes.max(1) as f64) as usize;
+    let (mut held, mut started) = (std::collections::VecDeque::new(), 0usize);
+    let mut events = EventList::with_capacity(64);
+    for (phase, playing) in [("idle", false), ("playing", true)] {
+        let mut times = Vec::with_capacity(blocks);
+        let (mut voices, mut cpu) = (0, 0f32);
+        let start = Instant::now();
+        for b in 0..blocks {
+            events.clear();
+            let frame = b * FRAMES;
+            while playing && started * every < frame + FRAMES {
+                let note = |on: bool, key: u8| {
+                    let body = if on {
+                        EventBody::NoteOn { group: 0, channel: 0, note: key, velocity: 100 }
+                    } else {
+                        EventBody::NoteOff { group: 0, channel: 0, note: key, velocity: 0 }
+                    };
+                    Event::new(0, body)
+                };
+                if held.len() >= notes.min(keys.len())
+                    && let Some(key) = held.pop_front()
+                {
+                    events.push(note(false, key));
+                }
+                let key = keys[(started * 7) % keys.len()];
+                events.push(note(true, key));
+                held.push_back(key);
+                started += 1;
+            }
+            times.push(process(&mut dsp, &events).as_secs_f64() * 1e3);
+            voices = voices.max(p.shared.voices.load(Ordering::Relaxed));
+            cpu = cpu.max(f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32));
+            if let Some(wait) = (start + block * (b + 1) as u32).checked_duration_since(Instant::now()) {
+                std::thread::sleep(wait);
+            }
+        }
+        if playing {
+            let mut off = EventList::with_capacity(64);
+            for key in held.drain(..) {
+                off.push(Event::new(0, EventBody::NoteOff { group: 0, channel: 0, note: key, velocity: 0 }));
+            }
+            process(&mut dsp, &off);
+        }
+        let mut sorted = times.clone();
+        sorted.sort_by(f64::total_cmp);
+        let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
+        let mean = times.iter().sum::<f64>() / times.len() as f64;
+        let deadline = FRAMES as f64 / RATE * 1e3;
+        println!(
+            "{phase}: {} blocks · mean {mean:.3} ms · p50 {:.3} · p99 {:.3} · max {:.3} ({:.1}× mean) · load {:.1}% of the {deadline:.2} ms deadline · peak reported CPU {:.1}% · peak {voices} voices",
+            times.len(),
+            at(0.5),
+            at(0.99),
+            at(1.0),
+            at(1.0) / mean,
+            mean / deadline * 100.,
+            cpu * 100.
+        );
+        // Where the slow blocks fall: evenly spaced ones are a timer.
+        let slow: Vec<usize> = (0..times.len()).filter(|&i| times[i] > 2. * at(0.5).max(0.01)).collect();
+        let gaps: Vec<usize> = slow.windows(2).map(|w| w[1] - w[0]).collect();
+        println!(
+            "  {} blocks over 2× median; first at {:?}; gaps {:?}",
+            slow.len(),
+            &slow[..slow.len().min(12)],
+            &gaps[..gaps.len().min(24)]
+        );
+    }
+    stop.store(true, Ordering::Relaxed);
+    let _ = loader.join();
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
