@@ -8,6 +8,13 @@ pub(super) const SILENCE: f32 = 1e-6;
 /// Kontakt's instrument buses.
 const BUSES: usize = 16;
 const NO_BUS: u8 = u8::MAX;
+/// Kontakt output channels a program can route to past the instrument
+/// output (`$ENGINE_PAR_OUTPUT_CHANNEL` 0.., shown "Out 1"…): a mic
+/// mixer's separate outputs. Groups reach channel `c` as bus
+/// [`DIRECT`]` + c` ([`bus_input`](FxProcessor::bus_input)).
+pub const OUTS: usize = 8;
+/// [`FxProcessor::bus_input`]'s first output channel.
+pub const DIRECT: u8 = BUSES as u8;
 
 /// An effect rack a script addresses (`$NI_INSERT_BUS`, `$NI_SEND_BUS`,
 /// `$NI_MAIN_BUS`, `$NI_BUS_OFFSET + n`).
@@ -34,6 +41,9 @@ pub enum FxParam {
     Volume,
     /// Bus pan, -1..=1; the slot is ignored.
     Pan,
+    /// Output channel the bus plays to (0..[`OUTS`]), -1 for the
+    /// instrument output; the slot is ignored.
+    Output,
 }
 
 /// Owned DSP state for one program's insert, send and main racks and its
@@ -54,6 +64,13 @@ pub struct FxProcessor {
     bus_of: [u8; BUSES],
     max_block: usize,
     sleep: Sleep,
+    /// Output channels, `max_block` each; empty for the default processor.
+    outs: Vec<[Box<[f32]>; 2]>,
+    /// Channels written since they were last cleared.
+    out_fed: u8,
+    /// A block ended ([`mix_buses`](Self::mix_buses)): the next write to a
+    /// channel starts the next block, clearing them all first.
+    outs_done: bool,
 }
 
 /// When a chain may stop processing: its input has been silent (−120 dBFS)
@@ -140,6 +157,10 @@ struct Bus {
     /// A voice rendered into `input` this block.
     fed: bool,
     sleep: Sleep,
+    /// Kontakt bus index.
+    index: u8,
+    /// Output channel (0..[`OUTS`]) past the instrument output, or -1.
+    output: i8,
 }
 
 enum Dsp {
@@ -213,6 +234,8 @@ impl ProgramFx {
                     gains: balance(b.volume, b.pan),
                     fed: false,
                     sleep: Sleep::ASLEEP,
+                    index: b.index as u8,
+                    output: channel(b.output as f32),
                 }
             })
             .collect();
@@ -225,6 +248,9 @@ impl ProgramFx {
             max_block,
             // Nothing rings yet.
             sleep: Sleep::ASLEEP,
+            outs: (0..OUTS).map(|_| [zeros(max_block), zeros(max_block)]).collect(),
+            out_fed: 0,
+            outs_done: false,
         }
     }
 }
@@ -254,6 +280,8 @@ impl FxProcessor {
             bus.sleep = Sleep::ASLEEP;
         }
         self.sleep = Sleep::ASLEEP;
+        self.outs.iter_mut().flatten().for_each(|b| b.fill(0.0));
+        self.out_fed = 0;
     }
 
     /// Processes the program output in place. Once the input has been silent
@@ -280,7 +308,11 @@ impl FxProcessor {
 
     /// `frames` of Kontakt bus `bus`'s input for the current block (within
     /// `max_block`); `None` when the program has no such bus.
+    /// Buses [`DIRECT`]` + c` are output channel `c`.
     pub fn bus_input(&mut self, bus: u8, frames: Range<usize>) -> Option<(&mut [f32], &mut [f32])> {
+        if let Some(c) = bus.checked_sub(DIRECT) {
+            return self.out(c as usize, frames);
+        }
         let i = *self.bus_of.get(bus as usize)?;
         let bus = self.buses.get_mut(i as usize)?;
         let [l, r] = &mut bus.input;
@@ -292,8 +324,10 @@ impl FxProcessor {
     /// Runs every bus that was fed or still rings on its first `left.len()`
     /// input frames (at most `max_block`), adds it to `left`/`right` through
     /// its fader and pan, and clears the inputs for the next block.
+    /// A bus routed to an output channel plays there instead.
     pub fn mix_buses(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len()).min(self.max_block);
+        self.fresh_outs();
         for bus in &mut self.buses {
             if !bus.fed && bus.sleep.sleeping() {
                 continue;
@@ -311,9 +345,16 @@ impl FxProcessor {
                 (target[0] - start[0]) / n as f32,
                 (target[1] - start[1]) / n as f32,
             ];
-            for (i, ((l, r), (x, y))) in left
+            let (to_l, to_r) = match self.outs.get_mut(bus.output as usize) {
+                Some([ol, or]) if bus.output >= 0 => {
+                    self.out_fed |= 1 << bus.output;
+                    (&mut ol[..n], &mut or[..n])
+                }
+                _ => (&mut left[..n], &mut right[..n]),
+            };
+            for (i, ((l, r), (x, y))) in to_l
                 .iter_mut()
-                .zip(right.iter_mut())
+                .zip(to_r.iter_mut())
                 .zip(il.iter_mut().zip(ir.iter_mut()))
                 .enumerate()
             {
@@ -324,18 +365,61 @@ impl FxProcessor {
             }
             bus.gains = target;
         }
+        self.outs_done = true;
+    }
+
+    /// Clear the output channels once a new block writes to them.
+    fn fresh_outs(&mut self) {
+        if std::mem::take(&mut self.outs_done) {
+            for (c, out) in self.outs.iter_mut().enumerate() {
+                if self.out_fed & 1 << c != 0 {
+                    out.iter_mut().for_each(|b| b.fill(0.0));
+                }
+            }
+            self.out_fed = 0;
+        }
+    }
+
+    fn out(&mut self, c: usize, frames: Range<usize>) -> Option<(&mut [f32], &mut [f32])> {
+        self.fresh_outs();
+        let [l, r] = self.outs.get_mut(c)?;
+        let out = (l.get_mut(frames.clone())?, r.get_mut(frames)?);
+        self.out_fed |= 1 << c;
+        Some(out)
+    }
+
+    /// What the last block played to each output channel past the
+    /// instrument output: `(channel, left, right)`, first `n` frames. Read
+    /// it after the block, before the next.
+    pub fn direct_outs(&self, n: usize) -> impl Iterator<Item = (usize, &[f32], &[f32])> {
+        let n = n.min(self.max_block);
+        (self.outs.iter().enumerate())
+            .filter(move |(c, _)| self.out_fed & 1 << c != 0)
+            .map(move |(c, [l, r])| (c, &l[..n], &r[..n]))
+    }
+
+    /// The first bus routed to each output channel, as its Kontakt index.
+    pub fn routed(&self) -> [Option<u8>; OUTS] {
+        let mut to = [None; OUTS];
+        for bus in &self.buses {
+            if let Some(t) = to.get_mut(bus.output as usize).filter(|_| bus.output >= 0) {
+                t.get_or_insert(bus.index);
+            }
+        }
+        to
     }
 
     /// Set a script-controllable value; false when this processor does not
     /// hold it (unknown or unimplemented slots).
     pub fn set_param(&mut self, rack: Rack, slot: u8, param: FxParam, value: f32) -> bool {
         let gain = value.max(0.0);
-        if let FxParam::Volume | FxParam::Pan = param {
+        if let FxParam::Volume | FxParam::Pan | FxParam::Output = param {
             let Some(bus) = self.bus_mut(rack) else {
                 return false;
             };
             match param {
                 FxParam::Volume => bus.volume = gain,
+                FxParam::Output => bus.output = channel(value),
                 _ => bus.pan = value.clamp(-1.0, 1.0),
             }
             return true;
@@ -373,12 +457,12 @@ impl FxProcessor {
 
     /// Current value of a script-controllable parameter.
     pub fn param(&self, rack: Rack, slot: u8, param: FxParam) -> Option<f32> {
-        if let FxParam::Volume | FxParam::Pan = param {
+        if let FxParam::Volume | FxParam::Pan | FxParam::Output = param {
             let bus = self.bus(rack)?;
-            return Some(if param == FxParam::Volume {
-                bus.volume
-            } else {
-                bus.pan
+            return Some(match param {
+                FxParam::Volume => bus.volume,
+                FxParam::Output => f32::from(bus.output),
+                _ => bus.pan,
             });
         }
         let tap = self.insert.iter().find_map(|stage| match stage {
@@ -644,4 +728,9 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
         }));
         out
     }))
+}
+
+/// An output channel, 0..[`OUTS`], or -1 for the instrument output.
+fn channel(value: f32) -> i8 {
+    if (0.0..OUTS as f32).contains(&value) { value as i8 } else { -1 }
 }

@@ -6,7 +6,8 @@ use crate::{
         Streaming, TUNE_RANGE, load_scripts,
         overrides::{Edits, Override, Probe},
     },
-    fx::FxProcessor,
+    fx::{DIRECT, FxProcessor, OUTS},
+    routing,
     import::{self, Instrument},
     timing::{self, Align, Holds, Plan, Timing},
     ksp::{Interface, KeyState, Live, Persisted, Refresh, Runtime},
@@ -19,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -63,6 +64,14 @@ pub struct Part {
     /// How late the part sounds, measured, and the player's override (see
     /// [`Selection::auto_align`]).
     pub timing: Timing,
+    /// The player picked [`Part::output`]: automatic routing leaves it.
+    pub output_manual: bool,
+    /// Per output channel the instrument plays to past its own output (a
+    /// mic mixer's "Out 2"), the bus it goes to, -1 with the part; kept by
+    /// "One per mic" routing (`routing.rs`), empty otherwise.
+    pub mic_buses: Vec<i16>,
+    /// What plays on each of those channels, as the library names it.
+    pub mic_names: Vec<String>,
 }
 impl Part {
     /// Where the part's samples play from, given the rack's setting.
@@ -122,6 +131,9 @@ impl Default for Part {
             streaming: None,
             edits: Edits::default(),
             timing: Timing::default(),
+            output_manual: false,
+            mic_buses: Vec::new(),
+            mic_names: Vec::new(),
         }
     }
 }
@@ -202,6 +214,8 @@ pub struct Selection {
     /// Hold notes back only while the host's transport plays: played live
     /// with it stopped, a part sounds as late as its library does.
     pub align_transport_only: bool,
+    /// How parts are routed to buses and host ports ([`routing::Outputs`]).
+    pub outputs: u8,
 }
 impl Selection {
     /// Output bus `n`, default when never set.
@@ -233,6 +247,7 @@ impl Selection {
 }
 
 #[derive(Params)]
+#[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision")]
 pub struct SamplerParams {
     #[param(name="Volume",range="linear(-60, 6)",default=-12.0,unit="dB",smooth="exp(5)")]
     pub volume: FloatParam,
@@ -256,6 +271,18 @@ pub struct SamplerParams {
     pub level: MeterSlot,
 }
 pub(crate) use SamplerParamsParamId as P;
+
+impl SamplerParams {
+    /// Host output port `index`'s name, as last published (`routing.rs`).
+    fn port_name(&self, index: u32) -> Option<String> {
+        let names = self.shared.port_names.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        names.published.get(index as usize).cloned()
+    }
+
+    fn port_names_revision(&self) -> u64 {
+        self.shared.port_names_revision.load(Ordering::Acquire)
+    }
+}
 
 pub struct Shared {
     ready: ArrayQueue<(usize, u64, Handoff)>,
@@ -336,6 +363,13 @@ pub struct Shared {
     measure: Arc<Measure>,
     /// The latency the host is told, ms (`f32` bits); 0 while auto-align is off.
     pub(crate) reported: AtomicU32,
+    /// What each part's instrument plays past its own output ([`routing::Mics`]),
+    /// published by the audio thread.
+    mics: [[AtomicU16; OUTS]; RACK_SLOTS],
+    /// Host port names; the loader publishes, the host's main thread reads.
+    port_names: Mutex<routing::PortNames>,
+    /// Bumped with each publication: format wrappers poll it and tell the host.
+    port_names_revision: AtomicU64,
 }
 /// Parts' timing measurements, each on a thread of its own.
 #[derive(Default)]
@@ -443,6 +477,9 @@ impl Default for Shared {
             published: Mutex::default(),
             measure: Arc::default(),
             reported: AtomicU32::new(0),
+            mics: Default::default(),
+            port_names: Mutex::default(),
+            port_names_revision: AtomicU64::new(0),
             view: Mutex::new(View {
                 script_epoch: 0,
                 multi_status: String::new(),
@@ -602,6 +639,10 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
                 solo: p.solo,
                 aux: if (0..BUSES as i16).contains(&p.aux) { p.aux as u8 } else { NO_AUX },
                 aux_gain: db_gain(p.aux_gain),
+                outs: std::array::from_fn(|c| match p.mic_buses.get(c) {
+                    Some(&b) if (0..BUSES as i16).contains(&b) => b as u8,
+                    _ => NO_AUX,
+                }),
             })
             .unwrap_or_default()
     })
@@ -973,6 +1014,7 @@ impl BackgroundTask for Load {
                 }
             }
         }
+        route(params);
         {
             let current = params.selection.read().unwrap();
             params.shared.sync_overrides(&current);
@@ -1442,6 +1484,58 @@ fn smart_memory(shared: &Shared) {
     }
 }
 
+/// Route parts as the mixer's "Outputs" choice says and publish the host
+/// port names once they settle.
+fn route(params: &SamplerParams) {
+    let shared = &params.shared;
+    let names = {
+        let mut current = params.selection.write().unwrap();
+        let mut routed = current.clone();
+        shared.reroute(&mut routed);
+        if routed != *current {
+            *current = routed;
+        }
+        routing::port_names(&current)
+    };
+    let mut ports = shared.port_names.lock().unwrap();
+    if ports.offer(names, Instant::now()) {
+        shared.port_names_revision.fetch_add(1, Ordering::Release);
+    }
+}
+impl Shared {
+    /// [`routing::apply`] with what the audio thread last saw the parts'
+    /// instruments route past their outputs, named from the instruments.
+    pub(crate) fn reroute(&self, selection: &mut Selection) {
+        let mics: routing::Mics = self.mics.each_ref().map(|m| m.each_ref().map(|c| c.load(Ordering::Relaxed)));
+        let view = self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        routing::apply(selection, &mics, |slot, code| {
+            let instrument = view.parts.get(slot).and_then(|v| v.instrument.as_deref());
+            let name = instrument.and_then(|i| match code {
+                0x100.. => i.groups.get(usize::from(code - 0x100)).map(|g| g.name.clone()),
+                b => i.fx.buses.iter().find(|x| x.index == usize::from(b - 1)).map(|x| x.name.clone()),
+            });
+            name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| match code {
+                0x100.. => "Direct".into(),
+                b => format!("Bus {b}"),
+            })
+        });
+    }
+}
+/// What an instrument routes to each output channel past its own output
+/// ([`routing::Mics`]): its first instrument bus there, else its first group.
+pub(crate) fn outs_of(engine: &Engine) -> [u16; OUTS] {
+    let mut outs = engine.fx().routed().map(|b| b.map_or(0, |b| 1 + u16::from(b)));
+    let settings = engine.bank().map_or(&[][..], |b| &b.settings[..]);
+    for (g, s) in settings.iter().enumerate() {
+        if let Some(c) = s.bus.and_then(|b| b.checked_sub(DIRECT))
+            && let Some(o) = outs.get_mut(usize::from(c))
+            && *o == 0
+        {
+            *o = 0x100 + g.min(0xfeff) as u16;
+        }
+    }
+    outs
+}
 /// How long a new latency must hold before the host hears of it: hosts
 /// restart processing for each change, and parts loading one by one would
 /// otherwise change it once per part.
@@ -1619,6 +1713,11 @@ impl PluginLogic for Sampler {
         if s.until_poll <= frames {
             if let Some(tasks) = cx.tasks::<Load>() {
                 tasks.spawn_coalescing(Load);
+            }
+            for (engine, mics) in s.rack.parts.iter().zip(&p.shared.mics) {
+                for (m, out) in mics.iter().zip(outs_of(engine)) {
+                    m.store(out, Ordering::Relaxed);
+                }
             }
             s.until_poll = (rate * 0.1) as usize;
         } else {
@@ -2406,9 +2505,14 @@ mod tests {
                     solo: true,
                     streaming: Some(Streaming::Auto),
                     timing: Timing { override_ms: Some(120.), exclude: true, ..Default::default() },
+                    output: 3,
+                    output_manual: true,
+                    mic_buses: vec![-1, 4],
+                    mic_names: vec![String::new(), "Close".into()],
                     ..Default::default()
                 },
             ],
+            outputs: 2,
             order: vec![1, 0],
             midi_thru: true,
             favorites: vec!["/libraries/Solo/a.nki".into()],

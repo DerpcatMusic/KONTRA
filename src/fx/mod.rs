@@ -14,7 +14,7 @@ mod reverb;
 
 pub use kind::Kind;
 pub use params::Params;
-pub use processor::{FxParam, FxProcessor, Rack};
+pub use processor::{DIRECT, FxParam, FxProcessor, OUTS, Rack};
 
 use anyhow::{Context, Result, ensure};
 use ni_file::kontakt::{
