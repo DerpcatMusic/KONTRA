@@ -1978,7 +1978,7 @@ mod tests {
                 let mpe = Mpe { zone: Zone::Lower, ..Mpe::default() };
                 router.set_route(Route::new(&path.to_string_lossy(), &Articulate::default(), &mpe));
                 // Crossings per second and level of 0.5 s of the note, 0.2 s in.
-                let mut listen = |e: &mut Engine, router: &mut Router, before: &[In], after: &[In]| {
+                let listen = |e: &mut Engine, router: &mut Router, before: &[In], after: &[In]| {
                     quiet(e);
                     for &ev in before {
                         feed(router, e, ev, 0);
