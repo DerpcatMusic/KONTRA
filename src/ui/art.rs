@@ -22,12 +22,14 @@ pub struct Looks {
 }
 
 type Job = (String, Arc<Image>);
+/// The artwork looks were made from (its address), and the looks once made.
+type Made = (usize, Option<Arc<Looks>>);
 
 #[derive(Default)]
 pub struct Art {
     /// By library: the artwork they were made from (its address) and the
     /// looks, `None` while they are being made.
-    made: Mutex<HashMap<String, (usize, Option<Arc<Looks>>)>>,
+    made: Mutex<HashMap<String, Made>>,
     work: Mutex<Option<mpsc::Sender<Job>>>,
     /// Jobs sent and not yet done.
     pending: Arc<AtomicUsize>,
