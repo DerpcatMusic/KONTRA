@@ -296,13 +296,10 @@ fn element(m: &mut Machine, pc: usize, v: VarId, index: i32) -> Option<usize> {
     }
 }
 
-fn finite(x: f64) -> Exec<f64> {
-    if x.is_finite() {
-        Ok(x)
-    } else {
-        Err(Fault("Nonfinite real result"))
-    }
-}
+/// Reals are IEEE doubles, as in Kontakt: `x / 0.0` is infinite and the
+/// callback goes on. Dolce and Areia divide 0.0 by 0.0 in
+/// `on persistence_changed` on every load; aborting there skipped 1,400 lines.
+pub const NONFINITE: &str = "Nonfinite real result (kept)";
 
 /// Run until the callback finishes, suspends, faults or exhausts `fuel`.
 pub fn exec(m: &mut Machine, fuel: &mut u64) -> Exec<Yield> {
@@ -339,7 +336,11 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             (|$a:ident, $b:ident| $e:expr) => {{
                 let $b = s.real();
                 let $a = s.real();
-                s.reals.push(finite($e)?);
+                let x = $e;
+                if !x.is_finite() {
+                    m.env.fault(m.slot.index, *pc as u32, NONFINITE);
+                }
+                s.reals.push(x);
             }};
         }
         macro_rules! cmp_real {

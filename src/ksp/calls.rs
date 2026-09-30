@@ -25,7 +25,7 @@ fn push_int(m: &mut Machine, v: i32) -> Exec<Step> {
 
 fn push_real(m: &mut Machine, v: f64) -> Exec<Step> {
     if !v.is_finite() {
-        return Err(Fault("Nonfinite real result"));
+        m.env.fault(m.slot.index, m.t.pc, super::vm::NONFINITE);
     }
     m.stk.reals.push(v);
     Ok(Step::Next)
@@ -195,8 +195,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         RealToInt | Int => {
             let x = m.stk.real().trunc();
             if !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&x) {
-                return Err(Fault("Real to integer overflow"));
+                m.env.fault(m.slot.index, m.t.pc, "Real to integer overflow (saturated)");
             }
+            // Saturating; NaN is 0.
             push_int(m, x as i32)
         }
         Round | Floor | Ceil | Sqrt | Exp | Log | Log2 | Log10 | Sin | Cos | Tan | Asin | Acos

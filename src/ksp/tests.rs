@@ -87,23 +87,24 @@ fn shared_host_services_are_scoped_and_transactional() {
 fn real_expressions_and_arrays() {
     let source = "on init\ndeclare ?a[2] := (2.5, -3.0)\ndeclare ~x := ?a[0]*2.0\ndeclare ui_label $label(1,1)\nif (~x=5.0)\nset_text($label,int(round(~x+real(2))) & \":\" & int(abs(?a[1])))\nend if\nend on";
     assert_eq!(label(source), "7:3");
-    for expression in [
-        "1.0/0.0",
-        "sqrt(-1.0)",
-        "exp(1000.0)",
-        "int(2147483648.0)",
-        "1.0+1",
+    // Like Kontakt's doubles, nonfinite reals are reported and kept; the
+    // callback goes on. Integer conversion saturates.
+    for (expression, shown) in [
+        ("1.0/0.0", "inf"),
+        ("sqrt(-1.0)", "NaN"),
+        ("exp(1000.0)", "inf"),
+        ("real(int(2147483648.0))", "2147483647"),
     ] {
-        assert!(
-            initialize(
-                &format!("on init\ndeclare ~x := {expression}\nend on"),
-                0,
-                0
-            )
-            .is_err(),
-            "{expression}"
-        );
+        let ui = initialize(
+            &format!("on init\ndeclare ~x := {expression}\ndeclare ui_label $l(1,1)\nset_text($l, ~x)\nend on"),
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), shown, "{expression}");
+        assert!(!ui.diagnostics.is_empty(), "{expression}");
     }
+    assert!(initialize("on init\ndeclare ~x := 1.0+1\nend on", 0, 0).is_err());
     let ok = "on init\ndeclare ~x := 1.0e-3\ndeclare $bits := sh_right(sh_left(3.and.1,4),2)\ndeclare $cast := real_to_int(int_to_real(4))\nend on";
     assert!(initialize(ok, 0, 0).is_ok());
     let fill = "on init\ndeclare %a[4] := (1, 2)\ndeclare ui_label $l(1,1)\nset_text($l, %a[3] & min(4, 2) & max(1.5, 2.5))\nend on";
