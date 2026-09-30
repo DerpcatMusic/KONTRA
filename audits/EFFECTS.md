@@ -244,8 +244,8 @@ the flag (Cellos `dc legatodyn1` inverted, `cl legatodyn1` not), and the flag by
 (`0x12`) is the same on all. Group 16 (`cl legatodyn1`), the +7 dB treble case, is one of
 the 14 outliers; flipping the reading would make the other 50 boost instead. Kontakt's
 default is non-inverted, so the designers pressed invert on most routes, which reads as a
-cut at onset. The volume invert flag stays ignored (MODULATION.md): there its siblings
-disagree without a sign change being audible.
+cut at onset. This is in tension with the volume invert flag, which stays ignored because
+sibling mic copies disagree on it (MODULATION.md); the two readings are unreconciled.
 
 Cost (`cargo test --release --no-default-features --lib engine::filter::tests::bench --
 --ignored --nocapture`, per voice, 128-frame stereo blocks of noise at 48 kHz, load ~12,
