@@ -691,3 +691,30 @@ fn reversed_case_ranges_and_effect_loads_compile() {
     assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "in1-1");
     assert!(ui.diagnostics.iter().all(|d| !d.contains("disabled")), "{:?}", ui.diagnostics);
 }
+
+/// Snapshots refreshed a small budget at a time (as the audio thread does,
+/// so big persistent tables never stall a block) end up equal to a whole
+/// refresh, and say whether anything changed.
+#[test]
+fn budgeted_persistence_refresh_matches_whole_and_reports_changes() {
+    let script = "on init\ndeclare %table[1000]\nmake_persistent(%table)\ndeclare $x\nmake_persistent($x)\ndeclare ui_knob $k(0, 1000, 1)\nmake_persistent($k)\nend on\non ui_control($k)\n%table[$k] := $k + 7\n$x := $k\nend on";
+    let mut rig = Rig::new(&[script]);
+    let mut saved = rig.rt.persistence();
+    let mut at = runtime::Refresh::default();
+    let mut blocks = 0;
+    while !rig.rt.refresh_persistence_within(&mut saved, &mut at, 64) {
+        blocks += 1;
+    }
+    assert!(blocks >= 15, "1000 values at 64 a block take many blocks: {blocks}");
+    assert!(!at.changed, "nothing ran since the snapshot was taken");
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 999);
+    let mut at = runtime::Refresh::default();
+    while !rig.rt.refresh_persistence_within(&mut saved, &mut at, 64) {}
+    assert!(at.changed);
+    assert!(saved == rig.rt.persistence(), "piecewise equals whole");
+    let Value::Array(table) = &saved[0]["%table"] else {
+        panic!("a persistent array saves as one")
+    };
+    assert_eq!((&table[999], &saved[0]["$x"]), (&Value::Int(1006), &Value::Int(999)));
+    assert!(!rig.rt.refresh_persistence(&mut saved), "a second refresh finds nothing new");
+}

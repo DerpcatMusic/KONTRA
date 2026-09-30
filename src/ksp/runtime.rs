@@ -544,9 +544,18 @@ pub struct Runtime {
     /// `on init` or `on persistence_changed`), in call order.
     /// The playing engine applies them on install and after a reset.
     pub init_controllers: Vec<(u8, u8)>,
+    /// Counts script runs and host writes to script memory; see [`changes`](Self::changes).
+    changes: u64,
 }
 
 impl Runtime {
+    /// Grows whenever script memory may have changed: a callback ran or the
+    /// host wrote a variable. Equal counts mean equal memory, so refreshes
+    /// can be skipped.
+    pub fn changes(&self) -> u64 {
+        self.changes
+    }
+
     pub fn new(host: HostState, outputs: usize, persisted: Vec<Persisted>) -> Self {
         Self {
             programs: Vec::new(),
@@ -556,6 +565,7 @@ impl Runtime {
             threads: vec![Thread::default(); THREAD_CAPACITY],
             free_threads: (0..THREAD_CAPACITY as u16).rev().collect(),
             outputs,
+            changes: 0,
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
             init_controllers: Vec::new(),
@@ -746,17 +756,48 @@ impl Runtime {
     /// Update `saved`, built earlier by [`persistence`](Self::persistence), in
     /// place without allocating, so the audio thread can refresh a snapshot
     /// the host then saves. A string that outgrew its buffer is cut to it;
-    /// [`settle_persistence`] tells the host and makes room.
-    pub fn refresh_persistence(&self, saved: &mut [Persisted]) {
-        let slots = self.programs.iter().zip(&self.states).zip(saved);
-        for ((prog, state), saved) in slots {
-            for &v in &state.persistent {
+    /// [`settle_persistence`] tells the host and makes room. Returns whether
+    /// any value changed.
+    pub fn refresh_persistence(&self, saved: &mut [Persisted]) -> bool {
+        let mut at = Refresh::default();
+        while !self.refresh_persistence_within(saved, &mut at, usize::MAX) {}
+        at.changed
+    }
+
+    /// [`refresh_persistence`](Self::refresh_persistence) a piece at a time:
+    /// about `budget` values from where `at` stands. True once `saved` is
+    /// whole again; `at.changed` then says whether anything differed. Scripts
+    /// keep megabytes of persistent tables, too much for one audio block.
+    pub fn refresh_persistence_within(
+        &self,
+        saved: &mut [Persisted],
+        at: &mut Refresh,
+        budget: usize,
+    ) -> bool {
+        let mut left = budget;
+        let slots = self.programs.len().min(self.states.len()).min(saved.len());
+        while at.slot < slots {
+            let (prog, state) = (&self.programs[at.slot], &self.states[at.slot]);
+            while let Some(&v) = state.persistent.get(at.item) {
+                if left == 0 {
+                    return false;
+                }
                 let var = &prog.vars[v as usize];
-                if let Some(value) = saved.get_mut(&*var.name) {
-                    refresh_value(&state.mem, var, value);
+                let len = if var.poly { 0 } else { var.len.map_or(1, |n| n as usize) };
+                let end = len.min(at.at.saturating_add(left));
+                if let Some(value) = saved[at.slot].get_mut(&*var.name) {
+                    at.changed |= refresh_range(&state.mem, var, value, at.at..end);
+                }
+                left = left.saturating_sub(end - at.at + 1);
+                if end < len {
+                    at.at = end;
+                } else {
+                    (at.item, at.at) = (at.item + 1, 0);
                 }
             }
+            (at.slot, at.item) = (at.slot + 1, 0);
         }
+        true
     }
 
     pub fn interface(&self, slot: usize) -> Interface {
@@ -813,15 +854,29 @@ impl Runtime {
     /// [`live`](Self::live), in place and without allocating, so the audio
     /// thread can refresh it for the host. Strings are cut to the room they
     /// have; properties and menu items `live` lacks are skipped.
-    pub fn refresh_live(&self, live: &mut Live) {
+    /// Returns whether anything changed.
+    pub fn refresh_live(&self, live: &mut Live) -> bool {
+        let mut at = Refresh::default();
+        while !self.refresh_live_within(live, &mut at, usize::MAX) {}
+        at.changed
+    }
+
+    /// [`refresh_live`](Self::refresh_live) a piece at a time, about `budget`
+    /// control properties from where `at` stands; true once done.
+    pub fn refresh_live_within(&self, live: &mut Live, at: &mut Refresh, budget: usize) -> bool {
         if let Some(out) = &mut live.interface
             && let Some(state) = self.states.get(live.slot)
+            && at.item < out.controls.len()
         {
-            state.ui.refresh(&self.programs[live.slot], &state.mem, out);
+            let prog = &self.programs[live.slot];
+            at.changed |= state.ui.refresh(prog, &state.mem, out, &mut at.item, budget);
+            if at.item != usize::MAX {
+                return false;
+            }
         }
         for (note, key) in &mut live.keys {
             let host = self.env.host.keyboard.get(note);
-            copy_text(&mut key.name, host.map_or("", |k| &k.name));
+            let mut changed = copy_text(&mut key.name, host.map_or("", |k| &k.name));
             fn text(v: Option<&Value>) -> &str {
                 match v {
                     Some(Value::Text(s)) => s,
@@ -829,13 +884,17 @@ impl Runtime {
                 }
             }
             if let Some(Value::Text(t)) = &mut key.color {
-                copy_text(t, text(host.and_then(|k| k.color.as_ref())));
+                changed |= copy_text(t, text(host.and_then(|k| k.color.as_ref())));
             }
             if let Some(Value::Text(t)) = &mut key.kind {
-                copy_text(t, text(host.and_then(|k| k.kind.as_ref())));
+                changed |= copy_text(t, text(host.and_then(|k| k.kind.as_ref())));
             }
-            key.pressed = host.is_some_and(|k| k.pressed);
+            let pressed = host.is_some_and(|k| k.pressed);
+            changed |= key.pressed != pressed;
+            key.pressed = pressed;
+            at.changed |= changed;
         }
+        true
     }
 
     /// Slot errors, runtime faults (with script line numbers) and service notes.
@@ -981,6 +1040,7 @@ impl Runtime {
         let var = &prog.vars[v as usize];
         if var.ty == Ty::Int && var.len.is_none() {
             state.mem.ints[var.slot as usize] = value;
+            self.changes += 1;
         }
         if let Some(entry) = prog.ui_callbacks[v as usize] {
             let ctx = Ctx::new(slot as u8, Kind::UiControl);
@@ -1327,6 +1387,7 @@ impl Runtime {
         );
         if let Some(v) = prog.sys_arrays[a as usize] {
             state.mem.ints[prog.vars[v as usize].slot as usize + i] = value;
+            self.changes += 1;
         }
     }
 
@@ -1371,6 +1432,7 @@ impl Runtime {
     }
 
     fn resume(&mut self, engine: &mut dyn KspEngine, i: u16) {
+        self.changes += 1;
         let t = &mut self.threads[i as usize];
         let slot = t.ctx.slot as usize;
         let budget = self
@@ -1544,11 +1606,14 @@ pub fn read_value(mem: &vm::Memory, var: &compile::Var) -> Value {
 }
 
 /// Replace `t` with as much of `s` as fits its capacity, without allocating.
-pub(super) fn copy_text(t: &mut String, s: &str) {
-    if t != s {
-        t.clear();
-        t.push_str(&s[..s.floor_char_boundary(t.capacity())]);
+/// Returns whether `t` changed.
+pub(super) fn copy_text(t: &mut String, s: &str) -> bool {
+    if t == s {
+        return false;
     }
+    t.clear();
+    t.push_str(&s[..s.floor_char_boundary(t.capacity())]);
+    true
 }
 
 /// Give a string room to grow before a refresh must cut it.
@@ -1564,27 +1629,57 @@ fn each_text_in(value: &mut Value, f: &mut impl FnMut(&mut String)) {
     }
 }
 
-/// Copy current values into a value shaped by [`read_value`], without reshaping it.
-pub(super) fn refresh_value(mem: &vm::Memory, var: &compile::Var, value: &mut Value) {
+/// Copy current values into a value shaped by [`read_value`], without
+/// reshaping it; returns whether it changed.
+pub(super) fn refresh_value(mem: &vm::Memory, var: &compile::Var, value: &mut Value) -> bool {
+    refresh_range(mem, var, value, 0..usize::MAX)
+}
+
+/// [`refresh_value`] for the array elements in `range` (a scalar is element 0).
+fn refresh_range(
+    mem: &vm::Memory,
+    var: &compile::Var,
+    value: &mut Value,
+    range: std::ops::Range<usize>,
+) -> bool {
     if var.poly {
-        return;
+        return false;
+    }
+    fn set<T: PartialEq + Copy>(d: &mut T, x: T) -> bool {
+        let changed = *d != x;
+        *d = x;
+        changed
     }
     let one = |i: usize, v: &mut Value| match (var.ty, v) {
-        (Ty::Int, Value::Int(n)) => *n = mem.ints[i],
-        (Ty::Real, Value::Real(n)) => *n = mem.reals[i],
+        (Ty::Int, Value::Int(n)) => set(n, mem.ints[i]),
+        (Ty::Real, Value::Real(n)) => set(n, mem.reals[i]),
         (Ty::Str, Value::Text(t)) => copy_text(t, &mem.strs[i]),
-        _ => {}
+        _ => false,
     };
     let s = var.slot as usize;
     match (var.len, value) {
-        (None, v) => one(s, v),
+        (None, v) if range.start == 0 && !range.is_empty() => one(s, v),
         (Some(n), Value::Array(items)) => {
-            for (i, v) in items.iter_mut().take(n as usize).enumerate() {
-                one(s + i, v);
+            let end = range.end.min(n as usize).min(items.len());
+            let start = range.start.min(end);
+            let mut changed = false;
+            for (i, v) in items[start..end].iter_mut().enumerate() {
+                changed |= one(s + start + i, v);
             }
+            changed
         }
-        _ => {}
+        _ => false,
     }
+}
+
+/// Where an incremental refresh stands; start from the default.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Refresh {
+    slot: usize,
+    item: usize,
+    at: usize,
+    /// Something differed from the buffer so far.
+    pub changed: bool,
 }
 
 /// Whether `saved`, refreshed by [`Runtime::refresh_persistence`], holds

@@ -173,29 +173,48 @@ impl Ui {
 
     /// Copy properties, values and menu items into `out`, built by
     /// [`interface`](Self::interface), without allocating.
-    pub fn refresh(&self, prog: &Program, mem: &Memory, out: &mut Interface) {
-        for (c, o) in self.controls.iter().zip(&mut out.controls) {
+    /// Refresh `out`'s controls from `next` on, about `budget` properties'
+    /// worth, advancing `next`; returns whether anything changed.
+    pub fn refresh(
+        &self,
+        prog: &Program,
+        mem: &Memory,
+        out: &mut Interface,
+        next: &mut usize,
+        budget: usize,
+    ) -> bool {
+        let (mut changed, mut left) = (false, budget);
+        for (c, o) in self.controls.iter().zip(&mut out.controls).skip(*next) {
+            if left == 0 {
+                break;
+            }
+            *next += 1;
+            left = left.saturating_sub(c.props.len() + c.menu.len() + 1);
             for (par, v) in &c.props {
                 let Some(name) = prog.symbol_name(*par) else {
                     continue;
                 };
-                match (v, o.properties.get_mut(name)) {
-                    (Prop::Int(n), Some(Value::Int(d))) => *d = *n,
+                changed |= match (v, o.properties.get_mut(name)) {
+                    (Prop::Int(n), Some(Value::Int(d))) => std::mem::replace(d, *n) != *n,
                     (Prop::Str(s), Some(Value::Text(d))) => copy_text(d, s),
-                    _ => {}
+                    _ => false,
                 }
             }
             if let Some(v) = o.properties.get_mut("$CONTROL_PAR_VALUE") {
-                refresh_value(mem, &prog.vars[c.var as usize], v);
+                changed |= refresh_value(mem, &prog.vars[c.var as usize], v);
             }
             let visible = c.menu.iter().filter(|m| m.visible);
             if visible.clone().count() == o.menu.len() {
                 for (m, (text, value)) in visible.zip(&mut o.menu) {
-                    copy_text(text, &m.text);
-                    *value = m.value;
+                    changed |= copy_text(text, &m.text);
+                    changed |= std::mem::replace(value, m.value) != m.value;
                 }
             }
         }
+        if *next >= self.controls.len().min(out.controls.len()) {
+            *next = usize::MAX;
+        }
+        changed
     }
 
     pub fn interface(&self, prog: &Program, mem: &Memory) -> Interface {

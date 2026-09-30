@@ -574,7 +574,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             }
             Ok(Step::Next)
         }
-        ResetRlsTrigCounter | WillNeverTerminate | SetMapEditorEventColor => {
+        ResetRlsTrigCounter => {
+            if let Ok(note) = u8::try_from(m.stk.int()).map(|n| n.min(127)) {
+                m.engine.reset_release_counter(m.env.offset, note);
+            }
+            Ok(Step::Next)
+        }
+        WillNeverTerminate | SetMapEditorEventColor => {
             m.stk.int();
             Ok(Step::Next)
         }

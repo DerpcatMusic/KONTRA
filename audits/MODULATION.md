@@ -84,7 +84,7 @@ and payloads agree with that order:
 | 5 | Key position | – | KP_PITCH, BALANCE_*HIGHREG* |
 | 6 | Velocity | – | VEL_VOLUME, VEL_EQ_*, VEL_ATTACK |
 | 7 | Release velocity | assumed none | not present |
-| 8 | Release trigger counter | – | RTC_VOLUME/PITCH/ATTACK |
+| 8 | Release trigger counter | – | RTC_VOLUME/PITCH/ATTACK, 2,648 records (played, see "Release-trigger counter") |
 | 9 | Constant | – | CV_PITCH |
 | 10/11 | Random uni/bipolar | assumed none | not present |
 | 12 | From script | u32 (1/3/4, likely script slot) | KSP_PITCH, script-driven CC_VOLUME |
@@ -243,7 +243,7 @@ block the engine reads each source (0..1), shapes it, applies a one-pole lag
 | Attack, Release (volume AHDSR) | time scaled by the volume law `1 - |i| * (1 - v)`, fixed at note start | low (see below) |
 
 Sources: velocity, key, constant, MIDI CC (live, per channel), pitch bend, channel
-pressure. Not applied: Script/RTC, random, release velocity, poly aftertouch,
+pressure, release-trigger counter (see below). Not applied: Script, random, release velocity, poly aftertouch,
 `Unassigned`, and the remaining `Module` targets (effect parameters); no pan target
 exists in the local corpus. Velocity → volume always goes through the shaper.
 
@@ -254,8 +254,8 @@ AHDSR as slot 1, groups with the AHDSR alone as slot 0). Their shapers map into
 0.59..1 (Pacific VEL_ATTACK: velocity 0 → 1, 127 → 0.59; PB_ATTACK release: 0.81 at
 rest, 1 at full bend), which reads naturally as a time factor, so they scale the
 stored time. Whether Kontakt scales the time or the normalized knob value is
-unverified. Solo has none; Vista's are RTC-driven (not modelled), so no validation
-library exercises them.
+unverified. Solo has none; Vista's are RTC-driven, so only the release-trigger
+counter exercises them there.
 
 The decoded `invert` flag stays **ignored**. Vista Full Strings Sustains is decisive:
 its four CC100 crossfade layers (`susdyn1`-`4`) carry bell shapers peaking at
@@ -295,6 +295,70 @@ parameters, INTMOD_*, LFO_*) is stored by the KSP runtime, read back unchanged, 
 (`Runtime::init_engine_pars`); the playing engine replays them when the scripts,
 bank or effects are installed. Up to 4096 writes queue per render (Areia bursts reach
 about 320 per note); overflow is counted as dropped commands.
+
+## Release-trigger counter (RTC_VOLUME / RTC_PITCH / RTC_ATTACK)
+
+Kontakt 5.6.8 manual, Source module (p. 222): "T (Time, only visible if Release
+Trigger is activated): If you set this to a value other than 0, KONTAKT will count
+from that value backwards in millisecond intervals when it receives a note, then stop
+the timer and provide its current value as a modulation source when it receives the
+corresponding note-off value. This way, you can make your Instrument respond to note
+durations, for instance by reducing the volume of your release sample after longer
+notes in order to make it fit a Sample with a natural decay." Modulation chapter:
+"RLS Trig. Count: This value is generated for Groups that are being triggered on
+release and indicates the time between the trigger and the release signal." KSP
+reference: "reset_rls_trig_counter(<note>): Resets the release trigger counter (used
+by the release trigger system script)"; no `$ENGINE_PAR` or `$EVENT_PAR` addresses
+the counter or `T`.
+
+`T` is the group's `rls_trig_counter` field (imported as `Group::release_counter_ms`).
+Corpus (every local NKI, aggregate only):
+
+- 2,648 RTC assignments (external source code 8) in 1,454 groups, all release-trigger
+  groups with `T` != 0: CHORUS 756, Dolce 936, Pacific 836, Vista 120. No group with
+  RTC has `T` = 0, and no non-release group has `T` != 0. `T` is 750 ms (1,016
+  groups), 1,200 (80), 1,500 (328), 2,000 (18) or 4,000 (12); 2,604 more release
+  groups keep a `T` without any RTC assignment.
+- Targets: volume 868, `playPos` 1,414 (named `RTC_PITCH` in every case: the name is
+  the preset author's, the target is sample start), `ahdsr_attack` 366. None targets
+  pitch.
+- Every one carries an enabled breakpoint shaper; lag is 0 in all. Intensity is 1 for
+  most volume/attack entries (0 in 47 volume, 92 attack, 2 start entries) and
+  0.16-0.71 for sample start. Invert is set on 855 of them (301 of 366 attack).
+
+Mapping: the source value is the counter's remaining share,
+`x = clamp((T - held_ms) / T, 0, 1)`, fixed when the release voice starts, where
+`held_ms` runs from the key's note-on (or the last `reset_rls_trig_counter` for that
+note) to its note-off. A sustain pedal defers the release sample but not the stop:
+the counter stops at the key release, as the manual says. `x` then goes through the
+shaper and the existing laws for volume, sample start and attack time. A key never
+pressed (script-generated notes) reads `held_ms` = 0, so `x` = 1.
+
+Why this reading (medium confidence):
+- Direction: the manual counts down and reports the current value, and its own
+  example (quieter release after longer notes) is what identity shaping gives with
+  `x` = remaining share: a note held `T` or longer reads 0, which the volume law turns
+  into `1 - |i|`.
+- Scale relative to `T`: the stored shapers vary over the whole 0..1 range for every
+  `T` (CHORUS `T` = 750 volume: 0.797 at x = 0, 0.79-0.82 at 0.5, 0.90 at 0.75, 1 at
+  1), which a fixed millisecond scale would leave mostly unused for short `T`.
+- Shaper shapes then read naturally: all 1,414 sample-start shapers fall toward
+  x = 1 (most from 1 to 0), so a note released at once plays its release sample from
+  (or nearest) the start and one held past `T` skips furthest into it, up to
+  `i * start_mod`: the longer the note, the less of the release's onset replays.
+  Volume shapers rise
+  toward x = 1 in 468 entries (CHORUS, most Dolce and Pacific `T` = 750: releases
+  after long notes about 2 dB quieter) and fall in 348 (Pacific `T` = 1,500: releases
+  after short notes quieter).
+
+Unverified: that the source is normalised by `T` (rather than by a fixed range), the
+direction (no Kontakt render to compare), millisecond quantisation of the counter,
+and the invert flag, which stays ignored as for every other source. The counter is
+kept per MIDI channel and key; `reset_rls_trig_counter` resets the key on the
+scripts' channel. `NO_SYS_SCRIPT_RLS_TRIG` is not modelled, so the key-down reset
+happens whether or not a script bypasses the system release script. Tests:
+`release_trigger_counter_scales_release_volume_by_held_time` and
+`reset_rls_trig_counter_restarts_the_count` in `tests/playback.rs`.
 
 ## Corpus run (`kontakto inspect-mods` over every local NKI)
 

@@ -90,6 +90,8 @@ pub trait KspEngine {
     fn find_target(&self, _group: usize, _modulator: usize, _name: &str) -> Option<usize> {
         None
     }
+    /// `reset_rls_trig_counter`: restart `note`'s release-trigger counter.
+    fn reset_release_counter(&mut self, _at: u32, _note: u8) {}
     /// Whether a voice is still sounding; drives `event_status` for sample-length notes.
     fn voice_active(&self, _voice: EventId) -> bool {
         true

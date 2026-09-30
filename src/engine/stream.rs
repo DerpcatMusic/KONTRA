@@ -102,7 +102,11 @@ impl Slot {
         unsafe { self.ring.add((v % RING) as usize).as_ref() }
     }
 
-    /// Audio thread: (re)start streaming `map` from virtual frame `from`.
+    /// Audio thread: (re)start streaming `map` from virtual frame `from`,
+    /// for a consumer whose lowest frame still read is `read` (as in
+    /// [`Slot::release_below`]: the frame before the voice position, its
+    /// cubic's left tap). The streamer fills up to `RING` frames past `read`,
+    /// so a `read` too high lets it overwrite that tap.
     /// Returns the tag the consumer must match in [`Slot::published`].
     pub fn configure(&self, sample: u32, map: &PlayMap, wraps: u64, from: u64, read: u64) -> u16 {
         let l = map.looped.unwrap_or(LoopMap {
@@ -167,6 +171,25 @@ impl Slot {
     /// Audio thread: copy published frames starting at virtual `v`.
     #[inline]
     pub fn copy(&self, v: u64, out: &mut [Frame]) {
+        // Published frames are no longer written: the streamer only fills
+        // frames past `written`, which sit elsewhere in the ring, and the
+        // `Acquire` in `published` orders its stores before this read. So
+        // they copy as plain memory, at most two runs around the wrap,
+        // rather than one atomic load a frame.
+        #[cfg(target_endian = "little")]
+        if out.len() as u64 <= RING {
+            let start = (v % RING) as usize;
+            let first = out.len().min(RING as usize - start);
+            let base = self.ring.as_ptr().cast::<Frame>();
+            // SAFETY: both runs lie within this slot's `RING` frames; an
+            // `AtomicU64` holds a little-endian `[f32; 2]` bit for bit, and
+            // no store to these frames races the read (see above).
+            unsafe {
+                std::ptr::copy_nonoverlapping(base.add(start), out.as_mut_ptr(), first);
+                std::ptr::copy_nonoverlapping(base, out.as_mut_ptr().add(first), out.len() - first);
+            }
+            return;
+        }
         for (i, frame) in out.iter_mut().enumerate() {
             let bits = self.frame(v + i as u64).load(Ordering::Relaxed);
             *frame = [
@@ -467,6 +490,24 @@ impl Worker {
             for (i, (frame, partner)) in out.iter_mut().zip(partners.iter()).enumerate() {
                 *frame = blend.apply(i as u64, *frame, *partner);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_reads_across_the_ring_wrap() {
+        let ring: Vec<AtomicU64> = (0..RING).map(AtomicU64::new).collect();
+        let mut wake = Wake::default();
+        let slot = Slot::new(NonNull::from(&ring[0]), NonNull::from(&mut wake));
+        let mut out = [[0.0; 2]; 64];
+        slot.copy(RING * 3 - 20, &mut out);
+        for (i, frame) in out.iter().enumerate() {
+            let bits = (RING - 20 + i as u64) % RING;
+            assert_eq!(*frame, [f32::from_bits(bits as u32), f32::from_bits((bits >> 32) as u32)]);
         }
     }
 }

@@ -433,6 +433,8 @@ impl Context<'_> {
             pressure: self.pressure[c],
             note,
             velocity,
+            // Fixed at the note start, never read live.
+            counter: 0.0,
         }
     }
 }
@@ -683,7 +685,7 @@ impl Voice {
         // Published frames before the divergence stay valid; restart after them.
         let from = self.limit.max(trusted.min(diverge));
         let tag =
-            slots[slot as usize].configure(self.sample, &self.map, wraps, from, self.pos as u64);
+            slots[slot as usize].configure(self.sample, &self.map, wraps, from, first);
         self.stream = Some(Stream {
             slot,
             tag,
