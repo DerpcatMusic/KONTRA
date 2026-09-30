@@ -14,6 +14,8 @@ pub mod fx;
 #[cfg(feature="plugin")]
 mod artwork;
 #[cfg(feature="plugin")]
+mod library;
+#[cfg(feature="plugin")]
 mod plugin;
 #[cfg(feature="plugin")]
 mod routing;

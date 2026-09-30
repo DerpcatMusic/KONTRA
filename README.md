@@ -50,9 +50,9 @@ content is not supported in this build." The nightly builds of this
 repository enable it. Build it into a local install with:
 
 ```sh
-cargo moose install --clap --vst3 --user --features library-access
-cargo run --release --features standalone,library-access --bin kontakto-standalone
-cargo run --release --features library-access --bin kontakto -- bench-load '/path/to/instrument.nki'
+cargo moose install --clap --vst3 --user
+cargo run --release --features standalone --bin kontakto-standalone
+cargo run --release --bin kontakto -- bench-load '/path/to/instrument.nki'
 ```
 <!-- private:end -->
 

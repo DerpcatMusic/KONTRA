@@ -10,16 +10,19 @@ use std::sync::{Arc, Mutex};
 
 /// What the editor asks for.
 pub enum Ask {
-    /// The folder that holds the libraries, starting from `from`.
-    Folder { from: PathBuf },
+    /// A library folder (`single`), or a folder of libraries, from `from`.
+    Folder { from: PathBuf, single: bool },
     /// Where to save a multi, starting in `from` with `name` filled in.
     Multi { from: PathBuf, name: String },
+    /// A picture to show as the cover of the library in `library`.
+    Artwork { library: PathBuf },
 }
 
 /// What came back.
 pub enum Picked {
-    Folder(PathBuf),
+    Folder(PathBuf, bool),
     Multi(PathBuf),
+    Artwork { library: PathBuf, picture: PathBuf },
 }
 
 #[derive(Default)]
@@ -27,6 +30,9 @@ pub struct Picker {
     /// A dialog is open: a second one waits for it.
     open: AtomicBool,
     picked: Mutex<Option<Picked>>,
+    /// The library folder of each row of the browser's upper pane, as last
+    /// drawn: a picture dropped on a row becomes its cover.
+    pub rows: Mutex<Vec<Option<PathBuf>>>,
 }
 
 impl Picker {
@@ -84,11 +90,17 @@ impl Picker {
 
 fn show(ask: Ask) -> Option<Picked> {
     match ask {
-        Ask::Folder { from } => rfd::FileDialog::new()
-            .set_title("The folder that holds your Kontakt libraries")
+        Ask::Folder { from, single } => rfd::FileDialog::new()
+            .set_title(if single { "A Kontakt library folder" } else { "A folder of Kontakt libraries" })
             .set_directory(from)
             .pick_folder()
-            .map(Picked::Folder),
+            .map(|path| Picked::Folder(path, single)),
+        Ask::Artwork { library } => rfd::FileDialog::new()
+            .set_title("A picture for the library's cover")
+            .set_directory(&library)
+            .add_filter("Pictures", &["png", "jpg", "jpeg"])
+            .pick_file()
+            .map(|picture| Picked::Artwork { library, picture }),
         Ask::Multi { from, name } => {
             let _ = std::fs::create_dir_all(&from);
             rfd::FileDialog::new()

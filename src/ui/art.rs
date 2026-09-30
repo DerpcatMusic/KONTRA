@@ -21,9 +21,36 @@ pub struct Looks {
     pub backdrop: [Option<Arc<Image>>; 2],
 }
 
-type Job = (String, Arc<Image>);
-/// The artwork looks were made from (its address), and the looks once made.
-type Made = (usize, Option<Arc<Looks>>);
+/// What a library's looks are made from: its own artwork, a picture the
+/// player chose, or its generated cover ([`super::cover`]).
+#[derive(Clone)]
+pub enum Source {
+    Image(Arc<Image>),
+    /// A PNG or JPEG the player chose, and when it was chosen.
+    File(std::path::PathBuf, u64),
+    /// The generated cover, its color from `artwork` when there is some.
+    Cover(super::cover::Spec, Option<Arc<Image>>),
+}
+
+impl Source {
+    /// A number that changes whenever what the looks show would.
+    fn identity(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::hash::DefaultHasher::new();
+        match self {
+            Self::Image(image) => (0u8, Arc::as_ptr(image) as usize).hash(&mut h),
+            Self::File(path, stamp) => (1u8, path, stamp).hash(&mut h),
+            Self::Cover(spec, artwork) => {
+                (2u8, spec.key(0, 0, true), artwork.as_ref().map(|a| Arc::as_ptr(a) as usize)).hash(&mut h)
+            }
+        }
+        h.finish()
+    }
+}
+
+type Job = (String, Source);
+/// What looks were made from ([`Source::identity`]), and the looks once made.
+type Made = (u64, Option<Arc<Looks>>);
 
 #[derive(Default)]
 pub struct Art {
@@ -38,17 +65,17 @@ pub struct Art {
 }
 
 impl Art {
-    /// `library`'s looks made from `image`; `None` until they are, and the
+    /// `library`'s looks made from `source`; `None` until they are, and the
     /// first ask sends them to be made.
-    pub fn get(self: &Arc<Self>, library: &str, image: &Arc<Image>) -> Option<Arc<Looks>> {
-        let from = Arc::as_ptr(image) as usize;
+    pub fn get(self: &Arc<Self>, library: &str, source: Source) -> Option<Arc<Looks>> {
+        let from = source.identity();
         let mut made = super::lock(&self.made);
         if let Some((_, looks)) = made.get(library).filter(|(at, _)| *at == from) {
             return looks.clone();
         }
         made.insert(library.to_owned(), (from, None));
         drop(made);
-        self.send((library.to_owned(), image.clone()));
+        self.send((library.to_owned(), source));
         None
     }
 
@@ -74,11 +101,11 @@ impl Art {
             let spawned = std::thread::Builder::new()
                 .name("kontakto-artwork".into())
                 .spawn(move || {
-                    for (library, image) in rx {
-                        let looks = Arc::new(make(&image));
+                    for (library, source) in rx {
+                        let from = source.identity();
+                        let looks = Arc::new(made_from(source));
                         if let Some(art) = weak.upgrade() {
                             let mut made = super::lock(&art.made);
-                            let from = Arc::as_ptr(&image) as usize;
                             if made.get(&library).is_some_and(|(at, _)| *at == from) {
                                 made.insert(library, (from, Some(looks)));
                             }
@@ -100,9 +127,37 @@ impl Art {
     }
 }
 
+fn made_from(source: Source) -> Looks {
+    match source {
+        Source::Image(image) => make(&image),
+        Source::File(path, _) => artwork::decode_file(&path).map(|i| make(&i)).unwrap_or_default(),
+        Source::Cover(mut spec, artwork) => {
+            if let Some(hue) = artwork.as_deref().and_then(artwork::tint) {
+                spec = super::cover::Spec::new(&spec.name, &spec.vendor, Some(hue));
+            }
+            cover(&spec)
+        }
+    }
+}
+
+/// A generated cover's looks: the thumbnail with the name on it; the
+/// banner and backdrop in its plain color, as the header names the part.
+fn cover(spec: &super::cover::Spec) -> Looks {
+    let (tw, th) = px(super::browser::THUMB);
+    let plain = super::cover::cached(spec, 64, 16, false);
+    let mut looks = plain.as_ref().map(make).unwrap_or_default();
+    looks.thumb = super::cover::cached(spec, tw, th, true).map(Arc::new);
+    looks.tint = Some(spec.hue);
+    looks
+}
+
+/// A size in points as pixels at twice that, for crispness.
+fn px((w, h): (f64, f64)) -> (u32, u32) {
+    ((w * 2.).round() as u32, (h * 2.).round() as u32)
+}
+
 /// Every look of `image`, at twice the size each is drawn for crispness.
 fn make(image: &Image) -> Looks {
-    let px = |(w, h): (f64, f64)| ((w * 2.).round() as u32, (h * 2.).round() as u32);
     let (tw, th) = px(super::browser::THUMB);
     let (bw, bh) = px(super::rack::BANNER);
     let banner = |blurred| artwork::banner(image, bw, bh, blurred).map(Arc::new);
@@ -123,17 +178,25 @@ mod tests {
     fn looks_are_made_off_the_frame_once() {
         let art = Arc::new(Art::default());
         let image = Arc::new(Image::rgba(60, 20, [200u8, 40, 40, 255].repeat(60 * 20)).unwrap());
-        assert!(art.get("Red", &image).is_none(), "not made yet: the frame goes on without it");
-        assert!(art.get("Red", &image).is_none(), "and is not asked for twice");
+        let red = || Source::Image(image.clone());
+        assert!(art.get("Red", red()).is_none(), "not made yet: the frame goes on without it");
+        assert!(art.get("Red", red()).is_none(), "and is not asked for twice");
         while art.busy() {
             std::thread::yield_now();
         }
         assert!(art.ready(), "its arrival wakes the editor");
-        let looks = art.get("Red", &image).expect("made");
+        let looks = art.get("Red", red()).expect("made");
         assert!(looks.thumb.is_some() && looks.banner.iter().all(Option::is_some));
         assert!(looks.backdrop.iter().all(Option::is_some) && looks.tint.is_some());
         assert!(!art.ready());
         let other = Arc::new(Image::rgba(60, 20, vec![90; 60 * 20 * 4]).unwrap());
-        assert!(art.get("Red", &other).is_none(), "new artwork for a library is made again");
+        assert!(art.get("Red", Source::Image(other)).is_none(), "new artwork for a library is made again");
+        let spec = super::super::cover::Spec::new("Red", "", None);
+        assert!(art.get("Red", Source::Cover(spec.clone(), None)).is_none(), "so is a generated cover");
+        while art.busy() {
+            std::thread::yield_now();
+        }
+        let looks = art.get("Red", Source::Cover(spec, None)).expect("made");
+        assert!(looks.thumb.is_some() && looks.banner.iter().all(Option::is_some) && looks.tint.is_some());
     }
 }
