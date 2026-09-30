@@ -57,7 +57,7 @@ fn shared_host_services_are_scoped_and_transactional() {
     let ui = initialize_with_host(next, 0, 0, &mut host).unwrap();
     assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "Warm73Keyswitch1");
     assert!(initialize(next, 0, 0).is_err());
-    let failed = "on init\npgs_set_key_val(MIC_LEVEL,1,0)\ndeclare $a := 1/0\nend on";
+    let failed = "on init\npgs_set_key_val(MIC_LEVEL,1,0)\nset_key_pressed_support(2)\nend on";
     assert!(initialize_with_host(failed, 0, 0, &mut host).is_err());
     assert_eq!(host.pgs_ints[0].1[1], 73);
     for bad in [
@@ -213,7 +213,9 @@ fn computed_ui_and_execution_limits() {
     let oob = initialize("on init\ndeclare %a[1]\n%a[2] := 1\nend on", 0, 0).unwrap();
     assert!(oob.diagnostics.iter().any(|d| d.contains("out of bounds")));
     assert!(initialize("on init\nunknown_function()\nend on", 0, 0).is_err());
-    assert!(initialize("on init\ndeclare $a := 1/0\nend on", 0, 0).is_err());
+    // Integer division by zero is 0, reported, and init goes on.
+    let div = initialize("on init\ndeclare $z\ndeclare $a := 1/$z\nend on", 0, 0).unwrap();
+    assert!(div.diagnostics.iter().any(|d| d.contains("division by zero")));
     assert!(
         initialize(
             "on init\ndeclare @s := \"x\"\nwhile (1)\n@s := @s & @s\nend while\nend on",
@@ -429,6 +431,18 @@ fn legato_retriggers_on_overlapping_notes() {
             "off v2@300"
         ]
     );
+}
+
+/// A voice index divided by an off switch: integer division and modulo by zero
+/// give 0 and the callback goes on to play, as in Kontakt.
+#[test]
+fn integer_division_by_zero_yields_zero_and_continues() {
+    let script = "on init\ndeclare $split := 0\ndeclare %prev[4] := (-1)\ndeclare $voice\nend on\non note\nignore_event($EVENT_ID)\n$voice := $EVENT_VELOCITY / (128 / 2 * $split) + $EVENT_NOTE mod $split\nif (%prev[$voice] = -1)\n%prev[$voice] := $EVENT_NOTE\nplay_note($EVENT_NOTE, $EVENT_VELOCITY, 0, -1)\nend if\nend on";
+    let mut rig = Rig::new(&[script]);
+    rig.on(0, 60).block(16);
+    assert_eq!(rig.log(), ["play 60@0 v1 [0, 1, 2]"]);
+    let d = rig.rt.diagnostics();
+    assert!(d.iter().all(|l| l.contains("division by zero")), "{d:?}");
 }
 
 #[test]
