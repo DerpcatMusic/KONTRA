@@ -108,7 +108,24 @@ impl Pcm {
 
     /// [`Pcm::pack`] for integer frames of a `bits`-deep source, skipping
     /// the float round trip. `None` unless 16- or 24-bit and in range.
+    /// Uses an AVX2 build when the CPU has it.
     pub fn pack_ints(frames: &[[i32; 2]], bits: u16, compress: bool) -> Option<Self> {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: the running CPU supports AVX2.
+            return unsafe { Self::pack_ints_avx2(frames, bits, compress) };
+        }
+        Self::pack_ints_body(frames, bits, compress)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    fn pack_ints_avx2(frames: &[[i32; 2]], bits: u16, compress: bool) -> Option<Self> {
+        Self::pack_ints_body(frames, bits, compress)
+    }
+
+    #[inline(always)]
+    fn pack_ints_body(frames: &[[i32; 2]], bits: u16, compress: bool) -> Option<Self> {
         let scale = match bits {
             16 => I16_SCALE,
             24 => I24_SCALE,
@@ -247,6 +264,7 @@ impl Packed {
     /// Pack `frames` if `quantize` turns every block into integers at
     /// `scale` (returning false if it cannot) and packing saves at least a
     /// tenth.
+    #[inline(always)]
     fn encode<T: Copy>(
         frames: &[[T; 2]],
         scale: f32,
