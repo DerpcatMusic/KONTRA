@@ -937,7 +937,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 26] = [
+    let states: [(&str, bool, &[&str]); 30] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         // Esc: no part selected, the keys show what each part plays.
@@ -968,6 +968,11 @@ fn screenshot() {
         // Edited: the library's curves stay drawn faintly under the edits.
         ("sound-edited", true, &["tab-sound"]),
         ("sound-compact", true, &["tab-sound", "edit-compact"]),
+        ("sound-modulation", true, &["tab-sound", "edit-lower-Modulation"]),
+        ("sound-effects", true, &["tab-sound", "edit-lower-Effects"]),
+        // A value double-clicked into a field.
+        ("sound-typing", true, &["tab-sound"]),
+        ("mixer-wide", true, &["tab-mixer", "mix-wide"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
@@ -994,7 +999,26 @@ fn screenshot() {
                     selection.parts[0].edits.set(Override { group: None, param, offset });
                 }
             }
-            if state == "mixer" {
+            // A chord with a little noise under it, for the spectrum.
+            let heard = state.starts_with("mixer") || state.starts_with("sound");
+            let mut seed = 1u32;
+            let signal: Vec<f32> = (0..crate::plugin::SCOPE)
+                    .map(|n| {
+                        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        let noise = (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+                        let t = n as f32 / 48_000.;
+                        [(110., 0.3), (220., 0.2), (330., 0.12), (440., 0.1), (880., 0.05), (1760., 0.02), (3520., 0.008)]
+                            .iter()
+                            .map(|(hz, a)| a * (std::f32::consts::TAU * hz * t).sin())
+                            .sum::<f32>()
+                            + 0.004 * noise
+                    })
+                    .collect();
+            if heard {
+                p.shared.scope.push(&signal);
+            }
+            if state.starts_with("mixer") {
+                p.shared.meters.clips.parts[1].store(true, Ordering::Relaxed);
                 // Mid-song: parts on two buses, one sending to a named third.
                 let mut selection = p.selection.write().unwrap();
                 for (slot, part) in selection.parts.iter_mut().enumerate() {
@@ -1026,6 +1050,20 @@ fn screenshot() {
             }
             if state == "unselected" {
                 h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+            }
+            if state == "sound-typing" {
+                let at = center(&h.ui, "edit-envelope-value-Release");
+                for down in [true, false, true, false] {
+                    h.tick(pointer(at, down));
+                }
+            }
+            // The spectrum eases in over a few of its looks, the signal still coming.
+            if heard {
+                for _ in 0..10 {
+                    std::thread::sleep(Duration::from_millis(35));
+                    p.shared.scope.push(&signal);
+                    h.idle(1);
+                }
             }
             h.settle_art();
             // Springs (the browser drawer) come to rest.
@@ -1071,6 +1109,8 @@ fn screenshot() {
                     "tab-info",
                     match state {
                         "mixer" => "master-strip",
+                        // Wide strips scroll at 900: the toolbar stays.
+                        "mixer-wide" => "mix-wide",
                         // Scrolled away, its header is stuck at the top.
                         "sticky" => "header-0",
                         _ => "header-0",
@@ -1506,6 +1546,22 @@ fn sound_tab_drags_an_envelope_handle_into_the_override_layer() {
     assert_eq!(library, 1000.0, "the instrument is untouched");
     h.press("edit-envelope-reset");
     assert!(p.selection.read().unwrap().parts[0].edits.0.is_empty(), "reset plays the library's");
+
+    // A value double-clicked takes one typed in.
+    h.idle(60);
+    let at = center(&h.ui, "edit-envelope-value-Attack");
+    for down in [true, false, true, false] {
+        h.tick(pointer(at, down));
+    }
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("edit-envelope-value-Attack-edit").is_some(), "a field to type in");
+    h.tick(Input { keys: vec![KeyPress { key: Key::Char('a'), mods: Mods { ctrl: true, ..Default::default() } }], ..Default::default() });
+    h.tick(Input { text: "250 ms".into(), ..Default::default() });
+    h.tick(enter());
+    h.idle(3);
+    let edits = p.selection.read().unwrap().parts[0].edits.clone();
+    let attack = Param::Attack.apply(0.01, edits.offset(0, Param::Attack));
+    assert!((attack - 0.25).abs() < 0.01, "the attack plays {attack} s");
 }
 
 fn key_spot(ui: &Ui, note: u8) -> Point {

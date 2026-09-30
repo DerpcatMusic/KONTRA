@@ -52,6 +52,8 @@ pub enum Command {
     Duplicate(usize),
     Remove(usize),
     Rename(usize),
+    /// Show a part's envelope, filter and effects in the Sound tab.
+    EditSound(usize),
     Mute(usize),
     Solo(usize),
     Move(usize, i32),
@@ -185,6 +187,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             let position = cx.selection.order.iter().position(|n| *n as usize == slot);
             let last = cx.selection.order.len().saturating_sub(1);
             let mut items = vec![
+                act("Edit sound", "", Command::EditSound(slot)),
                 act("Rename…", "", Command::Rename(slot)),
                 act("Duplicate", "Ctrl+D", Command::Duplicate(slot)),
                 Item::Rule,
@@ -311,12 +314,16 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             {
                 return Vec::new();
             }
-            vec![
+            let mut items = vec![
                 act("Rename…", "", Command::StripRename(strip)),
                 act("Reset", "", Command::StripReset(strip)),
                 Item::Rule,
                 act("Route to…", "", Command::StripRoute(strip)),
-            ]
+            ];
+            if let Strip::Part(slot) = strip {
+                items.extend([Item::Rule, act("Edit sound", "", Command::EditSound(slot))]);
+            }
+            items
         }
         Target::Output(slot) => {
             let Some(part) = cx.selection.parts.get(*slot) else {
@@ -538,6 +545,10 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Rename(slot) => {
             cx.show(slot);
             cx.state.renaming = Some((slot, super::rack::name(cx, slot)));
+        }
+        Command::EditSound(slot) => {
+            cx.show(slot);
+            cx.state.tab = super::Tab::Sound;
         }
         Command::Mute(slot) => cx.selection.parts[slot].mute ^= true,
         Command::Solo(slot) => cx.selection.parts[slot].solo ^= true,

@@ -116,6 +116,10 @@ pub struct Rack {
     pub bus_controls: [BusControls; BUSES],
     /// Accumulated by [`render`](Self::render); take them to publish.
     pub peaks: Peaks,
+    /// The slot whose post-fader signal [`render`](Self::render) copies to
+    /// `tapped` (mono) for a spectrum; `None` copies nothing.
+    pub tap: Option<usize>,
+    pub tapped: [f32; MAX_BLOCK],
     part: Block,
     buses: [Block; BUSES],
     /// Per bus, frames holding signal; beyond them it is all zeros.
@@ -129,6 +133,8 @@ impl Default for Rack {
             controls: [PartControls::default(); RACK_SLOTS],
             bus_controls: Mix::default().buses,
             peaks: Peaks::default(),
+            tap: None,
+            tapped: [0.0; MAX_BLOCK],
             part: [[0.0; MAX_BLOCK]; 2],
             buses: [[[0.0; MAX_BLOCK]; 2]; BUSES],
             written: [0; BUSES],
@@ -249,12 +255,16 @@ impl Rack {
             bus[1][..*written].fill(0.0);
             *written = 0;
         }
+        if self.tap.is_some() {
+            self.tapped[..n].fill(0.0);
+        }
         let solo = self.controls.iter().any(|c| c.solo);
-        for ((engine, c), meter) in self
+        for (slot, ((engine, c), meter)) in self
             .parts
             .iter_mut()
             .zip(&self.controls)
             .zip(&mut self.peaks.parts)
+            .enumerate()
         {
             let [left, right] = &mut self.part;
             engine.tune = c.tune;
@@ -272,6 +282,11 @@ impl Rack {
                 *x *= gr;
             }
             *meter = [meter[0].max(peak(left)), meter[1].max(peak(right))];
+            if self.tap == Some(slot) {
+                for ((t, l), r) in self.tapped[..n].iter_mut().zip(&*left).zip(&*right) {
+                    *t = (l + r) * 0.5;
+                }
+            }
             let aux = (c.aux as usize) < BUSES && c.aux != c.output && c.aux_gain != 0.0;
             for (bus, gain) in [(c.output as usize, 1.0), (c.aux as usize, c.aux_gain)]
                 .into_iter()

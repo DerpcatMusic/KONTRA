@@ -20,6 +20,7 @@
 
 mod art;
 mod browser;
+mod chain;
 mod computer;
 mod editor;
 mod header;
@@ -30,6 +31,7 @@ mod mixer;
 mod panel;
 mod picker;
 mod rack;
+mod spectrum;
 #[cfg(test)]
 mod tests;
 mod theme;
@@ -43,7 +45,7 @@ use moose::prelude::*;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use theme::*;
@@ -73,6 +75,8 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
 fn let_go(p: &SamplerParams, computer: &computer::Computer) {
     computer.release(p);
     p.shared.release_keyboard();
+    // The next frame names the spectrum's strip again, if one still shows.
+    p.shared.scope.source.store(0, Ordering::Relaxed);
 }
 
 /// The lock's data even if a panicking thread held it: the editor shows what
@@ -96,6 +100,9 @@ struct Meters {
     cpu: AtomicU32,
     /// Sample data read from disk, MB/s.
     disk: AtomicU32,
+    /// A view moves on its own (a spectrum or a peak hold falling): the
+    /// last frame built says so, and frames keep coming until one does not.
+    animating: AtomicBool,
 }
 
 /// Decides, every display tick, whether anything the editor shows moved
@@ -117,6 +124,8 @@ struct Watch {
     disk_counter: Option<&'static AtomicU64>,
     poll_at: Option<Instant>,
     frame_at: Option<Instant>,
+    /// The audio thread's block count, and when it last moved.
+    blocks: (u64, Option<Instant>),
 }
 
 /// Readouts and the loading line refresh this often at most.
@@ -201,7 +210,18 @@ impl Watch {
         let sounding = (m.parts.iter().chain(&m.buses).chain([&m.master]))
             .any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
         // The sound editor's playheads, and the values scripts move under it.
+        // A host that stops calling the audio thread leaves its last voices
+        // behind: once it has been still a while, they are gone.
         let probe = &p.shared.probe;
+        let blocks = p.shared.blocks.load(Ordering::Relaxed);
+        if blocks != self.blocks.0 {
+            self.blocks = (blocks, Some(now));
+        } else if self.blocks.1.is_some_and(|t| now - t > Duration::from_millis(250)) {
+            self.blocks.1 = None;
+            for tap in &probe.voices {
+                tap.store(0, Ordering::Relaxed);
+            }
+        }
         let watch = probe.watch.load(Ordering::Relaxed);
         let sounding = sounding || (watch != 0 && probe.taps().next().is_some());
         if let Some(values) = probe.read(watch, 1) {
@@ -209,7 +229,8 @@ impl Watch {
         }
         sounding.hash(&mut h);
         // Progress and the sweep redraw on the animation's own clock.
-        let animate = (loading || sounding) && due(self.frame_at, ANIMATION_MS);
+        let moving = meters.animating.load(Ordering::Relaxed);
+        let animate = (loading || sounding || moving) && due(self.frame_at, ANIMATION_MS);
         if animate {
             self.frame_at = Some(now);
         }
@@ -364,6 +385,12 @@ struct EditorState {
     picker: Arc<picker::Picker>,
     /// The sound editor's view and curves.
     editor: editor::State,
+    /// The mixer's strip width and meter holds.
+    mixer: mixer::State,
+    /// The spectrum on screen, and the strip it shows this frame
+    /// ([`crate::plugin::Scope::source`]; 0 for none).
+    analyser: spectrum::Analyser,
+    scope: usize,
 }
 
 impl EditorState {
@@ -779,6 +806,9 @@ fn build(
         modulation: None,
         picker,
         editor: Default::default(),
+        mixer: Default::default(),
+        analyser: Default::default(),
+        scope: 0,
     };
     move |ui, bridge| {
         // The loader also runs from the audio thread; poll here so a stopped host still loads.
@@ -1000,6 +1030,9 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
     if cx.state.tab != Tab::Sound || cx.part().is_none() {
         cx.p.shared.probe.watch.store(0, Ordering::Relaxed);
     }
+    // A spectrum shown below names its strip; none shown, none is copied.
+    cx.state.scope = 0;
+    cx.state.meters.animating.store(false, Ordering::Relaxed);
     if cx.state.tab == Tab::Rack {
         content.push(rack::view(ui, cx));
     } else if cx.state.tab == Tab::Mixer {
@@ -1017,6 +1050,10 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
             _ => instrument::info(cx),
         });
     }
+    cx.p.shared.scope.source.store(cx.state.scope, Ordering::Relaxed);
+    if cx.state.analyser.busy() && cx.state.scope != 0 {
+        cx.state.meters.animating.store(true, Ordering::Relaxed);
+    }
     col(content)
         .gap(0)
         .flex(1)
@@ -1024,4 +1061,14 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         .min_h(0)
         .fill(Role::Background)
         .id("center")
+}
+
+impl Cx<'_> {
+    /// The spectrum of `source` ([`crate::plugin::Scope::source`]), which
+    /// the audio thread copies from while this frame shows it.
+    fn spectrum(&mut self, source: usize) -> Arc<spectrum::Shape> {
+        self.state.scope = source;
+        let rate = f64::from_bits(self.p.shared.rate.load(Ordering::Relaxed)) as f32;
+        self.state.analyser.update(&self.p.shared.scope, source, rate)
+    }
 }
