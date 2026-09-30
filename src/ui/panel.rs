@@ -1680,3 +1680,42 @@ mod tests {
         assert_eq!(Unit::Semitones.format(3.), "+3 st");
     }
 }
+
+#[cfg(test)]
+mod probe {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn probe_articulations() {
+        let paths = std::fs::read_to_string("/tmp/probe_paths.txt").unwrap();
+        for path in paths.lines().filter(|l| !l.is_empty()) {
+            let i = crate::import::read(std::path::Path::new(path)).unwrap();
+            let (rt, errs) = crate::engine::load_scripts(&i, i.script_state.clone(), 48000.);
+            let view = crate::plugin::script_interface(rt.as_deref());
+            println!("=== {} errs={:?}", i.name, errs.len());
+            for (n, k) in view.keys.iter() {
+                let c = match &k.color { Some(Value::Text(t)) if !t.is_empty() => t.clone(), _ => String::new() };
+                let kd = match &k.kind { Some(Value::Text(t)) if !t.is_empty() => t.clone(), _ => String::new() };
+                let dull = ["", "$KEY_COLOR_BLACK", "$KEY_COLOR_WHITE", "$KEY_COLOR_DEFAULT", "$KEY_COLOR_INACTIVE", "$KEY_COLOR_NONE"];
+                if !k.name.is_empty() || !dull.contains(&c.as_str()) || kd.contains("CONTROL") {
+                    println!("  key {n}: name={:?} color={c} kind={kd}", k.name);
+                }
+            }
+            if let Some(ui) = &view.interface {
+                let names = ui.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+                    Some(Value::Text(n)) => Some(n.as_str()),
+                    _ => None,
+                });
+                let pics: HashMap<String, Arc<Picture>> = crate::artwork::pictures(&i.path, names).into_iter().collect();
+                for s in sections(ui, &pics) {
+                    for i in s.columns.iter().flatten().flatten().filter(|i| i.face == Face::List) {
+                        println!("  list {:?}", i.name);
+                        for e in &i.list {
+                            println!("    {:?} key={:?} on={} ctl={:?} en={:?}", e.name, e.key, e.on, e.control, e.enable);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
