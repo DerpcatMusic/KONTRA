@@ -76,6 +76,8 @@ pub(super) enum Kind {
         cc: u8,
         value: i32,
     },
+    /// `reset_rls_trig_counter(note)`.
+    ResetCounter(u8),
 }
 
 /// The engine as the runtime sees it during one call, borrowed from `Engine`.
@@ -136,6 +138,10 @@ impl KspEngine for Host<'_> {
 
     fn fade(&mut self, at: u32, voice: EventId, fade: Fade) {
         self.push(at, voice, Kind::Fade(fade));
+    }
+
+    fn reset_release_counter(&mut self, at: u32, note: u8) {
+        self.push(at, EventId::default(), Kind::ResetCounter(note));
     }
 
     fn set_par(&mut self, at: u32, voice: EventId, par: VoicePar, value: i32) {
@@ -273,6 +279,9 @@ impl Player {
             }
             // Other virtual controllers: nothing in the engine uses them.
             Kind::Controller { .. } => {}
+            &Kind::ResetCounter(note) => {
+                self.key_on[channel as usize & 15][note as usize & 127] = self.now;
+            }
         }
     }
 }

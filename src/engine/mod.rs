@@ -346,6 +346,7 @@ impl Engine {
             return self.note_off(channel, note);
         }
         self.player.keys[channel as usize][note as usize] = velocity.min(127);
+        self.player.key_on[channel as usize][note as usize] = self.player.now;
         if let Some((rt, mut host)) = self.scripted(channel) {
             return rt.note_on(&mut host, 0, note, velocity.min(127));
         }
@@ -359,6 +360,7 @@ impl Engine {
         }
         if self.script.is_some() {
             self.player.keys[channel as usize][note as usize] = 0;
+            self.player.key_up[channel as usize][note as usize] = self.player.now;
             if let Some((rt, mut host)) = self.scripted(channel) {
                 rt.note_off(&mut host, 0, note);
             }
@@ -626,6 +628,13 @@ struct Player {
     keys: [[u8; 128]; 16],
     /// Release triggers deferred by the sustain pedal: note-on velocity.
     pedal_releases: [[u8; 128]; 16],
+    /// Frames rendered so far.
+    now: u64,
+    /// Frame each key went down (or its release counter was reset) and up:
+    /// the release-trigger counter's start and stop. Boxed: a rack's engines
+    /// are built on the stack.
+    key_on: Box<[[u64; 128]; 16]>,
+    key_up: Box<[[u64; 128]; 16]>,
     allowed: GroupMask,
     next_event: u32,
     clock: u64,
@@ -655,6 +664,9 @@ impl Player {
             pressure: [0; 16],
             keys: [[0; 128]; 16],
             pedal_releases: [[0; 128]; 16],
+            now: 0,
+            key_on: Box::new([[0; 128]; 16]),
+            key_up: Box::new([[0; 128]; 16]),
             allowed: GroupMask::all(),
             next_event: 0,
             clock: 0,
@@ -709,6 +721,14 @@ impl Player {
 
     fn frames(&self, seconds: f32) -> u32 {
         (seconds.max(0.0) * self.rate as f32) as u32
+    }
+
+    /// How long the key was held when its release-trigger counter stopped:
+    /// until now while it is down, else until it went up.
+    fn held_ms(&self, channel: u8, note: u8) -> f32 {
+        let (c, n) = (channel as usize & 15, note as usize & 127);
+        let end = if self.keys[c][n] > 0 { self.now } else { self.key_up[c][n] };
+        end.saturating_sub(self.key_on[c][n]) as f32 * 1000.0 / self.rate as f32
     }
 
     fn next_id(&mut self) -> EventId {
@@ -804,6 +824,11 @@ impl Player {
             pressure: self.pressure[c],
             note: ev.note,
             velocity: ev.velocity,
+            counter: if release_trigger {
+                params::release_counter(group.release_counter_ms, self.held_ms(ev.channel, ev.note))
+            } else {
+                0.0
+            },
         };
         let mods = settings.mods.start(&inputs);
         let modulated = (settings.mods.start_offset(&inputs) * play.start_mod as f32) as u64;
@@ -965,6 +990,9 @@ impl Player {
         }
         let (c, n) = (channel as usize, note as usize);
         let velocity = std::mem::take(&mut self.keys[c][n]);
+        if velocity > 0 {
+            self.key_up[c][n] = self.now;
+        }
         let sustained = self.pedal(channel, note);
         for v in &mut self.voices {
             if v.channel == channel && v.note == note && v.held && !v.release_trigger {
@@ -1155,6 +1183,7 @@ impl Player {
                 }
             }
         }
+        self.now += n as u64;
     }
 
     /// Instrument volume/pan (ramped per block) and the Tone low-pass.

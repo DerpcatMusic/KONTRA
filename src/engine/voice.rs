@@ -433,6 +433,8 @@ impl Context<'_> {
             pressure: self.pressure[c],
             note,
             velocity,
+            // Fixed at the note start, never read live.
+            counter: 0.0,
         }
     }
 }

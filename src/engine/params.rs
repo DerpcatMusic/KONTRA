@@ -24,6 +24,8 @@ pub(crate) enum Source {
     Cc(u8),
     Bend,
     Pressure,
+    /// Release-trigger counter, fixed when the release voice starts.
+    Counter,
 }
 
 impl Source {
@@ -35,6 +37,7 @@ impl Source {
             ModSource::MidiCc(cc) if cc < 128 => Self::Cc(cc),
             ModSource::PitchBend => Self::Bend,
             ModSource::MonoAftertouch => Self::Pressure,
+            ModSource::ReleaseTriggerCounter => Self::Counter,
             _ => return None,
         })
     }
@@ -162,6 +165,20 @@ pub(crate) struct Inputs<'a> {
     pub pressure: u8,
     pub note: u8,
     pub velocity: u8,
+    /// Release-trigger counter, 0..=1 (see [`release_counter`]).
+    pub counter: f32,
+}
+
+/// Release-trigger counter as a source value: Kontakt counts down from the
+/// group's `T` (ms) while the key is held and stops at the key release, so a
+/// short note reads near 1 and a note held `T` or longer reads 0. A group
+/// without a counter (`T` = 0) reads 0.
+pub(crate) fn release_counter(t_ms: i32, held_ms: f32) -> f32 {
+    if t_ms <= 0 {
+        return 0.0;
+    }
+    let t = t_ms as f32;
+    ((t - held_ms) / t).clamp(0.0, 1.0)
 }
 
 impl Inputs<'_> {
@@ -174,6 +191,7 @@ impl Inputs<'_> {
             Source::Cc(cc) => f32::from(self.cc[cc as usize]) / 127.0,
             Source::Bend => (self.bend + 1.0) * 0.5,
             Source::Pressure => f32::from(self.pressure) / 127.0,
+            Source::Counter => self.counter,
         }
     }
 }
@@ -266,12 +284,16 @@ impl ModTable {
             if reads(source) { r } else { *r.start()..=*r.start() }
         };
         let velocities = one(velocities, Source::Velocity);
+        let counters = one(0..=127, Source::Counter);
         let (mut low, mut high) = (f32::MAX, f32::MIN);
         for note in one(keys, Source::Key) {
             for velocity in velocities.clone() {
-                let input = Inputs { cc, bend: 0.0, pressure: 0, note, velocity };
-                let x = self.start_offset(&input);
-                (low, high) = (low.min(x), high.max(x));
+                for counter in counters.clone() {
+                    let counter = f32::from(counter) / 127.0;
+                    let input = Inputs { cc, bend: 0.0, pressure: 0, note, velocity, counter };
+                    let x = self.start_offset(&input);
+                    (low, high) = (low.min(x), high.max(x));
+                }
             }
         }
         (low, high)
@@ -897,6 +919,7 @@ mod tests {
             pressure: 0,
             note: 60,
             velocity: 64,
+            counter: 0.0,
         };
         let mut values = table.start(&input);
         let (gain, _) = table.modulate(&mut values, &input, 128, 48000.0);
@@ -938,6 +961,7 @@ mod tests {
                 pressure: 0,
                 note: 60,
                 velocity,
+                counter: 0.0,
             };
             table.scale_envelope(&mut env, &input);
             (env.attack, env.release)
