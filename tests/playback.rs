@@ -318,6 +318,26 @@ fn reset_rls_trig_counter_restarts_the_count() {
     assert!((out - 0.4 * 0.9).abs() < 1e-3, "{out}");
 }
 
+/// Pacific's release groups send the counter to sample start (RTC_PITCH): the
+/// release skips the sustain pre-roll its sample opens with. Dropping this
+/// route made the library audit about 4 dB louder, not more correct.
+#[test]
+fn release_trigger_counter_moves_release_sample_start() {
+    let mut group = counted_release();
+    group.mods[0].name = "RTC_PITCH".into();
+    group.mods[0].target = ModTarget::SampleStart;
+    let zone = Zone { start_mod: Some(1000), ..Zone::default() };
+    let ramp = Sample { rate: 48000, frames: (0..2000).map(|i| [i as f32 / 2000.0; 2]).collect() };
+    let bank = Bank::from_samples(vec![group], vec![zone], vec![(PathBuf::new(), ramp)]).unwrap();
+    let mut e = engine_with(bank);
+    e.note_on(0, 60, 100);
+    render(&mut e, 24000);
+    e.note_off(0, 60);
+    // Held 500 ms of T = 1000: x = 0.5, so 500 of the 1000 start-mod frames.
+    let out = render(&mut e, 60)[59][0];
+    assert!((out - 559.0 / 2000.0).abs() < 2e-3, "{out}");
+}
+
 fn sine(period: f32, frames: usize) -> Sample {
     Sample {
         rate: 48000,
@@ -2093,100 +2113,30 @@ fn decaying_tails_flush_denormals_to_zero() {
     assert_eq!(subnormal, 0);
 }
 
-/// A purged group's sample keeps only a short head and streams the rest;
-/// offline it plays exactly as from RAM. The streamer carries over when the
-/// purge lands mid-note, and back when the group is restored: playing voices
-/// keep their streams.
 #[test]
-fn purged_groups_stream_exactly_and_carry_over() {
-    let dir = std::env::temp_dir().join(format!("kontakto-purge-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let frames = 200_000;
-    let paths = [dir.join("cold.wav"), dir.join("warm.wav")];
-    for path in &paths {
-        write_wav_bits(path, frames, 24);
-    }
-    let zones: Vec<Zone> = (0..2)
-        .map(|group| Zone {
-            group,
-            sample: paths[group].clone(),
-            ..Zone::default()
-        })
-        .collect();
-    let groups = vec![Group::default(), Group::default()];
-    let instrument = instrument(groups.clone(), zones.clone());
-    let progress = Default::default();
-    let load = |cold: &[bool], streamer| {
-        Bank::load_purging(&instrument, 1 << 30, Streaming::Auto, &[], &progress, cold, streamer).unwrap()
+fn overload_fades_released_voices_quietest_first() {
+    // Every key plays a loud group and one at −70 dB; releases ring on.
+    let quiet = Group {
+        gain: 3e-4,
+        ..Group::default()
     };
-    let full = load(&[], None);
-    let purged = load(&[true, false], full.streamer());
-    assert_eq!((full.purged, purged.purged), (0, 1));
-    assert!(purged.bytes < full.bytes);
-    let restored = load(&[false, false], full.streamer());
-    let ram = || {
-        let samples = paths.iter().map(|p| (p.clone(), kontakto::audio::decode(p, frames).unwrap()));
-        Bank::from_samples(groups.clone(), zones.clone(), samples.collect()).unwrap()
-    };
-    let (mut a, mut b) = (engine_with(full), engine_with(ram()));
-    a.blocking_streams = true;
-    let note = NoteEvent::new(0, 60, 100);
-    a.start_event(&note).unwrap();
-    b.start_event(&note).unwrap();
-    let mut next = [Some(purged), Some(restored)].into_iter();
-    for block in 0..600 {
-        if block == 150 || block == 300 {
-            assert!(a.upgrade_bank(Box::new(next.next().flatten().unwrap())).is_some());
-            assert!(a.voice_census().iter().all(|v| v.streams), "voices keep their streams");
-        }
-        assert!(render(&mut a, 128) == render(&mut b, 128), "diverges in block {block}");
-    }
-    assert_eq!(a.underruns(), 0);
-
-    // In real time, a note on the purged head waits for its stream instead
-    // of starting with a gap: the RAM output, a few blocks late.
-    let purged = load(&[true, true], None);
-    let (mut a, mut b) = (engine_with(purged), engine_with(ram()));
-    a.start_event(&note).unwrap();
-    b.start_event(&note).unwrap();
-    let expected: Vec<Frame> = (0..200).flat_map(|_| render(&mut b, 128)).collect();
-    let mut out = Vec::new();
-    for _ in 0..200 {
-        out.extend(render(&mut a, 128));
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    let sounds = |x: &[Frame]| x.iter().position(|f| *f != [0.0; 2]).unwrap();
-    let late = sounds(&out) - sounds(&expected);
-    assert!(late % 128 == 0 && late <= 4800, "starts {late} frames late");
-    assert!(out[late..] == expected[..out.len() - late], "plays as from RAM once started");
-    assert_eq!(a.underruns(), 0);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-/// Under load the quieter release tails fade out over 10 ms, never cut:
-/// the loud tail and the held note play on.
-#[test]
-fn shed_tails_fade_the_quiet_ones() {
-    let mut e = engine();
-    e.release = 5.0;
-    for note in [60, 62, 64, 66] {
-        e.note_on(0, note, 100);
-    }
-    render(&mut e, 256);
-    // Released earlier, 62 and 64 have decayed further than 60.
-    e.note_off(0, 62);
-    e.note_off(0, 64);
-    render(&mut e, 24000);
+    let mut e = engine_with(layered(vec![Group::default(), quiet], &[0.5, 0.5]));
+    e.release = 10.0;
+    e.note_on(0, 60, 127);
+    e.note_on(0, 62, 127);
+    render(&mut e, 480);
     e.note_off(0, 60);
-    let before = render(&mut e, 256);
-    e.shed_tails();
-    let after: Vec<Frame> = (0..8).flat_map(|_| render(&mut e, 128)).collect();
-    let released = |e: &Engine| e.voice_census().iter().filter(|v| v.released).count();
-    assert_eq!((e.active_voices(), released(&e)), (2, 1), "the quiet tails end, the loud one and the held note stay: {:?}", e.voice_census());
-    // No step larger than the fade's slope: a 10 ms ramp, not a cut.
-    let mut last = *before.last().unwrap();
-    for f in &after {
-        assert!((f[0] - last[0]).abs() < 0.01, "clicks: {last:?} -> {f:?}");
-        last = *f;
-    }
+    render(&mut e, 480);
+    assert_eq!(e.active_voices(), 4, "no load: releases ring");
+    e.load = 0.85;
+    render(&mut e, 64);
+    assert_eq!(e.active_voices(), 4, "fading, not cut");
+    render(&mut e, 480);
+    assert_eq!(e.active_voices(), 3, "the inaudible release ended");
+    e.load = 1.0;
+    render(&mut e, 480);
+    assert_eq!(e.active_voices(), 2, "near the deadline the quietest release goes too");
+    e.load = 0.0;
+    render(&mut e, 4800);
+    assert_eq!(e.active_voices(), 2, "held notes are never shed");
 }

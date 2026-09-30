@@ -170,15 +170,116 @@ fn the_computer_keyboard_plays_while_switched_on() {
     assert!(!send(&mut h, key(4, "k", false)));
 }
 
+/// A mouse glissando with no instrument loaded: one key sounds and lights at
+/// a time, across white and black keys, the key it began on looks like any
+/// other once the pointer has left it, and letting go anywhere, even outside
+/// the window, stops it and leaves nothing lit.
+#[test]
+fn a_glissando_follows_the_pointer_and_lets_go_anywhere() {
+    let p = Arc::new(SamplerParams::new());
+    let (width, height) = (1180u16, 760u16);
+    let mut h = Harness::new(&p, width.into(), height.into());
+    let frame = |h: &Harness, n: u8| h.ui.scene().unwrap().surface(&format!("key-{n}")).unwrap().frame;
+    let low = |h: &Harness, n: u8| {
+        let r = frame(h, n);
+        Point::new(r.x + r.size.width / 2., r.y + r.size.height * 0.85)
+    };
+    let color = |h: &Harness, at: Point| {
+        let pix = pixels(&h.ui, width, height);
+        let i = (at.y as usize * usize::from(width) + at.x as usize) * 4;
+        [pix[i], pix[i + 1], pix[i + 2]]
+    };
+    let lit = |p: &SamplerParams| (0..128u8).filter(|&n| p.shared.played[n as usize].load(Ordering::Relaxed) > 0).collect::<Vec<_>>();
+    let (c, e) = (low(&h, 60), low(&h, 64));
+    let (c_rest, e_rest) = (color(&h, c), color(&h, e));
+    for _ in 0..20 {
+        h.tick(pointer(c, false));
+    }
+    assert_ne!(color(&h, c), c_rest, "a key lifts under the pointer");
+    let sent = |p: &SamplerParams| std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(_, play)| play).collect::<Vec<_>>();
+    let path = [60u8, 61, 62, 63, 64];
+    let mut want = Vec::new();
+    for (i, &n) in path.iter().enumerate() {
+        // Black keys are pressed high, where they lie over the white ones.
+        let r = frame(&h, n);
+        let at = Point::new(r.x + r.size.width / 2., r.y + r.size.height * if n % 12 == 1 || n % 12 == 3 { 0.3 } else { 0.85 });
+        for _ in 0..3 {
+            h.tick(pointer(at, true));
+        }
+        assert_eq!(lit(&p), [n], "only the key under the pointer lights");
+        let got = sent(&p);
+        let velocity = match got.last() {
+            Some(Play::Note(m, v)) if *m == n && *v > 0 => *v,
+            other => panic!("{n} starts: {got:?} {other:?}"),
+        };
+        if i > 0 {
+            want.push(Play::Note(path[i - 1], 0));
+        }
+        want.push(Play::Note(n, velocity));
+        assert_eq!(got, want[want.len() - got.len()..], "each key goes as the next starts");
+    }
+    // Resting on E, the LED left behind on C has faded: C looks as it did
+    // before it was played, though it holds the pointer's capture.
+    for _ in 0..40 {
+        h.tick(pointer(e, true));
+    }
+    assert_eq!(color(&h, c), c_rest, "the key the glissando began on lets go of its look");
+    assert_ne!(color(&h, e), e_rest, "the sounding key is lit");
+    // Out of the window, then up.
+    let away = Input {
+        pointer: PointerInput { pos: None, buttons: Buttons::PRIMARY, ..Default::default() },
+        ..Default::default()
+    };
+    h.tick(away.clone());
+    assert_eq!(lit(&p), [64], "leaving the keys keeps the last one sounding");
+    h.tick(Input { pointer: PointerInput { pos: None, ..Default::default() }, ..Default::default() });
+    h.idle(40);
+    assert_eq!(sent(&p), [Play::Note(64, 0)], "letting go outside the window stops it, once");
+    assert!(lit(&p).is_empty(), "nothing stays lit");
+    assert_eq!(color(&h, e), e_rest, "and nothing looks lit");
+    // Pressed and let go off the key, on the window's chrome.
+    h.tick(pointer(c, true));
+    h.tick(pointer(c, true));
+    let off = center(&h.ui, "panic");
+    h.tick(pointer(off, true));
+    h.tick(pointer(off, false));
+    h.idle(3);
+    assert_eq!(sent(&p).len(), 2, "one note-on, one note-off");
+    assert!(lit(&p).is_empty());
+}
+
+/// Closing the editor lets go of what its keyboard holds: the mouse's note
+/// and the computer keyboard's, as losing the focus does.
+#[test]
+fn closing_the_editor_lets_go_of_the_keys() {
+    let p = Arc::new(SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 760.);
+    let at = center(&h.ui, "key-60");
+    h.tick(pointer(at, true));
+    h.tick(pointer(at, true));
+    assert_eq!(p.shared.keyboard.pop().map(|(_, play)| play).and_then(|play| match play {
+        Play::Note(n, v) if v > 0 => Some(n),
+        _ => None,
+    }), Some(60));
+    let mut editor = editor(p.clone());
+    editor.close();
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 0))), "closing lets the note go");
+    assert!(p.shared.played.iter().all(|v| v.load(Ordering::Relaxed) == 0), "and unlights it");
+    // Reopened, the gesture the close cut short sends nothing more.
+    h.ui.close();
+    h.idle(3);
+    assert!(p.shared.keyboard.pop().is_none());
+}
+
 fn selected_slot(p: &SamplerParams) -> usize {
     p.shared.selected.load(Ordering::Relaxed) as usize
 }
 
-/// A narrow rack moves the header's controls under the part name, so the
-/// name keeps a line of its own instead of truncating.
+/// Every header is the one compact line, open or folded, narrow or wide:
+/// the name shrinks before anything leaves the rack.
 #[test]
-fn a_narrow_header_gives_the_name_its_line() {
-    for (width, below) in [(900., true), (1180., false)] {
+fn a_header_is_one_line_at_any_width() {
+    for width in [900., 1180.] {
         let p = Arc::new(SamplerParams::new());
         p.selection.write().unwrap().parts.push(Part {
             path: "/virtual/Library/Una Corda Pure.nki".into(),
@@ -188,8 +289,10 @@ fn a_narrow_header_gives_the_name_its_line() {
         h.idle(2);
         let scene = h.ui.scene().unwrap();
         let frame = |id: &str| scene.surface(id).unwrap().frame;
-        let (name, port) = (frame("name-0"), frame("midi-0"));
-        assert_eq!(port.y > name.y + name.size.height, below, "at {width}");
+        let (header, name, port, remove) = (frame("header-0"), frame("name-0"), frame("midi-0"), frame("remove-0"));
+        assert!((header.size.height - (rack::SLIM - 1.)).abs() < 0.5, "at {width}: {header:?}");
+        assert!(port.y < name.y + name.size.height && name.y < port.y + port.size.height, "at {width}");
+        assert!(remove.x + remove.size.width <= header.x + header.size.width, "at {width}");
     }
 }
 
@@ -266,14 +369,21 @@ fn rack_interactions() {
     let part = &parts(&p)[0];
     assert!(part.pan > 0. && part.gain > 0. && part.tune > 0., "{} {} {}", part.pan, part.gain, part.tune);
 
+    let tall = |h: &Harness| h.ui.scene().unwrap().surface("part-0").unwrap().frame.size.height;
+    let open = tall(&h);
     h.press("collapse-0");
     assert!(parts(&p)[0].collapsed, "the chevron folds a part");
+    let folding = tall(&h);
+    assert!(folding < open - 1. && folding > rack::SLIM + 1., "it springs shut, not at once: {open} to {folding}");
+    h.idle(30);
     assert!(h.ui.scene().unwrap().surface("stage-0").is_none());
+    assert!((tall(&h) - rack::SLIM).abs() < 0.5, "to its header alone");
     h.press("collapse-0");
-    assert!(
-        h.ui.scene().unwrap().surface("stage-0").is_some(),
-        "and unfolds it"
-    );
+    let opening = tall(&h);
+    assert!(opening > rack::SLIM + 1. && opening < open - 1., "and springs open: {opening}");
+    h.idle(30);
+    assert!(h.ui.scene().unwrap().surface("stage-0").is_some(), "and unfolds it");
+    assert!((tall(&h) - open).abs() < 0.5);
     // The part's foot drags it down to its slim line, which folds it; a
     // double-click on the foot unfolds it again.
     let edge = |h: &Harness| center(&h.ui, "resize-0");
@@ -282,15 +392,35 @@ fn rack_interactions() {
         h.tick(pointer(Point::new(at.x, at.y + dy), true));
     }
     h.tick(pointer(Point::new(at.x, at.y - 400.), false));
-    h.idle(3);
+    h.idle(30);
     assert!(parts(&p)[0].collapsed, "dragged to its slim line, a part folds");
     let at = edge(&h);
     for down in [true, false, true, false] {
         h.tick(pointer(at, down));
     }
-    h.idle(3);
+    h.idle(30);
     let part = &parts(&p)[0];
     assert!(!part.collapsed && part.height == 0., "a double-click unfolds it whole");
+    // Dragged part way, it follows the pointer as it goes and stays there.
+    h.idle(60); // not a double click
+    let at = edge(&h);
+    h.tick(pointer(at, true));
+    let mut heights = Vec::new();
+    for dy in [-4., -12., -20.] {
+        h.tick(pointer(Point::new(at.x, at.y + dy), true));
+        h.tick(pointer(Point::new(at.x, at.y + dy), true));
+        heights.push(tall(&h));
+    }
+    h.tick(pointer(Point::new(at.x, at.y - 20.), false));
+    h.idle(30);
+    assert!(heights.windows(2).all(|w| w[1] < w[0] - 5.), "the height follows the drag: {heights:?}");
+    assert!((tall(&h) - heights[2]).abs() < 1. && heights[2] < open - 10., "and stays: {} of {open}", tall(&h));
+    assert!(!parts(&p)[0].collapsed && parts(&p)[0].height > 0., "{:?} {:?}", parts(&p)[0].collapsed, parts(&p)[0].height);
+    let at = edge(&h);
+    for down in [true, false, true, false] {
+        h.tick(pointer(at, down));
+    }
+    h.idle(30);
 
     // Lower on a key plays louder; dragging across the keys moves the note
     // along, and letting go stops it.
@@ -671,17 +801,15 @@ fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bo
     }
     if state == "pressed" {
         // Held on every kind of key: keyswitch red, unmapped grey, mapped
-        // green, white and black, soft to hard.
+        // green, white and black, soft to hard. From the host: a played key
+        // nothing on screen holds is let go on the first frame.
         for (note, velocity) in [(14, 127), (15, 60), (30, 100), (32, 100), (48, 25), (61, 90), (64, 127), (66, 60)] {
-            p.shared.played[note].store(velocity, Ordering::Relaxed);
+            p.shared.heard[note].store(velocity, Ordering::Relaxed);
         }
     }
     if state == "playing" {
-        // Keys sounding, soft to hard, on screen and from the host; a keyswitch.
-        for (note, velocity) in [(15, 100), (48, 40), (52, 127)] {
-            p.shared.played[note].store(velocity, Ordering::Relaxed);
-        }
-        for (note, velocity) in [(55, 90), (58, 110), (61, 30)] {
+        // Keys sounding, soft to hard, from the host; a keyswitch.
+        for (note, velocity) in [(15, 100), (48, 40), (52, 127), (55, 90), (58, 110), (61, 30)] {
             p.shared.heard[note].store(velocity, Ordering::Relaxed);
         }
     }
@@ -738,7 +866,12 @@ fn frame_cost() {
     let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
         "03 Areia - 6 Celli - Core Techniques,Vista - 3 Cellos,Una Corda Pure".into()
     });
-    let instruments = library_instruments(&files, &chosen);
+    let library = library_instruments(&files, &chosen);
+    // KONTAKTO_PARTS="1,4,8,16": the rack filled to each count, cycling the chosen.
+    let counts = std::env::var("KONTAKTO_PARTS").unwrap_or_else(|_| "1,4,8,16".into());
+    for count in counts.split(',').filter_map(|n| n.trim().parse::<usize>().ok()) {
+    println!("{count} parts");
+    let instruments: Vec<_> = library.iter().cycle().take(count).cloned().collect();
     let p = racked(&files, &instruments, true, "perform");
     let (w, hgt) = (1600u16, 1000u16);
     let mut h = Harness::new(&p, f64::from(w), f64::from(hgt));
@@ -784,9 +917,10 @@ fn frame_cost() {
     let shared = p.clone();
     measure(&mut h, "keys", &mut |i| {
         let note = 48 + (i % 24);
-        shared.shared.played[note].store(if i % 2 == 0 { 100 } else { 0 }, Ordering::Relaxed);
+        shared.shared.heard[note].store(if i % 2 == 0 { 100 } else { 0 }, Ordering::Relaxed);
         Input::default()
     });
+    }
 }
 
 /// Renders the editor in its main states to `.impeccable/review/` (git-ignored)
@@ -803,9 +937,11 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 25] = [
+    let states: [(&str, bool, &[&str]); 26] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
+        // Esc: no part selected, the keys show what each part plays.
+        ("unselected", true, &[]),
         ("mapping", true, &["tab-mapping"]),
         ("rack", true, &["tab-rack"]),
         ("info", true, &["tab-info"]),
@@ -888,6 +1024,9 @@ fn screenshot() {
             for id in presses {
                 h.press(id);
             }
+            if state == "unselected" {
+                h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+            }
             h.settle_art();
             // Springs (the browser drawer) come to rest.
             h.idle(30);
@@ -933,7 +1072,7 @@ fn screenshot() {
                     match state {
                         "mixer" => "master-strip",
                         // Scrolled away, its header is stuck at the top.
-                        "sticky" => "stuck-0",
+                        "sticky" => "header-0",
                         _ => "header-0",
                     },
                 ]);
@@ -1367,4 +1506,244 @@ fn sound_tab_drags_an_envelope_handle_into_the_override_layer() {
     assert_eq!(library, 1000.0, "the instrument is untouched");
     h.press("edit-envelope-reset");
     assert!(p.selection.read().unwrap().parts[0].edits.0.is_empty(), "reset plays the library's");
+}
+
+fn key_spot(ui: &Ui, note: u8) -> Point {
+    let r = ui.scene().unwrap().surface(&format!("key-{note}")).unwrap().frame;
+    Point::new(r.x + r.size.width / 2., r.y + r.size.height * 0.9)
+}
+
+fn keys_down(p: &SamplerParams) -> Vec<u8> {
+    (0..128u8).filter(|&n| p.shared.played[n as usize].load(Ordering::Relaxed) > 0).collect()
+}
+
+/// The top edge of each of `notes`, where a key's LED shines, as painted.
+fn key_tops(ui: &Ui, notes: std::ops::Range<u8>) -> Vec<[u8; 3]> {
+    let pix = pixels(ui, 1180, 760);
+    notes
+        .map(|n| {
+            let r = ui.scene().unwrap().surface(&format!("key-{n}")).unwrap().frame;
+            let o = (((r.y + 3.) as usize) * 1180 + (r.x + r.size.width / 2.) as usize) * 4;
+            [pix[o], pix[o + 1], pix[o + 2]]
+        })
+        .collect()
+}
+
+fn glows(c: [u8; 3]) -> bool {
+    i32::from(c[0]) - i32::from(c[2]) > 30
+}
+
+/// A drag across the keys moves the sound and the light together, one note
+/// at a time; letting go anywhere stops it, and a note nothing holds any
+/// more is let go on the next frame.
+#[test]
+fn a_glide_lights_what_sounds_and_lets_go_anywhere() {
+    let p = Arc::new(SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 760.);
+    let rest = key_tops(&h.ui, 60..61)[0];
+    for note in [60, 64] {
+        let at = key_spot(&h.ui, note);
+        for _ in 0..40 {
+            h.tick(pointer(at, true));
+        }
+    }
+    assert_eq!(keys_down(&p), [64], "one note sounds: the one under the pointer");
+    let tops = key_tops(&h.ui, 60..65);
+    assert!(glows(tops[4]), "and it is the one lit");
+    assert!(
+        tops[0].iter().zip(rest).all(|(a, b)| a.abs_diff(b) <= 2),
+        "the key the drag began on is at rest, not pressed: {:?} vs {rest:?}",
+        tops[0]
+    );
+    let away = Point::new(600., 300.);
+    for _ in 0..3 {
+        h.tick(pointer(away, true));
+    }
+    assert_eq!(keys_down(&p), [64], "off the keys the last note holds");
+    h.tick(pointer(away, false));
+    h.idle(40);
+    assert!(keys_down(&p).is_empty(), "let go off the keys, it stops");
+    assert!(!key_tops(&h.ui, 48..84).into_iter().any(glows), "and nothing stays lit");
+    let sent: Vec<_> = std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(_, play)| play).collect();
+    assert!(
+        matches!(sent[..], [Play::Note(60, _), Play::Note(60, 0), Play::Note(64, _), Play::Note(64, 0)]),
+        "{sent:?}"
+    );
+
+    // A release lost with the editor that held it (dropped mid-drag).
+    p.shared.press_key(0, 70, 100);
+    let _ = p.shared.keyboard.pop();
+    h.idle(1);
+    assert!(keys_down(&p).is_empty(), "a note nothing holds is let go");
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(70, 0))));
+    // The mouse and a computer key on one note: a note-off for each note-on.
+    p.shared.press_key(0, 72, 100);
+    p.shared.press_key(0, 72, 90);
+    p.shared.release_key(72);
+    p.shared.release_key(72);
+    let sent: Vec<_> = std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(_, play)| play).collect();
+    assert_eq!(sent, [Play::Note(72, 100), Play::Note(72, 0), Play::Note(72, 90), Play::Note(72, 0)]);
+}
+
+/// The editor's window, headless: the real event queue and frame schedule
+/// over the editor's build, cancelled as `editor()` cancels it.
+struct Window {
+    build: Build,
+    bridge: Bridge<SamplerParams>,
+    p: Arc<SamplerParams>,
+    computer: Arc<computer::Computer>,
+    watch: Watch,
+}
+
+impl moose::mui::mui::host::View for Window {
+    fn build(&mut self, ui: &mut Ui, _: &Input) -> El {
+        (self.build)(ui, &mut self.bridge)
+    }
+    fn changed(&mut self) -> bool {
+        self.watch.changed(&self.p, &Meters::default(), &self.computer)
+    }
+    fn request_resize(&mut self, _: u32, _: u32) -> bool {
+        false
+    }
+    fn cancel(&mut self, _: &Ui) {
+        let_go(&self.p, &self.computer);
+    }
+}
+
+struct NoClipboard;
+impl moose::mui::mui::Clipboard for NoClipboard {
+    fn get(&mut self) -> Option<String> {
+        None
+    }
+    fn set(&mut self, _: &str) {}
+}
+
+/// However a glide ends -- the button up outside the window, focus lost,
+/// the window closed -- its note stops; and whatever arrives in whatever
+/// order, never two keys sound at once.
+#[test]
+fn the_window_lets_go_of_a_glide_however_it_ends() {
+    use moose::mui::mui::host::{Driver, Shared};
+    let p = Arc::new(SamplerParams::new());
+    let computer = Arc::<computer::Computer>::default();
+    let mut s = Shared {
+        ui: theme::ui(),
+        view: Window {
+            build: Box::new(build(&p, Arc::default(), computer.clone(), Arc::default(), Arc::default())),
+            bridge: Bridge::new(p.clone()),
+            p: p.clone(),
+            computer,
+            watch: Watch::default(),
+        },
+    };
+    let now = std::cell::Cell::new(Instant::now());
+    let tick = |d: &mut Driver, s: &mut Shared<Window>, n: usize| {
+        for _ in 0..n {
+            now.set(now.get() + Duration::from_millis(16));
+            d.advance(s, now.get());
+        }
+    };
+    let mut d = Driver::new((1180, 760), 1.0, Box::new(NoClipboard));
+    tick(&mut d, &mut s, 3);
+    let keys: Vec<Point> = (48..84).map(|n| key_spot(&s.ui, n)).collect();
+    let mods = Mods::default();
+    let glide = |d: &mut Driver, s: &mut Shared<Window>| {
+        d.pointer_moved(keys[12], mods);
+        d.button(Button::Primary, true, mods);
+        tick(d, s, 2);
+        d.pointer_moved(keys[16], mods);
+        tick(d, s, 2);
+        assert_eq!(keys_down(&s.view.p), [64]);
+    };
+    glide(&mut d, &mut s);
+    d.pointer_left();
+    d.button(Button::Primary, false, mods);
+    glide(&mut d, &mut s);
+    d.pointer_left();
+    tick(&mut d, &mut s, 2);
+    assert_eq!(keys_down(&p), [64], "off the window the last note holds");
+    d.button(Button::Primary, false, mods);
+    tick(&mut d, &mut s, 2);
+    assert!(keys_down(&p).is_empty(), "the button up outside the window");
+    glide(&mut d, &mut s);
+    d.focus(false);
+    tick(&mut d, &mut s, 1);
+    assert!(keys_down(&p).is_empty(), "focus lost mid-glide");
+    d.focus(true);
+    d.button(Button::Primary, false, mods);
+    glide(&mut d, &mut s);
+    d.close(&mut s);
+    assert!(keys_down(&p).is_empty(), "the window closed mid-glide, with no frame after");
+
+    let mut d = Driver::new((1180, 760), 1.0, Box::new(NoClipboard));
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut down = false;
+    for step in 0..3000 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        match seed % 16 {
+            0..=6 => d.pointer_moved(keys[(seed >> 8) as usize % keys.len()], mods),
+            7..=9 => {
+                down = !down;
+                d.button(Button::Primary, down, mods);
+            }
+            10 => d.pointer_left(),
+            11 => {
+                d.focus(false);
+                down = false;
+            }
+            12 => d.focus(true),
+            _ => tick(&mut d, &mut s, 1),
+        }
+        assert!(keys_down(&p).len() <= 1, "step {step}: {:?}", keys_down(&p));
+    }
+    d.button(Button::Primary, false, mods);
+    tick(&mut d, &mut s, 2);
+    assert!(keys_down(&p).is_empty());
+}
+
+/// A clicked header marks its part and the keys play it alone; Esc, or a
+/// click on the rack off every part, lets go, and the keys then play every
+/// part as MIDI channel 1 would.
+#[test]
+fn the_keys_play_the_selected_part_or_every_part() {
+    let p = two_parts();
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(3);
+    let click = |h: &mut Harness, at: Point| {
+        h.tick(pointer(at, true));
+        h.tick(pointer(at, false));
+        h.idle(2);
+    };
+    let play = |h: &mut Harness| {
+        let at = key_spot(&h.ui, 60);
+        h.tick(pointer(at, true));
+        h.tick(pointer(at, true));
+        h.tick(pointer(at, false));
+        h.idle(2);
+        let sent: Vec<_> = std::iter::from_fn(|| p.shared.keyboard.pop()).collect();
+        sent.first().map(|(slot, _)| *slot)
+    };
+    let header = h.ui.scene().unwrap().surface("header-1").unwrap().frame;
+    click(&mut h, Point::new(header.x + header.size.width * 0.3, header.y + 4.));
+    assert_eq!(selected_slot(&p), 1);
+    assert_eq!(play(&mut h), Some(1), "the selected part plays");
+
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    h.idle(2);
+    assert_eq!(selected_slot(&p), crate::plugin::EVERY_PART, "Esc lets go");
+    assert!(h.ui.scene().unwrap().surface("part-ranges").is_some(), "the keys show each part's range");
+    assert_eq!(play(&mut h), Some(crate::plugin::EVERY_PART), "and every part plays");
+
+    let name = center(&h.ui, "name-0");
+    click(&mut h, name);
+    assert_eq!(selected_slot(&p), 0);
+    let body = center(&h.ui, "body-1");
+    click(&mut h, body);
+    assert_eq!(selected_slot(&p), 1, "a click on a part's controls' ground selects it");
+    // Below the rack's foot there is only the rack.
+    let foot = h.ui.scene().unwrap().surface("rack-drop").unwrap().frame;
+    click(&mut h, Point::new(foot.x + 40., foot.y + foot.size.height + 40.));
+    assert_eq!(selected_slot(&p), crate::plugin::EVERY_PART, "a click on the empty rack lets go");
 }

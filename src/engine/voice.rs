@@ -2,17 +2,14 @@
 
 use super::{
     DECLICK, EventId, MAX_BLOCK,
-    bank::{Bank, MIN_PRELOAD, Span},
+    bank::{Bank, Span},
     filter::VoiceFilter,
     map::{FOREVER, PlayMap, Run},
     params::{Inputs, VOICE_MODS},
     stream::Slot,
 };
 use crate::audio::Frame;
-use std::{
-    sync::atomic::Ordering::Relaxed,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 /// Highest playback increment (source frames per output frame): a 192 kHz
 /// sample three octaves up at 48 kHz.
@@ -27,9 +24,6 @@ const SILENT: f32 = 1e-4;
 const OFFLINE_WAIT: Duration = Duration::from_secs(5);
 /// Seconds a voice stays muted before its stream pauses.
 const PAUSE_AFTER: f32 = 0.1;
-/// Seconds a real-time voice may hold its start for streamed data it has no
-/// resident copy of (a purged sample, an offset past the resident range).
-pub(crate) const START_WAIT: f32 = 0.1;
 
 /// Attack-hold-decay-sustain-release amplitude envelope, times in seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -194,40 +188,16 @@ fn glide(from: f32, to: f32, frames: f32, curve: f32) -> (f32, f32) {
     (mul, target * (1.0 - mul))
 }
 
-/// The first eight powers of the step `x = x * mul + add`: frame `k` of a
-/// run of eight is `pow[k] * x + off[k]`.
-fn powers((mul, add): (f32, f32)) -> ([f32; 8], [f32; 8]) {
+/// Write `x = x * mul + add` per frame into `out`, from `x` = `level`;
+/// returns the last value. Eight frames at a time from powers of the step,
+/// so the frames don't wait on each other as a frame-by-frame loop does.
+fn affine(out: &mut [f32], level: f32, (mul, add): (f32, f32)) -> f32 {
     let (mut pow, mut off) = ([0f32; 8], [0f32; 8]);
     let (mut p, mut o) = (1f32, 0f32);
     for k in 0..8 {
         (p, o) = (p * mul, o * mul + add);
         (pow[k], off[k]) = (p, o);
     }
-    (pow, off)
-}
-
-/// Move `level` as [`affine`] would over up to `chunks` runs of eight
-/// frames, one step a run, stopping before a run that ends at or below
-/// `lo` or at or above `hi`: a stage may end in it, which only a
-/// frame-by-frame look can tell. Returns the level and the runs passed.
-fn affine_skip(level: f32, step: (f32, f32), chunks: usize, lo: f32, hi: f32) -> (f32, usize) {
-    let (pow, off) = powers(step);
-    let mut x = level;
-    for k in 0..chunks {
-        let next = pow[7] * x + off[7];
-        if next <= lo || next >= hi {
-            return (x, k);
-        }
-        x = next;
-    }
-    (x, chunks)
-}
-
-/// Write `x = x * mul + add` per frame into `out`, from `x` = `level`;
-/// returns the last value. Eight frames at a time from powers of the step,
-/// so the frames don't wait on each other as a frame-by-frame loop does.
-fn affine(out: &mut [f32], level: f32, step: (f32, f32)) -> f32 {
-    let (pow, off) = powers(step);
     let mut x = level;
     let (chunks, tail) = out.as_chunks_mut::<8>();
     for c in chunks {
@@ -240,6 +210,66 @@ fn affine(out: &mut [f32], level: f32, step: (f32, f32)) -> f32 {
         *t = pow[k] * x + off[k];
     }
     out.last().copied().unwrap_or(level)
+}
+
+/// [`affine`] over `len` frames into `out`, or without writing them when
+/// `out` is `None`: the same values either way, from the same eight-frame
+/// powers, so an envelope that skips frames lands where one that renders
+/// them does, bit for bit. Returns the first frame where `stop` holds and
+/// its value, or the last frame's value (`level` for no frames).
+fn affine_until(
+    out: Option<&mut [f32]>,
+    len: usize,
+    level: f32,
+    step: (f32, f32),
+    stop: impl Fn(f32) -> bool,
+) -> (f32, Option<usize>) {
+    if let Some(out) = out {
+        let out = &mut out[..len];
+        let last = affine(out, level, step);
+        return match first(out, &stop) {
+            Some(i) => (out[i], Some(i)),
+            None => (last, None),
+        };
+    }
+    let (mul, add) = step;
+    let (mut pow, mut off) = ([0f32; 8], [0f32; 8]);
+    let (mut p, mut o) = (1f32, 0f32);
+    for k in 0..8 {
+        (p, o) = (p * mul, o * mul + add);
+        (pow[k], off[k]) = (p, o);
+    }
+    let mut x = level;
+    for chunk in 0..len / 8 {
+        let c: [f32; 8] = std::array::from_fn(|k| pow[k] * x + off[k]);
+        // Every frame is tested, as `position` would: a chunk's end alone
+        // could step back over the threshold by a rounding.
+        if let Some(k) = first(&c, &stop) {
+            return (c[k], Some(chunk * 8 + k));
+        }
+        x = c[7];
+    }
+    let tail = len % 8;
+    if tail > 0 {
+        let c: [f32; 8] = std::array::from_fn(|k| pow[k] * x + off[k]);
+        if let Some(k) = first(&c[..tail], &stop) {
+            return (c[k], Some(len - tail + k));
+        }
+        x = c[tail - 1];
+    }
+    (x, None)
+}
+
+/// The first of `xs` where `stop` holds: eight at a time without a branch
+/// each, as the frames of a glide rarely stop.
+fn first(xs: &[f32], stop: &impl Fn(f32) -> bool) -> Option<usize> {
+    let (chunks, tail) = xs.as_chunks::<8>();
+    for (c, chunk) in chunks.iter().enumerate() {
+        if chunk.iter().fold(false, |hit, &x| hit | stop(x)) {
+            return chunk.iter().position(|&x| stop(x)).map(|k| c * 8 + k);
+        }
+    }
+    tail.iter().position(|&x| stop(x)).map(|k| chunks.len() * 8 + k)
 }
 
 impl Envelope {
@@ -305,68 +335,52 @@ impl Envelope {
         }
     }
 
-    /// Advance over `out.len()` frames as [`Envelope::render`] would; `out`
-    /// is scratch. Held stages move without a pass over the frames.
-    pub fn skip(&mut self, out: &mut [f32], flex: Option<&Flex>, rate: f32) {
-        let chunks = out.len() / 8;
-        let (step, chunks, lo, hi) = match self.stage {
-            Stage::Sustain if self.level > SILENT => return,
-            Stage::Hold if self.left as usize >= out.len() => {
-                self.left -= out.len() as u32;
-                if self.left == 0 {
-                    self.stage = Stage::Decay;
-                }
-                return;
-            }
-            // Glides step a run of eight at a time on the same arithmetic
-            // as `render`, which takes over for the run a stage may end in
-            // (the margins are far wider than rounding) and the tail.
-            Stage::Attack => (self.step, chunks, f32::NEG_INFINITY, 1.0 - 1e-3),
-            Stage::Decay => {
-                let step = (self.decay, self.sustain * (1.0 - self.decay));
-                (step, chunks, self.sustain + 2.0 * SILENT, f32::INFINITY)
-            }
-            Stage::Release => ((self.release, 0.0), chunks, 2.0 * SILENT, f32::INFINITY),
-            // A segment's last frame lands on its point in `render`.
-            Stage::Point(_) => {
-                let chunks = chunks.min(self.left.saturating_sub(1) as usize / 8);
-                (self.step, chunks, f32::NEG_INFINITY, f32::INFINITY)
-            }
-            _ => (self.step, 0, 0.0, 0.0),
-        };
-        let (level, runs) = affine_skip(self.level, step, chunks, lo, hi);
-        self.level = level;
-        if let Stage::Point(_) = self.stage {
-            self.left -= 8 * runs as u32;
-        }
-        self.render(&mut out[8 * runs..], flex, rate);
+    /// Advance over `frames` exactly as [`Envelope::render`] would, without
+    /// computing each frame: held stages jump, glides step eight frames at
+    /// a time.
+    pub fn skip(&mut self, frames: usize, flex: Option<&Flex>, rate: f32) {
+        self.run(None, frames, flex, rate);
     }
 
     /// Write one gain per frame; `flex` is the envelope's points, if it is one.
     pub fn render(&mut self, out: &mut [f32], flex: Option<&Flex>, rate: f32) {
+        let len = out.len();
+        self.run(Some(out), len, flex, rate);
+    }
+
+    /// The stage machine over `len` frames, writing them to `out` if given.
+    fn run(&mut self, mut out: Option<&mut [f32]>, len: usize, flex: Option<&Flex>, rate: f32) {
         let mut i = 0;
-        while i < out.len() {
-            let rest = &mut out[i..];
+        while i < len {
+            let n = len - i;
+            let mut rest = out.as_deref_mut().map(|o| &mut o[i..]);
             let written = match self.stage {
                 Stage::Attack => {
-                    self.level = affine(rest, self.level, self.step);
-                    match rest.iter().position(|&x| x >= 1.0) {
+                    let (level, peak) =
+                        affine_until(rest.as_deref_mut(), n, self.level, self.step, |x| x >= 1.0);
+                    self.level = level;
+                    match peak {
                         Some(peak) => {
-                            (self.level, rest[peak]) = (1.0, 1.0);
+                            if let Some(rest) = rest {
+                                rest[peak] = 1.0;
+                            }
+                            self.level = 1.0;
                             self.stage = Stage::Hold;
                             peak + 1
                         }
-                        None => rest.len(),
+                        None => n,
                     }
                 }
                 Stage::Hold => {
-                    let n = rest.len().min(self.left as usize);
-                    rest[..n].fill(self.level);
-                    self.left -= n as u32;
+                    let m = n.min(self.left as usize);
+                    if let Some(rest) = rest {
+                        rest[..m].fill(self.level);
+                    }
+                    self.left -= m as u32;
                     if self.left == 0 {
                         self.stage = Stage::Decay;
                     }
-                    n
+                    m
                 }
                 Stage::Enter(i) => {
                     self.stage = match flex.and_then(|f| f.points.get(i as usize)) {
@@ -381,16 +395,19 @@ impl Envelope {
                     0
                 }
                 Stage::Point(i) => {
-                    let n = rest.len().min(self.left as usize);
-                    self.level = affine(&mut rest[..n], self.level, self.step);
-                    self.left -= n as u32;
+                    let m = n.min(self.left as usize);
+                    (self.level, _) =
+                        affine_until(rest.as_deref_mut(), m, self.level, self.step, |_| false);
+                    self.left -= m as u32;
                     if self.left == 0 {
                         let point = flex.and_then(|f| Some((f.sustain, f.points.get(i as usize)?)));
                         self.stage = match point {
                             Some((sustain, p)) => {
                                 // Land exactly on the point.
                                 self.level = p.level;
-                                rest[n - 1] = p.level;
+                                if let Some(rest) = rest {
+                                    rest[m - 1] = p.level;
+                                }
                                 if i as usize == sustain {
                                     Stage::Sustain
                                 } else {
@@ -400,40 +417,48 @@ impl Envelope {
                             None => Stage::Done,
                         };
                     }
-                    n
+                    m
                 }
                 Stage::Decay => {
-                    let step = (self.decay, self.sustain * (1.0 - self.decay));
-                    self.level = affine(rest, self.level, step);
-                    match rest.iter().position(|&x| x - self.sustain <= SILENT) {
+                    let sustain = self.sustain;
+                    let step = (self.decay, sustain * (1.0 - self.decay));
+                    let (level, end) =
+                        affine_until(rest, n, self.level, step, |x| x - sustain <= SILENT);
+                    self.level = level;
+                    match end {
                         Some(end) => {
-                            self.level = self.sustain;
+                            self.level = sustain;
                             self.stage = Stage::Sustain;
                             end + 1
                         }
-                        None => rest.len(),
+                        None => n,
                     }
                 }
                 Stage::Sustain if self.level > SILENT => {
-                    rest.fill(self.level);
-                    rest.len()
+                    if let Some(rest) = rest {
+                        rest.fill(self.level);
+                    }
+                    n
                 }
                 Stage::Release => {
-                    self.level = affine(rest, self.level, (self.release, 0.0));
-                    match rest.iter().position(|&x| x < SILENT) {
+                    let (level, end) =
+                        affine_until(rest, n, self.level, (self.release, 0.0), |x| x < SILENT);
+                    self.level = level;
+                    match end {
                         Some(end) => {
-                            self.level = rest[end];
                             self.stage = Stage::Done;
                             end + 1
                         }
-                        None => rest.len(),
+                        None => n,
                     }
                 }
                 Stage::Sustain | Stage::Done => {
                     self.stage = Stage::Done;
                     self.level = 0.0;
-                    rest.fill(0.0);
-                    rest.len()
+                    if let Some(rest) = rest {
+                        rest.fill(0.0);
+                    }
+                    n
                 }
             };
             i += written;
@@ -490,10 +515,15 @@ impl Fade {
         self.value
     }
 
-    /// Advance as [`Fade::apply`] would; `amp` is scratch.
-    fn skip(&mut self, amp: &mut [f32]) {
-        if self.left > 0 {
-            self.apply(amp);
+    /// Advance over `frames` as [`Fade::apply`] would.
+    fn skip(&mut self, frames: usize) {
+        for _ in 0..frames.min(self.left as usize) {
+            self.left -= 1;
+            self.value = if self.left == 0 {
+                self.target
+            } else {
+                self.value + self.step
+            };
         }
     }
 
@@ -562,10 +592,10 @@ pub(crate) struct Voice {
     pub pitch: (f32, f64),
     /// Current value of each of the group's voiced modulation assignments.
     pub mods: [f32; VOICE_MODS],
-    /// The channel's [`Context::epochs`] value at which `mods` settled
-    /// (0: not settled), and the volume factor and semitones they gave.
-    pub settled: u64,
+    /// The last modulation result `(gain, semitones)`, and the input stamp
+    /// ([`Context::inputs`]) it holds for while the modulation is settled.
     pub modulated: (f32, f32),
+    pub settled: Option<u32>,
     pub stream: Option<Stream>,
     /// AHDSR envelope (the engine defaults without one, unity with only a flex).
     pub env: Envelope,
@@ -585,8 +615,6 @@ pub(crate) struct Voice {
     pub gains: [f32; 2],
     /// Frames the voice has been muted for, to pause its stream.
     pub muted: u32,
-    /// Frames the voice may still hold its start for its stream (0: started).
-    pub wait: u32,
     /// Group insert filter state (untouched when the group has none).
     pub filter: VoiceFilter,
 }
@@ -600,13 +628,13 @@ pub(crate) struct Context<'a> {
     pub pressure: &'a [u8; 16],
     /// Per-key MPE and note expression.
     pub expression: &'a [super::Expression; 128],
-    /// Per channel, bumped whenever its controllers or any group's
-    /// parameters change: settled modulation is reused while it holds.
-    pub epochs: &'a [u64; 16],
     /// Instrument tune in semitones.
     pub tune: f32,
     pub rate: f32,
     pub blocking: bool,
+    /// Changes whenever anything modulation reads may have: controllers,
+    /// bend, pressure or group parameters.
+    pub inputs: u32,
 }
 
 impl Context<'_> {
@@ -656,6 +684,12 @@ pub(crate) fn balance(gain: f32, pan: f32) -> [f32; 2] {
 }
 
 impl Voice {
+    /// Peak gain the voice ended its last block at, sample aside.
+    pub fn level(&self) -> f32 {
+        let flex = self.flex.as_ref().map_or(1.0, Envelope::level);
+        self.gains[0].max(self.gains[1]) * self.env.level() * flex * self.fade.value()
+    }
+
     /// Mix one block (at most [`MAX_BLOCK`] frames) into `left`/`right`.
     /// Returns `(alive, underrun)`.
     pub fn render(
@@ -668,13 +702,13 @@ impl Voice {
         let n = left.len().min(right.len()).min(MAX_BLOCK);
         let group = &cx.bank.settings[self.group as usize];
         let inputs = cx.inputs(self.channel, self.note, self.velocity);
-        // Held controllers leave modulation where it settled: most voices
-        // skip the table and its curves.
-        let epoch = cx.epochs[self.channel as usize & 15];
-        if self.settled != epoch {
+        // Settled modulation (every controller at rest, as held ones soon
+        // are) gives the same result until an input changes: the group's
+        // table, a cache miss per voice, is not read.
+        if self.settled != Some(cx.inputs) {
             let (gain, semitones, settled) = group.mods.modulate(&mut self.mods, &inputs, n, cx.rate);
             self.modulated = (gain, semitones);
-            self.settled = if settled { epoch } else { 0 };
+            self.settled = settled.then_some(cx.inputs);
         }
         let (modulation, semitones) = self.modulated;
         let x = cx.expression[self.note as usize & 127];
@@ -689,33 +723,17 @@ impl Voice {
             (self.base_pan + group.pan + self.pan + x.pan).clamp(-1.0, 1.0),
         );
         let muted = target == [0.0; 2] && self.gains == [0.0; 2];
-        // Heard: its group is in use, not to be purged.
-        if !muted && let Some(used) = cx.bank.usage.get(self.group as usize) {
-            used.store(super::bank::CLOCK.load(Relaxed), Relaxed);
-        }
-        // Late rather than gapped: a voice whose first frames are neither
-        // resident nor streamed yet holds (envelopes too) until they are, as
-        // long as START_WAIT allows. Offline renders wait on the disk anyway.
-        if self.wait > 0 && !muted {
-            // The smallest preload's worth ahead, as the planner counts it:
-            // what it trusts a stream to catch up within.
-            if cx.blocking || self.wait <= n as u32 || self.streamed_ahead(cx, MIN_PRELOAD) {
-                self.wait = 0;
-            } else {
-                self.wait -= n as u32;
-                return (true, false);
-            }
-        }
 
         let amp = &mut scratch.amp[..n];
         let flex = &mut scratch.flex[..n];
         if muted {
-            // Unheard: the envelopes and fade only move on.
-            self.env.skip(amp, None, cx.rate);
+            // Unheard: the envelopes and fade only move on, to where
+            // rendering them would have left them.
+            self.env.skip(n, None, cx.rate);
             if let Some(env) = &mut self.flex {
-                env.skip(flex, group.flex.as_ref(), cx.rate);
+                env.skip(n, group.flex.as_ref(), cx.rate);
             }
-            self.fade.skip(amp);
+            self.fade.skip(n);
         } else {
             self.env.render(amp, None, cx.rate);
             if let Some(env) = &mut self.flex {
@@ -797,23 +815,6 @@ impl Voice {
             && !self.fade.finished()
             && self.pos < self.length as f64;
         (alive, underrun)
-    }
-
-    /// Whether `ahead` frames past the position are resident or published
-    /// by the stream.
-    fn streamed_ahead(&mut self, cx: &Context, ahead: u64) -> bool {
-        let need = (self.pos as u64 + ahead + 4).min(self.length);
-        if need <= self.limit {
-            return true;
-        }
-        self.resume(cx);
-        let Some(stream) = &mut self.stream else {
-            return true;
-        };
-        if let Some(end) = cx.slots[stream.slot as usize].published(stream.tag) {
-            stream.trusted = stream.trusted.max(end);
-        }
-        stream.trusted >= need
     }
 
     /// Stop streaming while muted, keeping the slot.
@@ -1236,6 +1237,46 @@ mod tests {
         assert!(env.done());
     }
 
+    /// A muted voice's envelope skips its frames yet lands exactly where
+    /// rendering them would: un-muted or released later, it sounds the same.
+    #[test]
+    fn skipped_envelopes_land_where_rendered_ones_do() {
+        let rate = 48_000.0;
+        let flex = Flex {
+            points: [
+                FlexPoint { seconds: 0.013, level: 1.0, curve: 0.7 },
+                FlexPoint { seconds: 0.05, level: 0.3, curve: -0.4 },
+                FlexPoint { seconds: 0.2, level: 0.0, curve: 0.2 },
+            ]
+            .into(),
+            sustain: 1,
+        };
+        let ahdsr = |curve| Ahdsr { attack: 0.011, curve, hold: 0.003, decay: 0.07, sustain: 0.4, release: 0.09 };
+        let cases = [
+            (Envelope::new(&ahdsr(0.0), rate), None),
+            (Envelope::new(&ahdsr(0.8), rate), None),
+            (Envelope::new(&ahdsr(-0.6), rate), None),
+            (Envelope::flex(), Some(&flex)),
+        ];
+        for (start, flex) in cases {
+            let (mut rendered, mut skipped) = (start, start);
+            let mut out = [0.0; MAX_BLOCK];
+            // Uneven blocks, released partway, until both are done.
+            for block in 0..400 {
+                if block == 60 {
+                    rendered.release(flex);
+                    skipped.release(flex);
+                }
+                let n = [128, 77, 1, 8, 13][block % 5];
+                rendered.render(&mut out[..n], flex, rate);
+                skipped.skip(n, flex, rate);
+                assert_eq!(rendered.level().to_bits(), skipped.level().to_bits(), "block {block}");
+                assert_eq!((rendered.stage, rendered.left), (skipped.stage, skipped.left), "block {block}");
+            }
+            assert!(skipped.done());
+        }
+    }
+
     #[test]
     fn affine_steps_match_frame_by_frame() {
         for (mul, add) in [(1.0, 0.01), (0.9993, 0.0007), (1.02, -0.001), (0.0, 0.5)] {
@@ -1248,41 +1289,6 @@ mod tests {
                     assert!((o - x).abs() <= 1e-5 * x.abs().max(1.0), "{mul} {add} at {i}: {o} vs {x}");
                 }
                 assert_eq!(last, out.last().copied().unwrap_or(0.25));
-            }
-        }
-    }
-
-    /// A muted voice's envelope skips to exactly where a heard one renders to.
-    #[test]
-    fn skip_lands_where_render_does() {
-        let rate = 48000.0;
-        let flex = Flex {
-            points: [
-                FlexPoint { seconds: 0.013, level: 1.0, curve: 0.4 },
-                FlexPoint { seconds: 0.05, level: 0.3, curve: -0.7 },
-                FlexPoint { seconds: 0.2, level: 0.0, curve: 0.0 },
-            ]
-            .into(),
-            sustain: 1,
-        };
-        let adsr = Ahdsr { attack: 0.021, curve: 0.6, hold: 0.004, decay: 0.05, sustain: 0.4, release: 0.06 };
-        let blocks = [512, 128, 37, 8, 1, 300, 512, 64, 7, 512];
-        for (p, points) in [(adsr, None), (Ahdsr { sustain: 0.0, ..adsr }, None), (adsr, Some(&flex))] {
-            let new = || if points.is_some() { Envelope::flex() } else { Envelope::new(&p, rate) };
-            let (mut heard, mut muted) = (new(), new());
-            let mut out = [0.0; 512];
-            for (i, &n) in blocks.iter().cycle().take(60).enumerate() {
-                if i == 25 {
-                    heard.release(points);
-                    muted.release(points);
-                }
-                heard.render(&mut out[..n], points, rate);
-                muted.skip(&mut out[..n], points, rate);
-                assert_eq!(
-                    (heard.level.to_bits(), heard.stage, heard.left),
-                    (muted.level.to_bits(), muted.stage, muted.left),
-                    "block {i}"
-                );
             }
         }
     }

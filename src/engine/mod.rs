@@ -18,16 +18,15 @@ mod map;
 pub mod overrides;
 mod params;
 mod rack;
+mod residency;
 mod script;
 mod stream;
 mod voice;
 
 pub(crate) use bank::parallel;
-/// Seconds a tail shed under load fades over.
-const TAIL_FADE: f32 = 0.01;
-pub use stream::Streamer;
-pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, clock, memory_budget, resident_bytes, trim};
+pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, memory_budget, resident_bytes};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
+pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
@@ -37,6 +36,7 @@ pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 use crate::fx::FxProcessor;
 use crate::ksp::Runtime;
 use map::FOREVER;
+use std::sync::atomic::Ordering;
 use params::{Address, GroupPar, Write};
 use script::{Command, Host};
 use stream::Slot;
@@ -52,6 +52,14 @@ pub const MAX_BLOCK: usize = 128;
 pub const MAX_GROUPS: usize = 4096;
 /// Fade applied to voices stolen by the instrument polyphony limit.
 const STEAL_FADE: f32 = 0.005;
+/// Load (render time over block time) from which released voices too quiet
+/// to hear under the rest end early: at −80 dBFS here, rising to −50 dBFS
+/// at full load.
+const SHED_FROM: f32 = 0.7;
+/// Load from which the quietest released voices end, [`STEAL_PER_BLOCK`]
+/// a block, however loud.
+const STEAL_FROM: f32 = 0.9;
+const STEAL_PER_BLOCK: usize = 16;
 /// Seconds of ramp where a voice starts or ends mid-waveform.
 pub(crate) const DECLICK: f32 = 0.001;
 
@@ -191,6 +199,9 @@ pub struct Engine {
     pub tune: f32,
     /// The player's edits over the bank's values (see `overrides.rs`).
     overrides: overrides::Edits,
+    /// Recent render time over block time, set by the host: near the
+    /// deadline, released voices end early (see [`SHED_FROM`]).
+    pub load: f32,
 }
 
 impl Default for Engine {
@@ -209,6 +220,7 @@ impl Default for Engine {
             blocking_streams: false,
             tune: 0.0,
             overrides: overrides::Edits(Vec::with_capacity(overrides::MAX_OVERRIDES)),
+            load: 0.0,
         }
     }
 }
@@ -218,6 +230,7 @@ impl Engine {
     /// disposal off the audio thread.
     pub fn set_bank(&mut self, bank: Option<Box<Bank>>) -> Option<Box<Bank>> {
         self.player.clear_voices(self.bank.as_deref());
+        self.player.touch();
         self.commands.clear();
         self.writes.clear();
         let old = std::mem::replace(&mut self.bank, bank);
@@ -243,9 +256,33 @@ impl Engine {
         };
         // Swapped, not cloned: no allocation here.
         std::mem::swap(&mut old.settings, &mut bank.settings);
+        self.player.touch();
         self.player.rebind(old, &bank);
-        self.player.unsettle();
         self.bank.replace(bank)
+    }
+
+    /// Swap in heads the smart memory resized (see `residency.rs`), each
+    /// only while no voice plays its sample: a voice reads its sample's
+    /// head by index and limit. Applied heads then hold the replaced data,
+    /// to free off the audio thread; the rest wait for a later block.
+    pub fn swap_heads(&mut self, heads: &mut [residency::Head]) {
+        let Some(bank) = self.bank.as_deref_mut() else {
+            return;
+        };
+        let in_use = &mut self.player.in_use;
+        in_use.clear();
+        in_use.extend(self.player.voices.iter().map(|v| v.sample));
+        in_use.sort_unstable();
+        for head in heads {
+            let sample = head.sample();
+            if let Some(data) = bank.samples.get_mut(sample as usize)
+                && data.streamed
+                && in_use.binary_search(&sample).is_err()
+            {
+                std::mem::swap(&mut data.spans, &mut head.spans);
+                head.applied();
+            }
+        }
     }
 
     /// Install the program effects, built for [`rate`](Self::rate) with
@@ -307,6 +344,7 @@ impl Engine {
 
     /// Apply one engine parameter; false when nothing installed holds it.
     fn write(&mut self, address: Address, value: f32) -> bool {
+        self.player.touch();
         match address {
             Address::Fx(rack, slot, param) => self.fx.set_param(rack, slot, param, value),
             Address::Instrument(p) => {
@@ -354,26 +392,6 @@ impl Engine {
 
     pub fn active_voices(&self) -> usize {
         self.player.voices.len()
-    }
-
-    /// Fade out, over 10 ms, the released voices quieter than the mean of
-    /// those still sounding: under a near deadline, tails are what is least
-    /// missed. Repeated while the load stays high, the quiet end goes first.
-    pub fn shed_tails(&mut self) {
-        let fade = self.player.fade_frames(TAIL_FADE);
-        let level = |v: &Voice| v.env.level() * v.fade.value() * v.gains[0].max(v.gains[1]);
-        let tail = |v: &&mut Voice| v.released && !v.fade.dying();
-        let voices = &mut self.player.voices;
-        let (count, sum) = (voices.iter_mut().filter(tail)).fold((0, 0.0), |(n, s), v| (n + 1, s + level(v)));
-        if count == 0 {
-            return;
-        }
-        let mean = sum / count as f32;
-        for v in voices.iter_mut().filter(tail) {
-            if level(v) < mean {
-                v.fade.start(0.0, fade, true);
-            }
-        }
     }
 
     /// Voices not muted: those rendered, and heard.
@@ -496,6 +514,7 @@ impl Engine {
             return rt.pitch_bend(&mut host, 0, i32::from(value) - 8192);
         }
         self.player.bend[channel as usize] = (f32::from(value) - 8192.0) / 8192.0;
+        self.player.touch();
     }
 
     /// Channel pressure (mono aftertouch modulation), through the scripts.
@@ -505,6 +524,7 @@ impl Engine {
             return rt.channel_pressure(&mut host, 0, value);
         }
         self.player.pressure[channel as usize] = value;
+        self.player.touch();
     }
 
     /// A host edit of script control `control` in script slot `slot`: sets its
@@ -614,6 +634,7 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             rt.process(&mut host, n as u32);
         }
+        self.player.shed(self.load);
         let defaults = self.defaults();
         let (mut next, mut written) = (0, 0);
         for (block, (l, r)) in left[..n]
@@ -715,6 +736,8 @@ struct Player {
     voices: Vec<Voice>,
     /// Free stream slots of the current bank.
     free: Vec<u16>,
+    /// Samples voices play, gathered to swap heads safely.
+    in_use: Vec<u32>,
     /// Zones matched by the current note start, with crossfade gains.
     pending: Vec<(u32, f32)>,
     scratch: Scratch,
@@ -751,10 +774,9 @@ struct Player {
     tone: [f32; 2],
     underruns: u64,
     dropped_commands: u64,
-    /// Modulation epochs per channel (see [`voice::Context::epochs`]) and
-    /// the controllers they were taken at.
-    epochs: [u64; 16],
-    seen: Box<([[u8; 128]; 16], [u32; 16], [u8; 16])>,
+    /// Stamp of what modulation reads (see [`voice::Context::inputs`]):
+    /// bumped by every controller, bend, pressure and group write.
+    inputs: u32,
 }
 
 impl Player {
@@ -762,6 +784,7 @@ impl Player {
         let mut player = Self {
             voices: Vec::with_capacity(MAX_VOICES),
             free: Vec::with_capacity(stream::SLOTS),
+            in_use: Vec::with_capacity(MAX_VOICES),
             pending: Vec::with_capacity(MAX_VOICES),
             scratch: Scratch::default(),
             rate,
@@ -786,8 +809,7 @@ impl Player {
             tone: [0.0; 2],
             underruns: 0,
             dropped_commands: 0,
-            epochs: [1; 16],
-            seen: Box::new(([[0; 128]; 16], [0; 16], [0; 16])),
+            inputs: 0,
         };
         player.reset_midi();
         player
@@ -807,11 +829,12 @@ impl Player {
         self.pedal_releases = [[0; 128]; 16];
         (self.volume, self.pan) = (1.0, 0.0);
         self.tone = [0.0; 2];
+        self.touch();
     }
 
-    /// Group parameters changed: settled modulation may not hold.
-    fn unsettle(&mut self) {
-        self.epochs.iter_mut().for_each(|e| *e += 1);
+    /// Something modulation reads changed: settled voices modulate again.
+    fn touch(&mut self) {
+        self.inputs = self.inputs.wrapping_add(1);
     }
 
     fn clear_voices(&mut self, bank: Option<&Bank>) {
@@ -826,48 +849,25 @@ impl Player {
 
     /// Move playing voices from `old` to `new`, which holds the same samples
     /// with other residency: each finds its resident span and limit as at a
-    /// start, and streams through a slot of `new` from where it is. With the
-    /// streamer shared (a purge), a stream that still holds every frame the
-    /// voice will need past its new resident range plays on untouched.
+    /// start, and streams through a slot of `new` from where it is.
     fn rebind(&mut self, old: &Bank, new: &Bank) {
-        let shared = match (&old.streamer, &new.streamer) {
-            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
-            _ => false,
-        };
         let slots = old.slots();
-        if !shared {
-            self.free.clear();
-            self.free.extend((0..new.slots().len() as u16).rev());
-        }
+        self.free.clear();
+        self.free.extend((0..new.slots().len() as u16).rev());
         for v in &mut self.voices {
+            if let Some(stream) = v.stream.take() {
+                slots[stream.slot as usize].stop();
+            }
             let sample = &new.samples[v.sample as usize];
             let first = (v.pos as u64).saturating_sub(1);
-            let was = v.limit;
             v.span = (v.map.run(first, v.wraps))
                 .and_then(|run| sample.span_at(run.frame))
                 .unwrap_or(0);
             let span = &sample.spans[v.span as usize];
             v.limit = v.map.resident_limit(first, v.wraps, span.start, span.end());
-            // The ring holds frames from `was` on: nothing below it is lost
-            // if the resident range still reaches it or the voice is past it.
-            let keep = shared
-                && v.stream.is_some_and(|s| !s.paused)
-                && was != FOREVER
-                && v.limit != FOREVER
-                && (v.limit >= was || first >= was);
-            if keep {
-                continue;
-            }
-            let slot = match v.stream.take() {
-                Some(stream) => {
-                    slots[stream.slot as usize].stop();
-                    shared.then_some(stream.slot)
-                }
-                None => None,
-            };
             // Paused, the next render configures it from the position, as
             // when a muted voice returns; a loop reserves it as at a start.
-            let slot = slot.or_else(|| if sample.streamed { self.free.pop() } else { None });
+            let slot = if sample.streamed { self.free.pop() } else { None };
             v.stream = slot.map(|slot| voice::Stream {
                 slot,
                 tag: 0,
@@ -979,6 +979,9 @@ impl Player {
         let group = &bank.groups()[zone.group];
         let settings = &bank.settings[zone.group];
         let sample = &bank.samples[play.sample as usize];
+        // One writer, the audio thread: no read-modify-write needed.
+        let played = &bank.usage[play.sample as usize];
+        played.store(played.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
         self.make_room(bank, settings.voice_group);
 
         let key = if group.key_tracking {
@@ -1079,8 +1082,8 @@ impl Player {
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),
             mods,
-            settled: 0,
-            modulated: (0.0, 0.0),
+            modulated: (1.0, 0.0),
+            settled: None,
             stream,
             env: Envelope::new(&envelope, self.rate as f32),
             flex: settings.flex.as_ref().map(|_| Envelope::flex()),
@@ -1091,11 +1094,10 @@ impl Player {
             pan: ev.pan,
             gains: [0.0; 2],
             muted: 0,
-            wait: if limit == FOREVER { 0 } else { self.frames(voice::START_WAIT) },
             filter: VoiceFilter::new(settings.filter.as_deref(), &settings.mods, &inputs, self.rate as f32),
         };
         // Start at the voice's first-block gains, so it does not ramp in.
-        let (modulation, _, _) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
+        let (modulation, ..) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
         let pan = (zone.pan + settings.pan + ev.pan).clamp(-1.0, 1.0);
         voice.gains = balance(base_level * settings.gain * modulation * voice.volume, pan);
         if offset > 0 {
@@ -1231,6 +1233,7 @@ impl Player {
         let c = channel as usize;
         let value = value.min(127);
         self.cc[c][cc as usize] = value;
+        self.touch();
         match cc {
             // General MIDI volume curve: 127 is unity.
             7 => self.volume = (f32::from(value) / 127.0).powi(2),
@@ -1311,6 +1314,38 @@ impl Player {
         }
     }
 
+    /// Under `load`, fade out released voices: first those below a floor
+    /// that rises with the load, then near the deadline the quietest. Held
+    /// notes and muted voices (which cost next to nothing) are left alone.
+    fn shed(&mut self, load: f32) {
+        if load < SHED_FROM {
+            return;
+        }
+        let over = ((load - SHED_FROM) / (1.0 - SHED_FROM)).min(1.0);
+        let floor = 10f32.powf((-80.0 + 30.0 * over) / 20.0);
+        let steal = if load >= STEAL_FROM { STEAL_PER_BLOCK } else { 0 };
+        let fade = self.fade_frames(STEAL_FADE);
+        // The quietest released voices above the floor, loudest first.
+        let mut quietest = [(f32::INFINITY, 0); STEAL_PER_BLOCK];
+        for (i, v) in self.voices.iter_mut().enumerate() {
+            if !v.released || v.fade.dying() || v.gains == [0.0; 2] {
+                continue;
+            }
+            let level = v.level();
+            if level < floor {
+                v.fade.start(0.0, fade, true);
+            } else if steal > 0 && level < quietest[0].0 {
+                quietest[0] = (level, i);
+                quietest.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+            }
+        }
+        for &(level, i) in &quietest {
+            if level.is_finite() {
+                self.voices[i].fade.start(0.0, fade, true);
+            }
+        }
+    }
+
     /// Render every voice into `left`/`right`, or into its group's bus input
     /// at frame `offset` of the current block.
     fn render(
@@ -1322,20 +1357,9 @@ impl Player {
         blocking: bool,
         tune: f32,
     ) {
-        // Every path that moves a controller lands in these arrays: compare
-        // them rather than trust each one to say so.
-        let (cc, bend, pressure) = &mut *self.seen;
-        for c in 0..16 {
-            let b = self.bend[c].to_bits();
-            if cc[c] != self.cc[c] || bend[c] != b || pressure[c] != self.pressure[c] {
-                (cc[c], bend[c], pressure[c]) = (self.cc[c], b, self.pressure[c]);
-                self.epochs[c] += 1;
-            }
-        }
         let cx = Context {
             bank,
             slots: bank.slots(),
-            epochs: &self.epochs,
             cc: &self.cc,
             bend: &self.bend,
             pressure: &self.pressure,
@@ -1343,6 +1367,7 @@ impl Player {
             tune: self.instrument.2 + tune,
             rate: self.rate as f32,
             blocking,
+            inputs: self.inputs,
         };
         let n = left.len();
         let mut i = 0;

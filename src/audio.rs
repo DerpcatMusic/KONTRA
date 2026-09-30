@@ -571,6 +571,11 @@ impl Sources {
 }
 
 impl Source {
+    /// The sample path this source was resolved from.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn open(&self) -> Result<SampleReader> {
         self.open_counted(false)
     }

@@ -53,6 +53,14 @@ pub fn accent() -> Color {
     Color::oklch(0.76, ACCENT_CHROMA, ACCENT_HUE)
 }
 
+/// Part `slot`'s color, down its header's edge and over the keys it plays:
+/// hues a golden angle apart, so no two parts look alike and neighbors
+/// least of all, at one quiet lightness and chroma. The first is blue.
+pub fn part_color(slot: usize) -> Color {
+    let hue = (250. + slot as f64 * 137.507_764) % 360.;
+    Color::oklch(0.7, 0.1, hue as f32)
+}
+
 /// The hairline every boundary is drawn with.
 pub fn hairline() -> Fill {
     Role::Ink.alpha(0.08)
@@ -1142,6 +1150,23 @@ pub fn note_name(note: u8) -> String {
     format!("{}{}", NAMES[(note % 12) as usize], note as i16 / 12 - 2)
 }
 
+/// `name` without its library's name in front: "Vista - Harp" in
+/// "Performance Samples Vista" is "Harp". Only a name set off by a dash,
+/// colon or underscore goes; "Una Corda Pure" stays whole.
+pub fn without_library<'a>(name: &'a str, library: &str) -> &'a str {
+    let library = library_label(library);
+    let library = library.split(" [").next().unwrap_or_default().trim();
+    let rest = (name.get(..library.len()))
+        .filter(|head| !library.is_empty() && head.eq_ignore_ascii_case(library))
+        .map(|_| &name[library.len()..]);
+    rest.and_then(|rest| {
+        let shorn = rest.trim_start_matches([' ', '-', '–', '—', ':', '_']);
+        let set_off = rest.len() - shorn.len() > rest.len() - rest.trim_start().len();
+        (set_off && !shorn.is_empty()).then_some(shorn)
+    })
+    .unwrap_or(name)
+}
+
 /// A library folder name without the vendor noise.
 pub fn library_label(name: &str) -> String {
     name.replace("Performance Samples ", "")
@@ -1178,6 +1203,16 @@ pub fn arc(cx: f64, cy: f64, r: f64, from: f64, sweep: f64) -> DrawPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_leave_their_library_out() {
+        assert_eq!(without_library("Vista - Harp", "Performance Samples Vista"), "Harp");
+        assert_eq!(without_library("Solo_Violin", "Solo"), "Violin");
+        assert_eq!(without_library("Una Corda Pure", "Una Corda Library"), "Una Corda Pure");
+        assert_eq!(without_library("Vistas", "Vista"), "Vistas");
+        assert_eq!(without_library("Vista - ", "Vista"), "Vista - ");
+        assert_eq!(without_library("Harp", ""), "Harp");
+    }
 
     #[test]
     fn note_names_follow_kontakt() {

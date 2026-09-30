@@ -40,6 +40,9 @@ const URGENT: u64 = 2 * CHUNK;
 /// Frames decoded per slot per streamer pass, so one voice cannot starve others.
 const CHUNK: u64 = 2048;
 const NO_SAMPLE: u32 = u32::MAX;
+/// A streamer thread idle this long hands its rings' pages back to the
+/// system; the next voice to stream through one maps it afresh.
+const RECLAIM_AFTER: Duration = Duration::from_secs(5);
 const POSITION: u64 = (1 << 48) - 1;
 
 /// Seqlock-protected voice configuration plus the ring itself.
@@ -127,25 +130,22 @@ impl Slot {
         )
     }
 
-    /// Streamer thread, the slot stopped: return the ring's whole pages to
-    /// the system; they read as zeros, and are mapped again, when next
-    /// written. No reader looks at a stopped slot's frames.
-    fn give_back(&self) {
+    /// Streamer, while no voice streams through it: give the ring's pages
+    /// back, which read as zeros from then on. False if the system refused.
+    fn reclaim(&self) -> bool {
         #[cfg(target_os = "linux")]
         {
-            unsafe extern "C" {
-                fn madvise(addr: *mut std::ffi::c_void, len: usize, advice: i32) -> i32;
-            }
-            const MADV_DONTNEED: i32 = 4;
-            const PAGE: usize = 4096;
+            // SAFETY: `sysconf` has no preconditions.
+            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as usize;
             let start = self.ring.as_ptr() as usize;
-            let (first, last) = (start.next_multiple_of(PAGE), (start + RING as usize * 8) / PAGE * PAGE);
-            if last > first {
-                // SAFETY: whole pages inside this slot's ring, which only
-                // this thread writes; zero bits are a valid `AtomicU64`.
-                unsafe { madvise(first as *mut _, last - first, MADV_DONTNEED) };
-            }
+            let (lo, hi) = (start.next_multiple_of(page), (start + RING as usize * 8) / page * page);
+            // SAFETY: whole pages inside this slot's ring; no voice reads it
+            // (the slot is stopped) and only this thread writes it. Zeros are
+            // valid `AtomicU64`s.
+            hi > lo && unsafe { libc::madvise(lo as *mut _, hi - lo, libc::MADV_DONTNEED) } == 0
         }
+        #[cfg(not(target_os = "linux"))]
+        false
     }
 
     /// Audio thread: stop streaming.
@@ -262,10 +262,10 @@ fn tag(seq: u32) -> u16 {
 }
 
 /// Streaming thread and the slots it serves; owned by a [`super::Bank`].
-pub struct Streamer {
+pub(crate) struct Streamer {
     shared: Arc<Shared>,
-    threads: Vec<JoinHandle<()>>,
     sources: Arc<[Option<Arc<Source>>]>,
+    threads: Vec<JoinHandle<()>>,
 }
 
 struct Shared {
@@ -276,6 +276,39 @@ struct Shared {
     /// first write, so rings no voice streamed into stay unbacked.
     _rings: Rings,
     stop: AtomicBool,
+    rings: Arc<RingUse>,
+}
+
+/// Ring memory in use and handed back, for the smart-memory status.
+#[derive(Default)]
+pub(crate) struct RingUse {
+    /// Rings written since they were last reclaimed.
+    touched: AtomicU32,
+    /// Rings reclaimed and not written since.
+    reclaimed: AtomicU32,
+}
+
+impl RingUse {
+    const BYTES: usize = RING as usize * 8;
+
+    pub fn bytes(&self) -> usize {
+        self.touched.load(Ordering::Relaxed) as usize * Self::BYTES
+    }
+
+    pub fn freed(&self) -> usize {
+        self.reclaimed.load(Ordering::Relaxed) as usize * Self::BYTES
+    }
+}
+
+/// A slot's ring pages.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Pages {
+    /// Never written: the kernel has not mapped them.
+    #[default]
+    Unused,
+    Touched,
+    /// Handed back while idle.
+    Reclaimed,
 }
 
 struct Rings(NonNull<AtomicU64>);
@@ -309,7 +342,7 @@ unsafe impl Sync for Rings {}
 
 impl Streamer {
     /// `sources[i]` is `Some` for every sample that is not fully resident.
-    pub(crate) fn spawn(sources: Vec<Option<Arc<Source>>>) -> std::io::Result<Self> {
+    pub fn spawn(sources: Vec<Option<Arc<Source>>>) -> std::io::Result<Self> {
         let rings = Rings::new();
         // SAFETY: slot `i`'s ring starts in bounds of the allocation.
         let ring = |i: usize| unsafe { rings.0.add(i * RING as usize) };
@@ -320,6 +353,7 @@ impl Streamer {
             wakes,
             _rings: rings,
             stop: AtomicBool::new(false),
+            rings: Arc::default(),
         });
         let sources: Arc<[Option<Arc<Source>>]> = sources.into();
         let threads = (0..THREADS)
@@ -335,24 +369,25 @@ impl Streamer {
         }
         Ok(Self {
             shared,
-            threads,
             sources,
+            threads,
         })
     }
 
-    pub(crate) fn slots(&self) -> &[Slot] {
+    pub fn slots(&self) -> &[Slot] {
         &self.shared.slots
     }
 
-    /// Whether this streamer reads `sources` (the same, interned, per sample).
-    pub(crate) fn reads(&self, sources: &[Arc<Source>]) -> bool {
-        self.sources.len() == sources.len()
-            && (self.sources.iter().zip(sources))
-                .all(|(a, b)| a.as_ref().is_some_and(|a| Arc::ptr_eq(a, b)))
+    pub fn sources(&self) -> Arc<[Option<Arc<Source>>]> {
+        self.sources.clone()
+    }
+
+    pub fn rings(&self) -> Arc<RingUse> {
+        self.shared.rings.clone()
     }
 
     /// Bytes of ring memory.
-    pub(crate) const BYTES: usize = SLOTS * RING as usize * 8;
+    pub const BYTES: usize = SLOTS * RING as usize * 8;
 }
 
 impl Drop for Streamer {
@@ -373,8 +408,7 @@ struct Cursor {
     /// The slot's open sample, kept across restarts of the same sample and
     /// closed when the slot stops: one open file per streaming voice.
     reader: Option<(u32, SampleReader)>,
-    /// Frames were written into the ring since it was last given back.
-    used: bool,
+    pages: Pages,
 }
 
 struct Worker {
@@ -405,20 +439,36 @@ impl Worker {
             let epoch = wake.epoch.load(Ordering::Acquire);
             let (mut busy, mut active) = (false, false);
             for (slot, cursor) in slots().zip(&mut cursors) {
-                busy |= self.serve(slot, cursor, URGENT);
+                busy |= self.serve(slot, cursor, URGENT, &shared.rings);
                 active |= cursor.config.is_some();
             }
             for (slot, cursor) in slots().zip(&mut cursors) {
                 if wake.epoch.load(Ordering::Acquire) != epoch {
                     break;
                 }
-                busy |= self.serve(slot, cursor, RING);
+                busy |= self.serve(slot, cursor, RING, &shared.rings);
             }
             if busy || wake.epoch.load(Ordering::Acquire) != epoch {
                 continue;
             }
             if active {
                 std::thread::park_timeout(Duration::from_millis(1));
+            } else if cfg!(target_os = "linux") && cursors.iter().any(|c| c.pages == Pages::Touched) {
+                // A wakeup left from busier times returns at once: count
+                // only a whole quiet wait.
+                let idle = std::time::Instant::now();
+                std::thread::park_timeout(RECLAIM_AFTER);
+                if wake.epoch.load(Ordering::Acquire) != epoch || idle.elapsed() < RECLAIM_AFTER {
+                    continue;
+                }
+                let touched = slots().zip(&mut cursors).filter(|(_, c)| c.pages == Pages::Touched);
+                for (slot, cursor) in touched {
+                    if slot.reclaim() {
+                        cursor.pages = Pages::Reclaimed;
+                        shared.rings.touched.fetch_sub(1, Ordering::Relaxed);
+                        shared.rings.reclaimed.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
             } else {
                 std::thread::park();
             }
@@ -427,25 +477,18 @@ impl Worker {
 
     /// Decode one chunk for a slot with fewer than `lead` frames buffered
     /// ahead of its consumer; true if work was done.
-    fn serve(&mut self, slot: &Slot, cursor: &mut Cursor, lead: u64) -> bool {
+    fn serve(&mut self, slot: &Slot, cursor: &mut Cursor, lead: u64, rings: &RingUse) -> bool {
         if let Some((seq, config)) = slot.snapshot(cursor.seq) {
             let reader = cursor
                 .reader
                 .take()
                 .filter(|(sample, _)| config.is_some_and(|c| c.sample == *sample));
-            // Stopped: its voice ended or went quiet. The ring's pages go
-            // back to the system until it streams again.
-            let mut used = cursor.used;
-            if config.is_none() && used {
-                slot.give_back();
-                used = false;
-            }
             *cursor = Cursor {
                 seq,
                 config,
                 next: config.map_or(0, |c| c.from),
                 reader,
-                used,
+                pages: cursor.pages,
             };
         }
         let Some(config) = cursor.config else {
@@ -470,6 +513,13 @@ impl Worker {
         }
         let reader = cursor.reader.as_mut().map(|(_, reader)| reader);
         self.fill(reader, &config, cursor.next, n as usize);
+        if cursor.pages != Pages::Touched {
+            if cursor.pages == Pages::Reclaimed {
+                rings.reclaimed.fetch_sub(1, Ordering::Relaxed);
+            }
+            cursor.pages = Pages::Touched;
+            rings.touched.fetch_add(1, Ordering::Relaxed);
+        }
         // A reconfiguration while decoding makes this chunk stale; never publish it.
         if slot.seq.load(Ordering::Acquire) != cursor.seq {
             return true;
@@ -480,7 +530,6 @@ impl Worker {
                 .store(bits, Ordering::Relaxed);
         }
         cursor.next += n;
-        cursor.used = true;
         slot.written.store(
             u64::from(tag(cursor.seq)) << 48 | cursor.next,
             Ordering::Release,

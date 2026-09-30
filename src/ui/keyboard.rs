@@ -1,6 +1,8 @@
 //! A playable keyboard in Kontakt's manner: keys that play samples are plain,
 //! keys that don't are dimmed, and keys a script colored (keyswitches, usually)
-//! wear that color on their whole face.
+//! wear that color on their whole face. With a part selected it plays that
+//! part; with none, every part MIDI channel 1 reaches, and a thin strip in
+//! each part's color over the keys shows what each plays.
 
 use super::{Cx, theme::*};
 use crate::ksp::{KeyState, Value};
@@ -67,6 +69,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         note_name((first + OCTAVES * 12 - 1) as u8)
     );
     let plays = match span {
+        _ if cx.state.chosen().is_none() => "Every part on channel 1 or Omni".to_owned(),
         Some((low, high)) if cx.part().is_some() => {
             format!("Plays {} – {}", note_name(low as u8), note_name(high as u8))
         }
@@ -103,15 +106,19 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     .align(Align::Center)
     .pad(edges(TIGHT, TIGHT, TIGHT, INSET))
     .shrink(0);
+    let first_note = (cx.state.octave * 12) as u8;
+    let shown = first_note..first_note + (OCTAVES * 12) as u8;
+    // Hidden, the keys hold no pointer: a glissando still lets go.
+    play(ui, cx, shown);
     if !open {
         return col![bar].gap(0).shrink(0).fill(Role::Surface);
     }
 
-    let slot = cx.state.selected;
-    let first_note = (cx.state.octave * 12) as u8;
-    let shown = first_note..first_note + (OCTAVES * 12) as u8;
-    play(ui, cx, shown);
-    let keys = cx.part_view().keys.clone();
+    let slot = cx.state.played();
+    let keys = match cx.state.chosen() {
+        Some(_) => cx.part_view().keys.clone(),
+        None => Default::default(),
+    };
     let mut octaves = Vec::new();
     for octave in cx.state.octave..cx.state.octave + OCTAVES {
         let mut make = |n: i16, black: bool| {
@@ -147,7 +154,10 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
             .h(Len::Pct(100.)),
         );
     }
-    let strip = range_strip(looks, cx.state.octave);
+    let strip = match cx.state.chosen() {
+        Some(_) => range_strip(looks, cx.state.octave),
+        None => part_strips(cx),
+    };
     let wheels = wheels(ui, cx.p, slot, &mut cx.state.modulation);
     col![
         bar,
@@ -301,6 +311,78 @@ fn range_strip(looks: [Look; 128], octave: i16) -> El {
     .named("Key range")
 }
 
+/// Where `note` sits across a strip `width` wide showing `OCTAVES` from
+/// `octave`: its left edge and width, as the keys under it lie.
+fn key_x(note: usize, octave: i16, width: f64) -> (f64, f64) {
+    let octave_w = (width - f64::from(OCTAVES - 1)) / f64::from(OCTAVES);
+    let o = note as f64 / 12. - f64::from(octave);
+    let (x, w) = span_in_octave((note % 12) as i16);
+    (o.floor() * (octave_w + 1.) + x * octave_w, w * octave_w)
+}
+
+/// Each loaded part's slot and the keys it maps, in rack order.
+fn part_ranges(cx: &mut Cx) -> Vec<(usize, [bool; 128])> {
+    let mut out = Vec::new();
+    for slot in cx.selection.order.iter().map(|&s| s as usize) {
+        let Some(i) = cx.view.parts.get(slot).and_then(|v| v.instrument.as_ref()) else { continue };
+        let (seen, mapped) = cx.state.ranges.entry(slot).or_insert_with(|| (std::sync::Weak::new(), [false; 128]));
+        if !seen.upgrade().is_some_and(|s| Arc::ptr_eq(&s, i)) {
+            *mapped = mapped_keys(i);
+            *seen = Arc::downgrade(i);
+        }
+        out.push((slot, *mapped));
+    }
+    out
+}
+
+/// With no part selected: a thin bar per part in its color from its lowest
+/// mapped key to its highest, parts whose ranges overlap on rows of their own.
+fn part_strips(cx: &mut Cx) -> El {
+    const ROW: f64 = 3.;
+    let mut rows: Vec<Vec<(usize, usize, usize)>> = Vec::new();
+    let mut tip = Vec::new();
+    for (slot, mapped) in part_ranges(cx) {
+        let (Some(low), Some(high)) = (mapped.iter().position(|m| *m), mapped.iter().rposition(|m| *m)) else { continue };
+        tip.push(format!("{}: {} – {}", super::rack::name(cx, slot), note_name(low as u8), note_name(high as u8)));
+        match rows.iter_mut().find(|r| r.iter().all(|&(_, l, h)| high < l || low > h)) {
+            Some(r) => r.push((slot, low, high)),
+            None => rows.push(vec![(slot, low, high)]),
+        }
+    }
+    let (octave, count) = (cx.state.octave, rows.len().max(1));
+    let (first, last) = ((octave * 12) as usize, ((octave + OCTAVES) * 12 - 1) as usize);
+    canvas(move |s| {
+        let mut draw = Vec::new();
+        for (n, r) in rows.iter().enumerate() {
+            let y = n as f64 * (ROW + 1.);
+            for &(slot, low, high) in r.iter().filter(|(_, l, h)| *h >= first && *l <= last) {
+                let (left, _) = key_x(low.max(first), octave, s.width);
+                let (right, w) = key_x(high.min(last), octave, s.width);
+                draw.push(Draw::fill(rect(left.floor(), y, (right + w).ceil() - left.floor(), ROW), part_color(slot)));
+            }
+        }
+        draw
+    })
+    .w(Len::Pct(100.))
+    .h(count as f64 * (ROW + 1.) - 1.)
+    .shrink(0)
+    .tip(tip.join("\n"))
+    .named("What each part plays")
+    .id("part-ranges")
+}
+
+/// The keys `i`'s playable zones map.
+fn mapped_keys(i: &crate::import::Instrument) -> [bool; 128] {
+    let mut mapped = [false; 128];
+    for z in i.zones.iter().filter(|z| z.available) {
+        let (low, high) = (z.low_key.min(127) as usize, z.high_key.min(127) as usize);
+        if low <= high {
+            mapped[low..=high].fill(true);
+        }
+    }
+    mapped
+}
+
 /// The green of a key that plays.
 const MAPPED_HUE: f32 = 150.;
 
@@ -314,6 +396,17 @@ enum Look {
 
 fn looks(cx: &mut Cx) -> [Look; 128] {
     let mut looks = [Look::Unmapped; 128];
+    if cx.state.chosen().is_none() {
+        // Every part's keys play.
+        for (_, mapped) in &part_ranges(cx) {
+            for (look, &m) in looks.iter_mut().zip(mapped) {
+                if m {
+                    *look = Look::Mapped;
+                }
+            }
+        }
+        return looks;
+    }
     if cx.part().is_none() {
         return looks;
     }
@@ -322,13 +415,7 @@ fn looks(cx: &mut Cx) -> [Look; 128] {
         // Tens of thousands of zones: walked once per instrument, not per frame.
         let (seen, mapped) = &mut cx.state.mapped;
         if !seen.upgrade().is_some_and(|s| Arc::ptr_eq(&s, i)) {
-            *mapped = [false; 128];
-            for z in i.zones.iter().filter(|z| z.available) {
-                let (low, high) = (z.low_key.min(127) as usize, z.high_key.min(127) as usize);
-                if low <= high {
-                    mapped[low..=high].fill(true);
-                }
-            }
+            *mapped = mapped_keys(i);
             *seen = Arc::downgrade(i);
         }
         for (look, &m) in looks.iter_mut().zip(mapped.iter()) {
@@ -359,9 +446,29 @@ fn looks(cx: &mut Cx) -> [Look; 128] {
 /// Mouse playing: a press starts the key under the pointer, dragging across
 /// the keys moves the note along (a glissando) and letting go stops it.
 /// Lower on a key plays louder, as on a real one.
+///
+/// Then whatever the keys hold that neither the glissando nor a held
+/// computer key accounts for is let go, every frame: a note whose release
+/// was lost (an editor dropped mid-drag, a window that never saw the
+/// button come up) cannot outlive the next frame.
 fn play(ui: &Ui, cx: &mut Cx, shown: std::ops::Range<u8>) {
+    glide(ui, cx, shown);
     let shared = &cx.p.shared;
-    let slot = cx.state.selected;
+    let sounding = cx.state.gliss.map(|(_, n)| n);
+    let typed = cx.state.computer.notes();
+    for note in 0..128u8 {
+        if shared.played[note as usize].load(Ordering::Relaxed) > 0
+            && sounding != Some(note)
+            && !typed.contains(&note)
+        {
+            shared.release_key(note);
+        }
+    }
+}
+
+fn glide(ui: &Ui, cx: &mut Cx, shown: std::ops::Range<u8>) {
+    let shared = &cx.p.shared;
+    let slot = cx.state.played();
     for note in shown.clone() {
         let r = ui.get(format!("key-{note}"));
         if r.pressed && r.button == Some(Button::Primary) {
@@ -418,6 +525,9 @@ fn key(
         p.shared.audition(Some(note));
     }
     let held = lit > 0;
+    // The pointer is on the key: a glissando's first key keeps the capture
+    // (and so MUI's hover) after the pointer has moved on.
+    let over = ui.get(id.as_str()).hovered;
     let name = note_name(note);
     let face = match (look, black) {
         (Look::Colored(c), false) => c,
@@ -465,13 +575,15 @@ fn key(
     stack![led, text]
         .fill(face)
         .on(State::Hover, move |s| {
-            if held {
+            if held || !over {
                 s
             } else {
                 let lift = if black { 0.12 } else { -0.06 };
                 s.fill(Color::oklch((face.lightness() + lift).clamp(0., 1.), face.chroma(), face.hue()))
             }
         })
+        // Pressed is the LED's to show, on whichever key sounds.
+        .on(State::Press, |s| s)
         .focusable()
         .a11y(A11y::Button)
         .named(format!("Play {label}"))

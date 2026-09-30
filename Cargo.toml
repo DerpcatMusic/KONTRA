@@ -34,6 +34,10 @@ clap-sys = { version = "0.5", optional = true }
 # Native file dialogs; on Linux the XDG desktop portal over a runtime-loaded libdbus.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
 
+# Stream rings hand idle pages back (madvise).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [[bin]]
 name = "kontakto"
 path = "src/main.rs"
