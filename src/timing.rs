@@ -85,8 +85,8 @@ pub struct Timing {
     pub loaded: Delay,
     /// Per articulation of the part's list, by name.
     pub arts: Vec<Delay>,
-    /// What the library's own panel says, ms ([`declared`]): used over
-    /// what was measured.
+    /// What the library's own panel says, ms ([`declared`]): one figure for
+    /// the whole patch, so used only where nothing could be measured.
     pub declared: Option<f32>,
     /// Every note of the part is this late (ms), whatever was measured.
     pub override_ms: Option<f32>,
@@ -114,10 +114,10 @@ impl Timing {
         if self.exclude {
             return 0.0;
         }
-        if let Some(ms) = self.override_ms.or(self.declared) {
+        if let Some(ms) = self.override_ms {
             return ms;
         }
-        self.delay(art).ms(legato, velocity).unwrap_or(0.0)
+        self.delay(art).ms(legato, velocity).or(self.declared).unwrap_or(0.0)
     }
 
     /// The latest any note of the part sounds, as aligned (0 excluded).
@@ -125,13 +125,32 @@ impl Timing {
         if self.exclude {
             return 0.0;
         }
-        if let Some(ms) = self.override_ms.or(self.declared) {
+        if let Some(ms) = self.override_ms {
             return ms.clamp(0.0, MAX_MS);
         }
         (self.arts.iter().chain([&self.loaded]))
             .filter_map(Delay::max)
-            .fold(0.0, f32::max)
-            .min(MAX_MS)
+            .reduce(f32::max)
+            .or(self.declared)
+            .unwrap_or(0.0)
+            .clamp(0.0, MAX_MS)
+    }
+
+    /// Where the part's figure comes from, for its menu.
+    pub fn basis(&self) -> &'static str {
+        if self.exclude {
+            "excluded"
+        } else if self.override_ms.is_some() {
+            "set by hand"
+        } else if self.arts.iter().chain([&self.loaded]).any(|d| d.max().is_some()) {
+            "measured"
+        } else if self.declared.is_some() {
+            "as the library states"
+        } else if self.source.is_empty() {
+            "not measured yet"
+        } else {
+            "nothing measured"
+        }
     }
 }
 
