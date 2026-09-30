@@ -39,7 +39,69 @@ pub struct Ahdsr {
     pub release: f32,
 }
 
+/// Where an envelope is, as the editor shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Phase {
+    Done = 0,
+    Attack,
+    Hold,
+    Decay,
+    Sustain,
+    Release,
+    /// On a flex envelope's segments.
+    Flex,
+}
+
+impl Phase {
+    pub fn from_u8(x: u8) -> Self {
+        match x {
+            1 => Self::Attack,
+            2 => Self::Hold,
+            3 => Self::Decay,
+            4 => Self::Sustain,
+            5 => Self::Release,
+            6 => Self::Flex,
+            _ => Self::Done,
+        }
+    }
+}
+
 impl Ahdsr {
+    /// The attack, decay and release as a voice renders them, each sampled
+    /// at `points + 1` even steps over its own time: the engine's envelope
+    /// run at a rate that fits the stage into `points` frames. The release
+    /// falls from the sustain level. A stage of no time is one point.
+    pub fn trace(&self, points: usize) -> [Vec<f32>; 3] {
+        let n = points.max(1);
+        let sustain = self.sustain.clamp(0.0, 1.0);
+        let base = Ahdsr { attack: 0.0, curve: 0.0, hold: 0.0, decay: 0.0, sustain, release: f32::INFINITY };
+        let timed = |seconds: f32| seconds > 0.0 && seconds.is_finite();
+        let mut out = [vec![1.0], vec![sustain], vec![0.0]];
+        if timed(self.attack) {
+            let env = Ahdsr { attack: self.attack, curve: self.curve, sustain: 1.0, ..base };
+            let mut e = Envelope::new(&env, n as f32 / self.attack);
+            out[0] = vec![0.0; n + 1];
+            e.render(&mut out[0][1..], None, 1.0);
+        }
+        if timed(self.decay) {
+            // No attack: the first frame is at full level, the decay follows.
+            let mut e = Envelope::new(&Ahdsr { decay: self.decay, ..base }, n as f32 / self.decay);
+            out[1] = vec![0.0; n + 1];
+            e.render(&mut out[1], None, 1.0);
+        }
+        if timed(self.release) {
+            // Full level, then the sustain level (no decay time), then let go.
+            let mut e = Envelope::new(&Ahdsr { release: self.release, ..base }, n as f32 / self.release);
+            let mut lead = [0.0; 2];
+            e.render(&mut lead, None, 1.0);
+            e.release(None);
+            out[2] = vec![e.level(); n + 1];
+            e.render(&mut out[2][1..], None, 1.0);
+        }
+        out
+    }
+
     /// Holds 1 until the voice ends another way: the partner of a lone flex envelope.
     pub const UNITY: Self = Self {
         attack: 0.0,
@@ -198,6 +260,19 @@ impl Envelope {
     /// The gain the envelope has reached.
     pub fn level(&self) -> f32 {
         self.level
+    }
+
+    /// The stage, for the editor's playheads: see [`Phase`].
+    pub fn phase(&self) -> Phase {
+        match self.stage {
+            Stage::Attack => Phase::Attack,
+            Stage::Hold => Phase::Hold,
+            Stage::Decay => Phase::Decay,
+            Stage::Sustain => Phase::Sustain,
+            Stage::Release => Phase::Release,
+            Stage::Enter(_) | Stage::Point(_) => Phase::Flex,
+            Stage::Done => Phase::Done,
+        }
     }
 
     /// Advance over `out.len()` frames as [`Envelope::render`] would; `out`
@@ -1072,6 +1147,27 @@ mod tests {
                 assert_eq!(last, out.last().copied().unwrap_or(0.25));
             }
         }
+    }
+
+    /// The editor's envelope drawing follows the laws voices play by.
+    #[test]
+    fn trace_follows_the_envelope_laws() {
+        let env = Ahdsr { attack: 0.3, curve: 0.0, hold: 0.1, decay: 2.0, sustain: 0.25, release: 4.0 };
+        let [attack, decay, release] = env.trace(100);
+        assert_eq!((attack.len(), decay.len(), release.len()), (101, 101, 101));
+        assert_eq!(attack[0], 0.0);
+        assert!((attack[50] - 0.5).abs() < 1e-4, "linear attack: {}", attack[50]);
+        assert!((attack[100] - 1.0).abs() < 1e-4);
+        // −60 dB of the distance to sustain over the decay time.
+        assert_eq!(decay[0], 1.0);
+        let at = |t: f32| 0.25 + 0.75 * 0.001f32.powf(t);
+        assert!((decay[50] - at(0.5)).abs() < 1e-4, "{} vs {}", decay[50], at(0.5));
+        assert_eq!(release[0], 0.25);
+        assert!((release[50] - 0.25 * 0.001f32.powf(0.5)).abs() < 1e-4);
+        // A convex attack rises early; a stage of no time is a point.
+        let fast = Ahdsr { curve: 1.0, decay: 0.0, ..env }.trace(100);
+        assert!(fast[0][25] > 0.5);
+        assert_eq!(fast[1], vec![0.25]);
     }
 
     #[test]

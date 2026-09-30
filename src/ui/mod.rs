@@ -21,6 +21,7 @@
 mod art;
 mod browser;
 mod computer;
+mod editor;
 mod header;
 mod instrument;
 mod keyboard;
@@ -32,6 +33,7 @@ mod rack;
 #[cfg(test)]
 mod tests;
 mod theme;
+mod viz;
 
 use crate::engine::RACK_SLOTS;
 use crate::import;
@@ -194,6 +196,13 @@ impl Watch {
         let m = &p.shared.meters;
         let sounding = (m.parts.iter().chain(&m.buses).chain([&m.master]))
             .any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
+        // The sound editor's playheads, and the values scripts move under it.
+        let probe = &p.shared.probe;
+        let watch = probe.watch.load(Ordering::Relaxed);
+        let sounding = sounding || (watch != 0 && probe.taps().next().is_some());
+        if let Some(values) = probe.read(watch, 1) {
+            values.map(f32::to_bits).hash(&mut h);
+        }
         sounding.hash(&mut h);
         // Progress and the sweep redraw on the animation's own clock.
         let animate = (loading || sounding) && due(self.frame_at, ANIMATION_MS);
@@ -267,6 +276,7 @@ enum Tab {
     Rack,
     Mixer,
     Mapping,
+    Sound,
     Info,
 }
 
@@ -338,6 +348,8 @@ struct EditorState {
     modulation: Option<f64>,
     /// The system file dialog, answering on a later frame.
     picker: Arc<picker::Picker>,
+    /// The sound editor's view and curves.
+    editor: editor::State,
 }
 
 /// The browser's files by library name, as indices into the scan.
@@ -473,6 +485,7 @@ impl Cx<'_> {
         part.program = 0;
         part.group = u32::MAX;
         part.name.clear();
+        part.edits = Default::default();
         self.show(slot);
     }
 
@@ -724,6 +737,7 @@ fn build(
         gliss: None,
         modulation: None,
         picker,
+        editor: Default::default(),
     };
     move |ui, bridge| {
         // The loader also runs from the audio thread; poll here so a stopped host still loads.
@@ -789,6 +803,7 @@ fn build(
             let mut current = write(&p.selection);
             if *current == before {
                 *current = selection;
+                p.shared.sync_overrides(&current);
                 let _ = p.shared.controls.force_push(mix(&current));
                 p.shared
                     .midi_thru
@@ -921,6 +936,7 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         (Tab::Rack, "Rack", "tab-rack"),
         (Tab::Mixer, "Mixer", "tab-mixer"),
         (Tab::Mapping, "Mapping", "tab-mapping"),
+        (Tab::Sound, "Sound", "tab-sound"),
         (Tab::Info, "Info", "tab-info"),
     ] {
         let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
@@ -942,6 +958,10 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         content.push(banner(Role::Warning, cx.state.notice.clone()));
     }
     let slot = cx.state.selected;
+    // The audio thread reports the edited group only while it is shown.
+    if cx.state.tab != Tab::Sound || cx.part().is_none() {
+        cx.p.shared.probe.watch.store(0, Ordering::Relaxed);
+    }
     if cx.state.tab == Tab::Rack {
         content.push(rack::view(ui, cx));
     } else if cx.state.tab == Tab::Mixer {
@@ -955,6 +975,7 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         content.extend(instrument::notices(cx, slot));
         content.push(match cx.state.tab {
             Tab::Mapping => instrument::mapping(ui, cx),
+            Tab::Sound => editor::view(ui, cx),
             _ => instrument::info(cx),
         });
     }

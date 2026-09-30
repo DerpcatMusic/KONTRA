@@ -195,7 +195,7 @@ impl KspEngine for Host<'_> {
             None => match address {
                 Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param)?,
                 Address::Instrument(p) => instrument(self.player.instrument, p)?,
-                _ => params::read(&self.bank?.settings, address)?,
+                _ => params::read(&self.bank?.base, address)?,
             },
         };
         Some(address.encode(value))

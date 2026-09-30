@@ -803,7 +803,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 22] = [
+    let states: [(&str, bool, &[&str]); 25] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -828,6 +828,10 @@ fn screenshot() {
         ("resized", true, &[]),
         ("loading", true, &[]),
         ("pressed", true, &[]),
+        ("sound", true, &["tab-sound"]),
+        // Edited: the library's curves stay drawn faintly under the edits.
+        ("sound-edited", true, &["tab-sound"]),
+        ("sound-compact", true, &["tab-sound", "edit-compact"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
@@ -847,6 +851,13 @@ fn screenshot() {
     {
         for &(width, height) in &sizes {
             let p = racked(&files, &instruments, loaded, state);
+            if state == "sound-edited" {
+                use crate::engine::overrides::{Override, Param};
+                let mut selection = p.selection.write().unwrap();
+                for (param, offset) in [(Param::Release, -0.2), (Param::Attack, 0.15), (Param::Sustain, -0.2)] {
+                    selection.parts[0].edits.set(Override { group: None, param, offset });
+                }
+            }
             if state == "mixer" {
                 // Mid-song: parts on two buses, one sending to a named third.
                 let mut selection = p.selection.write().unwrap();
@@ -1317,4 +1328,43 @@ fn editor_opens_while_parts_load() {
         started.elapsed().as_secs_f64()
     );
     assert!(first < Duration::from_millis(500) && worst < Duration::from_millis(250));
+}
+
+/// Dragging the envelope's release handle left shortens the release as an
+/// override on the part (the instrument untouched); the panel's reset
+/// plays the library's again.
+#[test]
+fn sound_tab_drags_an_envelope_handle_into_the_override_layer() {
+    use crate::engine::overrides::Param;
+    let p = scripted_part("on init\nend on");
+    let env = crate::modulation::Ahdsr {
+        attack_curve: 0.0,
+        attack_ms: 10.0,
+        decay_ms: 500.0,
+        hold_ms: 0.0,
+        release_ms: 1000.0,
+        sustain: 0.5,
+        unknown_flag: 0,
+        unknown_tail: Vec::new(),
+    };
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let i = view.parts[0].instrument.as_mut().unwrap();
+        Arc::get_mut(i).unwrap().groups = vec![import::Group { volume_env: Some(env), ..Default::default() }];
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("tab-sound");
+    let frame = h.ui.scene().unwrap().surface("edit-envelope").expect("the envelope graph").frame;
+    // The release handle: the envelope's end, at the floor, inset by SPACE.
+    let at = Point::new(frame.x + frame.size.width - SPACE, frame.y + frame.size.height - SPACE);
+    for (x, down) in [(0., true), (-10., true), (-60., true), (-60., false)] {
+        h.tick(pointer(Point::new(at.x + x, at.y), down));
+    }
+    h.idle(2);
+    let offset = p.selection.read().unwrap().parts[0].edits.get(None, Param::Release);
+    assert!(offset < -0.01, "release moved down: {offset}");
+    let library = p.shared.view.lock().unwrap().parts[0].instrument.as_ref().unwrap().groups[0].volume_env.as_ref().unwrap().release_ms;
+    assert_eq!(library, 1000.0, "the instrument is untouched");
+    h.press("edit-envelope-reset");
+    assert!(p.selection.read().unwrap().parts[0].edits.0.is_empty(), "reset plays the library's");
 }
