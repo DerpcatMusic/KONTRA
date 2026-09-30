@@ -40,16 +40,6 @@ impl Line {
         self.buf[pos.wrapping_sub(delay) & self.mask]
     }
 
-    /// Linear-interpolated read at a fractional delay.
-    #[inline]
-    fn read_frac(&self, pos: usize, delay: f32) -> f32 {
-        let whole = delay as usize;
-        let frac = delay - whole as f32;
-        let a = self.read(pos, whole);
-        let b = self.read(pos, whole + 1);
-        a + (b - a) * frac
-    }
-
     #[inline]
     fn write(&mut self, pos: usize, value: f32) {
         self.buf[pos & self.mask] = value;
@@ -68,7 +58,10 @@ pub struct Reverb {
     allpass: [[Line; 2]; 2],
     allpass_len: [usize; 2],
     diffusion: f32,
-    lines: [Line; LINES],
+    /// The feedback lines' ring, one frame of all [`LINES`] per entry:
+    /// a frame's writes are one store and its reads share one mask. The
+    /// length is a power of two.
+    lines: Box<[[f32; LINES]]>,
     delay: [f32; LINES],
     feedback: [f32; LINES],
     damp_coef: f32,
@@ -103,7 +96,8 @@ impl Reverb {
         let mod_depth = ms(n(p.modulation) * 1.5);
 
         let delay = BASE_MS.map(|base| ms(base * scale));
-        let lines = delay.map(|d| Line::new((d + mod_depth) as usize + 2));
+        let longest = delay.iter().fold(0f32, |m, &d| m.max(d));
+        let lines = vec![[0.0; LINES]; ((longest + mod_depth) as usize + 4).next_power_of_two()];
         // Each pass through a line of length d must lose 60 dB over rt60.
         let feedback = delay.map(|d| 10f32.powf(-3.0 * d / (rt60 * sample_rate)));
         let predelay_len = ms(n(p.predelay) * MAX_PREDELAY_MS) as usize;
@@ -116,7 +110,7 @@ impl Reverb {
             allpass: std::array::from_fn(|_| allpass_len.map(Line::new)),
             allpass_len,
             diffusion: 0.75 * n(p.diffusion),
-            lines,
+            lines: lines.into(),
             delay,
             feedback,
             damp_coef: one_pole(18_000.0 * 0.05f32.powf(n(p.damping)), sample_rate),
@@ -146,14 +140,32 @@ impl Reverb {
     pub fn clear(&mut self) {
         self.predelay.clear();
         self.allpass.iter_mut().flatten().for_each(Line::clear);
-        self.lines.iter_mut().for_each(Line::clear);
+        self.lines.fill([0.0; LINES]);
         self.damp_state = [0.0; LINES];
         self.input_state = [0.0; 2];
         self.shelf_state = [0.0; 2];
     }
 
-    /// Replaces `left`/`right` with the wet (100%) reverb signal.
+    /// Replaces `left`/`right` with the wet (100%) reverb signal. Runs the
+    /// lines with AVX2 when the CPU has it, to the same result.
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: the running CPU supports AVX2.
+            return unsafe { self.process_avx2(left, right) };
+        }
+        self.process_with::<false>(left, right);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    fn process_avx2(&mut self, left: &mut [f32], right: &mut [f32]) {
+        self.process_with::<true>(left, right);
+    }
+
+    /// `AVX2` only from [`process_avx2`](Self::process_avx2).
+    #[inline(always)]
+    fn process_with<const AVX2: bool>(&mut self, left: &mut [f32], right: &mut [f32]) {
         for (left, right) in left.chunks_mut(LFO_STEP).zip(right.chunks_mut(LFO_STEP)) {
             let from = self.lfo;
             for _ in 0..left.len() {
@@ -166,7 +178,7 @@ impl Reverb {
             for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
                 let t = (i + 1) as f32;
                 let lfo = [from[0] + slope[0] * t, from[1] + slope[1] * t];
-                [*l, *r] = self.tick([*l, *r], lfo);
+                [*l, *r] = self.tick::<AVX2>([*l, *r], lfo);
             }
         }
     }
@@ -179,8 +191,8 @@ impl Reverb {
     }
 
     /// One frame; `[sin, cos]` of the LFO phase.
-    #[inline]
-    fn tick(&mut self, input: [f32; 2], [sin, cos]: [f32; 2]) -> [f32; 2] {
+    #[inline(always)]
+    fn tick<const AVX2: bool>(&mut self, input: [f32; 2], lfo: [f32; 2]) -> [f32; 2] {
         let pos = self.pos;
         self.pos = pos.wrapping_add(1);
 
@@ -202,27 +214,11 @@ impl Reverb {
             *out = x;
         }
 
-        // Quadrature LFOs on alternate lines decorrelate modes without pitch wobble.
-        let mut taps = [0.0; LINES];
-        for (i, tap) in taps.iter_mut().enumerate() {
-            let lfo = match i % 4 {
-                0 => sin,
-                1 => cos,
-                2 => -sin,
-                _ => -cos,
-            };
-            let d = self.delay[i] + self.mod_depth * (0.5 + 0.5 * lfo);
-            *tap = self.lines[i].read_frac(pos, d);
-        }
-
-        let mut mix = taps;
-        hadamard(&mut mix);
-        let lines = self.lines.iter_mut().zip(&mut self.damp_state);
-        for (i, ((line, damped), (m, fb))) in lines.zip(mix.iter().zip(&self.feedback)).enumerate()
-        {
-            *damped += (m * fb - *damped) * self.damp_coef + ANTI_DENORMAL;
-            line.write(pos, *damped + diffused[i % 2]);
-        }
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: `AVX2` is only set on CPUs that support it.
+        let taps = if AVX2 { unsafe { self.lines_avx2(pos, lfo, diffused) } } else { self.lines(pos, lfo, diffused) };
+        #[cfg(not(target_arch = "x86_64"))]
+        let taps = self.lines(pos, lfo, diffused);
 
         let l = (taps[0] - taps[2] + taps[4] - taps[6]) * 0.5;
         let r = (taps[1] - taps[3] + taps[5] - taps[7]) * 0.5;
@@ -234,6 +230,83 @@ impl Reverb {
             *v += *low * self.shelf_gain;
         }
         out
+    }
+
+    /// Reads the modulated taps of every line, mixes them and writes the
+    /// damped feedback plus `diffused` input back; returns the taps.
+    #[inline(always)]
+    fn lines(&mut self, pos: usize, [sin, cos]: [f32; 2], diffused: [f32; 2]) -> [f32; LINES] {
+        // Quadrature LFOs on alternate lines decorrelate modes without pitch wobble.
+        let lfo = [sin, cos, -sin, -cos, sin, cos, -sin, -cos];
+        let mask = self.lines.len() - 1;
+        let taps: [f32; LINES] = std::array::from_fn(|i| {
+            // A linear-interpolated read at a fractional delay.
+            let d = self.delay[i] + self.mod_depth * (0.5 + 0.5 * lfo[i]);
+            let whole = d as usize;
+            let frac = d - whole as f32;
+            let a = self.lines[pos.wrapping_sub(whole) & mask][i];
+            let b = self.lines[pos.wrapping_sub(whole + 1) & mask][i];
+            a + (b - a) * frac
+        });
+        let mut mix = taps;
+        hadamard(&mut mix);
+        let row = &mut self.lines[pos & mask];
+        for (i, (y, damped)) in row.iter_mut().zip(&mut self.damp_state).enumerate() {
+            *damped += (mix[i] * self.feedback[i] - *damped) * self.damp_coef + ANTI_DENORMAL;
+            *y = *damped + diffused[i % 2];
+        }
+        taps
+    }
+
+    /// [`lines`](Self::lines) with the eight lines in the lanes of one
+    /// vector: the same operations in the same order, so the same result.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    fn lines_avx2(&mut self, pos: usize, [sin, cos]: [f32; 2], [dl, dr]: [f32; 2]) -> [f32; LINES] {
+        use std::arch::x86_64::*;
+        let mask = self.lines.len() - 1;
+        let lfo = _mm256_setr_ps(sin, cos, -sin, -cos, sin, cos, -sin, -cos);
+        let half = _mm256_set1_ps(0.5);
+        // SAFETY: loads of `[f32; 8]` arrays; the gathers read
+        // `lines[(pos - k) & mask][lane]`, inside the ring.
+        unsafe {
+            let depth = _mm256_mul_ps(_mm256_set1_ps(self.mod_depth), _mm256_add_ps(half, _mm256_mul_ps(half, lfo)));
+            let d = _mm256_add_ps(_mm256_loadu_ps(self.delay.as_ptr()), depth);
+            let whole = _mm256_cvttps_epi32(d);
+            let frac = _mm256_sub_ps(d, _mm256_cvtepi32_ps(whole));
+            // Only the low bits survive the mask, so 32-bit positions do.
+            let at = _mm256_sub_epi32(_mm256_set1_epi32(pos as i32), whole);
+            let (m, lane) = (_mm256_set1_epi32(mask as i32), _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7));
+            let index = |at| _mm256_add_epi32(_mm256_slli_epi32::<3>(_mm256_and_si256(at, m)), lane);
+            let base = self.lines.as_ptr().cast::<f32>();
+            let a = _mm256_i32gather_ps::<4>(base, index(at));
+            let b = _mm256_i32gather_ps::<4>(base, index(_mm256_sub_epi32(at, _mm256_set1_epi32(1))));
+            let taps = _mm256_add_ps(a, _mm256_mul_ps(_mm256_sub_ps(b, a), frac));
+
+            // Hadamard butterflies: the lower lane of each pair takes a + b,
+            // the upper a - b.
+            let mut x = taps;
+            let swap = _mm256_permute_ps::<0b1011_0001>(x);
+            x = _mm256_blend_ps::<0b1010_1010>(_mm256_add_ps(x, swap), _mm256_sub_ps(swap, x));
+            let swap = _mm256_permute_ps::<0b0100_1110>(x);
+            x = _mm256_blend_ps::<0b1100_1100>(_mm256_add_ps(x, swap), _mm256_sub_ps(swap, x));
+            let swap = _mm256_permute2f128_ps::<0x01>(x, x);
+            x = _mm256_blend_ps::<0b1111_0000>(_mm256_add_ps(x, swap), _mm256_sub_ps(swap, x));
+            let mix = _mm256_mul_ps(x, _mm256_set1_ps((LINES as f32).sqrt().recip()));
+
+            let damped = _mm256_loadu_ps(self.damp_state.as_ptr());
+            let step = _mm256_mul_ps(
+                _mm256_sub_ps(_mm256_mul_ps(mix, _mm256_loadu_ps(self.feedback.as_ptr())), damped),
+                _mm256_set1_ps(self.damp_coef),
+            );
+            let damped = _mm256_add_ps(damped, _mm256_add_ps(step, _mm256_set1_ps(ANTI_DENORMAL)));
+            _mm256_storeu_ps(self.damp_state.as_mut_ptr(), damped);
+            let row = &mut self.lines[pos & mask];
+            _mm256_storeu_ps(row.as_mut_ptr(), _mm256_add_ps(damped, _mm256_setr_ps(dl, dr, dl, dr, dl, dr, dl, dr)));
+            let mut out = [0.0; LINES];
+            _mm256_storeu_ps(out.as_mut_ptr(), taps);
+            out
+        }
     }
 }
 
@@ -328,11 +401,31 @@ mod tests {
         for (i, &x) in input.iter().enumerate() {
             exact.advance_lfo();
             let (sin, cos) = exact.lfo_phase.sin_cos();
-            let [el, er] = exact.tick([x, x], [sin, cos]);
+            let [el, er] = exact.tick::<false>([x, x], [sin, cos]);
             worst = worst.max((el - l[i]).abs()).max((er - r[i]).abs());
             peak = peak.max(el.abs());
         }
         assert!(worst < 1e-5 * peak, "worst {worst} of peak {peak}");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_lines_match_scalar_bit_for_bit() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let (mut simd, mut scalar) = (Reverb::new(&params(0.8), 44_100.0), Reverb::new(&params(0.8), 44_100.0));
+        let input: Vec<f32> = (0..20_000).map(|i| (i as f32 * 0.03).sin()).collect();
+        let (mut l, mut r) = (input.clone(), input.clone());
+        let (mut l2, mut r2) = (input.clone(), input);
+        for c in 0..l.len() / 64 {
+            let range = c * 64..(c + 1) * 64;
+            // SAFETY: checked above.
+            unsafe { simd.process_avx2(&mut l[range.clone()], &mut r[range.clone()]) };
+            scalar.process_with::<false>(&mut l2[range.clone()], &mut r2[range]);
+        }
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!((bits(&l), bits(&r)), (bits(&l2), bits(&r2)));
     }
 
     #[test]
