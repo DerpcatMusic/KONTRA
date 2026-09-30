@@ -96,6 +96,8 @@ The palette stays achromatic through normal interaction; the single warm status 
 
 **The Neutral Selection Rule.** Keep active states in the graphite family; use coral only when the instrument reports a real error.
 
+**The No Orange Rule.** Nothing is drawn orange, amber or mustard (OKLCH hues 40–105): focus, tabs and selection are light grey; part and bus hues walk the circle with that band cut out; a library whose artwork is orange gets no library color, and its curves take the part's color.
+
 ## Typography
 
 **Display Font:** Noto Sans (sans-serif fallback)  

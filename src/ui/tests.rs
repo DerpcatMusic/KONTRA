@@ -1607,8 +1607,10 @@ fn key_tops(ui: &Ui, notes: std::ops::Range<u8>) -> Vec<[u8; 3]> {
         .collect()
 }
 
-fn glows(c: [u8; 3]) -> bool {
-    i32::from(c[0]) - i32::from(c[2]) > 30
+/// Whether a key top is lit: the neutral LED darkens a light key well
+/// away from `rest`, a white key's unlit top.
+fn glows(c: [u8; 3], rest: [u8; 3]) -> bool {
+    c.iter().zip(rest).map(|(&a, b)| i32::from(a.abs_diff(b))).sum::<i32>() > 60
 }
 
 /// A drag across the keys moves the sound and the light together, one note
@@ -1619,6 +1621,7 @@ fn a_glide_lights_what_sounds_and_lets_go_anywhere() {
     let p = Arc::new(SamplerParams::new());
     let mut h = Harness::new(&p, 1180., 760.);
     let rest = key_tops(&h.ui, 60..61)[0];
+    let rests = key_tops(&h.ui, 48..84);
     for note in [60, 64] {
         let at = key_spot(&h.ui, note);
         for _ in 0..40 {
@@ -1627,7 +1630,7 @@ fn a_glide_lights_what_sounds_and_lets_go_anywhere() {
     }
     assert_eq!(keys_down(&p), [64], "one note sounds: the one under the pointer");
     let tops = key_tops(&h.ui, 60..65);
-    assert!(glows(tops[4]), "and it is the one lit");
+    assert!(glows(tops[4], rest), "and it is the one lit");
     assert!(
         tops[0].iter().zip(rest).all(|(a, b)| a.abs_diff(b) <= 2),
         "the key the drag began on is at rest, not pressed: {:?} vs {rest:?}",
@@ -1641,7 +1644,7 @@ fn a_glide_lights_what_sounds_and_lets_go_anywhere() {
     h.tick(pointer(away, false));
     h.idle(40);
     assert!(keys_down(&p).is_empty(), "let go off the keys, it stops");
-    assert!(!key_tops(&h.ui, 48..84).into_iter().any(glows), "and nothing stays lit");
+    assert!(!key_tops(&h.ui, 48..84).into_iter().zip(rests).any(|(c, r)| glows(c, r)), "and nothing stays lit");
     let sent: Vec<_> = std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(_, play)| play).collect();
     assert!(
         matches!(sent[..], [Play::Note(60, _), Play::Note(60, 0), Play::Note(64, _), Play::Note(64, 0)]),
@@ -1824,4 +1827,16 @@ fn the_keys_play_the_selected_part_or_every_part() {
     let foot = h.ui.scene().unwrap().surface("rack-drop").unwrap().frame;
     click(&mut h, Point::new(foot.x + 40., foot.y + foot.size.height + 40.));
     assert_eq!(selected_slot(&p), crate::plugin::EVERY_PART, "a click on the empty rack lets go");
+}
+
+/// Part and bus hues skip orange, start where they always did, and stay apart.
+#[test]
+fn hue_walks_skip_orange() {
+    use super::theme::{golden_hue, orange};
+    for from in [250., 190.] {
+        assert!((golden_hue(from, 0) - from).abs() < 0.01);
+        let hues: Vec<f32> = (0..16).map(|n| golden_hue(from, n)).collect();
+        assert!(hues.iter().all(|&h| !orange(h)), "{hues:?}");
+        assert!(hues.windows(2).all(|w| (w[0] - w[1]).rem_euclid(360.).min((w[1] - w[0]).rem_euclid(360.)) > 60.));
+    }
 }
