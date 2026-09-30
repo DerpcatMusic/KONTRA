@@ -306,7 +306,8 @@ fn reads_racks_slots_and_buses_from_program_bytes() {
 }
 
 /// CPU cost per effect. Run with
-/// `cargo test --release --no-default-features --lib fx::tests::bench -- --ignored --nocapture`.
+/// `cargo test --release --lib fx::tests::bench -- --ignored --nocapture`;
+/// `FX_BENCH=<name part>` runs only matching effects (for `perf stat`).
 #[test]
 #[ignore = "benchmark"]
 fn bench() {
@@ -355,21 +356,23 @@ fn bench() {
         ("convolution 2 s", with_dry(convolution(&noise_ir(2.0)))),
         ("convolution 5 s", with_dry(convolution(&noise_ir(5.0)))),
     ];
-    for (name, fx) in cases {
+    let only = std::env::var("FX_BENCH").unwrap_or_default();
+    for (name, fx) in cases.into_iter().filter(|(name, _)| name.contains(only.as_str())) {
         let mut c = chain(vec![fx]);
         let (mut l, mut r) = ramp(BLOCK);
-        let mut worst = 0u128;
+        let (mut worst, mut hash) = (0u128, 0u64);
         let start = std::time::Instant::now();
         for _ in 0..BLOCKS {
             let t = std::time::Instant::now();
             c.process(&mut l, &mut r);
             worst = worst.max(t.elapsed().as_nanos());
+            hash = l.iter().chain(&r).fold(hash, |h, v| (h ^ u64::from(v.to_bits())).wrapping_mul(0x100_0000_01b3));
             l.iter_mut().for_each(|v| *v *= 0.5);
         }
         let mean = start.elapsed().as_nanos() / BLOCKS as u128;
         let budget = BLOCK as f64 / SR as f64 * 1e9;
         println!(
-            "{name:>18}: {mean:>7} ns/block mean, {worst:>8} ns worst ({:.2}% of a 128-frame 48 kHz block)",
+            "{name:>18}: {mean:>7} ns/block mean, {worst:>8} ns worst ({:.2}% of a 128-frame 48 kHz block) · output hash {hash:016x}",
             mean as f64 / budget * 100.0
         );
     }

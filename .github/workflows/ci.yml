@@ -1,0 +1,69 @@
+name: CI
+
+# Linux runs the full gate; Windows only checks that everything compiles.
+# macOS (10x minutes in a private repository) is built by nightly.yml only.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'audits/**', 'LICENSE', 'NOTICE']
+  pull_request:
+    paths-ignore: ['**.md', 'audits/**', 'LICENSE', 'NOTICE']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: System libraries (X11, OpenGL/Vulkan, ALSA, JACK)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-icccm4-dev libxcursor-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev \
+            libgl1-mesa-dev libvulkan-dev mesa-vulkan-drivers \
+            libasound2-dev libjack-jackd2-dev
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The tree predates rustfmt enforcement: report, don't fail. Make this
+      # step required after a one-time `cargo fmt` with no branches open.
+      - name: rustfmt
+        continue-on-error: true
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --release --all-targets --features library-access
+      - name: test
+        run: cargo test --release
+      - name: test (library-access)
+        run: cargo test --release --features library-access --lib 'access::'
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: check
+        run: cargo check --release --all-targets --features library-access,standalone
