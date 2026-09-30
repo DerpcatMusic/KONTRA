@@ -143,6 +143,9 @@ impl Watch {
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
         p.shared.focus_request.load(Ordering::Relaxed).hash(&mut h);
+        // The wheels follow incoming MIDI as it moves them.
+        p.shared.bend.load(Ordering::Relaxed).hash(&mut h);
+        p.shared.modulation.load(Ordering::Relaxed).hash(&mut h);
         for owner in &p.shared.key_owners {
             (owner.load(Ordering::Relaxed) < 128).hash(&mut h);
         }

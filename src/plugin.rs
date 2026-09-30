@@ -107,7 +107,12 @@ pub struct Shared {
     /// Host sample rate (`f64` bits) that effect processors are built for.
     rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
-    pub(crate) keyboard: ArrayQueue<(usize, u8, bool)>,
+    /// What the on-screen keyboard and wheels play, by rack slot.
+    pub(crate) keyboard: ArrayQueue<(usize, Play)>,
+    /// The pitch wheel (0..=16383, centre 8192) and mod wheel (0..=127) as
+    /// last moved, on screen or by incoming MIDI.
+    pub(crate) bend: AtomicU32,
+    pub(crate) modulation: AtomicU32,
     pub(crate) controls: ArrayQueue<[PartControls; RACK_SLOTS]>,
     generation: [AtomicU64; RACK_SLOTS],
     /// Per slot, how far its bank load is, out of [`crate::engine::LOAD_DONE`].
@@ -184,6 +189,8 @@ impl Default for Shared {
             rate: AtomicU64::new(48000f64.to_bits()),
             key_owners: std::array::from_fn(|_| AtomicU64::new(128)),
             keyboard: ArrayQueue::new(256),
+            bend: AtomicU32::new(8192),
+            modulation: AtomicU32::new(0),
             controls: ArrayQueue::new(1),
             generation: std::array::from_fn(|_| AtomicU64::new(0)),
             load_progress: std::array::from_fn(|_| AtomicU32::new(0)),
@@ -238,6 +245,16 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
             })
             .unwrap_or_default()
     })
+}
+/// What the on-screen keyboard and wheels send a part.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Play {
+    /// A key, down or up.
+    Note(u8, bool),
+    /// The pitch wheel, 0..=16383.
+    Bend(u16),
+    /// The mod wheel (CC1).
+    Mod(u8),
 }
 /// A script control edit for the runtime of `part` tagged `epoch`.
 struct Edit {
@@ -348,7 +365,7 @@ impl Shared {
     /// Start `note` on `slot` from the on-screen keyboard.
     pub(crate) fn press_key(&self, slot: usize, note: u8) {
         self.key_owners[note as usize].store(slot as u64, Ordering::Release);
-        if self.keyboard.push((slot, note, true)).is_err() {
+        if self.keyboard.push((slot, Play::Note(note, true))).is_err() {
             self.panic.store(true, Ordering::Release);
         }
     }
@@ -356,9 +373,23 @@ impl Shared {
     /// Stop `note` on whichever slot the on-screen keyboard started it.
     pub(crate) fn release_key(&self, note: u8) {
         let owner = self.key_owners[note as usize].swap(128, Ordering::AcqRel);
-        if owner < RACK_SLOTS as u64 && self.keyboard.push((owner as usize, note, false)).is_err() {
+        if owner < RACK_SLOTS as u64
+            && self.keyboard.push((owner as usize, Play::Note(note, false))).is_err()
+        {
             self.panic.store(true, Ordering::Release);
         }
+    }
+
+    /// Move the pitch wheel (0..=16383) for `slot`, as the keys play it.
+    pub(crate) fn bend(&self, slot: usize, value: u16) {
+        self.bend.store(u32::from(value), Ordering::Relaxed);
+        let _ = self.keyboard.push((slot, Play::Bend(value)));
+    }
+
+    /// Move the mod wheel (CC1, 0..=127) for `slot`, as the keys play it.
+    pub(crate) fn modulate(&self, slot: usize, value: u8) {
+        self.modulation.store(u32::from(value), Ordering::Relaxed);
+        let _ = self.keyboard.push((slot, Play::Mod(value)));
     }
 
     /// Stop every note the on-screen keyboard holds.
@@ -935,14 +966,17 @@ impl PluginLogic for Sampler {
             }
             s.audition_left.fill(0);
         }
-        while let Some((slot, note, down)) = p.shared.keyboard.pop() {
+        while let Some((slot, play)) = p.shared.keyboard.pop() {
             let e = &mut s.rack.parts[slot.min(RACK_SLOTS - 1)];
             let channel = preview_channel(e);
-            if down {
-                let velocity = preview_velocity(e, note);
-                e.note_on(channel, note, velocity);
-            } else {
-                e.note_off(channel, note);
+            match play {
+                Play::Note(note, true) => {
+                    let velocity = preview_velocity(e, note);
+                    e.note_on(channel, note, velocity);
+                }
+                Play::Note(note, false) => e.note_off(channel, note),
+                Play::Bend(value) => e.pitch_bend(channel, value),
+                Play::Mod(value) => e.cc(channel, 1, value),
             }
         }
         if p.shared.audition.swap(false, Ordering::AcqRel) {
@@ -999,11 +1033,18 @@ impl PluginLogic for Sampler {
                         s.rack.note_off_port(e.port, channel, note)
                     }
                     EventBody::PitchBend { channel, value, .. } => {
+                        // The on-screen wheels follow what is played.
+                        p.shared.bend.store(u32::from(value), Ordering::Relaxed);
                         s.rack.pitch_bend_port(e.port, channel, value)
                     }
                     EventBody::ControlChange {
                         channel, cc, value, ..
-                    } => s.rack.cc_port(e.port, channel, cc, value),
+                    } => {
+                        if cc == 1 {
+                            p.shared.modulation.store(u32::from(value), Ordering::Relaxed);
+                        }
+                        s.rack.cc_port(e.port, channel, cc, value)
+                    }
                     EventBody::ChannelPressure {
                         channel, pressure, ..
                     } => s.rack.channel_pressure_port(e.port, channel, pressure),

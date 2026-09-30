@@ -6,6 +6,7 @@ use super::{Cx, theme::*};
 use crate::ksp::{KeyState, Value};
 use crate::plugin::SamplerParams;
 use moose::mui::mui::prelude::*;
+use std::ops::RangeInclusive;
 use std::sync::atomic::Ordering;
 
 const OCTAVES: i16 = 7;
@@ -132,15 +133,97 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         );
     }
     let strip = range_strip(looks, cx.state.octave);
+    let wheels = wheels(ui, cx.p, slot);
     col![
         bar,
-        col![strip, row(octaves).gap(1).h(CONTROL * 3.).clip()]
-            .gap(1)
-            .pad(edges(0., INSET, SPACE, INSET))
+        row![
+            wheels,
+            col![strip, row(octaves).gap(1).h(CONTROL * 3.).clip()]
+                .gap(1)
+                .flex(1)
+                .min_w(0)
+        ]
+        .gap(SPACE)
+        .align(Align::End)
+        .pad(edges(0., INSET, SPACE, INSET))
     ]
     .gap(0)
     .shrink(0)
     .fill(Role::Surface)
+}
+
+/// The pitch and mod wheels, left of the keys. Dragging bends or modulates
+/// the selected part the way its keys play it; the pitch wheel springs back
+/// to the middle when let go, the mod wheel stays. Both follow incoming MIDI.
+fn wheels(ui: &mut Ui, p: &SamplerParams, slot: usize) -> El {
+    let bend = f64::from(p.shared.bend.load(Ordering::Relaxed).min(16383));
+    let mut at = (bend - 8192.) / 8192.;
+    let before = at;
+    let pitch = wheel(ui, "wheel-pitch", "Pitch bend", &mut at, -1.0..=1.0, 0.);
+    if ui.get("wheel-pitch").released {
+        at = 0.;
+    }
+    if at != before {
+        p.shared.bend(slot, (8192. + at * 8192.).round().clamp(0., 16383.) as u16);
+    }
+    let mut depth = f64::from(p.shared.modulation.load(Ordering::Relaxed).min(127));
+    let before = depth;
+    let modulation = wheel(ui, "wheel-mod", "Modulation (CC1)", &mut depth, 0.0..=127.0, 0.);
+    if depth.round() != before {
+        p.shared.modulate(slot, depth.round() as u8);
+    }
+    row![pitch, modulation].gap(TIGHT).h(CONTROL * 3.).shrink(0)
+}
+
+/// A narrow vertical wheel over `range`, filled from `origin`: drag it,
+/// scroll it, step it with the arrows; double-click returns it to `origin`.
+fn wheel(ui: &mut Ui, id: &str, name: &str, value: &mut f64, range: RangeInclusive<f64>, origin: f64) -> El {
+    let (lo, hi) = (*range.start(), *range.end());
+    let r = ui.get(id);
+    // The thumb follows the pointer: the wheel's own height is its travel.
+    let travel = ui.scene().and_then(|s| s.surface(id)).map_or(CONTROL * 3., |s| s.frame.size.height);
+    ui.drag(id, value, range.clone(), travel, true);
+    if let Some(wheel) = ui.wheel(id) {
+        *value = (*value - wheel.y.signum() * (hi - lo) / 50.).clamp(lo, hi);
+    }
+    stepped(ui, id, value, &range);
+    if r.double_clicked {
+        *value = origin;
+    }
+    let unit = |v: f64| ((v - lo) / (hi - lo)).clamp(0., 1.);
+    let (at, from) = (unit(*value), unit(origin));
+    let lift = ui.state(id).hover.max(if r.held { 1. } else { 0. }) as f32;
+    let focused = ui.focus_visible(id);
+    canvas(move |s| {
+        let thumb = TIGHT;
+        let y = |u: f64| (s.height - thumb) * (1. - u);
+        let mid = (s.width / 2.).round();
+        let mut draw = vec![
+            Draw::fill(rect(0., 0., s.width, s.height), Role::Ink.alpha(0.08 + 0.04 * lift)),
+            Draw::fill(rect(mid - 1., 0., 2., s.height), Role::Ink.alpha(0.14)),
+        ];
+        let (a, b) = if at > from { (y(at), y(from)) } else { (y(from), y(at)) };
+        if b - a > 0.5 {
+            draw.push(Draw::fill(rect(mid - 1., a + thumb / 2., 2., b - a), Role::Ink.alpha(0.6)));
+        }
+        if origin > lo {
+            draw.push(Draw::fill(rect(0., (y(from) + thumb / 2.).round(), s.width, 1.), Role::Ink.alpha(0.3)));
+        }
+        draw.push(Draw::fill(rect(0., y(at).round(), s.width, thumb), Role::Ink.alpha(0.75 + 0.2 * lift)));
+        if focused {
+            draw.push(Draw::stroke(rect(0.5, 0.5, s.width - 1., s.height - 1.), Role::Primary.alpha(0.9), 1.));
+        }
+        draw
+    })
+    .w(SPACE * 2.)
+    .h(Len::Pct(100.))
+    .shrink(0)
+    .cursor(Cursor::ResizeV)
+    .focusable()
+    .a11y(A11y::Slider { value: *value, min: lo, max: hi })
+    .named(name.to_owned())
+    .tip(format!("{name}: drag up or down"))
+    .id(id.to_owned())
 }
 
 /// The spacer before each black key and the key, in an octave 14 units wide.

@@ -1,7 +1,7 @@
 use super::*;
 use crate::artwork;
 use crate::engine::load_scripts;
-use crate::plugin::script_interface;
+use crate::plugin::{Play, script_interface};
 
 fn enter() -> Input {
     Input {
@@ -115,6 +115,10 @@ impl Harness {
     }
 }
 
+fn selected_slot(p: &SamplerParams) -> usize {
+    p.shared.selected.load(Ordering::Relaxed) as usize
+}
+
 /// A narrow rack moves the header's controls under the part name, so the
 /// name keeps a line of its own instead of truncating.
 #[test]
@@ -207,13 +211,32 @@ fn rack_interactions() {
     h.tick(pointer(key, true));
     h.tick(pointer(key, false));
     h.idle(1);
-    assert_eq!(p.shared.keyboard.pop(), Some((0, 60, true)));
-    assert_eq!(p.shared.keyboard.pop(), Some((0, 60, false)));
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, true))));
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, false))));
     p.shared.key_owners[61].store(1, Ordering::Relaxed);
     p.shared.release_keyboard();
-    assert_eq!(p.shared.keyboard.pop(), Some((1, 61, false)));
+    assert_eq!(p.shared.keyboard.pop(), Some((1, Play::Note(61, false))));
     p.shared.release_keyboard();
     assert!(p.shared.keyboard.pop().is_none());
+
+    // The wheels bend and modulate the selected part the way its keys play
+    // it; the pitch wheel springs back to the middle, the mod wheel stays.
+    for id in ["wheel-pitch", "wheel-mod"] {
+        let at = center(&h.ui, id);
+        for dy in [0., -5., -20.] {
+            h.tick(pointer(Point::new(at.x, at.y + dy), true));
+        }
+        h.tick(pointer(Point::new(at.x, at.y - 20.), false));
+        h.idle(1);
+    }
+    let sent: Vec<(usize, Play)> = std::iter::from_fn(|| p.shared.keyboard.pop()).collect();
+    let slot = selected_slot(&p);
+    assert!(sent.iter().all(|(s, _)| *s == slot), "to the selected part");
+    assert!(sent.iter().any(|(_, play)| matches!(play, Play::Bend(v) if *v > 8192)), "{sent:?}");
+    assert!(sent.contains(&(slot, Play::Bend(8192))), "pitch springs back: {sent:?}");
+    assert!(matches!(sent.last(), Some((_, Play::Mod(v))) if *v > 0), "{sent:?}");
+    assert_eq!(p.shared.bend.load(Ordering::Relaxed), 8192);
+    assert!(p.shared.modulation.load(Ordering::Relaxed) > 0, "mod stays where it is set");
 
     h.press("tab-rack");
     h.press("remove-0");
