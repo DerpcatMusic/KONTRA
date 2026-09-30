@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -71,6 +71,8 @@ pub struct Selection {
     pub favorites: Vec<String>,
     /// Presets opened lately, newest first.
     pub recent: Vec<String>,
+    /// The computer keyboard plays notes.
+    pub qwerty: bool,
 }
 
 #[derive(Params)]
@@ -112,6 +114,10 @@ pub struct Shared {
     /// Host sample rate (`f64` bits) that effect processors are built for.
     rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
+    /// The velocity each key sounds at, 0 when silent: `played` on screen
+    /// or from the computer keyboard, `heard` from the host's MIDI.
+    pub(crate) played: [AtomicU8; 128],
+    pub(crate) heard: [AtomicU8; 128],
     /// What the on-screen keyboard and wheels play, by rack slot.
     pub(crate) keyboard: ArrayQueue<(usize, Play)>,
     /// The pitch wheel (0..=16383, centre 8192) and mod wheel (0..=127) as
@@ -193,6 +199,8 @@ impl Default for Shared {
             edits: ArrayQueue::new(256),
             rate: AtomicU64::new(48000f64.to_bits()),
             key_owners: std::array::from_fn(|_| AtomicU64::new(128)),
+            played: std::array::from_fn(|_| AtomicU8::new(0)),
+            heard: std::array::from_fn(|_| AtomicU8::new(0)),
             keyboard: ArrayQueue::new(256),
             bend: AtomicU32::new(8192),
             modulation: AtomicU32::new(0),
@@ -254,8 +262,8 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
 /// What the on-screen keyboard and wheels send a part.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Play {
-    /// A key, down or up.
-    Note(u8, bool),
+    /// A key at a velocity; 0 lets it go.
+    Note(u8, u8),
     /// The pitch wheel, 0..=16383.
     Bend(u16),
     /// The mod wheel (CC1).
@@ -367,10 +375,12 @@ impl Shared {
         *self.multi_request.lock().unwrap() = Some(path);
     }
 
-    /// Start `note` on `slot` from the on-screen keyboard.
-    pub(crate) fn press_key(&self, slot: usize, note: u8) {
+    /// Start `note` on `slot` at `velocity` (1..=127) from the on-screen keyboard.
+    pub(crate) fn press_key(&self, slot: usize, note: u8, velocity: u8) {
+        let velocity = velocity.clamp(1, 127);
         self.key_owners[note as usize].store(slot as u64, Ordering::Release);
-        if self.keyboard.push((slot, Play::Note(note, true))).is_err() {
+        self.played[note as usize].store(velocity, Ordering::Relaxed);
+        if self.keyboard.push((slot, Play::Note(note, velocity))).is_err() {
             self.panic.store(true, Ordering::Release);
         }
     }
@@ -378,8 +388,9 @@ impl Shared {
     /// Stop `note` on whichever slot the on-screen keyboard started it.
     pub(crate) fn release_key(&self, note: u8) {
         let owner = self.key_owners[note as usize].swap(128, Ordering::AcqRel);
+        self.played[note as usize].store(0, Ordering::Relaxed);
         if owner < RACK_SLOTS as u64
-            && self.keyboard.push((owner as usize, Play::Note(note, false))).is_err()
+            && self.keyboard.push((owner as usize, Play::Note(note, 0))).is_err()
         {
             self.panic.store(true, Ordering::Release);
         }
@@ -1041,6 +1052,9 @@ impl PluginLogic for Sampler {
             for owner in &p.shared.key_owners {
                 owner.store(128, Ordering::Release);
             }
+            for lit in p.shared.played.iter().chain(&p.shared.heard) {
+                lit.store(0, Ordering::Relaxed);
+            }
             for channel in 0..16 {
                 s.rack.cc(channel, 120, 0);
                 s.rack.cc(channel, 121, 0);
@@ -1051,11 +1065,8 @@ impl PluginLogic for Sampler {
             let e = &mut s.rack.parts[slot.min(RACK_SLOTS - 1)];
             let channel = preview_channel(e);
             match play {
-                Play::Note(note, true) => {
-                    let velocity = preview_velocity(e, note);
-                    e.note_on(channel, note, velocity);
-                }
-                Play::Note(note, false) => e.note_off(channel, note),
+                Play::Note(note, 0) => e.note_off(channel, note),
+                Play::Note(note, velocity) => e.note_on(channel, note, velocity),
                 Play::Bend(value) => e.pitch_bend(channel, value),
                 Play::Mod(value) => e.cc(channel, 1, value),
             }
@@ -1109,8 +1120,17 @@ impl PluginLogic for Sampler {
                         note,
                         velocity,
                         ..
-                    } => s.rack.note_on_port(e.port, channel, note, velocity),
+                    } => {
+                        // The on-screen keys light for what the host plays.
+                        if let Some(lit) = p.shared.heard.get(note as usize) {
+                            lit.store(velocity, Ordering::Relaxed);
+                        }
+                        s.rack.note_on_port(e.port, channel, note, velocity)
+                    }
                     EventBody::NoteOff { channel, note, .. } => {
+                        if let Some(lit) = p.shared.heard.get(note as usize) {
+                            lit.store(0, Ordering::Relaxed);
+                        }
                         s.rack.note_off_port(e.port, channel, note)
                     }
                     EventBody::PitchBend { channel, value, .. } => {
@@ -1276,6 +1296,7 @@ mod tests {
             midi_thru: true,
             favorites: vec!["/libraries/Solo/a.nki".into()],
             recent: vec!["second.nki".into(), "first.nkm".into()],
+            qwerty: true,
         };
         assert!(Selection::deserialize(&state.serialize()).unwrap() == state);
         assert_eq!(rack_controls(&state)[0].tune, -3.5, "the part's tune reaches the engine");

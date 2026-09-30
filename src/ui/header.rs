@@ -69,6 +69,20 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
     if thru {
         cx.selection.midi_thru = !cx.selection.midi_thru;
     }
+    let (qwerty, qwerty_el) = icon_button(
+        ui,
+        "qwerty",
+        Icon::Keys,
+        "Play from the computer keyboard: A to ' play, Z X step the octave, C V the velocity",
+        cx.selection.qwerty,
+    );
+    if qwerty {
+        cx.selection.qwerty = !cx.selection.qwerty;
+        if !cx.selection.qwerty {
+            cx.state.computer.release(p);
+        }
+    }
+    cx.state.computer.on.store(cx.selection.qwerty, Ordering::Relaxed);
     let (panic, panic_el) = action(ui, "panic", "Panic", false);
     if panic {
         p.shared.panic.store(true, Ordering::Release);
@@ -106,9 +120,9 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         vrule().h(CONTROL - TIGHT),
         cluster(vec![section("Master"), master, meter_bar(level)]).gap(SPACE),
         vrule().h(CONTROL - TIGHT),
-        cluster(vec![thru_el, panic_el, more_el]),
+        cluster(vec![qwerty_el, thru_el, panic_el, more_el]),
     ])
-    .gap(INSET)
+    .gap(SPACE)
     .pad((SPACE, SPACE))
     .fill(Role::Surface)
 }

@@ -1534,6 +1534,7 @@ dependencies = [
  "ni-file",
  "png",
  "realfft",
+ "rfd 0.17.2",
  "serde",
  "serde_json",
  "symphonia",
@@ -1955,7 +1956,7 @@ dependencies = [
  "objc",
  "pico-args",
  "raw-window-handle",
- "rfd",
+ "rfd 0.15.4",
  "windows-sys 0.61.2",
  "x11-dl",
 ]
@@ -2020,7 +2021,6 @@ dependencies = [
 [[package]]
 name = "mui-baseview"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#aa1f8f3cd9f2b33b16b7e6209c54ff6634d2bf04"
 dependencies = [
  "accesskit_unix",
  "arboard",
@@ -3025,6 +3025,30 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rfd"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20dafead71c16a34e1ff357ddefc8afc11e7d51d6d2b9fbd07eaa48e3e540220"
+dependencies = [
+ "block2",
+ "dispatch2",
+ "js-sys",
+ "libc",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "percent-encoding",
+ "pollster",
+ "raw-window-handle",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

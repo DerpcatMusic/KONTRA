@@ -96,6 +96,8 @@ pub struct MuiEditor<P: Params> {
     min: Option<(u32, u32)>,
     pub(crate) scale: HostScale,
     window: Option<Handle>,
+    /// [`MuiEditor::on_key`], handed to each window it opens.
+    keys: Option<window::KeyHook>,
 }
 
 /// Whole logical points, as the host's window API takes them.
@@ -147,6 +149,7 @@ impl<P: Params> MuiEditor<P> {
             min: None,
             scale: HostScale::default(),
             window: None,
+            keys: None,
         }
     }
 
@@ -176,6 +179,15 @@ impl<P: Params> MuiEditor<P> {
     #[must_use]
     pub fn on_cancel(self, f: impl FnMut(&Ui) + Send + 'static) -> Self {
         lock(&self.shared).view.cancel = Some(Box::new(f));
+        self
+    }
+
+    /// See every key event, down and up, before MUI routes it; `true` takes
+    /// the key from MUI and the host. Runs on the window's thread with the
+    /// last frame's `Ui`.
+    #[must_use]
+    pub fn on_key(mut self, f: impl FnMut(&Ui, &window::KeyEvent) -> bool + Send + 'static) -> Self {
+        self.keys = Some(Arc::new(Mutex::new(f)));
         self
     }
 
@@ -222,6 +234,9 @@ impl<P: Params> Editor for MuiEditor<P> {
             .attach(context.with_params(Arc::clone(&self.params)));
         // A request made while closed was for the last window.
         self.requests = Arc::default();
+        if let Some(keys) = &self.keys {
+            self.requests.on_key(Arc::clone(keys));
+        }
         self.window = window::open(
             &ParentWindow(parent),
             "MUI",

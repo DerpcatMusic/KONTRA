@@ -71,17 +71,33 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         }
         _ => String::new(),
     };
-    let bar = row![
-        section("Keyboard"),
-        caption(shown_range).text_size(SMALL).reserve("C#-2 – C#-2"),
-        caption(plays)
-            .text_size(SMALL)
-            .fill(Role::Dim)
-            .lines(1)
-            .flex(1)
-            .min_w(0),
-        cluster(vec![down_el, up_el, toggle_el])
-    ]
+    let computer = &cx.state.computer;
+    let qwerty = cx.selection.qwerty.then(|| {
+        let from = computer.octave_c();
+        let text = format!(
+            "QWERTY {} – {} · velocity {}",
+            note_name(from),
+            note_name(from + 17),
+            computer.velocity.load(Ordering::Relaxed)
+        );
+        caption(text).text_size(SMALL).fill(Role::Dim).shrink(0)
+    });
+    let bar = row(
+        [
+            section("Keyboard"),
+            caption(shown_range).text_size(SMALL).reserve("C#-2 – C#-2"),
+            caption(plays)
+                .text_size(SMALL)
+                .fill(Role::Dim)
+                .lines(1)
+                .flex(1)
+                .min_w(0),
+        ]
+        .into_iter()
+        .chain(qwerty)
+        .chain([cluster(vec![down_el, up_el, toggle_el])])
+        .collect::<Vec<_>>(),
+    )
     .gap(INSET)
     .align(Align::Center)
     .pad(edges(TIGHT, TIGHT, TIGHT, INSET))
@@ -91,6 +107,9 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     }
 
     let slot = cx.state.selected;
+    let first_note = (cx.state.octave * 12) as u8;
+    let shown = first_note..first_note + (OCTAVES * 12) as u8;
+    play(ui, cx, shown);
     let keys = cx.part_view().keys.clone();
     let mut octaves = Vec::new();
     for octave in cx.state.octave..cx.state.octave + OCTAVES {
@@ -99,15 +118,10 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
             if ui.get(format!("key-{note}")).clicked_with(Button::Secondary) {
                 super::menu::open(ui, cx, super::menu::Target::Key(note));
             }
-            key(
-                ui,
-                cx.p,
-                slot,
-                note,
-                black,
-                looks[note as usize],
-                keys.get(&note),
-            )
+            let lit = cx.p.shared.played[note as usize]
+                .load(Ordering::Relaxed)
+                .max(cx.p.shared.heard[note as usize].load(Ordering::Relaxed));
+            key(ui, cx.p, note, black, looks[note as usize], lit, keys.get(&note))
         };
         let whites =
             row([0, 2, 4, 5, 7, 9, 11].map(|n| make(n, false).flex(1).min_w(0).h(Len::Pct(100.))))
@@ -133,7 +147,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         );
     }
     let strip = range_strip(looks, cx.state.octave);
-    let wheels = wheels(ui, cx.p, slot);
+    let wheels = wheels(ui, cx.p, slot, &mut cx.state.modulation);
     col![
         bar,
         row![
@@ -155,7 +169,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
 /// The pitch and mod wheels, left of the keys. Dragging bends or modulates
 /// the selected part the way its keys play it; the pitch wheel springs back
 /// to the middle when let go, the mod wheel stays. Both follow incoming MIDI.
-fn wheels(ui: &mut Ui, p: &SamplerParams, slot: usize) -> El {
+fn wheels(ui: &mut Ui, p: &SamplerParams, slot: usize, held: &mut Option<f64>) -> El {
     let bend = f64::from(p.shared.bend.load(Ordering::Relaxed).min(16383));
     let mut at = (bend - 8192.) / 8192.;
     let before = at;
@@ -166,10 +180,13 @@ fn wheels(ui: &mut Ui, p: &SamplerParams, slot: usize) -> El {
     if at != before {
         p.shared.bend(slot, (8192. + at * 8192.).round().clamp(0., 16383.) as u16);
     }
-    let mut depth = f64::from(p.shared.modulation.load(Ordering::Relaxed).min(127));
-    let before = depth;
+    // A drag keeps its unrounded value between frames, so moves finer than
+    // a step (a Shift drag) add up; MIDI moving the wheel meanwhile wins.
+    let sent = f64::from(p.shared.modulation.load(Ordering::Relaxed).min(127));
+    let mut depth = held.filter(|v| v.round() == sent).unwrap_or(sent);
     let modulation = wheel(ui, "wheel-mod", "Modulation (CC1)", &mut depth, 0.0..=127.0, 0.);
-    if depth.round() != before {
+    *held = ui.get("wheel-mod").held.then_some(depth);
+    if depth.round() != sent {
         p.shared.modulate(slot, depth.round() as u8);
     }
     row![pitch, modulation].gap(TIGHT).h(CONTROL * 3.).shrink(0)
@@ -312,27 +329,68 @@ fn looks(cx: &Cx) -> [Look; 128] {
     looks
 }
 
+/// Mouse playing: a press starts the key under the pointer, dragging across
+/// the keys moves the note along (a glissando) and letting go stops it.
+/// Lower on a key plays louder, as on a real one.
+fn play(ui: &Ui, cx: &mut Cx, shown: std::ops::Range<u8>) {
+    let shared = &cx.p.shared;
+    let slot = cx.state.selected;
+    for note in shown.clone() {
+        let r = ui.get(format!("key-{note}"));
+        if r.pressed && r.button == Some(Button::Primary) {
+            if let Some((_, sounding)) = cx.state.gliss.take() {
+                shared.release_key(sounding);
+            }
+            let velocity = key_under(ui, note..note + 1).map_or(100, |(_, v)| v);
+            shared.press_key(slot, note, velocity);
+            cx.state.gliss = Some((note, note));
+        }
+    }
+    let Some((origin, sounding)) = cx.state.gliss else {
+        return;
+    };
+    if !ui.get(format!("key-{origin}")).held {
+        shared.release_key(sounding);
+        cx.state.gliss = None;
+        return;
+    }
+    if let Some((note, velocity)) = key_under(ui, shown).filter(|(n, _)| *n != sounding) {
+        shared.release_key(sounding);
+        shared.press_key(slot, note, velocity);
+        cx.state.gliss = Some((origin, note));
+    }
+}
+
+/// The key under the pointer among `notes`, and the velocity its height
+/// plays: black keys first, as they lie over the white ones.
+fn key_under(ui: &Ui, notes: std::ops::Range<u8>) -> Option<(u8, u8)> {
+    let scene = ui.scene()?;
+    let black = |n: &u8| matches!(n % 12, 1 | 3 | 6 | 8 | 10);
+    let (blacks, whites): (Vec<u8>, Vec<u8>) = notes.partition(black);
+    blacks.into_iter().chain(whites).find_map(|note| {
+        let id = format!("key-{note}");
+        let at = ui.local(id.as_str())?;
+        let size = scene.surface(&id)?.frame.size;
+        let inside = (0. ..size.width).contains(&at.x) && (0. ..size.height).contains(&at.y);
+        let down = (at.y / size.height).clamp(0., 1.);
+        inside.then(|| (note, (24. + 103. * down).round() as u8))
+    })
+}
+
 fn key(
     ui: &mut Ui,
     p: &SamplerParams,
-    slot: usize,
     note: u8,
     black: bool,
     look: Look,
+    lit: u8,
     script: Option<&KeyState>,
 ) -> El {
     let id = format!("key-{note}");
-    let r = ui.get(id.as_str());
-    if r.pressed && r.button == Some(Button::Primary) {
-        p.shared.press_key(slot, note);
-    }
-    if r.released {
-        p.shared.release_key(note);
-    }
-    if r.key_activated {
+    if ui.get(id.as_str()).key_activated {
         p.shared.audition(Some(note));
     }
-    let held = p.shared.key_owners[note as usize].load(Ordering::Relaxed) < 128;
+    let held = lit > 0;
     let name = note_name(note);
     let face = match (look, black) {
         (Look::Colored(c), false) => c,
@@ -342,10 +400,16 @@ fn key(
         (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
         (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
     };
-    // A played key sinks: darker when white, lighter when black.
+    // A sounding key takes the accent, deeper the harder it is played.
     let face = if held {
-        let l = face.lightness();
-        Color::oklch(if black { l + 0.25 } else { l * 0.72 }, face.chroma(), face.hue())
+        let a = accent();
+        let t = 0.45 + 0.55 * f32::from(lit) / 127.;
+        let mix = |x: f32, y: f32| x + (y - x) * t;
+        Color::oklch(
+            mix(face.lightness(), a.lightness() * if black { 0.8 } else { 1. }),
+            mix(face.chroma(), a.chroma()),
+            a.hue(),
+        )
     } else {
         face
     };
@@ -366,6 +430,8 @@ fn key(
     col(parts)
         .pad((2, 3))
         .fill(face)
+        // Lit at once, fading out when let go.
+        .animate_with(if held { Spring::instant() } else { Spring::new(0.35, 1.) })
         .on(State::Hover, move |s| {
             if held {
                 s

@@ -19,6 +19,7 @@
 //! [`Shared`]: crate::plugin::Shared
 
 mod browser;
+mod computer;
 mod header;
 mod instrument;
 mod keyboard;
@@ -44,15 +45,21 @@ use theme::*;
 
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let meters = Arc::new(Meters::default());
-    let build = build(&params, meters.clone());
+    let computer = Arc::new(computer::Computer::default());
+    let build = build(&params, meters.clone(), computer.clone());
     let drop_params = params.clone();
-    let cancel_params = params.clone();
+    let (cancel_params, cancel_computer) = (params.clone(), computer.clone());
+    let (key_params, key_computer) = (params.clone(), computer.clone());
     let watch_params = params.clone();
     let mut watch = Watch::default();
     MuiEditor::new(params, theme::ui(), (1180, 760), build)
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, ui, at, paths, dropped))
-        .on_cancel(move |_| cancel_params.shared.release_keyboard())
-        .changed(move || watch.changed(&watch_params, &meters))
+        .on_cancel(move |_| {
+            cancel_computer.release(&cancel_params);
+            cancel_params.shared.release_keyboard();
+        })
+        .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
+        .changed(move || watch.changed(&watch_params, &meters, &computer))
         .fixed_zoom()
         .resizable((900, 600))
         .into_editor()
@@ -107,7 +114,7 @@ const READOUT_MS: u64 = 100;
 const ANIMATION_MS: u64 = 33;
 
 impl Watch {
-    fn changed(&mut self, p: &SamplerParams, meters: &Meters) -> bool {
+    fn changed(&mut self, p: &SamplerParams, meters: &Meters, computer: &computer::Computer) -> bool {
         let now = Instant::now();
         let due = |at: Option<Instant>, every: u64| {
             at.is_none_or(|t| now - t >= Duration::from_millis(every))
@@ -146,9 +153,12 @@ impl Watch {
         // The wheels follow incoming MIDI as it moves them.
         p.shared.bend.load(Ordering::Relaxed).hash(&mut h);
         p.shared.modulation.load(Ordering::Relaxed).hash(&mut h);
-        for owner in &p.shared.key_owners {
-            (owner.load(Ordering::Relaxed) < 128).hash(&mut h);
+        // Lit keys, and what the computer keyboard plays.
+        for lit in p.shared.played.iter().chain(&p.shared.heard) {
+            lit.load(Ordering::Relaxed).hash(&mut h);
         }
+        computer.octave.load(Ordering::Relaxed).hash(&mut h);
+        computer.velocity.load(Ordering::Relaxed).hash(&mut h);
         let (loading, pending) = {
             let view = lock(&p.shared.view);
             fingerprint(&view, &mut h);
@@ -249,6 +259,13 @@ struct EditorState {
     /// Each library's color, from its artwork, worked out once.
     tints: HashMap<String, Option<Color>>,
     started: Instant,
+    /// The computer keyboard's octave, velocity and held keys.
+    computer: Arc<computer::Computer>,
+    /// A mouse glissando: the key it began on (which holds the pointer)
+    /// and the key now sounding.
+    gliss: Option<(u8, u8)>,
+    /// The mod wheel's unrounded value while it is dragged.
+    modulation: Option<f64>,
 }
 
 impl EditorState {
@@ -568,6 +585,7 @@ fn native_files(p: &SamplerParams, ui: &Ui, at: Point, paths: &[PathBuf], droppe
 fn build(
     params: &Arc<SamplerParams>,
     meters: Arc<Meters>,
+    computer: Arc<computer::Computer>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
     let mut root = read(&params.selection).root.clone();
     if root.is_empty() {
@@ -597,6 +615,9 @@ fn build(
         renaming: None,
         tints: HashMap::new(),
         started: Instant::now(),
+        computer,
+        gliss: None,
+        modulation: None,
     };
     move |ui, bridge| {
         // The loader also runs from the audio thread; poll here so a stopped host still loads.

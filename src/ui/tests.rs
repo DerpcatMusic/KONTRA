@@ -45,15 +45,18 @@ struct Harness {
     build: Build,
     bridge: Bridge<SamplerParams>,
     size: Size,
+    computer: Arc<computer::Computer>,
 }
 
 impl Harness {
     fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
+        let computer = Arc::<computer::Computer>::default();
         let mut h = Self {
             ui: theme::ui(),
-            build: Box::new(build(p, Arc::default())),
+            build: Box::new(build(p, Arc::default(), computer.clone())),
             bridge: Bridge::new(p.clone()),
             size: Size::new(width, height),
+            computer,
         };
         h.idle(3);
         h
@@ -113,6 +116,43 @@ impl Harness {
         self.tick(enter());
         self.idle(3);
     }
+}
+
+/// The computer keyboard plays from the home row once switched on, holds a
+/// note until its key comes up, and leaves text fields their typing.
+#[test]
+fn the_computer_keyboard_plays_while_switched_on() {
+    use moose::mui::mui::host::{KeyEvent, NativeKey};
+    let p = Arc::new(SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 760.);
+    let key = |code: u64, text: &str, down: bool| KeyEvent {
+        code,
+        key: NativeKey::Text(text.into()),
+        down,
+        mods: Mods::default(),
+    };
+    let computer = h.computer.clone();
+    let mut send = |h: &mut Harness, e: KeyEvent| computer.key(&h.ui, &p, &e);
+    assert!(!send(&mut h, key(1, "a", true)), "off, keys pass through");
+    h.press("qwerty");
+    assert!(read(&p.selection).qwerty, "the top bar switches it on");
+    assert!(send(&mut h, key(1, "a", true)));
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 100))));
+    assert!(send(&mut h, key(1, "a", true)), "a repeat is swallowed");
+    assert!(p.shared.keyboard.pop().is_none(), "and plays nothing");
+    assert!(send(&mut h, key(2, "x", true)), "X steps the octave");
+    assert!(send(&mut h, key(3, "V", true)), "V the velocity");
+    assert!(send(&mut h, key(4, "k", true)));
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(84, 120))));
+    assert!(send(&mut h, key(1, "a", false)));
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 0))), "the note its key started stops");
+    assert!(!send(&mut h, key(2, "x", false)), "ups of other keys pass");
+    h.ui.focus("search");
+    h.idle(2);
+    assert!(!send(&mut h, key(5, "s", true)), "a text field keeps its typing");
+    h.press("qwerty");
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(84, 0))), "switching off lets go");
+    assert!(!send(&mut h, key(4, "k", false)));
 }
 
 fn selected_slot(p: &SamplerParams) -> usize {
@@ -207,15 +247,38 @@ fn rack_interactions() {
         "and unfolds it"
     );
 
-    let key = center(&h.ui, "key-60");
-    h.tick(pointer(key, true));
-    h.tick(pointer(key, false));
-    h.idle(1);
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, true))));
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, false))));
+    // Lower on a key plays louder; dragging across the keys moves the note
+    // along, and letting go stops it.
+    let frame = |id: &str| h.ui.scene().unwrap().surface(id).unwrap().frame;
+    let (c, d, e) = (frame("key-60"), frame("key-62"), frame("key-64"));
+    let at = |r: moose::mui::mui::scene::Frame, down: f64| Point::new(r.x + r.size.width / 2., r.y + r.size.height * down);
+    // The editor sees a frame's input as the next one builds.
+    let mut hold = |pos: Point, down: bool| {
+        h.tick(pointer(pos, down));
+        h.tick(pointer(pos, down));
+    };
+    hold(at(c, 0.9), true);
+    let first = p.shared.keyboard.pop();
+    let Some((0, Play::Note(60, loud))) = first else { panic!("C plays: {first:?}") };
+    assert!(p.shared.played[60].load(Ordering::Relaxed) == loud, "and lights");
+    hold(at(d, 0.9), true);
+    hold(at(e, 0.9), true);
+    hold(at(e, 0.9), false);
+    let sent: Vec<_> = std::iter::from_fn(|| p.shared.keyboard.pop()).collect();
+    assert_eq!(
+        sent.iter().map(|(_, play)| *play).collect::<Vec<_>>(),
+        [Play::Note(60, 0), Play::Note(62, loud), Play::Note(62, 0), Play::Note(64, loud), Play::Note(64, 0)],
+        "a glissando lets each key go as the next starts"
+    );
+    assert!(p.shared.played.iter().all(|v| v.load(Ordering::Relaxed) == 0), "nothing stays lit");
+    hold(at(c, 0.1), true);
+    hold(at(c, 0.1), false);
+    let Some((0, Play::Note(60, soft))) = p.shared.keyboard.pop() else { panic!("C plays") };
+    assert!(soft < loud, "the top of a key plays softer: {soft} vs {loud}");
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 0))));
     p.shared.key_owners[61].store(1, Ordering::Relaxed);
     p.shared.release_keyboard();
-    assert_eq!(p.shared.keyboard.pop(), Some((1, Play::Note(61, false))));
+    assert_eq!(p.shared.keyboard.pop(), Some((1, Play::Note(61, 0))));
     p.shared.release_keyboard();
     assert!(p.shared.keyboard.pop().is_none());
 
@@ -237,6 +300,24 @@ fn rack_interactions() {
     assert!(matches!(sent.last(), Some((_, Play::Mod(v))) if *v > 0), "{sent:?}");
     assert_eq!(p.shared.bend.load(Ordering::Relaxed), 8192);
     assert!(p.shared.modulation.load(Ordering::Relaxed) > 0, "mod stays where it is set");
+    // A Shift drag moves the mod wheel finer than a step a pixel; the
+    // pixels still add up.
+    h.idle(60); // not a double click, which would reset it
+    let before = p.shared.modulation.load(Ordering::Relaxed);
+    let at = center(&h.ui, "wheel-mod");
+    let fine = |y: f64, down: bool| {
+        let mut input = pointer(Point::new(at.x, y), down);
+        input.pointer.mods.shift = true;
+        input
+    };
+    for dy in 0..30 {
+        h.tick(fine(at.y - f64::from(dy), true));
+    }
+    h.tick(fine(at.y - 30., false));
+    h.idle(1);
+    let after = p.shared.modulation.load(Ordering::Relaxed);
+    assert!(after > before, "fine moves add up: {before} to {after}");
+    while p.shared.keyboard.pop().is_some() {}
 
     h.press("tab-rack");
     h.press("remove-0");
@@ -405,7 +486,7 @@ fn screenshot() {
         .map(Arc::new)
         .collect();
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 12] = [
+    let states: [(&str, bool, &[&str]); 13] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -418,6 +499,7 @@ fn screenshot() {
         ("save", true, &["app-menu", "menu-item-6"]),
         ("collapsed", true, &["toggle-browser", "keyboard-toggle"]),
         ("error", true, &[]),
+        ("playing", true, &["qwerty"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
@@ -470,6 +552,15 @@ fn screenshot() {
                     };
                 }
             }
+            if state == "playing" {
+                // Keys sounding, soft to hard, on screen and from the host.
+                for (note, velocity) in [(48, 40), (52, 127)] {
+                    p.shared.played[note].store(velocity, Ordering::Relaxed);
+                }
+                for (note, velocity) in [(55, 90), (58, 110), (61, 30)] {
+                    p.shared.heard[note].store(velocity, Ordering::Relaxed);
+                }
+            }
             let mut h = Harness::new(&p, f64::from(width), f64::from(height));
             for id in presses {
                 h.press(id);
@@ -502,7 +593,7 @@ fn screenshot() {
                 u32::from(width),
                 u32::from(height),
             );
-            let mut visible = vec!["octave-up", "panic"];
+            let mut visible = vec!["octave-up", "panic", "app-menu", "toggle-browser"];
             if state != "collapsed" {
                 visible.push("search");
             }
@@ -621,7 +712,8 @@ fn idle_editor_rebuilds_only_when_something_moves() {
         disk_counter: Some(&DISK),
         ..Watch::default()
     };
-    let mut changed = || watch.changed(&p, &meters);
+    let computer = computer::Computer::default();
+    let mut changed = || watch.changed(&p, &meters, &computer);
     assert!(changed(), "the first tick builds");
     std::thread::sleep(Duration::from_millis(110));
     assert!(!changed(), "nothing moved: no rebuild, however long");
