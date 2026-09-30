@@ -13,6 +13,7 @@ use super::{Cx, RackDrag, instrument, menu, move_part, theme::*};
 use crate::import;
 use moose::mui::mui::prelude::*;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 /// The display name of a part: the player's, the loaded instrument's, else the file's.
@@ -28,18 +29,20 @@ pub fn name(cx: &Cx, slot: usize) -> String {
         .unwrap_or_else(|| super::header::stem(&part.path))
 }
 
-/// A slim header's height: one line of controls. Parts shrink no further,
-/// and stuck headers stack at this pitch.
+/// A header's height with the rule under it: one line of controls. Parts
+/// shrink no further, and stuck headers stack at this pitch.
 pub const SLIM: f64 = CONTROL + 6.;
+
 
 /// Every part in rack order, then the foot that adds more.
 ///
 /// The rack scrolls itself rather than as a scroll node, so it can scroll
 /// to a part and knows where each part is: with sticky headers on, a part
-/// scrolled above the view keeps its header stacked slim at the top, one
-/// below it at the bottom, and a click on a stuck header brings its part
-/// back. Positions are last frame's layout; a change in what the rack holds
-/// asks for one more frame so they catch up.
+/// scrolled above the view keeps its header stacked at the top, one below
+/// it at the bottom, and a click on a stuck header brings its part back.
+/// Positions are last frame's layout; a change in what the rack holds asks
+/// for one more frame so they catch up. Parts well out of view keep their
+/// room but are not built.
 pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let order: Vec<usize> = cx.selection.order.iter().map(|&n| n as usize).collect();
     if order.is_empty() {
@@ -50,33 +53,74 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
             .flex(1)
             .min_h(0);
     }
+    // A click on the rack itself, off every part, lets go of the selection.
+    if ui.get("rack-view").clicked {
+        cx.state.selected_none();
+    }
+    let (view_h, content_h, frames) = {
+        let frame = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
+        let content = frame("rack-content");
+        let frames: Vec<Option<(f64, f64)>> = (order.iter())
+            .map(|slot| {
+                let f = frame(&format!("part-{slot}"))?;
+                Some((f.y - content?.y, f.size.height))
+            })
+            .collect();
+        let view_h = frame("rack-view").map_or(0., |f| f.size.height);
+        (view_h, content.map_or(0., |f| f.size.height), frames)
+    };
+    let sticky = !cx.selection.sticky_off;
+    let n = order.len();
+    // Where part `i`'s header shows with the rack scrolled to `y`: in place,
+    // or stacked at the edge it went past.
+    let place = |i: usize, top: f64, y: f64| {
+        let at = top - y;
+        if !sticky {
+            return at;
+        }
+        let (above, below) = (i as f64 * SLIM, view_h - (n - i) as f64 * SLIM);
+        if at < above { above } else { at.min(below).max(above) }
+    };
+    // Which headers are stuck, and which parts are near enough the view to
+    // build, from where the rack was last drawn.
+    let drawn = cx.state.rack_drawn;
+    let (mut stuck, mut near) = (vec![false; n], vec![true; n]);
+    if view_h > 0. {
+        for (i, f) in frames.iter().enumerate() {
+            let Some((top, h)) = *f else { continue };
+            stuck[i] = sticky && (place(i, top, drawn) - (top - drawn)).abs() > 0.5;
+            near[i] = top - drawn + h > -view_h && top - drawn < 2. * view_h;
+        }
+    }
     wheel_taken();
-    let mut items: Vec<El> = order.iter().map(|&slot| part(ui, cx, slot)).collect();
+    let mut items = Vec::with_capacity(n + 1);
+    let mut shape = {
+        use std::hash::{DefaultHasher, Hash};
+        let mut h = DefaultHasher::new();
+        (&stuck, &near, cx.state.resizing.map(|(s, h)| (s, h.to_bits()))).hash(&mut h);
+        h
+    };
+    for (i, &slot) in order.iter().enumerate() {
+        items.push(part(ui, cx, slot, stuck[i], near[i], &mut shape));
+    }
     items.push(foot(ui, cx));
+    let headers: Vec<(usize, El)> = (0..n)
+        .filter(|&i| stuck[i] && frames[i].is_some())
+        .map(|i| (i, col![header_at(ui, cx, order[i], true), rule()].gap(0).w(Len::Pct(100.))))
+        .collect();
     // A knob under the pointer turns; the rack scrolls otherwise.
     let taken = wheel_taken();
     let wheel = ui.wheel("rack-view").filter(|_| !taken);
 
-    let (view_h, content_h, tops) = {
-        let frame = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
-        let content = frame("rack-content");
-        let tops: Vec<Option<f64>> = (order.iter())
-            .map(|slot| Some(frame(&format!("part-{slot}"))?.y - content?.y))
-            .collect();
-        let view_h = frame("rack-view").map_or(0., |f| f.size.height);
-        (view_h, content.map_or(0., |f| f.size.height), tops)
-    };
-    let sticky = !cx.selection.sticky_off;
-    // Where part `i` of the order sits scrolled to, under the headers stuck above it.
-    let pitch = |i: usize| if sticky { i as f64 * SLIM } else { 0. };
     let max = (content_h - view_h).max(0.);
     let state = &mut *cx.state;
     if let Some(w) = wheel {
         state.rack_y += w.y;
     }
+    let pitch = |i: usize| if sticky { i as f64 * SLIM } else { 0. };
     if let Some(at) = (state.reveal)
         .and_then(|slot| order.iter().position(|s| *s == slot))
-        .and_then(|i| Some(tops[i]? - pitch(i)))
+        .and_then(|i| Some(frames[i]?.0 - pitch(i)))
     {
         state.rack_y = at;
         state.reveal = None;
@@ -90,18 +134,9 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     // The bar under the hand follows it; everything else glides.
     let y = if bar.held { state.rack_y } else { ui.tween_with("rack-y", state.rack_y, quick()) };
+    cx.state.rack_drawn = y;
     // What moves the layout: one more frame once it has, to read it back.
-    let shape = {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        for &slot in &order {
-            let p = &cx.selection.parts[slot];
-            (slot, p.collapsed, p.height.to_bits(), instrument::stage_deps(cx, slot)).hash(&mut h);
-            cx.view.parts[slot].status.hash(&mut h);
-        }
-        cx.state.resizing.map(|(s, h)| (s, h.to_bits())).hash(&mut h);
-        (h.finish() % 1_000_000) as f64
-    };
+    let shape = (std::hash::Hasher::finish(&shape) % 1_000_000) as f64;
     ui.tween_with("rack-shape", shape, Spring::instant());
 
     let content = col(items).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0).id("rack-content");
@@ -118,21 +153,9 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         .scrolled(0., y.round())
         .id("rack-view");
     let mut layers = vec![viewport];
-    if sticky && view_h > 0. {
-        let n = order.len();
-        for (i, &slot) in order.iter().enumerate() {
-            let Some(top) = tops[i] else { continue };
-            let at = top - y;
-            let (above, below) = (pitch(i), view_h - (n - i) as f64 * SLIM);
-            let stuck_at = if at < above {
-                above
-            } else if at > below {
-                below
-            } else {
-                continue;
-            };
-            layers.push(stuck(ui, cx, slot, at < above).at(0., stuck_at));
-        }
+    for (i, header) in headers {
+        let top = frames[i].map_or(0., |f| f.0);
+        layers.push(header.at(0., place(i, top, y).round()));
     }
     let mut row_items = vec![stack(layers).flex(1).min_w(0).min_h(0).h(Len::Pct(100.)).clip()];
     if content_h > view_h + 0.5 && view_h > 0. {
@@ -162,84 +185,91 @@ fn scrollbar(ui: &mut Ui, y: f64, view_h: f64, content_h: f64) -> El {
     .id("rack-bar")
 }
 
-/// One part: its header, what shows of its notices and controls at the
-/// height it is given, and an edge along its foot that sizes it. Dragged
-/// shorter, the controls clip, then only the header stays, then its slim
-/// line; a double-click on the edge swaps the slim line and all of it.
-fn part(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
+/// One part: its header, as much of its notices and controls as its height
+/// shows, and an edge along its foot that sizes it. The height springs to
+/// where it is headed (folded to the header, dragged shorter, or all of
+/// it) and follows the edge exactly while it is dragged; a double-click on
+/// the edge folds or unfolds it. A header `stuck` at the rack's edge leaves
+/// its room here; a part not `near` the view keeps its room unbuilt.
+fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &mut impl std::hash::Hasher) -> El {
+    use std::hash::Hash;
     let edge_id = format!("resize-{slot}");
-    let (part_h, head_h, body_h) = {
+    let (part_h, body_h) = {
         let height = |id: String| ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame.size.height);
-        (height(format!("part-{slot}")), height(format!("header-{slot}")), height(format!("body-{slot}")))
+        (height(format!("part-{slot}")), height(format!("body-{slot}")))
     };
     if let Some(h) = body_h {
         cx.state.bodies.insert(slot, h);
     }
-    let p = &cx.selection.parts[slot];
-    let collapsed = p.collapsed;
-    // The full header's height, as long as it was last shown full.
-    let full_h = head_h.filter(|h| !collapsed && *h > SLIM).unwrap_or(SLIM + CONTROL);
-    let natural = cx.state.bodies.get(&slot).map(|b| full_h + b);
-    let set = (!collapsed && p.height > 0.).then_some(f64::from(p.height));
+    // All of it: the header, then its notices and controls.
+    let natural = cx.state.bodies.get(&slot).map(|b| SLIM + b);
+    // A click anywhere on the part that no control takes selects it.
+    if [format!("part-{slot}"), format!("body-{slot}"), format!("stage-{slot}")].into_iter().any(|id| ui.get(id).clicked) {
+        cx.state.select(slot);
+    }
     let r = ui.get(edge_id.as_str());
     let state = &mut *cx.state;
     if r.dragged {
-        let from = state
-            .resizing
-            .filter(|(s, _)| *s == slot)
-            .map_or(if collapsed { SLIM } else { set.or(part_h).unwrap_or(full_h) }, |(_, h)| h);
+        let from = state.resizing.filter(|(s, _)| *s == slot).map(|(_, h)| h).or(part_h).unwrap_or(SLIM);
         let to = (from + r.drag_delta.y).max(SLIM);
         state.resizing = Some((slot, natural.map_or(to, |n| to.min(n))));
     }
     let dragging = state.resizing.filter(|(s, _)| *s == slot).map(|(_, h)| h);
+    let p = &mut cx.selection.parts[slot];
     if r.released
         && let Some(h) = dragging
     {
         state.resizing = None;
-        let p = &mut cx.selection.parts[slot];
-        p.collapsed = h < full_h - 0.5;
+        // Dragged up to the header, it folds; down to all of it, it follows its content.
+        p.collapsed = h < SLIM + TIGHT;
         let all = natural.is_some_and(|n| h >= n - 1.);
         p.height = if p.collapsed || all { 0. } else { h as f32 };
     }
     if r.double_clicked {
-        let p = &mut cx.selection.parts[slot];
         if !p.collapsed && p.height == 0. {
             p.collapsed = true;
         } else {
             (p.collapsed, p.height) = (false, 0.);
         }
     }
-    let p = &cx.selection.parts[slot];
-    let height = cx.state.resizing.filter(|(s, _)| *s == slot).map(|(_, h)| h).or((!p.collapsed && p.height > 0.).then_some(f64::from(p.height)));
-    let slim = p.collapsed || height.is_some_and(|h| h < full_h - 0.5);
-    let head = header_at(ui, cx, slot, slim);
-    let mut lines = vec![head];
-    if slim {
-        // Mid-drag below a full header: the slim line, then the room it will take.
-        if let Some(h) = height.filter(|h| *h > SLIM) {
-            lines.push(block(Len::Pct(100.), h - SLIM));
-        }
+    let dragging = state.resizing.filter(|(s, _)| *s == slot).map(|(_, h)| h);
+    let set = (!p.collapsed && p.height > 0.).then_some(f64::from(p.height));
+    let target = match (p.collapsed, set, natural) {
+        (true, ..) => Some(SLIM),
+        (false, Some(h), n) => Some(n.map_or(h, |n| h.min(n))),
+        (false, None, n) => n,
+    };
+    // Not yet laid out whole: all of it, unsprung, so the next frame knows how much that is.
+    let height = dragging.or(target).map(|to| {
+        let sprung = ui.tween_with(format!("part-h-{slot}"), to, quick());
+        if dragging.is_some() { to } else { sprung }
+    });
+    (p.collapsed, set.map(f64::to_bits), natural.map(f64::to_bits)).hash(shape);
+
+    let mut lines = vec![if stuck {
+        block(Len::Pct(100.), SLIM - 1.).shrink(0)
     } else {
-        let mut body: Vec<El> = instrument::notices(cx, slot).into_iter().collect();
-        // Kept as drawn while nothing it shows moves: meters and keys
-        // redraw around it, not through it.
-        let deps = (instrument::stage_deps(cx, slot), cx.selection.appearance);
-        let stage = ui.memo(format!("stage-memo-{slot}"), deps, |ui| instrument::stage(ui, cx, slot));
-        body.push(behind(cx, slot, stage));
-        let body = col(body).gap(0).align(Align::Stretch).shrink(0).id(format!("body-{slot}"));
-        match height.map(|h| h - full_h) {
-            // Too little room for any of it: the header alone.
-            Some(room) if room < 1. => {}
-            Some(room) if natural.is_none_or(|n| room < n - full_h - 0.5) => {
-                // Clipped, it fades into the edge: there is more below.
-                let fade = block(Len::Pct(100.), room.min(CONTROL))
-                    .fill(Gradient::linear(180., [(0., Role::Background.alpha(0.)), (1., Role::Background.alpha(0.9))]))
-                    .anchor(Align::Start, Align::End);
-                let body = col![body].gap(0).align(Align::Stretch).w(Len::Pct(100.)).h(room);
-                lines.push(stack![body, fade].w(Len::Pct(100.)).h(room).shrink(0).clip());
-            }
-            _ => lines.push(body),
-        }
+        header_at(ui, cx, slot, false)
+    }];
+    let room = height.map(|h| h - SLIM);
+    if room.is_none_or(|r| r >= 0.5) {
+        let body = if near {
+            let mut body: Vec<El> = instrument::notices(cx, slot).into_iter().collect();
+            // Kept as drawn while nothing it shows moves: meters and keys
+            // redraw around it, not through it.
+            let deps = (instrument::stage_deps(cx, slot), cx.selection.appearance);
+            deps.hash(shape);
+            let stage = ui.memo(format!("stage-memo-{slot}"), deps, |ui| instrument::stage(ui, cx, slot));
+            body.push(behind(cx, slot, stage));
+            col(body).gap(0).align(Align::Stretch).shrink(0).id(format!("body-{slot}"))
+        } else {
+            block(Len::Pct(100.), room.unwrap_or(0.)).shrink(0)
+        };
+        lines.push(match room {
+            // What the height shows of it: the rest is clipped.
+            Some(room) => col![body].gap(0).align(Align::Stretch).w(Len::Pct(100.)).h(room).shrink(0).clip(),
+            None => body,
+        });
     }
     lines.push(rule());
     let lift = ui.state(edge_id.as_str()).hover.max(if r.held { 1. } else { 0. }) as f32;
@@ -247,11 +277,10 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         if lift <= 0.01 {
             return Vec::new();
         }
-        let t = 2.;
-        vec![Draw::fill(rect(0., s.height - t, s.width, t), accent().with_alpha(0.35 + 0.5 * lift))]
+        vec![Draw::fill(rect(0., s.height - 2., s.width, 2.), Role::Ink.alpha(0.2 + 0.4 * lift))]
     })
     .w(Len::Pct(100.))
-    .h(6)
+    .h(TIGHT + 2.)
     .anchor(Align::Start, Align::End)
     .cursor(Cursor::ResizeV)
     .tip("Drag to size the part, double-click to fold or unfold it")
@@ -263,76 +292,6 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .id(format!("part-{slot}"))
 }
 
-/// A part's header stuck to the rack's top or bottom edge while its part is
-/// scrolled away: its color, name and state on one slim line, solo and
-/// mute still at hand. A click scrolls back to the part.
-fn stuck(ui: &mut Ui, cx: &mut Cx, slot: usize, top: bool) -> El {
-    let id = format!("stuck-{slot}");
-    let r = ui.get(id.as_str());
-    if r.clicked {
-        cx.state.selected = slot;
-        cx.state.reveal = Some(slot);
-    }
-    let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
-    let tint = cx.tint(&library);
-    let selected = cx.state.selected == slot;
-    let loading = loading(cx, slot);
-    let name = name(cx, slot);
-    let facts = facts(cx, slot, true).to_uppercase();
-    let part = &mut cx.selection.parts[slot];
-    let (mut solo, mut mute) = (part.solo, part.mute);
-    let switches = solo_mute(ui, &id, &mut solo, &mut mute);
-    (part.solo, part.mute) = (solo, mute);
-    let p = cx.p.clone();
-    let level = move || crate::plugin::Meters::read(&p.shared.meters.parts[slot]);
-    let p = cx.p.clone();
-    let dot = activity_dot(move || crate::plugin::Meters::read(&p.shared.meters.parts[slot]) != [0.; 2]);
-    let mut line = vec![
-        block(3, Len::Pct(100.))
-            .fill(match tint {
-                Some(t) => Fill::from(t),
-                None if selected => accent().into(),
-                None => Role::Ink.alpha(0.12),
-            })
-            .shrink(0),
-        glyph(if top { Icon::Up } else { Icon::Down }, TEXT - 2., Role::Ink.alpha(0.45)),
-        body(name.clone())
-            .text_size(TEXT)
-            .text_weight(Weight::SEMIBOLD)
-            .fill(if part.mute { Role::Dim } else { Role::Ink })
-            .lines(1)
-            .min_w(0)
-            .shrink(1),
-    ];
-    line.extend(loading.map(|done| load_chip(done, false)));
-    line.extend([
-        caption(facts)
-            .text_size(SMALL - 2.)
-            .text_weight(Weight::SEMIBOLD)
-            .fill(Role::Dim)
-            .lines(1)
-            .min_w(0)
-            .flex(1),
-        switches,
-        dot,
-        col![meter_v(level)].pad((3, 0)).h(Len::Pct(100.)).shrink(0),
-    ]);
-    let el = row(line)
-        .gap(SPACE)
-        .align(Align::Center)
-        .pad(edges(0., 0., 0., 0.))
-        .h(SLIM)
-        .w(Len::Pct(100.))
-        .fill(if selected { Role::Raised } else { Role::Surface })
-        .stroke(hairline())
-        .stroke_width(1)
-        .cursor(Cursor::Hand)
-        .a11y(A11y::Button)
-        .named(format!("{name}: scroll to it"))
-        .tip(format!("{name}\nClick to scroll to it"))
-        .id(id);
-    interactive(el, selected)
-}
 
 /// A part's controls over what the appearance puts behind them.
 fn behind(cx: &mut Cx, slot: usize, stage: El) -> El {
@@ -417,22 +376,38 @@ fn step_preset(cx: &Cx, slot: usize, by: isize) -> Option<String> {
     siblings.get(to).map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Below this width the routing and mix controls take a second line under
-/// the name: about the controls' width plus a name's.
+/// `slot`'s previous and next presets in its library folder, looked up once
+/// per preset and scan: stepping walks every file the browser knows.
+fn neighbors(cx: &mut Cx, slot: usize) -> [Option<String>; 2] {
+    let path = cx.selection.parts[slot].path.clone();
+    let (files, root, known) = &mut cx.state.neighbors;
+    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &cx.view.files)) || *root != cx.view.root {
+        (*files, *root) = (Arc::downgrade(&cx.view.files), cx.view.root.clone());
+        known.clear();
+    }
+    if let Some(found) = known.get(&path) {
+        return found.clone();
+    }
+    let found = [step_preset(cx, slot, -1), step_preset(cx, slot, 1)];
+    cx.state.neighbors.2.insert(path, found.clone());
+    found
+}
+
+/// Below this width the header packs its controls tighter and the load
+/// chip drops its word.
 const ONE_LINE: f64 = 860.;
 
 /// The header banner: the library's artwork fading out over this width, and
 /// taller than any header so covering one only ever crops it top and bottom.
 pub const BANNER: (f64, f64) = (TEXT * 36., TEXT * 7.);
 
-/// A part's header, after Koda's part strip: a thin bar with the library's
-/// color down its left edge. The fold, the name over what it is, preset
+/// A part's header, after Kontakt's compact part strip: one slim line with
+/// the part's color down its left edge. The fold, the name with preset
 /// stepping; MIDI and output routing, pan, gain and tune; solo and mute,
 /// the activity dot, menu and remove; the part's meter at the right edge.
-/// Folded, it is one slim line with every control still on it.
+/// The same line whether the part is open, folded or stuck at the rack's edge.
 pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
-    let slim = cx.selection.parts[slot].collapsed;
-    header_at(ui, cx, slot, slim)
+    header_at(ui, cx, slot, false)
 }
 
 /// How far `slot`'s samples have loaded, 0..1, while they load.
@@ -443,8 +418,8 @@ pub(super) fn loading(cx: &Cx, slot: usize) -> Option<f64> {
     })
 }
 
-/// "Loading 42%" in the accent, or only "42%" where room is short; before
-/// the first sample is read, "Loading…".
+/// "Loading 42%", or only "42%" where room is short; before the first
+/// sample is read, "Loading…".
 pub(super) fn load_chip(done: f64, words: bool) -> El {
     let text = match (done > 0., words) {
         (true, true) => format!("Loading {:.0}%", done * 100.),
@@ -453,15 +428,14 @@ pub(super) fn load_chip(done: f64, words: bool) -> El {
     };
     caption(text)
         .text_size(SMALL - 1.)
-        .text_weight(Weight::SEMIBOLD)
-        .fill(accent())
+        .fill(Role::Dim)
         .lines(1)
         .shrink(0)
         .named("Loading")
 }
 
-/// [`header`], full or slim.
-fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, slim: bool) -> El {
+/// [`header`]; a `stuck` one, clicked, also scrolls back to its part.
+fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let id = format!("header-{slot}");
     // Last frame's width: the header spans the rack, so its own layout never
     // changes it and the choice can't oscillate.
@@ -469,10 +443,12 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, slim: bool) -> El {
         .scene()
         .and_then(|s| s.surface(&id))
         .is_some_and(|s| s.frame.size.width < ONE_LINE);
-    let selected = cx.state.selected == slot;
     let r = ui.get(id.as_str());
     if r.clicked {
-        cx.state.selected = slot;
+        cx.state.select(slot);
+        if stuck {
+            cx.state.reveal = Some(slot);
+        }
     }
     if r.clicked_with(Button::Secondary) {
         menu::open(ui, cx, menu::Target::Part(slot));
@@ -503,13 +479,12 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, slim: bool) -> El {
     }
     let (previous, prev_el) = icon_button(ui, format!("preset-prev-{slot}"), Icon::Left, "Previous preset", false);
     let (next, next_el) = icon_button(ui, format!("preset-next-{slot}"), Icon::Right, "Next preset", false);
-    let before = step_preset(cx, slot, -1);
-    let after = step_preset(cx, slot, 1);
-    if let Some(path) = before.clone().filter(|_| previous).or(after.clone().filter(|_| next)) {
-        cx.replace(slot, path);
-    }
+    let [before, after] = neighbors(cx, slot);
     let prev_el = prev_el.when(before.is_none(), |e| e.disabled().opacity(0.3));
     let next_el = next_el.when(after.is_none(), |e| e.disabled().opacity(0.3));
+    if let Some(path) = before.filter(|_| previous).or(after.filter(|_| next)) {
+        cx.replace(slot, path);
+    }
     let more_id = format!("more-{slot}");
     let (more, more_el) = icon_button(ui, more_id.as_str(), Icon::More, "Part menu", false);
     if more {
@@ -538,11 +513,10 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, slim: bool) -> El {
     }
 
     let title = title(ui, cx, slot);
-    let full = facts(cx, slot, false);
-    let facts = if narrow { facts(cx, slot, true) } else { full.clone() };
     let progress = loading(cx, slot);
+    let failed = cx.view.parts[slot].status.starts_with("Load failed");
+    let selected = cx.state.chosen() == Some(slot);
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
-    let tint = cx.tint(&library);
     let banner = cx.looks(&library).and_then(|l| l.banner[usize::from(cx.blurred())].clone());
 
     let part = &mut cx.selection.parts[slot];
@@ -567,120 +541,79 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, slim: bool) -> El {
         cx.remove(slot);
     }
 
-    let facts_el = |fill: bool| {
-        caption(facts.to_uppercase())
-            .text_size(SMALL - 2.)
-            .text_weight(Weight::SEMIBOLD)
-            .fill(Role::Dim)
-            .lines(1)
-            .min_w(0)
-            .tip(full.clone())
-            .when(fill, |e| e.flex(1))
+    let chip = match progress {
+        Some(done) => Some(load_chip(done, !narrow)),
+        None => failed.then(|| caption("Failed to load").text_size(SMALL - 1.).fill(Role::Dim).lines(1).shrink(0)),
     };
-    let chip = progress.map(|done| load_chip(done, !(slim && narrow)));
     let mut name_row = vec![title, prev_el, next_el];
     name_row.extend(chip);
-    let name_row = row(name_row).gap(0).align(Align::Center).min_w(0);
+    let name_row = row(name_row).gap(0).align(Align::Center).flex(1).min_w(0);
     let mix = cluster(vec![midi_el, output_el, pan_el, gain_el, tune_el]).gap(SPACE);
     let tail = cluster(vec![switches, dot, more_el, remove_el]).gap(TIGHT + 1.);
-    let rows = match (slim, narrow) {
-        // Slim: one line, every control still on it; what it is beside
-        // its name where there is room for it.
-        (true, false) => vec![
-            row![name_row.shrink(1), facts_el(true)]
-                .gap(SPACE)
-                .align(Align::Center)
-                .flex(1)
-                .min_w(0),
-            mix,
-            tail,
-        ],
-        (true, true) => vec![name_row.flex(1).shrink(1), mix, tail],
-        (false, false) => vec![
-            col![facts_el(false), name_row].gap(0).align(Align::Start).flex(1).min_w(0),
-            mix,
-            tail,
-        ],
-        (false, true) => vec![
-            col![
-                row![name_row.flex(1), tail].gap(SPACE).align(Align::Center),
-                row![facts_el(true), mix].gap(SPACE).align(Align::Center)
-            ]
-            .gap(2)
-            .align(Align::Stretch)
-            .flex(1)
-            .min_w(0),
-        ],
-    };
-    let mut line = vec![fold_el];
-    line.extend(rows);
-    let body = row(line)
-        .gap(if slim && narrow { TIGHT } else { SPACE })
+    let body = row![fold_el, name_row, mix, tail]
+        .gap(if narrow { TIGHT } else { SPACE })
         .align(Align::Center)
-        .pad(edges(2., SPACE, 2., TIGHT))
+        .pad(edges(0., SPACE, 0., TIGHT))
         .flex(1)
         .min_w(0);
-    // The library's color runs down the left edge, the accent's when it has
-    // none and the part is selected; the bottom edge doubles as load progress.
-    let edge = block(3, Len::Pct(100.))
-        .fill(match tint {
-            Some(t) => Fill::from(t),
-            None if selected => accent().into(),
-            None => Role::Ink.alpha(0.12),
-        })
-        .shrink(0);
-    let bar = canvas(move |s| match progress {
-        Some(done) => vec![
-            Draw::fill(rect(0., 0., s.width, s.height), Role::Ink.alpha(0.1)),
-            Draw::fill(rect(0., 0., (s.width * done).max(SPACE), s.height), accent()),
-        ],
-        None => Vec::new(),
-    })
-    .w(Len::Pct(100.))
-    .h(if progress.is_some() { 2 } else { 0 })
-    .shrink(0)
-    .named("Load progress");
+    // The part's own color runs down the left edge; the bottom edge
+    // doubles as load progress.
+    let edge = block(3, Len::Pct(100.)).fill(part_color(slot)).shrink(0);
     let meter = col![meter_v(level)].pad((3, 0)).h(Len::Pct(100.)).shrink(0);
-    let name = name(cx, slot);
-    let line = row![edge, body, meter].gap(0).align(Align::Stretch).when(slim, |e| e.h(SLIM - 1.));
-    let line = match banner {
-        // The artwork fades in behind the controls; the title sits on a
+    let mut layers = Vec::new();
+    if let Some(image) = banner {
+        // The artwork fades in behind the controls; the name sits on a
         // darker stretch of it so a logo in the artwork never crowds it.
-        Some(image) => stack![
+        layers.push(
             block(BANNER.0, Len::Pct(100.))
                 .fill(Fill::Image(image, moose::mui::mui::scene::Fit::Cover))
                 .anchor(Align::Start, Align::Start),
+        );
+        layers.push(
             block(BANNER.0 * 0.75, Len::Pct(100.))
                 .fill(Gradient::linear(
                     90.,
                     [(0., Role::Surface.alpha(0.7)), (0.5, Role::Surface.alpha(0.45)), (1., Role::Surface.alpha(0.))],
                 ))
                 .anchor(Align::Start, Align::Start),
-            line
-        ]
+        );
+    }
+    layers.push(row![edge, body, meter].gap(0).align(Align::Stretch).w(Len::Pct(100.)).h(Len::Pct(100.)));
+    layers.extend(progress.map(|done| {
+        canvas(move |s| {
+            vec![
+                Draw::fill(rect(0., 0., s.width, s.height), Role::Ink.alpha(0.1)),
+                Draw::fill(rect(0., 0., (s.width * done).max(SPACE), s.height), Role::Ink.alpha(0.6)),
+            ]
+        })
         .w(Len::Pct(100.))
-        .clip(),
-        None => line,
-    };
-    col![line, bar]
-        .gap(0)
-        .fill(if selected { Role::Raised } else { Role::Surface })
-        .when(over, |e| e.stroke(accent()).stroke_width(1))
+        .h(2)
+        .anchor(Align::Start, Align::End)
+        .named("Load progress")
+    }));
+    let name = name(cx, slot);
+    // Selected: a brighter fill inside a crisp line.
+    stack(layers)
+        .w(Len::Pct(100.))
+        .h(SLIM - 1.)
+        .fill(if selected { Role::Level(3) } else { Role::Surface })
+        .when(selected, |e| e.stroke(Role::Ink.alpha(0.55)).stroke_width(1))
+        .when(over, |e| e.stroke(Role::Ink).stroke_width(1))
+        .clip()
         .a11y(A11y::Group)
         .named(name)
         .id(id)
         .shrink(0)
 }
 
-/// What the part is: its library and size, or that it failed to load.
-/// `brief` leaves out the group and zone counts, for a narrow header.
-fn facts(cx: &Cx, slot: usize, brief: bool) -> String {
+/// What the part is: its library, groups and zones, size, or that it failed to load.
+fn facts(cx: &Cx, slot: usize) -> String {
     let v = &cx.view.parts[slot];
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
     // "Areia 1.2.0 [Audio Imperia]": the vendor in brackets goes.
     let library = library_label(&library);
     let mut facts = vec![library.split(" [").next().unwrap_or_default().to_owned()];
-    if let Some(i) = instrument::instrument_of(cx, slot).filter(|_| !brief) {
+    if let Some(i) = instrument::instrument_of(cx, slot) {
         facts.push(format!("{} groups · {} zones", i.groups.len(), i.zones.len()));
     }
     if !v.loading && v.bytes > 0 {
@@ -728,12 +661,14 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     if r.double_clicked {
         cx.state.renaming = Some((slot, name.clone()));
     } else if r.clicked {
-        cx.state.selected = slot;
+        cx.state.select(slot);
     }
     if r.dragged && r.button == Some(Button::Primary) {
         ui.start_drag(name_id.as_str(), RackDrag::Part(slot));
     }
     let muted = cx.selection.parts[slot].mute;
+    // The library and size stay in the tooltip: beside the name they only repeat it.
+    let facts = facts(cx, slot);
     body(name.clone())
         .text_size(TEXT + 1.)
         .text_weight(Weight::SEMIBOLD)
@@ -742,7 +677,7 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .min_w(0)
         .shrink(1)
         .cursor(Cursor::Grab)
-        .tip(format!("{name}\nDrag to reorder · double-click to rename"))
+        .tip(format!("{name}\n{facts}\nDrag to reorder · double-click to rename"))
         .named(name)
         .id(name_id)
 }

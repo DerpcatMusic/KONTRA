@@ -307,7 +307,11 @@ struct EditorState {
     octave: i16,
     /// The part the keyboard was last centered on.
     keyboard_for: Option<(String, u32)>,
+    /// The part the Mapping, Sound and Info views show, and the rack marks
+    /// and the keyboard plays unless `unselected`: Esc or a click on the
+    /// empty rack lets go, and the keyboard then plays every part MIDI would.
     selected: usize,
+    unselected: bool,
     notice: String,
     root: String,
     last_poll: Instant,
@@ -335,10 +339,16 @@ struct EditorState {
     /// How far the rack is scrolled (where it glides to), a part to scroll
     /// to once it is laid out, and a part's height while its edge is dragged.
     rack_y: f64,
+    /// Where the rack was scrolled to when last drawn.
+    rack_drawn: f64,
     reveal: Option<usize>,
     resizing: Option<(usize, f64)>,
     /// Each part's notices and controls at their full height, as last laid out.
     bodies: HashMap<usize, f64>,
+    /// Each preset's neighbors in its library folder, of which scan and root.
+    neighbors: (std::sync::Weak<Vec<PathBuf>>, String, HashMap<String, [Option<String>; 2]>),
+    /// Each part's instrument and the keys it maps, for the keyboard's range strips.
+    ranges: HashMap<usize, (std::sync::Weak<import::Instrument>, [bool; 128])>,
     /// Each part's performance view as last read.
     panels: HashMap<usize, panel::Cache>,
     started: Instant,
@@ -353,6 +363,29 @@ struct EditorState {
     picker: Arc<picker::Picker>,
     /// The sound editor's view and curves.
     editor: editor::State,
+}
+
+impl EditorState {
+    /// Select `slot`: the rack marks it and the keyboard plays it.
+    fn select(&mut self, slot: usize) {
+        self.selected = slot;
+        self.unselected = false;
+    }
+
+    /// Let go of the selection: no part is marked, the keyboard plays them all.
+    fn selected_none(&mut self) {
+        self.unselected = true;
+    }
+
+    /// The selected part, if one is.
+    fn chosen(&self) -> Option<usize> {
+        (!self.unselected).then_some(self.selected)
+    }
+
+    /// The slot the keyboard, computer keys and wheels play.
+    fn played(&self) -> usize {
+        self.chosen().unwrap_or(crate::plugin::EVERY_PART)
+    }
 }
 
 /// The browser's files by library name, as indices into the scan.
@@ -408,7 +441,7 @@ impl Cx<'_> {
 
     /// Select `slot`, unfold it and scroll the rack to it.
     fn show(&mut self, slot: usize) {
-        self.state.selected = slot;
+        self.state.select(slot);
         self.state.reveal = Some(slot);
         self.state.notice.clear();
         self.state.renaming = None;
@@ -515,7 +548,7 @@ impl Cx<'_> {
         self.selection.parts[slot] = Part::default();
         self.selection.order.retain(|n| *n as usize != slot);
         let next = self.selection.order.first().map_or(0, |n| *n as usize);
-        self.state.selected = next;
+        self.state.select(next);
         self.state.renaming = None;
     }
 
@@ -717,6 +750,7 @@ fn build(
         octave: 2,
         keyboard_for: None,
         selected: 0,
+        unselected: false,
         notice: String::new(),
         root,
         last_poll: Instant::now() - Duration::from_secs(1),
@@ -731,9 +765,12 @@ fn build(
         mapped: (std::sync::Weak::new(), [false; 128]),
         libraries: Default::default(),
         rack_y: 0.,
+        rack_drawn: 0.,
         reveal: None,
         resizing: None,
         bodies: HashMap::new(),
+        neighbors: Default::default(),
+        ranges: HashMap::new(),
         panels: HashMap::new(),
         started: Instant::now(),
         computer,
@@ -757,13 +794,11 @@ fn build(
         sanitize(&mut selection);
         let focus = p.shared.focus_request.swap(128, Ordering::Relaxed);
         if focus < RACK_SLOTS as u64 {
-            state.selected = focus as usize;
+            state.select(focus as usize);
             state.notice.clear();
         }
         state.selected = state.selected.min(selection.parts.len().saturating_sub(1));
-        p.shared
-            .selected
-            .store(state.selected as u64, Ordering::Relaxed);
+        p.shared.selected.store(state.played() as u64, Ordering::Relaxed);
         let window = ui
             .scene()
             .and_then(|s| s.surface("editor-root"))
@@ -813,9 +848,7 @@ fn build(
                     .store(current.midi_thru, Ordering::Release);
             }
         }
-        p.shared
-            .selected
-            .store(state.selected as u64, Ordering::Relaxed);
+        p.shared.selected.store(state.played() as u64, Ordering::Relaxed);
 
         let mut shell = vec![top, header::loading_bar(&view, &p, state.started)];
         shell.extend(settings);
@@ -869,13 +902,14 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
         .is_none_or(|k| k.starts_with("key-") || k.starts_with("header-") || k.starts_with("name-"));
     let keys = ui.shortcuts().to_vec();
     let slot = cx.state.selected;
-    let loaded = cx.part().is_some();
+    let loaded = cx.part().is_some() && cx.state.chosen().is_some();
     for k in keys {
         let ctrl = k.mods.ctrl || k.mods.cmd;
         match k.key {
             Key::Delete if loaded && cx.state.renaming.is_none() => cx.remove(slot),
             Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
+            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() => cx.state.selected_none(),
             _ => {}
         }
     }

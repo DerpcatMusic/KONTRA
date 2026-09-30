@@ -53,6 +53,14 @@ pub fn accent() -> Color {
     Color::oklch(0.76, ACCENT_CHROMA, ACCENT_HUE)
 }
 
+/// Part `slot`'s color, down its header's edge and over the keys it plays:
+/// hues a golden angle apart, so no two parts look alike and neighbors
+/// least of all, at one quiet lightness and chroma. The first is blue.
+pub fn part_color(slot: usize) -> Color {
+    let hue = (250. + slot as f64 * 137.507_764) % 360.;
+    Color::oklch(0.7, 0.1, hue as f32)
+}
+
 /// The hairline every boundary is drawn with.
 pub fn hairline() -> Fill {
     Role::Ink.alpha(0.08)

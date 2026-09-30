@@ -23,7 +23,6 @@ use super::{Cx, RackDrag, instrument, menu, theme::*};
 use crate::engine::BUSES;
 use crate::plugin::{Bus, Meters, P, SamplerParams};
 use moose::mui::{Bridge, mui::prelude::*};
-use std::path::Path;
 
 /// A strip's width: a fader, a meter and a readout, no more.
 const WIDTH: f64 = TEXT * 6.5;
@@ -193,13 +192,11 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let id = format!("strip-{slot}");
     let r = ui.get(id.as_str());
     if r.clicked {
-        cx.state.selected = slot;
+        cx.state.select(slot);
     }
     if right_clicked(ui, &[&id, "mix-name", "mix-pan", "mix-fader"], slot) {
         menu::open(ui, cx, menu::Target::Strip(Strip::Part(slot)));
     }
-    let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
-    let tint = cx.tint(&library);
     let name = strip_name(ui, cx, Strip::Part(slot));
 
     let part = cx.selection.parts[slot].clone();
@@ -270,9 +267,9 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         col![aux_el, send_el].gap(2).shrink(0),
         output_el,
     ];
-    let edge = tint.map_or(Role::Ink.alpha(0.12), Fill::from);
+    let edge = Fill::from(part_color(slot));
     let label = super::rack::name(cx, slot);
-    frame(rows, edge, cx.state.selected == slot)
+    frame(rows, edge, cx.state.chosen() == Some(slot))
         .a11y(A11y::Group)
         .named(label)
         .id(id)
