@@ -176,6 +176,7 @@ impl Engine {
 
     /// Recompute what plays of `param` in `group` (or all) from the base.
     fn refresh(&mut self, group: Option<u16>, param: Param) {
+        self.player.unsettle();
         let Some(bank) = self.bank.as_deref_mut() else {
             return;
         };
@@ -194,6 +195,7 @@ impl Engine {
 
     /// Apply a script's group-level write: to the base, then what plays.
     pub(super) fn write_group(&mut self, address: Address, value: f32) -> bool {
+        self.player.unsettle();
         let Some(bank) = self.bank.as_deref_mut() else {
             return false;
         };

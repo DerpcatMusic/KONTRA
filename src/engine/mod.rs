@@ -241,6 +241,7 @@ impl Engine {
         // Swapped, not cloned: no allocation here.
         std::mem::swap(&mut old.settings, &mut bank.settings);
         self.player.rebind(old, &bank);
+        self.player.unsettle();
         self.bank.replace(bank)
     }
 
@@ -727,6 +728,10 @@ struct Player {
     tone: [f32; 2],
     underruns: u64,
     dropped_commands: u64,
+    /// Modulation epochs per channel (see [`voice::Context::epochs`]) and
+    /// the controllers they were taken at.
+    epochs: [u64; 16],
+    seen: Box<([[u8; 128]; 16], [u32; 16], [u8; 16])>,
 }
 
 impl Player {
@@ -758,6 +763,8 @@ impl Player {
             tone: [0.0; 2],
             underruns: 0,
             dropped_commands: 0,
+            epochs: [1; 16],
+            seen: Box::new(([[0; 128]; 16], [0; 16], [0; 16])),
         };
         player.reset_midi();
         player
@@ -777,6 +784,11 @@ impl Player {
         self.pedal_releases = [[0; 128]; 16];
         (self.volume, self.pan) = (1.0, 0.0);
         self.tone = [0.0; 2];
+    }
+
+    /// Group parameters changed: settled modulation may not hold.
+    fn unsettle(&mut self) {
+        self.epochs.iter_mut().for_each(|e| *e += 1);
     }
 
     fn clear_voices(&mut self, bank: Option<&Bank>) {
@@ -1021,6 +1033,8 @@ impl Player {
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),
             mods,
+            settled: 0,
+            modulated: (0.0, 0.0),
             stream,
             env: Envelope::new(&envelope, self.rate as f32),
             flex: settings.flex.as_ref().map(|_| Envelope::flex()),
@@ -1034,7 +1048,7 @@ impl Player {
             filter: VoiceFilter::new(settings.filter.as_deref(), &settings.mods, &inputs, self.rate as f32),
         };
         // Start at the voice's first-block gains, so it does not ramp in.
-        let (modulation, _) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
+        let (modulation, _, _) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
         let pan = (zone.pan + settings.pan + ev.pan).clamp(-1.0, 1.0);
         voice.gains = balance(base_level * settings.gain * modulation * voice.volume, pan);
         if offset > 0 {
@@ -1261,9 +1275,20 @@ impl Player {
         blocking: bool,
         tune: f32,
     ) {
+        // Every path that moves a controller lands in these arrays: compare
+        // them rather than trust each one to say so.
+        let (cc, bend, pressure) = &mut *self.seen;
+        for c in 0..16 {
+            let b = self.bend[c].to_bits();
+            if cc[c] != self.cc[c] || bend[c] != b || pressure[c] != self.pressure[c] {
+                (cc[c], bend[c], pressure[c]) = (self.cc[c], b, self.pressure[c]);
+                self.epochs[c] += 1;
+            }
+        }
         let cx = Context {
             bank,
             slots: bank.slots(),
+            epochs: &self.epochs,
             cc: &self.cc,
             bend: &self.bend,
             pressure: &self.pressure,

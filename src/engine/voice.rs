@@ -510,6 +510,10 @@ pub(crate) struct Voice {
     pub pitch: (f32, f64),
     /// Current value of each of the group's voiced modulation assignments.
     pub mods: [f32; VOICE_MODS],
+    /// The channel's [`Context::epochs`] value at which `mods` settled
+    /// (0: not settled), and the volume factor and semitones they gave.
+    pub settled: u64,
+    pub modulated: (f32, f32),
     pub stream: Option<Stream>,
     /// AHDSR envelope (the engine defaults without one, unity with only a flex).
     pub env: Envelope,
@@ -542,6 +546,9 @@ pub(crate) struct Context<'a> {
     pub pressure: &'a [u8; 16],
     /// Per-key MPE and note expression.
     pub expression: &'a [super::Expression; 128],
+    /// Per channel, bumped whenever its controllers or any group's
+    /// parameters change: settled modulation is reused while it holds.
+    pub epochs: &'a [u64; 16],
     /// Instrument tune in semitones.
     pub tune: f32,
     pub rate: f32,
@@ -607,7 +614,15 @@ impl Voice {
         let n = left.len().min(right.len()).min(MAX_BLOCK);
         let group = &cx.bank.settings[self.group as usize];
         let inputs = cx.inputs(self.channel, self.note, self.velocity);
-        let (modulation, semitones) = group.mods.modulate(&mut self.mods, &inputs, n, cx.rate);
+        // Held controllers leave modulation where it settled: most voices
+        // skip the table and its curves.
+        let epoch = cx.epochs[self.channel as usize & 15];
+        if self.settled != epoch {
+            let (gain, semitones, settled) = group.mods.modulate(&mut self.mods, &inputs, n, cx.rate);
+            self.modulated = (gain, semitones);
+            self.settled = if settled { epoch } else { 0 };
+        }
+        let (modulation, semitones) = self.modulated;
         let x = cx.expression[self.note as usize & 127];
         let semitones = semitones + group.tune + cx.tune + x.tune;
         if semitones != self.pitch.0 {

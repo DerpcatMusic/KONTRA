@@ -216,22 +216,26 @@ impl ModTable {
     ///
     /// Volume: each assignment scales amplitude by `1 - |i|·(1 - v)` for
     /// shaped value `v` (inverted, `1 - v`, when `i < 0`). Pitch: `12·i·v`
-    /// semitones, with pitch bend mapped back to -1..=1.
+    /// semitones, with pitch bend mapped back to -1..=1. The flag is true
+    /// when every live source has settled on its input: until the inputs
+    /// or the table change, another call returns the same.
     pub(crate) fn modulate(
         &self,
         values: &mut [f32; VOICE_MODS],
         input: &Inputs,
         frames: usize,
         rate: f32,
-    ) -> (f32, f32) {
-        let (mut gain, mut semitones) = (1.0, 0.0);
+    ) -> (f32, f32, bool) {
+        let (mut gain, mut semitones, mut settled) = (1.0, 0.0, true);
         for (value, &i) in values.iter_mut().zip(&self.voiced) {
             let m = &self.mods[i as usize];
             let Some((source, target)) = m.route else {
                 continue;
             };
             if source.live() {
-                approach(value, m.shape(input.read(source)), m.lag, frames, rate);
+                let x = m.shape(input.read(source));
+                approach(value, x, m.lag, frames, rate);
+                settled &= *value == x;
             }
             match target {
                 Target::Volume => {
@@ -253,7 +257,7 @@ impl ModTable {
                 Target::Start | Target::Attack | Target::Release | Target::Fx => {}
             }
         }
-        (gain.max(0.0), semitones)
+        (gain.max(0.0), semitones, settled)
     }
 
     /// Sample-start offset as a fraction of the zone's start-mod range.
@@ -968,14 +972,14 @@ mod tests {
             counter: 0.0,
         };
         let mut values = table.start(&input);
-        let (gain, _) = table.modulate(&mut values, &input, 128, 48000.0);
+        let (gain, ..) = table.modulate(&mut values, &input, 128, 48000.0);
         let expected = (64.0f32 / 127.0).powi(2);
         assert!((gain - expected).abs() < 1e-5, "{gain} vs {expected}");
 
         // CC11 drops to 0: after one lag time constant 63% of the way down.
         let quiet = [0; 128];
         input.cc = &quiet;
-        let (gain, _) = table.modulate(&mut values, &input, 4800, 48000.0);
+        let (gain, ..) = table.modulate(&mut values, &input, 4800, 48000.0);
         assert!((gain / expected - (-1.0f32).exp()).abs() < 1e-4, "{gain}");
     }
 
