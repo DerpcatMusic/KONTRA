@@ -709,6 +709,7 @@ impl VoiceFilter {
     }
 
     /// Move the external sources on over `n` frames, before [`process`](Self::process).
+    #[inline(always)]
     pub fn follow(&mut self, f: &GroupFilter, table: &ModTable, input: &Inputs, n: usize, rate: f32) {
         for (value, (_, i)) in self.ext.iter_mut().zip(&f.ext) {
             table.mods[*i as usize].follow(value, input, n, rate);
@@ -718,6 +719,7 @@ impl VoiceFilter {
     /// Work out this block's [`FilterKey`] into `held` when the filter is
     /// held: no module envelopes and the matrix reached, with at most four
     /// active sections. Tunes the sections it keeps. Returns the key's hash.
+    #[inline(always)]
     pub fn hold(&mut self, f: &GroupFilter, table: &ModTable, rate: f32) -> Option<u64> {
         if !f.envs.is_empty() || self.matrix != f.matrix {
             return None;

@@ -755,6 +755,7 @@ impl Lanes {
         self.lanes.clear();
     }
 
+    #[inline(always)]
     pub fn add(&mut self, mut lane: Lane, class: u64, key: &FilterKey, voice: u16) {
         if lane.is_solo() {
             lane.shape = u64::from(voice);
@@ -957,6 +958,7 @@ impl Voice {
     /// it: modulation, pitch and gain into [`Voice::plan`], and the [`Lane`]
     /// it can mix in. `bus` is the group's, with its gains when it only
     /// passes to the output through a fader at rest.
+    #[inline(always)]
     pub fn plan(&mut self, cx: &Context, n: usize, bus: Option<u8>, through: Option<[f32; 2]>) -> Option<Lane> {
         let group = &cx.bank.settings[self.group as usize];
         let inputs = cx.inputs(self.channel, self.note, self.velocity);

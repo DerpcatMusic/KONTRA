@@ -62,6 +62,15 @@ pub enum Pcm {
     Packed(Packed),
 }
 
+/// Whether the CPU runs the AVX-512 builds of the hot loops (F, BW and VL;
+/// std caches the detection).
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub(crate) fn avx512() -> bool {
+    use std::arch::is_x86_feature_detected as has;
+    has!("avx512f") && has!("avx512bw") && has!("avx512vl")
+}
+
 const I16_SCALE: f32 = 32768.0;
 const I24_SCALE: f32 = 8388608.0;
 
@@ -207,6 +216,11 @@ impl Pcm {
     #[inline]
     pub fn accumulate(&self, at: usize, weights: [f32; 2], acc: &mut [Frame]) -> bool {
         #[cfg(target_arch = "x86_64")]
+        if avx512() {
+            // SAFETY: the running CPU supports AVX-512 F, BW and VL.
+            return unsafe { self.accumulate_avx512(at, weights, acc) };
+        }
+        #[cfg(target_arch = "x86_64")]
         if std::arch::is_x86_feature_detected!("avx2") {
             // SAFETY: the running CPU supports AVX2.
             return unsafe { self.accumulate_avx2(at, weights, acc) };
@@ -218,33 +232,94 @@ impl Pcm {
     #[target_feature(enable = "avx2")]
     fn accumulate_avx2(&self, at: usize, weights: [f32; 2], acc: &mut [Frame]) -> bool {
         use std::arch::x86_64::*;
-        let Self::I16(d) = self else {
+        let Some(ints) = self.ints(at, acc.len()) else {
             return self.accumulate_body(at, weights, acc);
-        };
-        let Some(xs) = d.get(2 * at..2 * (at + acc.len())) else {
-            return false;
         };
         // Eight frames a pass: sixteen samples widened to i32, then to f32,
         // multiplied, then added (never fused, as the decoded path does).
-        let w = weights.map(|w| w * (1.0 / I16_SCALE));
+        // Flat over the interleaved samples, weights alternating: written per
+        // frame, the compiler splits the channels apart and back again.
+        let w = weights.map(|w| w * ints.gain());
         let (chunks, tail) = acc.as_flattened_mut().as_chunks_mut::<16>();
-        let (xchunks, xtail) = xs.as_chunks::<16>();
+        let done = chunks.len() * 16;
         // SAFETY: AVX2 is enabled; every load and store stays within a chunk.
         unsafe {
             let wv = _mm256_setr_ps(w[0], w[1], w[0], w[1], w[0], w[1], w[0], w[1]);
-            for (a, x) in chunks.iter_mut().zip(xchunks) {
-                let x = _mm256_loadu_si256(x.as_ptr().cast());
-                let lo = _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(x)));
-                let hi = _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(x, 1)));
-                let p = a.as_mut_ptr();
-                _mm256_storeu_ps(p, _mm256_add_ps(_mm256_loadu_ps(p), _mm256_mul_ps(wv, lo)));
-                _mm256_storeu_ps(p.add(8), _mm256_add_ps(_mm256_loadu_ps(p.add(8)), _mm256_mul_ps(wv, hi)));
+            let add = |p: *mut f32, x: __m256i| {
+                let x = _mm256_cvtepi32_ps(x);
+                _mm256_storeu_ps(p, _mm256_add_ps(_mm256_loadu_ps(p), _mm256_mul_ps(wv, x)));
+            };
+            match ints {
+                Ints::I16(xs) => {
+                    for (a, x) in chunks.iter_mut().zip(xs.as_chunks::<16>().0) {
+                        let x = _mm256_loadu_si256(x.as_ptr().cast());
+                        add(a.as_mut_ptr(), _mm256_cvtepi16_epi32(_mm256_castsi256_si128(x)));
+                        add(a.as_mut_ptr().add(8), _mm256_cvtepi16_epi32(_mm256_extracti128_si256(x, 1)));
+                    }
+                }
+                Ints::I24(hs, ls) => {
+                    let x = |h: __m128i, l: __m128i| {
+                        _mm256_or_si256(_mm256_slli_epi32(_mm256_cvtepi16_epi32(h), 8), _mm256_cvtepu8_epi32(l))
+                    };
+                    for (a, (h, l)) in chunks.iter_mut().zip(hs.as_chunks::<16>().0.iter().zip(ls.as_chunks::<16>().0)) {
+                        let (h, l) = (_mm256_loadu_si256(h.as_ptr().cast()), _mm_loadu_si128(l.as_ptr().cast()));
+                        add(a.as_mut_ptr(), x(_mm256_castsi256_si128(h), l));
+                        add(a.as_mut_ptr().add(8), x(_mm256_extracti128_si256(h, 1), _mm_srli_si128(l, 8)));
+                    }
+                }
             }
         }
-        for (k, (a, &x)) in tail.iter_mut().zip(xtail).enumerate() {
-            *a += w[k & 1] * f32::from(x);
-        }
+        ints.add_tail(done, w, tail);
         true
+    }
+
+    /// [`Pcm::accumulate_avx2`] sixteen samples to a vector.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+    fn accumulate_avx512(&self, at: usize, weights: [f32; 2], acc: &mut [Frame]) -> bool {
+        use std::arch::x86_64::*;
+        let Some(ints) = self.ints(at, acc.len()) else {
+            return self.accumulate_body(at, weights, acc);
+        };
+        let w = weights.map(|w| w * ints.gain());
+        let (chunks, tail) = acc.as_flattened_mut().as_chunks_mut::<16>();
+        let done = chunks.len() * 16;
+        // SAFETY: AVX-512 F and BW are enabled; every load and store stays within a chunk.
+        unsafe {
+            let wv = _mm512_loadu_ps(std::array::from_fn::<f32, 16, _>(|k| w[k & 1]).as_ptr());
+            let add = |p: *mut f32, x: __m512i| {
+                let x = _mm512_cvtepi32_ps(x);
+                _mm512_storeu_ps(p, _mm512_add_ps(_mm512_loadu_ps(p), _mm512_mul_ps(wv, x)));
+            };
+            match ints {
+                Ints::I16(xs) => {
+                    for (a, x) in chunks.iter_mut().zip(xs.as_chunks::<16>().0) {
+                        add(a.as_mut_ptr(), _mm512_cvtepi16_epi32(_mm256_loadu_si256(x.as_ptr().cast())));
+                    }
+                }
+                Ints::I24(hs, ls) => {
+                    for (a, (h, l)) in chunks.iter_mut().zip(hs.as_chunks::<16>().0.iter().zip(ls.as_chunks::<16>().0)) {
+                        let h = _mm512_cvtepi16_epi32(_mm256_loadu_si256(h.as_ptr().cast()));
+                        let l = _mm512_cvtepu8_epi32(_mm_loadu_si128(l.as_ptr().cast()));
+                        add(a.as_mut_ptr(), _mm512_or_si512(_mm512_slli_epi32(h, 8), l));
+                    }
+                }
+            }
+        }
+        ints.add_tail(done, w, tail);
+        true
+    }
+
+    /// Integer samples of frames `[at, at + n)`, for the vector kernels;
+    /// `None` for other formats or out of range.
+    #[inline(always)]
+    fn ints(&self, at: usize, n: usize) -> Option<Ints<'_>> {
+        let samples = 2 * at..2 * (at + n);
+        match self {
+            Self::I16(d) => Some(Ints::I16(d.get(samples)?)),
+            Self::I24(high, low) => Some(Ints::I24(high.get(samples.clone())?, low.get(samples)?)),
+            _ => None,
+        }
     }
 
     #[inline(always)]
@@ -334,6 +409,37 @@ impl Pcm {
             Self::Packed(_) => unreachable!(),
         }
         true
+    }
+}
+
+/// Borrowed integer samples, interleaved (see [`Pcm::I24`]).
+#[derive(Clone, Copy)]
+enum Ints<'a> {
+    I16(&'a [i16]),
+    I24(&'a [i16], &'a [u8]),
+}
+
+impl Ints<'_> {
+    /// Full scale as a gain.
+    #[inline(always)]
+    fn gain(self) -> f32 {
+        match self {
+            Self::I16(_) => 1.0 / I16_SCALE,
+            Self::I24(..) => 1.0 / I24_SCALE,
+        }
+    }
+
+    /// `acc[k] += w[k & 1] * sample(from + k)`: the samples a vector pass left.
+    #[inline(always)]
+    fn add_tail(self, from: usize, w: [f32; 2], acc: &mut [f32]) {
+        for (k, a) in acc.iter_mut().enumerate() {
+            let i = from + k;
+            let x = match self {
+                Self::I16(xs) => i32::from(xs[i]),
+                Self::I24(hs, ls) => i32::from(hs[i]) << 8 | i32::from(ls[i]),
+            };
+            *a += w[k & 1] * x as f32;
+        }
     }
 }
 
@@ -1159,10 +1265,28 @@ mod tests {
             // Weighted sums straight from storage match decoding first, bit for bit.
             for (pcm, len) in [(pcm, 131), (Pcm::pack(&frames, false), 77)] {
                 let w = [0.37, -1.3];
-                let mut acc: Vec<Frame> = (0..len).map(|i| [i as f32 * 0.01, 0.5]).collect();
-                let want: Vec<Frame> = acc.iter().zip(&frames[100..]).map(|(a, x)| [a[0] + w[0] * x[0], a[1] + w[1] * x[1]]).collect();
-                assert!(pcm.accumulate(100, w, &mut acc));
-                assert_eq!(acc, want);
+                let start: Vec<Frame> = (0..len).map(|i| [i as f32 * 0.01, 0.5]).collect();
+                let want: Vec<Frame> = start.iter().zip(&frames[100..]).map(|(a, x)| [a[0] + w[0] * x[0], a[1] + w[1] * x[1]]).collect();
+                // Every kernel this CPU runs, not only the one dispatch picks.
+                let mut kernels: Vec<fn(&Pcm, usize, [f32; 2], &mut [Frame]) -> bool> = vec![Pcm::accumulate, Pcm::accumulate_body];
+                #[cfg(target_arch = "x86_64")]
+                {
+                    if std::arch::is_x86_feature_detected!("avx2") {
+                        // SAFETY: the running CPU supports AVX2.
+                        kernels.push(|p, at, w, acc| unsafe { p.accumulate_avx2(at, w, acc) });
+                    }
+                    if avx512() {
+                        // SAFETY: the running CPU supports AVX-512 F, BW and VL.
+                        kernels.push(|p, at, w, acc| unsafe { p.accumulate_avx512(at, w, acc) });
+                    }
+                }
+                for kernel in kernels {
+                    let mut acc = start.clone();
+                    assert!(kernel(&pcm, 100, w, &mut acc));
+                    assert_eq!(acc, want);
+                    assert!(!kernel(&pcm, 1000 - len + 1, w, &mut acc));
+                }
+                let mut acc = start.clone();
                 assert!(!pcm.accumulate(1000 - len + 1, w, &mut acc));
             }
         }
