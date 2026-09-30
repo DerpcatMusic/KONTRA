@@ -24,6 +24,7 @@ mod header;
 mod instrument;
 mod keyboard;
 mod menu;
+mod mixer;
 mod panel;
 mod picker;
 mod rack;
@@ -184,8 +185,15 @@ impl Watch {
                 });
             (view.parts.iter().any(|v| v.loading), pending)
         };
+        // Meters read their atomics as they are laid out: while any shows a
+        // level, frames run on the animation clock; the fall to silence
+        // changes the signature, so the last one draws them empty.
+        let m = &p.shared.meters;
+        let sounding = (m.parts.iter().chain(&m.buses).chain([&m.master]))
+            .any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
+        sounding.hash(&mut h);
         // Progress and the sweep redraw on the animation's own clock.
-        let animate = loading && due(self.frame_at, ANIMATION_MS);
+        let animate = (loading || sounding) && due(self.frame_at, ANIMATION_MS);
         if animate {
             self.frame_at = Some(now);
         }
@@ -240,6 +248,7 @@ impl Appearance {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Rack,
+    Mixer,
     Mapping,
     Info,
 }
@@ -282,9 +291,21 @@ struct EditorState {
     cursor: Option<String>,
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
+    /// A bus's name while it is being edited.
+    renaming_bus: Option<(usize, String)>,
+    /// Buses below this index show a mixer strip even when unused.
+    buses_shown: usize,
     /// Each library's color and backdrop, from its artwork, worked out once.
     tints: HashMap<String, Option<Color>>,
     backdrops: HashMap<String, Option<Arc<Image>>>,
+    thumbs: HashMap<String, Arc<Image>>,
+    banners: HashMap<String, Arc<Image>>,
+    /// The keys the selected part's instrument maps, and which instrument.
+    mapped: (std::sync::Weak<import::Instrument>, [bool; 128]),
+    /// The browser's files by library: of which scan, root and kind.
+    libraries: (std::sync::Weak<Vec<PathBuf>>, String, bool, Arc<Libraries>),
+    /// Each part's performance view as last read.
+    panels: HashMap<usize, panel::Cache>,
     started: Instant,
     /// The computer keyboard's octave, velocity and held keys.
     computer: Arc<computer::Computer>,
@@ -312,6 +333,31 @@ impl EditorState {
 }
 
 impl EditorState {
+    /// `library`'s artwork at twice `size`, for a crisp thumbnail that
+    /// scales nothing as it is drawn; made once.
+    fn thumbnail(&mut self, view: &View, library: &str, size: (f64, f64)) -> Option<Arc<Image>> {
+        // Artwork still being scanned is looked for again next frame.
+        if let Some(t) = self.thumbs.get(library) {
+            return Some(t.clone());
+        }
+        let (w, h) = ((size.0 * 2.).round() as u32, (size.1 * 2.).round() as u32);
+        let t = Arc::new(crate::artwork::thumbnail(view.artwork.get(library)?, w, h)?);
+        self.thumbs.insert(library.to_owned(), t.clone());
+        Some(t)
+    }
+
+    /// `library`'s artwork as a header banner `size` (logical) at twice the
+    /// pixels, once; artwork still being scanned is looked for again.
+    fn banner(&mut self, view: &View, library: &str, size: (f64, f64)) -> Option<Arc<Image>> {
+        if let Some(b) = self.banners.get(library) {
+            return Some(b.clone());
+        }
+        let (w, h) = ((size.0 * 2.).round() as u32, (size.1 * 2.).round() as u32);
+        let b = Arc::new(crate::artwork::banner(view.artwork.get(library)?, w, h)?);
+        self.banners.insert(library.to_owned(), b.clone());
+        Some(b)
+    }
+
     /// `library`'s artwork made a backdrop, once.
     fn backdrop(&mut self, view: &View, library: &str) -> Option<Arc<Image>> {
         self.backdrops
@@ -321,9 +367,12 @@ impl EditorState {
     }
 }
 
+/// The browser's files by library name, as indices into the scan.
+type Libraries = std::collections::BTreeMap<String, Vec<usize>>;
+
 /// One frame's inputs: the loader's view, the rack being edited, the editor state.
 struct Cx<'a> {
-    p: &'a SamplerParams,
+    p: &'a Arc<SamplerParams>,
     view: &'a View,
     selection: Selection,
     state: &'a mut EditorState,
@@ -669,8 +718,15 @@ fn build(
         menu: None,
         cursor: None,
         renaming: None,
+        renaming_bus: None,
+        buses_shown: 1,
         tints: HashMap::new(),
         backdrops: HashMap::new(),
+        thumbs: HashMap::new(),
+        banners: HashMap::new(),
+        mapped: (std::sync::Weak::new(), [false; 128]),
+        libraries: Default::default(),
+        panels: HashMap::new(),
         started: Instant::now(),
         computer,
         gliss: None,
@@ -724,7 +780,7 @@ fn build(
             .browser
             .then(|| browser::sidebar(ui, &mut cx).w(browser_w));
         let splitter = cx.state.browser.then(|| splitter(ui, &mut cx, browser_w));
-        let main = main_view(ui, &mut cx);
+        let main = main_view(ui, &mut cx, bridge);
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
         let ghost = ghost(ui, &cx);
@@ -860,10 +916,11 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
 }
 
 /// View tabs over the rack, or over the selected part's mapping or details.
-fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
+fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
     let mut tabs = Vec::new();
     for (tab, label, id) in [
         (Tab::Rack, "Rack", "tab-rack"),
+        (Tab::Mixer, "Mixer", "tab-mixer"),
         (Tab::Mapping, "Mapping", "tab-mapping"),
         (Tab::Info, "Info", "tab-info"),
     ] {
@@ -888,6 +945,8 @@ fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
     let slot = cx.state.selected;
     if cx.state.tab == Tab::Rack {
         content.push(rack::view(ui, cx));
+    } else if cx.state.tab == Tab::Mixer {
+        content.push(mixer::view(ui, cx, bridge));
     } else if cx.part().is_none() {
         content.push(instrument::welcome(cx));
     } else {

@@ -91,13 +91,31 @@ fn sentence(text: &str) -> String {
 }
 
 /// `slot`'s performance controls, rebuilt natively, or a word on why there are none.
+/// Everything [`stage`] reads, hashed: while it holds, the stage is kept as
+/// drawn and not built again.
+pub fn stage_deps(cx: &Cx, slot: usize) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let v = &cx.view.parts[slot];
+    let at = |a: Option<*const ()>| a.map_or(0, |p| p as usize);
+    let mut h = DefaultHasher::new();
+    slot.hash(&mut h);
+    at(v.interface.as_ref().map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
+    at(instrument_of(cx, slot).map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
+    (Arc::as_ptr(&v.pictures) as usize, &v.interface_status).hash(&mut h);
+    if let (Some(cache), Some(interface)) = (cx.state.panels.get(&slot), &v.interface) {
+        panel::values(cache, interface).hash(&mut h);
+    }
+    cx.state.held.filter(|(p, ..)| *p == slot).map(|(_, c, v)| (c, v.to_bits())).hash(&mut h);
+    h.finish()
+}
+
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let v = &cx.view.parts[slot];
     let loaded = instrument_of(cx, slot).is_some();
     let scripted = instrument_of(cx, slot).is_some_and(|i| !i.scripts.is_empty());
     let sections = match &v.interface {
-        Some(interface) if loaded => panel::sections(interface, &v.pictures),
-        _ => Vec::new(),
+        Some(interface) if loaded => panel::cached(cx.state.panels.entry(slot).or_default(), interface, &v.pictures),
+        _ => Arc::default(),
     };
     if !sections.is_empty() {
         return panel::view(ui, cx, slot, &sections).id(format!("stage-{slot}"));

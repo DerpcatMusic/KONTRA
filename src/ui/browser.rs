@@ -11,6 +11,7 @@ use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::Fit;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// What the lower pane lists.
 #[derive(Clone, PartialEq, Eq)]
@@ -28,10 +29,19 @@ pub const SPLIT_MAX: f64 = 0.7;
 pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let view = cx.view;
     let multis = cx.state.multis;
-    let mut libraries = BTreeMap::<String, Vec<&PathBuf>>::new();
-    for file in view.files.iter().filter(|f| import::is_multi(f) == multis) {
-        libraries.entry(cx.library_of(file)).or_default().push(file);
+    // Which library each file is in, worked out once per scan.
+    let (files, root, kind, grouped) = &mut cx.state.libraries;
+    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &view.files)) || *root != view.root || *kind != multis {
+        let mut by: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (n, file) in view.files.iter().enumerate().filter(|(_, f)| import::is_multi(f) == multis) {
+            by.entry(super::library_of(&view.root, file)).or_default().push(n);
+        }
+        (*files, *root, *kind, *grouped) = (Arc::downgrade(&view.files), view.root.clone(), multis, Arc::new(by));
     }
+    let libraries: BTreeMap<String, Vec<&PathBuf>> = grouped
+        .iter()
+        .map(|(name, files)| (name.clone(), files.iter().map(|&n| &view.files[n]).collect()))
+        .collect();
     // Favorites and recents of the kind picked.
     let kind = |paths: &[String]| -> Vec<PathBuf> {
         paths
@@ -103,9 +113,9 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             Source::Library(name) => (
                 library_label(name),
                 libraries[name].len(),
-                match view.artwork.get(name) {
+                match cx.state.thumbnail(view, name, THUMB) {
                     Some(image) => block(THUMB.0, THUMB.1)
-                        .fill(Fill::Image(image.clone(), Fit::Cover))
+                        .fill(Fill::Image(image, Fit::Cover))
                         .shrink(0),
                     None => symbol(Icon::Sidebar),
                 },

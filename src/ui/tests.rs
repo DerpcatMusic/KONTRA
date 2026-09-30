@@ -173,7 +173,7 @@ fn a_narrow_header_gives_the_name_its_line() {
         h.idle(2);
         let scene = h.ui.scene().unwrap();
         let frame = |id: &str| scene.surface(id).unwrap().frame;
-        let (name, port) = (frame("name-0"), frame("port-0"));
+        let (name, port) = (frame("name-0"), frame("midi-0"));
         assert_eq!(port.y > name.y + name.size.height, below, "at {width}");
     }
 }
@@ -232,11 +232,24 @@ fn rack_interactions() {
     h.press("tab-rack");
     h.press("mute-0");
     assert!(parts(&p)[0].mute);
-    for (id, text) in [("output-0", "4"), ("channel-0", "2"), ("port-0", "2")] {
-        h.type_into(id, text);
+    // The routing menus: output st.4, channel 2, then port B (after a rule and a heading).
+    for (menu, item) in [("output-0", 3), ("midi-0", 2), ("midi-0", 20)] {
+        h.press(menu);
+        h.press(&format!("menu-item-{item}"));
     }
     let part = &parts(&p)[0];
     assert_eq!((part.output, part.channel, part.port), (3, 1, 1));
+    // Pan, gain and tune drag up; a double-click brings each back.
+    for id in ["pan-0", "volume-0", "tune-0"] {
+        let at = center(&h.ui, id);
+        for dy in [0., -5., -20.] {
+            h.tick(pointer(Point::new(at.x, at.y + dy), true));
+        }
+        h.tick(pointer(Point::new(at.x, at.y - 20.), false));
+        h.idle(30);
+    }
+    let part = &parts(&p)[0];
+    assert!(part.pan > 0. && part.gain > 0. && part.tune > 0., "{} {} {}", part.pan, part.gain, part.tune);
 
     h.press("collapse-0");
     assert!(parts(&p)[0].collapsed, "the chevron folds a part");
@@ -520,6 +533,206 @@ fn search_groups_results_by_library() {
     );
 }
 
+/// The owner's library instruments named in `names` (comma-separated stems).
+fn library_instruments(files: &[PathBuf], names: &str) -> Vec<Arc<import::Instrument>> {
+    names
+        .split(',')
+        .filter_map(|name| files.iter().find(|p| p.file_stem().is_some_and(|n| n == name)))
+        .filter_map(|p| import::read(p).ok())
+        .map(Arc::new)
+        .collect()
+}
+
+/// `i`'s scripts run, and `KONTAKTO_PRESS="$var=1,$other=2"` edits made
+/// (a page switch, say) as a player would.
+fn scripted(i: &import::Instrument) -> crate::plugin::ScriptView {
+    let Some(mut rt) = load_scripts(i, i.script_state.clone(), 48000.).0 else {
+        return script_interface(None);
+    };
+    let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
+    // A second of audio: listeners and waits run as they would once playing.
+    let mut run = |rt: &mut crate::ksp::Runtime| (0..100).for_each(|_| rt.process(&mut engine, 480));
+    run(&mut rt);
+    for press in std::env::var("KONTAKTO_PRESS").unwrap_or_default().split(',') {
+        let Some((var, value)) = press.split_once('=') else { continue };
+        let live = script_interface(Some(&rt));
+        let control = live
+            .interface
+            .as_ref()
+            .and_then(|u| u.controls.iter().position(|c| c.variable == var));
+        if let (Some(control), Ok(value)) = (control, value.parse()) {
+            let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
+            rt.ui_control(&mut engine, live.slot, control, value);
+        }
+        run(&mut rt);
+    }
+    script_interface(Some(&rt))
+}
+
+/// A plugin whose rack holds `instruments` (when `loaded`) as the loader
+/// leaves them: scripts run, pictures read. `state` stages the
+/// screenshots' special cases.
+fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bool, state: &str) -> Arc<SamplerParams> {
+    let root = Path::new(import::LIBRARY_ROOT);
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.artwork = artwork::scan(root, files);
+        view.files = Arc::new(files.to_vec());
+        view.root = import::LIBRARY_ROOT.into();
+        for (slot, i) in instruments.iter().enumerate().filter(|_| loaded) {
+            p.selection.write().unwrap().parts.push(Part {
+                path: i.path.to_string_lossy().into(),
+                group: i.first_playable_group().unwrap_or(0) as u32,
+                ..Default::default()
+            });
+            let script = scripted(i);
+            let (interface, keys) = (script.interface, script.keys);
+            // Control pictures, as the plugin loads them: they size controls.
+            let names = interface.iter().flat_map(|u| &u.controls).filter_map(|c| {
+                match c.properties.get("$CONTROL_PAR_PICTURE") {
+                    Some(crate::ksp::Value::Text(n)) => Some(n.as_str()),
+                    _ => None,
+                }
+            });
+            let pictures = Arc::new(artwork::pictures(&i.path, names));
+            view.parts[slot] = PartView {
+                pictures,
+                wallpaper: artwork::performance(i, interface.as_ref().map(|u| u.wallpaper.as_str()))
+                    .unwrap_or(None),
+                interface,
+                keys,
+                instrument: Some(i.clone()),
+                active: i.name.clone(),
+                bytes: 180 << 20,
+                loading: state == "error" && slot == 2,
+                status: if state == "error" && slot == 0 {
+                    "Load failed: missing sample data in archive".into()
+                } else {
+                    format!("{} groups · {} zones", i.groups.len(), i.zones.len())
+                },
+                ..Default::default()
+            };
+        }
+    }
+    p.selection.write().unwrap().appearance = match state {
+        "color" => 1,
+        "artwork" => 2,
+        _ => 0,
+    };
+    if state == "playing" {
+        // Keys sounding, soft to hard, on screen and from the host; a keyswitch.
+        for (note, velocity) in [(15, 100), (48, 40), (52, 127)] {
+            p.shared.played[note].store(velocity, Ordering::Relaxed);
+        }
+        for (note, velocity) in [(55, 90), (58, 110), (61, 30)] {
+            p.shared.heard[note].store(velocity, Ordering::Relaxed);
+        }
+    }
+    p
+}
+
+/// Prints a library instrument's script controls as authored and as the
+/// panel reads them. `KONTAKTO_SHOT` names it; run with `--ignored --nocapture`.
+#[test]
+#[ignore]
+fn dump_panel() {
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let names = std::env::var("KONTAKTO_SHOT").unwrap_or_default();
+    for i in library_instruments(&files, &names) {
+        let script = scripted(&i);
+        for (note, k) in script.keys.iter() {
+            println!("key {note} {:?} {:?}", k.color, k.name);
+        }
+        let (lo, hi) = i.zones.iter().filter(|z| z.available).fold((127, 0), |(l, h), z| (z.low_key.min(l), z.high_key.max(h)));
+        println!("zones span {lo}..={hi}");
+        let Some(interface) = script.interface else { continue };
+        println!("== {} ({}x{})", i.name, interface.width, interface.height);
+        for (n, c) in interface.controls.iter().enumerate() {
+            let prop = |k: &str| c.properties.get(&format!("$CONTROL_PAR_{k}")).map(|v| format!("{v:?}")).unwrap_or_default();
+            println!(
+                "{n:3} {:12} {:28} x{} y{} w{} h{} hide{} text={} pic={} val={}",
+                c.kind, c.variable, prop("POS_X"), prop("POS_Y"), prop("WIDTH"), prop("HEIGHT"),
+                prop("HIDE"), prop("TEXT"), prop("PICTURE"), prop("VALUE")
+            );
+        }
+        let names = interface.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+            Some(crate::ksp::Value::Text(n)) => Some(n.as_str()),
+            _ => None,
+        });
+        let pictures = artwork::pictures(&i.path, names);
+        let t = std::time::Instant::now();
+        let sections = panel::sections(&interface, &pictures);
+        println!("{sections:#?}\nsections in {} us", t.elapsed().as_micros());
+    }
+}
+
+/// What one frame costs, in microseconds: the view's build plus layout and
+/// paint-list resolve, and a CPU raster of the result (a stand-in for the
+/// GPU's share). `KONTAKTO_SHOT` picks the rack; run with `--ignored`.
+#[test]
+#[ignore]
+fn frame_cost() {
+    use moose::mui::mui::vello::{
+        self,
+        vello_cpu::{Pixmap, RenderContext, Resources},
+    };
+    use std::time::Instant;
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
+        "03 Areia - 6 Celli - Core Techniques,Vista - 3 Cellos,Una Corda Pure".into()
+    });
+    let instruments = library_instruments(&files, &chosen);
+    let p = racked(&files, &instruments, true, "perform");
+    let (w, hgt) = (1600u16, 1000u16);
+    let mut h = Harness::new(&p, f64::from(w), f64::from(hgt));
+    h.idle(10);
+    let mut raster = RenderContext::new(w, hgt);
+    let mut resources = Resources::default();
+    let mut cache = vello::Cache::default();
+    let mut pix = Pixmap::new(w, hgt);
+    let mut measure = |h: &mut Harness, label: &str, input: &mut dyn FnMut(usize) -> Input| {
+        let n = 120;
+        let (mut frame, mut paint) = (Vec::new(), Vec::new());
+        for i in 0..n {
+            let t = Instant::now();
+            h.tick(input(i));
+            frame.push(t.elapsed().as_secs_f64() * 1e6);
+            let t = Instant::now();
+            raster.reset();
+            vello::paint(
+                &mut vello::Cpu { ctx: &mut raster, resources: &mut resources, cache: &mut cache },
+                h.ui.scene().unwrap(),
+                vello::kurbo::Affine::IDENTITY,
+            )
+            .unwrap();
+            raster.flush();
+            raster.render(&mut pix, &mut resources);
+            paint.push(t.elapsed().as_secs_f64() * 1e6);
+        }
+        // The median, and the least: a busy machine delays some frames,
+        // never speeds one up.
+        let spread = |v: &mut Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            (v[v.len() / 2], v[0])
+        };
+        let ((fm, fl), (pm, pl)) = (spread(&mut frame), spread(&mut paint));
+        println!("{label:>10}: build+layout {fm:>6.0} us (min {fl:>5.0})   cpu paint {pm:>6.0} us (min {pl:>5.0})");
+    };
+    measure(&mut h, "idle", &mut |_| Input::default());
+    let knob = center(&h.ui, "volume-0");
+    measure(&mut h, "dragging", &mut |i| {
+        pointer(Point::new(knob.x, knob.y - (i % 40) as f64), i % 60 != 59)
+    });
+    h.idle(3);
+    let shared = p.clone();
+    measure(&mut h, "keys", &mut |i| {
+        let note = 48 + (i % 24);
+        shared.shared.played[note].store(if i % 2 == 0 { 100 } else { 0 }, Ordering::Relaxed);
+        Input::default()
+    });
+}
+
 /// Renders the editor in its main states to `.impeccable/review/` (git-ignored)
 /// for a visual check. Uses the owner's library when present.
 #[test]
@@ -528,23 +741,13 @@ fn screenshot() {
         self,
         vello_cpu::{Pixmap, RenderContext, Resources},
     };
-    let root = Path::new(import::LIBRARY_ROOT);
-    let files = import::presets(root).unwrap_or_default();
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
     // KONTAKTO_SHOT="Name A,Name B" renders other instruments in the rack slots.
     let chosen = std::env::var("KONTAKTO_SHOT")
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
-    let instruments: Vec<_> = chosen
-        .split(',')
-        .filter_map(|name| {
-            files
-                .iter()
-                .find(|p| p.file_stem().is_some_and(|n| n == name))
-        })
-        .filter_map(|p| import::read(p).ok())
-        .map(Arc::new)
-        .collect();
+    let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 15] = [
+    let states: [(&str, bool, &[&str]); 17] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -560,71 +763,47 @@ fn screenshot() {
         ("playing", true, &["qwerty"]),
         ("color", true, &[]),
         ("artwork", true, &[]),
+        ("folded", true, &["collapse-0", "collapse-1"]),
+        ("mixer", true, &["tab-mixer"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
     let wanted = |state: &str| only.is_empty() || only.split(',').any(|s| s == state);
+    // KONTAKTO_WIDTHS="900,2000" renders those window widths instead.
+    let widths = std::env::var("KONTAKTO_WIDTHS").unwrap_or_else(|_| "1180,900".into());
+    let sizes: Vec<(u16, u16)> = widths
+        .split(',')
+        .filter_map(|w| w.trim().parse().ok())
+        .map(|w: u16| (w, if w < 1000 { 600 } else if w > 1500 { 1000 } else { 760 }))
+        .collect();
     for (state, loaded, presses) in states.into_iter().filter(|(s, ..)| wanted(s)) {
-        for (width, height) in [(1180u16, 760u16), (900, 600)] {
-            let p = Arc::new(SamplerParams::new());
-            {
-                let mut view = p.shared.view.lock().unwrap();
-                view.artwork = artwork::scan(root, &files);
-                view.files = Arc::new(files.clone());
-                view.root = import::LIBRARY_ROOT.into();
-                for (slot, i) in instruments.iter().enumerate().filter(|_| loaded) {
-                    p.selection.write().unwrap().parts.push(Part {
-                        path: i.path.to_string_lossy().into(),
-                        group: i.first_playable_group().unwrap_or(0) as u32,
-                        ..Default::default()
-                    });
-                    let script = script_interface(
-                        load_scripts(i, i.script_state.clone(), 48000.).0.as_deref(),
-                    );
-                    let (interface, keys) = (script.interface, script.keys);
-                    // Control pictures, as the plugin loads them: they size controls.
-                    let names = interface.iter().flat_map(|u| &u.controls).filter_map(|c| {
-                        match c.properties.get("$CONTROL_PAR_PICTURE") {
-                            Some(crate::ksp::Value::Text(n)) => Some(n.as_str()),
-                            _ => None,
-                        }
-                    });
-                    let pictures = Arc::new(artwork::pictures(&i.path, names));
-                    view.parts[slot] = PartView {
-                        pictures,
-                        wallpaper: artwork::performance(
-                            i,
-                            interface.as_ref().map(|u| u.wallpaper.as_str()),
-                        )
-                        .unwrap_or(None),
-                        interface,
-                        keys,
-                        instrument: Some(i.clone()),
-                        active: i.name.clone(),
-                        bytes: 180 << 20,
-                        loading: state == "error" && slot == 2,
-                        status: if state == "error" && slot == 0 {
-                            "Load failed: missing sample data in archive".into()
-                        } else {
-                            format!("{} groups · {} zones", i.groups.len(), i.zones.len())
-                        },
-                        ..Default::default()
-                    };
+        for &(width, height) in &sizes {
+            let p = racked(&files, &instruments, loaded, state);
+            if state == "mixer" {
+                // Mid-song: parts on two buses, one sending to a named third.
+                let mut selection = p.selection.write().unwrap();
+                for (slot, part) in selection.parts.iter_mut().enumerate() {
+                    part.output = [0, 0, 1][slot % 3];
+                    part.gain = [-3., 0.2, -10.][slot % 3];
+                    part.pan = [0., -0.1, 0.34][slot % 3];
                 }
-            }
-            p.selection.write().unwrap().appearance = match state {
-                "color" => 1,
-                "artwork" => 2,
-                _ => 0,
-            };
-            if state == "playing" {
-                // Keys sounding, soft to hard, on screen and from the host.
-                for (note, velocity) in [(48, 40), (52, 127)] {
-                    p.shared.played[note].store(velocity, Ordering::Relaxed);
+                if let Some(part) = selection.parts.get_mut(1) {
+                    (part.aux, part.aux_gain) = (2, -6.);
                 }
-                for (note, velocity) in [(55, 90), (58, 110), (61, 30)] {
-                    p.shared.heard[note].store(velocity, Ordering::Relaxed);
+                selection.bus_mut(2).name = "Hall".into();
+                selection.bus_mut(1).gain = -4.5;
+                drop(selection);
+                let m = &p.shared.meters;
+                for (meter, [l, r]) in m.parts.iter().zip([[0.5, 0.42], [0.9, 1.05], [0.05, 0.03]]) {
+                    meter[0].store(f32::to_bits(l), Ordering::Relaxed);
+                    meter[1].store(f32::to_bits(r), Ordering::Relaxed);
                 }
+                for (meter, [l, r]) in m.buses.iter().zip([[0.7, 0.6], [0.04, 0.03], [0.2, 0.25]]) {
+                    meter[0].store(f32::to_bits(l), Ordering::Relaxed);
+                    meter[1].store(f32::to_bits(r), Ordering::Relaxed);
+                }
+                m.master[0].store(0.3f32.to_bits(), Ordering::Relaxed);
+                m.master[1].store(0.28f32.to_bits(), Ordering::Relaxed);
             }
             let mut h = Harness::new(&p, f64::from(width), f64::from(height));
             for id in presses {
@@ -663,7 +842,7 @@ fn screenshot() {
                 visible.push("search");
             }
             if loaded {
-                visible.extend(["tab-info", "header-0"]);
+                visible.extend(["tab-info", if state == "mixer" { "master-strip" } else { "header-0" }]);
             } else {
                 visible.push("rack-drop");
             }
@@ -702,9 +881,8 @@ fn screenshot() {
     }
 }
 
-#[test]
-fn performance_controls_edit_the_script() {
-    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_knob $vibrato(0, 100, 1)\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
+/// A rack of one part running `script`, its performance view read.
+fn scripted_part(script: &str) -> Arc<SamplerParams> {
     let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
     let (rt, errors) = crate::ksp::Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
     assert!(errors.iter().all(Option::is_none), "{errors:?}");
@@ -734,11 +912,44 @@ fn performance_controls_edit_the_script() {
             kontakt_preload: 0,
         }));
     }
-    let value = |n: usize| {
-        let view = p.shared.view.lock().unwrap();
-        view.parts[0].interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"]
-            .clone()
-    };
+    p
+}
+
+/// Control `n`'s value in part 0's performance view.
+fn control_value(p: &SamplerParams, n: usize) -> crate::ksp::Value {
+    let view = p.shared.view.lock().unwrap();
+    view.parts[0].interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"].clone()
+}
+
+/// Wide switches stacked at one pitch, one set, read as a list: each row
+/// named by its label, with its on/off as a check box and its keyswitch; a
+/// row the script hid below the fold comes back.
+#[test]
+fn an_articulation_list_picks_one_and_turns_rows_on() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $art0\nmove_control_px($art0, 10, 50)\nset_control_par(get_ui_id($art0), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art0), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $art1\nmove_control_px($art1, 10, 72)\nset_control_par(get_ui_id($art1), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art1), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $art2\nmove_control_px($art2, 10, 94)\nset_control_par(get_ui_id($art2), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art2), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $art3\nmove_control_px($art3, 10, 116)\nset_control_par(get_ui_id($art3), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art3), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name0(1,1)\nset_text($name0, \"Sustain\")\nmove_control_px($name0, 10, 50)\nset_control_par(get_ui_id($name0), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name0), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name1(1,1)\nset_text($name1, \"Staccato\")\nmove_control_px($name1, 10, 72)\nset_control_par(get_ui_id($name1), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name1), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name2(1,1)\nset_text($name2, \"Pizzicato\")\nmove_control_px($name2, 10, 94)\nset_control_par(get_ui_id($name2), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name2), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name3(1,1)\nset_text($name3, \"Tremolo\")\nmove_control_px($name3, 10, 116)\nset_control_par(get_ui_id($name3), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name3), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $onoff0\nmove_control_px($onoff0, 10, 50)\nset_control_par(get_ui_id($onoff0), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff0), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_switch $onoff1\nmove_control_px($onoff1, 10, 72)\nset_control_par(get_ui_id($onoff1), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff1), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_switch $onoff2\nmove_control_px($onoff2, 10, 94)\nset_control_par(get_ui_id($onoff2), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff2), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_switch $onoff3\nmove_control_px($onoff3, 10, 116)\nset_control_par(get_ui_id($onoff3), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff3), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_label $key0(1,1)\nset_text($key0, \"C#-0\")\nmove_control_px($key0, 90, 52)\ndeclare ui_label $key1(1,1)\nset_text($key1, \"C#-1\")\nmove_control_px($key1, 90, 74)\ndeclare ui_label $key2(1,1)\nset_text($key2, \"C#-2\")\nmove_control_px($key2, 90, 96)\ndeclare ui_label $key3(1,1)\nset_text($key3, \"C#-3\")\nmove_control_px($key3, 90, 118)\n$art0 := 1\nset_control_par(get_ui_id($art3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nset_control_par(get_ui_id($name3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nset_control_par(get_ui_id($onoff3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nset_control_par(get_ui_id($key3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nend on");
+    let mut h = Harness::new(&p, 1180., 760.);
+    let scene = h.ui.scene().unwrap();
+    for n in [0, 1, 2, 3] {
+        assert!(scene.surface(&format!("ksp-0-{n}")).is_some(), "row {n} is shown");
+        assert!(scene.surface(&format!("ksp-0-{}", n + 8)).is_some(), "row {n}'s check box");
+    }
+    // The labels and keyswitches are part of the rows, not controls.
+    assert!(scene.surface("ksp-0-4").is_none() && scene.surface("ksp-0-12").is_none());
+    h.press("ksp-0-2");
+    assert_eq!(control_value(&p, 2), crate::ksp::Value::Int(1), "a row picks its choice");
+    let check = center(&h.ui, "ksp-0-9");
+    h.tick(pointer(check, true));
+    h.tick(pointer(check, false));
+    h.idle(3);
+    assert_eq!(control_value(&p, 9), crate::ksp::Value::Int(1), "a check box turns its row on");
+    assert_eq!(control_value(&p, 1), crate::ksp::Value::Int(0), "and does not pick the row");
+}
+
+#[test]
+fn performance_controls_edit_the_script() {
+    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_knob $vibrato(0, 100, 1)\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
+    let p = scripted_part(script);
+    let value = |n: usize| control_value(&p, n);
     let mut h = Harness::new(&p, 1180., 760.);
 
     h.press("ksp-0-0");
@@ -813,4 +1024,161 @@ fn library_is_the_first_folder_under_the_root() {
     assert_eq!(at("/libs/", "/libs//Solo/a.nki"), "Solo");
     assert_eq!(at("/libs", "/libsX/Solo/a.nki"), "");
     assert_eq!(at("/libs", "/other/a.nki"), "");
+}
+
+/// The window as pixels, RGBA, painted from the last frame's scene.
+fn pixels(ui: &Ui, width: u16, height: u16) -> Vec<u8> {
+    use moose::mui::mui::vello::{
+        self,
+        vello_cpu::{Pixmap, RenderContext, Resources},
+    };
+    let mut ctx = RenderContext::new(width, height);
+    let mut resources = Resources::default();
+    vello::paint(
+        &mut vello::Cpu {
+            ctx: &mut ctx,
+            resources: &mut resources,
+            cache: &mut vello::Cache::default(),
+        },
+        ui.scene().unwrap(),
+        vello::kurbo::Affine::IDENTITY,
+    )
+    .unwrap();
+    ctx.flush();
+    let mut pix = Pixmap::new(width, height);
+    ctx.render(&mut pix, &mut resources);
+    pix.take_unpremultiplied()
+        .iter()
+        .flat_map(|p| [p.r, p.g, p.b, p.a])
+        .collect()
+}
+
+fn two_parts() -> Arc<SamplerParams> {
+    let p = Arc::new(SamplerParams::new());
+    for name in ["Piano", "Strings"] {
+        p.selection.write().unwrap().parts.push(Part {
+            path: format!("/virtual/Library/{name}.nki"),
+            ..Default::default()
+        });
+    }
+    p
+}
+
+/// Routing from the mixer: menus pick a part's output, send and MIDI
+/// input and a bus's host port; a strip dropped on a bus routes it there.
+#[test]
+fn mixer_routing_edits() {
+    let p = two_parts();
+    let part = |p: &SamplerParams, n: usize| p.selection.read().unwrap().parts[n].clone();
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("tab-mixer");
+    let shows = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
+    assert!(shows(&h, "strip-0") && shows(&h, "strip-1") && shows(&h, "master-strip"));
+    assert!(shows(&h, "bus-0") && !shows(&h, "bus-2"), "only buses in use");
+
+    h.press("mix-out-0");
+    h.press("menu-item-2");
+    assert_eq!(part(&p, 0).output, 2, "the output menu routes");
+    assert!(shows(&h, "bus-2"), "a bus in use gets its strip");
+
+    // No send, a rule, then st.1…: the fourth bus.
+    h.press("mix-aux-1");
+    h.press("menu-item-5");
+    assert_eq!(part(&p, 1).aux, 3);
+    assert!(shows(&h, "bus-3"));
+
+    // Omni, channels 1–16, a rule, a heading, ports A–D.
+    h.press("mix-in-1");
+    h.press("menu-item-3");
+    h.press("mix-in-1");
+    h.press("menu-item-20");
+    assert_eq!((part(&p, 1).port, part(&p, 1).channel), (1, 2));
+
+    h.drag("mix-name-1", "bus-2");
+    assert_eq!(part(&p, 1).output, 2, "a strip dropped on a bus plays through it");
+
+    h.press("solo-mix-0");
+    h.press("mute-bus-2");
+    assert!(part(&p, 0).solo);
+    assert!(p.selection.read().unwrap().bus(2).mute);
+
+    h.press("bus-port-2");
+    h.press("menu-item-5");
+    assert_eq!(p.selection.read().unwrap().bus(2).port, 5);
+
+    assert!(!shows(&h, "bus-1"));
+    h.press("mix-add-bus");
+    assert!(shows(&h, "bus-1"), "+ shows the next bus");
+
+    // Right-click: Rename…, Reset, a rule, Route to…
+    p.selection.write().unwrap().parts[0].gain = -6.;
+    h.idle(2);
+    let at = center(&h.ui, "strip-0");
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input {
+            pointer: PointerInput {
+                pos: Some(at),
+                buttons,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    }
+    h.idle(2);
+    h.press("menu-item-1");
+    assert_eq!((part(&p, 0).gain, part(&p, 0).solo), (0., false), "Reset");
+    assert_eq!(part(&p, 0).output, 2, "and the routing stays");
+}
+
+/// A meter is a canvas that reads the audio thread's level as the scene is
+/// walked: the same tree, framed again, shows the new level. The editor
+/// asks for frames only while a meter moves.
+#[test]
+fn mixer_meters_paint_without_a_rebuild() {
+    let p = two_parts();
+    let (width, height) = (1180u16, 760u16);
+    let mut h = Harness::new(&p, f64::from(width), f64::from(height));
+    h.press("tab-mixer");
+    let root = (h.build)(&mut h.ui, &mut h.bridge);
+    h.ui.frame(root.clone(), Some(h.size), Input::default(), 0.).unwrap();
+    let quiet = pixels(&h.ui, width, height);
+    for m in &p.shared.meters.parts[0] {
+        m.store(0.8f32.to_bits(), Ordering::Relaxed);
+    }
+    h.ui.frame(root, Some(h.size), Input::default(), 0.).unwrap();
+    let loud = pixels(&h.ui, width, height);
+    let r = h.ui.scene().unwrap().surface("mix-fader-0-meter").unwrap().frame;
+    let x = (r.x + 1.) as usize;
+    let at = |y: usize| (y * usize::from(width) + x) * 4;
+    let lit = (r.y as usize..(r.y + r.size.height) as usize)
+        .filter(|&y| quiet[at(y)..at(y) + 4] != loud[at(y)..at(y) + 4])
+        .count();
+    assert!(lit as f64 > r.size.height / 2., "the meter shows the level: {lit} rows");
+
+    static DISK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let meters = Meters::default();
+    let mut watch = Watch {
+        disk_counter: Some(&DISK),
+        ..Watch::default()
+    };
+    let computer = computer::Computer::default();
+    let mut changed = || watch.changed(&p, &meters, &computer);
+    let settle = Duration::from_millis(ANIMATION_MS + 5);
+    let level = |v: f32| {
+        for m in &p.shared.meters.parts[0] {
+            m.store(v.to_bits(), Ordering::Relaxed);
+        }
+    };
+    level(0.);
+    changed();
+    std::thread::sleep(settle);
+    assert!(!changed(), "silent meters ask for nothing");
+    level(0.5);
+    std::thread::sleep(settle);
+    assert!(changed(), "a moving meter asks for a frame");
+    level(0.);
+    std::thread::sleep(settle);
+    assert!(changed(), "and one more to draw it empty");
+    std::thread::sleep(settle);
+    assert!(!changed(), "silent meters ask for nothing");
 }

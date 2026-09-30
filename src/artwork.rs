@@ -360,6 +360,73 @@ fn decode(bytes: &[u8]) -> Option<Image> {
     };
     Image::rgba(info.width, info.height, rgba)
 }
+/// `image` cropped to cover `w` × `h` from its middle and shrunk to it by
+/// area averaging, once, so a list of thumbnails scales nothing per frame.
+pub fn thumbnail(image: &Image, w: u32, h: u32) -> Option<Image> {
+    let (sw, sh) = (image.width as f64, image.height as f64);
+    if sw == 0. || sh == 0. || w == 0 || h == 0 {
+        return None;
+    }
+    let scale = (f64::from(w) / sw).max(f64::from(h) / sh);
+    let (cw, ch) = (f64::from(w) / scale, f64::from(h) / scale);
+    let (x0, y0) = ((sw - cw) / 2., (sh - ch) / 2.);
+    let px = image.rgba.as_chunks::<4>().0;
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let (top, bottom) = (y0 + f64::from(y) * ch / f64::from(h), y0 + f64::from(y + 1) * ch / f64::from(h));
+        for x in 0..w {
+            let (left, right) = (x0 + f64::from(x) * cw / f64::from(w), x0 + f64::from(x + 1) * cw / f64::from(w));
+            let (mut sum, mut n) = ([0u32; 4], 0u32);
+            for sy in top as usize..(bottom.ceil() as usize).min(image.height as usize).max(top as usize + 1) {
+                for sx in left as usize..(right.ceil() as usize).min(image.width as usize).max(left as usize + 1) {
+                    let c = px[sy * image.width as usize + sx];
+                    (0..4).for_each(|k| sum[k] += u32::from(c[k]));
+                    n += 1;
+                }
+            }
+            rgba.extend(sum.map(|s| (s / n.max(1)) as u8));
+        }
+    }
+    Image::rgba(w, h, rgba)
+}
+
+/// The artwork as a header banner, after Kontakt 8's: cropped to cover
+/// `w` x `h`, every banner brought to one dim level with its contrast and
+/// color held down so a white title reads over any of it, and fading from
+/// opaque at the left to nothing at the right.
+pub fn banner(image: &Image, w: u32, h: u32) -> Option<Image> {
+    // The level every banner sits at, how much of its contrast and color
+    // stays, and the brightest it gets (of 255).
+    const LEVEL: f32 = 52.;
+    const CONTRAST: f32 = 0.45;
+    const COLOR: f32 = 0.55;
+    const PEAK: f32 = 96.;
+    let crop = thumbnail(image, w, h)?;
+    let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let pixels = crop.rgba.as_chunks::<4>().0;
+    let rgb = |c: &[u8; 4]| [0, 1, 2].map(|k| f32::from(c[k]));
+    let mean = pixels.iter().map(|c| luma(rgb(c))).sum::<f32>() / pixels.len() as f32;
+    let gain = LEVEL / mean.max(1.);
+    let rgba = pixels
+        .iter()
+        .enumerate()
+        .flat_map(|(i, c)| {
+            let c = rgb(c);
+            let l = luma(c);
+            // Contrast around the level, then a soft knee under the peak;
+            // color only ever loses strength, dark artwork lifted or not.
+            let lit = LEVEL + (l * gain - LEVEL) * CONTRAST;
+            let lit = PEAK * (1. - (-lit.max(0.) / PEAK).exp()) * 1.3;
+            let [r, g, b] = c.map(|v| (lit + (v - l) * COLOR * gain.min(1.)).clamp(0., 255.) as u8);
+            let t = (i as u32 % w) as f32 / (w - 1).max(1) as f32;
+            let s = ((t - 0.1) / 0.9).clamp(0., 1.);
+            let fade = 1. - s * s * (3. - 2. * s);
+            [r, g, b, (255. * fade) as u8]
+        })
+        .collect::<Vec<u8>>();
+    Image::rgba(w, h, rgba)
+}
+
 /// The artwork as a backdrop to play over: shrunk to a few dozen pixels
 /// (which blurs it once scaled back up), blurred again, mostly drained of
 /// color and darkened well below the text drawn on it.
@@ -532,6 +599,32 @@ mod tests {
         assert_eq!(super::Layout::parse("").frames, 1);
         assert_eq!(super::png_name("../x"), None);
         assert_eq!(super::png_name("knob").as_deref(), Some("knob.png"));
+    }
+
+    #[test]
+    fn thumbnails_cover_from_the_middle() {
+        // Wide artwork: left third red, middle green, right third blue.
+        let rgba: Vec<u8> = (0..60)
+            .flat_map(|x| match x / 20 {
+                0 => [255, 0, 0, 255],
+                1 => [0, 255, 0, 255],
+                _ => [0, 0, 255, 255],
+            })
+            .collect::<Vec<u8>>()
+            .repeat(20);
+        let image = super::Image::rgba(60, 20, rgba).unwrap();
+        let t = super::thumbnail(&image, 2, 2).unwrap();
+        assert_eq!((t.width, t.height), (2, 2));
+        assert_eq!(&t.rgba[..4], &[0, 255, 0, 255], "a square crop keeps the middle");
+    }
+
+    #[test]
+    fn banners_fade_right_and_stay_dim() {
+        let white = super::Image::rgba(40, 10, vec![255u8; 40 * 10 * 4]).unwrap();
+        let b = super::banner(&white, 20, 4).unwrap();
+        let px = b.rgba.as_chunks::<4>().0;
+        assert_eq!((px[0][3], px[19][3]), (255, 0), "opaque at the left, gone at the right");
+        assert!(px.iter().all(|p| p[..3].iter().all(|&c| c < 110)), "white artwork dims under a title");
     }
 
     #[test]
