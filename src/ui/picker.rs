@@ -95,7 +95,7 @@ fn show(ask: Ask) -> Option<Picked> {
                 .set_title("Save the rack as a multi")
                 .set_directory(from)
                 .set_file_name(format!("{name}.{}", crate::import::SAVED_MULTI))
-                .add_filter("KONTAKTO multi", &[crate::import::SAVED_MULTI])
+                .add_filter("KONTRA multi", &[crate::import::SAVED_MULTI])
                 .save_file()
                 .map(Picked::Multi)
         }

@@ -622,12 +622,12 @@ impl Shared {
         self.audition.store(true, Ordering::Release);
     }
 }
-/// A rack KONTAKTO saved: a `.kontakto-multi` file, JSON. An NKM would have
+/// A rack KONTRA saved: a `.kontra-multi` file, JSON. An NKM would have
 /// to embed every instrument's program, which nothing here writes, so this
 /// names the instruments instead:
 ///
 /// ```json
-/// { "format": "kontakto-multi", "version": 1, "name": "Evening",
+/// { "format": "kontra-multi", "version": 1, "name": "Evening",
 ///   "parts": [ { "path": "/…/Piano.nki", "program": 0,
 ///                "channel": -1, "port": 0, "output": 0,
 ///                "gain": 0.0, "pan": 0.0, "tune": 0.0,
@@ -651,7 +651,7 @@ pub struct SavedMulti {
 }
 
 impl SavedMulti {
-    const FORMAT: &str = "kontakto-multi";
+    const FORMAT: &str = "kontra-multi";
 
     /// The rack in `selection`, in its order.
     pub fn of(name: &str, selection: &Selection) -> Self {
@@ -679,8 +679,11 @@ impl SavedMulti {
 
     pub fn read(path: &Path) -> anyhow::Result<Self> {
         let multi: Self = serde_json::from_slice(&std::fs::read(path)?)?;
-        anyhow::ensure!(multi.format == Self::FORMAT, "Not a KONTAKTO multi");
-        anyhow::ensure!(multi.version <= 1, "Saved by a newer KONTAKTO");
+        anyhow::ensure!(
+            [Self::FORMAT, "kontakto-multi"].contains(&multi.format.as_str()),
+            "Not a KONTRA multi"
+        );
+        anyhow::ensure!(multi.version <= 1, "Saved by a newer KONTRA");
         Ok(multi)
     }
 }
@@ -1892,7 +1895,7 @@ mod tests {
     #[test]
     fn saved_multi_round_trips_through_the_browser_and_loader() {
         let root = std::env::temp_dir().join(format!("kontakto-multi-{}", std::process::id()));
-        let path = root.join("Multis").join("Evening.kontakto-multi");
+        let path = root.join("Multis").join("Evening.kontra-multi");
         let rack = Selection {
             root: root.to_string_lossy().into_owned(),
             parts: vec![

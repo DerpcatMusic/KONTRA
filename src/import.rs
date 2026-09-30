@@ -582,9 +582,11 @@ impl Resolver {
 }
 
 pub fn catalog(root: &Path) -> Result<Vec<PathBuf>> {Ok(presets(root)?.into_iter().filter(|p|!is_multi(p)).collect())}
-/// The extension of a rack KONTAKTO saved itself; see `plugin::SavedMulti`.
-pub const SAVED_MULTI: &str = "kontakto-multi";
-pub fn is_saved_multi(path:&Path)->bool {path.extension().is_some_and(|x|x.eq_ignore_ascii_case(SAVED_MULTI))}
+/// The extension of a rack KONTRA saved itself; see `plugin::SavedMulti`.
+pub const SAVED_MULTI: &str = "kontra-multi";
+/// The extension racks had before the rename; still opened.
+pub const OLD_SAVED_MULTI: &str = "kontakto-multi";
+pub fn is_saved_multi(path:&Path)->bool {path.extension().is_some_and(|x|x.eq_ignore_ascii_case(SAVED_MULTI) || x.eq_ignore_ascii_case(OLD_SAVED_MULTI))}
 pub fn is_multi(path:&Path)->bool {is_saved_multi(path) || path.extension().is_some_and(|x|x.eq_ignore_ascii_case("nkm"))}
 pub fn presets(root: &Path) -> Result<Vec<PathBuf>> {
     ensure!(root.is_dir(), "Library folder does not exist: {}", root.display());

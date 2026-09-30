@@ -108,7 +108,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
 
     strip(vec![
         browser_el,
-        body("KONTAKTO")
+        body("KONTRA")
             .text_size(TEXT + 1.)
             .text_weight(Weight::BOLD)
             .fill(Role::Ink)

@@ -1,15 +1,15 @@
 [vendor]
-name = "Derpcat"
-id = "audio.derpcat"
-url = "https://github.com/DerpcatMusic"
-au_manufacturer = "Dcat"
+name = "Matari Audio"
+id = "audio.matari"
+url = "https://github.com/Matari-Audio"
+au_manufacturer = "Mtri"
 
 [[plugin]]
-name = "Kontakto"
-bundle_id = "kontakto"
+name = "KONTRA"
+bundle_id = "kontra"
 crate = "kontakto"
 category = "instrument"
-fourcc = "Knto"
+fourcc = "Kntr"
 vst3_subcategory = "Sampler"
 
 midi_input = true
