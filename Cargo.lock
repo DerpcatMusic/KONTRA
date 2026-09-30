@@ -1520,6 +1520,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 name = "kontakto"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "anyhow",
  "clap-sys",
  "crossbeam-queue",
@@ -2250,7 +2251,6 @@ dependencies = [
 name = "ni-file"
 version = "0.0.1"
 dependencies = [
- "aes",
  "binread",
  "color-eyre",
  "encoding_rs",

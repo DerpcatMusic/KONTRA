@@ -598,7 +598,7 @@ pub struct Source {
     file: PathBuf,
     offset: u64,
     len: Option<u64>,
-    key: Option<Arc<LibraryKey>>,
+    key: Option<Arc<dyn LibraryKey>>,
 }
 
 /// Resolves sample paths, caching archive indexes and library keys.
@@ -613,7 +613,7 @@ pub struct Sources {
 struct Indexed {
     index: Archive,
     file: File,
-    key: OnceLock<Result<Option<Arc<LibraryKey>>, String>>,
+    key: OnceLock<Result<Option<Arc<dyn LibraryKey>>, String>>,
 }
 
 impl Sources {
@@ -651,9 +651,7 @@ impl Sources {
         let key = if entry.encoded && entry.key_index != 0xff {
             ensure!(entry.key_index == 0x100, "Unsupported legacy NKX cipher");
             let key = indexed.key.get_or_init(|| {
-                crate::import::library_key(&archive)
-                    .map(|key| key.map(Arc::new))
-                    .map_err(|e| format!("{e:#}"))
+                crate::access::library_key(&archive).map_err(|e| format!("{e:#}"))
             });
             Some(
                 key.clone()
@@ -771,7 +769,7 @@ struct Bytes {
     base: u64,
     len: u64,
     pos: u64,
-    key: Option<Arc<LibraryKey>>,
+    key: Option<Arc<dyn LibraryKey>>,
     /// Count reads in [`DISK_READ`].
     counted: bool,
 }

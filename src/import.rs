@@ -144,8 +144,8 @@ fn nis_payload(n:ni_file::nis::ItemContainer,path:&Path,depth:usize)->Result<Vec
     }
     Ok(match Repository::from(n).infer_schema() {
             NISObject::BNISoundPreset(p) => {
-                let key = library_key(path)?;
-                let enc = p.encryption_item_with_key(key.as_ref()).context("NIS preset subtree")?;
+                let key = if p.is_encrypted()? { crate::access::library_key(path)? } else { None };
+                let enc = p.encryption_item_with_key(key.as_deref()).context("NIS preset subtree")?;
                 ni_file::nis::schema::PresetChunkItem::from(enc.subtree.item()?).properties()?.0
             },
             _ => bail!("Unsupported NIS preset structure"),
@@ -656,33 +656,6 @@ impl Instrument {
             zones.peek().is_some() && zones.all(|z|z.available)
         })
     }
-}
-
-/// Read only the access fields supplied with this library; never log or persist them.
-pub(crate) fn library_key(path: &Path) -> Result<Option<ni_file::nis::LibraryKey>> {
-    for parent in path.ancestors().skip(1) {
-        for entry in std::fs::read_dir(parent)? {
-            let file = entry?.path();
-            if !file.extension().is_some_and(|e| e.eq_ignore_ascii_case("nicnt")) { continue; }
-            // Product XML precedes artwork. Bound reads even for malformed containers.
-            let mut bytes = Vec::new();
-            File::open(&file)?.take(64 * 1024).read_to_end(&mut bytes)?;
-            fn field<const N: usize>(bytes: &[u8], tag: &[u8]) -> Option<[u8; N]> {
-                let start = bytes.windows(tag.len()).position(|w| w == tag)? + tag.len();
-                let text = bytes.get(start..start + N * 2)?;
-                let mut out = [0; N];
-                for (dest, pair) in out.iter_mut().zip(text.chunks_exact(2)) {
-                    *dest = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-                }
-                (bytes.get(start + N * 2) == Some(&b'<')).then_some(out)
-            }
-            if let (Some(key), Some(iv)) = (field::<32>(&bytes, b"<JDX>"), field::<16>(&bytes, b"<HU>")) {
-                return Ok(Some(ni_file::nis::LibraryKey::new(key, iv)));
-            }
-        }
-        if parent.join("Samples").is_dir() { break; }
-    }
-    Ok(None)
 }
 
 #[cfg(test)]

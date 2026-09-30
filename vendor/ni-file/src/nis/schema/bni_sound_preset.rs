@@ -23,7 +23,13 @@ impl BNISoundPreset {
             .ok_or(Error::Static("No EncryptionItem"))?
     }
 
-    pub fn encryption_item_with_key(&self, key: Option<&crate::nis::LibraryKey>) -> Result<EncryptionItem, Error> {
+    /// Whether the preset subtree is encrypted (needs a key to read).
+    pub fn is_encrypted(&self) -> Result<bool, Error> {
+        let frame = self.0.find_data(&ItemType::EncryptionItem).ok_or(Error::Static("No EncryptionItem"))?;
+        Ok(frame.data.get(4).is_some_and(|b| *b != 0))
+    }
+
+    pub fn encryption_item_with_key(&self, key: Option<&dyn crate::nis::LibraryKey>) -> Result<EncryptionItem, Error> {
         let frame = self.0.find_data(&ItemType::EncryptionItem).ok_or(Error::Static("No EncryptionItem"))?;
         EncryptionItem::read_with_key(frame, key)
     }
