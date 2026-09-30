@@ -40,8 +40,11 @@ pub struct Part {
     pub script_state: String,
     /// The name the player gave the part; empty shows the instrument's.
     pub name: String,
-    /// The rack shows only the part's header, not its performance view.
+    /// The rack shows only the part's header, one slim line of it.
     pub collapsed: bool,
+    /// The part's height in the rack, header and all, when the player sized
+    /// it; 0 shows all of its performance view.
+    pub height: f32,
     /// Output bus (0..[`BUSES`]) the part also sends to, post-fader; -1 for none.
     pub aux: i16,
     /// Level of that send in dB (-60..=6).
@@ -83,6 +86,7 @@ impl Default for Part {
             script_state: String::new(),
             name: String::new(),
             collapsed: false,
+            height: 0.,
             aux: -1,
             aux_gain: 0.,
             streaming: None,
@@ -149,6 +153,11 @@ pub struct Selection {
     /// What plays behind a part's controls: 0 plain, 1 its library's
     /// color, 2 its library's artwork.
     pub appearance: u8,
+    /// Library artwork behind parts and in their headers shows sharp, not blurred.
+    pub sharp_artwork: bool,
+    /// Part headers scroll away with their parts instead of stacking at the
+    /// rack's top and bottom edges.
+    pub sticky_off: bool,
     /// Output buses by index; shorter than [`BUSES`] when the rest are default.
     pub buses: Vec<Bus>,
     /// Where samples play from, for parts that do not choose
@@ -1838,6 +1847,8 @@ mod tests {
             browser_width: 300.,
             browser_split: 0.4,
             appearance: 2,
+            sharp_artwork: true,
+            sticky_off: true,
             streaming: Streaming::RamOnly,
             buses: vec![
                 Bus::default(),

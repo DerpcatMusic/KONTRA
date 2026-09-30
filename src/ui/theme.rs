@@ -564,6 +564,17 @@ impl Fader {
     }
 }
 
+thread_local! {
+    /// A control turned by the wheel since [`wheel_taken`] last looked.
+    static WHEELED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a control took the wheel since the last call: a list that
+/// scrolls itself asks, so the wheel over a knob turns the knob alone.
+pub fn wheel_taken() -> bool {
+    WHEELED.with(|w| w.replace(false))
+}
+
 /// Pointer, wheel and keys on a continuous control `id`: drag across
 /// `travel` px (Shift is fine), wheel and arrows step, double-click resets.
 pub fn drive(
@@ -579,6 +590,7 @@ pub fn drive(
     let r = ui.get(id);
     ui.drag(id, value, range.clone(), travel, vertical);
     if let Some(wheel) = ui.wheel(id) {
+        WHEELED.with(|w| w.set(true));
         let step = (hi - lo) / if r.mods.shift { 500. } else { 50. };
         let dir = if wheel.y.abs() >= wheel.x.abs() {
             -wheel.y
