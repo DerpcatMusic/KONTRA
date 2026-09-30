@@ -472,3 +472,26 @@ fn performance_controls_edit_the_script() {
         "a menu item sets the menu"
     );
 }
+
+#[test]
+fn idle_editor_rebuilds_at_the_loader_poll_rate() {
+    let p = Arc::new(SamplerParams::new());
+    let mut changed = outside_changes(p.clone());
+    assert!(changed(), "the first tick builds");
+    assert!(!changed(), "nothing moved: no rebuild");
+    p.shared.voices.store(3, Ordering::Relaxed);
+    assert!(changed(), "a voice count change rebuilds at once");
+    std::thread::sleep(Duration::from_millis(110));
+    assert!(changed(), "the loader's view is picked up every 100 ms");
+    p.shared.view.lock().unwrap().parts[0].loading = true;
+    assert!(changed() && changed(), "loading animates every tick");
+}
+
+#[test]
+fn library_is_the_first_folder_under_the_root() {
+    let at = |root: &str, path: &str| library_of(root, Path::new(path));
+    assert_eq!(at("/libs", "/libs/Solo/Instruments/a.nki"), "Solo");
+    assert_eq!(at("/libs/", "/libs//Solo/a.nki"), "Solo");
+    assert_eq!(at("/libs", "/libsX/Solo/a.nki"), "");
+    assert_eq!(at("/libs", "/other/a.nki"), "");
+}

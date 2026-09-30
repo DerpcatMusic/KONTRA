@@ -455,6 +455,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         GetEventPar => {
             let [id, p] = ints(m);
             let v = m.env.events.get(id).map_or(0, |e| match p {
+                // Only a sounding voice has a zone; scripts read 0 as "voice gone" to
+                // retire tracked notes (legato scripts pick the transition from them).
+                // A released event reads 0 at once, though its tail may still sound.
+                // ponytail: the engine does not report which zone a voice plays, so a
+                // normally mapped voice reads 1; plumb the zone index if a script needs it.
+                par::ZONE_ID if !e.voice.is_some_and(|v| m.engine.voice_active(v)) => 0,
+                par::ZONE_ID => e.zone.max(1),
                 par::PAR_0..=par::PAR_3 => e.pars[p as usize],
                 par::VOLUME => e.volume,
                 par::TUNE => e.tune,
@@ -462,7 +469,6 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 par::NOTE => e.note,
                 par::VELOCITY => e.velocity,
                 par::SOURCE => e.source,
-                par::ZONE_ID => e.zone,
                 _ => 0,
             });
             push_int(m, v)

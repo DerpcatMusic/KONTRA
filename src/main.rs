@@ -59,7 +59,7 @@ fn main() -> Result<()> {
   Some("bench-load") => for p in &args[2..] {bench_load(Path::new(p))?},
   Some("bench-stream") => bench_stream(Path::new(args.get(2).context("bench-stream requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(64),args.get(4).map(|s|s.parse()).transpose()?.unwrap_or(10.0))?,
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]"),
  }
  Ok(())
 }
@@ -185,6 +185,10 @@ fn play(engine: &mut Engine, &(_, on, note, velocity): &NoteInput) {
     }
 }
 
+fn seconds_of(frames: u64) -> f64 {
+    frames as f64 / RATE
+}
+
 /// Load an instrument's scripts for `engine`, reporting slot errors.
 fn install_scripts(engine: &mut Engine, instrument: &import::Instrument) {
     let (script, errors) = load_scripts(instrument, instrument.script_state.clone(), engine.rate());
@@ -202,7 +206,7 @@ fn install_scripts(engine: &mut Engine, instrument: &import::Instrument) {
 /// channel 1 (times in ms), before notes at the same time.
 fn render(args: &[String]) -> Result<()> {
     let flag = |name: &str| args.iter().any(|a| a == name);
-    let (dry, no_script) = (flag("--dry"), flag("--no-script"));
+    let (dry, no_script, realtime) = (flag("--dry"), flag("--no-script"), flag("--realtime"));
     let option = |name: &str| {
         args.iter()
             .position(|a| a == name)
@@ -263,7 +267,9 @@ fn render(args: &[String]) -> Result<()> {
         });
     let streamed = bank.streamed_samples();
     let mut engine = Engine::default();
-    engine.blocking_streams = true;
+    // `--realtime` plays like the plugin: blocks at their wall-clock deadline,
+    // late disk data as silence.
+    engine.blocking_streams = !realtime;
     engine.set_bank(Some(Box::new(bank)));
     if !dry {
         engine.set_fx(instrument.fx.processor(engine.rate() as f32, MAX_BLOCK));
@@ -300,7 +306,12 @@ fn render(args: &[String]) -> Result<()> {
     let (min_frames, max_frames) = ((4.0 * RATE) as u64, (60.0 * RATE) as u64);
     let (mut frame, mut next, mut voices_end, mut last_audible) = (0u64, 0, None, 0);
     let mut next_cc = 0;
+    let started = std::time::Instant::now();
     loop {
+        if realtime {
+            let due = started + std::time::Duration::from_secs_f64(seconds_of(frame));
+            std::thread::sleep(due.saturating_duration_since(std::time::Instant::now()));
+        }
         while let Some(&(_, cc, value)) = ccs.get(next_cc).filter(|e| e.0 <= frame) {
             engine.cc(0, cc, value);
             next_cc += 1;
@@ -369,13 +380,14 @@ fn render(args: &[String]) -> Result<()> {
         played += &format!(" · {} CC changes", ccs.len());
     }
     println!(
-        "{} · {groups} · {played} · {scripts} · {fx} · {:.2} s · peak {peak:.6} · RMS {rms:.6} · max step {jump:.6} at {:.3} s · sound until {:.2} s (last note-off {:.2} s) · {tail} · {streamed} streamed samples · {} underruns",
+        "{} · {groups} · {played} · {scripts} · {fx} · {:.2} s · peak {peak:.6} · RMS {rms:.6} · max step {jump:.6} at {:.3} s · sound until {:.2} s (last note-off {:.2} s) · {tail} · {streamed} streamed samples · {} underruns · {} dropped script commands",
         instrument.name,
         seconds(frame),
         seconds(jump_at),
         seconds(last_audible),
         seconds(last_off),
-        engine.underruns()
+        engine.underruns(),
+        engine.dropped_commands()
     );
     if let Some(rt) = engine.script() {
         for line in rt.diagnostics() {
