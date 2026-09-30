@@ -227,6 +227,8 @@ pub struct Shared {
     pub(crate) view: Mutex<View>,
     /// Voices sounding across the rack, reported by the audio thread.
     pub(crate) voices: AtomicU64,
+    /// Of those, the ones not muted by their scripts: the ones rendered.
+    pub(crate) audible: AtomicU64,
     /// Audio thread load (`f32` bits): render time over block time, peak-held.
     pub(crate) cpu: AtomicU64,
     /// Voice blocks whose streamed samples were not read in time (played
@@ -307,6 +309,7 @@ impl Default for Shared {
             midi_thru: AtomicBool::new(false),
             multi_request: Mutex::new(None),
             voices: AtomicU64::new(0),
+            audible: AtomicU64::new(0),
             cpu: AtomicU64::new(0),
             dropouts: AtomicU64::new(0),
             view: Mutex::new(View {
@@ -1413,6 +1416,8 @@ impl PluginLogic for Sampler {
         }
         let voices: usize = s.rack.parts.iter().map(Engine::active_voices).sum();
         p.shared.voices.store(voices as u64, Ordering::Relaxed);
+        let audible: usize = s.rack.parts.iter().map(Engine::audible_voices).sum();
+        p.shared.audible.store(audible as u64, Ordering::Relaxed);
         let dropouts: u64 = (s.rack.parts.iter())
             .map(|e| e.underruns() + e.dropped_commands())
             .sum();
@@ -1554,7 +1559,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     let transport = TransportInfo::default();
     let mut data = vec![vec![0f32; FRAMES]; 2 * BUSES];
     let mut outgoing = EventList::with_capacity(64);
-    let instructions = Counter::open(1);
+    let (instructions, cycles) = (Counter::open(1), Counter::open(0));
     let mut process = |dsp: &mut Dsp, events: &EventList| {
         let mut channels: Vec<_> = data.iter_mut().map(|v| v.as_mut_slice()).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, FRAMES);
@@ -1565,11 +1570,13 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         outgoing.clear();
         let mut cx = ProcessContext::new(&transport, RATE, FRAMES, &mut outgoing)
             .with_bus_routing(routing);
-        let count = || instructions.as_ref().map_or(0, Counter::read);
-        let (started, cpu, before) = (Instant::now(), thread_cpu(), count());
+        let count = |c: &Option<Counter>| c.as_ref().map_or(0, Counter::read);
+        let (started, cpu) = (Instant::now(), thread_cpu());
+        let before = (count(&instructions), count(&cycles));
         Sampler::process(dsp, &p, &mut buffer, events, &mut cx);
-        let millions = (count() - before) as f64 * 1e-6;
-        (started.elapsed().as_secs_f64() * 1e3, (thread_cpu() - cpu) * 1e3, millions)
+        let millions = (count(&instructions) - before.0) as f64 * 1e-6;
+        let spent = (count(&cycles) - before.1) as f64 * 1e-6;
+        (started.elapsed().as_secs_f64() * 1e3, (thread_cpu() - cpu) * 1e3, millions, spent)
     };
     Sampler::reset(
         &mut dsp,
@@ -1607,7 +1614,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     let (mut held, mut started) = (std::collections::VecDeque::new(), 0usize);
     let mut events = EventList::with_capacity(64);
     // Idle instructions per block, so playing ones divide into a cost per voice.
-    let mut idle = 0.;
+    let (mut idle, mut idle_cycles) = (0., 0.);
     println!("resident after load: {:.0} MiB", rss_mib());
     // Idle again after playing: voices and streams have ended and must cost nothing.
     for (phase, playing) in [("idle", false), ("playing", true), ("after", false)] {
@@ -1616,8 +1623,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         }
         let process_cpu = cpu_clock(2);
         let (mut times, mut cpus) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
-        let mut counts = Vec::with_capacity(blocks);
-        let (mut voices, mut cpu, mut voice_blocks) = (0, 0f32, 0usize);
+        let (mut counts, mut cycle_counts) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
+        let (mut voices, mut cpu, mut voice_blocks, mut audible_blocks) = (0, 0f32, 0usize, 0usize);
         let start = Instant::now();
         for b in 0..blocks {
             events.clear();
@@ -1641,12 +1648,14 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
                 held.push_back(key);
                 started += 1;
             }
-            let (wall, cpu_ms, millions) = process(&mut dsp, &events);
+            let (wall, cpu_ms, millions, spent) = process(&mut dsp, &events);
+            cycle_counts.push(spent);
             times.push(wall);
             cpus.push(cpu_ms);
             counts.push(millions);
             let now = p.shared.voices.load(Ordering::Relaxed);
             (voices, voice_blocks) = (voices.max(now), voice_blocks + now as usize);
+            audible_blocks += dsp.rack.parts.iter().map(|e| e.audible_voices()).sum::<usize>();
             cpu = cpu.max(f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32));
             if let Some(wait) = (start + block * (b + 1) as u32).checked_duration_since(Instant::now()) {
                 std::thread::sleep(wait);
@@ -1661,9 +1670,10 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         }
         let deadline = FRAMES as f64 / RATE * 1e3;
         let mean_voices = voice_blocks as f64 / times.len() as f64;
+        let mean_audible = audible_blocks as f64 / times.len() as f64;
         let whole = (cpu_clock(2) - process_cpu) / start.elapsed().as_secs_f64();
         println!(
-            "{phase}: {} blocks · mean {mean_voices:.0}, peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core",
+            "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core",
             times.len(),
             cpu * 100.,
             whole * 100.
@@ -1673,11 +1683,20 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             sorted.sort_by(f64::total_cmp);
             let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
             let mean = counts.iter().sum::<f64>() / counts.len() as f64;
+            let mean_cycles = cycle_counts.iter().sum::<f64>() / cycle_counts.len() as f64;
             let per_voice = if playing && mean_voices >= 1. {
-                format!(" · {:.1} k per voice", (mean - idle) * 1e3 / mean_voices)
+                let voice_frames = mean_voices * FRAMES as f64;
+                let audible_frames = mean_audible.max(1.) * FRAMES as f64;
+                format!(
+                    " · {:.1} k per voice · {:.1} instructions, {:.1} cycles per voice-frame · {:.1} cycles per audible voice-frame",
+                    (mean - idle) * 1e3 / mean_voices,
+                    (mean - idle) * 1e6 / voice_frames,
+                    (mean_cycles - idle_cycles) * 1e6 / voice_frames,
+                    (mean_cycles - idle_cycles) * 1e6 / audible_frames,
+                )
             } else {
                 if phase == "idle" {
-                    idle = mean;
+                    (idle, idle_cycles) = (mean, mean_cycles);
                 }
                 String::new()
             };

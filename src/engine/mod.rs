@@ -313,6 +313,11 @@ impl Engine {
         self.player.voices.len()
     }
 
+    /// Voices not muted: those rendered, and heard.
+    pub fn audible_voices(&self) -> usize {
+        self.player.voices.iter().filter(|v| v.gains != [0.0; 2]).count()
+    }
+
     /// What each playing voice is, for diagnostics: group, whether it was
     /// released or release-triggered, streams, and its channel gain and
     /// envelope level at the end of the last block.

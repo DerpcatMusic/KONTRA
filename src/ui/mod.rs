@@ -147,6 +147,7 @@ impl Watch {
             ((self.cpu * 100.).round() as u32).hash(&mut h);
             ((self.disk * 10.).round() as u32).hash(&mut h);
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
+            p.shared.audible.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
             self.readouts = h.finish();
         }
