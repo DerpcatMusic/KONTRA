@@ -1033,13 +1033,16 @@ pub struct Dsp {
     script_epoch: [u64; RACK_SLOTS],
     /// The lent live view and persistence snapshot being refreshed, a budget
     /// a block: slot, epoch and [`Runtime::changes`] at the start, buffer, progress.
-    live: Option<(usize, (u64, u64), Box<Live>, Refresh)>,
-    snapshot: Option<(usize, (u64, u64), Box<Vec<Persisted>>, Refresh)>,
+    live: Option<Lent<Box<Live>>>,
+    snapshot: Option<Lent<Box<Vec<Persisted>>>>,
     /// Per slot, epoch and changes the buffers last refreshed whole hold:
     /// while the scripts do not run they are current and need no refresh.
     live_seen: [(u64, u64); RACK_SLOTS],
     snapshot_seen: [(u64, u64); RACK_SLOTS],
 }
+/// A lent buffer being refreshed: slot, epoch and changes at the start,
+/// the buffer, progress.
+type Lent<T> = (usize, (u64, u64), T, Refresh);
 /// Script values copied into a lent buffer per block: large tables take
 /// several blocks rather than one long one.
 const REFRESH_BUDGET: usize = 16384;

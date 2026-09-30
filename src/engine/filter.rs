@@ -477,10 +477,11 @@ impl Section {
                 let out = |s1: __m128, s2: __m128, x: __m128| {
                     _mm_add_ps(_mm_add_ps(_mm_mul_ps(c1, s1), _mm_mul_ps(c2, s2)), _mm_mul_ps(d, x))
                 };
-                let mut ls = left.chunks_exact_mut(2);
-                let mut rs = right.chunks_exact_mut(2);
-                for (l, r) in (&mut ls).zip(&mut rs) {
-                    let load = |p: &[f32]| _mm_castsi128_ps(_mm_loadl_epi64(p.as_ptr().cast()));
+                let n = left.len().min(right.len());
+                let (ls, l_rest) = left[..n].as_chunks_mut::<2>();
+                let (rs, r_rest) = right[..n].as_chunks_mut::<2>();
+                for (l, r) in ls.iter_mut().zip(rs) {
+                    let load = |p: &[f32; 2]| _mm_castsi128_ps(_mm_loadl_epi64(p.as_ptr().cast()));
                     // [l0, r0, l1, r1]
                     let x = _mm_unpacklo_ps(load(l), load(r));
                     let (x0, x1) = (_mm_movelh_ps(x, x), _mm_movehl_ps(x, x));
@@ -495,7 +496,7 @@ impl Section {
                     (s1, s2) = (_mm_movehl_ps(t1, t1), _mm_movehl_ps(t2, t2));
                 }
                 // An odd last frame steps once, on the low lanes.
-                if let (Some(l), Some(r)) = (ls.into_remainder().first_mut(), rs.into_remainder().first_mut()) {
+                if let (Some(l), Some(r)) = (l_rest.first_mut(), r_rest.first_mut()) {
                     let x = _mm_unpacklo_ps(_mm_load_ss(l), _mm_load_ss(r));
                     let x0 = _mm_movelh_ps(x, x);
                     let (t1, t2) = step(s1, s2, _mm_mul_ps(q1, x0), _mm_mul_ps(q2, x0));
