@@ -1447,11 +1447,6 @@ pub(crate) struct ScriptView {
 
 moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 
-/// Host-shaped timing: the parts at `paths` in the rack, `Sampler::process`
-/// called at real-time pace for 512-frame blocks at 48 kHz on sixteen
-/// active stereo ports, with the loader running every 100 ms as the host's
-/// task does. First `seconds` idle, then `seconds` with `notes` held notes
-/// on every part, one replaced every `1 s / notes`. Prints block times.
 /// This thread's CPU time in seconds (Linux), which a busy machine's
 /// preemption does not inflate the way wall time does; 0 elsewhere.
 fn thread_cpu() -> f64 {
@@ -1473,6 +1468,51 @@ fn thread_cpu() -> f64 {
     #[cfg(not(target_os = "linux"))]
     0.0
 }
+/// This thread's user-space instruction or cycle count from the CPU's
+/// counters (Linux x86-64, where `perf_event_open` is allowed). Instructions
+/// are the same run to run however busy the machine is, so small changes
+/// compare where timings drown in noise.
+struct Counter(i32);
+impl Counter {
+    fn open(config: u64) -> Option<Self> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            unsafe extern "C" {
+                fn syscall(n: i64, ...) -> i64;
+            }
+            // perf_event_attr, version 5 (112 bytes): hardware `config`,
+            // user space only (exclude_kernel, exclude_hv), enabled.
+            let mut attr = [0u64; 14];
+            attr[0] = 112 << 32;
+            attr[1] = config;
+            attr[5] = (1 << 5) | (1 << 6);
+            // SAFETY: perf_event_open(attr, this thread, any CPU, no group, no flags).
+            let fd = unsafe { syscall(298, attr.as_ptr(), 0i32, -1i32, -1i32, 0u64) };
+            (fd >= 0).then_some(Self(fd as i32))
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = config;
+            None
+        }
+    }
+
+    fn read(&self) -> u64 {
+        unsafe extern "C" {
+            fn read(fd: i32, buf: *mut u64, n: usize) -> isize;
+        }
+        let mut value = 0;
+        // SAFETY: reads one u64 count from the counter's descriptor.
+        unsafe { read(self.0, &mut value, 8) };
+        value
+    }
+}
+/// Host-shaped timing: the parts at `paths` in the rack, `Sampler::process`
+/// called at real-time pace for 512-frame blocks at 48 kHz on sixteen
+/// active stereo ports, with the loader running every 100 ms as the host's
+/// task does. First `seconds` idle, then `seconds` with `notes` held notes
+/// on every part, one replaced every `1 s / notes`. Prints block times and,
+/// where the CPU's counters are readable, instructions per block.
 pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Result<()> {
     use moose::core::bus_routing::{BusActivation, BusRouting};
     use std::time::Duration;
@@ -1490,6 +1530,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     let transport = TransportInfo::default();
     let mut data = vec![vec![0f32; FRAMES]; 2 * BUSES];
     let mut outgoing = EventList::with_capacity(64);
+    let instructions = Counter::open(1);
     let mut process = |dsp: &mut Dsp, events: &EventList| {
         let mut channels: Vec<_> = data.iter_mut().map(|v| v.as_mut_slice()).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, FRAMES);
@@ -1500,9 +1541,11 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         outgoing.clear();
         let mut cx = ProcessContext::new(&transport, RATE, FRAMES, &mut outgoing)
             .with_bus_routing(routing);
-        let (started, cpu) = (Instant::now(), thread_cpu());
+        let count = || instructions.as_ref().map_or(0, Counter::read);
+        let (started, cpu, before) = (Instant::now(), thread_cpu(), count());
         Sampler::process(dsp, &p, &mut buffer, events, &mut cx);
-        (started.elapsed().as_secs_f64() * 1e3, (thread_cpu() - cpu) * 1e3)
+        let millions = (count() - before) as f64 * 1e-6;
+        (started.elapsed().as_secs_f64() * 1e3, (thread_cpu() - cpu) * 1e3, millions)
     };
     Sampler::reset(
         &mut dsp,
@@ -1544,6 +1587,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             break;
         }
         let (mut times, mut cpus) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
+        let mut counts = Vec::with_capacity(blocks);
         let (mut voices, mut cpu) = (0, 0f32);
         let start = Instant::now();
         for b in 0..blocks {
@@ -1568,9 +1612,10 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
                 held.push_back(key);
                 started += 1;
             }
-            let (wall, cpu_ms) = process(&mut dsp, &events);
+            let (wall, cpu_ms, millions) = process(&mut dsp, &events);
             times.push(wall);
             cpus.push(cpu_ms);
+            counts.push(millions);
             voices = voices.max(p.shared.voices.load(Ordering::Relaxed));
             cpu = cpu.max(f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32));
             if let Some(wait) = (start + block * (b + 1) as u32).checked_duration_since(Instant::now()) {
@@ -1586,6 +1631,18 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         }
         let deadline = FRAMES as f64 / RATE * 1e3;
         println!("{phase}: {} blocks · peak {voices} voices · peak reported CPU {:.1}%", times.len(), cpu * 100.);
+        if counts.iter().any(|&c| c > 0.) {
+            let mut sorted = counts.clone();
+            sorted.sort_by(f64::total_cmp);
+            let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
+            let mean = counts.iter().sum::<f64>() / counts.len() as f64;
+            println!(
+                "  instructions: mean {mean:.3} M/block · p50 {:.3} · p99 {:.3} · max {:.3}",
+                at(0.5),
+                at(0.99),
+                at(1.0)
+            );
+        }
         for (clock, times) in [("wall", &times), ("thread CPU", &cpus)] {
             let mut sorted = times.clone();
             sorted.sort_by(f64::total_cmp);
