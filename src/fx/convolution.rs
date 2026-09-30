@@ -1,16 +1,24 @@
-//! Zero-latency two-stage partitioned FFT convolution.
+//! Zero-latency non-uniformly partitioned FFT convolution.
 //!
 //! The head covers the first `TAIL_FACTOR * head_block` samples of the IR with
 //! small partitions and recomputes the current partial block on every call, so
-//! output has no added latency for any host block size. The tail uses large
-//! partitions computed once per tail block; its natural one-block latency lines
-//! up exactly with its IR offset.
+//! output has no added latency for any host block size. Tail stages follow,
+//! each with partitions [`STAGE_GROWTH`] times longer than the last (up to
+//! [`MAX_STAGE_BLOCK`]), computed once per stage block; a stage's natural
+//! one-block latency lines up exactly with its IR offset, which is never
+//! shorter than its block. Long partitions cut the spectral multiply-adds
+//! per frame from IR length / head block to a few dozen.
 
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex, num_complex::Complex32};
 use std::sync::Arc;
 
-/// Tail partitions are this many head blocks long.
+/// The first tail stage's partitions are this many head blocks long.
 const TAIL_FACTOR: usize = 16;
+/// Each further tail stage has partitions this many times longer…
+const STAGE_GROWTH: usize = 4;
+/// …up to this many frames: longer blocks would put ever larger FFTs into
+/// the one callback that completes them.
+const MAX_STAGE_BLOCK: usize = 16_384;
 
 /// Uniformly partitioned overlap-add convolver (`FFTConvolver` scheme).
 struct Partitioned {
@@ -183,10 +191,10 @@ fn mac_body(acc: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
     }
 }
 
-/// One channel: head (zero latency) plus optional tail.
+/// One channel: head (zero latency) plus tail stages.
 pub struct Convolver {
     head: Partitioned,
-    tail: Option<Tail>,
+    tails: Box<[Tail]>,
     scratch: Vec<f32>,
     len: usize,
     /// Sum of the IR's magnitudes from every [`QUIET_STEP`]th frame on:
@@ -211,15 +219,21 @@ impl Convolver {
         let split = (block * TAIL_FACTOR).min(ir.len());
         let mut planner = RealFftPlanner::new();
         let head = Partitioned::new(&mut planner, &ir[..split], block);
-        let tail = (split < ir.len()).then(|| {
-            let tail_block = block * TAIL_FACTOR;
-            Tail {
-                conv: Partitioned::new(&mut planner, &ir[split..], tail_block),
-                input: vec![0.0; tail_block],
-                output: vec![0.0; tail_block],
+        let mut tails = Vec::new();
+        let (mut start, mut size) = (split, block * TAIL_FACTOR);
+        while start < ir.len() {
+            let next = (size * STAGE_GROWTH).min(MAX_STAGE_BLOCK);
+            // A longer stage pays for its larger FFTs only over a few
+            // partitions; short of that, this stage takes the rest.
+            let end = if next > size && ir.len() >= 3 * next { next } else { ir.len() };
+            tails.push(Tail {
+                conv: Partitioned::new(&mut planner, &ir[start..end], size),
+                input: vec![0.0; size],
+                output: vec![0.0; size],
                 pos: 0,
-            }
-        });
+            });
+            (start, size) = (end, next);
+        }
         let mut sum = 0.0;
         let mut remaining: Vec<f32> = (ir.chunks(QUIET_STEP).rev())
             .map(|c| {
@@ -230,7 +244,7 @@ impl Convolver {
         remaining.reverse();
         Self {
             head,
-            tail,
+            tails: tails.into(),
             scratch: vec![0.0; max_block],
             len: ir.len(),
             remaining: remaining.into(),
@@ -247,7 +261,7 @@ impl Convolver {
     /// Silences the convolver's history.
     pub fn clear(&mut self) {
         self.head.clear();
-        if let Some(tail) = &mut self.tail {
+        for tail in &mut self.tails {
             tail.conv.clear();
             tail.input.fill(0.0);
             tail.output.fill(0.0);
@@ -261,24 +275,32 @@ impl Convolver {
         let (io, input) = (&mut io[..n], &mut self.scratch[..n]);
         input.copy_from_slice(io);
         self.head.process(input, io);
-        let Some(tail) = &mut self.tail else { return };
+        for tail in &mut self.tails {
+            tail.process(input, io);
+        }
+    }
+}
+
+impl Tail {
+    /// Adds the stage's output for `input` to `io`.
+    fn process(&mut self, input: &[f32], io: &mut [f32]) {
         let mut done = 0;
-        while done < n {
-            let len = (n - done).min(tail.input.len() - tail.pos);
-            let range = tail.pos..tail.pos + len;
-            tail.input[range.clone()].copy_from_slice(&input[done..done + len]);
-            for (y, t) in io[done..done + len].iter_mut().zip(&tail.output[range]) {
+        while done < input.len() {
+            let len = (input.len() - done).min(self.input.len() - self.pos);
+            let range = self.pos..self.pos + len;
+            self.input[range.clone()].copy_from_slice(&input[done..done + len]);
+            for (y, t) in io[done..done + len].iter_mut().zip(&self.output[range]) {
                 *y += t;
             }
-            tail.pos += len;
+            self.pos += len;
             done += len;
-            // Spread the tail's history sum evenly over the head blocks.
-            let count = tail.conv.count();
-            tail.conv
-                .accumulate(1 + (count - 1) * tail.pos / tail.input.len());
-            if tail.pos == tail.input.len() {
-                tail.pos = 0;
-                tail.conv.process(&tail.input, &mut tail.output);
+            // Spread the stage's history sum evenly over its block.
+            let count = self.conv.count();
+            self.conv
+                .accumulate(1 + (count - 1) * self.pos / self.input.len());
+            if self.pos == self.input.len() {
+                self.pos = 0;
+                self.conv.process(&self.input, &mut self.output);
             }
         }
     }
@@ -290,7 +312,7 @@ mod tests {
 
     fn direct(x: &[f32], h: &[f32]) -> Vec<f32> {
         (0..x.len())
-            .map(|n| (0..=n.min(h.len() - 1)).map(|k| h[k] * x[n - k]).sum())
+            .map(|n| (0..=n.min(h.len() - 1)).map(|k| f64::from(h[k]) * f64::from(x[n - k])).sum::<f64>() as f32)
             .collect()
     }
 
@@ -325,6 +347,30 @@ mod tests {
                 .map(|(a, b)| (a - b).abs())
                 .fold(0.0, f32::max);
             assert!(err < 1e-4, "block {block}: max error {err}");
+        }
+    }
+
+    #[test]
+    fn long_ir_matches_direct_convolution_through_every_stage() {
+        // Head 32, stages 512, 2048, 8192 and the capped 16384 with three
+        // partitions (block 1); head 128, stages 2048, 8192, 16384 (block 100).
+        let h: Vec<f32> = noise(60_000, 5)
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v * (-(i as f32) / 20_000.0).exp())
+            .collect();
+        let x = noise(70_000, 9);
+        let expected = direct(&x, &h);
+        let peak = expected.iter().fold(0f32, |m, v| m.max(v.abs()));
+        for block in [1, 100] {
+            let mut conv = Convolver::new(&h, block);
+            assert_eq!(conv.tails.len(), if block == 1 { 4 } else { 3 });
+            let mut y = x.clone();
+            for chunk in y.chunks_mut(block) {
+                conv.process(chunk);
+            }
+            let err = y.iter().zip(&expected).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+            assert!(err < 1e-5 * peak, "block {block}: max error {err} of peak {peak}");
         }
     }
 

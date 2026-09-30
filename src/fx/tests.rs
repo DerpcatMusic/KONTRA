@@ -306,7 +306,8 @@ fn reads_racks_slots_and_buses_from_program_bytes() {
 }
 
 /// CPU cost per effect. Run with
-/// `cargo test --release --no-default-features --lib fx::tests::bench -- --ignored --nocapture`.
+/// `cargo test --release --lib fx::tests::bench -- --ignored --nocapture`;
+/// `FX_BENCH=<name part>` runs only matching effects (for `perf stat`).
 #[test]
 #[ignore = "benchmark"]
 fn bench() {
@@ -355,7 +356,8 @@ fn bench() {
         ("convolution 2 s", with_dry(convolution(&noise_ir(2.0)))),
         ("convolution 5 s", with_dry(convolution(&noise_ir(5.0)))),
     ];
-    for (name, fx) in cases {
+    let only = std::env::var("FX_BENCH").unwrap_or_default();
+    for (name, fx) in cases.into_iter().filter(|(name, _)| name.contains(only.as_str())) {
         let mut c = chain(vec![fx]);
         let (mut l, mut r) = ramp(BLOCK);
         let (mut worst, mut hash) = (0u128, 0u64);
