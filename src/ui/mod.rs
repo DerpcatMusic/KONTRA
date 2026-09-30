@@ -220,6 +220,9 @@ struct EditorState {
     multis: bool,
     tab: Tab,
     settings: bool,
+    /// The name a "Save multi…" is typing, and why the last try failed.
+    saving: Option<String>,
+    save_error: String,
     /// The browser is shown, and how wide.
     browser: bool,
     sidebar: f64,
@@ -576,6 +579,8 @@ fn build(
         multis: false,
         tab: Tab::Rack,
         settings: false,
+        saving: None,
+        save_error: String::new(),
         browser: true,
         sidebar: SIDEBAR,
         keyboard: true,
@@ -629,6 +634,7 @@ fn build(
         shortcuts(ui, &mut cx);
         let top = header::top_bar(ui, &mut cx, bridge);
         let settings = cx.state.settings.then(|| header::settings(ui, &mut cx));
+        let saving = cx.state.saving.is_some().then(|| header::save_multi(ui, &mut cx));
         let browser_w = cx
             .state
             .sidebar
@@ -660,6 +666,7 @@ fn build(
 
         let mut shell = vec![top, header::loading_bar(&view, &p, state.started)];
         shell.extend(settings);
+        shell.extend(saving);
         let mut middle: Vec<El> = sidebar.into_iter().collect();
         middle.extend(splitter);
         middle.push(main);

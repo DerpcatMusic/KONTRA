@@ -18,7 +18,8 @@ use std::{
     time::Instant,
 };
 
-#[derive(State, Clone, PartialEq)]
+#[derive(State, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Part {
     pub path: String,
     pub group: u32,
@@ -411,6 +412,69 @@ impl Shared {
         self.audition.store(true, Ordering::Release);
     }
 }
+/// A rack KONTAKTO saved: a `.kontakto-multi` file, JSON. An NKM would have
+/// to embed every instrument's program, which nothing here writes, so this
+/// names the instruments instead:
+///
+/// ```json
+/// { "format": "kontakto-multi", "version": 1, "name": "Evening",
+///   "parts": [ { "path": "/…/Piano.nki", "program": 0,
+///                "channel": -1, "port": 0, "output": 0,
+///                "gain": 0.0, "pan": 0.0, "tune": 0.0,
+///                "mute": false, "solo": false, "collapsed": false,
+///                "name": "", "group": 4294967295, "script_state": "" } ] }
+/// ```
+///
+/// Parts are in rack order. `channel` is 0..=15 or -1 for omni; `port`
+/// 0..=3 is MIDI port A..D; `output` 0..=7 the stereo output; `gain` dB
+/// (-60..=6); `pan` -1..=1; `tune` semitones with cents as the fraction
+/// (±36); `program` picks the program inside an NKM `path`; `name` empty
+/// shows the instrument's; `group` `u32::MAX` means every group;
+/// `script_state` holds the script controls' persistent values as JSON,
+/// empty for the instrument's own. A missing field takes its default.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SavedMulti {
+    pub format: String,
+    pub version: u32,
+    pub name: String,
+    pub parts: Vec<Part>,
+}
+
+impl SavedMulti {
+    const FORMAT: &str = "kontakto-multi";
+
+    /// The rack in `selection`, in its order.
+    pub fn of(name: &str, selection: &Selection) -> Self {
+        Self {
+            format: Self::FORMAT.into(),
+            version: 1,
+            name: name.into(),
+            parts: selection
+                .order
+                .iter()
+                .filter_map(|n| selection.parts.get(*n as usize))
+                .filter(|p| !p.path.is_empty())
+                .cloned()
+                .collect(),
+        }
+    }
+
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)?;
+        }
+        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        Ok(())
+    }
+
+    pub fn read(path: &Path) -> anyhow::Result<Self> {
+        let multi: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        anyhow::ensure!(multi.format == Self::FORMAT, "Not a KONTAKTO multi");
+        anyhow::ensure!(multi.version <= 1, "Saved by a newer KONTAKTO");
+        Ok(multi)
+    }
+}
+
 pub struct Load;
 impl BackgroundTask for Load {
     type Params = SamplerParams;
@@ -420,9 +484,34 @@ impl BackgroundTask for Load {
         let requested = { params.shared.multi_request.lock().unwrap().take() };
         if let Some(path) = requested {
             let before = params.selection.read().unwrap().clone();
-            let result = import::read_multi(Path::new(&path)).and_then(|m| {
+            // A saved rack restores every setting; an NKM only its programs.
+            let result = if import::is_saved_multi(Path::new(&path)) {
+                SavedMulti::read(Path::new(&path)).map(|m| {
+                    let status = format!("{} · {} instruments", m.name, m.parts.len());
+                    (m.parts, status)
+                })
+            } else {
+                import::read_multi(Path::new(&path)).map(|m| {
+                    let parts = m
+                        .parts
+                        .iter()
+                        .map(|p| Part {
+                            path: path.clone(),
+                            program: p.program,
+                            ..Default::default()
+                        })
+                        .collect::<Vec<_>>();
+                    let status = format!(
+                        "{} · {} instruments · original multi routing/scripts unavailable",
+                        m.name,
+                        parts.len()
+                    );
+                    (parts, status)
+                })
+            }
+            .and_then(|m| {
                 anyhow::ensure!(
-                    m.parts.len() <= RACK_SLOTS,
+                    m.0.len() <= RACK_SLOTS,
                     "Multi exceeds the 16-instrument rack limit"
                 );
                 Ok(m)
@@ -431,26 +520,14 @@ impl BackgroundTask for Load {
                 return;
             }
             match result {
-                Ok(m) => {
+                Ok((parts, status)) => {
                     let mut current = params.selection.write().unwrap();
                     if *current == before {
-                        current.parts = m
-                            .parts
-                            .iter()
-                            .map(|p| Part {
-                                path: path.clone(),
-                                program: p.program,
-                                ..Default::default()
-                            })
-                            .collect();
-                        current.order = (0..m.parts.len() as u32).collect();
+                        current.order = (0..parts.len() as u32).collect();
+                        current.parts = parts;
                         current.multi = path;
                         params.shared.focus_request.store(0, Ordering::Release);
-                        params.shared.view.lock().unwrap().multi_status = format!(
-                            "{} · {} instruments · original multi routing/scripts unavailable",
-                            m.name,
-                            m.parts.len()
-                        );
+                        params.shared.view.lock().unwrap().multi_status = status;
                     } else {
                         params.shared.view.lock().unwrap().multi_status =
                             "Multi load canceled because the rack changed".into();
@@ -1202,6 +1279,51 @@ mod tests {
         };
         assert!(Selection::deserialize(&state.serialize()).unwrap() == state);
         assert_eq!(rack_controls(&state)[0].tune, -3.5, "the part's tune reaches the engine");
+    }
+    #[test]
+    fn saved_multi_round_trips_through_the_browser_and_loader() {
+        let root = std::env::temp_dir().join(format!("kontakto-multi-{}", std::process::id()));
+        let path = root.join("Multis").join("Evening.kontakto-multi");
+        let rack = Selection {
+            root: root.to_string_lossy().into_owned(),
+            parts: vec![
+                Part {
+                    path: "/libraries/Keys/Piano.nki".into(),
+                    channel: 3,
+                    port: 1,
+                    output: 2,
+                    gain: -6.5,
+                    pan: -0.5,
+                    tune: 7.02,
+                    collapsed: true,
+                    name: "Left hand".into(),
+                    script_state: r#"[{"name":"$legato","value":1}]"#.into(),
+                    ..Default::default()
+                },
+                Part {
+                    path: "/libraries/Strings/Ensemble.nkm".into(),
+                    program: 2,
+                    mute: true,
+                    ..Default::default()
+                },
+            ],
+            order: vec![1, 0],
+            ..Default::default()
+        };
+        SavedMulti::of("Evening", &rack).save(&path).unwrap();
+        assert!(import::is_multi(&path));
+        assert_eq!(import::presets(&root).unwrap(), [path.clone()], "the browser lists it");
+
+        let p = SamplerParams::new();
+        p.selection.write().unwrap().root = rack.root.clone();
+        p.shared.queue_multi(path.to_string_lossy().into_owned());
+        Load.run(&p);
+        let loaded = p.selection.read().unwrap().clone();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(loaded.parts == [rack.parts[1].clone(), rack.parts[0].clone()], "every setting, in rack order");
+        assert_eq!(loaded.order, [0, 1]);
+        assert_eq!(loaded.multi, path.to_string_lossy());
+        assert!(p.shared.view.lock().unwrap().multi_status.starts_with("Evening · 2 instruments"));
     }
     #[test]
     fn control_edits_run_the_script_and_report_back() {

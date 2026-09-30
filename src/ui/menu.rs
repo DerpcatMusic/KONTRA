@@ -45,6 +45,7 @@ pub enum Command {
     Audition(u8),
     Folders,
     Rescan,
+    SaveMulti,
     Browser,
     Keyboard,
     Panic,
@@ -209,15 +210,21 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 })
                 .collect()
         }
-        Target::App => vec![
-            check("Browser", cx.state.browser, Command::Browser),
-            check("Keyboard", cx.state.keyboard, Command::Keyboard),
-            Item::Rule,
-            act("Library folder…", "", Command::Folders),
-            act("Rescan libraries", "", Command::Rescan),
-            Item::Rule,
-            act("All notes off", "", Command::Panic),
-        ],
+        Target::App => {
+            let mut items = vec![
+                check("Browser", cx.state.browser, Command::Browser),
+                check("Keyboard", cx.state.keyboard, Command::Keyboard),
+                Item::Rule,
+                act("Library folder…", "", Command::Folders),
+                act("Rescan libraries", "", Command::Rescan),
+                Item::Rule,
+            ];
+            if !cx.selection.order.is_empty() {
+                items.extend([act("Save multi…", "", Command::SaveMulti), Item::Rule]);
+            }
+            items.push(act("All notes off", "", Command::Panic));
+            items
+        }
     }
 }
 
@@ -363,6 +370,16 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .root
                 .clear();
+        }
+        Command::SaveMulti => {
+            // A saved multi offers its own name back; anything else starts blank.
+            let current = &cx.selection.multi;
+            cx.state.saving = Some(if crate::import::is_saved_multi(Path::new(current)) {
+                super::header::stem(current)
+            } else {
+                String::new()
+            });
+            cx.state.save_error.clear();
         }
         Command::Browser => cx.state.browser ^= true,
         Command::Keyboard => cx.state.keyboard ^= true,

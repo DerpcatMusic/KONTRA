@@ -324,6 +324,35 @@ fn favorites_star_from_the_row_or_the_menu_and_lead_the_browser() {
 }
 
 #[test]
+fn save_multi_names_the_rack_and_writes_it_under_multis() {
+    let root = std::env::temp_dir().join(format!("kontakto-save-{}", std::process::id()));
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut s = p.selection.write().unwrap();
+        s.root = root.to_string_lossy().into_owned();
+        s.parts = vec![crate::plugin::Part {
+            path: "/virtual/Keys/Piano.nki".into(),
+            tune: -2.,
+            ..Default::default()
+        }];
+        s.order = vec![0];
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("app-menu");
+    h.press("menu-item-6");
+    assert!(h.ui.scene().unwrap().surface("multi-name").is_some(), "Save multi… asks for a name");
+    h.type_into("multi-name", "Duo/Night");
+    let path = header::multi_path(&root.to_string_lossy(), "DuoNight");
+    let saved = crate::plugin::SavedMulti::read(&path);
+    std::fs::remove_dir_all(&root).ok();
+    let saved = saved.expect("the multi is written under Multis");
+    assert_eq!(saved.name, "DuoNight");
+    assert!(saved.parts == p.selection.read().unwrap().parts);
+    assert_eq!(p.selection.read().unwrap().multi, path.to_string_lossy());
+    assert!(h.ui.scene().unwrap().surface("multi-name").is_none(), "the strip closes");
+}
+
+#[test]
 fn search_groups_results_by_library() {
     let p = Arc::new(SamplerParams::new());
     {

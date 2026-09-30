@@ -172,6 +172,76 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     .fill(Role::Surface)
 }
 
+/// Where a multi named `name` is saved: the library folder's `Multis`, so
+/// the browser lists it with the rest.
+pub fn multi_path(root: &str, name: &str) -> std::path::PathBuf {
+    std::path::Path::new(root)
+        .join("Multis")
+        .join(format!("{name}.{}", crate::import::SAVED_MULTI))
+}
+
+/// The strip that names and saves the rack as a multi.
+pub fn save_multi(ui: &mut Ui, cx: &mut Cx) -> El {
+    let Some(name) = cx.state.saving.as_mut() else {
+        return block(0, 0);
+    };
+    if ui.scene().and_then(|s| s.surface("multi-name")).is_none() {
+        ui.focus("multi-name");
+    }
+    let field = text_edit(ui, "multi-name", name, TextOpts::default());
+    let cancel = ui.keys("multi-name").iter().any(|k| k.key == Key::Escape);
+    let (save, save_el) = action(ui, "multi-save", "Save", false);
+    let (close, close_el) = icon_button(ui, "multi-close", Icon::Close, "Close", false);
+    if cancel || close {
+        cx.state.saving = None;
+    } else if save || field.changed.submitted {
+        // A name is one file name: no folders, no leading dots.
+        let name: String = name
+            .trim()
+            .trim_start_matches('.')
+            .chars()
+            .filter(|c| !matches!(c, '/' | '\\' | ':'))
+            .collect();
+        let root = match cx.selection.root.as_str() {
+            "" => crate::import::LIBRARY_ROOT.to_owned(),
+            root => root.to_owned(),
+        };
+        let result = if name.is_empty() {
+            Err(anyhow::anyhow!("Name the multi first"))
+        } else {
+            let path = multi_path(&root, &name);
+            crate::plugin::SavedMulti::of(&name, &cx.selection)
+                .save(&path)
+                .map(|()| path)
+        };
+        match result {
+            Ok(path) => {
+                cx.selection.multi = path.to_string_lossy().into_owned();
+                cx.state.saving = None;
+                // Scan again so the browser lists it.
+                super::lock(&cx.p.shared.view).root.clear();
+            }
+            Err(e) => cx.state.save_error = format!("{e:#}"),
+        }
+    }
+    let error = (!cx.state.save_error.is_empty()).then(|| {
+        caption(cx.state.save_error.clone()).fill(Role::Dim).lines(1).shrink(0)
+    });
+    let mut line = vec![
+        section("Save multi"),
+        field.el.flex(1).min_w(0).h(CONTROL).named("Multi name"),
+    ];
+    line.extend(error);
+    line.extend([save_el, close_el]);
+    col![
+        row(line).gap(SPACE).align(Align::Center).pad((INSET, SPACE)),
+        rule()
+    ]
+    .gap(0)
+    .shrink(0)
+    .fill(Role::Surface)
+}
+
 /// A line under the top bar. It fills as loading parts read their
 /// samples; before any sample is read, a segment sweeps across it.
 pub fn loading_bar(view: &View, p: &SamplerParams, started: Instant) -> El {

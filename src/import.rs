@@ -578,13 +578,16 @@ impl Resolver {
 }
 
 pub fn catalog(root: &Path) -> Result<Vec<PathBuf>> {Ok(presets(root)?.into_iter().filter(|p|!is_multi(p)).collect())}
-pub fn is_multi(path:&Path)->bool {path.extension().is_some_and(|x|x.eq_ignore_ascii_case("nkm"))}
+/// The extension of a rack KONTAKTO saved itself; see `plugin::SavedMulti`.
+pub const SAVED_MULTI: &str = "kontakto-multi";
+pub fn is_saved_multi(path:&Path)->bool {path.extension().is_some_and(|x|x.eq_ignore_ascii_case(SAVED_MULTI))}
+pub fn is_multi(path:&Path)->bool {is_saved_multi(path) || path.extension().is_some_and(|x|x.eq_ignore_ascii_case("nkm"))}
 pub fn presets(root: &Path) -> Result<Vec<PathBuf>> {
     ensure!(root.is_dir(), "Library folder does not exist: {}", root.display());
     let mut files = Vec::new();
     for e in walkdir::WalkDir::new(root).follow_links(false) {
         let e = e?;
-        if e.file_type().is_file() && e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("nki") || x.eq_ignore_ascii_case("nkm")) { files.push(e.into_path()); }
+        if e.file_type().is_file() && (e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("nki")) || is_multi(e.path())) { files.push(e.into_path()); }
     }
     files.sort(); Ok(files)
 }
