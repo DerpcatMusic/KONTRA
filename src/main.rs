@@ -57,9 +57,11 @@ fn main() -> Result<()> {
   Some("ksp-run") => ksp_run(Path::new(args.get(2).context("ksp-run requires an NKI path")?),&args[3..])?,
   Some("bench") => bench(args.get(2).map(|s|s.parse()).transpose()?.unwrap_or(1000),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(24))?,
   Some("bench-load") => for p in &args[2..] {bench_load(Path::new(p))?},
+  Some("audit-libraries") => audit_libraries(&args[2..])?,
+  Some("audit-patch") => audit_patch(Path::new(args.get(2).context("audit-patch requires an NKI path")?))?,
   Some("bench-stream") => bench_stream(Path::new(args.get(2).context("bench-stream requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(64),args.get(4).map(|s|s.parse()).transpose()?.unwrap_or(10.0))?,
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]"),
  }
  Ok(())
 }
@@ -189,9 +191,25 @@ fn seconds_of(frames: u64) -> f64 {
     frames as f64 / RATE
 }
 
-/// Load an instrument's scripts for `engine`, reporting slot errors.
-fn install_scripts(engine: &mut Engine, instrument: &import::Instrument) {
-    let (script, errors) = load_scripts(instrument, instrument.script_state.clone(), engine.rate());
+/// Scripts, as the plugin loads them.
+type Scripts = (Option<Box<kontakto::ksp::Runtime>>, Vec<String>);
+
+/// Load the scripts, then the bank, as the plugin does: the bank keeps
+/// resident the start offsets the scripts' `on init` controllers select.
+fn load(instrument: &import::Instrument) -> Result<(Bank, Scripts)> {
+    let scripts = load_scripts(instrument, instrument.script_state.clone(), RATE);
+    let controllers = scripts.0.as_deref().map_or(&[][..], |rt| &rt.init_controllers[..]);
+    let bank = Bank::load_counting(
+        instrument,
+        kontakto::engine::MEMORY_LIMIT,
+        controllers,
+        &Default::default(),
+    )?;
+    Ok((bank, scripts))
+}
+
+/// Install [`load`]ed scripts in `engine`, reporting slot errors.
+fn install_scripts(engine: &mut Engine, (script, errors): Scripts) {
     for error in errors {
         eprintln!("{error}");
     }
@@ -233,7 +251,7 @@ fn render(args: &[String]) -> Result<()> {
         .filter(|s| *s != "all")
         .map(|s| s.parse())
         .transpose()?;
-    let bank = Bank::load(&instrument)?;
+    let (bank, scripts) = load(&instrument)?;
     if bank.skipped_zones > 0 {
         eprintln!(
             "Skipped {} zones: {}",
@@ -279,7 +297,7 @@ fn render(args: &[String]) -> Result<()> {
         engine.set_group_allowed(g, true);
     }
     if !no_script {
-        install_scripts(&mut engine, &instrument);
+        install_scripts(&mut engine, scripts);
     }
     let input = match notes {
         Some(list) => parse_notes(list.split(','))?,
@@ -486,7 +504,16 @@ fn bench_load(path: &Path) -> Result<()> {
     let instrument = import::read(path)?;
     let import_ms = started.elapsed().as_secs_f64() * 1e3;
     let started = std::time::Instant::now();
-    let bank = match Bank::load(&instrument) {
+    let scripts = load_scripts(&instrument, instrument.script_state.clone(), RATE);
+    let init_ms = started.elapsed().as_secs_f64() * 1e3;
+    let controllers = scripts.0.as_deref().map_or(&[][..], |rt| &rt.init_controllers[..]);
+    let started = std::time::Instant::now();
+    let bank = match Bank::load_counting(
+        &instrument,
+        kontakto::engine::MEMORY_LIMIT,
+        controllers,
+        &Default::default(),
+    ) {
         Ok(bank) => bank,
         Err(e) => {
             println!("{name}: load failed after {:.0} ms: {e:#}", started.elapsed().as_secs_f64() * 1e3);
@@ -507,9 +534,7 @@ fn bench_load(path: &Path) -> Result<()> {
     }
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(bank)));
-    let started = std::time::Instant::now();
-    install_scripts(&mut engine, &instrument);
-    let init_ms = started.elapsed().as_secs_f64() * 1e3;
+    install_scripts(&mut engine, scripts);
     let status = |key: &str| {
         std::fs::read_to_string("/proc/self/status")
             .ok()
@@ -535,7 +560,8 @@ fn bench_load(path: &Path) -> Result<()> {
 fn bench_script(path: &Path, seconds: f64) -> Result<()> {
     let instrument = import::read(path)?;
     ensure!(!instrument.scripts.is_empty(), "Instrument has no scripts");
-    let bank = Bank::load(&instrument)?;
+    let started = std::time::Instant::now();
+    let (bank, scripts) = load(&instrument)?;
     let low = bank
         .zones()
         .iter()
@@ -563,8 +589,7 @@ fn bench_script(path: &Path, seconds: f64) -> Result<()> {
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(bank)));
     engine.set_fx(instrument.fx.processor(RATE as f32, MAX_BLOCK));
-    let started = std::time::Instant::now();
-    install_scripts(&mut engine, &instrument);
+    install_scripts(&mut engine, scripts);
     let init_ms = started.elapsed().as_secs_f64() * 1e3;
     let slots = engine.script().map_or(0, |rt| rt.slots());
     let scripted = time_blocks(&mut engine, &input);
@@ -603,13 +628,13 @@ fn bench_script(path: &Path, seconds: f64) -> Result<()> {
 /// Scripts run, so articulation scripts pick the groups that sound.
 fn bench_stream(path: &Path, notes: usize, seconds: f64) -> Result<()> {
     let instrument = import::read(path)?;
-    let bank = Bank::load(&instrument)?;
+    let (bank, scripts) = load(&instrument)?;
     let low = bank.zones().iter().map(|z| z.low_key).min().context("Instrument has no playable zones")?;
     let high = bank.zones().iter().map(|z| z.high_key).max().unwrap_or(low);
     let preload = bank.preload;
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(bank)));
-    install_scripts(&mut engine, &instrument);
+    install_scripts(&mut engine, scripts);
     let keys: Vec<u8> = (low..=high).collect();
     let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
     let block = std::time::Duration::from_secs_f64(MAX_BLOCK as f64 / RATE);
@@ -856,5 +881,269 @@ fn ksp_run(path:&Path,notes:&[String])->Result<()> {
         "diagnostics":rt.diagnostics(),"sample_rate":RATE,"calls":engine.calls,
     });
     println!("{}",serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+/// A library folder: a Kontakt library (`Instruments` or a `.nicnt`) or,
+/// for anything else, why it cannot be audited.
+enum Library {
+    Kontakt(std::path::PathBuf),
+    Other(std::path::PathBuf, String),
+}
+
+/// Libraries under `root`: folders holding a Kontakt library, and folders
+/// of other formats named by their commonest file types. Folders without a
+/// library recurse one level (`Libraries/Kontakt/<library>`).
+fn libraries(root: &Path, depth: usize, out: &mut Vec<Library>) -> Result<()> {
+    let mut dirs: Vec<_> = std::fs::read_dir(root)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        let names: Vec<_> = std::fs::read_dir(&dir)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        let kontakt = names.iter().any(|p| {
+            p.file_name().is_some_and(|n| n == "Instruments")
+                || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("nicnt"))
+        });
+        if kontakt {
+            out.push(Library::Kontakt(dir));
+        } else if depth == 0 && names.iter().any(|p| p.is_dir()) {
+            libraries(&dir, depth + 1, out)?;
+        } else {
+            let mut kinds = std::collections::BTreeMap::<String, usize>::new();
+            for e in walkdir::WalkDir::new(&dir).max_depth(4).into_iter().flatten() {
+                if let Some(x) = e.path().extension().filter(|_| e.file_type().is_file()) {
+                    *kinds.entry(x.to_string_lossy().to_lowercase()).or_default() += 1;
+                }
+            }
+            let mut kinds: Vec<_> = kinds.into_iter().collect();
+            kinds.sort_by(|a, b| b.1.cmp(&a.1));
+            let format = |x: &str| match x {
+                "ascf" | "cf" => "Ample Sound",
+                "ufs" | "r2ruvi" => "UVI",
+                "pak" => "IK Multimedia",
+                "s20" | "obw" => "Toontrack",
+                _ => "",
+            };
+            let vendor = kinds.iter().map(|(x, _)| format(x)).find(|v| !v.is_empty());
+            let files: Vec<_> = kinds.iter().take(3).map(|(x, n)| format!("{n} .{x}")).collect();
+            let reason = format!(
+                "not a Kontakt library{} ({}): no NKI instruments to load",
+                vendor.map_or(String::new(), |v| format!(": {v} format")),
+                files.join(", ")
+            );
+            out.push(Library::Other(dir, reason));
+        }
+    }
+    Ok(())
+}
+
+/// One command for every library under `root`: load its heaviest instrument
+/// (most available zones, then most zones) through the engine in a child
+/// process, play notes at real-time pace and tabulate load time, memory,
+/// zones, script errors, underruns and loudness. Writes `out` as Markdown
+/// with names and numbers only.
+fn audit_libraries(args: &[String]) -> Result<()> {
+    let at = args.iter().position(|a| a == "--out");
+    let out = at.and_then(|i| args.get(i + 1)).map_or("audits/LIBRARIES.md", String::as_str);
+    let root = args
+        .iter()
+        .enumerate()
+        .find(|&(i, a)| !a.starts_with("--") && at.is_none_or(|o| i != o + 1))
+        .map_or_else(
+            || Path::new(import::LIBRARY_ROOT).parent().unwrap_or(Path::new("/")).to_path_buf(),
+            |(_, a)| std::path::PathBuf::from(a),
+        );
+    let mut found = Vec::new();
+    libraries(&root, 0, &mut found)?;
+    let exe = std::env::current_exe()?;
+    let mut rows = Vec::new();
+    for library in found {
+        let (dir, row) = match library {
+            Library::Other(dir, reason) => (dir, serde_json::json!({"status": "skipped", "reason": reason})),
+            Library::Kontakt(dir) => {
+                let row = match heaviest(&dir) {
+                    Err(e) => serde_json::json!({"status": "FAIL", "reason": format!("{e:#}")}),
+                    Ok((path, candidates)) => {
+                        eprintln!("Auditing {}", path.display());
+                        let child = std::process::Command::new(&exe).arg("audit-patch").arg(&path).output()?;
+                        let line = String::from_utf8_lossy(&child.stdout);
+                        let mut row = serde_json::from_str::<serde_json::Value>(line.trim()).unwrap_or_else(|_| {
+                            let err = String::from_utf8_lossy(&child.stderr);
+                            let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no output");
+                            serde_json::json!({"status": "FAIL", "reason": format!("child exited {}: {last}", child.status)})
+                        });
+                        row["patch"] = path.file_stem().map(|s| s.to_string_lossy().into_owned()).into();
+                        row["candidates"] = candidates.into();
+                        row
+                    }
+                };
+                (dir, row)
+            }
+        };
+        let mut row = row;
+        row["library"] = dir.file_name().map(|s| s.to_string_lossy().into_owned()).into();
+        eprintln!("{row}");
+        rows.push(row);
+    }
+    let table = libraries_table(&rows);
+    println!("{table}");
+    let date = std::process::Command::new("date").arg("+%Y-%m-%d").output().ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let doc = format!(
+        "# Library audit, {date}\n\nGenerated by `kontakto audit-libraries {}`. For every library, the NKI with the most available zones (then most zones) is loaded through the engine path the plugin uses (import, bank within the 1 GiB part budget, scripts, effects) in its own process. It then plays three single notes and a three-note chord across the mapped keys at velocity 100 with CC1 = 100 and CC11 = 127, rendered at real-time pace (48 kHz, 128-frame blocks) without waiting for the disk, so late streams count as underruns. No audio is saved. Names and numbers only.\n\nLoad = import + bank + script init. RSS is the child process after loading (peak in brackets). RMS is over the whole render. Underruns count voice blocks missing streamed data.\n\n{table}\n",
+        root.display()
+    );
+    std::fs::write(out, doc)?;
+    eprintln!("Wrote {out}");
+    Ok(())
+}
+
+/// The NKI under `dir` with the most available zones, then most zones, and
+/// how many instruments were compared. Imports run on every core.
+fn heaviest(dir: &Path) -> Result<(std::path::PathBuf, usize)> {
+    let paths: Vec<_> = import::presets(dir)?.into_iter().filter(|p| !import::is_multi(p)).collect();
+    ensure!(!paths.is_empty(), "no NKI instruments");
+    let next = std::sync::Mutex::new(paths.iter());
+    let weights = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..std::thread::available_parallelism().map_or(4, |n| n.get()) {
+            s.spawn(|| {
+                while let Some(path) = { let n = next.lock().unwrap().next(); n } {
+                    if let Ok(i) = import::read(path) {
+                        let weight = (i.zones.iter().filter(|z| z.available).count(), i.zones.len());
+                        weights.lock().unwrap().push((weight, path));
+                    }
+                }
+            });
+        }
+    });
+    let weights = weights.into_inner().unwrap();
+    let (_, path) = weights.iter().max().context("no NKI instrument imports")?;
+    Ok(((*path).clone(), paths.len()))
+}
+
+fn libraries_table(rows: &[serde_json::Value]) -> String {
+    let mut t = String::from("| Library | Heaviest patch | Zones avail/total | Samples (streamed) | Resident MiB | Preload | RSS MiB | Load ms | RMS dBFS | Underruns | Script errors | Warnings | Status |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    let s = |v: &serde_json::Value| match v {
+        serde_json::Value::Null => "-".to_string(),
+        serde_json::Value::String(s) => s.replace('|', "/"),
+        v => v.to_string(),
+    };
+    for r in rows {
+        let status = match r["status"].as_str() {
+            Some("ok") => "ok".to_string(),
+            _ => format!("{}: {}", s(&r["status"]), s(&r["reason"])),
+        };
+        let pair = |a: &str, b: &str| if r[a].is_null() { "-".into() } else { format!("{}/{}", s(&r[a]), s(&r[b])) };
+        t += &format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            s(&r["library"]),
+            s(&r["patch"]),
+            pair("zones_available", "zones_total"),
+            if r["samples"].is_null() { "-".into() } else { format!("{} ({})", r["samples"], r["streamed"]) },
+            s(&r["resident_mib"]),
+            s(&r["preload"]),
+            if r["rss_mib"].is_null() { "-".into() } else { format!("{} ({})", r["rss_mib"], r["rss_peak_mib"]) },
+            s(&r["load_ms"]),
+            s(&r["rms_db"]),
+            s(&r["underruns"]),
+            s(&r["script_errors"]),
+            s(&r["warnings"]),
+            status
+        );
+    }
+    t
+}
+
+/// `audit-libraries`' child: load and play one instrument, one JSON line.
+fn audit_patch(path: &Path) -> Result<()> {
+    let started = std::time::Instant::now();
+    let instrument = import::read(path)?;
+    let (bank, (script, errors)) = load(&instrument)?;
+    let (zones_total, zones_available) = (
+        instrument.zones.len(),
+        instrument.zones.iter().filter(|z| z.available).count(),
+    );
+    let mut keys: Vec<u8> = (0..128u8)
+        .filter(|&k| bank.zones().iter().any(|z| (z.low_key..=z.high_key).contains(&k)))
+        .collect();
+    keys.dedup();
+    ensure!(!keys.is_empty(), "no playable zones");
+    let mut row = serde_json::json!({
+        "zones_total": zones_total,
+        "zones_available": zones_available,
+        "zones_playable": bank.zones().len(),
+        "samples": bank.sample_count(),
+        "streamed": bank.streamed_samples(),
+        "resident_mib": (bank.bytes as f64 / 1048576.0).round(),
+        "preload": bank.preload,
+    });
+    let mut warnings = instrument.warnings.len() + usize::from(bank.warning.is_some());
+    let mut engine = Engine::default();
+    engine.set_bank(Some(Box::new(bank)));
+    engine.set_fx(instrument.fx.processor(RATE as f32, MAX_BLOCK));
+    engine.set_script(script);
+    row["load_ms"] = (started.elapsed().as_millis() as u64).into();
+    row["script_errors"] = errors.len().into();
+    let status = |key: &str| {
+        std::fs::read_to_string("/proc/self/status").ok().and_then(|s| {
+            let line = s.lines().find(|l| l.starts_with(key))?;
+            line.split_whitespace().nth(1)?.parse::<f64>().ok()
+        }).map_or(0.0, |kib| (kib / 1024.0).round())
+    };
+    row["rss_mib"] = status("VmRSS:").into();
+    // Three notes across the mapped keys, then them as a chord; 0.3 s tail.
+    let picks: Vec<u8> = [1, 2, 3].iter().map(|q| keys[keys.len() * q / 4]).collect();
+    let mut specs: Vec<String> = picks.iter().enumerate()
+        .map(|(i, k)| format!("{k}@{}-{}", i * 800, i * 800 + 700)).collect();
+    specs.extend(picks.iter().map(|k| format!("{k}@2400-3400")));
+    let input = parse_notes(specs.iter().map(String::as_str))?;
+    for (cc, value) in [(1, 100), (11, 127)] {
+        engine.cc(0, cc, value);
+    }
+    let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+    let blocks = (3.7 * RATE) as usize / MAX_BLOCK;
+    let block = std::time::Duration::from_secs_f64(MAX_BLOCK as f64 / RATE);
+    let (mut square, mut nonfinite, mut next) = (0f64, 0usize, 0);
+    let start = std::time::Instant::now();
+    for b in 0..blocks {
+        let frame = (b * MAX_BLOCK) as u64;
+        while let Some(event) = input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64) {
+            play(&mut engine, event);
+            next += 1;
+        }
+        engine.render(&mut left, &mut right);
+        for x in left.iter().chain(&right) {
+            if x.is_finite() { square += f64::from(*x) * f64::from(*x) } else { nonfinite += 1 }
+        }
+        if let Some(wait) = (start + block * (b as u32 + 1)).checked_duration_since(std::time::Instant::now()) {
+            std::thread::sleep(wait);
+        }
+    }
+    let rms = (square / (blocks * MAX_BLOCK * 2) as f64).sqrt();
+    if let Some(rt) = engine.script() {
+        warnings += rt.diagnostics().len();
+    }
+    row["rss_peak_mib"] = status("VmHWM:").into();
+    row["rms_db"] = ((20.0 * rms.max(1e-12).log10() * 10.0).round() / 10.0).into();
+    row["underruns"] = engine.underruns().into();
+    row["nonfinite"] = nonfinite.into();
+    row["warnings"] = warnings.into();
+    let failure = if nonfinite > 0 {
+        Some("non-finite output".to_string())
+    } else if rms <= 1e-6 {
+        Some("silent".to_string())
+    } else if engine.underruns() > 0 {
+        Some("underruns".to_string())
+    } else {
+        errors.first().map(|_| "script errors".to_string())
+    };
+    row["status"] = failure.as_ref().map_or("ok", |_| "FAIL").into();
+    row["reason"] = failure.into();
+    println!("{row}");
     Ok(())
 }
