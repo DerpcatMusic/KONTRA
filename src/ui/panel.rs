@@ -758,7 +758,10 @@ pub fn articulations(sections: &[Section], slot: usize, keys: &std::collections:
         .collect();
     let keyed = |i: &&&Item| i.list.iter().any(|e| e.key.is_some());
     let Some(list) = lists.iter().find(keyed).or_else(|| lists.iter().max_by_key(|i| i.list.len())) else {
-        return Vec::new();
+        return keyswitches(keys)
+            .into_iter()
+            .map(|(key, name)| (name, Some(key), None))
+            .collect();
     };
     list.list
         .iter()
@@ -768,6 +771,27 @@ pub fn articulations(sections: &[Section], slot: usize, keys: &std::collections:
             (e.name.clone(), key, e.control.map(|c| (slot as u16, c as u16)))
         })
         .collect()
+}
+
+/// Keyswitches a script names on the keyboard, for a panel without a list
+/// (Afflatus): the longest run of named, colored keys a note or two apart,
+/// at least two long.
+pub fn keyswitches(keys: &std::collections::BTreeMap<u8, crate::ksp::KeyState>) -> Vec<(u8, String)> {
+    let colored = |k: &crate::ksp::KeyState| match &k.color {
+        Some(Value::Text(c)) => !matches!(
+            c.trim_start_matches('$').trim_start_matches("KEY_COLOR_"),
+            "" | "NONE" | "DEFAULT" | "INACTIVE" | "WHITE" | "BLACK"
+        ),
+        _ => false,
+    };
+    let mut runs: Vec<Vec<(u8, String)>> = Vec::new();
+    for (&note, k) in keys.iter().filter(|(_, k)| colored(k) && !clean(&k.name).is_empty()) {
+        match runs.last_mut() {
+            Some(run) if note - run[run.len() - 1].0 <= 2 => run.push((note, clean(&k.name))),
+            _ => runs.push(vec![(note, clean(&k.name))]),
+        }
+    }
+    runs.into_iter().filter(|r| r.len() >= 2).max_by_key(Vec::len).unwrap_or_default()
 }
 
 /// Whether switch `s` lies behind list `list`: a picture over half its rows.
@@ -1767,7 +1791,11 @@ mod tests {
                     _ => None,
                 }),
             );
-            let found = articulations(&sections(&interface, &pictures), view.slot, &view.keys);
+            let mut found = articulations(&sections(&interface, &pictures), view.slot, &view.keys);
+            // KONTAKTO_BY_CONTROL=1 switches by the list's controls, as a click does, not by key.
+            if std::env::var("KONTAKTO_BY_CONTROL").is_ok() {
+                found.iter_mut().filter(|f| f.2.is_some()).for_each(|f| f.1 = None);
+            }
             println!("== {name}: {} articulations", found.len());
             // A note every articulation plays: the middle of the mapped keys above the keyswitches.
             let lowest = found.iter().filter_map(|f| f.1).max().map_or(0, |k| k + 1);
@@ -1777,6 +1805,8 @@ mod tests {
                 .collect();
             mapped.sort_unstable();
             let note = mapped.get(mapped.len() / 2).copied().unwrap_or(60).min(120);
+            let note = std::env::var("KONTAKTO_NOTE").ok().and_then(|n| n.parse().ok()).unwrap_or(note);
+            println!("  playing {note} and {}", note + 4);
             let path = path.to_string_lossy().into_owned();
             let mut a = Articulate::default();
             a.sync(&path, &found);
