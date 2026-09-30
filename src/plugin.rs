@@ -3053,4 +3053,49 @@ mod tests {
         assert!(!p.on);
         assert_eq!(p.latency(48000.), 0);
     }
+
+    /// The loader measures a real part in the background and reports its
+    /// latest articulation to the audio thread.
+    #[test]
+    #[ignore = "requires the owner's local Pacific library"]
+    fn loader_measures_a_real_part() {
+        let p = SamplerParams::new();
+        let path = Path::new(import::LIBRARY_ROOT)
+            .join("Pacific Ensemble Strings")
+            .to_string_lossy()
+            .into_owned();
+        let nki = (import::presets(Path::new(&path)).unwrap().into_iter())
+            .map(|f| f.to_string_lossy().into_owned())
+            .find(|f| f.contains("Marcato") && f.ends_with(".nki"))
+            .unwrap();
+        {
+            let mut s = p.selection.write().unwrap();
+            s.auto_align = true;
+            s.parts = vec![Part { path: nki.clone(), ..Default::default() }];
+        }
+        let started = Instant::now();
+        loop {
+            Load.run(&p);
+            let t = p.selection.read().unwrap().parts[0].timing.clone();
+            if !t.source.is_empty() {
+                println!("{nki}: {} ms {} after {:?}", t.latest(), t.basis(), started.elapsed());
+                assert!(t.latest() > 20.0 && t.latest() < 200.0);
+                break;
+            }
+            assert!(started.elapsed().as_secs() < 120, "not measured");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Told the host once the figure has held for the debounce.
+        let told = Instant::now();
+        let plan = loop {
+            Load.run(&p);
+            if let Some(plan) = p.shared.plan.pop().filter(|p| p.latency_ms > 0.0) {
+                break plan;
+            }
+            assert!(told.elapsed() < LATENCY_SETTLE * 2, "never reported");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        assert!(plan.on && plan.latency_ms > 20.0);
+        assert!(told.elapsed() >= LATENCY_SETTLE - std::time::Duration::from_millis(200));
+    }
 }
