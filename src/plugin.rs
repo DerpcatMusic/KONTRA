@@ -3143,6 +3143,91 @@ mod tests {
         timing::Delay { first: [Some(first_ms); 3], legato: [Some(first_ms); 3], ..Default::default() }
     }
 
+    /// A library's mic mixer sends its "Tree" bus to "Out 2" and its
+    /// "Close" group straight to "Out 3" (`$ENGINE_PAR_OUTPUT_CHANNEL`). In
+    /// "One per mic" each gets a bus and host port of its own, named after
+    /// it, and plays there; the rest stays on the part's own.
+    #[test]
+    fn mic_outputs_get_their_own_buses_and_ports() {
+        use crate::{audio::Sample, import::{Group, Instrument, Loop, Zone}};
+        use moose::core::bus_routing::{BusActivation, BusRouting};
+        let groups: Vec<Group> = ["Close", "Tree", "Main"].map(|n| Group { name: n.into(), ..Group::default() }).into();
+        let looped = Some(Loop { start: 0, end: 100, until_release: false, crossfade: 0 });
+        let zones = (0..3)
+            .map(|g| Zone { group: g, sample: PathBuf::from(g.to_string()), loop_range: looped.clone(), ..Zone::default() })
+            .collect();
+        let samples = [0.1f32, 0.2, 0.3]
+            .iter()
+            .enumerate()
+            .map(|(g, &v)| (PathBuf::from(g.to_string()), Sample { rate: 48000, frames: vec![[v, v]; 100] }))
+            .collect();
+        let mut i = Instrument { name: "Harp".into(), groups: groups.clone(), ..Default::default() };
+        i.fx.buses = vec![crate::fx::Bus { index: 0, name: "Tree".into(), volume: 1.0, pan: 0.0, output: -1, chain: Default::default() }];
+        i.scripts = vec!["on init
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, $NI_BUS_OFFSET, 1, -1, -1)
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, 1, -1, -1, $NI_BUS_OFFSET)
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, 2, 0, -1, -1)
+end on"
+            .into()];
+        let (rt, errors) = load_scripts(&i, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut dsp = Dsp::default();
+        let p = SamplerParams::new();
+        let e = &mut dsp.rack.parts[0];
+        e.set_bank(Some(Box::new(Bank::from_samples(groups, zones, samples).unwrap())));
+        e.set_script(rt);
+        let fx = i.fx.processor(e.rate() as f32, MAX_BLOCK);
+        e.set_fx(fx);
+
+        const BLOCK: usize = 256;
+        let transport = TransportInfo::default();
+        let mut block = |dsp: &mut Dsp, note: bool| {
+            let mut events = EventList::with_capacity(2);
+            if note {
+                events.push(Event::on_port(0, 0, EventBody::NoteOn { group: 0, channel: 0, note: 60, velocity: 127 }));
+            }
+            let mut out = vec![vec![0f32; BLOCK]; 8];
+            let mut refs: Vec<_> = out.iter_mut().map(|o| o.as_mut_slice()).collect();
+            let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, BLOCK);
+            let mut midi_out = EventList::with_capacity(4);
+            let mut routes = BusRouting::new();
+            for _ in 0..4 {
+                routes.push_output(2, BusActivation::Active);
+            }
+            let mut cx = ProcessContext::new(&transport, 48000., BLOCK, &mut midi_out).with_bus_routing(routes);
+            Sampler::process(dsp, &p, &mut buffer, &events, &mut cx);
+            out
+        };
+        // A block tells the loader what the instrument routes where.
+        block(&mut dsp, false);
+        p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(i));
+        let mut sel = Selection {
+            outputs: routing::Outputs::Mic as u8,
+            parts: vec![Part { path: "/lib/Harp.nki".into(), ..Default::default() }],
+            order: vec![0],
+            ..Default::default()
+        };
+        p.shared.reroute(&mut sel);
+        assert_eq!(sel.parts[0].mic_buses[..4], [-1, 1, 2, -1]);
+        assert_eq!(routing::port_names(&sel)[..4], ["Harp", "Harp Tree", "Harp Close", "st.4"]);
+
+        let _ = p.shared.controls.force_push(mix(&sel));
+        block(&mut dsp, true);
+        let out = block(&mut dsp, false);
+        let at = |ch: usize| out[ch][BLOCK - 1];
+        assert!(at(0) > 0. && at(2) > 0. && at(4) > 0., "{} {} {}", at(0), at(2), at(4));
+        assert!((at(2) - 2. * at(4)).abs() < 1e-5, "Tree (0.2) is twice Close (0.1): {} {}", at(2), at(4));
+        assert_eq!(at(6), 0.);
+
+        // Back to one per instrument: the mics play with the part again.
+        sel.outputs = routing::Outputs::Instrument as u8;
+        p.shared.reroute(&mut sel);
+        let _ = p.shared.controls.force_push(mix(&sel));
+        let out = block(&mut dsp, false);
+        assert!(out[2][BLOCK - 1] == 0. && out[4][BLOCK - 1] == 0.);
+        assert!(out[0][BLOCK - 1] > at(0));
+    }
+
     /// Two parts 10 and 30 ms late: the host is told 30 ms, the first part's
     /// notes wait 20, and both attacks land together, 30 ms after the note.
     /// The wait is sample-exact: the held part renders bit for bit what it

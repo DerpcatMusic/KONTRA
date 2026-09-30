@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 /// The mixer's "Outputs" choice ([`Selection::outputs`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Outputs {
-    /// Everything on st.1, as Kontakt starts.
+    /// Everything on st.1, as Kontakt starts: parts keep the bus they
+    /// have, new ones start on st.1 ([`to_stereo`] moves them all back).
     #[default]
     Stereo,
     /// Each part on a bus and host port of its own, named after it.
@@ -87,11 +88,7 @@ pub fn apply(sel: &mut Selection, mics: &Mics, mic_name: impl Fn(usize, u16) -> 
             p.mic_buses.clear();
             p.mic_names.clear();
         }
-        if p.output_manual {
-            continue;
-        }
-        if mode == Outputs::Stereo {
-            p.output = 0;
+        if p.output_manual || mode == Outputs::Stereo {
             continue;
         }
         let o = usize::from(p.output).min(BUSES - 1);
@@ -134,6 +131,14 @@ pub fn apply(sel: &mut Selection, mics: &Mics, mic_name: impl Fn(usize, u16) -> 
             // Past 16, a mic plays with its instrument.
             Some(c) => p.mic_buses[c] = free.map_or(-1, |b| b as i16),
         }
+    }
+}
+
+/// Choose "Stereo mix": every part not routed by hand back on st.1.
+pub fn to_stereo(sel: &mut Selection) {
+    sel.outputs = Outputs::Stereo as u8;
+    for p in sel.parts.iter_mut().filter(|p| !p.output_manual) {
+        p.output = 0;
     }
 }
 
@@ -257,10 +262,14 @@ pub fn name_outputs(sel: &mut Selection) {
 }
 
 /// Forget the hand-picked routes: every part and bus routed automatically
-/// again, every bus on its own port. Levels, names and sends stay.
+/// again (on st.1 in "Stereo mix"), every bus on its own port. Levels,
+/// names and sends stay.
 pub fn reset(sel: &mut Selection) {
     for p in &mut sel.parts {
         p.output_manual = false;
+    }
+    if Outputs::of(sel.outputs) == Outputs::Stereo {
+        to_stereo(sel);
     }
     for n in 0..sel.buses.len() {
         sel.bus_mut(n).port = -1;
@@ -340,8 +349,11 @@ mod tests {
     #[test]
     fn one_per_instrument_is_stable() {
         let mut sel = rack(&["Harp", "Celli", "Horns"]);
+        sel.parts[1].output = 4;
         apply_now(&mut sel);
-        assert_eq!(outputs(&sel), [0, 0, 0], "stereo mix: everything on st.1");
+        assert_eq!(outputs(&sel), [0, 4, 0], "stereo mix: an old session keeps its routes");
+        to_stereo(&mut sel);
+        assert_eq!(outputs(&sel), [0, 0, 0], "choosing it: everything on st.1");
         sel.outputs = 1;
         apply_now(&mut sel);
         assert_eq!(outputs(&sel), [0, 1, 2]);
@@ -380,7 +392,7 @@ mod tests {
         apply_now(&mut sel);
         // Horns keep st.2; Harp leaves st.1, a send; Celli take the next free.
         assert_eq!(outputs(&sel), [2, 3, 1]);
-        sel.outputs = 0;
+        to_stereo(&mut sel);
         apply_now(&mut sel);
         assert_eq!(outputs(&sel), [0, 0, 1], "stereo mix keeps a hand-picked route");
         reset(&mut sel);

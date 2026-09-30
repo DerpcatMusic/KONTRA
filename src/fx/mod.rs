@@ -191,6 +191,9 @@ impl ProgramFx {
                 match param {
                     FxParam::Volume => return Some(bus.volume),
                     FxParam::Pan => return Some(bus.pan),
+                    FxParam::Output => {
+                        return Some(if (0..OUTS as i32).contains(&bus.output) { bus.output as f32 } else { -1.0 });
+                    }
                     _ => &bus.chain,
                 }
             }
