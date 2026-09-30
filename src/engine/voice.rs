@@ -1526,8 +1526,9 @@ fn hermite(q: &[Frame; 4], t: f32) -> Frame {
 
 /// The inner loop: resample `window` from `base` by `step` (32.32 fixed
 /// point), apply per-frame amplitude and ramped channel gains, and accumulate.
-/// Dispatches to an AVX2 kernel that works eight frames at a time when the
-/// CPU has it (3.2x the scalar loop at 1000 voices).
+/// Dispatches to an AVX-512 kernel that works sixteen frames at a time, or
+/// an AVX2 one that works eight (3.2x the scalar loop at 1000 voices), when
+/// the CPU has them.
 #[allow(clippy::too_many_arguments)]
 fn mix(
     window: &[Frame],
@@ -1551,11 +1552,113 @@ fn mix(
         return taps(window, base >> 32, step >> 32, amp, gains, delta, left, right);
     }
     #[cfg(target_arch = "x86_64")]
+    if crate::audio::avx512() && std::arch::is_x86_feature_detected!("fma") {
+        // SAFETY: the running CPU supports every feature `mix_avx512` is compiled for.
+        return unsafe { mix_avx512(window, base, step, amp, gains, delta, left, right) };
+    }
+    #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
         // SAFETY: the running CPU supports every feature `mix_avx2` is compiled for.
-        return unsafe { mix_avx2(window, base, step, amp, gains, delta, left, right) };
+        return unsafe { mix_avx2(window, base, step, amp, gains, delta, left, right, 0) };
     }
     mix_body(window, base, step, amp, gains, delta, left, right, 0);
+}
+
+/// [`mix_avx2`] sixteen frames a pass: each pair of rows (frames `k` and
+/// `k + 8`) shares a register through the same in-lane transpose, and one
+/// two-source permute per tap puts the sixteen frames back in order. The
+/// same arithmetic, element for element; the rest goes eight at a time.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx2,fma,avx512f,avx512bw,avx512vl")]
+fn mix_avx512(
+    window: &[Frame],
+    base: u64,
+    step: u64,
+    amp: &[f32],
+    gains: [f32; 2],
+    delta: [f32; 2],
+    left: &mut [f32],
+    right: &mut [f32],
+) {
+    use std::arch::x86_64::*;
+    let n = left.len().min(right.len()).min(amp.len());
+    let full = n / 16 * 16;
+    let fits = full > 0
+        && base >> 32 >= 1
+        && ((base + step * (full as u64 - 1)) >> 32) as usize + 3 <= window.len();
+    let done = if fits { full } else { 0 };
+    let frames = window.as_ptr().cast::<f32>();
+    let v = _mm512_set1_ps;
+    let lanes = _mm512_setr_ps(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0);
+    let lane_steps = _mm512_mullo_epi32(
+        _mm512_set1_epi32(step as u32 as i32),
+        _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+    );
+    // Quarter q of the transposed pair (a, b) holds frames 4q..4q+4 of rows
+    // (a) 0..4, (b) 4..8 in its low and high halves, and 8..16 above.
+    let low = _mm512_setr_epi32(0, 1, 2, 3, 16, 17, 18, 19, 8, 9, 10, 11, 24, 25, 26, 27);
+    let high = _mm512_setr_epi32(4, 5, 6, 7, 20, 21, 22, 23, 12, 13, 14, 15, 28, 29, 30, 31);
+    for i in (0..done).step_by(16) {
+        let p = base + step * i as u64;
+        // SAFETY: `fits` bounds every frame's taps j-1..=j+2 inside `window`,
+        // and i+16 <= n bounds `amp`, `left` and `right`.
+        unsafe {
+            let row = |k: u64| {
+                let j = |k: u64| ((p + step * k) >> 32) as usize;
+                let lo = _mm256_loadu_ps(frames.add(2 * (j(k) - 1)));
+                let hi = _mm256_loadu_ps(frames.add(2 * (j(k + 8) - 1)));
+                _mm512_castpd_ps(_mm512_insertf64x4(_mm512_castpd256_pd512(_mm256_castps_pd(lo)), _mm256_castps_pd(hi), 1))
+            };
+            let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
+            let (r4, r5, r6, r7) = (row(4), row(5), row(6), row(7));
+            let (t0, t1) = (_mm512_unpacklo_ps(r0, r1), _mm512_unpackhi_ps(r0, r1));
+            let (t2, t3) = (_mm512_unpacklo_ps(r2, r3), _mm512_unpackhi_ps(r2, r3));
+            let (t4, t5) = (_mm512_unpacklo_ps(r4, r5), _mm512_unpackhi_ps(r4, r5));
+            let (t6, t7) = (_mm512_unpacklo_ps(r6, r7), _mm512_unpackhi_ps(r6, r7));
+            let (s0, s1) = (_mm512_shuffle_ps(t0, t2, 0x44), _mm512_shuffle_ps(t0, t2, 0xEE));
+            let (s2, s3) = (_mm512_shuffle_ps(t1, t3, 0x44), _mm512_shuffle_ps(t1, t3, 0xEE));
+            let (s4, s5) = (_mm512_shuffle_ps(t4, t6, 0x44), _mm512_shuffle_ps(t4, t6, 0xEE));
+            let (s6, s7) = (_mm512_shuffle_ps(t5, t7, 0x44), _mm512_shuffle_ps(t5, t7, 0xEE));
+            // Tap k of channel c for all sixteen frames: column 2k + c.
+            let taps = [
+                [_mm512_permutex2var_ps(s0, low, s4), _mm512_permutex2var_ps(s1, low, s5)],
+                [_mm512_permutex2var_ps(s2, low, s6), _mm512_permutex2var_ps(s3, low, s7)],
+                [_mm512_permutex2var_ps(s0, high, s4), _mm512_permutex2var_ps(s1, high, s5)],
+                [_mm512_permutex2var_ps(s2, high, s6), _mm512_permutex2var_ps(s3, high, s7)],
+            ];
+            let frac = _mm512_add_epi32(_mm512_set1_epi32(p as u32 as i32), lane_steps);
+            let t = _mm512_mul_ps(
+                _mm512_cvtepi32_ps(_mm512_srli_epi32(frac, 8)),
+                v(1.0 / (1 << 24) as f32),
+            );
+            let a = _mm512_loadu_ps(amp.as_ptr().add(i));
+            let fi = _mm512_add_ps(v(i as f32), lanes);
+            for (c, out) in [left.as_mut_ptr(), right.as_mut_ptr()].into_iter().enumerate() {
+                let (xm1, x0, x1, x2) = (taps[0][c], taps[1][c], taps[2][c], taps[3][c]);
+                let c1 = _mm512_mul_ps(v(0.5), _mm512_sub_ps(x1, xm1));
+                let c2 = _mm512_sub_ps(
+                    _mm512_add_ps(
+                        _mm512_sub_ps(xm1, _mm512_mul_ps(v(2.5), x0)),
+                        _mm512_mul_ps(v(2.0), x1),
+                    ),
+                    _mm512_mul_ps(v(0.5), x2),
+                );
+                let c3 = _mm512_add_ps(
+                    _mm512_mul_ps(v(0.5), _mm512_sub_ps(x2, xm1)),
+                    _mm512_mul_ps(v(1.5), _mm512_sub_ps(x0, x1)),
+                );
+                let y = _mm512_add_ps(_mm512_mul_ps(c3, t), c2);
+                let y = _mm512_add_ps(_mm512_mul_ps(y, t), c1);
+                let y = _mm512_add_ps(_mm512_mul_ps(y, t), x0);
+                let gain = _mm512_add_ps(v(gains[c]), _mm512_mul_ps(v(delta[c]), fi));
+                let o = out.add(i);
+                let sum = _mm512_mul_ps(_mm512_mul_ps(y, a), gain);
+                _mm512_storeu_ps(o, _mm512_add_ps(_mm512_loadu_ps(o), sum));
+            }
+        }
+    }
+    mix_avx2(window, base, step, amp, gains, delta, left, right, done);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1655,6 +1758,7 @@ fn mix_avx2(
     delta: [f32; 2],
     left: &mut [f32],
     right: &mut [f32],
+    from: usize,
 ) {
     use std::arch::x86_64::*;
     let n = left.len().min(right.len()).min(amp.len());
@@ -1663,11 +1767,12 @@ fn mix_avx2(
     // channel, and the Hermite runs across the eight frames at once. The
     // arithmetic matches `mix_body` operation for operation, so the output
     // is bit-identical whichever path a frame takes.
-    let full = n / 8 * 8;
-    let fits = full > 0
+    // From frame `from` on, eight at a time.
+    let full = from + n.saturating_sub(from) / 8 * 8;
+    let fits = full > from
         && base >> 32 >= 1
         && ((base + step * (full as u64 - 1)) >> 32) as usize + 3 <= window.len();
-    let done = if fits { full } else { 0 };
+    let done = if fits { full } else { from };
     let frames = window.as_ptr().cast::<f32>();
     let v = _mm256_set1_ps;
     let lanes = _mm256_setr_ps(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0);
@@ -1675,7 +1780,7 @@ fn mix_avx2(
         _mm256_set1_epi32(step as u32 as i32),
         _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7),
     );
-    for i in (0..done).step_by(8) {
+    for i in (from..done).step_by(8) {
         let p = base + step * i as u64;
         // SAFETY: `fits` bounds every frame's taps j-1..=j+2 inside `window`,
         // and i+8 <= n bounds `amp`, `left` and `right`.
@@ -1787,21 +1892,80 @@ mod tests {
             (2.0, 128, 700, 1.0),
             (3.0, 77, 700, 1.0),
             (1.0, 128, 132, 1.0),
+            // Sixteen at a time, then eight, then single frames.
+            (0.8123, 31, 700, 1.7),
+            (1.9, 16, 40, 1.2),
+            (0.5, 128, 67, 1.9),
         ] {
             let step = (step * FIXED_ONE) as u64;
             let base = (base * FIXED_ONE) as u64;
-            let run = |simd: bool| {
+            type Kernel = fn(&[Frame], u64, u64, &[f32], [f32; 2], [f32; 2], &mut [f32], &mut [f32]);
+            // Every kernel this CPU runs, not only the one dispatch picks.
+            let mut kernels: Vec<Kernel> = vec![mix];
+            #[cfg(target_arch = "x86_64")]
+            {
+                use std::arch::is_x86_feature_detected as has;
+                if has!("avx2") && has!("fma") {
+                    // SAFETY: the running CPU supports AVX2 and FMA.
+                    kernels.push(|w, b, s, a, g, d, l, r| unsafe { mix_avx2(w, b, s, a, g, d, l, r, 0) });
+                }
+                if crate::audio::avx512() && has!("fma") {
+                    // SAFETY: the running CPU supports AVX-512 F, BW and VL, AVX2 and FMA.
+                    kernels.push(|w, b, s, a, g, d, l, r| unsafe { mix_avx512(w, b, s, a, g, d, l, r) });
+                }
+            }
+            let run = |kernel: Option<Kernel>| {
                 let (mut l, mut r) = (vec![0.25; n], vec![-0.5; n]);
                 let args = (&window[..len], base, step, &amp[..n], [0.7, 0.3], [0.001, -0.002]);
-                if simd {
-                    mix(args.0, args.1, args.2, args.3, args.4, args.5, &mut l, &mut r);
-                } else {
-                    mix_body(args.0, args.1, args.2, args.3, args.4, args.5, &mut l, &mut r, 0);
+                match kernel {
+                    Some(k) => k(args.0, args.1, args.2, args.3, args.4, args.5, &mut l, &mut r),
+                    None => mix_body(args.0, args.1, args.2, args.3, args.4, args.5, &mut l, &mut r, 0),
                 }
                 (l, r)
             };
-            assert_eq!(run(true), run(false), "step {step:#x}, {n} frames");
+            for kernel in kernels {
+                assert_eq!(run(Some(kernel)), run(None), "step {step:#x}, {n} frames");
+            }
         }
+    }
+
+    /// Nanoseconds per 128-frame block of each mix kernel, best of many:
+    /// `cargo test --release --lib mix_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(target_arch = "x86_64")]
+    fn mix_speed() {
+        use std::arch::is_x86_feature_detected as has;
+        let window: Vec<Frame> = (0..WINDOW).map(|i| [(i as f32 * 0.37).sin(), (i as f32 * 0.11).cos()]).collect();
+        let amp = [0.9f32; MAX_BLOCK];
+        let (mut l, mut r) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+        let base = (1.3 * FIXED_ONE) as u64;
+        type Kernel = fn(&[Frame], u64, u64, &[f32], [f32; 2], [f32; 2], &mut [f32], &mut [f32]);
+        let mut kernels: Vec<(&str, Kernel)> =
+            vec![("scalar", |w, b, s, a, g, d, l, r| mix_body(w, b, s, a, g, d, l, r, 0))];
+        if has!("avx2") && has!("fma") {
+            // SAFETY: the running CPU supports AVX2 and FMA.
+            kernels.push(("avx2", |w, b, s, a, g, d, l, r| unsafe { mix_avx2(w, b, s, a, g, d, l, r, 0) }));
+        }
+        if crate::audio::avx512() && has!("fma") {
+            // SAFETY: the running CPU supports AVX-512 F, BW and VL, AVX2 and FMA.
+            kernels.push(("avx512", |w, b, s, a, g, d, l, r| unsafe { mix_avx512(w, b, s, a, g, d, l, r) }));
+        }
+        for step in [0.53, 1.06, 1.87] {
+            let step = (step * FIXED_ONE) as u64;
+            for (name, kernel) in &kernels {
+                let mut best = f64::MAX;
+                for _ in 0..200 {
+                    let t = std::time::Instant::now();
+                    for _ in 0..100 {
+                        kernel(&window, base, step, &amp, [0.7, 0.3], [0.0; 2], &mut l, &mut r);
+                    }
+                    best = best.min(t.elapsed().as_secs_f64() / 100.0);
+                }
+                println!("step {:.2} {name}: {:.0} ns per block", step as f64 / FIXED_ONE, best * 1e9);
+            }
+        }
+        assert!(l[0].is_finite());
     }
 
     #[test]
