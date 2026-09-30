@@ -17,18 +17,16 @@
 //! master strip is the host Volume parameter. Meters are canvases that read
 //! the audio thread's atomics while the scene is walked, so the tree never
 //! depends on a level: [`super::Watch`] asks for frames only while a meter
-//! is moving and the mixer is on screen.
+//! is moving.
 
 use super::{Cx, RackDrag, instrument, menu, theme::*};
 use crate::engine::BUSES;
 use crate::plugin::{Bus, Meters, P, SamplerParams};
-use moose::mui::mui::geometry::Path as DrawPath;
 use moose::mui::{Bridge, mui::prelude::*};
-use std::f64::consts::PI;
 use std::path::Path;
 
 /// A strip's width: a fader, a meter and a readout, no more.
-const STRIP: f64 = TEXT * 6.5;
+const WIDTH: f64 = TEXT * 6.5;
 /// The fader's thumb; the meter keeps the same end margins, so levels and
 /// fader positions share one scale.
 const THUMB: (f64, f64) = (TEXT * 1.5, TEXT * 0.75);
@@ -172,7 +170,7 @@ fn frame(rows: Vec<El>, edge: Fill, selected: bool) -> El {
     col(items)
         .gap(0)
         .align(Align::Stretch)
-        .w(STRIP)
+        .w(WIDTH)
         .fill(if selected { Role::Raised } else { Role::Surface })
         .shrink(0)
 }
@@ -208,13 +206,13 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let (input, input_el) = route(
         ui,
         &format!("mix-in-{slot}"),
-        Glyph::MidiIn,
+        Icon::MidiIn,
         None,
         input_text(part.port, part.channel),
         "MIDI input",
     );
     if input {
-        menu::open_under(ui, cx, menu::Target::Input(slot), &format!("mix-in-{slot}"));
+        menu::open_under(ui, cx, menu::Target::Midi(slot), &format!("mix-in-{slot}"));
     }
     let mut pan = f64::from(part.pan);
     let pan_el = pan_wedge(ui, &format!("mix-pan-{slot}"), &mut pan);
@@ -229,15 +227,15 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         !part.mute,
         move || Meters::read(&meter.shared.meters.parts[slot]),
     );
-    let (solo, solo_el) = latch(ui, format!("mix-solo-{slot}"), "S", "Solo", part.solo);
-    let (mute, mute_el) = latch(ui, format!("mix-mute-{slot}"), "M", "Mute", part.mute);
+    let (mut solo, mut mute) = (part.solo, part.mute);
+    let switches = solo_mute(ui, &format!("mix-{slot}"), &mut solo, &mut mute);
     let aux_text = if part.aux < 0 {
         "No send".to_owned()
     } else {
         cx.selection.bus(part.aux as usize).label(part.aux as usize)
     };
     let aux_chip = (part.aux >= 0).then(|| bus_color(part.aux as usize));
-    let (aux, aux_el) = route(ui, &format!("mix-aux-{slot}"), Glyph::Send, aux_chip, aux_text, "Aux send");
+    let (aux, aux_el) = route(ui, &format!("mix-aux-{slot}"), Icon::Right, aux_chip, aux_text, "Aux send");
     if aux {
         menu::open_under(ui, cx, menu::Target::Aux(slot), &format!("mix-aux-{slot}"));
     }
@@ -247,7 +245,7 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let (output, output_el) = route(
         ui,
         &format!("mix-out-{slot}"),
-        Glyph::AudioOut,
+        Icon::AudioOut,
         Some(bus_color(out)),
         cx.selection.bus(out).label(out),
         "Output",
@@ -260,15 +258,15 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     part.pan = pan as f32;
     part.gain = gain as f32;
     part.aux_gain = aux_gain as f32;
-    part.solo ^= solo;
-    part.mute ^= mute;
+    part.solo = solo;
+    part.mute = mute;
 
     let rows = vec![
         name,
         input_el,
         pan_el,
         fader_el,
-        segmented(vec![solo_el.flex(1), mute_el.flex(1)]),
+        row![switches].justify(Justify::Center).shrink(0),
         col![aux_el, send_el].gap(2).shrink(0),
         output_el,
     ];
@@ -318,7 +316,7 @@ fn bus_strip(ui: &mut Ui, cx: &mut Cx, n: usize) -> El {
         .filter(|p| !p.path.is_empty() && (usize::from(p.output) == n || p.aux == n as i16))
         .count();
     let sources_el = row![
-        glyph_el(Glyph::AudioIn, Role::Dim.alpha(1.)),
+        glyph(Icon::AudioIn, TEXT, Role::Dim.alpha(1.)),
         caption(match sources {
             0 => "No input".to_owned(),
             n => format!("{n} in"),
@@ -345,13 +343,13 @@ fn bus_strip(ui: &mut Ui, cx: &mut Cx, n: usize) -> El {
         !bus.mute,
         move || Meters::read(&meter.shared.meters.buses[n]),
     );
-    let (solo, solo_el) = latch(ui, format!("bus-solo-{n}"), "S", "Solo", bus.solo);
-    let (mute, mute_el) = latch(ui, format!("bus-mute-{n}"), "M", "Mute", bus.mute);
+    let (mut solo, mut mute) = (bus.solo, bus.mute);
+    let switches = solo_mute(ui, &format!("bus-{n}"), &mut solo, &mut mute);
     let port = if bus.port < 0 { n } else { bus.port as usize };
     let (to, port_el) = route(
         ui,
         &format!("bus-port-{n}"),
-        Glyph::AudioOut,
+        Icon::AudioOut,
         Some(bus_color(n)),
         format!("Out {}", port_text(port)),
         "Host output",
@@ -359,19 +357,19 @@ fn bus_strip(ui: &mut Ui, cx: &mut Cx, n: usize) -> El {
     if to {
         menu::open_under(ui, cx, menu::Target::BusPort(n), &format!("bus-port-{n}"));
     }
-    if (pan, gain, solo, mute) != (f64::from(bus.pan), f64::from(bus.gain), false, false) {
+    if (pan, gain, solo, mute) != (f64::from(bus.pan), f64::from(bus.gain), bus.solo, bus.mute) {
         let bus = cx.selection.bus_mut(n);
         bus.pan = pan as f32;
         bus.gain = gain as f32;
-        bus.solo ^= solo;
-        bus.mute ^= mute;
+        bus.solo = solo;
+        bus.mute = mute;
     }
     let rows = vec![
         name,
         sources_el,
         pan_el,
         fader_el,
-        segmented(vec![solo_el.flex(1), mute_el.flex(1)]),
+        row![switches].justify(Justify::Center).shrink(0),
         blank(CONTROL - 2. + 2. + 4.),
         port_el,
     ];
@@ -404,12 +402,12 @@ fn master_strip(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) ->
             .pad((TIGHT, 0))
             .h(CONTROL - 2.)
             .shrink(0),
-        blank(CONTROL - TIGHT),
+        blank(super::theme::STRIP),
         fader_el,
-        blank(CONTROL),
+        blank(super::theme::STRIP),
         blank(CONTROL - 2. + 2. + 4.),
         row![
-            glyph_el(Glyph::AudioOut, Role::Dim.alpha(1.)),
+            glyph(Icon::AudioOut, TEXT, Role::Dim.alpha(1.)),
             caption("Host").fill(Role::Dim).lines(1).min_w(0)
         ]
         .gap(TIGHT)
@@ -540,70 +538,15 @@ pub fn reset(cx: &mut Cx, strip: Strip) {
     }
 }
 
-// Controls. ponytail: local until theme.rs carries the shared Koda widgets
-// (pan_wedge, meter_v, the MIDI and audio icons); swap these for them then.
-
-/// The line icons the routing rows wear.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Glyph {
-    /// A five-pin DIN socket.
-    MidiIn,
-    /// A speaker: what leaves for the host.
-    AudioOut,
-    /// A jack plug pointing in.
-    AudioIn,
-    /// An arrow off the main path.
-    Send,
-}
-
-fn glyph_el(icon: Glyph, ink: Fill) -> El {
-    canvas(move |s| {
-        let u = s.width.min(s.height) / 16.;
-        let (ox, oy) = ((s.width - 16. * u) / 2., (s.height - 16. * u) / 2.);
-        let p = |x: f64, y: f64| Point::new(ox + x * u, oy + y * u);
-        let weight = 1.3 * u.max(0.75);
-        let line = |pts: &[(f64, f64)], closed: bool| {
-            Draw::stroke(DrawPath::polyline(pts.iter().map(|&(x, y)| p(x, y)), closed), ink.clone(), weight)
-        };
-        let dot = |x: f64, y: f64| Draw::fill(circle(ox + x * u, oy + y * u, 1.1 * u), ink.clone());
-        match icon {
-            Glyph::MidiIn => {
-                let mut d = vec![Draw::stroke(circle(ox + 8. * u, oy + 8. * u, 6.3 * u), ink.clone(), weight)];
-                // Five pins round the upper arc, the key notch below.
-                for n in 0..5 {
-                    let a = PI + PI * f64::from(n) / 4.;
-                    d.push(dot(8. + 3.7 * a.cos(), 8.6 + 3.7 * a.sin()));
-                }
-                d.push(line(&[(6.8, 14.3), (6.8, 12.6), (9.2, 12.6), (9.2, 14.3)], false));
-                d
-            }
-            Glyph::AudioOut => vec![
-                line(&[(2.5, 6.), (5.5, 6.), (9., 3.), (9., 13.), (5.5, 10.), (2.5, 10.)], true),
-                Draw::stroke(arc(ox + 9. * u, oy + 8. * u, 4.5 * u, -PI / 4., PI / 2.), ink.clone(), weight),
-            ],
-            Glyph::AudioIn => vec![
-                line(&[(1.5, 8.), (9., 8.)], false),
-                line(&[(6., 5.), (9., 8.), (6., 11.)], false),
-                line(&[(11.5, 3.), (14.5, 3.), (14.5, 13.), (11.5, 13.)], false),
-            ],
-            Glyph::Send => vec![
-                line(&[(2., 12.), (8., 12.), (13., 5.)], false),
-                line(&[(9.5, 4.5), (13., 5.), (13.5, 8.5)], false),
-            ],
-        }
-    })
-    .square(TEXT)
-    .shrink(0)
-}
-
 /// A routing field: an icon, the target's color on its left edge, and
-/// what it points at. Opens a menu.
-fn route(ui: &mut Ui, id: &str, icon: Glyph, chip: Option<Color>, text: String, name: &str) -> (bool, El) {
+/// what it points at. Opens a menu. [`route`](super::theme::route) with a
+/// color, for the labels that name a bus.
+fn route(ui: &mut Ui, id: &str, icon: Icon, chip: Option<Color>, text: String, name: &str) -> (bool, El) {
     let hit = ui.get(id).activated();
     let edge = chip.map_or(Role::Ink.alpha(0.), Fill::from);
     let el = row![
         block(2, Len::Pct(100.)).fill(edge).shrink(0),
-        glyph_el(icon, Role::Dim.alpha(1.)),
+        glyph(icon, TEXT, Role::Ink.alpha(0.72)),
         body(text.clone()).text_size(SMALL).lines(1).flex(1).min_w(0)
     ]
     .gap(TIGHT)
@@ -619,46 +562,6 @@ fn route(ui: &mut Ui, id: &str, icon: Glyph, chip: Option<Color>, text: String, 
     .id(id.to_owned())
     .shrink(0);
     (hit, interactive(el, false))
-}
-
-/// Pan as a wedge that grows from the center toward its side, with
-/// Kontakt's readout beside it: "C", "L10", "R34".
-fn pan_wedge(ui: &mut Ui, id: &str, pan: &mut f64) -> El {
-    let held = drive(ui, id, pan, &(-1.0..=1.0), TRAVEL, false, 0.);
-    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
-    let at = *pan;
-    let wedge = canvas(move |s| {
-        let (mid, base) = (s.width / 2., (s.height / 2. + 3.).round());
-        let x = mid + at * (s.width / 2. - 1.);
-        let rise = 3. + 5. * at.abs();
-        let mut d = vec![
-            Draw::fill(rect(0., base, s.width, 1.), Role::Ink.alpha(0.14 + 0.06 * lift)),
-            Draw::fill(rect(mid.round() - 0.5, base - 6., 1., 7.), Role::Ink.alpha(0.3)),
-        ];
-        if at.abs() > 0.005 {
-            d.push(Draw::fill(
-                DrawPath::polyline([Point::new(mid, base), Point::new(x, base), Point::new(x, base - rise)], true),
-                value_ink(lift),
-            ));
-        }
-        d
-    })
-    .flex(1)
-    .h(CONTROL - TIGHT)
-    .min_w(0)
-    .cursor(Cursor::ResizeH)
-    .focusable()
-    .a11y(A11y::Slider { value: at, min: -1., max: 1. })
-    .named("Pan")
-    .tip("Pan: drag, Shift for fine, double-click to center")
-    .id(id.to_owned());
-    row![
-        wedge,
-        caption(pan_text(at).replace(' ', "")).text_size(SMALL).reserve("L100")
-    ]
-    .gap(TIGHT)
-    .align(Align::Center)
-    .shrink(0)
 }
 
 /// A send level as a thin bar; dim and inert when nothing is sent.
@@ -683,17 +586,6 @@ fn send_level(ui: &mut Ui, id: &str, db: &mut f64, on: bool) -> El {
     .named("Send level")
     .tip(if on { format!("Send level {text}: drag, double-click for 0 dB") } else { "Pick a send bus first".into() })
     .id(id.to_owned())
-}
-
-/// A meter level's color: quiet green, amber in the top 12 dB, red over 0.
-fn level_color(db: f64) -> Color {
-    if db > 0. {
-        Color::oklch(0.64, 0.19, 28.)
-    } else if db > -12. {
-        Color::oklch(0.82, 0.13, 90.)
-    } else {
-        Color::oklch(0.72, 0.13, 150.)
-    }
 }
 
 /// The fader column: a vertical fader with a stereo meter beside it and
@@ -752,34 +644,11 @@ fn channel(
     .named(name.to_owned())
     .tip(format!("{name}: drag, Shift for fine, wheel, double-click to reset"))
     .id(id.to_owned());
-    let meter = canvas(move |s| {
-        let (w, gap) = ((s.width - 1.) / 2., 1.);
-        let mut d = Vec::new();
-        for (n, level) in levels().into_iter().enumerate() {
-            let x = n as f64 * (w + gap);
-            d.push(Draw::fill(rect(x, y(s.height, 1.), w, s.height - THUMB.1), Role::Ink.alpha(0.07)));
-            if level <= 0. {
-                continue;
-            }
-            let db = 20. * f64::from(level).log10();
-            // Stacked zones, each drawn only as far as the level reaches.
-            let mut from = *DB.start();
-            for (to, color) in [(-12., level_color(-20.)), (0., level_color(-6.)), (*DB.end(), level_color(1.))] {
-                let top = db.min(to);
-                if top > from {
-                    let (a, b) = (y(s.height, unit(top)), y(s.height, unit(from)));
-                    d.push(Draw::fill(rect(x, a, w, b - a), color));
-                }
-                from = to;
-            }
-        }
-        d
-    })
-    .w(7)
-    .h(Len::Pct(100.))
-    .shrink(0)
-    .named(format!("{name} meter"))
-    .id(format!("{id}-meter"));
+    // The meter keeps the fader's end margins, so both read on one scale.
+    let meter = col![meter_v(levels).id(format!("{id}-meter"))]
+        .pad((0., THUMB.1 / 2.))
+        .align(Align::Stretch)
+        .shrink(0);
     col![
         row![spacer(), fader, meter, spacer()]
             .gap(TIGHT)

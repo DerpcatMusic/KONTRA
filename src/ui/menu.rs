@@ -19,13 +19,14 @@ pub enum Target {
     App,
     /// A script menu in a part's performance controls.
     Script { part: usize, control: usize },
-    /// A mixer strip.
-    Strip(Strip),
-    /// A part's MIDI input, output bus and aux send; a bus's host port.
-    Input(usize),
+    /// A part's MIDI input: its channel and port.
+    Midi(usize),
+    /// A part's output bus, its aux send bus; a bus's host port.
     Output(usize),
     Aux(usize),
     BusPort(usize),
+    /// A mixer strip.
+    Strip(Strip),
 }
 
 #[derive(Clone, Debug)]
@@ -57,10 +58,11 @@ pub enum Command {
     Browser,
     Keyboard,
     Panic,
-    Appearance(super::Appearance),
-    /// A part listens on a MIDI port and channel (-1 omni).
-    Input(usize, u8, i16),
+    /// A part's MIDI channel (-1 omni), its port (0..4), its output bus.
+    Channel(usize, i16),
+    Port(usize, u8),
     Output(usize, u8),
+    Appearance(super::Appearance),
     /// A part's send bus, -1 for none.
     Aux(usize, i16),
     /// A bus's host port, -1 for its own.
@@ -229,6 +231,18 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 })
                 .collect()
         }
+        Target::Midi(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot) else {
+                return Vec::new();
+            };
+            let mut items = vec![check("Omni", part.channel < 0, Command::Channel(*slot, -1))];
+            items.extend((0..16).map(|c| check(format!("Channel {}", c + 1), part.channel == c, Command::Channel(*slot, c))));
+            items.extend([Item::Rule, Item::Info("Port".into())]);
+            items.extend((0..4u8).map(|n| {
+                check(format!("Port {}", char::from(b'A' + n)), part.port == n, Command::Port(*slot, n))
+            }));
+            items
+        }
         Target::Strip(strip) => {
             let strip = *strip;
             if let Strip::Part(slot) = strip
@@ -242,23 +256,6 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 Item::Rule,
                 act("Route to…", "", Command::StripRoute(strip)),
             ]
-        }
-        Target::Input(slot) => {
-            let Some(part) = cx.selection.parts.get(*slot) else {
-                return Vec::new();
-            };
-            let (slot, port, channel) = (*slot, part.port, part.channel);
-            let mut items = vec![Item::Info("MIDI port".into())];
-            for n in 0..4u8 {
-                let label = format!("Port {}", char::from(b'A' + n));
-                items.push(check(label, port == n, Command::Input(slot, n, channel)));
-            }
-            items.extend([Item::Rule, Item::Info("Channel".into())]);
-            items.push(check("Omni", channel < 0, Command::Input(slot, port, -1)));
-            for c in 0..16i16 {
-                items.push(check(format!("Channel {}", c + 1), channel == c, Command::Input(slot, port, c)));
-            }
-            items
         }
         Target::Output(slot) => {
             let Some(part) = cx.selection.parts.get(*slot) else {
@@ -498,21 +495,14 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::Keyboard => cx.state.keyboard ^= true,
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
+        Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
+        Command::Port(slot, port) => cx.selection.parts[slot].port = port,
+        Command::Output(slot, output) => cx.selection.parts[slot].output = output,
         Command::Script {
             part,
             control,
             value,
         } => shared.edit_control(part, control, value),
-        Command::Input(slot, port, channel) => {
-            if let Some(part) = cx.selection.parts.get_mut(slot) {
-                (part.port, part.channel) = (port, channel);
-            }
-        }
-        Command::Output(slot, n) => {
-            if let Some(part) = cx.selection.parts.get_mut(slot) {
-                part.output = n;
-            }
-        }
         Command::Aux(slot, n) => {
             if let Some(part) = cx.selection.parts.get_mut(slot) {
                 part.aux = n;

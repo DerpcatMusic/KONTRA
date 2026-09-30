@@ -251,6 +251,7 @@ pub enum Icon {
     Close,
     Sidebar,
     Search,
+    #[allow(dead_code, reason = "the mixer's audition")]
     Play,
     Menu,
     /// A favorite not yet set, and set.
@@ -260,6 +261,16 @@ pub enum Icon {
     Keys,
     /// A clock face: what was opened lately.
     Recent,
+    /// A five-pin DIN socket with an arrow in, or out: MIDI routing.
+    MidiIn,
+    #[allow(dead_code, reason = "the mixer's routing")]
+    MidiOut,
+    /// A waveform with an arrow in, or out: audio routing.
+    #[allow(dead_code, reason = "the mixer's routing")]
+    AudioIn,
+    AudioOut,
+    /// A tuning fork: tune.
+    Fork,
 }
 
 /// `icon` in `ink`, `size` points square.
@@ -327,6 +338,33 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                     black(8.6),
                 ]
             }
+            Icon::MidiIn | Icon::MidiOut | Icon::AudioIn | Icon::AudioOut => {
+                let pin = |x: f64, y: f64| {
+                    Draw::fill(rect(ox + (x - 0.8) * u, oy + (y - 0.8) * u, 1.6 * u, 1.6 * u), ink.clone())
+                };
+                let mut draw = if matches!(icon, Icon::MidiIn | Icon::MidiOut) {
+                    vec![
+                        Draw::stroke(arc(ox + 6. * u, oy + 8. * u, 4.8 * u, 0., 2. * PI), ink.clone(), weight),
+                        pin(3.7, 8.3),
+                        pin(6., 5.8),
+                        pin(8.3, 8.3),
+                        line(&[(6., 12.8), (6., 11.)]),
+                    ]
+                } else {
+                    vec![line(&[(1., 8.), (2.6, 4.), (4.2, 12.), (5.8, 3.), (7.4, 13.), (9., 6.), (10.2, 8.)])]
+                };
+                // In points at the socket; out points away from it.
+                draw.push(if matches!(icon, Icon::MidiIn | Icon::AudioIn) {
+                    line(&[(13.4, 6.), (11.6, 8.), (13.4, 10.), (11.6, 8.), (15.5, 8.)])
+                } else {
+                    line(&[(11.8, 8.), (15.4, 8.), (13.6, 6.), (15.4, 8.), (13.6, 10.)])
+                });
+                draw
+            }
+            Icon::Fork => vec![
+                line(&[(5., 1.5), (5., 7.8), (5.7, 9.7), (8., 10.8), (10.3, 9.7), (11., 7.8), (11., 1.5)]),
+                line(&[(8., 10.8), (8., 14.8)]),
+            ],
             Icon::Recent => vec![
                 Draw::stroke(arc(ox + 8. * u, oy + 8. * u, 5.5 * u, 0., 2. * PI), ink.clone(), weight),
                 line(&[(8., 5.), (8., 8.), (10.5, 9.5)]),
@@ -475,14 +513,6 @@ pub struct Fader {
 }
 
 impl Fader {
-    pub const PAN: Self = Self {
-        origin: 0.,
-        detent: Some(0.),
-        reset: 0.,
-        widest: "R 100",
-        vertical: false,
-        length: None,
-    };
     pub const LEVEL: Self = Self {
         origin: -60.,
         detent: Some(0.),
@@ -753,6 +783,268 @@ pub fn dial(
     (value.to_bits() != before.to_bits(), el)
 }
 
+// Strip controls, after Koda's part strip: small, dense, each one readable
+// at a glance. The mixer uses them too; keep their signatures.
+
+/// A strip control's height: a hair under a [`CONTROL`].
+pub const STRIP: f64 = CONTROL - TIGHT;
+/// The pan wedge's width.
+const WEDGE: f64 = TEXT * 3.5;
+
+/// Signal and state colors: a lit activity dot and a meter's safe range,
+/// its hot range, and clipping.
+pub fn signal() -> Color {
+    Color::oklch(0.8, 0.19, 145.)
+}
+fn hot() -> Color {
+    Color::oklch(0.84, 0.16, 88.)
+}
+fn clip() -> Color {
+    Color::oklch(0.64, 0.21, 27.)
+}
+
+/// Kontakt's pan, tight: "C", "L23", "R40".
+pub fn pan_short(pan: f64) -> String {
+    pan_text(pan).replace(' ', "")
+}
+
+/// Common wiring of a strip control: focus, cursor, a slider's name and value.
+fn slider_el(el: El, id: &str, name: &str, value: f64, range: &RangeInclusive<f64>, tip: String) -> El {
+    el.cursor(Cursor::ResizeV)
+        .focusable()
+        .a11y(A11y::Slider {
+            value,
+            min: *range.start(),
+            max: *range.end(),
+        })
+        .named(name.to_owned())
+        .tip(tip)
+        .id(id.to_owned())
+        .shrink(0)
+}
+
+/// Koda's pan: the value ("C", "L23") over a thin wedge that widens from
+/// the middle to both ends, filled from the middle to a white tick at the
+/// value. Drag up or down (Shift is fine), wheel, arrows; double-click centers.
+pub fn pan_wedge(ui: &mut Ui, id: &str, pan: &mut f64) -> El {
+    let range = -1.0..=1.0;
+    let held = drive(ui, id, pan, &range, TRAVEL, true, 0.);
+    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
+    let focused = ui.focus_visible(id);
+    let at = pan.clamp(-1., 1.);
+    let wedge = canvas(move |s| {
+        let (w, h) = (s.width, s.height);
+        let c = w / 2.;
+        let mid = h / 2.;
+        let half = |x: f64| 0.5 + (mid - 0.5) * ((x - c).abs() / c).min(1.);
+        let shape = |a: f64, b: f64| {
+            DrawPath::polyline(
+                [(a, mid - half(a)), (b, mid - half(b)), (b, mid + half(b)), (a, mid + half(a))]
+                    .map(|(x, y)| Point::new(x, y)),
+                true,
+            )
+        };
+        let track = Role::Ink.alpha(0.16 + 0.08 * lift);
+        let x = c + at * c;
+        let mut draw = vec![Draw::fill(shape(0., c), track.clone()), Draw::fill(shape(c, w), track)];
+        if (x - c).abs() > 0.5 {
+            draw.push(Draw::fill(shape(c.min(x), c.max(x)), value_ink(0.)));
+        }
+        let tick = (x - 0.75).clamp(0., w - 1.5);
+        draw.push(Draw::fill(rect(tick, 0., 1.5, h), Color::oklch(0.98, 0., 0.)));
+        if focused {
+            draw.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), Role::Primary.alpha(0.9), 1.));
+        }
+        draw
+    })
+    .w(WEDGE)
+    .h(TIGHT * 2.)
+    .shrink(0);
+    let el = col![
+        caption(pan_short(at)).text_size(SMALL - 1.).fill(Role::Dim).reserve("R100"),
+        wedge
+    ]
+    .gap(2)
+    .align(Align::Center)
+    .justify(Justify::Center)
+    .h(STRIP);
+    slider_el(el, id, "Pan", at, &range, "Pan: drag, Shift for fine, double-click to center".into())
+}
+
+/// A small gain knob: a 270° track, an accent arc from 0 dB to the value,
+/// and the level in dB beside it ("-6.0", "-inf"). -60 to +6 dB; drag up
+/// or down, wheel, arrows; double-click returns to 0 dB.
+pub fn gain_knob(ui: &mut Ui, id: &str, db: &mut f64) -> El {
+    let range = -60.0..=6.0;
+    let held = drive(ui, id, db, &range, TRAVEL, true, 0.);
+    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
+    let focused = ui.focus_visible(id);
+    let unit = |v: f64| ((v + 60.) / 66.).clamp(0., 1.);
+    let (at, from) = (unit(*db), unit(0.));
+    let knob = canvas(move |s| {
+        let (cx, cy) = (s.width / 2., s.height / 2.);
+        let weight = 2.;
+        let r = s.width.min(s.height) / 2. - weight / 2. - 0.5;
+        let (start, sweep) = (0.75 * PI, 1.5 * PI);
+        let mut draw = vec![
+            Draw::fill(circle(cx, cy, r - weight - 0.5), Role::Raised.alpha(1.)),
+            Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.24 + 0.08 * lift), weight),
+        ];
+        let (a, b) = if at < from { (at, from) } else { (from, at) };
+        if b - a > 0.004 {
+            draw.push(Draw::stroke(arc(cx, cy, r, start + sweep * a, sweep * (b - a)), accent(), weight));
+        }
+        let angle = start + sweep * at;
+        let (inner, outer) = (r * 0.15, r - weight - 0.5);
+        draw.push(Draw::stroke(
+            DrawPath::polyline(
+                [
+                    Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner),
+                    Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer),
+                ],
+                false,
+            ),
+            value_ink(lift),
+            1.5,
+        ));
+        if focused {
+            draw.push(Draw::stroke(circle(cx, cy, r + 1.5), Role::Primary.alpha(0.9), 1.));
+        }
+        draw
+    })
+    .square(STRIP)
+    .shrink(0);
+    let text = if *db <= -59.95 { "-inf".to_owned() } else { format!("{:.1}", *db + 0.) };
+    let el = row![knob, caption(text).text_size(SMALL).reserve("-60.0")]
+        .gap(TIGHT)
+        .align(Align::Center);
+    slider_el(el, id, "Volume", *db, &range, "Volume: drag up or down, Shift for fine, double-click for 0 dB".into())
+}
+
+/// A tuning fork and the tune in semitones ("0.00", "-1.25"): drag up or
+/// down (Shift is fine), wheel, arrows; double-click returns to 0. Cents
+/// are the finest step.
+pub fn tune_field(ui: &mut Ui, id: &str, semitones: &mut f64, range: RangeInclusive<f64>) -> El {
+    let held = drive(ui, id, semitones, &range, TRAVEL * 2., true, 0.);
+    *semitones = (*semitones * 100.).round() / 100.;
+    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
+    let text = if semitones.abs() < 0.005 { "0.00".to_owned() } else { format!("{:+.2}", *semitones) };
+    let el = row![
+        glyph(Icon::Fork, TEXT, Role::Ink.alpha(0.5 + 0.4 * lift)),
+        caption(text).text_size(SMALL).reserve("+36.00")
+    ]
+    .gap(2)
+    .align(Align::Center)
+    .h(STRIP)
+    .pad((2, 0))
+    .when(ui.focus_visible(id), |e| e.stroke(Role::Primary.alpha(0.9)).stroke_width(1));
+    slider_el(el, id, "Tune", *semitones, &range, "Tune in semitones: drag, Shift for fine, double-click for 0".into())
+}
+
+/// Where a meter's level sits on its scale: -60 dB at the foot, +6 at the top.
+fn meter_unit(level: f32) -> f64 {
+    if level <= 0. {
+        return 0.;
+    }
+    ((20. * f64::from(level).log10() + 60.) / 66.).clamp(0., 1.)
+}
+
+/// A thin vertical stereo meter. `level` is read each time the meter is
+/// laid out, so feeding it an atomic moves the meter on any frame without
+/// rebuilding what is around it. Linear peaks, drawn on a dB scale: signal
+/// green, hot above -6 dB, red past 0.
+pub fn meter_v(level: impl Fn() -> [f32; 2] + 'static) -> El {
+    canvas(move |s| {
+        let bar = ((s.width - 1.) / 2.).floor().max(1.);
+        let mut draw = vec![
+            Draw::fill(rect(0., 0., bar, s.height), Role::Ink.alpha(0.16)),
+            Draw::fill(rect(bar + 1., 0., bar, s.height), Role::Ink.alpha(0.16)),
+        ];
+        let y = |u: f64| s.height * (1. - u);
+        let (hot_at, clip_at) = (54. / 66., 60. / 66.);
+        for (n, level) in level().into_iter().enumerate() {
+            let top = meter_unit(level);
+            let x = n as f64 * (bar + 1.);
+            for (from, to, color) in [(0., hot_at, signal()), (hot_at, clip_at, hot()), (clip_at, 1., clip())] {
+                if top > from {
+                    let to = top.min(to);
+                    draw.push(Draw::fill(rect(x, y(to), bar, y(from) - y(to)), color));
+                }
+            }
+        }
+        draw
+    })
+    .w(5)
+    .h(Len::Pct(100.))
+    .shrink(0)
+    .named("Level")
+}
+
+/// A small dot, lit green while `lit` says the part is sounding; read at
+/// layout like [`meter_v`].
+pub fn activity_dot(lit: impl Fn() -> bool + 'static) -> El {
+    canvas(move |s| {
+        let fill = if lit() { Fill::from(signal()) } else { Role::Ink.alpha(0.16) };
+        vec![Draw::fill(circle(s.width / 2., s.height / 2., s.width.min(s.height) / 2.), fill)]
+    })
+    .square(TIGHT * 1.75)
+    .shrink(0)
+    .named("Activity")
+}
+
+/// Solo and mute as a tight pair, `solo-{key}` and `mute-{key}`: set solo
+/// fills amber, set mute blue, both with dark ink.
+pub fn solo_mute(ui: &mut Ui, key: &str, solo: &mut bool, mute: &mut bool) -> El {
+    let one = |ui: &mut Ui, id: String, letter: &str, name: &str, on: &mut bool, lit: Color| {
+        if ui.get(id.as_str()).activated() {
+            *on = !*on;
+        }
+        let el = row![
+            caption(letter.to_owned())
+                .text_size(SMALL)
+                .text_weight(Weight::SEMIBOLD)
+                .fill(if *on { Fill::from(Color::oklch(0.18, 0., 0.)) } else { Role::Dim.into() })
+        ]
+        .align(Align::Center)
+        .justify(Justify::Center)
+        .square(STRIP)
+        .fill(if *on { Fill::from(lit) } else { Role::Field.into() })
+        .focusable()
+        .a11y(A11y::Toggle { on: *on })
+        .named(name.to_owned())
+        .tip(name.to_owned())
+        .id(id)
+        .shrink(0);
+        interactive(el, *on)
+    };
+    let s = one(ui, format!("solo-{key}"), "S", "Solo", solo, accent());
+    let m = one(ui, format!("mute-{key}"), "M", "Mute", mute, Color::oklch(0.72, 0.12, 240.));
+    row![s, m].gap(1).align(Align::Center).shrink(0)
+}
+
+/// A compact routing menu: an icon (MIDI or audio, in or out), the current
+/// choice kept `widest` wide, and a caret. Returns whether it was clicked.
+pub fn route(ui: &mut Ui, id: impl Into<Id>, icon: Icon, text: &str, widest: &str, name: &str) -> (bool, El) {
+    let id: Id = id.into();
+    let hit = ui.get(id.clone()).activated();
+    let el = row![
+        glyph(icon, TEXT + 2., Role::Ink.alpha(0.72)),
+        caption(text.to_owned()).text_size(SMALL).lines(1).reserve(widest.to_owned()),
+        glyph(Icon::Down, TIGHT * 2.5, Role::Ink.alpha(0.45))
+    ]
+    .gap(3)
+    .align(Align::Center)
+    .pad((TIGHT, 0))
+    .h(STRIP)
+    .focusable()
+    .a11y(A11y::Button)
+    .named(format!("{name}: {text}"))
+    .tip(name.to_owned())
+    .id(id)
+    .shrink(0);
+    (hit, interactive(el, false))
+}
+
 /// Kontakt's pan readout: "C", "L 23", "R 40".
 pub fn pan_text(pan: f64) -> String {
     let n = (pan.abs() * 100.).round();
@@ -866,5 +1158,10 @@ mod tests {
         assert_eq!(tune_text(0.001), "0 st");
         assert_eq!(tune_text(-12.), "-12 st");
         assert_eq!(tune_text(1.25), "+1.25 st");
+        assert_eq!(pan_short(-0.23), "L23");
+        assert_eq!(pan_short(0.), "C");
+        assert_eq!(meter_unit(0.), 0.);
+        assert_eq!(meter_unit(1.), 60. / 66.);
+        assert_eq!(meter_unit(1e-4), 0., "-80 dB sits at the foot");
     }
 }

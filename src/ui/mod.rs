@@ -40,7 +40,7 @@ use moose::prelude::*;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use theme::*;
@@ -89,8 +89,6 @@ struct Meters {
     cpu: AtomicU32,
     /// Sample data read from disk, MB/s.
     disk: AtomicU32,
-    /// The mixer is on screen: its meters want frames while they move.
-    mixer: AtomicBool,
 }
 
 /// Decides, every display tick, whether anything the editor shows moved
@@ -112,9 +110,6 @@ struct Watch {
     disk_counter: Option<&'static AtomicU64>,
     poll_at: Option<Instant>,
     frame_at: Option<Instant>,
-    /// When the mixer's meters were last looked at, and whether any moved.
-    meter_at: Option<Instant>,
-    metering: bool,
 }
 
 /// Readouts and the loading line refresh this often at most.
@@ -190,8 +185,15 @@ impl Watch {
                 });
             (view.parts.iter().any(|v| v.loading), pending)
         };
+        // Meters read their atomics as they are laid out: while any shows a
+        // level, frames run on the animation clock; the fall to silence
+        // changes the signature, so the last one draws them empty.
+        let m = &p.shared.meters;
+        let sounding = (m.parts.iter().chain(&m.buses).chain([&m.master]))
+            .any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
+        sounding.hash(&mut h);
         // Progress and the sweep redraw on the animation's own clock.
-        let animate = loading && due(self.frame_at, ANIMATION_MS);
+        let animate = (loading || sounding) && due(self.frame_at, ANIMATION_MS);
         if animate {
             self.frame_at = Some(now);
         }
@@ -203,20 +205,8 @@ impl Watch {
         if poll {
             self.poll_at = Some(now);
         }
-        // The mixer's meters paint from the audio thread's atomics as the
-        // scene is walked: frames only while one shows a level, and one more
-        // to draw them empty.
-        let mut meter = false;
-        if meters.mixer.load(Ordering::Relaxed) && due(self.meter_at, ANIMATION_MS) {
-            self.meter_at = Some(now);
-            let m = &p.shared.meters;
-            let live = (m.parts.iter().chain(&m.buses).chain([&m.master]))
-                .any(|m| crate::plugin::Meters::read(m) != [0.; 2]);
-            meter = live || self.metering;
-            self.metering = live;
-        }
         // The loading line sweeps until the first samples arrive.
-        moved || poll || animate || meter
+        moved || poll || animate
     }
 }
 
@@ -912,7 +902,6 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         content.push(banner(Role::Warning, cx.state.notice.clone()));
     }
     let slot = cx.state.selected;
-    cx.state.meters.mixer.store(cx.state.tab == Tab::Mixer, Ordering::Relaxed);
     if cx.state.tab == Tab::Rack {
         content.push(rack::view(ui, cx));
     } else if cx.state.tab == Tab::Mixer {
