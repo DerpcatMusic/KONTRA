@@ -189,13 +189,14 @@ impl std::ops::Deref for Frames {
 /// data; the registry only finds it, and forgets it when the last bank
 /// drops. Touched only while loading, never on the audio thread.
 mod resident {
-    use super::{Arc, Frames, Mutex, Span};
+    use super::{Arc, Frames, Mutex, Source, Span};
     use std::{collections::HashMap, path::PathBuf, sync::Weak};
 
     /// By sample path and packing (loops pack uncompressed): each span's
     /// first frame and data.
     type Registry = HashMap<(PathBuf, bool), Vec<(u64, Weak<Frames>)>>;
     static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
+    static SOURCES: Mutex<Option<HashMap<PathBuf, Weak<Source>>>> = Mutex::new(None);
 
     fn with<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
         let mut lock = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
@@ -215,14 +216,28 @@ mod resident {
         })
     }
 
-    /// Forget spans every bank has dropped.
+    /// Forget spans and sources every bank has dropped.
     pub fn sweep() {
         with(|r| {
             r.retain(|_, spans| {
                 spans.retain(|(_, d)| d.strong_count() > 0);
                 !spans.is_empty()
             })
-        })
+        });
+        let mut sources = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+        sources.get_or_insert_default().retain(|_, s| s.strong_count() > 0);
+    }
+
+    /// Where `path` streams from, one copy per process.
+    pub fn source((source, path): (Source, &PathBuf)) -> Arc<Source> {
+        let mut lock = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+        let sources = lock.get_or_insert_default();
+        if let Some(shared) = sources.get(path).and_then(Weak::upgrade) {
+            return shared;
+        }
+        let shared = Arc::new(source);
+        sources.insert(path.clone(), Arc::downgrade(&shared));
+        shared
     }
 
     pub fn insert(key: (PathBuf, bool), span: &Span) {
@@ -486,7 +501,7 @@ impl Bank {
                     Ok(())
                 };
                 let spans = read_spans().map(|()| kept);
-                (spans, streamed, reader.rate, source)
+                (spans, streamed, reader.rate, (source, path))
             },
         );
         progress.store(LOAD_DONE, Ordering::Relaxed);
@@ -502,7 +517,7 @@ impl Bank {
                 }
             };
             bytes += spans.iter().map(|s| s.data.bytes()).sum::<usize>();
-            streamed.push(streamed_sample.then_some(source));
+            streamed.push(streamed_sample.then(|| resident::source(source)));
             samples.push(SampleData {
                 rate,
                 spans,
@@ -941,6 +956,10 @@ impl Builder {
             );
         }
         let plays = self.plays;
+        // Samples are resolved: a playing bank never reads zones' paths,
+        // and 93k of them (Areia) are 14 MiB a part.
+        let mut zones = self.zones;
+        zones.iter_mut().for_each(|z| z.sample = PathBuf::new());
         let any_solo = self.groups.iter().any(|g| g.soloed);
         let playable = self
             .groups
@@ -951,8 +970,7 @@ impl Builder {
         let mut key_zones = Vec::new();
         for note in 0..128u8 {
             key_start[note as usize] = key_zones.len() as u32;
-            let on_key = self
-                .zones
+            let on_key = zones
                 .iter()
                 .enumerate()
                 .filter(|(_, z)| (z.low_key..=z.high_key).contains(&note));
@@ -961,7 +979,7 @@ impl Builder {
         key_start[128] = key_zones.len() as u32;
         Ok(Bank {
             groups: self.groups,
-            zones: self.zones,
+            zones,
             base: self.settings.clone(),
             settings: self.settings,
             plays,
