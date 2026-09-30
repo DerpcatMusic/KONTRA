@@ -1,7 +1,7 @@
 //! Voices: envelopes, fades, source windows and the per-block render kernel.
 
 use super::{
-    EventId, MAX_BLOCK,
+    DECLICK, EventId, MAX_BLOCK,
     bank::{Bank, Span},
     filter::VoiceFilter,
     map::{FOREVER, PlayMap, Run},
@@ -460,6 +460,10 @@ impl Default for Scratch {
 /// Balance law shared with the rack: the far side attenuates linearly.
 #[inline]
 pub(crate) fn balance(gain: f32, pan: f32) -> [f32; 2] {
+    // Scripts set gains and pans: NaN or infinity silences, never poisons, the mix.
+    if !gain.is_finite() || pan.is_nan() {
+        return [0.0; 2];
+    }
     [gain * (1.0 - pan.max(0.0)), gain * (1.0 + pan.min(0.0))]
 }
 
@@ -482,7 +486,6 @@ impl Voice {
             env.render(flex, group.flex.as_ref(), cx.rate);
             amp.iter_mut().zip(flex.iter()).for_each(|(a, f)| *a *= f);
         }
-        self.fade.apply(amp);
 
         let inputs = cx.inputs(self.channel, self.note, self.velocity);
         let (modulation, semitones) = group.mods.modulate(&mut self.mods, &inputs, n, cx.rate);
@@ -491,6 +494,15 @@ impl Voice {
             self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));
         }
         let step = (self.step * self.tune * self.pitch.1).min(MAX_STEP);
+        self.fade.apply(amp);
+        // A sample ending mid-waveform ramps out over its last millisecond.
+        let declick = DECLICK * cx.rate;
+        let end = ((self.length as f64 - self.pos) / step) as f32;
+        if end < n as f32 + declick {
+            for (i, a) in amp.iter_mut().enumerate() {
+                *a *= ((end - i as f32) / declick).clamp(0.0, 1.0);
+            }
+        }
 
         // The window starts one frame before the position for the cubic's left tap.
         let first = self.pos as i64 - 1;

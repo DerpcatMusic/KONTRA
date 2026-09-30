@@ -125,14 +125,16 @@ fn mapped_polyphony_sustain_channels_and_release() {
     render(&mut e, 480);
     assert_eq!(e.active_voices(), 512, "default polyphony");
     e.cc(0, 120, 0);
+    render(&mut e, 480);
     assert_eq!(e.active_voices(), 0);
 }
 
 #[test]
 fn root_pitch_octave_reverse_and_end_bounds() {
+    // Long enough that the end's declick ramp stays clear of the checks.
     let ramp = || Sample {
         rate: 48000,
-        frames: (0..100).map(|i| [i as f32 / 100.0; 2]).collect(),
+        frames: (0..1000).map(|i| [i as f32 / 100.0; 2]).collect(),
     };
     let mut a = engine_with(
         Bank::from_samples(
@@ -147,7 +149,7 @@ fn root_pitch_octave_reverse_and_end_bounds() {
         (last(&mut a, 11)[0] - 0.2).abs() < 1e-6,
         "an octave up steps two frames"
     );
-    render(&mut a, 100);
+    render(&mut a, 500);
     assert_eq!(a.active_voices(), 0, "voice ends at the sample end");
     let reverse = Group {
         reverse: true,
@@ -162,7 +164,7 @@ fn root_pitch_octave_reverse_and_end_bounds() {
         .unwrap(),
     );
     b.note_on(0, 60, 127);
-    assert!((last(&mut b, 11)[0] - 0.89).abs() < 1e-6);
+    assert!((last(&mut b, 11)[0] - 9.89).abs() < 1e-5);
 }
 
 #[test]
@@ -233,6 +235,7 @@ fn release_triggers_fire_on_release_including_after_the_pedal() {
         "note-off starts the release sample at the note-on velocity"
     );
     e.cc(0, 120, 0);
+    render(&mut e, 480);
 
     e.cc(0, 64, 127);
     e.note_on(0, 60, 64);
@@ -517,15 +520,16 @@ fn zone_crossfades_velocity_curve_and_start_offset() {
     event.offset_us = 12500;
     let id = e.start_event(&event).unwrap();
     let gain = (6.0 / 21.0 * std::f32::consts::FRAC_PI_2).sin();
-    let out = render(&mut e, 10);
+    // Past the 1 ms declick ramp of a mid-sample start.
+    let out = render(&mut e, 60);
     assert!(
-        (out[9][0] - gain * 609.0 / 2000.0).abs() < 1e-4,
+        (out[59][0] - gain * 659.0 / 2000.0).abs() < 1e-4,
         "offset 600 frames at crossfade gain: {}",
-        out[9][0]
+        out[59][0]
     );
     e.change_event(id, EventChange::Volume(0.5));
     let out = render(&mut e, 256);
-    assert!((out[255][0] - 0.5 * gain * (609.0 + 256.0) / 2000.0).abs() < 1e-4);
+    assert!((out[255][0] - 0.5 * gain * (659.0 + 256.0) / 2000.0).abs() < 1e-4);
     e.fade_event(id, 0.001, 0.0, true);
     render(&mut e, 128);
     assert!(!e.event_active(id));
@@ -1602,4 +1606,278 @@ fn tight_budgets_keep_the_scripted_start_offset_resident() {
     }
     assert_eq!(a.underruns(), 0);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+// Sampler edge cases. Each states the Kontakt behaviour it pins down.
+
+/// A key re-struck under the sustain pedal starts a new voice and the
+/// sustained one keeps ringing; pedal-up releases both.
+#[test]
+fn restruck_notes_under_the_pedal_layer_until_pedal_up() {
+    let mut e = engine();
+    e.note_on(0, 60, 127);
+    e.cc(0, 64, 127);
+    e.note_off(0, 60);
+    e.note_on(0, 60, 127);
+    assert_eq!(last(&mut e, 64), [1.0, 0.5], "both voices sound");
+    e.note_off(0, 60);
+    assert_eq!(last(&mut e, 1000), [1.0, 0.5], "the pedal holds both");
+    e.cc(0, 64, 0);
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// Sostenuto (CC66) holds only the notes down when it is pressed.
+#[test]
+fn sostenuto_holds_only_the_notes_down_when_pressed() {
+    let mut e = engine();
+    e.note_on(0, 60, 127);
+    e.cc(0, 66, 127);
+    e.note_off(0, 60);
+    e.note_on(0, 62, 127);
+    e.note_off(0, 62);
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 1, "62 was not latched");
+    assert_eq!(last(&mut e, 1), [0.5, 0.25]);
+    e.cc(0, 66, 0);
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0);
+    // A latched key still down at sostenuto-up keeps sounding.
+    e.note_on(0, 64, 127);
+    e.cc(0, 66, 127);
+    e.cc(0, 66, 0);
+    assert_eq!(last(&mut e, 1000), [0.5, 0.25]);
+}
+
+/// Note-on with velocity 0 is a note-off; a note-off before the note's first
+/// render still ends it; duplicate note-ons all end at the key's note-off.
+#[test]
+fn velocity_zero_early_note_off_and_duplicate_note_ons_leave_no_stuck_voices() {
+    let mut e = engine();
+    e.note_on(0, 60, 100);
+    e.note_on(0, 60, 0);
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0, "velocity 0 releases");
+    e.note_on(0, 61, 100);
+    e.note_on(0, 61, 90);
+    e.note_off(0, 61);
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0, "one note-off ends duplicate note-ons");
+    let mut s = scripted("on init\nend on\non note\nend on");
+    s.note_on(0, 60, 100);
+    s.note_off(0, 60);
+    render(&mut s, 48000);
+    assert_eq!(s.active_voices(), 0, "a note-off before the first render ends it");
+}
+
+/// All-sound-off (CC120) silences every voice at once, with a click-free
+/// few-ms fade; all-notes-off (CC123) releases keys but respects the pedal.
+#[test]
+fn all_sound_off_fades_fast_and_all_notes_off_respects_the_pedal() {
+    let zone = Zone {
+        loop_range: Some(Loop {
+            start: 0,
+            end: 4800,
+            until_release: false,
+            crossfade: 0,
+        }),
+        ..Zone::default()
+    };
+    let bank = Bank::from_samples(
+        vec![Group::default()],
+        vec![zone],
+        vec![(PathBuf::new(), sine(100.0, 4800))],
+    )
+    .unwrap();
+    let mut e = engine_with(bank);
+    e.release = 5.0;
+    e.note_on(0, 60, 127);
+    // Cut at the sine's peak: a hard stop would step by 1.
+    let mut out = render(&mut e, 1025);
+    e.cc(0, 120, 0);
+    out.extend(render(&mut e, 480));
+    assert!(max_step(&out[100..]) < 0.1, "cut step {}", max_step(&out[100..]));
+    assert_eq!(e.active_voices(), 0, "gone within 10 ms despite a 5 s release");
+    e.note_on(0, 60, 127);
+    e.cc(0, 64, 127);
+    e.cc(0, 123, 0);
+    render(&mut e, 4800);
+    assert_eq!(e.active_voices(), 1, "the pedal holds notes through all-notes-off");
+}
+
+/// A voice that starts mid-waveform (start offset) or whose sample ends
+/// mid-waveform ramps in and out instead of clicking.
+#[test]
+fn voices_ramp_at_mid_waveform_starts_and_sample_ends() {
+    let period = 100.0;
+    let play = |start_mod: Option<u32>, offset_us: u64| {
+        let zone = Zone {
+            start_mod,
+            ..Zone::default()
+        };
+        let bank = Bank::from_samples(
+            vec![Group::default()],
+            vec![zone],
+            // Ends at a peak of the sine: a hard stop would jump by 1.
+            vec![(PathBuf::new(), sine(period, 4825))],
+        )
+        .unwrap();
+        let mut e = engine_with(bank);
+        e.attack = 0.0;
+        let mut note = NoteEvent::new(0, 60, 127);
+        note.offset_us = offset_us;
+        e.start_event(&note).unwrap();
+        render(&mut e, 6000)
+    };
+    let smooth = TAU_OVER(period) * 1.1;
+    // 25 frames in: the sine's peak.
+    let offset = play(Some(1000), 25 * 1_000_000 / 48000 + 1);
+    assert!(offset[0][0].abs() < 0.2, "starts at {}", offset[0][0]);
+    assert!(max_step(&offset) < smooth, "start step {}", max_step(&offset));
+    let whole = play(None, 0);
+    assert!(max_step(&whole) < smooth, "end step {}", max_step(&whole));
+}
+
+/// Changing the host block size mid-session changes nothing audible, and a
+/// sample-rate change keeps pitch and envelope times.
+#[test]
+fn block_size_and_sample_rate_changes_keep_playback_intact() {
+    let bank = || {
+        let zone = Zone {
+            loop_range: Some(Loop {
+                start: 0,
+                end: 4800,
+                until_release: false,
+                crossfade: 0,
+            }),
+            ..Zone::default()
+        };
+        Bank::from_samples(
+            vec![Group::default()],
+            vec![zone],
+            vec![(PathBuf::new(), sine(100.0, 4800))],
+        )
+        .unwrap()
+    };
+    let (mut a, mut b) = (engine_with(bank()), engine_with(bank()));
+    a.note_on(0, 60, 127);
+    b.note_on(0, 60, 127);
+    let steady = render(&mut a, 9000);
+    let mut varied = Vec::new();
+    for n in [1, 7, 128, 300, 1000, 64, 5000, 1500].into_iter().cycle() {
+        if varied.len() >= 9000 {
+            break;
+        }
+        varied.extend(render(&mut b, n.min(9000 - varied.len())));
+    }
+    let worst = steady
+        .iter()
+        .zip(&varied)
+        .map(|(x, y)| (x[0] - y[0]).abs())
+        .fold(0.0, f32::max);
+    assert!(worst < 1e-4, "block size changed the output by {worst}");
+    // At 96 kHz the 48 kHz sine's period doubles.
+    b.reset(96000.0);
+    b.note_on(0, 60, 127);
+    let out = render(&mut b, 4000);
+    let rising = |o: &[Frame]| {
+        o.windows(2)
+            .filter(|w| w[0][0] < 0.0 && w[1][0] >= 0.0)
+            .count()
+    };
+    assert_eq!(rising(&out[100..]), 19, "3900 frames of a 200-frame period");
+}
+
+/// Tiny samples and loops shorter than the interpolator's four taps play
+/// finitely; reversed short samples too.
+#[test]
+fn tiny_samples_and_loops_play_finitely() {
+    for (frames, looped, reverse) in [
+        (1, None, false),
+        (2, Some((0, 1)), false),
+        (3, Some((1, 3)), false),
+        (5, Some((2, 4)), true),
+        (4, None, true),
+    ] {
+        let zone = Zone {
+            loop_range: looped.map(|(start, end)| Loop {
+                start,
+                end,
+                until_release: false,
+                crossfade: 0,
+            }),
+            ..Zone::default()
+        };
+        let group = Group {
+            reverse,
+            ..Group::default()
+        };
+        let bank = Bank::from_samples(
+            vec![group],
+            vec![zone],
+            vec![(PathBuf::new(), constant([0.5, -0.5], frames))],
+        )
+        .unwrap();
+        let mut e = engine_with(bank);
+        e.note_on(0, 60, 127);
+        let out = render(&mut e, 2000);
+        assert!(out.iter().all(|f| f[0].is_finite() && f[1].is_finite()));
+        if looped.is_some() && !reverse {
+            assert!((out[1500][0] - 0.5).abs() < 1e-3, "{frames}-frame loop holds its level");
+        }
+    }
+    let empty = Bank::from_samples(
+        vec![Group::default()],
+        vec![Zone::default()],
+        vec![(PathBuf::new(), constant([0.5; 2], 0))],
+    );
+    assert!(empty.is_err(), "a zero-length sample has nothing to play");
+}
+
+/// A sample recorded at 96 kHz plays at its own pitch at 48 kHz.
+#[test]
+fn samples_at_other_rates_keep_their_pitch() {
+    let mut sample = sine(200.0, 48000);
+    sample.rate = 96000;
+    let bank = Bank::from_samples(vec![Group::default()], vec![Zone::default()], vec![(PathBuf::new(), sample)]).unwrap();
+    let mut e = engine_with(bank);
+    e.note_on(0, 60, 127);
+    let out = render(&mut e, 4000);
+    let rising = out[100..]
+        .windows(2)
+        .filter(|w| w[0][0] < 0.0 && w[1][0] >= 0.0)
+        .count();
+    assert_eq!(rising, 38, "a 200-frame period at 96 kHz is 100 frames at 48 kHz");
+}
+
+/// Scripted NaN or infinite gains and pans silence their voice instead of
+/// poisoning the mix; other voices keep playing.
+#[test]
+fn non_finite_script_values_never_reach_the_output() {
+    let mut e = engine();
+    e.note_on(0, 60, 127);
+    let bad = e.start_event(&NoteEvent::new(0, 62, 127)).unwrap();
+    e.change_event(bad, EventChange::Pan(f32::NAN));
+    render(&mut e, 64);
+    assert_eq!(last(&mut e, 64), [0.5, 0.25], "only the NaN voice is silent");
+    e.change_event(bad, EventChange::Pan(0.0));
+    e.change_event(bad, EventChange::Volume(f32::INFINITY));
+    let out = render(&mut e, 256);
+    assert!(out.iter().flatten().all(|x| x.is_finite()));
+    assert_eq!(out[255], [0.5, 0.25]);
+}
+
+/// A decaying tail (here the Tone low-pass after the note) flushes to zero
+/// instead of crawling through subnormals, which cost many times more per
+/// sample on x86.
+#[test]
+fn decaying_tails_flush_denormals_to_zero() {
+    let mut e = engine();
+    e.cutoff = 100.0;
+    e.note_on(0, 60, 127);
+    render(&mut e, 1000);
+    e.note_off(0, 60);
+    let out = render(&mut e, 20000);
+    let subnormal = out.iter().flatten().filter(|x| x.is_subnormal()).count();
+    assert_eq!(subnormal, 0);
 }
