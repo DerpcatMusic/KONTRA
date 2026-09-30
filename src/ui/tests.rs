@@ -170,6 +170,107 @@ fn the_computer_keyboard_plays_while_switched_on() {
     assert!(!send(&mut h, key(4, "k", false)));
 }
 
+/// A mouse glissando with no instrument loaded: one key sounds and lights at
+/// a time, across white and black keys, the key it began on looks like any
+/// other once the pointer has left it, and letting go anywhere, even outside
+/// the window, stops it and leaves nothing lit.
+#[test]
+fn a_glissando_follows_the_pointer_and_lets_go_anywhere() {
+    let p = Arc::new(SamplerParams::new());
+    let (width, height) = (1180u16, 760u16);
+    let mut h = Harness::new(&p, width.into(), height.into());
+    let frame = |h: &Harness, n: u8| h.ui.scene().unwrap().surface(&format!("key-{n}")).unwrap().frame;
+    let low = |h: &Harness, n: u8| {
+        let r = frame(h, n);
+        Point::new(r.x + r.size.width / 2., r.y + r.size.height * 0.85)
+    };
+    let color = |h: &Harness, at: Point| {
+        let pix = pixels(&h.ui, width, height);
+        let i = (at.y as usize * usize::from(width) + at.x as usize) * 4;
+        [pix[i], pix[i + 1], pix[i + 2]]
+    };
+    let lit = |p: &SamplerParams| (0..128u8).filter(|&n| p.shared.played[n as usize].load(Ordering::Relaxed) > 0).collect::<Vec<_>>();
+    let (c, e) = (low(&h, 60), low(&h, 64));
+    let (c_rest, e_rest) = (color(&h, c), color(&h, e));
+    for _ in 0..20 {
+        h.tick(pointer(c, false));
+    }
+    assert_ne!(color(&h, c), c_rest, "a key lifts under the pointer");
+    let sent = |p: &SamplerParams| std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(_, play)| play).collect::<Vec<_>>();
+    let path = [60u8, 61, 62, 63, 64];
+    let mut want = Vec::new();
+    for (i, &n) in path.iter().enumerate() {
+        // Black keys are pressed high, where they lie over the white ones.
+        let r = frame(&h, n);
+        let at = Point::new(r.x + r.size.width / 2., r.y + r.size.height * if n % 12 == 1 || n % 12 == 3 { 0.3 } else { 0.85 });
+        for _ in 0..3 {
+            h.tick(pointer(at, true));
+        }
+        assert_eq!(lit(&p), [n], "only the key under the pointer lights");
+        let got = sent(&p);
+        let velocity = match got.last() {
+            Some(Play::Note(m, v)) if *m == n && *v > 0 => *v,
+            other => panic!("{n} starts: {got:?} {other:?}"),
+        };
+        if i > 0 {
+            want.push(Play::Note(path[i - 1], 0));
+        }
+        want.push(Play::Note(n, velocity));
+        assert_eq!(got, want[want.len() - got.len()..], "each key goes as the next starts");
+    }
+    // Resting on E, the LED left behind on C has faded: C looks as it did
+    // before it was played, though it holds the pointer's capture.
+    for _ in 0..40 {
+        h.tick(pointer(e, true));
+    }
+    assert_eq!(color(&h, c), c_rest, "the key the glissando began on lets go of its look");
+    assert_ne!(color(&h, e), e_rest, "the sounding key is lit");
+    // Out of the window, then up.
+    let away = Input {
+        pointer: PointerInput { pos: None, buttons: Buttons::PRIMARY, ..Default::default() },
+        ..Default::default()
+    };
+    h.tick(away.clone());
+    assert_eq!(lit(&p), [64], "leaving the keys keeps the last one sounding");
+    h.tick(Input { pointer: PointerInput { pos: None, ..Default::default() }, ..Default::default() });
+    h.idle(40);
+    assert_eq!(sent(&p), [Play::Note(64, 0)], "letting go outside the window stops it, once");
+    assert!(lit(&p).is_empty(), "nothing stays lit");
+    assert_eq!(color(&h, e), e_rest, "and nothing looks lit");
+    // Pressed and let go off the key, on the window's chrome.
+    h.tick(pointer(c, true));
+    h.tick(pointer(c, true));
+    let off = center(&h.ui, "panic");
+    h.tick(pointer(off, true));
+    h.tick(pointer(off, false));
+    h.idle(3);
+    assert_eq!(sent(&p).len(), 2, "one note-on, one note-off");
+    assert!(lit(&p).is_empty());
+}
+
+/// Closing the editor lets go of what its keyboard holds: the mouse's note
+/// and the computer keyboard's, as losing the focus does.
+#[test]
+fn closing_the_editor_lets_go_of_the_keys() {
+    let p = Arc::new(SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 760.);
+    let at = center(&h.ui, "key-60");
+    h.tick(pointer(at, true));
+    h.tick(pointer(at, true));
+    assert_eq!(p.shared.keyboard.pop().map(|(_, play)| play).and_then(|play| match play {
+        Play::Note(n, v) if v > 0 => Some(n),
+        _ => None,
+    }), Some(60));
+    let mut editor = editor(p.clone());
+    editor.close();
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 0))), "closing lets the note go");
+    assert!(p.shared.played.iter().all(|v| v.load(Ordering::Relaxed) == 0), "and unlights it");
+    // Reopened, the gesture the close cut short sends nothing more.
+    h.ui.close();
+    h.idle(3);
+    assert!(p.shared.keyboard.pop().is_none());
+}
+
 fn selected_slot(p: &SamplerParams) -> usize {
     p.shared.selected.load(Ordering::Relaxed) as usize
 }

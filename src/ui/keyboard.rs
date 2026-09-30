@@ -103,14 +103,15 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     .align(Align::Center)
     .pad(edges(TIGHT, TIGHT, TIGHT, INSET))
     .shrink(0);
+    let first_note = (cx.state.octave * 12) as u8;
+    let shown = first_note..first_note + (OCTAVES * 12) as u8;
+    // Hidden, the keys hold no pointer: a glissando still lets go.
+    play(ui, cx, shown);
     if !open {
         return col![bar].gap(0).shrink(0).fill(Role::Surface);
     }
 
     let slot = cx.state.selected;
-    let first_note = (cx.state.octave * 12) as u8;
-    let shown = first_note..first_note + (OCTAVES * 12) as u8;
-    play(ui, cx, shown);
     let keys = cx.part_view().keys.clone();
     let mut octaves = Vec::new();
     for octave in cx.state.octave..cx.state.octave + OCTAVES {
@@ -418,6 +419,9 @@ fn key(
         p.shared.audition(Some(note));
     }
     let held = lit > 0;
+    // The pointer is on the key: a glissando's first key keeps the capture
+    // (and so MUI's hover) after the pointer has moved on.
+    let over = ui.get(id.as_str()).hovered;
     let name = note_name(note);
     let face = match (look, black) {
         (Look::Colored(c), false) => c,
@@ -465,13 +469,15 @@ fn key(
     stack![led, text]
         .fill(face)
         .on(State::Hover, move |s| {
-            if held {
+            if held || !over {
                 s
             } else {
                 let lift = if black { 0.12 } else { -0.06 };
                 s.fill(Color::oklch((face.lightness() + lift).clamp(0., 1.), face.chroma(), face.hue()))
             }
         })
+        // Pressed is the LED's to show, on whichever key sounds.
+        .on(State::Press, |s| s)
         .focusable()
         .a11y(A11y::Button)
         .named(format!("Play {label}"))
