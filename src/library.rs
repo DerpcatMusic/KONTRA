@@ -14,8 +14,13 @@
 //! versions, brackets and underscores; the vendor comes from the product, a
 //! bracketed name or the vendor folder it sits in. Scans run on a thread of
 //! their own, report progress, and can be canceled.
+//!
+//! On a first run with no roots, the libraries Kontakt knows about are added
+//! (see [`kontakt`]); the player can import them again at any time.
 
 use crate::import;
+
+mod kontakt;
 use moose::mui::mui::scene::Image;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -50,6 +55,8 @@ pub struct Settings {
     pub roots: Vec<Root>,
     /// Covers the player chose, by library folder.
     pub covers: BTreeMap<String, Cover>,
+    /// The libraries Kontakt knows about were looked for, on the first run.
+    pub imported: bool,
 }
 
 impl Settings {
@@ -70,14 +77,6 @@ impl Settings {
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
         std::fs::rename(tmp, path)
-    }
-
-    /// The settings to start from when none were saved: the owner's library
-    /// folder when it is there.
-    fn first() -> Self {
-        let roots = (!cfg!(test) && Path::new(import::LIBRARY_ROOT).is_dir())
-            .then(|| Root { path: import::LIBRARY_ROOT.into(), single: false });
-        Self { roots: roots.into_iter().collect(), ..Self::default() }
     }
 }
 
@@ -472,6 +471,8 @@ pub struct Scanned {
     pub shelf: Arc<Shelf>,
     pub files: Arc<Vec<PathBuf>>,
     pub artwork: HashMap<String, Arc<Image>>,
+    /// The roots an import from Kontakt added, when the scan made one.
+    pub imported: Option<Vec<Root>>,
 }
 
 /// The app's libraries: the settings naming them, the scan finding them,
@@ -482,6 +483,8 @@ pub struct Scanner {
     wanted: AtomicU64,
     started: AtomicU64,
     progress: Mutex<Arc<Progress>>,
+    /// The next scan first imports the libraries Kontakt knows about.
+    import: AtomicBool,
     /// A finished scan and which it was; `None` inside when canceled.
     done: Arc<Mutex<Option<(u64, Option<Scanned>)>>>,
     sizes: Arc<Mutex<HashMap<PathBuf, Option<u64>>>>,
@@ -496,6 +499,7 @@ impl Default for Scanner {
             wanted: AtomicU64::new(1),
             started: AtomicU64::new(0),
             progress: Mutex::default(),
+            import: AtomicBool::new(false),
             done: Arc::default(),
             sizes: Arc::default(),
             stamp: Arc::default(),
@@ -515,7 +519,7 @@ impl Scanner {
         }
         let mut slot = self.settings.write().unwrap_or_else(PoisonError::into_inner);
         slot.get_or_insert_with(|| {
-            Arc::new(Settings::path().and_then(|p| Settings::load(&p)).unwrap_or_else(Settings::first))
+            Arc::new(Settings::path().and_then(|p| Settings::load(&p)).unwrap_or_default())
         })
         .clone()
     }
@@ -588,6 +592,12 @@ impl Scanner {
         });
     }
 
+    /// Add the libraries Kontakt knows about that are not here yet, and scan.
+    pub fn import_kontakt(&self) {
+        self.import.store(true, Ordering::Relaxed);
+        self.rescan();
+    }
+
     /// Ask for a new scan; the one running stops.
     pub fn rescan(&self) {
         self.wanted.fetch_add(1, Ordering::AcqRel);
@@ -626,6 +636,16 @@ impl Scanner {
         }
         if let Some(done) = lock(&self.done).take_if(|(g, _)| *g <= want) {
             if done.0 == want {
+                if let Some(imported) = done.1.as_ref().and_then(|s| s.imported.clone()) {
+                    self.edit(|s| {
+                        for root in imported {
+                            if !s.roots.iter().any(|r| r.path == root.path) {
+                                s.roots.push(root);
+                            }
+                        }
+                        s.imported = true;
+                    });
+                }
                 return Some(done);
             }
         }
@@ -639,16 +659,23 @@ impl Scanner {
         let progress = Arc::new(Progress::default());
         progress.running.store(true, Ordering::Relaxed);
         *lock(&self.progress) = progress.clone();
-        let mut roots = self.settings().roots.clone();
+        let settings = self.settings();
+        let mut roots = settings.roots.clone();
+        // A first run, with nothing set up yet, starts from what Kontakt knows.
+        let first = !settings.imported && roots.is_empty() && Settings::path().is_some();
+        let import = self.import.swap(false, Ordering::Relaxed) || first;
         // Multis saved with no library folder to keep them in.
-        if let Some(multis) = data_dir().map(|d| d.join("Multis")).filter(|d| d.is_dir()) {
-            roots.push(Root { path: multis.to_string_lossy().into_owned(), single: true });
-        }
+        let multis = data_dir().map(|d| d.join("Multis")).filter(|d| d.is_dir());
         let done = self.done.clone();
-        let nothing = roots.is_empty();
+        let nothing = roots.is_empty() && multis.is_none() && !import;
         let work = {
             let (progress, done, stamp) = (progress.clone(), done.clone(), self.stamp.clone());
             move || {
+                let imported = import.then(|| kontakt::roots(&roots));
+                roots.extend(imported.iter().flatten().cloned());
+                if let Some(multis) = multis {
+                    roots.push(Root { path: multis.to_string_lossy().into_owned(), single: true });
+                }
                 let scanned = scan(&roots, &progress).map(|(mut shelf, files)| {
                     let artwork = crate::artwork::scan(&shelf.libraries);
                     for library in &mut shelf.libraries {
@@ -659,7 +686,7 @@ impl Scanner {
                     let per_root = std::mem::take(&mut shelf.per_root);
                     let mut shelf = Shelf::new(shelf.libraries);
                     shelf.per_root = per_root;
-                    Scanned { shelf: Arc::new(shelf), files: Arc::new(files), artwork }
+                    Scanned { shelf: Arc::new(shelf), files: Arc::new(files), artwork, imported }
                 });
                 let scanned = scanned.filter(|_| !progress.canceled());
                 // A canceled scan finishing late never replaces a newer one.

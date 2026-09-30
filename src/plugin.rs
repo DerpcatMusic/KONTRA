@@ -1004,6 +1004,12 @@ impl BackgroundTask for Load {
             match scanned {
                 Some(scanned) => {
                     view.status = format!("{} libraries · {} presets", scanned.shelf.libraries.len(), scanned.files.len());
+                    if let Some(imported) = &scanned.imported {
+                        view.status += &match imported.len() {
+                            0 => " · nothing new from Kontakt".to_owned(),
+                            n => format!(" · {n} folders from Kontakt"),
+                        };
+                    }
                     view.shelf = scanned.shelf;
                     view.files = scanned.files;
                     view.artwork = scanned.artwork;

@@ -227,6 +227,10 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     if many || one {
         add_folder(cx, one);
     }
+    let (import, import_el) = action(ui, "root-import", "Import from Kontakt", false);
+    if import {
+        cx.p.shared.libraries.import_kontakt();
+    }
     let (scan, scan_el) = action(ui, "scan", "Rescan", false);
     if scan {
         cx.p.shared.libraries.rescan();
@@ -236,7 +240,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         cx.state.settings = false;
     }
     let mut body = vec![
-        row![section("Library folders").flex(1), many_el, one_el, scan_el, close_el]
+        row![section("Library folders").flex(1), many_el, one_el, import_el, scan_el, close_el]
             .gap(SPACE)
             .align(Align::Center)
             .pad(edges(SPACE, SPACE, 0., INSET))

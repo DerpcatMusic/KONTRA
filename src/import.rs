@@ -3,6 +3,8 @@ use ni_file::{NIFile, kontakt::{KontaktChunks, StructuredObject, objects::{Progr
 use serde::Serialize;
 use std::{collections::HashMap, ffi::OsString, fs::File, io::{Cursor, Read}, path::{Path, PathBuf}};
 
+/// The developer's library folder: the command-line tools' default, and a
+/// last place a first run looks. The app's libraries come from its settings.
 pub const LIBRARY_ROOT: &str = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
 
 pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, ModSource, ModTarget, Modulator, ShaperCurve};
