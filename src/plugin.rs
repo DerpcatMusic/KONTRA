@@ -289,6 +289,9 @@ pub struct Shared {
     pub(crate) voices: AtomicU64,
     /// Of those, the ones not muted by their scripts: the ones rendered.
     pub(crate) audible: AtomicU64,
+    /// Set by every editor display tick: an editor is open to show the
+    /// scripts' live views, which the audio thread otherwise need not copy.
+    pub(crate) watched: AtomicBool,
     /// Audio thread load (`f32` bits): render time over block time, peak-held.
     pub(crate) cpu: AtomicU64,
     /// Voice blocks whose streamed samples were not read in time (played
@@ -341,6 +344,8 @@ pub(crate) struct View {
     pub(crate) files: Arc<Vec<PathBuf>>,
     pub(crate) parts: [PartView; RACK_SLOTS],
     pub(crate) status: String,
+    /// When an editor last showed the rack (see [`Shared::watched`]).
+    pub(crate) watched_at: Option<Instant>,
 }
 impl Default for Shared {
     fn default() -> Self {
@@ -376,6 +381,7 @@ impl Default for Shared {
             multi_request: Mutex::new(None),
             voices: AtomicU64::new(0),
             audible: AtomicU64::new(0),
+            watched: AtomicBool::new(false),
             cpu: AtomicU64::new(0),
             dropouts: AtomicU64::new(0),
             view: Mutex::new(View {
@@ -386,6 +392,7 @@ impl Default for Shared {
                 files: Arc::default(),
                 parts: std::array::from_fn(|_| PartView::default()),
                 status: "Choose a library and select a preset".into(),
+                watched_at: None,
             }),
         }
     }
@@ -1160,9 +1167,16 @@ impl BackgroundTask for Load {
             v.script_slot = live.slot;
             v.live = Some(live);
         }
+        if params.shared.watched.swap(false, Ordering::Relaxed) {
+            params.shared.view.lock().unwrap().watched_at = Some(Instant::now());
+        }
         for slot in 0..RACK_SLOTS {
             let mut view = params.shared.view.lock().unwrap();
-            if let Some(live) = view.parts[slot].live.take()
+            // Live views only while an editor shows them: refreshing script
+            // interfaces no one sees was most of an idle rack's audio work.
+            let shown = view.watched_at.is_some_and(|t| t.elapsed() < LIVE_WATCH);
+            if shown
+                && let Some(live) = view.parts[slot].live.take()
                 && let Err((_, live)) = params.shared.live_requests.push((slot, live))
             {
                 view.parts[slot].live = Some(live);
@@ -1205,6 +1219,8 @@ type Lent<T> = (usize, (u64, u64), T, Refresh);
 /// several blocks rather than one long one.
 const REFRESH_BUDGET: usize = 16384;
 const SNAPSHOT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+/// Live views keep refreshing this long after the editor's last display tick.
+const LIVE_WATCH: std::time::Duration = std::time::Duration::from_secs(2);
 const LIVE_BUDGET: usize = 512;
 pub struct Sampler;
 

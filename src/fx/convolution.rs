@@ -189,7 +189,14 @@ pub struct Convolver {
     tail: Option<Tail>,
     scratch: Vec<f32>,
     len: usize,
+    /// Sum of the IR's magnitudes from every [`QUIET_STEP`]th frame on:
+    /// output that many frames after the input stops is at most the input
+    /// peak times it.
+    remaining: Box<[f32]>,
 }
+
+/// Frames between [`Convolver::remaining`] entries.
+const QUIET_STEP: usize = 256;
 
 struct Tail {
     conv: Partitioned,
@@ -213,17 +220,28 @@ impl Convolver {
                 pos: 0,
             }
         });
+        let mut sum = 0.0;
+        let mut remaining: Vec<f32> = (ir.chunks(QUIET_STEP).rev())
+            .map(|c| {
+                sum += c.iter().map(|x| x.abs()).sum::<f32>();
+                sum
+            })
+            .collect();
+        remaining.reverse();
         Self {
             head,
             tail,
             scratch: vec![0.0; max_block],
             len: ir.len(),
+            remaining: remaining.into(),
         }
     }
 
-    /// Impulse response length in frames.
-    pub fn ir_len(&self) -> usize {
-        self.len
+    /// Frames of output after input at most `peak` falls silent, until it
+    /// is below −120 dBFS: where the rest of the IR can no longer add up to it.
+    pub fn tail(&self, peak: f32) -> usize {
+        let quiet = self.remaining.partition_point(|&r| r * peak >= super::processor::SILENCE);
+        (quiet * QUIET_STEP).min(self.len)
     }
 
     /// Silences the convolver's history.

@@ -78,8 +78,8 @@ pub struct Reverb {
     shelf_gain: f32,
     shelf_state: [f32; 2],
     width: f32,
-    /// Frames until an impulse decays below -120 dB.
-    tail: usize,
+    /// Frames the network takes to decay by 60 dB.
+    rt60: f32,
 }
 
 /// One-pole lowpass coefficient for cutoff `hz`.
@@ -124,13 +124,15 @@ impl Reverb {
             shelf_gain: 10f32.powf(-18.0 * n(p.low_shelf) / 20.0) - 1.0,
             shelf_state: [0.0; 2],
             width: n(p.stereo),
-            tail: (2.0 * rt60 * sample_rate) as usize + predelay_len,
+            rt60: rt60 * sample_rate,
         }
     }
 
-    /// Frames of output after the input falls silent (to -120 dB).
-    pub fn tail(&self) -> usize {
-        self.tail
+    /// Frames of output after input at most `peak` falls silent, until it
+    /// is below −120 dBFS: 60 dB per reverb time.
+    pub fn tail(&self, peak: f32) -> usize {
+        let db = 20.0 * (peak / super::processor::SILENCE).max(1.0).log10();
+        self.predelay_len + (self.rt60 * db / 60.0) as usize
     }
 
     /// Silences the network.
