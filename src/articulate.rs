@@ -523,6 +523,11 @@ impl Router {
         }
     }
 
+    /// The articulation script control `control` of script slot `slot` picks.
+    pub fn articulation_of_control(&self, slot: usize, control: usize) -> Option<usize> {
+        (self.route.arts()).iter().position(|a| a.control != u16::MAX && usize::from(a.slot) == slot && usize::from(a.control) == control)
+    }
+
     /// Switch the scripts to articulation `to` before a note on `channel`,
     /// unless they are there already.
     pub fn select(&mut self, to: usize, channel: u8, e: &mut Engine) {

@@ -85,6 +85,9 @@ pub struct Timing {
     pub loaded: Delay,
     /// Per articulation of the part's list, by name.
     pub arts: Vec<Delay>,
+    /// What the library's own panel says, ms ([`declared`]): used over
+    /// what was measured.
+    pub declared: Option<f32>,
     /// Every note of the part is this late (ms), whatever was measured.
     pub override_ms: Option<f32>,
     /// Not aligned: plays as late as the library does.
@@ -111,7 +114,7 @@ impl Timing {
         if self.exclude {
             return 0.0;
         }
-        if let Some(ms) = self.override_ms {
+        if let Some(ms) = self.override_ms.or(self.declared) {
             return ms;
         }
         self.delay(art).ms(legato, velocity).unwrap_or(0.0)
@@ -122,7 +125,7 @@ impl Timing {
         if self.exclude {
             return 0.0;
         }
-        if let Some(ms) = self.override_ms {
+        if let Some(ms) = self.override_ms.or(self.declared) {
             return ms.clamp(0.0, MAX_MS);
         }
         (self.arts.iter().chain([&self.loaded]))
@@ -441,6 +444,13 @@ impl Align {
         }
     }
 
+    /// A click on the part's articulation list picked `row`: the next notes play it.
+    pub fn picked(&mut self, slot: usize, row: Option<usize>) {
+        if let (Some(s), Some(row)) = (self.parts.get_mut(slot), row) {
+            s.art = row.min(LOADED);
+        }
+    }
+
     /// Play everything held, now.
     pub fn flush(&mut self, rack: &mut Rack, routers: &mut [Router; RACK_SLOTS]) {
         self.release(u64::MAX, rack, routers);
@@ -493,6 +503,19 @@ pub fn onset_ms(x: &[f32], rate: f64, db: f32) -> Option<f32> {
     }
     let at = p.iter().position(|&v| v >= peak * 10f64.powf(f64::from(db) / 10.0))?;
     Some(at as f32 + 2.5)
+}
+
+/// Where `x` rises fastest within its first second: the middle of the 10 ms
+/// its 5 ms loudness gains most dB over, ms. Research only.
+pub fn steepest_ms(x: &[f32], rate: f64) -> Option<f32> {
+    let p = power(x, rate);
+    let peak = p.iter().copied().fold(0.0, f64::max);
+    if peak < 1e-12 {
+        return None;
+    }
+    let db: Vec<f64> = p.iter().map(|v| 10.0 * (v.max(peak * 1e-6)).log10()).collect();
+    let (at, _) = (0..db.len().saturating_sub(10).min(1000)).map(|i| (i, db[i + 10] - db[i])).max_by(|a, b| a.1.total_cmp(&b.1))?;
+    Some(at as f32 + 5.0 + 2.5)
 }
 
 /// Energy of `x` at `hz` and its next two harmonics, Hann-windowed.
@@ -608,6 +631,9 @@ fn quiet(e: &mut Engine) {
 pub fn take(e: &mut Engine, pick: Pick, note: u8, velocity: u8) -> Take {
     let rate = e.rate();
     quiet(e);
+    // Dynamics and expression as a player leaves them, mostly up.
+    e.cc(0, 1, 100);
+    e.cc(0, 11, 127);
     match pick {
         Pick::Loaded => {}
         Pick::Key(key) => {
@@ -667,18 +693,168 @@ pub fn measure(e: &mut Engine, arts: &[articulate::Found], note: u8) -> (Delay, 
     (loaded, arts)
 }
 
-/// A note every articulation plays: the middle of the mapped keys above the keyswitches.
+/// A note every articulation plays: above the keyswitches, the key with
+/// the most zones (all its groups and layers), nearest the middle of those.
 pub fn probe_note(i: &crate::import::Instrument, arts: &[articulate::Found]) -> u8 {
     let lowest = arts.iter().filter_map(|f| f.1).max().map_or(0, |k| k.saturating_add(1));
-    let mut mapped: Vec<u8> = (i.zones.iter())
-        .filter(|z| z.available && z.high_key >= lowest && z.high_key < 124)
-        .flat_map(|z| z.low_key.max(lowest)..=z.high_key)
-        .collect();
-    mapped.sort_unstable();
-    mapped.get(mapped.len() / 2).copied().unwrap_or(60)
+    let mut count = [0usize; 124];
+    for z in i.zones.iter().filter(|z| z.available) {
+        for k in z.low_key.max(lowest)..=z.high_key.min(123) {
+            count[usize::from(k)] += 1;
+        }
+    }
+    let most = count.iter().copied().max().unwrap_or(0);
+    let keys: Vec<u8> = (0..124u8).filter(|&k| most > 0 && count[usize::from(k)] * 10 >= most * 9).collect();
+    keys.get(keys.len() / 2).copied().unwrap_or(60)
 }
 
 const _: () = assert!(MAX_BLOCK >= STEP);
+
+/// The delay a library states on its own panel, ms: a value field
+/// labelled as a sample or playback offset holding a negative number of ms
+/// (Performance Samples' "Sample Offset", "PLBK Offset"). One such field,
+/// or one naming samples or playback among several; else none.
+pub fn declared(rt: Option<&crate::ksp::Runtime>) -> Option<f32> {
+    let interface = rt?.live().interface?;
+    let text = |c: &crate::ksp::Control, p: &str| match c.properties.get(p) {
+        Some(crate::ksp::Value::Text(t)) => t.to_lowercase(),
+        _ => String::new(),
+    };
+    let found: Vec<(String, i32)> = (interface.controls.iter())
+        .filter(|c| c.kind == "ui_value_edit" && text(c, "$CONTROL_PAR_TEXT").contains("offset"))
+        .filter_map(|c| match c.properties.get("$CONTROL_PAR_VALUE") {
+            Some(crate::ksp::Value::Int(v)) if (-500..0).contains(v) => Some((text(c, "$CONTROL_PAR_TEXT"), *v)),
+            _ => None,
+        })
+        .collect();
+    let named: Vec<_> = found.iter().filter(|(l, _)| ["sample", "plbk", "playback"].iter().any(|k| l.contains(k))).collect();
+    match (found.as_slice(), named.as_slice()) {
+        ([(_, v)], _) | (_, [(_, v)]) => Some(-*v as f32),
+        _ => None,
+    }
+}
+
+/// An instrument's articulation list as its performance view shows it,
+/// from its initialized scripts in `e`.
+#[cfg(feature = "plugin")]
+pub fn found(i: &crate::import::Instrument, e: &Engine) -> Vec<articulate::Found> {
+    let view = crate::plugin::script_interface(e.script());
+    let sections = view.interface.as_deref().map_or_else(Vec::new, |interface| {
+        let names = interface.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+            Some(crate::ksp::Value::Text(n)) => Some(n.as_str()),
+            _ => None,
+        });
+        crate::ui::sections(interface, &crate::artwork::pictures(&i.path, names))
+    });
+    crate::ui::articulations(&sections, view.slot, &view.keys)
+}
+
+/// A fresh engine playing `i` as the plugin loads it, streaming and
+/// waiting for the disk, at `rate`.
+pub fn engine_for(i: &crate::import::Instrument, rate: f64, budget: usize) -> anyhow::Result<Engine> {
+    let (script, _) = crate::engine::load_scripts(i, i.script_state.clone(), rate);
+    let controllers = script.as_deref().map_or(Vec::new(), |rt| rt.init_controllers.clone());
+    let bank = crate::engine::Bank::load_counting(i, budget, Default::default(), &controllers, &Default::default())?;
+    let mut e = Engine::default();
+    e.reset(rate);
+    e.blocking_streams = true;
+    e.set_bank(Some(Box::new(bank)));
+    e.set_script(script);
+    Ok(e)
+}
+
+/// The research behind `audits/LATENCY.md` for one instrument, as JSON:
+/// its script controls named like a delay, its zones' sample starts, and
+/// per articulation and velocity the first note's onset at three
+/// thresholds, the legato transition, and when voices started. Names and
+/// numbers only.
+#[cfg(feature = "plugin")]
+pub fn audit(path: &std::path::Path) -> anyhow::Result<serde_json::Value> {
+    use serde_json::json;
+    const RATE: f64 = 48_000.0;
+    let i = crate::import::read(path)?;
+    let started = std::time::Instant::now();
+    let mut e = engine_for(&i, RATE, crate::engine::MEMORY_LIMIT)?;
+    let load_ms = started.elapsed().as_millis();
+    render(&mut e, 0.5, None, None);
+    // Script controls that look like a delay or sample start setting.
+    let named = |s: &str| {
+        let s = s.to_lowercase();
+        ["delay", "latency", "offset", "start", "tight", "pre-roll", "preroll", "look"].iter().any(|k| s.contains(k))
+    };
+    let view = crate::plugin::script_interface(e.script());
+    let text = |v: Option<&crate::ksp::Value>| match v {
+        Some(crate::ksp::Value::Text(t)) => t.clone(),
+        Some(crate::ksp::Value::Int(n)) => n.to_string(),
+        _ => String::new(),
+    };
+    let controls: Vec<_> = (view.interface.iter().flat_map(|u| &u.controls))
+        .filter(|c| named(&c.variable) || named(&text(c.properties.get("$CONTROL_PAR_TEXT"))))
+        .map(|c| {
+            json!({
+                "kind": c.kind,
+                "label": text(c.properties.get("$CONTROL_PAR_TEXT")),
+                "shows": text(c.properties.get("$CONTROL_PAR_LABEL")),
+                "value": text(c.properties.get("$CONTROL_PAR_VALUE")),
+                "matched_by": if named(&text(c.properties.get("$CONTROL_PAR_TEXT"))) { "label" } else { "variable name" },
+            })
+        })
+        .collect();
+    let zones: Vec<_> = i.zones.iter().filter(|z| z.available).collect();
+    let starts: Vec<f64> = zones.iter().map(|z| z.start as f64).collect();
+    let mods: Vec<f64> = zones.iter().filter_map(|z| z.start_mod).map(f64::from).collect();
+    let stats = |v: &[f64]| {
+        if v.is_empty() {
+            return json!(null);
+        }
+        let mut v = v.to_vec();
+        v.sort_by(f64::total_cmp);
+        json!({"zones": v.len(), "min_frames": v[0], "median_frames": v[v.len() / 2], "max_frames": v[v.len() - 1]})
+    };
+    let arts = found(&i, &e);
+    let note = probe_note(&i, &arts);
+    let round = |v: Option<f32>| v.map(|v| (v * 10.0).round() / 10.0);
+    let mut rows = Vec::new();
+    let picks = std::iter::once(("(as loaded)".to_owned(), Pick::Loaded)).chain(arts.iter().map(|(name, key, control)| {
+        let pick = match (key, control) {
+            (Some(key), _) => Pick::Key(*key),
+            (None, Some((slot, control))) => Pick::Control(usize::from(*slot), usize::from(*control)),
+            _ => Pick::Loaded,
+        };
+        (name.clone(), pick)
+    }));
+    for (name, pick) in picks {
+        let mut per = Vec::new();
+        for &velocity in &VELOCITIES {
+            let t = take(&mut e, pick, note, velocity);
+            let second = note.saturating_add(4).min(127);
+            per.push(json!({
+                "velocity": velocity,
+                "first_voice_ms": round(t.first_voice_ms),
+                "onset_30": round(onset_ms(&t.first, RATE, -30.0)),
+                "onset_20": round(onset_ms(&t.first, RATE, -20.0)),
+                "onset_12": round(onset_ms(&t.first, RATE, -12.0)),
+                "onset_6": round(onset_ms(&t.first, RATE, -6.0)),
+                "steepest": round(steepest_ms(&t.first, RATE)),
+                "legato_voice_ms": round(t.legato_voice_ms),
+                "legato_20": round(transition_ms(&t.legato, RATE, second, -20.0)),
+                "legato_12": round(transition_ms(&t.legato, RATE, second, -12.0)),
+            }));
+        }
+        rows.push(json!({"articulation": name, "takes": per}));
+    }
+    Ok(json!({
+        "instrument": i.name,
+        "load_ms": load_ms,
+        "measure_ms": started.elapsed().as_millis() - load_ms,
+        "scripts": i.scripts.len(),
+        "note": note,
+        "delay_controls": controls,
+        "sample_start": stats(&starts),
+        "sample_start_mod": stats(&mods),
+        "articulations": rows,
+    }))
+}
 
 #[cfg(test)]
 mod tests {
