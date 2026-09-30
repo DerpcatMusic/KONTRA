@@ -465,6 +465,8 @@ pub(crate) struct Context<'a> {
     pub cc: &'a [[u8; 128]; 16],
     pub bend: &'a [f32; 16],
     pub pressure: &'a [u8; 16],
+    /// Per-key MPE and note expression.
+    pub expression: &'a [super::Expression; 128],
     /// Instrument tune in semitones.
     pub tune: f32,
     pub rate: f32,
@@ -531,15 +533,16 @@ impl Voice {
         let group = &cx.bank.settings[self.group as usize];
         let inputs = cx.inputs(self.channel, self.note, self.velocity);
         let (modulation, semitones) = group.mods.modulate(&mut self.mods, &inputs, n, cx.rate);
-        let semitones = semitones + group.tune + cx.tune;
+        let x = cx.expression[self.note as usize & 127];
+        let semitones = semitones + group.tune + cx.tune + x.tune;
         if semitones != self.pitch.0 {
             self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));
         }
         let step = (self.step * self.tune * self.pitch.1).min(MAX_STEP);
-        let level = self.base_level * group.gain * modulation * self.volume;
+        let level = self.base_level * group.gain * modulation * self.volume * x.gain;
         let target = balance(
             level,
-            (self.base_pan + group.pan + self.pan).clamp(-1.0, 1.0),
+            (self.base_pan + group.pan + self.pan + x.pan).clamp(-1.0, 1.0),
         );
         let muted = target == [0.0; 2] && self.gains == [0.0; 2];
 

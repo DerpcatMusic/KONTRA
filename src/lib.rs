@@ -3,6 +3,7 @@ pub mod import;
 pub mod modulation;
 pub mod audio;
 pub mod engine;
+pub mod articulate;
 pub mod fx;
 #[cfg(feature="plugin")]
 mod artwork;

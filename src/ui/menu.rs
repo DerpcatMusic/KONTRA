@@ -2,8 +2,9 @@
 //! asked for, closed by a pick, a click elsewhere or Escape.
 
 use super::{Cx, mixer::{self, Strip}, theme::*};
-use crate::engine::BUSES;
+use crate::engine::{BUSES, Streaming};
 use moose::mui::mui::prelude::*;
+use crate::articulate::Zone;
 use std::path::Path;
 
 /// What a menu is about.
@@ -27,6 +28,9 @@ pub enum Target {
     BusPort(usize),
     /// A mixer strip.
     Strip(Strip),
+    /// An articulation's keyswitch: remap it, or learn the key from MIDI
+    /// (keys held when learning started are ignored).
+    Keyswitch { part: usize, row: usize, learning: Option<u128> },
 }
 
 #[derive(Clone, Debug)]
@@ -58,13 +62,17 @@ pub enum Command {
     Browser,
     Keyboard,
     Panic,
-    /// Load every sample into RAM instead of streaming, or back.
-    RamOnly,
+    /// Where the rack's samples play from.
+    Streaming(Streaming),
+    /// Where a part's samples play from; `None` follows the rack.
+    PartStreaming(usize, Option<Streaming>),
     /// A part's MIDI channel (-1 omni), its port (0..4), its output bus.
     Channel(usize, i16),
     Port(usize, u8),
     Output(usize, u8),
     Appearance(super::Appearance),
+    StickyHeaders,
+    ArtworkBlur,
     /// A part's send bus, -1 for none.
     Aux(usize, i16),
     /// A bus's host port, -1 for its own.
@@ -72,6 +80,12 @@ pub enum Command {
     StripRename(Strip),
     StripReset(Strip),
     StripRoute(Strip),
+    /// Play an articulation's keyswitch from another key; `None` restores it.
+    Remap(usize, usize, Option<u8>),
+    Learn(usize, usize),
+    KeepOriginal(usize),
+    Mpe(usize, Zone),
+    BendRange(usize, u8),
     /// Set a script control to a value.
     Script {
         part: usize,
@@ -177,7 +191,29 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 check("Mute", part.mute, Command::Mute(slot)),
                 check("Solo", part.solo, Command::Solo(slot)),
                 Item::Rule,
+                Item::Info("MPE".into()),
             ];
+            for (zone, label) in [(Zone::Off, "MPE off"), (Zone::Lower, "Lower zone"), (Zone::Upper, "Upper zone")] {
+                items.push(check(label, part.mpe.zone == zone, Command::Mpe(slot, zone)));
+            }
+            if part.mpe.zone != Zone::Off {
+                for range in [2, 12, 24, 48] {
+                    let label = format!("Bend range ±{range}");
+                    items.push(check(label, part.mpe.bend_range == range, Command::BendRange(slot, range)));
+                }
+            }
+            items.push(Item::Rule);
+            // Where its samples play from, the rack's way unless it has its own.
+            let rack = match cx.selection.streaming {
+                Streaming::Auto => "Samples as the rack (streaming)",
+                Streaming::RamOnly => "Samples as the rack (all in RAM)",
+            };
+            items.extend([
+                check(rack, part.streaming.is_none(), Command::PartStreaming(slot, None)),
+                check("Stream from disk", part.streaming == Some(Streaming::Auto), Command::PartStreaming(slot, Some(Streaming::Auto))),
+                check("Load all into RAM", part.streaming == Some(Streaming::RamOnly), Command::PartStreaming(slot, Some(Streaming::RamOnly))),
+                Item::Rule,
+            ]);
             if position.is_some_and(|p| p > 0) {
                 items.push(act("Move up", "", Command::Move(slot, -1)));
             }
@@ -245,6 +281,29 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             }));
             items
         }
+        &Target::Keyswitch { part, row, learning } => {
+            let Some(a) = cx.selection.parts.get(part).map(|p| &p.articulate) else {
+                return Vec::new();
+            };
+            let Some((key, remap)) = a.articulations.get(row).and_then(|r| Some((r.key?, r.remap))) else {
+                return Vec::new();
+            };
+            let mut items = vec![
+                Item::Info(format!("{} · keyswitch {}", a.articulations[row].name, note_name(key))),
+                check(
+                    if learning.is_some() { "Press a key…" } else { "Learn from MIDI" },
+                    learning.is_some(),
+                    Command::Learn(part, row),
+                ),
+                check(format!("Original key {}", note_name(key)), remap.is_none(), Command::Remap(part, row, None)),
+                check("Original keys still switch", a.keep_original, Command::KeepOriginal(part)),
+                Item::Rule,
+            ];
+            items.extend((0..128u8).filter(|&n| n != key).map(|n| {
+                check(note_name(n), remap == Some(n), Command::Remap(part, row, Some(n)))
+            }));
+            items
+        }
         Target::Strip(strip) => {
             let strip = *strip;
             if let Strip::Part(slot) = strip
@@ -304,8 +363,13 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 items.extend([act("Save multi…", "", Command::SaveMulti), Item::Rule]);
             }
             items.push(act("All notes off", "", Command::Panic));
-            let ram = cx.selection.streaming == crate::engine::Streaming::RamOnly;
-            items.extend([Item::Rule, check("Load samples into RAM (no disk streaming)", ram, Command::RamOnly)]);
+            let rack = cx.selection.streaming;
+            items.extend([
+                Item::Rule,
+                Item::Info("Performance".into()),
+                check("Disk streaming: Auto", rack == Streaming::Auto, Command::Streaming(Streaming::Auto)),
+                check("Load all into RAM", rack == Streaming::RamOnly, Command::Streaming(Streaming::RamOnly)),
+            ]);
             items.extend([Item::Rule, Item::Info("Appearance".into())]);
             let now = super::Appearance::of(cx.selection.appearance);
             for (look, label) in [
@@ -315,6 +379,11 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             ] {
                 items.push(check(label, now == look, Command::Appearance(look)));
             }
+            items.extend([
+                Item::Rule,
+                check("Artwork blur", !cx.selection.sharp_artwork, Command::ArtworkBlur),
+                check("Sticky headers", !cx.selection.sticky_off, Command::StickyHeaders),
+            ]);
             items
         }
     }
@@ -350,6 +419,18 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
     if ui.dismissed(&[ID, anchor]) {
         cx.state.menu = None;
         return None;
+    }
+    if let Target::Keyswitch { part, row, learning: Some(held) } = menu.target {
+        let shared = &cx.p.shared;
+        let down = |n: usize| {
+            use std::sync::atomic::Ordering::Relaxed;
+            shared.heard[n].load(Relaxed) > 0 || shared.played[n].load(Relaxed) > 0
+        };
+        if let Some(n) = (0..128).find(|&n| down(n) && held & 1 << n == 0) {
+            run(ui, cx, Command::Remap(part, row, Some(n as u8)));
+            cx.state.menu = None;
+            return None;
+        }
     }
     let items = items(cx, &menu.target);
     if items.is_empty() {
@@ -497,15 +578,35 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         }
         Command::Browser => cx.state.browser ^= true,
         Command::Appearance(look) => cx.selection.appearance = look as u8,
+        Command::ArtworkBlur => cx.selection.sharp_artwork ^= true,
+        Command::StickyHeaders => cx.selection.sticky_off ^= true,
         Command::Keyboard => cx.state.keyboard ^= true,
-        Command::RamOnly => {
-            use crate::engine::Streaming;
-            cx.selection.streaming = match cx.selection.streaming {
-                Streaming::RamOnly => Streaming::Auto,
-                Streaming::Auto => Streaming::RamOnly,
-            };
+        Command::Streaming(mode) => cx.selection.streaming = mode,
+        Command::PartStreaming(slot, mode) => {
+            if let Some(part) = cx.selection.parts.get_mut(slot) {
+                part.streaming = mode;
+            }
         }
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
+        Command::Remap(part, row, to) => {
+            if let Some(r) = cx.selection.parts.get_mut(part).and_then(|p| p.articulate.articulations.get_mut(row)) {
+                r.remap = to.filter(|&to| Some(to) != r.key);
+            }
+        }
+        Command::Learn(part, row) => {
+            use std::sync::atomic::Ordering::Relaxed;
+            let down = |n: usize| shared.heard[n].load(Relaxed) > 0 || shared.played[n].load(Relaxed) > 0;
+            let held = (0..128).filter(|&n| down(n)).fold(0u128, |m, n| m | 1 << n);
+            let anchor = format!("art-key-{part}-{row}");
+            open_under(ui, cx, Target::Keyswitch { part, row, learning: Some(held) }, &anchor);
+        }
+        Command::KeepOriginal(part) => {
+            if let Some(p) = cx.selection.parts.get_mut(part) {
+                p.articulate.keep_original ^= true;
+            }
+        }
+        Command::Mpe(slot, zone) => cx.selection.parts[slot].mpe.zone = zone,
+        Command::BendRange(slot, range) => cx.selection.parts[slot].mpe.bend_range = range,
         Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
         Command::Port(slot, port) => cx.selection.parts[slot].port = port,
         Command::Output(slot, output) => cx.selection.parts[slot].output = output,

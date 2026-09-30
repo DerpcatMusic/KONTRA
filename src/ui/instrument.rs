@@ -106,6 +106,7 @@ pub fn stage_deps(cx: &Cx, slot: usize) -> u64 {
         panel::values(cache, interface).hash(&mut h);
     }
     cx.state.held.filter(|(p, ..)| *p == slot).map(|(_, c, v)| (c, v.to_bits())).hash(&mut h);
+    panel::deps(cx, slot).hash(&mut h);
     h.finish()
 }
 
