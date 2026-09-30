@@ -1270,6 +1270,10 @@ impl PluginLogic for Sampler {
             .store(c.sample_rate.to_bits(), Ordering::Release);
         s.until_poll = 0;
         s.audition_left.fill(0);
+        // The voices are gone, and the host's releases for them may be too.
+        for lit in &p.shared.heard {
+            lit.store(0, Ordering::Relaxed);
+        }
     }
     fn process(
         s: &mut Dsp,
@@ -1485,6 +1489,8 @@ impl PluginLogic for Sampler {
                     match ev {
                         In::NoteOn(_, note, velocity) => lit(note, velocity),
                         In::NoteOff(_, note) => lit(note, 0),
+                        // All sound or all notes off, as a host sends on stop.
+                        In::Cc(_, 120 | 123, _) => (0..128).for_each(|note| lit(note, 0)),
                         In::Bend(_, value) => p.shared.bend.store(u32::from(value), Ordering::Relaxed),
                         In::Cc(_, 1, value) => {
                             p.shared.modulation.store(u32::from(value), Ordering::Relaxed)
@@ -2102,6 +2108,40 @@ mod tests {
             crate::ksp::Value::Int(1),
             "edits persist"
         );
+    }
+    /// The keys lit by the host's notes go out with its all-notes-off and
+    /// all-sound-off (what a host sends on stop), and when it resets the
+    /// plugin, with or without parts to play them.
+    #[test]
+    fn host_notes_light_until_the_host_lets_them_go() {
+        let p = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        let run = |dsp: &mut Dsp, bodies: &[EventBody]| {
+            let mut events = EventList::with_capacity(bodies.len().max(1));
+            for &body in bodies {
+                events.push(Event::on_port(0, 0, body));
+            }
+            let mut outputs = vec![vec![0f32; 64]; 2];
+            let mut refs: Vec<_> = outputs.iter_mut().map(|o| o.as_mut_slice()).collect();
+            let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 64);
+            let transport = TransportInfo::default();
+            let mut midi_out = EventList::with_capacity(4);
+            let mut cx = ProcessContext::new(&transport, 48000., 64, &mut midi_out);
+            Sampler::process(dsp, &p, &mut buffer, &events, &mut cx);
+        };
+        let lit = |p: &SamplerParams| (0..128).filter(|&n| p.shared.heard[n].load(Ordering::Relaxed) > 0).count();
+        let chord: Vec<_> = (69..81)
+            .map(|note| EventBody::NoteOn { group: 0, channel: 0, note, velocity: 100 })
+            .collect();
+        for cc in [123, 120] {
+            run(&mut dsp, &chord);
+            assert_eq!(lit(&p), 12, "the host's notes light their keys");
+            run(&mut dsp, &[EventBody::ControlChange { group: 0, channel: 3, cc, value: 0 }]);
+            assert_eq!(lit(&p), 0, "CC{cc} lets them go");
+        }
+        run(&mut dsp, &chord);
+        Sampler::reset(&mut dsp, &p, &AudioConfig::new(48000., 64));
+        assert_eq!(lit(&p), 0, "a reset forgets them");
     }
     #[test]
     fn process_routes_bus_and_midi_thru() {

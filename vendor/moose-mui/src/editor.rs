@@ -254,9 +254,13 @@ impl<P: Params> Editor for MuiEditor<P> {
             // baseview tears the handler down on this thread, inside
             // `close`, and its last event would wait on this lock.
             let mut s = lock(&self.shared);
+            let s = &mut *s;
             s.view.bridge.close();
             // The bridge ended the host's gestures; these are the same edges.
             s.ui.close();
+            // And the app's own (a held note): the window's last event may
+            // never come, and a host may build a fresh editor next time.
+            s.view.cancel(&s.ui);
         }
         self.close_window();
     }

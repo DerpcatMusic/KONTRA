@@ -532,3 +532,16 @@ fn cancellation_reaches_editor_callback() {
     let editor=editor(&params).on_cancel(move |_|record.store(true,std::sync::atomic::Ordering::Relaxed));
     let shared=&mut *lock(&editor.shared);shared.view.cancel(&shared.ui);assert!(called.load(std::sync::atomic::Ordering::Relaxed));
 }
+
+#[test]
+fn closing_the_editor_reaches_the_cancel_callback() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let params = Arc::new(Synth::new());
+    let called = Arc::new(AtomicUsize::new(0));
+    let record = called.clone();
+    let mut editor = editor(&params).on_cancel(move |_| {
+        record.fetch_add(1, Ordering::Relaxed);
+    });
+    editor.close();
+    assert_eq!(called.load(Ordering::Relaxed), 1, "a close releases app-owned gestures");
+}
