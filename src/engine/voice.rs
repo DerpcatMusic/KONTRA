@@ -98,7 +98,34 @@ pub(crate) struct Envelope {
     decay: f32,
     sustain: f32,
     release: f32,
+    /// Frames spent in the current stage, for the Edit view's voice dots.
+    frames: u32,
+    /// Decay and release shapes (0: Kontakt's exponential, see [`stage_k`])
+    /// and their lengths in frames.
+    curves: [f32; 2],
+    lengths: [f32; 2],
 }
+
+/// Glide exponent of a decay or release shape `curve` (-1..=1): 0 is close
+/// to Kontakt's exponential (−60 dB over the time, `k = ln 1000`), -0.5 a
+/// straight line, -1 a slow start, 1 a steeper fall.
+pub fn stage_k(curve: f32) -> f32 {
+    std::f32::consts::LN_10 * 3.0 * (1.0 + 2.0 * curve.clamp(-1.0, 1.0))
+}
+
+/// Level of a glide from 1 to 0 with exponent `k` at `u` (0..=1) of its time:
+/// the attack's (rising, `1 - level`) and shaped decays' and releases' law.
+pub fn glide_level(k: f32, u: f32) -> f32 {
+    let u = u.clamp(0.0, 1.0);
+    if k.abs() < 1e-3 {
+        1.0 - u
+    } else {
+        1.0 - (-k * u).exp_m1() / (-k).exp_m1()
+    }
+}
+
+/// Smallest time a live sustain change glides over, so it never clicks.
+const SMOOTH: f32 = 0.005;
 
 /// Per-frame multiplier that reaches −60 dB after `seconds`.
 fn exp_coef(seconds: f32, rate: f32) -> f32 {
@@ -116,7 +143,16 @@ const CURVE_STEEPNESS: f32 = 5.0;
 /// Per-frame step from `from` to `to` over `frames` (at least 1), bent by
 /// `curve`.
 fn glide(from: f32, to: f32, frames: f32, curve: f32) -> (f32, f32) {
-    let k = CURVE_STEEPNESS * curve.clamp(-1.0, 1.0);
+    glide_k(from, to, frames, attack_k(curve))
+}
+
+/// Glide exponent of an attack `curve`.
+pub fn attack_k(curve: f32) -> f32 {
+    CURVE_STEEPNESS * curve.clamp(-1.0, 1.0)
+}
+
+/// [`glide`] with its exponent `k` given.
+fn glide_k(from: f32, to: f32, frames: f32, k: f32) -> (f32, f32) {
     if k.abs() < 1e-3 {
         return (1.0, (to - from) / frames);
     }
@@ -152,6 +188,11 @@ fn affine(out: &mut [f32], level: f32, (mul, add): (f32, f32)) -> f32 {
 
 impl Envelope {
     pub fn new(p: &Ahdsr, rate: f32) -> Self {
+        Self::shaped(p, [0.0; 2], rate)
+    }
+
+    /// An AHDSR with decay and release `curves` (0 is Kontakt's exponential).
+    pub fn shaped(p: &Ahdsr, curves: [f32; 2], rate: f32) -> Self {
         let attack = p.attack * rate;
         Self {
             stage: Stage::Attack,
@@ -165,7 +206,84 @@ impl Envelope {
             decay: exp_coef(p.decay, rate),
             sustain: p.sustain.clamp(0.0, 1.0),
             release: exp_coef(p.release, rate),
+            frames: 0,
+            curves,
+            lengths: [p.decay.max(0.0) * rate, p.release.max(0.0) * rate],
         }
+    }
+
+    /// Take new times, levels and shapes while playing (a Live Edit): the
+    /// stage in progress continues from its level and elapsed time, and a
+    /// changed sustain level glides there rather than jumping.
+    pub fn retime(&mut self, p: &Ahdsr, curves: [f32; 2], rate: f32) {
+        let elapsed = self.frames as f32;
+        match self.stage {
+            Stage::Attack => {
+                let attack = p.attack * rate;
+                self.step = if attack > elapsed + 1.0 {
+                    glide(self.level, 1.0, attack - elapsed, p.curve)
+                } else {
+                    (1.0, 1.0)
+                };
+            }
+            Stage::Hold => {
+                self.left = ((p.hold.max(0.0) * rate) as u32).saturating_sub(self.frames);
+            }
+            _ => {}
+        }
+        self.decay = exp_coef(p.decay, rate);
+        self.release = exp_coef(p.release, rate);
+        self.lengths = [p.decay.max(0.0) * rate, p.release.max(0.0) * rate];
+        self.curves = curves;
+        let sustain = p.sustain.clamp(0.0, 1.0);
+        let moved = sustain != self.sustain;
+        self.sustain = sustain;
+        match self.stage {
+            Stage::Sustain if moved => {
+                // Glide to the new level over the decay, never faster than SMOOTH.
+                let seconds = p.decay.max(SMOOTH);
+                self.decay = exp_coef(seconds, rate);
+                self.lengths[0] = seconds * rate;
+                self.enter_decay();
+            }
+            Stage::Decay => {
+                self.lengths[0] = (self.lengths[0] - elapsed).max(SMOOTH * rate);
+                self.enter_decay();
+            }
+            Stage::Release => self.enter_release(),
+            _ => {}
+        }
+    }
+
+    fn enter_decay(&mut self) {
+        self.stage = Stage::Decay;
+        self.frames = 0;
+        if self.curves[0] != 0.0 {
+            let frames = self.lengths[0].max(1.0);
+            self.step = glide_k(self.level, self.sustain, frames, stage_k(self.curves[0]));
+        }
+    }
+
+    fn enter_release(&mut self) {
+        if self.curves[1] != 0.0 {
+            let frames = self.lengths[1].max(1.0);
+            self.step = glide_k(self.level, 0.0, frames, stage_k(self.curves[1]));
+        }
+    }
+
+    /// The stage (`0` attack, `1` hold, `2` decay, `3` sustain, `4`
+    /// release, `5` a flex segment, `6` done) and frames spent in it.
+    pub fn position(&self) -> (u8, u32) {
+        let stage = match self.stage {
+            Stage::Attack => 0,
+            Stage::Hold => 1,
+            Stage::Decay => 2,
+            Stage::Sustain => 3,
+            Stage::Release => 4,
+            Stage::Enter(_) | Stage::Point(_) => 5,
+            Stage::Done => 6,
+        };
+        (stage, self.frames)
     }
 
     /// A flex envelope's state; its points are passed to `render`.
@@ -178,17 +296,27 @@ impl Envelope {
             decay: 0.0,
             sustain: 0.0,
             release: 0.0,
+            frames: 0,
+            curves: [0.0; 2],
+            lengths: [0.0; 2],
         }
     }
 
     /// Enter the release: the flex segment after the sustain point, or the
     /// AHDSR release.
     pub fn release(&mut self, flex: Option<&Flex>) {
-        self.stage = match (self.stage, flex) {
+        let stage = match (self.stage, flex) {
             (Stage::Done, _) => Stage::Done,
             (_, Some(flex)) => Stage::Enter((flex.sustain + 1) as u8),
             _ => Stage::Release,
         };
+        if stage != self.stage {
+            self.frames = 0;
+        }
+        self.stage = stage;
+        if stage == Stage::Release {
+            self.enter_release();
+        }
     }
 
     pub fn done(&self) -> bool {
@@ -204,11 +332,14 @@ impl Envelope {
     /// is scratch. Held stages move without a pass over the frames.
     pub fn skip(&mut self, out: &mut [f32], flex: Option<&Flex>, rate: f32) {
         match self.stage {
-            Stage::Sustain if self.level > SILENT => {}
+            Stage::Sustain if self.level > SILENT => {
+                self.frames = self.frames.saturating_add(out.len() as u32);
+            }
             Stage::Hold if self.left as usize >= out.len() => {
                 self.left -= out.len() as u32;
+                self.frames = self.frames.saturating_add(out.len() as u32);
                 if self.left == 0 {
-                    self.stage = Stage::Decay;
+                    self.enter_decay();
                 }
             }
             _ => self.render(out, flex, rate),
@@ -220,6 +351,7 @@ impl Envelope {
         let mut i = 0;
         while i < out.len() {
             let rest = &mut out[i..];
+            let stage = self.stage;
             let written = match self.stage {
                 Stage::Attack => {
                     self.level = affine(rest, self.level, self.step);
@@ -237,7 +369,7 @@ impl Envelope {
                     rest[..n].fill(self.level);
                     self.left -= n as u32;
                     if self.left == 0 {
-                        self.stage = Stage::Decay;
+                        self.enter_decay();
                     }
                     n
                 }
@@ -276,9 +408,17 @@ impl Envelope {
                     n
                 }
                 Stage::Decay => {
-                    let step = (self.decay, self.sustain * (1.0 - self.decay));
+                    let step = if self.curves[0] == 0.0 {
+                        (self.decay, self.sustain * (1.0 - self.decay))
+                    } else {
+                        self.step
+                    };
+                    // A live edit may raise the sustain above the level.
+                    let above = self.level >= self.sustain;
                     self.level = affine(rest, self.level, step);
-                    match rest.iter().position(|&x| x - self.sustain <= SILENT) {
+                    let s = self.sustain;
+                    let reached = |x: f32| if above { x - s <= SILENT } else { s - x <= SILENT };
+                    match rest.iter().position(|&x| reached(x)) {
                         Some(end) => {
                             self.level = self.sustain;
                             self.stage = Stage::Sustain;
@@ -292,9 +432,12 @@ impl Envelope {
                     rest.len()
                 }
                 Stage::Release => {
-                    self.level = affine(rest, self.level, (self.release, 0.0));
+                    let step = if self.curves[1] == 0.0 { (self.release, 0.0) } else { self.step };
+                    self.level = affine(rest, self.level, step);
                     match rest.iter().position(|&x| x < SILENT) {
                         Some(end) => {
+                            // A shaped release crosses zero on its last frame.
+                            rest[end] = rest[end].max(0.0);
                             self.level = rest[end];
                             self.stage = Stage::Done;
                             end + 1
@@ -309,6 +452,12 @@ impl Envelope {
                     rest.len()
                 }
             };
+            // A stage entered mid-chunk counts from 0 on the next pass.
+            if self.stage == stage {
+                self.frames = self.frames.saturating_add(written as u32);
+            } else {
+                self.frames = 0;
+            }
             i += written;
         }
     }
