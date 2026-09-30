@@ -435,7 +435,25 @@ impl Section {
         self.c = [a1, a2, g * a2, m[0], m[1], m[2]];
     }
 
+    /// Uses an AVX build when the CPU has it: the same arithmetic, in
+    /// three-operand instructions that drop the SSE register copies.
     fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx") {
+            // SAFETY: the running CPU supports AVX.
+            return unsafe { self.process_avx(left, right) };
+        }
+        self.process_body(left, right);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx")]
+    fn process_avx(&mut self, left: &mut [f32], right: &mut [f32]) {
+        self.process_body(left, right);
+    }
+
+    #[inline(always)]
+    fn process_body(&mut self, left: &mut [f32], right: &mut [f32]) {
         let [a1, a2, a3, m0, m1, m2] = self.c;
         let [mut l1, mut l2, mut r1, mut r2] = self.s;
         // The loop is latency-bound. The state update `s' = 2v - s` is
