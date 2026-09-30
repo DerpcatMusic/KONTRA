@@ -1077,24 +1077,26 @@ impl LaneFilter {
     }
 
     /// Dot a voice's own filter input, `left`/`right`, with how each frame
-    /// reaches the end state.
-    pub fn dots_out(&mut self, left: &[f32], right: &[f32]) {
+    /// reaches the end state, and add it to the run's input `sum`.
+    pub fn dots_out(&mut self, left: &[f32], right: &[f32], sum: [&mut [f32]; 2]) {
         #[cfg(target_arch = "x86_64")]
         if std::arch::is_x86_feature_detected!("avx2") {
             // SAFETY: the running CPU supports AVX2.
-            return unsafe { self.dots_out_avx2(left, right) };
+            return unsafe { self.dots_out_avx2(left, right, sum) };
         }
-        self.dots_out_body(left, right);
+        self.dots_out_body(left, right, sum);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    fn dots_out_avx2(&mut self, left: &[f32], right: &[f32]) {
-        self.dots_out_body(left, right);
+    fn dots_out_avx2(&mut self, left: &[f32], right: &[f32], sum: [&mut [f32]; 2]) {
+        self.dots_out_body(left, right, sum);
     }
 
     #[inline(always)]
-    fn dots_out_body(&mut self, left: &[f32], right: &[f32]) {
+    fn dots_out_body(&mut self, left: &[f32], right: &[f32], [sl, sr]: [&mut [f32]; 2]) {
+        sl.iter_mut().zip(left).for_each(|(o, x)| *o += x);
+        sr.iter_mut().zip(right).for_each(|(o, x)| *o += x);
         let [mut dl, mut dr] = self.d;
         let k = &self.tunings[self.tuning].k;
         for ((l, r), k) in left.iter().zip(right).zip(k.iter()) {
