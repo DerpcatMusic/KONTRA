@@ -63,7 +63,6 @@ Sampler developer guide and the Vital user guide.
 6. **Library ghost** (our own addition). Once a value is overridden, the
    library's curve stays drawn faintly under the edited one, so "what I
    changed" can be read at a glance.
-
 7. **Spectrum** (the Pro-Q pattern). Behind the response, the part's
    post-fader output; beside the mixer, the selected part's or the master's.
    The audio thread copies one strip into a lock-free ring only while a
