@@ -3,7 +3,7 @@
 use super::{
     DECLICK, EventId, MAX_BLOCK,
     bank::{Bank, Span},
-    filter::VoiceFilter,
+    filter::{FilterKey, LaneFilter, VoiceFilter},
     map::{FOREVER, PlayMap, Run},
     params::{Inputs, VOICE_MODS},
     stream::Slot,
@@ -646,20 +646,41 @@ impl Lane {
     fn new(bus: Option<u8>, step: u64, base: u64, decay: u32) -> Self {
         let bus = bus.map_or(0, |b| u64::from(b) + 1);
         Self {
-            route: std::num::NonZeroU64::MIN | (1 << 63) | bus << 48 | (step & Self::STEP),
+            route: Self::route(bus << 48 | (step & Self::STEP)),
             shape: (base & 0xFFFF_FFFF) | u64::from(decay) << 32,
         }
+    }
+
+    const SOLO: u64 = 1 << 62;
+
+    /// With the top bit set, never zero.
+    fn route(bits: u64) -> std::num::NonZeroU64 {
+        std::num::NonZeroU64::new(bits | 1 << 63).unwrap_or(std::num::NonZeroU64::MAX)
+    }
+
+    /// A voice alone in its lane, rendering itself: one per voice (see
+    /// [`Lanes::add`]).
+    fn solo(bus: Option<u8>) -> Self {
+        let bus = bus.map_or(0, |b| u64::from(b) + 1);
+        Self {
+            route: Self::route(Self::SOLO | bus << 48),
+            shape: 0,
+        }
+    }
+
+    pub fn is_solo(&self) -> bool {
+        self.route.get() & Self::SOLO != 0
     }
 
     pub fn bus(&self) -> Option<u8> {
         ((self.route.get() >> 48) as u8).checked_sub(1)
     }
 
-    fn step(&self) -> u64 {
+    pub fn step(&self) -> u64 {
         self.route.get() & Self::STEP
     }
 
-    fn base(&self) -> u64 {
+    pub fn base(&self) -> u64 {
         (1 << 32) | (self.shape & 0xFFFF_FFFF)
     }
 
@@ -680,11 +701,16 @@ impl Lane {
     /// lane's envelope curve (`amp` is scratch).
     pub fn mix(&self, acc: &[Frame], amp: &mut [f32], left: &mut [f32], right: &mut [f32]) {
         let n = left.len();
-        match self.decay() {
-            0 => amp[..n].fill(1.0),
-            decay => _ = affine(&mut amp[..n], 1.0, (f32::from_bits(decay), 0.0)),
-        }
+        self.curve(&mut amp[..n]);
         mix(acc, self.base(), self.step(), &amp[..n], [1.0; 2], [0.0; 2], left, right);
+    }
+
+    /// The envelope's curve over the block, relative to the voices' weights.
+    pub fn curve(&self, amp: &mut [f32]) {
+        match self.decay() {
+            0 => amp.fill(1.0),
+            decay => _ = affine(amp, 1.0, (f32::from_bits(decay), 0.0)),
+        }
     }
 }
 
@@ -695,8 +721,11 @@ pub(crate) struct Lanes {
     /// `(stamp, index into `lanes`)`; entries of older stamps are free.
     table: Box<[(u32, u16)]>,
     stamp: u32,
-    /// Each lane, its first and last voice and how many it has.
-    pub lanes: Vec<(Lane, u16, u16, u16)>,
+    /// Each lane, its filter class ([`Plan::class`]), its first and last
+    /// voice and how many it has.
+    pub lanes: Vec<(Lane, u64, u16, u16, u16)>,
+    /// Each lane's filter, for classes other than 0.
+    pub keys: Box<[FilterKey]>,
     /// The next voice of each voice's lane, and each voice's lane.
     next: Box<[u16]>,
     of: Box<[u16]>,
@@ -708,6 +737,7 @@ impl Lanes {
             table: vec![(0, 0); (2 * voices).next_power_of_two()].into_boxed_slice(),
             stamp: 0,
             lanes: Vec::with_capacity(voices),
+            keys: vec![FilterKey::default(); voices].into_boxed_slice(),
             next: vec![0; voices].into_boxed_slice(),
             of: vec![0; voices].into_boxed_slice(),
         }
@@ -722,22 +752,28 @@ impl Lanes {
         self.lanes.clear();
     }
 
-    pub fn add(&mut self, lane: Lane, voice: u16) {
+    pub fn add(&mut self, mut lane: Lane, class: u64, key: &FilterKey, voice: u16) {
+        if lane.is_solo() {
+            lane.shape = u64::from(voice);
+        }
         let mask = self.table.len() - 1;
-        let mut h = (lane.hash() >> 40) as usize & mask;
+        let mut h = ((lane.hash() ^ class.wrapping_mul(0xD6E8_FEB8_6659_FD93)) >> 40) as usize & mask;
         loop {
             let (stamp, i) = self.table[h];
             if stamp != self.stamp {
                 self.of[voice as usize] = self.lanes.len() as u16;
                 self.table[h] = (self.stamp, self.lanes.len() as u16);
-                self.lanes.push((lane, voice, voice, 1));
+                if class != 0 {
+                    self.keys[self.lanes.len()] = *key;
+                }
+                self.lanes.push((lane, class, voice, voice, 1));
                 return;
             }
             let entry = &mut self.lanes[i as usize];
-            if entry.0 == lane {
+            if entry.0 == lane && entry.1 == class && (class == 0 || self.keys[i as usize] == *key) {
                 self.of[voice as usize] = i;
-                self.next[entry.2 as usize] = voice;
-                (entry.2, entry.3) = (voice, entry.3 + 1);
+                self.next[entry.3 as usize] = voice;
+                (entry.3, entry.4) = (voice, entry.4 + 1);
                 return;
             }
             h = (h + 1) & mask;
@@ -749,9 +785,10 @@ impl Lanes {
         self.of[voice as usize] = u16::MAX;
     }
 
-    /// Whether `voice` shares its lane this block.
+    /// Whether `voice` renders in its lane this block: it shares it, or
+    /// its filter.
     pub fn shared(&self, voice: u16) -> bool {
-        self.lanes.get(self.of[voice as usize] as usize).is_some_and(|l| l.3 > 1)
+        self.lanes.get(self.of[voice as usize] as usize).is_some_and(|l| l.4 > 1 || l.1 != 0)
     }
 
     /// The voices of the lane starting at `first`, `count` of them.
@@ -772,6 +809,9 @@ pub(crate) struct Plan {
     pub declick: Option<f32>,
     /// Per-channel gain in its lane.
     pub weights: [f32; 2],
+    /// The lane's group filter: 0 for none, else its key's hash.
+    pub class: u64,
+    pub key: FilterKey,
 }
 
 /// One playing zone. Plain data; the engine owns the storage.
@@ -949,11 +989,26 @@ impl Voice {
             muted,
             declick: declick.then_some(end),
             weights: [0.0; 2],
+            class: 0,
+            key: FilterKey::default(),
+        };
+        // A filter held all block is linear and time-invariant: voices of
+        // any group with it at the same settings can share it.
+        let class = match &group.filter {
+            None => Some(0),
+            Some(_) if muted => None,
+            Some(f) => {
+                self.filter.follow(f, &group.mods, &inputs, n, cx.rate);
+                self.filter.key(f, &group.mods, cx.rate).map(|key| {
+                    plan.key = key;
+                    key.hash() ^ bus.map_or(0, |b| u64::from(b) + 1) << 48
+                })
+            }
         };
         let mut lane = None;
         // One gain all block, before any filter: the voice's frames can be
         // summed, weighted, with others resampled alike.
-        if !muted && !declick && group.filter.is_none() && self.gains == target && self.fade.steady() {
+        if let Some(class) = class.filter(|_| !muted && !declick && self.gains == target && self.fade.steady()) {
             let flex = match &self.flex {
                 Some(env) => env.shape(n),
                 None => Some(Shape::Flat(1.0)),
@@ -965,26 +1020,37 @@ impl Voice {
                 };
                 let a = level * self.fade.value();
                 let first = self.pos as i64 - 1;
+                // Bus gains fold into the weights only ahead of no filter.
+                let through = through.filter(|_| class == 0);
                 let g = through.unwrap_or([1.0; 2]);
                 plan.weights = [a * target[0] * g[0], a * target[1] * g[1]];
+                plan.class = class;
                 let base = ((self.pos - first as f64) * FIXED_ONE) as u64;
                 lane = Some(Lane::new(bus.filter(|_| through.is_none()), plan.step, base, decay));
             }
+        }
+        // Resampled its own way, a voice still shares its filter.
+        if let Some(class) = class.filter(|&c| c != 0 && lane.is_none()) {
+            plan.class = class;
+            lane = Some(Lane::solo(bus));
         }
         self.plan = plan;
         lane
     }
 
-    /// Mix the planned block into `left`/`right`. Returns `(alive, underrun)`.
+    /// Mix the planned block into `left`/`right`, through the group's
+    /// filter unless `bare` (its lane filters). Returns `(alive, underrun)`.
     pub fn render(
         &mut self,
         cx: &Context,
         scratch: &mut Scratch,
         left: &mut [f32],
         right: &mut [f32],
+        bare: bool,
     ) -> (bool, bool) {
         let Plan { n, step, target, muted, declick, .. } = self.plan;
         let group = &cx.bank.settings[self.group as usize];
+        let own = group.filter.as_ref().filter(|_| !bare);
         let amp = &mut scratch.amp[..n];
         let flex = &mut scratch.flex[..n];
         if muted {
@@ -1031,7 +1097,7 @@ impl Voice {
                 (target[1] - self.gains[1]) / n as f32,
             ];
             let [out_l, out_r] = &mut scratch.out;
-            let (l, r) = match &group.filter {
+            let (l, r) = match own {
                 Some(_) => {
                     out_l[..n].fill(0.0);
                     out_r[..n].fill(0.0);
@@ -1041,11 +1107,9 @@ impl Voice {
             };
             mix(window, base, step, amp, self.gains, delta, l, r);
             self.gains = target;
-            if let Some(filter) = &group.filter {
+            if let Some(filter) = own {
                 let (l, r) = (&mut out_l[..n], &mut out_r[..n]);
-                let inputs = cx.inputs(self.channel, self.note, self.velocity);
-                self.filter
-                    .process(filter, &group.mods, &inputs, &mut scratch.flex, l, r, cx.rate);
+                self.filter.process(filter, &group.mods, &mut scratch.flex, l, r, cx.rate);
                 left[..n].iter_mut().zip(l.iter()).for_each(|(o, x)| *o += x);
                 right[..n].iter_mut().zip(r.iter()).for_each(|(o, x)| *o += x);
             }
@@ -1056,7 +1120,13 @@ impl Voice {
     /// Add the planned block's source frames, times its lane weights, to
     /// `acc` (the lane's window): the lane resamples the sum once. Returns
     /// `(alive, underrun)`.
-    pub fn accumulate(&mut self, cx: &Context, buf: &mut [Frame], acc: &mut [Frame]) -> (bool, bool) {
+    pub fn accumulate(
+        &mut self,
+        cx: &Context,
+        buf: &mut [Frame],
+        acc: &mut [Frame],
+        filter: Option<&mut LaneFilter>,
+    ) -> (bool, bool) {
         let Plan { n, target, weights, .. } = self.plan;
         let group = &cx.bank.settings[self.group as usize];
         // The lane renders the envelope's curve; the voice's own only moves on.
@@ -1072,38 +1142,55 @@ impl Voice {
         // the ring: never copied to memory first.
         let mut underrun = false;
         let resident = self.resident(cx.bank, first, count);
-        if !resident.is_some_and(|(span, at)| span.data.accumulate(at, weights, acc))
-            && !self.accumulate_streamed(cx, first, weights, acc)
-        {
-            underrun = self.gather(cx, first, &mut buf[..count]);
-            accumulate(&buf[..count], weights, acc);
+        if let Some(filter) = filter {
+            // The frames also move the voice's filter state on: decoded once.
+            filter.begin(&self.filter);
+            let mut add = |src: &[Frame], at: usize| {
+                accumulate(src, weights, &mut acc[at..]);
+                filter.dots(src, at);
+            };
+            if let Some((span, at)) = resident {
+                add(span.data.window(at, &mut buf[..count]).unwrap_or_default(), 0);
+            } else if let Some([a, b]) = self.streamed(cx, first, count) {
+                add(a, 0);
+                add(b, a.len());
+            } else {
+                underrun = self.gather(cx, first, &mut buf[..count]);
+                add(&buf[..count], 0);
+            }
+            filter.end(&mut self.filter, weights);
+        } else if !resident.is_some_and(|(span, at)| span.data.accumulate(at, weights, acc)) {
+            match self.streamed(cx, first, count) {
+                Some([a, b]) => {
+                    let (head, tail) = acc.split_at_mut(a.len());
+                    accumulate(a, weights, head);
+                    accumulate(b, weights, tail);
+                }
+                None => {
+                    underrun = self.gather(cx, first, &mut buf[..count]);
+                    accumulate(&buf[..count], weights, acc);
+                }
+            }
         }
         self.gains = target;
         (self.advance(cx), underrun)
     }
 
-    /// Add streamed frames from `first`, times `weights`, to `acc` from
-    /// the ring, when all of them are streamed and published; false (and
-    /// `acc` untouched) otherwise.
-    fn accumulate_streamed(&mut self, cx: &Context, first: i64, weights: [f32; 2], acc: &mut [Frame]) -> bool {
+    /// The `count` frames from `first` in the stream ring, as its two
+    /// runs, when all of them are streamed and published.
+    fn streamed<'b>(&mut self, cx: &Context<'b>, first: i64, count: usize) -> Option<[&'b [Frame]; 2]> {
         let (Ok(v), Some(stream)) = (u64::try_from(first), self.stream.as_mut()) else {
-            return false;
+            return None;
         };
-        let need = v + acc.len() as u64;
+        let need = v + count as u64;
         if v < self.limit || need > self.length {
-            return false;
+            return None;
         }
         let slot = &cx.slots[stream.slot as usize];
         if let Some(end) = slot.published(stream.tag) {
             stream.trusted = stream.trusted.max(end);
         }
-        let Some([a, b]) = slot.runs(v, acc.len()).filter(|_| stream.trusted >= need) else {
-            return false;
-        };
-        let (head, tail) = acc.split_at_mut(a.len());
-        accumulate(a, weights, head);
-        accumulate(b, weights, tail);
-        true
+        slot.runs(v, count).filter(|_| stream.trusted >= need)
     }
 
     /// The planned block's source frames: the first (one before the
