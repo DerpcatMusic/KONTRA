@@ -220,6 +220,29 @@ impl Slot {
         }
     }
 
+    /// Audio thread: `len` published frames from virtual `v` as the ring
+    /// holds them, at most two runs around the wrap, borrowed rather than
+    /// copied (see [`Slot::copy`] for why plain reads are sound). Borrow
+    /// them only until [`Slot::release_below`] passes them.
+    #[inline]
+    pub fn runs(&self, v: u64, len: usize) -> Option<[&[Frame]; 2]> {
+        if !cfg!(target_endian = "little") || len as u64 > RING {
+            return None;
+        }
+        let start = (v % RING) as usize;
+        let first = len.min(RING as usize - start);
+        let base = self.ring.as_ptr().cast::<Frame>();
+        // SAFETY: both runs lie within this slot's `RING` frames; an
+        // `AtomicU64` holds a little-endian `[f32; 2]` bit for bit, and no
+        // store to published frames races the read.
+        unsafe {
+            Some([
+                std::slice::from_raw_parts(base.add(start), first),
+                std::slice::from_raw_parts(base, len - first),
+            ])
+        }
+    }
+
     /// Streamer: a consistent configuration if it changed since `seen`.
     fn snapshot(&self, seen: u32) -> Option<(u32, Option<Config>)> {
         let seq = self.seq.load(Ordering::Acquire);

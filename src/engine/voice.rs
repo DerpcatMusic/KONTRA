@@ -279,6 +279,32 @@ fn affine_until(
     (x, None)
 }
 
+/// [`affine_until`] of a release (`x = x * mul`, `mul` in `[0, 1]`, from
+/// `x >= 0`) to below [`SILENT`], unwritten: the same values, but as
+/// the powers of `mul` only fall, so does each chunk's frames, and its last
+/// frame alone says whether the chunk reaches silence. One multiply per
+/// eight frames, as muted and laned voices only move on.
+fn decay_until_silent(len: usize, level: f32, mul: f32) -> (f32, Option<usize>) {
+    let mut p = 1f32;
+    let pow: [f32; 8] = std::array::from_fn(|_| {
+        p *= mul;
+        p
+    });
+    let mut x = level;
+    for chunk in 0..len / 8 {
+        // `pow[k] * x + 0.0` in `affine_until`: the same value.
+        let last = pow[7] * x;
+        if last < SILENT {
+            let c: [f32; 8] = std::array::from_fn(|k| pow[k] * x);
+            let k = c.iter().position(|&x| x < SILENT).unwrap_or(7);
+            return (c[k], Some(chunk * 8 + k));
+        }
+        x = last;
+    }
+    let (x, end) = affine_until(None, len % 8, x, (mul, 0.0), |x| x < SILENT);
+    (x, end.map(|k| len / 8 * 8 + k))
+}
+
 /// The first of `xs` where `stop` holds: eight at a time without a branch
 /// each, as the frames of a glide rarely stop.
 fn first(xs: &[f32], stop: &impl Fn(f32) -> bool) -> Option<usize> {
@@ -474,8 +500,10 @@ impl Envelope {
                     n
                 }
                 Stage::Release => {
-                    let (level, end) =
-                        affine_until(rest, n, self.level, (self.release, 0.0), |x| x < SILENT);
+                    let (level, end) = match rest {
+                        Some(rest) => affine_until(Some(rest), n, self.level, (self.release, 0.0), |x| x < SILENT),
+                        None => decay_until_silent(n, self.level, self.release),
+                    };
                     self.level = level;
                     match end {
                         Some(end) => {
@@ -1040,14 +1068,42 @@ impl Voice {
         self.muted = 0;
         self.resume(cx);
         // Resident frames add in straight from storage, never decoded to memory.
+        // Resident frames add in straight from storage, streamed ones from
+        // the ring: never copied to memory first.
         let mut underrun = false;
         let resident = self.resident(cx.bank, first, count);
-        if !resident.is_some_and(|(span, at)| span.data.accumulate(at, weights, acc)) {
+        if !resident.is_some_and(|(span, at)| span.data.accumulate(at, weights, acc))
+            && !self.accumulate_streamed(cx, first, weights, acc)
+        {
             underrun = self.gather(cx, first, &mut buf[..count]);
             accumulate(&buf[..count], weights, acc);
         }
         self.gains = target;
         (self.advance(cx), underrun)
+    }
+
+    /// Add streamed frames from `first`, times `weights`, to `acc` from
+    /// the ring, when all of them are streamed and published; false (and
+    /// `acc` untouched) otherwise.
+    fn accumulate_streamed(&mut self, cx: &Context, first: i64, weights: [f32; 2], acc: &mut [Frame]) -> bool {
+        let (Ok(v), Some(stream)) = (u64::try_from(first), self.stream.as_mut()) else {
+            return false;
+        };
+        let need = v + acc.len() as u64;
+        if v < self.limit || need > self.length {
+            return false;
+        }
+        let slot = &cx.slots[stream.slot as usize];
+        if let Some(end) = slot.published(stream.tag) {
+            stream.trusted = stream.trusted.max(end);
+        }
+        let Some([a, b]) = slot.runs(v, acc.len()).filter(|_| stream.trusted >= need) else {
+            return false;
+        };
+        let (head, tail) = acc.split_at_mut(a.len());
+        accumulate(a, weights, head);
+        accumulate(b, weights, tail);
+        true
     }
 
     /// The planned block's source frames: the first (one before the
