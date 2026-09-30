@@ -7,7 +7,7 @@
 //! ("Runtime modulation and engine parameters").
 
 use super::{Ahdsr, GroupSettings, filter::Knob};
-use crate::fx::{FxParam, Rack};
+use crate::fx::{DIRECT, FxParam, OUTS, Rack};
 use crate::import::{Group, ModAssignment, ModSource, ModTarget};
 use crate::ksp::{ENGINE_PAR_BASE, EnginePar};
 use std::sync::Arc;
@@ -476,6 +476,7 @@ impl Address {
                     (0.., _, _) => Self::Group(group()?, p),
                     (_, Some(b), GroupPar::Volume) => Self::Fx(Rack::Bus(b), 0, FxParam::Volume),
                     (_, Some(b), GroupPar::Pan) => Self::Fx(Rack::Bus(b), 0, FxParam::Pan),
+                    (_, Some(b), GroupPar::Output) => Self::Fx(Rack::Bus(b), 0, FxParam::Output),
                     (_, None, GroupPar::Volume | GroupPar::Pan | GroupPar::Tune) => {
                         Self::Instrument(p)
                     }
@@ -538,10 +539,15 @@ impl Address {
     pub(crate) fn decode(self, value: i32) -> f32 {
         let x = (value as f32 / UNIT).clamp(0.0, 1.0);
         match self {
-            Self::Group(_, GroupPar::Output) => match value - BUS_OFFSET {
-                b @ 0..16 => b as f32,
+            // An instrument bus, or past the instrument output to output
+            // channel `c` as bus `DIRECT + c` (a mic mixer's "Out 2").
+            Self::Group(_, GroupPar::Output) => match (value, value - BUS_OFFSET) {
+                (_, b @ 0..16) => b as f32,
+                (c, _) if (0..OUTS as i32).contains(&c) => f32::from(DIRECT) + c as f32,
                 _ => -1.0,
             },
+            Self::Fx(_, _, FxParam::Output) if (0..OUTS as i32).contains(&value) => value as f32,
+            Self::Fx(_, _, FxParam::Output) => -1.0,
             Self::Group(_, p) | Self::Instrument(p) => match p {
                 GroupPar::Volume => volume(x),
                 GroupPar::Pan => 2.0 * x - 1.0,
@@ -574,8 +580,13 @@ impl Address {
     pub(crate) fn encode(self, v: f32) -> i32 {
         let x = match self {
             Self::Group(_, GroupPar::Output) => {
-                return if v >= 0.0 { BUS_OFFSET + v as i32 } else { -1 };
+                return match v {
+                    v if v >= f32::from(DIRECT) => v as i32 - i32::from(DIRECT),
+                    v if v >= 0.0 => BUS_OFFSET + v as i32,
+                    _ => -1,
+                };
             }
+            Self::Fx(_, _, FxParam::Output) => return if v >= 0.0 { v as i32 } else { -1 },
             Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) => {
                 return i32::from(v != 0.0);
             }
@@ -940,6 +951,11 @@ mod tests {
         let output = Address::Group(0, GroupPar::Output);
         assert_eq!(output.decode(1003), 3.0);
         assert_eq!(output.encode(output.decode(-1)), -1);
+        // Past the instrument output: channel 1 ("Out 2"), both ways.
+        assert_eq!(output.decode(1), f32::from(DIRECT) + 1.0);
+        assert_eq!(output.encode(output.decode(1)), 1);
+        let bus_out = Address::Fx(Rack::Bus(2), 0, FxParam::Output);
+        assert_eq!((bus_out.decode(3), bus_out.decode(-1), bus_out.encode(3.0)), (3.0, -1.0, 3));
     }
 
     fn group() -> Group {

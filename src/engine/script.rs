@@ -11,7 +11,7 @@ use crate::import::{Group, Instrument};
 use crate::ksp::{EnginePar, Fade, KspEngine, NoteLength, NoteSpec, Persisted, Runtime, VoicePar};
 
 /// Script output buses, as Kontakt's default output section.
-const SCRIPT_OUTPUTS: usize = 8;
+const SCRIPT_OUTPUTS: usize = crate::fx::OUTS;
 
 /// Initialize an instrument's scripts off the audio thread (`on init` may take
 /// a while), restoring `persisted` values. `None` when it has no scripts.

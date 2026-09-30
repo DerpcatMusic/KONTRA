@@ -870,8 +870,10 @@ fn build(
         let menu = menu::view(ui, &mut cx, window);
         let ghost = ghost(ui, &cx);
 
-        let Cx { selection, .. } = cx;
+        let Cx { mut selection, .. } = cx;
         if selection != before {
+            // Parts added, removed or rerouted are routed at once.
+            p.shared.reroute(&mut selection);
             let mut current = write(&p.selection);
             if *current == before {
                 *current = selection;

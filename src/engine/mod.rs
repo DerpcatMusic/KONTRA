@@ -366,6 +366,11 @@ impl Engine {
         self.script.as_deref()
     }
 
+    /// The instrument's effects, and what it played past its own output.
+    pub fn fx(&self) -> &FxProcessor {
+        &self.fx
+    }
+
     pub fn bank(&self) -> Option<&Bank> {
         self.bank.as_deref()
     }

@@ -144,12 +144,20 @@ pub fn db_short(db: f64) -> String {
     }
 }
 
+/// Parts playing (or sending, or with a mic) through bus `n`.
+fn sources(cx: &Cx, n: usize) -> usize {
+    let n16 = n as i16;
+    cx.selection
+        .parts
+        .iter()
+        .filter(|p| !p.path.is_empty())
+        .map(|p| usize::from(usize::from(p.output) == n || p.aux == n16) + p.mic_buses.iter().filter(|&&b| b == n16).count())
+        .sum()
+}
+
 /// Whether bus `n` earns a strip without being asked for.
 fn in_use(cx: &Cx, n: usize) -> bool {
-    cx.selection.bus(n) != Bus::default()
-        || cx.selection.parts.iter().any(|p| {
-            !p.path.is_empty() && (usize::from(p.output) == n || p.aux == n as i16)
-        })
+    cx.selection.bus(n) != Bus::default() || sources(cx, n) > 0
 }
 
 pub fn view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
@@ -265,8 +273,14 @@ fn toolbar(ui: &mut Ui, cx: &mut Cx, fits: bool) -> El {
             m.spectrum = to;
         }
     }
-    let mut items = vec![section("Strips"), segmented(vec![narrow, wide]), spacer()];
-    if !fits && m.spectrum != Spectrum::Off {
+    let spectrum_on = m.spectrum != Spectrum::Off;
+    let mode = crate::routing::Outputs::of(cx.selection.outputs).label();
+    let (outputs_hit, outputs) = dropdown(ui, "mix-outputs", mode, "Outputs: routing to the host");
+    if outputs_hit {
+        menu::open_under(ui, cx, menu::Target::Routing, "mix-outputs");
+    }
+    let mut items = vec![section("Outputs"), outputs, section("Strips"), segmented(vec![narrow, wide]), spacer()];
+    if !fits && spectrum_on {
         items.push(caption("No room for the spectrum").fill(Role::Dim).lines(1).min_w(0));
     }
     items.extend([section("Spectrum"), segmented(vec![off, part, master])]);
@@ -404,7 +418,7 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let aux_text = if part.aux < 0 {
         "No send".to_owned()
     } else {
-        cx.selection.bus(part.aux as usize).label(part.aux as usize)
+        crate::routing::label(&cx.selection, part.aux as usize)
     };
     let aux_chip = (part.aux >= 0).then(|| bus_color(part.aux as usize));
     let (aux, aux_el) = route(ui, &format!("mix-aux-{slot}"), Icon::Right, aux_chip, aux_text, "Aux send", wide);
@@ -420,7 +434,7 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         &format!("mix-out-{slot}"),
         Icon::AudioOut,
         Some(bus_color(out)),
-        cx.selection.bus(out).label(out),
+        crate::routing::label(&cx.selection, out),
         "Output",
         wide,
     );
@@ -478,18 +492,13 @@ fn bus_strip(ui: &mut Ui, cx: &mut Cx, n: usize) -> El {
             && let Some(RackDrag::Part(slot)) = ui.dropped_on::<RackDrag>(target.as_str())
             && let Some(part) = cx.selection.parts.get_mut(slot)
         {
-            part.output = n as u8;
+            (part.output, part.output_manual) = (n as u8, true);
         }
     }
     let name = strip_name(ui, cx, Strip::Bus(n));
     let wide = cx.state.mixer.wide;
     let bus = cx.selection.bus(n);
-    let sources = cx
-        .selection
-        .parts
-        .iter()
-        .filter(|p| !p.path.is_empty() && (usize::from(p.output) == n || p.aux == n as i16))
-        .count();
+    let sources = sources(cx, n);
     let sources_el = row![
         glyph(Icon::AudioIn, TEXT, Role::Dim.alpha(1.)),
         caption(match sources {
@@ -540,7 +549,7 @@ fn bus_strip(ui: &mut Ui, cx: &mut Cx, n: usize) -> El {
         blank(SEND),
         port_el,
     ]);
-    let label = bus.label(n);
+    let label = crate::routing::label(&cx.selection, n);
     frame(rows, bus_color(n).into(), false, cx.state.mixer.width)
         .when(over, |e| e.stroke(accent()).stroke_width(1))
         .a11y(A11y::Group)
@@ -595,7 +604,7 @@ fn master_strip(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) ->
 fn strip_name(ui: &mut Ui, cx: &mut Cx, strip: Strip) -> El {
     let (name_id, edit_id, name) = match strip {
         Strip::Part(slot) => (format!("mix-name-{slot}"), format!("mix-rename-{slot}"), super::rack::name(cx, slot)),
-        Strip::Bus(n) => (format!("bus-name-{n}"), format!("bus-rename-{n}"), cx.selection.bus(n).label(n)),
+        Strip::Bus(n) => (format!("bus-name-{n}"), format!("bus-rename-{n}"), crate::routing::label(&cx.selection, n)),
     };
     let editing = match strip {
         Strip::Part(slot) => cx.state.renaming.as_mut().filter(|(s, _)| *s == slot),
@@ -667,7 +676,7 @@ fn strip_name(ui: &mut Ui, cx: &mut Cx, strip: Strip) -> El {
 pub fn start_rename(cx: &mut Cx, strip: Strip) {
     match strip {
         Strip::Part(slot) => cx.state.renaming = Some((slot, super::rack::name(cx, slot))),
-        Strip::Bus(n) => cx.state.renaming_bus = Some((n, cx.selection.bus(n).label(n))),
+        Strip::Bus(n) => cx.state.renaming_bus = Some((n, crate::routing::label(&cx.selection, n))),
     }
 }
 
@@ -681,7 +690,9 @@ fn rename(cx: &mut Cx, strip: Strip, text: String) {
             cx.selection.parts[slot].name = if text == default { String::new() } else { text };
         }
         Strip::Bus(n) => {
-            let default = Bus::default().label(n);
+            // What it was called unnamed, st.N or what plays through it.
+            cx.selection.bus_mut(n).name = String::new();
+            let default = crate::routing::label(&cx.selection, n);
             cx.selection.bus_mut(n).name = if text == default { String::new() } else { text };
         }
     }

@@ -26,6 +26,8 @@ pub enum Target {
     Output(usize),
     Aux(usize),
     BusPort(usize),
+    /// The mixer's routing: the Outputs mode and the one-click actions.
+    Routing,
     /// A mixer strip.
     Strip(Strip),
     /// An articulation's keyswitch: remap it, or learn the key from MIDI
@@ -72,6 +74,15 @@ pub enum Command {
     Channel(usize, i16),
     Port(usize, u8),
     Output(usize, u8),
+    /// Route a part automatically again.
+    AutoOutput(usize),
+    /// The mixer's Outputs mode ([`crate::routing::Outputs`]).
+    Outputs(u8),
+    OwnOutputs,
+    OwnChannels,
+    AllOmni,
+    NameOutputs,
+    ResetRouting,
     Appearance(super::Appearance),
     StickyHeaders,
     ArtworkBlur,
@@ -339,12 +350,28 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             let Some(part) = cx.selection.parts.get(*slot) else {
                 return Vec::new();
             };
-            (0..BUSES)
-                .map(|n| {
-                    let label = bus_item(cx, n);
-                    check(label, usize::from(part.output) == n, Command::Output(*slot, n as u8))
-                })
-                .collect()
+            let mut items = vec![check("Automatic", !part.output_manual, Command::AutoOutput(*slot)), Item::Rule];
+            items.extend((0..BUSES).map(|n| {
+                let label = bus_item(cx, n);
+                check(label, part.output_manual && usize::from(part.output) == n, Command::Output(*slot, n as u8))
+            }));
+            items
+        }
+        Target::Routing => {
+            use crate::routing::Outputs;
+            let now = Outputs::of(cx.selection.outputs);
+            let mut items = vec![Item::Info("Outputs".into())];
+            items.extend(Outputs::ALL.map(|o| check(o.label(), now == o, Command::Outputs(o as u8))));
+            items.extend([
+                Item::Rule,
+                act("Give every instrument its own output", "", Command::OwnOutputs),
+                act("Name outputs after instruments", "", Command::NameOutputs),
+                act("Reset routing", "", Command::ResetRouting),
+                Item::Rule,
+                act("Give every instrument its own MIDI channel", "", Command::OwnChannels),
+                act("All Omni", "", Command::AllOmni),
+            ]);
+            items
         }
         Target::Aux(slot) => {
             let Some(part) = cx.selection.parts.get(*slot) else {
@@ -447,7 +474,7 @@ fn timing_items(cx: &Cx, slot: usize, items: &mut Vec<Item>) {
 /// "st.3", or "st.3 · Drums" once named.
 fn bus_item(cx: &Cx, n: usize) -> String {
     let own = crate::plugin::Bus::default().label(n);
-    match cx.selection.bus(n).label(n) {
+    match crate::routing::label(&cx.selection, n) {
         name if name == own => name,
         name => format!("{own} · {name}"),
     }
@@ -673,7 +700,24 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::BendRange(slot, range) => cx.selection.parts[slot].mpe.bend_range = range,
         Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
         Command::Port(slot, port) => cx.selection.parts[slot].port = port,
-        Command::Output(slot, output) => cx.selection.parts[slot].output = output,
+        Command::Output(slot, output) => {
+            let part = &mut cx.selection.parts[slot];
+            (part.output, part.output_manual) = (output, true);
+        }
+        Command::AutoOutput(slot) => cx.selection.parts[slot].output_manual = false,
+        Command::Outputs(0) => crate::routing::to_stereo(&mut cx.selection),
+        Command::Outputs(mode) => cx.selection.outputs = mode,
+        Command::OwnOutputs => {
+            use crate::routing::Outputs;
+            if Outputs::of(cx.selection.outputs) == Outputs::Stereo {
+                cx.selection.outputs = Outputs::Instrument as u8;
+            }
+            cx.selection.parts.iter_mut().for_each(|p| p.output_manual = false);
+        }
+        Command::OwnChannels => crate::routing::own_channels(&mut cx.selection),
+        Command::AllOmni => crate::routing::all_omni(&mut cx.selection),
+        Command::NameOutputs => crate::routing::name_outputs(&mut cx.selection),
+        Command::ResetRouting => crate::routing::reset(&mut cx.selection),
         Command::Script {
             part,
             control,

@@ -350,8 +350,9 @@ fn rack_interactions() {
     h.press("tab-rack");
     h.press("mute-0");
     assert!(parts(&p)[0].mute);
-    // The routing menus: output st.4, channel 2, then port B (after a rule and a heading).
-    for (menu, item) in [("output-0", 3), ("midi-0", 2), ("midi-0", 20)] {
+    // The routing menus: output st.4 (after Automatic and a rule), channel 2,
+    // then port B (after a rule and a heading).
+    for (menu, item) in [("output-0", 5), ("midi-0", 2), ("midi-0", 20)] {
         h.press(menu);
         h.press(&format!("menu-item-{item}"));
     }
@@ -1371,9 +1372,11 @@ fn mixer_routing_edits() {
     assert!(shows(&h, "strip-0") && shows(&h, "strip-1") && shows(&h, "master-strip"));
     assert!(shows(&h, "bus-0") && !shows(&h, "bus-2"), "only buses in use");
 
+    // Automatic, a rule, then st.1…: the third bus, picked by hand.
     h.press("mix-out-0");
-    h.press("menu-item-2");
+    h.press("menu-item-4");
     assert_eq!(part(&p, 0).output, 2, "the output menu routes");
+    assert!(part(&p, 0).output_manual, "and the route sticks");
     assert!(shows(&h, "bus-2"), "a bus in use gets its strip");
 
     // No send, a rule, then st.1…: the fourth bus.

@@ -6,7 +6,8 @@ use crate::{
         Streaming, TUNE_RANGE, load_scripts,
         overrides::{Edits, Override, Probe},
     },
-    fx::FxProcessor,
+    fx::{DIRECT, FxProcessor, OUTS},
+    routing,
     import::{self, Instrument},
     timing::{self, Align, Holds, Plan, Timing},
     ksp::{Interface, KeyState, Live, Persisted, Refresh, Runtime},
@@ -19,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -63,6 +64,14 @@ pub struct Part {
     /// How late the part sounds, measured, and the player's override (see
     /// [`Selection::auto_align`]).
     pub timing: Timing,
+    /// The player picked [`Part::output`]: automatic routing leaves it.
+    pub output_manual: bool,
+    /// Per output channel the instrument plays to past its own output (a
+    /// mic mixer's "Out 2"), the bus it goes to, -1 with the part; kept by
+    /// "One per mic" routing (`routing.rs`), empty otherwise.
+    pub mic_buses: Vec<i16>,
+    /// What plays on each of those channels, as the library names it.
+    pub mic_names: Vec<String>,
 }
 impl Part {
     /// Where the part's samples play from, given the rack's setting.
@@ -122,6 +131,9 @@ impl Default for Part {
             streaming: None,
             edits: Edits::default(),
             timing: Timing::default(),
+            output_manual: false,
+            mic_buses: Vec::new(),
+            mic_names: Vec::new(),
         }
     }
 }
@@ -202,6 +214,8 @@ pub struct Selection {
     /// Hold notes back only while the host's transport plays: played live
     /// with it stopped, a part sounds as late as its library does.
     pub align_transport_only: bool,
+    /// How parts are routed to buses and host ports ([`routing::Outputs`]).
+    pub outputs: u8,
 }
 impl Selection {
     /// Output bus `n`, default when never set.
@@ -233,6 +247,7 @@ impl Selection {
 }
 
 #[derive(Params)]
+#[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision")]
 pub struct SamplerParams {
     #[param(name="Volume",range="linear(-60, 6)",default=-12.0,unit="dB",smooth="exp(5)")]
     pub volume: FloatParam,
@@ -256,6 +271,18 @@ pub struct SamplerParams {
     pub level: MeterSlot,
 }
 pub(crate) use SamplerParamsParamId as P;
+
+impl SamplerParams {
+    /// Host output port `index`'s name, as last published (`routing.rs`).
+    fn port_name(&self, index: u32) -> Option<String> {
+        let names = self.shared.port_names.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        names.published.get(index as usize).cloned()
+    }
+
+    fn port_names_revision(&self) -> u64 {
+        self.shared.port_names_revision.load(Ordering::Acquire)
+    }
+}
 
 pub struct Shared {
     ready: ArrayQueue<(usize, u64, Handoff)>,
@@ -336,6 +363,13 @@ pub struct Shared {
     measure: Arc<Measure>,
     /// The latency the host is told, ms (`f32` bits); 0 while auto-align is off.
     pub(crate) reported: AtomicU32,
+    /// What each part's instrument plays past its own output ([`routing::Mics`]),
+    /// published by the audio thread.
+    mics: [[AtomicU16; OUTS]; RACK_SLOTS],
+    /// Host port names; the loader publishes, the host's main thread reads.
+    port_names: Mutex<routing::PortNames>,
+    /// Bumped with each publication: format wrappers poll it and tell the host.
+    port_names_revision: AtomicU64,
 }
 /// Parts' timing measurements, each on a thread of its own.
 #[derive(Default)]
@@ -443,6 +477,9 @@ impl Default for Shared {
             published: Mutex::default(),
             measure: Arc::default(),
             reported: AtomicU32::new(0),
+            mics: Default::default(),
+            port_names: Mutex::default(),
+            port_names_revision: AtomicU64::new(0),
             view: Mutex::new(View {
                 script_epoch: 0,
                 multi_status: String::new(),
@@ -602,6 +639,10 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
                 solo: p.solo,
                 aux: if (0..BUSES as i16).contains(&p.aux) { p.aux as u8 } else { NO_AUX },
                 aux_gain: db_gain(p.aux_gain),
+                outs: std::array::from_fn(|c| match p.mic_buses.get(c) {
+                    Some(&b) if (0..BUSES as i16).contains(&b) => b as u8,
+                    _ => NO_AUX,
+                }),
             })
             .unwrap_or_default()
     })
@@ -973,6 +1014,7 @@ impl BackgroundTask for Load {
                 }
             }
         }
+        route(params);
         {
             let current = params.selection.read().unwrap();
             params.shared.sync_overrides(&current);
@@ -1442,6 +1484,58 @@ fn smart_memory(shared: &Shared) {
     }
 }
 
+/// Route parts as the mixer's "Outputs" choice says and publish the host
+/// port names once they settle.
+fn route(params: &SamplerParams) {
+    let shared = &params.shared;
+    let names = {
+        let mut current = params.selection.write().unwrap();
+        let mut routed = current.clone();
+        shared.reroute(&mut routed);
+        if routed != *current {
+            *current = routed;
+        }
+        routing::port_names(&current)
+    };
+    let mut ports = shared.port_names.lock().unwrap();
+    if ports.offer(names, Instant::now()) {
+        shared.port_names_revision.fetch_add(1, Ordering::Release);
+    }
+}
+impl Shared {
+    /// [`routing::apply`] with what the audio thread last saw the parts'
+    /// instruments route past their outputs, named from the instruments.
+    pub(crate) fn reroute(&self, selection: &mut Selection) {
+        let mics: routing::Mics = self.mics.each_ref().map(|m| m.each_ref().map(|c| c.load(Ordering::Relaxed)));
+        let view = self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        routing::apply(selection, &mics, |slot, code| {
+            let instrument = view.parts.get(slot).and_then(|v| v.instrument.as_deref());
+            let name = instrument.and_then(|i| match code {
+                0x100.. => i.groups.get(usize::from(code - 0x100)).map(|g| g.name.clone()),
+                b => i.fx.buses.iter().find(|x| x.index == usize::from(b - 1)).map(|x| x.name.clone()),
+            });
+            name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| match code {
+                0x100.. => "Direct".into(),
+                b => format!("Bus {b}"),
+            })
+        });
+    }
+}
+/// What an instrument routes to each output channel past its own output
+/// ([`routing::Mics`]): its first instrument bus there, else its first group.
+pub(crate) fn outs_of(engine: &Engine) -> [u16; OUTS] {
+    let mut outs = engine.fx().routed().map(|b| b.map_or(0, |b| 1 + u16::from(b)));
+    let settings = engine.bank().map_or(&[][..], |b| &b.settings[..]);
+    for (g, s) in settings.iter().enumerate() {
+        if let Some(c) = s.bus.and_then(|b| b.checked_sub(DIRECT))
+            && let Some(o) = outs.get_mut(usize::from(c))
+            && *o == 0
+        {
+            *o = 0x100 + g.min(0xfeff) as u16;
+        }
+    }
+    outs
+}
 /// How long a new latency must hold before the host hears of it: hosts
 /// restart processing for each change, and parts loading one by one would
 /// otherwise change it once per part.
@@ -1619,6 +1713,11 @@ impl PluginLogic for Sampler {
         if s.until_poll <= frames {
             if let Some(tasks) = cx.tasks::<Load>() {
                 tasks.spawn_coalescing(Load);
+            }
+            for (engine, mics) in s.rack.parts.iter().zip(&p.shared.mics) {
+                for (m, out) in mics.iter().zip(outs_of(engine)) {
+                    m.store(out, Ordering::Relaxed);
+                }
             }
             s.until_poll = (rate * 0.1) as usize;
         } else {
@@ -2406,9 +2505,14 @@ mod tests {
                     solo: true,
                     streaming: Some(Streaming::Auto),
                     timing: Timing { override_ms: Some(120.), exclude: true, ..Default::default() },
+                    output: 3,
+                    output_manual: true,
+                    mic_buses: vec![-1, 4],
+                    mic_names: vec![String::new(), "Close".into()],
                     ..Default::default()
                 },
             ],
+            outputs: 2,
             order: vec![1, 0],
             midi_thru: true,
             favorites: vec!["/libraries/Solo/a.nki".into()],
@@ -3037,6 +3141,91 @@ mod tests {
 
     fn attack(first_ms: f32) -> timing::Delay {
         timing::Delay { first: [Some(first_ms); 3], legato: [Some(first_ms); 3], ..Default::default() }
+    }
+
+    /// A library's mic mixer sends its "Tree" bus to "Out 2" and its
+    /// "Close" group straight to "Out 3" (`$ENGINE_PAR_OUTPUT_CHANNEL`). In
+    /// "One per mic" each gets a bus and host port of its own, named after
+    /// it, and plays there; the rest stays on the part's own.
+    #[test]
+    fn mic_outputs_get_their_own_buses_and_ports() {
+        use crate::{audio::Sample, import::{Group, Instrument, Loop, Zone}};
+        use moose::core::bus_routing::{BusActivation, BusRouting};
+        let groups: Vec<Group> = ["Close", "Tree", "Main"].map(|n| Group { name: n.into(), ..Group::default() }).into();
+        let looped = Some(Loop { start: 0, end: 100, until_release: false, crossfade: 0 });
+        let zones = (0..3)
+            .map(|g| Zone { group: g, sample: PathBuf::from(g.to_string()), loop_range: looped.clone(), ..Zone::default() })
+            .collect();
+        let samples = [0.1f32, 0.2, 0.3]
+            .iter()
+            .enumerate()
+            .map(|(g, &v)| (PathBuf::from(g.to_string()), Sample { rate: 48000, frames: vec![[v, v]; 100] }))
+            .collect();
+        let mut i = Instrument { name: "Harp".into(), groups: groups.clone(), ..Default::default() };
+        i.fx.buses = vec![crate::fx::Bus { index: 0, name: "Tree".into(), volume: 1.0, pan: 0.0, output: -1, chain: Default::default() }];
+        i.scripts = vec!["on init
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, $NI_BUS_OFFSET, 1, -1, -1)
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, 1, -1, -1, $NI_BUS_OFFSET)
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, 2, 0, -1, -1)
+end on"
+            .into()];
+        let (rt, errors) = load_scripts(&i, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut dsp = Dsp::default();
+        let p = SamplerParams::new();
+        let e = &mut dsp.rack.parts[0];
+        e.set_bank(Some(Box::new(Bank::from_samples(groups, zones, samples).unwrap())));
+        e.set_script(rt);
+        let fx = i.fx.processor(e.rate() as f32, MAX_BLOCK);
+        e.set_fx(fx);
+
+        const BLOCK: usize = 256;
+        let transport = TransportInfo::default();
+        let block = |dsp: &mut Dsp, note: bool| {
+            let mut events = EventList::with_capacity(2);
+            if note {
+                events.push(Event::on_port(0, 0, EventBody::NoteOn { group: 0, channel: 0, note: 60, velocity: 127 }));
+            }
+            let mut out = vec![vec![0f32; BLOCK]; 8];
+            let mut refs: Vec<_> = out.iter_mut().map(|o| o.as_mut_slice()).collect();
+            let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, BLOCK);
+            let mut midi_out = EventList::with_capacity(4);
+            let mut routes = BusRouting::new();
+            for _ in 0..4 {
+                routes.push_output(2, BusActivation::Active);
+            }
+            let mut cx = ProcessContext::new(&transport, 48000., BLOCK, &mut midi_out).with_bus_routing(routes);
+            Sampler::process(dsp, &p, &mut buffer, &events, &mut cx);
+            out
+        };
+        // A block tells the loader what the instrument routes where.
+        block(&mut dsp, false);
+        p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(i));
+        let mut sel = Selection {
+            outputs: routing::Outputs::Mic as u8,
+            parts: vec![Part { path: "/lib/Harp.nki".into(), ..Default::default() }],
+            order: vec![0],
+            ..Default::default()
+        };
+        p.shared.reroute(&mut sel);
+        assert_eq!(sel.parts[0].mic_buses[..4], [-1, 1, 2, -1]);
+        assert_eq!(routing::port_names(&sel)[..4], ["Harp", "Harp Tree", "Harp Close", "st.4"]);
+
+        let _ = p.shared.controls.force_push(mix(&sel));
+        block(&mut dsp, true);
+        let out = block(&mut dsp, false);
+        let at = |ch: usize| out[ch][BLOCK - 1];
+        assert!(at(0) > 0. && at(2) > 0. && at(4) > 0., "{} {} {}", at(0), at(2), at(4));
+        assert!((at(2) - 2. * at(4)).abs() < 1e-5, "Tree (0.2) is twice Close (0.1): {} {}", at(2), at(4));
+        assert_eq!(at(6), 0.);
+
+        // Back to one per instrument: the mics play with the part again.
+        sel.outputs = routing::Outputs::Instrument as u8;
+        p.shared.reroute(&mut sel);
+        let _ = p.shared.controls.force_push(mix(&sel));
+        let out = block(&mut dsp, false);
+        assert!(out[2][BLOCK - 1] == 0. && out[4][BLOCK - 1] == 0.);
+        assert!(out[0][BLOCK - 1] > at(0));
     }
 
     /// Two parts 10 and 30 ms late: the host is told 30 ms, the first part's

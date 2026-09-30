@@ -1,0 +1,14 @@
+# Vendored from moose bffa467 with KONTRA's output port name patch; see vendor/MOOSE-PATCHES.md.
+[package]
+name = "moose-params"
+version = "7.0.0"
+repository = "https://github.com/Matari-Audio/moose"
+homepage = "https://github.com/Matari-Audio/moose"
+edition = "2024"
+license = "LicenseRef-TruceLicense-1.0"
+rust-version = "1.92"
+description = "Parameter system for the moose framework"
+
+[dependencies]
+bitflags = "2"
+

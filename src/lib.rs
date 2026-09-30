@@ -12,6 +12,8 @@ mod artwork;
 #[cfg(feature="plugin")]
 mod plugin;
 #[cfg(feature="plugin")]
+mod routing;
+#[cfg(feature="plugin")]
 mod ui;
 #[cfg(feature="plugin")]
 pub use plugin::{Plugin, bench_host};

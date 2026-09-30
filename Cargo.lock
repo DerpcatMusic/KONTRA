@@ -1783,7 +1783,6 @@ dependencies = [
 [[package]]
 name = "moose-clap"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497#bffa4677d0b82119d38566ce7e932dc5c463d497"
 dependencies = [
  "clap-sys",
  "crossbeam-queue",
@@ -1820,7 +1819,6 @@ dependencies = [
 [[package]]
 name = "moose-derive"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497#bffa4677d0b82119d38566ce7e932dc5c463d497"
 dependencies = [
  "moose-build",
  "moose-params",
@@ -1922,7 +1920,6 @@ dependencies = [
 [[package]]
 name = "moose-params"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497#bffa4677d0b82119d38566ce7e932dc5c463d497"
 dependencies = [
  "bitflags 2.13.2",
 ]
@@ -1985,7 +1982,6 @@ source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce
 [[package]]
 name = "moose-vst3"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497#bffa4677d0b82119d38566ce7e932dc5c463d497"
 dependencies = [
  "cc",
  "crossbeam-queue",
