@@ -127,6 +127,27 @@ impl Slot {
         )
     }
 
+    /// Streamer thread, the slot stopped: return the ring's whole pages to
+    /// the system; they read as zeros, and are mapped again, when next
+    /// written. No reader looks at a stopped slot's frames.
+    fn give_back(&self) {
+        #[cfg(target_os = "linux")]
+        {
+            unsafe extern "C" {
+                fn madvise(addr: *mut std::ffi::c_void, len: usize, advice: i32) -> i32;
+            }
+            const MADV_DONTNEED: i32 = 4;
+            const PAGE: usize = 4096;
+            let start = self.ring.as_ptr() as usize;
+            let (first, last) = (start.next_multiple_of(PAGE), (start + RING as usize * 8) / PAGE * PAGE);
+            if last > first {
+                // SAFETY: whole pages inside this slot's ring, which only
+                // this thread writes; zero bits are a valid `AtomicU64`.
+                unsafe { madvise(first as *mut _, last - first, MADV_DONTNEED) };
+            }
+        }
+    }
+
     /// Audio thread: stop streaming.
     pub fn stop(&self) {
         self.write(NO_SAMPLE, [0; 8], 0);
@@ -340,6 +361,8 @@ struct Cursor {
     /// The slot's open sample, kept across restarts of the same sample and
     /// closed when the slot stops: one open file per streaming voice.
     reader: Option<(u32, SampleReader)>,
+    /// Frames were written into the ring since it was last given back.
+    used: bool,
 }
 
 struct Worker {
@@ -398,11 +421,19 @@ impl Worker {
                 .reader
                 .take()
                 .filter(|(sample, _)| config.is_some_and(|c| c.sample == *sample));
+            // Stopped: its voice ended or went quiet. The ring's pages go
+            // back to the system until it streams again.
+            let mut used = cursor.used;
+            if config.is_none() && used {
+                slot.give_back();
+                used = false;
+            }
             *cursor = Cursor {
                 seq,
                 config,
                 next: config.map_or(0, |c| c.from),
                 reader,
+                used,
             };
         }
         let Some(config) = cursor.config else {
@@ -437,6 +468,7 @@ impl Worker {
                 .store(bits, Ordering::Relaxed);
         }
         cursor.next += n;
+        cursor.used = true;
         slot.written.store(
             u64::from(tag(cursor.seq)) << 48 | cursor.next,
             Ordering::Release,
