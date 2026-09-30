@@ -10,7 +10,7 @@ repository = "https://github.com/Matari-Audio/kontra"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["plugin", "clap", "vst3"]
+default = ["plugin", "clap", "vst3", "library-access"]
 plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-text", "dep:zune-jpeg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
