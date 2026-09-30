@@ -224,9 +224,12 @@ pub fn save_multi(ui: &mut Ui, cx: &mut Cx) -> El {
             Err(e) => cx.state.save_error = format!("{e:#}"),
         }
     }
-    let error = (!cx.state.save_error.is_empty()).then(|| {
-        caption(cx.state.save_error.clone()).fill(Role::Dim).lines(1).shrink(0)
-    });
+    let note = if cx.state.save_error.is_empty() {
+        "Into the library folder's Multis".to_owned()
+    } else {
+        cx.state.save_error.clone()
+    };
+    let error = Some(caption(note).fill(Role::Dim).lines(1).shrink(0));
     let mut line = vec![
         section("Save multi"),
         field.el.flex(1).min_w(0).h(CONTROL).named("Multi name"),

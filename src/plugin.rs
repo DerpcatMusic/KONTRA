@@ -1312,7 +1312,7 @@ mod tests {
         };
         SavedMulti::of("Evening", &rack).save(&path).unwrap();
         assert!(import::is_multi(&path));
-        assert_eq!(import::presets(&root).unwrap(), [path.clone()], "the browser lists it");
+        assert_eq!(import::presets(&root).unwrap(), std::slice::from_ref(&path), "the browser lists it");
 
         let p = SamplerParams::new();
         p.selection.write().unwrap().root = rack.root.clone();

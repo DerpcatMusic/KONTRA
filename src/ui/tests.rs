@@ -405,7 +405,7 @@ fn screenshot() {
         .map(Arc::new)
         .collect();
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 11] = [
+    let states: [(&str, bool, &[&str]); 12] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -415,6 +415,7 @@ fn screenshot() {
         ("multis", false, &["picker-multis"]),
         ("settings", true, &["app-menu", "menu-item-3"]),
         ("menu", true, &["app-menu"]),
+        ("save", true, &["app-menu", "menu-item-6"]),
         ("collapsed", true, &["toggle-browser", "keyboard-toggle"]),
         ("error", true, &[]),
     ];
