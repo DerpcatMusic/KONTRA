@@ -413,8 +413,9 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         }
         Err(e) => { warnings.push(format!("Effects were not imported: {e:#}")); Default::default() }
     };
-    if resolver.undownloaded > 0 {
-        warnings.push(format!("{} samples read back as zeros from disk. The files may be fine: the Linux NTFS driver can return zeros for data it fails to map; try mounting the drive with ntfs3", resolver.undownloaded));
+    if !resolver.undownloaded.is_empty() {
+        let mounts = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+        warnings.push(zero_read_warning(resolver.undownloaded.len(), mount_of(&mounts, &resolver.root.canonicalize().unwrap_or_else(|_| resolver.root.clone()))));
     }
     warnings.sort(); warnings.dedup(); missing_samples.sort(); missing_samples.dedup();
     let (voice_limit, voice_groups) = match p.0.find_first(0x32).map(|c| voice_groups(&c.data)).transpose() {
@@ -422,6 +423,29 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
         Err(e) => { warnings.push(format!("Voice groups ignored: {e:#}")); (None, Vec::new()) }
     };
     Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state, kontakt_sample_bytes: program.num_bytes_samples_total, kontakt_preload: program.dfd_channel_preload_size })
+}
+
+/// (mount point, fs type, source) of the deepest mount containing `path`, from mountinfo text.
+fn mount_of(mountinfo: &str, path: &Path) -> Option<(PathBuf, String, String)> {
+    let unescape = |s: &str| s.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\");
+    mountinfo.lines().filter_map(|line| {
+        let (left, right) = line.split_once(" - ")?;
+        let point = PathBuf::from(unescape(left.split(' ').nth(4)?));
+        let mut right = right.split(' ');
+        Some((point, right.next()?.to_string(), unescape(right.next()?)))
+    }).filter(|(point, ..)| path.starts_with(point)).max_by_key(|(point, ..)| point.as_os_str().len())
+}
+
+/// The in-kernel `ntfs` driver (Linux 7.x) rejects the $DATA extents Windows stores in
+/// extension MFT records of heavily fragmented files ("Failed to load full runlist" in
+/// dmesg) and reads everything past the base extent as zeros. ntfs3 reads them. See audits/NTFS.md.
+fn zero_read_warning(samples: usize, mount: Option<(PathBuf, String, String)>) -> String {
+    match mount {
+        Some((point, fs, source)) if fs == "ntfs" => format!(
+            "{samples} samples read back as zeros. The files are likely intact: the kernel `ntfs` driver on {} drops the extents of large fragmented files (dmesg: \"Failed to load full runlist\"). Remount with ntfs3: sudo umount '{1}' && sudo mount -t ntfs3 -o uid=$(id -u),gid=$(id -g),umask=0002,noatime {source} '{1}' (or set the type to ntfs3 in /etc/fstab)",
+            source, point.display()),
+        _ => format!("{samples} samples read back as zeros from disk: the library files are incomplete (an interrupted download leaves the rest zero-filled). Re-download the affected archives"),
+    }
 }
 
 /// VoiceGroups chunk (0x32, v0x60): program limit, a 128-bit presence mask, then one
@@ -459,12 +483,12 @@ pub struct Resolver {
     is_file: HashMap<PathBuf, bool>,
     /// Member entries validated ahead by [`Resolver::resolve_all`].
     checked: HashMap<(PathBuf, String), Option<ni_file::nkr::Entry>>,
-    /// Archive members found zero-filled so far: an interrupted download
-    /// preallocates the archive and leaves the unfetched rest as zeros.
-    pub undownloaded: usize,
+    /// Archive members whose header reads back as zeros: an interrupted download, or
+    /// the kernel `ntfs` driver dropping the extents of a fragmented archive.
+    pub undownloaded: std::collections::HashSet<PathBuf>,
 }
 impl Resolver {
-    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), canonical: HashMap::new(), is_file: HashMap::new(), checked: HashMap::new(), undownloaded: 0 } }
+    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), canonical: HashMap::new(), is_file: HashMap::new(), checked: HashMap::new(), undownloaded: Default::default() } }
     pub fn resolve(&mut self, parent: &Path, name: &str) -> Result<Option<PathBuf>> {
         let name = name.replace('\\', "/");
         let direct = parent.join(&name);
@@ -488,7 +512,7 @@ impl Resolver {
                     };
                     return Ok(Some(canonical.join(&entry.name)));
                 }
-                Some(entry) if entry.issue == Some("Zero-filled NKX member header") => self.undownloaded += 1,
+                Some(entry) if entry.issue == Some("Zero-filled NKX member header") => { self.undownloaded.insert(direct.clone()); }
                 _ => {}
             }
             return Ok(None);
@@ -622,5 +646,18 @@ mod preset_tests {
         let root=std::env::temp_dir().join(format!("kontakto-presets-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&root).unwrap();
         for name in ["Piano.NKI","Ensemble.NKM","C4.wav","C5.ncw","Resource.nkr","Library.nicnt"]{std::fs::write(root.join(name),[]).unwrap();}
         let all=super::presets(&root).unwrap();assert_eq!(all.len(),2);assert_eq!(all.iter().filter(|p|super::is_multi(p)).count(),1);assert_eq!(super::catalog(&root).unwrap().len(),1);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn zero_reads_on_kernel_ntfs_name_the_ntfs3_remount() {
+        let info = "22 1 0:21 / / rw - btrfs /dev/nvme1n1p2 rw\n\
+                    99 22 259:7 / /mnt/MAIN\\040STORAGE rw,noatime - ntfs /dev/nvme0n1p1 rw,errors=continue\n\
+                    98 22 259:8 / /mnt/MAIN rw - ntfs3 /dev/sda1 rw\n";
+        let lib = std::path::Path::new("/mnt/MAIN STORAGE/Libraries/Kontakt/Areia");
+        let m = super::mount_of(info, lib).unwrap();
+        assert_eq!((m.0.to_str().unwrap(), m.1.as_str(), m.2.as_str()), ("/mnt/MAIN STORAGE", "ntfs", "/dev/nvme0n1p1"));
+        let w = super::zero_read_warning(3, Some(m));
+        assert!(w.contains("mount -t ntfs3") && w.contains("/dev/nvme0n1p1 '/mnt/MAIN STORAGE'"), "{w}");
+        assert_eq!(super::mount_of(info, std::path::Path::new("/mnt/MAIN/x")).unwrap().1, "ntfs3");
+        assert!(!super::zero_read_warning(3, super::mount_of(info, std::path::Path::new("/home/x"))).contains("ntfs3"));
     }
 }

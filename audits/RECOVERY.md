@@ -1,5 +1,7 @@
 # Resource recovery checks
 
+Superseded: the zero-filled members below are not missing bytes. The kernel `ntfs` driver drops the extension runlist extents of these fragmented archives and reads their tails as zeros. The files are intact; remount the drive with ntfs3 (see `NTFS.md`).
+
 The read-only index audit covered 268 NKX/NKR archives. All 951,741 unavailable members have 22 zero bytes where a member header should be. The remaining member headers passed the index checks; sample payload decoding was not audited in full.
 
 For each affected archive, sampled a 64 KiB window around its first, middle and last invalid member offset (clipped at file boundaries). 582 of 600 sampled windows were entirely zero. These larger zero-filled regions cannot be reconstructed from an encryption key.
