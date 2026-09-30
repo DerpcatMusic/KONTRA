@@ -1,5 +1,15 @@
-//! The editor: a library browser, a rack of parts, the selected instrument's
-//! performance view and a playable keyboard.
+//! The editor: a library browser, a Kontakt-style rack of parts with their
+//! performance controls rebuilt natively, and a playable keyboard.
+//!
+//! ```text
+//! ┌ top bar: wordmark · activity · meters · master · global actions ───────┐
+//! ├ browser ┆ tabs: rack · mapping · info ─────────────────────────────────┤
+//! │         ┆ part header: fold · name ‹ › · routing · S M · vol/pan · ✕  │
+//! │ (resize)┆   performance controls (sections, strips, knobs, faders)    │
+//! │         ┆ part header (folded) ─────────────────────────────────────── │
+//! │         ┆ add an instrument                                           │
+//! ├ keyboard dock (collapsible) ───────────────────────────────────────────┤
+//! ```
 //!
 //! Views read a per-frame copy of the loader's [`View`] and edit a copy of the
 //! host-persisted [`Selection`]; the copy is written back once per frame. Notes
@@ -12,6 +22,8 @@ mod browser;
 mod header;
 mod instrument;
 mod keyboard;
+mod menu;
+mod panel;
 mod rack;
 #[cfg(test)]
 mod tests;
@@ -20,52 +32,149 @@ mod theme;
 use crate::engine::RACK_SLOTS;
 use crate::import;
 use crate::plugin::{Load, Part, PartView, SamplerParams, Selection, View, rack_controls};
-use moose::mui::{Bridge, MuiEditor, mui::prelude::*};
+use moose::mui::{Bridge, MuiEditor, mui::prelude::*, mui::prelude::Color};
 use moose::prelude::*;
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use theme::*;
 
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
-    let build = build(&params);
+    let cpu = Arc::new(AtomicU32::new(0));
+    let build = build(&params, cpu.clone());
     let drop_params = params.clone();
     let cancel_params = params.clone();
-    let changed = outside_changes(params.clone());
+    let watch_params = params.clone();
+    let mut watch = Watch::default();
     MuiEditor::new(params, theme::ui(), (1180, 760), build)
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, ui, at, paths, dropped))
         .on_cancel(move |_| cancel_params.shared.release_keyboard())
-        .changed(changed)
+        .changed(move || watch.changed(&watch_params, &cpu))
         .fixed_zoom()
         .resizable((900, 600))
         .into_editor()
 }
 
-/// When to rebuild for state outside the editor's own input: every tick
-/// while loading animates or the voice count moves, else at the loader's
-/// 100 ms poll, the fastest the view it publishes can change. Rebuilding
-/// every tick kept the UI thread at 15-30% of a core while idle.
-fn outside_changes(p: Arc<SamplerParams>) -> impl FnMut() -> bool + Send + 'static {
-    let (mut last, mut voices) = (Instant::now(), u64::MAX);
-    move || {
-        let now_voices = p.shared.voices.load(Ordering::Relaxed);
-        let busy = {
-            let view = p.shared.view.lock().unwrap();
-            view.parts.iter().any(|v| v.loading) || view.multi_status.starts_with("Loading")
+/// The lock's data even if a panicking thread held it: the editor shows what
+/// is there rather than taking the host down with it.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    l.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    l.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Decides, every display tick, whether anything the editor shows moved
+/// outside its own input: a readout, a held key, the loader's view. An idle
+/// editor then draws nothing at all.
+#[derive(Default)]
+struct Watch {
+    signature: u64,
+    /// The readouts' hash as last sampled: they move with every note, so
+    /// they are looked at ten times a second, not every tick.
+    readouts: u64,
+    cpu: f32,
+    cpu_at: Option<Instant>,
+    poll_at: Option<Instant>,
+    frame_at: Option<Instant>,
+}
+
+/// Readouts and the loading line refresh this often at most.
+const READOUT_MS: u64 = 100;
+const ANIMATION_MS: u64 = 33;
+
+impl Watch {
+    fn changed(&mut self, p: &SamplerParams, cpu_out: &AtomicU32) -> bool {
+        let now = Instant::now();
+        let due = |at: Option<Instant>, every: u64| {
+            at.is_none_or(|t| now - t >= Duration::from_millis(every))
         };
-        if busy || now_voices != voices || last.elapsed() >= Duration::from_millis(100) {
-            (last, voices) = (Instant::now(), now_voices);
-            return true;
+        if due(self.cpu_at, READOUT_MS) {
+            self.cpu_at = Some(now);
+            // The audio thread keeps its peak load; ease it down between looks.
+            let peak = f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32);
+            self.cpu = peak.max(self.cpu * 0.8);
+            cpu_out.store(self.cpu.to_bits(), Ordering::Relaxed);
+            let mut h = DefaultHasher::new();
+            ((self.cpu * 100.).round() as u32).hash(&mut h);
+            p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
+            p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
+            self.readouts = h.finish();
         }
-        false
+        let mut h = DefaultHasher::new();
+        self.readouts.hash(&mut h);
+        p.shared.focus_request.load(Ordering::Relaxed).hash(&mut h);
+        for owner in &p.shared.key_owners {
+            (owner.load(Ordering::Relaxed) < 128).hash(&mut h);
+        }
+        let (loading, pending) = {
+            let view = lock(&p.shared.view);
+            fingerprint(&view, &mut h);
+            let selection = read(&p.selection);
+            let root = if selection.root.is_empty() {
+                import::LIBRARY_ROOT
+            } else {
+                &selection.root
+            };
+            let pending = view.root != root
+                || lock(&p.shared.multi_request).is_some()
+                || (0..RACK_SLOTS).any(|n| {
+                    let (path, program) = selection
+                        .parts
+                        .get(n)
+                        .map_or(("", 0), |p| (p.path.as_str(), p.program));
+                    match &view.parts[n].attempted {
+                        Some((a, b)) => (a.as_str(), *b) != (path, program),
+                        None => !path.is_empty(),
+                    }
+                });
+            (view.parts.iter().any(|v| v.loading), pending)
+        };
+        // Progress and the sweep redraw on the animation's own clock.
+        let animate = loading && due(self.frame_at, ANIMATION_MS);
+        if animate {
+            self.frame_at = Some(now);
+        }
+        let signature = h.finish();
+        let moved = signature != self.signature;
+        self.signature = signature;
+        // A stopped host runs no audio thread to start the loader: frames poll it.
+        let poll = pending && due(self.poll_at, READOUT_MS);
+        if poll {
+            self.poll_at = Some(now);
+        }
+        // The loading line sweeps until the first samples arrive.
+        moved || poll || animate
+    }
+}
+
+/// What of the loader's view is on screen, cheaply: pointers of what it
+/// replaces wholesale, and the small fields it edits in place.
+fn fingerprint(view: &View, h: &mut DefaultHasher) {
+    fn at<T>(a: &Option<Arc<T>>) -> usize {
+        a.as_ref().map_or(0, |a| Arc::as_ptr(a) as *const () as usize)
+    }
+    (&view.status, &view.multi_status, &view.root).hash(h);
+    (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
+    for v in &view.parts {
+        (v.loading, v.bytes, &v.status, v.program, v.interface_status.len()).hash(h);
+        (at(&v.instrument), at(&v.interface), at(&v.wallpaper)).hash(h);
+        (Arc::as_ptr(&v.keys) as usize, Arc::as_ptr(&v.pictures) as usize).hash(h);
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
-    Perform,
-    Mapping,
     Rack,
+    Mapping,
     Info,
 }
 
@@ -77,6 +186,11 @@ struct EditorState {
     multis: bool,
     tab: Tab,
     settings: bool,
+    /// The browser is shown, and how wide.
+    browser: bool,
+    sidebar: f64,
+    /// The keyboard dock is open.
+    keyboard: bool,
     /// First octave on the keyboard.
     octave: i16,
     /// The part the keyboard was last centered on.
@@ -85,13 +199,35 @@ struct EditorState {
     notice: String,
     root: String,
     last_poll: Instant,
-    /// Smoothed audio thread load, 0..1.
-    cpu: f32,
-    /// Script control being dragged, with its unrounded value.
-    held: Option<(usize, f64)>,
-    /// Script menu showing its items.
-    menu: Option<usize>,
+    /// Smoothed audio thread load, 0..1, as [`Watch`] last eased it.
+    cpu: Arc<AtomicU32>,
+    /// Script control being dragged: part, control, unrounded value.
+    held: Option<(usize, usize, f64)>,
+    /// The context menu showing.
+    menu: Option<menu::Menu>,
+    /// The browser's keyboard cursor: a preset path.
+    cursor: Option<String>,
+    /// Presets opened this session, newest first.
+    recent: Vec<String>,
+    /// A part's name while it is being edited.
+    renaming: Option<(usize, String)>,
+    /// Each library's color, from its artwork, worked out once.
+    tints: HashMap<String, Option<Color>>,
     started: Instant,
+}
+
+impl EditorState {
+    /// `library`'s color: its artwork's dominant hue at a fixed, quiet
+    /// lightness and chroma, so every library reads alike.
+    fn tint(&mut self, view: &View, library: &str) -> Option<Color> {
+        *self
+            .tints
+            .entry(library.to_owned())
+            .or_insert_with(|| {
+                let hue = crate::artwork::tint(view.artwork.get(library)?)?;
+                Some(Color::oklch(0.66, 0.11, hue))
+            })
+    }
 }
 
 /// One frame's inputs: the loader's view, the rack being edited, the editor state.
@@ -126,17 +262,27 @@ impl Cx<'_> {
             .filter(|p| !p.path.is_empty())
     }
 
-    /// Show `slot` in the instrument view.
+    /// Select `slot` and unfold it.
     fn show(&mut self, slot: usize) {
         self.state.selected = slot;
-        self.state.tab = Tab::Perform;
         self.state.notice.clear();
+        self.state.renaming = None;
+        if let Some(part) = self.selection.parts.get_mut(slot) {
+            part.collapsed = false;
+        }
+    }
+
+    fn remember(&mut self, path: &str) {
+        self.state.recent.retain(|p| p != path);
+        self.state.recent.insert(0, path.to_owned());
+        self.state.recent.truncate(6);
     }
 
     /// Open a preset from the browser: a multi replaces the rack, an instrument
     /// already in the rack is shown, anything else takes a free slot.
     fn open(&mut self, path: &Path) {
         let text = path.to_string_lossy().into_owned();
+        self.remember(&text);
         if import::is_multi(path) {
             self.p.shared.queue_multi(text);
             self.state.notice.clear();
@@ -154,6 +300,7 @@ impl Cx<'_> {
 
     /// Add an instrument to the first free slot and show it.
     fn add(&mut self, path: String) {
+        self.remember(&path);
         match add_part(
             &mut self.selection,
             Part {
@@ -171,6 +318,7 @@ impl Cx<'_> {
 
     /// Put another instrument (or a multi) in `slot`.
     fn replace(&mut self, slot: usize, path: String) {
+        self.remember(&path);
         if import::is_multi(Path::new(&path)) {
             self.p.shared.queue_multi(path);
             return;
@@ -179,7 +327,51 @@ impl Cx<'_> {
         part.path = path;
         part.program = 0;
         part.group = u32::MAX;
+        part.name.clear();
         self.show(slot);
+    }
+
+    /// A copy of `slot` in the next free slot, shown.
+    fn duplicate(&mut self, slot: usize) {
+        let Some(part) = self.selection.parts.get(slot).cloned() else {
+            return;
+        };
+        match add_part(&mut self.selection, part) {
+            Some(copy) => {
+                move_part(&mut self.selection, copy, slot);
+                move_part(&mut self.selection, slot, copy);
+                self.show(copy);
+            }
+            None => self.state.notice = "The rack is full (16 instruments).".into(),
+        }
+    }
+
+    /// Empty `slot` and show whichever part now comes first.
+    fn remove(&mut self, slot: usize) {
+        if slot >= self.selection.parts.len() {
+            return;
+        }
+        self.selection.parts[slot] = Part::default();
+        self.selection.order.retain(|n| *n as usize != slot);
+        let next = self.selection.order.first().map_or(0, |n| *n as usize);
+        self.state.selected = next;
+        self.state.renaming = None;
+    }
+
+    /// Move `slot` `by` places along the rack.
+    fn move_by(&mut self, slot: usize, by: i32) {
+        let order = self.selection.order.clone();
+        let Some(at) = order.iter().position(|n| *n as usize == slot) else {
+            return;
+        };
+        match by {
+            -1 if at > 0 => move_part(&mut self.selection, slot, order[at - 1] as usize),
+            1 if at + 1 < order.len() => {
+                let next = order[at + 1] as usize;
+                move_part(&mut self.selection, next, slot);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -273,18 +465,15 @@ fn native_files(p: &SamplerParams, ui: &Ui, at: Point, paths: &[PathBuf], droppe
     if paths.is_empty() || !paths.iter().all(nki) {
         return false;
     }
-    let mut selection = p.selection.write().unwrap();
-    let target = (0..selection.parts.len()).find(|n| {
-        ui.scene()
-            .and_then(|s| s.surface(&format!("part-{n}")))
-            .is_some_and(|s| {
-                let r = s.frame;
-                at.x >= r.x
-                    && at.x < r.x + r.size.width
-                    && at.y >= r.y
-                    && at.y < r.y + r.size.height
-            })
-    });
+    let mut selection = write(&p.selection);
+    let inside = |id: &str| {
+        ui.scene().and_then(|s| s.surface(id)).is_some_and(|s| {
+            let r = s.frame;
+            at.x >= r.x && at.x < r.x + r.size.width && at.y >= r.y && at.y < r.y + r.size.height
+        })
+    };
+    // A part's header takes the file in place of the part.
+    let target = (0..selection.parts.len()).find(|n| inside(&format!("header-{n}")));
     let free = RACK_SLOTS.saturating_sub(
         selection
             .parts
@@ -304,6 +493,7 @@ fn native_files(p: &SamplerParams, ui: &Ui, at: Point, paths: &[PathBuf], droppe
                     part.path = path;
                     part.program = 0;
                     part.group = u32::MAX;
+                    part.name.clear();
                     Some(slot)
                 }
                 None => add_part(
@@ -324,8 +514,9 @@ fn native_files(p: &SamplerParams, ui: &Ui, at: Point, paths: &[PathBuf], droppe
 
 fn build(
     params: &Arc<SamplerParams>,
+    cpu: Arc<AtomicU32>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
-    let mut root = params.selection.read().unwrap().root.clone();
+    let mut root = read(&params.selection).root.clone();
     if root.is_empty() {
         root = import::LIBRARY_ROOT.into();
     }
@@ -333,17 +524,24 @@ fn build(
         search: String::new(),
         library: None,
         multis: false,
-        tab: Tab::Perform,
+        tab: Tab::Rack,
         settings: false,
+        browser: true,
+        sidebar: SIDEBAR,
+        keyboard: true,
         octave: 2,
         keyboard_for: None,
         selected: 0,
         notice: String::new(),
         root,
         last_poll: Instant::now() - Duration::from_secs(1),
-        cpu: 0.,
+        cpu,
         held: None,
         menu: None,
+        cursor: None,
+        recent: Vec::new(),
+        renaming: None,
+        tints: HashMap::new(),
         started: Instant::now(),
     };
     move |ui, bridge| {
@@ -355,20 +553,23 @@ fn build(
             state.last_poll = Instant::now();
         }
         let p = bridge.params().clone();
-        let view = p.shared.view.lock().unwrap().clone();
-        let mut selection = p.selection.read().unwrap().clone();
+        let view = lock(&p.shared.view).clone();
+        let mut selection = read(&p.selection).clone();
         let before = selection.clone();
         sanitize(&mut selection);
         let focus = p.shared.focus_request.swap(128, Ordering::Relaxed);
         if focus < RACK_SLOTS as u64 {
             state.selected = focus as usize;
-            state.tab = Tab::Perform;
             state.notice.clear();
         }
         state.selected = state.selected.min(selection.parts.len().saturating_sub(1));
         p.shared
             .selected
             .store(state.selected as u64, Ordering::Relaxed);
+        let window = ui
+            .scene()
+            .and_then(|s| s.surface("editor-root"))
+            .map_or(Size::new(1180., 760.), |s| s.frame.size);
 
         let mut cx = Cx {
             p: &p,
@@ -376,15 +577,26 @@ fn build(
             selection,
             state: &mut state,
         };
+        shortcuts(ui, &mut cx);
         let top = header::top_bar(ui, &mut cx, bridge);
         let settings = cx.state.settings.then(|| header::settings(ui, &mut cx));
-        let sidebar = browser::sidebar(ui, &mut cx);
+        let browser_w = cx
+            .state
+            .sidebar
+            .clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(window.width * 0.42));
+        let sidebar = cx
+            .state
+            .browser
+            .then(|| browser::sidebar(ui, &mut cx).w(browser_w));
+        let splitter = cx.state.browser.then(|| splitter(ui, cx.state, browser_w));
         let main = main_view(ui, &mut cx);
-        let keys = keyboard::strip(ui, &mut cx);
+        let keys = keyboard::dock(ui, &mut cx);
+        let menu = menu::view(ui, &mut cx, window);
+        let ghost = ghost(ui, &cx);
 
         let Cx { selection, .. } = cx;
         if selection != before {
-            let mut current = p.selection.write().unwrap();
+            let mut current = write(&p.selection);
             if *current == before {
                 *current = selection;
                 let _ = p.shared.controls.force_push(rack_controls(&current));
@@ -399,48 +611,130 @@ fn build(
 
         let mut shell = vec![top, header::loading_bar(&view, &p, state.started)];
         shell.extend(settings);
-        shell.push(row![sidebar, vrule(), main].flex(1).min_h(0));
+        let mut middle: Vec<El> = sidebar.into_iter().collect();
+        middle.extend(splitter);
+        middle.push(main);
+        shell.push(row(middle).gap(0).flex(1).min_h(0));
         shell.push(rule());
         shell.push(keys);
-        col(shell)
-            .gap(0)
+        let mut layers = vec![col(shell).gap(0).full()];
+        layers.extend(menu);
+        layers.extend(ghost);
+        stack(layers)
             .full()
             .fill(Role::Background)
             .radius(0)
             .clip()
+            .id("editor-root")
     }
 }
 
-/// Rack strip, instrument header, view tabs, notices and the current view.
+/// Global keys: Delete removes the shown part, Ctrl+D duplicates it, Space
+/// auditions it. The browser reads the arrows and Enter itself.
+fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
+    // A focused button takes Space for itself.
+    let free = ui
+        .focus_key()
+        .is_none_or(|k| k.starts_with("key-") || k.starts_with("header-") || k.starts_with("name-"));
+    let keys = ui.shortcuts().to_vec();
+    let slot = cx.state.selected;
+    let loaded = cx.part().is_some();
+    for k in keys {
+        let ctrl = k.mods.ctrl || k.mods.cmd;
+        match k.key {
+            Key::Delete if loaded && cx.state.renaming.is_none() => cx.remove(slot),
+            Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
+            Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
+            _ => {}
+        }
+    }
+}
+
+/// The handle between the browser and the rest: drag to resize, double-click
+/// to restore the width.
+fn splitter(ui: &mut Ui, state: &mut EditorState, width: f64) -> El {
+    let r = ui.get("splitter");
+    if r.dragged {
+        state.sidebar = (width + r.drag_delta.x).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+    }
+    if r.double_clicked {
+        state.sidebar = SIDEBAR;
+    }
+    let lift = ui.state("splitter").hover.max(if r.held { 1. } else { 0. }) as f32;
+    canvas(move |s| {
+        vec![Draw::fill(
+            rect(0., 0., if lift > 0.5 { 2. } else { 1. }, s.height),
+            Role::Ink.alpha(0.08 + 0.25 * lift),
+        )]
+    })
+    .w(4)
+    .h(Len::Pct(100.))
+    .shrink(0)
+    .cursor(Cursor::ResizeH)
+    .tip("Drag to resize the browser, double-click to reset")
+    .named("Resize browser")
+    .id("splitter")
+}
+
+/// What a drag carries, following the pointer.
+fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
+    let label = match ui.dragging::<RackDrag>()? {
+        RackDrag::Instrument(path) => header::stem(path),
+        RackDrag::Part(slot) => rack::name(cx, *slot),
+    };
+    let at = ui.local("editor-root")?;
+    Some(
+        row![body(label).text_size(TEXT).lines(1).min_w(0)]
+            .align(Align::Center)
+            .pad((SPACE, TIGHT))
+            .max_size(Size::new(SIDEBAR, CONTROL * 2.))
+            .fill(Role::Level(3))
+            .stroke(accent())
+            .stroke_width(1)
+            .opacity(0.94)
+            .at(at.x + INSET, at.y + SPACE),
+    )
+}
+
+/// View tabs over the rack, or over the selected part's mapping or details.
 fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
-    let strip = rack::strip(ui, cx);
-    let empty = cx.selection.parts.iter().all(|p| p.path.is_empty());
-    let mut content = vec![strip, rule()];
-    if empty && cx.state.tab != Tab::Rack {
+    let mut tabs = Vec::new();
+    for (tab, label, id) in [
+        (Tab::Rack, "Rack", "tab-rack"),
+        (Tab::Mapping, "Mapping", "tab-mapping"),
+        (Tab::Info, "Info", "tab-info"),
+    ] {
+        let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
+        if hit {
+            cx.state.tab = tab;
+        }
+        tabs.push(el);
+    }
+    let mut content = vec![
+        row(tabs)
+            .gap(INSET + TIGHT)
+            .align(Align::Center)
+            .pad((INSET, 0))
+            .shrink(0)
+            .fill(Role::Surface),
+        rule(),
+    ];
+    if !cx.state.notice.is_empty() {
+        content.push(banner(Role::Warning, cx.state.notice.clone()));
+    }
+    let slot = cx.state.selected;
+    if cx.state.tab == Tab::Rack {
+        content.push(rack::view(ui, cx));
+    } else if cx.part().is_none() {
         content.push(instrument::welcome(cx));
     } else {
-        content.push(instrument::header(ui, cx));
-        let mut tabs = Vec::new();
-        for (tab, label, id) in [
-            (Tab::Perform, "Perform", "tab-perform"),
-            (Tab::Mapping, "Mapping", "tab-mapping"),
-            (Tab::Rack, "Rack", "tab-rack"),
-            (Tab::Info, "Info", "tab-info"),
-        ] {
-            let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
-            if hit {
-                cx.state.tab = tab;
-            }
-            tabs.push(el);
-        }
-        content.push(row(tabs).gap(HALF).pad((WIDE - GAP, 0)).shrink(0));
+        // The selected part's header stays on top of its mapping and details.
+        content.push(rack::header(ui, cx, slot));
         content.push(rule());
-        content.extend(instrument::notices(cx));
+        content.extend(instrument::notices(cx, slot));
         content.push(match cx.state.tab {
-            Tab::Perform => instrument::perform(ui, cx),
             Tab::Mapping => instrument::mapping(ui, cx),
-            Tab::Rack => rack::mixer(ui, cx),
-            Tab::Info => instrument::info(cx),
+            _ => instrument::info(cx),
         });
     }
     col(content)
@@ -449,4 +743,5 @@ fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
         .min_w(0)
         .min_h(0)
         .fill(Role::Background)
+        .id("center")
 }

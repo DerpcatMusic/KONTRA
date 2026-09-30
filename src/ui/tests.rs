@@ -51,7 +51,7 @@ impl Harness {
     fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
         let mut h = Self {
             ui: theme::ui(),
-            build: Box::new(build(p)),
+            build: Box::new(build(p, Arc::default())),
             bridge: Bridge::new(p.clone()),
             size: Size::new(width, height),
         };
@@ -136,13 +136,13 @@ fn rack_interactions() {
     h.press("instrument-1");
     assert_eq!(parts(&p).len(), 2, "clicking a preset adds it");
     h.press("instrument-0");
-    h.press("preset-next");
+    h.press("preset-next-0");
     assert_eq!(parts(&p).len(), 2, "clicking a loaded preset shows it");
     assert!(
         parts(&p)[0].path.ends_with("Strings.nki"),
         "next preset replaces the shown part"
     );
-    h.press("preset-prev");
+    h.press("preset-prev-0");
     assert!(parts(&p)[0].path.ends_with("Piano.nki"));
 
     h.press("picker-multis");
@@ -159,11 +159,11 @@ fn rack_interactions() {
     assert_eq!(parts(&p).len(), 2, "the rack stays until the multi loads");
     h.press("picker-instruments");
 
-    h.drag("part-1", "part-0");
+    h.drag("name-1", "header-0");
     assert_eq!(
         p.selection.read().unwrap().order,
         vec![1, 0],
-        "chips reorder by dragging"
+        "parts reorder by dragging their names"
     );
 
     h.press("tab-rack");
@@ -175,10 +175,13 @@ fn rack_interactions() {
     let part = &parts(&p)[0];
     assert_eq!((part.output, part.channel, part.port), (3, 1, 1));
 
-    h.press("part-0");
+    h.press("collapse-0");
+    assert!(parts(&p)[0].collapsed, "the chevron folds a part");
+    assert!(h.ui.scene().unwrap().surface("stage-0").is_none());
+    h.press("collapse-0");
     assert!(
-        h.ui.scene().unwrap().surface("instrument-stage").is_some(),
-        "a chip opens the instrument view"
+        h.ui.scene().unwrap().surface("stage-0").is_some(),
+        "and unfolds it"
     );
 
     let key = center(&h.ui, "key-60");
@@ -217,11 +220,11 @@ fn rack_interactions() {
         &vec![PathBuf::from("full.nki"); RACK_SLOTS],
         true
     ));
-    let at = center(ui, "part-1");
+    let at = center(ui, "header-1");
     assert!(native_files(&p, ui, at, &files, true));
     assert!(
         parts(&p)[1].path.ends_with("Native.nki"),
-        "a file dropped on a chip replaces it"
+        "a file dropped on a header replaces its part"
     );
     let multi = [PathBuf::from("/external/Multi.nkm")];
     let before = p.selection.read().unwrap().clone();
@@ -288,7 +291,7 @@ fn screenshot() {
         .map(Arc::new)
         .collect();
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 9] = [
+    let states: [(&str, bool, &[&str]); 11] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -296,10 +299,15 @@ fn screenshot() {
         ("info", true, &["tab-info"]),
         ("library", false, &["library-0"]),
         ("multis", false, &["picker-multis"]),
-        ("settings", true, &["settings"]),
+        ("settings", true, &["app-menu", "menu-item-3"]),
+        ("menu", true, &["app-menu"]),
+        ("collapsed", true, &["toggle-browser", "keyboard-toggle"]),
         ("error", true, &[]),
     ];
-    for (state, loaded, presses) in states {
+    // KONTAKTO_STATES="perform,rack" renders only those states.
+    let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
+    let wanted = |state: &str| only.is_empty() || only.split(',').any(|s| s == state);
+    for (state, loaded, presses) in states.into_iter().filter(|(s, ..)| wanted(s)) {
         for (width, height) in [(1180u16, 760u16), (900, 600)] {
             let p = Arc::new(SamplerParams::new());
             {
@@ -370,9 +378,14 @@ fn screenshot() {
                 u32::from(width),
                 u32::from(height),
             );
-            let mut visible = vec!["search", "octave-up", "rack-drop", "panic"];
+            let mut visible = vec!["octave-up", "panic"];
+            if state != "collapsed" {
+                visible.push("search");
+            }
             if loaded {
-                visible.extend(["tab-info", "performance-play", "part-0"]);
+                visible.extend(["tab-info", "header-0"]);
+            } else {
+                visible.push("rack-drop");
             }
             for id in visible {
                 let r = scene
@@ -396,7 +409,7 @@ fn screenshot() {
             if state == "settings" {
                 assert!(scene.surface("root").is_some());
             }
-            if loaded {
+            if loaded && state != "collapsed" {
                 // The keyboard centers on the instrument, so pick a key it shows.
                 let key = (0..128)
                     .find(|n| h.ui.scene().unwrap().surface(&format!("key-{n}")).is_some())
@@ -448,12 +461,12 @@ fn performance_controls_edit_the_script() {
     };
     let mut h = Harness::new(&p, 1180., 760.);
 
-    h.press("ksp-control-0");
+    h.press("ksp-0-0");
     assert_eq!(value(0), crate::ksp::Value::Int(1), "a switch toggles on");
-    h.press("ksp-control-0");
+    h.press("ksp-0-0");
     assert_eq!(value(0), crate::ksp::Value::Int(0), "and off");
 
-    let knob = center(&h.ui, "ksp-control-1");
+    let knob = center(&h.ui, "ksp-0-1");
     for y in [0., -10., -60.] {
         h.tick(pointer(Point::new(knob.x, knob.y + y), true));
     }
@@ -464,8 +477,8 @@ fn performance_controls_edit_the_script() {
     };
     assert!(dragged > 10, "dragging a knob up raises it, got {dragged}");
 
-    h.press("ksp-control-2");
-    h.press("ksp-menu-2-1");
+    h.press("ksp-0-2");
+    h.press("menu-item-1");
     assert_eq!(
         value(2),
         crate::ksp::Value::Int(1),
@@ -474,17 +487,27 @@ fn performance_controls_edit_the_script() {
 }
 
 #[test]
-fn idle_editor_rebuilds_at_the_loader_poll_rate() {
+fn idle_editor_rebuilds_only_when_something_moves() {
     let p = Arc::new(SamplerParams::new());
-    let mut changed = outside_changes(p.clone());
+    // The library is scanned: nothing is pending for the loader.
+    p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
+    let cpu = AtomicU32::new(0);
+    let mut watch = Watch::default();
+    let mut changed = || watch.changed(&p, &cpu);
     assert!(changed(), "the first tick builds");
-    assert!(!changed(), "nothing moved: no rebuild");
-    p.shared.voices.store(3, Ordering::Relaxed);
-    assert!(changed(), "a voice count change rebuilds at once");
     std::thread::sleep(Duration::from_millis(110));
-    assert!(changed(), "the loader's view is picked up every 100 ms");
+    assert!(!changed(), "nothing moved: no rebuild, however long");
+    p.shared.voices.store(3, Ordering::Relaxed);
+    assert!(!changed(), "readouts wait for their next look");
+    std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
+    assert!(changed(), "a voice count change shows on the next look");
+    assert!(!changed());
+    p.shared.dropouts.store(1, Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
+    assert!(changed(), "so does a dropout");
     p.shared.view.lock().unwrap().parts[0].loading = true;
-    assert!(changed() && changed(), "loading animates every tick");
+    assert!(changed(), "loading animates");
+    assert!(!changed(), "at most every {ANIMATION_MS} ms");
 }
 
 #[test]

@@ -32,6 +32,10 @@ pub struct Part {
     pub program: u32,
     /// Script persistent variables as JSON (`Vec<Persisted>`); empty uses the instrument's saved values.
     pub script_state: String,
+    /// The name the player gave the part; empty shows the instrument's.
+    pub name: String,
+    /// The rack shows only the part's header, not its performance view.
+    pub collapsed: bool,
 }
 impl Default for Part {
     fn default() -> Self {
@@ -47,6 +51,8 @@ impl Default for Part {
             mute: false,
             solo: false,
             script_state: String::new(),
+            name: String::new(),
+            collapsed: false,
         }
     }
 }
