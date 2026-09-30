@@ -13,6 +13,7 @@
 //! time-stamped commands that [`Engine::render`] applies at their frame.
 
 mod bank;
+pub(crate) mod filter;
 mod map;
 mod params;
 mod rack;
@@ -33,6 +34,7 @@ use map::FOREVER;
 use params::{Address, GroupPar, Write};
 use script::{Command, Host};
 use stream::Slot;
+use filter::VoiceFilter;
 use voice::{Context, Envelope, Fade, Scratch, Stream, Voice, balance};
 
 /// Voice storage per engine. Polyphony limits steal before this is reached;
@@ -853,6 +855,7 @@ impl Player {
             base_pan: zone.pan,
             pan: ev.pan,
             gains: [0.0; 2],
+            filter: VoiceFilter::new(settings.filter.as_deref(), &settings.mods, &inputs, self.rate as f32),
         };
         // Start at the voice's first-block gains, so it does not ramp in.
         let (modulation, _) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);

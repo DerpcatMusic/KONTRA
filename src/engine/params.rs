@@ -6,7 +6,7 @@
 //! semantics, with their confidence, are in `audits/MODULATION.md`
 //! ("Runtime modulation and engine parameters").
 
-use super::{Ahdsr, GroupSettings};
+use super::{Ahdsr, GroupSettings, filter::Knob};
 use crate::fx::{FxParam, Rack};
 use crate::import::{Group, ModAssignment, ModSource, ModTarget};
 use crate::ksp::{ENGINE_PAR_BASE, EnginePar};
@@ -53,6 +53,8 @@ pub(crate) enum Target {
     /// Volume AHDSR attack or release time, fixed at note start.
     Attack,
     Release,
+    /// A group filter or EQ knob (see `filter.rs`).
+    Fx,
 }
 
 /// One external modulation assignment prepared for playback.
@@ -77,7 +79,7 @@ impl From<&ModAssignment> for Mod {
             ModTarget::SampleStart => Some(Target::Start),
             ModTarget::Attack => Some(Target::Attack),
             ModTarget::Release => Some(Target::Release),
-            ModTarget::Module { .. } => None,
+            ModTarget::Module { .. } => Some(Target::Fx),
         };
         Self {
             route: Source::of(m.source).zip(target),
@@ -93,7 +95,7 @@ impl From<&ModAssignment> for Mod {
 
 impl Mod {
     /// Shaped source value; exact at MIDI steps, linear between them.
-    fn shape(&self, x: f32) -> f32 {
+    pub(crate) fn shape(&self, x: f32) -> f32 {
         let x = x.clamp(0.0, 1.0);
         let Some(curve) = &self.curve else {
             return x;
@@ -101,6 +103,20 @@ impl Mod {
         let p = x * 127.0;
         let i = (p as usize).min(126);
         curve[i] + (curve[i + 1] - curve[i]) * (p - i as f32)
+    }
+}
+
+impl Mod {
+    /// Shaped value at note start; 0 for sources playback does not model.
+    pub(crate) fn start_value(&self, input: &Inputs) -> f32 {
+        self.route.map_or(0.0, |(source, _)| self.shape(input.read(source)))
+    }
+
+    /// Advance a live source's lagged `value` over `frames`.
+    pub(crate) fn follow(&self, value: &mut f32, input: &Inputs, frames: usize, rate: f32) {
+        if let Some((source, _)) = self.route.filter(|(s, _)| s.live()) {
+            *value += (self.shape(input.read(source)) - *value) * lag_factor(self.lag, frames, rate);
+        }
     }
 }
 
@@ -215,7 +231,7 @@ impl ModTable {
                     };
                     semitones += 12.0 * m.intensity * v;
                 }
-                Target::Start | Target::Attack | Target::Release => {}
+                Target::Start | Target::Attack | Target::Release | Target::Fx => {}
             }
         }
         (gain.max(0.0), semitones)
@@ -268,6 +284,8 @@ mod id {
     pub const PAN: i32 = B + 1;
     pub const TUNE: i32 = B + 2;
     pub const OUTPUT_CHANNEL: i32 = B + 3;
+    pub const CUTOFF: i32 = B + 4;
+    pub const RESONANCE: i32 = B + 5;
     pub const ATTACK: i32 = B + 6;
     pub const DECAY: i32 = B + 7;
     pub const SUSTAIN: i32 = B + 8;
@@ -324,6 +342,8 @@ pub(crate) enum Address {
         bipolar: bool,
     },
     Fx(Rack, u8, FxParam),
+    /// Cutoff or resonance of a group insert filter (normalized).
+    Filter(u16, u8, Knob),
 }
 
 impl Address {
@@ -393,6 +413,15 @@ impl Address {
                     bipolar: par.id == id::MOD_TARGET_MP_INTENSITY,
                 }
             }
+            id::CUTOFF | id::RESONANCE => Self::Filter(
+                group()?,
+                u8::try_from(par.slot).ok()?,
+                if par.id == id::CUTOFF {
+                    Knob::Cutoff
+                } else {
+                    Knob::Resonance
+                },
+            ),
             id::EFFECT_BYPASS | id::SEND_EFFECT_BYPASS => fx(FxParam::Bypass)?,
             id::SEND_EFFECT_DRY_LEVEL => fx(FxParam::Dry)?,
             id::SEND_EFFECT_OUTPUT_GAIN | id::INSERT_EFFECT_OUTPUT_GAIN => fx(FxParam::Wet)?,
@@ -407,7 +436,7 @@ impl Address {
     pub(crate) fn is_group(&self) -> bool {
         matches!(
             self,
-            Self::Group(..) | Self::Envelope(..) | Self::Intensity { .. }
+            Self::Group(..) | Self::Envelope(..) | Self::Intensity { .. } | Self::Filter(..)
         )
     }
 
@@ -433,6 +462,8 @@ impl Address {
                 Stage::Decay | Stage::Release => time(x, LONG),
             },
             Self::Intensity { bipolar: true, .. } => 2.0 * x - 1.0,
+            // Stored knobs are the KSP value / 1e6: Solo sets 1000000 and 0 where it stores 1 and 0.
+            Self::Filter(..) => x,
             // Square law: Areia sets 704316 where its presets store 0.4961.
             Self::Intensity { .. } => x * x,
             Self::Fx(_, _, FxParam::Bypass) => f32::from(value != 0),
@@ -461,6 +492,7 @@ impl Address {
             },
             Self::Intensity { bipolar: true, .. } | Self::Fx(_, _, FxParam::Pan) => (v + 1.0) * 0.5,
             Self::Intensity { .. } => v.abs().sqrt(),
+            Self::Filter(..) => v,
             Self::Fx(..) => volume_value(v),
         };
         (x.clamp(0.0, 1.0) * UNIT).round() as i32
@@ -536,6 +568,10 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             };
             m.intensity = value.clamp(-1.0, 1.0);
         }
+        Address::Filter(g, slot, knob) => {
+            let filter = settings.get_mut(g as usize).and_then(|s| s.filter.as_mut());
+            return filter.is_some_and(|f| f.set_knob(slot, knob, value));
+        }
         Address::Instrument(_) | Address::Fx(..) => return false,
     }
     true
@@ -570,6 +606,7 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
             .mods
             .get(index as usize)
             .map(|m| m.intensity),
+        Address::Filter(g, slot, knob) => settings.get(g as usize)?.filter.as_ref()?.knob(slot, knob),
         _ => None,
     }
 }

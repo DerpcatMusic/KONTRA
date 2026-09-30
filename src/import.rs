@@ -5,7 +5,7 @@ use std::{collections::HashMap, fs::File, io::{Cursor, Read}, path::{Path, PathB
 
 pub const LIBRARY_ROOT: &str = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
 
-pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModSource, ModTarget, Modulator, ShaperCurve};
+pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, ModSource, ModTarget, Modulator, ShaperCurve};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Group {
@@ -30,6 +30,10 @@ pub struct Group {
     pub mods: Vec<ModAssignment>,
     /// Internal and external modulators in KSP `find_mod` order.
     pub modulators: Vec<Modulator>,
+    /// Internal AHDSRs driving module parameters (filter cutoff, EQ gain).
+    pub envelopes: Vec<ModEnvelope>,
+    /// Group insert effects (only filters and EQs play).
+    pub fx: crate::fx::Chain,
     /// Kontakt voice group (choke/voice-limit group) index, if assigned.
     pub voice_group: Option<u32>,
     /// Raw interpolation quality setting; 0 in every local preset.
@@ -39,7 +43,7 @@ pub struct Group {
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
-            release_trigger: false, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), voice_group: None, interp_quality: 0 }
+            release_trigger: false, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), voice_group: None, interp_quality: 0 }
     }
 }
 
@@ -285,6 +289,14 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
             }
         };
         warnings.extend(modulation.warnings);
+        let fx = match g.insert_fx().map_err(anyhow::Error::from).and_then(|a| crate::fx::Chain::from_array(&a)) {
+            Ok(fx) => fx,
+            Err(e) => {
+                warnings.push(format!("{}: group effects not imported: {e:#}", v.name));
+                Default::default()
+            }
+        };
+        warnings.extend(crate::engine::filter::unsupported(&fx));
         // Gain and tuning are linear ratios (see audits/MODULATION.md).
         groups.push(Group {
             name: v.name,
@@ -301,6 +313,8 @@ fn read_inner(path: &Path, index:u32) -> Result<Instrument> {
             flex_env: modulation.flex_env,
             mods: modulation.mods,
             modulators: modulation.modulators,
+            envelopes: modulation.envelopes,
+            fx,
             voice_group: u32::try_from(v.voice_group_index).ok(),
             interp_quality: v.interp_quality,
         });

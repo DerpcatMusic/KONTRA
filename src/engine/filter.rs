@@ -1,0 +1,504 @@
+//! Per-voice group insert filters and EQs.
+//!
+//! Every filter and EQ band is a topology-preserving (zero-delay feedback)
+//! state-variable section (Simper's SVF): low/high/band pass and notch from
+//! its outputs, EQ bands as bells. Multi-pole filters cascade 2-pole
+//! sections. Coefficients follow modulation at control rate ([`CONTROL`]
+//! frames); the SVF stays stable under abrupt coefficient changes.
+//!
+//! Stored values are normalized knobs (0..=1, `$ENGINE_PAR_*` / 1e6); type
+//! ids, value laws and their confidence are in `audits/EFFECTS.md`.
+
+use super::{
+    MAX_BLOCK,
+    params::{Inputs, Mod, ModTable},
+    voice::{Ahdsr, Envelope},
+};
+use crate::fx::{Chain, Params, params::EqBand};
+use crate::import::{Group, ModAssignment, ModTarget};
+
+/// Frames between coefficient updates.
+pub(crate) const CONTROL: usize = 32;
+/// Filter and EQ units per group.
+const MAX_UNITS: usize = 4;
+/// 2-pole sections per voice, all units together.
+const MAX_SECTIONS: usize = 8;
+/// Module envelopes and external assignments a voice follows.
+const MAX_ENVS: usize = 4;
+const MAX_EXT: usize = 8;
+/// Knobs per unit: cutoff and resonance, or frequency, bandwidth and gain per band.
+const KNOBS: usize = 9;
+
+/// Legacy and state-variable filter cutoff: `43.6 Hz · 2^(8.96 x)`, 43.6 Hz
+/// to 21.7 kHz (KSP community law `ep = 111607 · log2(f / 43.6)`).
+const CUTOFF_MIN_HZ: f32 = 43.6;
+const CUTOFF_OCTAVES: f32 = 8.96;
+/// Q at resonance 0 (Butterworth per section) and the growth to resonance 1.
+const Q_MIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
+const Q_SPAN: f32 = 28.0;
+/// EQ knob ranges (Kontakt manual): 20 Hz..20 kHz, 0.3..3 octaves, ±18 dB.
+const EQ_MIN_HZ: f32 = 20.0;
+const EQ_DECADES: f32 = 3.0;
+const BW_MIN: f32 = 0.3;
+const BW_SPAN: f32 = 2.7;
+const GAIN_DB: f32 = 18.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Response {
+    Low,
+    High,
+    Band,
+    Notch,
+}
+
+/// Kontakt filter type id → response and 2-pole section count. Low/high
+/// direction is medium confidence, pole counts low (see `audits/EFFECTS.md`).
+fn filter_type(id: i32) -> Option<(Response, u8)> {
+    use Response::*;
+    Some(match id {
+        2 => (Low, 1),
+        3 => (High, 1),
+        4 => (Band, 1),
+        5 => (Low, 2),
+        6 => (High, 2),
+        7 => (Band, 2),
+        8 => (Notch, 2),
+        9 => (Low, 3),
+        52 => (Low, 1),
+        53 => (Band, 1),
+        54 => (High, 1),
+        55 => (Low, 2),
+        56 => (Band, 2),
+        57 => (High, 2),
+        _ => return None,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shape {
+    Filter(Response),
+    Eq,
+}
+
+/// Parameter of a unit, by knob index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Knob {
+    Cutoff,
+    Resonance,
+    Freq(u8),
+    Bandwidth(u8),
+    Gain(u8),
+}
+
+impl Knob {
+    /// Modulation target names: `filterCutoff`, `eqGain2`...
+    fn parse(name: &str) -> Option<Self> {
+        let band = |rest: &str| rest.parse::<u8>().ok().filter(|b| (1..=3).contains(b)).map(|b| b - 1);
+        Some(match name {
+            "filterCutoff" => Self::Cutoff,
+            "filterResonance" => Self::Resonance,
+            _ => {
+                if let Some(b) = name.strip_prefix("eqGain") {
+                    Self::Gain(band(b)?)
+                } else if let Some(b) = name.strip_prefix("eqFreq") {
+                    Self::Freq(band(b)?)
+                } else {
+                    Self::Bandwidth(band(name.strip_prefix("eqBandwidth")?)?)
+                }
+            }
+        })
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Cutoff => 0,
+            Self::Resonance => 1,
+            Self::Freq(b) => 3 * b as usize,
+            Self::Bandwidth(b) => 3 * b as usize + 1,
+            Self::Gain(b) => 3 * b as usize + 2,
+        }
+    }
+}
+
+/// One filter or EQ of a group's insert rack.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Unit {
+    slot: u8,
+    shape: Shape,
+    /// 2-pole sections (EQ: bands).
+    sections: u8,
+    /// Normalized knobs; scripts write cutoff and resonance.
+    knobs: [f32; KNOBS],
+}
+
+/// A modulation route onto a unit's knob.
+#[derive(Clone, Debug, PartialEq)]
+struct Route {
+    unit: u8,
+    knob: u8,
+    /// Invert button, read as a negative direction.
+    sign: f32,
+}
+
+/// A group's filters and EQs with their modulation, shared by its voices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupFilter {
+    units: Box<[Unit]>,
+    /// Module envelopes and what they drive (intensity and shaper in `Mod`).
+    envs: Box<[(Ahdsr, Box<[(Route, Mod)]>)]>,
+    /// External assignments: index into the group's `ModTable`.
+    ext: Box<[(Route, u16)]>,
+}
+
+fn normalized(band: &EqBand) -> [f32; 3] {
+    [
+        (band.freq_hz / EQ_MIN_HZ).log10() / EQ_DECADES,
+        (band.bandwidth_oct - BW_MIN) / BW_SPAN,
+        (band.gain_db + GAIN_DB) / (2.0 * GAIN_DB),
+    ]
+}
+
+/// Active filters and EQs of a rack that play, in slot order.
+fn playing(chain: &Chain) -> impl Iterator<Item = Unit> + '_ {
+    chain.slots.iter().filter(|fx| !fx.bypass).filter_map(|fx| {
+        let mut knobs = [0.0; KNOBS];
+        let (shape, sections) = match &fx.params {
+            Params::Filter(f) => {
+                let (response, sections) = filter_type(f.filter_type)?;
+                knobs[..2].copy_from_slice(&[f.cutoff, f.resonance]);
+                (Shape::Filter(response), sections)
+            }
+            Params::Eq(eq) => {
+                for (k, band) in knobs.chunks_mut(3).zip(&eq.bands) {
+                    k.copy_from_slice(&normalized(band));
+                }
+                (Shape::Eq, eq.bands.len() as u8)
+            }
+            _ => return None,
+        };
+        Some(Unit {
+            slot: fx.slot as u8,
+            shape,
+            sections,
+            knobs,
+        })
+    })
+}
+
+/// Import warnings for group effects that do not play.
+pub fn unsupported(chain: &Chain) -> Vec<String> {
+    let mut out = Vec::new();
+    for fx in chain.slots.iter().filter(|fx| !fx.bypass) {
+        match &fx.params {
+            Params::Filter(f) if filter_type(f.filter_type).is_none() => {
+                out.push(format!("Group filter type {} is not implemented", f.filter_type));
+            }
+            Params::Filter(_) | Params::Eq(_) => {}
+            _ => out.push(format!("Group insert effect {} is not applied", fx.kind.name())),
+        }
+    }
+    let (units, sections) = playing(chain).fold((0, 0), |(u, s), unit| (u + 1, s + unit.sections as usize));
+    if units > MAX_UNITS || sections > MAX_SECTIONS {
+        out.push(format!("Only the first {MAX_UNITS} group filters ({MAX_SECTIONS} poles pairs) play"));
+    }
+    out
+}
+
+impl GroupFilter {
+    /// `None` when the group has no playing filter or EQ.
+    pub(crate) fn new(group: &Group) -> Option<Box<Self>> {
+        let mut units: Vec<Unit> = Vec::new();
+        let mut sections = 0;
+        for unit in playing(&group.fx) {
+            sections += unit.sections as usize;
+            if units.len() == MAX_UNITS || sections > MAX_SECTIONS {
+                break;
+            }
+            units.push(unit);
+        }
+        if units.is_empty() {
+            return None;
+        }
+        let route = |m: &ModAssignment| {
+            let ModTarget::Module { param, slot } = &m.target else {
+                return None;
+            };
+            let knob = Knob::parse(param)?;
+            let unit = units.iter().position(|u| {
+                u.slot == *slot
+                    && match (u.shape, knob) {
+                        (Shape::Filter(_), Knob::Cutoff | Knob::Resonance) => true,
+                        (Shape::Eq, Knob::Freq(b) | Knob::Bandwidth(b) | Knob::Gain(b)) => b < u.sections,
+                        _ => false,
+                    }
+            })?;
+            Some(Route {
+                unit: unit as u8,
+                knob: knob.index() as u8,
+                sign: if m.invert { -1.0 } else { 1.0 },
+            })
+        };
+        let envs = group
+            .envelopes
+            .iter()
+            .filter_map(|e| {
+                let routes: Box<[_]> = e.targets.iter().filter_map(|m| Some((route(m)?, Mod::from(m)))).collect();
+                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes))
+            })
+            .take(MAX_ENVS)
+            .collect();
+        let ext = group
+            .mods
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| Some((route(m)?, i as u16)))
+            .take(MAX_EXT)
+            .collect();
+        Some(Box::new(Self {
+            units: units.into(),
+            envs,
+            ext,
+        }))
+    }
+
+    /// A unit's stored knob (`get_engine_par`).
+    pub(crate) fn knob(&self, slot: u8, knob: Knob) -> Option<f32> {
+        let unit = self.units.iter().find(|u| u.slot == slot)?;
+        matches!(unit.shape, Shape::Filter(_)).then(|| unit.knobs[knob.index()])
+    }
+
+    /// Set a filter's cutoff or resonance (`set_engine_par`); false if absent.
+    pub(crate) fn set_knob(&mut self, slot: u8, knob: Knob, value: f32) -> bool {
+        let Some(unit) = self
+            .units
+            .iter_mut()
+            .find(|u| u.slot == slot && matches!(u.shape, Shape::Filter(_)))
+        else {
+            return false;
+        };
+        unit.knobs[knob.index()] = value.clamp(0.0, 1.0);
+        true
+    }
+}
+
+/// One 2-pole TPT state-variable section, stereo.
+#[derive(Clone, Copy, Debug, Default)]
+struct Section {
+    /// `a1, a2, a3, m0, m1, m2` (Simper's notation).
+    c: [f32; 6],
+    /// `ic1eq, ic2eq` for left, then right.
+    s: [f32; 4],
+}
+
+impl Section {
+    fn set(&mut self, response: Response, hz: f32, q: f32, rate: f32) {
+        let g = (std::f32::consts::PI * hz.min(0.49 * rate) / rate).tan();
+        let k = 1.0 / q;
+        let (m0, m1, m2) = match response {
+            Response::Low => (0.0, 0.0, 1.0),
+            Response::High => (1.0, -k, -1.0),
+            Response::Band => (0.0, 1.0, 0.0),
+            Response::Notch => (1.0, -k, 0.0),
+        };
+        self.coefficients(g, k, [m0, m1, m2]);
+    }
+
+    /// Peaking EQ band: `gain_db` at `hz`, `bw` octaves wide.
+    fn set_bell(&mut self, hz: f32, bw: f32, gain_db: f32, rate: f32) {
+        let g = (std::f32::consts::PI * hz.min(0.49 * rate) / rate).tan();
+        let a = 10f32.powf(gain_db / 40.0);
+        let q = 1.0 / (2.0 * (std::f32::consts::LN_2 * 0.5 * bw).sinh());
+        let k = 1.0 / (q * a);
+        self.coefficients(g, k, [1.0, k * (a * a - 1.0), 0.0]);
+    }
+
+    fn coefficients(&mut self, g: f32, k: f32, m: [f32; 3]) {
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let a2 = g * a1;
+        self.c = [a1, a2, g * a2, m[0], m[1], m[2]];
+    }
+
+    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let [a1, a2, a3, m0, m1, m2] = self.c;
+        let [mut l1, mut l2, mut r1, mut r2] = self.s;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let v3 = *l - l2;
+            let v1 = a1 * l1 + a2 * v3;
+            let v2 = l2 + a2 * l1 + a3 * v3;
+            l1 = 2.0 * v1 - l1;
+            l2 = 2.0 * v2 - l2;
+            *l = m0 * *l + m1 * v1 + m2 * v2;
+            let v3 = *r - r2;
+            let v1 = a1 * r1 + a2 * v3;
+            let v2 = r2 + a2 * r1 + a3 * v3;
+            r1 = 2.0 * v1 - r1;
+            r2 = 2.0 * v2 - r2;
+            *r = m0 * *r + m1 * v1 + m2 * v2;
+        }
+        // Flush denormals once per call: decaying states would otherwise slow down.
+        self.s = [l1, l2, r1, r2].map(|v| if v.abs() < 1e-20 { 0.0 } else { v });
+    }
+}
+
+/// A voice's filter state: its module envelopes, lagged external sources
+/// and sections. Empty (no work) for voices of groups without filters.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct VoiceFilter {
+    envs: [Envelope; MAX_ENVS],
+    ext: [f32; MAX_EXT],
+    sections: [Section; MAX_SECTIONS],
+}
+
+impl VoiceFilter {
+    pub fn new(filter: Option<&GroupFilter>, table: &ModTable, input: &Inputs, rate: f32) -> Self {
+        let mut out = Self {
+            envs: [Envelope::new(&Ahdsr::UNITY, rate); MAX_ENVS],
+            ext: [0.0; MAX_EXT],
+            sections: [Section::default(); MAX_SECTIONS],
+        };
+        if let Some(f) = filter {
+            for (env, (params, _)) in out.envs.iter_mut().zip(&f.envs) {
+                *env = Envelope::new(params, rate);
+            }
+            for (value, (_, i)) in out.ext.iter_mut().zip(&f.ext) {
+                *value = table.mods[*i as usize].start_value(input);
+            }
+        }
+        out
+    }
+
+    pub fn release(&mut self) {
+        self.envs.iter_mut().for_each(|e| e.release(None));
+    }
+
+    /// Filter one block (at most [`MAX_BLOCK`] frames) in place; `ctl` is scratch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process(
+        &mut self,
+        f: &GroupFilter,
+        table: &ModTable,
+        input: &Inputs,
+        ctl: &mut [f32; MAX_BLOCK],
+        left: &mut [f32],
+        right: &mut [f32],
+        rate: f32,
+    ) {
+        let n = left.len();
+        for (value, (_, i)) in self.ext.iter_mut().zip(&f.ext) {
+            table.mods[*i as usize].follow(value, input, n, rate);
+        }
+        // Envelope levels at each control tick.
+        let mut levels = [[0.0; MAX_BLOCK / CONTROL]; MAX_ENVS];
+        for (env, ticks) in self.envs.iter_mut().zip(&mut levels).take(f.envs.len()) {
+            env.render(&mut ctl[..n], None, rate);
+            for (t, level) in ticks.iter_mut().enumerate().take(n.div_ceil(CONTROL)) {
+                *level = ctl[t * CONTROL];
+            }
+        }
+        let modulated = !f.envs.is_empty() || !f.ext.is_empty();
+        let step = if modulated { CONTROL } else { n };
+        for (t, start) in (0..n).step_by(step).enumerate() {
+            let end = (start + step).min(n);
+            let mut knobs: [[f32; KNOBS]; MAX_UNITS] = std::array::from_fn(|u| {
+                f.units.get(u).map_or([0.0; KNOBS], |unit| unit.knobs)
+            });
+            for (e, (_, routes)) in f.envs.iter().enumerate() {
+                for (r, m) in routes.iter() {
+                    knobs[r.unit as usize][r.knob as usize] += r.sign * m.intensity * m.shape(levels[e][t]);
+                }
+            }
+            for ((r, i), value) in f.ext.iter().zip(&self.ext) {
+                knobs[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * value;
+            }
+            let mut s = 0;
+            for (unit, knobs) in f.units.iter().zip(&knobs) {
+                let k = knobs.map(|k| k.clamp(0.0, 1.0));
+                for b in 0..unit.sections as usize {
+                    let section = &mut self.sections[s + b];
+                    match unit.shape {
+                        Shape::Filter(response) => section.set(
+                            response,
+                            CUTOFF_MIN_HZ * (CUTOFF_OCTAVES * k[0]).exp2(),
+                            Q_MIN * Q_SPAN.powf(k[1]),
+                            rate,
+                        ),
+                        Shape::Eq => section.set_bell(
+                            EQ_MIN_HZ * 10f32.powf(EQ_DECADES * k[3 * b]),
+                            BW_MIN + BW_SPAN * k[3 * b + 1],
+                            GAIN_DB * (2.0 * k[3 * b + 2] - 1.0),
+                            rate,
+                        ),
+                    }
+                    section.process(&mut left[start..end], &mut right[start..end]);
+                }
+                s += unit.sections as usize;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RATE: f32 = 48_000.0;
+
+    /// Steady-state gain (dB) of `section` for a sine at `hz`.
+    fn gain_db(mut section: Section, hz: f32) -> f32 {
+        let frames = (RATE as usize) / 2;
+        let mut peak = 0.0f32;
+        let mut block = [0.0; 256];
+        for start in (0..frames).step_by(256) {
+            let mut right = [0.0; 256];
+            for (i, x) in block.iter_mut().enumerate() {
+                *x = (2.0 * std::f32::consts::PI * hz * (start + i) as f32 / RATE).sin();
+            }
+            section.process(&mut block, &mut right);
+            if start > frames / 2 {
+                peak = block.iter().fold(peak, |p, x| p.max(x.abs()));
+            }
+        }
+        20.0 * peak.log10()
+    }
+
+    #[test]
+    fn lowpass_highpass_and_resonance_match_analytic_responses() {
+        let mut s = Section::default();
+        s.set(Response::Low, 1000.0, Q_MIN, RATE);
+        assert!((gain_db(s, 1000.0) + 3.01).abs() < 0.1, "LP -3 dB at cutoff");
+        assert!(gain_db(s, 100.0).abs() < 0.05);
+        assert!((gain_db(s, 4000.0) + 24.1).abs() < 0.5, "12 dB/octave");
+        s.set(Response::High, 1000.0, Q_MIN, RATE);
+        assert!((gain_db(s, 1000.0) + 3.01).abs() < 0.1, "HP -3 dB at cutoff");
+        assert!(gain_db(s, 10_000.0).abs() < 0.1);
+        // Resonance peak: |H(fc)| = Q for the 2-pole low pass.
+        s.set(Response::Low, 1000.0, 8.0, RATE);
+        assert!((gain_db(s, 1000.0) - 20.0 * 8f32.log10()).abs() < 0.1);
+        s.set(Response::Notch, 1000.0, Q_MIN, RATE);
+        assert!(gain_db(s, 1000.0) < -40.0);
+    }
+
+    #[test]
+    fn eq_bell_reaches_its_gain_at_the_center() {
+        let mut s = Section::default();
+        for db in [-12.0, 6.0, 18.0] {
+            s.set_bell(2000.0, 1.0, db, RATE);
+            assert!((gain_db(s, 2000.0) - db).abs() < 0.05, "{db} dB");
+            assert!(gain_db(s, 30.0).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn stays_finite_under_fast_modulation() {
+        let mut s = Section::default();
+        let (mut l, mut r) = ([1.0; CONTROL], [-1.0; CONTROL]);
+        for i in 0..20_000 {
+            let hz = if i % 2 == 0 { 30.0 } else { 20_000.0 };
+            s.set(Response::Low, hz, Q_MIN * Q_SPAN, RATE);
+            s.process(&mut l, &mut r);
+            l.fill(if i % 3 == 0 { 1.0 } else { -1.0 });
+            r.fill(0.5);
+        }
+        assert!(s.s.iter().all(|v| v.is_finite() && v.abs() < 1e3));
+    }
+}
