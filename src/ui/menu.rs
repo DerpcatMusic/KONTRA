@@ -63,6 +63,8 @@ pub enum Command {
     Port(usize, u8),
     Output(usize, u8),
     Appearance(super::Appearance),
+    StickyHeaders,
+    BlurArtwork,
     /// A part's send bus, -1 for none.
     Aux(usize, i16),
     /// A bus's host port, -1 for its own.
@@ -311,6 +313,11 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             ] {
                 items.push(check(label, now == look, Command::Appearance(look)));
             }
+            items.extend([
+                Item::Rule,
+                check("Sticky part headers", cx.selection.sticky_headers, Command::StickyHeaders),
+                check("Blur library artwork", !cx.selection.sharp_artwork, Command::BlurArtwork),
+            ]);
             items
         }
     }
@@ -493,6 +500,8 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         }
         Command::Browser => cx.state.browser ^= true,
         Command::Appearance(look) => cx.selection.appearance = look as u8,
+        Command::StickyHeaders => cx.selection.sticky_headers ^= true,
+        Command::BlurArtwork => cx.selection.sharp_artwork ^= true,
         Command::Keyboard => cx.state.keyboard ^= true,
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
         Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,

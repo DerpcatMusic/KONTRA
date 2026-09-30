@@ -391,10 +391,10 @@ pub fn thumbnail(image: &Image, w: u32, h: u32) -> Option<Image> {
 }
 
 /// The artwork as a header banner, after Kontakt 8's: cropped to cover
-/// `w` x `h`, every banner brought to one dim level with its contrast and
-/// color held down so a white title reads over any of it, and fading from
-/// opaque at the left to nothing at the right.
-pub fn banner(image: &Image, w: u32, h: u32) -> Option<Image> {
+/// `w` x `h`, softened when `blur`, every banner brought to one dim level
+/// with its contrast and color held down so a white title reads over any of
+/// it, and fading from opaque at the left to nothing at the right.
+pub fn banner(image: &Image, w: u32, h: u32, blur: bool) -> Option<Image> {
     // The level every banner sits at, how much of its contrast and color
     // stays, and the brightest it gets (of 255).
     const LEVEL: f32 = 52.;
@@ -403,15 +403,18 @@ pub fn banner(image: &Image, w: u32, h: u32) -> Option<Image> {
     const PEAK: f32 = 96.;
     let crop = thumbnail(image, w, h)?;
     let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-    let pixels = crop.rgba.as_chunks::<4>().0;
-    let rgb = |c: &[u8; 4]| [0, 1, 2].map(|k| f32::from(c[k]));
-    let mean = pixels.iter().map(|c| luma(rgb(c))).sum::<f32>() / pixels.len() as f32;
+    let mut pixels: Vec<[f32; 3]> =
+        crop.rgba.as_chunks::<4>().0.iter().map(|c| [0, 1, 2].map(|k| f32::from(c[k]))).collect();
+    if blur {
+        // A twentieth of the banner's height: soft, still recognisable.
+        box_blur(&mut pixels, w as usize, h as usize, (h as usize / 20).max(1), 3);
+    }
+    let mean = pixels.iter().map(|&c| luma(c)).sum::<f32>() / pixels.len() as f32;
     let gain = LEVEL / mean.max(1.);
     let rgba = pixels
         .iter()
         .enumerate()
-        .flat_map(|(i, c)| {
-            let c = rgb(c);
+        .flat_map(|(i, &c)| {
             let l = luma(c);
             // Contrast around the level, then a soft knee under the peak;
             // color only ever loses strength, dark artwork lifted or not.
@@ -428,21 +431,22 @@ pub fn banner(image: &Image, w: u32, h: u32) -> Option<Image> {
 }
 
 /// The artwork as a backdrop to play over: shrunk to a few dozen pixels
-/// (which blurs it once scaled back up), blurred again, mostly drained of
-/// color and darkened well below the text drawn on it.
-pub fn backdrop(image: &Image) -> Option<Image> {
-    const W: usize = 48;
+/// (which blurs it once scaled back up) and blurred again when `blur`,
+/// else kept at a few hundred; mostly drained of color and darkened well
+/// below the text drawn on it.
+pub fn backdrop(image: &Image, blur: bool) -> Option<Image> {
     let (sw, sh) = (image.width as usize, image.height as usize);
     if sw == 0 || sh == 0 {
         return None;
     }
-    let h = (W * sh / sw).clamp(1, W);
-    // Area average into W x h.
-    let mut px = vec![[0f32; 3]; W * h];
-    let mut n = vec![0f32; W * h];
+    let w = if blur { 48 } else { sw.min(640) };
+    let h = (w * sh / sw).clamp(1, w);
+    // Area average into w x h.
+    let mut px = vec![[0f32; 3]; w * h];
+    let mut n = vec![0f32; w * h];
     for (i, c) in image.rgba.as_chunks::<4>().0.iter().enumerate() {
         let (x, y) = (i % sw, i / sw);
-        let at = (y * h / sh) * W + x * W / sw;
+        let at = (y * h / sh) * w + x * w / sw;
         for k in 0..3 {
             px[at][k] += f32::from(c[k]);
         }
@@ -451,24 +455,8 @@ pub fn backdrop(image: &Image) -> Option<Image> {
     for (p, n) in px.iter_mut().zip(&n) {
         p.iter_mut().for_each(|v| *v /= n.max(1.));
     }
-    // Two passes of a 3x3 box.
-    for _ in 0..2 {
-        let from = px.clone();
-        for y in 0..h {
-            for x in 0..W {
-                let mut sum = [0f32; 3];
-                let mut count = 0.;
-                for (dx, dy) in (-1i32..=1).flat_map(|dx| (-1i32..=1).map(move |dy| (dx, dy))) {
-                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-                    if (0..W as i32).contains(&nx) && (0..h as i32).contains(&ny) {
-                        let q = from[ny as usize * W + nx as usize];
-                        (0..3).for_each(|k| sum[k] += q[k]);
-                        count += 1.;
-                    }
-                }
-                px[y * W + x] = sum.map(|v| v / count);
-            }
-        }
+    if blur {
+        box_blur(&mut px, w, h, 1, 2);
     }
     // Every backdrop settles at the same dim average, bright artwork or dark.
     let luma = |[r, g, b]: [f32; 3]| 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -482,7 +470,39 @@ pub fn backdrop(image: &Image) -> Option<Image> {
             [tone(r), tone(g), tone(b), 255]
         })
         .collect::<Vec<u8>>();
-    Image::rgba(W as u32, h as u32, rgba)
+    Image::rgba(w as u32, h as u32, rgba)
+}
+
+/// `passes` of a box `radius` wide each side over `w` x `h` pixels, one
+/// axis then the other; at the edges it averages what is inside. Three
+/// passes come close to a Gaussian.
+fn box_blur(px: &mut [[f32; 3]], w: usize, h: usize, radius: usize, passes: usize) {
+    let mut line = Vec::new();
+    for _ in 0..passes {
+        // Rows, then columns: (lines, start of line n, step along it, length).
+        for (lines, stride, step, len) in [(h, w, 1, w), (w, 1, w, h)] {
+            for n in 0..lines {
+                let at = |i: usize| n * stride + i * step;
+                line.clear();
+                line.extend((0..len).map(|i| px[at(i)]));
+                // A running sum over the window [i - radius, i + radius].
+                let mut sum = [0f32; 3];
+                for c in &line[..radius.min(len)] {
+                    (0..3).for_each(|k| sum[k] += c[k]);
+                }
+                for i in 0..len {
+                    if i + radius < len {
+                        (0..3).for_each(|k| sum[k] += line[i + radius][k]);
+                    }
+                    if i > radius {
+                        (0..3).for_each(|k| sum[k] -= line[i - radius - 1][k]);
+                    }
+                    let inside = (i + radius).min(len - 1) + 1 - i.saturating_sub(radius);
+                    px[at(i)] = sum.map(|v| v / inside as f32);
+                }
+            }
+        }
+    }
 }
 
 /// The artwork's identity color as an OKLCH hue in degrees: the most
@@ -621,7 +641,7 @@ mod tests {
     #[test]
     fn banners_fade_right_and_stay_dim() {
         let white = super::Image::rgba(40, 10, vec![255u8; 40 * 10 * 4]).unwrap();
-        let b = super::banner(&white, 20, 4).unwrap();
+        let b = super::banner(&white, 20, 4, true).unwrap();
         let px = b.rgba.as_chunks::<4>().0;
         assert_eq!((px[0][3], px[19][3]), (255, 0), "opaque at the left, gone at the right");
         assert!(px.iter().all(|p| p[..3].iter().all(|&c| c < 110)), "white artwork dims under a title");
@@ -630,11 +650,27 @@ mod tests {
     #[test]
     fn backdrops_settle_dim_and_small() {
         let bright = super::Image::rgba(300, 100, [250u8, 200, 40, 255].repeat(300 * 100)).unwrap();
-        let b = super::backdrop(&bright).unwrap();
+        let b = super::backdrop(&bright, true).unwrap();
         assert_eq!((b.width, b.height), (48, 16));
         let px = &b.rgba[..4];
         assert!(px[0] < 45 && px[1] < 40, "darkened: {px:?}");
         assert!(px[0] - px[2] < 25, "mostly drained of color: {px:?}");
+        let sharp = super::backdrop(&bright, false).unwrap();
+        assert_eq!((sharp.width, sharp.height), (300, 100), "sharp keeps the detail");
+    }
+
+    #[test]
+    fn blur_softens_an_edge_and_sharp_keeps_it() {
+        // Black on the left half, white on the right.
+        let rgba: Vec<u8> = (0..64 * 16).flat_map(|i| if i % 64 < 32 { [0, 0, 0, 255] } else { [255; 4] }).collect();
+        let image = super::Image::rgba(64, 16, rgba).unwrap();
+        let step = |blur| {
+            let b = super::banner(&image, 64, 40, blur).unwrap();
+            let px = b.rgba.as_chunks::<4>().0;
+            // Across the edge, a pixel apart, in the opaque left of the fade.
+            i32::from(px[20 * 64 + 32][1]) - i32::from(px[20 * 64 + 31][1])
+        };
+        assert!(step(false) > 3 * step(true).max(1), "sharp {} blurred {}", step(false), step(true));
     }
 
     #[test]

@@ -298,9 +298,10 @@ struct EditorState {
     buses_shown: usize,
     /// Each library's color and backdrop, from its artwork, worked out once.
     tints: HashMap<String, Option<Color>>,
-    backdrops: HashMap<String, Option<Arc<Image>>>,
+    /// Blurred and sharp, by library and whether blurred.
+    backdrops: HashMap<(String, bool), Option<Arc<Image>>>,
     thumbs: HashMap<String, Arc<Image>>,
-    banners: HashMap<String, Arc<Image>>,
+    banners: HashMap<(String, bool), Arc<Image>>,
     /// The keys the selected part's instrument maps, and which instrument.
     mapped: (std::sync::Weak<import::Instrument>, [bool; 128]),
     /// The browser's files by library: of which scan, root and kind.
@@ -348,22 +349,24 @@ impl EditorState {
     }
 
     /// `library`'s artwork as a header banner `size` (logical) at twice the
-    /// pixels, once; artwork still being scanned is looked for again.
-    fn banner(&mut self, view: &View, library: &str, size: (f64, f64)) -> Option<Arc<Image>> {
-        if let Some(b) = self.banners.get(library) {
+    /// pixels, blurred or not, once each; artwork still being scanned is
+    /// looked for again.
+    fn banner(&mut self, view: &View, library: &str, size: (f64, f64), blur: bool) -> Option<Arc<Image>> {
+        let key = (library.to_owned(), blur);
+        if let Some(b) = self.banners.get(&key) {
             return Some(b.clone());
         }
         let (w, h) = ((size.0 * 2.).round() as u32, (size.1 * 2.).round() as u32);
-        let b = Arc::new(crate::artwork::banner(view.artwork.get(library)?, w, h)?);
-        self.banners.insert(library.to_owned(), b.clone());
+        let b = Arc::new(crate::artwork::banner(view.artwork.get(library)?, w, h, blur)?);
+        self.banners.insert(key, b.clone());
         Some(b)
     }
 
-    /// `library`'s artwork made a backdrop, once.
-    fn backdrop(&mut self, view: &View, library: &str) -> Option<Arc<Image>> {
+    /// `library`'s artwork made a backdrop, blurred or not, once each.
+    fn backdrop(&mut self, view: &View, library: &str, blur: bool) -> Option<Arc<Image>> {
         self.backdrops
-            .entry(library.to_owned())
-            .or_insert_with(|| crate::artwork::backdrop(view.artwork.get(library)?).map(Arc::new))
+            .entry((library.to_owned(), blur))
+            .or_insert_with(|| crate::artwork::backdrop(view.artwork.get(library)?, blur).map(Arc::new))
             .clone()
     }
 }

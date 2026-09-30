@@ -42,6 +42,9 @@ pub struct Part {
     pub name: String,
     /// The rack shows only the part's header, not its performance view.
     pub collapsed: bool,
+    /// How tall the rack shows the part's performance view, in points: 0 at
+    /// its full height; below the UI's `MIN_BODY` none: the header alone.
+    pub height: f32,
     /// Output bus (0..[`BUSES`]) the part also sends to, post-fader; -1 for none.
     pub aux: i16,
     /// Level of that send in dB (-60..=6).
@@ -64,6 +67,7 @@ impl Default for Part {
             script_state: String::new(),
             name: String::new(),
             collapsed: false,
+            height: 0.,
             aux: -1,
             aux_gain: 0.,
         }
@@ -129,6 +133,10 @@ pub struct Selection {
     /// What plays behind a part's controls: 0 plain, 1 its library's
     /// color, 2 its library's artwork.
     pub appearance: u8,
+    /// Scrolled parts' headers stay docked at the rack's top and bottom.
+    pub sticky_headers: bool,
+    /// Library artwork is shown as drawn, not blurred.
+    pub sharp_artwork: bool,
     /// Output buses by index; shorter than [`BUSES`] when the rest are default.
     pub buses: Vec<Bus>,
 }
@@ -1793,6 +1801,8 @@ mod tests {
             browser_width: 300.,
             browser_split: 0.4,
             appearance: 2,
+            sticky_headers: true,
+            sharp_artwork: true,
             buses: vec![
                 Bus::default(),
                 Bus {
@@ -1847,6 +1857,7 @@ mod tests {
                     pan: -0.5,
                     tune: 7.02,
                     collapsed: true,
+                    height: 120.,
                     name: "Left hand".into(),
                     script_state: r#"[{"name":"$legato","value":1}]"#.into(),
                     ..Default::default()
