@@ -236,7 +236,7 @@ pub fn render(spec: &Spec, w: u32, h: u32, title: bool) -> Option<Image> {
             })
             .max_by(|a, b| a.0.total_cmp(&b.0));
         match best {
-            Some((size, lines)) if size >= 11. => {
+            Some((size, lines)) if size >= (hf * 0.2).max(16.) => {
                 let size = size.floor();
                 let step = size * 1.08;
                 // Set from the foot up, left aligned.

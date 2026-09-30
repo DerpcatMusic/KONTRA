@@ -206,11 +206,12 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     if cx.settings.roots.is_empty() {
         rows.push(
-            caption("No library folders yet. Add the folder that holds your Kontakt libraries, or one library's own folder.")
+            col![caption("No library folders yet. Add the folder that holds your Kontakt libraries, or one library's own folder.")
                 .fill(Role::Dim)
-                .lines(2)
-                .pad(edges(0., INSET, 0., INSET))
-                .shrink(0),
+                .lines(2)]
+            .align(Align::Start)
+            .pad(edges(0., INSET, 0., INSET))
+            .shrink(0),
         );
     }
     // Typed, for a desktop with no file dialog.

@@ -160,7 +160,8 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let scanning = cx.p.shared.libraries.scanning();
     if libraries.is_empty() && scanning.is_none() {
         if view.files.is_empty() {
-            rows.push(empty_state(ui, cx));
+            // First, so its buttons are in view above favorites and recent.
+            rows.insert(0, empty_state(ui, cx));
         } else {
             rows.push(hint(if multis { "No multis in these libraries." } else { "No instruments in these libraries." }));
         }
