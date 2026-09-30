@@ -937,9 +937,11 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 25] = [
+    let states: [(&str, bool, &[&str]); 26] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
+        // Esc: no part selected, the keys show what each part plays.
+        ("unselected", true, &[]),
         ("mapping", true, &["tab-mapping"]),
         ("rack", true, &["tab-rack"]),
         ("info", true, &["tab-info"]),
@@ -1022,6 +1024,9 @@ fn screenshot() {
             for id in presses {
                 h.press(id);
             }
+            if state == "unselected" {
+                h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+            }
             h.settle_art();
             // Springs (the browser drawer) come to rest.
             h.idle(30);
@@ -1067,7 +1072,7 @@ fn screenshot() {
                     match state {
                         "mixer" => "master-strip",
                         // Scrolled away, its header is stuck at the top.
-                        "sticky" => "stuck-0",
+                        "sticky" => "header-0",
                         _ => "header-0",
                     },
                 ]);

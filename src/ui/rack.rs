@@ -16,7 +16,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-/// The display name of a part: the player's, the loaded instrument's, else the file's.
+/// The display name of a part: the player's, else the loaded instrument's
+/// or the file's without its library's name in front.
 pub fn name(cx: &Cx, slot: usize) -> String {
     let Some(part) = cx.selection.parts.get(slot) else {
         return String::new();
@@ -24,9 +25,10 @@ pub fn name(cx: &Cx, slot: usize) -> String {
     if !part.name.is_empty() {
         return part.name.clone();
     }
-    instrument::instrument_of(cx, slot)
+    let full = instrument::instrument_of(cx, slot)
         .map(|i| i.name.clone())
-        .unwrap_or_else(|| super::header::stem(&part.path))
+        .unwrap_or_else(|| super::header::stem(&part.path));
+    without_library(&full, &cx.library_of(Path::new(&part.path))).to_owned()
 }
 
 /// A header's height with the rule under it: one line of controls. Parts
@@ -649,7 +651,8 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             let part = &cx.selection.parts[slot];
             let default = instrument::instrument_of(cx, slot)
                 .map_or_else(|| super::header::stem(&part.path), |i| i.name.clone());
-            cx.selection.parts[slot].name = if text == default || text.is_empty() {
+            let shown = without_library(&default, &cx.library_of(Path::new(&part.path)));
+            cx.selection.parts[slot].name = if text == default || text == shown || text.is_empty() {
                 String::new()
             } else {
                 text.to_owned()
@@ -674,7 +677,7 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .text_weight(Weight::SEMIBOLD)
         .fill(if muted { Role::Dim } else { Role::Ink })
         .lines(1)
-        .min_w(0)
+        .min_w(TEXT * 6.)
         .shrink(1)
         .cursor(Cursor::Grab)
         .tip(format!("{name}\n{facts}\nDrag to reorder · double-click to rename"))

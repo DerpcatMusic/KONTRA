@@ -547,7 +547,7 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
         } else {
             Role::Ink.alpha(0.)
         }),
-        body(stem(path))
+        body(without_library(&stem(path), &cx.library_of(path)).to_owned())
             .text_size(TEXT)
             .fill(if loaded || cursor { Role::Ink } else { Role::Dim })
             .lines(1)

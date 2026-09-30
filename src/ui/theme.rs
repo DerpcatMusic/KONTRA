@@ -1150,6 +1150,23 @@ pub fn note_name(note: u8) -> String {
     format!("{}{}", NAMES[(note % 12) as usize], note as i16 / 12 - 2)
 }
 
+/// `name` without its library's name in front: "Vista - Harp" in
+/// "Performance Samples Vista" is "Harp". Only a name set off by a dash,
+/// colon or underscore goes; "Una Corda Pure" stays whole.
+pub fn without_library<'a>(name: &'a str, library: &str) -> &'a str {
+    let library = library_label(library);
+    let library = library.split(" [").next().unwrap_or_default().trim();
+    let rest = (name.get(..library.len()))
+        .filter(|head| !library.is_empty() && head.eq_ignore_ascii_case(library))
+        .map(|_| &name[library.len()..]);
+    rest.and_then(|rest| {
+        let shorn = rest.trim_start_matches([' ', '-', '–', '—', ':', '_']);
+        let set_off = rest.len() - shorn.len() > rest.len() - rest.trim_start().len();
+        (set_off && !shorn.is_empty()).then_some(shorn)
+    })
+    .unwrap_or(name)
+}
+
 /// A library folder name without the vendor noise.
 pub fn library_label(name: &str) -> String {
     name.replace("Performance Samples ", "")
@@ -1186,6 +1203,16 @@ pub fn arc(cx: f64, cy: f64, r: f64, from: f64, sweep: f64) -> DrawPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_leave_their_library_out() {
+        assert_eq!(without_library("Vista - Harp", "Performance Samples Vista"), "Harp");
+        assert_eq!(without_library("Solo_Violin", "Solo"), "Violin");
+        assert_eq!(without_library("Una Corda Pure", "Una Corda Library"), "Una Corda Pure");
+        assert_eq!(without_library("Vistas", "Vista"), "Vistas");
+        assert_eq!(without_library("Vista - ", "Vista"), "Vista - ");
+        assert_eq!(without_library("Harp", ""), "Harp");
+    }
 
     #[test]
     fn note_names_follow_kontakt() {
