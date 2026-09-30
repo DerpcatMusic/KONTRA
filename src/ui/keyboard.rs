@@ -279,7 +279,7 @@ fn range_strip(looks: [Look; 128], octave: i16) -> El {
                         continue;
                     };
                     let fill = match (pass, look) {
-                        (false, Look::Mapped) => Role::Ink.alpha(0.45),
+                        (false, Look::Mapped) => Fill::from(Color::oklch(0.66, 0.1, MAPPED_HUE)),
                         (true, Look::Colored(c)) => Fill::from(*c),
                         _ => continue,
                     };
@@ -299,6 +299,9 @@ fn range_strip(looks: [Look; 128], octave: i16) -> El {
     .shrink(0)
     .named("Key range")
 }
+
+/// The green of a key that plays.
+const MAPPED_HUE: f32 = 150.;
 
 /// What a key does for the selected part.
 #[derive(Clone, Copy, PartialEq)]
@@ -322,8 +325,8 @@ fn looks(cx: &Cx) -> [Look; 128] {
         }
     }
     for (&note, state) in v.keys.iter() {
-        if let Some(color) = state.color.as_ref().and_then(key_color) {
-            looks[note.min(127) as usize] = color.map_or(Look::Mapped, Look::Colored);
+        if let Some(look) = state.color.as_ref().and_then(key_color) {
+            looks[note.min(127) as usize] = look;
         }
     }
     looks
@@ -395,21 +398,19 @@ fn key(
     let face = match (look, black) {
         (Look::Colored(c), false) => c,
         (Look::Colored(c), true) => Color::oklch(c.lightness() * 0.62, c.chroma(), c.hue()),
-        (Look::Mapped, false) => Color::oklch(0.92, 0., 0.),
-        (Look::Mapped, true) => Color::oklch(0.17, 0., 0.),
+        // A key that plays is tinted green: faintly on white, deeper on black.
+        (Look::Mapped, false) => Color::oklch(0.93, 0.035, MAPPED_HUE),
+        (Look::Mapped, true) => Color::oklch(0.33, 0.075, MAPPED_HUE),
         (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
         (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
     };
-    // A sounding key takes the accent, deeper the harder it is played.
+    // A sounding key takes the accent whatever its color, brighter the
+    // harder it is played, ringed in a deeper amber so it reads even on
+    // an orange key.
     let face = if held {
         let a = accent();
-        let t = 0.45 + 0.55 * f32::from(lit) / 127.;
-        let mix = |x: f32, y: f32| x + (y - x) * t;
-        Color::oklch(
-            mix(face.lightness(), a.lightness() * if black { 0.8 } else { 1. }),
-            mix(face.chroma(), a.chroma()),
-            a.hue(),
-        )
+        let v = f32::from(lit) / 127.;
+        Color::oklch(a.lightness() * if black { 0.85 } else { 1. } + 0.06 * v, a.chroma() + 0.03, a.hue())
     } else {
         face
     };
@@ -430,6 +431,7 @@ fn key(
     col(parts)
         .pad((2, 3))
         .fill(face)
+        .when(held, |e| e.stroke(Color::oklch(0.45, 0.12, accent().hue())).stroke_width(2))
         // Lit at once, fading out when let go.
         .animate_with(if held { Spring::instant() } else { Spring::new(0.35, 1.) })
         .on(State::Hover, move |s| {
@@ -449,17 +451,18 @@ fn key(
 }
 
 /// What a script's `$KEY_COLOR_*` does to a key: `None` leaves the zone
-/// mapping's look, `Some(None)` shows a plain key (Kontakt's DEFAULT, WHITE,
-/// BLACK, INACTIVE and anything unnamed), `Some(color)` colors it.
-fn key_color(value: &Value) -> Option<Option<Color>> {
+/// mapping's look (NONE, DEFAULT), INACTIVE dims it, WHITE, BLACK and
+/// anything unnamed show a key that plays, a color colors it. Red is a
+/// keyswitch's crisp red.
+fn key_color(value: &Value) -> Option<Look> {
     let name = match value {
         Value::Text(name) => name
             .trim_start_matches('$')
             .trim_start_matches("KEY_COLOR_"),
-        _ => return Some(None),
+        _ => return Some(Look::Mapped),
     };
     let hue = match name {
-        "RED" => 25.,
+        "RED" => return Some(Look::Colored(keyswitch())),
         "ORANGE" => 50.,
         "LIGHT_ORANGE" => 65.,
         "WARM_YELLOW" => 80.,
@@ -475,11 +478,12 @@ fn key_color(value: &Value) -> Option<Option<Color>> {
         "PURPLE" => 315.,
         "MAGENTA" => 340.,
         "FUCHSIA" => 355.,
-        "" | "NONE" => return None,
-        // DEFAULT, WHITE, BLACK, INACTIVE and unnamed values.
-        _ => return Some(None),
+        "" | "NONE" | "DEFAULT" => return None,
+        "INACTIVE" => return Some(Look::Unmapped),
+        // WHITE, BLACK and unnamed values.
+        _ => return Some(Look::Mapped),
     };
-    Some(Some(Color::oklch(0.68, 0.13, hue)))
+    Some(Look::Colored(Color::oklch(0.68, 0.16, hue)))
 }
 
 #[cfg(test)]
@@ -489,18 +493,14 @@ mod tests {
     #[test]
     fn script_key_colors() {
         let color = |name: &str| key_color(&Value::Text(name.into()));
-        assert!((color("$KEY_COLOR_RED").unwrap().unwrap().hue() - 25.).abs() < 1.);
-        assert_eq!(
-            color("$KEY_COLOR_NONE"),
-            None,
-            "NONE falls back to the mapping"
-        );
-        assert_eq!(
-            color("$KEY_COLOR_BLACK"),
-            Some(None),
-            "BLACK shows a plain key"
-        );
-        assert_eq!(color("$KEY_COLOR_DEFAULT"), Some(None), "DEFAULT is a plain key");
+        let Some(Look::Colored(red)) = color("$KEY_COLOR_RED") else {
+            panic!("red colors a key")
+        };
+        assert!((red.hue() - 25.).abs() < 1. && red.chroma() > 0.18, "a crisp red");
+        assert!(color("$KEY_COLOR_NONE").is_none(), "NONE falls back to the mapping");
+        assert!(color("$KEY_COLOR_DEFAULT").is_none(), "DEFAULT falls back to the mapping");
+        assert!(color("$KEY_COLOR_BLACK") == Some(Look::Mapped), "BLACK shows a key that plays");
+        assert!(color("$KEY_COLOR_INACTIVE") == Some(Look::Unmapped), "INACTIVE is dim");
         const { assert!(MAX_OCTAVE * 12 + OCTAVES * 12 <= 128) };
     }
 }

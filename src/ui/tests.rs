@@ -621,8 +621,8 @@ fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bo
         _ => 0,
     };
     if state == "playing" {
-        // Keys sounding, soft to hard, on screen and from the host.
-        for (note, velocity) in [(48, 40), (52, 127)] {
+        // Keys sounding, soft to hard, on screen and from the host; a keyswitch.
+        for (note, velocity) in [(15, 100), (48, 40), (52, 127)] {
             p.shared.played[note].store(velocity, Ordering::Relaxed);
         }
         for (note, velocity) in [(55, 90), (58, 110), (61, 30)] {
