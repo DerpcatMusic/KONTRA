@@ -725,19 +725,32 @@ pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
 /// Send `ev`, from host MIDI port `port`, through each rack part's router
 /// that takes it. Releases, pitch bend and controllers other than volume and
 /// pan reach every part on the port, so a changed routing never sticks a
-/// note or a pedal.
-pub fn dispatch(rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], port: u8, ev: In) {
-    let Rack { parts, controls, .. } = rack;
-    for ((e, c), r) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()) {
-        let wide = match ev {
-            In::NoteOff(..) | In::Bend(..) => true,
-            In::Cc(_, cc, _) => !matches!(cc, 7 | 10),
-            _ => false,
-        };
-        if !(if wide { c.port == port } else { r.hears(c, port, ev.channel()) }) {
-            continue;
+/// note or a pedal. Returns the slots it reached, one bit each.
+pub fn dispatch(rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], port: u8, ev: In) -> u32 {
+    let wide = match ev {
+        In::NoteOff(..) | In::Bend(..) => true,
+        In::Cc(_, cc, _) => !matches!(cc, 7 | 10),
+        _ => false,
+    };
+    let Rack { controls, .. } = rack;
+    let mut reached = 0;
+    for (slot, (c, r)) in controls.iter().zip(routers.iter()).enumerate() {
+        if if wide { c.port == port } else { r.hears(c, port, ev.channel()) } {
+            reached |= 1 << slot;
         }
-        feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
+    }
+    dispatch_to(rack, routers, reached, ev);
+    reached
+}
+
+/// Send `ev` through the routers of the slots in `slots` (one bit each), as
+/// [`dispatch`] would: a note-off reaches exactly the parts its note-on did.
+pub fn dispatch_to(rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], slots: u32, ev: In) {
+    let Rack { parts, controls, .. } = rack;
+    for (slot, ((e, c), r)) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()).enumerate() {
+        if slots & 1 << slot != 0 {
+            feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
+        }
     }
 }
 
