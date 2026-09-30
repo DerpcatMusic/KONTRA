@@ -62,7 +62,7 @@ if [ $mode = public ]; then
   mv src/no_access.rs src/access.rs
   sed -i '/^\/\/ Encrypted library content: the `library-access` feature/d;
           /^#\[cfg_attr(.*feature = "library-access".*path = /d' src/lib.rs
-  sed -i '/^# Reads a library.s own access data/d; /^library-access = /d; /^aes = /d' Cargo.toml
+  sed -i '/^# Reads a library.s own access data/d; /^library-access = /d; /^aes = /d; s/, "library-access"//' Cargo.toml
   grep -q 'library-access\|path = "no_access.rs"' src/lib.rs Cargo.toml &&
     { echo "library-access still referenced in src/lib.rs or Cargo.toml" >&2; exit 1; }
   sed -i 's#^//! Stand-in for the `library-access` feature: this build#//! Library access: this build#' src/access.rs
