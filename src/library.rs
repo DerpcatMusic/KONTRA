@@ -53,8 +53,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// `settings.json` in the app's config folder; a folder of the test
-    /// run's own under test, so tests never touch the player's.
+    /// `settings.json` in the app's config folder; none under test.
     pub fn path() -> Option<PathBuf> {
         Some(config_dir()?.join("settings.json"))
     }
@@ -83,8 +82,10 @@ impl Settings {
 }
 
 fn config_dir() -> Option<PathBuf> {
+    // Under test every scanner starts from nothing and saves nowhere: tests
+    // share a process, and must not share settings.
     if cfg!(test) {
-        return Some(std::env::temp_dir().join(format!("kontra-test-{}", std::process::id())).join("config"));
+        return None;
     }
     Some(dirs::config_dir()?.join("kontra"))
 }
