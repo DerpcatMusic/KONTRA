@@ -360,7 +360,27 @@ fn looks(cx: &mut Cx) -> [Look; 128] {
 /// Mouse playing: a press starts the key under the pointer, dragging across
 /// the keys moves the note along (a glissando) and letting go stops it.
 /// Lower on a key plays louder, as on a real one.
+///
+/// Then whatever the keys hold that neither the glissando nor a held
+/// computer key accounts for is let go, every frame: a note whose release
+/// was lost (an editor dropped mid-drag, a window that never saw the
+/// button come up) cannot outlive the next frame.
 fn play(ui: &Ui, cx: &mut Cx, shown: std::ops::Range<u8>) {
+    glide(ui, cx, shown);
+    let shared = &cx.p.shared;
+    let sounding = cx.state.gliss.map(|(_, n)| n);
+    let typed = cx.state.computer.notes();
+    for note in 0..128u8 {
+        if shared.played[note as usize].load(Ordering::Relaxed) > 0
+            && sounding != Some(note)
+            && !typed.contains(&note)
+        {
+            shared.release_key(note);
+        }
+    }
+}
+
+fn glide(ui: &Ui, cx: &mut Cx, shown: std::ops::Range<u8>) {
     let shared = &cx.p.shared;
     let slot = cx.state.selected;
     for note in shown.clone() {

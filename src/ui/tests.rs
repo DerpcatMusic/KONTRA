@@ -772,17 +772,15 @@ fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bo
     }
     if state == "pressed" {
         // Held on every kind of key: keyswitch red, unmapped grey, mapped
-        // green, white and black, soft to hard.
+        // green, white and black, soft to hard. From the host: a played key
+        // nothing on screen holds is let go on the first frame.
         for (note, velocity) in [(14, 127), (15, 60), (30, 100), (32, 100), (48, 25), (61, 90), (64, 127), (66, 60)] {
-            p.shared.played[note].store(velocity, Ordering::Relaxed);
+            p.shared.heard[note].store(velocity, Ordering::Relaxed);
         }
     }
     if state == "playing" {
-        // Keys sounding, soft to hard, on screen and from the host; a keyswitch.
-        for (note, velocity) in [(15, 100), (48, 40), (52, 127)] {
-            p.shared.played[note].store(velocity, Ordering::Relaxed);
-        }
-        for (note, velocity) in [(55, 90), (58, 110), (61, 30)] {
+        // Keys sounding, soft to hard, from the host; a keyswitch.
+        for (note, velocity) in [(15, 100), (48, 40), (52, 127), (55, 90), (58, 110), (61, 30)] {
             p.shared.heard[note].store(velocity, Ordering::Relaxed);
         }
     }
@@ -885,7 +883,7 @@ fn frame_cost() {
     let shared = p.clone();
     measure(&mut h, "keys", &mut |i| {
         let note = 48 + (i % 24);
-        shared.shared.played[note].store(if i % 2 == 0 { 100 } else { 0 }, Ordering::Relaxed);
+        shared.shared.heard[note].store(if i % 2 == 0 { 100 } else { 0 }, Ordering::Relaxed);
         Input::default()
     });
 }
@@ -1468,4 +1466,199 @@ fn sound_tab_drags_an_envelope_handle_into_the_override_layer() {
     assert_eq!(library, 1000.0, "the instrument is untouched");
     h.press("edit-envelope-reset");
     assert!(p.selection.read().unwrap().parts[0].edits.0.is_empty(), "reset plays the library's");
+}
+
+fn key_spot(ui: &Ui, note: u8) -> Point {
+    let r = ui.scene().unwrap().surface(&format!("key-{note}")).unwrap().frame;
+    Point::new(r.x + r.size.width / 2., r.y + r.size.height * 0.9)
+}
+
+fn keys_down(p: &SamplerParams) -> Vec<u8> {
+    (0..128u8).filter(|&n| p.shared.played[n as usize].load(Ordering::Relaxed) > 0).collect()
+}
+
+/// The top edge of each of `notes`, where a key's LED shines, as painted.
+fn key_tops(ui: &Ui, notes: std::ops::Range<u8>) -> Vec<[u8; 3]> {
+    let pix = pixels(ui, 1180, 760);
+    notes
+        .map(|n| {
+            let r = ui.scene().unwrap().surface(&format!("key-{n}")).unwrap().frame;
+            let o = (((r.y + 3.) as usize) * 1180 + (r.x + r.size.width / 2.) as usize) * 4;
+            [pix[o], pix[o + 1], pix[o + 2]]
+        })
+        .collect()
+}
+
+fn glows(c: [u8; 3]) -> bool {
+    i32::from(c[0]) - i32::from(c[2]) > 30
+}
+
+/// A drag across the keys moves the sound and the light together, one note
+/// at a time; letting go anywhere stops it, and a note nothing holds any
+/// more is let go on the next frame.
+#[test]
+fn a_glide_lights_what_sounds_and_lets_go_anywhere() {
+    let p = Arc::new(SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 760.);
+    let rest = key_tops(&h.ui, 60..61)[0];
+    for note in [60, 64] {
+        let at = key_spot(&h.ui, note);
+        for _ in 0..40 {
+            h.tick(pointer(at, true));
+        }
+    }
+    assert_eq!(keys_down(&p), [64], "one note sounds: the one under the pointer");
+    let tops = key_tops(&h.ui, 60..65);
+    assert!(glows(tops[4]), "and it is the one lit");
+    assert!(
+        tops[0].iter().zip(rest).all(|(a, b)| a.abs_diff(b) <= 2),
+        "the key the drag began on is at rest, not pressed: {:?} vs {rest:?}",
+        tops[0]
+    );
+    let away = Point::new(600., 300.);
+    for _ in 0..3 {
+        h.tick(pointer(away, true));
+    }
+    assert_eq!(keys_down(&p), [64], "off the keys the last note holds");
+    h.tick(pointer(away, false));
+    h.idle(40);
+    assert!(keys_down(&p).is_empty(), "let go off the keys, it stops");
+    assert!(!key_tops(&h.ui, 48..84).into_iter().any(glows), "and nothing stays lit");
+    let sent: Vec<_> = std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(_, play)| play).collect();
+    assert!(
+        matches!(sent[..], [Play::Note(60, _), Play::Note(60, 0), Play::Note(64, _), Play::Note(64, 0)]),
+        "{sent:?}"
+    );
+
+    // A release lost with the editor that held it (dropped mid-drag).
+    p.shared.press_key(0, 70, 100);
+    let _ = p.shared.keyboard.pop();
+    h.idle(1);
+    assert!(keys_down(&p).is_empty(), "a note nothing holds is let go");
+    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(70, 0))));
+    // The mouse and a computer key on one note: a note-off for each note-on.
+    p.shared.press_key(0, 72, 100);
+    p.shared.press_key(0, 72, 90);
+    p.shared.release_key(72);
+    p.shared.release_key(72);
+    let sent: Vec<_> = std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(_, play)| play).collect();
+    assert_eq!(sent, [Play::Note(72, 100), Play::Note(72, 0), Play::Note(72, 90), Play::Note(72, 0)]);
+}
+
+/// The editor's window, headless: the real event queue and frame schedule
+/// over the editor's build, cancelled as `editor()` cancels it.
+struct Window {
+    build: Build,
+    bridge: Bridge<SamplerParams>,
+    p: Arc<SamplerParams>,
+    computer: Arc<computer::Computer>,
+    watch: Watch,
+}
+
+impl moose::mui::mui::host::View for Window {
+    fn build(&mut self, ui: &mut Ui, _: &Input) -> El {
+        (self.build)(ui, &mut self.bridge)
+    }
+    fn changed(&mut self) -> bool {
+        self.watch.changed(&self.p, &Meters::default(), &self.computer)
+    }
+    fn request_resize(&mut self, _: u32, _: u32) -> bool {
+        false
+    }
+    fn cancel(&mut self, _: &Ui) {
+        let_go(&self.p, &self.computer);
+    }
+}
+
+struct NoClipboard;
+impl moose::mui::mui::Clipboard for NoClipboard {
+    fn get(&mut self) -> Option<String> {
+        None
+    }
+    fn set(&mut self, _: &str) {}
+}
+
+/// However a glide ends -- the button up outside the window, focus lost,
+/// the window closed -- its note stops; and whatever arrives in whatever
+/// order, never two keys sound at once.
+#[test]
+fn the_window_lets_go_of_a_glide_however_it_ends() {
+    use moose::mui::mui::host::{Driver, Shared};
+    let p = Arc::new(SamplerParams::new());
+    let computer = Arc::<computer::Computer>::default();
+    let mut s = Shared {
+        ui: theme::ui(),
+        view: Window {
+            build: Box::new(build(&p, Arc::default(), computer.clone(), Arc::default(), Arc::default())),
+            bridge: Bridge::new(p.clone()),
+            p: p.clone(),
+            computer,
+            watch: Watch::default(),
+        },
+    };
+    let now = std::cell::Cell::new(Instant::now());
+    let tick = |d: &mut Driver, s: &mut Shared<Window>, n: usize| {
+        for _ in 0..n {
+            now.set(now.get() + Duration::from_millis(16));
+            d.advance(s, now.get());
+        }
+    };
+    let mut d = Driver::new((1180, 760), 1.0, Box::new(NoClipboard));
+    tick(&mut d, &mut s, 3);
+    let keys: Vec<Point> = (48..84).map(|n| key_spot(&s.ui, n)).collect();
+    let mods = Mods::default();
+    let glide = |d: &mut Driver, s: &mut Shared<Window>| {
+        d.pointer_moved(keys[12], mods);
+        d.button(Button::Primary, true, mods);
+        tick(d, s, 2);
+        d.pointer_moved(keys[16], mods);
+        tick(d, s, 2);
+        assert_eq!(keys_down(&s.view.p), [64]);
+    };
+    glide(&mut d, &mut s);
+    d.pointer_left();
+    d.button(Button::Primary, false, mods);
+    glide(&mut d, &mut s);
+    d.pointer_left();
+    tick(&mut d, &mut s, 2);
+    assert_eq!(keys_down(&p), [64], "off the window the last note holds");
+    d.button(Button::Primary, false, mods);
+    tick(&mut d, &mut s, 2);
+    assert!(keys_down(&p).is_empty(), "the button up outside the window");
+    glide(&mut d, &mut s);
+    d.focus(false);
+    tick(&mut d, &mut s, 1);
+    assert!(keys_down(&p).is_empty(), "focus lost mid-glide");
+    d.focus(true);
+    d.button(Button::Primary, false, mods);
+    glide(&mut d, &mut s);
+    d.close(&mut s);
+    assert!(keys_down(&p).is_empty(), "the window closed mid-glide, with no frame after");
+
+    let mut d = Driver::new((1180, 760), 1.0, Box::new(NoClipboard));
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut down = false;
+    for step in 0..3000 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        match seed % 16 {
+            0..=6 => d.pointer_moved(keys[(seed >> 8) as usize % keys.len()], mods),
+            7..=9 => {
+                down = !down;
+                d.button(Button::Primary, down, mods);
+            }
+            10 => d.pointer_left(),
+            11 => {
+                d.focus(false);
+                down = false;
+            }
+            12 => d.focus(true),
+            _ => tick(&mut d, &mut s, 1),
+        }
+        assert!(keys_down(&p).len() <= 1, "step {step}: {:?}", keys_down(&p));
+    }
+    d.button(Button::Primary, false, mods);
+    tick(&mut d, &mut s, 2);
+    assert!(keys_down(&p).is_empty());
 }
