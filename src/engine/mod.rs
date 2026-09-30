@@ -132,6 +132,24 @@ impl NoteEvent<'_> {
     }
 }
 
+/// Per-key expression from MPE or host note expressions: every voice on the
+/// key follows it, released or not, until the key's next note-on resets it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Expression {
+    /// Semitones.
+    pub tune: f32,
+    /// Linear gain.
+    pub gain: f32,
+    /// −1..=1, added to the voice's pan.
+    pub pan: f32,
+}
+
+impl Default for Expression {
+    fn default() -> Self {
+        Self { tune: 0.0, gain: 1.0, pan: 0.0 }
+    }
+}
+
 /// Absolute parameter changes for a running event.
 #[derive(Clone, Copy, Debug)]
 pub enum EventChange {
@@ -489,6 +507,11 @@ impl Engine {
         self.player.change_event(id, change);
     }
 
+    /// Set the expression of every voice on `note`, now and until changed.
+    pub fn set_expression(&mut self, note: u8, expression: Expression) {
+        self.player.expression[note as usize & 127] = expression;
+    }
+
     pub fn event_active(&self, id: EventId) -> bool {
         self.player.voices.iter().any(|v| v.event == id)
     }
@@ -653,6 +676,8 @@ struct Player {
     cc: [[u8; 128]; 16],
     /// Channel pressure.
     pressure: [u8; 16],
+    /// Per-key expression, by the voices' note.
+    expression: [Expression; 128],
     /// Velocity of keys that are down.
     keys: [[u8; 128]; 16],
     /// Release triggers deferred by the sustain pedal: note-on velocity.
@@ -691,6 +716,7 @@ impl Player {
             bend: [0.0; 16],
             cc: [[0; 128]; 16],
             pressure: [0; 16],
+            expression: [Expression::default(); 128],
             keys: [[0; 128]; 16],
             pedal_releases: [[0; 128]; 16],
             now: 0,
@@ -716,6 +742,7 @@ impl Player {
         self.sostenuto = [[false; 128]; 16];
         self.bend = [0.0; 16];
         self.pressure = [0; 16];
+        self.expression = [Expression::default(); 128];
         self.cc = [[0; 128]; 16];
         for cc in &mut self.cc {
             (cc[7], cc[10], cc[11]) = (127, 64, 127);
@@ -1191,6 +1218,7 @@ impl Player {
             cc: &self.cc,
             bend: &self.bend,
             pressure: &self.pressure,
+            expression: &self.expression,
             tune: self.instrument.2 + tune,
             rate: self.rate as f32,
             blocking,

@@ -743,6 +743,33 @@ fn lists(read: &mut Vec<(Item, String)>) -> Vec<Item> {
     out
 }
 
+/// An articulation as a list row names it: name, keyswitch, and the script
+/// slot and control that pick it.
+pub type Found = (String, Option<u8>, Option<(u16, u16)>);
+
+/// The articulations in `sections`: the rows of the first list of choices
+/// with keyswitches (else the longest list of choices), each keyswitch read
+/// from the note beside it or else from the key the script named after it.
+pub fn articulations(sections: &[Section], slot: usize, keys: &std::collections::BTreeMap<u8, crate::ksp::KeyState>) -> Vec<Found> {
+    let lists: Vec<&Item> = sections
+        .iter()
+        .flat_map(|s| s.columns.iter().flatten().flatten())
+        .filter(|i| i.face == Face::List && i.list.iter().all(|e| e.control.is_some()))
+        .collect();
+    let keyed = |i: &&&Item| i.list.iter().any(|e| e.key.is_some());
+    let Some(list) = lists.iter().find(keyed).or_else(|| lists.iter().max_by_key(|i| i.list.len())) else {
+        return Vec::new();
+    };
+    list.list
+        .iter()
+        .map(|e| {
+            let named = || keys.iter().find(|(_, k)| clean(&k.name) == e.name).map(|(&n, _)| n);
+            let key = e.key.as_deref().and_then(crate::articulate::parse_note).or_else(named);
+            (e.name.clone(), key, e.control.map(|c| (slot as u16, c as u16)))
+        })
+        .collect()
+}
+
 /// Whether switch `s` lies behind list `list`: a picture over half its rows.
 fn behind(list: &Rect, s: &Rect) -> bool {
     let along = s.bottom().min(list.bottom()) - s.y.max(list.y);
@@ -1678,5 +1705,153 @@ mod tests {
         assert_eq!(Unit::Hertz.format(1234.), "1.2 kHz");
         assert_eq!(Unit::Millis.format(120.), "120 ms");
         assert_eq!(Unit::Semitones.format(3.), "+3 st");
+    }
+
+    /// Plays mixed articulations at once on real libraries through the
+    /// articulation router in channel mode and reports, per pair, whether
+    /// both sound: each articulation's groups are learned from its own
+    /// keyswitch first (four times over, for round robins). `KONTAKTO_SHOT`
+    /// names the instruments; run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn articulations_play_together_on_libraries() {
+        use crate::articulate::{Articulate, In, Mode, Route, Router, apply};
+        use crate::engine::{Bank, Engine, MAX_BLOCK, MEMORY_LIMIT, load_scripts};
+        use std::collections::BTreeSet;
+        let files = crate::import::presets(std::path::Path::new(crate::import::LIBRARY_ROOT)).unwrap_or_default();
+        let names = std::env::var("KONTAKTO_SHOT").unwrap_or_default();
+        const RATE: f64 = 48000.;
+        let render = |e: &mut Engine, seconds: f64| {
+            let (mut l, mut r) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+            for _ in 0..(seconds * RATE / MAX_BLOCK as f64) as usize {
+                e.render(&mut l, &mut r);
+            }
+        };
+        // Groups by family: their names without numbers, so round robins
+        // and dynamic layers of one articulation read as one.
+        let sounding = |e: &Engine, i: &crate::import::Instrument| -> BTreeSet<String> {
+            (e.voice_census().iter())
+                .filter(|v| !v.released && v.gain * v.envelope > 1e-3)
+                .map(|v| i.groups[v.group as usize].name.chars().filter(|c| !c.is_ascii_digit()).collect())
+                .collect()
+        };
+        let quiet = |e: &mut Engine| {
+            for c in 0..16 {
+                e.cc(c, 123, 0);
+            }
+            render(e, 2.0);
+        };
+        for name in names.split(',') {
+            let Some(path) = files.iter().find(|p| p.file_stem().is_some_and(|n| n == name)) else {
+                println!("== {name}: not found");
+                continue;
+            };
+            let i = crate::import::read(path).unwrap();
+            let (script, _) = load_scripts(&i, i.script_state.clone(), RATE);
+            let controllers = script.as_deref().map_or(Vec::new(), |rt| rt.init_controllers.clone());
+            let bank = Bank::load_counting(&i, MEMORY_LIMIT, &controllers, &Default::default()).unwrap();
+            let mut e = Engine::default();
+            e.blocking_streams = true;
+            e.set_bank(Some(Box::new(bank)));
+            e.set_script(script);
+            render(&mut e, 1.0);
+            let view = crate::plugin::script_interface(e.script());
+            let Some(interface) = view.interface else {
+                println!("== {name}: no performance view");
+                continue;
+            };
+            let pictures = crate::artwork::pictures(
+                &i.path,
+                interface.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+                    Some(Value::Text(n)) => Some(n.as_str()),
+                    _ => None,
+                }),
+            );
+            let found = articulations(&sections(&interface, &pictures), view.slot, &view.keys);
+            println!("== {name}: {} articulations", found.len());
+            // A note every articulation plays: the middle of the mapped keys above the keyswitches.
+            let lowest = found.iter().filter_map(|f| f.1).max().map_or(0, |k| k + 1);
+            let mut mapped: Vec<u8> = (i.zones.iter())
+                .filter(|z| z.available && z.high_key >= lowest)
+                .flat_map(|z| z.low_key.max(lowest)..=z.high_key)
+                .collect();
+            mapped.sort_unstable();
+            let note = mapped.get(mapped.len() / 2).copied().unwrap_or(60).min(120);
+            let path = path.to_string_lossy().into_owned();
+            let mut a = Articulate::default();
+            a.sync(&path, &found);
+            let mut router = Router::default();
+            let send = |e: &mut Engine, router: &mut Router, ev| router.input(ev, 0, &mut |o| apply(e, o));
+            // Each articulation's groups, as its own keyswitch or click plays them.
+            let mut groups: Vec<BTreeSet<String>> = Vec::new();
+            for (n, f) in found.iter().enumerate() {
+                let mut all = BTreeSet::new();
+                for rep in 0..8 {
+                    quiet(&mut e);
+                    match (f.1, f.2) {
+                        (Some(key), _) => {
+                            e.note_on(0, key, 100);
+                            e.note_off(0, key);
+                        }
+                        (None, Some((slot, control))) => e.ui_control(slot.into(), control.into(), 1),
+                        _ => {}
+                    }
+                    render(&mut e, 0.05);
+                    // Both notes the pairs play, round robins and all.
+                    let played = note + if rep % 2 == 0 { 0 } else { 4 };
+                    e.note_on(0, played, 100);
+                    render(&mut e, 0.25);
+                    all.extend(sounding(&e, &i));
+                    e.note_off(0, played);
+                }
+                println!("  {n:2} {:32} key {:?} control {:?}: {} group families", f.0, f.1, f.2, all.len());
+                groups.push(all);
+            }
+            let Some(first) = (0..found.len()).find(|&n| !groups[n].is_empty()) else {
+                continue;
+            };
+            let (mut together, mut pairs) = (0, 0);
+            for b in (0..found.len()).filter(|&b| b != first) {
+                let only_a: BTreeSet<String> = groups[first].difference(&groups[b]).cloned().collect();
+                let only_b: BTreeSet<String> = groups[b].difference(&groups[first]).cloned().collect();
+                if only_a.is_empty() || only_b.is_empty() {
+                    println!("  {} + {}: same groups, cannot tell apart", found[first].0, found[b].0);
+                    continue;
+                }
+                for staggered in [false, true] {
+                    quiet(&mut e);
+                    let mut a = a.clone();
+                    a.mode = Mode::Channel;
+                    for (n, art) in a.articulations.iter_mut().enumerate() {
+                        art.enabled = n == first || n == b;
+                        art.channel = u8::from(n == b);
+                    }
+                    router.set_route(Route::new(&path, &a, &Default::default()));
+                    send(&mut e, &mut router, In::NoteOn(0, note, 100));
+                    if staggered {
+                        render(&mut e, 0.1);
+                    }
+                    send(&mut e, &mut router, In::NoteOn(1, note + 4, 100));
+                    render(&mut e, 0.25);
+                    let now = sounding(&e, &i);
+                    let (has_a, has_b) = (!now.is_disjoint(&only_a), !now.is_disjoint(&only_b));
+                    pairs += 1;
+                    together += usize::from(has_a && has_b);
+                    println!(
+                        "  {} + {} ({}): {}",
+                        found[first].0,
+                        found[b].0,
+                        if staggered { "second 100 ms later" } else { "one chord" },
+                        match (has_a, has_b) {
+                            (true, true) => "both sound".to_owned(),
+                            _ => format!("first {has_a}, second {has_b}: {now:?}"),
+                        }
+                    );
+                    send(&mut e, &mut router, In::NoteOff(0, note));
+                    send(&mut e, &mut router, In::NoteOff(1, note + 4));
+                }
+            }
+            println!("  together in {together} of {pairs}");
+        }
     }
 }

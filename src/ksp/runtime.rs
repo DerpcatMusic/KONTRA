@@ -1216,6 +1216,11 @@ impl Runtime {
         self.states[slot as usize].error.is_none()
     }
 
+    /// Some enabled script has an `on poly_at`: it shapes per-note pressure itself.
+    pub fn handles_poly_at(&self) -> bool {
+        (0..self.programs.len() as u8).any(|slot| self.entry(slot, Callback::PolyAt).is_some())
+    }
+
     fn entry(&self, slot: u8, cb: Callback) -> Option<u32> {
         if self.enabled(slot) {
             self.programs[slot as usize].callback(cb)
