@@ -1,4 +1,4 @@
-//! Read-only NKX/NKR directory index with optional library-provided resource keys.
+//! Read-only NKX/NKR directory index; encrypted members need a caller-supplied keystream.
 //! Format references: unnks and nkxtract; verified against local v0x110 archives.
 use crate::{read_bytes::ReadBytesExt, Error};
 use std::{
@@ -72,7 +72,7 @@ impl Archive {
         &self,
         mut reader: R,
         name: &str,
-        key: Option<&crate::nis::LibraryKey>,
+        key: Option<&dyn crate::nis::LibraryKey>,
     ) -> Result<Vec<u8>, Error> {
         let e = self
             .find(name)

@@ -2,6 +2,9 @@
 name = "kontakto"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "KONTRA: a Kontakt-compatible sampler (CLAP, VST3, standalone)"
+repository = "https://github.com/Matari-Audio/kontra"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -12,9 +15,12 @@ plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-text", "dep:zune-jpeg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
+# Reads a library's own access data to open its encrypted content (src/access.rs).
+library-access = ["dep:aes"]
 
 [dependencies]
 anyhow = "1"
+aes = { version = "0.8", optional = true }
 png = { version = "0.18", optional = true }
 ni-file = { path = "vendor/ni-file", features = ["serde"] }
 ncw = { path = "vendor/ncw" }

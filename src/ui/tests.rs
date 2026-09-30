@@ -1011,7 +1011,8 @@ fn screenshot() {
     let sticky_ok = instruments.len() > 1;
     for (state, loaded, presses) in states
         .into_iter()
-        .filter(|(s, ..)| wanted(s) && (*s != "sticky" || sticky_ok))
+        // Without the owner's library (CI), only the states with no instrument.
+        .filter(|(s, loaded, _)| wanted(s) && (*s != "sticky" || sticky_ok) && (!loaded || !instruments.is_empty()))
     {
         for &(width, height) in &sizes {
             let p = racked(&files, &instruments, loaded, state);

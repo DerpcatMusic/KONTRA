@@ -72,7 +72,7 @@ impl SubtreeItem {
 
     pub fn read_with_key<R: ReadBytesExt>(
         mut reader: R,
-        key: Option<&LibraryKey>,
+        key: Option<&dyn LibraryKey>,
     ) -> Result<Self, Error> {
         if reader.read_u32_le()? != 1 {
             return Err(Error::Static("Unsupported subtree version"));
@@ -144,47 +144,12 @@ mod tests {
     }
 }
 
-/// Library-provided AES-256 key and counter. Deliberately has no Debug implementation.
-pub struct LibraryKey {
-    stream: Box<[u8; 65536]>,
-}
-impl LibraryKey {
-    pub fn new(key: [u8; 32], iv: [u8; 16]) -> Self {
-        use aes::cipher::{BlockEncrypt, KeyInit};
-        let cipher = aes::Aes256::new((&key).into());
-        let mut counter = u128::from_be_bytes(iv);
-        let mut stream = Box::new([0u8; 65536]);
-        let mut seed = 0x608da0a2u32;
-        for chunk in stream.chunks_exact_mut(16) {
-            let mut block = counter.to_be_bytes().into();
-            cipher.encrypt_block(&mut block);
-            for (out, value) in chunk.iter_mut().zip(block) {
-                seed = seed.wrapping_mul(0x343fd).wrapping_add(0x269ec3);
-                *out = value ^ (seed >> 16) as u8;
-            }
-            counter = counter.wrapping_add(1);
-        }
-        Self { stream }
-    }
-    /// Resource-relative cipher stream; precomputed once, repeated every 64 KiB.
-    pub fn apply(&self, bytes: &mut [u8]) {
+/// A caller-supplied keystream for encrypted presets and archive members.
+/// ni-file derives no keys; implementations live outside this crate.
+pub trait LibraryKey: Send + Sync {
+    /// Decrypt `bytes` that start `offset` bytes into the resource.
+    fn apply_at(&self, offset: u64, bytes: &mut [u8]);
+    fn apply(&self, bytes: &mut [u8]) {
         self.apply_at(0, bytes);
-    }
-    /// Decrypt `bytes` that start `offset` bytes into the resource. The stream
-    /// is position-relative, so members can be read at random offsets.
-    pub fn apply_at(&self, offset: u64, bytes: &mut [u8]) {
-        let len = self.stream.len();
-        let mut at = (offset % len as u64) as usize;
-        // Whole runs up to the stream's wrap-around: a plain XOR that vectorizes.
-        for run in bytes.chunks_mut(len) {
-            let (head, tail) = run.split_at_mut((len - at).min(run.len()));
-            for (byte, key) in head.iter_mut().zip(&self.stream[at..]) {
-                *byte ^= key;
-            }
-            for (byte, key) in tail.iter_mut().zip(&self.stream[..]) {
-                *byte ^= key;
-            }
-            at = (at + run.len()) % len;
-        }
     }
 }
