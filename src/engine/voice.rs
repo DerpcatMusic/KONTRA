@@ -1177,7 +1177,11 @@ impl Voice {
             // leave it, so it returns as if it had played on. Muted a while,
             // it stops streaming too: disk reads and decoding for voices no
             // one hears were most of the streamers' work.
-            self.filter.rest();
+            // Once is enough: only rendering (which unmutes) moves it again,
+            // and its state is most of a muted voice's cache lines.
+            if self.muted == 0 {
+                self.filter.rest();
+            }
             self.muted = self.muted.saturating_add(n as u32);
             // Still in the resident head, resuming is a voice start as usual.
             if self.muted as f32 >= PAUSE_AFTER * cx.rate || (self.pos as u64) < self.limit {
