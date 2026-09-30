@@ -1,0 +1,156 @@
+name: Nightly
+
+# Daily release builds (CLAP, VST3, standalone) for Linux, macOS and
+# Windows, published as the rolling `nightly` pre-release. Skipped when the
+# default branch has no commits since the last nightly. macOS bundles are
+# signed ad hoc; notarization is out of scope.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even without new commits
+        type: boolean
+        default: false
+      macos_x86_64:
+        description: Also build macOS x86_64 (another macOS job, 10x minutes)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # The MOOSE revision Cargo.toml pins; cargo-moose must match it.
+  MOOSE_REV: bffa4677d0b82119d38566ce7e932dc5c463d497
+  FEATURES: library-access
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          FORCE: ${{ inputs.force || false }}
+          MAC_X86: ${{ inputs.macos_x86_64 || false }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # `gh release create --target` makes a lightweight tag: its object is the commit.
+          last=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
+          echo "HEAD $GITHUB_SHA, last nightly ${last:-none}"
+          build=true
+          if [ "$last" = "$GITHUB_SHA" ] && [ "$FORCE" != true ]; then build=false; fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          matrix='{"include":[
+            {"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","name":"linux-x86_64"},
+            {"os":"windows-latest","target":"x86_64-pc-windows-msvc","name":"windows-x86_64"},
+            {"os":"macos-latest","target":"aarch64-apple-darwin","name":"macos-arm64"}'
+          if [ "$MAC_X86" = true ]; then
+            matrix+=',{"os":"macos-latest","target":"x86_64-apple-darwin","name":"macos-x86_64"}'
+          fi
+          echo "matrix=$(echo "$matrix]}" | tr -d '\n ')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    name: build (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: System libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config zip \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-icccm4-dev libxcursor-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev \
+            libgl1-mesa-dev libvulkan-dev \
+            libasound2-dev libjack-jackd2-dev
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install cargo-moose
+        shell: bash
+        run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
+      - name: CLAP and VST3 bundles
+        shell: bash
+        run: cargo moose build --clap --vst3 --features "$FEATURES" --target ${{ matrix.target }}
+      - name: Standalone
+        shell: bash
+        run: cargo build --release --features "standalone,$FEATURES" --bin kontakto-standalone --target ${{ matrix.target }}
+      - name: Stage
+        shell: bash
+        run: |
+          stage="KONTRA-nightly-${{ matrix.name }}"
+          mkdir "$stage"
+          cp -R "target/bundles/${{ matrix.target }}/KONTRA.clap" "target/bundles/${{ matrix.target }}/KONTRA.vst3" "$stage/"
+          exe=kontakto-standalone; [ "$RUNNER_OS" = Windows ] && exe=kontakto-standalone.exe
+          cp "target/${{ matrix.target }}/release/$exe" "$stage/"
+          cp LICENSE NOTICE THIRD_PARTY.md "$stage/"
+          echo "STAGE=$stage" >> "$GITHUB_ENV"
+      - name: Ad-hoc codesign (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3" "$STAGE/kontakto-standalone"
+          codesign --verify --deep --verbose=2 "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3"
+      - name: Zip
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            macOS) ditto -c -k --sequesterRsrc --keepParent "$STAGE" "$STAGE.zip" ;;
+            Windows) 7z a -tzip "$STAGE.zip" "$STAGE" > /dev/null ;;
+            *) zip -qry "$STAGE.zip" "$STAGE" ;;
+          esac
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.STAGE }}
+          path: ${{ env.STAGE }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: KONTRA-nightly-*
+          merge-multiple: true
+      - name: Publish the nightly pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l dist
+          short=${GITHUB_SHA::7}
+          notes="Automated build of ${short} ($(date -u +%Y-%m-%d)). Untested snapshot.
+
+          Contents per platform: KONTRA.clap, KONTRA.vst3 and kontakto-standalone.
+          macOS builds are signed ad hoc and not notarized: after unzipping, run
+          \`xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone\`.
+          x86_64 builds target x86-64-v3 (AVX2)."
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly dist/*.zip --prerelease --target "$GITHUB_SHA" \
+            --title "Nightly ${short}" --notes "$notes"
