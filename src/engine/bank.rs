@@ -11,7 +11,7 @@ use crate::{
     audio::{self, Frame, Pcm, Sample, SampleReader, Source},
     import::{Group, Instrument, VoiceLimit, Zone},
 };
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, bail};
 use std::{
     collections::HashMap,
     num::NonZero,
@@ -23,7 +23,9 @@ use std::{
     },
 };
 
-/// Default resident sample memory budget per bank.
+/// Default resident sample memory budget per bank. A bank never fails on
+/// it: [`Builder::plan`] trades preload and resident start-offset range for
+/// streaming until the bank fits.
 pub const MEMORY_LIMIT: usize = 1 << 30;
 /// Frames of every sample kept in RAM past the furthest start offset
 /// (Kontakt's DFD preload). Voices start from this instantly while the
@@ -33,8 +35,12 @@ pub const MEMORY_LIMIT: usize = 1 << 30;
 /// 1000 streaming voices and 256 note starts per second; 1024 frames
 /// underruns. Shrinks toward [`MIN_PRELOAD`] to fit the budget.
 pub const PRELOAD_FRAMES: u64 = 2048;
-/// Smallest preload the budget may force: ≈21 ms at 48 kHz.
+/// Smallest preload the budget forces before start-offset ranges start to
+/// stream: ≈21 ms at 48 kHz.
 pub const MIN_PRELOAD: u64 = 1024;
+/// Last-resort preload for banks that still do not fit: ≈5 ms at 48 kHz.
+/// Streams may underrun under heavy load; the bank warns.
+pub const FLOOR_PRELOAD: u64 = 256;
 /// Voices per instrument when the program stores no limit.
 const DEFAULT_POLYPHONY: usize = 512;
 
@@ -136,6 +142,17 @@ pub(crate) struct Span {
     pub data: Pcm,
 }
 
+impl SampleData {
+    /// The resident span holding `frame`.
+    pub(crate) fn span_at(&self, frame: u64) -> Option<u32> {
+        let i = self.spans.partition_point(|s| s.end() <= frame);
+        self.spans
+            .get(i)
+            .filter(|s| s.start <= frame)
+            .map(|_| i as u32)
+    }
+}
+
 impl Span {
     pub fn end(&self) -> u64 {
         self.start + self.data.len() as u64
@@ -145,8 +162,6 @@ impl Span {
 /// Zone data resolved for playback.
 pub(crate) struct ZonePlay {
     pub sample: u32,
-    /// Resident span holding the zone's first frames.
-    pub span: u32,
     pub map: PlayMap,
     /// Maximum start offset in frames.
     pub start_mod: u64,
@@ -194,6 +209,11 @@ pub struct Bank {
     /// Resident bytes the preload was planned for; [`Bank::bytes`] is less
     /// where samples pack.
     pub planned: usize,
+    /// Frames of each zone's start-offset range kept resident; later offsets
+    /// start from the stream.
+    pub cover: u64,
+    /// How the budget degraded streaming, when it may not keep up.
+    pub warning: Option<String>,
     /// Zones dropped because their sample is missing, unreadable or out of bounds.
     pub skipped_zones: usize,
     /// First few reasons for skipped zones.
@@ -214,14 +234,17 @@ impl Bank {
     /// resident samples and stream buffers. The preload shrinks from
     /// [`PRELOAD_FRAMES`] toward [`MIN_PRELOAD`] until the bank fits.
     pub fn load_within(instrument: &Instrument, budget: usize) -> Result<Self> {
-        Self::load_counting(instrument, budget, &AtomicU32::new(0))
+        Self::load_counting(instrument, budget, &[], &AtomicU32::new(0))
     }
 
     /// [`Bank::load_within`], counting `progress` up to [`LOAD_DONE`] as
-    /// samples are opened and then read.
+    /// samples are opened and then read. `controllers` are the values the
+    /// scripts set in `on init` ([`crate::ksp::Runtime::init_controllers`]):
+    /// a tight budget keeps resident only the start offsets they select.
     pub fn load_counting(
         instrument: &Instrument,
         budget: usize,
+        controllers: &[(u8, u8)],
         progress: &AtomicU32,
     ) -> Result<Self> {
         let mut issues = Issues::default();
@@ -292,8 +315,11 @@ impl Bank {
             .iter()
             .map(|(_, r)| Pcm::frame_bytes(r.bits))
             .collect();
-        let (preload, plan, planned) = builder.plan(&frame_bytes, budget)?;
-        let jobs = readers.into_iter().zip(plan).collect();
+        let layout = builder.plan(&frame_bytes, budget, controllers);
+        let (preload, whole, margin, planned) =
+            (layout.preload, layout.whole, layout.margin, layout.bytes);
+        let (cover, max_cover) = (layout.cover.min(layout.width), layout.width);
+        let jobs = readers.into_iter().zip(layout.plan).collect();
         let decoded = parallel(
             jobs,
             |buf: &mut Vec<Frame>, ((source, mut reader), (spans, streamed, looping))| {
@@ -338,13 +364,29 @@ impl Bank {
         } else {
             None
         };
-        ensure!(
-            bytes <= budget,
-            "Resident sample data exceeds the {} MiB bank limit",
-            budget >> 20
-        );
         let mut bank = builder.finish(samples, streamer, bytes)?;
-        (bank.preload, bank.planned) = (preload, planned);
+        (bank.preload, bank.planned, bank.cover) = (preload, planned, cover);
+        let mib = budget >> 20;
+        bank.warning = if planned > budget {
+            Some(format!(
+                "Needs {} MiB resident at the smallest preload, over the {mib} MiB budget",
+                planned >> 20
+            ))
+        } else if preload < MIN_PRELOAD {
+            Some(format!(
+                "Preload cut to {preload} frames to fit {mib} MiB: streams may underrun under heavy load"
+            ))
+        } else if cover < max_cover {
+            Some(format!(
+                "Sample-start offsets more than {cover} frames past the scripts' setting stream from disk and may start late"
+            ))
+        } else if !whole {
+            Some(format!(
+                "Sample-start offsets more than {margin} frames from the scripts' controller settings stream from disk and may start late"
+            ))
+        } else {
+            None
+        };
         audio::trim_heap();
         Ok(bank)
     }
@@ -442,6 +484,21 @@ impl Issues {
 /// whether voices loop inside them indefinitely.
 type Plan = (Vec<Range<u64>>, bool, bool);
 
+/// [`Builder::plan`]'s choice: per-sample plans and their expected bytes.
+struct Layout {
+    preload: u64,
+    /// Every start offset is resident, not only those reachable.
+    whole: bool,
+    /// Frames around the reachable offsets also resident.
+    margin: u64,
+    /// Resident frames of each zone's start-offset range past its lowest.
+    cover: u64,
+    /// The widest resident start-offset range any zone asks for.
+    width: u64,
+    plan: Vec<Plan>,
+    bytes: usize,
+}
+
 /// Shared validation and indexing for loaded and in-memory banks.
 struct Builder {
     groups: Vec<Group>,
@@ -485,7 +542,6 @@ impl Builder {
                         .min(map.end - map.start - 1);
                     plays.push(ZonePlay {
                         sample,
-                        span: 0,
                         map,
                         start_mod,
                     });
@@ -534,17 +590,36 @@ impl Builder {
         }
     }
 
-    /// The largest preload in `MIN_PRELOAD..=PRELOAD_FRAMES` whose resident
-    /// data fits `budget`, and per sample the resident ranges and whether it
-    /// streams. `frame_bytes[sample]` is its expected storage per frame.
-    /// Also returns the planned bytes: packing may store less.
-    fn plan(&self, frame_bytes: &[usize], budget: usize) -> Result<(u64, Vec<Plan>, usize)> {
+    /// Per sample the resident ranges and whether it streams, shedding
+    /// resident data until it fits `budget`, cheapest loss first:
+    /// 1. every zone's whole start-offset range, the preload shrinking from
+    ///    [`PRELOAD_FRAMES`] to [`MIN_PRELOAD`];
+    /// 2. only the offsets reachable with the scripts' `controllers` (Areia
+    ///    16 Violins keeps 12000 frames for each of 24576 samples, 1.8 GiB,
+    ///    yet its script pins CC113 to one offset), widened into the spare
+    ///    budget, or with the preload shrinking again;
+    /// 3. the reachable ranges cut short;
+    /// 4. the preload down to [`FLOOR_PRELOAD`].
+    ///
+    /// Past that the bank loads over budget rather than fail. Each step
+    /// keeps the largest value that fits, within 64 frames.
+    /// `frame_bytes[sample]` is its expected storage per frame; packing may
+    /// store less than planned.
+    fn plan(&self, frame_bytes: &[usize], budget: usize, controllers: &[(u8, u8)]) -> Layout {
         let mut uses = vec![Vec::new(); frame_bytes.len()];
-        for play in &self.plays {
-            uses[play.sample as usize].push(play);
+        for (i, play) in self.plays.iter().enumerate() {
+            uses[play.sample as usize].push(i);
         }
-        let plan = |preload| -> (Vec<Plan>, usize) {
-            let plan: Vec<_> = uses.iter().map(|plays| spans(plays, preload)).collect();
+        let all: Vec<_> = self.plays.iter().map(|p| (0, p.start_mod)).collect();
+        let reachable = self.reachable(controllers);
+        let plan = |reach: &[(u64, u64)], preload, cover| -> Layout {
+            let plan: Vec<_> = uses
+                .iter()
+                .map(|plays| {
+                    let plays: Vec<_> = plays.iter().map(|&i| (&self.plays[i], reach[i])).collect();
+                    spans(&plays, preload, cover)
+                })
+                .collect();
             let mut bytes: usize = plan
                 .iter()
                 .zip(frame_bytes)
@@ -555,32 +630,101 @@ impl Builder {
             if plan.iter().any(|(_, streamed, _)| *streamed) {
                 bytes += Streamer::BYTES;
             }
-            (plan, bytes)
+            Layout {
+                preload,
+                whole: reach == &all[..],
+                margin: 0,
+                cover,
+                width: reach.iter().map(|(lo, hi)| hi - lo).max().unwrap_or(0),
+                plan,
+                bytes,
+            }
         };
-        let (full, bytes) = plan(PRELOAD_FRAMES);
-        if bytes <= budget {
-            return Ok((PRELOAD_FRAMES, full, bytes));
+        // The largest `x` in `lo..=hi` whose layout fits, given that `lo`'s does.
+        let largest = |lo: u64, hi: u64, at: &dyn Fn(u64) -> Layout| {
+            let (mut fits, mut over, mut best) = (lo, hi + 1, at(lo));
+            while over - fits > 64 {
+                let mid = (fits + over) / 2;
+                let candidate = at(mid);
+                if candidate.bytes <= budget {
+                    (fits, best) = (mid, candidate);
+                } else {
+                    over = mid;
+                }
+            }
+            best
+        };
+        let full = plan(&all, PRELOAD_FRAMES, u64::MAX);
+        if full.bytes <= budget {
+            return full;
         }
-        let (mut best, mut best_bytes) = plan(MIN_PRELOAD);
-        let bytes = best_bytes;
-        ensure!(
-            bytes <= budget,
-            "Resident sample data needs {} MiB even at the minimum preload; the bank limit is {} MiB",
-            bytes >> 20,
-            budget >> 20
-        );
-        // Resident bytes grow with the preload: bisect to 256-frame precision.
-        let (mut fits, mut over) = (MIN_PRELOAD, PRELOAD_FRAMES);
-        while over - fits > 256 {
-            let mid = (fits + over) / 2;
-            let (candidate, bytes) = plan(mid);
-            if bytes <= budget {
-                (fits, best, best_bytes) = (mid, candidate, bytes);
-            } else {
-                over = mid;
+        if plan(&all, MIN_PRELOAD, u64::MAX).bytes <= budget {
+            return largest(MIN_PRELOAD, PRELOAD_FRAMES, &|p| plan(&all, p, u64::MAX));
+        }
+        // The reachable offsets, widened by `margin` frames into spare budget.
+        let widened = |margin: u64| {
+            let reach: Vec<_> = reachable
+                .iter()
+                .zip(&all)
+                .map(|(&(lo, hi), &(_, max))| {
+                    (lo.saturating_sub(margin), hi.saturating_add(margin).min(max))
+                })
+                .collect();
+            Layout {
+                margin,
+                ..plan(&reach, PRELOAD_FRAMES, u64::MAX)
+            }
+        };
+        let reach = &reachable[..];
+        if plan(reach, PRELOAD_FRAMES, u64::MAX).bytes <= budget {
+            let widest = all.iter().map(|&(_, max)| max).max().unwrap_or(0);
+            return largest(0, widest, &widened);
+        }
+        if plan(reach, MIN_PRELOAD, u64::MAX).bytes <= budget {
+            return largest(MIN_PRELOAD, PRELOAD_FRAMES, &|p| plan(reach, p, u64::MAX));
+        }
+        if plan(reach, MIN_PRELOAD, 0).bytes <= budget {
+            let width = reach.iter().map(|(lo, hi)| hi - lo).max().unwrap_or(0);
+            return largest(0, width, &|c| plan(reach, MIN_PRELOAD, c));
+        }
+        let floor = plan(reach, FLOOR_PRELOAD, 0);
+        if floor.bytes <= budget {
+            return largest(FLOOR_PRELOAD, MIN_PRELOAD, &|p| plan(reach, p, 0));
+        }
+        floor
+    }
+
+    /// Per zone, the lowest and highest start offset (frames) its voices
+    /// take with `controllers` held and every other controller at 0, over
+    /// its keys and velocities. Scripted `play_note` offsets are not known.
+    fn reachable(&self, controllers: &[(u8, u8)]) -> Vec<(u64, u64)> {
+        let mut cc = [0u8; 128];
+        for &(n, value) in controllers {
+            if let Some(c) = cc.get_mut(n as usize) {
+                *c = value;
             }
         }
-        Ok((fits, best, best_bytes))
+        let mut seen = HashMap::new();
+        self.plays
+            .iter()
+            .zip(&self.zones)
+            .map(|(play, z)| {
+                if play.start_mod == 0 {
+                    return (0, 0);
+                }
+                let key = (z.group, z.low_key, z.high_key, z.low_velocity, z.high_velocity);
+                let (lo, hi) = *seen.entry(key).or_insert_with(|| {
+                    self.settings[z.group].mods.start_offset_range(
+                        &cc,
+                        z.low_key..=z.high_key,
+                        z.low_velocity..=z.high_velocity,
+                    )
+                });
+                // As a voice rounds it (`Player::spawn`).
+                let frames = |x: f32| ((x * play.start_mod as f32) as u64).min(play.start_mod);
+                (frames(lo), frames(hi))
+            })
+            .collect()
     }
 
     /// Skip every zone of a sample whose data turned out to be unreadable.
@@ -606,19 +750,7 @@ impl Builder {
                 self.issues.notes.join("; ")
             );
         }
-        let mut plays = self.plays;
-        for play in &mut plays {
-            let spans = &samples[play.sample as usize].spans;
-            let first = if play.map.reverse {
-                play.map.end - 1
-            } else {
-                play.map.start
-            };
-            let span = spans
-                .iter()
-                .position(|s| s.start <= first && first < s.end());
-            play.span = span.ok_or_else(|| anyhow::anyhow!("Zone start is not resident"))? as u32;
-        }
+        let plays = self.plays;
         let any_solo = self.groups.iter().any(|g| g.soloed);
         let playable = self
             .groups
@@ -648,6 +780,8 @@ impl Builder {
             samples,
             preload: PRELOAD_FRAMES,
             planned: bytes,
+            cover: u64::MAX,
+            warning: None,
             voice_groups: self.voice_groups,
             polyphony: self.polyphony,
             streamer,
@@ -702,23 +836,25 @@ fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), 
 
 /// Resident frame ranges of a sample played by `plays`, merged and sorted,
 /// whether any zone path extends beyond them, and whether a voice may loop in
-/// them. Each zone keeps `preload` frames past its furthest start offset;
+/// them. Each zone keeps its start offsets `lo..=hi` (at most `cover` past
+/// `lo`; other offsets stream) and `preload` frames past them;
 /// loops ending within four preloads of the zone start stay resident, so
 /// short sustain loops never touch the disk. Data past the furthest frame
 /// any zone plays is never needed.
-fn spans(plays: &[&ZonePlay], preload: u64) -> Plan {
+fn spans(plays: &[(&ZonePlay, (u64, u64))], preload: u64, cover: u64) -> Plan {
     let (mut frames, mut looping, mut any_loop) = (0, false, false);
     let mut ranges = Vec::with_capacity(plays.len());
-    for play in plays {
+    for &(play, (lo, hi)) in plays {
         let map = &play.map;
         frames = frames.max(map.end);
         any_loop |= map.looped.is_some();
-        let head = preload + play.start_mod;
+        // A voice's first window frame is one before its start offset.
+        let (first, head) = (lo.saturating_sub(1), hi.min(lo.saturating_add(cover)) + preload);
         if map.reverse {
-            ranges.push(map.end.saturating_sub(head)..map.end);
+            ranges.push(map.end.saturating_sub(head)..map.end - first.min(map.end));
             continue;
         }
-        let mut range = map.start..map.start + head;
+        let mut range = map.start + first..map.start + head;
         if let Some(l) = map
             .looped
             .filter(|l| l.end <= map.start + 4 * preload && map.start < l.end)

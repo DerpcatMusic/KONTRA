@@ -399,7 +399,7 @@ impl Worker {
                 .sources
                 .get(config.sample as usize)
                 .and_then(Option::as_ref)
-                .and_then(|source| source.open().ok())
+                .and_then(|source| source.open_stream().ok())
                 .map(|reader| (config.sample, reader));
         }
         let reader = cursor.reader.as_mut().map(|(_, reader)| reader);

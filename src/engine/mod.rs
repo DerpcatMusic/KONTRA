@@ -46,6 +46,8 @@ pub const MAX_BLOCK: usize = 128;
 pub const MAX_GROUPS: usize = 4096;
 /// Fade applied to voices stolen by the instrument polyphony limit.
 const STEAL_FADE: f32 = 0.005;
+/// Seconds of ramp where a voice starts or ends mid-waveform.
+pub(crate) const DECLICK: f32 = 0.001;
 
 /// Identifies one note event and every voice it started.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
@@ -503,6 +505,7 @@ impl Engine {
     /// Render `left.len()` frames, overwriting both buffers. Scripts advance
     /// first; their commands then split voice rendering at their exact frames.
     pub fn render(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let _ftz = FlushDenormals::new();
         let n = left.len().min(right.len());
         left.fill(0.0);
         right.fill(0.0);
@@ -561,6 +564,13 @@ impl Engine {
             self.player.output(l, r, self.cutoff);
             // Runs without voices too, so reverb and convolution tails ring out.
             self.fx.process(l, r);
+            // Backstop: a non-finite sample would deafen the host's whole bus.
+            if !l.iter().chain(r.iter()).all(|x| x.is_finite()) {
+                l.fill(0.0);
+                r.fill(0.0);
+                self.fx.clear();
+                self.player.tone = [0.0; 2];
+            }
         }
         // Only an empty render leaves changes behind: apply them now.
         for i in written..self.writes.len() {
@@ -598,6 +608,8 @@ struct Player {
     scratch: Scratch,
     rate: f64,
     sustain: [bool; 16],
+    /// Keys latched by the sostenuto pedal (CC66).
+    sostenuto: [[bool; 128]; 16],
     bend: [f32; 16],
     cc: [[u8; 128]; 16],
     /// Channel pressure.
@@ -629,6 +641,7 @@ impl Player {
             scratch: Scratch::default(),
             rate,
             sustain: [false; 16],
+            sostenuto: [[false; 128]; 16],
             bend: [0.0; 16],
             cc: [[0; 128]; 16],
             pressure: [0; 16],
@@ -651,6 +664,7 @@ impl Player {
 
     fn reset_midi(&mut self) {
         self.sustain = [false; 16];
+        self.sostenuto = [[false; 128]; 16];
         self.bend = [0.0; 16];
         self.pressure = [0; 16];
         self.cc = [[0; 128]; 16];
@@ -791,8 +805,16 @@ impl Player {
         let wraps = play
             .map
             .wraps(if release_trigger { offset } else { FOREVER });
-        let span = &sample.spans[play.span as usize];
-        let limit = play.map.resident_limit(wraps, span.start, span.end());
+        // The resident span holding the voice's first window frame (one
+        // before the start, for the cubic's left tap), if any does.
+        let first = offset.saturating_sub(1);
+        let span_index = play
+            .map
+            .run(first, wraps)
+            .and_then(|run| sample.span_at(run.frame))
+            .unwrap_or(0);
+        let span = &sample.spans[span_index as usize];
+        let limit = play.map.resident_limit(first, wraps, span.start, span.end());
         let stream = if sample.streamed {
             self.free.pop()
         } else {
@@ -807,6 +829,8 @@ impl Player {
                     trusted: 0,
                 }
             } else {
+                // From the voice's start on (`limit >= first`): an offset past
+                // the resident range streams from there, not from the zone start.
                 let tag = bank.slots()[slot as usize].configure(
                     play.sample,
                     &play.map,
@@ -840,7 +864,7 @@ impl Player {
             release_trigger,
             age: self.clock,
             sample: play.sample,
-            span: play.span,
+            span: span_index,
             map: play.map,
             wraps,
             length: play.map.len(wraps),
@@ -865,6 +889,9 @@ impl Player {
         let (modulation, _) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
         let pan = (zone.pan + settings.pan + ev.pan).clamp(-1.0, 1.0);
         voice.gains = balance(base_level * settings.gain * modulation * voice.volume, pan);
+        if offset > 0 {
+            voice.fade.fade_in(self.fade_frames(DECLICK));
+        }
         self.voices.push(voice);
     }
 
@@ -930,7 +957,7 @@ impl Player {
         }
         let (c, n) = (channel as usize, note as usize);
         let velocity = std::mem::take(&mut self.keys[c][n]);
-        let sustained = self.sustain[c];
+        let sustained = self.pedal(channel, note);
         for v in &mut self.voices {
             if v.channel == channel && v.note == note && v.held && !v.release_trigger {
                 v.held = false;
@@ -961,7 +988,8 @@ impl Player {
             .filter(|v| v.event == id && !v.released)
         {
             first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger));
-            if self.sustain[v.channel as usize] {
+            let (c, n) = (v.channel as usize & 15, v.note as usize & 127);
+            if self.sustain[c] || self.sostenuto[c][n] {
                 v.held = false;
             } else {
                 v.release(bank, &mut self.free);
@@ -979,7 +1007,7 @@ impl Player {
         groups: &GroupMask,
         defaults: Ahdsr,
     ) {
-        if self.sustain.get(channel as usize) == Some(&true) {
+        if channel < 16 && note < 128 && self.pedal(channel, note) {
             self.pedal_releases[channel as usize][note as usize] = velocity;
             return;
         }
@@ -1007,25 +1035,34 @@ impl Player {
                 if self.sustain[c] && !on {
                     self.sustain[c] = false;
                     if let Some(bank) = bank {
-                        self.pedal_up(bank, channel, defaults);
+                        let free = self.sostenuto[c].map(|latched| !latched);
+                        self.pedal_up(bank, channel, &free, defaults);
                     }
                 }
                 self.sustain[c] = on;
             }
+            // Sostenuto latches the keys down now; its release lets go of
+            // those no longer held by key or sustain.
+            66 => {
+                let on = value >= 64;
+                let latched = std::mem::replace(&mut self.sostenuto[c], [false; 128]);
+                if on {
+                    self.sostenuto[c] = std::array::from_fn(|n| latched[n] || self.keys[c][n] > 0);
+                } else if let (Some(bank), false) = (bank, self.sustain[c]) {
+                    self.pedal_up(bank, channel, &latched, defaults);
+                }
+            }
+            // All sound off: a click-free cut, well short of any release.
             120 => {
-                let slots = bank.map_or(&[][..], Bank::slots);
-                let free = &mut self.free;
-                self.voices.retain(|v| {
-                    let keep = v.channel != channel;
-                    if let (false, Some(stream)) = (keep, v.stream) {
-                        slots[stream.slot as usize].stop();
-                        free.push(stream.slot);
-                    }
-                    keep
-                });
+                let fade = self.fade_frames(STEAL_FADE);
+                for v in self.voices.iter_mut().filter(|v| v.channel == channel) {
+                    v.fade.start(0.0, fade, true);
+                }
+                self.pedal_releases[c] = [0; 128];
             }
             121 => {
                 self.cc(bank, channel, 64, 0, defaults);
+                self.cc(bank, channel, 66, 0, defaults);
                 self.bend[c] = 0.0;
                 self.cc[c][1] = 0;
                 self.cc[c][11] = 127;
@@ -1041,13 +1078,24 @@ impl Player {
         }
     }
 
-    fn pedal_up(&mut self, bank: &Bank, channel: u8, defaults: Ahdsr) {
+    /// Whether a pedal keeps `note` sounding after its key goes up.
+    fn pedal(&self, channel: u8, note: u8) -> bool {
+        self.sustain[channel as usize] || self.sostenuto[channel as usize][note as usize]
+    }
+
+    /// A pedal let go: release the `notes` whose keys are up.
+    fn pedal_up(&mut self, bank: &Bank, channel: u8, notes: &[bool; 128], defaults: Ahdsr) {
         for v in &mut self.voices {
-            if v.channel == channel && !v.held && !v.released && !v.release_trigger {
+            if v.channel == channel
+                && notes[v.note as usize & 127]
+                && !v.held
+                && !v.released
+                && !v.release_trigger
+            {
                 v.release(bank, &mut self.free);
             }
         }
-        for note in 0..128u8 {
+        for note in (0..128u8).filter(|&n| notes[n as usize]) {
             let velocity =
                 std::mem::take(&mut self.pedal_releases[channel as usize][note as usize]);
             if velocity > 0 {
@@ -1127,6 +1175,42 @@ impl Player {
                 *x = *state;
             }
         }
+    }
+}
+
+/// Flush-to-zero and denormals-are-zero while alive, restoring the caller's
+/// mode after: decaying tails (tone filter, effects, releases) otherwise
+/// crawl through subnormals at many times the cost per sample.
+struct FlushDenormals {
+    #[cfg(target_arch = "x86_64")]
+    saved: u32,
+}
+
+impl FlushDenormals {
+    #[allow(deprecated)]
+    fn new() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        {
+            use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+            const FTZ_DAZ: u32 = 0x8040;
+            // SAFETY: SSE is baseline on x86_64; only the FTZ and DAZ bits change.
+            let saved = unsafe { _mm_getcsr() };
+            unsafe { _mm_setcsr(saved | FTZ_DAZ) };
+            Self { saved }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        Self {}
+    }
+}
+
+impl Drop for FlushDenormals {
+    #[allow(deprecated)]
+    fn drop(&mut self) {
+        // SAFETY: restores the mode read in `new`.
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            std::arch::x86_64::_mm_setcsr(self.saved)
+        };
     }
 }
 

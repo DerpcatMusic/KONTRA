@@ -730,11 +730,6 @@ impl BackgroundTask for Load {
                         c.group = group as u32;
                     }
                 }
-                let bank = Box::new(Bank::load_counting(
-                    &instrument,
-                    crate::engine::MEMORY_LIMIT,
-                    &params.shared.load_progress[slot],
-                )?);
                 let resident: usize = params
                     .shared
                     .view
@@ -746,10 +741,16 @@ impl BackgroundTask for Load {
                     .filter(|(n, _)| *n != slot)
                     .map(|(_, p)| p.bytes)
                     .sum();
-                anyhow::ensure!(
-                    resident + bank.bytes <= 2 * crate::engine::MEMORY_LIMIT,
-                    "Rack exceeds 2 GiB RAM limit"
-                );
+                // The part gets what the 2 GiB rack has left; a tight budget
+                // streams more instead of failing.
+                let budget = crate::engine::MEMORY_LIMIT
+                    .min((2 * crate::engine::MEMORY_LIMIT).saturating_sub(resident));
+                let bank = Box::new(Bank::load_counting(
+                    &instrument,
+                    budget,
+                    script.as_deref().map_or(&[], |rt| &rt.init_controllers),
+                    &params.shared.load_progress[slot],
+                )?);
                 Ok((instrument, Some(bank), script, snapshot))
             })();
             let current = params.selection.read().unwrap();
@@ -920,6 +921,9 @@ fn bank_status(bank: &Bank) -> String {
             " · {} zones skipped (missing or unreadable)",
             bank.skipped_zones
         );
+    }
+    if let Some(warning) = &bank.warning {
+        status += &format!(" · {warning}");
     }
     status
 }
