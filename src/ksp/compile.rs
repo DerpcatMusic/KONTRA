@@ -435,6 +435,7 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
             c.declare_all(body)?;
         }
     }
+    c.alias_case_variants();
     let mut units: Vec<(usize, Unit)> = Vec::new();
     for (i, b) in blocks.iter().enumerate() {
         let unit = c.unit(b);
@@ -723,6 +724,33 @@ impl<'a> Compiler<'a> {
         self.p.ui_callbacks.push(None);
         self.p.sys_arrays[a as usize] = Some(id);
         id
+    }
+
+    /// Kontakt matches variable names without regard to case: Una Corda declares
+    /// `$T3_swiNoiToEQ` and persists `$T3_swiNoiToEq`. Every spelling of a
+    /// declared name that the script uses resolves to the declared variable.
+    fn alias_case_variants(&mut self) {
+        let folded: HashMap<String, VarId> = self
+            .var_ids
+            .iter()
+            .map(|(&s, &v)| (self.name(s).to_ascii_lowercase(), v))
+            .collect();
+        for sym in 0..self.syms.count() as Sym {
+            let name = self.name(sym);
+            // Kontakt's own names (`%CC`, `$EVENT_NOTE`) keep their meaning.
+            let builtin = SysArray::from_name(name).is_some()
+                || builtins::sys_var(name).is_some()
+                || builtins::constant(name).or_else(|| builtins::symbol(name)).is_some();
+            if builtin
+                || self.var_ids.contains_key(&sym)
+                || !name.starts_with(['$', '%', '~', '?', '@', '!'])
+            {
+                continue;
+            }
+            if let Some(&v) = folded.get(&name.to_ascii_lowercase()) {
+                self.var_ids.insert(sym, v);
+            }
+        }
     }
 
     /// Resolve a variable reference to a declared or runtime-maintained variable.

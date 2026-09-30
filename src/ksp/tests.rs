@@ -647,3 +647,14 @@ fn live_view_follows_ui_control() {
         l
     });
 }
+
+#[test]
+fn variable_names_match_without_case() {
+    // Una Corda persists `$swiNoiToEq` after declaring `$swiNoiToEQ`; Kontakt runs it.
+    // A user `%cc_map` never captures Kontakt's `%CC`.
+    let source = "on init\ndeclare %cc[2]\ndeclare ui_switch $swiNoiToEQ\nmake_persistent($swiNoiToEq)\n$SWINOITOEQ := 1\ndeclare ui_label $l(1,1)\nset_text($l, $swinoitoeq & %CC[0])\nmake_perfview\nend on\non ui_control($swiNoiToEq)\nend on";
+    let ui = initialize(source, 0, 0).unwrap();
+    assert!(ui.performance);
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_VALUE"), "1");
+    assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "10");
+}

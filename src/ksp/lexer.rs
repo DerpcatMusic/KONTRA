@@ -123,6 +123,10 @@ impl Interner {
     pub fn name(&self, sym: Sym) -> &str {
         &self.names[sym as usize]
     }
+
+    pub fn count(&self) -> usize {
+        self.names.len()
+    }
 }
 
 pub struct Tokens {
