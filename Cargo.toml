@@ -56,8 +56,20 @@ name = "kontakto-standalone"
 path = "src/standalone.rs"
 required-features = ["standalone"]
 
+# panic stays "unwind": a plugin must not abort the host, and the importer
+# catches parser panics. Fat LTO with one codegen unit measured no faster than
+# ThinLTO on the synthetic and real-library benches, at four times the build.
+# For a trained build see tools/pgo.sh.
 [profile.release]
 panic = "unwind"
+lto = "thin"
+strip = "symbols"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [dev-dependencies]
 mui = { git = "https://github.com/Matari-Audio/MUI", features = ["cpu"] }
