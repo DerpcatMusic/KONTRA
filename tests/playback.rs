@@ -2140,3 +2140,62 @@ fn overload_fades_released_voices_quietest_first() {
     render(&mut e, 4800);
     assert_eq!(e.active_voices(), 2, "held notes are never shed");
 }
+
+/// Voices that resample alike (same step and position fraction) sum in one
+/// lane before interpolating. Only the rounding of the sums moves: layered,
+/// panned, pitched and releasing voices stay within -120 dBFS of rendering
+/// each alone.
+#[test]
+fn lanes_match_voices_rendered_alone_within_120_db() {
+    let noise = |seed: u32, bits: i32| {
+        let mut x = seed;
+        let scale = 2f32.powi(bits - 1);
+        let frames = (0..20_000)
+            .map(|_| {
+                let mut next = || {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    ((x >> 8) as f32 / (1 << 23) as f32 - 1.0) * 0.99
+                };
+                [next(), next()].map(|v| (v * scale).round() / scale)
+            })
+            .collect();
+        Sample { rate: 48000, frames }
+    };
+    let play = |lanes: bool| {
+        let groups: Vec<Group> = (0..8)
+            .map(|g| Group { gain: 0.02 + 0.01 * g as f32, pan: g as f32 / 8.0 - 0.4, ..Group::default() })
+            .collect();
+        let zones = (0..8)
+            .map(|g| Zone {
+                group: g,
+                sample: PathBuf::from(g.to_string()),
+                loop_range: Some(Loop { start: 1000, end: 19_000, until_release: false, crossfade: 300 }),
+                ..Zone::default()
+            })
+            .collect();
+        // 16-bit, 24-bit and float storage.
+        let samples = (0..8).map(|g| (PathBuf::from(g.to_string()), noise(g as u32 + 1, [16, 24, 32][g % 3]))).collect();
+        let mut e = engine_with(Bank::from_samples(groups, zones, samples).unwrap());
+        (e.attack, e.release) = (0.005, 0.25);
+        e.set_lanes(lanes);
+        // On the root (whole steps), pitched, and an octave up.
+        for (note, velocity) in [(60, 100), (55, 90), (72, 127), (61, 60)] {
+            e.note_on(0, note, velocity);
+            render(&mut e, 1234);
+        }
+        let mut out = render(&mut e, 9000);
+        e.note_off(0, 60);
+        e.note_off(0, 55);
+        out.extend(render(&mut e, 6000));
+        e.note_off(0, 72);
+        e.note_off(0, 61);
+        out.extend(render(&mut e, 12_000));
+        out
+    };
+    let (alone, laned) = (play(false), play(true));
+    let peak = alone.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    let error = alone.iter().flatten().zip(laned.iter().flatten()).fold(0f32, |e, (a, b)| e.max((a - b).abs()));
+    assert!((0.5..=1.0).contains(&peak), "near full scale: {peak}");
+    assert!(error > 0.0, "lanes were taken");
+    assert!(error < 1e-6, "{:.1} dB", 20.0 * error.log10());
+}

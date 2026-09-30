@@ -1848,6 +1848,42 @@ impl Counter {
 /// task does. First `seconds` idle, then `seconds` with `notes` held notes
 /// on every part, one replaced every `1 s / notes`. Prints block times and,
 /// where the CPU's counters are readable, instructions per block.
+/// How the playing voices could share work: muted, filtered, envelope
+/// stage, and how many distinct resampling phases and sources they have.
+fn census(voices: &[crate::engine::VoiceInfo]) {
+    use std::collections::HashMap;
+    let audible: Vec<_> = voices.iter().filter(|v| v.gain > 0.0).collect();
+    let mut phases: HashMap<String, usize> = HashMap::new();
+    for v in &audible {
+        *phases.entry(format!("{:?}", v.phase)).or_default() += 1;
+    }
+    let key = |v: &crate::engine::VoiceInfo| ((v.step * 4294967296.0) as u64, ((v.pos.fract()) * 4294967296.0) as u64);
+    let count = |f: &dyn Fn(&&&crate::engine::VoiceInfo) -> bool, k: &dyn Fn(&crate::engine::VoiceInfo) -> String| {
+        let mut m: HashMap<String, usize> = HashMap::new();
+        for v in audible.iter().filter(|v| f(v)) {
+            *m.entry(k(v)).or_default() += 1;
+        }
+        m.len()
+    };
+    let unfiltered = audible.iter().filter(|v| !v.filtered).count();
+    let mut steps: Vec<(f64, bool)> = audible.iter().map(|v| (v.step, v.pos.fract() == 0.0)).collect();
+    steps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    steps.dedup();
+    println!("  steps (step, integer position): {:?}", &steps[..steps.len().min(8)]);
+    println!(
+        "  census: {} voices · {} muted · {} audible ({} filtered) · stages {:?} · unfiltered: {} step groups, {} step+phase groups, {} identical-source groups · all audible: {} step+phase groups",
+        voices.len(),
+        voices.len() - audible.len(),
+        audible.len(),
+        audible.len() - unfiltered,
+        phases,
+        count(&|v| !v.filtered, &|v| format!("{}", key(v).0)),
+        count(&|v| !v.filtered, &|v| format!("{:?}", key(v))),
+        count(&|v| !v.filtered, &|v| format!("{} {} {}", v.sample, v.pos, v.step)),
+        count(&|_| true, &|v| format!("{:?}", key(v))),
+    );
+}
+
 pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Result<()> {
     use moose::core::bus_routing::{BusActivation, BusRouting};
     use std::time::Duration;
@@ -1980,6 +2016,9 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             (voices, voice_blocks) = (voices.max(now), voice_blocks + now as usize);
             audible_blocks += dsp.rack.parts.iter().map(|e| e.audible_voices()).sum::<usize>();
             cpu = cpu.max(f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32));
+            if playing && b % (blocks / 4).max(1) == blocks / 8 {
+                census(&dsp.rack.parts[0].voice_census());
+            }
             pace.until(block * (b + 1) as u32);
         }
         if playing {

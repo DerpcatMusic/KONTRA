@@ -200,6 +200,109 @@ impl Pcm {
         self.decode_body(at, out)
     }
 
+    /// Add frames `[at, at + acc.len())`, times `weights` per channel, to
+    /// `acc` without decoding them to memory first; false (and `acc`
+    /// untouched) if out of range. The same sums as decoding, then
+    /// weighting: the integer scales are powers of two.
+    #[inline]
+    pub fn accumulate(&self, at: usize, weights: [f32; 2], acc: &mut [Frame]) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: the running CPU supports AVX2.
+            return unsafe { self.accumulate_avx2(at, weights, acc) };
+        }
+        self.accumulate_body(at, weights, acc)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    fn accumulate_avx2(&self, at: usize, weights: [f32; 2], acc: &mut [Frame]) -> bool {
+        use std::arch::x86_64::*;
+        let Self::I16(d) = self else {
+            return self.accumulate_body(at, weights, acc);
+        };
+        let Some(xs) = d.get(2 * at..2 * (at + acc.len())) else {
+            return false;
+        };
+        // Eight frames a pass: sixteen samples widened to i32, then to f32,
+        // multiplied, then added (never fused, as the decoded path does).
+        let w = weights.map(|w| w * (1.0 / I16_SCALE));
+        let (chunks, tail) = acc.as_flattened_mut().as_chunks_mut::<16>();
+        let (xchunks, xtail) = xs.as_chunks::<16>();
+        // SAFETY: AVX2 is enabled; every load and store stays within a chunk.
+        unsafe {
+            let wv = _mm256_setr_ps(w[0], w[1], w[0], w[1], w[0], w[1], w[0], w[1]);
+            for (a, x) in chunks.iter_mut().zip(xchunks) {
+                let x = _mm256_loadu_si256(x.as_ptr().cast());
+                let lo = _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(x)));
+                let hi = _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(x, 1)));
+                let p = a.as_mut_ptr();
+                _mm256_storeu_ps(p, _mm256_add_ps(_mm256_loadu_ps(p), _mm256_mul_ps(wv, lo)));
+                _mm256_storeu_ps(p.add(8), _mm256_add_ps(_mm256_loadu_ps(p.add(8)), _mm256_mul_ps(wv, hi)));
+            }
+        }
+        for (k, (a, &x)) in tail.iter_mut().zip(xtail).enumerate() {
+            *a += w[k & 1] * f32::from(x);
+        }
+        true
+    }
+
+    #[inline(always)]
+    fn accumulate_body(&self, at: usize, weights: [f32; 2], acc: &mut [Frame]) -> bool {
+        if at + acc.len() > self.len() {
+            return false;
+        }
+        let samples = 2 * at..2 * (at + acc.len());
+        // Sixteen samples (eight frames) a pass, weights alternating by channel.
+        #[inline(always)]
+        fn add<T: Copy>(acc: &mut [Frame], xs: &[T], w: [f32; 2], f: impl Fn(T) -> f32) {
+            let w: [f32; 16] = std::array::from_fn(|k| w[k & 1]);
+            let (chunks, tail) = acc.as_flattened_mut().as_chunks_mut::<16>();
+            let (xs, xtail) = xs.as_chunks::<16>();
+            for (a, x) in chunks.iter_mut().zip(xs) {
+                for k in 0..16 {
+                    a[k] += w[k] * f(x[k]);
+                }
+            }
+            for (k, (a, &x)) in tail.iter_mut().zip(xtail).enumerate() {
+                *a += w[k] * f(x);
+            }
+        }
+        match self {
+            Self::F32(d) => match d.as_flattened().get(samples) {
+                Some(s) => add(acc, s, weights, |x| x),
+                None => return false,
+            },
+            Self::I16(d) => match d.get(samples) {
+                Some(s) => add(acc, s, weights.map(|w| w * (1.0 / I16_SCALE)), f32::from),
+                None => return false,
+            },
+            Self::I24(high, low) => match (high.get(samples.clone()), low.get(samples)) {
+                (Some(high), Some(low)) => {
+                    let w = weights.map(|w| w * (1.0 / I24_SCALE));
+                    for (a, (h, l)) in acc.iter_mut().zip(high.as_chunks::<2>().0.iter().zip(low.as_chunks::<2>().0)) {
+                        for c in 0..2 {
+                            a[c] += w[c] * (i32::from(h[c]) << 8 | i32::from(l[c])) as f32;
+                        }
+                    }
+                }
+                _ => return false,
+            },
+            Self::Packed(p) => {
+                // Decoded in stack-sized chunks: no allocation on the audio thread.
+                let mut frames = [[0.0; 2]; 64];
+                for (c, chunk) in acc.chunks_mut(frames.len()).enumerate() {
+                    let frames = &mut frames[..chunk.len()];
+                    if !p.decode(at + c * 64, frames) {
+                        return false;
+                    }
+                    add(chunk, frames.as_flattened(), weights, |x| x);
+                }
+            }
+        }
+        true
+    }
+
     #[inline(always)]
     fn decode_body(&self, at: usize, out: &mut [Frame]) -> bool {
         if let Self::Packed(p) = self {
@@ -1053,6 +1156,15 @@ mod tests {
             let mut out = vec![[0.0; 2]; 900];
             assert_eq!(pcm.window(100, &mut out).unwrap(), &frames[100..]);
             assert!(pcm.window(101, &mut out).is_none());
+            // Weighted sums straight from storage match decoding first, bit for bit.
+            for (pcm, len) in [(pcm, 131), (Pcm::pack(&frames, false), 77)] {
+                let w = [0.37, -1.3];
+                let mut acc: Vec<Frame> = (0..len).map(|i| [i as f32 * 0.01, 0.5]).collect();
+                let want: Vec<Frame> = acc.iter().zip(&frames[100..]).map(|(a, x)| [a[0] + w[0] * x[0], a[1] + w[1] * x[1]]).collect();
+                assert!(pcm.accumulate(100, w, &mut acc));
+                assert_eq!(acc, want);
+                assert!(!pcm.accumulate(1000 - len + 1, w, &mut acc));
+            }
         }
     }
 
