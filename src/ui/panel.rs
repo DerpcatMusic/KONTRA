@@ -15,7 +15,8 @@ use crate::artwork::Picture;
 use crate::ksp::{Control, Interface, Value};
 use moose::mui::mui::prelude::*;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{Arc, Weak};
 
 /// Authored pixels between clusters that make them separate sections.
 const SECTION_GAP: f64 = 16.;
@@ -849,6 +850,113 @@ fn rows(mut items: Vec<Item>) -> Vec<Vec<Item>> {
     split
 }
 
+/// A part's sections as last read, and what they were read from: the
+/// interface, and its shape (everything but values and readouts), so a new
+/// interface a script publishes with only values changed reads nothing again.
+#[derive(Default)]
+pub struct Cache {
+    interface: Weak<Interface>,
+    pictures: usize,
+    shape: u64,
+    sections: Arc<Vec<Section>>,
+    /// Every control the sections show, whose values to watch.
+    used: Vec<usize>,
+}
+
+/// `interface`'s sections through `cache`: read again only when its shape
+/// or pictures change. Values are read live as the controls are drawn.
+pub fn cached(
+    cache: &mut Cache,
+    interface: &Arc<Interface>,
+    pictures: &Arc<HashMap<String, Arc<Picture>>>,
+) -> Arc<Vec<Section>> {
+    let pics = Arc::as_ptr(pictures) as usize;
+    let same = cache.interface.upgrade().is_some_and(|i| Arc::ptr_eq(&i, interface));
+    if !same || pics != cache.pictures {
+        let shape = shape(interface);
+        if shape != cache.shape || pics != cache.pictures {
+            let read = sections(interface, pictures);
+            cache.used = read
+                .iter()
+                .flat_map(|s| s.columns.iter().flatten().flatten().chain(&s.actions))
+                .flat_map(|i| {
+                    let rows = i.list.iter().flat_map(|e| {
+                        let extras = e.extras.iter().map(|x| x.control);
+                        e.control.into_iter().chain(e.enable.map(|(c, _)| c)).chain(extras)
+                    });
+                    std::iter::once(i.control).chain(rows).collect::<Vec<_>>()
+                })
+                .collect();
+            cache.sections = Arc::new(read);
+            cache.shape = shape;
+        }
+        cache.interface = Arc::downgrade(interface);
+        cache.pictures = pics;
+    }
+    cache.sections.clone()
+}
+
+/// The values and readouts of what `cache` shows, hashed: a performance
+/// view is drawn again when they move.
+pub fn values(cache: &Cache, interface: &Interface) -> u64 {
+    let mut h = DefaultHasher::new();
+    for c in cache.used.iter().filter_map(|&n| interface.controls.get(n)) {
+        for key in ["$CONTROL_PAR_VALUE", "$CONTROL_PAR_LABEL"] {
+            if let Some(v) = c.properties.get(key) {
+                hash_value(v, &mut h);
+            }
+        }
+    }
+    h.finish()
+}
+
+/// What decides an interface's sections: every control's kind, name, menu
+/// and properties but its value and readout.
+fn shape(interface: &Interface) -> u64 {
+    let mut h = DefaultHasher::new();
+    (interface.width, interface.height, interface.controls.len()).hash(&mut h);
+    for c in &interface.controls {
+        (&c.variable, &c.kind, &c.menu).hash(&mut h);
+        for (key, v) in &c.properties {
+            if key != "$CONTROL_PAR_VALUE" && key != "$CONTROL_PAR_LABEL" {
+                key.hash(&mut h);
+                hash_value(v, &mut h);
+            }
+        }
+    }
+    h.finish()
+}
+
+fn hash_value(v: &Value, h: &mut DefaultHasher) {
+    match v {
+        Value::Int(n) => n.hash(h),
+        Value::Real(r) => r.to_bits().hash(h),
+        Value::Text(t) => t.hash(h),
+        Value::Array(a) => a.iter().for_each(|v| hash_value(v, h)),
+    }
+}
+
+/// Control `control`'s value in `part`'s interface as it is now.
+fn live(cx: &Cx, part: usize, control: usize) -> Option<f64> {
+    let c = cx.view.parts.get(part)?.interface.as_ref()?.controls.get(control)?;
+    match c.properties.get("$CONTROL_PAR_VALUE")? {
+        Value::Int(n) => Some(f64::from(*n)),
+        Value::Real(r) => Some(*r),
+        _ => None,
+    }
+}
+
+/// `item` with its value and readout as they are now.
+fn fresh(cx: &Cx, part: usize, item: &Item) -> Item {
+    let mut item = item.clone();
+    item.raw = live(cx, part, item.control).unwrap_or(item.raw);
+    let label = cx.view.parts.get(part).and_then(|v| v.interface.as_ref()).and_then(|i| i.controls.get(item.control));
+    if let Some(Value::Text(t)) = label.and_then(|c| c.properties.get("$CONTROL_PAR_LABEL")) {
+        item.label = clean(t);
+    }
+    item
+}
+
 /// The interface's controls, grouped as they were drawn.
 pub fn sections(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec<Section> {
     let mut out = bands(items(interface, pictures), SECTION_GAP)
@@ -1139,6 +1247,13 @@ fn value_text(item: &Item) -> String {
 
 /// One control, wired to the script: every edit runs its `on ui_control`.
 fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
+    let now;
+    let item = if item.face == Face::List {
+        item
+    } else {
+        now = fresh(cx, part, item);
+        &now
+    };
     let id = format!("ksp-{part}-{}", item.control);
     let name = item.name.as_str();
     let range = item.min..=item.max.max(item.min + 1.);
@@ -1254,6 +1369,12 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
 /// One row of a list: set, it is raised with an accent edge. Its check box
 /// turns the choice on or off; the keyswitch that picks it sits at the right.
 fn entry(ui: &mut Ui, cx: &mut Cx, part: usize, e: &Entry) -> El {
+    let set = |c: usize, was: bool| live(cx, part, c).map_or(was, |v| v >= 1.);
+    let e = &Entry {
+        on: e.control.map_or(e.on, |c| set(c, e.on)),
+        enable: e.enable.map(|(c, on)| (c, set(c, on))),
+        ..e.clone()
+    };
     // As in Kontakt, a click flips the switch; the script keeps one set.
     let id = e.control.map(|c| format!("ksp-{part}-{c}"));
     if let (Some(c), Some(id)) = (e.control, &id)

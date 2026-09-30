@@ -7,6 +7,7 @@ use crate::ksp::{KeyState, Value};
 use crate::plugin::SamplerParams;
 use moose::mui::mui::prelude::*;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 const OCTAVES: i16 = 7;
@@ -311,16 +312,28 @@ enum Look {
     Colored(Color),
 }
 
-fn looks(cx: &Cx) -> [Look; 128] {
+fn looks(cx: &mut Cx) -> [Look; 128] {
     let mut looks = [Look::Unmapped; 128];
-    let v = cx.part_view();
     if cx.part().is_none() {
         return looks;
     }
+    let v = &cx.view.parts[cx.state.selected];
     if let Some(i) = &v.instrument {
-        for z in i.zones.iter().filter(|z| z.available) {
-            for n in z.low_key.min(127)..=z.high_key.min(127) {
-                looks[n as usize] = Look::Mapped;
+        // Tens of thousands of zones: walked once per instrument, not per frame.
+        let (seen, mapped) = &mut cx.state.mapped;
+        if !seen.upgrade().is_some_and(|s| Arc::ptr_eq(&s, i)) {
+            *mapped = [false; 128];
+            for z in i.zones.iter().filter(|z| z.available) {
+                let (low, high) = (z.low_key.min(127) as usize, z.high_key.min(127) as usize);
+                if low <= high {
+                    mapped[low..=high].fill(true);
+                }
+            }
+            *seen = Arc::downgrade(i);
+        }
+        for (look, &m) in looks.iter_mut().zip(mapped.iter()) {
+            if m {
+                *look = Look::Mapped;
             }
         }
     }

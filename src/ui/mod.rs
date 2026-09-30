@@ -292,6 +292,13 @@ struct EditorState {
     /// Each library's color and backdrop, from its artwork, worked out once.
     tints: HashMap<String, Option<Color>>,
     backdrops: HashMap<String, Option<Arc<Image>>>,
+    thumbs: HashMap<String, Arc<Image>>,
+    /// The keys the selected part's instrument maps, and which instrument.
+    mapped: (std::sync::Weak<import::Instrument>, [bool; 128]),
+    /// The browser's files by library: of which scan, root and kind.
+    libraries: (std::sync::Weak<Vec<PathBuf>>, String, bool, Arc<std::collections::BTreeMap<String, Vec<usize>>>),
+    /// Each part's performance view as last read.
+    panels: HashMap<usize, panel::Cache>,
     started: Instant,
     /// The computer keyboard's octave, velocity and held keys.
     computer: Arc<computer::Computer>,
@@ -319,6 +326,19 @@ impl EditorState {
 }
 
 impl EditorState {
+    /// `library`'s artwork at twice `size`, for a crisp thumbnail that
+    /// scales nothing as it is drawn; made once.
+    fn thumbnail(&mut self, view: &View, library: &str, size: (f64, f64)) -> Option<Arc<Image>> {
+        // Artwork still being scanned is looked for again next frame.
+        if let Some(t) = self.thumbs.get(library) {
+            return Some(t.clone());
+        }
+        let (w, h) = ((size.0 * 2.).round() as u32, (size.1 * 2.).round() as u32);
+        let t = Arc::new(crate::artwork::thumbnail(view.artwork.get(library)?, w, h)?);
+        self.thumbs.insert(library.to_owned(), t.clone());
+        Some(t)
+    }
+
     /// `library`'s artwork made a backdrop, once.
     fn backdrop(&mut self, view: &View, library: &str) -> Option<Arc<Image>> {
         self.backdrops
@@ -678,6 +698,10 @@ fn build(
         renaming: None,
         tints: HashMap::new(),
         backdrops: HashMap::new(),
+        thumbs: HashMap::new(),
+        mapped: (std::sync::Weak::new(), [false; 128]),
+        libraries: Default::default(),
+        panels: HashMap::new(),
         started: Instant::now(),
         computer,
         gliss: None,

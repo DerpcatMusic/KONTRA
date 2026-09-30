@@ -33,7 +33,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         panels.push(header(ui, cx, slot));
         if !cx.selection.parts[slot].collapsed {
             panels.extend(instrument::notices(cx, slot));
-            let stage = instrument::stage(ui, cx, slot);
+            // Kept as drawn while nothing it shows moves: meters and keys
+            // redraw around it, not through it.
+            let deps = (instrument::stage_deps(cx, slot), cx.selection.appearance);
+            let stage = ui.memo(format!("stage-memo-{slot}"), deps, |ui| instrument::stage(ui, cx, slot));
             panels.push(behind(cx, slot, stage));
         }
         panels.push(rule());

@@ -360,6 +360,36 @@ fn decode(bytes: &[u8]) -> Option<Image> {
     };
     Image::rgba(info.width, info.height, rgba)
 }
+/// `image` cropped to cover `w` × `h` from its middle and shrunk to it by
+/// area averaging, once, so a list of thumbnails scales nothing per frame.
+pub fn thumbnail(image: &Image, w: u32, h: u32) -> Option<Image> {
+    let (sw, sh) = (image.width as f64, image.height as f64);
+    if sw == 0. || sh == 0. || w == 0 || h == 0 {
+        return None;
+    }
+    let scale = (f64::from(w) / sw).max(f64::from(h) / sh);
+    let (cw, ch) = (f64::from(w) / scale, f64::from(h) / scale);
+    let (x0, y0) = ((sw - cw) / 2., (sh - ch) / 2.);
+    let px = image.rgba.as_chunks::<4>().0;
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let (top, bottom) = (y0 + f64::from(y) * ch / f64::from(h), y0 + f64::from(y + 1) * ch / f64::from(h));
+        for x in 0..w {
+            let (left, right) = (x0 + f64::from(x) * cw / f64::from(w), x0 + f64::from(x + 1) * cw / f64::from(w));
+            let (mut sum, mut n) = ([0u32; 4], 0u32);
+            for sy in top as usize..(bottom.ceil() as usize).min(image.height as usize).max(top as usize + 1) {
+                for sx in left as usize..(right.ceil() as usize).min(image.width as usize).max(left as usize + 1) {
+                    let c = px[sy * image.width as usize + sx];
+                    (0..4).for_each(|k| sum[k] += u32::from(c[k]));
+                    n += 1;
+                }
+            }
+            rgba.extend(sum.map(|s| (s / n.max(1)) as u8));
+        }
+    }
+    Image::rgba(w, h, rgba)
+}
+
 /// The artwork as a backdrop to play over: shrunk to a few dozen pixels
 /// (which blurs it once scaled back up), blurred again, mostly drained of
 /// color and darkened well below the text drawn on it.
@@ -532,6 +562,23 @@ mod tests {
         assert_eq!(super::Layout::parse("").frames, 1);
         assert_eq!(super::png_name("../x"), None);
         assert_eq!(super::png_name("knob").as_deref(), Some("knob.png"));
+    }
+
+    #[test]
+    fn thumbnails_cover_from_the_middle() {
+        // Wide artwork: left third red, middle green, right third blue.
+        let rgba: Vec<u8> = (0..60)
+            .flat_map(|x| match x / 20 {
+                0 => [255, 0, 0, 255],
+                1 => [0, 255, 0, 255],
+                _ => [0, 0, 255, 255],
+            })
+            .collect::<Vec<u8>>()
+            .repeat(20);
+        let image = super::Image::rgba(60, 20, rgba).unwrap();
+        let t = super::thumbnail(&image, 2, 2).unwrap();
+        assert_eq!((t.width, t.height), (2, 2));
+        assert_eq!(&t.rgba[..4], &[0, 255, 0, 255], "a square crop keeps the middle");
     }
 
     #[test]

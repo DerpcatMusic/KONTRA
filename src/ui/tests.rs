@@ -661,7 +661,9 @@ fn dump_panel() {
             _ => None,
         });
         let pictures = artwork::pictures(&i.path, names);
-        println!("{:#?}", panel::sections(&interface, &pictures));
+        let t = std::time::Instant::now();
+        let sections = panel::sections(&interface, &pictures);
+        println!("{sections:#?}\nsections in {} us", t.elapsed().as_micros());
     }
 }
 
@@ -708,15 +710,14 @@ fn frame_cost() {
             raster.render(&mut pix, &mut resources);
             paint.push(t.elapsed().as_secs_f64() * 1e6);
         }
-        let median = |v: &mut Vec<f64>| {
+        // The median, and the least: a busy machine delays some frames,
+        // never speeds one up.
+        let spread = |v: &mut Vec<f64>| {
             v.sort_by(f64::total_cmp);
-            v[v.len() / 2]
+            (v[v.len() / 2], v[0])
         };
-        println!(
-            "{label:>10}: build+layout {:>7.0} us   cpu paint {:>7.0} us",
-            median(&mut frame),
-            median(&mut paint)
-        );
+        let ((fm, fl), (pm, pl)) = (spread(&mut frame), spread(&mut paint));
+        println!("{label:>10}: build+layout {fm:>6.0} us (min {fl:>5.0})   cpu paint {pm:>6.0} us (min {pl:>5.0})");
     };
     measure(&mut h, "idle", &mut |_| Input::default());
     let knob = center(&h.ui, "volume-0");
