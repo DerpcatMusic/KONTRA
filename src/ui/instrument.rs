@@ -1,7 +1,7 @@
 //! The selected instrument: its header, its script's performance view, its
 //! key/velocity mapping, details, and plain-spoken notices.
 
-use super::{Cx, Tab, rack::pan_text, theme::*};
+use super::{Cx, Tab, theme::*};
 use crate::artwork::Picture;
 use crate::import::{self, Instrument};
 use crate::ksp::{Control, Interface, Value};
@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 /// The instrument loaded for the selected part, once it matches the part.
-fn current<'a>(cx: &'a Cx) -> Option<&'a Arc<Instrument>> {
+pub(super) fn current<'a>(cx: &'a Cx) -> Option<&'a Arc<Instrument>> {
     let part = cx.part()?;
     let v = cx.part_view();
     v.instrument
@@ -45,15 +45,23 @@ pub fn welcome(cx: &Cx) -> El {
         .min_h(0)
 }
 
-/// Name, library, size, preset stepping, part level and pan, audition.
 /// Width of the library banner in the instrument header.
-const HEADER_ART: f64 = 132.;
+const HEADER_ART: f64 = 112.;
+/// The header's two control rows.
+const HEADER_H: f64 = 2. * CONTROL + HALF + 2. * (GAP + 2.);
 
+/// Kontakt 8's instrument header: the library's banner, the name with preset
+/// stepping, what it is, and the part's routing, mute/solo, level and pan.
 pub fn header(ui: &mut Ui, cx: &mut Cx) -> El {
     let Some(part) = cx.part().cloned() else {
         return block(Len::Pct(100.), 0).shrink(0);
     };
     let slot = cx.state.selected;
+    let width = ui
+        .scene()
+        .and_then(|s| s.surface("center"))
+        .map_or(900., |s| s.frame.size.width);
+    let wide = width >= 760.;
     let library = cx.library_of(Path::new(&part.path));
     let multi = import::is_multi(Path::new(&part.path));
     let siblings: Vec<_> = cx
@@ -65,8 +73,8 @@ pub fn header(ui: &mut Ui, cx: &mut Cx) -> El {
     let index = siblings
         .iter()
         .position(|path| path.to_string_lossy() == part.path);
-    let (previous, prev_el) = action(ui, "preset-prev", "‹", false);
-    let (next, next_el) = action(ui, "preset-next", "›", false);
+    let (previous, prev_el) = icon_button(ui, "preset-prev", Icon::Left, "Previous preset", false);
+    let (next, next_el) = icon_button(ui, "preset-next", Icon::Right, "Next preset", false);
     let target = index.and_then(|n| match (previous, next) {
         (true, _) => n.checked_sub(1),
         (_, true) => Some(n + 1).filter(|n| *n < siblings.len()),
@@ -76,88 +84,172 @@ pub fn header(ui: &mut Ui, cx: &mut Cx) -> El {
         let path = siblings[target].to_string_lossy().into_owned();
         cx.replace(slot, path);
     }
-    let prev_el = prev_el
-        .named("Previous preset")
-        .when(!index.is_some_and(|n| n > 0), |e| e.disabled());
-    let next_el = next_el
-        .named("Next preset")
-        .when(!index.is_some_and(|n| n + 1 < siblings.len()), |e| {
-            e.disabled()
-        });
+    let prev_el = prev_el.when(!index.is_some_and(|n| n > 0), |e| e.disabled().opacity(0.35));
+    let next_el = next_el.when(!index.is_some_and(|n| n + 1 < siblings.len()), |e| {
+        e.disabled().opacity(0.35)
+    });
+    let (audition, play_el) = icon_button(ui, "performance-play", Icon::Play, "Audition (Space)", false);
+    if audition {
+        cx.p.shared.audition(None);
+    }
+    let (more, more_el) = icon_button(ui, "part-more", Icon::More, "Part menu", false);
+    if more {
+        super::menu::open_under(ui, cx, super::menu::Target::Part(slot), "part-more");
+    }
 
     let v = cx.part_view();
+    let loading = v.loading;
     let instrument = current(cx).cloned();
-    let name = instrument
-        .as_ref()
-        .map_or_else(|| super::header::stem(&part.path), |i| i.name.clone());
+    let name = super::rack::name(cx, slot);
     let mut facts = vec![library_label(&library)];
     if let Some(i) = &instrument {
         facts.push(format!("{} groups", i.groups.len()));
         facts.push(format!("{} zones", i.zones.len()));
     }
-    if v.loading {
-        facts.push("loading samples…".into());
+    if loading {
+        let done = cx.p.shared.load_progress[slot].load(std::sync::atomic::Ordering::Relaxed);
+        let percent = f64::from(done) / f64::from(crate::engine::LOAD_DONE) * 100.;
+        facts.push(format!("loading samples {percent:.0}%"));
     } else if v.bytes > 0 {
         facts.push(megabytes(v.bytes));
     }
     facts.retain(|f| !f.is_empty());
-
-    let part = &mut cx.selection.parts[slot];
-    let mut gain = f64::from(part.gain);
-    let gain_el = number(
-        ui,
-        "performance-gain",
-        "Level",
-        &mut gain,
-        -60.0..=6.0,
-        format!("{:.1} dB", part.gain),
-    );
-    part.gain = gain as f32;
-    let mut pan = f64::from(part.pan);
-    let pan_el = number(
-        ui,
-        "performance-pan",
-        "Pan",
-        &mut pan,
-        -1.0..=1.0,
-        pan_text(part.pan),
-    );
-    part.pan = pan as f32;
-    let (audition, play_el) = action(ui, "performance-play", "Audition", false);
-    if audition {
-        cx.p.shared.audition(None);
-    }
-
-    // Kontakt's instrument header: the library's banner, then the name.
-    let banner = cx.view.artwork.get(&library).map(|image| {
-        block(HEADER_ART, 40)
-            .fill(Fill::Image(image.clone(), Fit::Cover))
-            .shrink(0)
+    let progress = loading.then(|| {
+        let done = cx.p.shared.load_progress[slot].load(std::sync::atomic::Ordering::Relaxed);
+        f64::from(done) / f64::from(crate::engine::LOAD_DONE)
     });
-    let mut strip = vec![row![prev_el, next_el].gap(0).shrink(0)];
-    strip.extend(banner);
-    strip.extend([
-        col![
-            body(fit(&name, 64))
+
+    let title = match cx.state.renaming.as_mut() {
+        Some(text) => {
+            let existed = ui.scene().and_then(|s| s.surface("rename")).is_some();
+            if !existed {
+                ui.focus("rename");
+            }
+            let field = text_edit(ui, "rename", text, TextOpts::default());
+            let cancel = ui.keys("rename").iter().any(|k| k.key == Key::Escape);
+            let done = field.changed.submitted || (existed && !ui.focused("rename"));
+            let el = field.el.h(CONTROL).radius(2).flex(1).min_w(0).named("Part name");
+            if cancel {
+                cx.state.renaming = None;
+            } else if done {
+                let text = cx.state.renaming.take().unwrap_or_default();
+                let text = text.trim();
+                let default = instrument.as_ref().map_or_else(|| super::header::stem(&part.path), |i| i.name.clone());
+                cx.selection.parts[slot].name = if text == default { String::new() } else { text.to_owned() };
+            }
+            el
+        }
+        None => {
+            if ui.get("instrument-name").double_clicked {
+                cx.state.renaming = Some(name.clone());
+            }
+            body(name.clone())
                 .text_size(16)
                 .text_weight(Weight::SEMIBOLD)
-                .lines(1),
-            caption(facts.join("  ·  ")).fill(Role::Dim).lines(1)
-        ]
-        .gap(2)
-        .align(Align::Start)
-        .flex(1)
-        .min_w(0),
-        gain_el,
-        pan_el,
-        play_el.named("Audition the selected part"),
-    ]);
-    row(strip)
-        .gap(GAP + HALF)
+                .lines(1)
+                .min_w(0)
+                .shrink(1)
+                .tip(format!("{name}\nDouble-click to rename"))
+                .named(name.clone())
+                .id("instrument-name")
+        }
+    };
+
+    let part = &mut cx.selection.parts[slot];
+    let mut channel = f64::from(part.channel + 1);
+    let port = char::from(b'A' + part.port.min(3));
+    let channel_text = if part.channel < 0 {
+        format!("{port} Omni")
+    } else {
+        format!("{port} {}", part.channel + 1)
+    };
+    let channel_el = number(ui, "header-channel", "MIDI", &mut channel, 0.0..=16.0, channel_text);
+    part.channel = channel.round() as i16 - 1;
+    let mut output = f64::from(part.output) + 1.;
+    let output_el = number(ui, "header-output", "Out", &mut output, 1.0..=8.0, format!("st.{}", part.output + 1));
+    part.output = output.round() as u8 - 1;
+    let (mute, mute_el) = letter_toggle(ui, "header-mute", "M", "Mute", part.mute);
+    if mute {
+        part.mute = !part.mute;
+    }
+    let (solo, solo_el) = letter_toggle(ui, "header-solo", "S", "Solo", part.solo);
+    if solo {
+        part.solo = !part.solo;
+    }
+    let track = if wide { 104. } else { 72. };
+    let mut gain = f64::from(part.gain);
+    let (_, gain_el) = fader(ui, "performance-gain", "Volume", &mut gain, -60.0..=6.0, Fader::LEVEL, db_text, Some(track));
+    part.gain = gain as f32;
+    let mut pan = f64::from(part.pan);
+    let (_, pan_el) = fader(ui, "performance-pan", "Pan", &mut pan, -1.0..=1.0, Fader::PAN, pan_text, Some(track));
+    part.pan = pan as f32;
+
+    let label = |text: &str| section(text).w(28).shrink(0);
+    let identity = col![
+        row![title, prev_el, next_el].gap(HALF).align(Align::Center).h(CONTROL),
+        row![caption(facts.join("  ·  ")).fill(Role::Dim).lines(1).min_w(0)]
+            .align(Align::Center)
+            .h(CONTROL)
+    ]
+    .gap(HALF)
+    .flex(1)
+    .min_w(0);
+    let routing = col![channel_el.h(CONTROL), output_el.h(CONTROL)]
+        .gap(HALF)
+        .align(Align::End)
+        .shrink(0);
+    let switches = col![row![mute_el, solo_el].gap(HALF).h(CONTROL).align(Align::Center), row![play_el].h(CONTROL).align(Align::Center)]
+        .gap(HALF)
         .align(Align::Center)
-        .pad((WIDE, GAP))
+        .shrink(0);
+    let faders = col![
+        row![label("Vol"), gain_el].gap(HALF).align(Align::Center).h(CONTROL),
+        row![label("Pan"), pan_el].gap(HALF).align(Align::Center).h(CONTROL)
+    ]
+    .gap(HALF)
+    .shrink(0);
+
+    let mut strip = Vec::new();
+    if wide {
+        if let Some(image) = cx.view.artwork.get(&library) {
+            strip.push(
+                block(HEADER_ART, 2. * CONTROL + HALF)
+                    .fill(Fill::Image(image.clone(), Fit::Cover))
+                    .shrink(0),
+            );
+        }
+    }
+    strip.extend([
+        identity,
+        vrule().h(2. * CONTROL),
+        routing,
+        switches,
+        vrule().h(2. * CONTROL),
+        faders,
+        col![more_el, spacer()].h(2. * CONTROL + HALF).shrink(0),
+    ]);
+    let body = row(strip)
+        .gap(WIDE - HALF)
+        .align(Align::Center)
+        .pad(edges(GAP + 2., GAP, GAP + 2., WIDE))
+        .h(HEADER_H)
+        .shrink(0);
+    // The bottom edge doubles as this part's load progress, so loading never moves anything.
+    let edge = canvas(move |s| match progress {
+        Some(done) => vec![
+            Draw::fill(rect(0., 0., s.width, 2.), Role::Primary.alpha(0.18)),
+            Draw::fill(rect(0., 0., (s.width * done.clamp(0., 1.)).max(8.), 2.), accent()),
+        ],
+        None => vec![Draw::fill(rect(0., 1., s.width, 1.), hairline())],
+    })
+    .w(Len::Pct(100.))
+    .h(2)
+    .shrink(0);
+    col![body, edge]
+        .gap(0)
         .fill(Role::Surface)
         .shrink(0)
+        .id("instrument-header")
 }
 
 /// Load failures, missing samples and rack notices, in words a player can act on.
@@ -320,12 +412,12 @@ fn performance_view(
             cx.p.shared.edit_control(part, w.control, value);
             w.set(f64::from(value));
         }
-        if cx.state.menu == Some(w.control) && w.kind == Kind::Menu {
+        if cx.state.ksp_menu == Some(w.control) && w.kind == Kind::Menu {
             open_menu = Some(w.clone());
         }
     }
-    if cx.state.menu.is_some() && open_menu.is_none() {
-        cx.state.menu = None;
+    if cx.state.ksp_menu.is_some() && open_menu.is_none() {
+        cx.state.ksp_menu = None;
     }
 
     let image = image.cloned();
@@ -387,7 +479,7 @@ fn menu_list(ui: &mut Ui, cx: &mut Cx, part: usize, menu: &Widget, scale: f64, h
         let id = format!("ksp-menu-{}-{n}", menu.control);
         if ui.get(id.as_str()).activated() {
             cx.p.shared.edit_control(part, menu.control, *value);
-            cx.state.menu = None;
+            cx.state.ksp_menu = None;
         }
         let chosen = f64::from(*value) == menu.raw;
         let (_, el) = action(ui, id.as_str(), &clean(text), chosen);
@@ -635,7 +727,7 @@ impl Widget {
             }
             Kind::Button if r.activated() => Some(i32::from(self.raw < 1.)),
             Kind::Menu if r.activated() => {
-                state.menu = (state.menu != Some(self.control)).then_some(self.control);
+                state.ksp_menu = (state.ksp_menu != Some(self.control)).then_some(self.control);
                 None
             }
             _ => None,
@@ -860,29 +952,6 @@ fn nine(
             out.push(Draw::image(px, py, pw, ph, piece.clone()));
         }
     }
-}
-
-fn rect(x: f64, y: f64, w: f64, h: f64) -> DrawPath {
-    DrawPath::polyline(
-        [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].map(|(x, y)| Point::new(x, y)),
-        true,
-    )
-}
-
-fn circle(cx: f64, cy: f64, r: f64) -> DrawPath {
-    arc(cx, cy, r, 0., 2. * PI)
-}
-
-fn arc(cx: f64, cy: f64, r: f64, from: f64, sweep: f64) -> DrawPath {
-    let steps = ((sweep.abs() / (2. * PI)) * 48.).ceil().max(2.) as usize;
-    let closed = sweep >= 2. * PI - 1e-9;
-    DrawPath::polyline(
-        (0..=steps).map(|n| {
-            let a = from + sweep * n as f64 / steps as f64;
-            Point::new(cx + a.cos() * r, cy + a.sin() * r)
-        }),
-        closed,
-    )
 }
 
 /// Groups on the left; the selected group's zones on a key × velocity grid.

@@ -51,7 +51,7 @@ impl Harness {
     fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
         let mut h = Self {
             ui: theme::ui(),
-            build: Box::new(build(p)),
+            build: Box::new(build(p, Arc::default())),
             bridge: Bridge::new(p.clone()),
             size: Size::new(width, height),
         };
@@ -288,7 +288,7 @@ fn screenshot() {
         .map(Arc::new)
         .collect();
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 9] = [
+    let states: [(&str, bool, &[&str]); 11] = [
         ("empty", false, &[]),
         ("perform", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -296,7 +296,9 @@ fn screenshot() {
         ("info", true, &["tab-info"]),
         ("library", false, &["library-0"]),
         ("multis", false, &["picker-multis"]),
-        ("settings", true, &["settings"]),
+        ("settings", true, &["app-menu", "menu-item-3"]),
+        ("menu", true, &["app-menu"]),
+        ("collapsed", true, &["toggle-browser", "keyboard-toggle"]),
         ("error", true, &[]),
     ];
     for (state, loaded, presses) in states {
@@ -370,7 +372,10 @@ fn screenshot() {
                 u32::from(width),
                 u32::from(height),
             );
-            let mut visible = vec!["search", "octave-up", "rack-drop", "panic"];
+            let mut visible = vec!["octave-up", "rack-drop", "panic"];
+            if state != "collapsed" {
+                visible.push("search");
+            }
             if loaded {
                 visible.extend(["tab-info", "performance-play", "part-0"]);
             }
@@ -396,7 +401,7 @@ fn screenshot() {
             if state == "settings" {
                 assert!(scene.surface("root").is_some());
             }
-            if loaded {
+            if loaded && state != "collapsed" {
                 // The keyboard centers on the instrument, so pick a key it shows.
                 let key = (0..128)
                     .find(|n| h.ui.scene().unwrap().surface(&format!("key-{n}")).is_some())
