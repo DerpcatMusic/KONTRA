@@ -40,7 +40,8 @@ pub enum SampleFormat {
 
 impl BlockHeader {
     pub fn read<R: Read>(reader: &mut R) -> Result<BlockHeader, Error> {
-        let buf = reader.read_bytes(BLOCK_HEADER_SIZE)?;
+        let mut buf = [0; BLOCK_HEADER_SIZE];
+        reader.read_exact(&mut buf)?;
         let mut reader = buf.as_slice();
 
         if reader.read_u32_be()? != BLOCK_MAGIC {
@@ -84,24 +85,18 @@ pub(crate) fn read_block<R: Read>(
         return Err(Error::UnsupportedBitDepth(block.bits));
     }
 
-    let packed = |reader: &mut R| -> Result<_, Error> {
-        let mut data = [0; BLOCK_BYTES];
-        reader.read_exact(&mut data[..bits * SAMPLES_PER_BLOCK / 8])?;
-        Ok(unpack_block(&data, bits))
-    };
     match block.bits.cmp(&0) {
-        std::cmp::Ordering::Greater => {
-            // Delta encoded: each value is the difference to the next sample.
-            let mut values = packed(reader)?;
-            let mut current = block.base_value;
-            for v in &mut values {
-                (*v, current) = (current, current.wrapping_add(*v));
-            }
-            out.extend_from_slice(&values);
-        }
-        std::cmp::Ordering::Less => {
-            // Bit truncated: raw samples packed at `bits` bits each.
-            out.extend_from_slice(&packed(reader)?);
+        std::cmp::Ordering::Greater | std::cmp::Ordering::Less => {
+            let mut data = [0; BLOCK_BYTES];
+            reader.read_exact(&mut data[..bits * SAMPLES_PER_BLOCK / 8])?;
+            // Unpacked straight into the end of `out`.
+            let start = out.len();
+            out.resize(start + SAMPLES_PER_BLOCK, 0);
+            let values = (&mut out[start..]).try_into().expect("resized to one block");
+            // Positive: delta encoded, each value the difference to the next
+            // sample. Negative: bit truncated, raw samples at `bits` bits each.
+            let base = (block.bits > 0).then_some(block.base_value);
+            unpack_block(&data, bits, base, values);
         }
         std::cmp::Ordering::Equal => {
             // Legacy zero-width interpretation. Synthetic tests only: Kontakt

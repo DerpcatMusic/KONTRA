@@ -40,17 +40,25 @@ impl Iterator for PackedValues<'_> {
 /// [`unpack_block`].
 pub const BLOCK_BYTES: usize = 32 * crate::SAMPLES_PER_BLOCK / 8 + 8;
 
-/// Unpack one block body of `bits`-wide (1..=32) little-endian signed values.
-/// Each value is read with one unaligned 64-bit load, so there is no per-bit
-/// loop; `data` past the body must be zero padding.
-pub fn unpack_block(data: &[u8; BLOCK_BYTES], bits: usize) -> [i32; crate::SAMPLES_PER_BLOCK] {
+/// Unpack one block body of `bits`-wide (1..=32) little-endian signed values
+/// into `out`. With `base`, the values are deltas: each is replaced by the
+/// running sum before it, starting at `base` (wrapping). Each value is read
+/// with one unaligned 64-bit load, so there is no per-bit loop; `data` past
+/// the body must be zero padding.
+pub fn unpack_block(
+    data: &[u8; BLOCK_BYTES],
+    bits: usize,
+    base: Option<i32>,
+    out: &mut [i32; crate::SAMPLES_PER_BLOCK],
+) {
     debug_assert!((1..=32).contains(&bits));
     // One copy per width: every shift and offset becomes a constant.
     macro_rules! widths {
         ($($b:literal)*) => {
-            match bits {
-                $($b => unpack_fixed::<$b>(data),)*
-                _ => [0; crate::SAMPLES_PER_BLOCK],
+            match (bits, base) {
+                $(($b, None) => unpack_fixed::<$b, false>(data, 0, out),)*
+                $(($b, Some(base)) => unpack_fixed::<$b, true>(data, base, out),)*
+                _ => out.fill(0),
             }
         };
     }
@@ -58,19 +66,29 @@ pub fn unpack_block(data: &[u8; BLOCK_BYTES], bits: usize) -> [i32; crate::SAMPL
 }
 
 /// [`unpack_block`] at a fixed width: eight values fill exactly `B` bytes.
-fn unpack_fixed<const B: usize>(data: &[u8; BLOCK_BYTES]) -> [i32; crate::SAMPLES_PER_BLOCK] {
+/// Summing the deltas in the same pass keeps them in registers.
+fn unpack_fixed<const B: usize, const DELTA: bool>(
+    data: &[u8; BLOCK_BYTES],
+    mut current: i32,
+    out: &mut [i32; crate::SAMPLES_PER_BLOCK],
+) {
     let mask = (1u64 << B) - 1;
-    let mut out = [0; crate::SAMPLES_PER_BLOCK];
     for (group, values) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
         for (k, value) in values.iter_mut().enumerate() {
             let bit = k * B;
             // Never clamps (at most 63 * 32 + 28); it drops the bounds check.
             let byte = (group * B + bit / 8).min(BLOCK_BYTES - 8);
             let word = u64::from_le_bytes(data[byte..byte + 8].try_into().unwrap_or_default());
-            *value = sign_extend(((word >> (bit % 8)) & mask) as u32, B);
+            let v = sign_extend(((word >> (bit % 8)) & mask) as u32, B);
+            *value = if DELTA {
+                let before = current;
+                current = current.wrapping_add(v);
+                before
+            } else {
+                v
+            };
         }
     }
-    out
 }
 
 /// Sign-extend the low `bits` bits of `raw` to an i32.
@@ -114,7 +132,21 @@ mod tests {
                 *byte = (i as u32).wrapping_mul(2654435761).rotate_right(13) as u8;
             }
             let expected: Vec<_> = packed_values(&data[..len], bits).collect();
-            assert_eq!(unpack_block(&data, bits).to_vec(), expected, "{bits} bits");
+            let mut out = [0; crate::SAMPLES_PER_BLOCK];
+            unpack_block(&data, bits, None, &mut out);
+            assert_eq!(out.to_vec(), expected, "{bits} bits");
+
+            let mut current = i32::MAX - 5;
+            let deltas: Vec<_> = expected
+                .iter()
+                .map(|&v| {
+                    let before = current;
+                    current = current.wrapping_add(v);
+                    before
+                })
+                .collect();
+            unpack_block(&data, bits, Some(i32::MAX - 5), &mut out);
+            assert_eq!(out.to_vec(), deltas, "{bits} bits, delta");
         }
     }
 
