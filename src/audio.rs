@@ -467,7 +467,16 @@ impl Sources {
 
 impl Source {
     pub fn open(&self) -> Result<SampleReader> {
-        SampleReader::open(self).with_context(|| {
+        self.open_counted(false)
+    }
+
+    /// [`Source::open`] for the streamer: its reads count in [`DISK_READ`].
+    pub fn open_stream(&self) -> Result<SampleReader> {
+        self.open_counted(true)
+    }
+
+    fn open_counted(&self, counted: bool) -> Result<SampleReader> {
+        SampleReader::open(self, counted).with_context(|| {
             let why = if self.is_unwritten() {
                 "its data reads back as zeros (a filesystem read problem or an incomplete download)"
             } else {
@@ -490,7 +499,7 @@ impl Source {
             .is_ok_and(|()| len > 0 && head[..len].iter().all(|&b| b == 0))
     }
 
-    fn bytes(&self) -> Result<Bytes> {
+    fn bytes(&self, counted: bool) -> Result<Bytes> {
         let mut file = File::open(&self.file)
             .with_context(|| format!("Opening sample {}", self.file.display()))?;
         let len = match self.len {
@@ -504,6 +513,7 @@ impl Source {
             len,
             pos: 0,
             key: self.key.clone(),
+            counted,
         })
     }
 }
@@ -538,8 +548,8 @@ impl Seek for FileAt<'_> {
     }
 }
 
-/// Sample bytes read from disk so far, streaming and loading alike: the
-/// editor's disk readout is its rate of change.
+/// Sample bytes streamed from disk so far (loading reads are not counted):
+/// the editor's disk readout is its rate of change.
 pub static DISK_READ: AtomicU64 = AtomicU64::new(0);
 
 /// A byte window of a file, decrypted on the fly when keyed.
@@ -549,13 +559,17 @@ struct Bytes {
     len: u64,
     pos: u64,
     key: Option<Arc<LibraryKey>>,
+    /// Count reads in [`DISK_READ`].
+    counted: bool,
 }
 
 impl Read for Bytes {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let room = self.len.saturating_sub(self.pos).min(buf.len() as u64) as usize;
         let n = self.file.read(&mut buf[..room])?;
-        DISK_READ.fetch_add(n as u64, Ordering::Relaxed);
+        if self.counted {
+            DISK_READ.fetch_add(n as u64, Ordering::Relaxed);
+        }
         if let Some(key) = &self.key {
             key.apply_at(self.pos, &mut buf[..n]);
         }
@@ -624,8 +638,8 @@ struct PcmCodec {
 const SKIP_AHEAD: u64 = 16384;
 
 impl SampleReader {
-    fn open(source: &Source) -> Result<Self> {
-        let bytes = source.bytes()?;
+    fn open(source: &Source, counted: bool) -> Result<Self> {
+        let bytes = source.bytes(counted)?;
         let ncw = source
             .path
             .extension()
@@ -843,6 +857,30 @@ impl PcmCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The disk readout counts streaming, not loading. Library tests never
+    /// stream, so only this test's streamed read moves the counter.
+    #[test]
+    fn only_streaming_reads_count_as_disk_throughput() {
+        let path = std::env::temp_dir().join(format!("kontakto-disk-{}.wav", std::process::id()));
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&path, spec).unwrap();
+        (0..20_000).for_each(|i| w.write_sample(i as i16).unwrap());
+        w.finalize().unwrap();
+        let source = Sources::default().source(&path).unwrap();
+        let mut out = vec![[0.0; 2]; 10_000];
+        let before = DISK_READ.load(Ordering::Relaxed);
+        source.open().unwrap().read(0, &mut out).unwrap();
+        assert_eq!(DISK_READ.load(Ordering::Relaxed), before, "loading reads");
+        source.open_stream().unwrap().read(0, &mut out).unwrap();
+        assert!(DISK_READ.load(Ordering::Relaxed) >= before + 40_000, "streamed reads");
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn pcm_stores_each_resolution_exactly() {
