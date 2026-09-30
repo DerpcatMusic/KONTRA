@@ -25,7 +25,7 @@ pub use engine::{
     NoteLength, NoteSpec, VoicePar, engine_par_name,
 };
 pub use inventory::requirements;
-pub use runtime::{Live, MAX_SLOTS, Persisted, Runtime, settle_persistence};
+pub use runtime::{Live, MAX_SLOTS, Persisted, Refresh, Runtime, settle_persistence};
 
 use anyhow::Result;
 use serde::Serialize;

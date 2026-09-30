@@ -511,6 +511,12 @@ impl Engine {
         let n = left.len().min(right.len());
         left.fill(0.0);
         right.fill(0.0);
+        // An empty slot: nothing to play, run or ring out.
+        if self.bank.is_none() && self.script.is_none() && self.fx.is_empty() {
+            self.commands.clear();
+            self.writes.clear();
+            return;
+        }
         let channel = self.script_channel;
         if let Some((rt, mut host)) = self.scripted(channel) {
             rt.process(&mut host, n as u32);

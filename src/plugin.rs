@@ -6,7 +6,7 @@ use crate::{
     },
     fx::FxProcessor,
     import::{self, Instrument},
-    ksp::{Interface, KeyState, Live, Persisted, Runtime},
+    ksp::{Interface, KeyState, Live, Persisted, Refresh, Runtime},
 };
 use crossbeam_queue::ArrayQueue;
 use moose::mui::mui::scene::Image;
@@ -191,7 +191,8 @@ pub struct Shared {
     discard: ArrayQueue<Retired>,
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
     snapshot_requests: ArrayQueue<(usize, Box<Vec<Persisted>>)>,
-    snapshots: ArrayQueue<(usize, u64, Box<Vec<Persisted>>)>,
+    /// Refreshed snapshots, and whether any value in them changed.
+    snapshots: ArrayQueue<(usize, u64, Box<Vec<Persisted>>, bool)>,
     /// Live script views, lent and refreshed the same way.
     live_requests: ArrayQueue<(usize, Box<Live>)>,
     lives: ArrayQueue<(usize, u64, Box<Live>)>,
@@ -255,6 +256,8 @@ pub(crate) struct PartView {
     pub(crate) script_epoch: u64,
     /// Snapshot buffer for this slot's runtime while the loader holds it.
     pub(crate) snapshot: Option<Box<Vec<Persisted>>>,
+    /// When `snapshot` was last lent out.
+    pub(crate) snapshot_lent: Option<Instant>,
     /// Live view buffer for this slot's runtime while the loader holds it.
     pub(crate) live: Option<Box<Live>>,
     /// Script slot that `interface` belongs to.
@@ -475,6 +478,7 @@ fn next_epoch(
     let v = &mut view.parts[slot];
     v.script_epoch = view.script_epoch;
     v.snapshot = snapshot;
+    v.snapshot_lent = None;
     v.live = script.map(|rt| Box::new(rt.live()));
     view.script_epoch
 }
@@ -949,10 +953,16 @@ impl BackgroundTask for Load {
             ));
         }
         // Save script values the audio thread reported, then lend the buffers out again.
-        while let Some((slot, epoch, mut snapshot)) = params.shared.snapshots.pop() {
+        while let Some((slot, epoch, mut snapshot, changed)) = params.shared.snapshots.pop() {
             let mut view = params.shared.view.lock().unwrap();
             let v = &mut view.parts[slot];
             if epoch == 0 || epoch != v.script_epoch {
+                continue;
+            }
+            // Unchanged: the saved JSON already holds it. Serializing megabytes
+            // of script tables ten times a second was most of the loader's time.
+            if !changed {
+                v.snapshot = Some(snapshot);
                 continue;
             }
             if !crate::ksp::settle_persistence(&mut snapshot) {
@@ -1000,10 +1010,16 @@ impl BackgroundTask for Load {
             {
                 view.parts[slot].live = Some(live);
             }
-            if let Some(snapshot) = view.parts[slot].snapshot.take()
-                && let Err((_, snapshot)) = params.shared.snapshot_requests.push((slot, snapshot))
+            // Once a second: saving is all it is for, and big script tables
+            // cost the audio thread a while to copy.
+            let v = &mut view.parts[slot];
+            if v.snapshot_lent.is_none_or(|t| t.elapsed() >= SNAPSHOT_EVERY)
+                && let Some(snapshot) = v.snapshot.take()
             {
-                view.parts[slot].snapshot = Some(snapshot);
+                match params.shared.snapshot_requests.push((slot, snapshot)) {
+                    Ok(()) => v.snapshot_lent = Some(Instant::now()),
+                    Err((_, snapshot)) => v.snapshot = Some(snapshot),
+                }
             }
         }
     }
@@ -1015,7 +1031,20 @@ pub struct Dsp {
     audition_left: [usize; RACK_SLOTS],
     /// Epoch of each slot's installed runtime, returned with its persistence snapshots.
     script_epoch: [u64; RACK_SLOTS],
+    /// The lent live view and persistence snapshot being refreshed, a budget
+    /// a block: slot, epoch and [`Runtime::changes`] at the start, buffer, progress.
+    live: Option<(usize, (u64, u64), Box<Live>, Refresh)>,
+    snapshot: Option<(usize, (u64, u64), Box<Vec<Persisted>>, Refresh)>,
+    /// Per slot, epoch and changes the buffers last refreshed whole hold:
+    /// while the scripts do not run they are current and need no refresh.
+    live_seen: [(u64, u64); RACK_SLOTS],
+    snapshot_seen: [(u64, u64); RACK_SLOTS],
 }
+/// Script values copied into a lent buffer per block: large tables take
+/// several blocks rather than one long one.
+const REFRESH_BUDGET: usize = 16384;
+const SNAPSHOT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+const LIVE_BUDGET: usize = 512;
 pub struct Sampler;
 
 /// Channel that makes the on-screen keyboard reach the part's first zone.
@@ -1160,28 +1189,39 @@ impl PluginLogic for Sampler {
                 s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
             }
         }
-        // Refresh lent live views in place; the loader shows them.
-        while !p.shared.lives.is_full() {
-            let Some((slot, mut live)) = p.shared.live_requests.pop() else {
-                break;
-            };
-            if let Some(rt) = s.rack.parts[slot].script() {
-                rt.refresh_live(&mut live);
-            }
-            let _ = p.shared.lives.push((slot, s.script_epoch[slot], live));
+        // Refresh lent live views and persistence snapshots in place, one at
+        // a time and a budget a block; the loader shows and saves them.
+        let version = |s: &Dsp, slot: usize| {
+            let changes = s.rack.parts[slot].script().map_or(0, Runtime::changes);
+            (s.script_epoch[slot], changes)
+        };
+        if s.live.is_none() && !p.shared.lives.is_full() {
+            s.live = (p.shared.live_requests.pop())
+                .map(|(slot, live)| (slot, version(s, slot), live, Refresh::default()));
         }
-        // Refresh lent persistence snapshots in place; the loader saves them.
-        while !p.shared.snapshots.is_full() {
-            let Some((slot, mut snapshot)) = p.shared.snapshot_requests.pop() else {
-                break;
-            };
-            if let Some(rt) = s.rack.parts[slot].script() {
-                rt.refresh_persistence(&mut snapshot);
+        if let Some((slot, seen, live, at)) = &mut s.live {
+            let done = seen.0 != s.script_epoch[*slot]
+                || *seen == s.live_seen[*slot]
+                || (s.rack.parts[*slot].script())
+                    .is_none_or(|rt| rt.refresh_live_within(live, at, LIVE_BUDGET));
+            if done && let Some((slot, seen, live, _)) = s.live.take() {
+                s.live_seen[slot] = seen;
+                let _ = p.shared.lives.push((slot, seen.0, live));
             }
-            let _ = p
-                .shared
-                .snapshots
-                .push((slot, s.script_epoch[slot], snapshot));
+        }
+        if s.snapshot.is_none() && !p.shared.snapshots.is_full() {
+            s.snapshot = (p.shared.snapshot_requests.pop())
+                .map(|(slot, saved)| (slot, version(s, slot), saved, Refresh::default()));
+        }
+        if let Some((slot, seen, saved, at)) = &mut s.snapshot {
+            let done = seen.0 != s.script_epoch[*slot]
+                || *seen == s.snapshot_seen[*slot]
+                || (s.rack.parts[*slot].script())
+                    .is_none_or(|rt| rt.refresh_persistence_within(saved, at, REFRESH_BUDGET));
+            if done && let Some((slot, seen, saved, at)) = s.snapshot.take() {
+                s.snapshot_seen[slot] = seen;
+                let _ = p.shared.snapshots.push((slot, seen.0, saved, at.changed));
+            }
         }
         for e in &mut s.rack.parts {
             e.attack = p.attack.value();
@@ -1321,11 +1361,11 @@ impl PluginLogic for Sampler {
                 *gain = db_to_linear(p.volume.read());
             }
             let ports = s.rack.bus_controls.map(|c| usize::from(c.port));
-            let buses = s.rack.render(len);
+            let (buses, live) = s.rack.render_live(len);
             for channel in 0..channels {
                 b.output(channel)[at..at + len].fill(0.0);
             }
-            for (bus, x) in buses.iter().enumerate() {
+            for (bus, x) in buses.iter().enumerate().filter(|(bus, _)| live[*bus]) {
                 let port = ports[bus];
                 let route = cx
                     .bus_routing
@@ -1407,6 +1447,177 @@ pub(crate) struct ScriptView {
 
 moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 
+/// Host-shaped timing: the parts at `paths` in the rack, `Sampler::process`
+/// called at real-time pace for 512-frame blocks at 48 kHz on sixteen
+/// active stereo ports, with the loader running every 100 ms as the host's
+/// task does. First `seconds` idle, then `seconds` with `notes` held notes
+/// on every part, one replaced every `1 s / notes`. Prints block times.
+/// This thread's CPU time in seconds (Linux), which a busy machine's
+/// preemption does not inflate the way wall time does; 0 elsewhere.
+fn thread_cpu() -> f64 {
+    #[cfg(target_os = "linux")]
+    {
+        #[repr(C)]
+        struct Timespec {
+            s: i64,
+            ns: i64,
+        }
+        unsafe extern "C" {
+            fn clock_gettime(clock: i32, t: *mut Timespec) -> i32;
+        }
+        let mut t = Timespec { s: 0, ns: 0 };
+        // SAFETY: clock_gettime writes one timespec for CLOCK_THREAD_CPUTIME_ID (3).
+        unsafe { clock_gettime(3, &mut t) };
+        t.s as f64 + t.ns as f64 * 1e-9
+    }
+    #[cfg(not(target_os = "linux"))]
+    0.0
+}
+pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Result<()> {
+    use moose::core::bus_routing::{BusActivation, BusRouting};
+    use std::time::Duration;
+    const FRAMES: usize = 512;
+    const RATE: f64 = 48000.;
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts = paths
+        .iter()
+        .map(|path| Part {
+            path: path.clone(),
+            ..Default::default()
+        })
+        .collect();
+    let mut dsp = Dsp::default();
+    let transport = TransportInfo::default();
+    let mut data = vec![vec![0f32; FRAMES]; 2 * BUSES];
+    let mut outgoing = EventList::with_capacity(64);
+    let mut process = |dsp: &mut Dsp, events: &EventList| {
+        let mut channels: Vec<_> = data.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, FRAMES);
+        let mut routing = BusRouting::new();
+        for _ in 0..BUSES {
+            routing.push_output(2, BusActivation::Active);
+        }
+        outgoing.clear();
+        let mut cx = ProcessContext::new(&transport, RATE, FRAMES, &mut outgoing)
+            .with_bus_routing(routing);
+        let (started, cpu) = (Instant::now(), thread_cpu());
+        Sampler::process(dsp, &p, &mut buffer, events, &mut cx);
+        (started.elapsed().as_secs_f64() * 1e3, (thread_cpu() - cpu) * 1e3)
+    };
+    Sampler::reset(
+        &mut dsp,
+        &p,
+        &AudioConfig::new(RATE, FRAMES),
+    );
+    let none = EventList::with_capacity(0);
+    Load.run(&p);
+    for _ in 0..4 {
+        process(&mut dsp, &none);
+        Load.run(&p);
+    }
+    let loaded = (dsp.rack.parts.iter().take(paths.len())).filter(|e| e.bank().is_some()).count();
+    anyhow::ensure!(loaded == paths.len(), "only {loaded} of {} parts loaded", paths.len());
+    let keys: Vec<u8> = {
+        let b = dsp.rack.parts[0].bank().unwrap();
+        let low = b.zones().iter().map(|z| z.low_key).min().unwrap_or(48);
+        let high = b.zones().iter().map(|z| z.high_key).max().unwrap_or(72);
+        // Keyswitches sit low: play the upper part of the range.
+        (low.max(36)..=high.min(96)).collect()
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let loader = {
+        let (p, stop) = (p.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                Load.run(&p);
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+    };
+    let block = Duration::from_secs_f64(FRAMES as f64 / RATE);
+    let blocks = (seconds * RATE) as usize / FRAMES;
+    let every = (RATE / notes.max(1) as f64) as usize;
+    let (mut held, mut started) = (std::collections::VecDeque::new(), 0usize);
+    let mut events = EventList::with_capacity(64);
+    for (phase, playing) in [("idle", false), ("playing", true)] {
+        if playing && notes == 0 {
+            break;
+        }
+        let (mut times, mut cpus) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
+        let (mut voices, mut cpu) = (0, 0f32);
+        let start = Instant::now();
+        for b in 0..blocks {
+            events.clear();
+            let frame = b * FRAMES;
+            while playing && started * every < frame + FRAMES {
+                let note = |on: bool, key: u8| {
+                    let body = if on {
+                        EventBody::NoteOn { group: 0, channel: 0, note: key, velocity: 100 }
+                    } else {
+                        EventBody::NoteOff { group: 0, channel: 0, note: key, velocity: 0 }
+                    };
+                    Event::new(0, body)
+                };
+                if held.len() >= notes.min(keys.len())
+                    && let Some(key) = held.pop_front()
+                {
+                    events.push(note(false, key));
+                }
+                let key = keys[(started * 7) % keys.len()];
+                events.push(note(true, key));
+                held.push_back(key);
+                started += 1;
+            }
+            let (wall, cpu_ms) = process(&mut dsp, &events);
+            times.push(wall);
+            cpus.push(cpu_ms);
+            voices = voices.max(p.shared.voices.load(Ordering::Relaxed));
+            cpu = cpu.max(f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32));
+            if let Some(wait) = (start + block * (b + 1) as u32).checked_duration_since(Instant::now()) {
+                std::thread::sleep(wait);
+            }
+        }
+        if playing {
+            let mut off = EventList::with_capacity(64);
+            for key in held.drain(..) {
+                off.push(Event::new(0, EventBody::NoteOff { group: 0, channel: 0, note: key, velocity: 0 }));
+            }
+            process(&mut dsp, &off);
+        }
+        let deadline = FRAMES as f64 / RATE * 1e3;
+        println!("{phase}: {} blocks · peak {voices} voices · peak reported CPU {:.1}%", times.len(), cpu * 100.);
+        for (clock, times) in [("wall", &times), ("thread CPU", &cpus)] {
+            let mut sorted = times.clone();
+            sorted.sort_by(f64::total_cmp);
+            let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
+            let mean = times.iter().sum::<f64>() / times.len() as f64;
+            println!(
+                "  {clock}: mean {mean:.3} ms · p50 {:.3} · p99 {:.3} · max {:.3} ({:.1}× mean) · {:.1}% of the {deadline:.2} ms deadline",
+                at(0.5),
+                at(0.99),
+                at(1.0),
+                at(1.0) / mean,
+                mean / deadline * 100.,
+            );
+        }
+        let times = &cpus;
+        let mut sorted = times.clone();
+        sorted.sort_by(f64::total_cmp);
+        let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
+        // Where the slow blocks fall: evenly spaced ones are a timer.
+        let slow: Vec<usize> = (0..times.len()).filter(|&i| times[i] > 2. * at(0.5).max(0.01)).collect();
+        let gaps: Vec<usize> = slow.windows(2).map(|w| w[1] - w[0]).collect();
+        println!(
+            "  {} blocks over 2× median; first at {:?}; gaps {:?}",
+            slow.len(),
+            &slow[..slow.len().min(12)],
+            &gaps[..gaps.len().min(24)]
+        );
+    }
+    stop.store(true, Ordering::Relaxed);
+    let _ = loader.join();
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;

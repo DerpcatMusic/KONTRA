@@ -118,6 +118,8 @@ pub struct Rack {
     pub peaks: Peaks,
     part: Block,
     buses: [Block; BUSES],
+    /// Per bus, frames holding signal; beyond them it is all zeros.
+    written: [usize; BUSES],
 }
 
 impl Default for Rack {
@@ -129,6 +131,7 @@ impl Default for Rack {
             peaks: Peaks::default(),
             part: [[0.0; MAX_BLOCK]; 2],
             buses: [[[0.0; MAX_BLOCK]; 2]; BUSES],
+            written: [0; BUSES],
         }
     }
 }
@@ -234,10 +237,17 @@ impl Rack {
     /// Render `frames` (at most [`MAX_BLOCK`]) into the bus blocks, after
     /// each bus's fader; [`BusControls::port`] says where each one plays.
     pub fn render(&mut self, frames: usize) -> &[Block; BUSES] {
+        self.render_live(frames).0
+    }
+
+    /// [`render`](Self::render), also saying which buses carry signal: the
+    /// others are silent and need no copying out.
+    pub fn render_live(&mut self, frames: usize) -> (&[Block; BUSES], [bool; BUSES]) {
         let n = frames.min(MAX_BLOCK);
-        for bus in &mut self.buses {
-            bus[0][..n].fill(0.0);
-            bus[1][..n].fill(0.0);
+        for (bus, written) in self.buses.iter_mut().zip(&mut self.written) {
+            bus[0][..*written].fill(0.0);
+            bus[1][..*written].fill(0.0);
+            *written = 0;
         }
         let solo = self.controls.iter().any(|c| c.solo);
         for ((engine, c), meter) in self
@@ -249,11 +259,12 @@ impl Rack {
             let [left, right] = &mut self.part;
             engine.tune = c.tune;
             engine.render(&mut left[..n], &mut right[..n]);
-            if c.mute || (solo && !c.solo) {
+            let (left, right) = (&mut left[..n], &mut right[..n]);
+            // Silent parts, idle instruments and empty slots, add nothing.
+            if c.mute || (solo && !c.solo) || (peak(left) == 0.0 && peak(right) == 0.0) {
                 continue;
             }
             let [gl, gr] = balance(c.gain, c.pan);
-            let (left, right) = (&mut left[..n], &mut right[..n]);
             for x in left.iter_mut() {
                 *x *= gl;
             }
@@ -266,7 +277,9 @@ impl Rack {
                 .into_iter()
                 .take(1 + usize::from(aux))
             {
-                let [bus_l, bus_r] = &mut self.buses[bus.min(BUSES - 1)];
+                let bus = bus.min(BUSES - 1);
+                self.written[bus] = n;
+                let [bus_l, bus_r] = &mut self.buses[bus];
                 for (out, x) in bus_l[..n].iter_mut().zip(&*left) {
                     *out += x * gain;
                 }
@@ -276,12 +289,16 @@ impl Rack {
             }
         }
         let solo = self.bus_controls.iter().any(|c| c.solo);
-        for ((bus, c), meter) in self
+        for (((bus, c), meter), &written) in self
             .buses
             .iter_mut()
             .zip(&self.bus_controls)
             .zip(&mut self.peaks.buses)
+            .zip(&self.written)
         {
+            if written == 0 {
+                continue;
+            }
             let [gl, gr] = if c.mute || (solo && !c.solo) {
                 [0.0; 2]
             } else {
@@ -299,6 +316,6 @@ impl Rack {
                 meter[1].max(peak(&bus[1][..n])),
             ];
         }
-        &self.buses
+        (&self.buses, self.written.map(|w| w > 0))
     }
 }
