@@ -297,7 +297,7 @@ struct EditorState {
     /// The keys the selected part's instrument maps, and which instrument.
     mapped: (std::sync::Weak<import::Instrument>, [bool; 128]),
     /// The browser's files by library: of which scan, root and kind.
-    libraries: (std::sync::Weak<Vec<PathBuf>>, String, bool, Arc<std::collections::BTreeMap<String, Vec<usize>>>),
+    libraries: (std::sync::Weak<Vec<PathBuf>>, String, bool, Arc<Libraries>),
     /// Each part's performance view as last read.
     panels: HashMap<usize, panel::Cache>,
     started: Instant,
@@ -360,6 +360,9 @@ impl EditorState {
             .clone()
     }
 }
+
+/// The browser's files by library name, as indices into the scan.
+type Libraries = std::collections::BTreeMap<String, Vec<usize>>;
 
 /// One frame's inputs: the loader's view, the rack being edited, the editor state.
 struct Cx<'a> {
