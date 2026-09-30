@@ -46,17 +46,20 @@ struct Harness {
     bridge: Bridge<SamplerParams>,
     size: Size,
     computer: Arc<computer::Computer>,
+    art: Arc<art::Art>,
 }
 
 impl Harness {
     fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
         let computer = Arc::<computer::Computer>::default();
+        let art = Arc::<art::Art>::default();
         let mut h = Self {
             ui: theme::ui(),
-            build: Box::new(build(p, Arc::default(), computer.clone(), Arc::default())),
+            build: Box::new(build(p, Arc::default(), computer.clone(), Arc::default(), art.clone())),
             bridge: Bridge::new(p.clone()),
             size: Size::new(width, height),
             computer,
+            art,
         };
         h.idle(3);
         h
@@ -67,6 +70,18 @@ impl Harness {
         self.ui
             .frame(root, Some(self.size), input, 1. / 60.)
             .unwrap();
+    }
+
+    /// Frames until the library artwork asked for is made and drawn.
+    fn settle_art(&mut self) {
+        loop {
+            self.idle(1);
+            if !self.art.busy() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        self.idle(2);
     }
 
     fn idle(&mut self, frames: usize) {
@@ -809,7 +824,7 @@ fn screenshot() {
             for id in presses {
                 h.press(id);
             }
-            h.idle(2);
+            h.settle_art();
             let scene = h.ui.scene().unwrap();
             let mut ctx = RenderContext::new(width, height);
             let mut resources = Resources::default();

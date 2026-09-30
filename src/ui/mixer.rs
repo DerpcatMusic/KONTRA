@@ -199,7 +199,7 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         menu::open(ui, cx, menu::Target::Strip(Strip::Part(slot)));
     }
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
-    let tint = cx.state.tint(cx.view, &library);
+    let tint = cx.tint(&library);
     let name = strip_name(ui, cx, Strip::Part(slot));
 
     let part = cx.selection.parts[slot].clone();

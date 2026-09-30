@@ -18,6 +18,7 @@
 //!
 //! [`Shared`]: crate::plugin::Shared
 
+mod art;
 mod browser;
 mod computer;
 mod header;
@@ -49,7 +50,8 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let meters = Arc::new(Meters::default());
     let computer = Arc::new(computer::Computer::default());
     let picker = Arc::new(picker::Picker::default());
-    let build = build(&params, meters.clone(), computer.clone(), picker.clone());
+    let art = Arc::new(art::Art::default());
+    let build = build(&params, meters.clone(), computer.clone(), picker.clone(), art.clone());
     let drop_params = params.clone();
     let (cancel_params, cancel_computer) = (params.clone(), computer.clone());
     let (key_params, key_computer) = (params.clone(), computer.clone());
@@ -62,7 +64,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             cancel_params.shared.release_keyboard();
         })
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
-        .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready())
+        .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready())
         .fixed_zoom()
         .resizable((900, 600))
         .into_editor()
@@ -211,6 +213,20 @@ impl Watch {
     }
 }
 
+/// A copy of the loader's view for a frame to read, taken quickly: the
+/// script buffers it lends the audio thread (megabytes of persistent
+/// tables, the live interface) stay behind, as nothing on screen reads them
+/// and copying them held the lock the loader waits on.
+fn shown(view: &Mutex<View>) -> View {
+    let mut view = lock(view);
+    let lent: Vec<_> = (view.parts.iter_mut()).map(|v| (v.snapshot.take(), v.live.take())).collect();
+    let copy = view.clone();
+    for (v, (snapshot, live)) in view.parts.iter_mut().zip(lent) {
+        (v.snapshot, v.live) = (snapshot, live);
+    }
+    copy
+}
+
 /// What of the loader's view is on screen, cheaply: pointers of what it
 /// replaces wholesale, and the small fields it edits in place.
 fn fingerprint(view: &View, h: &mut DefaultHasher) {
@@ -296,11 +312,9 @@ struct EditorState {
     renaming_bus: Option<(usize, String)>,
     /// Buses below this index show a mixer strip even when unused.
     buses_shown: usize,
-    /// Each library's color and backdrop, from its artwork, worked out once.
-    tints: HashMap<String, Option<Color>>,
-    backdrops: HashMap<String, Option<Arc<Image>>>,
-    thumbs: HashMap<String, Arc<Image>>,
-    banners: HashMap<String, Arc<Image>>,
+    /// Each library's color, thumbnail, banner and backdrop, made from its
+    /// artwork off the frame.
+    art: Arc<art::Art>,
     /// The keys the selected part's instrument maps, and which instrument.
     mapped: (std::sync::Weak<import::Instrument>, [bool; 128]),
     /// The browser's files by library: of which scan, root and kind.
@@ -317,55 +331,6 @@ struct EditorState {
     modulation: Option<f64>,
     /// The system file dialog, answering on a later frame.
     picker: Arc<picker::Picker>,
-}
-
-impl EditorState {
-    /// `library`'s color: its artwork's dominant hue at a fixed, quiet
-    /// lightness and chroma, so every library reads alike.
-    fn tint(&mut self, view: &View, library: &str) -> Option<Color> {
-        *self
-            .tints
-            .entry(library.to_owned())
-            .or_insert_with(|| {
-                let hue = crate::artwork::tint(view.artwork.get(library)?)?;
-                Some(Color::oklch(0.66, 0.11, hue))
-            })
-    }
-}
-
-impl EditorState {
-    /// `library`'s artwork at twice `size`, for a crisp thumbnail that
-    /// scales nothing as it is drawn; made once.
-    fn thumbnail(&mut self, view: &View, library: &str, size: (f64, f64)) -> Option<Arc<Image>> {
-        // Artwork still being scanned is looked for again next frame.
-        if let Some(t) = self.thumbs.get(library) {
-            return Some(t.clone());
-        }
-        let (w, h) = ((size.0 * 2.).round() as u32, (size.1 * 2.).round() as u32);
-        let t = Arc::new(crate::artwork::thumbnail(view.artwork.get(library)?, w, h)?);
-        self.thumbs.insert(library.to_owned(), t.clone());
-        Some(t)
-    }
-
-    /// `library`'s artwork as a header banner `size` (logical) at twice the
-    /// pixels, once; artwork still being scanned is looked for again.
-    fn banner(&mut self, view: &View, library: &str, size: (f64, f64)) -> Option<Arc<Image>> {
-        if let Some(b) = self.banners.get(library) {
-            return Some(b.clone());
-        }
-        let (w, h) = ((size.0 * 2.).round() as u32, (size.1 * 2.).round() as u32);
-        let b = Arc::new(crate::artwork::banner(view.artwork.get(library)?, w, h)?);
-        self.banners.insert(library.to_owned(), b.clone());
-        Some(b)
-    }
-
-    /// `library`'s artwork made a backdrop, once.
-    fn backdrop(&mut self, view: &View, library: &str) -> Option<Arc<Image>> {
-        self.backdrops
-            .entry(library.to_owned())
-            .or_insert_with(|| crate::artwork::backdrop(view.artwork.get(library)?).map(Arc::new))
-            .clone()
-    }
 }
 
 /// The browser's files by library name, as indices into the scan.
@@ -386,6 +351,22 @@ enum RackDrag {
 }
 
 impl Cx<'_> {
+    /// `library`'s artwork made into what the editor shows, once it is.
+    fn looks(&self, library: &str) -> Option<Arc<art::Looks>> {
+        self.state.art.get(library, self.view.artwork.get(library)?)
+    }
+
+    /// `library`'s color: its artwork's dominant hue at a fixed, quiet
+    /// lightness and chroma, so every library reads alike.
+    fn tint(&self, library: &str) -> Option<Color> {
+        Some(Color::oklch(0.66, 0.11, self.looks(library)?.tint?))
+    }
+
+    /// Whether artwork shows blurred.
+    fn blurred(&self) -> bool {
+        !self.selection.sharp_artwork
+    }
+
     /// The library folder a preset lives in, relative to the scanned root.
     fn library_of(&self, path: &Path) -> String {
         library_of(&self.view.root, path)
@@ -684,6 +665,7 @@ fn build(
     meters: Arc<Meters>,
     computer: Arc<computer::Computer>,
     picker: Arc<picker::Picker>,
+    art: Arc<art::Art>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
     let mut root = read(&params.selection).root.clone();
     if root.is_empty() {
@@ -721,10 +703,7 @@ fn build(
         renaming: None,
         renaming_bus: None,
         buses_shown: 1,
-        tints: HashMap::new(),
-        backdrops: HashMap::new(),
-        thumbs: HashMap::new(),
-        banners: HashMap::new(),
+        art,
         mapped: (std::sync::Weak::new(), [false; 128]),
         libraries: Default::default(),
         panels: HashMap::new(),
@@ -743,7 +722,7 @@ fn build(
             state.last_poll = Instant::now();
         }
         let p = bridge.params().clone();
-        let view = lock(&p.shared.view).clone();
+        let view = shown(&p.shared.view);
         let mut selection = read(&p.selection).clone();
         let before = selection.clone();
         sanitize(&mut selection);

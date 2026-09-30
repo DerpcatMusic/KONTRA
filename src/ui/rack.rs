@@ -62,11 +62,11 @@ fn behind(cx: &mut Cx, slot: usize, stage: El) -> El {
     }
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
     match look {
-        super::Appearance::Color => match cx.state.tint(cx.view, &library) {
+        super::Appearance::Color => match cx.tint(&library) {
             Some(tint) => stage.fill(Color::oklch(0.225, 0.026, tint.hue())),
             None => stage,
         },
-        _ => match cx.state.backdrop(cx.view, &library) {
+        _ => match cx.looks(&library).and_then(|l| l.backdrop[usize::from(cx.blurred())].clone()) {
             Some(image) => stack![
                 block(Len::Pct(100.), Len::Pct(100.))
                     .fill(Fill::Image(image, moose::mui::mui::scene::Fit::Cover)),
@@ -143,7 +143,7 @@ const ONE_LINE: f64 = 860.;
 
 /// The header banner: the library's artwork fading out over this width, and
 /// taller than any header so covering one only ever crops it top and bottom.
-const BANNER: (f64, f64) = (TEXT * 36., TEXT * 7.);
+pub const BANNER: (f64, f64) = (TEXT * 36., TEXT * 7.);
 
 /// A part's header, after Koda's part strip: a thin bar with the library's
 /// color down its left edge. The fold, the name over what it is, preset
@@ -234,8 +234,8 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         f64::from(done) / f64::from(crate::engine::LOAD_DONE)
     });
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
-    let tint = cx.state.tint(cx.view, &library);
-    let banner = cx.state.banner(cx.view, &library, BANNER);
+    let tint = cx.tint(&library);
+    let banner = cx.looks(&library).and_then(|l| l.banner[usize::from(cx.blurred())].clone());
 
     let part = &mut cx.selection.parts[slot];
     let mut gain = f64::from(part.gain);

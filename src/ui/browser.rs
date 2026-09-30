@@ -113,7 +113,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             Source::Library(name) => (
                 library_label(name),
                 libraries[name].len(),
-                match cx.state.thumbnail(view, name, THUMB) {
+                match cx.looks(name).and_then(|l| l.thumb.clone()) {
                     Some(image) => block(THUMB.0, THUMB.1)
                         .fill(Fill::Image(image, Fit::Cover))
                         .shrink(0),
@@ -282,7 +282,7 @@ fn pane_of(id: &str) -> Option<Pane> {
 }
 
 /// A library thumbnail's size in the upper pane.
-const THUMB: (f64, f64) = (TEXT * 3., TEXT * 1.75);
+pub const THUMB: (f64, f64) = (TEXT * 3., TEXT * 1.75);
 
 /// A pseudo-entry's mark where a library shows its artwork.
 fn symbol(icon: Icon) -> El {

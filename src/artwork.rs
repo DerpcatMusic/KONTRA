@@ -393,8 +393,9 @@ pub fn thumbnail(image: &Image, w: u32, h: u32) -> Option<Image> {
 /// The artwork as a header banner, after Kontakt 8's: cropped to cover
 /// `w` x `h`, every banner brought to one dim level with its contrast and
 /// color held down so a white title reads over any of it, and fading from
-/// opaque at the left to nothing at the right.
-pub fn banner(image: &Image, w: u32, h: u32) -> Option<Image> {
+/// opaque at the left to nothing at the right. `blurred` softens it first,
+/// so a logo in the artwork stops competing with the title.
+pub fn banner(image: &Image, w: u32, h: u32, blurred: bool) -> Option<Image> {
     // The level every banner sits at, how much of its contrast and color
     // stays, and the brightest it gets (of 255).
     const LEVEL: f32 = 52.;
@@ -402,6 +403,7 @@ pub fn banner(image: &Image, w: u32, h: u32) -> Option<Image> {
     const COLOR: f32 = 0.55;
     const PEAK: f32 = 96.;
     let crop = thumbnail(image, w, h)?;
+    let crop = if blurred { blur(&crop, (h / 12).max(2) as usize, 3)? } else { crop };
     let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     let pixels = crop.rgba.as_chunks::<4>().0;
     let rgb = |c: &[u8; 4]| [0, 1, 2].map(|k| f32::from(c[k]));
@@ -427,50 +429,21 @@ pub fn banner(image: &Image, w: u32, h: u32) -> Option<Image> {
     Image::rgba(w, h, rgba)
 }
 
-/// The artwork as a backdrop to play over: shrunk to a few dozen pixels
-/// (which blurs it once scaled back up), blurred again, mostly drained of
-/// color and darkened well below the text drawn on it.
-pub fn backdrop(image: &Image) -> Option<Image> {
-    const W: usize = 48;
-    let (sw, sh) = (image.width as usize, image.height as usize);
+/// The artwork as a backdrop to play over, mostly drained of color and
+/// darkened well below the text drawn on it. `blurred` shrinks it to a few
+/// dozen pixels first (which blurs it once scaled back up) and blurs it
+/// again; sharp, it keeps up to a wide rack's worth of pixels.
+pub fn backdrop(image: &Image, blurred: bool) -> Option<Image> {
+    let (sw, sh) = (image.width, image.height);
     if sw == 0 || sh == 0 {
         return None;
     }
-    let h = (W * sh / sw).clamp(1, W);
-    // Area average into W x h.
-    let mut px = vec![[0f32; 3]; W * h];
-    let mut n = vec![0f32; W * h];
-    for (i, c) in image.rgba.as_chunks::<4>().0.iter().enumerate() {
-        let (x, y) = (i % sw, i / sw);
-        let at = (y * h / sh) * W + x * W / sw;
-        for k in 0..3 {
-            px[at][k] += f32::from(c[k]);
-        }
-        n[at] += 1.;
-    }
-    for (p, n) in px.iter_mut().zip(&n) {
-        p.iter_mut().for_each(|v| *v /= n.max(1.));
-    }
-    // Two passes of a 3x3 box.
-    for _ in 0..2 {
-        let from = px.clone();
-        for y in 0..h {
-            for x in 0..W {
-                let mut sum = [0f32; 3];
-                let mut count = 0.;
-                for (dx, dy) in (-1i32..=1).flat_map(|dx| (-1i32..=1).map(move |dy| (dx, dy))) {
-                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-                    if (0..W as i32).contains(&nx) && (0..h as i32).contains(&ny) {
-                        let q = from[ny as usize * W + nx as usize];
-                        (0..3).for_each(|k| sum[k] += q[k]);
-                        count += 1.;
-                    }
-                }
-                px[y * W + x] = sum.map(|v| v / count);
-            }
-        }
-    }
+    let w = if blurred { 48 } else { sw.min(1280) };
+    let h = (u64::from(w) * u64::from(sh) / u64::from(sw)).clamp(1, u64::from(w)) as u32;
+    let small = thumbnail(image, w, h)?;
+    let small = if blurred { blur(&small, 1, 2)? } else { small };
     // Every backdrop settles at the same dim average, bright artwork or dark.
+    let px: Vec<[f32; 3]> = small.rgba.as_chunks::<4>().0.iter().map(|c| [0, 1, 2].map(|k| f32::from(c[k]))).collect();
     let luma = |[r, g, b]: [f32; 3]| 0.2126 * r + 0.7152 * g + 0.0722 * b;
     let mean = px.iter().map(|p| luma(*p)).sum::<f32>() / px.len() as f32;
     let gain = (30. / mean.max(1.)).min(1.);
@@ -482,7 +455,41 @@ pub fn backdrop(image: &Image) -> Option<Image> {
             [tone(r), tone(g), tone(b), 255]
         })
         .collect::<Vec<u8>>();
-    Image::rgba(W as u32, h as u32, rgba)
+    Image::rgba(w, h, rgba)
+}
+
+/// `image` blurred by `passes` of a box `radius` pixels each way, across
+/// then down: three passes are near enough a Gaussian. Edges repeat.
+fn blur(image: &Image, radius: usize, passes: usize) -> Option<Image> {
+    let (w, h) = (image.width as usize, image.height as usize);
+    let mut px: Vec<[f32; 4]> = image.rgba.as_chunks::<4>().0.iter().map(|c| c.map(f32::from)).collect();
+    let scale = 1. / (2 * radius + 1) as f32;
+    for _ in 0..passes {
+        for across in [true, false] {
+            let (n, lines) = if across { (w, h) } else { (h, w) };
+            let at = |line: usize, i: usize| if across { line * w + i } else { i * w + line };
+            let mut out = vec![[0f32; 4]; n];
+            for line in 0..lines {
+                let get = |i: isize| px[at(line, i.clamp(0, n as isize - 1) as usize)];
+                let r = radius as isize;
+                let mut sum = [0f32; 4];
+                for i in -r..=r {
+                    let c = get(i);
+                    (0..4).for_each(|k| sum[k] += c[k]);
+                }
+                for (i, o) in out.iter_mut().enumerate() {
+                    *o = sum.map(|v| v * scale);
+                    let (add, drop) = (get(i as isize + r + 1), get(i as isize - r));
+                    (0..4).for_each(|k| sum[k] += add[k] - drop[k]);
+                }
+                for (i, o) in out.iter().enumerate() {
+                    px[at(line, i)] = *o;
+                }
+            }
+        }
+    }
+    let rgba: Vec<u8> = px.iter().flat_map(|c| c.map(|v| v.round().clamp(0., 255.) as u8)).collect();
+    Image::rgba(w as u32, h as u32, rgba)
 }
 
 /// The artwork's identity color as an OKLCH hue in degrees: the most
@@ -621,20 +628,34 @@ mod tests {
     #[test]
     fn banners_fade_right_and_stay_dim() {
         let white = super::Image::rgba(40, 10, vec![255u8; 40 * 10 * 4]).unwrap();
-        let b = super::banner(&white, 20, 4).unwrap();
-        let px = b.rgba.as_chunks::<4>().0;
-        assert_eq!((px[0][3], px[19][3]), (255, 0), "opaque at the left, gone at the right");
-        assert!(px.iter().all(|p| p[..3].iter().all(|&c| c < 110)), "white artwork dims under a title");
+        for blurred in [false, true] {
+            let b = super::banner(&white, 20, 4, blurred).unwrap();
+            let px = b.rgba.as_chunks::<4>().0;
+            assert_eq!((px[0][3], px[19][3]), (255, 0), "opaque at the left, gone at the right");
+            assert!(px.iter().all(|p| p[..3].iter().all(|&c| c < 110)), "white artwork dims under a title");
+        }
     }
 
     #[test]
     fn backdrops_settle_dim_and_small() {
         let bright = super::Image::rgba(300, 100, [250u8, 200, 40, 255].repeat(300 * 100)).unwrap();
-        let b = super::backdrop(&bright).unwrap();
-        assert_eq!((b.width, b.height), (48, 16));
-        let px = &b.rgba[..4];
-        assert!(px[0] < 45 && px[1] < 40, "darkened: {px:?}");
-        assert!(px[0] - px[2] < 25, "mostly drained of color: {px:?}");
+        for (blurred, size) in [(true, (48, 16)), (false, (300, 100))] {
+            let b = super::backdrop(&bright, blurred).unwrap();
+            assert_eq!((b.width, b.height), size);
+            let px = &b.rgba[..4];
+            assert!(px[0] < 45 && px[1] < 40, "darkened: {px:?}");
+            assert!(px[0] - px[2] < 25, "mostly drained of color: {px:?}");
+        }
+    }
+
+    #[test]
+    fn blur_spreads_an_edge() {
+        let half: Vec<u8> = (0..10).flat_map(|x| if x < 5 { [0u8, 0, 0, 255] } else { [200, 200, 200, 255] }).collect();
+        let image = super::Image::rgba(10, 1, half).unwrap();
+        let b = super::blur(&image, 2, 3).unwrap();
+        let px = b.rgba.as_chunks::<4>().0;
+        assert!(px[4][0] > 40 && px[5][0] < 160, "the edge softens: {:?}", &px[3..7]);
+        assert!(px[0][0] < 40 && px[9][0] > 160 && px[0][3] == 255, "the ends keep their color: {px:?}");
     }
 
     #[test]
