@@ -36,7 +36,6 @@ impl ItemDataHeader {
     }
 
     pub fn item_type(&self) -> ItemType {
-        let domain_id = std::str::from_utf8(&self.domain_id).expect("Not UTF-8");
-        ItemType::new(self.item_id, domain_id)
+        ItemType::new(self.item_id, &String::from_utf8_lossy(&self.domain_id))
     }
 }

@@ -16,6 +16,13 @@ If you'd like to join the effort or just learn more about reverse engineering, p
 
 ## Features
 
+This vendored copy exposes readers and extraction APIs; it does not provide a
+Kontakt preset/container writer or a lossless read/edit/write round trip.
+Unknown chunk bytes remain available in the parsed structures, but decoded
+objects map only part of the format. Do not use them to overwrite an original
+instrument. Encrypted content requires a matching caller-supplied library key;
+recognizing a container does not establish sample access or playable parity.
+
 - ✅ **KontaktV1**
 	- Read Metadata
 	- Decompress Patch
