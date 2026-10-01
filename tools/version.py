@@ -41,6 +41,7 @@ def check():
 def write(version):
     validate(version)
     pkg = package()
+    updates = []
     for filename, header in [('Cargo.toml', '[package]'), ('Cargo.lock', '[[package]]')]:
         path = ROOT / filename
         text = path.read_text()
@@ -59,6 +60,9 @@ def write(version):
         changed = pattern.sub(replace, text)
         if count != 1:
             raise ValueError(f'Expected one root package in {filename}, found {count}')
+        updates.append((path, changed))
+    # Validate both edits before changing either file.
+    for path, changed in updates:
         path.write_text(changed)
     check()
 
