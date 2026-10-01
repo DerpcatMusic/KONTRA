@@ -19,6 +19,7 @@
 //! [`Shared`]: crate::plugin::Shared
 
 mod art;
+pub(crate) mod audit;
 mod browser;
 mod chain;
 mod computer;

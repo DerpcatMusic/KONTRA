@@ -27,7 +27,7 @@ const HIDE_TITLE: i32 = 4;
 const HIDE_WHOLE: i32 = 16;
 
 /// Kontakt's default text, near enough: its own fonts are not drawn.
-const FONT: f64 = 11.;
+pub(super) const FONT: f64 = 11.;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -86,14 +86,14 @@ fn int(c: &Control, name: &str) -> Option<i32> {
     }
 }
 
-fn prop<'a>(c: &'a Control, name: &str) -> &'a str {
+pub(super) fn prop<'a>(c: &'a Control, name: &str) -> &'a str {
     match c.properties.get(name) {
         Some(Value::Text(s)) => s,
         _ => "",
     }
 }
 
-fn value(c: &Control) -> f64 {
+pub(super) fn value(c: &Control) -> f64 {
     match c.properties.get("$CONTROL_PAR_VALUE") {
         Some(Value::Int(n)) => f64::from(*n),
         Some(Value::Real(r)) => *r,
@@ -409,7 +409,7 @@ fn keep_spaces(text: &str) -> String {
 
 /// The text a control shows, its alignment (0 left, 1 centre, 2 right)
 /// and its offset from the top, if the script set one.
-fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, Option<f64>) {
+pub(super) fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, Option<f64>) {
     let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
     let own = prop(c, "$CONTROL_PAR_TEXT").to_owned();
     let words = match kind {

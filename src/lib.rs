@@ -23,6 +23,9 @@ mod routing;
 mod ui;
 #[cfg(feature="plugin")]
 pub use plugin::{Plugin, bench_host};
+/// `kontakto audit-ui`: see `ui::audit`.
+#[cfg(feature="plugin")]
+pub use ui::audit::run as audit_ui;
 /// The library folders the player scans, from its settings.
 #[cfg(feature="plugin")]
 pub fn library_roots() -> Vec<std::path::PathBuf> {
