@@ -137,17 +137,52 @@ pub enum Op {
     BrVarImm(Cmp, u32, i32, u32),
     /// The test of a loop the runtime can run natively: `loops[n]`.
     Loop(u32),
+    // Chains written by `chain` over `fuse`'s output. `vm::hot` runs the
+    // chained ops in one dispatch; everywhere else each is the op it
+    // replaced ([`Op::replaced`]), which keeps the fuel charged per op.
+    /// `AddVarImm(a, n)` whose `Jump t` lands on a `BrVarImm`: a loop's
+    /// increment, back-edge and test.
+    IncBr(u32, i32, u32),
+    /// `LdIAVar(v, a)` then `BrImm`.
+    BrIAVar(VarId, u32),
+    /// `LdIA2(v, a, b, n)` then `BrImm`.
+    BrIA2(VarId, u32, u32, i16),
+    /// `LdIAPoly(v, p)`, `LdIA2`, `AddImm`, `BrCmp`: a poly-indexed element
+    /// compared with an offset 2D element.
+    BrPolyIA2(VarId, u32),
+    /// `LdI a; LdI b; IAdd; LdIA v`, as `(v, a, b)`.
+    LdIASum(VarId, u32, u32),
+    /// `LdI a; LdI b; IAdd`.
+    AddVars(u32, u32),
+    /// `LdI a; AddImm n`.
+    LdIAdd(u32, i32),
 }
 
-/// Integer comparison of a fused branch.
+impl Op {
+    /// The op a chain replaced; any other op itself.
+    pub fn replaced(self) -> Self {
+        match self {
+            Self::IncBr(a, n, _) => Self::AddVarImm(a, n),
+            Self::BrIAVar(v, a) => Self::LdIAVar(v, a),
+            Self::BrIA2(v, a, b, n) => Self::LdIA2(v, a, b, n),
+            Self::BrPolyIA2(v, p) => Self::LdIAPoly(v, p),
+            Self::LdIASum(_, a, _) | Self::AddVars(a, _) | Self::LdIAdd(a, _) => Self::LdI(a),
+            op => op,
+        }
+    }
+}
+
+/// Integer comparison of a fused branch. Bit 0, 1 and 2 of each value say
+/// whether it holds for `a < b`, `a == b` and `a > b`, so testing is a shift.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Cmp {
-    Eq,
-    Ne,
-    Lt,
-    Gt,
-    Le,
-    Ge,
+    Lt = 0b001,
+    Eq = 0b010,
+    Le = 0b011,
+    Gt = 0b100,
+    Ne = 0b101,
+    Ge = 0b110,
 }
 
 impl Cmp {
@@ -165,14 +200,9 @@ impl Cmp {
 
     #[inline(always)]
     pub fn test(self, a: i32, b: i32) -> bool {
-        match self {
-            Self::Eq => a == b,
-            Self::Ne => a != b,
-            Self::Lt => a < b,
-            Self::Gt => a > b,
-            Self::Le => a <= b,
-            Self::Ge => a >= b,
-        }
+        // Branchless: a `match` here compiled to a second jump table.
+        let order = u32::from(a >= b) + u32::from(a > b);
+        (self as u32 >> order) & 1 != 0
     }
 }
 
@@ -238,6 +268,39 @@ fn fuse(code: &mut [Op]) {
             [Op::LdI(a), Op::LdIA(v), ..] => Op::LdIAVar(v, a),
             [Op::PushI(n), Op::IAdd, ..] => Op::AddImm(n),
             [Op::PushI(n), Op::ISub, ..] => Op::AddImm(n.wrapping_neg()),
+            _ => continue,
+        };
+    }
+}
+
+/// Chains of `fuse`'s output that dominate real scripts' note callbacks
+/// (Audio Imperia's articulation scans, ANALOG STRINGS' list shifts). Like
+/// `fuse`, each is written over its first op and the rest stay in place;
+/// unlike `fuse`, the replaced op is recoverable ([`Op::replaced`]).
+fn chain(code: &mut [Op]) {
+    for i in 0..code.len() {
+        let br_var_imm = |t: u32| matches!(code.get(t as usize), Some(Op::BrVarImm(..)));
+        code[i] = match code[i..] {
+            [Op::AddVarImm(a, n), _, _, _, Op::Jump(t), ..] if br_var_imm(t) => Op::IncBr(a, n, t),
+            [Op::LdIAVar(v, a), _, Op::BrImm(..), ..] => Op::BrIAVar(v, a),
+            [Op::LdIA2(v, a, b, n), _, _, _, _, _, Op::BrImm(..), ..] => Op::BrIA2(v, a, b, n),
+            [
+                Op::LdIAPoly(v, p),
+                _,
+                Op::LdIA2(..),
+                _,
+                _,
+                _,
+                _,
+                _,
+                Op::AddImm(_),
+                _,
+                Op::BrCmp(..),
+                ..,
+            ] => Op::BrPolyIA2(v, p),
+            [Op::LdI(a), Op::LdI(b), Op::IAdd, Op::LdIA(v), ..] => Op::LdIASum(v, a, b),
+            [Op::LdI(a), Op::LdI(b), Op::IAdd, ..] => Op::AddVars(a, b),
+            [Op::LdI(a), Op::AddImm(n), ..] => Op::LdIAdd(a, n),
             _ => continue,
         };
     }
@@ -350,6 +413,9 @@ pub struct Program {
     pub reals: Vec<f64>,
     pub strings: Vec<Box<str>>,
     pub vars: Vec<Var>,
+    /// `(slot, length)` per `VarId`, scalars as length 1: the interpreter's
+    /// bounds checks, without `Var`'s other fields in the cache.
+    pub elems: Vec<(u32, u32)>,
     pub functions: Vec<u32>,
     pub inits: Vec<ArrayInit>,
     pub cases: Vec<CaseArm>,
@@ -571,6 +637,8 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
     }
     thread(&mut c.p.code);
     fuse(&mut c.p.code);
+    chain(&mut c.p.code);
+    c.p.elems = c.p.vars.iter().map(|v| (v.slot, v.len.unwrap_or(1))).collect();
     Ok(c.p)
 }
 
