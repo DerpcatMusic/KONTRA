@@ -1161,6 +1161,29 @@ mod real {
         g
     }
 
+    #[test]
+    #[ignore = "probe"]
+    fn probe_keys() {
+        let path = std::env::var("NKI").unwrap();
+        let i = crate::import::read(std::path::Path::new(&path)).unwrap();
+        let mut e = crate::timing::engine_for(&i, 48000.0, crate::engine::MEMORY_LIMIT).unwrap();
+        step(&mut e, 0.3);
+        let view = crate::plugin::script_interface(e.script());
+        for (k, s) in view.keys.iter() {
+            println!("key {k}: {:?} {:?} {:?}", s.name, s.color, s.kind);
+        }
+        let mut ranges = std::collections::BTreeMap::<usize, (u8, u8, usize)>::new();
+        for z in i.zones.iter().filter(|z| z.available) {
+            let r = ranges.entry(z.group).or_insert((127, 0, 0));
+            r.0 = r.0.min(z.low_key);
+            r.1 = r.1.max(z.high_key);
+            r.2 += 1;
+        }
+        for (g, r) in ranges {
+            println!("group {g} {:?}: {:?}", i.groups[g].name, r);
+        }
+    }
+
     /// Solo Cello in channel mode: pizzicato, spiccato and legato at once on
     /// one key each play their own groups, and the short notes' releases
     /// leave the legato alone.

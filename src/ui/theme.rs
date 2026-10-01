@@ -848,6 +848,12 @@ pub fn keyswitch() -> Color {
     Color::oklch(0.6, 0.2, 25.)
 }
 
+/// A keyswitch the library leaves uncolored, or one moved to another key:
+/// violet, apart from the keys that play (green) and the library's own red.
+pub fn keyswitch_mark() -> Color {
+    Color::oklch(0.62, 0.14, 300.)
+}
+
 /// A compact check box: a tick on the accent when set, an outline when
 /// clear. Returns whether it was clicked.
 pub fn check(ui: &mut Ui, id: impl Into<Id>, name: &str, on: bool) -> (bool, El) {

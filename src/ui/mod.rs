@@ -353,8 +353,6 @@ struct EditorState {
     /// Each library's color, thumbnail, banner and backdrop, made from its
     /// artwork off the frame.
     art: Arc<art::Art>,
-    /// The keys the selected part's instrument maps, and which instrument.
-    mapped: (std::sync::Weak<import::Instrument>, [bool; 128]),
     /// The browser's files by library: of which scan, shelf and kind.
     libraries: (std::sync::Weak<Vec<PathBuf>>, usize, bool, Arc<Libraries>),
     /// How far the rack is scrolled (where it glides to), a part to scroll
@@ -818,7 +816,6 @@ fn build(
         renaming_bus: None,
         buses_shown: 1,
         art,
-        mapped: (std::sync::Weak::new(), [false; 128]),
         libraries: Default::default(),
         rack_y: 0.,
         rack_drawn: 0.,

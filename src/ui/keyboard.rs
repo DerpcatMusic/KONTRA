@@ -19,15 +19,16 @@ const MAX_OCTAVE: i16 = (128 / 12) - OCTAVES;
 /// The keyboard dock: a title bar with the shown range, octave stepping and
 /// the collapse switch, then a range strip over the keys.
 pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
-    let looks = looks(cx);
+    let parts = shown_parts(cx);
+    let looks = looks(cx, &parts);
     // Center the keys on a newly shown instrument's range.
-    let shown = cx.part().map(|p| (p.path.clone(), p.program));
+    let shown = parts.first().and_then(|&s| cx.selection.parts.get(s)).map(|p| (p.path.clone(), p.program));
     let used = |l: &Look| *l != Look::Unmapped;
     let span = looks
         .iter()
         .position(used)
         .map(|low| (low, looks.iter().rposition(used).unwrap_or(low)));
-    if shown != cx.state.keyboard_for && cx.part_view().instrument.is_some() {
+    if shown != cx.state.keyboard_for && shown.is_some() {
         if let Some((low, high)) = span {
             let octaves = (high / 12 - low / 12) as i16 + 1;
             let first = low as i16 / 12 - ((OCTAVES - octaves) / 2).max(0);
@@ -68,12 +69,11 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         note_name(first as u8),
         note_name((first + OCTAVES * 12 - 1) as u8)
     );
-    let plays = match span {
-        _ if cx.state.chosen().is_none() => "Every part on channel 1 or Omni".to_owned(),
-        Some((low, high)) if cx.part().is_some() => {
-            format!("Plays {} – {}", note_name(low as u8), note_name(high as u8))
-        }
-        _ => String::new(),
+    let plays = match playable(&looks) {
+        _ if parts.len() > 1 => "Every part on channel 1 or Omni".to_owned(),
+        Some((low, high)) => format!("Plays {} – {}", note_name(low as u8), note_name(high as u8)),
+        None if cx.state.chosen().is_none() => "Every part on channel 1 or Omni".to_owned(),
+        None => String::new(),
     };
     let computer = &cx.state.computer;
     let qwerty = cx.selection.qwerty.then(|| {
@@ -115,9 +115,9 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     }
 
     let slot = cx.state.played();
-    let keys = match cx.state.chosen() {
-        Some(_) => cx.part_view().keys.clone(),
-        None => Default::default(),
+    let keys = match parts[..] {
+        [slot] => cx.view.parts[slot].keys.clone(),
+        _ => Default::default(),
     };
     let mut octaves = Vec::new();
     for octave in cx.state.octave..cx.state.octave + OCTAVES {
@@ -154,9 +154,9 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
             .h(Len::Pct(100.)),
         );
     }
-    let strip = match cx.state.chosen() {
-        Some(_) => range_strip(looks, cx.state.octave),
-        None => part_strips(cx),
+    let strip = match parts.len() {
+        0 | 1 => range_strip(looks, cx.state.octave),
+        _ => part_strips(cx, &parts),
     };
     let wheels = wheels(ui, cx.p, slot, &mut cx.state.modulation);
     col![
@@ -320,29 +320,50 @@ fn key_x(note: usize, octave: i16, width: f64) -> (f64, f64) {
     (o.floor() * (octave_w + 1.) + x * octave_w, w * octave_w)
 }
 
-/// Each loaded part's slot and the keys it maps, in rack order.
-fn part_ranges(cx: &mut Cx) -> Vec<(usize, [bool; 128])> {
-    let mut out = Vec::new();
-    for slot in cx.selection.order.iter().map(|&s| s as usize) {
-        let Some(i) = cx.view.parts.get(slot).and_then(|v| v.instrument.as_ref()) else { continue };
-        let (seen, mapped) = cx.state.ranges.entry(slot).or_insert_with(|| (std::sync::Weak::new(), [false; 128]));
-        if !seen.upgrade().is_some_and(|s| Arc::ptr_eq(&s, i)) {
-            *mapped = mapped_keys(i);
-            *seen = Arc::downgrade(i);
-        }
-        out.push((slot, *mapped));
+/// The parts the keys show: the selected one or, with none selected, those
+/// the keys play (port A on MIDI channel 1 or Omni, or with an articulation
+/// on channel 1), in rack order.
+fn shown_parts(cx: &Cx) -> Vec<usize> {
+    let loaded = |slot: usize| {
+        let part = cx.selection.parts.get(slot).filter(|p| !p.path.is_empty());
+        let instrument = cx.view.parts.get(slot).is_some_and(|v| v.instrument.is_some());
+        part.filter(|_| instrument)
+    };
+    if let Some(slot) = cx.state.chosen() {
+        return loaded(slot).map(|_| slot).into_iter().collect();
     }
-    out
+    let hears = |p: &crate::plugin::Part| {
+        let a = &p.articulate;
+        let by_channel = a.mode == crate::articulate::Mode::Channel && a.source == p.path;
+        p.port == 0 && (p.channel <= 0 || by_channel && a.articulations.iter().any(|r| r.enabled && r.channel == 0))
+    };
+    (cx.selection.order.iter().map(|&s| s as usize)).filter(|&slot| loaded(slot).is_some_and(hears)).collect()
 }
 
-/// With no part selected: a thin bar per part in its color from its lowest
-/// mapped key to its highest, parts whose ranges overlap on rows of their own.
-fn part_strips(cx: &mut Cx) -> El {
+/// The keys part `slot`'s instrument maps, walked once per instrument: tens
+/// of thousands of zones are too many to walk every frame.
+fn mapped(cx: &mut Cx, slot: usize) -> [bool; 128] {
+    let Some(i) = cx.view.parts.get(slot).and_then(|v| v.instrument.as_ref()) else {
+        return [false; 128];
+    };
+    let (seen, mapped) = cx.state.ranges.entry(slot).or_insert_with(|| (std::sync::Weak::new(), [false; 128]));
+    if !seen.upgrade().is_some_and(|s| Arc::ptr_eq(&s, i)) {
+        *mapped = mapped_keys(i);
+        *seen = Arc::downgrade(i);
+    }
+    *mapped
+}
+
+/// With several parts shown: a thin bar per part in its color from its
+/// lowest playable key to its highest, parts whose ranges overlap on rows of
+/// their own.
+fn part_strips(cx: &mut Cx, shown: &[usize]) -> El {
     const ROW: f64 = 3.;
     let mut rows: Vec<Vec<(usize, usize, usize)>> = Vec::new();
     let mut tip = Vec::new();
-    for (slot, mapped) in part_ranges(cx) {
-        let (Some(low), Some(high)) = (mapped.iter().position(|m| *m), mapped.iter().rposition(|m| *m)) else { continue };
+    for &slot in shown {
+        let looks = part_looks(cx, slot);
+        let Some((low, high)) = playable(&looks) else { continue };
         tip.push(format!("{}: {} – {}", super::rack::name(cx, slot), note_name(low as u8), note_name(high as u8)));
         match rows.iter_mut().find(|r| r.iter().all(|&(_, l, h)| high < l || low > h)) {
             Some(r) => r.push((slot, low, high)),
@@ -371,14 +392,32 @@ fn part_strips(cx: &mut Cx) -> El {
     .id("part-ranges")
 }
 
-/// The keys `i`'s playable zones map.
+/// The keys `i`'s playable zones map. A multisample's lowest and highest
+/// zones are often stretched to the keyboard's ends: such an edge counts
+/// from the zone's root, where its samples really are.
 fn mapped_keys(i: &crate::import::Instrument) -> [bool; 128] {
+    let mut zones = vec![0usize; i.groups.len().max(1)];
+    for z in i.zones.iter().filter(|z| z.available) {
+        if let Some(n) = zones.get_mut(z.group) {
+            *n += 1;
+        }
+    }
     let mut mapped = [false; 128];
     for z in i.zones.iter().filter(|z| z.available) {
-        let (low, high) = (z.low_key.min(127) as usize, z.high_key.min(127) as usize);
-        if low <= high {
-            mapped[low..=high].fill(true);
+        let (mut low, mut high) = (z.low_key.min(127), z.high_key.min(127));
+        if low > high {
+            continue;
         }
+        if zones.get(z.group).is_some_and(|&n| n > 1) {
+            let root = z.root.clamp(low, high);
+            if low == 0 {
+                low = root;
+            }
+            if high == 127 {
+                high = root;
+            }
+        }
+        mapped[low as usize..=high as usize].fill(true);
     }
     mapped
 }
@@ -386,7 +425,7 @@ fn mapped_keys(i: &crate::import::Instrument) -> [bool; 128] {
 /// The green of a key that plays.
 const MAPPED_HUE: f32 = 150.;
 
-/// What a key does for the selected part.
+/// What a key does for the parts shown.
 #[derive(Clone, Copy, PartialEq)]
 enum Look {
     Unmapped,
@@ -394,50 +433,68 @@ enum Look {
     Colored(Color),
 }
 
-fn looks(cx: &mut Cx) -> [Look; 128] {
-    let mut looks = [Look::Unmapped; 128];
-    if cx.state.chosen().is_none() {
-        // Every part's keys play.
-        for (_, mapped) in &part_ranges(cx) {
-            for (look, &m) in looks.iter_mut().zip(mapped) {
-                if m {
-                    *look = Look::Mapped;
-                }
+impl Look {
+    /// Which of two parts' looks a key shows: a color, else playing.
+    fn rank(self) -> u8 {
+        match self {
+            Look::Unmapped => 0,
+            Look::Mapped => 1,
+            Look::Colored(_) => 2,
+        }
+    }
+}
+
+/// The lowest and highest keys that play notes (keyswitches aside).
+fn playable(looks: &[Look; 128]) -> Option<(usize, usize)> {
+    let low = looks.iter().position(|l| *l == Look::Mapped)?;
+    Some((low, looks.iter().rposition(|l| *l == Look::Mapped).unwrap_or(low)))
+}
+
+/// Part `slot`'s keys: those its zones map play, then the colors its
+/// scripts give keys (INACTIVE ones play nothing), then its articulations'
+/// keyswitches, marked where the library leaves them plain.
+fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
+    let mapped = mapped(cx, slot);
+    let mut looks = mapped.map(|m| if m { Look::Mapped } else { Look::Unmapped });
+    if let Some(v) = cx.view.parts.get(slot) {
+        for (&note, state) in v.keys.iter() {
+            if let Some(look) = state.color.as_ref().and_then(key_color) {
+                looks[note.min(127) as usize] = look;
             }
         }
+    }
+    let Some(a) = cx.selection.parts.get(slot).filter(|p| !p.path.is_empty() && p.articulate.source == p.path).map(|p| &p.articulate) else {
         return looks;
-    }
-    if cx.part().is_none() {
-        return looks;
-    }
-    let v = &cx.view.parts[cx.state.selected];
-    if let Some(i) = &v.instrument {
-        // Tens of thousands of zones: walked once per instrument, not per frame.
-        let (seen, mapped) = &mut cx.state.mapped;
-        if !seen.upgrade().is_some_and(|s| Arc::ptr_eq(&s, i)) {
-            *mapped = mapped_keys(i);
-            *seen = Arc::downgrade(i);
-        }
-        for (look, &m) in looks.iter_mut().zip(mapped.iter()) {
-            if m {
-                *look = Look::Mapped;
-            }
+    };
+    for key in a.articulations.iter().filter_map(|r| r.key.filter(|&k| k < 128)) {
+        if !matches!(looks[key as usize], Look::Colored(_)) {
+            looks[key as usize] = Look::Colored(keyswitch_mark());
         }
     }
-    for (&note, state) in v.keys.iter() {
-        if let Some(look) = state.color.as_ref().and_then(key_color) {
-            looks[note.min(127) as usize] = look;
+    // A remapped keyswitch's look moves to the key that plays it; a cleared
+    // one's key plays nothing.
+    let plain = |from: usize| if mapped[from] { Look::Mapped } else { Look::Unmapped };
+    for r in &a.articulations {
+        let (Some(from), Some(to)) = (r.key.map(|k| k as usize & 127), r.remap.map(usize::from)) else { continue };
+        let look = looks[from];
+        if !a.keep_original || to >= 128 {
+            looks[from] = plain(from);
         }
-    }
-    // A remapped keyswitch's color moves to the key that plays it.
-    if let Some(p) = cx.part().filter(|p| p.articulate.source == p.path) {
-        let a = &p.articulate;
-        for (from, to) in a.articulations.iter().filter_map(|r| Some((r.key? as usize & 127, r.remap? as usize & 127))) {
-            let look = looks[from];
-            if !a.keep_original {
-                looks[from] = if cx.state.mapped.1[from] { Look::Mapped } else { Look::Unmapped };
-            }
+        if to < 128 {
             looks[to] = look;
+        }
+    }
+    looks
+}
+
+/// The shown parts' keys together.
+fn looks(cx: &mut Cx, shown: &[usize]) -> [Look; 128] {
+    let mut looks = [Look::Unmapped; 128];
+    for &slot in shown {
+        for (look, part) in looks.iter_mut().zip(part_looks(cx, slot)) {
+            if part.rank() > look.rank() {
+                *look = part;
+            }
         }
     }
     looks
