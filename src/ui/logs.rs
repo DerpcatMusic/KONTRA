@@ -10,9 +10,10 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-// Noto Sans at SMALL/TEXT measures 15 + 16 + 15 px on the fixture's device
-// grid. Include both 1 px vertical insets in the virtualized row pitch.
-const ROW: f64 = 15. + 16. + 15. + 2.;
+// Noto Sans has a 1.362 em pitch: two SMALL captions, one TEXT body and
+// both 1 px insets require 48.308 px. MUI keeps raw metrics without a device
+// scale (including offscreen rendering), so reserve the full rounded-up span.
+const ROW: f64 = 49.;
 static WAKE: AtomicU64 = AtomicU64::new(0);
 
 /// A completed snapshot also wakes an idle plugin editor.
@@ -733,11 +734,13 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                         secondary()
                     })
                     .lines(1)
-                    .min_w(0),
+                    .min_w(0)
+                    .id(format!("{id}-title")),
                 body(event.reason.as_deref().unwrap_or(&event.event))
                     .text_size(TEXT)
                     .lines(1)
-                    .min_w(0),
+                    .min_w(0)
+                    .id(format!("{id}-reason")),
                 caption(scope)
                     .fill(secondary())
                     .lines(1)
@@ -1070,10 +1073,19 @@ mod tests {
         assert!(state.detail.as_ref().unwrap().1.contains("Marker 1001"));
         let scene = ui.scene().unwrap();
         let row = scene.surface("log-event-1002").unwrap().frame;
+        let title = scene.surface("log-event-1002-title").unwrap().frame;
+        let reason = scene.surface("log-event-1002-reason").unwrap().frame;
         let scope = scene.surface("log-event-1002-scope").unwrap().frame;
+        let font = Font::new(NOTO_SANS).unwrap();
+        let caption_pitch = ui.text_run(&font, "M", SMALL).unwrap().line_height;
+        let body_pitch = ui.text_run(&font, "M", TEXT).unwrap().line_height;
         assert!(
             scope.y + scope.size.height <= row.y + row.size.height - 1.,
-            "the third line fits above the row's bottom inset"
+            "the third line must fit above the bottom inset: row={row:?}, \
+             title={title:?}, reason={reason:?}, scope={scope:?}, \
+             caption_pitch={caption_pitch}, body_pitch={body_pitch}, \
+             required_span={}",
+            caption_pitch * 2. + body_pitch + 2.,
         );
         let shot = Path::new("artifacts/diagnostics/log-panel-fixture.png");
         std::fs::create_dir_all(shot.parent().unwrap()).unwrap();
