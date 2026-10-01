@@ -567,16 +567,8 @@ impl Cx<'_> {
     /// Add an instrument to the first free slot and show it.
     fn add(&mut self, path: String) {
         self.remember(&path);
-        let (port, channel) = self.selection.next_input();
-        match add_part(
-            &mut self.selection,
-            Part {
-                path,
-                port,
-                channel,
-                ..Default::default()
-            },
-        ) {
+        let part = new_part(&self.selection, &self.settings, path);
+        match add_part(&mut self.selection, part) {
             Some(slot) => self.show(slot),
             None => {
                 self.state.notice =
@@ -651,6 +643,19 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 }
 
 /// Put `part` in the first empty slot; `None` when the rack is full.
+/// A part for `path` on the input and output the settings give new parts.
+fn new_part(selection: &Selection, settings: &crate::library::Settings, path: String) -> Part {
+    let (port, channel) = settings.new_input.unwrap_or_else(|| selection.next_input());
+    Part {
+        path,
+        port,
+        channel,
+        output: settings.new_output.unwrap_or(0),
+        output_manual: settings.new_output.is_some(),
+        ..Default::default()
+    }
+}
+
 fn add_part(selection: &mut Selection, part: Part) -> Option<usize> {
     let slot = selection
         .parts
@@ -790,16 +795,8 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
                     Some(slot)
                 }
                 None => {
-                    let (port, channel) = selection.next_input();
-                    add_part(
-                        &mut selection,
-                        Part {
-                            path,
-                            port,
-                            channel,
-                            ..Default::default()
-                        },
-                    )
+                    let part = new_part(&selection, &p.shared.libraries.settings(), path);
+                    add_part(&mut selection, part)
                 }
             };
             if let Some(slot) = slot {
@@ -839,7 +836,8 @@ fn build(
         octave: 2,
         keyboard_for: None,
         selected: 0,
-        unselected: false,
+        // Every part shows until one is clicked.
+        unselected: true,
         notice: String::new(),
         root: String::new(),
         last_poll: Instant::now() - Duration::from_secs(1),

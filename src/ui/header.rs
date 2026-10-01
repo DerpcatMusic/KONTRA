@@ -258,6 +258,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         .shrink(0),
     );
     body.push(view_settings(ui, cx));
+    body.push(new_part_settings(ui, cx));
     col![col(body).gap(TIGHT).align(Align::Stretch), rule()]
         .gap(0)
         .shrink(0)
@@ -301,6 +302,59 @@ fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     .align(Align::Center)
     .pad(edges(TIGHT, SPACE, SPACE, INSET))
     .shrink(0)
+}
+
+/// The MIDI input and output bus new parts take.
+fn new_part_settings(ui: &mut Ui, cx: &mut Cx) -> El {
+    let libraries = &cx.p.shared.libraries;
+    let (input, output) = (cx.settings.new_input, cx.settings.new_output);
+    let fixed = input.filter(|&(_, c)| c >= 0);
+    let mut inputs = Vec::new();
+    for (id, label, to, on) in [
+        ("next", "Next free channel", None, input.is_none()),
+        ("omni", "Omni", Some((0, -1)), input.is_some_and(|(_, c)| c < 0)),
+        ("fixed", "Channel", Some(fixed.unwrap_or((0, 0))), fixed.is_some()),
+    ] {
+        let (hit, el) = action(ui, format!("new-input-{id}"), label, on);
+        if hit {
+            libraries.edit(|s| s.new_input = to);
+        }
+        inputs.push(el);
+    }
+    // A1…D16, stepped.
+    let step = |ui: &mut Ui, id: &str, now: usize, count: usize| {
+        let (down, down_el) = icon_button(ui, format!("{id}-down"), Icon::Left, "Previous", false);
+        let (up, up_el) = icon_button(ui, format!("{id}-up"), Icon::Right, "Next", false);
+        let to = if down { Some((now + count - 1) % count) } else if up { Some((now + 1) % count) } else { None };
+        (to, down_el, up_el)
+    };
+    let mut items = vec![caption("New parts: MIDI").fill(secondary()).lines(1).shrink(0), segmented(inputs)];
+    if let Some((port, channel)) = fixed {
+        let now = usize::from(port) * 16 + channel as usize;
+        let (to, down, up) = step(ui, "new-channel", now, 64);
+        if let Some(n) = to {
+            libraries.edit(|s| s.new_input = Some(((n / 16) as u8, (n % 16) as i16)));
+        }
+        let name = format!("{}{}", char::from(b'A' + port), channel + 1);
+        items.push(cluster(vec![down, caption(name).reserve("D16").justify(Justify::Center), up]));
+    }
+    let mut outputs = Vec::new();
+    for (id, label, to, on) in [("auto", "Automatic", None, output.is_none()), ("fixed", "Bus", Some(output.unwrap_or(0)), output.is_some())] {
+        let (hit, el) = action(ui, format!("new-output-{id}"), label, on);
+        if hit {
+            libraries.edit(|s| s.new_output = to);
+        }
+        outputs.push(el);
+    }
+    items.extend([caption("Output").fill(secondary()).lines(1).shrink(0), segmented(outputs)]);
+    if let Some(bus) = output {
+        let (to, down, up) = step(ui, "new-bus", usize::from(bus), crate::engine::BUSES);
+        if let Some(n) = to {
+            libraries.edit(|s| s.new_output = Some(n as u8));
+        }
+        items.push(cluster(vec![down, caption(format!("st.{}", bus + 1)).reserve("st.16").justify(Justify::Center), up]));
+    }
+    row(items).gap(SPACE).align(Align::Center).pad(edges(TIGHT, SPACE, SPACE, INSET)).shrink(0)
 }
 
 /// Ask for a library folder (`single`) or a folder of libraries to add;
