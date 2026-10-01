@@ -171,6 +171,11 @@ impl Kind {
             .map_or(Kind::Unknown(id), |(_, kind, _)| *kind)
     }
 
+    /// Whether a rack slot of this kind plays (see `processor::Dsp`).
+    pub fn has_dsp(self) -> bool {
+        matches!(self, Kind::Gainer | Kind::StereoModeller | Kind::Reverb | Kind::Convolution | Kind::SendLevels)
+    }
+
     /// Kontakt's display name, for warnings and reports.
     pub fn name(self) -> String {
         match TABLE.iter().find(|(_, kind, _)| *kind == self) {

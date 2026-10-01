@@ -1067,6 +1067,7 @@ mod tests {
                     volume_env: true,
                     flex: false,
                     envelope: None,
+                    kind: String::new(),
                 },
                 Modulator {
                     name: "VEL_VOLUME".into(),
@@ -1075,6 +1076,7 @@ mod tests {
                     volume_env: false,
                     flex: false,
                     envelope: None,
+                    kind: String::new(),
                 },
                 Modulator {
                     name: "CC_VOLUME".into(),
@@ -1083,6 +1085,7 @@ mod tests {
                     volume_env: false,
                     flex: false,
                     envelope: None,
+                    kind: String::new(),
                 },
             ],
             ..Group::default()
@@ -1181,7 +1184,7 @@ mod tests {
         // missing slot: Kontakt ignores those; an external modulator's are
         // left unmapped.
         let mut flex = group();
-        flex.modulators.insert(1, Modulator { name: "ENV_FLEX".into(), targets: Vec::new(), assignments: None, volume_env: false, flex: true, envelope: None });
+        flex.modulators.insert(1, Modulator { name: "ENV_FLEX".into(), targets: Vec::new(), assignments: None, volume_env: false, flex: true, envelope: None, kind: "flex".into() });
         let flex = [flex];
         assert!(Address::inert(par(id::ATTACK, 1, -1), &flex));
         assert!(Address::inert(par(id::RELEASE, 9, -1), &flex));

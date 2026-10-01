@@ -57,7 +57,7 @@ pub enum Response {
 
 /// Kontakt filter type id → response and 2-pole section count. Low/high
 /// direction is medium confidence, pole counts low (see `audits/EFFECTS.md`).
-fn filter_type(id: i32) -> Option<(Response, u8)> {
+pub(crate) fn filter_type(id: i32) -> Option<(Response, u8)> {
     use Response::*;
     Some(match id {
         2 => (Low, 1),
@@ -76,6 +76,32 @@ fn filter_type(id: i32) -> Option<(Response, u8)> {
         57 => (High, 2),
         _ => return None,
     })
+}
+
+/// KSP `$FILTER_TYPE_*` constants by the type id the engine stores. The
+/// classic ids follow the guessed order of `filter_type`; types no local
+/// preset stores get KONTRA-internal ids from 1000 (Kontakt's own values are
+/// opaque to scripts, so only consistency matters).
+const KSP_FILTER_TYPES: &[(&str, i32)] = &[
+    ("$FILTER_TYPE_LP2POLE", 2),
+    ("$FILTER_TYPE_HP2POLE", 3),
+    ("$FILTER_TYPE_BP2POLE", 4),
+    ("$FILTER_TYPE_LP4POLE", 5),
+    ("$FILTER_TYPE_HP4POLE", 6),
+    ("$FILTER_TYPE_BP4POLE", 7),
+    ("$FILTER_TYPE_BR4POLE", 8),
+    ("$FILTER_TYPE_LP6POLE", 9),
+    ("$FILTER_TYPE_SV_LP2", 52),
+    ("$FILTER_TYPE_SV_BP2", 53),
+    ("$FILTER_TYPE_SV_HP2", 54),
+    ("$FILTER_TYPE_SV_LP4", 55),
+    ("$FILTER_TYPE_SV_BP4", 56),
+    ("$FILTER_TYPE_SV_HP4", 57),
+];
+
+/// Value of a KSP `$FILTER_TYPE_*` constant.
+pub fn ksp_filter_type(name: &str) -> Option<i32> {
+    KSP_FILTER_TYPES.iter().find(|(n, _)| *n == name).map(|&(_, id)| id)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -104,7 +130,7 @@ pub(crate) enum Knob {
 
 impl Knob {
     /// Modulation target names: `filterCutoff`, `eqGain2`...
-    fn parse(name: &str) -> Option<Self> {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
         let band = |rest: &str| rest.parse::<u8>().ok().filter(|b| (1..=3).contains(b)).map(|b| b - 1);
         Some(match name {
             "filterCutoff" => Self::Cutoff,

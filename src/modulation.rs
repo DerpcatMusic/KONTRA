@@ -87,6 +87,10 @@ pub struct Modulator {
     /// Index into `Group::envelopes` of an AHDSR driving module parameters.
     #[serde(default)]
     pub envelope: Option<usize>,
+    /// Modulator kind, for audits: `ahdsr`, `flex`, `chunk 0xNN` (an
+    /// undecoded internal modulator) or `external`.
+    #[serde(default)]
+    pub kind: String,
 }
 
 /// Modulation read from one group, plus notes about what was left out.
@@ -121,6 +125,11 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
             // The first volume envelope of each kind; the voice multiplies them.
             let volume = params.targets.iter().any(|t| t.param == "volume");
             let flex = matches!(params.modulator, RawModulator::Flex(_));
+            let kind = match params.modulator {
+                RawModulator::Ahdsr(_) => "ahdsr".to_owned(),
+                RawModulator::Flex(_) => "flex".to_owned(),
+                RawModulator::Other { chunk_id } => format!("chunk 0x{chunk_id:02x}"),
+            };
             let envelope = (matches!(params.modulator, RawModulator::Ahdsr(_)) && !volume)
                 .then_some(out.envelopes.len());
             let volume_env = match params.modulator {
@@ -167,6 +176,7 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                 volume_env,
                 flex,
                 envelope,
+                kind,
             });
         }
         if skipped > 0 {
@@ -186,6 +196,7 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                 volume_env: false,
                 flex: false,
                 envelope: None,
+                kind: "external".into(),
             });
             for target in params.targets {
                 out.mods.push(ModAssignment {

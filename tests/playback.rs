@@ -2235,7 +2235,7 @@ fn shared_filters_match_voices_filtered_alone_within_120_db() {
     };
     let band = |freq_hz, gain_db| params::EqBand { freq_hz, bandwidth_oct: 1.0, gain_db };
     let eq = |bands| Params::Eq(params::Eq { bands });
-    let low = |cutoff| Params::Filter(params::Filter { filter_type: 5, cutoff, resonance: 0.3 });
+    let low = |cutoff| Params::Filter(params::Filter { filter_type: 5, cutoff, resonance: 0.3, extra: [0.0; 3] });
     let knob = |source, param: &str, slot| ModAssignment {
         name: String::new(),
         source,

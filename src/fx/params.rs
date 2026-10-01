@@ -56,6 +56,10 @@ pub struct Filter {
     pub cutoff: f32,
     /// 0..=1, `$ENGINE_PAR_RESONANCE` / 1e6.
     pub resonance: f32,
+    /// Further knobs some types store after resonance (normalized; up to
+    /// three are kept): drive, formant talk/size... See `audits/EFFECTS.md`.
+    #[serde(default)]
+    pub extra: [f32; 3],
 }
 
 /// `BParFXFilter` with an EQ type (22/23/24 = 1/2/3 bands), stored in
@@ -247,7 +251,11 @@ fn filter(r: &mut Reader) -> Option<Params> {
         return Some(Params::Eq(Eq { bands }));
     }
     let [cutoff, resonance] = r.array()?;
-    Some(Params::Filter(Filter { filter_type, cutoff, resonance }))
+    let mut extra = [0.0; 3];
+    for x in extra.iter_mut().take(r.0.len() / 4) {
+        *x = r.f32()?;
+    }
+    Some(Params::Filter(Filter { filter_type, cutoff, resonance, extra }))
 }
 
 fn convolution(r: &mut Reader) -> Option<Params> {
