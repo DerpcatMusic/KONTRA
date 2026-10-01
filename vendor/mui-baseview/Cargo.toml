@@ -2,7 +2,9 @@
 # window's raw key events, down and up, reach an app hook before MUI's key
 # routing (`Requests::on_key`). MUI hands the app key presses only, and a
 # computer keyboard that plays notes has to hear the key come up. And a wheel
-# notch scrolls three list rows rather than half of one.
+# notch scrolls three list rows rather than half of one. And an app hook
+# (`Requests::on_pointer`) hides the pointer while a knob is dragged and puts
+# it back where the drag began (`platform::warp_pointer`).
 # Every change carries a `KONTAKTO patch:` comment.
 [package]
 name = "mui-baseview"
@@ -32,4 +34,7 @@ objc = "0.2"
 arboard = { version = "3.6", default-features = false }
 # The window's accessibility tree over AT-SPI; needs no window handle.
 accesskit_unix = "0.22"
+# The pointer put back after a drag (src/platform.rs): Xlib loaded at run
+# time, the same crate and version baseview loads it with.
+x11-dl = "2.21"
 mui-access = { git = "https://github.com/Matari-Audio/MUI" }

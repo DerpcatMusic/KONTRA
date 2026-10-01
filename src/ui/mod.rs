@@ -69,6 +69,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, ui, at, paths, dropped))
         .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
+        .hide_pointer(theme::pointer_hidden)
         .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready())
         .fixed_zoom()
         .resizable((900, 600))
