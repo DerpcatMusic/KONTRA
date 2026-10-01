@@ -285,6 +285,17 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     row![area].justify(Justify::Center).align(Align::Start).w(Len::Pct(100.))
 }
 
+/// Text as the script spaced it (scripts pad with spaces to clear an icon),
+/// without glyphs from a library's private icon font, which ours can't draw.
+fn keep_spaces(text: &str) -> String {
+    text.chars()
+        .filter(|c| !matches!(*c as u32, 0xE000..=0xF8FF))
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}
+
 /// The text a control shows, its alignment (0 left, 1 centre, 2 right)
 /// and its offset from the top, if the script set one.
 fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, Option<f64>) {
@@ -305,7 +316,7 @@ fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, Option<f64>)
     let default = if kind == Kind::Label { 0 } else { 1 };
     let align = int(c, "$CONTROL_PAR_TEXT_ALIGNMENT").unwrap_or(default);
     let top = int(c, "$CONTROL_PAR_TEXTPOS_Y").map(f64::from);
-    (super::panel::clean(&words), align, top)
+    (keep_spaces(&words), align, top)
 }
 
 /// Text on a control `w` by `h` (scaled), aligned as the script asked.
@@ -451,11 +462,11 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         let name = prop(c, "$CONTROL_PAR_TEXT");
         let name = if name.is_empty() { c.variable.trim_start_matches(['$', '~']) } else { name };
         if hide & HIDE_TITLE == 0 {
-            layers.push(words(super::panel::clean(name), 1, Some(0.), w, h, s, ink(under)));
+            layers.push(words(keep_spaces(name), 1, Some(0.), w, h, s, ink(under)));
         }
         if hide & HIDE_VALUE == 0 {
             let label = prop(c, "$CONTROL_PAR_LABEL");
-            let shown_value = if label.is_empty() { format!("{}", now.round()) } else { super::panel::clean(label) };
+            let shown_value = if label.is_empty() { format!("{}", now.round()) } else { keep_spaces(label) };
             layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s, ink(under)));
         }
     }
@@ -507,8 +518,10 @@ fn plain(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, hide: i32, s: f6
         };
         match kind {
             Kind::Knob => {
+                // Between its name and its value.
+                let text = FONT * 1.4 * s;
                 let (cx, cy) = (w / 2., h / 2.);
-                let r = (w.min(h) / 2. - 3. * s).max(2.);
+                let r = (w.min(h - 2. * text) / 2. - 2. * s).max(2.);
                 let (start, sweep) = (0.75 * std::f64::consts::PI, 1.5 * std::f64::consts::PI);
                 d.push(Draw::fill(circle(cx, cy, r), field));
                 d.push(Draw::stroke(arc(cx, cy, r, start, sweep), edge, 2. * s));

@@ -1316,6 +1316,52 @@ fn performance_controls_edit_the_script() {
     );
 }
 
+/// The library's own view: shown by default once there is artwork, its
+/// controls at their own places editing the script; the header switches the
+/// part to the rebuilt view and back, and the choice is the part's.
+#[test]
+fn the_original_view_edits_the_script_and_switches() {
+    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_slider $vibrato(0, 100)\nset_control_par_str(get_ui_id($vibrato), $CONTROL_PAR_PICTURE, \"strip\")\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
+    let p = scripted_part(script);
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let frame = Arc::new(moose::mui::mui::scene::Image::rgba(40, 40, vec![255; 40 * 40 * 4]).unwrap());
+        let strip = Arc::new(artwork::Picture { frames: vec![frame; 11], resizable: false });
+        view.parts[0].pictures = Arc::new([("strip".to_owned(), strip)].into());
+        view.parts[0].wallpaper = Some(Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, vec![40; 632 * 268 * 4]).unwrap()));
+    }
+    let value = |n: usize| control_value(&p, n);
+    let mut h = Harness::new(&p, 1180., 760.);
+    let scene = h.ui.scene().unwrap();
+    assert!(scene.surface("kpv-0-1").is_some() && scene.surface("ksp-0-1").is_none(), "the original view by default");
+    let at = scene.surface("kpv-0-1").unwrap().frame;
+    assert_eq!((at.size.width, at.size.height), (40., 40.), "sized to its picture at 1x");
+    let origin = scene.surface("stage-0").unwrap().frame;
+    let left = origin.x + (origin.size.width - 632.) / 2.;
+    assert!((at.x - left - 200.).abs() < 1., "at its own place: {at:?} in {origin:?}");
+
+    h.press("kpv-0-0");
+    assert_eq!(value(0), crate::ksp::Value::Int(1), "a switch toggles on");
+    let knob = center(&h.ui, "kpv-0-1");
+    for y in [0., -10., -60.] {
+        h.tick(pointer(Point::new(knob.x, knob.y + y), true));
+    }
+    h.tick(pointer(Point::new(knob.x, knob.y - 60.), false));
+    h.idle(2);
+    let crate::ksp::Value::Int(dragged) = value(1) else { panic!("slider value") };
+    assert!(dragged > 10, "dragging up raises it, got {dragged}");
+    h.press("kpv-0-2");
+    h.press("menu-item-1");
+    assert_eq!(value(2), crate::ksp::Value::Int(1), "a menu item sets the menu");
+
+    h.press("view-0");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 2, "the part keeps its choice");
+    assert!(h.ui.scene().unwrap().surface("ksp-0-1").is_some(), "the rebuilt view");
+    h.press("view-0");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 1);
+    assert!(h.ui.scene().unwrap().surface("kpv-0-1").is_some());
+}
+
 #[test]
 fn idle_editor_rebuilds_only_when_something_moves() {
     let p = Arc::new(SamplerParams::new());
