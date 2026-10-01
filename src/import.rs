@@ -233,13 +233,48 @@ fn resource_container(c: &KontaktChunks) -> Result<Option<String>> {
     Ok(table.and_then(|t| t.special_filetable.into_values().find(|f| f.to_lowercase().ends_with(".nkr"))))
 }
 
+/// The source of script slot `slot` (0-based among the instrument's slots):
+/// the `Resources/scripts` file it links to when the library has it (Kontakt
+/// reloads linked scripts), else the text saved in the slot. Why a linked
+/// slot has no text is a warning, never a generic script error.
+fn script_source(path: &Path, slot: usize, s: &ni_file::kontakt::objects::BParScriptParams, warnings: &mut Vec<String>) -> Option<String> {
+    let saved = s.text.as_deref().map(|t| script_text(t.as_bytes())).filter(|t| !t.trim().is_empty());
+    let Some(link) = s.textfile_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else { return saved };
+    let slot = slot + 1;
+    #[cfg(feature = "plugin")]
+    let linked = crate::artwork::linked_script(path, link);
+    #[cfg(not(feature = "plugin"))]
+    let linked: Result<Option<Vec<u8>>, String> = Ok(None);
+    match linked {
+        Ok(Some(bytes)) => return Some(script_text(&bytes)).filter(|t| !t.trim().is_empty()).or(saved),
+        Ok(None) if saved.is_some() => {}
+        Ok(None) => warnings.push(format!("Script slot {slot}: linked script Resources/scripts/{} not found", link.rsplit(['/', '\\']).next().unwrap_or(link))),
+        Err(e) => warnings.push(format!("Script slot {slot}: linked script {link} is unreadable: {e}")),
+    }
+    saved
+}
+
+/// Script text as Kontakt may store it: UTF-8 (with or without a byte order
+/// mark), UTF-16LE, or Windows-1252, whose high half Latin-1 approximates.
+fn script_text(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let utf16 = bytes.starts_with(b"\xFF\xFE") || (bytes.len() >= 4 && bytes[0] != 0 && bytes[1] == 0 && bytes[3] == 0);
+    if utf16 {
+        let units: Vec<u16> = bytes.strip_prefix(b"\xFF\xFE").unwrap_or(bytes).chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        return String::from_utf16_lossy(&units);
+    }
+    String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| bytes.iter().map(|&b| char::from(b)).collect())
+}
+
 /// Inspect scripts without sample resolution, so compatibility rescans do not reopen sample archives.
 pub fn script_inventory(path:&Path)->Result<serde_json::Value>{
     std::panic::catch_unwind(||->Result<_>{
         let c=chunks(path)?;let programs=if let Some(p)=c.find_first(0x28){vec![(0,Program::try_from(p)?)]}else{multi_programs(&c)?.1};let mut report=Vec::new();
         for (program,p) in programs {
             let groups=GroupList::try_from(p.0.find_first(0x33).context("Missing group list")?)?.groups.len();let mut scripts=Vec::new();let mut host=crate::ksp::HostState::default();
-            for child in &p.0.children {if child.id==6 {let s=BParScript::try_from(child)?.params()?;if !s.bypass && let Some(source)=s.text.filter(|s|!s.trim().is_empty()){scripts.push(crate::ksp::inspect(&source,groups,&mut host));}}}
+            let mut warnings=Vec::new();
+            for (slot,child) in p.0.children.iter().filter(|c|c.id==6).enumerate() {let s=BParScript::try_from(child)?.params()?;if !s.bypass && let Some(source)=script_source(path,slot,&s,&mut warnings){scripts.push(crate::ksp::inspect(&source,groups,&mut host));}}
+            if !warnings.is_empty() {scripts.push(serde_json::json!({"warnings":warnings}));}
             report.push(serde_json::json!({"program":program,"scripts":scripts}));
         }
         Ok(serde_json::json!(report))
@@ -353,11 +388,9 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     }
     let mut scripts = Vec::new();
     let mut script_state = Vec::new();
-    for c in &p.0.children {
-        if c.id == 6 {
-            let s = BParScript::try_from(c)?.params().context("Script parameters")?;
-            if !s.bypass && let Some(text) = s.text.filter(|s| !s.trim().is_empty()) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
-        }
+    for (slot, c) in p.0.children.iter().filter(|c| c.id == 6).enumerate() {
+        let s = BParScript::try_from(c)?.params().context("Script parameters")?;
+        if !s.bypass && let Some(text) = script_source(&path, slot, &s, &mut warnings) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
     }
     warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, and velocity, key, CC, pitch bend and aftertouch drive volume, pitch, sample start and the AHDSR's attack and release times; LFOs, further envelopes, the invert button, effect targets and other modulator parameters are not applied".into());
     let parent = path.parent().context("Instrument has no parent")?;
@@ -680,5 +713,28 @@ mod preset_tests {
         assert!(w.contains("mount -t ntfs3") && w.contains("/dev/nvme0n1p1 '/mnt/MAIN STORAGE'"), "{w}");
         assert_eq!(super::mount_of(info, std::path::Path::new("/mnt/MAIN/x")).unwrap().1, "ntfs3");
         assert!(!super::zero_read_warning(3, super::mount_of(info, std::path::Path::new("/home/x"))).contains("ntfs3"));
+    }
+    #[test]
+    fn script_text_decodes_every_kontakt_encoding() {
+        let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain("on init\nend on".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        assert_eq!(super::script_text(&utf16), "on init\nend on");
+        let bare: Vec<u8> = "on init".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(super::script_text(&bare), "on init");
+        assert_eq!(super::script_text(b"\xEF\xBB\xBFon init"), "on init");
+        assert_eq!(super::script_text(b"{ caf\xE9 }"), "{ caf\u{e9} }");
+    }
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn linked_scripts_resolve_windows_paths_without_case() {
+        let root = std::env::temp_dir().join(format!("kontakto-linked-{}", std::process::id()));
+        let dir = root.join("resources").join("Scripts");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(root.join("Instruments")).unwrap();
+        std::fs::write(dir.join("Main.txt"), b"on init\nend on").unwrap();
+        let nki = root.join("Instruments").join("A.nki");
+        let found = crate::artwork::linked_script(&nki, "C:\\Libs\\X\\Resources\\scripts\\Main.txt").unwrap();
+        assert_eq!(found.as_deref(), Some(&b"on init\nend on"[..]));
+        assert_eq!(crate::artwork::linked_script(&nki, "Missing.txt").unwrap(), None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -853,3 +853,44 @@ fn pgs_and_async_ping_pong_cannot_hang() {
         rt.process(&mut engine, 128);
     }
 }
+
+#[test]
+fn built_in_state_variables() {
+    let script = "on init\ndeclare ui_label $l(1,1)\nset_text($l, $NI_KONTAKT_IS_HEADLESS & $NI_KONTAKT_IS_STANDALONE & $SIGNATURE_NUM & $SIGNATURE_DENOM & \" \" & ($NI_DATE_YEAR > 2020) & ($NI_DATE_MONTH >= 1) & ($NI_TIME_HOUR < 24))\nend on\non note\nset_text($l, %KEY_DOWN_OCT[0] & %KEY_DOWN_OCT[1] & ($PLAYED_VOICES_INST > 0))\nend on\non release\nset_text($l, %KEY_DOWN_OCT[0])\nend on";
+    let mut rig = Rig::new(&[script]);
+    let ui = rig.rt.interface(0);
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "0044 111");
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+    rig.on(0, 60).on(0, 72).block(64);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "201");
+    rig.off(0, 72).block(64);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "1");
+}
+
+#[test]
+fn sine_era_framework_in_slot_two() {
+    // The shape of Heavyocity and Orchestral Tools frameworks: the second slot
+    // builds meters and loads impulses from nested functions.
+    let first = "on init\ndeclare $x\nend on";
+    let second = "function style\nset_control_par(get_ui_id($meter), $CONTROL_PAR_BG_COLOR, 0)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_OFF_COLOR, 0)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_ON_COLOR, 0FF00h)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_OVERLOAD_COLOR, 0FF0000h)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_PEAK_COLOR, 0FFFFFFh)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_VERTICAL, 1)\nattach_level_meter(get_ui_id($meter), -1, -1, 0, $NI_BUS_OFFSET + 1)\nend function\nfunction build\ncall style\n$voices := get_voice_limit($NI_VL_TMPRO_STANDARD)\nset_engine_par($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, 500000, -1, 0, $NI_BUS_OFFSET + 1)\nend function\non init\ndeclare ui_label $l(1,1)\ndeclare ui_level_meter $meter\ndeclare ui_waveform $wave(6,6)\ndeclare $id\ndeclare $voices\ncall build\nset_text($l, get_control_par(get_ui_id($meter), $CONTROL_PAR_ON_COLOR) & \" \" & get_control_par(get_ui_id($meter), $CONTROL_PAR_VERTICAL) & \" \" & $voices)\nend on\non note\n$id := load_ir_sample(\"Hall.wav\", 0, $NI_BUS_OFFSET + 1)\nwait_async($id)\nadd_text_line($l, \"ir \" & $NI_ASYNC_EXIT_STATUS & get_engine_par_disp($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, -1, 0, $NI_BUS_OFFSET + 1))\nend on";
+    let mut rig = Rig::new(&[first, second]);
+    assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "65280 1 8");
+    assert!(
+        !rig.rt.diagnostics().iter().any(|d| d.contains("Unsupported")),
+        "{:?}",
+        rig.rt.diagnostics()
+    );
+    rig.on(0, 60).block(64);
+    assert!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT").contains("\nir "));
+}
+
+#[test]
+fn a_script_without_init_says_what_it_holds() {
+    for (source, want) in [
+        ("  \n", "the script text is empty"),
+        ("on note\nend on\nfunction f\nend function", "holds only 2 block(s): on note, function f"),
+    ] {
+        let e = format!("{:#}", initialize(source, 0, 0).unwrap_err());
+        assert!(e.contains(want), "{e}");
+    }
+}

@@ -155,5 +155,12 @@ pub fn inspect(source: &str, groups: usize, host: &mut HostState) -> serde_json:
         }),
         Err(e) => serde_json::json!({"error": format!("{e:#}")}),
     };
-    serde_json::json!({"requirements": requirements, "initialization": initialization})
+    // Undeclared uppercase names compile as opaque constants: right for
+    // Kontakt's symbolic constants, silently wrong for a built-in it lacks.
+    let constants = compile::compile(source, &compile::Setup { groups, outputs: 8 })
+        .map(|p| p.auto_symbols.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    serde_json::json!({"requirements": requirements, "initialization": initialization, "opaque_constants": constants})
 }
+
+pub use compile::{UNSUPPORTED_FUNCTION, UNSUPPORTED_VARIABLE};

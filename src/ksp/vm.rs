@@ -665,7 +665,32 @@ fn sys(m: &Machine, v: SysVar) -> i32 {
         SysVar::CurrentScriptSlot => i32::from(m.slot.index),
         // The control of `on ui_control(s)`; ui_control callbacks keep the value.
         SysVar::UiId => ctx.value,
+        SysVar::PlayedVoices => env.events.live_count() as i32,
+        // No song position from the host yet, so every bar starts now.
+        SysVar::DistanceBarStart => 0,
+        SysVar::Date(i) => civil_now()[i as usize],
+        SysVar::Time(i) => civil_now()[3 + i as usize],
     }
+}
+
+/// Year, month, day, hour, minute, second of the wall clock.
+// ponytail: UTC; Kontakt reports local time, which needs a time zone database.
+fn civil_now() -> [i32; 6] {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400) as i32);
+    // Days to civil date (H. Hinnant).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as i32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as i32;
+    let year = (yoe + era * 400 + i64::from(month <= 2)) as i32;
+    [year, month, day, rest / 3600, rest / 60 % 60, rest % 60]
 }
 
 fn declare(m: &mut Machine, v: VarId) -> Exec<()> {

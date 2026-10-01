@@ -203,6 +203,11 @@ impl Events {
         Some(i32::from(generation) << EVENT_INDEX_BITS | i as i32)
     }
 
+    /// Events still in use: playing, held or not yet recycled.
+    pub fn live_count(&self) -> usize {
+        EVENT_CAPACITY - self.free.len()
+    }
+
     pub fn get(&self, id: i32) -> Option<&Event> {
         let e = self.slots.get(Event::index(id))?;
         (id > 0 && i32::from(e.generation) == id >> EVENT_INDEX_BITS).then_some(e)
@@ -984,6 +989,7 @@ impl Runtime {
             keys.rotate_left(1);
             keys[3] = id;
         }
+        self.key_down_oct(note);
         self.env.queue(Work::Note { event: id, slot: 0 });
         self.settle(engine);
     }
@@ -993,6 +999,7 @@ impl Runtime {
         let note = note.min(127);
         self.set_sys(SysArray::KeyDown, note as usize, 0);
         let keys = std::mem::take(&mut self.env.input.keys[note as usize]);
+        self.key_down_oct(note);
         for id in keys.into_iter().filter(|&id| id != 0) {
             if let Some(e) = self.env.events.get_mut(id) {
                 e.held = false;
@@ -1462,6 +1469,12 @@ impl Runtime {
             state.mem.ints[prog.vars[v as usize].slot as usize + i] = value;
             self.changes += 1;
         }
+    }
+
+    fn key_down_oct(&mut self, note: u8) {
+        let pc = usize::from(note % 12);
+        let held = (pc..128).step_by(12).filter(|&k| self.env.input.keys[k].iter().any(|&id| id != 0)).count();
+        self.set_sys(SysArray::KeyDownOct, pc, held as i32);
     }
 
     fn set_sys(&mut self, a: SysArray, i: usize, value: i32) {

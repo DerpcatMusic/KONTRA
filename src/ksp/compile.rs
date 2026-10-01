@@ -339,7 +339,7 @@ pub struct Program {
     pub real_slots: u32,
     pub strs: u32,
     pub poly: u32,
-    pub sys_arrays: [Option<VarId>; 5],
+    pub sys_arrays: [Option<VarId>; 6],
     /// Script-local names for undeclared uppercase constants.
     pub auto_symbols: Vec<Box<str>>,
     /// Blocks that failed to compile, disabled at runtime.
@@ -419,6 +419,26 @@ fn spellings(syms: &Interner) -> HashMap<String, Vec<Sym>> {
     out
 }
 
+/// Why a script has no `on init`, naming what it does hold (never its text).
+fn missing_init(source: &str, blocks: &[Block], c: &Compiler) -> String {
+    let lines = source.lines().count();
+    let why = if source.trim().is_empty() {
+        "the script text is empty".to_owned()
+    } else if source.contains('\0') {
+        format!("the {lines}-line text holds NUL bytes, so it was not decoded (UTF-16?)")
+    } else if blocks.is_empty() {
+        format!("the {lines}-line text holds no callbacks or functions")
+    } else {
+        let names: Vec<String> = blocks
+            .iter()
+            .take(8)
+            .map(|b| format!("{} {}", if b.function { "function" } else { "on" }, c.name(b.name)))
+            .collect();
+        format!("the {lines}-line text holds only {} block(s): {}", blocks.len(), names.join(", "))
+    };
+    format!("No KSP init callback: {why}")
+}
+
 pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
     let tokens = lex(source)?;
     let blocks = parse(&tokens)?;
@@ -440,7 +460,7 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
     let init = blocks
         .iter()
         .position(|b| !b.function && c.name(b.name) == "init")
-        .context("No KSP init callback")?;
+        .with_context(|| missing_init(source, &blocks, &c))?;
     ensure!(
         blocks
             .iter()
@@ -750,6 +770,7 @@ impl<'a> Compiler<'a> {
             SysArray::CcTouched => "%CC_TOUCHED",
             SysArray::PolyAt => "%POLY_AT",
             SysArray::GroupsSelected => "%GROUPS_SELECTED",
+            SysArray::KeyDownOct => "%KEY_DOWN_OCT",
         };
         self.p.vars.push(Var {
             name: name.into(),
