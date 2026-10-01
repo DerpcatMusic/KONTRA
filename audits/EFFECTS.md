@@ -258,8 +258,63 @@ three alternating runs each):
 | Vista Harp (LP, envelope) | 1,027..1,060 | 1,013..1,031 | 3.8% |
 | Solo Pads (2 filters, Stereo Modeller) | 1,212..1,314 | 1,322..1,387 | 5.0% (the Stereo Modeller is new work) |
 
-Not implemented: ladder, 1-pole and Versatile types (warned on import), type 51, pseudo
-stereo and Inverter flags (warned), the amp split point (filters run after the amp
-envelope), `get_engine_par_disp` strings (still the raw value; Kontakt's formats are not
-recorded locally). Group SolidGeq (Una Corda), Surround Panner and Skreamer (Afflatus)
-still pass through with a warning.
+Not implemented: Versatile (19) and type 51 (warned on import), pseudo stereo and
+Inverter flags (warned), the amp split point (filters run after the amp envelope),
+`get_engine_par_disp` strings (still the raw value; Kontakt's formats are not recorded
+locally). Ladders, phaser, formant, Solid G-EQ and the drive effects are covered below.
+
+## Effect blocks and model filters (2026-10-01)
+
+Inventory: `kontakto audit-dsp <root>` lists every filter type, effect (group, insert,
+send, bus, main), modulator, modulation target and script-set `$ENGINE_PAR_*` /
+`$FILTER_TYPE_*` / `$EFFECT_TYPE_*` in the corpus, static and from each instrument's init
+callback, ranked by instruments using it, and whether it plays. 788 instruments: 214 of
+300 items did not play before this work, 72 of 304 after (left: modulation the importer
+skips, `MOD_TARGET_INTENSITY`, `GN_GAIN`, convolution IR shaping, Rotator, Jump, legacy
+Reverb, Versatile, type 51, group Compressor, Inverter flags, ANALOG STRINGS' LFOs).
+
+Filter type ids (`engine::filter::filter_type`, `KSP_FILTER_TYPES`):
+
+| Id | Type | Evidence | Confidence |
+|---|---|---|---|
+| 100..105 | AR LP2, LP4, HP2, HP4, BP2, BP4 | ANALOG STRINGS' script sets `$FILTER_TYPE_AR_LP2` on exactly the groups storing 100 | high for 100, medium for the run |
+| 106, 107 | Daft LP, HP | next in reference order; stored 106 on 283 ANALOG STRINGS groups | low |
+| 13 | Phaser | stored by ANALOG STRINGS, the remaining unexplained id | low |
+| 70, 71 | Formant 1, 2; 90 formant too | as above | low |
+| 52..57 | SVF 1 and 2 section LP/BP/HP (not AR) | Solo, Areia, Una Corda store them with SVF knobs | medium |
+| 19 | Versatile | Una Corda's script names it on the groups storing 19 | medium |
+| SV_NOTCH4 | 1000 (no preset stores it) | | none |
+
+`$ENGINE_PAR_EFFECT_SUBTYPE` (group slots) switches the filter type: the script's value is
+the type id itself (ANALOG STRINGS sets 106 on slots storing 106). Ladders are 2 or 4
+pole Moog-style cascades with optional passband compensation (AR) or none (Daft);
+formant: two resonant band passes per vowel pair moved by Talk, sharpened by Sharp,
+shifted by Size (`FORMANT_TALK/SHARP/SIZE`); phaser: 4 allpass sections swept by cutoff.
+
+Rack effects (`src/fx/blocks.rs`; stored values are what presets hold, scripts set
+normalized x = value/1e6 through a law):
+
+| Effect | DSP | Laws (stored) | Confidence |
+|---|---|---|---|
+| Compressor | dB peak detector, linked, attack/release one-poles | threshold -60..0 dB linear, ratio `50^x`, attack `1000 x^3` ms, release `5000 x^3` ms | low |
+| Limiter | input gain into a 0 dBFS ceiling | in-gain -24..+24 dB: ANALOG STRINGS' script sets 500011 on a slot storing 0.00053 dB, `(0.500011 - 0.5) * 48`; release `10 * 100^x` ms (starts at the stored 10 for 0) | high for in-gain, low for release |
+| Solid Bus Comp, Feedback Compressor | as the compressor, feedback detector for the latter | stepped ratio/attack/release, makeup | low |
+| Delay | stereo ring, ping-pong pan, damping low pass, feedback | time `2000 x^3` ms; `*_UNIT` raw (`-1` stored, read as free ms; a sync unit reads time x 125 ms, 120 BPM) | low |
+| Chorus, Flanger | modulated delay lines, feedback (flanger) | normalized | low |
+| Phaser | 6 allpasses | normalized | low |
+| Transient Master, Lo-Fi, Distortion, Skreamer, Tape Saturator, Saturation | per-sample shapers (Pade tanh), Lo-Fi bit/rate reduction | normalized; Saturation shape -1..1 | low |
+| Filter, EQ, Solid G-EQ | the group filter sections (`RackFilter`) | as group filters; G-EQ +-15 dB, bands 30-450, 200-2500, 600-7000, 1500-16k Hz, shelves unless the bell switch is on | low |
+
+Effect `0x1d` (class name Surround Panner) is Saturation: `$ENGINE_PAR_SHAPE` reaches it
+and its first float is -1..1. Group slots of the drive kinds and Solid G-EQ run per voice
+(at most 2 drive stages, in slot order between the filter units); the group modulation
+targets `shaper`, `distortionIntensity`, `bitdepth` and `downsample` move them
+(normalized). A rack Filter/EQ storing output gain 0 and dry level 0 is read as unset
+(unity): ANALOG STRINGS' active insert EQ is stored so and no script sets it. Bypassed
+send slots return nothing.
+
+Level checks (`kontakto render`, before and after): Dolce, Pacific, Vista, Solo, Una
+Corda, CHORUS and Afflatus 2 Horns unchanged. Mega Brass +1 dB (Skreamer, Saturation;
+one Skreamer stores +10.5 dB output, so audit-libraries' chord is 11 dB louder). ANALOG
+STRINGS +8 dB (one note) / +11.6 dB (audit-libraries chord): the compressor's stored
++9 dB output gain now applies. None of these levels is checked against Kontakt.
