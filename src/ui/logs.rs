@@ -10,7 +10,9 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-const ROW: f64 = TEXT * 3. + SPACE;
+// Noto Sans at SMALL/TEXT measures 15 + 16 + 15 px on the fixture's device
+// grid. Include both 1 px vertical insets in the virtualized row pitch.
+const ROW: f64 = 15. + 16. + 15. + 2.;
 static WAKE: AtomicU64 = AtomicU64::new(0);
 
 /// A completed snapshot also wakes an idle plugin editor.
@@ -414,7 +416,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             } else {
                 "Export report"
             },
-            false,
+            true,
         );
         if export && state.destination.trim().is_empty() {
             state.export_error = Some("Choose a new report folder before exporting.".into());
@@ -736,7 +738,11 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                     .text_size(TEXT)
                     .lines(1)
                     .min_w(0),
-                caption(scope).fill(secondary()).lines(1).min_w(0),
+                caption(scope)
+                    .fill(secondary())
+                    .lines(1)
+                    .min_w(0)
+                    .id(format!("{id}-scope")),
             ]
             .gap(0)
             .align(Align::Stretch)
@@ -1062,6 +1068,13 @@ mod tests {
         assert_eq!(state.selected, Some(1002));
         assert!(ui.scene().unwrap().surface("logs-copy").is_some());
         assert!(state.detail.as_ref().unwrap().1.contains("Marker 1001"));
+        let scene = ui.scene().unwrap();
+        let row = scene.surface("log-event-1002").unwrap().frame;
+        let scope = scene.surface("log-event-1002-scope").unwrap().frame;
+        assert!(
+            scope.y + scope.size.height <= row.y + row.size.height - 1.,
+            "the third line fits above the row's bottom inset"
+        );
         let shot = Path::new("artifacts/diagnostics/log-panel-fixture.png");
         std::fs::create_dir_all(shot.parent().unwrap()).unwrap();
         moose::core::screenshot::save_png(
