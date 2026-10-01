@@ -57,6 +57,113 @@ pub struct Settings {
     pub covers: BTreeMap<String, Cover>,
     /// The libraries Kontakt knows about were looked for, on the first run.
     pub imported: bool,
+    /// How the browser lists the libraries.
+    pub sort: Sort,
+    /// The player's own order of the libraries, by folder: set by dragging one.
+    pub order: Vec<String>,
+    /// Libraries pinned above the rest, by folder.
+    pub pinned: Vec<String>,
+    /// When a preset of each library was last loaded, by folder: seconds
+    /// since 1970.
+    pub used: BTreeMap<String, u64>,
+    /// Folders opened or closed in the browser, by path.
+    pub folders: BTreeMap<String, bool>,
+    /// The library the browser last showed, by folder, and the row chosen in it.
+    pub last_library: String,
+    pub last_row: String,
+}
+
+/// How the browser lists the libraries. Pinned ones lead whatever the sort.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Sort {
+    /// By name, until the player drags one.
+    #[default]
+    Name,
+    /// The player's own order.
+    Custom,
+    /// The library a preset was last loaded from first.
+    Recent,
+    Vendor,
+}
+
+impl Sort {
+    pub const ALL: [Self; 4] = [Self::Custom, Self::Name, Self::Recent, Self::Vendor];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "A\u{2013}Z",
+            Self::Custom => "Custom",
+            Self::Recent => "Recently used",
+            Self::Vendor => "Vendor",
+        }
+    }
+}
+
+/// A library's presets by folder, as on disk.
+#[derive(Debug, Default, PartialEq)]
+pub struct Folder {
+    pub name: String,
+    /// Its path, as text.
+    pub path: String,
+    /// Its folders by name, then its presets as indices into what it was
+    /// built from, in that order.
+    pub folders: Vec<Folder>,
+    pub presets: Vec<usize>,
+    /// Presets in it and every folder under it.
+    pub count: usize,
+}
+
+impl Folder {
+    /// The folders of `presets` under `dir`; one outside it sits at the top.
+    pub fn tree<'a>(dir: &Path, presets: impl IntoIterator<Item = &'a Path>) -> Self {
+        let mut root = Folder { path: dir.to_string_lossy().into_owned(), ..Folder::default() };
+        for (n, preset) in presets.into_iter().enumerate() {
+            let inside = preset.parent().and_then(|p| p.strip_prefix(dir).ok());
+            let mut at = &mut root;
+            for part in inside.into_iter().flat_map(Path::components) {
+                let name = part.as_os_str().to_string_lossy();
+                // Presets come sorted: their folder is most often the last one made.
+                let found = match at.folders.last() {
+                    Some(f) if f.name == name => Some(at.folders.len() - 1),
+                    _ => at.folders.iter().position(|f| f.name == name),
+                };
+                let i = found.unwrap_or_else(|| {
+                    let path = Path::new(&at.path).join(name.as_ref()).to_string_lossy().into_owned();
+                    at.folders.push(Folder { name: name.into_owned(), path, ..Folder::default() });
+                    at.folders.len() - 1
+                });
+                at = &mut at.folders[i];
+            }
+            at.presets.push(n);
+        }
+        root.settle();
+        root
+    }
+
+    /// Folders by name, numbers in them by value; counts summed.
+    fn settle(&mut self) {
+        self.folders.sort_by_cached_key(|f| natural(&f.name));
+        self.count = self.presets.len();
+        for f in &mut self.folders {
+            f.settle();
+            self.count += f.count;
+        }
+    }
+}
+
+/// A sort key reading runs of digits as numbers: "2 Legato" before "10 Shorts".
+pub fn natural(text: &str) -> Vec<(u64, String)> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let (number, tail) = rest.split_at(digits);
+        let words = tail.find(|c: char| c.is_ascii_digit()).unwrap_or(tail.len());
+        let (word, tail) = tail.split_at(words);
+        out.push((number.parse().unwrap_or(0), word.to_lowercase()));
+        rest = tail;
+    }
+    out
 }
 
 impl Settings {
@@ -67,6 +174,38 @@ impl Settings {
 
     pub fn load(path: &Path) -> Option<Self> {
         serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    }
+
+    /// `libraries` as the browser lists them: pinned ones first, then by the
+    /// sort chosen. Libraries the custom order has not seen follow it, by name.
+    pub fn arrange<'a>(&self, libraries: impl IntoIterator<Item = &'a Library>) -> Vec<&'a Library> {
+        let place = |list: &[String], dir: &str| list.iter().position(|d| d == dir).unwrap_or(usize::MAX);
+        let mut out: Vec<&Library> = libraries.into_iter().collect();
+        out.sort_by_cached_key(|l| {
+            let dir = l.dir.to_string_lossy();
+            let (rank, vendor) = match self.sort {
+                Sort::Name => (0, String::new()),
+                Sort::Custom => (place(&self.order, &dir) as u64, String::new()),
+                // Newest first; never used last.
+                Sort::Recent => (u64::MAX - self.used.get(dir.as_ref()).map_or(0, |&t| t + 1), String::new()),
+                Sort::Vendor => (u64::from(l.vendor.is_empty()), l.vendor.to_lowercase()),
+            };
+            (place(&self.pinned, &dir), rank, vendor, l.name.to_lowercase())
+        });
+        out
+    }
+
+    /// Move the library in folder `from` to just before `before` (the end
+    /// when `None`), `shown` being every library's folder as listed: the
+    /// listing becomes the player's own order.
+    pub fn reorder(&mut self, shown: &[String], from: &str, before: Option<&str>) {
+        let mut order: Vec<String> = shown.iter().filter(|d| *d != from).cloned().collect();
+        let at = before.and_then(|b| order.iter().position(|d| d == b)).unwrap_or(order.len());
+        order.insert(at, from.to_owned());
+        // Libraries offline now keep their place, at the end.
+        order.extend(self.order.iter().filter(|d| !shown.contains(d)).cloned());
+        self.order = order;
+        self.sort = Sort::Custom;
     }
 
     /// Written aside and renamed into place: a crash never leaves half a file.
@@ -832,6 +971,80 @@ mod tests {
         assert_eq!(Settings::load(&path), Some(s));
         assert_eq!(Settings::load(&dir.join("missing.json")), None);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_dragged_order_survives_a_restart_and_new_libraries_follow_it() {
+        let lib = |name: &str, vendor: &str| Library {
+            dir: format!("/libs/{name}").into(),
+            name: name.into(),
+            vendor: vendor.into(),
+            ..Library::default()
+        };
+        let all = [lib("Areia", "Audio Imperia"), lib("Kinder Piano", "Hollow Sun"), lib("Tundra", "Spitfire")];
+        let names = |s: &Settings, libs: &[Library]| -> Vec<String> {
+            s.arrange(libs).iter().map(|l| l.name.clone()).collect()
+        };
+        let mut s = Settings::default();
+        assert_eq!(s.sort, Sort::Name);
+        assert_eq!(names(&s, &all), ["Areia", "Kinder Piano", "Tundra"]);
+        // Tundra dragged to the top: the order becomes the player's own.
+        let shown: Vec<String> = s.arrange(&all).iter().map(|l| l.dir.to_string_lossy().into()).collect();
+        s.reorder(&shown, "/libs/Tundra", Some("/libs/Areia"));
+        assert_eq!(s.sort, Sort::Custom);
+        assert_eq!(names(&s, &all), ["Tundra", "Areia", "Kinder Piano"]);
+
+        let dir = tree("order", &[]);
+        let path = dir.join("settings.json");
+        s.save(&path).unwrap();
+        let s = Settings::load(&path).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!(names(&s, &all), ["Tundra", "Areia", "Kinder Piano"], "kept across a restart");
+
+        // A library found later follows the order; an offline one keeps its place.
+        let mut more = all.to_vec();
+        more.push(lib("Alpha", ""));
+        assert_eq!(names(&s, &more), ["Tundra", "Areia", "Kinder Piano", "Alpha"]);
+        let mut s = s;
+        let shown: Vec<String> = s.arrange(&all[..2]).iter().map(|l| l.dir.to_string_lossy().into()).collect();
+        s.reorder(&shown, "/libs/Areia", None);
+        assert_eq!(s.order, ["/libs/Kinder Piano", "/libs/Areia", "/libs/Tundra"]);
+
+        // Pinned leads; the other sorts.
+        s.pinned = vec!["/libs/Kinder Piano".into()];
+        s.sort = Sort::Vendor;
+        assert_eq!(names(&s, &more), ["Kinder Piano", "Areia", "Tundra", "Alpha"]);
+        s.pinned.clear();
+        s.sort = Sort::Recent;
+        s.used.insert("/libs/Tundra".into(), 10);
+        s.used.insert("/libs/Alpha".into(), 20);
+        assert_eq!(names(&s, &more), ["Alpha", "Tundra", "Areia", "Kinder Piano"]);
+    }
+
+    #[test]
+    fn presets_are_shelved_by_their_folders() {
+        let files: Vec<PathBuf> = [
+            "/lib/Instruments/10 Shorts/Spiccato.nki",
+            "/lib/Instruments/2 Legato/Legato.nki",
+            "/lib/Instruments/2 Legato/Sub/Slow.nki",
+            "/lib/Instruments/All.nki",
+            "/lib/Loose.nki",
+            "/elsewhere/Odd.nki",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+        let root = Folder::tree(Path::new("/lib"), files.iter().map(PathBuf::as_path));
+        assert_eq!(root.count, 6);
+        assert_eq!(root.presets, [4, 5], "loose presets, and one outside, sit at the top");
+        let instruments = &root.folders[0];
+        assert_eq!((instruments.name.as_str(), instruments.count), ("Instruments", 4));
+        assert_eq!(instruments.presets, [3]);
+        let names: Vec<_> = instruments.folders.iter().map(|f| (f.name.as_str(), f.count)).collect();
+        assert_eq!(names, [("2 Legato", 2), ("10 Shorts", 1)], "numbers sort by value");
+        assert_eq!(instruments.folders[0].path, "/lib/Instruments/2 Legato");
+        assert_eq!(instruments.folders[0].folders[0].presets, [2]);
+        assert_eq!(Folder::tree(Path::new("/lib"), []).count, 0);
     }
 
     #[test]
