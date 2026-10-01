@@ -267,11 +267,14 @@ impl Session {
             sender: Mutex::new(sender),
             worker: Mutex::new(worker),
         });
-        emit_to(&session, json!({
-            "level":"info", "module":"system", "event":"session_started", "code":"session_started",
-            "data":{"build":build_identity(), "os":std::env::consts::OS, "arch":std::env::consts::ARCH,
-                "pid":std::process::id()},
-        }));
+        emit_to(
+            &session,
+            json!({
+                "level":"info", "module":"system", "event":"session_started", "code":"session_started",
+                "data":{"build":build_identity(), "os":std::env::consts::OS, "arch":std::env::consts::ARCH,
+                    "pid":std::process::id()},
+            }),
+        );
         session
     }
 }
