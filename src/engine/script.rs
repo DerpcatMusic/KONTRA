@@ -5,7 +5,7 @@
 //! off the audio thread, where nothing can play.
 
 use super::params::{self, Address, GroupPar, MAX_WRITES, Write};
-use super::{Ahdsr, Bank, EventChange, EventId, GroupMask, GroupSettings, NoteEvent, Player};
+use super::{Ahdsr, Bank, EventChange, EventId, Expression, GroupMask, GroupSettings, NoteEvent, Player};
 use crate::fx::{FxParam, FxProcessor, Kind as FxKind, Load, ProgramFx, Rack, ScriptIr};
 use crate::import::{Group, Instrument};
 use crate::ksp::{EnginePar, Fade, KspEngine, NoteLength, NoteSpec, Persisted, Runtime, VoicePar};
@@ -128,12 +128,14 @@ pub(super) enum Kind {
         /// triggers at once, which is how scripts play release samples.
         whole: bool,
         groups: GroupMask,
+        expression: Option<Expression>,
     },
     /// Key release; `trigger` carries note, velocity and groups for release
     /// triggers unless the note already fired them.
     Release {
         trigger: Option<(u8, u8)>,
         groups: GroupMask,
+        expression: Option<Expression>,
     },
     Fade(Fade),
     Change(EventChange),
@@ -234,6 +236,7 @@ impl KspEngine for Host<'_> {
             pan: n.pan.clamp(-1000, 1000) as f32 / 1000.0,
             whole: n.length == NoteLength::Sample,
             groups: *n.groups,
+            expression: None,
         };
         self.push(at, n.channel, id, kind).then_some(id)
     }
@@ -242,6 +245,10 @@ impl KspEngine for Host<'_> {
         let kind = Kind::Release {
             trigger: (n.length != NoteLength::Sample).then_some((n.note, n.velocity)),
             groups: *n.groups,
+            expression: self.commands.iter().find_map(|c| match c.kind {
+                Kind::Start { expression, .. } if c.id == voice => expression,
+                _ => None,
+            }).or_else(|| self.player.release_expression(voice, n.channel, n.note)),
         };
         self.push(at, n.channel, voice, kind);
     }
@@ -359,6 +366,7 @@ impl Player {
                 tune,
                 pan,
                 whole,
+                expression,
                 ref groups,
             } => {
                 let event = NoteEvent {
@@ -370,16 +378,17 @@ impl Player {
                     volume,
                     tune,
                     pan,
+                    frozen_expression: expression,
                 };
                 self.start(bank, &event, id, false, defaults);
                 if whole {
                     self.start(bank, &event, id, true, defaults);
                 }
             }
-            Kind::Release { trigger, groups } => {
+            Kind::Release { trigger, groups, expression } => {
                 let latched = self.release_voices(bank, id).is_some_and(|event| event.4);
                 if let &Some((note, velocity)) = trigger {
-                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, defaults);
+                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, *expression, defaults);
                 }
             }
             &Kind::Fade(Fade::In { duration_us }) => {

@@ -129,6 +129,8 @@ pub struct NoteEvent<'a> {
     pub tune: f64,
     /// −1 (left) to 1 (right), added to zone and group pan.
     pub pan: f32,
+    /// An originating MPE event's member expression, independent of channel reuse.
+    pub frozen_expression: Option<Expression>,
 }
 
 impl NoteEvent<'_> {
@@ -142,6 +144,7 @@ impl NoteEvent<'_> {
             volume: 1.0,
             tune: 0.0,
             pan: 0.0,
+            frozen_expression: None,
         }
     }
 }
@@ -503,6 +506,18 @@ impl Engine {
         if channel >= 16 || owner >= 16 || note >= 128 {
             return;
         }
+        // Capture at the physical key-up, before a delayed KSP release or
+        // member reuse can replace this event's channel/key expression.
+        if self.player.mpe_zone.is_some_and(|(_, members)| members & (1 << channel) != 0) {
+            let x = self.player.expression[channel as usize][note as usize];
+            for c in self.commands.iter_mut().filter(|c| c.channel == channel) {
+                if let script::Kind::Start { note: key, expression, .. } = &mut c.kind
+                    && *key == note { expression.get_or_insert(x); }
+            }
+            for v in self.player.voices.iter_mut().filter(|v| v.channel == channel && v.note == note && v.held && !v.release_trigger) {
+                v.frozen_expression.get_or_insert(x);
+            }
+        }
         if self.script.is_some() {
             if !self.script.as_ref().unwrap().key_down_except(owner, channel, note) {
                 self.player.keys[channel as usize][note as usize] = 0;
@@ -648,7 +663,8 @@ impl Engine {
         if let Some((channel, note, velocity, false, latched)) = self.player.release_voices(bank, id) {
             let allowed = self.player.allowed;
             let key = (channel, note, velocity);
-            self.player.trigger_release(bank, id, key, &allowed, latched, defaults);
+            let expression = self.player.release_expression(id, channel, note);
+            self.player.trigger_release(bank, id, key, &allowed, latched, expression, defaults);
         }
     }
 
@@ -664,7 +680,7 @@ impl Engine {
         self.player.change_event(id, change);
     }
 
-    /// Set the expression of every voice on `note`, now and until changed.
+    /// Set live expression on `note`; released MPE snapshots remain independent.
     pub fn set_expression(&mut self, note: u8, expression: Expression) {
         for channel in 0..16 {
             self.set_expression_on(channel, note, expression);
@@ -876,6 +892,7 @@ struct PendingRelease {
     velocity: u8,
     groups: GroupMask,
     captured: bool,
+    expression: Option<Expression>,
 }
 
 /// Engine state apart from the bank, so voices can mutate while the bank is borrowed.
@@ -1242,7 +1259,7 @@ impl Player {
             sostenuto: false,
             released: false,
             release_trigger,
-            frozen_expression: None,
+            frozen_expression: ev.frozen_expression,
             age: self.clock,
             sample: play.sample,
             span: span_index,
@@ -1356,13 +1373,15 @@ impl Player {
         while let Some(source) = self.voices.iter().find(|v| v.channel == channel && v.note == note && v.held && !v.released && !v.release_trigger).map(|v| v.event) {
             if let Some((channel, note, velocity, false, captured)) = self.release_voices(bank, source) {
                 found = true;
-                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, defaults);
+                let expression = self.release_expression(source, channel, note);
+                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, expression, defaults);
             }
         }
         // Release-only instruments can have a key but no attack voice.
         if !found && velocity > 0 {
             let source = self.next_id();
-            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, defaults);
+            let expression = self.release_expression(source, channel, note);
+            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, expression, defaults);
         }
     }
 
@@ -1388,6 +1407,14 @@ impl Player {
         first
     }
 
+    /// The originating voice may have been frozen at an earlier physical
+    /// key-up while the script delayed its release callback.
+    fn release_expression(&self, source: EventId, channel: u8, note: u8) -> Option<Expression> {
+        self.voices.iter().find(|v| v.event == source).and_then(|v| v.frozen_expression)
+            .or_else(|| self.mpe_zone.filter(|(_, members)| channel < 16 && members & (1 << channel) != 0)
+                .map(|_| self.expression[channel as usize][note as usize & 127]))
+    }
+
     /// Start the release-trigger zones for a key release, limited to `groups`;
     /// pedals defer the exact event, velocity and group mask until pedal-up.
     fn trigger_release(
@@ -1397,6 +1424,7 @@ impl Player {
         (channel, note, velocity): (u8, u8, u8),
         groups: &GroupMask,
         latched: bool,
+        expression: Option<Expression>,
         defaults: Ahdsr,
     ) {
         if channel < 16 && note < 128 && (latched || self.sustain[channel as usize]) {
@@ -1408,13 +1436,14 @@ impl Player {
                 return;
             }
             self.pending_releases.push(PendingRelease {
-                source, channel, note, velocity, groups: *groups, captured: latched,
+                source, channel, note, velocity, groups: *groups, captured: latched, expression,
             });
             return;
         }
         let id = self.next_id();
         let event = NoteEvent {
             groups: Some(groups),
+            frozen_expression: expression,
             ..NoteEvent::new(channel, note, velocity)
         };
         self.start(bank, &event, id, true, defaults);
@@ -1520,7 +1549,7 @@ impl Player {
             let r = self.pending_releases[i];
             if r.channel == channel && !r.captured {
                 let id = self.next_id();
-                let event = NoteEvent { groups: Some(&r.groups), ..NoteEvent::new(r.channel, r.note, r.velocity) };
+                let event = NoteEvent { groups: Some(&r.groups), frozen_expression: r.expression, ..NoteEvent::new(r.channel, r.note, r.velocity) };
                 self.start(bank, &event, id, true, defaults);
             } else {
                 self.pending_releases[keep] = r;

@@ -435,6 +435,8 @@ pub struct Router {
     held: [[(u8, u8); 128]; 16],
     /// MPE: member channels' pitch bend and the live bend range.
     bend: [u16; 16],
+    /// Remember pressure even while a member has no active key.
+    member_pressure: [Option<u8>; 16],
     bend_range: u8,
     rpn: [Rpn; 16],
     /// Per channel and key as the engine got them.
@@ -458,6 +460,7 @@ impl Default for Router {
             current: None,
             held: [[(NONE, NONE); 128]; 16],
             bend: [8192; 16],
+            member_pressure: [None; 16],
             rpn: [Rpn { msb: 127, lsb: 127 }; 16],
             expression: Box::new([[Expression::default(); 128]; 16]),
             brightness: [NONE; 128],
@@ -652,6 +655,11 @@ impl Router {
                 } else {
                     out(Out::NoteOn(to, key, velocity));
                 }
+                if r.member(channel) {
+                    if let Some(value) = self.member_pressure[channel as usize] {
+                        self.pressure(to, key, value, out);
+                    }
+                }
             }
             In::NoteOff(_, note) => {
                 let (to, key) = match std::mem::replace(&mut self.held[channel as usize][note as usize & 127], (NONE, NONE)) {
@@ -684,6 +692,7 @@ impl Router {
                 out(Out::Bend(to, value));
             }
             In::Pressure(_, value) if r.member(channel) => {
+                self.member_pressure[channel as usize] = Some(value.min(127));
                 let row = self.held[channel as usize];
                 for (to, key) in row.into_iter().filter(|h| h.1 != NONE) {
                     self.pressure(to, key, value, out);
@@ -1149,7 +1158,30 @@ mod tests {
         assert_eq!(a.articulations[1].remap, None);
     }
 
-    /// Range negotiation updates the zone and excludes unrelated NRPN data.
+    /// Remembered member pressure sets a new note's initial expression.
+    #[test]
+    fn mpe_pressure_before_note_on_sets_the_same_initial_expression() {
+        for scripted in [false, true] {
+            for (zone, member) in [(Zone::Lower, 1), (Zone::Upper, 14)] {
+                let play = |before: bool| {
+                    let (mut e, _) = three_articulation_part();
+                    if !scripted { e.set_script(None); }
+                    let mut r = router(&Articulate::default(), &Mpe { zone, ..Mpe::default() });
+                    if before { feed(&mut r, &mut e, In::Pressure(member, 37), 0); }
+                    feed(&mut r, &mut e, In::NoteOn(member, 60, 100), 0);
+                    if !before { feed(&mut r, &mut e, In::Pressure(member, 37), 0); }
+                    let (mut left, mut right) = ([0.; 128], [0.; 128]);
+                    e.render(&mut left, &mut right);
+                    (left, right)
+                };
+                let (before, after) = (play(true), play(false));
+                for i in 0..128 {
+                    assert!((before.0[i] - after.0[i]).abs() < 1e-5 && (before.1[i] - after.1[i]).abs() < 1e-5, "{zone:?}, scripted={scripted}: initial pressure lost at frame {i}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn mpe_rpn_range_changes_update_active_notes_and_nrpn_does_not_change_range() {
         for (zone, members) in [(Zone::Lower, [1, 2]), (Zone::Upper, [14, 13])] {
@@ -1174,6 +1206,81 @@ mod tests {
             }
             r.input(In::Bend(members[0], 0), 0, &mut |o| output.push(o));
             assert!(!output.iter().any(|o| matches!(o, Out::Expression(..))), "NRPN data entry changed the zero pitch range");
+        }
+    }
+
+    #[test]
+    fn mpe_release_samples_preserve_the_originating_event_expression() {
+        use crate::{audio::Sample, engine::Bank, import::{Group, Loop, Zone as SampleZone}, modulation::{ModAssignment, ModSource, ModTarget}};
+        for (delay, attack_rendered) in [(0, true), (1000, true), (1000, false)] {
+            let setup = || {
+                let group = Group { mods: vec![ModAssignment {
+                    name: "PB_PITCH".into(), source: ModSource::PitchBend, target: ModTarget::Pitch,
+                    intensity: 1., invert: false, lag_ms: 0, shaper: None,
+                }], ..Group::default() };
+                let groups = vec![group.clone(), Group { release_trigger: true, ..group }];
+                let path = std::path::PathBuf::from("release-tone");
+                let zones = (0..2).map(|group| SampleZone { group, sample: path.clone(),
+                    loop_range: Some(Loop { start: 0, end: 1024, until_release: false, crossfade: 0 }),
+                    ..SampleZone::default() }).collect();
+                let tone = Sample { rate: 48000, frames: (0..1024).map(|i| [(i as f32 * 0.07).sin() * 0.2; 2]).collect() };
+                let bank = Bank::from_samples(groups, zones, vec![(path, tone)]).unwrap();
+                let wait = if delay > 0 { "ignore_event($EVENT_ID)\nwait(1000)\n" } else { "" };
+                let off = if delay > 0 { "note_off($EVENT_ID)\n" } else { "" };
+                let rt = runtime(&format!("on note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\n{wait}disallow_group($ALL_GROUPS)\nallow_group(1)\n{off}end on"));
+                let mut e = Engine::default();
+                e.reset(48000.);
+                e.attack = 0.0001;
+                e.release = 0.001;
+                e.set_bank(Some(Box::new(bank)));
+                e.set_script(Some(Box::new(rt)));
+                (e, router(&Articulate::default(), &Mpe { zone: Zone::Lower, ..Mpe::default() }))
+            };
+            let start = |e: &mut Engine, r: &mut Router, gain, pan, tune| {
+                feed(r, e, In::NoteOn(1, 60, 100), 0);
+                feed(r, e, In::NoteGain(1, 60, gain), 0);
+                feed(r, e, In::NotePan(1, 60, pan), 0);
+                feed(r, e, In::NoteTune(1, 60, tune), 0);
+            };
+            let (mut actual, mut ar) = setup();
+            let (mut old, mut or) = setup();
+            let (mut new, mut nr) = setup();
+            for (e, r) in [(&mut actual, &mut ar), (&mut old, &mut or)] {
+                start(e, r, 0.25, -1., 7.);
+                if attack_rendered { render(e); }
+                feed(r, e, In::Cc(0, 64, 127), 0);
+                feed(r, e, In::NoteOff(1, 60), 0);
+                assert!(!e.key_down(1, 60), "the physical key must be up before reuse");
+            }
+            // Old Release and new Start are queued at the same frame; pedal-up
+            // later creates the old release sample after this member has been reused.
+            start(&mut actual, &mut ar, 0.75, 1., -5.);
+            start(&mut new, &mut nr, 0.75, 1., -5.);
+            for e in [&mut actual, &mut old, &mut new] { render(e); }
+            for (e, r) in [(&mut actual, &mut ar), (&mut old, &mut or), (&mut new, &mut nr)] {
+                feed(r, e, In::Cc(0, 64, 0), 0);
+            }
+            let audio = |e: &mut Engine| {
+                let (mut l, mut r) = ([0.; 128], [0.; 128]);
+                e.render(&mut l, &mut r);
+                (l, r)
+            };
+            let mut old_release_step = None;
+            for master_bend in [8192, 12288] {
+                for (e, r) in [(&mut actual, &mut ar), (&mut old, &mut or), (&mut new, &mut nr)] {
+                    feed(r, e, In::Bend(0, master_bend), 0);
+                }
+                let (a, o, n) = (audio(&mut actual), audio(&mut old), audio(&mut new));
+                let voices = actual.voice_census();
+                let release_step = voices.iter().find(|v| v.release_trigger)
+                    .unwrap_or_else(|| panic!("no release sample: delay={delay}, attack_rendered={attack_rendered}, master={master_bend}, voices={voices:?}, diagnostics={:?}", actual.script().unwrap().diagnostics())).step;
+                if let Some(before) = old_release_step { assert!(release_step > before, "master bend must remain live on a frozen release tail"); }
+                old_release_step = Some(release_step);
+                for i in 0..128 {
+                    assert!((a.0[i] - o.0[i] - n.0[i]).abs() < 1e-5 && (a.1[i] - o.1[i] - n.1[i]).abs() < 1e-5,
+                        "frame {i}: release sample followed the reused member's expression (master bend {master_bend})");
+                }
+            }
         }
     }
 
