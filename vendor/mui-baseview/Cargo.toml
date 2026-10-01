@@ -1,0 +1,41 @@
+# MUI's mui-baseview at aa1f8f3 (crates/mui-baseview), with one patch: a
+# window's raw key events, down and up, reach an app hook before MUI's key
+# routing (`Requests::on_key`). MUI hands the app key presses only, and a
+# computer keyboard that plays notes has to hear the key come up. And a wheel
+# notch scrolls five list rows rather than half of one, more in a fast run. And an app hook
+# (`Requests::on_pointer`) hides the pointer while a knob is dragged and puts
+# it back where the drag began (`platform::warp_pointer`). And `resize_corner`
+# shows the diagonal resize cursor MUI has no `Cursor` for.
+# Every change carries a `KONTAKTO patch:` comment.
+[package]
+name = "mui-baseview"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+publish = false
+
+# A native window: nothing here builds for wasm.
+[dependencies]
+mui = { git = "https://github.com/Matari-Audio/MUI", features = ["gpu-effects"] }
+baseview = { package = "moose-baseview", git = "https://github.com/Matari-Audio/moose" }
+keyboard-types = { version = "0.8", default-features = false }
+# baseview's handles; the same 0.6 wgpu takes.
+raw-window-handle = "0.6"
+# mui-vello picks no backend; the window that owns the device does.
+wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "gles", "metal", "dx12"] }
+
+# Frame skipping and view anchoring on macOS (src/platform.rs); baseview
+# already pulls it in there.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+# baseview does not own an X11 selection; arboard keeps one alive.
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3.6", default-features = false }
+# The window's accessibility tree over AT-SPI; needs no window handle.
+accesskit_unix = "0.22"
+# The pointer put back after a drag (src/platform.rs): Xlib loaded at run
+# time, the same crate and version baseview loads it with.
+x11-dl = "2.21"
+mui-access = { git = "https://github.com/Matari-Audio/MUI" }

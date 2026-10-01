@@ -1,0 +1,1296 @@
+//! Script-controllable engine state: per-group modulation tables and the KSP
+//! engine parameters (`set_engine_par`) mapped onto groups, the instrument,
+//! buses and effects.
+//!
+//! Mappings from Kontakt's normalized 0..=1000000 values and the modulation
+//! semantics, with their confidence, are in `audits/MODULATION.md`
+//! ("Runtime modulation and engine parameters").
+
+use super::{Ahdsr, GroupSettings, filter::Knob};
+use crate::fx::{DIRECT, FxParam, OUTS, Rack};
+use crate::import::{Group, ModAssignment, ModSource, ModTarget};
+use crate::ksp::{ENGINE_PAR_BASE, EnginePar};
+use std::sync::Arc;
+
+/// Modulation values one voice tracks: its group's first volume and pitch
+/// assignments with a modelled source.
+pub const VOICE_MODS: usize = 8;
+
+/// Modulation source the engine models.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Source {
+    Velocity,
+    Key,
+    Constant,
+    Cc(u8),
+    Bend,
+    Pressure,
+    /// Release-trigger counter, fixed when the release voice starts.
+    Counter,
+}
+
+impl Source {
+    fn of(source: ModSource) -> Option<Self> {
+        Some(match source {
+            ModSource::Velocity => Self::Velocity,
+            ModSource::KeyPosition => Self::Key,
+            ModSource::Constant => Self::Constant,
+            ModSource::MidiCc(cc) if cc < 128 => Self::Cc(cc),
+            ModSource::PitchBend => Self::Bend,
+            ModSource::MonoAftertouch => Self::Pressure,
+            ModSource::ReleaseTriggerCounter => Self::Counter,
+            _ => return None,
+        })
+    }
+
+    /// Changes while a voice plays (otherwise fixed at the note start).
+    fn live(self) -> bool {
+        matches!(self, Self::Cc(_) | Self::Bend | Self::Pressure)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Target {
+    Volume,
+    Pitch,
+    Start,
+    /// Volume AHDSR attack or release time, fixed at note start.
+    Attack,
+    Release,
+    /// A group filter or EQ knob (see `filter.rs`).
+    Fx,
+}
+
+/// One external modulation assignment prepared for playback.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mod {
+    /// `None` when playback does not model the source or target; the
+    /// intensity is still kept for scripts.
+    route: Option<(Source, Target)>,
+    /// Depth, -1..=1; negative inverts. Scripts change it.
+    pub intensity: f32,
+    /// Lag time constant in seconds.
+    lag: f32,
+    /// Shaper sampled at the 128 MIDI steps; `None` is the identity.
+    /// Shared between equal shapers by [`share_curves`].
+    curve: Option<Arc<[f32; 128]>>,
+}
+
+impl From<&ModAssignment> for Mod {
+    fn from(m: &ModAssignment) -> Self {
+        let target = match m.target {
+            ModTarget::Volume => Some(Target::Volume),
+            ModTarget::Pitch => Some(Target::Pitch),
+            ModTarget::SampleStart => Some(Target::Start),
+            ModTarget::Attack => Some(Target::Attack),
+            ModTarget::Release => Some(Target::Release),
+            ModTarget::Module { .. } => Some(Target::Fx),
+            // ponytail: group pan and loop modulation is kept for scripts, not played.
+            ModTarget::Group(_) => None,
+        };
+        Self {
+            route: Source::of(m.source).zip(target),
+            intensity: m.intensity,
+            lag: f32::from(m.lag_ms) / 1000.0,
+            curve: m
+                .shaper
+                .as_ref()
+                .map(|_| Arc::new(std::array::from_fn(|i| m.shape(i as f32 / 127.0)))),
+        }
+    }
+}
+
+impl Mod {
+    /// Shaped source value; exact at MIDI steps, linear between them.
+    pub(crate) fn shape(&self, x: f32) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        let Some(curve) = &self.curve else {
+            return x;
+        };
+        let p = x * 127.0;
+        let i = (p as usize).min(126);
+        curve[i] + (curve[i + 1] - curve[i]) * (p - i as f32)
+    }
+}
+
+impl Mod {
+    /// Shaped value at note start; 0 for sources playback does not model.
+    pub(crate) fn start_value(&self, input: &Inputs) -> f32 {
+        self.route.map_or(0.0, |(source, _)| self.shape(input.read(source)))
+    }
+
+    /// Advance a live source's lagged `value` over `frames`.
+    pub(crate) fn follow(&self, value: &mut f32, input: &Inputs, frames: usize, rate: f32) {
+        if let Some((source, _)) = self.route.filter(|(s, _)| s.live()) {
+            approach(value, self.shape(input.read(source)), self.lag, frames, rate);
+        }
+    }
+}
+
+/// Group modulation assignments in import order (the KSP target addresses),
+/// plus which of them a voice evaluates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModTable {
+    pub mods: Box<[Mod]>,
+    /// Volume and pitch assignments with a modelled source, at most [`VOICE_MODS`].
+    voiced: Box<[u16]>,
+    /// Sample-start assignments with a modelled source.
+    starts: Box<[u16]>,
+    /// Envelope-time assignments with a modelled source.
+    times: Box<[u16]>,
+}
+
+impl From<&Group> for ModTable {
+    fn from(group: &Group) -> Self {
+        let mods: Box<[Mod]> = group.mods.iter().map(Mod::from).collect();
+        let routed = |want: fn(Target) -> bool| {
+            (0..mods.len() as u16)
+                .filter(|&i| mods[i as usize].route.is_some_and(|(_, t)| want(t)))
+                .collect::<Vec<_>>()
+        };
+        let mut voiced = routed(|t| matches!(t, Target::Volume | Target::Pitch));
+        // ponytail: extra assignments are ignored; no local group has more than 8.
+        voiced.truncate(VOICE_MODS);
+        Self {
+            voiced: voiced.into(),
+            starts: routed(|t| t == Target::Start).into(),
+            times: routed(|t| matches!(t, Target::Attack | Target::Release)).into(),
+            mods,
+        }
+    }
+}
+
+/// Performance state a voice's modulation reads.
+#[derive(Clone, Copy)]
+pub(crate) struct Inputs<'a> {
+    pub cc: &'a [u8; 128],
+    /// Combined MPE CC74, preserving a released note's member value.
+    pub cc74: Option<u8>,
+    /// -1..=1.
+    pub bend: f32,
+    pub pressure: u8,
+    pub note: u8,
+    pub velocity: u8,
+    /// Release-trigger counter, 0..=1 (see [`release_counter`]).
+    pub counter: f32,
+}
+
+/// Release-trigger counter as a source value: Kontakt counts down from the
+/// group's `T` (ms) while the key is held and stops at the key release, so a
+/// short note reads near 1 and a note held `T` or longer reads 0. A group
+/// without a counter (`T` = 0) reads 0.
+pub(crate) fn release_counter(t_ms: i32, held_ms: f32) -> f32 {
+    if t_ms <= 0 {
+        return 0.0;
+    }
+    let t = t_ms as f32;
+    ((t - held_ms) / t).clamp(0.0, 1.0)
+}
+
+impl Inputs<'_> {
+    /// Unshaped source value, 0..=1.
+    fn read(&self, source: Source) -> f32 {
+        match source {
+            Source::Velocity => f32::from(self.velocity) / 127.0,
+            Source::Key => f32::from(self.note) / 127.0,
+            Source::Constant => 1.0,
+            Source::Cc(cc) => f32::from(if cc == 74 { self.cc74.unwrap_or(self.cc[74]) } else { self.cc[cc as usize] }) / 127.0,
+            Source::Bend => (self.bend + 1.0) * 0.5,
+            Source::Pressure => f32::from(self.pressure) / 127.0,
+            Source::Counter => self.counter,
+        }
+    }
+}
+
+impl ModTable {
+    /// Initial per-voice values: every source at its current value, unlagged.
+    pub(crate) fn start(&self, input: &Inputs) -> [f32; VOICE_MODS] {
+        let mut values = [0.0; VOICE_MODS];
+        for (value, &i) in values.iter_mut().zip(&self.voiced) {
+            let m = &self.mods[i as usize];
+            if let Some((source, _)) = m.route {
+                *value = m.shape(input.read(source));
+            }
+        }
+        values
+    }
+
+    /// Advance live sources over `frames` at `rate` and return the volume
+    /// factor, the pitch offset in semitones, and whether every live value
+    /// has reached its source: settled, the same inputs give the same
+    /// result again whatever the frames.
+    ///
+    /// Volume: each assignment scales amplitude by `1 - |i|·(1 - v)` for
+    /// shaped value `v` (inverted, `1 - v`, when `i < 0`). Pitch: `12·i·v`
+    /// semitones, with pitch bend mapped back to -1..=1. The flag is true
+    /// when every live source has settled on its input: until the inputs
+    /// or the table change, another call returns the same.
+    pub(crate) fn modulate(
+        &self,
+        values: &mut [f32; VOICE_MODS],
+        input: &Inputs,
+        frames: usize,
+        rate: f32,
+    ) -> (f32, f32, bool) {
+        let (mut gain, mut semitones, mut settled) = (1.0, 0.0, true);
+        for (value, &i) in values.iter_mut().zip(&self.voiced) {
+            let m = &self.mods[i as usize];
+            let Some((source, target)) = m.route else {
+                continue;
+            };
+            if source.live() {
+                let x = m.shape(input.read(source));
+                approach(value, x, m.lag, frames, rate);
+                settled &= *value == x;
+            }
+            match target {
+                Target::Volume => {
+                    let v = if m.intensity < 0.0 {
+                        1.0 - *value
+                    } else {
+                        *value
+                    };
+                    gain *= 1.0 - m.intensity.abs() * (1.0 - v);
+                }
+                Target::Pitch => {
+                    let v = if source == Source::Bend {
+                        *value * 2.0 - 1.0
+                    } else {
+                        *value
+                    };
+                    semitones += 12.0 * m.intensity * v;
+                }
+                Target::Start | Target::Attack | Target::Release | Target::Fx => {}
+            }
+        }
+        (gain.max(0.0), semitones, settled)
+    }
+
+    /// Sample-start offset as a fraction of the zone's start-mod range.
+    pub(crate) fn start_offset(&self, input: &Inputs) -> f32 {
+        self.starts
+            .iter()
+            .map(|&i| &self.mods[i as usize])
+            .filter_map(|m| Some(m.intensity.abs() * m.shape(input.read(m.route?.0))))
+            .sum::<f32>()
+            .min(1.0)
+    }
+
+    /// Lowest and highest [`ModTable::start_offset`] of notes in `keys` at
+    /// `velocities` with controllers held at `cc`, bend centred and no
+    /// pressure: where a zone's voices start until a controller moves.
+    pub(crate) fn start_offset_range(
+        &self,
+        cc: &[u8; 128],
+        keys: std::ops::RangeInclusive<u8>,
+        velocities: std::ops::RangeInclusive<u8>,
+    ) -> (f32, f32) {
+        let reads = |source| {
+            self.starts
+                .iter()
+                .any(|&i| self.mods[i as usize].route.is_some_and(|(s, _)| s == source))
+        };
+        // Only sources some start modulation reads need sweeping.
+        let one = |r: std::ops::RangeInclusive<u8>, source| {
+            if reads(source) { r } else { *r.start()..=*r.start() }
+        };
+        let velocities = one(velocities, Source::Velocity);
+        let counters = one(0..=127, Source::Counter);
+        let (mut low, mut high) = (f32::MAX, f32::MIN);
+        for note in one(keys, Source::Key) {
+            for velocity in velocities.clone() {
+                for counter in counters.clone() {
+                    let counter = f32::from(counter) / 127.0;
+                    let input = Inputs { cc74: None, cc, bend: 0.0, pressure: 0, note, velocity, counter };
+                    let x = self.start_offset(&input);
+                    (low, high) = (low.min(x), high.max(x));
+                }
+            }
+        }
+        (low, high)
+    }
+
+    /// Scale the volume AHDSR's attack and release by their note-start
+    /// modulation, with the volume law: `1 - |i|·(1 - v)`. Stored shapers
+    /// (velocity 0 → 1, 127 → 0.59 on attack) read as time factors.
+    pub(crate) fn scale_envelope(&self, env: &mut Ahdsr, input: &Inputs) {
+        for m in self.times.iter().map(|&i| &self.mods[i as usize]) {
+            let Some((source, target)) = m.route else {
+                continue;
+            };
+            let v = m.shape(input.read(source));
+            let v = if m.intensity < 0.0 { 1.0 - v } else { v };
+            let factor = (1.0 - m.intensity.abs() * (1.0 - v)).max(0.0);
+            match target {
+                Target::Attack => env.attack *= factor,
+                _ => env.release *= factor,
+            }
+        }
+    }
+}
+
+/// Point equal shaper curves at one copy. Groups mostly repeat the same
+/// assignments, and voices spread over hundreds of groups otherwise read as
+/// many copies every block, each a cache miss (Mega Brass: 1128 curves, 33
+/// distinct).
+pub(crate) fn share_curves<'a>(tables: impl Iterator<Item = &'a mut ModTable>) {
+    let mut seen = std::collections::HashMap::new();
+    for curve in tables.flat_map(|t| t.mods.iter_mut()).filter_map(|m| m.curve.as_mut()) {
+        *curve = Arc::clone(seen.entry(curve.map(f32::to_bits)).or_insert_with(|| Arc::clone(curve)));
+    }
+}
+
+/// Move a lagged `value` toward `x` over `frames`. Settled (as a held
+/// controller soon is) it costs no exp: within 1e-6 it lands on `x`, which
+/// steps smaller than half a float's spacing would never reach.
+fn approach(value: &mut f32, x: f32, lag: f32, frames: usize, rate: f32) {
+    if (x - *value).abs() <= 1e-6 {
+        *value = x;
+    } else {
+        *value += (x - *value) * lag_factor(lag, frames, rate);
+    }
+}
+
+/// One-pole smoothing step over `frames`: the share of the distance covered.
+fn lag_factor(lag: f32, frames: usize, rate: f32) -> f32 {
+    if lag <= 0.0 {
+        1.0
+    } else {
+        1.0 - (-(frames as f32) / (lag * rate)).exp()
+    }
+}
+
+// ---- Engine parameters ------------------------------------------------------------
+
+/// `$ENGINE_PAR_*` ids, as positions in the runtime's engine parameter table.
+pub mod id {
+    use super::ENGINE_PAR_BASE as B;
+    pub const VOLUME: i32 = B;
+    pub const PAN: i32 = B + 1;
+    pub const TUNE: i32 = B + 2;
+    pub const OUTPUT_CHANNEL: i32 = B + 3;
+    pub const CUTOFF: i32 = B + 4;
+    pub const RESONANCE: i32 = B + 5;
+    pub const ATTACK: i32 = B + 6;
+    pub const DECAY: i32 = B + 7;
+    pub const SUSTAIN: i32 = B + 8;
+    pub const RELEASE: i32 = B + 9;
+    pub const HOLD: i32 = B + 10;
+    pub const ATK_CURVE: i32 = B + 11;
+    pub const MOD_TARGET_INTENSITY: i32 = B + 16;
+    pub const MOD_TARGET_MP_INTENSITY: i32 = B + 17;
+    pub const EFFECT_BYPASS: i32 = B + 22;
+    pub const EFFECT_TYPE: i32 = B + 23;
+    pub const EFFECT_SUBTYPE: i32 = B + 24;
+    pub const SEND_EFFECT_TYPE: i32 = B + 25;
+    pub const SEND_EFFECT_BYPASS: i32 = B + 26;
+    pub const SEND_EFFECT_DRY_LEVEL: i32 = B + 27;
+    pub const SEND_EFFECT_OUTPUT_GAIN: i32 = B + 28;
+    pub const INSERT_EFFECT_OUTPUT_GAIN: i32 = B + 29;
+    pub const SENDLEVEL_0: i32 = B + 30;
+    pub const SENDLEVEL_7: i32 = B + 37;
+    pub const RV2_PREDELAY: i32 = B + 101;
+    pub const RV2_TIME: i32 = B + 102;
+    pub const RV2_TYPE: i32 = B + 103;
+    pub const RV2_SIZE: i32 = B + 104;
+    pub const RV2_DAMPING: i32 = B + 105;
+    pub const RV2_DIFF: i32 = B + 106;
+    pub const RV2_MOD: i32 = B + 107;
+    pub const RV2_STEREO: i32 = B + 108;
+    pub const RV2_FREEZE: i32 = B + 109;
+    #[cfg(test)]
+    pub const RV2_EQ_LOW_FREQ: i32 = B + 110;
+    pub const RV2_EQ_LOW_GAIN: i32 = B + 111;
+    #[cfg(test)]
+    pub const RV2_EQ_HIGH_FREQ: i32 = B + 112;
+    pub const RV2_EQ_HIGH_GAIN: i32 = B + 113;
+    pub const STEREO: i32 = B + 138;
+    pub const STEREO_PAN: i32 = B + 139;
+    pub const FREQ1: i32 = B + 157;
+    pub const FREQ3: i32 = B + 159;
+    pub const BW1: i32 = B + 160;
+    pub const BW3: i32 = B + 162;
+    pub const GAIN1: i32 = B + 163;
+    pub const GAIN3: i32 = B + 165;
+}
+
+/// KSP `$NI_BUS_OFFSET`: generic values from here address instrument buses.
+const BUS_OFFSET: i32 = 1000;
+/// Instrument buses.
+const BUSES: u8 = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GroupPar {
+    Volume,
+    Pan,
+    Tune,
+    Output,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stage {
+    Attack,
+    /// Attack curve, -1..=1.
+    Curve,
+    Hold,
+    Decay,
+    Sustain,
+    Release,
+}
+
+/// A modelled engine parameter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Address {
+    Group(u16, GroupPar),
+    /// Volume, pan or tune of the whole instrument.
+    Instrument(GroupPar),
+    /// Volume envelope of a group.
+    Envelope(u16, Stage),
+    /// A group's module envelope (filter, EQ), by `Group::envelopes` index.
+    ModEnvelope(u16, u8, Stage),
+    /// A modulation assignment's intensity; `bipolar` for the MP variant.
+    Intensity {
+        group: u16,
+        index: u16,
+        bipolar: bool,
+    },
+    Fx(Rack, u8, FxParam),
+    /// A group insert slot's filter/EQ knob (normalized), bypass, output
+    /// gain or Stereo Modeller setting.
+    Filter(u16, u8, Knob),
+    /// The `$EFFECT_TYPE_*` of a group insert slot; read only.
+    GroupType(u16, u8),
+}
+
+/// The effect rack a KSP `generic` argument names.
+pub(crate) fn rack(generic: i32) -> Option<Rack> {
+    Some(match generic {
+        0 => Rack::Send,
+        1 => Rack::Insert,
+        2 => Rack::Main,
+        g => Rack::Bus(u8::try_from(g - BUS_OFFSET).ok().filter(|&b| b < BUSES)?),
+    })
+}
+
+impl Address {
+    /// Map a KSP address onto the engine, or `None` when it is not modelled.
+    pub(crate) fn resolve(par: EnginePar, groups: &[Group]) -> Option<Self> {
+        let group = || {
+            u16::try_from(par.group)
+                .ok()
+                .filter(|&g| (g as usize) < groups.len())
+        };
+        let modulator = |g: u16| {
+            let m = usize::try_from(par.slot).ok()?;
+            groups[g as usize].modulators.get(m)
+        };
+        let rack = || {
+            (par.group == -1).then_some(())?;
+            rack(par.generic)
+        };
+        let fx = |param| Some(Self::Fx(rack()?, u8::try_from(par.slot).ok()?, param));
+        let slot = |knob| Some(Self::Filter(group()?, u8::try_from(par.slot).ok()?, knob));
+        // Group inserts are addressed by group; the racks by `group == -1`.
+        let insert = |knob, param| if par.group >= 0 { slot(knob) } else { fx(param) };
+        Some(match par.id {
+            id::VOLUME | id::PAN | id::TUNE | id::OUTPUT_CHANNEL => {
+                let p = match par.id {
+                    id::VOLUME => GroupPar::Volume,
+                    id::PAN => GroupPar::Pan,
+                    id::TUNE => GroupPar::Tune,
+                    _ => GroupPar::Output,
+                };
+                let bus = u8::try_from(par.generic - BUS_OFFSET)
+                    .ok()
+                    .filter(|&b| b < BUSES);
+                match (par.group, bus, p) {
+                    (0.., _, _) => Self::Group(group()?, p),
+                    (_, Some(b), GroupPar::Volume) => Self::Fx(Rack::Bus(b), 0, FxParam::Volume),
+                    (_, Some(b), GroupPar::Pan) => Self::Fx(Rack::Bus(b), 0, FxParam::Pan),
+                    (_, Some(b), GroupPar::Output) => Self::Fx(Rack::Bus(b), 0, FxParam::Output),
+                    (_, None, GroupPar::Volume | GroupPar::Pan | GroupPar::Tune) => {
+                        Self::Instrument(p)
+                    }
+                    _ => return None,
+                }
+            }
+            id::ATTACK | id::ATK_CURVE | id::DECAY | id::SUSTAIN | id::RELEASE | id::HOLD => {
+                let g = group()?;
+                let m = modulator(g)?;
+                let stage = match par.id {
+                    id::ATTACK => Stage::Attack,
+                    id::ATK_CURVE => Stage::Curve,
+                    id::HOLD => Stage::Hold,
+                    id::DECAY => Stage::Decay,
+                    id::SUSTAIN => Stage::Sustain,
+                    _ => Stage::Release,
+                };
+                match (m.volume_env, m.envelope) {
+                    (true, _) => Self::Envelope(g, stage),
+                    (_, Some(e)) => Self::ModEnvelope(g, u8::try_from(e).ok()?, stage),
+                    _ => return None,
+                }
+            }
+            id::MOD_TARGET_INTENSITY | id::MOD_TARGET_MP_INTENSITY => {
+                let g = group()?;
+                let m = modulator(g)?;
+                let target = usize::try_from(par.generic).unwrap_or(0);
+                (target < m.targets.len()).then_some(())?;
+                Self::Intensity {
+                    group: g,
+                    index: u16::try_from(m.assignments? + target).ok()?,
+                    bipolar: par.id == id::MOD_TARGET_MP_INTENSITY,
+                }
+            }
+            id::CUTOFF => slot(Knob::Cutoff)?,
+            id::RESONANCE => slot(Knob::Resonance)?,
+            id::FREQ1..=id::FREQ3 => slot(Knob::Freq((par.id - id::FREQ1) as u8))?,
+            id::BW1..=id::BW3 => slot(Knob::Bandwidth((par.id - id::BW1) as u8))?,
+            id::GAIN1..=id::GAIN3 => slot(Knob::Gain((par.id - id::GAIN1) as u8))?,
+            id::STEREO => slot(Knob::Spread)?,
+            id::STEREO_PAN => slot(Knob::Pan)?,
+            id::EFFECT_SUBTYPE => slot(Knob::Type)?,
+            id::EFFECT_BYPASS => insert(Knob::Bypass, FxParam::Bypass)?,
+            id::INSERT_EFFECT_OUTPUT_GAIN => insert(Knob::Output, FxParam::Wet)?,
+            id::SEND_EFFECT_BYPASS => fx(FxParam::Bypass)?,
+            id::EFFECT_TYPE if par.group >= 0 => {
+                Self::GroupType(group()?, u8::try_from(par.slot).ok().filter(|&s| s < 8)?)
+            }
+            id::EFFECT_TYPE | id::SEND_EFFECT_TYPE => fx(FxParam::Type)?,
+            // Reverb (`$EFFECT_TYPE_REVERB2`), as its stored values, which
+            // are the KSP values / 1e6 as for every other knob. Presets store
+            // two EQ values, 0 in every local preset: the high and low cut
+            // amounts (gains, 0 flat), not frequencies, which would not
+            // default to 0. The band frequencies are not stored and stay
+            // unmapped; freeze is not stored either.
+            id::RV2_TYPE => fx(FxParam::Reverb(0))?,
+            id::RV2_TIME => fx(FxParam::Reverb(1))?,
+            id::RV2_SIZE => fx(FxParam::Reverb(2))?,
+            id::RV2_DAMPING => fx(FxParam::Reverb(3))?,
+            id::RV2_MOD => fx(FxParam::Reverb(4))?,
+            id::RV2_DIFF => fx(FxParam::Reverb(5))?,
+            id::RV2_PREDELAY => fx(FxParam::Reverb(6))?,
+            id::RV2_STEREO => fx(FxParam::Reverb(9))?,
+            id::RV2_EQ_HIGH_GAIN => fx(FxParam::Reverb(7))?,
+            id::RV2_EQ_LOW_GAIN => fx(FxParam::Reverb(8))?,
+            id::RV2_FREEZE => fx(FxParam::Reverb(10))?,
+            id::SEND_EFFECT_DRY_LEVEL => fx(FxParam::Dry)?,
+            id::SEND_EFFECT_OUTPUT_GAIN => fx(FxParam::Wet)?,
+            id::SENDLEVEL_0..=id::SENDLEVEL_7 => {
+                // Una Corda addresses its insert Send Levels with generic 0.
+                // These are the send inputs, not parameters of the return rack.
+                let rack = if par.generic == 0 { Rack::Insert } else { rack()? };
+                (par.group == -1).then_some(())?;
+                Self::Fx(rack, u8::try_from(par.slot).ok()?, FxParam::SendLevel((par.id - id::SENDLEVEL_0) as u8))
+            }
+            _ => match crate::ksp::engine_par_name(par.id)? {
+                "$ENGINE_PAR_IRC_PREDELAY" => fx(FxParam::Convolution(0))?,
+                "$ENGINE_PAR_IRC_LENGTH_RATIO_ER" => fx(FxParam::Convolution(1))?,
+                "$ENGINE_PAR_IRC_LENGTH_RATIO_LR" => fx(FxParam::Convolution(2))?,
+                // The formant filter's knobs: talk, sharp, size.
+                "$ENGINE_PAR_FORMANT_TALK" => slot(Knob::Cutoff)?,
+                "$ENGINE_PAR_FORMANT_SHARP" => slot(Knob::Resonance)?,
+                "$ENGINE_PAR_FORMANT_SIZE" => slot(Knob::Size)?,
+                name => {
+                    let (kind, n) = crate::fx::blocks::engine_par(name)?;
+                    insert(Knob::Field(kind, n), FxParam::Field(kind, n))?
+                }
+            },
+        })
+    }
+
+    /// Whether Kontakt itself ignores `par`, which [`resolve`](Self::resolve)
+    /// cannot map: AHDSR stages addressed to a flex envelope or to a
+    /// modulator slot the group does not have.
+    pub(crate) fn inert(par: EnginePar, groups: &[Group]) -> bool {
+        let stage = matches!(
+            par.id,
+            id::ATTACK | id::ATK_CURVE | id::DECAY | id::SUSTAIN | id::RELEASE | id::HOLD
+        );
+        let group = usize::try_from(par.group).ok().and_then(|g| groups.get(g));
+        let slot = usize::try_from(par.slot).ok();
+        stage
+            && group.zip(slot).is_some_and(|(g, m)| g.modulators.get(m).is_none_or(|m| m.flex))
+    }
+
+    /// Held by the bank's group settings.
+    pub(crate) fn is_group(&self) -> bool {
+        matches!(
+            self,
+            Self::Group(..)
+                | Self::Envelope(..)
+                | Self::ModEnvelope(..)
+                | Self::Intensity { .. }
+                | Self::Filter(..)
+        )
+    }
+
+    /// Physical value of a KSP value: linear gain, pan -1..=1, semitones,
+    /// seconds, intensity, bus index (-1 = instrument output) or bypass 0/1.
+    pub(crate) fn decode(self, value: i32) -> f32 {
+        let x = (value as f32 / UNIT).clamp(0.0, 1.0);
+        match self {
+            // An instrument bus, or past the instrument output to output
+            // channel `c` as bus `DIRECT + c` (a mic mixer's "Out 2").
+            Self::Group(_, GroupPar::Output) => match (value, value - BUS_OFFSET) {
+                (_, b @ 0..16) => b as f32,
+                (c, _) if (0..OUTS as i32).contains(&c) => f32::from(DIRECT) + c as f32,
+                _ => -1.0,
+            },
+            Self::Fx(_, _, FxParam::Output) if (0..OUTS as i32).contains(&value) => value as f32,
+            Self::Fx(_, _, FxParam::Output) => -1.0,
+            Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => value as f32,
+            // `$NI_REVERB2_TYPE_ROOM` (0) or `_HALL` (1).
+            Self::Fx(_, _, FxParam::Reverb(0 | 10)) => f32::from(value != 0),
+            Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => x,
+            Self::Group(_, p) | Self::Instrument(p) => match p {
+                GroupPar::Volume => volume(x),
+                GroupPar::Pan => 2.0 * x - 1.0,
+                _ => (2.0 * x - 1.0) * TUNE_RANGE,
+            },
+            Self::Envelope(_, stage) | Self::ModEnvelope(_, _, stage) => match stage {
+                Stage::Sustain => x,
+                // Solo sets 1000000, 750000 and 333333 where its presets store 1, 0.5, -0.33.
+                Stage::Curve => 2.0 * x - 1.0,
+                Stage::Attack | Stage::Hold => time(x, SHORT),
+                Stage::Decay | Stage::Release => time(x, LONG),
+            },
+            Self::Intensity { bipolar: true, .. } => 2.0 * x - 1.0,
+            Self::Filter(_, _, Knob::Bypass) => f32::from(value != 0),
+            Self::Filter(_, _, Knob::Type) => value as f32,
+            Self::Filter(_, _, Knob::Output) => effect_gain(x),
+            // Afflatus sets 434210 where it stores spread -0.1316, Solo 500000 for 0.
+            Self::Filter(_, _, Knob::Spread | Knob::Pan) => 2.0 * x - 1.0,
+            // Stored knobs are the KSP value / 1e6: Solo sets 1000000 and 0 where it stores 1 and 0.
+            Self::Filter(..) => x,
+            // Square law: Areia sets 704316 where its presets store 0.4961.
+            Self::Intensity { .. } => x * x,
+            Self::Fx(_, _, FxParam::Bypass) => f32::from(value != 0),
+            Self::Fx(_, _, FxParam::Pan) => 2.0 * x - 1.0,
+            Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => effect_gain(x),
+            Self::Fx(..) => volume(x),
+        }
+    }
+
+    /// Inverse of [`decode`](Self::decode), rounded.
+    pub(crate) fn encode(self, v: f32) -> i32 {
+        let x = match self {
+            Self::Group(_, GroupPar::Output) => {
+                return match v {
+                    v if v >= f32::from(DIRECT) => v as i32 - i32::from(DIRECT),
+                    v if v >= 0.0 => BUS_OFFSET + v as i32,
+                    _ => -1,
+                };
+            }
+            Self::Fx(_, _, FxParam::Output) => return if v >= 0.0 { v as i32 } else { -1 },
+            Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => return v as i32,
+            Self::Fx(_, _, FxParam::Reverb(0 | 10)) => return i32::from(v >= 0.5),
+            Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => v,
+            Self::Filter(_, _, Knob::Type) => return v as i32,
+            Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) => {
+                return i32::from(v != 0.0);
+            }
+            Self::Group(_, p) | Self::Instrument(p) => match p {
+                GroupPar::Volume => volume_value(v),
+                GroupPar::Pan => (v + 1.0) * 0.5,
+                _ => (v / TUNE_RANGE + 1.0) * 0.5,
+            },
+            Self::Envelope(_, stage) | Self::ModEnvelope(_, _, stage) => match stage {
+                Stage::Sustain => v,
+                Stage::Curve => (v + 1.0) * 0.5,
+                Stage::Attack | Stage::Hold => time_value(v, SHORT),
+                Stage::Decay | Stage::Release => time_value(v, LONG),
+            },
+            Self::Intensity { bipolar: true, .. }
+            | Self::Fx(_, _, FxParam::Pan)
+            | Self::Filter(_, _, Knob::Spread | Knob::Pan) => (v + 1.0) * 0.5,
+            Self::Intensity { .. } => v.abs().sqrt(),
+            Self::Filter(_, _, Knob::Output) | Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => {
+                (v.max(0.0) / EFFECT_MAX_GAIN).cbrt()
+            }
+            Self::Filter(..) => v,
+            Self::Fx(..) => volume_value(v),
+        };
+        (x.clamp(0.0, 1.0) * UNIT).round() as i32
+    }
+}
+
+pub(super) const UNIT: f32 = 1_000_000.0;
+/// +12 dB, Kontakt's volume maximum.
+const MAX_GAIN: f32 = 3.981_071_7;
+/// Group and instrument tune span ±36 semitones.
+const TUNE_RANGE: f32 = 36.0;
+/// Attack and hold maximum, decay and release maximum (seconds).
+const SHORT: f32 = 15.000_02;
+const LONG: f32 = 25.000_04;
+/// Envelope time curve offset (seconds).
+const TIME_BASE: f32 = 0.002;
+
+/// Kontakt's volume law: 630859 is 0 dB, 1000000 is +12 dB (cubic in amplitude).
+fn volume(x: f32) -> f32 {
+    MAX_GAIN * x * x * x
+}
+
+/// +24 dB, the effect output gain and dry level maximum.
+const EFFECT_MAX_GAIN: f32 = 16.0;
+
+/// Effect output gain and dry level, cubic: Afflatus sets 396851 where it
+/// stores 1.0000056, and 125919 where it stores 0.0319443.
+fn effect_gain(x: f32) -> f32 {
+    EFFECT_MAX_GAIN * x * x * x
+}
+
+fn volume_value(gain: f32) -> f32 {
+    (gain.max(0.0) / MAX_GAIN).cbrt()
+}
+
+/// Envelope stage time: `2 ms · ((1 + max / 2 ms)^x − 1)`.
+fn time(x: f32, max: f32) -> f32 {
+    TIME_BASE * ((1.0 + max / TIME_BASE).powf(x) - 1.0)
+}
+
+fn time_value(seconds: f32, max: f32) -> f32 {
+    (seconds.max(0.0) / TIME_BASE + 1.0).ln() / (1.0 + max / TIME_BASE).ln()
+}
+
+/// What `get_engine_par_disp` shows: the value in the unit scripts append
+/// themselves (`& " dB"`, `" ms"`, `" Hz"`, `" %"`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Disp {
+    /// Linear gain, shown in dB with one decimal, `-inf` at silence.
+    Gain(f32),
+    /// A number with this many decimals.
+    Num(f32, u8),
+    /// -1..=1, shown as `C`, `L 50`, `R 50`.
+    Pan(f32),
+}
+
+impl std::fmt::Display for Disp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Gain(g) if g <= 1e-6 => f.write_str("-inf"),
+            // 630000 is -0.01 dB: Kontakt shows 0.0, not -0.0.
+            Self::Gain(g) => write!(f, "{:.1}", (20.0 * g.log10() * 10.0).round() / 10.0 + 0.0),
+            Self::Num(v, d) => write!(f, "{:.*}", d as usize, v),
+            Self::Pan(p) => match (p.abs() * 100.0).round() {
+                n if n < 1.0 => f.write_str("C"),
+                n => write!(f, "{} {n:.0}", if p < 0.0 { "L" } else { "R" }),
+            },
+        }
+    }
+}
+
+/// Display of an engine parameter value by Kontakt's laws, the same the
+/// engine decodes with; `None` for parameters whose law is not modelled.
+pub fn display(id: i32, value: i32) -> Option<Disp> {
+    let x = (value as f32 / UNIT).clamp(0.0, 1.0);
+    Some(match id {
+        id::VOLUME | id::SENDLEVEL_0..=id::SENDLEVEL_7 => Disp::Gain(volume(x)),
+        id::INSERT_EFFECT_OUTPUT_GAIN | id::SEND_EFFECT_DRY_LEVEL | id::SEND_EFFECT_OUTPUT_GAIN => {
+            Disp::Gain(effect_gain(x))
+        }
+        id::SUSTAIN => Disp::Gain(x),
+        id::PAN => Disp::Pan(2.0 * x - 1.0),
+        id::TUNE => Disp::Num((2.0 * x - 1.0) * TUNE_RANGE, 2),
+        id::ATTACK | id::HOLD => Disp::Num(time(x, SHORT) * 1000.0, 1),
+        id::DECAY | id::RELEASE => Disp::Num(time(x, LONG) * 1000.0, 1),
+        // The filter's cutoff law (`filter.rs`): 43.6 Hz · 2^(8.96 x).
+        id::CUTOFF => Disp::Num(43.6 * (8.96 * x).exp2(), 1),
+        // Stereo Modeller spread: 0 % mono, 100 % as recorded, 200 % widest.
+        id::STEREO => Disp::Num(x * 200.0, 1),
+        _ => match crate::ksp::engine_par_name(id)? {
+            "$ENGINE_PAR_IRC_PREDELAY" => Disp::Num(crate::fx::params::IrSettings::predelay_ms(x), 2),
+            "$ENGINE_PAR_IRC_LENGTH_RATIO_ER" | "$ENGINE_PAR_IRC_LENGTH_RATIO_LR" => Disp::Num(50. + 100. * x, 1),
+            _ => return None,
+        },
+    })
+}
+
+/// Set a group-level parameter (group, envelope or intensity); false for
+/// other addresses and missing groups.
+pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32) -> bool {
+    match address {
+        Address::Group(g, p) => {
+            let Some(group) = settings.get_mut(g as usize) else {
+                return false;
+            };
+            match p {
+                GroupPar::Volume => group.gain = value.max(0.0),
+                GroupPar::Pan => group.pan = value.clamp(-1.0, 1.0),
+                GroupPar::Tune => group.tune = value,
+                GroupPar::Output => group.bus = (value >= 0.0).then_some(value as u8),
+            }
+        }
+        Address::Envelope(..) | Address::ModEnvelope(..) => {
+            let Some((env, stage)) = envelope(settings, address) else {
+                return false;
+            };
+            match stage {
+                Stage::Curve => env.curve = value.clamp(-1.0, 1.0),
+                Stage::Attack => env.attack = value.max(0.0),
+                Stage::Hold => env.hold = value.max(0.0),
+                Stage::Decay => env.decay = value.max(0.0),
+                Stage::Sustain => env.sustain = value.clamp(0.0, 1.0),
+                Stage::Release => env.release = value.max(0.0),
+            }
+        }
+        Address::Intensity { group, index, .. } => {
+            let m = settings
+                .get_mut(group as usize)
+                .and_then(|s| s.mods.mods.get_mut(index as usize));
+            let Some(m) = m else {
+                return false;
+            };
+            m.intensity = value.clamp(-1.0, 1.0);
+        }
+        Address::Filter(g, slot, knob) => {
+            let filter = settings.get_mut(g as usize).and_then(|s| s.filter.as_mut());
+            return filter.is_some_and(|f| f.set_knob(slot, knob, value));
+        }
+        Address::Instrument(_) | Address::Fx(..) | Address::GroupType(..) => return false,
+    }
+    true
+}
+
+/// The envelope `address` names and the stage.
+fn envelope(settings: &mut [GroupSettings], address: Address) -> Option<(&mut Ahdsr, Stage)> {
+    match address {
+        Address::Envelope(g, stage) => Some((settings.get_mut(g as usize)?.envelope.as_mut()?, stage)),
+        Address::ModEnvelope(g, e, stage) => {
+            Some((settings.get_mut(g as usize)?.filter.as_mut()?.envelope(e)?, stage))
+        }
+        _ => None,
+    }
+}
+
+/// Current value of a group-level parameter.
+pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> {
+    match address {
+        Address::Group(g, p) => {
+            let group = settings.get(g as usize)?;
+            Some(match p {
+                GroupPar::Volume => group.gain,
+                GroupPar::Pan => group.pan,
+                GroupPar::Tune => group.tune,
+                GroupPar::Output => group.bus.map_or(-1.0, f32::from),
+            })
+        }
+        Address::Envelope(g, stage) | Address::ModEnvelope(g, _, stage) => {
+            let env = match address {
+                Address::ModEnvelope(_, e, _) => *settings.get(g as usize)?.filter.as_ref()?.envelope_at(e)?,
+                _ => settings.get(g as usize)?.envelope?,
+            };
+            Some(match stage {
+                Stage::Attack => env.attack,
+                Stage::Curve => env.curve,
+                Stage::Hold => env.hold,
+                Stage::Decay => env.decay,
+                Stage::Sustain => env.sustain,
+                Stage::Release => env.release,
+            })
+        }
+        Address::Intensity { group, index, .. } => settings
+            .get(group as usize)?
+            .mods
+            .mods
+            .get(index as usize)
+            .map(|m| m.intensity),
+        Address::Filter(g, slot, knob) => settings.get(g as usize)?.filter.as_ref()?.knob(slot, knob),
+        _ => None,
+    }
+}
+
+/// One engine parameter change, applied at frame `at` of the next render.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Write {
+    pub at: u32,
+    pub address: Address,
+    pub value: f32,
+}
+
+/// Engine parameter changes one render can hold; later ones are dropped and counted.
+pub const MAX_WRITES: usize = 4096;
+
+/// `$EFFECT_TYPE_*` of group `g`'s insert `slot`, 0 when it is empty.
+pub(crate) fn group_type(groups: &[Group], g: u16, slot: u8) -> Option<f32> {
+    let fx = &groups.get(g as usize)?.fx;
+    let kind = fx.slots.iter().find(|fx| fx.slot == slot as usize).map(|fx| fx.kind.ser_id());
+    Some(f32::from(kind.unwrap_or(0)))
+}
+
+/// `find_mod`: position in `Group::modulators` of the first name `is` accepts.
+pub(crate) fn find_mod(groups: &[Group], group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+    groups.get(group)?.modulators.iter().position(|m| is(&m.name))
+}
+
+/// `find_target`: position among the modulator's targets.
+pub(crate) fn find_target(
+    groups: &[Group],
+    group: usize,
+    modulator: usize,
+    is: &dyn Fn(&str) -> bool,
+) -> Option<usize> {
+    groups.get(group)?.modulators.get(modulator)?.targets.iter().position(|t| is(t))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::import::{Modulator, ShaperCurve};
+
+    #[test]
+    fn equal_curves_share_one_copy() {
+        let mut other = group();
+        other.mods[0].shaper = Some(ShaperCurve::Table(vec![0.5; 128]));
+        let mut tables = [&group(), &group(), &other].map(ModTable::from);
+        share_curves(tables.iter_mut());
+        let curve = |t: &ModTable| t.mods[0].curve.clone().unwrap();
+        assert!(Arc::ptr_eq(&curve(&tables[0]), &curve(&tables[1])));
+        assert!(!Arc::ptr_eq(&curve(&tables[0]), &curve(&tables[2])));
+        assert_eq!(tables[0], ModTable::from(&group()), "sharing changes no value");
+    }
+
+    #[test]
+    fn release_counter_moves_the_release_sample_start() {
+        // Pacific's RTC_PITCH: counter -> sample start at 0.5, shaped from 1
+        // (counter 0) down to 0.42 (counter 1). Dropping the route plays the
+        // release's loud onset, about 4 dB over the whole audit render.
+        let group = Group {
+            mods: vec![ModAssignment {
+                name: "RTC_PITCH".into(),
+                source: ModSource::ReleaseTriggerCounter,
+                target: ModTarget::SampleStart,
+                intensity: 0.5,
+                invert: false,
+                lag_ms: 0,
+                shaper: Some(ShaperCurve::Table((0..128).map(|i| 1.0 - 0.58 * i as f32 / 127.0).collect())),
+            }],
+            ..Group::default()
+        };
+        let table = ModTable::from(&group);
+        let cc = [0u8; 128];
+        let at = |counter| table.start_offset(&Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter });
+        // A 700 ms note under T = 1500 ms leaves 0.53 of the counter.
+        let x = release_counter(1500, 700.0);
+        assert!((x - 0.533).abs() < 1e-3);
+        assert!((at(x) - 0.5 * (1.0 - 0.58 * x)).abs() < 1e-2, "{}", at(x));
+        let (low, high) = table.start_offset_range(&cc, 60..=60, 100..=100);
+        assert!((low - 0.21).abs() < 1e-2 && (high - 0.5).abs() < 1e-3, "{low}..{high}");
+    }
+
+    #[test]
+    fn lagged_values_settle_exactly() {
+        // A long lag over short blocks steps less than half the float
+        // spacing near the target: without the snap it never arrives.
+        let mut value = 0.2f32;
+        for _ in 0..2000 {
+            approach(&mut value, 0.7, 0.01, 128, 48000.0);
+        }
+        assert_eq!(value, 0.7);
+    }
+
+    #[test]
+    fn ids_match_the_runtime_table() {
+        use crate::ksp::engine_par_name as name;
+        for (id, expected) in [
+            (id::VOLUME, "VOLUME"),
+            (id::PAN, "PAN"),
+            (id::TUNE, "TUNE"),
+            (id::OUTPUT_CHANNEL, "OUTPUT_CHANNEL"),
+            (id::ATTACK, "ATTACK"),
+            (id::DECAY, "DECAY"),
+            (id::SUSTAIN, "SUSTAIN"),
+            (id::RELEASE, "RELEASE"),
+            (id::HOLD, "HOLD"),
+            (id::ATK_CURVE, "ATK_CURVE"),
+            (id::MOD_TARGET_INTENSITY, "MOD_TARGET_INTENSITY"),
+            (id::MOD_TARGET_MP_INTENSITY, "MOD_TARGET_MP_INTENSITY"),
+            (id::EFFECT_BYPASS, "EFFECT_BYPASS"),
+            (id::EFFECT_TYPE, "EFFECT_TYPE"),
+            (id::EFFECT_SUBTYPE, "EFFECT_SUBTYPE"),
+            (id::SEND_EFFECT_TYPE, "SEND_EFFECT_TYPE"),
+            (id::RV2_PREDELAY, "RV2_PREDELAY"),
+            (id::RV2_TIME, "RV2_TIME"),
+            (id::RV2_TYPE, "RV2_TYPE"),
+            (id::RV2_SIZE, "RV2_SIZE"),
+            (id::RV2_DAMPING, "RV2_DAMPING"),
+            (id::RV2_DIFF, "RV2_DIFF"),
+            (id::RV2_MOD, "RV2_MOD"),
+            (id::RV2_STEREO, "RV2_STEREO"),
+            (id::RV2_FREEZE, "RV2_FREEZE"),
+            (id::RV2_EQ_LOW_FREQ, "RV2_EQ_LOW_FREQ"),
+            (id::RV2_EQ_LOW_GAIN, "RV2_EQ_LOW_GAIN"),
+            (id::RV2_EQ_HIGH_FREQ, "RV2_EQ_HIGH_FREQ"),
+            (id::RV2_EQ_HIGH_GAIN, "RV2_EQ_HIGH_GAIN"),
+            (id::SEND_EFFECT_BYPASS, "SEND_EFFECT_BYPASS"),
+            (id::SEND_EFFECT_DRY_LEVEL, "SEND_EFFECT_DRY_LEVEL"),
+            (id::SEND_EFFECT_OUTPUT_GAIN, "SEND_EFFECT_OUTPUT_GAIN"),
+            (id::INSERT_EFFECT_OUTPUT_GAIN, "INSERT_EFFECT_OUTPUT_GAIN"),
+            (id::SENDLEVEL_0, "SENDLEVEL_0"),
+            (id::SENDLEVEL_7, "SENDLEVEL_7"),
+            (id::STEREO, "STEREO"),
+            (id::STEREO_PAN, "STEREO_PAN"),
+            (id::FREQ1, "FREQ1"),
+            (id::FREQ3, "FREQ3"),
+            (id::BW1, "BW1"),
+            (id::BW3, "BW3"),
+            (id::GAIN1, "GAIN1"),
+            (id::GAIN3, "GAIN3"),
+        ] {
+            assert_eq!(name(id), Some(format!("$ENGINE_PAR_{expected}").as_str()));
+        }
+    }
+
+    #[test]
+    fn value_laws_match_reference_points() {
+        let volume = Address::Instrument(GroupPar::Volume);
+        assert!((volume.decode(630_859) - 1.0).abs() < 1e-3, "0 dB");
+        // The cube law is Kontakt's to within 0.005 dB, not bit-exact.
+        assert!((volume.encode(1.0) - 630_859).abs() < 200);
+        // Areia sets 704316 where its presets store intensity 0.4961.
+        let intensity = Address::Intensity {
+            group: 0,
+            index: 0,
+            bipolar: false,
+        };
+        assert!((intensity.decode(704_316) - 0.4961).abs() < 1e-3);
+        // Areia sets these at init; its saved envelopes hold the same times.
+        let attack = Address::Envelope(0, Stage::Attack);
+        let release = Address::Envelope(0, Stage::Release);
+        assert!((attack.decode(465_229) - 0.125_013).abs() < 1e-4);
+        assert!((release.decode(512_668) - 0.250_001).abs() < 1e-4);
+        // Afflatus sets these on a group insert and its send; the presets store the gains.
+        let output = Address::Filter(0, 1, Knob::Output);
+        assert!((output.decode(396_851) - 1.000_005_6).abs() < 1e-4);
+        assert!((Address::Fx(Rack::Send, 0, FxParam::Wet).decode(125_919) - 0.031_944).abs() < 1e-5);
+        assert!((output.encode(1.0) - 396_851).abs() < 2);
+        let spread = Address::Filter(0, 0, Knob::Spread);
+        assert!((spread.decode(434_210) + 0.131_58).abs() < 1e-4);
+        assert!((release.decode(1_000_000) - 25.000_04).abs() < 1e-3);
+        // Solo sets these where its presets store attack curves 0.5 and -0.33.
+        let curve = Address::Envelope(0, Stage::Curve);
+        assert_eq!(curve.decode(750_000), 0.5);
+        assert!((curve.decode(333_333) + 0.333_33).abs() < 1e-5);
+        assert_eq!(curve.encode(1.0), 1_000_000);
+        assert_eq!(release.encode(0.250_001), 512_668);
+        // Areia's send level, stored as 0.25 (−12 dB).
+        let send = Address::Fx(Rack::Insert, 7, FxParam::SendLevel(0));
+        assert!((send.decode(396_820) - 0.25).abs() < 2e-3);
+        let output = Address::Group(0, GroupPar::Output);
+        assert_eq!(output.decode(1003), 3.0);
+        assert_eq!(output.encode(output.decode(-1)), -1);
+        // Past the instrument output: channel 1 ("Out 2"), both ways.
+        assert_eq!(output.decode(1), f32::from(DIRECT) + 1.0);
+        assert_eq!(output.encode(output.decode(1)), 1);
+        let bus_out = Address::Fx(Rack::Bus(2), 0, FxParam::Output);
+        assert_eq!((bus_out.decode(3), bus_out.decode(-1), bus_out.encode(3.0)), (3.0, -1.0, 3));
+    }
+
+    fn group() -> Group {
+        let assignment = |source, lag_ms, shaper| ModAssignment {
+            name: String::new(),
+            source,
+            target: ModTarget::Volume,
+            intensity: 1.0,
+            invert: false,
+            lag_ms,
+            shaper,
+        };
+        Group {
+            mods: vec![
+                // Velocity squared by a table shaper.
+                assignment(
+                    ModSource::Velocity,
+                    0,
+                    Some(ShaperCurve::Table(
+                        (0..128).map(|i| (i as f32 / 127.0).powi(2)).collect(),
+                    )),
+                ),
+                assignment(ModSource::MidiCc(11), 100, None),
+            ],
+            modulators: vec![
+                Modulator {
+                    name: "ENV_AHDSR".into(),
+                    targets: vec!["ENV_AHDSR_VOLUME".into()],
+                    assignments: None,
+                    volume_env: true,
+                    flex: false,
+                    envelope: None,
+                    kind: String::new(),
+                },
+                Modulator {
+                    name: "VEL_VOLUME".into(),
+                    targets: vec![String::new()],
+                    assignments: Some(0),
+                    volume_env: false,
+                    flex: false,
+                    envelope: None,
+                    kind: String::new(),
+                },
+                Modulator {
+                    name: "CC_VOLUME".into(),
+                    targets: vec![String::new()],
+                    assignments: Some(1),
+                    volume_env: false,
+                    flex: false,
+                    envelope: None,
+                    kind: String::new(),
+                },
+            ],
+            ..Group::default()
+        }
+    }
+
+    #[test]
+    fn group_insert_types_and_reverb_eq_freeze_resolve() {
+        use crate::fx::{Effect, Kind, Params};
+        let mut g = group();
+        g.fx.slots.push(Effect {
+            slot: 2,
+            kind: Kind::StereoModeller,
+            version: 0,
+            bypass: false,
+            output_gain: 1.0,
+            dry_level: 0.0,
+            params: Params::Opaque { bytes: 0 },
+        });
+        let groups = [g];
+        let par = |id, group, slot, generic| EnginePar { id, group, slot, generic };
+        let ty = |slot| Address::resolve(par(id::EFFECT_TYPE, 0, slot, -1), &groups);
+        assert_eq!((ty(2), ty(8)), (Some(Address::GroupType(0, 2)), None));
+        assert_eq!((group_type(&groups, 0, 2), group_type(&groups, 0, 1)), (Some(31.0), Some(0.0)));
+        // A filter's type is its subtype; it decodes as the raw type id.
+        let sub = Address::resolve(par(id::EFFECT_SUBTYPE, 0, 1, -1), &groups);
+        assert_eq!(sub, Some(Address::Filter(0, 1, Knob::Type)));
+        assert_eq!((Address::Filter(0, 1, Knob::Type).decode(106), Address::Filter(0, 1, Knob::Type).encode(106.0)), (106.0, 106));
+        // Reverb: the stored EQ values are the cut amounts; freeze is a switch.
+        let rv = |id| Address::resolve(par(id, -1, 0, 0), &[]).map(|a| match a {
+            Address::Fx(_, _, FxParam::Reverb(n)) => n,
+            _ => u8::MAX,
+        });
+        let unresolved = |id| Address::resolve(par(id, -1, 0, 0), &[]).is_none();
+        assert_eq!([id::RV2_EQ_HIGH_GAIN, id::RV2_EQ_LOW_GAIN, id::RV2_FREEZE].map(rv), [Some(7), Some(8), Some(10)]);
+        assert!(unresolved(id::RV2_EQ_LOW_FREQ) && unresolved(id::RV2_EQ_HIGH_FREQ));
+        let freeze = Address::Fx(Rack::Send, 0, FxParam::Reverb(10));
+        assert_eq!((freeze.decode(1_000_000), freeze.decode(0), freeze.encode(1.0)), (1.0, 0.0, 1));
+    }
+
+    #[test]
+    fn velocity_shaper_and_lagged_cc_volume() {
+        let table = ModTable::from(&group());
+        let mut cc = [0; 128];
+        cc[11] = 127;
+        let mut input = Inputs {
+            cc: &cc,
+            cc74: None,
+            bend: 0.0,
+            pressure: 0,
+            note: 60,
+            velocity: 64,
+            counter: 0.0,
+        };
+        let mut values = table.start(&input);
+        let (gain, ..) = table.modulate(&mut values, &input, 128, 48000.0);
+        let expected = (64.0f32 / 127.0).powi(2);
+        assert!((gain - expected).abs() < 1e-5, "{gain} vs {expected}");
+
+        // CC11 drops to 0: after one lag time constant 63% of the way down.
+        let quiet = [0; 128];
+        input.cc = &quiet;
+        let (gain, ..) = table.modulate(&mut values, &input, 4800, 48000.0);
+        assert!((gain / expected - (-1.0f32).exp()).abs() < 1e-4, "{gain}");
+    }
+
+    #[test]
+    fn velocity_scales_envelope_attack_at_note_start() {
+        let group = Group {
+            mods: vec![ModAssignment {
+                name: "VEL_ATTACK".into(),
+                source: ModSource::Velocity,
+                target: ModTarget::Attack,
+                intensity: 1.0,
+                invert: false,
+                lag_ms: 0,
+                // Pacific's stored shaper: soft notes keep the attack, hard ones shorten it.
+                shaper: Some(ShaperCurve::Table(vec![1.0, 0.59])),
+            }],
+            ..Group::default()
+        };
+        let table = ModTable::from(&group);
+        let cc = [0; 128];
+        let attack = |velocity| {
+            let mut env = Ahdsr {
+                attack: 0.9,
+                ..Ahdsr::UNITY
+            };
+            let input = Inputs {
+                cc: &cc,
+                cc74: None,
+                bend: 0.0,
+                pressure: 0,
+                note: 60,
+                velocity,
+                counter: 0.0,
+            };
+            table.scale_envelope(&mut env, &input);
+            (env.attack, env.release)
+        };
+        assert_eq!(attack(0), (0.9, f32::INFINITY));
+        assert!((attack(127).0 - 0.9 * 0.59).abs() < 1e-5);
+        // Envelope times are not per-block voice modulation.
+        assert!(table.voiced.is_empty());
+    }
+
+    #[test]
+    fn addresses_resolve_by_decoded_names() {
+        let groups = [group()];
+        assert_eq!(find_mod(&groups, 0, &|n| n == "CC_VOLUME"), Some(2));
+        assert_eq!(find_target(&groups, 0, 0, &|n| n == "ENV_AHDSR_VOLUME"), Some(0));
+        let par = |id, slot, generic| EnginePar {
+            id,
+            group: 0,
+            slot,
+            generic,
+        };
+        assert_eq!(
+            Address::resolve(par(id::MOD_TARGET_INTENSITY, 2, -1), &groups),
+            Some(Address::Intensity {
+                group: 0,
+                index: 1,
+                bipolar: false
+            })
+        );
+        assert_eq!(
+            Address::resolve(par(id::ATTACK, 0, -1), &groups),
+            Some(Address::Envelope(0, Stage::Attack))
+        );
+        assert_eq!(Address::resolve(par(id::ATTACK, 1, -1), &groups), None);
+        // A flex envelope (slot 1 here) has no AHDSR stages, nor has a
+        // missing slot: Kontakt ignores those; an external modulator's are
+        // left unmapped.
+        let mut flex = group();
+        flex.modulators.insert(1, Modulator { name: "ENV_FLEX".into(), targets: Vec::new(), assignments: None, volume_env: false, flex: true, envelope: None, kind: "flex".into() });
+        let flex = [flex];
+        assert!(Address::inert(par(id::ATTACK, 1, -1), &flex));
+        assert!(Address::inert(par(id::RELEASE, 9, -1), &flex));
+        assert!(!Address::inert(par(id::ATTACK, 2, -1), &flex));
+        assert!(!Address::inert(par(id::VOLUME, 1, -1), &flex));
+        // A filter envelope is addressed by its `Group::envelopes` index.
+        let mut filter = group();
+        filter.modulators[1].envelope = Some(3);
+        assert_eq!(
+            Address::resolve(par(id::DECAY, 1, -1), &[filter]),
+            Some(Address::ModEnvelope(0, 3, Stage::Decay))
+        );
+        let bus = EnginePar {
+            id: id::VOLUME,
+            group: -1,
+            slot: -1,
+            generic: 1002,
+        };
+        assert_eq!(
+            Address::resolve(bus, &groups),
+            Some(Address::Fx(Rack::Bus(2), 0, FxParam::Volume))
+        );
+    }
+}

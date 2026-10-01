@@ -1,0 +1,71 @@
+// properties:
+// - num-hidden-items
+
+use std::io::Cursor;
+
+use crate::{
+    nis::{ItemData, ItemType, SubtreeItem},
+    read_bytes::ReadBytesExt,
+    NIFileError,
+};
+
+use super::preset::AuthoringApplication;
+
+#[derive(Debug)]
+pub struct AppSpecificProperties {
+    pub subtree_item: SubtreeItem,
+    pub authoring_app: AuthoringApplication,
+    pub version: String,
+}
+
+impl std::convert::TryFrom<&ItemData> for AppSpecificProperties {
+    type Error = NIFileError;
+
+    fn try_from(item: &ItemData) -> Result<Self, NIFileError> {
+        if item.header.item_type() != ItemType::AppSpecific {
+            return Err(NIFileError::ItemWrapError {
+                expected: ItemType::AppSpecific,
+                got: item.header.item_type(),
+            });
+        }
+
+        let subtree_item = SubtreeItem::read(&mut Cursor::new(&item.child().ok_or(NIFileError::Static("AppSpecific subtree is missing"))?.data))?;
+
+        let mut reader = Cursor::new(&item.data);
+
+        let prop_version = reader.read_u32_le()?;
+        if prop_version != 1 {return Err(NIFileError::Static("Unsupported AppSpecific version"));}
+
+        let authoring_app: AuthoringApplication = reader.read_u32_le()?.into();
+        let version = reader.read_widestring_utf16()?;
+
+        Ok(AppSpecificProperties {
+            subtree_item,
+            authoring_app,
+            version,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // use std::{fs::File, io::Read};
+    //
+    // use super::*;
+    //
+    // #[test]
+    // fn test_app_specific_read() -> Result<()> {
+    //     let mut file = File::open("tests/data/Containers/NIS/objects/AppSpecific/AppSpecific-000")?;
+    //     let item = AppSpecific::read(&mut file)?;
+    //
+    //     assert_eq!(item.authoring_app, AuthoringApplication::Kontakt);
+    //     assert_eq!(item.version, String::from("7.1.3.0"));
+    //
+    //     // ensure the read completed
+    //     let mut buf = Vec::new();
+    //     file.read_to_end(&mut buf)?;
+    //     assert_eq!(buf.len(), 0, "Excess data found");
+    //
+    //     Ok(())
+    // }
+}

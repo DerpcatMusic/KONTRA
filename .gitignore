@@ -1,0 +1,15 @@
+/target
+/artifacts
+/.impeccable/review
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+/audits/*.json*
+
+# Python migration-tool cache.
+/tools/__pycache__/
+
+# graft's local repository settings — not committed.
+/.graft/
+/.claude/worktrees/

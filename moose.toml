@@ -1,0 +1,20 @@
+[vendor]
+name = "Matari Audio"
+id = "audio.matari"
+url = "https://github.com/Matari-Audio"
+au_manufacturer = "Mtri"
+
+[[plugin]]
+name = "KONTRA"
+bundle_id = "kontra"
+crate = "kontakto"
+category = "instrument"
+fourcc = "Kntr"
+vst3_subcategory = "Sampler"
+
+midi_input = true
+midi_output = true
+midi_input_ports = 4
+midi_output_ports = 1
+# Per-note events: CLAP note expressions reach each key (MPE).
+midi2_input = true

@@ -1,0 +1,66 @@
+use std::io::Cursor;
+
+use crate::{
+    kontakt::{objects::StartCriteriaParams, Chunk, KontaktError},
+    read_bytes::ReadBytesExt,
+    Error,
+};
+
+const CHUNK_ID: u16 = 0x38;
+
+/// StartCriteriaList
+///
+/// Group Start Options - determines conditions for which a group
+/// is triggered. Maximum of 4 conditions per group.
+///
+/// Type:           Chunk<Raw>
+/// SerType:        ?
+/// Kontakt 7:      ?
+/// KontaktIO:      StartCritList
+///
+#[derive(Debug)]
+pub struct StartCriteriaList {
+    pub items: Vec<StartCriteriaParams>,
+}
+
+impl StartCriteriaList {
+    pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
+        let num_items = reader.read_i8()?;
+        let mut items = Vec::new();
+
+        if !(0..=15).contains(&num_items) { return Err(Error::Static("Invalid start criteria mask")); }
+
+        for i in 0..4 {
+            if num_items & (1 << (i & 0x1F)) != 0 {
+                // ensure raw data
+                let is_structured_object = reader.read_bool()?;
+                if is_structured_object {return Err(Error::Static("Unexpected structured start criteria"));}
+
+                // ensure startcriteria v70
+                let version = reader.read_u16_le()?;
+                if version!=0x70 {return Err(Error::Static("Unsupported start criteria version"));}
+
+                let item = StartCriteriaParams::read(&mut reader)?;
+                items.push(item);
+            }
+        }
+
+        Ok(Self { items })
+    }
+}
+
+impl std::convert::TryFrom<&Chunk> for StartCriteriaList {
+    type Error = Error;
+
+    fn try_from(chunk: &Chunk) -> Result<Self, Self::Error> {
+        if chunk.id != CHUNK_ID {
+            return Err(KontaktError::IncorrectID {
+                expected: CHUNK_ID,
+                got: chunk.id,
+            }
+            .into());
+        }
+        let reader = Cursor::new(&chunk.data);
+        Self::read(reader)
+    }
+}

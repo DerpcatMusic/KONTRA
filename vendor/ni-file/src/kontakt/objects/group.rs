@@ -1,0 +1,85 @@
+// Groups allow you to apply settings like effects, volume, panning, etc. to multiple samples at once rather than having to adjust each one individually.
+
+use std::io::Cursor;
+
+use crate::{
+    kontakt::{objects::start_criteria_list::StartCriteriaList, StructuredObject},
+    read_bytes::ReadBytesExt,
+    Error,
+};
+
+/// Type:           Chunk
+/// SerType:        0x04
+/// Kontakt 7:      BGroup?
+/// KontaktIO:      K4PL\_Group
+#[derive(Debug)]
+pub struct Group(pub StructuredObject);
+
+#[derive(Debug)]
+pub struct GroupParams {
+    pub name: String,
+    /// Linear amplitude ratio (0.5 is -6 dB).
+    pub volume: f32,
+    pub pan: f32,
+    /// Linear pitch ratio (0.5 is one octave down), not semitones.
+    pub tune: f32,
+    /// Repitch samples to midi note triggered.
+    pub key_tracking: bool,
+    /// Play samples in reverse.
+    pub reverse: bool,
+    pub release_trigger: bool,
+    pub release_trigger_note_monophonic: bool,
+    pub rls_trig_counter: i32,
+    pub midi_channel: i16,
+    pub voice_group_index: i32,
+    pub fx_idx_amp_split_point: i32,
+    pub muted: bool,
+    pub soloed: bool,
+    pub interp_quality: i32,
+    // Children: InternalModArray16 0x3B, ExternalModArray32 0x3C,
+    // BParGroupDynamics 0x4A (256 zero bytes in every local preset).
+    pub start_criteria: StartCriteriaList,
+}
+
+/// Group private data: 136 records of `(u32 8, u32 flags, u32 0)`, then 24
+/// bytes of unknown state, then the group insert effect rack. Fixed in all
+/// 224,868 local groups (Kontakt 5 to 7).
+const PRIVATE_RECORDS: usize = 136;
+const PRIVATE_TRAILER: usize = 24;
+
+impl Group {
+    /// The group insert effect rack (8 slots), stored in the private data.
+    pub fn insert_fx(&self) -> Result<super::BParamArrayBParFX8, Error> {
+        let data = &self.0.private_data;
+        let records = PRIVATE_RECORDS * 12;
+        if data.len() < records + PRIVATE_TRAILER
+            || data[..records].chunks(12).any(|r| r[..4] != [8, 0, 0, 0])
+        {
+            return Err(Error::Static("Unrecognized group private data"));
+        }
+        super::BParamArrayBParFX8::read(Cursor::new(&data[records + PRIVATE_TRAILER..]), 8)
+    }
+
+    pub fn params(&self) -> Result<GroupParams, Error> {
+        let mut reader = Cursor::new(&self.0.public_data);
+
+        Ok(GroupParams {
+            name: reader.read_widestring_utf16()?,
+            volume: reader.read_f32_le()?,
+            pan: reader.read_f32_le()?,
+            tune: reader.read_f32_le()?,
+            key_tracking: reader.read_bool()?,
+            reverse: reader.read_bool()?,
+            release_trigger: reader.read_bool()?,
+            release_trigger_note_monophonic: reader.read_bool()?,
+            rls_trig_counter: reader.read_i32_le()?,
+            midi_channel: reader.read_i16_le()?,
+            voice_group_index: reader.read_i32_le()?,
+            fx_idx_amp_split_point: reader.read_i32_le()?,
+            muted: reader.read_bool()?,
+            soloed: reader.read_bool()?,
+            interp_quality: reader.read_i32_le()?,
+            start_criteria: self.0.find_first(0x38).ok_or(Error::Static("Group has no start criteria list"))?.try_into()?,
+        })
+    }
+}
