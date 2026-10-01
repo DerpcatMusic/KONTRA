@@ -57,9 +57,15 @@ pub struct Settings {
     pub covers: BTreeMap<String, Cover>,
     /// The libraries Kontakt knows about were looked for, on the first run.
     pub imported: bool,
-    /// Parts show KONTRA's own controls, not the library's original
-    /// performance view, unless a part chooses otherwise.
+    /// The performance view parts show unless they choose their own.
+    pub view_mode: ViewMode,
+    /// What an older version kept instead: true was KONTRA's controls.
+    /// Read once into `view_mode`, never written.
+    #[serde(skip_serializing)]
     pub vector_view: bool,
+    /// The vectorized view draws the library's wallpaper, dimmed, behind
+    /// its controls.
+    pub vector_backdrop: bool,
     /// The original performance view's scale; 0 fits the part's width.
     pub view_scale: f32,
     /// How the browser lists the libraries.
@@ -76,6 +82,30 @@ pub struct Settings {
     /// The library the browser last showed, by folder, and the row chosen in it.
     pub last_library: String,
     pub last_row: String,
+}
+
+/// How a part shows its library's performance view.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ViewMode {
+    /// The library's own pictures, as Kontakt draws them.
+    #[default]
+    Original,
+    /// The same controls in the same places, drawn in KONTRA's own look.
+    Vectorized,
+    /// KONTRA's rebuilt controls.
+    Kontra,
+}
+
+impl ViewMode {
+    pub const ALL: [Self; 3] = [Self::Original, Self::Vectorized, Self::Kontra];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Original => "Original",
+            Self::Vectorized => "Vectorized",
+            Self::Kontra => "KONTRA",
+        }
+    }
 }
 
 /// How the browser lists the libraries. Pinned ones lead whatever the sort.
@@ -178,7 +208,11 @@ impl Settings {
     }
 
     pub fn load(path: &Path) -> Option<Self> {
-        serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+        let mut s: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        if std::mem::take(&mut s.vector_view) {
+            s.view_mode = ViewMode::Kontra;
+        }
+        Some(s)
     }
 
     /// `libraries` as the browser lists them: pinned ones first, then by the
@@ -968,6 +1002,21 @@ mod tests {
         for (folder, (name, vendor)) in cases {
             assert_eq!(clean_name(folder), (name.to_owned(), vendor.to_owned()), "{folder}");
         }
+    }
+
+    #[test]
+    fn the_view_mode_survives_a_restart_and_the_old_switch_migrates() {
+        let dir = tree("view-mode", &[]);
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"vector_view": true}"#).unwrap();
+        assert_eq!(Settings::load(&path).unwrap().view_mode, ViewMode::Kontra, "KONTRA's controls, as chosen before");
+        std::fs::write(&path, r#"{"vector_view": false}"#).unwrap();
+        assert_eq!(Settings::load(&path).unwrap().view_mode, ViewMode::Original);
+        let s = Settings { view_mode: ViewMode::Vectorized, ..Settings::default() };
+        s.save(&path).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("vector_view"), "the old switch is not written");
+        assert_eq!(Settings::load(&path), Some(s));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

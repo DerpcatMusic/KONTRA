@@ -435,6 +435,11 @@ fn read(
     Some((item, picture_name.to_owned()))
 }
 
+/// Each visible control's name, as KONTRA's view gives it, by control.
+pub fn names(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> HashMap<usize, String> {
+    items(interface, pictures).into_iter().map(|i| (i.control, i.name)).collect()
+}
+
 /// Visible controls, named, with the labels that named them taken out.
 fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec<Item> {
     let prefixes = prefixes(interface);

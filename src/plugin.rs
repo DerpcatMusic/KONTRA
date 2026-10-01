@@ -73,7 +73,8 @@ pub struct Part {
     /// What plays on each of those channels, as the library names it.
     pub mic_names: Vec<String>,
     /// Which performance view the part shows: 0 follows the app's setting,
-    /// 1 the library's original, 2 KONTRA's own controls.
+    /// 1 the library's original, 2 KONTRA's own controls, 3 the original
+    /// vectorized ([`crate::library::ViewMode`]).
     pub view: u8,
 }
 impl Part {

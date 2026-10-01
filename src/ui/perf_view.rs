@@ -9,6 +9,8 @@ use super::menu::{self, Target};
 use super::{Cx, theme::*};
 use crate::artwork::Picture;
 use crate::ksp::{Control, Interface, Value};
+use crate::library::ViewMode;
+use moose::mui::mui::geometry::Path as DrawPath;
 use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::{Fit, Image};
 use std::collections::HashMap;
@@ -201,21 +203,35 @@ pub fn available(v: &crate::plugin::PartView) -> bool {
         && (v.wallpaper.is_some() || !v.pictures.is_empty())
 }
 
-/// Whether a part showing `view` ([`crate::plugin::Part::view`]) shows the
-/// original view, given the app's default and whether there is one.
-pub fn original(view: u8, vector_default: bool, available: bool) -> bool {
-    available
-        && match view {
-            1 => true,
-            2 => false,
-            _ => !vector_default,
-        }
+/// The mode a part showing `view` ([`crate::plugin::Part::view`]) is in,
+/// given the app's default and whether the library has a view of its own.
+pub fn mode(view: u8, default: ViewMode, available: bool) -> ViewMode {
+    if !available {
+        return ViewMode::Kontra;
+    }
+    match view {
+        1 => ViewMode::Original,
+        2 => ViewMode::Kontra,
+        3 => ViewMode::Vectorized,
+        _ => default,
+    }
 }
 
-/// Whether `slot` shows its library's own view now.
-pub fn shows(cx: &Cx, slot: usize) -> bool {
+/// What [`crate::plugin::Part::view`] keeps for `mode`; `None` follows the
+/// app's default.
+pub fn code(mode: Option<ViewMode>) -> u8 {
+    match mode {
+        None => 0,
+        Some(ViewMode::Original) => 1,
+        Some(ViewMode::Kontra) => 2,
+        Some(ViewMode::Vectorized) => 3,
+    }
+}
+
+/// The mode `slot` shows now.
+pub fn shows(cx: &Cx, slot: usize) -> ViewMode {
     let view = cx.selection.parts.get(slot).map_or(0, |p| p.view);
-    original(view, cx.settings.vector_view, available(&cx.view.parts[slot]))
+    mode(view, cx.settings.view_mode, available(&cx.view.parts[slot]))
 }
 
 /// The width `slot`'s view has, as last laid out.
@@ -230,6 +246,7 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let v = &cx.view.parts[slot];
     let mut h = DefaultHasher::new();
     (room(ui, slot).round() as i64, cx.settings.view_scale.to_bits()).hash(&mut h);
+    (shows(cx, slot), cx.settings.vector_backdrop).hash(&mut h);
     (Arc::as_ptr(&v.pictures) as usize, v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
     if let Some(i) = &v.interface {
         (Arc::as_ptr(i) as usize, i.width, i.height).hash(&mut h);
@@ -276,8 +293,10 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
     });
 }
 
-/// `slot`'s performance view as its library drew it.
+/// `slot`'s performance view as its library drew it, or vectorized: the
+/// same controls in the same places in KONTRA's own look.
 pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
+    let vector = shows(cx, slot) == ViewMode::Vectorized;
     let v = &cx.view.parts[slot];
     let (Some(interface), pictures, wallpaper) = (v.interface.clone(), v.pictures.clone(), v.wallpaper.clone()) else {
         return block(0, 0);
@@ -286,17 +305,23 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let (w, h) = (f64::from(interface.width), f64::from(interface.height));
     let s = scale(room(ui, slot), w, cx.settings.view_scale);
     let mut layers = Vec::new();
-    if let Some(image) = wallpaper.clone() {
+    if let Some(image) = wallpaper.clone().filter(|_| !vector || cx.settings.vector_backdrop) {
         let (iw, ih) = (f64::from(image.width), f64::from(image.height));
         layers.push(block(iw * s, ih * s).fill(Fill::Image(image, Fit::Fill)).at(0., -HEADER * s));
+        if vector {
+            layers.push(block(w * s, h * s).fill(Role::Background.alpha(0.8)));
+        }
     }
     let drawn: Vec<(Shown, Option<Arc<Image>>)> = layout(&interface, &pictures)
         .into_iter()
         .map(|shown| {
-            let image = picture_frame(&shown, &interface.controls[shown.control], value(&interface.controls[shown.control]));
+            let c = &interface.controls[shown.control];
+            let image = if vector { None } else { picture_frame(&shown, c, value(c)) };
             (shown, image)
         })
         .collect();
+    // Names the wallpaper wrote beside the controls: ours say them.
+    let names = if vector { vector_names(&interface, &pictures) } else { HashMap::new() };
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         // What its text sits on: its own picture, else what is under it.
@@ -306,7 +331,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             .filter_map(|(dx, _)| luma_under(&drawn[..=n], wallpaper.as_deref(), cx_ + dx * shown.w, cy))
             .fold(None, |m: Option<(f32, u32)>, l| Some(m.map_or((l, 1), |(t, k)| (t + l, k + 1))))
             .map(|(t, k)| t / k as f32);
-        layers.push(control(ui, cx, slot, shown, c, s, under).at(shown.x * s, shown.y * s));
+        let look = if vector { Look::Vector(names.get(&shown.control).map(String::as_str)) } else { Look::Original(under) };
+        layers.push(control(ui, cx, slot, shown, c, s, look).at(shown.x * s, shown.y * s));
     }
     // Over everything: the value a drag is setting, or a value being typed.
     let find = |n: usize| drawn.iter().find(|(d, _)| d.control == n).map(|(d, _)| d.clone());
@@ -314,7 +340,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         let c = &interface.controls[shown.control];
         let label = prop(c, "$CONTROL_PAR_LABEL");
         let said = if label.is_empty() || shown.kind == Kind::Value { format!("{}", v.round()) } else { keep_spaces(label) };
-        let tag = text(said).text_size(FONT * s).fill(Role::Ink).lines(1).pad((2. * s, 4. * s)).fill(Role::Raised).radius(3.);
+        let tag = text(said).text_size(FONT * s).fill(Role::Ink).lines(1).pad((2. * s, 4. * s)).fill(Role::Raised);
         let (wide, tall) = ((shown.w * s).max(80. * s), FONT * s * 1.8);
         let y = if shown.y * s >= tall { shown.y * s - tall } else { (shown.y + shown.h) * s };
         layers.push(row![tag].justify(Justify::Center).w(wide).h(tall).at(shown.x * s + shown.w * s / 2. - wide / 2., y));
@@ -327,9 +353,9 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .w(w * s)
         .h(h * s)
         .shrink(0)
-        .fill(Color::srgb(0., 0., 0.))
+        .fill(if vector { Fill::from(Role::Background) } else { Fill::from(Color::srgb(0., 0., 0.)) })
         .clip()
-        .named("Original performance view");
+        .named(if vector { "Vectorized performance view" } else { "Original performance view" });
     row![area].justify(Justify::Center).align(Align::Start).w(Len::Pct(100.))
 }
 
@@ -391,7 +417,7 @@ fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, Option<f64>)
 }
 
 /// Text on a control `w` by `h` (scaled), aligned as the script asked.
-fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, ink: Color) -> El {
+fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, ink: impl Into<Fill>) -> El {
     let t = text(words).text_size(FONT * s).fill(ink).lines(1).min_w(0);
     let justify = match align {
         1 => Justify::Center,
@@ -462,10 +488,33 @@ fn luma_under(below: &[(Shown, Option<Arc<Image>>)], wallpaper: Option<&Image>, 
     at(wallpaper?, x, y + HEADER)
 }
 
-/// One control: its picture's frame or a plain stand-in, its text, and its
-/// pointer handling. `under` is how light what its text sits on is.
-#[allow(clippy::too_many_arguments)]
-fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s: f64, under: Option<f32>) -> El {
+/// How a control is drawn.
+#[derive(Clone, Copy)]
+enum Look<'a> {
+    /// Its picture, or KONTRA's face where it has none; how light what
+    /// its text sits on is.
+    Original(Option<f32>),
+    /// KONTRA's face, with the name the wallpaper wrote beside it.
+    Vector(Option<&'a str>),
+}
+
+/// The names the vectorized view writes under knobs: the ones KONTRA's
+/// own view finds, unless one of the script's labels says it already.
+fn vector_names(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> HashMap<usize, String> {
+    let said: std::collections::HashSet<String> = (interface.controls.iter())
+        .filter(|c| c.kind == "ui_label")
+        .map(|c| keep_spaces(prop(c, "$CONTROL_PAR_TEXT")).trim().to_lowercase())
+        .collect();
+    super::panel::names(interface, pictures)
+        .into_iter()
+        .filter(|(_, n)| !said.contains(&n.trim().to_lowercase()))
+        .collect()
+}
+
+/// One control: its picture's frame or KONTRA's face, its text, and its
+/// pointer handling.
+fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s: f64, look: Look) -> El {
+    let vector = matches!(look, Look::Vector(_));
     let id = format!("kpv-{slot}-{}", shown.control);
     let (w, h) = (shown.w * s, shown.h * s);
     let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
@@ -514,31 +563,48 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         }
         _ => interactive = false,
     }
-    let mut layers = vec![match picture_frame(shown, c, now) {
+    let picture = if vector { None } else { picture_frame(shown, c, now) };
+    let pictured = picture.is_some();
+    let behaviour = int(c, "$CONTROL_PAR_MOUSE_BEHAVIOUR").unwrap_or(0);
+    let vertical = drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour);
+    let round = shown.kind == Kind::Knob || shown.kind == Kind::Slider && knob_like(prop(c, "$CONTROL_PAR_PICTURE"), shown.w, shown.h);
+    let lift = if cx.state.held.is_some_and(|(p, n, _)| (p, n) == (slot, shown.control)) { 1. } else { ui.state(id.as_str()).hover as f32 };
+    let mut layers = vec![match picture {
         Some(image) => block(w, h).fill(Fill::Image(image, Fit::Fill)),
-        None => plain(shown.kind, c, now, lo, hi, hide, s).w(w).h(h),
+        None => face(shown.kind, c, now, lo, hi, vertical, round, s, lift).w(w).h(h),
     }];
-    // Text on a plain control sits on its dark field.
-    let field = shown.picture.is_none() && !matches!(shown.kind, Kind::Label | Kind::Knob | Kind::Area);
-    let own_ink = ink(if field { None } else { under });
+    // Text on our face is our ink; on a picture it reads what lies under it.
+    let own_ink = match look {
+        Look::Original(under) if pictured || matches!(shown.kind, Kind::Label | Kind::Area) => Fill::from(ink(under)),
+        _ => Fill::from(Role::Ink),
+    };
     let (said, align, top) = caption_of(c, shown.kind, now);
     if !said.is_empty() {
-        layers.push(words(said, align, top, w, h, s, own_ink));
+        layers.push(words(said, align, top, w, h, s, own_ink.clone()));
     }
-    if shown.kind == Kind::Knob && shown.picture.is_none() {
+    if shown.kind == Kind::Knob && !pictured {
         // Kontakt's own knob: its name over it, its value under it.
         let name = prop(c, "$CONTROL_PAR_TEXT");
         let name = if name.is_empty() { c.variable.trim_start_matches(['$', '~']) } else { name };
         if hide & HIDE_TITLE == 0 {
-            layers.push(words(keep_spaces(name), 1, Some(0.), w, h, s, ink(under)));
+            layers.push(words(keep_spaces(name), 1, Some(0.), w, h, s, own_ink.clone()));
         }
         if hide & HIDE_VALUE == 0 {
             let label = prop(c, "$CONTROL_PAR_LABEL");
             let shown_value = if label.is_empty() { format!("{}", now.round()) } else { keep_spaces(label) };
-            layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s, ink(under)));
+            layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s, own_ink));
         }
     }
-    let el = stack(layers).w(w).h(h).clip();
+    let mut el = stack(layers).w(w).h(h).clip();
+    // A knob the wallpaper named: the name under it, where the wallpaper had it.
+    if let Look::Vector(Some(name)) = look
+        && round
+        && shown.kind != Kind::Knob
+    {
+        let tag = words(name.to_owned(), 1, None, (shown.w * s).max(72. * s), FONT * s * 1.4, s, Role::Dim);
+        let off = (w - (shown.w * s).max(72. * s)) / 2.;
+        el = stack![el, tag.at(off, h)].w(w).h(h);
+    }
     if !interactive {
         return el;
     }
@@ -550,14 +616,8 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     let el = el
         .cursor(match shown.kind {
             Kind::Knob | Kind::Slider | Kind::Value if ui.get(id.as_str()).held => Cursor::Grabbing,
-            Kind::Knob | Kind::Slider | Kind::Value => {
-                let behaviour = int(c, "$CONTROL_PAR_MOUSE_BEHAVIOUR").unwrap_or(0);
-                if drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour) {
-                    Cursor::ResizeV
-                } else {
-                    Cursor::ResizeH
-                }
-            }
+            Kind::Knob | Kind::Slider | Kind::Value if vertical => Cursor::ResizeV,
+            Kind::Knob | Kind::Slider | Kind::Value => Cursor::ResizeH,
             _ => Cursor::Hand,
         })
         .named(name);
@@ -565,8 +625,12 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     el.captures_wheel().id(id)
 }
 
-/// A control drawn without its picture: Kontakt's plain look, near enough.
-fn plain(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, hide: i32, s: f64) -> El {
+/// A control in KONTRA's own look, filling its authored rect: what the
+/// vectorized view draws, and the original where a picture is missing.
+/// Nothing in it is translucent over what lies under it but its hairlines,
+/// so it never greys out a picture beneath.
+#[allow(clippy::too_many_arguments)]
+fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, round: bool, s: f64, lift: f32) -> El {
     let t = ((value - lo) / (hi - lo)).clamp(0., 1.);
     let on = value >= 1.;
     let bars: Vec<f64> = match (kind, c.properties.get("$CONTROL_PAR_VALUE")) {
@@ -580,52 +644,89 @@ fn plain(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, hide: i32, s: f6
             .collect(),
         _ => Vec::new(),
     };
+    let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
     let bg = hide & HIDE_BG == 0;
     canvas(move |z| {
         let (w, h) = (z.width, z.height);
-        let field = Color::srgba(0.12, 0.12, 0.13, 0.9);
-        let edge = Color::srgba(1., 1., 1., 0.18);
-        let lit = Color::srgb(0.62, 0.78, 0.95);
-        let dim = Color::srgba(0.62, 0.78, 0.95, 0.6);
+        let weight = (1.5 * s).max(1.);
+        let edge = Role::Ink.alpha(0.12 + 0.08 * lift);
         let mut d = Vec::new();
-        let boxed = |d: &mut Vec<Draw>, fill: Color| {
+        let boxed = |d: &mut Vec<Draw>, fill: Fill| {
             d.push(Draw::fill(rect(0., 0., w, h), fill));
-            d.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), edge, 1.));
+            d.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), edge.clone(), 1.));
         };
         match kind {
-            Kind::Knob => {
-                // Between its name and its value.
-                let text = FONT * 1.4 * s;
+            Kind::Knob | Kind::Slider if round => {
+                // Kontakt's own knob leaves rows for its name and value.
+                let text = if kind == Kind::Knob { FONT * 1.4 * s } else { 0. };
                 let (cx, cy) = (w / 2., h / 2.);
-                let r = (w.min(h - 2. * text) / 2. - 2. * s).max(2.);
+                let r = (w.min(h - 2. * text) / 2. - weight).max(2.);
                 let (start, sweep) = (0.75 * std::f64::consts::PI, 1.5 * std::f64::consts::PI);
-                d.push(Draw::fill(circle(cx, cy, r), field));
-                d.push(Draw::stroke(arc(cx, cy, r, start, sweep), edge, 2. * s));
+                d.push(Draw::fill(circle(cx, cy, r - weight * 1.5), Role::Raised.alpha(1.)));
+                d.push(Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.16 + 0.08 * lift), weight));
                 if t > 0.002 {
-                    d.push(Draw::stroke(arc(cx, cy, r, start, sweep * t), lit, 2. * s));
+                    d.push(Draw::stroke(arc(cx, cy, r, start, sweep * t), value_ink(0.), weight));
                 }
+                let angle = start + sweep * t;
+                let (inner, outer) = (r * 0.2, r - weight * 2.);
+                d.push(Draw::stroke(
+                    DrawPath::polyline(
+                        [
+                            Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner),
+                            Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer),
+                        ],
+                        false,
+                    ),
+                    value_ink(lift),
+                    weight,
+                ));
             }
-            Kind::Slider => {
-                boxed(&mut d, field);
-                if w >= h {
-                    d.push(Draw::fill(rect(1., 1., (w - 2.) * t, h - 2.), dim));
+            Kind::Knob | Kind::Slider => {
+                // A thin track along its length, filled to a square thumb.
+                let (len, across) = if vertical { (h, w) } else { (w, h) };
+                let place = |along: f64, off: f64, l: f64, th: f64| {
+                    if vertical { rect(off, len - along - l, th, l) } else { rect(along, off, l, th) }
+                };
+                let thumb = (across * 0.6).clamp(4., 12. * s).min(len / 3.);
+                let inner = len - thumb;
+                let mid = (across / 2.).round();
+                let at = thumb / 2. + t * inner;
+                d.push(Draw::fill(place(thumb / 2., mid - 1., inner, 2.), Role::Ink.alpha(0.16 + 0.08 * lift)));
+                d.push(Draw::fill(place(thumb / 2., mid - 1., at - thumb / 2., 2.), value_ink(0.)));
+                let th = (across - 2.).min(thumb * 1.4).max(2.);
+                d.push(Draw::fill(place(at - thumb / 2., mid - th / 2., thumb, th), value_ink(lift)));
+            }
+            Kind::Switch | Kind::Button => {
+                if on {
+                    boxed(&mut d, Fill::from(accent()));
                 } else {
-                    d.push(Draw::fill(rect(1., (h - 1.) - (h - 2.) * t, w - 2., (h - 2.) * t), dim));
+                    boxed(&mut d, Role::Raised.alpha(1.));
                 }
             }
-            Kind::Switch | Kind::Button => boxed(&mut d, if on { Color::srgba(0.36, 0.42, 0.5, 0.95) } else { field }),
-            Kind::Menu | Kind::Value | Kind::TextEdit | Kind::Other => boxed(&mut d, field),
-            Kind::Label if bg => d.push(Draw::fill(rect(0., 0., w, h), Color::srgba(0.2, 0.2, 0.21, 0.85))),
+            Kind::Menu => {
+                boxed(&mut d, Role::Field.alpha(1.));
+                let (x, y, k) = (w - 4. * s - 6. * s, h / 2., 3. * s);
+                if w > 30. * s {
+                    d.push(Draw::fill(
+                        DrawPath::polyline([Point::new(x, y - k / 2.), Point::new(x + 2. * k, y - k / 2.), Point::new(x + k, y + k / 2.)], true),
+                        Role::Dim.alpha(1.),
+                    ));
+                }
+            }
+            Kind::Value | Kind::TextEdit => boxed(&mut d, Role::Field.alpha(1.)),
             Kind::Table => {
-                boxed(&mut d, field);
+                boxed(&mut d, Role::Field.alpha(1.));
                 let top = bars.iter().fold(1f64, |m, v| m.max(v.abs()));
                 let bw = w / bars.len().max(1) as f64;
                 for (n, v) in bars.iter().enumerate() {
                     let bh = (v.abs() / top).min(1.) * (h - 2.);
-                    d.push(Draw::fill(rect(n as f64 * bw + 1., h - 1. - bh, (bw - 1.).max(1.), bh), dim));
+                    d.push(Draw::fill(rect(n as f64 * bw + 1., h - 1. - bh, (bw - 1.).max(1.), bh), value_ink(0.)));
                 }
             }
-            Kind::Label | Kind::Area => {}
+            // A box Kontakt draws for a meter, a waveform, a pad: outlined
+            // only, so it covers nothing.
+            Kind::Other if bg => d.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), edge, 1.)),
+            Kind::Label | Kind::Area | Kind::Other => {}
         }
         d
     })
@@ -718,11 +819,18 @@ mod tests {
     }
 
     #[test]
-    fn the_original_view_is_the_default_when_there_is_one() {
-        assert!(original(0, false, true));
-        assert!(!original(0, true, true), "the app's default");
-        assert!(original(1, true, true) && !original(2, false, true), "a part's own choice wins");
-        assert!(!original(1, false, false), "nothing to show: the rebuilt view");
+    fn a_part_keeps_its_mode_and_follows_the_default_otherwise() {
+        use ViewMode::*;
+        assert_eq!(mode(0, Original, true), Original);
+        assert_eq!(mode(0, Vectorized, true), Vectorized, "the app's default");
+        assert_eq!(mode(1, Kontra, true), Original, "a part's own choice wins");
+        assert_eq!(mode(2, Original, true), Kontra);
+        assert_eq!(mode(3, Original, true), Vectorized);
+        assert_eq!(mode(3, Original, false), Kontra, "nothing to show: the rebuilt view");
+        for m in [None, Some(Original), Some(Vectorized), Some(Kontra)] {
+            assert_eq!(mode(code(m), Original, true), m.unwrap_or(Original), "{m:?} survives as a part's code");
+        }
+        assert_eq!((code(Some(Original)), code(Some(Kontra))), (1, 2), "codes saved before the vectorized view keep their meaning");
     }
 
     #[test]

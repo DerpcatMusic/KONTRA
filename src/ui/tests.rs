@@ -1547,12 +1547,46 @@ fn the_original_view_edits_the_script_and_switches() {
     h.press("menu-item-1");
     assert_eq!(value(2), crate::ksp::Value::Int(1), "a menu item sets the menu");
 
+    // The header's view menu: Original, Vectorized, KONTRA.
     h.press("view-0");
+    h.press("menu-item-2");
     assert_eq!(p.selection.read().unwrap().parts[0].view, 2, "the part keeps its choice");
     assert!(h.ui.scene().unwrap().surface("ksp-0-1").is_some(), "the rebuilt view");
     h.press("view-0");
+    h.press("menu-item-1");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 3);
+    let scene = h.ui.scene().unwrap();
+    assert!(scene.surface("kpv-0-1").is_some() && scene.surface("ksp-0-1").is_none(), "the vectorized view");
+    h.press("view-0");
+    h.press("menu-item-0");
     assert_eq!(p.selection.read().unwrap().parts[0].view, 1);
     assert!(h.ui.scene().unwrap().surface("kpv-0-1").is_some());
+}
+
+/// The vectorized view keeps every control of the original where it was, at
+/// its size: only the drawing changes.
+#[test]
+fn the_vectorized_view_keeps_the_original_layout() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $vol(0, 100)\nmove_control_px($vol, 30, 40)\nset_control_par_str(get_ui_id($vol), $CONTROL_PAR_PICTURE, \"knob\")\ndeclare ui_switch $legato\nmove_control_px($legato, 120, 40)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nmove_control_px($mic, 200, 90)\ndeclare ui_label $title(1,1)\nset_text($title, \"Tone\")\nmove_control_px($title, 30, 100)\nend on");
+    {
+        let frame = Arc::new(moose::mui::mui::scene::Image::rgba(48, 50, vec![200; 48 * 50 * 4]).unwrap());
+        let knob = artwork::Picture { frames: vec![frame; 11], resizable: false };
+        p.shared.view.lock().unwrap().parts[0].pictures = Arc::new([("knob".to_owned(), Arc::new(knob))].into());
+    }
+    let rects = |code: u8| {
+        p.selection.write().unwrap().parts[0].view = code;
+        let h = Harness::new(&p, 1180., 760.);
+        let scene = h.ui.scene().unwrap();
+        let stage = scene.surface("stage-0").map(|s| s.frame);
+        let controls: Vec<_> = (0..4).filter_map(|n| scene.surface(&format!("kpv-0-{n}")).map(|s| (n, s.frame))).collect();
+        (stage, controls)
+    };
+    let (original, vectorized) = (rects(1), rects(3));
+    assert!(original.0.is_some(), "the original view shows");
+    assert_eq!(original.1.len(), 3, "the slider, switch and menu take the pointer: {:?}", original.1);
+    assert_eq!(original, vectorized, "same places, same sizes");
+    let knob = original.1[0].1;
+    assert_eq!((knob.size.width, knob.size.height), (48., 50.), "sized as its picture in both");
 }
 
 #[test]

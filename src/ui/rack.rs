@@ -489,13 +489,15 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     if let Some(path) = before.filter(|_| previous).or(after.filter(|_| next)) {
         cx.replace(slot, path);
     }
-    // The library's own performance view or ours, when it has one.
+    // Which performance view shows, when the library has one of its own:
+    // its original, that vectorized, or KONTRA's.
     let view_el = super::perf_view::available(&cx.view.parts[slot]).then(|| {
-        let original = super::perf_view::shows(cx, slot);
-        let tip = if original { "Show KONTRA's controls" } else { "Show the library's own interface" };
-        let (hit, el) = icon_button(ui, format!("view-{slot}"), Icon::Picture, tip, original);
+        let mode = super::perf_view::shows(cx, slot);
+        let id = format!("view-{slot}");
+        let tip = format!("Performance view: {}", mode.label());
+        let (hit, el) = icon_button(ui, id.as_str(), Icon::Picture, &tip, mode != crate::library::ViewMode::Kontra);
         if hit {
-            cx.selection.parts[slot].view = if original { 2 } else { 1 };
+            menu::open_under(ui, cx, menu::Target::View(slot), &id);
         }
         el
     });
