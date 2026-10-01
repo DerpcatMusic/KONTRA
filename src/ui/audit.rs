@@ -52,6 +52,7 @@ fn kind_name(k: Kind) -> &'static str {
         Kind::Table => "table",
         Kind::TextEdit => "text edit",
         Kind::Area => "mouse area",
+        Kind::Meter => "level meter",
         Kind::Other => "other",
     }
 }
@@ -67,7 +68,7 @@ fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwor
         let named = prop(c, "$CONTROL_PAR_PICTURE");
         if !named.is_empty() && !pictures.contains_key(named) {
             found.add("missing picture");
-        } else if s.picture.is_none() && !matches!(s.kind, Kind::Label | Kind::Area) {
+        } else if s.picture.is_none() && !matches!(s.kind, Kind::Label | Kind::Area | Kind::Meter) {
             found.add(format!("vector fallback: {kind}"));
         }
         // The view clips as Kontakt's does; a control mostly outside is lost.

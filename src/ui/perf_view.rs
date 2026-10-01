@@ -42,6 +42,8 @@ pub enum Kind {
     TextEdit,
     /// Takes the pointer in Kontakt, shows nothing: `ui_mouse_area`.
     Area,
+    /// `ui_level_meter`: Kontakt draws it from its colours, never a picture.
+    Meter,
     /// Any other kind (`ui_xy`, `ui_waveform`, a meter): a plain box.
     Other,
 }
@@ -59,6 +61,7 @@ impl Kind {
             "ui_table" => Self::Table,
             "ui_text_edit" => Self::TextEdit,
             "ui_mouse_area" => Self::Area,
+            "ui_level_meter" => Self::Meter,
             _ => Self::Other,
         }
     }
@@ -446,7 +449,13 @@ pub(super) fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, O
     let own = prop(c, "$CONTROL_PAR_TEXT").to_owned();
     let words = match kind {
         Kind::Label | Kind::Switch | Kind::Button => own,
-        Kind::Menu => c.menu.iter().find(|(_, v)| f64::from(*v) == value).map(|(t, _)| t.clone()).unwrap_or_default(),
+        // A divider ("-----", "--- PASTE ---") that shares the value a
+        // script parks its menu on (-1) is no choice to show.
+        Kind::Menu => (c.menu.iter())
+            .find(|(_, v)| f64::from(*v) == value)
+            .map(|(t, _)| t.clone())
+            .filter(|t| !t.trim().starts_with("--"))
+            .unwrap_or_default(),
         Kind::Value if hide & HIDE_VALUE != 0 => String::new(),
         Kind::Value if hide & HIDE_TITLE != 0 || own.is_empty() => format!("{value}"),
         Kind::Value => format!("{own} {value}"),
@@ -789,6 +798,17 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
     };
     let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
     let bg = hide & HIDE_BG == 0;
+    // A meter's own colours, 0AARRGGBBh; a script that leaves the alpha
+    // out means it opaque.
+    let colour = |k: &str| {
+        int(c, k).map(|v| {
+            let v = v as u32;
+            let byte = |shift: u32| ((v >> shift) & 0xff) as f32 / 255.;
+            let a = if v >> 24 == 0 { 1. } else { byte(24) };
+            Color::srgba(byte(16), byte(8), byte(0), a)
+        })
+    };
+    let meter = (colour("$CONTROL_PAR_BG_COLOR"), colour("$CONTROL_PAR_OFF_COLOR"));
     canvas(move |z| {
         let (w, h) = (z.width, z.height);
         let weight = (1.5 * s).max(1.);
@@ -872,6 +892,13 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
             // A box Kontakt draws for a meter, a waveform, a pad: outlined
             // only, so it covers nothing.
             Kind::Other if bg => d.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), edge, 1.)),
+            // Unlit, as at silence: its background, its off colour inside.
+            Kind::Meter => {
+                d.push(Draw::fill(rect(0., 0., w, h), meter.0.map_or(Role::Field.alpha(1.), Fill::from)));
+                if let Some(off) = meter.1 {
+                    d.push(Draw::fill(rect(0., 0., w, h), off));
+                }
+            }
             Kind::Label | Kind::Area | Kind::Other => {}
         }
         d
@@ -891,6 +918,18 @@ mod tests {
             properties: props.iter().map(|(k, v)| (format!("$CONTROL_PAR_{k}"), v.clone())).collect::<BTreeMap<_, _>>(),
             menu: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_menu_parked_on_a_divider_shows_nothing() {
+        let menu = |items: &[(&str, i32)]| Control {
+            menu: items.iter().map(|(t, v)| ((*t).to_owned(), *v)).collect(),
+            ..control("ui_menu", &[])
+        };
+        let m = menu(&[("------------ PASTE ------------", -1), ("Layer 1", 0)]);
+        assert_eq!(caption_of(&m, Kind::Menu, -1.).0, "");
+        assert_eq!(caption_of(&m, Kind::Menu, 0.).0, "Layer 1");
+        assert_eq!(Kind::of("ui_level_meter"), Kind::Meter);
     }
 
     fn picture(w: u32, h: u32, frames: usize, resizable: bool) -> Arc<Picture> {
