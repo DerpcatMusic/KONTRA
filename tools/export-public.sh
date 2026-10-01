@@ -154,7 +154,7 @@ while IFS=: read -r f n; do
     *.rs) case $f in
       ./src/ksp/tests.rs) limit=106 ;;
       ./src/articulate.rs) limit=16 ;;
-      ./tests/playback.rs) limit=48 ;;
+      ./tests/playback.rs) limit=55 ;;
       ./tests/*|*/tests.rs|./src/plugin.rs) limit=40 ;;
       *) limit=3 ;;
     esac ;;
@@ -164,10 +164,11 @@ while IFS=: read -r f n; do
 done < <(scan -cEI "$ksp" . | grep -v ':0$' || true)
 
 # Key-like 64-digit hex strings. Lockfile checksums and the codec's test
-# data hashes are the known exceptions.
+# data hashes and the reviewed official actionlint archive checksum are the
+# known exceptions; the latter is a public download-integrity check, not a key.
 while IFS= read -r f; do leak "64-digit hex string in $f"; done < <(
   scan -lEI '(^|[^0-9A-Fa-f])[0-9A-Fa-f]{64}([^0-9A-Fa-f]|$)' . |
-    grep -vE '^\./(vendor/ni-file/)?Cargo\.lock$|^\./vendor/ncw/WRITER_VALIDATION\.md$' || true)
+    grep -vE '^\./(vendor/ni-file/)?Cargo\.lock$|^\./vendor/ncw/WRITER_VALIDATION\.md$|^\./\.github/scripts/check_workflows\.sh$' || true)
 
 # Personal data, passwords and local paths.
 while IFS= read -r f; do leak "personal data or local path in $f"; done < <(

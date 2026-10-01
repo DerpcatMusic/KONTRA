@@ -105,6 +105,7 @@ pub struct Event {
     pub volume: i32,
     pub tune: i32,
     pub pan: i32,
+    /// Initial engine mapping, distinguishing an unmapped active event from a finished voice.
     pub zone: i32,
     pub sample_offset_us: i64,
     pub length: NoteLength,
@@ -194,7 +195,6 @@ impl Event {
             volume_mdb: self.volume,
             tune_mc: self.tune,
             pan: self.pan,
-            zone: self.zone,
             groups: &self.groups,
         }
     }
@@ -1950,6 +1950,7 @@ impl Runtime {
         e.at_engine = true;
         let voice = engine.play_note(at, &e.spec(event));
         e.voice = voice;
+        e.zone = voice.and_then(|v| engine.voice_zone(v)).unwrap_or(-1);
         if let (Some(v), true) = (voice, e.fade_in_us > 0) {
             engine.fade_from(
                 at,

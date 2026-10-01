@@ -29,6 +29,7 @@ mod fitted;
 mod header;
 mod instrument;
 mod keyboard;
+mod logs;
 mod menu;
 mod mixer;
 mod panel;
@@ -111,6 +112,8 @@ struct Meters {
     /// A view moves on its own (a spectrum or a peak hold falling): the
     /// last frame built says so, and frames keep coming until one does not.
     animating: AtomicBool,
+    /// Journal changes affect this editor only while its Logs pane is shown.
+    logs_visible: AtomicBool,
 }
 
 /// Decides, every display tick, whether anything the editor shows moved
@@ -188,6 +191,10 @@ impl Watch {
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
+        if meters.logs_visible.load(Ordering::Relaxed) {
+            crate::diagnostics::revision().hash(&mut h);
+            logs::wake().hash(&mut h);
+        }
         p.shared.focus_request.load(Ordering::Relaxed).hash(&mut h);
         // The wheels follow incoming MIDI as it moves them.
         p.shared.bend.load(Ordering::Relaxed).hash(&mut h);
@@ -325,6 +332,7 @@ enum Tab {
     Mapping,
     Sound,
     Info,
+    Logs,
 }
 
 /// Editor-only state that outlives a frame but not the window.
@@ -371,6 +379,7 @@ struct EditorState {
     cursor: Option<String>,
     /// The browser's library filter, scroll and rows.
     browse: browser::Browse,
+    logs: logs::State,
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
     /// A bus's name while it is being edited.
@@ -859,6 +868,7 @@ fn build(
         menu: None,
         cursor: None,
         browse: Default::default(),
+        logs: Default::default(),
         renaming: None,
         renaming_bus: None,
         inline: None,
@@ -943,6 +953,7 @@ fn build(
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
         let ghost = ghost(ui, &cx);
+        cx.state.meters.logs_visible.store(cx.state.tab == Tab::Logs, Ordering::Relaxed);
 
         let Cx { mut selection, .. } = cx;
         if selection != before {
@@ -1134,6 +1145,7 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         (Tab::Mapping, "Mapping", "tab-mapping"),
         (Tab::Sound, "Sound", "tab-sound"),
         (Tab::Info, "Info", "tab-info"),
+        (Tab::Logs, "Logs", "tab-logs"),
     ] {
         let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
         if hit {
@@ -1165,6 +1177,8 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         content.push(rack::view(ui, cx));
     } else if cx.state.tab == Tab::Mixer {
         content.push(mixer::view(ui, cx, bridge));
+    } else if cx.state.tab == Tab::Logs {
+        content.push(logs::view(ui, cx));
     } else if cx.part().is_none() {
         content.push(instrument::welcome(cx));
     } else {

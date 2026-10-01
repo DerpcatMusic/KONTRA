@@ -24,11 +24,15 @@ pub enum NIPreset {
 
 impl NIFile {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
-        let filetype = NIFileType::read(&mut reader)?;
-        reader.rewind()?;
+        let (filetype, nis) = NIFileType::read_with_nis(&mut reader)?;
+        if nis.is_none() {
+            reader.rewind()?;
+        }
 
         Ok(match filetype {
-            NIFileType::NISContainer => NIFile::NISoundContainer(ItemContainer::read(reader)?),
+            NIFileType::NISContainer => NIFile::NISoundContainer(
+                nis.ok_or(Error::Static("Missing detected NIS container"))?,
+            ),
             NIFileType::Monolith => NIFile::Monolith(NIFileContainer::read(reader)?),
             NIFileType::NICompressedWave => NIFile::NICompressedWave,
             NIFileType::NKSContainer(_) | NIFileType::KontaktMultiV1 => {
