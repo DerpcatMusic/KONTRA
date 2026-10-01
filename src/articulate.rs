@@ -437,7 +437,7 @@ pub struct Router {
     bend_range: u8,
     rpn: [Rpn; 16],
     /// Per channel and key as the engine got them.
-    expression: [[Expression; 128]; 16],
+    expression: Box<[[Expression; 128]; 16]>,
     brightness: [u8; 128],
     /// The part's scripts: they take pressure per note (`on poly_at`), and
     /// channel controllers once, not per member channel.
@@ -458,7 +458,7 @@ impl Default for Router {
             held: [[(NONE, NONE); 128]; 16],
             bend: [8192; 16],
             rpn: [Rpn { msb: 127, lsb: 127 }; 16],
-            expression: [[Expression::default(); 128]; 16],
+            expression: Box::new([[Expression::default(); 128]; 16]),
             brightness: [NONE; 128],
             scripted: false,
             handles_pressure: false,
