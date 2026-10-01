@@ -1165,6 +1165,7 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: 
     )
     .centered()]
     .square(TEXT + 2.)
+    .cursor(Cursor::Hand)
     .focusable()
     .a11y(A11y::Toggle { on: favorite })
     .named(if favorite { "Remove from favorites" } else { "Add to favorites" })

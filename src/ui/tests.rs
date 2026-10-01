@@ -2426,3 +2426,38 @@ fn a_wheel_notch_scrolls_five_rows_and_a_fling_speeds_up() {
     assert_eq!(notch_lines(-1., fast, &mut run) * TEXT, -first * 1.25);
     assert_eq!(notch_lines(-1., Some(Duration::from_millis(300)), &mut run) * TEXT, -first);
 }
+
+/// What the pointer shows over each kind of thing: resize arrows over the
+/// edges, a few points either side of their line too, the hand over
+/// buttons, the I-beam over text, and the knob's up-down.
+#[test]
+fn the_cursor_follows_what_is_under_the_pointer() {
+    let p = two_parts();
+    let mut h = Harness::new(&p, 1180., 760.);
+    let cursor_at = |h: &mut Harness, at: Point| {
+        let root = (h.build)(&mut h.ui, &mut h.bridge);
+        h.ui.frame(root, Some(h.size), pointer(at, false), 1. / 60.).unwrap().cursor
+    };
+    let frame = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).unwrap_or_else(|| panic!("no {id}")).frame;
+    let split = frame(&h, "splitter");
+    for dx in [1., EDGE_GRAB] {
+        assert_eq!(cursor_at(&mut h, Point::new(split.x + dx, split.y + 200.)), Cursor::ResizeH, "browser edge +{dx}");
+    }
+    let divider = frame(&h, "browser-split");
+    for dy in [-EDGE_GRAB / 2., EDGE_GRAB / 2.] {
+        let at = Point::new(divider.x + 40., divider.y + divider.size.height / 2. + dy);
+        assert_eq!(cursor_at(&mut h, at), Cursor::ResizeV, "browser divider {dy:+}");
+    }
+    let edge = frame(&h, "resize-0");
+    for dy in [1., EDGE_GRAB] {
+        let at = Point::new(edge.x + edge.size.width / 2., edge.y + edge.size.height - dy);
+        assert_eq!(cursor_at(&mut h, at), Cursor::ResizeV, "part edge -{dy}");
+    }
+    for (id, want) in [("tab-mixer", Cursor::Hand), ("search", Cursor::Text), ("volume-0", Cursor::ResizeV)] {
+        let at = center(&h.ui, id);
+        assert_eq!(cursor_at(&mut h, at), want, "{id}");
+    }
+    let corner = frame(&h, "window-corner");
+    cursor_at(&mut h, Point::new(corner.x + corner.size.width - 2., corner.y + corner.size.height - 2.));
+    assert!(h.ui.get("window-corner").hovered, "the window's resize corner");
+}

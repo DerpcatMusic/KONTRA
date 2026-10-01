@@ -198,10 +198,11 @@ pub fn lift(steps: i32) -> Fill {
     Role::Level(steps).into()
 }
 
-/// The states every flat control shares: a faint lift on hover, a deeper one
-/// while pressed, a 1 px accent ring for keyboard focus.
+/// The states every flat control shares: the pointing hand, a faint lift on
+/// hover, a deeper one while pressed, a 1 px accent ring for keyboard focus.
 pub fn interactive(el: El, selected: bool) -> El {
-    el.on(State::Hover, move |s| if selected { s } else { s.fill(lift(1)) })
+    el.cursor(Cursor::Hand)
+        .on(State::Hover, move |s| if selected { s } else { s.fill(lift(1)) })
         .on(State::Press, |s| s.fill(lift(2)))
         .on(State::FocusVisible, |s| s.stroke(Role::Primary.alpha(0.9)).stroke_width(1))
         .animate_with(quick())
@@ -477,6 +478,7 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool,
     .align(Align::Center)
     .pad((SPACE, 0))
     .h(CONTROL + SPACE)
+    .cursor(Cursor::Hand)
     .focusable()
     .a11y(A11y::Button)
     .named(label.to_owned())
