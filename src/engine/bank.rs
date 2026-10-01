@@ -452,14 +452,19 @@ impl Bank {
             progress.fetch_max(at as u32, Ordering::Relaxed);
         };
         let opens = AtomicUsize::new(0);
-        let opened = parallel(resolved, |_: &mut (), source| {
-            check()?;
-            advance(&opens, paths.len(), 1, (base, reads_from));
-            let source = source?;
-            anyhow::Ok((source.open()?, source))
-        });
+        let opened = if let Some(headers) = cached.as_ref() {
+            resolved.into_iter().zip(headers).map(|(source, &header)| Ok((header, source?))).collect()
+        } else {
+            parallel(resolved, |_: &mut (), source| {
+                check()?;
+                advance(&opens, paths.len(), 1, (base, reads_from));
+                let source = source?;
+                let header = source.open()?.header();
+                anyhow::Ok((header, source))
+            })
+        };
         check()?;
-        let mut readers: Vec<(Source, SampleReader, &PathBuf)> = Vec::new();
+        let mut readers: Vec<(Source, Header, &PathBuf)> = Vec::new();
         let opened: Vec<Option<u32>> = opened
             .into_iter()
             .zip(&paths)
@@ -475,7 +480,7 @@ impl Bank {
             })
             .collect();
         if cached.is_none() && readers.len() == paths.len() {
-            let headers: Vec<_> = readers.iter().map(|(s, r, _)| (s, r.header())).collect();
+            let headers: Vec<_> = readers.iter().map(|(s, h, _)| (s, *h)).collect();
             store_headers(&instrument.path, &paths, &headers);
         }
         trace.mark("open");
@@ -517,11 +522,12 @@ impl Bank {
         let decoded = parallel(
             jobs,
             |(ints, buf): &mut (Vec<[i32; 2]>, Vec<Frame>),
-             ((source, mut reader, path), (spans, streamed, looping))| {
+             ((source, header, path), (spans, streamed, looping))| {
                 // Frames another bank holds are shared, not read again. A
                 // shared span may reach past the planned range: more is resident.
                 let key = (path.clone(), !looping, source.version);
                 let mut kept: Vec<Span> = Vec::with_capacity(spans.len());
+                let mut reader: Option<SampleReader> = None;
                 let read_spans = || -> Result<()> {
                     for range in spans {
                         check()?;
@@ -537,7 +543,8 @@ impl Bank {
                             continue;
                         }
                         let range = range.start.max(from)..range.end;
-                        let data = Frames::new(reader.read_pcm_cancelable(range.clone(), !looping, ints, buf, canceled)?);
+                        if reader.is_none() { reader = Some(source.open()?); }
+                        let data = Frames::new(reader.as_mut().unwrap().read_pcm_cancelable(range.clone(), !looping, ints, buf, canceled)?);
                         let span = Span { start: range.start, data };
                         resident::insert(key.clone(), &span);
                         kept.push(span);
@@ -546,7 +553,7 @@ impl Bank {
                     Ok(())
                 };
                 let spans = read_spans().map(|()| kept);
-                (spans, streamed, reader.rate, (source, path))
+                (spans, streamed, header.rate, (source, path))
             },
         );
         check()?;

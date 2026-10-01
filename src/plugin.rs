@@ -3468,6 +3468,9 @@ mod tests {
             ProcessContext::new(&transport, 48000., 2048, &mut outgoing).with_bus_routing(routing);
         Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
         assert!(dsp.rack.parts[0].bank().is_some() && dsp.rack.parts[1].bank().is_some());
+        for part in &dsp.rack.parts[..2] {
+            assert_eq!(part.bank().unwrap().zones().len(), 2000, "file-handle pressure must not discard harp zones");
+        }
         for ch in [0, 2] {
             assert!(buffer.output(ch).iter().all(|x| x.is_finite()));
             assert!(buffer.output(ch).iter().any(|x| x.abs() > 0.00001));

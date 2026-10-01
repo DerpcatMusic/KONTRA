@@ -769,7 +769,7 @@ pub struct Source {
     /// Virtual path; its extension selects the codec.
     path: PathBuf,
     file: PathBuf,
-    handle: Arc<File>,
+    handle: Option<Arc<File>>,
     pub(crate) version: SourceVersion,
     offset: u64,
     len: Option<u64>,
@@ -864,6 +864,11 @@ impl Sources {
         } else {
             None
         };
+        // Loose samples open only while a reader uses them. Retaining one
+        // handle per sample exhausts the process limit on large libraries.
+        if len.is_none() {
+            return Ok(Source { path: path.into(), version: (crate::cache::version(&file), 0), file, handle: None, offset, len, key });
+        }
         if !self.handles.contains_key(file.as_os_str()) {
             let handle = match self.archives.get(file.as_os_str()) {
                 Some(indexed) => indexed.file.clone(),
@@ -884,7 +889,7 @@ impl Sources {
         Ok(Source {
             path: path.into(),
             file,
-            handle: handle.clone(),
+            handle: Some(handle.clone()),
             version: *version,
             offset,
             len,
@@ -942,17 +947,22 @@ impl Source {
     fn is_unwritten(&self) -> bool {
         let mut head = [0u8; 64];
         let len = self.len.map_or(head.len() as u64, |l| l.min(head.len() as u64)) as usize;
-        FileAt { file: &self.handle, pos: self.offset }.read_exact(&mut head[..len])
+        let file = match &self.handle {
+            Some(file) => file.clone(),
+            None => match File::open(&self.file) { Ok(file) => Arc::new(file), Err(_) => return false },
+        };
+        FileAt { file: &file, pos: self.offset }.read_exact(&mut head[..len])
             .is_ok_and(|()| len > 0 && head[..len].iter().all(|&b| b == 0))
     }
 
     fn bytes(&self, counted: bool) -> Result<Bytes> {
-        let len = match self.len {
-            Some(len) => len,
-            None => self.handle.metadata()?.len(),
+        let file = match &self.handle {
+            Some(file) => file.clone(),
+            None => Arc::new(File::open(&self.file)?),
         };
+        let len = match self.len { Some(len) => len, None => file.metadata()?.len() };
         Ok(Bytes {
-            file: self.handle.clone(),
+            file,
             base: self.offset,
             len,
             pos: 0,
