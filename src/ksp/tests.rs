@@ -736,6 +736,25 @@ fn wait_resumes_sample_accurately() {
 }
 
 #[test]
+fn a_released_parent_survives_its_waiting_note_callback() {
+    let script = "on note\nif ($EVENT_NOTE = 60)\nignore_event($EVENT_ID)\nwait(10000)\nplay_note(72,100,0,-1)\nend if\nend on";
+    let mut rig = Rig::new(&[script]);
+    rig.on(0,60).off(0,60);
+    // Reuse every pool row before the original callback resumes. Its event
+    // and polyphonic row must remain valid until that callback finishes.
+    for _ in 0..super::runtime::EVENT_CAPACITY {
+        rig.on(0,61).off(0,61);
+        rig.engine.calls.clear();
+    }
+    rig.block(1024);
+    let log = rig.log();
+    assert_eq!(log.len(),2,"a child created after key-up must not stay held: {log:?}");
+    assert!(log[0].starts_with("play 72@480 "),"{log:?}");
+    assert!(log[1].starts_with("off ") && log[1].ends_with("@480"),"{log:?}");
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
 fn fades_and_durations() {
     let script = "on init\ndeclare $id\nend on\non note\nfade_in($EVENT_ID, 2000)\nwait(1000)\nfade_out($EVENT_ID, 5000, 1)\n$id := play_note(40, 100, 0, 20000)\nend on";
     let mut rig = Rig::new(&[script]);

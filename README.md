@@ -6,6 +6,21 @@ KONTRA is being built as an independent alternative to Kontakt. It is not affili
 
 KONTRA ships no instrument libraries or sample collections. Use libraries you are licensed to use, under their license terms.
 
+## Download the latest nightly
+
+[![Windows x64](https://img.shields.io/badge/Windows-x64-0078D4?style=for-the-badge)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-windows-x86_64.zip)
+[![macOS Apple silicon](https://img.shields.io/badge/macOS-Apple_silicon-222222?style=for-the-badge&logo=apple)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-macos-arm64.zip)
+[![macOS Intel](https://img.shields.io/badge/macOS-Intel-555555?style=for-the-badge&logo=apple)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-macos-x86_64.zip)
+[![Linux x64](https://img.shields.io/badge/Linux-x64-168B76?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-linux-x86_64.zip)
+
+Each ZIP contains the **CLAP plug-in, VST3 plug-in and standalone application**. These fixed links always serve the latest complete [nightly pre-release](https://github.com/DerpcatMusic/KONTRA/releases/tag/nightly). Every push or merge to public `main` starts all four builds on free GitHub-hosted runners; downloads update together after all builds and uploads succeed. The links become available after the first successful publication. See [build progress](https://github.com/DerpcatMusic/KONTRA/actions/workflows/nightly.yml) and the release notes for the source commit.
+
+Nightlies are experimental snapshots. Linux builds use Ubuntu 24.04 and require compatible system libraries. The x86_64 plug-ins require **AVX2, FMA and BMI2**. macOS builds are signed ad hoc and are not notarized; after extracting the ZIP, remove quarantine from the downloaded files if macOS blocks them:
+
+```sh
+xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone
+```
+
 ## Compatibility and known gaps
 
 **Full** means verified end to end for the named behavior. **Partial** means only a subset is implemented or exercised. **Unsupported** means the feature is not implemented. **Untested** means there is not enough reference or host testing to make a claim. **Experimental** means limited validation and an evolving interface. No broad compatibility area below is marked full.
@@ -15,7 +30,7 @@ KONTRA ships no instrument libraries or sample collections. Use libraries you ar
 | Preset parsing | **Partial** | Reads NKI instruments and NKM multis, including common groups, zones, key and velocity maps, loops, tuning, release triggers, and voice groups. | Unknown or unsupported structures may be skipped or rejected; parsing is not proof of correct behavior. |
 | Sample access | **Partial** | Reads WAV, AIFF, and NCW samples from loose files and NKX/NKR containers. The `library-access` feature uses access data supplied by compatible libraries. | Missing, damaged, unsupported, or inaccessible samples can prevent or degrade playback. The feature is enabled in Cargo's default feature set, but this does not cover every protected library. |
 | Audio and streaming | **Partial** | Sample playback, disk streaming, MIDI routing, and multiple outputs are implemented. Targeted playback tests and representative local patch checks exercise these paths. | No comprehensive Kontakt reference renders or real-DAW certification; timing and sound can differ. |
-| KSP scripts | **Partial** | Selected initialization, note, release, controller, and UI callbacks and commands run in the built-in script engine. Release callbacks honor their selected group. Unsupported calls are diagnosed. | Many KSP services and newer APIs are absent, including note-controller and MIDI-input callbacks, sample/zone editing, and complete asynchronous file and effect loading. |
+| KSP scripts | **Partial** | Selected initialization, note, release, controller, and UI callbacks and commands run in the built-in script engine. Release callbacks honor their selected group. Waiting callbacks retain their events through key-up and pool reuse, so late following notes receive their release. Unsupported calls are diagnosed. | Many KSP services and newer APIs are absent, including note-controller and MIDI-input callbacks, sample/zone editing, and complete asynchronous file and effect loading. |
 | Instrument interface | **Partial** | The editor includes a library browser, mapping, groups, mixer, spectrum, keyboard, imported controls, and zone waveforms. Original uses library artwork; Vectorized retains its background/layout with KONTRA knob and fader faces; KONTRA reorganizes controls. | Table, XY, file-selector and connected meter widgets, Komplete UI, and some original font and layer behavior remain incomplete or unsupported. |
 | Timing alignment | **Partial** | Timing is measured off the audio thread once per patch and program, with separate first-note and legato values by velocity. Source validity, manual offsets, and per-part exclusion govern use of the measurements. | Edits at the same path do not invalidate saved measurements automatically; choose **Measure again** after changing samples or scripts. |
 | Effects and modulation | **Partial** | Selected group filters, EQ, effects, and modulation paths are imported and processed. | Some effect and modulation types are skipped or pass through. Parameter laws and sound have not been validated against Kontakt. |
@@ -23,7 +38,7 @@ KONTRA ships no instrument libraries or sample collections. Use libraries you ar
 | Articulations | **Partial** | Articulation mappings and channel-aware MIDI and script event routing are implemented. Scripted Channel mode tracks physical input separately, supports independent same-pitch releases, and honors release-callback group selection. | Library-specific transitions, scripts, and every articulation have not been exhaustively checked. |
 | MIDI and pedals | **Partial** | Scripted channel stops release their physical inputs. Sostenuto captures individual voices. Pedal-deferred releases retain each event's groups and velocity. Note-offs, pedal-up and stopping fades have reserved command storage; extreme stop overflow performs a counted, click-free channel cut. | Broader DAW/device behavior remains under review. |
 | MPE | **Partial** | Both zones support independent member expression through reuse, delayed releases and queued attacks. Initial pressure reaches scripts and raw modulation. Initial host gain/pan applies from the first rendered frame. Member CC74/pressure freeze at key-up; manager CC74 adds (clamped), pressure uses the maximum. Master pedals, common controllers and combined master/member bend work through scripts; common controllers run one callback. Member bend-range updates affect held notes. | Complete negotiation/master bend sensitivity, pressure fallback/mapping policy and combined MPE/channel articulation remain incomplete. |
-| Release-event identity and timing | **Partial** | Script-transposed input notes retain physical ownership and expression. Samples created in release callbacks inherit the parent's frozen expression. Following-parent children freeze before delayed callbacks and retain that snapshot for release samples; freezing has independent command storage. Surviving attack events keep separate release-counter clocks; pedal-deferred samples retain duration at key-up. | Generated-child live expression before parent key-up, release-only/exhausted-voice clocks and pre-engine script delays remain under review. |
+| Release-event identity and timing | **Partial** | Script-transposed input notes and following-parent children retain physical ownership and live expression. Samples created in release callbacks inherit the parent's frozen expression. Following children freeze before delayed callbacks and retain that snapshot for release samples; freezing has independent command storage. Surviving attack events keep separate release-counter clocks; pedal-deferred samples retain duration at key-up. | Release-only/exhausted-voice clocks and pre-engine script delays remain under review. Libraries with pitch-indexed script state can still mix identical pitches from different articulation channels in one script instance. |
 | REAPER project migration | **Experimental** | Explicit SavedMulti mappings replace selected Kontakt instances in a copied RPP. An isolated REAPER check verified state through save/reopen and retained two tracks, MIDI and a send. | Opaque Kontakt state, parameter automation and nested containers are not translated. Other DAWs, host versions and sonic parity remain unverified. |
 | Kontakt parity | **Untested** | No compatibility guarantee is made. | A successful load or short render is not a reference comparison. |
 | Other sampler formats | **Unsupported** | None. | KONTRA does not load separate proprietary formats such as UVI, Toontrack, IK, or Ample Sound libraries. |
@@ -48,7 +63,7 @@ The repository's nightly workflow builds these targets. A build target does not 
 | Linux x86_64 | Yes | Yes | Yes |
 | Windows x86_64 | Yes | Yes | Yes |
 | macOS arm64 | Yes | Yes | Yes |
-| macOS x86_64 | Optional workflow build | Optional workflow build | Optional workflow build |
+| macOS x86_64 | Yes | Yes | Yes |
 
 macOS bundles are signed ad hoc and are not notarized.
 
