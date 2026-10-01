@@ -112,6 +112,8 @@ struct Meters {
     /// A view moves on its own (a spectrum or a peak hold falling): the
     /// last frame built says so, and frames keep coming until one does not.
     animating: AtomicBool,
+    /// Journal changes affect this editor only while its Logs pane is shown.
+    logs_visible: AtomicBool,
 }
 
 /// Decides, every display tick, whether anything the editor shows moved
@@ -189,8 +191,10 @@ impl Watch {
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
-        crate::diagnostics::revision().hash(&mut h);
-        logs::wake().hash(&mut h);
+        if meters.logs_visible.load(Ordering::Relaxed) {
+            crate::diagnostics::revision().hash(&mut h);
+            logs::wake().hash(&mut h);
+        }
         p.shared.focus_request.load(Ordering::Relaxed).hash(&mut h);
         // The wheels follow incoming MIDI as it moves them.
         p.shared.bend.load(Ordering::Relaxed).hash(&mut h);
@@ -949,6 +953,7 @@ fn build(
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
         let ghost = ghost(ui, &cx);
+        cx.state.meters.logs_visible.store(cx.state.tab == Tab::Logs, Ordering::Relaxed);
 
         let Cx { mut selection, .. } = cx;
         if selection != before {
