@@ -37,6 +37,9 @@ pub fn name(cx: &Cx, slot: usize) -> String {
 pub const SLIM: f64 = CONTROL + 6.;
 
 
+/// Parts built in a frame before the rack knows where they are.
+const UNPLACED: usize = 4;
+
 /// Every part in rack order, then the foot that adds more.
 ///
 /// The rack scrolls itself rather than as a scroll node, so it can scroll
@@ -88,11 +91,20 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     // build, from where the rack was last drawn.
     let drawn = cx.state.rack_drawn;
     let (mut stuck, mut near) = (vec![false; n], vec![true; n]);
-    if view_h > 0. {
-        for (i, f) in frames.iter().enumerate() {
-            let Some((top, h)) = *f else { continue };
-            stuck[i] = sticky && (place(i, top, drawn) - (top - drawn)).abs() > 0.5;
-            near[i] = top - drawn + h > -view_h && top - drawn < 2. * view_h;
+    // Parts not laid out yet (a fresh window, parts just added) are built a
+    // few a frame: sixteen big panels at once exceed the layout's node
+    // budget, and a refused layout would never learn where anything is.
+    let mut unplaced = 0;
+    for (i, f) in frames.iter().enumerate() {
+        match *f {
+            Some((top, h)) if view_h > 0. => {
+                stuck[i] = sticky && (place(i, top, drawn) - (top - drawn)).abs() > 0.5;
+                near[i] = top - drawn + h > -view_h && top - drawn < 2. * view_h;
+            }
+            _ => {
+                near[i] = unplaced < UNPLACED;
+                unplaced += 1;
+            }
         }
     }
     wheel_taken();
@@ -128,15 +140,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         state.rack_y = at;
         state.reveal = None;
     }
-    let bar = ui.get("rack-bar");
-    if bar.dragged && view_h > 0. {
-        state.rack_y += bar.drag_delta.y * content_h / view_h;
-    }
+    bar_drag(ui, "rack-bar", &mut state.rack_y, view_h, content_h);
     if view_h > 0. {
         state.rack_y = state.rack_y.clamp(0., max);
     }
     // The bar under the hand follows it; everything else glides.
-    let y = if bar.held { state.rack_y } else { ui.tween_with("rack-y", state.rack_y, quick()) };
+    let y = glide(ui, "rack-y", state.rack_y, ui.get("rack-bar").held);
     cx.state.rack_drawn = y;
     // What moves the layout: one more frame once it has, to read it back.
     let shape = (std::hash::Hasher::finish(&shape) % 1_000_000) as f64;
@@ -153,7 +162,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         .h(Len::Pct(100.))
         .scroll()
         .no_scrollbar()
-        .scrolled(0., y.round())
+        .scrolled(0., y)
         .id("rack-view");
     let mut layers = vec![viewport];
     for (i, header) in headers {
@@ -223,8 +232,9 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     };
     // Not yet laid out whole: all of it, unsprung, so the next frame knows how much that is.
     let height = dragging.or(target).map(|to| {
-        let sprung = ui.tween_with(format!("part-h-{slot}"), to, quick());
-        if dragging.is_some() { to } else { sprung }
+        // On whole points: the rack below stays sharp while it springs.
+        let sprung = ui.tween_with(format!("part-h-{slot}"), to, quick()).round();
+        if dragging.is_some() { to.round() } else { sprung }
     });
     (p.collapsed, set.map(f64::to_bits), natural.map(f64::to_bits)).hash(shape);
 
@@ -254,15 +264,11 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
         });
     }
     lines.push(rule());
-    let lift = ui.state(edge_id.as_str()).hover.max(if r.held { 1. } else { 0. }) as f32;
-    let edge = canvas(move |s| {
-        if lift <= 0.01 {
-            return Vec::new();
-        }
-        vec![Draw::fill(rect(0., s.height - 2., s.width, 2.), Role::Ink.alpha(0.2 + 0.4 * lift))]
-    })
+    let lift = edge_lift(ui, &edge_id);
+    // Over the rule at the part's foot, the accent line.
+    let edge = canvas(move |s| edge_mark(s, s.height - 1., false, lift))
     .w(Len::Pct(100.))
-    .h(TIGHT + 2.)
+    .h(EDGE_GRAB + 2.)
     .anchor(Align::Start, Align::End)
     .cursor(Cursor::ResizeV)
     .tip("Drag to size the part, double-click to fold or unfold it")

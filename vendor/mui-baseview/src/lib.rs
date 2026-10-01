@@ -36,8 +36,35 @@ use raw_window_handle::HasWindowHandle;
 
 const GPU_RETRY: Duration = Duration::from_millis(500);
 /// KONTAKTO patch: MUI lines per wheel notch (see the wheel event below).
-/// baseview does not read the system's scroll-lines setting, so this is fixed.
-const LINES_PER_NOTCH: f64 = 6.;
+/// baseview does not read the system's scroll-lines setting, so this is fixed:
+/// ten of the theme's 12-point lines, 120 points or five list rows.
+const LINES_PER_NOTCH: f64 = 10.;
+/// KONTAKTO patch: notches this close together are one fling, and each one
+/// in it scrolls further than the last, up to [`MAX_GAIN`] times a notch.
+const FLING: Duration = Duration::from_millis(90);
+const MAX_GAIN: f64 = 3.;
+
+/// KONTAKTO patch: lines one notch of `y` scrolls, `gap` after the last
+/// notch: a fast run the same way speeds up, a pause or a turn starts over.
+/// `run` is the notches in the fling so far, signed by direction.
+pub fn notch_lines(y: f64, gap: Option<Duration>, run: &mut i32) -> f64 {
+    let way = if y < 0. { -1 } else { 1 };
+    *run = if gap.is_some_and(|g| g < FLING) && run.signum() == way { *run + way } else { way };
+    let gain = (1. + 0.25 * f64::from(run.abs() - 1)).min(MAX_GAIN);
+    y * LINES_PER_NOTCH * gain
+}
+
+thread_local! {
+    /// KONTAKTO patch: see [`resize_corner`].
+    static CORNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// KONTAKTO patch: the pointer is over (or dragging) the window's resize
+/// corner: show the diagonal resize cursor, which MUI's `Cursor` lacks.
+/// Set from the view's build, on the window's thread, every frame.
+pub fn resize_corner(on: bool) {
+    CORNER.with(|c| c.set(on));
+}
 
 /// KONTAKTO patch: an app's look at every key event, down and up, before
 /// MUI routes it. `true` takes the key: MUI and the host never see it.
@@ -192,6 +219,8 @@ pub struct Handler<V> {
     /// where it hid, while a [`PointerHook`] hides it.
     pointer_at: Option<PhysicalPosition<f64>>,
     hidden_at: Option<PhysicalPosition<f64>>,
+    /// KONTAKTO patch: the last wheel notch, and the fling it is part of.
+    notch: (Option<Instant>, i32),
     /// The queue and the frame schedule.
     pub driver: Driver,
 }
@@ -217,6 +246,7 @@ impl<V: View> Handler<V> {
             captured: None,
             pointer_at: None,
             hidden_at: None,
+            notch: (None, 0),
             driver: Driver::new(size, scale, Box::new(Clipboard::default())),
         }
     }
@@ -365,6 +395,8 @@ impl<V: View> Handler<V> {
         }
         let cursor = if self.hidden_at.is_some() {
             MouseCursor::Hidden
+        } else if CORNER.with(std::cell::Cell::get) {
+            MouseCursor::NwseResize
         } else {
             native_cursor(self.driver.cursor())
         };
@@ -434,11 +466,17 @@ impl<V: View> Handler<V> {
                     let wheel = match delta {
                         // KONTAKTO patch: baseview reports one line per notch on every
                         // platform, and MUI makes a line one text height
-                        // (13 points): half a list row. A notch moves three
-                        // rows, about what desktop lists scroll; trackpads
-                        // send pixels and stay exact.
+                        // (12 points): half a list row. A notch moves
+                        // five rows, more in a fast run (`notch_lines`);
+                        // trackpads send pixels and stay exact. The lists
+                        // glide to where the notch puts them.
                         ScrollDelta::Lines { x, y } => {
-                            Wheel::Lines(f64::from(x) * LINES_PER_NOTCH, f64::from(y) * LINES_PER_NOTCH)
+                            let now = Instant::now();
+                            let gap = self.notch.0.map(|t| now - t);
+                            self.notch.0 = Some(now);
+                            let along = if y != 0. { y } else { x };
+                            let lines = notch_lines(f64::from(along), gap, &mut self.notch.1);
+                            if y != 0. { Wheel::Lines(0., lines) } else { Wheel::Lines(lines, 0.) }
                         }
                         ScrollDelta::Pixels { x, y } => Wheel::Pixels(f64::from(x), f64::from(y)),
                     };

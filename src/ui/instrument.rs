@@ -111,7 +111,7 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     panel::deps(cx, slot).hash(&mut h);
     original.hash(&mut h);
     if original {
-        perf_view::deps(ui, cx, slot).hash(&mut h);
+        (perf_view::deps(ui, cx, slot), super::fitted::generation(slot)).hash(&mut h);
     }
     h.finish()
 }
@@ -280,7 +280,12 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
         if let Some(stages) = report["stages_ms"].as_object() {
             for (name, ms) in stages { rows.push(caption(format!("{name}: {:.0} ms", ms.as_f64().unwrap_or(0.))).fill(Role::Dim)); }
         }
-        let issues: Vec<_> = ["issues", "script_restore", "ram_fill"].into_iter().flat_map(|key| {
+        for key in ["artwork", "preload", "ram_fill", "script_restore"] {
+            if let Some(status) = report[key]["status"].as_str() {
+                rows.push(caption(format!("{key}: {status} · {:.0} ms", report[key]["elapsed_ms"].as_f64().unwrap_or(0.))).fill(Role::Dim));
+            }
+        }
+        let issues: Vec<_> = ["issues", "script_restore", "artwork", "preload", "ram_fill"].into_iter().flat_map(|key| {
             if key == "issues" { report[key].as_array() } else { report[key]["issues"].as_array() }.into_iter().flatten()
         }).collect();
         {

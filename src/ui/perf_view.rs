@@ -6,7 +6,7 @@
 //! `on ui_control` runs.
 
 use super::menu::{self, Target};
-use super::{Cx, theme::*};
+use super::{Cx, fitted, theme::*};
 use crate::artwork::Picture;
 use crate::ksp::{Control, Interface, Value};
 use crate::library::ViewMode;
@@ -376,10 +376,15 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     fetch(cx, slot, &interface);
     let (w, h) = (f64::from(interface.width), f64::from(interface.height));
     let s = scale(room(ui, slot), w, cx.settings.view_scale);
+    // Everything lands on whole device pixels, and pictures are drawn at
+    // their pixel size: nothing straddles a pixel and blurs.
+    let dev = ui.scale().unwrap_or(1.);
+    let px = |v: f64| (v * dev).round() / dev;
     let mut layers = Vec::new();
     if let Some(image) = wallpaper.clone().filter(|_| !vector || cx.settings.vector_backdrop) {
-        let (iw, ih) = (f64::from(image.width), f64::from(image.height));
-        layers.push(block(iw * s, ih * s).fill(Fill::Image(image, Fit::Fill)).at(0., -HEADER * s));
+        let (iw, ih) = (px(f64::from(image.width) * s), px(f64::from(image.height) * s));
+        let image = fitted::fitted(&image, (iw * dev).round() as u32, (ih * dev).round() as u32, slot);
+        layers.push(block(iw, ih).fill(Fill::Image(image, Fit::Fill)).at(0., px(-HEADER * s)));
         if vector {
             layers.push(block(w * s, h * s).fill(Role::Background.alpha(0.8)));
         }
@@ -418,7 +423,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         };
         let name = names.get(&shown.control).filter(|_| !drawn.iter().any(|(o, _)| near(o)));
         let look = if vector { Look::Vector(name.map(String::as_str)) } else { Look::Original(under) };
-        layers.push(control(ui, cx, slot, shown, c, s, look).at(shown.x * s, shown.y * s));
+        layers.push(control(ui, cx, slot, shown, c, s, look).at(px(shown.x * s), px(shown.y * s)));
     }
     // Over everything: the value a drag is setting, or a value being typed.
     let find = |n: usize| drawn.iter().find(|(d, _)| d.control == n).map(|(d, _)| d.clone());
@@ -436,13 +441,16 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         layers.push(el.at(shown.x * s, shown.y * s));
     }
     let area = stack(layers)
-        .w(w * s)
-        .h(h * s)
+        .w(px(w * s))
+        .h(px(h * s))
         .shrink(0)
         .fill(if vector { Fill::from(Role::Background) } else { Fill::from(Color::srgb(0., 0., 0.)) })
         .clip()
         .named(if vector { "Vectorized performance view" } else { "Original performance view" });
-    row![area].justify(Justify::Center).align(Align::Start).w(Len::Pct(100.))
+    // Centred by a whole-pixel inset in the part's width (which the memo
+    // over this reads): centring by layout halves odd pixels.
+    let inset = (((room(ui, slot) - px(w * s)) / 2. * dev).floor() / dev).max(0.);
+    row![area].pad(edges(0., 0., 0., inset)).align(Align::Start).w(Len::Pct(100.))
 }
 
 /// A value edit's number being typed: Enter or a click away sets it, Esc
@@ -604,9 +612,10 @@ fn picture_frame(shown: &Shown, c: &Control, now: f64) -> Option<Arc<Image>> {
 /// size, else cut along each way it stretches into two ends kept as drawn
 /// and the middle pixel (or two) stretched between them: a stretched menu
 /// keeps its rounded ends and its arrow, a one-pixel divider its width.
-// ponytail: cut again on every build; cache the cuts if big stretched
-// pictures show up in profiles.
-fn sliced(image: &Arc<Image>, stretch: [bool; 2], w: f64, h: f64, s: f64) -> El {
+fn sliced(image: &Arc<Image>, stretch: [bool; 2], w: f64, h: f64, s: f64, dev: f64, slot: usize) -> El {
+    let fit = |image: &Arc<Image>, w: f64, h: f64| {
+        Fill::Image(fitted::fitted(image, (w * dev).round() as u32, (h * dev).round() as u32, slot), Fit::Fill)
+    };
     let (iw, ih) = (image.width, image.height);
     let cuts = |on: bool, own: u32, to: f64| -> Vec<(u32, u32, f64)> {
         let end = own.saturating_sub(1) / 2;
@@ -618,15 +627,15 @@ fn sliced(image: &Arc<Image>, stretch: [bool; 2], w: f64, h: f64, s: f64) -> El 
     };
     let (across, down) = (cuts(stretch[0], iw, w), cuts(stretch[1], ih, h));
     if across.len() == 1 && down.len() == 1 {
-        return block(w, h).fill(Fill::Image(image.clone(), Fit::Fill));
+        return block(w, h).fill(fit(image, w, h));
     }
     let mut parts = Vec::new();
     let mut y = 0.;
     for &(sy, sh, th) in &down {
         let mut x = 0.;
         for &(sx, sw, tw) in &across {
-            if let Some(piece) = crate::artwork::crop(image, sx, sy, sw, sh) {
-                parts.push(block(tw, th).fill(Fill::Image(piece, Fit::Fill)).at(x, y));
+            if let Some(piece) = fitted::cut(image, sx, sy, sw, sh) {
+                parts.push(block(tw, th).fill(fit(&piece, tw, th)).at(x, y));
             }
             x += tw;
         }
@@ -697,7 +706,8 @@ fn vector_names(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>)
 fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s: f64, look: Look) -> El {
     let vector = matches!(look, Look::Vector(_));
     let id = format!("kpv-{slot}-{}", shown.control);
-    let (w, h) = (shown.w * s, shown.h * s);
+    let dev = ui.scale().unwrap_or(1.);
+    let (w, h) = ((shown.w * s * dev).round() / dev, (shown.h * s * dev).round() / dev);
     let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
     let raw = value(c);
     let (min, max) = range(shown.kind, c);
@@ -751,7 +761,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     let round = shown.kind == Kind::Knob || shown.kind == Kind::Slider && knob_like(prop(c, "$CONTROL_PAR_PICTURE"), shown.w, shown.h);
     let lift = if cx.state.held.is_some_and(|(p, n, _)| (p, n) == (slot, shown.control)) { 1. } else { ui.state(id.as_str()).hover as f32 };
     let mut layers = vec![match picture {
-        Some(image) => sliced(&image, shown.picture.as_ref().map_or([false; 2], |p| p.stretch), w, h, s),
+        Some(image) => sliced(&image, shown.picture.as_ref().map_or([false; 2], |p| p.stretch), w, h, s, dev, slot),
         None => face(shown.kind, c, now, lo, hi, vertical, round, s, lift).w(w).h(h),
     }];
     // Text on our face is our ink; on a picture it reads what lies under it.
@@ -1021,7 +1031,7 @@ mod tests {
         let row = [[255,0,0,255], [255,0,0,255], [0,255,0,255], [0,0,255,255], [0,0,255,255]].concat();
         let image = Arc::new(Image::rgba(5, 5, row.repeat(5)).unwrap());
         let mut ui = crate::ui::theme::ui();
-        let root = sliced(&image, [true; 2], 21., 15., 1.);
+        let root = sliced(&image, [true; 2], 21., 15., 1., 1., 0);
         ui.frame(root, Some(Size::new(21., 15.)), Input::default(), 0.).unwrap();
         let rgba = crate::ui::tests::pixels(&ui, 21, 15);
         let pixel = |x: usize| &rgba[(7 * 21 + x) * 4..(7 * 21 + x) * 4 + 4];

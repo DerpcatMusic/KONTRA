@@ -12,7 +12,7 @@ Logging, formatting and file operations run off the audio thread. The audio call
 
 The sample bank retains eight failure examples, alongside the total skipped-zone count. Missing references from the importer are listed individually. Runtime fault locations are capped at 256 and explicitly report overflow. The Info tab shows the first 64 load issues; the journal contains the full recorded report. Logs contain local paths and error text, so review them before sharing. They do not contain sample audio, artwork bytes or script source.
 
-Pictures, scripts and array-data files have no fixed size cap. PNG dimensions use checked arithmetic and fallible pixel allocation; invalid input and allocation failures retain the resource name and actual reason. Unchanged full-frame pictures share their decoded buffer.
+Pictures, scripts and array-data files have no fixed size cap. PNG dimensions use checked arithmetic and fallible pixel allocation; invalid input and allocation failures retain the resource name and actual reason. Unchanged full-frame pictures share their decoded buffer. Original UI artwork is resized in the background and placed on whole device pixels; stretched controls reuse cached cuts that retain their corners.
 
 To isolate slow presets, use the existing audit CLI through this standard-library runner:
 

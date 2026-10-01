@@ -361,17 +361,28 @@ pub fn thumbnail(image: &Image, w: u32, h: u32) -> Option<Image> {
     let scale = (f64::from(w) / sw).max(f64::from(h) / sh);
     let (cw, ch) = (f64::from(w) / scale, f64::from(h) / scale);
     let (x0, y0) = ((sw - cw) / 2., (sh - ch) / 2.);
+    resample(image, w, h, x0, y0, cw, ch)
+}
+
+/// Resize the complete picture, retaining its edges even when its aspect changes.
+pub fn resize(image: &Image, w: u32, h: u32) -> Option<Image> {
+    if w == 0 || h == 0 || image.width == 0 || image.height == 0 { return None; }
+    resample(image, w, h, 0., 0., image.width as f64, image.height as f64)
+}
+
+fn resample(image: &Image, w: u32, h: u32, x0: f64, y0: f64, cw: f64, ch: f64) -> Option<Image> {
     let px = image.rgba.as_chunks::<4>().0;
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    let mut rgba = Vec::new();
+    rgba.try_reserve_exact((w as usize).checked_mul(h as usize)?.checked_mul(4)?).ok()?;
     for y in 0..h {
         let (top, bottom) = (y0 + f64::from(y) * ch / f64::from(h), y0 + f64::from(y + 1) * ch / f64::from(h));
         for x in 0..w {
             let (left, right) = (x0 + f64::from(x) * cw / f64::from(w), x0 + f64::from(x + 1) * cw / f64::from(w));
-            let (mut sum, mut n) = ([0u32; 4], 0u32);
+            let (mut sum, mut n) = ([0u64; 4], 0u64);
             for sy in top as usize..(bottom.ceil() as usize).min(image.height as usize).max(top as usize + 1) {
                 for sx in left as usize..(right.ceil() as usize).min(image.width as usize).max(left as usize + 1) {
                     let c = px[sy * image.width as usize + sx];
-                    (0..4).for_each(|k| sum[k] += u32::from(c[k]));
+                    (0..4).for_each(|k| sum[k] += u64::from(c[k]));
                     n += 1;
                 }
             }
