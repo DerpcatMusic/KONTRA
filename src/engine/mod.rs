@@ -146,8 +146,7 @@ impl NoteEvent<'_> {
     }
 }
 
-/// Per-key expression from MPE or host note expressions: every voice on the
-/// key follows it, released or not, until the key's next note-on resets it.
+/// Per-channel/key expression from MPE or host note expressions.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Expression {
     /// Semitones.
@@ -652,7 +651,15 @@ impl Engine {
 
     /// Set the expression of every voice on `note`, now and until changed.
     pub fn set_expression(&mut self, note: u8, expression: Expression) {
-        self.player.expression[note as usize & 127] = expression;
+        for channel in 0..16 {
+            self.set_expression_on(channel, note, expression);
+        }
+    }
+
+    pub fn set_expression_on(&mut self, channel: u8, note: u8, expression: Expression) {
+        if channel < 16 && note < 128 {
+            self.player.expression[channel as usize][note as usize] = expression;
+        }
     }
 
     pub fn event_active(&self, id: EventId) -> bool {
@@ -846,8 +853,8 @@ struct Player {
     cc: [[u8; 128]; 16],
     /// Channel pressure.
     pressure: [u8; 16],
-    /// Per-key expression, by the voices' note.
-    expression: [Expression; 128],
+    /// Per-channel/key expression, by the voices' MIDI channel and note.
+    expression: Box<[[Expression; 128]; 16]>,
     /// Velocity of keys that are down.
     keys: [[u8; 128]; 16],
     /// Release triggers deferred by the sustain pedal: note-on velocity.
@@ -896,7 +903,7 @@ impl Player {
             bend: [0.0; 16],
             cc: [[0; 128]; 16],
             pressure: [0; 16],
-            expression: [Expression::default(); 128],
+            expression: Box::new([[Expression::default(); 128]; 16]),
             keys: [[0; 128]; 16],
             pedal_releases: [[0; 128]; 16],
             now: 0,
@@ -923,7 +930,7 @@ impl Player {
         self.sostenuto = [[false; 128]; 16];
         self.bend = [0.0; 16];
         self.pressure = [0; 16];
-        self.expression = [Expression::default(); 128];
+        self.expression.fill([Expression::default(); 128]);
         self.cc = [[0; 128]; 16];
         for cc in &mut self.cc {
             (cc[7], cc[10], cc[11]) = (127, 64, 127);

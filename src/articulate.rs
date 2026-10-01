@@ -415,7 +415,7 @@ pub enum Out {
     PolyAt(u8, u8, u8),
     /// A script control set (script slot, control, value), as a click on it.
     Control(usize, usize, i32),
-    Expression(u8, Expression),
+    Expression(u8, u8, Expression),
 }
 
 /// MIDI state of the member channels' RPNs: parameter number, being set.
@@ -436,8 +436,8 @@ pub struct Router {
     bend: [u16; 16],
     bend_range: u8,
     rpn: [Rpn; 16],
-    /// Per key as the engine got it.
-    expression: [Expression; 128],
+    /// Per channel and key as the engine got them.
+    expression: [[Expression; 128]; 16],
     brightness: [u8; 128],
     /// The part's scripts: they take pressure per note (`on poly_at`), and
     /// channel controllers once, not per member channel.
@@ -458,7 +458,7 @@ impl Default for Router {
             held: [[(NONE, NONE); 128]; 16],
             bend: [8192; 16],
             rpn: [Rpn { msb: 127, lsb: 127 }; 16],
-            expression: [Expression::default(); 128],
+            expression: [[Expression::default(); 128]; 16],
             brightness: [NONE; 128],
             scripted: false,
             handles_pressure: false,
@@ -581,12 +581,12 @@ impl Router {
         self.current = Some(to);
     }
 
-    fn set_expression(&mut self, key: u8, f: impl FnOnce(&mut Expression), out: &mut impl FnMut(Out)) {
-        let x = &mut self.expression[key as usize & 127];
+    fn set_expression(&mut self, channel: u8, key: u8, f: impl FnOnce(&mut Expression), out: &mut impl FnMut(Out)) {
+        let x = &mut self.expression[channel as usize & 15][key as usize & 127];
         let was = *x;
         f(x);
         if *x != was {
-            out(Out::Expression(key, *x));
+            out(Out::Expression(channel, key, *x));
         }
     }
 
@@ -605,7 +605,7 @@ impl Router {
     fn pressure(&mut self, channel: u8, key: u8, value: u8, out: &mut impl FnMut(Out)) {
         out(Out::PolyAt(channel, key, value));
         if !self.handles_pressure {
-            self.set_expression(key, |x| x.gain = pressure_gain(value), out);
+            self.set_expression(channel, key, |x| x.gain = pressure_gain(value), out);
         }
     }
 
@@ -641,7 +641,7 @@ impl Router {
                 // A new note on a key starts from its channel's expression.
                 let tune = if r.member(channel) { self.member_tune(channel) } else { 0.0 };
                 self.brightness[key as usize] = NONE;
-                self.set_expression(key, |x| *x = Expression { tune, ..Expression::default() }, out);
+                self.set_expression(to, key, |x| *x = Expression { tune, ..Expression::default() }, out);
                 self.held[channel as usize][note as usize & 127] = (to, key);
                 if r.by_channel() && self.scripted {
                     out(Out::NoteOnFrom(to, channel, key, velocity));
@@ -672,8 +672,8 @@ impl Router {
                 self.bend[channel as usize] = value.min(16383);
                 let tune = self.member_tune(channel);
                 let row = self.held[channel as usize];
-                for (_, key) in row.into_iter().filter(|h| h.1 != NONE) {
-                    self.set_expression(key, |x| x.tune = tune, out);
+                for (to, key) in row.into_iter().filter(|h| h.1 != NONE) {
+                    self.set_expression(to, key, |x| x.tune = tune, out);
                 }
             }
             In::Bend(_, value) => {
@@ -688,8 +688,8 @@ impl Router {
             }
             In::Pressure(_, value) if r.member(channel) => {
                 let row = self.held[channel as usize];
-                for (_, key) in row.into_iter().filter(|h| h.1 != NONE) {
-                    self.pressure(channel, key, value, out);
+                for (to, key) in row.into_iter().filter(|h| h.1 != NONE) {
+                    self.pressure(to, key, value, out);
                 }
                 if !self.scripted {
                     out(Out::Pressure(channel, value));
@@ -726,7 +726,7 @@ impl Router {
             In::NoteTune(_, note, semitones) => {
                 let key = self.key_of(channel, note);
                 if key != NONE {
-                    self.set_expression(key, |x| x.tune = semitones, out);
+                    self.set_expression(to, key, |x| x.tune = semitones, out);
                 }
             }
             In::NotePressure(_, note, value) => {
@@ -738,13 +738,13 @@ impl Router {
             In::NoteGain(_, note, gain) => {
                 let key = self.key_of(channel, note);
                 if key != NONE {
-                    self.set_expression(key, |x| x.gain = gain.clamp(0.0, 4.0), out);
+                    self.set_expression(to, key, |x| x.gain = gain.clamp(0.0, 4.0), out);
                 }
             }
             In::NotePan(_, note, pan) => {
                 let key = self.key_of(channel, note);
                 if key != NONE {
-                    self.set_expression(key, |x| x.pan = pan.clamp(-1.0, 1.0), out);
+                    self.set_expression(to, key, |x| x.pan = pan.clamp(-1.0, 1.0), out);
                 }
             }
             In::NoteBrightness(_, note, value) => {
@@ -792,7 +792,7 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
         Out::Pressure(c, v) => e.channel_pressure(c, v),
         Out::PolyAt(c, n, v) => e.poly_pressure(c, n, v),
         Out::Control(slot, control, value) => e.ui_control(slot, control, value),
-        Out::Expression(n, x) => e.set_expression(n, x),
+        Out::Expression(c, n, x) => e.set_expression_on(c, n, x),
     }
 }
 
@@ -1139,6 +1139,30 @@ mod tests {
     /// A synthetic MPE stream: lower zone, two notes on members 2 and 3,
     /// each bent, pressed and brightened on its own channel.
     #[test]
+    fn mpe_same_pitch_members_keep_their_own_expression() {
+        let mpe = Mpe { zone: Zone::Lower, ..Mpe::default() };
+        let play = |channels: &[u8]| {
+            let (mut e, _) = three_articulation_part();
+            let mut r = router(&Articulate::default(), &mpe);
+            for &channel in channels {
+                feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0);
+                feed(&mut r, &mut e, In::NotePan(channel, 60, if channel == 1 { -1.0 } else { 1.0 }), 0);
+                feed(&mut r, &mut e, In::NoteGain(channel, 60, if channel == 1 { 0.25 } else { 0.75 }), 0);
+            }
+            let (mut l, mut r) = ([0f32; 128], [0f32; 128]);
+            e.render(&mut l, &mut r);
+            (l, r)
+        };
+        let a = play(&[1]);
+        let b = play(&[2]);
+        let both = play(&[1, 2]);
+        for i in 0..128 {
+            assert!((both.0[i] - a.0[i] - b.0[i]).abs() < 1e-5, "left frame {i}: another member changed this note");
+            assert!((both.1[i] - a.1[i] - b.1[i]).abs() < 1e-5, "right frame {i}: another member changed this note");
+        }
+    }
+
+    #[test]
     fn mpe_lower_zone_expresses_each_note() {
         let mpe = Mpe { zone: Zone::Lower, ..Mpe::default() };
         let mut r = router(&Articulate::default(), &mpe);
@@ -1152,7 +1176,7 @@ mod tests {
         send(&mut r, In::Pressure(1, 127));
         send(&mut r, In::Cc(2, 74, 20));
         let x = |key| out.iter().rev().find_map(|o| match o {
-            Out::Expression(k, x) if *k == key => Some(*x),
+            Out::Expression(_, k, x) if *k == key => Some(*x),
             _ => None,
         });
         assert_eq!(x(60).unwrap().tune, 24.0);
@@ -1171,7 +1195,7 @@ mod tests {
         }
         let mut last = None;
         r.input(In::Bend(1, 0), 0, &mut |o| last = Some(o));
-        assert_eq!(last, Some(Out::Expression(60, Expression { tune: -12.0, gain: 1.0, pan: 0.0 })));
+        assert_eq!(last, Some(Out::Expression(1, 60, Expression { tune: -12.0, gain: 1.0, pan: 0.0 })));
         // Members are heard, other channels not, on a part set to channel 1.
         let c = PartControls { channel: 0, ..PartControls::default() };
         assert!(r.hears(&c, 0, 15) && r.hears(&c, 0, 3));
@@ -1185,7 +1209,7 @@ mod tests {
         r.input(In::NoteOn(14, 60, 100), 0, &mut |o| out.push(o));
         r.input(In::Pressure(14, 0), 0, &mut |o| out.push(o));
         let gain = out.iter().rev().find_map(|o| match o {
-            Out::Expression(60, x) => Some(x.gain),
+            Out::Expression(14, 60, x) => Some(x.gain),
             _ => None,
         });
         assert!((gain.unwrap() - 0.251).abs() < 0.01);
@@ -1206,11 +1230,11 @@ mod tests {
         r.input(In::NoteTune(0, 60, -3.5), 0, &mut |o| out.push(o));
         r.input(In::NoteGain(0, 60, 0.5), 0, &mut |o| out.push(o));
         r.input(In::NotePan(0, 60, 0.25), 0, &mut |o| out.push(o));
-        assert_eq!(out.last(), Some(&Out::Expression(60, Expression { tune: -3.5, gain: 0.5, pan: 0.25 })));
+        assert_eq!(out.last(), Some(&Out::Expression(0, 60, Expression { tune: -3.5, gain: 0.5, pan: 0.25 })));
         // The next note on the key starts plain.
         r.input(In::NoteOff(0, 60), 0, &mut |o| out.push(o));
         r.input(In::NoteOn(0, 60, 100), 0, &mut |o| out.push(o));
-        assert!(out.contains(&Out::Expression(60, Expression::default())));
+        assert!(out.contains(&Out::Expression(0, 60, Expression::default())));
     }
 
     #[test]

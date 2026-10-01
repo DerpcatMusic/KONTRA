@@ -988,8 +988,8 @@ pub(crate) struct Context<'a> {
     pub cc: &'a [[u8; 128]; 16],
     pub bend: &'a [f32; 16],
     pub pressure: &'a [u8; 16],
-    /// Per-key MPE and note expression.
-    pub expression: &'a [super::Expression; 128],
+    /// Per-channel/key MPE and note expression.
+    pub expression: &'a [[super::Expression; 128]; 16],
     /// Instrument tune in semitones.
     pub tune: f32,
     pub rate: f32,
@@ -1099,7 +1099,7 @@ impl Voice {
             self.settled = settled.then_some(cx.inputs);
         }
         let (modulation, semitones) = self.modulated;
-        let x = cx.expression[self.note as usize & 127];
+        let x = cx.expression[self.channel as usize & 15][self.note as usize & 127];
         let semitones = semitones + group.tune + cx.tune + x.tune;
         if semitones != self.pitch.0 {
             self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));
