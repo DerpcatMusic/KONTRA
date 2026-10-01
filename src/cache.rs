@@ -510,4 +510,27 @@ mod tests {
         assert!(load(&dir, &path, 0).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn sample_headers_round_trip_and_changed_files_miss() {
+        let dir = std::env::temp_dir().join(format!("kontra-headers-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (preset, sample) = (dir.join("a.nki"), dir.join("1.wav"));
+        let spec = hound::WavSpec { channels: 1, sample_rate: 44_100, bits_per_sample: 24, sample_format: hound::SampleFormat::Int };
+        let mut w = hound::WavWriter::create(&sample, spec).unwrap();
+        (0..100).for_each(|i| w.write_sample(i).unwrap());
+        w.finalize().unwrap();
+        let source = Sources::default().source(&sample).unwrap();
+        let header = source.open().unwrap().header();
+        assert_eq!(header, Header { rate: 44_100, frames: 100, bits: Some(24) });
+        let paths = [sample.as_path()];
+        store_headers(&dir, &preset, &paths, &[(&source, header)]);
+        let back = headers(&dir, &preset, &paths).expect("a fresh entry hits");
+        assert_eq!((back[0].0.parts(), back[0].1), (source.parts(), header));
+        assert!(headers(&dir, &dir.join("b.nki"), &paths).is_none(), "another preset misses");
+        // The sample changed: stale.
+        std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&sample).unwrap(), b"x").unwrap();
+        assert!(headers(&dir, &preset, &paths).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

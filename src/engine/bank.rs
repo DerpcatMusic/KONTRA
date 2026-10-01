@@ -1218,7 +1218,7 @@ fn distinct(instrument: &Instrument) -> (Vec<Option<usize>>, Vec<&PathBuf>) {
 /// on Vista 5 Violins); only archive member headers are read in parallel.
 fn resolve(preset: &Path, paths: &[&PathBuf]) -> (Vec<Result<Source>>, Option<Vec<Header>>) {
     let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-    if let Some(cached) = crate::cache::dir().and_then(|dir| crate::cache::headers(&dir, preset, &paths)) {
+    if let Some(cached) = header_cache(preset).and_then(|dir| crate::cache::headers(&dir, preset, &paths)) {
         let (sources, headers) = cached.into_iter().map(|(s, h)| (Ok(s), h)).unzip();
         return (sources, Some(headers));
     }
@@ -1226,10 +1226,16 @@ fn resolve(preset: &Path, paths: &[&PathBuf]) -> (Vec<Result<Source>>, Option<Ve
 }
 
 fn store_headers(preset: &Path, paths: &[&PathBuf], headers: &[(&Source, Header)]) {
-    if let Some(dir) = crate::cache::dir() {
+    if let Some(dir) = header_cache(preset) {
         let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
         crate::cache::store_headers(&dir, preset, &paths, headers);
     }
+}
+
+/// Where `preset`'s sample headers are cached: nowhere for an instrument
+/// built in memory (no preset path).
+fn header_cache(preset: &Path) -> Option<PathBuf> {
+    crate::cache::dir().filter(|_| !preset.as_os_str().is_empty())
 }
 
 /// The zones whose sample opened (`opened[distinct id]`), with their index

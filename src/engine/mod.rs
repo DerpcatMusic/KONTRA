@@ -254,8 +254,10 @@ impl Engine {
         }) else {
             return self.set_bank(Some(bank));
         };
-        // Swapped, not cloned: no allocation here.
+        // Swapped, not cloned: no allocation here. The base too: scripts
+        // write it, and overrides recompute what plays from it.
         std::mem::swap(&mut old.settings, &mut bank.settings);
+        std::mem::swap(&mut old.base, &mut bank.base);
         self.player.touch();
         self.player.rebind(old, &bank);
         self.bank.replace(bank)
