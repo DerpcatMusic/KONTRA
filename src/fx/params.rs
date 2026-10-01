@@ -440,8 +440,8 @@ fn layout(kind: Kind) -> Option<&'static [(&'static str, Ty)]> {
         ],
         // Saturation: `$ENGINE_PAR_SHAPE` (-1..=1 stored) is the first.
         Kind::SurroundPanner => &[("param_0", F), ("param_1", F)],
-        // Two values, as `$ENGINE_PAR_LIM_*` lists them (low confidence).
-        Kind::Limiter => &[("in_gain", F), ("release", F)],
+        // Input gain (dB) and release (ms): ANALOG STRINGS stores 0.0005 and 10 (medium).
+        Kind::Limiter => &[("in_gain_db", F), ("release_ms", F)],
         Kind::Distortion => &[("param_0", F), ("drive", F), ("damping", F)],
         Kind::LoFi => &[
             ("bits", F),

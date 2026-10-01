@@ -83,8 +83,8 @@ const PARS: &[(&str, Kind, u8, Law)] = &[
     ("$ENGINE_PAR_RATIO", Kind::Compressor, 2, Law::Norm),
     ("$ENGINE_PAR_COMP_ATTACK", Kind::Compressor, 3, ATTACK),
     ("$ENGINE_PAR_COMP_DECAY", Kind::Compressor, 4, RELEASE),
-    ("$ENGINE_PAR_LIM_IN_GAIN", Kind::Limiter, 0, Law::Norm),
-    ("$ENGINE_PAR_LIM_RELEASE", Kind::Limiter, 1, Law::Norm),
+    ("$ENGINE_PAR_LIM_IN_GAIN", Kind::Limiter, 0, Law::Lin(0.0, 24.0)),
+    ("$ENGINE_PAR_LIM_RELEASE", Kind::Limiter, 1, Law::Cube(1000.0)),
     ("$ENGINE_PAR_DL_TIME", Kind::Delay, 0, DELAY_TIME),
     ("$ENGINE_PAR_DL_DAMPING", Kind::Delay, 1, Law::Norm),
     ("$ENGINE_PAR_DL_PAN", Kind::Delay, 2, Law::Norm),
@@ -170,7 +170,7 @@ pub(crate) fn normalized(kind: Kind, field: u8, v: f32) -> f32 {
 pub(crate) fn defaults(kind: Kind) -> Option<&'static [f32]> {
     Some(match kind {
         Kind::Compressor => &[0.0, -14.0, 0.5, 26.0, 200.0, 1.0],
-        Kind::Limiter => &[0.5, 0.5],
+        Kind::Limiter => &[0.0, 10.0],
         Kind::Delay => &[250.0, 0.3, 1.0, 0.2, -1.0, 0.0, 1.0, 1.0],
         Kind::Chorus => &[0.5, 0.77, 0.44, -1.0, 0.0, 1.0, 1.0],
         Kind::Flanger => &[0.5, 0.5, 0.5, 0.25, 1.5, -1.0, 0.0, 1.0, 1.0],
@@ -533,11 +533,11 @@ impl Comp {
                 self.link = f[5] >= 0.5;
                 (f[1], 50f32.powf(x(2)), f[3], f[4])
             }
-            // Input gain 0..=+24 dB into a 0 dBFS ceiling; release
-            // 1..=1000 ms. Values are 0..1 by assumption (unverified layout).
+            // Input gain (dB) into a 0 dBFS ceiling; release (ms). ANALOG
+            // STRINGS stores 0.0005 and 10.
             Kind::Limiter => {
-                self.input = db(24.0 * x(0));
-                (-0.1, 1000.0, 0.01, 1000f32.powf(x(1)))
+                self.input = db(f[0].clamp(-24.0, 24.0));
+                (-0.1, 1000.0, 0.01, f[1].max(0.1))
             }
             // SSL bus compressor: threshold ±15 dB, stepped ratio, attack
             // and release; makeup 0..=+20 dB, mix.
