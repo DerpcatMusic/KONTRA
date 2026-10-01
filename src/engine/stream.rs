@@ -686,6 +686,8 @@ struct Decoded {
     blocks: HashMap<(usize, u64), (Arc<Source>, Box<[Frame]>)>,
     order: VecDeque<(usize, u64)>,
     clock: u64,
+    decode_failures: u64,
+    last_error: Option<Instant>,
     #[cfg(test)]
     decodes: usize,
 }
@@ -697,7 +699,23 @@ impl Decoded {
         self.order.clear();
     }
 
-    fn read(
+    fn read(&mut self, source: &Arc<Source>, start: u64, out: &mut [Frame]) -> anyhow::Result<()> {
+        let result = self.read_frames(source, start, out);
+        if let Err(error) = &result {
+            self.decode_failures += 1;
+            // One summary per decoder worker/second, including suppressed failures.
+            if self.last_error.is_none_or(|last| last.elapsed() >= Duration::from_secs(1)) {
+                self.last_error = Some(Instant::now());
+                crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "streaming", "decode_failed", serde_json::json!({
+                    "path":source.path(), "frame":start, "decode_failures":self.decode_failures,
+                    "reason":format!("{error:#}"), "fallback":"silence",
+                }));
+            }
+        }
+        result
+    }
+
+    fn read_frames(
         &mut self,
         source: &Arc<Source>,
         mut start: u64,
@@ -818,4 +836,22 @@ mod tests {
             assert_eq!(*frame, [f32::from_bits(bits as u32), f32::from_bits((bits >> 32) as u32)]);
         }
     }
+    #[test]
+    fn streamed_decode_failure_silences_audio_and_throttles_reports() {
+        let path = std::env::temp_dir().join(format!("kontra-stream-broken-{}.wav", std::process::id()));
+        std::fs::write(&path, [0u8; 256]).unwrap();
+        let source = Arc::new(crate::audio::Sources::default().source(&path).unwrap());
+        let mut worker = Worker::new();
+        let run = PlayMap { start:0, end:64, reverse:false, looped:None }.run(0, 0).unwrap();
+        worker.frames[..64].fill([1.0; 2]);
+        worker.decode_run(Some(&source), &run, 0, 64);
+        assert!(worker.frames[..64].iter().all(|f| *f == [0.0; 2]));
+        assert_eq!(worker.decoded.decode_failures, 1);
+        let first = worker.decoded.last_error.unwrap();
+        worker.decode_run(Some(&source), &run, 0, 64);
+        assert_eq!(worker.decoded.decode_failures, 2);
+        assert_eq!(worker.decoded.last_error, Some(first), "repeated failures retain counters without formatting/log spam");
+        std::fs::remove_file(path).unwrap();
+    }
+
 }
