@@ -921,6 +921,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let c = control(m, id)?;
             if p == b::CONTROL_PAR_VALUE {
                 set_value(m, c, value);
+            } else if let Some(unit) = b::named("$KNOB_UNIT_", value).filter(|_| p == b::CONTROL_PAR_UNIT) {
+                // The UI reads units by name.
+                m.slot.ui.controls[c].set_str(p, unit);
             } else {
                 m.slot.ui.controls[c].set_int(p, value);
             }
@@ -1004,6 +1007,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             } else {
                 match m.slot.ui.controls[c].get(p) {
                     Some(Prop::Int(n)) => *n,
+                    Some(Prop::Str(s)) if p == b::CONTROL_PAR_UNIT => b::constant(s).unwrap_or(0),
                     _ => 0,
                 }
             };
@@ -1068,7 +1072,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 HidePart => b::CONTROL_PAR_HIDE,
                 _ => return Ok(Step::Next),
             };
-            match m.prog.symbol_name(value).filter(|_| f == SetKnobUnit) {
+            match b::named("$KNOB_UNIT_", value).filter(|_| f == SetKnobUnit) {
                 Some(name) => m.slot.ui.controls[c].set_str(p, name),
                 None => m.slot.ui.controls[c].set_int(p, value),
             }
@@ -1259,7 +1263,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                     return Ok(Step::Next);
                 }
             }
-            let shown = match m.prog.symbol_name(value) {
+            // The keyboard reads colors and types by name.
+            let family = if f == SetKeyColor { "$KEY_COLOR_" } else { "$NI_KEY_TYPE_" };
+            let shown = match b::named(family, value) {
                 Some(name) if f != SetKeyPressed => Value::Text(name.to_owned()),
                 _ => Value::Int(value),
             };
@@ -1307,6 +1313,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                     }
                 }) {
                     Some(Value::Int(n)) => *n,
+                    Some(Value::Text(name)) => b::constant(name).unwrap_or(0),
                     _ => 0,
                 },
             };

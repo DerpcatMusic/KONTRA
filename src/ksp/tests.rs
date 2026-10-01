@@ -45,6 +45,16 @@ fn control_ids_follow_declaration_order() {
 }
 
 #[test]
+fn unit_and_key_constants_have_small_values_and_keep_their_names() {
+    let mut host = HostState::default();
+    let source = "on init\ndeclare %per_unit[7]\ndeclare ui_knob $k(0,100,1)\ndeclare ui_label $l(1,1)\n%per_unit[$KNOB_UNIT_ST] := 5\nset_knob_unit($k,$KNOB_UNIT_HZ)\nset_key_color(61,$KEY_COLOR_RED)\nset_key_type(61,$NI_KEY_TYPE_CONTROL)\nset_control_par(get_ui_id($k),$CONTROL_PAR_UNIT,$KNOB_UNIT_MS)\nset_text($l,%per_unit[6] & get_control_par(get_ui_id($k),$CONTROL_PAR_UNIT) & get_key_color(61) & get_key_type(61) & $KEY_COLOR_BLACK)\nend on";
+    let ui = initialize_with_host(source, 0, 0, &mut host).unwrap();
+    assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "540120");
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_UNIT"), "$KNOB_UNIT_MS");
+    assert_eq!(host.keyboard[&61].color, Some(crate::ksp::Value::Text("$KEY_COLOR_RED".into())));
+}
+
+#[test]
 fn shared_host_services_are_scoped_and_transactional() {
     let mut host = HostState::default();
     let first = "on init\npgs_create_key(MIC_LEVEL,2)\npgs_set_key_val(MIC_LEVEL,1,73)\npgs_create_str_key(PRESET_NAME)\npgs_set_str_key_val(PRESET_NAME,\"Warm\")\nset_key_pressed(60,1)\nset_key_pressed_support(1)\nset_key_pressed(61,1)\nset_key_name(61,\"Keyswitch\")\nset_key_color(61,$KEY_COLOR_RED)\nset_key_type(61,$NI_KEY_TYPE_CONTROL)\nset_listener($NI_SIGNAL_TIMER_MS,1000)\nchange_listener_par($NI_SIGNAL_TIMER_MS,2000)\nend on";

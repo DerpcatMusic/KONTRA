@@ -455,8 +455,75 @@ pub fn real_constant(name: &str) -> Option<f64> {
     }
 }
 
+/// Enumerations scripts index arrays with or compare against, so they need Kontakt's
+/// small values rather than opaque ones. The KSP reference lists each family in
+/// this order without numbers; positions from 0 are assumed. The filter types are
+/// the type ids NKIs store (`audits/EFFECTS.md`); `$ENGINE_PAR_EFFECT_SUBTYPE`
+/// does not reach the filters yet, and the AR ids are a low-confidence match.
+const VALUED: &[(&str, i32)] = &[
+    ("$KNOB_UNIT_NONE", 0),
+    ("$KNOB_UNIT_DB", 1),
+    ("$KNOB_UNIT_HZ", 2),
+    ("$KNOB_UNIT_PERCENT", 3),
+    ("$KNOB_UNIT_MS", 4),
+    ("$KNOB_UNIT_OCT", 5),
+    ("$KNOB_UNIT_ST", 6),
+    ("$KEY_COLOR_RED", 0),
+    ("$KEY_COLOR_ORANGE", 1),
+    ("$KEY_COLOR_LIGHT_ORANGE", 2),
+    ("$KEY_COLOR_WARM_YELLOW", 3),
+    ("$KEY_COLOR_YELLOW", 4),
+    ("$KEY_COLOR_LIME", 5),
+    ("$KEY_COLOR_GREEN", 6),
+    ("$KEY_COLOR_MINT", 7),
+    ("$KEY_COLOR_CYAN", 8),
+    ("$KEY_COLOR_TURQUOISE", 9),
+    ("$KEY_COLOR_BLUE", 10),
+    ("$KEY_COLOR_PLUM", 11),
+    ("$KEY_COLOR_VIOLET", 12),
+    ("$KEY_COLOR_PURPLE", 13),
+    ("$KEY_COLOR_MAGENTA", 14),
+    ("$KEY_COLOR_FUCHSIA", 15),
+    ("$KEY_COLOR_DEFAULT", 16),
+    ("$KEY_COLOR_INACTIVE", 17),
+    ("$KEY_COLOR_NONE", 18),
+    ("$KEY_COLOR_WHITE", 19),
+    ("$KEY_COLOR_BLACK", 20),
+    ("$NI_KEY_TYPE_DEFAULT", 0),
+    ("$NI_KEY_TYPE_CONTROL", 1),
+    ("$NI_KEY_TYPE_NONE", 2),
+    ("$FILTER_TYPE_LP1POLE", 0),
+    ("$FILTER_TYPE_HP1POLE", 1),
+    ("$FILTER_TYPE_LP2POLE", 2),
+    ("$FILTER_TYPE_HP2POLE", 3),
+    ("$FILTER_TYPE_BP2POLE", 4),
+    ("$FILTER_TYPE_LP4POLE", 5),
+    ("$FILTER_TYPE_HP4POLE", 6),
+    ("$FILTER_TYPE_BP4POLE", 7),
+    ("$FILTER_TYPE_BR4POLE", 8),
+    ("$FILTER_TYPE_LP6POLE", 9),
+    ("$FILTER_TYPE_VERSATILE", 19),
+    ("$FILTER_TYPE_AR_LP2", 52),
+    ("$FILTER_TYPE_AR_BP2", 53),
+    ("$FILTER_TYPE_AR_HP2", 54),
+    ("$FILTER_TYPE_AR_LP4", 55),
+    ("$FILTER_TYPE_AR_BP4", 56),
+    ("$FILTER_TYPE_AR_HP4", 57),
+];
+
+/// The name in a `VALUED` family (`"$KEY_COLOR_"`) that has this value.
+pub fn named(family: &str, value: i32) -> Option<&'static str> {
+    VALUED
+        .iter()
+        .find(|(n, v)| *v == value && n.starts_with(family))
+        .map(|(n, _)| *n)
+}
+
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
+    if let Some(&(_, v)) = VALUED.iter().find(|(n, _)| *n == name) {
+        return Some(v);
+    }
     if let Some(v) = crate::fx::ksp_effect_type(name) {
         return Some(v);
     }
