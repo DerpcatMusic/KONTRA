@@ -302,9 +302,79 @@ impl SamplerParams {
     fn port_names_revision(&self) -> u64 {
         self.shared.port_names_revision.load(Ordering::Acquire)
     }
+
+    /// Support context: call on an export worker, never paint or process.
+    pub(crate) fn diagnostic_report(&self) -> serde_json::Value {
+        drain_audio_diagnostics(self);
+        let selection = self.selection.read().unwrap().clone();
+        let view = self.shared.view.lock().unwrap();
+        let parts: Vec<_> = selection.parts.iter().take(RACK_SLOTS).enumerate().map(|(slot, part)| {
+            let v = &view.parts[slot];
+            serde_json::json!({
+                "slot":slot, "path":part.path, "program":part.program, "name":part.name,
+                "port":part.port, "channel":part.channel, "output":part.output,
+                "aux":part.aux, "mic_buses":part.mic_buses, "mic_names":part.mic_names,
+                "gain":part.gain, "pan":part.pan, "tune":part.tune, "mute":part.mute, "solo":part.solo,
+                "articulation":part.articulate, "mpe":part.mpe, "timing":part.timing,
+                "streaming":part.streaming(selection.streaming), "generation":self.shared.generation[slot].load(Ordering::Relaxed),
+                "script_epoch":v.script_epoch, "status":v.status, "load":v.load_report.as_deref(),
+                "runtime_status":v.runtime_status,
+            })
+        }).collect();
+        let audio = *self.shared.diagnostic_latest.lock().unwrap();
+        let context = serde_json::json!({
+            "instance_id":self.shared.instance_id, "build":crate::build_info::BUILD,
+            "host":{"sample_rate":self.shared.rate(), "audio":audio},
+            "rack":{"parts":parts, "buses":selection.buses, "outputs":selection.outputs,
+                "auto_align":selection.auto_align, "align_transport_only":selection.align_transport_only,
+                "midi_thru":selection.midi_thru},
+            "audio_snapshots_dropped":self.shared.diagnostic_dropped.load(Ordering::Relaxed),
+            "keyboard":{"heard":self.shared.heard.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<_>>(),
+                "played":self.shared.played.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<_>>()},
+            "memory":{"resident_bytes":crate::engine::resident_bytes(), "budget_bytes":crate::engine::memory_budget()},
+        });
+        drop(view);
+        let mut context = context;
+        context["log_flush_error"] = serde_json::json!(crate::diagnostics::flush(std::time::Duration::from_secs(2)).err());
+        context
+    }
+}
+
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
+
+/// Fixed-size playback state; the audio thread only copies it into a queue.
+#[derive(Clone, Copy, serde::Serialize)]
+struct PartDiagnostics {
+    generation: u64,
+    script_epoch: u64,
+    voices: usize,
+    audible: usize,
+    underruns: u64,
+    dropped_commands: u64,
+    held_keys: [[u64; 2]; 16],
+    sustain_cc: [u8; 16],
+    sostenuto_cc: [u8; 16],
+    pending_commands: usize,
+    pending_writes: usize,
+    pending_releases: usize,
+}
+
+#[derive(Clone, Copy, serde::Serialize)]
+struct AudioDiagnostics {
+    block: u64,
+    sample_rate: f64,
+    block_size: usize,
+    output_channels: usize,
+    offline: bool,
+    output_buses: [(usize, usize); BUSES],
+    parts: [PartDiagnostics; RACK_SLOTS],
 }
 
 pub struct Shared {
+    instance_id: u64,
+    diagnostic_audio: ArrayQueue<AudioDiagnostics>,
+    diagnostic_latest: Mutex<Option<AudioDiagnostics>>,
+    diagnostic_dropped: AtomicU64,
     ready: ArrayQueue<(usize, u64, Handoff)>,
     discard: ArrayQueue<Retired>,
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
@@ -399,6 +469,8 @@ pub struct Shared {
     port_names: Mutex<routing::PortNames>,
     /// Bumped with each publication: format wrappers poll it and tell the host.
     port_names_revision: AtomicU64,
+    // Last: bank/stream queues and their workers retire before the logging worker.
+    _diagnostics: crate::diagnostics::DiagnosticLease,
 }
 /// How long an editor edit outranks a live view that disagrees with it.
 const EDIT_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
@@ -491,6 +563,10 @@ pub(crate) struct View {
 impl Default for Shared {
     fn default() -> Self {
         Self {
+            instance_id: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
+            diagnostic_audio: ArrayQueue::new(2),
+            diagnostic_latest: Mutex::new(None),
+            diagnostic_dropped: AtomicU64::new(0),
             ready: ArrayQueue::new(64),
             discard: ArrayQueue::new(64),
             snapshot_requests: ArrayQueue::new(2 * RACK_SLOTS),
@@ -543,6 +619,7 @@ impl Default for Shared {
             mics: Default::default(),
             port_names: Mutex::default(),
             port_names_revision: AtomicU64::new(0),
+            _diagnostics: crate::diagnostics::acquire(),
             view: Mutex::new(View {
                 script_epoch: 0,
                 multi_status: String::new(),
@@ -1065,11 +1142,76 @@ impl SavedMulti {
     }
 }
 
+fn trace_effects(trace: &mut crate::diagnostics::LoadTrace, instrument: &Instrument) {
+    for warning in instrument.fx.warnings() { trace.issue("effects", "unsupported_effect", warning); }
+    for (group, g) in instrument.groups.iter().enumerate() {
+        for warning in crate::engine::filter::unsupported(&g.fx) {
+            trace.issue("effects", "unsupported_group_effect", format!("Group {group} ({}): {warning}", g.name));
+        }
+    }
+}
+
+fn drain_audio_diagnostics(params: &SamplerParams) {
+    while let Some(audio) = params.shared.diagnostic_audio.pop() {
+        let mut latest = params.shared.diagnostic_latest.lock().unwrap();
+        if latest.is_some_and(|old| old.block >= audio.block) { continue }
+        let previous = *latest;
+        *latest = Some(audio);
+        drop(latest);
+        if previous.is_none_or(|old| (old.sample_rate, old.block_size, old.output_channels, old.offline, old.output_buses)
+            != (audio.sample_rate, audio.block_size, audio.output_channels, audio.offline, audio.output_buses)) {
+            crate::diagnostics::event(crate::diagnostics::LogLevel::Info, "audio", "host_audio_config", serde_json::json!({
+                "instance_id":params.shared.instance_id, "sample_rate":audio.sample_rate, "block_size":audio.block_size,
+                "output_channels":audio.output_channels, "output_buses":audio.output_buses, "offline":audio.offline,
+            }));
+        }
+        for (part, current) in audio.parts.iter().enumerate() {
+            let before = previous.map(|old| old.parts[part]).filter(|old|
+                (old.generation, old.script_epoch) == (current.generation, current.script_epoch));
+            let underruns = current.underruns.saturating_sub(before.map_or(0, |p| p.underruns));
+            let dropped = current.dropped_commands.saturating_sub(before.map_or(0, |p| p.dropped_commands));
+            if underruns == 0 && dropped == 0 { continue }
+            crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "engine", "playback_drops", serde_json::json!({
+                "instance_id":params.shared.instance_id, "part":part, "generation":current.generation,
+                "script_epoch":current.script_epoch, "underruns_delta":underruns, "dropped_commands_delta":dropped,
+                "state":current, "sample_rate":audio.sample_rate, "block_size":audio.block_size,
+                "reason":"Streamed frames arrived late or bounded script command queues overflowed; see the separate delta counters",
+            }));
+        }
+    }
+}
+
+/// Constant-size snapshots, at most once per second of audio; no logging here.
+fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, channels: usize, offline: bool, cx: &ProcessContext) {
+    if s.until_diagnostics > frames { s.until_diagnostics -= frames; return }
+    s.until_diagnostics = s.rack.parts[0].rate().max(1.0) as usize;
+    let audio = AudioDiagnostics {
+        block:p.shared.blocks.load(Ordering::Relaxed), sample_rate:s.rack.parts[0].rate(),
+        block_size:frames, output_channels:channels, offline,
+        output_buses:std::array::from_fn(|bus| cx.bus_routing.output(bus).map_or(if bus == 0 { (0, channels.min(2)) } else { (0, 0) }, |r| (r.channel_start(), r.channel_count()))),
+        parts:std::array::from_fn(|part| {
+            let e = &s.rack.parts[part];
+            let [pending_commands, pending_writes, pending_releases] = e.pending_work();
+            PartDiagnostics {
+                generation:s.installed_generation[part], script_epoch:s.script_epoch[part],
+                voices:e.active_voices(), audible:e.audible_voices(), underruns:e.underruns(), dropped_commands:e.dropped_commands(),
+                held_keys:std::array::from_fn(|channel| std::array::from_fn(|half| (0..64).fold(0, |keys, note|
+                    keys | (u64::from(e.key_down(channel as u8, (half * 64 + note) as u8)) << note)))),
+                sustain_cc:std::array::from_fn(|channel| e.cc_state()[channel][64]),
+                sostenuto_cc:std::array::from_fn(|channel| e.cc_state()[channel][66]),
+                pending_commands, pending_writes, pending_releases,
+            }
+        }),
+    };
+    if p.shared.diagnostic_audio.force_push(audio).is_some() { p.shared.diagnostic_dropped.fetch_add(1, Ordering::Relaxed); }
+}
+
 pub struct Load;
 impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
     fn run(self, params: &SamplerParams) {
+        drain_audio_diagnostics(params);
         let mut freed = false;
         while params.shared.discard.pop().is_some() {
             freed = true;
@@ -1192,6 +1334,7 @@ impl BackgroundTask for Load {
             };
             if let Some(instrument) = restore {
                 let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
+                trace.detail("instance_id", params.shared.instance_id);
                 trace.detail("operation", "script_restore");
                 trace.stage("scripts");
                 let (script, snapshot, errors) =
@@ -1208,6 +1351,7 @@ impl BackgroundTask for Load {
                 };
                 let fx = fx_rate.map(|rate| {
                     trace.stage("effects");
+                    trace_effects(&mut trace, &instrument);
                     crate::engine::effects(&instrument, script.as_deref(), rate as f32)
                 });
                 let report = trace.finish("loaded");
@@ -1288,6 +1432,7 @@ impl BackgroundTask for Load {
                 continue;
             }
             let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&part.path), part.program, Some(slot));
+            trace.detail("instance_id", params.shared.instance_id);
             trace.detail("sample_rate", params.shared.rate());
             trace.detail("streaming_requested", format!("{streaming:?}"));
             let set_stage = |trace: &mut crate::diagnostics::LoadTrace, name: &'static str| {
@@ -1389,6 +1534,7 @@ impl BackgroundTask for Load {
                 let live = script.as_deref().map(|rt| Box::new(rt.live()));
                 let rate = params.shared.rate();
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
+                trace_effects(&mut trace, &instrument);
                 let fx = crate::engine::effects(&instrument, script.as_deref(), rate as f32);
                 (instrument, bank, script, snapshot, preload, art, live, fx, rate, irs)
             });
@@ -1462,6 +1608,7 @@ impl BackgroundTask for Load {
                     if let Some(interface) = art {
                         let parent_id = params.shared.view.lock().unwrap().parts[slot].load_report.as_ref().map(|r| r["load_id"].clone());
                         let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
+                        trace.detail("instance_id", params.shared.instance_id);
                         trace.detail("operation", "artwork");
                         trace.detail("parent_load_id", parent_id);
                         trace.stage("artwork");
@@ -1503,6 +1650,7 @@ impl BackgroundTask for Load {
                     let Some((budget, controllers)) = preload else { continue };
                     let parent_id = params.shared.view.lock().unwrap().parts[slot].load_report.as_ref().map(|r| r["load_id"].clone());
                     let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
+                    trace.detail("instance_id", params.shared.instance_id);
                     trace.detail("operation", "preload");
                     trace.detail("parent_load_id", parent_id);
                     trace.stage("samples");
@@ -1560,6 +1708,7 @@ impl BackgroundTask for Load {
                         let parent_id = v.load_report.as_ref().map(|r| r["load_id"].clone());
                         drop(view);
                         let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
+                        trace.detail("instance_id", params.shared.instance_id);
                         trace.detail("operation", "ram_fill");
                         trace.detail("parent_load_id", parent_id);
                         trace.stage("samples");
@@ -1779,6 +1928,7 @@ pub struct Dsp {
     audition_left: [usize; RACK_SLOTS],
     /// Epoch of each slot's installed runtime, returned with its persistence snapshots.
     script_epoch: [u64; RACK_SLOTS],
+    installed_generation: [u64; RACK_SLOTS],
     /// The lent live view and persistence snapshot being refreshed, a budget
     /// a block: slot, epoch and [`Runtime::changes`] at the start, buffer, progress.
     live: Option<Lent<Box<Live>>>,
@@ -1798,6 +1948,9 @@ pub struct Dsp {
     load: f32,
     /// Notes held back so every part's attacks land on the grid.
     align: Align,
+    until_diagnostics: usize,
+    // Created off-thread with the rack, never acquired or replaced by reset/process.
+    _diagnostics: crate::diagnostics::DiagnosticLease,
 }
 struct KeySlots([u32; 128]);
 impl Default for KeySlots {
@@ -2095,6 +2248,7 @@ impl PluginLogic for Sampler {
             .rate
             .store(c.sample_rate.to_bits(), Ordering::Release);
         s.until_poll = 0;
+        s.until_diagnostics = 0;
         s.audition_left.fill(0);
         s.key_slots.0.fill(0);
         s.align.clear();
@@ -2165,6 +2319,7 @@ impl PluginLogic for Sampler {
                 } if current => {
                     engine.reset(rate);
                     s.script_epoch[slot] = epoch;
+                    s.installed_generation[slot] = generation;
                     Retired {
                         script: engine.set_script(script),
                         bank: engine.set_bank(bank),
@@ -2545,6 +2700,7 @@ impl PluginLogic for Sampler {
                 e.load = s.load;
             }
         }
+        capture_audio_diagnostics(s, p, frames, channels, offline, cx);
         ProcessStatus::Normal
     }
     fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
@@ -3554,6 +3710,7 @@ end on"#.into()],
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:0");
+        crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
         let journal = std::fs::read_to_string(crate::diagnostics::log_path().unwrap()).unwrap();
         assert!(journal.lines().any(|line| {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return false };
@@ -4408,4 +4565,47 @@ end on"
         assert!(plan.on && plan.latency_ms > 20.0);
         assert!(told.elapsed() >= LATENCY_SETTLE - std::time::Duration::from_millis(200));
     }
+    #[test]
+    fn diagnostics_audio_handoff_is_bounded_and_reports_held_channel_state() {
+        let p = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
+        dsp.rack.parts[0].note_on(2, 60, 100);
+        dsp.rack.parts[0].cc(2, 64, 127);
+        dsp.rack.parts[0].cc(2, 66, 127);
+        dsp.installed_generation[0] = 41;
+        p.shared.generation[0].store(42, Ordering::Relaxed);
+        let mut outputs = vec![vec![0f32; 128]; 2];
+        let mut refs: Vec<_> = outputs.iter_mut().map(|o| o.as_mut_slice()).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 128);
+        let transport = TransportInfo::default();
+        let events = EventList::with_capacity(0);
+        let mut midi_out = EventList::with_capacity(0);
+        let mut cx = ProcessContext::new(&transport, 48000., 128, &mut midi_out);
+        assert_eq!(allocations(|| {
+            for _ in 0..3 {
+                dsp.until_diagnostics = 0;
+                Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
+            }
+        }), 0, "diagnostic capture must not allocate, format or free on audio");
+        assert_eq!(p.shared.diagnostic_audio.len(), 2);
+        assert_eq!(p.shared.diagnostic_dropped.load(Ordering::Relaxed), 1);
+        drain_audio_diagnostics(&p);
+        let audio = p.shared.diagnostic_latest.lock().unwrap().unwrap();
+        assert_eq!((audio.block, audio.sample_rate, audio.block_size, audio.output_channels), (3, 48000., 128, 2));
+        assert_eq!(audio.parts[0].generation, 41, "reports the playing generation, not a queued load");
+        assert!(audio.parts[0].voices > 0 && audio.parts[0].held_keys[2][0] & (1 << 60) != 0);
+        assert_eq!((audio.parts[0].sustain_cc[2], audio.parts[0].sostenuto_cc[2]), (127, 127));
+        p.selection.write().unwrap().parts = vec![Part { path:"/missing-kontra-diagnostic-hooks/instrument.nki".into(), channel:2, ..Default::default() }];
+        Load.run(&p);
+        let context = p.diagnostic_report();
+        assert_eq!(context["instance_id"], p.shared.instance_id);
+        assert_eq!(context["rack"]["parts"][0]["channel"], 2);
+        assert_eq!(context["rack"]["parts"][0]["load"]["status"], "failed");
+        assert!(context["rack"]["parts"][0]["load"]["issues"][0]["message"].as_str().is_some());
+        assert_eq!(context["host"]["audio"]["block"], 3);
+        assert!(context["log_flush_error"].is_null());
+        assert_ne!(p.shared.instance_id, SamplerParams::new().shared.instance_id);
+    }
+
 }

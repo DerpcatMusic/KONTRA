@@ -1,6 +1,18 @@
 const OUTPUT_ENV: &str = "MOOSE_STANDALONE_OUTPUT";
 
 fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("--version" | "-V") => {
+            println!("{}", kontakto::build_info::SUMMARY);
+            return;
+        }
+        Some("--build-info") => {
+            print!("{}", kontakto::build_info::MANIFEST_JSON);
+            return;
+        }
+        _ => {}
+    }
+    let _diagnostics = kontakto::diagnostics::acquire();
     prefer_sound_server();
     moose_standalone::run::<kontakto::Plugin>();
 }

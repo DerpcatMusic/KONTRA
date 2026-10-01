@@ -621,3 +621,64 @@ fn nis_and_raw_chunks_roundtrip_without_losing_opaque_metadata() {
         assert!(SubtreeItem::read(Cursor::new(bytes)).is_err());
     }
 }
+
+#[test]
+fn nested_nis_lengths_cannot_consume_bytes_outside_their_declared_body() {
+    use ni_file::nis::{ItemContainer, SubtreeItem};
+    fn header(length: u64) -> Vec<u8> {
+        let mut out = length.to_le_bytes().to_vec();
+        out.extend(1u32.to_le_bytes());out.extend(b"hsin");out.extend([0;24]);out
+    }
+    fn data_header(length: u64, id: u32) -> Vec<u8> {
+        let mut out = length.to_le_bytes().to_vec();
+        out.extend(b"DSIN");out.extend(id.to_le_bytes());out.extend(1u32.to_le_bytes());out
+    }
+    let empty_children = [1u32.to_le_bytes(), 0u32.to_le_bytes()].concat();
+    let mut invalid_layer = header(88);
+    invalid_layer.extend(data_header(40, 0x9876));
+    invalid_layer.extend(data_header(21, 1)); // its enclosing layer permits only the 20-byte header
+    invalid_layer.extend(&empty_children);
+    assert!(ItemContainer::read(Cursor::new(&invalid_layer)).is_err());
+    assert!(SubtreeItem { inner_data: invalid_layer }.item().is_err());
+
+    let mut child = header(72); // only 68 child bytes are actually inside the parent
+    child.extend(data_header(20, 1));child.extend(&empty_children);
+    let mut parent = header(148);
+    parent.extend(data_header(20, 1));parent.extend(1u32.to_le_bytes());parent.extend(1u32.to_le_bytes());
+    parent.extend([0;12]);parent.extend(child);
+    parent.extend([0xaa;4]); // bytes after the declared parent must not satisfy the child
+    assert!(ItemContainer::read(Cursor::new(&parent)).is_err());
+    assert!(SubtreeItem { inner_data: parent }.item().is_err());
+
+    let mut valid = header(68);valid.extend(data_header(20, 1));valid.extend(empty_children);
+    let mut cursor = Cursor::new(&valid);
+    ItemContainer::read(&mut cursor).unwrap();assert_eq!(cursor.position(), 68);
+    for length in 0..valid.len() {
+        assert!(SubtreeItem { inner_data: valid[..length].to_vec() }.item().is_err());
+    }
+}
+
+#[test]
+fn generic_nis_read_reuses_detection_and_preserves_stream_consumption() {
+    use ni_file::NIFile;
+    use std::io::{Read, Seek, SeekFrom};
+    struct Counted { bytes: Cursor<Vec<u8>>, read: usize }
+    impl Read for Counted {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.bytes.read(out)?;self.read += n;Ok(n)
+        }
+    }
+    impl Seek for Counted {
+        fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> { self.bytes.seek(from) }
+    }
+    let mut bytes = 68u64.to_le_bytes().to_vec();
+    bytes.extend(1u32.to_le_bytes());bytes.extend(b"hsin");bytes.extend([0;24]);
+    bytes.extend(20u64.to_le_bytes());bytes.extend(b"DSIN");bytes.extend(1u32.to_le_bytes());bytes.extend(1u32.to_le_bytes());
+    bytes.extend(1u32.to_le_bytes());bytes.extend(0u32.to_le_bytes());
+    let mut reader = Counted { bytes: Cursor::new(bytes.clone()), read: 0 };
+    assert!(matches!(NIFile::read(&mut reader).unwrap(), NIFile::NISoundContainer(_)));
+    assert_eq!(reader.read, bytes.len() + 4); // one signature probe and one complete parse
+    assert_eq!(reader.bytes.position(), bytes.len() as u64);
+    bytes[60..64].copy_from_slice(&2u32.to_le_bytes()); // corrupt child-list version
+    assert!(NIFile::read(Cursor::new(&bytes)).is_err());
+}

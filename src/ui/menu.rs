@@ -100,6 +100,8 @@ pub enum Command {
     Pin(String),
     SaveMulti,
     Browser,
+    Logs,
+    About,
     Keyboard,
     Panic,
     /// Where the rack's samples play from.
@@ -512,6 +514,8 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             let mut items = vec![
                 check("Browser", cx.state.browser, Command::Browser),
                 check("Keyboard", cx.state.keyboard, Command::Keyboard),
+                act("Logs and support report…", "", Command::Logs),
+                act("About KONTRA…", "", Command::About),
                 Item::Rule,
                 act("Library folders…", "", Command::Folders),
                 act("Rescan libraries", "", Command::Rescan),
@@ -716,7 +720,7 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
     match command {
         Command::Open(path) => cx.open(Path::new(&path)),
         Command::OpenNew(path) => cx.add(path),
-        Command::Reveal(path) => reveal(Path::new(&path)),
+        Command::Reveal(path) => { if let Err(error) = reveal(Path::new(&path)) { cx.state.notice = error; } },
         Command::CopyPath(path) => ui.set_clipboard(path),
         Command::Favorite(path) => cx.toggle_favorite(&path),
         Command::Duplicate(slot) => cx.duplicate(slot),
@@ -796,6 +800,8 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             }
         }
         Command::Browser => cx.state.browser ^= true,
+        Command::Logs => cx.state.tab = super::Tab::Logs,
+        Command::About => { cx.state.tab = super::Tab::Logs; cx.state.logs.about = true; },
         Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::ArtworkBlur => cx.selection.sharp_artwork ^= true,
         Command::StickyHeaders => cx.selection.sticky_off ^= true,
@@ -885,7 +891,7 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
 }
 
 /// Show `path` in the system's file manager.
-fn reveal(path: &Path) {
+pub fn reveal(path: &Path) -> Result<(), String> {
     let folder = path.parent().unwrap_or(path);
     #[cfg(target_os = "macos")]
     let spawned = std::process::Command::new("open").arg("-R").arg(path).spawn();
@@ -897,7 +903,7 @@ fn reveal(path: &Path) {
     let spawned = std::process::Command::new("xdg-open").arg(folder).spawn();
     let _ = folder;
     // Reap it off this thread so it leaves no zombie behind.
-    if let Ok(mut child) = spawned {
-        std::thread::spawn(move || child.wait());
-    }
+    let mut child = spawned.map_err(|e| format!("Could not open the log/file folder: {e}"))?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }

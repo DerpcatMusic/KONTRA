@@ -1,0 +1,5 @@
+[toolchain]
+# Match the compiler observed in the successful 2026-10-01 CI baseline.
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

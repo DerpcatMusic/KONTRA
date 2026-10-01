@@ -606,6 +606,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 par::VOLUME => set_voice_par(m, id, VoicePar::VolumeMdb, value, false),
                 par::TUNE => set_voice_par(m, id, VoicePar::TuneMc, value, false),
                 par::PAN => set_voice_par(m, id, VoicePar::Pan, value, false),
+                par::ZONE_ID => m.env.note("set_event_par: EVENT_PAR_ZONE_ID is read-only"),
                 _ => {
                     for k in 0..targets(m, id) {
                         let id = m.env.targets[k];
@@ -617,7 +618,6 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                             par::NOTE if !e.at_engine => e.note = value.clamp(0, 127),
                             par::VELOCITY if !e.at_engine => e.velocity = value.clamp(1, 127),
                             par::MIDI_CHANNEL if !e.at_engine && (0..16).contains(&value) => e.channel = value as u8,
-                            par::ZONE_ID => e.zone = value,
                             _ => m.env.note("set_event_par: parameter not settable here"),
                         }
                     }
@@ -628,13 +628,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         GetEventPar => {
             let [id, p] = ints(m);
             let v = m.env.events.get(id).map_or(0, |e| match p {
-                // Only a sounding voice has a zone; scripts read 0 as "voice gone" to
-                // retire tracked notes (legato scripts pick the transition from them).
-                // A released event reads 0 at once, though its tail may still sound.
-                // ponytail: the engine does not report which zone a voice plays, so a
-                // normally mapped voice reads 1; plumb the zone index if a script needs it.
-                par::ZONE_ID if !e.voice.is_some_and(|v| m.engine.voice_active(v)) => 0,
-                par::ZONE_ID => e.zone.max(1),
+                par::ZONE_ID => e.voice.filter(|_| e.live).map_or(0, |v| {
+                    m.engine.voice_zone(v).unwrap_or(if e.zone < 0 { -1 } else { 0 })
+                }),
                 par::PAR_0..=par::PAR_3 => e.pars[p as usize],
                 par::VOLUME => e.volume,
                 par::TUNE => e.tune,
@@ -877,6 +873,16 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             }
             let miss = if f == FindGroup { 0 } else { b::NOT_FOUND };
             push_int(m, found.map_or(miss, |g| g as i32))
+        }
+        GetNumZones => {
+            let count = m.engine.zone_count() as i32;
+            push_int(m, count)
+        }
+        GetZoneId => {
+            let [index] = ints(m);
+            let id = usize::try_from(index).ok().and_then(|i| m.engine.zone_id(i));
+            if id.is_none() { m.env.note("get_zone_id: zone index out of range"); }
+            push_int(m, id.unwrap_or(-1))
         }
         GroupName => {
             let [g] = ints(m);

@@ -5,7 +5,7 @@ pub use item_data_header::*;
 pub use item_type::*;
 
 use crate::{read_bytes::ReadBytesExt, Error};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Write};
 
 #[derive(Clone, Debug)]
 pub struct ItemData {
@@ -58,29 +58,42 @@ impl ItemData {
             .and_then(|n| usize::try_from(n).ok())
             .ok_or(Error::Static("Invalid NIS item data length"))?;
 
-        match header.item_type() {
-            ItemType::Item => {
-                let data = reader.read_bytes(length)?;
-
-                Ok(Self {
-                    header,
-                    inner: None,
-                    data,
-                })
-            }
-            _ => {
-                let mut buf = Cursor::new(reader.read_bytes(length)?);
-                let inner = ItemData::read(&mut buf)?;
-                let mut data = Vec::new();
-                buf.read_to_end(&mut data)?;
-
-                Ok(Self {
-                    header,
-                    inner: Some(Box::new(inner)),
-                    data,
-                })
-            }
+        let body = reader.read_bytes(length)?;
+        if header.item_type() == ItemType::Item {
+            return Ok(Self {
+                header,
+                inner: None,
+                data: body,
+            });
         }
+        Self::read_body(header, &body)
+    }
+
+    pub(crate) fn read_cursor(reader: &mut Cursor<&[u8]>) -> Result<Self, Error> {
+        let header = ItemDataHeader::read(&mut *reader)?;
+        let length = header
+            .length
+            .checked_sub(20)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or(Error::Static("Invalid NIS item data length"))?;
+        let body = super::read_slice(reader, length)?;
+        Self::read_body(header, body)
+    }
+
+    fn read_body(header: ItemDataHeader, body: &[u8]) -> Result<Self, Error> {
+        let mut reader = Cursor::new(body);
+        let inner = if header.item_type() == ItemType::Item {
+            None
+        } else {
+            Some(Box::new(Self::read_cursor(&mut reader)?))
+        };
+        let remaining = body.len() - reader.position() as usize;
+        let data = reader.read_bytes(remaining)?;
+        Ok(Self {
+            header,
+            inner,
+            data,
+        })
     }
 }
 

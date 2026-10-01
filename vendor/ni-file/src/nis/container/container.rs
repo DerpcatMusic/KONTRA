@@ -1,4 +1,4 @@
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 
 use crate::{read_bytes::ReadBytesExt, Error, NIFileError};
 
@@ -24,9 +24,24 @@ impl ItemContainer {
             .checked_sub(40)
             .and_then(|n| usize::try_from(n).ok())
             .ok_or(Error::Static("Invalid NIS item length"))?;
-        let mut chunk_data = Cursor::new(reader.read_bytes(length)?);
+        let body = reader.read_bytes(length)?;
+        Self::read_body(header, &body)
+    }
 
-        let data = ItemData::read(&mut chunk_data)?;
+    pub(crate) fn read_cursor(reader: &mut Cursor<&[u8]>) -> Result<Self, Error> {
+        let header = ItemHeader::read(&mut *reader)?;
+        let length = header
+            .length
+            .checked_sub(40)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or(Error::Static("Invalid NIS item length"))?;
+        let body = super::read_slice(reader, length)?;
+        Self::read_body(header, body)
+    }
+
+    fn read_body(header: ItemHeader, body: &[u8]) -> Result<Self, Error> {
+        let mut chunk_data = Cursor::new(body);
+        let data = ItemData::read_cursor(&mut chunk_data)?;
         let (children, child_headers) = Self::read_children(&mut chunk_data)?;
         let trailing_data = chunk_data.read_all()?;
         Ok(Self {
@@ -128,8 +143,8 @@ impl ItemContainer {
         self.find_data(&kind).map(I::try_from)
     }
 
-    fn read_children<R: ReadBytesExt>(
-        mut buf: R,
+    fn read_children(
+        buf: &mut Cursor<&[u8]>,
     ) -> Result<(Vec<ItemContainer>, Vec<[u8; 12]>), Error> {
         let version = buf.read_u32_le()?;
         if version != 1 {
@@ -144,7 +159,7 @@ impl ItemContainer {
         for _ in 0..num_children {
             let mut header = [0; 12];
             buf.read_exact(&mut header)?;
-            children.push(ItemContainer::read(&mut buf)?);
+            children.push(ItemContainer::read_cursor(buf)?);
             headers.push(header);
         }
         Ok((children, headers))

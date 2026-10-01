@@ -29,6 +29,7 @@ mod fitted;
 mod header;
 mod instrument;
 mod keyboard;
+mod logs;
 mod menu;
 mod mixer;
 mod panel;
@@ -188,6 +189,8 @@ impl Watch {
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
+        crate::diagnostics::revision().hash(&mut h);
+        logs::wake().hash(&mut h);
         p.shared.focus_request.load(Ordering::Relaxed).hash(&mut h);
         // The wheels follow incoming MIDI as it moves them.
         p.shared.bend.load(Ordering::Relaxed).hash(&mut h);
@@ -325,6 +328,7 @@ enum Tab {
     Mapping,
     Sound,
     Info,
+    Logs,
 }
 
 /// Editor-only state that outlives a frame but not the window.
@@ -371,6 +375,7 @@ struct EditorState {
     cursor: Option<String>,
     /// The browser's library filter, scroll and rows.
     browse: browser::Browse,
+    logs: logs::State,
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
     /// A bus's name while it is being edited.
@@ -859,6 +864,7 @@ fn build(
         menu: None,
         cursor: None,
         browse: Default::default(),
+        logs: Default::default(),
         renaming: None,
         renaming_bus: None,
         inline: None,
@@ -1134,6 +1140,7 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         (Tab::Mapping, "Mapping", "tab-mapping"),
         (Tab::Sound, "Sound", "tab-sound"),
         (Tab::Info, "Info", "tab-info"),
+        (Tab::Logs, "Logs", "tab-logs"),
     ] {
         let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
         if hit {
@@ -1165,6 +1172,8 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         content.push(rack::view(ui, cx));
     } else if cx.state.tab == Tab::Mixer {
         content.push(mixer::view(ui, cx, bridge));
+    } else if cx.state.tab == Tab::Logs {
+        content.push(logs::view(ui, cx));
     } else if cx.part().is_none() {
         content.push(instrument::welcome(cx));
     } else {

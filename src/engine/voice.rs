@@ -919,6 +919,7 @@ pub(crate) struct Plan {
 /// One playing zone. Plain data; the engine owns the storage.
 pub(crate) struct Voice {
     pub event: EventId,
+    pub zone_id: u32,
     pub group: u32,
     pub voice_group: Option<u16>,
     pub channel: u8,
