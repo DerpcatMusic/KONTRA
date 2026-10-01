@@ -1,0 +1,8 @@
+[profile.default]
+# Real library tests can each load gigabytes; avoid exhausting a workstation.
+test-threads = 2
+retries = 0
+failure-output = "immediate-final"
+
+[profile.ci]
+fail-fast = false
