@@ -443,13 +443,13 @@ impl Bank {
         trace.mark("resolve");
         // Progress runs on from where the caller left it: opening every
         // sample takes the first tenth of the rest, reading them the others
-        // by frames read. Only ever rises.
+        // by frames read. Only ever rises; completion waits for a finished bank.
         let base = progress.load(Ordering::Relaxed).min(LOAD_DONE) as usize;
         let reads_from = base + (LOAD_DONE as usize - base) / 10;
         let advance = |done: &AtomicUsize, of: usize, add: usize, (from, to): (usize, usize)| {
             let n = done.fetch_add(add, Ordering::Relaxed) + add;
             let at = from + (to - from) * n.min(of) / of.max(1);
-            progress.fetch_max(at as u32, Ordering::Relaxed);
+            progress.fetch_max(at.min(LOAD_DONE as usize - 1) as u32, Ordering::Relaxed);
         };
         let opens = AtomicUsize::new(0);
         let opened = if let Some(headers) = cached.as_ref() {
@@ -557,7 +557,6 @@ impl Bank {
             },
         );
         check()?;
-        progress.store(LOAD_DONE, Ordering::Relaxed);
         trace.mark("read");
         let mut samples = Vec::with_capacity(decoded.len());
         let mut streamed = Vec::with_capacity(decoded.len());
@@ -622,6 +621,8 @@ impl Bank {
             None
         };
         audio::trim_heap();
+        check()?;
+        progress.store(LOAD_DONE, Ordering::Relaxed);
         Ok(bank)
     }
 
