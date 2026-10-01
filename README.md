@@ -116,7 +116,7 @@ pass `--target-cpu baseline` for older CPUs.
 
 ```sh
 bacon                       # compilation while editing; no tests
-bacon parity                # explicitly run two focused KSP regressions
+bacon parity                # explicitly run three focused KSP regressions
 ```
 
 Both jobs use an isolated `artifacts/check` cache. The parity job uses
@@ -173,9 +173,9 @@ bacon parity
 Pinned nightly Cranelift failed a `catch_unwind` smoke test on this machine; the same source passed with LLVM. It is therefore not enabled for plugin development. `tools/pgo.sh build` now trains from an explicit `KONTRA_PGO_PRESETS` file (one preset path per line), records results, fails on requested training-load errors, and rejects cross-target training. It defaults to portable CPU code and does not install plugins unless `install` is explicitly requested. PGO gains still require comparable playback and holdout measurements; the script does not guarantee a percentage. BOLT, nightly dependency hints and size-first standard-library builds remain experiments, rather than default shipping settings. Compiler guidance: [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html), [build performance](https://doc.rust-lang.org/cargo/guide/build-performance.html), and [rustc PGO](https://doc.rust-lang.org/rustc/profile-guided-optimization.html).
 
 
-The browser now has separate library and preset searches. With no preset search, a selected library shows its actual folders; entering a search reaches nested presets. Right-click a library to move it up/down; the order survives restarts. The `+` menu resets the order to A–Z. Preset rows mount around the viewport instead of building every widget in a large library, and both panes move three times the incoming wheel distance.
+The browser has separate library and preset searches, persistent custom ordering and pins, recent/vendor/name sorting, and a folder tree with breadcrumbs and keyboard navigation. Both library and preset panes render visible rows. Mouse-wheel notches move three rows; trackpad pixel scrolling retains its normal distance.
 
-The main menu's **Instrument controls** section switches between **Native vector UI** and **Library UI (imported layout)**; the choice is saved with plugin state. The imported mode uses KSP coordinates, original text, wallpaper frames and bitmap knobs/sliders/buttons where those resources and scripts can be read. Controls still run their script callbacks. Missing pictures and unsupported widgets are reported. This is partial legacy-KSP rendering: it does not provide universal Kontakt 1:1 UI compatibility, Komplete UI, table/waveform/file-selector rendering, original fonts or all layering behavior.
+Each rack part's view menu selects **Original**, **Vectorized**, or **KONTRA**. Original uses authored coordinates, wallpaper frames and bitmap controls; Vectorized retains that layout with native faces; KONTRA reorganizes the controls. The app settings choose the default view, scale and optional vectorized wallpaper. Controls still run their KSP callbacks. This is partial legacy-KSP rendering, with unsupported widgets/resource failures diagnosed; universal Kontakt UI parity and Komplete UI remain unfinished.
 
 `_read_persistent_var` uses the existing persistence implementation. Scripts with callbacks but no `on init` can compile. `get_voice_limit`/`set_voice_limit` now report the unavailable Time Machine Pro engine instead of aborting initialization, and `attach_level_meter` preserves valid initialization with an explicit unsupported-meter diagnostic. Those last two changes do not implement time stretching or connected meters. Large UI snapshots and FX construction run outside the editor's shared view lock. These fixes address reproduced causes; they do not certify Damage, NOVO, Metropolis Ark or the tester's Output libraries without playable copies.
 
@@ -192,3 +192,9 @@ laws without changing DSP, and `set_rpn`/`set_nrpn` reach subsequent script slot
 Array value access does not imply an XY/table renderer or indexed artwork and
 automation metadata support. Broader KSP coverage remains active work; see the
 [remaining compatibility gaps](audits/REPLACEMENT_REVIEW.md).
+
+The working `kontakt-parity` branch through `824a8a7` is integrated into
+`codex/performance-hardening`. The combined runtime retains bounded audio work,
+channel ownership and chunked snapshots, and adds real zone counts for
+`$NUM_ZONES` and prepared/recycled key-range text during playback. Scripts can
+load convolution IRs at initialization; dynamic IR replacement remains pending.

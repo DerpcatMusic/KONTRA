@@ -322,6 +322,8 @@ pub enum Icon {
     Fork,
     /// A tick: a set check box.
     Check,
+    /// A framed landscape: a library's own pictures.
+    Picture,
 }
 
 /// `icon` in `ink`, `size` points square.
@@ -417,6 +419,11 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 line(&[(8., 10.8), (8., 14.8)]),
             ],
             Icon::Check => vec![line(&[(3.5, 8.5), (6.5, 11.5), (12.5, 4.5)])],
+            Icon::Picture => vec![
+                line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
+                line(&[(2.5, 11.), (6., 7.5), (8.5, 10.), (10., 8.5), (13.5, 11.5)]),
+                dot(10.5, 6.),
+            ],
             Icon::Recent => vec![
                 Draw::stroke(arc(ox + 8. * u, oy + 8. * u, 5.5 * u, 0., 2. * PI), ink.clone(), weight),
                 line(&[(8., 5.), (8., 8.), (10.5, 9.5)]),
@@ -624,8 +631,9 @@ pub fn wheel_taken() -> bool {
     WHEELED.with(|w| w.replace(false))
 }
 
-/// Pointer, wheel and keys on a continuous control `id`: drag across
-/// `travel` px (Shift is fine), wheel and arrows step, double-click resets.
+/// Pointer, wheel and keys on a continuous control `id`, as Kontakt's: drag
+/// along `vertical` (up or right increases) across `travel` px, Shift for
+/// fine; wheel and arrows step; double-click or Ctrl/Cmd-click resets.
 pub fn drive(
     ui: &mut Ui,
     id: &str,
@@ -649,7 +657,7 @@ pub fn drive(
         *value = (*value + dir.signum() * step).clamp(lo, hi);
     }
     stepped(ui, id, value, range);
-    if r.double_clicked {
+    if r.double_clicked || r.pressed && (r.mods.ctrl || r.mods.cmd) {
         *value = reset;
     }
     r.held
@@ -871,6 +879,12 @@ fn clip() -> Color {
 /// salmon.
 pub fn keyswitch() -> Color {
     Color::oklch(0.6, 0.2, 25.)
+}
+
+/// A keyswitch the library leaves uncolored, or one moved to another key:
+/// violet, apart from the keys that play (green) and the library's own red.
+pub fn keyswitch_mark() -> Color {
+    Color::oklch(0.62, 0.14, 300.)
 }
 
 /// A compact check box: a tick on the accent when set, an outline when

@@ -42,10 +42,7 @@ macro_rules! builtins {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Builtin { $($id),* }
         impl Builtin {
-            pub fn from_name(name: &str) -> Option<Self> {
-                // Shipped scripts also use this internal spelling of the
-                // persistence reader. Keep its variable-reference signature.
-                let name = if name == "_read_persistent_var" { "read_persistent_var" } else { name };
+            fn lookup(name: &str) -> Option<Self> {
                 match name { $($name => Some(Self::$id),)* _ => None }
             }
             pub fn sig(self) -> Sig {
@@ -55,6 +52,15 @@ macro_rules! builtins {
             }
         }
     };
+}
+
+impl Builtin {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::lookup(name).or_else(|| match name {
+            // Kontakt 2's underscore spellings (`_set_engine_par`, `_pgs_key_exists`, ...).
+            _ => Self::lookup(name.strip_prefix('_').filter(|n| !n.starts_with(['_', '#']))?),
+        })
+    }
 }
 
 builtins! {
@@ -68,6 +74,12 @@ builtins! {
     MinReal "#min" [R R] 0 Real;
     MaxReal "#max" [R R] 0 Real;
     InRangeReal "#in_range" [R R R] 0 Int;
+    Sgn "sgn" [N] 0 Int;
+    Signbit "signbit" [N] 0 Int;
+    SgnReal "#sgn" [R] 0 Int;
+    SignbitReal "#signbit" [R] 0 Int;
+    Exp2 "exp2" [R] 0 Real;
+    Cbrt "cbrt" [R] 0 Real;
     ShLeft "sh_left" [I I] 0 Int;
     ShRight "sh_right" [I I] 0 Int;
     Random "random" [I I] 0 Int;
@@ -177,6 +189,7 @@ builtins! {
     GetControlParArr "get_control_par_arr" [I I I] 0 Int;
     GetControlParStrArr "get_control_par_str_arr" [I I I] 0 Str;
     GetControlParRealArr "get_control_par_real_arr" [I I I] 0 Real;
+    GetUiWfProperty "get_ui_wf_property" [V I I] 0 Int;
     SetText "set_text" [V S] 0 Void;
     AddTextLine "add_text_line" [V S] 0 Void;
     SetKnobLabel "set_knob_label" [V S] 0 Void;
@@ -222,9 +235,14 @@ builtins! {
     GetKeyTriggerstate "get_key_triggerstate" [I] 0 Int;
     SetKeyrange "set_keyrange" [I I S] 0 Void;
     RemoveKeyrange "remove_keyrange" [I] 0 Void;
+    GetKeyrangeMinNote "get_keyrange_min_note" [I] 0 Int;
+    GetKeyrangeMaxNote "get_keyrange_max_note" [I] 0 Int;
+    GetKeyrangeName "get_keyrange_name" [I] 0 Str;
     // Diagnostics and preprocessor leftovers.
     Message "message" [S] 0 Void;
     DisableLogging "disable_logging" [I] 0 Void;
+    WatchVar "watch_var" [V] 0 Void;
+    WatchArrayIdx "watch_array_idx" [A I] 0 Void;
     SetCondition "SET_CONDITION" [K] 0 Void;
     ResetCondition "RESET_CONDITION" [K] 0 Void;
     // Persistence.
@@ -274,6 +292,10 @@ pub enum SysVar {
     Tempo,
     CurrentScriptSlot,
     UiId,
+    PlayedVoices,
+    DistanceBarStart,
+    Date(u8),
+    Time(u8),
 }
 
 pub fn sys_var(name: &str) -> Option<SysVar> {
@@ -308,6 +330,14 @@ pub fn sys_var(name: &str) -> Option<SysVar> {
         "$NI_BPM" | "$NI_TEMPO" => Tempo,
         "$CURRENT_SCRIPT_SLOT" => CurrentScriptSlot,
         "$NI_UI_ID" => UiId,
+        "$PLAYED_VOICES_TOTAL" | "$PLAYED_VOICES_INST" => PlayedVoices,
+        "$DISTANCE_BAR_START" => DistanceBarStart,
+        "$NI_DATE_YEAR" => Date(0),
+        "$NI_DATE_MONTH" => Date(1),
+        "$NI_DATE_DAY" => Date(2),
+        "$NI_TIME_HOUR" => Time(0),
+        "$NI_TIME_MINUTE" => Time(1),
+        "$NI_TIME_SECOND" => Time(2),
         _ => return None,
     })
 }
@@ -321,6 +351,8 @@ pub enum SysArray {
     PolyAt,
     /// Edit-mode group selection; nothing is selected in a player.
     GroupsSelected,
+    /// Held keys per pitch class, C first.
+    KeyDownOct,
 }
 
 impl SysArray {
@@ -331,6 +363,7 @@ impl SysArray {
             "%CC_TOUCHED" => Self::CcTouched,
             "%POLY_AT" => Self::PolyAt,
             "%GROUPS_SELECTED" => Self::GroupsSelected,
+            "%KEY_DOWN_OCT" => Self::KeyDownOct,
             _ => return None,
         })
     }
@@ -340,6 +373,7 @@ impl SysArray {
             Self::GroupsSelected => groups.clamp(1, 4096) as u32,
             Self::KeyDown | Self::PolyAt => 128,
             Self::Cc | Self::CcTouched => CC_SLOTS as u32,
+            Self::KeyDownOct => 12,
         }
     }
 }
@@ -349,6 +383,8 @@ pub const CC_SLOTS: usize = 130;
 pub const VCC_PITCH_BEND: i32 = 128;
 pub const VCC_MONO_AT: i32 = 129;
 
+/// `$NI_NOT_FOUND`, what the `get_*_idx` commands return for a miss.
+pub const NOT_FOUND: i32 = -1;
 pub const ALL_GROUPS: i32 = 0x3FFF_FFFF;
 pub const ALL_EVENTS: i32 = 0x3FFF_FFFE;
 /// `by_marks` results carry this flag; plain event IDs never do.
@@ -364,6 +400,9 @@ pub fn instrument_control(id: i32) -> bool {
     (INST_ICON_ID..=INST_LIB_LAST_ID).contains(&id)
 }
 pub const FIRST_UI_ID: i32 = 32768;
+/// Time Machine Pro voice types for `get_voice_limit`/`set_voice_limit`.
+pub const VL_TMPRO_STANDARD: i32 = 0;
+pub const VL_TMPRO_HQ: i32 = 1;
 pub const HIDE_WHOLE_CONTROL: i32 = 16;
 
 pub mod event_par {
@@ -421,6 +460,9 @@ pub fn constant(name: &str) -> Option<i32> {
     if let Some(name) = name.strip_prefix("$NI_CONTROL_TYPE_") {
         return CONTROL_TYPES.iter().position(|(_, n)| *n == name).map(|i| i as i32);
     }
+    if let Some(v) = crate::fx::ksp_effect_type(name) {
+        return Some(v);
+    }
     if let Some(n) = name
         .strip_prefix("$MARK_")
         .and_then(|n| n.parse::<u32>().ok())
@@ -434,9 +476,6 @@ pub fn constant(name: &str) -> Option<i32> {
         return (0..=3).contains(&n).then_some(n);
     }
     Some(match name {
-        "$NI_NOT_FOUND" => -1,
-        "$NI_VL_TMPRO_STANDARD" => 0,
-        "$NI_VL_TMPRO_HQ" => 1,
         "$EVENT_PAR_VOLUME" => event_par::VOLUME,
         "$EVENT_PAR_TUNE" => event_par::TUNE,
         "$EVENT_PAR_PAN" => event_par::PAN,
@@ -478,12 +517,12 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_CB_TYPE_RPN" => cb::RPN,
         "$NI_CB_TYPE_NRPN" => cb::NRPN,
         "$NI_CB_TYPE_UI_CONTROL" => cb::UI_CONTROL,
-        "$NI_CB_TYPE_UI_CONTROLS" => cb::UI_CONTROLS,
         "$NI_CB_TYPE_UI_UPDATE" => cb::UI_UPDATE,
         "$NI_CB_TYPE_LISTENER" => cb::LISTENER,
         "$NI_CB_TYPE_PGS" => cb::PGS_CHANGED,
         "$NI_CB_TYPE_PERSISTENCE_CHANGED" => cb::PERSISTENCE_CHANGED,
         "$NI_CB_TYPE_ASYNC_COMPLETE" => cb::ASYNC_COMPLETE,
+        "$NI_CB_TYPE_UI_CONTROLS" => cb::UI_CONTROLS,
         "$NI_SIGNAL_TIMER_MS" => signal::TIMER_MS,
         "$NI_SIGNAL_TIMER_BEAT" => signal::TIMER_BEAT,
         "$NI_SIGNAL_TRANSP_START" => signal::TRANSP_START,
@@ -492,7 +531,15 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_INSERT_BUS" => 1,
         "$NI_MAIN_BUS" => 2,
         "$NI_BUS_OFFSET" => 1000,
-        "$NUM_ZONES" => 0,
+        "$NI_NOT_FOUND" => NOT_FOUND,
+        // `$ENGINE_PAR_RV2_TYPE` values: Reverb's room/hall switch.
+        "$NI_REVERB2_TYPE_ROOM" => 0,
+        "$NI_REVERB2_TYPE_HALL" => 1,
+        "$NI_VL_TMPRO_STANDARD" => VL_TMPRO_STANDARD,
+        "$NI_VL_TMPRO_HQ" | "$NI_VL_TMRPO_HQ" => VL_TMPRO_HQ,
+        // A plugin with an editor, in 4/4 unless the host says otherwise.
+        "$NI_KONTAKT_IS_HEADLESS" | "$NI_KONTAKT_IS_STANDALONE" => 0,
+        "$SIGNATURE_NUM" | "$SIGNATURE_DENOM" => 4,
         _ => return None,
     })
 }
@@ -568,6 +615,23 @@ pub const SYMBOLS: &[&str] = &[
     "$CONTROL_PAR_IDENTIFIER",
     "$CONTROL_PAR_NONE",
     "$CONTROL_PAR_SHORT_NAME",
+    // Level meters (`attach_level_meter`) and the rest of Kontakt 7's control set.
+    "$CONTROL_PAR_OFF_COLOR",
+    "$CONTROL_PAR_ON_COLOR",
+    "$CONTROL_PAR_OVERLOAD_COLOR",
+    "$CONTROL_PAR_PEAK_COLOR",
+    "$CONTROL_PAR_VERTICAL",
+    "$CONTROL_PAR_RANGE_MIN",
+    "$CONTROL_PAR_RANGE_MAX",
+    "$CONTROL_PAR_PARENT_PANEL",
+    "$CONTROL_PAR_VALUEPOS_Y",
+    "$CONTROL_PAR_WF_VIS_MODE",
+    "$CONTROL_PAR_WAVETABLE_COLOR",
+    "$CONTROL_PAR_WAVETABLE_ALPHA",
+    "$CONTROL_PAR_DISABLE_TEXT_SHIFTING",
+    "$CONTROL_PAR_RECEIVE_DRAG_EVENTS",
+    "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
+    "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
 ];
 
 pub const CONTROL_PAR_VALUE: i32 = SYMBOL_BASE;

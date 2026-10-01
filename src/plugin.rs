@@ -72,6 +72,10 @@ pub struct Part {
     pub mic_buses: Vec<i16>,
     /// What plays on each of those channels, as the library names it.
     pub mic_names: Vec<String>,
+    /// Which performance view the part shows: 0 follows the app's setting,
+    /// 1 the library's original, 2 KONTRA's own controls, 3 the original
+    /// vectorized ([`crate::library::ViewMode`]).
+    pub view: u8,
 }
 impl Part {
     /// Where the part's samples play from, given the rack's setting.
@@ -134,6 +138,7 @@ impl Default for Part {
             output_manual: false,
             mic_buses: Vec::new(),
             mic_names: Vec::new(),
+            view: 0,
         }
     }
 }
@@ -218,8 +223,6 @@ pub struct Selection {
     pub align_transport_only: bool,
     /// How parts are routed to buses and host ports ([`routing::Outputs`]).
     pub outputs: u8,
-    /// Use the imported KSP layout and artwork rather than native controls.
-    pub library_ui: bool,
 }
 impl Selection {
     /// Output bus `n`, default when never set.
@@ -355,6 +358,10 @@ pub struct Shared {
     pub(crate) watched: AtomicBool,
     /// Audio thread load (`f32` bits): render time over block time, peak-held.
     pub(crate) cpu: AtomicU64,
+    /// Render time and the audio time it rendered, in nanoseconds, summed:
+    /// the meter shows their ratio over its window, as Kontakt does.
+    pub(crate) busy_ns: AtomicU64,
+    pub(crate) span_ns: AtomicU64,
     /// Voice blocks whose streamed samples were not read in time (played
     /// silent) plus script engine calls dropped by a full queue, summed over
     /// the parts' engines since each was created.
@@ -404,6 +411,8 @@ pub(crate) struct PartView {
     pub(crate) freed: u64,
     /// Rate of the effects handed to the audio thread; 0 when none were.
     pub(crate) fx_rate: f64,
+    /// Impulse responses the runtime's `on init` loaded, built into the effects.
+    pub(crate) irs: Vec<crate::fx::ScriptIr>,
     /// `Part::script_state` the audio thread's runtime matches (loaded from or last saved).
     pub(crate) script_state: String,
     /// Epoch of the runtime last handed to the audio thread.
@@ -480,6 +489,8 @@ impl Default for Shared {
             audible: AtomicU64::new(0),
             watched: AtomicBool::new(false),
             cpu: AtomicU64::new(0),
+            busy_ns: AtomicU64::new(0),
+            span_ns: AtomicU64::new(0),
             dropouts: AtomicU64::new(0),
             underruns: Default::default(),
             plan: ArrayQueue::new(1),
@@ -1052,9 +1063,23 @@ impl BackgroundTask for Load {
                 let (script, snapshot, _) =
                     scripts(&instrument, &part.script_state, params.shared.rate());
                 let live = script.as_deref().map(|rt| Box::new(rt.live()));
+                let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
+                let fx_rate = {
+                    let view = params.shared.view.lock().unwrap();
+                    (irs != view.parts[slot].irs).then_some(view.parts[slot].fx_rate)
+                };
+                let fx = fx_rate.map(|rate| crate::engine::effects(&instrument, script.as_deref(), rate as f32));
                 let mut view = params.shared.view.lock().unwrap();
                 let epoch = next_epoch(&mut view, slot, snapshot, live);
                 view.parts[slot].script_state = part.script_state.clone();
+                if let Some(fx) = fx {
+                    view.parts[slot].irs = irs;
+                    let _ = params.shared.ready.force_push((
+                        slot,
+                        params.shared.generation[slot].load(Ordering::Acquire),
+                        Handoff::Fx(fx),
+                    ));
+                }
                 let _ = params.shared.ready.force_push((
                     slot,
                     params.shared.generation[slot].load(Ordering::Acquire),
@@ -1213,8 +1238,9 @@ impl BackgroundTask for Load {
             let result = result.map(|(instrument, bank, script, snapshot, fill)| {
                 let live = script.as_deref().map(|rt| Box::new(rt.live()));
                 let rate = params.shared.rate();
-                let fx = instrument.fx.processor(rate as f32, MAX_BLOCK);
-                (instrument, bank, script, snapshot, fill, live, fx, rate)
+                let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
+                let fx = crate::engine::effects(&instrument, script.as_deref(), rate as f32);
+                (instrument, bank, script, snapshot, fill, live, fx, rate, irs)
             });
             if canceled() {
                 params.shared.view.lock().unwrap().parts[slot].loading = false;
@@ -1223,7 +1249,7 @@ impl BackgroundTask for Load {
             let mut view = params.shared.view.lock().unwrap();
             view.parts[slot].loading = false;
             match result {
-                Ok((instrument, bank, script, snapshot, fill, live, fx, rate)) => {
+                Ok((instrument, bank, script, snapshot, fill, live, fx, rate, irs)) => {
                     let epoch = if script.is_some() {
                         next_epoch(&mut view, slot, snapshot, live)
                     } else {
@@ -1242,6 +1268,7 @@ impl BackgroundTask for Load {
                         "Controller instrument · KSP playback unavailable".into()
                     });
                     v.fx_rate = rate;
+                    v.irs = irs;
                     let _ = params.shared.ready.force_push((
                         slot,
                         generation,
@@ -1306,9 +1333,10 @@ impl BackgroundTask for Load {
                 v.instrument
                     .clone()
                     .filter(|_| v.fx_rate != 0. && v.fx_rate != rate)
+                    .map(|i| (i, v.irs.clone()))
             };
-            let Some(instrument) = stale else { continue };
-            let fx = instrument.fx.processor(rate as f32, MAX_BLOCK);
+            let Some((instrument, irs)) = stale else { continue };
+            let fx = instrument.fx.processor_with(rate as f32, MAX_BLOCK, &irs);
             params.shared.view.lock().unwrap().parts[slot].fx_rate = rate;
             let _ = params.shared.ready.force_push((
                 slot,
@@ -2121,7 +2149,10 @@ impl PluginLogic for Sampler {
         }
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
-            let load = (started.elapsed().as_secs_f64() * rate / frames as f64) as f32;
+            let busy = started.elapsed();
+            p.shared.busy_ns.fetch_add(busy.as_nanos() as u64, Ordering::Relaxed);
+            p.shared.span_ns.fetch_add((frames as f64 * 1e9 / rate) as u64, Ordering::Relaxed);
+            let load = (busy.as_secs_f64() * rate / frames as f64) as f32;
             p.shared
                 .cpu
                 .fetch_max(u64::from(load.to_bits()), Ordering::Relaxed);
@@ -2166,6 +2197,19 @@ moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 
 /// This thread's CPU time in seconds (Linux), which a busy machine's
 /// preemption does not inflate the way wall time does; 0 elsewhere.
+/// Minor page faults, voluntary and involuntary context switches this
+/// thread has taken (Linux; zeros elsewhere).
+fn thread_usage() -> [i64; 3] {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: getrusage fills one rusage for the calling thread.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut usage) };
+        [usage.ru_minflt, usage.ru_nvcsw, usage.ru_nivcsw]
+    }
+    #[cfg(not(target_os = "linux"))]
+    [0; 3]
+}
 fn thread_cpu() -> f64 {
     cpu_clock(3)
 }
@@ -2310,7 +2354,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     );
     for option in paths.iter().filter(|p| p.starts_with("--")) {
         anyhow::ensure!(
-            option == "--ram-only"
+            matches!(option.as_str(), "--ram-only" | "--chords" | "--fifo")
                 || option.starts_with("--frames=")
                 || option.starts_with("--rate="),
             "Unknown benchmark option {option}"
@@ -2318,6 +2362,12 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     }
     let p = Arc::new(SamplerParams::new());
     let ram_only = paths.iter().any(|p| p == "--ram-only");
+    // Quantized chords, as a DAW plays a grid: every 250 ms each part (on its
+    // own MIDI channel) releases its last chord and starts 3 or 4 notes at once.
+    let chords = paths.iter().any(|p| p == "--chords");
+    let fifo = paths.iter().any(|p| p == "--fifo");
+    #[cfg(not(target_os = "linux"))]
+    anyhow::ensure!(!fifo, "--fifo is only supported on Linux");
     let paths: Vec<_> = paths.iter().filter(|p| !p.starts_with("--")).cloned().collect();
     let paths = &paths[..];
     anyhow::ensure!(
@@ -2330,8 +2380,10 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     }
     selection.parts = paths
         .iter()
-        .map(|path| Part {
+        .enumerate()
+        .map(|(i, path)| Part {
             path: path.clone(),
+            channel: if chords { i as i16 } else { -1 },
             ..Default::default()
         })
         .collect();
@@ -2373,14 +2425,19 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     }
     let loaded = (dsp.rack.parts.iter().take(paths.len())).filter(|e| e.bank().is_some()).count();
     anyhow::ensure!(loaded == paths.len(), "only {loaded} of {} parts loaded", paths.len());
-    let keys: Vec<u8> = {
-        let b = dsp.rack.parts[0].bank().unwrap();
-        let low = b.zones().iter().map(|z| z.low_key).min().unwrap_or(48);
-        let high = b.zones().iter().map(|z| z.high_key).max().unwrap_or(72);
-        // Keyswitches sit low: play the upper part of the range.
-        (low.max(36)..=high.min(96)).collect()
-    };
-    anyhow::ensure!(!keys.is_empty(), "No playable benchmark keys in 36..96");
+    let part_keys: Vec<Vec<u8>> = (0..paths.len())
+        .map(|i| {
+            let b = dsp.rack.parts[i].bank().unwrap();
+            let low = b.zones().iter().map(|z| z.low_key).min().unwrap_or(48);
+            let high = b.zones().iter().map(|z| z.high_key).max().unwrap_or(72);
+            // Keyswitches sit low: play the upper part of the range.
+            (low.max(36)..=high.min(96)).collect()
+        })
+        .collect();
+    let keys = part_keys[0].clone();
+    let mut chord_held: Vec<Vec<u8>> = vec![Vec::new(); paths.len()];
+    let beat = (rate * 0.25) as usize;
+    anyhow::ensure!(part_keys.iter().all(|k| !k.is_empty()), "No playable benchmark keys in 36..96");
     let stop = Arc::new(AtomicBool::new(false));
     let loader = {
         let (p, stop) = (p.clone(), stop.clone());
@@ -2391,6 +2448,15 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             }
         })
     };
+    // As a host's audio thread: SCHED_FIFO 85 for this thread alone, so the
+    // loader, streamer and other processes cannot preempt it.
+    #[cfg(target_os = "linux")]
+    if fifo {
+        let param = libc::sched_param { sched_priority: 85 };
+        // SAFETY: sets this thread's own policy; tid 0 is the caller.
+        let failed = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) } != 0;
+        anyhow::ensure!(!failed, "SCHED_FIFO refused: {}", std::io::Error::last_os_error());
+    }
     let block = Duration::from_secs_f64(frames as f64 / rate);
     let blocks = (seconds * rate) as usize / frames;
     let every = (rate / notes.max(1) as f64) as usize;
@@ -2415,12 +2481,31 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         let process_cpu = cpu_clock(2);
         let (mut times, mut cpus) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
         let (mut counts, mut cycle_counts) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
+        let (mut faults, mut onsets) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
         let (mut voices, mut cpu, mut voice_blocks, mut audible_blocks) = (0, 0f32, 0usize, 0usize);
         let (start, mut pace) = (Instant::now(), crate::engine::Pace::start());
         for b in 0..blocks {
             events.clear();
             let frame = b * frames;
-            while playing && started * every < frame + frames {
+            let mut beats = 0;
+            while playing && chords && started * beat < frame + frames {
+                let at = (started * beat).saturating_sub(frame) as u32;
+                for (part, keys) in part_keys.iter().enumerate() {
+                    let channel = part as u8;
+                    for key in chord_held[part].drain(..) {
+                        events.push(Event::new(at, EventBody::NoteOff { group: 0, channel, note: key, velocity: 0 }));
+                    }
+                    for n in 0..3 + (started + part) % 2 {
+                        let key = keys[(started * 5 + n * 4) % keys.len()];
+                        events.push(Event::new(at, EventBody::NoteOn { group: 0, channel, note: key, velocity: 90 }));
+                        chord_held[part].push(key);
+                    }
+                }
+                started += 1;
+                beats += 1;
+            }
+            while playing && !chords && started * every < frame + frames {
+    anyhow::ensure!(part_keys.iter().all(|k| !k.is_empty()), "No playable benchmark keys in 36..96");
                 let note = |on: bool, key: u8| {
                     let body = if on {
                         EventBody::NoteOn { group: 0, channel: 0, note: key, velocity: 100 }
@@ -2439,7 +2524,11 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
                 held.push_back(key);
                 started += 1;
             }
+            let usage_before = thread_usage();
             let (wall, cpu_ms, millions, spent) = process(&mut dsp, &events);
+            let usage = thread_usage();
+            faults.push(std::array::from_fn::<i64, 3, _>(|i| usage[i] - usage_before[i]));
+            onsets.push(beats > 0);
             cycle_counts.push(spent);
             times.push(wall);
             cpus.push(cpu_ms);
@@ -2457,6 +2546,11 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             let mut off = EventList::with_capacity(64);
             for key in held.drain(..) {
                 off.push(Event::new(0, EventBody::NoteOff { group: 0, channel: 0, note: key, velocity: 0 }));
+            }
+            for (part, keys) in chord_held.iter_mut().enumerate() {
+                for key in keys.drain(..) {
+                    off.push(Event::new(0, EventBody::NoteOff { group: 0, channel: part as u8, note: key, velocity: 0 }));
+                }
             }
             process(&mut dsp, &off);
         }
@@ -2519,6 +2613,36 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
                 at(1.0) / mean,
                 mean / deadline * 100.,
             );
+        }
+        if onsets.iter().any(|&o| o) {
+            // Blocks that start notes against the rest: the note-on cost.
+            for (name, onset) in [("note-on blocks", true), ("other blocks", false)] {
+                let pick = |v: &[f64]| -> Vec<f64> { v.iter().zip(&onsets).filter(|(_, o)| **o == onset).map(|(t, _)| *t).collect() };
+                let (mut t, mut m) = (pick(&cpus), pick(&counts));
+                let f: Vec<f64> = faults.iter().zip(&onsets).filter(|(_, o)| **o == onset).map(|(f, _)| f[0] as f64).collect();
+                let switches: (i64, i64) = faults.iter().zip(&onsets).filter(|(_, o)| **o == onset).fold((0, 0), |a, (f, _)| (a.0 + f[1], a.1 + f[2]));
+                let off: Vec<f64> = times.iter().zip(&cpus).zip(&onsets).filter(|(_, o)| **o == onset).map(|((w, c), _)| w - c).collect();
+                t.sort_by(f64::total_cmp);
+                m.sort_by(f64::total_cmp);
+                let at = |v: &[f64], q: f64| v.get(((v.len().max(1) - 1) as f64 * q) as usize).copied().unwrap_or(0.);
+                let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+                println!(
+                    "  {name} ({}): CPU mean {:.3} ms · p99 {:.3} · max {:.3} · instructions mean {:.3} M · p99 {:.3} · max {:.3} · minor faults mean {:.1} · max {:.0} · off-CPU (wall − CPU) mean {:.3} ms · max {:.3} · context switches {} voluntary, {} involuntary",
+                    t.len(),
+                    mean(&t),
+                    at(&t, 0.99),
+                    at(&t, 1.),
+                    mean(&m),
+                    at(&m, 0.99),
+                    at(&m, 1.),
+                    mean(&f),
+                    f.iter().copied().fold(0., f64::max),
+                    mean(&off),
+                    off.iter().copied().fold(0., f64::max),
+                    switches.0,
+                    switches.1,
+                );
+            }
         }
         let times = &cpus;
         let mut sorted = times.clone();
@@ -2643,6 +2767,7 @@ mod tests {
                     output_manual: true,
                     mic_buses: vec![-1, 4],
                     mic_names: vec![String::new(), "Close".into()],
+                    view: 2,
                     ..Default::default()
                 },
             ],
@@ -2660,7 +2785,6 @@ mod tests {
             streaming: Streaming::RamOnly,
             auto_align: true,
             align_transport_only: true,
-            library_ui: true,
             buses: vec![
                 Bus::default(),
                 Bus {

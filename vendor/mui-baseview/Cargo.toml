@@ -1,7 +1,8 @@
 # MUI's mui-baseview at aa1f8f3 (crates/mui-baseview), with one patch: a
 # window's raw key events, down and up, reach an app hook before MUI's key
 # routing (`Requests::on_key`). MUI hands the app key presses only, and a
-# computer keyboard that plays notes has to hear the key come up.
+# computer keyboard that plays notes has to hear the key come up. And a wheel
+# notch scrolls three list rows rather than half of one.
 # Every change carries a `KONTAKTO patch:` comment.
 [package]
 name = "mui-baseview"

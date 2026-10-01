@@ -247,6 +247,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
             .shrink(0),
     ];
     body.extend(rows);
+    body.push(view_settings(ui, cx));
     body.push(
         row![
             field.el.flex(1).min_w(0).h(CONTROL).named("A folder to add, typed"),
@@ -261,6 +262,45 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         .gap(0)
         .shrink(0)
         .fill(Role::Surface)
+}
+
+/// Which performance view parts show unless they choose, and the scale of
+/// a library's own.
+fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
+    let libraries = &cx.p.shared.libraries;
+    let (mode, scale, backdrop) = (cx.settings.view_mode, cx.settings.view_scale, cx.settings.vector_backdrop);
+    let mut views = Vec::new();
+    for to in crate::library::ViewMode::ALL {
+        let (hit, el) = action(ui, format!("view-default-{to:?}"), to.label(), mode == to);
+        if hit {
+            libraries.edit(|s| s.view_mode = to);
+        }
+        views.push(el);
+    }
+    let (wall, wall_el) = check(ui, "view-backdrop", "Vectorized: library wallpaper behind, dimmed", backdrop);
+    if wall {
+        libraries.edit(|s| s.vector_backdrop = !backdrop);
+    }
+    let mut scales = Vec::new();
+    for (to, label) in [(0., "Fit"), (1., "1×"), (1.5, "1.5×"), (2., "2×")] {
+        let (hit, el) = action(ui, format!("view-scale-{label}"), label, scale == to);
+        if hit {
+            libraries.edit(|s| s.view_scale = to);
+        }
+        scales.push(el);
+    }
+    row![
+        caption("Performance view").fill(Role::Dim).lines(1).shrink(0),
+        segmented(views),
+        caption("Scale").fill(Role::Dim).lines(1).shrink(0),
+        segmented(scales),
+        wall_el,
+        caption("Wallpaper").fill(Role::Dim).lines(1).shrink(0),
+    ]
+    .gap(SPACE)
+    .align(Align::Center)
+    .pad(edges(TIGHT, SPACE, 0., INSET))
+    .shrink(0)
 }
 
 /// Ask for a library folder (`single`) or a folder of libraries to add;

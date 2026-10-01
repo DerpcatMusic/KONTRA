@@ -11,6 +11,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 pub const MAX_ARRAY_LEN: u32 = 1_000_000;
 pub const MAX_TOTAL_ELEMENTS: u32 = 16_000_000;
 const MAX_VARS: usize = 1 << 20;
+/// Diagnostic prefixes for what a script uses that this runtime lacks; the
+/// coverage audit counts them.
+pub const UNSUPPORTED_FUNCTION: &str = "Unsupported KSP function: ";
+pub const UNSUPPORTED_VARIABLE: &str = "Unsupported KSP variable: ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ty {
@@ -117,6 +121,16 @@ pub enum Op {
     AddVarImm(u32, i32),
     /// `PushI n; IAdd`.
     AddImm(i32),
+    /// `PushI n; LdI a; IMul; LdI b; IAdd`, as `(n, a, b)`: a flattened 2D index.
+    MulAdd(i32, u32, u32),
+    /// The same index followed by `LdIA v`, as `(v, a, b, n)` for `n` that fits.
+    LdIA2(VarId, u32, u32, i16),
+    /// `LdPoly p; LdIA v`, as `(v, p)`.
+    LdIAPoly(VarId, u32),
+    /// `LdIA v; PushI n; <cmp>; JumpIfZero t`.
+    BrIAImm(VarId, Cmp, i32, u32),
+    /// `<cmp>; JumpIfZero t`: pop b and a, jump to `t` unless `a cmp b`.
+    BrCmp(Cmp, u32),
     /// `LdI a; LdIA v`, as `(v, a)`.
     LdIAVar(VarId, u32),
     /// `PushI n; <cmp>; JumpIfZero t`: pop x and jump to `t` unless `x cmp n`.
@@ -212,8 +226,20 @@ fn fuse(code: &mut [Op]) {
             [Op::PushI(n), op, Op::JumpIfZero(t), ..] if let Some(cmp) = Cmp::of(op) => {
                 Op::BrImm(cmp, n, t)
             }
+            [Op::PushI(n), Op::LdI(a), Op::IMul, Op::LdI(b), Op::IAdd, Op::LdIA(v), ..]
+                if let Ok(n) = i16::try_from(n) =>
+            {
+                Op::LdIA2(v, a, b, n)
+            }
+            [Op::PushI(n), Op::LdI(a), Op::IMul, Op::LdI(b), Op::IAdd, ..] => Op::MulAdd(n, a, b),
+            [Op::LdIA(v), Op::PushI(n), op, Op::JumpIfZero(t), ..] if let Some(cmp) = Cmp::of(op) => {
+                Op::BrIAImm(v, cmp, n, t)
+            }
+            [Op::LdPoly(p), Op::LdIA(v), ..] => Op::LdIAPoly(v, p),
+            [op, Op::JumpIfZero(t), ..] if let Some(cmp) = Cmp::of(op) => Op::BrCmp(cmp, t),
             [Op::LdI(a), Op::LdIA(v), ..] => Op::LdIAVar(v, a),
             [Op::PushI(n), Op::IAdd, ..] => Op::AddImm(n),
+            [Op::PushI(n), Op::ISub, ..] => Op::AddImm(n.wrapping_neg()),
             _ => continue,
         };
     }
@@ -272,6 +298,7 @@ pub enum Callback {
     PgsChanged,
     PersistenceChanged,
     AsyncComplete,
+    /// Kontakt 7's global UI callback; `$NI_UI_ID` names the control.
     UiControls,
 }
 
@@ -336,7 +363,7 @@ pub struct Program {
     pub real_slots: u32,
     pub strs: u32,
     pub poly: u32,
-    pub sys_arrays: [Option<VarId>; 5],
+    pub sys_arrays: [Option<VarId>; 6],
     /// Script-local names for undeclared uppercase constants.
     pub auto_symbols: Vec<Box<str>>,
     /// Blocks that failed to compile, disabled at runtime.
@@ -369,6 +396,7 @@ impl Program {
 
 pub struct Setup {
     pub groups: usize,
+    pub zones: usize,
     pub outputs: usize,
 }
 
@@ -757,6 +785,7 @@ impl<'a> Compiler<'a> {
             SysArray::CcTouched => "%CC_TOUCHED",
             SysArray::PolyAt => "%POLY_AT",
             SysArray::GroupsSelected => "%GROUPS_SELECTED",
+            SysArray::KeyDownOct => "%KEY_DOWN_OCT",
         };
         self.p.vars.push(Var {
             name: name.into(),
@@ -786,6 +815,7 @@ impl<'a> Compiler<'a> {
         let name = self.syms.name(sym);
         match name {
             "$NUM_GROUPS" => return i32::try_from(self.setup.groups).ok(),
+            "$NUM_ZONES" => return i32::try_from(self.setup.zones).ok(),
             "$NUM_OUTPUT_CHANNELS" => return i32::try_from(self.setup.outputs).ok(),
             _ => {}
         }
@@ -914,16 +944,15 @@ impl<'a> Compiler<'a> {
                 _ => self.call(*name, args, false).map(drop),
             },
             StmtKind::If(cond, yes, no) => {
-                self.expr_ty(cond, Ty::Int)?;
-                let skip = self.here();
-                self.emit(Op::JumpIfZero(0));
+                let mut skip = Vec::new();
+                self.branch_unless(cond, &mut skip)?;
                 self.stmts(yes)?;
                 if no.is_empty() {
-                    self.patch(skip);
+                    skip.into_iter().for_each(|at| self.patch(at));
                 } else {
                     let end = self.here();
                     self.emit(Op::Jump(0));
-                    self.patch(skip);
+                    skip.into_iter().for_each(|at| self.patch(at));
                     self.stmts(no)?;
                     self.patch(end);
                 }
@@ -931,15 +960,14 @@ impl<'a> Compiler<'a> {
             }
             StmtKind::While(cond, body) => {
                 let top = self.label();
-                self.expr_ty(cond, Ty::Int)?;
-                let exit = self.here();
-                self.emit(Op::JumpIfZero(0));
+                let mut exit = Vec::new();
+                self.branch_unless(cond, &mut exit)?;
                 let outer = self.loop_start.replace(top);
                 let result = self.stmts(body);
                 self.loop_start = outer;
                 result?;
                 self.emit(Op::Jump(top));
-                self.patch(exit);
+                exit.into_iter().for_each(|at| self.patch(at));
                 Ok(())
             }
             StmtKind::Select(value, cases) => {
@@ -1230,6 +1258,20 @@ impl<'a> Compiler<'a> {
             self.emit(Op::Builtin(Builtin::GetEventParArr, 3));
             return Ok(Ty::Int);
         }
+        // An uppercase array nobody declared is a built-in this runtime lacks:
+        // reads give 0 rather than failing the callback.
+        if let (Some(_), Some(b'A'..=b'Z')) = (index, name.as_bytes().get(1)) {
+            self.p.diagnostics.insert(format!(
+                "{UNSUPPORTED_VARIABLE}{name} (line {}): reads 0",
+                self.line
+            ));
+            let ty = match name.as_bytes()[0] {
+                b'?' => Ty::Real,
+                b'!' => Ty::Str,
+                _ => Ty::Int,
+            };
+            return Ok(self.unsupported_value(ty));
+        }
         ensure!(index.is_none(), "Undeclared array {name}");
         if let Some(x) = builtins::real_constant(name) {
             self.p.reals.push(x);
@@ -1274,6 +1316,35 @@ impl<'a> Compiler<'a> {
             }
         }
         self.emit(op);
+    }
+
+    /// A condition as jumps: falls through when `cond` holds, else jumps to a
+    /// target the caller patches into each of `misses`. `and`/`or` become
+    /// plain branches, short-circuiting as their value form does, without
+    /// building the 0/1 the value form needs.
+    fn branch_unless(&mut self, cond: &Expr, misses: &mut Vec<u32>) -> Result<()> {
+        match cond {
+            Expr::Binary(BinOp::And, a, b) => {
+                self.branch_unless(a, misses)?;
+                self.branch_unless(b, misses)
+            }
+            Expr::Binary(BinOp::Or, a, b) => {
+                let mut next = Vec::new();
+                self.branch_unless(a, &mut next)?;
+                let taken = self.here();
+                self.emit(Op::Jump(0));
+                next.into_iter().for_each(|at| self.patch(at));
+                self.branch_unless(b, misses)?;
+                self.patch(taken);
+                Ok(())
+            }
+            _ => {
+                self.expr_ty(cond, Ty::Int)?;
+                misses.push(self.here());
+                self.emit(Op::JumpIfZero(0));
+                Ok(())
+            }
+        }
     }
 
     fn binary(&mut self, op: BinOp, a: &Expr, b: &Expr) -> Result<Ty> {
@@ -1366,6 +1437,44 @@ impl<'a> Compiler<'a> {
         Ok(result)
     }
 
+    /// A function this runtime lacks. Kontakt rejects unknown names when it
+    /// compiles, but a script written for a newer Kontakt should still run:
+    /// the call does nothing (its arguments are not evaluated) and yields an
+    /// empty value of the type its name suggests.
+    fn unsupported(&mut self, fname: &str, want_value: bool) -> Option<Ty> {
+        self.p.diagnostics.insert(format!(
+            "{UNSUPPORTED_FUNCTION}{fname} (line {}): does nothing, returns 0",
+            self.line
+        ));
+        if !want_value {
+            return None;
+        }
+        Some(self.unsupported_value(
+            if fname.contains("real") {
+                Ty::Real
+            } else if fname.ends_with("name") || fname.ends_with("_str") || fname == "get_sample" {
+                Ty::Str
+            } else {
+                Ty::Int
+            },
+        ))
+    }
+
+    fn unsupported_value(&mut self, ty: Ty) -> Ty {
+        match ty {
+            Ty::Int => self.emit(Op::PushI(0)),
+            Ty::Real => {
+                self.p.reals.push(0.0);
+                self.emit(Op::PushR(self.p.reals.len() as u32 - 1));
+            }
+            Ty::Str => {
+                self.p.strings.push("".into());
+                self.emit(Op::PushS(self.p.strings.len() as u32 - 1));
+            }
+        }
+        ty
+    }
+
     fn call(&mut self, name: Sym, args: &[Expr], want_value: bool) -> Result<Option<Ty>> {
         let fname = self.name(name);
         match (fname, args) {
@@ -1389,8 +1498,9 @@ impl<'a> Compiler<'a> {
             }
             _ => {}
         }
-        let b = Builtin::from_name(fname)
-            .with_context(|| format!("Unsupported KSP function: {fname}"))?;
+        let Some(b) = Builtin::from_name(fname) else {
+            return Ok(self.unsupported(fname, want_value));
+        };
         let sig = b.sig();
         let max = sig.args.len();
         let min = max - sig.optional as usize;
@@ -1460,6 +1570,8 @@ impl<'a> Compiler<'a> {
             (Builtin::Min, Some(Ty::Real)) => Builtin::MinReal,
             (Builtin::Max, Some(Ty::Real)) => Builtin::MaxReal,
             (Builtin::InRange, Some(Ty::Real)) => Builtin::InRangeReal,
+            (Builtin::Sgn, Some(Ty::Real)) => Builtin::SgnReal,
+            (Builtin::Signbit, Some(Ty::Real)) => Builtin::SignbitReal,
             _ => b,
         };
         self.emit(Op::Builtin(b, args.len() as u8));

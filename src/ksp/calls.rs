@@ -135,6 +135,22 @@ fn async_done(m: &mut Machine, status: i32) -> i32 {
 /// Recoverable failures: recorded as diagnostics, the call yields its default value.
 pub const NO_CONTROL: Fault = Fault("ID does not refer to a UI control");
 pub const NO_PGS_KEY: Fault = Fault("Unknown PGS key");
+/// Kontakt keeps at most this many `set_keyrange` ranges per instrument.
+const MAX_KEYRANGES: usize = 16;
+
+// Recycle names so replacing/removing a range never frees text on the audio thread.
+fn remove_keyranges(env: &mut super::runtime::Env, low: u8, high: u8, keep: Option<usize>) {
+    for i in (0..env.host.keyranges.len()).rev() {
+        let (l, h, _) = &env.host.keyranges[i];
+        if Some(i) != keep && *h >= low && *l <= high {
+            let (_, _, mut name) = env.host.keyranges.remove(i);
+            if !env.loading {
+                name.clear();
+                env.spare_keyranges.push(name);
+            }
+        }
+    }
+}
 
 fn charge(m: &Machine, fuel: &mut u64, count: u64) -> Exec<()> {
     if m.env.deadline.is_some() {
@@ -179,6 +195,26 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let lo = m.stk.real();
             let x = m.stk.real();
             push_int(m, (lo..=hi).contains(&x) as i32)
+        }
+        Sgn => {
+            let [a] = ints(m);
+            push_int(m, a.signum())
+        }
+        Signbit => {
+            let [a] = ints(m);
+            push_int(m, (a < 0) as i32)
+        }
+        SgnReal => {
+            let x = m.stk.real();
+            push_int(m, if x > 0.0 { 1 } else if x < 0.0 { -1 } else { 0 })
+        }
+        SignbitReal => {
+            let x = m.stk.real();
+            push_int(m, x.is_sign_negative() as i32)
+        }
+        Exp2 | Cbrt => {
+            let x = m.stk.real();
+            push_real(m, if f == Exp2 { x.exp2() } else { x.cbrt() })
         }
         ShLeft | ShRight => {
             let [a, n] = ints(m);
@@ -723,13 +759,20 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             Ok(Step::Next)
         }
         // ---- Groups, modules and engine parameters -------------------------------------
+        // An exact match, as Kontakt's. A miss returns 0 (`find_group`) or
+        // `$NI_NOT_FOUND`; framework scripts look up names their instrument
+        // lacks, so only a near miss (case or outer spaces) is reported: that
+        // would be a name this importer decoded differently.
         FindGroup | GetGroupIdx => {
             let name = m.stk.strs.pop();
-            let found = (0..m.engine.group_count()).find(|&g| m.engine.group_name(g) == name);
-            if found.is_none() && f == FindGroup {
-                m.env.note("find_group: group name not found; returned 0");
+            let groups = 0..m.engine.group_count();
+            let found = groups.clone().find(|&g| m.engine.group_name(g) == name);
+            let near = |g| m.engine.group_name(g).trim().eq_ignore_ascii_case(name.trim());
+            if found.is_none() && groups.clone().any(near) {
+                m.env.note("find_group: group name matches only ignoring case or spaces; not found");
             }
-            push_int(m, found.map_or(if f == FindGroup { 0 } else { -1 }, |i| i as i32))
+            let miss = if f == FindGroup { 0 } else { b::NOT_FOUND };
+            push_int(m, found.map_or(miss, |g| g as i32))
         }
         GroupName => {
             let [g] = ints(m);
@@ -742,7 +785,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         PurgeGroup => {
             ints::<2>(m);
-            let id = m.env.next_async();
+            // Samples stay loaded, but scripts wait for the completion.
+            let id = async_done(m, 1);
             push_int(m, id)
         }
         GetPurgeState => {
@@ -750,8 +794,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             push_int(m, 1)
         }
         FindMod | FindTarget | GetModIdx | GetTargetIdx => {
-            let modulator = matches!(f, FindMod | GetModIdx);
-            let (g, module) = if modulator {
+            let by_mod = matches!(f, FindMod | GetModIdx);
+            let (g, module) = if by_mod {
                 let [g] = ints(m);
                 (g, 0)
             } else {
@@ -760,7 +804,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             };
             let name = m.stk.strs.pop();
             let found = match (usize::try_from(g), usize::try_from(module)) {
-                (Ok(g), _) if modulator => m.engine.find_mod(g, name),
+                (Ok(g), _) if by_mod => m.engine.find_mod(g, name),
                 (Ok(g), Ok(module)) => m.engine.find_target(g, module, name),
                 _ => None,
             };
@@ -769,15 +813,21 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 m.env
                     .note("find_mod/find_target: modulator unknown to the engine; returned 0");
             }
-            push_int(m, found.map_or(if legacy { 0 } else { -1 }, |i| i as i32))
+            let miss = if matches!(f, FindMod | FindTarget) { 0 } else { b::NOT_FOUND };
+            push_int(m, found.map_or(miss, |i| i as i32))
         }
         GetEnginePar | GetEngineParDisp | GetEngineParDispExt => {
             let (p, v) = if f == GetEngineParDispExt {
+                // A hypothetical value, shown as if the parameter had it.
                 let [id, value, group, slot, generic] = ints(m);
-                (EnginePar { id, group, slot, generic }, value)
+                (engine_par([id, group, slot, generic]), value)
             } else {
                 let p = engine_par(ints(m));
-                let v = m.engine.engine_par(p).or_else(|| m.env.engine_par(p)).unwrap_or(0);
+                let v = m
+                    .engine
+                    .engine_par(p)
+                    .or_else(|| m.env.engine_par(p))
+                    .unwrap_or(0);
                 (p, v)
             };
             if f == GetEnginePar {
@@ -797,7 +847,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 slot: s,
                 generic,
             };
-            if !m.engine.set_engine_par(m.env.offset, p, value) {
+            let implemented = m.engine.set_engine_par(m.env.offset, p, value);
+            if !implemented {
                 m.env
                     .note("set_engine_par: parameter not implemented by the engine; value stored");
                 m.env.set_engine_par(p, value);
@@ -807,7 +858,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let loads = ["$ENGINE_PAR_EFFECT_TYPE", "$ENGINE_PAR_EFFECT_SUBTYPE", "$ENGINE_PAR_SEND_EFFECT_TYPE"]
                 .iter()
                 .any(|n| b::engine_par_id(n) == Some(id));
-            let result = if loads { async_done(m, 1) } else { -1 };
+            let result = if loads { async_done(m, i32::from(implemented)) } else { -1 };
             push_int(m, result)
         }
         GetVoiceLimit | SetVoiceLimit => {
@@ -836,11 +887,20 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             push_fmt(m, format_args!("Out {}", n + 1))
         }
         LoadIrSample => {
-            ints::<2>(m);
-            m.stk.strs.pop();
-            m.env
-                .note("load_ir_sample: impulse responses are not loaded");
-            let id = async_done(m, 0);
+            let [slot, generic] = ints(m);
+            let file = m.stk.strs.pop();
+            // Asynchronous in Kontakt: `on async_complete` reports 1 once
+            // loaded, 0 when not found.
+            let loaded = m.engine.load_ir_sample(&file, slot, generic);
+            match loaded {
+                Some(true) => {}
+                Some(false) => m.env.note(
+                    "load_ir_sample: file not found, or that slot holds no convolution effect",
+                ),
+                None => m.env.note("load_ir_sample: impulse responses load only while on init runs"),
+            }
+            let loaded = loaded == Some(true);
+            let id = async_done(m, i32::from(loaded));
             push_int(m, id)
         }
         // ---- User interface ------------------------------------------------------------
@@ -952,6 +1012,21 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 push_real(m, 0.0)
             }
         }
+        GetUiWfProperty => {
+            // Waveforms show no play cursor or slices here.
+            m.env.note("get_ui_wf_property: waveform data is unavailable");
+            ints::<2>(m);
+            m.stk.var();
+            push_int(m, 0)
+        }
+        WatchVar | WatchArrayIdx => {
+            // Creator Tools' debugger only.
+            if f == WatchArrayIdx {
+                m.stk.int();
+            }
+            m.stk.var();
+            Ok(Step::Next)
+        }
         GetControlPar | GetControlParArr => {
             let index = if f == GetControlParArr { Some(m.stk.int()) } else { None };
             let [id, p] = ints(m);
@@ -1062,9 +1137,14 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let v = m.stk.var();
             let c = control_of(m, v)?;
             if f == MoveControl {
+                // Grid position 0 hides the control; moving it back shows it.
+                let control = &mut m.slot.ui.controls[c];
                 if x == 0 || y == 0 {
-                    m.slot.ui.controls[c].set_int(b::CONTROL_PAR_HIDE, 1).map_err(Fault)?;
+                    control.set_int(b::CONTROL_PAR_HIDE, b::HIDE_WHOLE_CONTROL).map_err(Fault)?;
                     return Ok(Step::Next);
+                }
+                if matches!(control.get(b::CONTROL_PAR_HIDE), Some(Prop::Int(b::HIDE_WHOLE_CONTROL))) {
+                    control.set_int(b::CONTROL_PAR_HIDE, 0).map_err(Fault)?;
                 }
                 x = x.saturating_sub(1).saturating_mul(92).saturating_add(66);
                 y = y.saturating_sub(1).saturating_mul(21).saturating_add(2);
@@ -1095,6 +1175,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 let item = control.spare_menu.pop().unwrap();
                 control.menu.push(item);
             }
+            snap_menu(m, c);
             Ok(Step::Next)
         }
         SetMenuItemStr => {
@@ -1151,8 +1232,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let c = control(m, id)?;
             push_int(m, m.slot.ui.controls[c].menu.len() as i32)
         }
-        SetSkinOffset | SetUiColor | SetSnapshotType | DisableLogging | FsNavigate
-        | RemoveKeyrange => {
+        SetSkinOffset | SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
             if f == FsNavigate {
                 m.stk.int();
             }
@@ -1274,9 +1354,56 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             push_int(m, v)
         }
         SetKeyrange => {
-            ints::<2>(m);
-            m.stk.strs.pop();
+            let [lo, hi] = ints(m);
+            let (lo, hi) = (midi_note(lo)?, midi_note(hi)?);
+            let (lo, hi) = (lo.min(hi), lo.max(hi));
+            let name = m.stk.strs.pop();
+            // Reuse an overlapping range before recycling any others. Validate
+            // its text first, so a capacity fault leaves existing ranges intact.
+            let overlap = m.env.host.keyranges.iter().position(|&(l, h, _)| h >= lo && l <= hi);
+            if let Some(at) = overlap {
+                let range = &mut m.env.host.keyranges[at];
+                put_text(&mut range.2, name, m.env.loading)?;
+                (range.0, range.1) = (lo, hi);
+                remove_keyranges(m.env, lo, hi, Some(at));
+            } else if m.env.host.keyranges.len() < MAX_KEYRANGES {
+                let text = if m.env.loading {
+                    name.to_owned()
+                } else {
+                    let text = m.env.spare_keyranges.last_mut().ok_or(Fault("Key range text capacity exhausted"))?;
+                    put_text(text, name, false)?;
+                    m.env.spare_keyranges.pop().unwrap()
+                };
+                m.env.host.keyranges.push((lo, hi, text));
+            } else {
+                m.env.note("set_keyrange: at most 16 key ranges; range dropped");
+            }
             Ok(Step::Next)
+        }
+        RemoveKeyrange => {
+            let [note] = ints(m);
+            let note = midi_note(note)?;
+            remove_keyranges(m.env, note, note, None);
+            Ok(Step::Next)
+        }
+        GetKeyrangeMinNote | GetKeyrangeMaxNote | GetKeyrangeName => {
+            let [note] = ints(m);
+            let range = m
+                .env
+                .host
+                .keyranges
+                .iter()
+                .find(|&&(l, h, _)| (i32::from(l)..=i32::from(h)).contains(&note));
+            match (f, range) {
+                (GetKeyrangeName, r) => {
+                    let name = r.map_or("", |r| r.2.as_str());
+                    m.stk.strs.push_str(name)?;
+                    Ok(Step::Next)
+                }
+                (_, None) => Err(Fault("No key range at this note")),
+                (GetKeyrangeMinNote, Some(r)) => push_int(m, i32::from(r.0)),
+                (_, Some(r)) => push_int(m, i32::from(r.1)),
+            }
         }
         AttachZone => {
             ints::<2>(m);
@@ -1311,6 +1438,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .and_then(|p| p.get(&*var.name))
             {
                 write_value_rt(&mut m.slot.mem, var, value, m.env.loading)?;
+            }
+            if let Some(c) = m.slot.ui.control_of(v) {
+                snap_menu(m, c);
             }
             Ok(Step::Next)
         }
@@ -1434,6 +1564,22 @@ fn allow(groups: &mut GroupMask, group: i32, allowed: bool) {
         };
     } else if let Ok(g) = usize::try_from(group) {
         groups.set(g, allowed);
+    }
+}
+
+/// A menu shows one of its items: a value that is none of theirs (a fresh
+/// menu's 0, a saved value from an older version) becomes the first item's,
+/// as Kontakt selects it. Scripts index arrays by it in `on init`.
+fn snap_menu(m: &mut Machine, c: usize) {
+    let control = &m.slot.ui.controls[c];
+    let Some(first) = control.menu.first().map(|i| i.value) else { return };
+    let var = &m.prog.vars[control.var as usize];
+    if var.ty != Ty::Int || var.len.is_some() {
+        return;
+    }
+    let now = m.slot.mem.ints[var.slot as usize];
+    if !control.menu.iter().any(|i| i.value == now) {
+        m.slot.mem.ints[var.slot as usize] = first;
     }
 }
 

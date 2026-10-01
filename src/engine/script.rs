@@ -6,7 +6,7 @@
 
 use super::params::{self, Address, GroupPar, MAX_WRITES, Write};
 use super::{Ahdsr, Bank, EventChange, EventId, GroupMask, GroupSettings, NoteEvent, Player};
-use crate::fx::{FxProcessor, ProgramFx};
+use crate::fx::{FxParam, FxProcessor, ProgramFx, Rack, ScriptIr};
 use crate::import::{Group, Instrument};
 use crate::ksp::{EnginePar, Fade, KspEngine, NoteLength, NoteSpec, Persisted, Runtime, VoicePar};
 
@@ -29,6 +29,7 @@ pub fn load_scripts(
         Runtime::with_scripts(&instrument.scripts, &mut setup, SCRIPT_OUTPUTS, persisted);
     rt.init_engine_pars = setup.pars;
     rt.init_controllers = setup.controllers;
+    rt.init_irs = setup.irs;
     let errors = errors
         .into_iter()
         .enumerate()
@@ -36,6 +37,13 @@ pub fn load_scripts(
         .collect();
     crate::audio::trim_heap();
     (Some(Box::new(rt)), errors)
+}
+
+/// The instrument's effects for `rate`, with the impulse responses
+/// `script`'s `on init` loaded. Allocates: build off the audio thread.
+pub fn effects(instrument: &Instrument, script: Option<&Runtime>, rate: f32) -> FxProcessor {
+    let irs = script.map_or(&[][..], |rt| &rt.init_irs);
+    instrument.fx.processor_with(rate, super::MAX_BLOCK, irs)
 }
 
 /// Script engine calls one render can hold; the rest are dropped and counted.
@@ -171,6 +179,8 @@ impl KspEngine for Host<'_> {
         self.bank.map_or(0, |b| b.groups().len())
     }
 
+    fn zone_count(&self) -> usize { self.bank.map_or(0, |b| b.zones().len()) }
+
     fn group_name(&self, group: usize) -> &str {
         self.bank
             .and_then(|b| b.groups().get(group))
@@ -184,14 +194,17 @@ impl KspEngine for Host<'_> {
     /// Modelled parameters are queued for their frame, like notes.
     fn set_engine_par(&mut self, at: u32, par: EnginePar, value: i32) -> bool {
         let Some(address) = self.address(par) else {
-            return false;
+            return self.bank.is_some_and(|b| Address::inert(par, b.groups()));
         };
+        let value = address.decode(value);
+        if !loaded(address, value, |r, s| self.fx.param(r, s, FxParam::Type)) {
+            return false;
+        }
         if self.writes.len() == MAX_WRITES {
             self.player.dropped_commands += 1;
             return true;
         }
         let i = self.writes.partition_point(|w| w.at <= at);
-        let value = address.decode(value);
         self.writes.insert(i, Write { at, address, value });
         true
     }
@@ -299,6 +312,16 @@ impl Player {
     }
 }
 
+/// False for `$ENGINE_PAR_EFFECT_TYPE` naming another effect than the one
+/// loaded (`kind` of a rack slot): loading effects is not supported, but
+/// naming the loaded one, as framework scripts do in `on init`, keeps it.
+fn loaded(address: Address, value: f32, kind: impl Fn(Rack, u8) -> Option<f32>) -> bool {
+    match address {
+        Address::Fx(rack, slot, FxParam::Type) => kind(rack, slot) == Some(value),
+        _ => true,
+    }
+}
+
 /// Instrument volume, pan or tune from `(volume, pan, tune)`.
 fn instrument((volume, pan, tune): (f32, f32, f32), p: GroupPar) -> Option<f32> {
     match p {
@@ -315,7 +338,9 @@ fn instrument((volume, pan, tune): (f32, f32, f32), p: GroupPar) -> Option<f32> 
 /// during init.
 pub struct ScriptSetup<'a> {
     groups: &'a [Group],
+    zones: usize,
     fx: &'a ProgramFx,
+    path: &'a std::path::Path,
     rate: f64,
     settings: Vec<GroupSettings>,
     instrument: (f32, f32, f32),
@@ -323,19 +348,23 @@ pub struct ScriptSetup<'a> {
     effects: Vec<(Address, f32)>,
     pars: Vec<(EnginePar, i32)>,
     controllers: Vec<(u8, u8)>,
+    irs: Vec<ScriptIr>,
 }
 
 impl<'a> ScriptSetup<'a> {
     pub fn new(instrument: &'a Instrument, rate: f64) -> Self {
         Self {
             groups: &instrument.groups,
+            zones: instrument.zones.len(),
             fx: &instrument.fx,
+            path: &instrument.path,
             rate,
             settings: instrument.groups.iter().map(GroupSettings::from).collect(),
             instrument: (1.0, 0.0, 0.0),
             effects: Vec::new(),
             pars: Vec::new(),
             controllers: Vec::new(),
+            irs: Vec::new(),
         }
     }
 
@@ -372,6 +401,8 @@ impl KspEngine for ScriptSetup<'_> {
         self.groups.len()
     }
 
+    fn zone_count(&self) -> usize { self.zones }
+
     fn group_name(&self, group: usize) -> &str {
         self.groups.get(group).map_or("", |g| &g.name)
     }
@@ -382,9 +413,12 @@ impl KspEngine for ScriptSetup<'_> {
 
     fn set_engine_par(&mut self, _at: u32, par: EnginePar, value: i32) -> bool {
         let Some(address) = self.address(par) else {
-            return false;
+            return Address::inert(par, self.groups);
         };
         let v = address.decode(value);
+        if !loaded(address, v, |r, s| self.fx.param(r, s, FxParam::Type)) {
+            return false;
+        }
         match address {
             Address::Fx(..) => match self.effects.iter_mut().find(|e| e.0 == address) {
                 Some(e) => e.1 = v,
@@ -425,5 +459,25 @@ impl KspEngine for ScriptSetup<'_> {
 
     fn find_target(&self, group: usize, modulator: usize, name: &str) -> Option<usize> {
         params::find_target(self.groups, group, modulator, name)
+    }
+
+    /// Decoded here, off the audio thread; the effects build with it.
+    /// Only a convolution slot takes an impulse response.
+    fn load_ir_sample(&mut self, file: &str, slot: i32, generic: i32) -> Option<bool> {
+        let convolution = f32::from(crate::fx::Kind::Convolution.ser_id());
+        let Some((rack, slot)) = params::rack(generic)
+            .zip(u8::try_from(slot).ok())
+            .filter(|&(r, s)| self.fx.param(r, s, FxParam::Type) == Some(convolution))
+        else {
+            return Some(false);
+        };
+        let Some(ir) = crate::resources::ir_sample(self.path, file)
+            .and_then(|path| ScriptIr::load(rack, slot, path).ok())
+        else {
+            return Some(false);
+        };
+        self.irs.retain(|i| (i.rack, i.slot) != (rack, slot));
+        self.irs.push(ir);
+        Some(true)
     }
 }

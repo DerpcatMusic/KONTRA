@@ -19,6 +19,7 @@
 //! [`Shared`]: crate::plugin::Shared
 
 mod art;
+pub(crate) mod audit;
 mod browser;
 mod chain;
 mod computer;
@@ -30,6 +31,7 @@ mod keyboard;
 mod menu;
 mod mixer;
 mod panel;
+mod perf_view;
 mod picker;
 mod rack;
 mod spectrum;
@@ -118,6 +120,8 @@ struct Watch {
     readouts: u64,
     cpu: f32,
     disk: f32,
+    /// The audio thread's render and rendered time when last sampled.
+    busy: (u64, u64),
     /// When the readouts were last sampled, and the disk counter then.
     cpu_at: Option<Instant>,
     disk_read: u64,
@@ -144,9 +148,17 @@ impl Watch {
         if due(self.cpu_at, READOUT_MS) {
             let since = self.cpu_at.map_or(0., |t| (now - t).as_secs_f32());
             self.cpu_at = Some(now);
-            // The audio thread keeps its peak load; ease it down between looks.
-            let peak = f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32);
-            self.cpu = peak.max(self.cpu * 0.8);
+            // Mean load since the last look, as Kontakt shows it. The peak
+            // block's wall time read 20-80% at idle: one preempted block in
+            // a tenth of a second is scheduling, not work.
+            let busy = (p.shared.busy_ns.load(Ordering::Relaxed), p.shared.span_ns.load(Ordering::Relaxed));
+            let (work, span) = (busy.0.saturating_sub(self.busy.0), busy.1.saturating_sub(self.busy.1));
+            self.busy = busy;
+            let load = if span > 0 { work as f32 / span as f32 } else { 0. };
+            self.cpu = load * 0.5 + self.cpu * 0.5;
+            if self.cpu < 0.005 {
+                self.cpu = 0.;
+            }
             meters.cpu.store(self.cpu.to_bits(), Ordering::Relaxed);
             // Disk throughput since the last look, eased; idle settles on 0.
             let counter = self.disk_counter.unwrap_or(&crate::audio::DISK_READ);
@@ -307,10 +319,6 @@ enum Tab {
 /// Editor-only state that outlives a frame but not the window.
 struct EditorState {
     search: String,
-    library_search: String,
-    browser_folder: Option<(String, bool, PathBuf)>,
-    browser_scroll: [f64; 2],
-    browser_list: String,
     /// What the browser's lower pane lists; `None` searches every library.
     source: Option<browser::Source>,
     /// The browser pane that last held the focus, and the upper pane's
@@ -344,21 +352,27 @@ struct EditorState {
     meters: Arc<Meters>,
     /// Script control being dragged: part, control, unrounded value.
     held: Option<(usize, usize, f64)>,
+    /// A script value edit's number being typed: part, control, text.
+    typing: Option<(usize, usize, String)>,
     /// The context menu showing.
     menu: Option<menu::Menu>,
-    /// The browser's keyboard cursor: a preset path.
+    /// The browser's keyboard cursor: a preset path, or a folder's.
     cursor: Option<String>,
+    /// The browser's library filter, scroll and rows.
+    browse: browser::Browse,
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
     /// A bus's name while it is being edited.
     renaming_bus: Option<(usize, String)>,
+    /// An articulation's keyswitch, channel or velocity range being typed.
+    inline: Option<panel::Inline>,
+    /// The velocity split's boundary being dragged.
+    split_drag: Option<usize>,
     /// Buses below this index show a mixer strip even when unused.
     buses_shown: usize,
     /// Each library's color, thumbnail, banner and backdrop, made from its
     /// artwork off the frame.
     art: Arc<art::Art>,
-    /// The keys the selected part's instrument maps, and which instrument.
-    mapped: (std::sync::Weak<import::Instrument>, [bool; 128]),
     /// The browser's files by library: of which scan, shelf and kind.
     libraries: (std::sync::Weak<Vec<PathBuf>>, usize, bool, Arc<Libraries>),
     /// How far the rack is scrolled (where it glides to), a part to scroll
@@ -376,6 +390,8 @@ struct EditorState {
     ranges: HashMap<usize, (std::sync::Weak<import::Instrument>, [bool; 128])>,
     /// Each part's performance view as last read.
     panels: HashMap<usize, panel::Cache>,
+    /// Pictures the original views asked for, by instrument, read or not.
+    perf_asked: std::collections::HashSet<(PathBuf, String)>,
     started: Instant,
     /// The computer keyboard's octave, velocity and held keys.
     computer: Arc<computer::Computer>,
@@ -498,6 +514,18 @@ impl Cx<'_> {
     }
 
     fn remember(&mut self, path: &str) {
+        // Its library was used now: the browser can list by that.
+        if let Some(library) = self.view.shelf.of(Path::new(path)) {
+            let dir = library.dir.to_string_lossy().into_owned();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            if self.settings.used.get(&dir) != Some(&now) {
+                self.p.shared.libraries.edit(|s| {
+                    s.used.insert(dir, now);
+                });
+            }
+        }
         let recent = &mut self.selection.recent;
         recent.retain(|p| p != path);
         recent.insert(0, path.to_owned());
@@ -790,10 +818,6 @@ fn build(
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
     let mut state = EditorState {
         search: String::new(),
-        library_search: String::new(),
-        browser_folder: None,
-        browser_scroll: [0.; 2],
-        browser_list: String::new(),
         source: None,
         pane: None,
         split: match read(&params.selection).browser_split {
@@ -820,13 +844,16 @@ fn build(
         last_poll: Instant::now() - Duration::from_secs(1),
         meters,
         held: None,
+        typing: None,
         menu: None,
         cursor: None,
+        browse: Default::default(),
         renaming: None,
         renaming_bus: None,
+        inline: None,
+        split_drag: None,
         buses_shown: 1,
         art,
-        mapped: (std::sync::Weak::new(), [false; 128]),
         libraries: Default::default(),
         rack_y: 0.,
         rack_drawn: 0.,
@@ -836,6 +863,7 @@ fn build(
         neighbors: Default::default(),
         ranges: HashMap::new(),
         panels: HashMap::new(),
+        perf_asked: Default::default(),
         started: Instant::now(),
         computer,
         gliss: None,
@@ -976,10 +1004,10 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
     for k in keys {
         let ctrl = k.mods.ctrl || k.mods.cmd;
         match k.key {
-            Key::Delete if loaded && cx.state.renaming.is_none() => cx.remove(slot),
+            Key::Delete if loaded && cx.state.renaming.is_none() && cx.state.inline.is_none() && cx.state.typing.is_none() => cx.remove(slot),
             Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
-            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() => cx.state.selected_none(),
+            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && cx.state.inline.is_none() && cx.state.typing.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
             _ => {}
         }
     }

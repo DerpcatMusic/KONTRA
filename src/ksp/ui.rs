@@ -169,8 +169,7 @@ pub struct Ui {
     pub wallpaper: String,
     pub wallpaper_state: i32,
     pub listeners: BTreeMap<&'static str, i32>,
-    pub diagnostics: BTreeSet<Cow<'static, str>>,
-}
+    pub diagnostics: BTreeSet<Cow<'static, str>>,}
 
 impl Ui {
     pub fn new(vars: usize) -> Self {
@@ -185,8 +184,7 @@ impl Ui {
             wallpaper: String::new(),
             wallpaper_state: 0,
             listeners: BTreeMap::new(),
-            diagnostics: BTreeSet::new(),
-        }
+            diagnostics: BTreeSet::new(),        }
     }
 
     pub fn var_id(&self, v: VarId) -> i32 {

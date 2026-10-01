@@ -1,4 +1,5 @@
 //! Read local library artwork once, on the import worker. No copies on disk.
+use crate::resources::{Resources as Pictures, read_bounded};
 use moose::mui::mui::scene::Image;
 use std::{
     collections::HashMap,
@@ -133,7 +134,7 @@ pub fn performance(
         return Ok(None);
     };
     let filename = png_name(&name).ok_or("Invalid instrument wallpaper name")?;
-    let mut source = Pictures::of(&instrument.path);
+    let mut source = Pictures::of(&instrument.path, "pictures");
     let bytes = source
         .read(&filename)?
         .ok_or_else(|| format!("Instrument wallpaper {filename} was not found"))?;
@@ -145,22 +146,13 @@ pub fn performance(
     let frames = layout
         .cut(&image)
         .into_iter()
-        .map(|frame| {
-            // Kontakt's legacy wallpaper includes the instrument header; trim it
-            // off-thread so the canvas receives pixels at the authored scale.
-            if computed.is_some_and(|i| frame.height as i32 == i.height + 68) {
-                crop(&frame, 0, 68, frame.width, frame.height - 68).unwrap_or(frame)
-            } else {
-                frame
-            }
-        })
         .collect::<Vec<_>>();
     if frames.is_empty() {
         return Err("Invalid instrument wallpaper frames".into());
     }
     Ok(Some(Arc::new(Picture {
         frames,
-        resizable: layout.resizable,
+        stretch: layout.stretch,
     })))
 }
 
@@ -180,8 +172,22 @@ fn png_name(name: &str) -> Option<String> {
 #[derive(Debug)]
 pub struct Picture {
     pub frames: Vec<Arc<Image>>,
-    /// Stretches to the control; otherwise it keeps its own size.
-    pub resizable: bool,
+    /// Stretches to the control across and down (its sidecar's
+    /// "Horizontal" and "Vertical Resizable"); otherwise it keeps its own
+    /// size that way.
+    pub stretch: [bool; 2],
+}
+
+impl Picture {
+    /// The size it draws at on a control `w` by `h`: its own, but along a
+    /// way it stretches.
+    pub fn size(&self, w: f64, h: f64) -> (f64, f64) {
+        let f = &self.frames[0];
+        (
+            if self.stretch[0] { w } else { f64::from(f.width) },
+            if self.stretch[1] { h } else { f64::from(f.height) },
+        )
+    }
 }
 
 /// The control pictures named in `names` that the preset's library has.
@@ -189,7 +195,7 @@ pub fn pictures<'a>(
     path: &Path,
     names: impl IntoIterator<Item = &'a str>,
 ) -> HashMap<String, Arc<Picture>> {
-    let mut source = Pictures::of(path);
+    let mut source = Pictures::of(path, "pictures");
     let mut out = HashMap::new();
     for name in names {
         if out.contains_key(name) {
@@ -208,7 +214,7 @@ pub fn pictures<'a>(
         }
         let picture = Picture {
             frames,
-            resizable: layout.resizable,
+            stretch: layout.stretch,
         };
         out.insert(name.to_owned(), Arc::new(picture));
     }
@@ -216,7 +222,7 @@ pub fn pictures<'a>(
 }
 
 /// A copy of the `w` by `h` pixels at `x`, `y`; `None` when empty.
-fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
+pub fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
     if w == 0 || h == 0 || x + w > image.width || y + h > image.height {
         return None;
     }
@@ -235,7 +241,7 @@ fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
 struct Layout {
     frames: u32,
     horizontal: bool,
-    resizable: bool,
+    stretch: [bool; 2],
 }
 
 impl Layout {
@@ -243,7 +249,7 @@ impl Layout {
         let mut layout = Self {
             frames: 1,
             horizontal: false,
-            resizable: false,
+            stretch: [false; 2],
         };
         for (key, value) in text.lines().filter_map(|l| l.split_once(':')) {
             let value = value.trim();
@@ -252,7 +258,8 @@ impl Layout {
             match key.trim().to_lowercase().as_str() {
                 "number of animations" => layout.frames = number,
                 "horizontal animation" => layout.horizontal = yes,
-                "horizontal resizable" | "vertical resizable" => layout.resizable |= yes,
+                "horizontal resizable" => layout.stretch[0] = yes,
+                "vertical resizable" => layout.stretch[1] = yes,
                 _ => {}
             }
         }
@@ -280,118 +287,7 @@ impl Layout {
     }
 }
 
-/// Where a preset's pictures come from: `Resources/pictures` folders near
-/// it, else a resource container (`.nkr`) in or one folder below them.
-struct Pictures {
-    /// Loose picture files by lowercase name, nearest first.
-    files: HashMap<String, PathBuf>,
-    /// Containers to try in order, opened on first use.
-    containers: Vec<PathBuf>,
-    open: Vec<(File, ni_file::nkr::Archive)>,
-    key: Option<Option<std::sync::Arc<dyn ni_file::nis::LibraryKey>>>,
-    instrument: PathBuf,
-}
-
-impl Pictures {
-    fn of(instrument: &Path) -> Self {
-        let mut files = HashMap::new();
-        let mut containers = Vec::new();
-        let nkrs = |dir: &Path| {
-            let mut found: Vec<_> = std::fs::read_dir(dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkr")))
-                .collect();
-            found.sort();
-            found
-        };
-        for folder in instrument.ancestors().skip(1).take(4) {
-            for relative in ["Resources/pictures", "resources/pictures", "pictures"] {
-                for e in std::fs::read_dir(folder.join(relative))
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                {
-                    let name = e.file_name().to_string_lossy().to_lowercase();
-                    files.entry(name).or_insert_with(|| e.path());
-                }
-            }
-            containers.extend(nkrs(folder));
-            // Some libraries keep their container with the samples.
-            let mut subfolders: Vec<_> = std::fs::read_dir(folder)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_dir())
-                .collect();
-            subfolders.sort();
-            for sub in subfolders {
-                containers.extend(nkrs(&sub));
-            }
-        }
-        containers.dedup();
-        Self {
-            files,
-            containers,
-            open: Vec::new(),
-            key: None,
-            instrument: instrument.into(),
-        }
-    }
-
-    /// The bytes of `Resources/pictures/<file>`, if the library has it.
-    fn read(&mut self, file: &str) -> Result<Option<Vec<u8>>, String> {
-        if let Some(path) = self.files.get(&file.to_lowercase()) {
-            return read_bounded(path).map(Some);
-        }
-        let member = format!("Resources/pictures/{file}");
-        for n in 0.. {
-            if n == self.open.len() {
-                let Some(path) = (!self.containers.is_empty()).then(|| self.containers.remove(0))
-                else {
-                    return Ok(None);
-                };
-                let Ok(mut f) = File::open(&path) else {
-                    continue;
-                };
-                let Ok(archive) = ni_file::nkr::Archive::read(&mut f) else {
-                    continue;
-                };
-                self.open.push((f, archive));
-            }
-            let (f, archive) = &mut self.open[n];
-            let Some(entry) = archive.find(&member) else {
-                continue;
-            };
-            if entry.size > 32 * 1024 * 1024 {
-                return Err(format!("{file} exceeds 32 MiB"));
-            }
-            let key = match &self.key {
-                _ if !entry.encoded || entry.key_index == 0xff => &None,
-                Some(key) => key,
-                None => self.key.insert(
-                    crate::access::library_key(&self.instrument).map_err(|e| e.to_string())?,
-                ),
-            };
-            return archive
-                .read_entry_with_key(f, &member, key.as_deref())
-                .map(Some)
-                .map_err(|e| e.to_string());
-        }
-        Ok(None)
-    }
-}
-
-fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|f| f.take(32 * 1024 * 1024).read_to_end(&mut bytes))
-        .map_err(|e| e.to_string())?;
-    Ok(bytes)
-}
+/// `<dir>/Resources/<name>` and `<dir>/<name>`, matching each folder name
 fn wallpaper(scripts: &[String]) -> Option<String> {
     scripts
         .iter()
@@ -671,9 +567,15 @@ mod tests {
             super::Layout {
                 frames: 3,
                 horizontal: false,
-                resizable: false,
+                stretch: [false; 2],
             }
         );
+        // Windows line ends, spacing and case as libraries write them.
+        let strip = super::Layout::parse("Has Alpha Channel: yes\r\nnumber of animations : 4\r\nHorizontal Animation: YES\r\nVertical Resizable: yes\r\nHorizontal Resizable: no\r\n");
+        assert_eq!(strip, super::Layout { frames: 4, horizontal: true, stretch: [false, true] }, "a divider stretches down only");
+        let across = super::Image::rgba(4, 1, (0..16).collect::<Vec<u8>>()).unwrap();
+        assert_eq!(strip.cut(&across).iter().map(|f| f.rgba[0]).collect::<Vec<_>>(), [0, 4, 8, 12], "horizontal frames run left to right");
+        assert_eq!(super::Layout::parse("Number of Animations: 0").frames, 1, "none is one");
         // A 1x3 strip: red, green, blue.
         let image =
             super::Image::rgba(1, 3, vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]).unwrap();

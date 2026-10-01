@@ -16,8 +16,12 @@ pub enum Target {
     Library(String),
     /// The browser's add button: library folders.
     Libraries,
+    /// How the browser lists the libraries.
+    LibrarySort,
     /// A rack slot.
     Part(usize),
+    /// How a rack slot shows its library's performance view.
+    View(usize),
     /// A key on the keyboard.
     Key(u8),
     /// The editor's own menu in the top bar.
@@ -34,9 +38,16 @@ pub enum Target {
     Routing,
     /// A mixer strip.
     Strip(Strip),
-    /// An articulation's keyswitch: remap it, or learn the key from MIDI
-    /// (keys held when learning started are ignored).
-    Keyswitch { part: usize, row: usize, learning: Option<u128> },
+    /// An articulation's keyswitch, channel or velocity range.
+    Articulation { part: usize, row: usize, field: ArtField },
+}
+
+/// Which of an articulation's settings a menu is about.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ArtField {
+    Key,
+    Channel,
+    Velocity,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +73,10 @@ pub enum Command {
     EditSound(usize),
     Mute(usize),
     Solo(usize),
+    /// How a part shows its performance view ([`crate::plugin::Part::view`]).
+    View(usize, u8),
+    /// The mode every part follows, which a part then follows too.
+    DefaultView(usize, crate::library::ViewMode),
     Move(usize, i32),
     Audition(u8),
     /// Show or hide the library folders strip.
@@ -78,7 +93,9 @@ pub enum Command {
     ResetCover(String),
     MoveLibrary(String, i32),
     ResetLibraryOrder,
-    LibraryUI(bool),
+    /// How the browser lists the libraries; a library pinned above the rest, by folder.
+    SortLibraries(crate::library::Sort),
+    Pin(String),
     SaveMulti,
     Browser,
     Keyboard,
@@ -110,9 +127,17 @@ pub enum Command {
     StripRename(Strip),
     StripReset(Strip),
     StripRoute(Strip),
-    /// Play an articulation's keyswitch from another key; `None` restores it.
+    /// Play an articulation's keyswitch from another key; `None` restores
+    /// it, [`crate::articulate::CLEARED`] clears it.
     Remap(usize, usize, Option<u8>),
+    /// Take an articulation's keyswitch from the next key played.
     Learn(usize, usize),
+    /// An articulation's channel back to the library order's.
+    ResetChannel(usize, usize),
+    /// An articulation takes part in channel and velocity mode, or not.
+    TakePart(usize, usize),
+    /// Spread 1–127 evenly over the articulations taking part.
+    SplitVelocities(usize),
     KeepOriginal(usize),
     Mpe(usize, Zone),
     BendRange(usize, u8),
@@ -208,9 +233,19 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             if chosen.is_some() {
                 items.push(act(if own { "Reset to its artwork" } else { "Reset cover" }, "", Command::ResetCover(dir.clone())));
             }
-            items.extend([Item::Rule, act("Reveal in folder", "", Command::Reveal(dir.clone())), act("Copy path", "", Command::CopyPath(dir))]);
+            let pinned = cx.settings.pinned.contains(&dir);
+            items.extend([
+                Item::Rule,
+                act(if pinned { "Unpin" } else { "Pin to top" }, "", Command::Pin(dir.clone())),
+                act("Reveal in folder", "", Command::Reveal(dir.clone())),
+                act("Copy path", "", Command::CopyPath(dir)),
+            ]);
             items
         }
+        Target::LibrarySort => crate::library::Sort::ALL
+            .into_iter()
+            .map(|sort| check(sort.label(), cx.settings.sort == sort, Command::SortLibraries(sort)))
+            .collect(),
         Target::Libraries => {
             let mut items = vec![
                 act("Add folder of libraries…", "", Command::AddFolder(false)),
@@ -248,6 +283,17 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Reveal in folder", "", Command::Reveal(path.clone())),
                 act("Copy path", "", Command::CopyPath(path.clone())),
             ]);
+            items
+        }
+        Target::View(slot) => {
+            let slot = *slot;
+            let now = super::perf_view::shows(cx, slot);
+            let mut items: Vec<Item> = (crate::library::ViewMode::ALL.iter())
+                .map(|&m| check(m.label(), now == m, Command::View(slot, super::perf_view::code(Some(m)))))
+                .collect();
+            if now != cx.settings.view_mode {
+                items.extend([Item::Rule, act(format!("Make {} the default", now.label()), "", Command::DefaultView(slot, now))]);
+            }
             items
         }
         Target::Part(slot) => {
@@ -358,28 +404,40 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             }));
             items
         }
-        &Target::Keyswitch { part, row, learning } => {
+        &Target::Articulation { part, row, field } => {
+            use crate::articulate::CLEARED;
             let Some(a) = cx.selection.parts.get(part).map(|p| &p.articulate) else {
                 return Vec::new();
             };
-            let Some((key, remap)) = a.articulations.get(row).and_then(|r| Some((r.key?, r.remap))) else {
+            let Some(r) = a.articulations.get(row) else {
                 return Vec::new();
             };
-            let mut items = vec![
-                Item::Info(format!("{} · keyswitch {}", a.articulations[row].name, note_name(key))),
-                check(
-                    if learning.is_some() { "Press a key…" } else { "Learn from MIDI" },
-                    learning.is_some(),
-                    Command::Learn(part, row),
-                ),
-                check(format!("Original key {}", note_name(key)), remap.is_none(), Command::Remap(part, row, None)),
-                check("Original keys still switch", a.keep_original, Command::KeepOriginal(part)),
-                Item::Rule,
-            ];
-            items.extend((0..128u8).filter(|&n| n != key).map(|n| {
-                check(note_name(n), remap == Some(n), Command::Remap(part, row, Some(n)))
-            }));
-            items
+            let take_part = check("Plays by channel and velocity", r.enabled, Command::TakePart(part, row));
+            match field {
+                ArtField::Key => {
+                    let Some(key) = r.key else {
+                        return Vec::new();
+                    };
+                    vec![
+                        Item::Info(format!("{} · keyswitch {}", r.name, note_name(key))),
+                        act("Learn", "", Command::Learn(part, row)),
+                        check(format!("Reset to library default ({})", note_name(key)), r.remap.is_none(), Command::Remap(part, row, None)),
+                        check("Clear", r.remap == Some(CLEARED), Command::Remap(part, row, Some(CLEARED))),
+                        Item::Rule,
+                        check("Original keys still switch", a.keep_original, Command::KeepOriginal(part)),
+                    ]
+                }
+                ArtField::Channel => vec![
+                    Item::Info(format!("{} · channel {}", r.name, r.channel + 1)),
+                    check(format!("Reset to library default (Ch {})", row % 16 + 1), usize::from(r.channel) == row % 16, Command::ResetChannel(part, row)),
+                    take_part,
+                ],
+                ArtField::Velocity => vec![
+                    Item::Info(format!("{} · velocity {}–{}", r.name, r.low, r.high)),
+                    act("Reset: split evenly", "", Command::SplitVelocities(part)),
+                    take_part,
+                ],
+            }
         }
         Target::Strip(strip) => {
             let strip = *strip;
@@ -479,9 +537,6 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 items.push(Item::Info("Experimental".into()));
             }
             items.extend([
-                Item::Rule, Item::Info("Instrument controls".into()),
-                check("Native vector UI", !cx.selection.library_ui, Command::LibraryUI(false)),
-                check("Library UI (imported layout)", cx.selection.library_ui, Command::LibraryUI(true)),
                 Item::Rule, Item::Info("Appearance".into()),
             ]);
             let now = super::Appearance::of(cx.selection.appearance);
@@ -559,18 +614,6 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
     if ui.dismissed(&[ID, anchor]) {
         cx.state.menu = None;
         return None;
-    }
-    if let Target::Keyswitch { part, row, learning: Some(held) } = menu.target {
-        let shared = &cx.p.shared;
-        let down = |n: usize| {
-            use std::sync::atomic::Ordering::Relaxed;
-            shared.heard[n].load(Relaxed) > 0 || shared.played[n].load(Relaxed) > 0
-        };
-        if let Some(n) = (0..128).find(|&n| down(n) && held & 1 << n == 0) {
-            run(ui, cx, Command::Remap(part, row, Some(n as u8)));
-            cx.state.menu = None;
-            return None;
-        }
     }
     let items = items(cx, &menu.target);
     if items.is_empty() {
@@ -684,6 +727,11 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             cx.state.tab = super::Tab::Sound;
         }
         Command::Mute(slot) => cx.selection.parts[slot].mute ^= true,
+        Command::View(slot, code) => cx.selection.parts[slot].view = code,
+        Command::DefaultView(slot, mode) => {
+            shared.libraries.edit(|s| s.view_mode = mode);
+            cx.selection.parts[slot].view = 0;
+        }
         Command::Solo(slot) => cx.selection.parts[slot].solo ^= true,
         Command::Move(slot, by) => cx.move_by(slot, by),
         Command::Audition(note) => shared.audition(Some(note)),
@@ -691,6 +739,13 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::AddFolder(single) => super::header::add_folder(cx, single),
         Command::ImportKontakt => shared.libraries.import_kontakt(),
         Command::Rescan => shared.libraries.rescan(),
+        Command::SortLibraries(sort) => shared.libraries.edit(|s| s.sort = sort),
+        Command::Pin(dir) => shared.libraries.edit(|s| match s.pinned.iter().position(|d| *d == dir) {
+            Some(at) => {
+                s.pinned.remove(at);
+            }
+            None => s.pinned.push(dir),
+        }),
         Command::CancelScan => shared.libraries.cancel(),
         Command::ChangeArtwork(library) => {
             if !cx.state.picker.ask(super::picker::Ask::Artwork { library: library.into() }) {
@@ -702,17 +757,16 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         }
         Command::ResetCover(library) => shared.libraries.set_cover(Path::new(&library), None),
         Command::MoveLibrary(dir, by) => {
-            let mut order: Vec<String> = super::browser::ordered_libraries(&cx.view.shelf, &cx.settings)
+            let mut order: Vec<String> = cx.settings.arrange(cx.view.shelf.libraries.iter())
                 .into_iter().map(|l| l.dir.to_string_lossy().into_owned()).collect();
             if let Some(at) = order.iter().position(|p| *p == dir)
                 && let Some(to) = at.checked_add_signed(by as isize).filter(|&to| to < order.len())
             {
                 order.swap(at, to);
-                shared.libraries.edit(|s| s.order = order);
+                shared.libraries.edit(|s| { s.order = order; s.sort = crate::library::Sort::Custom; });
             }
         }
-        Command::ResetLibraryOrder => shared.libraries.edit(|s| s.order.clear()),
-        Command::LibraryUI(original) => cx.selection.library_ui = original,
+        Command::ResetLibraryOrder => shared.libraries.edit(|s| { s.order.clear(); s.sort = crate::library::Sort::Name; }),
         Command::SaveMulti => {
             // A saved multi offers its own name back; anything else starts blank.
             let current = &cx.selection.multi;
@@ -753,12 +807,21 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
                 r.remap = to.filter(|&to| Some(to) != r.key);
             }
         }
-        Command::Learn(part, row) => {
-            use std::sync::atomic::Ordering::Relaxed;
-            let down = |n: usize| shared.heard[n].load(Relaxed) > 0 || shared.played[n].load(Relaxed) > 0;
-            let held = (0..128).filter(|&n| down(n)).fold(0u128, |m, n| m | 1 << n);
-            let anchor = format!("art-key-{part}-{row}");
-            open_under(ui, cx, Target::Keyswitch { part, row, learning: Some(held) }, &anchor);
+        Command::Learn(part, row) => super::panel::begin(ui, cx, &format!("art-key-{part}-{row}")),
+        Command::ResetChannel(part, row) => {
+            if let Some(r) = cx.selection.parts.get_mut(part).and_then(|p| p.articulate.articulations.get_mut(row)) {
+                r.channel = (row % 16) as u8;
+            }
+        }
+        Command::TakePart(part, row) => {
+            if let Some(r) = cx.selection.parts.get_mut(part).and_then(|p| p.articulate.articulations.get_mut(row)) {
+                r.enabled ^= true;
+            }
+        }
+        Command::SplitVelocities(part) => {
+            if let Some(p) = cx.selection.parts.get_mut(part) {
+                p.articulate.split_velocities();
+            }
         }
         Command::KeepOriginal(part) => {
             if let Some(p) = cx.selection.parts.get_mut(part) {

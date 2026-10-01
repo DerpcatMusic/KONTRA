@@ -1490,6 +1490,12 @@ $async := save_array(!strings,0)
 $async := load_array(!strings,0)
 %values[1] := pgs_get_key_val(FIRST_USE,1)
 !strings[1] := pgs_get_str_key_val(FIRST_TEXT)
+set_keyrange(36,47,@text)
+set_keyrange(48,60,@text)
+set_keyrange(45,50,@text)
+remove_keyrange(46)
+set_keyrange(36,60,@text)
+set_text($label,get_keyrange_name(46))
 set_key_name(60,@text)
 set_key_color(60,$KEY_COLOR_RED)
 set_key_color(60,0)
@@ -1511,6 +1517,7 @@ end on"#;
     assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics());
     let ui = rt.interface(0);
     assert_eq!(ui.controls[1].menu.len(), 1);
+    assert_eq!(rt.env.host.keyranges, vec![(36, 60, rt.last_message().to_owned())]);
     let saved = rt.persistence();
     assert_eq!(saved[0]["%values"], Value::IntArray(vec![42, 73, 0, 0]));
     assert_eq!(
@@ -1578,6 +1585,8 @@ fn modulated_groups() -> Instrument {
             targets: vec![String::new()],
             assignments: Some(0),
             volume_env: false,
+            flex: false,
+            envelope: None,
         }],
         ..Group::default()
     };
@@ -2457,4 +2466,171 @@ fn shared_filters_match_voices_filtered_alone_within_120_db() {
     assert!((0.5..=1.0).contains(&peak), "near full scale: {peak}");
     assert!(error > 0.0, "filters were shared");
     assert!(error < 1e-6, "{:.1} dB", 20.0 * error.log10());
+}
+
+/// Two groups whose output taps send slot 0 (a Reverb) through a Send
+/// Levels slot at insert 7, as Audio Imperia and Solo store them.
+fn reverb_send(script: &str) -> (Engine, Box<Runtime>) {
+    use fx::{Chain, Effect, Kind, Params, params};
+    let effect = |slot, kind, params| Effect { slot, kind, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0, params };
+    let mut i = two_groups();
+    let reverb = params::Reverb {
+        room_type: 0.0,
+        time: 0.37,
+        size: 0.5,
+        damping: 0.5,
+        modulation: 0.5,
+        diffusion: 0.5,
+        predelay: 0.0,
+        high_cut: 0.0,
+        low_shelf: 0.0,
+        stereo: 1.0,
+    };
+    let levels = params::SendLevels { sends: vec![1.0; 8], outputs: Vec::new() };
+    i.fx.insert = Chain { slots: vec![effect(7, Kind::SendLevels, Params::SendLevels(levels))] };
+    i.fx.send = Chain { slots: vec![effect(0, Kind::Reverb, Params::Reverb(reverb))] };
+    i.scripts = vec![script.to_owned()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut e = engine_with(layered(i.groups.clone(), &[0.1, 0.2]));
+    e.set_fx(i.fx.processor(e.rate() as f32, MAX_BLOCK));
+    (e, rt.unwrap())
+}
+
+/// Energy after the voices end: the reverb tail.
+fn tail_energy(e: &mut Engine) -> f32 {
+    e.note_on(0, 60, 127);
+    render(e, 4800);
+    e.note_off(0, 60);
+    render(e, 48000).iter().skip(480).map(|f| f[0] * f[0] + f[1] * f[1]).sum()
+}
+
+/// The framework scripts' `on init`: name the effects already loaded, then
+/// set the reverb. Naming the loaded type keeps the effect, reading it back
+/// gives `$EFFECT_TYPE_*`, and `$ENGINE_PAR_RV2_*` and the send level reach
+/// the sound: a longer reverb rings longer, a closed send leaves no tail.
+#[test]
+fn scripts_name_loaded_effects_and_set_the_reverb_and_send() {
+    let script = |time: &str, send: &str| {
+        format!(
+            "on init
+declare %type_ok[1]
+set_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, $EFFECT_TYPE_REVERB2, -1, 0, $NI_SEND_BUS)
+set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_SEND_LEVELS, -1, 7, $NI_INSERT_BUS)
+set_engine_par($ENGINE_PAR_RV2_TYPE, $NI_REVERB2_TYPE_HALL, -1, 0, $NI_SEND_BUS)
+set_engine_par($ENGINE_PAR_RV2_TIME, {time}, -1, 0, $NI_SEND_BUS)
+set_engine_par($ENGINE_PAR_SENDLEVEL_0, {send}, -1, 7, $NI_INSERT_BUS)
+{{ Out of bounds, and so a diagnostic, unless the types read back. }}
+%type_ok[get_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, -1, 0, $NI_SEND_BUS) - $EFFECT_TYPE_REVERB2] := 1
+%type_ok[get_engine_par($ENGINE_PAR_EFFECT_TYPE, -1, 7, $NI_INSERT_BUS) - $EFFECT_TYPE_SEND_LEVELS] := 1
+%type_ok[get_engine_par($ENGINE_PAR_RV2_TYPE, -1, 0, $NI_SEND_BUS) - $NI_REVERB2_TYPE_HALL] := 1
+end on"
+        )
+    };
+    let run = |time: &str, send: &str| {
+        let (mut e, rt) = reverb_send(&script(time, send));
+        assert_eq!(rt.diagnostics(), Vec::<String>::new());
+        assert!(e.set_script(Some(rt)).is_none());
+        tail_energy(&mut e)
+    };
+    let (short, long, closed) = (run("0", "630859"), run("1000000", "630859"), run("1000000", "0"));
+    assert!(long > 4.0 * short, "RV2_TIME: {short} vs {long}");
+    assert!(closed < 1e-9, "SENDLEVEL_0 at 0 still feeds the reverb: {closed}");
+
+    // Loading another effect is not supported, and says so.
+    let (_, rt) = reverb_send(
+        "on init\nset_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, $EFFECT_TYPE_GAINER, -1, 0, $NI_SEND_BUS)\nend on",
+    );
+    assert!(rt.diagnostics().iter().any(|d| d.contains("set_engine_par")), "{:?}", rt.diagnostics());
+}
+
+/// `load_ir_sample` in `on init`: a name without extension or case found in
+/// the library's `Resources/ir_samples` loads into an empty convolution
+/// insert, and the effects then convolve with it; `on async_complete`
+/// reports 1 for it and 0 for a file that is not there.
+#[test]
+fn load_ir_sample_fills_the_convolution_slot_and_reports_status() {
+    use fx::{Chain, Effect, Kind, Params, params};
+    let dir = std::env::temp_dir().join(format!("kontakto-ir-{}", std::process::id()));
+    let irs = dir.join("Resources").join("IR_Samples");
+    std::fs::create_dir_all(&irs).unwrap();
+    write_wav(&irs.join("Room.WAV"), 4410);
+    let band = params::IrBand { length_ratio: 1.0, low_cut_hz: 20.0, high_cut_hz: 20_000.0 };
+    let conv = params::Convolution {
+        unknown: [0.0; 2],
+        predelay_ms: 0.0,
+        early: band,
+        late: band,
+        unknown_9: 0.0,
+        flags: [false; 5],
+        curve_x: Vec::new(),
+        curve_db: Vec::new(),
+        ir_index: -1,
+        ir_file: None,
+        ir_error: None,
+        ir: None,
+    };
+    let mut i = two_groups();
+    i.path = dir.join("Instrument.nki");
+    i.fx.insert = Chain {
+        slots: vec![Effect {
+            slot: 0,
+            kind: Kind::Convolution,
+            version: 0,
+            bypass: false,
+            output_gain: 1.0,
+            dry_level: 0.0,
+            params: Params::Convolution(Box::new(conv)),
+        }],
+    };
+    i.scripts = vec!["on init
+declare $found
+declare $missing
+declare $done
+declare %ok[1]
+$found := load_ir_sample(\"room\", 0, $NI_INSERT_BUS)
+$missing := load_ir_sample(\"nothing\", 0, $NI_INSERT_BUS)
+end on
+on async_complete
+{ Out of bounds, and so a diagnostic, unless the status is right. }
+if ($NI_ASYNC_ID = $found)
+  %ok[$NI_ASYNC_EXIT_STATUS - 1] := 1
+end if
+if ($NI_ASYNC_ID = $missing)
+  %ok[$NI_ASYNC_EXIT_STATUS] := 1
+end if
+inc($done)
+message($done)
+end on"
+        .into()];
+    let tail = |with_ir: bool| {
+        let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+        assert!(errors.is_empty(), "{errors:?}");
+        let rt = rt.unwrap();
+        assert_eq!(rt.init_irs.len(), 1);
+        let mut e = engine_with(layered(i.groups.clone(), &[0.1, 0.2]));
+        e.set_fx(kontakto::engine::effects(&i, with_ir.then_some(&*rt), e.rate() as f32));
+        e.set_script(Some(rt));
+        let energy = tail_energy(&mut e);
+        let rt = e.script().unwrap();
+        assert_eq!(rt.last_message(), "2");
+        let diagnostics = rt.diagnostics();
+        assert!(diagnostics.iter().all(|d| !d.contains("out of bounds")), "{diagnostics:?}");
+        assert!(diagnostics.iter().any(|d| d.contains("load_ir_sample: file not found")), "{diagnostics:?}");
+        energy
+    };
+    let (dry, wet) = (tail(false), tail(true));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(dry < 1e-9, "no impulse response, yet a tail: {dry}");
+    assert!(wet > 1e-3, "the loaded impulse response leaves no tail: {wet}");
+}
+
+#[test]
+fn unavailable_effects_report_async_failure() {
+    let mut e = scripted("on init\ndeclare ui_label $status(1,1)\nend on\non note\nset_engine_par($ENGINE_PAR_EFFECT_TYPE,$NI_INSERT_REVERB,-1,0,$NI_INSERT_BUS)\nend on\non async_complete\nset_text($status,$NI_ASYNC_EXIT_STATUS)\nend on");
+    e.note_on(0, 60, 100);
+    let (mut left, mut right) = ([0.; 64], [0.; 64]);
+    e.render(&mut left, &mut right);
+    let ui = e.script().unwrap().interface(0);
+    assert_eq!(ui.controls[0].properties["$CONTROL_PAR_TEXT"], Value::Text("0".into()));
 }

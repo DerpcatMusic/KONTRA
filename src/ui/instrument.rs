@@ -1,7 +1,8 @@
 //! A part's instrument: its performance controls, key/velocity mapping,
 //! details, and plain-spoken notices.
 
-use super::{Cx, panel, theme::*};
+use super::{Cx, panel, perf_view, theme::*};
+use crate::library::ViewMode;
 use crate::import::Instrument;
 use moose::mui::mui::prelude::*;
 use std::path::Path;
@@ -93,41 +94,41 @@ fn sentence(text: &str) -> String {
 /// `slot`'s performance controls, rebuilt natively, or a word on why there are none.
 /// Everything [`stage`] reads, hashed: while it holds, the stage is kept as
 /// drawn and not built again.
-pub fn stage_deps(cx: &Cx, slot: usize) -> u64 {
+pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let v = &cx.view.parts[slot];
+    let original = instrument_of(cx, slot).is_some() && perf_view::shows(cx, slot) != ViewMode::Kontra;
     let at = |a: Option<*const ()>| a.map_or(0, |p| p as usize);
     let mut h = DefaultHasher::new();
     slot.hash(&mut h);
-    cx.selection.library_ui.hash(&mut h);
     at(v.interface.as_ref().map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
     at(instrument_of(cx, slot).map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
     (Arc::as_ptr(&v.pictures) as usize, &v.interface_status).hash(&mut h);
-    if cx.selection.library_ui {
-        if let Some(interface) = &v.interface {
-            panel::original_values(interface).hash(&mut h);
-        }
-        at(v.wallpaper.as_ref().map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
-    }
     if let (Some(cache), Some(interface)) = (cx.state.panels.get(&slot), &v.interface) {
         panel::values(cache, interface).hash(&mut h);
     }
     cx.state.held.filter(|(p, ..)| *p == slot).map(|(_, c, v)| (c, v.to_bits())).hash(&mut h);
     panel::deps(cx, slot).hash(&mut h);
+    original.hash(&mut h);
+    if original {
+        perf_view::deps(ui, cx, slot).hash(&mut h);
+    }
     h.finish()
 }
 
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
-    let v = &cx.view.parts[slot];
     let loaded = instrument_of(cx, slot).is_some();
-    let scripted = instrument_of(cx, slot).is_some_and(|i| !i.scripts.is_empty());
-    if cx.selection.library_ui
-        && loaded
-        && let Some(interface) = v.interface.clone()
-    {
-        let pictures = v.pictures.clone();
-        return panel::original(ui, cx, slot, &interface, &pictures).id(format!("stage-{slot}"));
+    if loaded && perf_view::shows(cx, slot) != ViewMode::Kontra {
+        // The articulation setup follows the controls whichever view shows them.
+        if let Some(interface) = cx.view.parts[slot].interface.clone() {
+            let pictures = cx.view.parts[slot].pictures.clone();
+            let sections = panel::cached(cx.state.panels.entry(slot).or_default(), &interface, &pictures);
+            panel::sync(cx, slot, &sections);
+        }
+        return perf_view::view(ui, cx, slot).id(format!("stage-{slot}"));
     }
+    let v = &cx.view.parts[slot];
+    let scripted = instrument_of(cx, slot).is_some_and(|i| !i.scripts.is_empty());
     let sections = match &v.interface {
         Some(interface) if loaded => panel::cached(cx.state.panels.entry(slot).or_default(), interface, &v.pictures),
         _ => Arc::default(),

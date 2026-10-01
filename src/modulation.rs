@@ -80,6 +80,13 @@ pub struct Modulator {
     /// This is the internal envelope imported as `Group::volume_env` (AHDSR
     /// only, the target of `$ENGINE_PAR_ATTACK` and friends).
     pub volume_env: bool,
+    /// A flex envelope: it has no AHDSR stages, so Kontakt ignores
+    /// `$ENGINE_PAR_ATTACK` and friends addressed to it.
+    #[serde(default)]
+    pub flex: bool,
+    /// Index into `Group::envelopes` of an AHDSR driving module parameters.
+    #[serde(default)]
+    pub envelope: Option<usize>,
 }
 
 /// Modulation read from one group, plus notes about what was left out.
@@ -123,6 +130,9 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
             }
             // The first volume envelope of each kind; the voice multiplies them.
             let volume = params.targets.iter().any(|t| t.param == "volume");
+            let flex = matches!(params.modulator, RawModulator::Flex(_));
+            let envelope = (matches!(params.modulator, RawModulator::Ahdsr(_)) && !volume)
+                .then_some(out.envelopes.len());
             let volume_env = match params.modulator {
                 RawModulator::Ahdsr(env) if volume && out.volume_env.is_none() => {
                     out.volume_env = Some(env);
@@ -165,6 +175,8 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                 targets: params.targets.into_iter().map(|t| t.name).collect(),
                 assignments: None,
                 volume_env,
+                flex,
+                envelope,
             });
         }
         if skipped > 0 {
@@ -182,6 +194,8 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                 targets: params.targets.iter().map(|t| t.name.clone()).collect(),
                 assignments: Some(out.mods.len()),
                 volume_env: false,
+                flex: false,
+                envelope: None,
             });
             for target in params.targets {
                 out.mods.push(ModAssignment {

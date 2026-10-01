@@ -92,6 +92,25 @@ pub struct Reverb {
     pub stereo: f32,
 }
 
+impl Reverb {
+    /// Value `i` in `$ENGINE_PAR_RV2_*` order (see the fields).
+    pub fn field(&mut self, i: u8) -> Option<&mut f32> {
+        Some(match i {
+            0 => &mut self.room_type,
+            1 => &mut self.time,
+            2 => &mut self.size,
+            3 => &mut self.damping,
+            4 => &mut self.modulation,
+            5 => &mut self.diffusion,
+            6 => &mut self.predelay,
+            7 => &mut self.high_cut,
+            8 => &mut self.low_shelf,
+            9 => &mut self.stereo,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct IrBand {
     pub length_ratio: f32,

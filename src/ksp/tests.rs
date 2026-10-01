@@ -161,11 +161,13 @@ fn real_expressions_and_arrays() {
 fn whitespace_and_comments() {
     let source = "on\tinit\ndeclare{separator}ui_label $label(1,1)\ndeclare $n:=0\nwhile($n<1)\nif(1)\nselect($n)\ncase\t0\nset_text($label,\" keep  := spaces \")\nend\t select\nend  if\ninc($n)\nend\twhile\nend  on";
     assert_eq!(label(source), " keep  := spaces ");
+    // `iffy` is a name, not `if`: an unknown function.
     assert!(
         initialize("on init\niffy(1)\nend on", 0, 0)
-            .unwrap_err()
-            .to_string()
-            .contains("iffy")
+            .unwrap()
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("iffy"))
     );
 }
 
@@ -214,6 +216,15 @@ fn select_and_broken_callbacks() {
 }
 
 #[test]
+fn a_menu_selects_its_first_item_for_init_to_read() {
+    // Afflatus picks its wallpaper by its menu's value minus one in `on init`.
+    let source = "on init\ndeclare !walls[2]\n!walls[0] := \"first\"\n!walls[1] := \"second\"\ndeclare ui_menu $look\nadd_menu_item($look, \"A\", 1)\nadd_menu_item($look, \"B\", 2)\nmake_persistent($look)\nread_persistent_var($look)\nset_control_par_str($INST_WALLPAPER_ID, $CONTROL_PAR_PICTURE, !walls[$look - 1])\nend on";
+    assert_eq!(initialize(source, 0, 0).unwrap().wallpaper, "first");
+    let chosen = source.replace("make_persistent($look)", "$look := 2");
+    assert_eq!(initialize(&chosen, 0, 0).unwrap().wallpaper, "second", "a value it has stays");
+}
+
+#[test]
 fn computed_ui_and_execution_limits() {
     let source = r#"on init
  declare $i
@@ -248,15 +259,16 @@ fn computed_ui_and_execution_limits() {
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_POS_X"), "100");
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "Mic 2");
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_HIDE"), "16");
-    assert!(
-        initialize("on init\nwhile (1)\nend while\nend on", 0, 0)
-            .unwrap_err()
-            .to_string()
-            .contains("budget")
-    );
+    // A runaway `on init` is stopped, not the script: what it declared stays.
+    let runaway = initialize("on init\ndeclare ui_knob $k(0,1,1)\nwhile (1)\nend while\nend on", 0, 0).unwrap();
+    assert_eq!(runaway.controls.len(), 1);
+    assert!(runaway.diagnostics.iter().any(|d| d.contains("budget")), "{:?}", runaway.diagnostics);
     let oob = initialize("on init\ndeclare %a[1]\n%a[2] := 1\nend on", 0, 0).unwrap();
     assert!(oob.diagnostics.iter().any(|d| d.contains("out of bounds")));
-    assert!(initialize("on init\nunknown_function()\nend on", 0, 0).is_err());
+    // Unknown functions do nothing and yield 0; the rest of the script runs.
+    let unknown = initialize("on init\ndeclare ui_label $l(1,1)\nunknown_function(1)\nset_text($l, unknown_value($l) & get_unknown_name() & \"!\")\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&unknown, 0, "$CONTROL_PAR_TEXT"), "0!");
+    assert!(unknown.diagnostics.iter().any(|d| d.starts_with("Unsupported KSP function: unknown_function (line 3)")), "{:?}", unknown.diagnostics);
     // Integer division by zero is 0, reported, and init goes on.
     let div = initialize("on init\ndeclare $z\ndeclare $a := 1/$z\nend on", 0, 0).unwrap();
     assert!(div.diagnostics.iter().any(|d| d.contains("division by zero")));
@@ -330,6 +342,7 @@ end while
 set_text($l, %b[7] & ":" & $n & ":" & @s & ":" & %a[0] & %a[6] & %a[7])
 end on"#;
     let setup = compile::Setup {
+            zones: 0,
         groups: 0,
         outputs: 0,
     };
@@ -340,8 +353,8 @@ end on"#;
     let ui = initialize(oob, 0, 0).unwrap();
     assert!(ui.diagnostics.iter().any(|d| d.contains("out of bounds")));
     let spin = "on init\ndeclare %a[4]\ndeclare $i\nwhile (1)\n$i := 0\nwhile ($i < 4)\nif (%a[$i] = 1)\nend if\ninc($i)\nend while\nend while\nend on";
-    let error = initialize(spin, 0, 0).unwrap_err().to_string();
-    assert!(error.contains("budget"), "{error}");
+    let ui = initialize(spin, 0, 0).unwrap();
+    assert!(ui.diagnostics.iter().any(|d| d.contains("budget")), "{:?}", ui.diagnostics);
 }
 
 #[test]
@@ -845,9 +858,10 @@ fn runaway_callbacks_are_bounded() {
     for _ in 0..8 {
         rig.block(256);
     }
-    // The callback is preempted every block (2M instructions) and cut off after 5M;
-    // only then does its note move on to the engine, at the start of the third block.
-    assert_eq!(rig.log(), ["play 60@512 v1 [0, 1, 2]"]);
+    // The callback is preempted every block (4096 instructions a frame) and cut
+    // off after 5M; only then does its note move on to the engine, at the
+    // start of the fourth block.
+    assert_eq!(rig.log(), ["play 60@768 v1 [0, 1, 2]"]);
     assert!(
         rig.rt
             .diagnostics()
@@ -983,4 +997,273 @@ fn budgeted_persistence_refresh_matches_whole_and_reports_changes() {
     };
     assert_eq!((&table[999], &saved[0]["$x"]), (&1006, &Value::Int(999)));
     assert!(!rig.rt.refresh_persistence(&mut saved), "a second refresh finds nothing new");
+}
+
+// ---- Builtins added for coverage ---------------------------------------------------
+
+#[test]
+fn unavailable_stretch_voice_limits_report_failure() {
+    let script = "on init\ndeclare ui_label $l(1,1)\ndeclare $id\nset_text($l, get_voice_limit($NI_VL_TMPRO_STANDARD) & \",\" & get_voice_limit($NI_VL_TMPRO_HQ))\nend on\non note\n$id := set_voice_limit($NI_VL_TMPRO_HQ, 6)\nend on\non async_complete\nif ($NI_ASYNC_ID = $id)\nset_text($l, \"hq \" & get_voice_limit($NI_VL_TMPRO_HQ) & \" ok \" & $NI_ASYNC_EXIT_STATUS)\nend if\nend on";
+    let mut engine = LogEngine::new(vec!["Samples".into()], 48000.);
+    let (rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    assert!(rt.diagnostics().iter().any(|d| d.contains("Time Machine Pro is unavailable")));
+    let mut rig = Rig { rt, engine };
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "0,0");
+    rig.on(0, 60).block(64);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "hq 0 ok 0");
+
+}
+
+#[test]
+fn sign_and_root_math() {
+    assert_eq!(
+        label("on init\ndeclare ui_label $l(1,1)\nset_text($l, sgn(-7) & sgn(0) & sgn(3) & signbit(-1) & signbit(5) & sgn(-0.5) & signbit(2.0) & \":\" & exp2(3.0) & \":\" & cbrt(27.0))\nend on"),
+        "-10110-10:8:3"
+    );
+}
+
+#[test]
+fn legacy_and_kontakt7_spellings() {
+    // `_pgs_*` resolve to the commands they name; Kontakt 7's `get_*_idx`
+    // return `$NI_NOT_FOUND` where `find_*` return 0.
+    assert_eq!(
+        label("on init\ndeclare ui_label $l(1,1)\n_pgs_create_key(K, 1)\n_pgs_set_key_val(K, 0, 5)\nset_text($l, _pgs_get_key_val(K, 0) & get_group_idx(\"b\") & get_mod_idx(0, \"x\") & find_group(\"b\") & $NI_NOT_FOUND)\nend on"),
+        "5-1-10-1"
+    );
+}
+
+#[test]
+fn keyranges_never_overlap() {
+    let source = "on init\ndeclare ui_label $l(1,1)\nset_keyrange(36, 47, \"Low\")\nset_keyrange(48, 60, \"Mid\")\nset_keyrange(45, 50, \"Over\")\nset_text($l, get_keyrange_name(36) & \"|\" & get_keyrange_name(40) & \"|\" & get_keyrange_min_note(47) & \"-\" & get_keyrange_max_note(47) & \"|\" & get_keyrange_name(55))\nremove_keyrange(46)\nadd_text_line($l, get_keyrange_name(46) & \".\")\nend on";
+    // "Over" replaced both ranges it touched; removing it clears 46.
+    assert_eq!(label(source), "||45-50|\n.");
+}
+
+#[test]
+fn display_of_a_hypothetical_engine_value() {
+    let shown = label("on init\ndeclare ui_label $l(1,1)\nset_text($l, get_engine_par_disp_ext($ENGINE_PAR_VOLUME, 500000, 0, -1, -1) & \"|\" & get_engine_par_disp($ENGINE_PAR_VOLUME, 0, -1, -1))\nend on");
+    let (ext, current) = shown.split_once('|').unwrap();
+    assert!(!ext.is_empty() && ext != current, "{shown}");
+}
+
+#[test]
+fn ui_and_debugger_commands_are_accepted() {
+    let ui = initialize("on init\ndeclare ui_waveform $w(6,6)\ndeclare ui_xy ?xy[2]\ndeclare ui_label $l(1,1)\nattach_level_meter(get_ui_id($l), 0, 0, 0, -1)\nwatch_var($l)\nwatch_array_idx(?xy, 0)\nset_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0.5, 0)\nset_text($l, get_ui_wf_property($w, $UI_WF_PROP_PLAY_CURSOR, 0) & get_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0))\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), "00");
+    assert!(!ui.diagnostics.iter().any(|d| d.starts_with("Unsupported")), "{:?}", ui.diagnostics);
+}
+
+#[test]
+fn unsupported_builtins_degrade_per_call() {
+    // `get_zone_par` is not implemented: init runs on, reads give 0, and an
+    // unknown built-in array reads 0 instead of failing the callback.
+    let ui = initialize("on init\ndeclare ui_label $l(1,1)\nset_text($l, \"z\" & get_zone_par(0, $ZONE_PAR_VOLUME) & %NI_FUTURE_ARRAY[3])\nend on\non note\nset_zone_par(0, 0, 0)\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "z00");
+    for name in ["get_zone_par", "set_zone_par"] {
+        assert!(ui.diagnostics.iter().any(|d| d.starts_with(&format!("Unsupported KSP function: {name}"))), "{:?}", ui.diagnostics);
+    }
+    assert!(ui.diagnostics.iter().any(|d| d.starts_with("Unsupported KSP variable: %NI_FUTURE_ARRAY")));
+}
+
+#[test]
+fn ui_controls_runs_before_the_control_callback() {
+    let script = "on init\nmake_perfview\ndeclare ui_knob $k(0, 10, 1)\ndeclare ui_label $l(1,1)\nend on\non ui_controls\nset_text($l, \"all \" & ($NI_UI_ID = get_ui_id($k)) & \" \" & $k)\nend on\non ui_control($k)\nadd_text_line($l, \"own\")\nend on";
+    let mut rig = Rig::new(&[script]);
+    // Out-of-range host values are clamped to the knob's range.
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 99);
+    assert_eq!(prop(&rig.rt.interface(0), 1, "$CONTROL_PAR_TEXT"), "all 1 10\nown");
+}
+
+#[test]
+fn move_control_to_zero_hides_and_back_shows() {
+    let ui = initialize("on init\ndeclare ui_knob $a(0,1,1)\ndeclare ui_knob $b(0,1,1)\nmove_control($a, 0, 0)\nmove_control($b, 0, 0)\nmove_control($b, 2, 1)\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_HIDE"), "16");
+    assert_eq!(prop(&ui, 1, "$CONTROL_PAR_HIDE"), "0");
+}
+
+// ---- Runaway scripts ---------------------------------------------------------------
+
+#[test]
+fn runaway_scripts_stay_alive_and_bounded() {
+    // An endless `on init` loop is stopped; the script and its controls stay,
+    // and its other callbacks still run.
+    let script = "on init\ndeclare ui_label $l(1,1)\nset_text($l, \"before\")\nwhile (1)\nend while\nend on\non note\nset_text($l, \"note\")\nend on\non ui_control($l)\nwhile (1)\nend while\nend on";
+    let mut engine = LogEngine::new(vec!["a".into()], 48_000.0);
+    let (mut rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    assert!(rt.diagnostics().iter().any(|d| d.contains("on init exceeded")));
+    assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "before");
+    rt.note_on(&mut engine, 0, 60, 100);
+    assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "note");
+    // An endless UI callback costs a bounded share of each block, then stops.
+    rt.ui_control(&mut engine, 0, 0, 1);
+    let start = std::time::Instant::now();
+    for _ in 0..64 {
+        rt.process(&mut engine, 128);
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(rt.diagnostics().iter().any(|d| d.contains("instruction budget")));
+    rt.note_on(&mut engine, 0, 61, 100);
+    assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "note");
+}
+
+#[test]
+fn pgs_and_async_ping_pong_cannot_hang() {
+    // Each answers a change with another change (and queued work, or a new
+    // asynchronous call): delivery is spread over blocks instead of looping.
+    let pgs = "on init\npgs_create_key(K, 1)\nend on\non pgs_changed\npgs_set_key_val(K, 0, pgs_get_key_val(K, 0) + 1)\nset_controller(1, 1)\nend on\non note\npgs_set_key_val(K, 0, 1)\nend on";
+    let retry = "on init\ndeclare $id\nend on\non note\n$id := load_ir_sample(\"x.wav\", 0, 0)\nend on\non async_complete\n$id := load_ir_sample(\"x.wav\", 0, 0)\nend on";
+    let mut engine = LogEngine::new(vec!["a".into()], 48_000.0);
+    let (mut rt, _) = Runtime::with_scripts(&[pgs, retry], &mut engine, 8, Vec::new());
+    rt.note_on(&mut engine, 0, 60, 100);
+    for _ in 0..4 {
+        rt.process(&mut engine, 128);
+    }
+}
+
+/// Conditions compiled as branches and the fused index/compare ops give the
+/// value form's results: short-circuit `and`/`or`, flattened 2D indexes,
+/// and an out-of-bounds read that yields 0 and is reported.
+#[test]
+fn branch_conditions_and_fused_indexes_match_the_value_form() {
+    let source = "on init
+declare %a[12] := (5, 0, 7, 1, 0, 3, 9, 2, 0, 4, 6, 8)
+declare $i
+declare $j
+declare $n
+declare $hits
+declare $gt
+declare ui_label $label(1,1)
+while ($i < 3 and $n < 100)
+  $j := 0
+  while ($j < 4)
+    if ((%a[4 * $i + $j] > 2 and %a[4 * $i + $j] # 9) or $j = 3)
+      inc($hits)
+    end if
+    if (not (%a[$j] = 0) and ($i = 1 or $j = 0))
+      $n := $n + %a[4 * $i + $j]
+    end if
+    if ($j > $i)
+      inc($gt)
+    end if
+    inc($j)
+  end while
+  inc($i)
+end while
+if (%a[$hits + 100] = 0 or 0)
+  $n := $n + 1000
+end if
+set_text($label, $hits & \":\" & $n & \":\" & $gt)
+end on";
+    let ui = initialize(source, 0, 0).unwrap();
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "8:1016:6");
+    assert!(ui.diagnostics.iter().any(|d| d.contains("out of bounds")), "{:?}", ui.diagnostics);
+}
+
+#[test]
+fn built_in_state_variables() {
+    let script = "on init\ndeclare ui_label $l(1,1)\nset_text($l, $NI_KONTAKT_IS_HEADLESS & $NI_KONTAKT_IS_STANDALONE & $SIGNATURE_NUM & $SIGNATURE_DENOM & \" \" & ($NI_DATE_YEAR > 2020) & ($NI_DATE_MONTH >= 1) & ($NI_TIME_HOUR < 24))\nend on\non note\nset_text($l, %KEY_DOWN_OCT[0] & %KEY_DOWN_OCT[1] & ($PLAYED_VOICES_INST > 0))\nend on\non release\nset_text($l, %KEY_DOWN_OCT[0])\nend on";
+    let mut rig = Rig::new(&[script]);
+    let ui = rig.rt.interface(0);
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "0044 111");
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+    rig.on(0, 60).on(0, 72).block(64);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "201");
+    rig.off(0, 72).block(64);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "1");
+}
+
+#[test]
+fn sine_era_framework_in_slot_two() {
+    // The shape of Heavyocity and Orchestral Tools frameworks: the second slot
+    // builds meters and loads impulses from nested functions.
+    let first = "on init\ndeclare $x\nend on";
+    let second = "function style\nset_control_par(get_ui_id($meter), $CONTROL_PAR_BG_COLOR, 0)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_OFF_COLOR, 0)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_ON_COLOR, 0FF00h)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_OVERLOAD_COLOR, 0FF0000h)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_PEAK_COLOR, 0FFFFFFh)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_VERTICAL, 1)\nattach_level_meter(get_ui_id($meter), -1, -1, 0, $NI_BUS_OFFSET + 1)\nend function\nfunction build\ncall style\n$voices := get_voice_limit($NI_VL_TMPRO_STANDARD)\nset_engine_par($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, 500000, -1, 0, $NI_BUS_OFFSET + 1)\nend function\non init\ndeclare ui_label $l(1,1)\ndeclare ui_level_meter $meter\ndeclare ui_waveform $wave(6,6)\ndeclare $id\ndeclare $voices\ncall build\nset_text($l, get_control_par(get_ui_id($meter), $CONTROL_PAR_ON_COLOR) & \" \" & get_control_par(get_ui_id($meter), $CONTROL_PAR_VERTICAL) & \" \" & $voices)\nend on\non note\n$id := load_ir_sample(\"Hall.wav\", 0, $NI_BUS_OFFSET + 1)\nwait_async($id)\nadd_text_line($l, \"ir \" & $NI_ASYNC_EXIT_STATUS & get_engine_par_disp($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, -1, 0, $NI_BUS_OFFSET + 1))\nend on";
+    let mut rig = Rig::new(&[first, second]);
+    assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "65280 1 8");
+    assert!(
+        !rig.rt.diagnostics().iter().any(|d| d.contains("Unsupported")),
+        "{:?}",
+        rig.rt.diagnostics()
+    );
+    rig.on(0, 60).block(64);
+    assert!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT").contains("\nir "));
+}
+
+#[test]
+fn a_script_without_init_says_what_it_holds() {
+    for (source, want) in [
+        ("  \n", "the script text is empty"),
+        ("on note\nend on\nfunction f\nend function", "holds only 2 block(s): on note, function f"),
+    ] {
+        let e = format!("{:#}", initialize(source, 0, 0).unwrap_err());
+        assert!(e.contains(want), "{e}");
+    }
+}
+
+#[test]
+fn group_lookups_match_exactly_and_report_only_near_misses() {
+    let run = |names: &str| {
+        let script = format!("on init\ndeclare ui_label $l(1,1)\nset_text($l, {names})\nend on");
+        let mut engine = LogEngine::new(vec!["a".into(), "Strings Long".into()], 48_000.0);
+        let (rt, _) = Runtime::with_scripts(&[script.as_str()], &mut engine, 8, Vec::new());
+        (prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), rt.diagnostics())
+    };
+    // A name the instrument lacks is the script's business, as in Kontakt.
+    let (text, diagnostics) = run("find_group(\"Strings Long\") & find_group(\"Brass\") & get_group_idx(\"Brass\")");
+    assert_eq!((text.as_str(), diagnostics), ("10-1", Vec::<String>::new()));
+    // One that differs only in case or spaces may be decoded wrongly.
+    let (text, diagnostics) = run("find_group(\"strings long \")");
+    assert_eq!(text, "0");
+    assert!(diagnostics.iter().any(|d| d.contains("find_group")), "{diagnostics:?}");
+}
+
+/// The two out-of-bounds shapes the local libraries hit, both script bugs
+/// Kontakt shares: a label reading one name past a per-instrument name table
+/// (Afflatus), and a loop running nine voices over four-voice slots
+/// (Dolce, with its saved developer switches on). Each read is empty or 0,
+/// is reported, and the callback carries on.
+#[test]
+fn library_out_of_bounds_shapes_read_empty_and_continue() {
+    let source = "on init
+declare const $ARTS := 2
+declare const $VOICES := 4
+declare !names[$ARTS]
+!names[0] := \"Rip Slow\"
+declare %ids[$ARTS * $VOICES] := (-1)
+declare $art
+declare $n
+declare $found
+while ($art < $ARTS)
+  $n := 0
+  while ($n <= 8)
+    if (%ids[$VOICES * $art + $n] # -1)
+      inc($found)
+    end if
+    inc($n)
+  end while
+  inc($art)
+end while
+declare ui_label $l(1,1)
+set_text($l, \"[\" & !names[6] & \"]\" & $found)
+end on";
+    let ui = initialize(source, 0, 0).unwrap();
+    // The six reads past index 7 yield 0, which is not -1.
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "[]6");
+    assert!(ui.diagnostics.iter().any(|d| d.contains("out of bounds")), "{:?}", ui.diagnostics);
+}
+
+#[test]
+fn zone_sized_tables_and_compilation_cache_follow_the_instrument() {
+    let source = "on init\ndeclare %zones[$NUM_ZONES]\ndeclare ui_label $count(1,1)\nset_text($count, num_elements(%zones))\nend on";
+    let mut loaded = Vec::new();
+    for zones in [3, 17, 3] {
+        let mut engine = LogEngine::new(vec!["Samples".into()], 48000.);
+        engine.zones = zones;
+        let mut rt = Runtime::new(HostState::default(), 2, Vec::new());
+        rt.load(&mut engine, source).unwrap();
+        assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), zones.to_string());
+        loaded.push(rt);
+    }
 }

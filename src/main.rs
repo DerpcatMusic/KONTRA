@@ -66,9 +66,12 @@ fn main() -> Result<()> {
   #[cfg(feature = "plugin")]
   Some("bench-host") => kontakto::bench_host(&args[4..],args.get(2).context("bench-host <seconds> <notes> <instrument.nki>...")?.parse()?,args.get(3).context("bench-host <seconds> <notes> <instrument.nki>...")?.parse()?)?,
   #[cfg(not(feature = "plugin"))]
-  Some("bench-host" | "audit-latency") => anyhow::bail!("This command requires the plugin feature"),
+  Some("bench-host" | "audit-latency" | "audit-ui") => anyhow::bail!("This command requires the plugin feature"),
+  Some("audit-ksp") => audit_ksp(&args[2..])?,
+  #[cfg(feature = "plugin")]
+  Some("audit-ui") => kontakto::audit_ui(&args[2..])?,
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-ksp [root...] [--json out.json]\nkontakto audit-ui [root...] [--shots DIR] [--json out.json]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]"),
  }
  Ok(())
 }
@@ -298,7 +301,8 @@ fn render(args: &[String]) -> Result<()> {
     engine.blocking_streams = !realtime;
     engine.set_bank(Some(Box::new(bank)));
     if !dry {
-        engine.set_fx(instrument.fx.processor(engine.rate() as f32, MAX_BLOCK));
+        let script = scripts.0.as_deref().filter(|_| !no_script);
+        engine.set_fx(kontakto::engine::effects(&instrument, script, engine.rate() as f32));
     }
     if let Some(g) = group {
         engine.set_all_groups_allowed(false);
@@ -434,7 +438,7 @@ fn voices(path: &Path, notes: &str) -> Result<()> {
     let mut engine = Engine::default();
     engine.blocking_streams = true;
     engine.set_bank(Some(Box::new(bank)));
-    engine.set_fx(instrument.fx.processor(engine.rate() as f32, MAX_BLOCK));
+    engine.set_fx(kontakto::engine::effects(&instrument, scripts.0.as_deref(), engine.rate() as f32));
     install_scripts(&mut engine, scripts);
     let input = parse_notes(notes.split(','))?;
     let last = input.last().map_or(0, |e| e.0);
@@ -661,7 +665,7 @@ fn bench_script(path: &Path, seconds: f64) -> Result<()> {
     let input = parse_notes(specs.iter().map(String::as_str))?;
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(bank)));
-    engine.set_fx(instrument.fx.processor(RATE as f32, MAX_BLOCK));
+    engine.set_fx(kontakto::engine::effects(&instrument, scripts.0.as_deref(), RATE as f32));
     install_scripts(&mut engine, scripts);
     let init_ms = started.elapsed().as_secs_f64() * 1e3;
     let slots = engine.script().map_or(0, |rt| rt.slots());
@@ -1161,7 +1165,7 @@ fn audit_patch(path: &Path) -> Result<()> {
     let mut warnings = instrument.warnings.len() + usize::from(bank.warning.is_some());
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(bank)));
-    engine.set_fx(instrument.fx.processor(RATE as f32, MAX_BLOCK));
+    engine.set_fx(kontakto::engine::effects(&instrument, script.as_deref(), RATE as f32));
     engine.set_script(script);
     row["load_ms"] = (started.elapsed().as_millis() as u64).into();
     row["script_errors"] = errors.len().into();
@@ -1223,5 +1227,125 @@ fn audit_patch(path: &Path) -> Result<()> {
     row["status"] = failure.as_ref().map_or("ok", |_| "FAIL").into();
     row["reason"] = failure.into();
     println!("{row}");
+    Ok(())
+}
+
+/// KSP coverage: compile and initialize every script of every instrument
+/// under the roots (default: the player's library roots), then rank each gap
+/// by how many instruments it touches. A script whose `on init` fails is
+/// dead (its instrument "breaks"); degraded calls and disabled callbacks
+/// only lose that call or callback. Prints names and counts, never source.
+fn audit_ksp(args: &[String]) -> Result<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let json_at = args.iter().position(|a| a == "--json");
+    let json = json_at.and_then(|i| args.get(i + 1));
+    let mut roots: Vec<std::path::PathBuf> = args
+        .iter()
+        .enumerate()
+        .filter(|&(i, a)| !a.starts_with("--") && json_at.is_none_or(|j| i != j + 1))
+        .map(|(_, a)| a.into())
+        .collect();
+    if roots.is_empty() {
+        roots.push(import::LIBRARY_ROOT.into());
+        #[cfg(feature = "plugin")]
+        roots.extend(kontakto::library_roots());
+        roots.sort();
+        roots.dedup();
+    }
+    // Gap -> (kind, instruments it touches, occurrences).
+    let mut gaps: BTreeMap<String, (&str, BTreeSet<String>, usize)> = BTreeMap::new();
+    let (mut instruments, mut broken, mut degraded) = (0usize, BTreeSet::new(), BTreeSet::new());
+    let mut rows = Vec::new();
+    // Line numbers vary per script; the gap is the same.
+    let general = |s: &str| {
+        let s = s.split_once(": ").filter(|(head, _)| head.starts_with("KSP line ")).map_or(s, |(_, rest)| rest);
+        let mut out = String::new();
+        let mut rest = s;
+        while let Some(at) = rest.find("line ") {
+            out.push_str(&rest[..at]);
+            let digits = rest[at + 5..].bytes().take_while(u8::is_ascii_digit).count();
+            out.push_str(if digits > 0 { "line N" } else { "line " });
+            rest = &rest[at + 5 + digits..];
+        }
+        out + rest
+    };
+    for root in &roots {
+        let Ok(presets) = import::presets(root) else {
+            eprintln!("skipped {}: not a folder", root.display());
+            continue;
+        };
+        for path in presets {
+            let programs = if import::is_multi(&path) {
+                import::read_multi(&path).map(|m| m.parts.into_iter().map(|p| p.program).collect::<Vec<_>>())
+            } else {
+                Ok(vec![0])
+            };
+            for program in programs.unwrap_or_default() {
+                let name = format!("{}#{program}", path.display());
+                let i = match import::read_program(&path, program) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        eprintln!("{name}: {e:#}");
+                        continue;
+                    }
+                };
+                instruments += 1;
+                let mut host = kontakto::ksp::HostState::default();
+                let mut add = |kind: &'static str, gap: String, name: &str| {
+                    let g = gaps.entry(gap).or_insert((kind, BTreeSet::new(), 0));
+                    g.1.insert(name.to_owned());
+                    g.2 += 1;
+                };
+                for w in i.warnings.iter().filter(|w| w.starts_with("Script slot")) {
+                    add("slot", general(w.split_once(": ").map_or(w, |x| x.1)), &name);
+                    degraded.insert(name.clone());
+                }
+                let mut slots = Vec::new();
+                for (slot, source) in i.scripts.iter().enumerate() {
+                    let report = kontakto::ksp::inspect(source, i.groups.len(), &mut host);
+                    let init = &report["initialization"];
+                    if let Some(e) = init["error"].as_str() {
+                        add("init error", general(e), &name);
+                        broken.insert(name.clone());
+                    }
+                    for d in init["diagnostics"].as_array().into_iter().flatten().filter_map(|d| d.as_str()) {
+                        let d = d.strip_prefix(&format!("Slot {}: ", 1)).unwrap_or(d);
+                        let kind = if let Some(f) = d.strip_prefix(kontakto::ksp::UNSUPPORTED_FUNCTION) {
+                            add("function", f.split(' ').next().unwrap_or(f).into(), &name);
+                            "function"
+                        } else if let Some(v) = d.strip_prefix(kontakto::ksp::UNSUPPORTED_VARIABLE) {
+                            add("variable", v.split(' ').next().unwrap_or(v).into(), &name);
+                            "variable"
+                        } else if let Some(cb) = d.strip_prefix("callback disabled: ") {
+                            add("callback disabled", general(cb.split_once(": ").map_or(cb, |x| x.1)), &name);
+                            "callback"
+                        } else if d.starts_with("Callback on ") {
+                            add("callback", d.into(), &name);
+                            "callback"
+                        } else {
+                            continue;
+                        };
+                        let _ = kind;
+                        degraded.insert(name.clone());
+                    }
+                    for c in report["opaque_constants"].as_array().into_iter().flatten().filter_map(|c| c.as_str()) {
+                        add("opaque constant", c.into(), &name);
+                    }
+                    slots.push(serde_json::json!({"slot": slot + 1, "report": report}));
+                }
+                rows.push(serde_json::json!({"instrument": name, "scripts": slots, "warnings": i.warnings.iter().filter(|w| w.starts_with("Script slot")).collect::<Vec<_>>()}));
+            }
+        }
+    }
+    if let Some(out) = json {
+        std::fs::write(out, serde_json::to_string_pretty(&rows)?)?;
+    }
+    println!("KSP coverage: {instruments} instruments, {} with a dead script (init fails), {} with degraded calls or callbacks", broken.len(), degraded.len());
+    let mut ranked: Vec<_> = gaps.into_iter().collect();
+    ranked.sort_by(|a, b| (b.1.0 != "opaque constant").cmp(&(a.1.0 != "opaque constant")).then(b.1.1.len().cmp(&a.1.1.len())).then(a.0.cmp(&b.0)));
+    println!("{:>11} {:>11}  {:<18} gap", "instruments", "occurrences", "kind");
+    for (gap, (kind, who, n)) in ranked {
+        println!("{:>11} {:>11}  {:<18} {gap}", who.len(), n, kind);
+    }
     Ok(())
 }

@@ -1,10 +1,12 @@
 //! Real-time DSP state built from a [`ProgramFx`] description.
 
-use super::{Effect, Params, ProgramFx, convolution::Convolver, params, reverb::Reverb};
+use super::{Effect, Kind, Params, ProgramFx, convolution::Convolver, params, reverb::Reverb};
 use std::ops::Range;
 
 /// Input at or below this level (−120 dBFS) counts as silence for tail tracking.
 pub(super) const SILENCE: f32 = 1e-6;
+/// `$EFFECT_TYPE_SEND_LEVELS`.
+const SEND_LEVELS: f32 = 0x17 as f32;
 /// Kontakt's instrument buses.
 const BUSES: usize = 16;
 const NO_BUS: u8 = u8::MAX;
@@ -44,6 +46,12 @@ pub enum FxParam {
     /// Output channel the bus plays to (0..[`OUTS`]), -1 for the
     /// instrument output; the slot is ignored.
     Output,
+    /// The slot's effect as its `$EFFECT_TYPE_*` value. Setting the type
+    /// already loaded keeps the effect as it is; loading another is not
+    /// supported (it would allocate on the audio thread).
+    Type,
+    /// Reverb value `n` in `$ENGINE_PAR_RV2_*` order, 0..=1.
+    Reverb(u8),
 }
 
 /// Owned DSP state for one program's insert, send and main racks and its
@@ -170,7 +178,8 @@ enum Dsp {
         width: f32,
         gains: [f32; 2],
     },
-    Reverb(Box<Reverb>),
+    /// The settings are kept for scripts that change one at a time.
+    Reverb(Box<Reverb>, params::Reverb),
     Convolution(Box<[Convolver; 2]>),
 }
 
@@ -437,6 +446,7 @@ impl FxProcessor {
             match param {
                 FxParam::Bypass => tap.bypass = value != 0.0,
                 FxParam::Wet => tap.gain = gain,
+                FxParam::Type => return value == SEND_LEVELS,
                 FxParam::SendLevel(n) => {
                     let level = returns
                         .iter()
@@ -454,10 +464,18 @@ impl FxProcessor {
         let Some(s) = self.slot_mut(rack, slot) else {
             return false;
         };
-        match param {
-            FxParam::Bypass => s.bypass = value != 0.0,
-            FxParam::Wet => s.wet = gain,
-            FxParam::Dry => s.dry = gain,
+        match (param, &mut s.dsp) {
+            (FxParam::Bypass, _) => s.bypass = value != 0.0,
+            (FxParam::Wet, _) => s.wet = gain,
+            (FxParam::Dry, _) => s.dry = gain,
+            (FxParam::Type, dsp) => return value == dsp.kind(),
+            (FxParam::Reverb(n), Dsp::Reverb(rv, p)) => {
+                let Some(field) = p.field(n) else {
+                    return false;
+                };
+                *field = value.clamp(0.0, 1.0);
+                rv.set(p);
+            }
             _ => return false,
         }
         true
@@ -481,6 +499,7 @@ impl FxProcessor {
             return match param {
                 FxParam::Bypass => Some(f32::from(tap.bypass)),
                 FxParam::Wet => Some(tap.gain),
+                FxParam::Type => Some(SEND_LEVELS),
                 FxParam::SendLevel(n) => {
                     let j = self.returns.iter().position(|r| r.slot.index == n)?;
                     tap.levels.get(j).copied()
@@ -489,10 +508,12 @@ impl FxProcessor {
             };
         }
         let s = self.slot(rack, slot)?;
-        match param {
-            FxParam::Bypass => Some(f32::from(s.bypass)),
-            FxParam::Wet => Some(s.wet),
-            FxParam::Dry => Some(s.dry),
+        match (param, &s.dsp) {
+            (FxParam::Bypass, _) => Some(f32::from(s.bypass)),
+            (FxParam::Wet, _) => Some(s.wet),
+            (FxParam::Dry, _) => Some(s.dry),
+            (FxParam::Type, dsp) => Some(dsp.kind()),
+            (FxParam::Reverb(n), Dsp::Reverb(_, p)) => { *p }.field(n).copied(),
             _ => None,
         }
     }
@@ -648,7 +669,7 @@ impl Dsp {
                 width: (1.0 + p.spread).clamp(0.0, 2.0),
                 gains: [(1.0 - p.pan).clamp(0.0, 1.0), (1.0 + p.pan).clamp(0.0, 1.0)],
             },
-            Params::Reverb(p) => Dsp::Reverb(Box::new(Reverb::new(p, sample_rate))),
+            Params::Reverb(p) => Dsp::Reverb(Box::new(Reverb::new(p, sample_rate)), *p),
             Params::Convolution(p) => {
                 let ir = prepare_ir(p, sample_rate)?;
                 Dsp::Convolution(Box::new(ir.map(|ch| Convolver::new(&ch, max_block))))
@@ -657,10 +678,21 @@ impl Dsp {
         })
     }
 
+    /// The effect's `$EFFECT_TYPE_*` value.
+    fn kind(&self) -> f32 {
+        let kind = match self {
+            Dsp::Gain(_) => Kind::Gainer,
+            Dsp::Stereo { .. } => Kind::StereoModeller,
+            Dsp::Reverb(..) => Kind::Reverb,
+            Dsp::Convolution(_) => Kind::Convolution,
+        };
+        f32::from(kind.ser_id())
+    }
+
     fn clear(&mut self) {
         match self {
             Dsp::Gain(_) | Dsp::Stereo { .. } => {}
-            Dsp::Reverb(rv) => rv.clear(),
+            Dsp::Reverb(rv, _) => rv.clear(),
             Dsp::Convolution(conv) => conv.iter_mut().for_each(Convolver::clear),
         }
     }
@@ -669,7 +701,7 @@ impl Dsp {
     fn tail(&self, peak: f32) -> usize {
         match self {
             Dsp::Gain(_) | Dsp::Stereo { .. } => 0,
-            Dsp::Reverb(rv) => rv.tail(peak),
+            Dsp::Reverb(rv, _) => rv.tail(peak),
             Dsp::Convolution(conv) => conv[0].tail(peak).max(conv[1].tail(peak)),
         }
     }
@@ -688,7 +720,7 @@ impl Dsp {
                     *r = (mid - side) * gains[1];
                 }
             }
-            Dsp::Reverb(rv) => rv.process(left, right),
+            Dsp::Reverb(rv, _) => rv.process(left, right),
             Dsp::Convolution(conv) => {
                 conv[0].process(left);
                 conv[1].process(right);

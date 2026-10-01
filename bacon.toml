@@ -7,7 +7,7 @@ command = ["cargo", "check", "--lib"]
 
 # Explicitly selected; normal editing never launches tests.
 [jobs.parity]
-command = ["cargo", "nextest", "run", "--lib", "--no-default-features", "--features", "library-access", "-E", "test(midi_channels_survive_waits_and_release_independently) | test(global_ui_callbacks_and_custom_event_data_reach_their_consumers)"]
+command = ["cargo", "nextest", "run", "--lib", "--no-default-features", "--features", "library-access", "-E", "test(midi_channels_survive_waits_and_release_independently) | test(global_ui_callbacks_and_custom_event_data_reach_their_consumers) | test(zone_sized_tables_and_compilation_cache_follow_the_instrument)"]
 analyzer = "nextest"
 need_stdout = true
 env.RUST_MIN_STACK = "16777216"

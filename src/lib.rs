@@ -5,6 +5,7 @@ pub mod import;
 #[cfg_attr(not(feature = "library-access"), path = "no_access.rs")]
 mod access;
 mod cache;
+mod resources;
 pub mod modulation;
 pub mod audio;
 pub mod engine;
@@ -23,3 +24,11 @@ mod routing;
 mod ui;
 #[cfg(feature="plugin")]
 pub use plugin::{Plugin, bench_host};
+/// `kontakto audit-ui`: see `ui::audit`.
+#[cfg(feature="plugin")]
+pub use ui::audit::run as audit_ui;
+/// The library folders the player scans, from its settings.
+#[cfg(feature="plugin")]
+pub fn library_roots() -> Vec<std::path::PathBuf> {
+    library::Settings::path().and_then(|p| library::Settings::load(&p)).map(|s| s.roots.into_iter().map(|r| r.path.into()).collect()).unwrap_or_default()
+}

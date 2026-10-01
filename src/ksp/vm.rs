@@ -632,6 +632,11 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 *x = x.wrapping_add(n);
                 *pc += 3;
             }
+            Op::MulAdd(n, a, b) => {
+                let x = n.wrapping_mul(mem.ints[a as usize]);
+                s.ints.push(x.wrapping_add(mem.ints[b as usize]));
+                *pc += 4;
+            }
             Op::AddImm(n) => {
                 let a = s.int();
                 s.ints.push(a.wrapping_add(n));
@@ -642,6 +647,29 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 let x = element(m, *pc, v, i).map_or(0, |e| m.slot.mem.ints[e]);
                 m.stk.ints.push(x);
                 *pc += 1;
+            }
+            Op::LdIA2(v, a, b, n) => {
+                let i = i32::from(n).wrapping_mul(mem.ints[a as usize]);
+                let i = i.wrapping_add(mem.ints[b as usize]);
+                let x = element(m, *pc + 5, v, i).map_or(0, |e| m.slot.mem.ints[e]);
+                m.stk.ints.push(x);
+                *pc += 5;
+            }
+            Op::LdIAPoly(v, p) => {
+                let i = mem.poly[(m.t.ctx.poly_row * m.prog.poly + p) as usize];
+                let x = element(m, *pc + 1, v, i).map_or(0, |e| m.slot.mem.ints[e]);
+                m.stk.ints.push(x);
+                *pc += 1;
+            }
+            Op::BrIAImm(v, cmp, n, t) => {
+                let i = s.int();
+                let x = element(m, *pc, v, i).map_or(0, |e| m.slot.mem.ints[e]);
+                *pc = if cmp.test(x, n) { *pc + 3 } else { t as usize };
+            }
+            Op::BrCmp(cmp, t) => {
+                let b = s.int();
+                let a = s.int();
+                *pc = if cmp.test(a, b) { *pc + 1 } else { t as usize };
             }
             Op::BrImm(cmp, n, t) => {
                 *pc = if cmp.test(s.int(), n) {
@@ -740,7 +768,32 @@ fn sys(m: &Machine, v: SysVar) -> i32 {
         SysVar::Tempo => env.tempo as i32,
         SysVar::CurrentScriptSlot => i32::from(m.slot.index),
         SysVar::UiId => ctx.ui_id,
+        SysVar::PlayedVoices => env.events.live_count() as i32,
+        // No song position from the host yet, so every bar starts now.
+        SysVar::DistanceBarStart => 0,
+        SysVar::Date(i) => civil_now()[i as usize],
+        SysVar::Time(i) => civil_now()[3 + i as usize],
     }
+}
+
+/// Year, month, day, hour, minute, second of the wall clock.
+// ponytail: UTC; Kontakt reports local time, which needs a time zone database.
+fn civil_now() -> [i32; 6] {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400) as i32);
+    // Days to civil date (H. Hinnant).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as i32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as i32;
+    let year = (yoe + era * 400 + i64::from(month <= 2)) as i32;
+    [year, month, day, rest / 3600, rest / 60 % 60, rest % 60]
 }
 
 fn declare(m: &mut Machine, v: VarId) -> Exec<()> {

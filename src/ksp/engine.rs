@@ -80,6 +80,7 @@ pub trait KspEngine {
         self.controller(at, cc, value);
     }
     fn group_count(&self) -> usize;
+    fn zone_count(&self) -> usize { 0 }
     fn group_name(&self, group: usize) -> &str;
     fn sample_rate(&self) -> f64;
     /// Set at frame `at`. Returns false when the engine does not implement the
@@ -92,6 +93,12 @@ pub trait KspEngine {
     }
     /// Index of a named modulation target, if the engine knows it.
     fn find_target(&self, _group: usize, _modulator: usize, _name: &str) -> Option<usize> {
+        None
+    }
+    /// `load_ir_sample`: load impulse response `file` into convolution
+    /// `slot` of rack `generic`. Whether it loaded; `None` when this engine
+    /// cannot load impulse responses.
+    fn load_ir_sample(&mut self, _file: &str, _slot: i32, _generic: i32) -> Option<bool> {
         None
     }
     /// `reset_rls_trig_counter`: restart `note`'s release-trigger counter.
@@ -157,6 +164,7 @@ pub enum EngineCall {
 #[derive(Debug, Default)]
 pub struct LogEngine {
     pub groups: Vec<String>,
+    pub zones: usize,
     /// Per group: modulator names with their target names, in `find_mod` order.
     pub modulators: Vec<Vec<(String, Vec<String>)>>,
     pub calls: Vec<EngineCall>,
@@ -170,6 +178,7 @@ impl LogEngine {
     pub fn new(groups: Vec<String>, rate: f64) -> Self {
         Self {
             groups,
+            zones: 0,
             rate,
             ..Self::default()
         }
@@ -236,6 +245,8 @@ impl KspEngine for LogEngine {
     fn group_count(&self) -> usize {
         self.groups.len()
     }
+
+    fn zone_count(&self) -> usize { self.zones }
 
     fn group_name(&self, group: usize) -> &str {
         self.groups.get(group).map_or("", String::as_str)

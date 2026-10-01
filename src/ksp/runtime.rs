@@ -21,10 +21,10 @@ use std::sync::{Arc, Mutex, Weak};
 /// holds it: parts and plugin instances playing one instrument run the same
 /// code over their own memory.
 fn compiled(source: &str, setup: &Setup) -> Result<Arc<Program>> {
-    type Compiled = std::collections::HashMap<(Box<str>, usize, usize), Weak<Program>>;
+    type Compiled = std::collections::HashMap<(Box<str>, usize, usize, usize), Weak<Program>>;
     static COMPILED: Mutex<Option<Compiled>> = Mutex::new(None);
     let lock = || COMPILED.lock().unwrap_or_else(|e| e.into_inner());
-    let key = (Box::from(source), setup.groups, setup.outputs);
+    let key = (Box::from(source), setup.groups, setup.outputs, setup.zones);
     if let Some(p) = lock().get_or_insert_default().get(&key).and_then(Weak::upgrade) {
         return Ok(p);
     }
@@ -52,8 +52,13 @@ const SNAPSHOT_SLACK: usize = 64;
 const ENGINE_PAR_HEADROOM: usize = 1024;
 /// Instructions one callback may run between waits.
 pub const CALLBACK_FUEL: u64 = 5_000_000;
-/// Instructions all callbacks together may run per audio block; the rest is deferred.
-pub const BLOCK_FUEL: u64 = 2_000_000;
+/// Instructions all callbacks together may run per frame of an audio block
+/// (about 2 ns each, so under half the block's time); the rest is deferred.
+pub const FUEL_PER_FRAME: u64 = 4_096;
+/// Budget for the first block, and the floor for tiny ones.
+pub const BLOCK_FUEL: u64 = 512 * FUEL_PER_FRAME;
+/// `on async_complete` callbacks one settle delivers; the rest wait a block.
+const MAX_COMPLETIONS: u32 = 64;
 /// `on init` runs off the audio thread and may do far more work.
 pub const INIT_FUEL: u64 = 1_000_000_000;
 
@@ -203,6 +208,11 @@ impl Events {
         Some(i32::from(generation) << EVENT_INDEX_BITS | i as i32)
     }
 
+    /// Events still in use: playing, held or not yet recycled.
+    pub fn live_count(&self) -> usize {
+        EVENT_CAPACITY - self.free.len()
+    }
+
     pub fn get(&self, id: i32) -> Option<&Event> {
         let e = self.slots.get(Event::index(id))?;
         (id > 0 && i32::from(e.generation) == id >> EVENT_INDEX_BITS).then_some(e)
@@ -336,6 +346,7 @@ pub struct Env {
     pub saved_arrays: BTreeMap<(u8, VarId), (Value, bool)>,
     pub spare_pgs_ints: Vec<(String, Vec<i32>)>,
     pub spare_pgs_strs: Vec<(String, String)>,
+    pub spare_keyranges: Vec<String>,
     pub persisted: Vec<Persisted>,
     /// Distinct service notes, preallocated so noting never allocates.
     pub notes: Vec<&'static str>,
@@ -378,6 +389,7 @@ impl Env {
             saved_arrays: BTreeMap::new(),
             spare_pgs_ints: Vec::new(),
             spare_pgs_strs: Vec::new(),
+            spare_keyranges: Vec::new(),
             persisted,
             notes: Vec::with_capacity(NOTE_CAPACITY),
             faults: Vec::with_capacity(FAULT_CAPACITY),
@@ -584,6 +596,9 @@ pub struct Runtime {
     /// `on init` or `on persistence_changed`), in call order.
     /// The playing engine applies them on install and after a reset.
     pub init_controllers: Vec<(u8, u8)>,
+    /// Impulse responses `on init` loaded (`load_ir_sample`), last per slot;
+    /// effects build with them ([`crate::fx::ProgramFx::processor_with`]).
+    pub init_irs: Vec<crate::fx::ScriptIr>,
     /// Counts script runs and host writes to script memory; see [`changes`](Self::changes).
     changes: u64,
     /// Host-block budget survives internal render segments and MIDI splits.
@@ -614,6 +629,7 @@ impl Runtime {
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
             init_controllers: Vec::new(),
+            init_irs: Vec::new(),
         }
     }
 
@@ -712,7 +728,7 @@ impl Runtime {
             .max()
             .unwrap_or(0)
             .clamp(512, 65536);
-        let text_cells = 64
+        let text_cells = 80
             + 3 * 128
             + self.env.host.pgs_strs.len()
             + self
@@ -746,6 +762,13 @@ impl Runtime {
         // have their separate 4 MiB-per-slot allowance below.
         let text_bytes = desired.min((16 << 20) / text_cells.max(1));
         self.stacks.strs.prepare(text_bytes);
+        self.env.host.keyranges.truncate(16);
+        self.env.host.keyranges.reserve(16usize.saturating_sub(self.env.host.keyranges.len()));
+        self.env.spare_keyranges.reserve(16usize.saturating_sub(self.env.spare_keyranges.len()));
+        self.env.spare_keyranges.resize_with(16 - self.env.host.keyranges.len(), String::new);
+        for name in self.env.host.keyranges.iter_mut().map(|r| &mut r.2).chain(&mut self.env.spare_keyranges) {
+            name.reserve(text_bytes.saturating_sub(name.len()));
+        }
         for (prog, state) in self.programs.iter().zip(&mut self.states) {
             // Bound added headroom even for million-element string arrays.
             let per_string = ((4 << 20) / state.mem.strs.len().max(1)).min(text_bytes);
@@ -854,6 +877,7 @@ impl Runtime {
         let index = self.programs.len() as u8;
         let setup = Setup {
             groups: engine.group_count(),
+            zones: engine.zone_count(),
             outputs: self.outputs,
         };
         let program = match compiled(source, &setup) {
@@ -922,7 +946,13 @@ impl Runtime {
                 "KSP line {}: wait() is not allowed in on init",
                 prog.line(t.pc - 1)
             ),
-            Ok(Yield::OutOfFuel | Yield::OutOfTime) => bail!("KSP execution budget exhausted in on init"),
+            // Like Kontakt's runaway-loop guard, stop the callback, not the script:
+            // everything `on init` declared before the loop stays usable.
+            Ok(Yield::OutOfFuel | Yield::OutOfTime) => self.env.fault(
+                slot,
+                t.pc,
+                "on init exceeded its instruction budget and was stopped",
+            ),
             Err(f) => bail!("KSP line {}: {}", prog.line(t.pc.saturating_sub(1)), f.0),
         }
         // Nothing plays yet, so init's notes are dropped; controllers it sets
@@ -1184,6 +1214,7 @@ impl Runtime {
             keys.rotate_left(1);
             keys[3] = id;
         }
+        self.key_down_oct(note);
         self.env.queue(Work::Note { event: id, slot: 0 });
         self.settle(engine);
     }
@@ -1194,6 +1225,7 @@ impl Runtime {
         let keys = std::mem::take(&mut self.env.input.keys[self.env.input.channel as usize][note as usize]);
         let held = self.env.input.keys.iter().any(|channel| channel[note as usize].iter().any(|&id| id != 0));
         self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
+        self.key_down_oct(note);
         for id in keys.into_iter().filter(|&id| id != 0) {
             if let Some(e) = self.env.events.get_mut(id) {
                 e.held = false;
@@ -1275,7 +1307,16 @@ impl Runtime {
             return;
         };
         let v = c.var;
-        let prog = &self.programs[slot];
+        // Host values (automation, articulations) stay within the control's range.
+        let range = |p| match c.get(p) {
+            Some(super::ui::Prop::Int(n)) => Some(*n),
+            _ => None,
+        };
+        let value = match (range(b::CONTROL_PAR_MIN_VALUE), range(b::CONTROL_PAR_MAX_VALUE)) {
+            (Some(a), Some(z)) => value.clamp(a.min(z), a.max(z)),
+            _ => value,
+        };
+        let prog = self.programs[slot].clone();
         let var = &prog.vars[v as usize];
         if var.ty == Ty::Int && var.len.is_none() {
             state.mem.ints[var.slot as usize] = value;
@@ -1323,6 +1364,10 @@ impl Runtime {
     /// Finish the current block: resume every callback due before its end.
     pub fn process(&mut self, engine: &mut dyn KspEngine, frames: u32) {
         let end = self.env.now + u64::from(frames);
+        // What the last settle left for later (see `settle`).
+        if self.env.pgs_changed || !self.env.async_done.is_empty() {
+            self.settle(engine);
+        }
         self.run_timers(engine, end);
         if self.env.block_fuel == 0 {
             self.env
@@ -1397,6 +1442,13 @@ impl Runtime {
 
     /// Drain queued work and the follow-up callbacks it triggers.
     fn settle(&mut self, engine: &mut dyn KspEngine) {
+        // `on pgs_changed` runs once per settle: scripts that answer a change
+        // with another change would otherwise ping-pong here forever. Later
+        // changes are delivered by the next settle.
+        let mut pgs_delivered = false;
+        // Likewise for scripts that answer every completion with a new
+        // asynchronous call (a retry that can never succeed here).
+        let mut completions = 0;
         loop {
             while let Some(w) = self.env.work.pop_front() {
                 self.handle(engine, w);
@@ -1413,14 +1465,18 @@ impl Runtime {
                     }
                 }
             }
-            if let Some((slot, id, status)) = self.env.async_done.pop() {
+            if completions < MAX_COMPLETIONS
+                && let Some((slot, id, status)) = self.env.async_done.pop()
+            {
+                completions += 1;
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::AsyncComplete));
                 ctx.async_id = id;
                 ctx.async_status = status;
                 self.spawn_cb(engine, slot, Callback::AsyncComplete, ctx);
                 continue;
             }
-            if std::mem::take(&mut self.env.pgs_changed) {
+            if !pgs_delivered && std::mem::take(&mut self.env.pgs_changed) {
+                pgs_delivered = true;
                 for slot in 0..self.states.len() as u8 {
                     self.spawn_cb(
                         engine,
@@ -1650,6 +1706,12 @@ impl Runtime {
             state.mem.ints[prog.vars[v as usize].slot as usize + i] = value;
             self.changes += 1;
         }
+    }
+
+    fn key_down_oct(&mut self, note: u8) {
+        let pc = usize::from(note % 12);
+        let held = (pc..128).step_by(12).filter(|&k| self.env.input.keys.iter().any(|channel| channel[k].iter().any(|&id| id != 0))).count();
+        self.set_sys(SysArray::KeyDownOct, pc, held as i32);
     }
 
     fn set_sys(&mut self, a: SysArray, i: usize, value: i32) {

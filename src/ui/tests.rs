@@ -296,6 +296,93 @@ fn a_header_is_one_line_at_any_width() {
     }
 }
 
+/// A hundred libraries of a hundred presets each, in folders. The filter
+/// (Ctrl+F) narrows the libraries and opens one from the keys; a library
+/// shows its folders, which the arrows fold and walk; Enter loads into the
+/// selected part; libraries reorder by dragging; and a search over all of
+/// them builds only the rows in view, yet brings the cursor into it.
+#[test]
+fn the_browser_finds_by_library_and_folder() {
+    let mut files: Vec<PathBuf> = (0..100)
+        .flat_map(|lib| (0..100).map(move |n| format!("/virtual/Lib {lib:03}/Instruments/{} Part/Patch {n:03}.nki", n / 25).into()))
+        .collect();
+    files.sort();
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &files));
+        v.files = Arc::new(files);
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let key = |key: Key, mods: Mods| Input { keys: vec![KeyPress { key, mods }], ..Default::default() };
+    let tap = |h: &mut Harness, k: Key| {
+        h.tick(key(k, Mods::default()));
+        h.idle(2);
+    };
+    let shown = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
+
+    h.tick(key(Key::Char('f'), Mods { ctrl: true, ..Mods::default() }));
+    h.idle(2);
+    assert_eq!(h.ui.focus_key(), Some("library-filter"), "Ctrl+F goes to the library filter");
+    h.tick(Input { text: "lib 042".into(), ..Default::default() });
+    h.idle(2);
+    assert!(shown(&h, "library-42") && !shown(&h, "library-41"), "it narrows the libraries");
+    tap(&mut h, Key::Enter);
+    assert_eq!(h.ui.focus_key(), Some("folder-0"), "Enter opens the match");
+    // Instruments, all the library holds, starts open over its four folders.
+    assert!(shown(&h, "folder-4") && !shown(&h, "instrument-5"));
+    tap(&mut h, Key::Down);
+    tap(&mut h, Key::Right);
+    assert!(shown(&h, "instrument-2"), "Right opens a folder");
+    assert_eq!(p.shared.libraries.settings().folders.get("/virtual/Lib 042/Instruments/0 Part"), Some(&true));
+    tap(&mut h, Key::Right);
+    assert_eq!(h.ui.focus_key(), Some("instrument-2"), "and steps into it");
+    tap(&mut h, Key::Left);
+    assert_eq!(h.ui.focus_key(), Some("folder-1"), "Left steps back to its folder");
+    tap(&mut h, Key::Left);
+    assert!(!shown(&h, "instrument-2"), "and shuts it");
+    tap(&mut h, Key::Right);
+    tap(&mut h, Key::Right);
+    tap(&mut h, Key::Enter);
+    let path = |p: &SamplerParams| p.selection.read().unwrap().parts.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
+    assert_eq!(path(&p), ["/virtual/Lib 042/Instruments/0 Part/Patch 000.nki"]);
+    tap(&mut h, Key::Down);
+    tap(&mut h, Key::Enter);
+    assert_eq!(path(&p), ["/virtual/Lib 042/Instruments/0 Part/Patch 001.nki"], "Enter loads into the selected part");
+    let settings = p.shared.libraries.settings();
+    assert_eq!((settings.last_library.as_str(), settings.used.len()), ("/virtual/Lib 042", 1), "the place is kept");
+
+    // Esc clears the filter; a library dragged onto another goes before it.
+    h.ui.focus("library-filter");
+    tap(&mut h, Key::Escape);
+    h.drag("library-42", "library-41");
+    let settings = p.shared.libraries.settings();
+    assert_eq!(settings.sort, crate::library::Sort::Custom);
+    assert_eq!(settings.order[40..43], ["/virtual/Lib 040", "/virtual/Lib 042", "/virtual/Lib 041"]);
+
+    // Every library searched (a second click on the chosen one lets it go):
+    // ten thousand matches, a screenful built.
+    let at = center(&h.ui, "library-41");
+    for down in [true, false] {
+        h.tick(pointer(at, down));
+    }
+    h.idle(2);
+    assert!(!shown(&h, "folder-0"), "no library chosen");
+    h.ui.focus("search");
+    let start = Instant::now();
+    h.tick(Input { text: "patch".into(), ..Default::default() });
+    eprintln!("search over 10k presets: {:?}", start.elapsed());
+    h.idle(2);
+    let built = |h: &Harness| (0..10_000).filter(|n| shown(h, &format!("instrument-{n}"))).collect::<Vec<_>>();
+    assert!((3..60).contains(&built(&h).len()), "{} rows built", built(&h).len());
+    for _ in 0..40 {
+        h.tick(key(Key::PageDown, Mods::default()));
+    }
+    h.idle(2);
+    let cursor = built(&h);
+    assert!(cursor.first().is_some_and(|&n| n > 200), "the cursor's row is brought into view: {cursor:?}");
+}
+
 #[test]
 fn rack_interactions() {
     let p = Arc::new(SamplerParams::new());
@@ -314,8 +401,13 @@ fn rack_interactions() {
     h.press("library-0");
     h.drag("instrument-0", "rack-drop");
     assert_eq!(parts(&p).len(), 1, "a preset dropped on the rack is added");
-    h.press("instrument-1");
-    assert_eq!(parts(&p).len(), 2, "clicking a preset adds it");
+    h.ui.focus("instrument-1");
+    h.tick(Input {
+        keys: vec![KeyPress { key: Key::Enter, mods: Mods { shift: true, ..Mods::default() } }],
+        ..Default::default()
+    });
+    h.idle(3);
+    assert_eq!(parts(&p).len(), 2, "Shift+Enter on a preset adds it");
     h.press("instrument-0");
     h.press("preset-next-0");
     assert_eq!(parts(&p).len(), 2, "clicking a loaded preset shows it");
@@ -713,17 +805,6 @@ fn a_large_library_browser_keeps_scrolling_and_searching() {
     let mut h = Harness::new(&p, 1180., 760.);
     h.press("library-0");
     h.idle(2);
-    let mut times = Vec::new();
-    for _ in 0..20 {
-        let start = std::time::Instant::now();
-        h.idle(1);
-        times.push(start.elapsed().as_secs_f64() * 1e3);
-    }
-    times.sort_by(f64::total_cmp);
-    println!(
-        "1000-preset browser: median {:.3} ms, max {:.3} ms",
-        times[10], times[19]
-    );
     let shown = (0..1000)
         .filter(|n| {
             h.ui.scene()
@@ -734,29 +815,25 @@ fn a_large_library_browser_keeps_scrolling_and_searching() {
         .count();
     println!("mounted preset rows: {shown}");
     assert!(shown < 100, "the browser must not mount all 1000 rows");
-    let at = center(&h.ui, "browser-presets");
+    let before = h.ui.scene().unwrap().surface("instrument-5").unwrap().frame.y;
+    let at = center(&h.ui, "browser-list");
     h.tick(Input {
-        wheel: Vec2::new(0., 40.),
+        wheel: Vec2::new(0., 120.),
         ..pointer(at, false)
     });
     h.idle(30);
-    let content =
-        h.ui.scene()
-            .unwrap()
-            .surface("browser-presets-content")
-            .unwrap()
-            .frame;
+    let after = h.ui.scene().unwrap().surface("instrument-5").unwrap().frame.y;
     let viewport =
         h.ui.scene()
             .unwrap()
-            .surface("browser-presets")
+            .surface("browser-list")
             .unwrap()
             .frame;
     assert!(
-        viewport.y - content.y >= 110.,
-        "wheel travel is three times the input"
+        before - after >= 110.,
+        "normalized wheel input moves the list"
     );
-    h.ui.focus("instrument-0");
+    h.ui.focus("instrument-5");
     h.tick(Input {
         keys: vec![KeyPress {
             key: Key::End,
@@ -786,63 +863,7 @@ fn a_large_library_browser_keeps_scrolling_and_searching() {
     assert!(read(&p.selection).parts[0].path.ends_with("Patch 0999.nki"));
 }
 
-#[test]
-fn library_search_order_and_folder_navigation() {
-    let p = Arc::new(SamplerParams::new());
-    {
-        let mut v = p.shared.view.lock().unwrap();
-        v.files = Arc::new(vec![
-            "/virtual/Keys/Instruments/Piano/Grand.nki".into(),
-            "/virtual/Keys/Instruments/Piano/Bright.nki".into(),
-            "/virtual/Keys/Instruments/Organs/Church.nki".into(),
-            "/virtual/Toys/Toy.nki".into(),
-        ]);
-        v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
-        let mut settings = crate::library::Settings::default();
-        settings.order = vec!["/virtual/Toys".into()];
-        let order = browser::ordered_libraries(&v.shelf, &settings);
-        assert_eq!(order[0].name, "Toys");
-    }
-    let mut h = Harness::new(&p, 1180., 760.);
-    h.press("library-0");
-    h.idle(2);
-    assert!(h.ui.scene().unwrap().surface("folder-0").is_some());
-    assert!(
-        h.ui.scene().unwrap().surface("instrument-0").is_none(),
-        "root contains folders, not all nested presets"
-    );
-    h.press("folder-1"); // Organs sorts before Piano.
-    h.idle(2);
-    assert!(h.ui.scene().unwrap().surface("instrument-1").is_some());
-    h.press("folder-up");
-    h.idle(2);
-    assert!(h.ui.scene().unwrap().surface("folder-1").is_some());
-    h.ui.focus("search");
-    h.tick(Input {
-        text: "church".into(),
-        ..Default::default()
-    });
-    h.idle(2);
-    h.press("instrument-0");
-    assert!(
-        read(&p.selection).parts[0].path.ends_with("Church.nki"),
-        "search reaches nested folders"
-    );
-    h.ui.focus("library-search");
-    h.tick(Input {
-        text: "toys".into(),
-        ..Default::default()
-    });
-    h.idle(2);
-    let scene = h.ui.scene().unwrap();
-    assert!(scene.surface("library-0").is_some() && scene.surface("library-1").is_none());
-    assert!(
-        scene.surface("search").is_some(),
-        "preset search remains separate"
-    );
-}
 
-/// The owner's library instruments named in `names` (comma-separated stems).
 fn library_instruments(files: &[PathBuf], names: &str) -> Vec<Arc<import::Instrument>> {
     names
         .split(',')
@@ -852,8 +873,7 @@ fn library_instruments(files: &[PathBuf], names: &str) -> Vec<Arc<import::Instru
         .collect()
 }
 
-/// `i`'s scripts run, and `KONTAKTO_PRESS="$var=1,$other=2"` edits made
-/// (a page switch, say) as a player would.
+
 fn scripted(i: &import::Instrument) -> crate::plugin::ScriptView {
     let Some(mut rt) = load_scripts(i, i.script_state.clone(), 48000.).0 else {
         return script_interface(None);
@@ -935,6 +955,8 @@ fn racked(
             p.selection.write().unwrap().parts.push(Part {
                 path: i.path.to_string_lossy().into(),
                 group: i.first_playable_group().unwrap_or(0) as u32,
+                // KONTAKTO_VIEW=3 shows the parts vectorized (see `Part::view`).
+                view: std::env::var("KONTAKTO_VIEW").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
                 ..Default::default()
             });
             let script = scripted(i);
@@ -1145,7 +1167,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 35] = [
+    let states: &[(&str, bool, &[&str])] = &[
         ("empty", false, &[]),
         // Libraries with no artwork: generated covers; one chosen.
         ("covers", false, &["library-2"]),
@@ -1160,6 +1182,13 @@ fn screenshot() {
         ("info", true, &["tab-info"]),
         ("library", false, &["library-1"]),
         ("multis", false, &["picker-multis"]),
+        // A library's folders, one opened by the keys, a part loaded.
+        ("browser-tree", true, &["library-2"]),
+        // The search inside a library: flat, each with its folder under it.
+        ("browser-search", false, &["library-2"]),
+        // The library filter typed into, and the sort menu.
+        ("browser-filter", false, &[]),
+        ("browser-sort", false, &["library-sort"]),
         ("settings", true, &["app-menu", "menu-item-3"]),
         ("menu", true, &["app-menu"]),
         ("save", true, &["app-menu", "menu-item-6"]),
@@ -1189,6 +1218,11 @@ fn screenshot() {
         // Auto-align on: the settings and a part's timing.
         ("timing", true, &["app-menu"]),
         ("timing-part", true, &["more-0"]),
+        // The articulation list in each of its modes (instruments with one).
+        ("arts-channel", true, &["art-mode-0-Channel"]),
+        ("arts-velocity", true, &["art-mode-0-Velocity"]),
+        // A keyswitch clicked: typed in place, or learned from a key.
+        ("arts-editing", true, &["art-key-0-1"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
@@ -1202,14 +1236,14 @@ fn screenshot() {
         .collect();
     // Sticky headers need a second part to scroll past the first.
     let sticky_ok = instruments.len() > 1;
-    for (state, loaded, presses) in states
+    for &(state, loaded, presses) in states
         .into_iter()
         // Without the owner's library (CI), only the states with no instrument.
         .filter(|(s, loaded, _)| wanted(s) && (*s != "sticky" || sticky_ok) && (!loaded || !instruments.is_empty()))
     {
         for &(width, height) in &sizes {
             let p = racked(&files, &instruments, loaded, state);
-            p.selection.write().unwrap().library_ui = state == "library-ui";
+            if state == "library-ui" { p.selection.write().unwrap().parts.iter_mut().for_each(|p| p.view = 1); }
             if state == "sound-edited" {
                 use crate::engine::overrides::{Override, Param};
                 let mut selection = p.selection.write().unwrap();
@@ -1265,6 +1299,25 @@ fn screenshot() {
             let mut h = Harness::new(&p, f64::from(width), f64::from(height));
             for id in presses {
                 h.press(id);
+            }
+            let typed = |h: &mut Harness, id: &str, text: &str| {
+                h.ui.focus(id);
+                h.tick(Input { text: text.into(), ..Default::default() });
+                h.idle(2);
+            };
+            let tap = |h: &mut Harness, key: Key| {
+                h.tick(Input { keys: vec![KeyPress { key, mods: Mods::default() }], ..Default::default() });
+                h.idle(2);
+            };
+            match state {
+                "browser-tree" => {
+                    for key in [Key::Down, Key::Right, Key::Right, Key::Down] {
+                        tap(&mut h, key);
+                    }
+                }
+                "browser-search" => typed(&mut h, "search", "a"),
+                "browser-filter" => typed(&mut h, "library-filter", "a"),
+                _ => {}
             }
             if state == "unselected" {
                 h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
@@ -1413,6 +1466,76 @@ fn control_value(p: &SamplerParams, n: usize) -> crate::ksp::Value {
     view.parts[0].interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"].clone()
 }
 
+/// An articulation's keyswitch is typed or played in place, its channel and
+/// velocity range typed; a right-click offers learn, reset and clear.
+#[test]
+fn articulation_cells_type_learn_and_reset() {
+    use crate::articulate::{CLEARED, Mode};
+    let p = scripted_part("on init\nmake_perfview\ndeclare ui_knob $tone(0, 100, 1)\nend on");
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let key = |name: &str| crate::ksp::KeyState { name: name.into(), color: Some(crate::ksp::Value::Text("$KEY_COLOR_RED".into())), ..Default::default() };
+        view.parts[0].keys = Arc::new([(24, key("Legato")), (25, key("Staccato"))].into_iter().collect());
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(3);
+    let arts = |p: &SamplerParams| p.selection.read().unwrap().parts[0].articulate.clone();
+    assert_eq!(arts(&p).articulations.len(), 2, "the named keys are the list");
+
+    h.type_into("art-key-0-1", "d#2");
+    assert_eq!(arts(&p).articulations[1].remap, Some(51), "a typed note");
+    h.type_into("art-key-0-1", "37");
+    assert_eq!(arts(&p).articulations[1].remap, Some(37), "a typed MIDI number");
+
+    // Clicked, it takes the next key played; one already down does not count.
+    p.shared.heard[60].store(100, Ordering::Relaxed);
+    h.press("art-key-0-0");
+    p.shared.heard[48].store(100, Ordering::Relaxed);
+    h.idle(3);
+    assert_eq!(arts(&p).articulations[0].remap, Some(48), "learned from a key");
+    assert!(h.ui.scene().unwrap().surface("art-key-0-0-edit").is_none(), "and done");
+    p.shared.heard[48].store(0, Ordering::Relaxed);
+    p.shared.heard[60].store(0, Ordering::Relaxed);
+
+    // Right-click: the library's name, Learn, Reset, Clear; no list of notes.
+    let right_click = |h: &mut Harness, id: &str| {
+        let at = center(&h.ui, id);
+        for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+            h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
+        }
+        h.idle(2);
+    };
+    right_click(&mut h, "art-key-0-1");
+    assert!(h.ui.scene().unwrap().surface("menu-item-6").is_none(), "a short menu");
+    h.press("menu-item-3");
+    assert_eq!(arts(&p).articulations[1].remap, Some(CLEARED), "Clear");
+    right_click(&mut h, "art-key-0-1");
+    h.press("menu-item-2");
+    assert_eq!(arts(&p).articulations[1].remap, None, "Reset to library default");
+
+    p.selection.write().unwrap().parts[0].articulate.mode = Mode::Channel;
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("art-key-0-1").is_none(), "channel mode shows channels, not keys");
+    h.type_into("art-ch-0-1", "9");
+    assert_eq!(arts(&p).articulations[1].channel, 8);
+    right_click(&mut h, "art-ch-0-1");
+    h.press("menu-item-1");
+    assert_eq!(arts(&p).articulations[1].channel, 1, "back to its place in the list");
+
+    p.selection.write().unwrap().parts[0].articulate.mode = Mode::Velocity;
+    h.idle(2);
+    h.type_into("art-vel-0-0", "1-40");
+    assert_eq!((arts(&p).articulations[0].low, arts(&p).articulations[0].high), (1, 40));
+    // Dragging the split's line moves the boundary between the two.
+    let bar = h.ui.scene().unwrap().surface("art-split-0").unwrap().frame;
+    let y = bar.y + bar.size.height / 2.;
+    for (x, down) in [(bar.x + bar.size.width * 40. / 127., true), (bar.x + bar.size.width * 0.75, true), (bar.x + bar.size.width * 0.75, false)] {
+        h.tick(pointer(Point::new(x, y), down));
+    }
+    let a = arts(&p);
+    assert_eq!((a.articulations[0].high, a.articulations[1].low), (95, 96), "{a:?}");
+}
+
 /// Wide switches stacked at one pitch, one set, read as a list: each row
 /// named by its label, with its on/off as a check box and its keyswitch; a
 /// row the script hid below the fold comes back.
@@ -1437,59 +1560,6 @@ fn an_articulation_list_picks_one_and_turns_rows_on() {
     assert_eq!(control_value(&p, 1), crate::ksp::Value::Int(0), "and does not pick the row");
 }
 
-#[test]
-fn imported_layout_keeps_coordinates_and_edits_bitmap_controls() {
-    let p = scripted_part(
-        "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $play\nset_text($play,\"Play\")\nmove_control_px($play,20,30)\nset_control_par_str(get_ui_id($play),$CONTROL_PAR_PICTURE,\"toggle\")\ndeclare ui_knob $amount(0,100,1)\nmove_control_px($amount,120,30)\nset_control_par_str(get_ui_id($amount),$CONTROL_PAR_PICTURE,\"dial\")\nend on",
-    );
-    p.selection.write().unwrap().library_ui = true;
-    {
-        use moose::mui::mui::scene::Image;
-        let frame = |rgba: [u8; 4]| Arc::new(Image::rgba(32, 32, rgba.repeat(32 * 32)).unwrap());
-        let picture = || {
-            Arc::new(crate::artwork::Picture {
-                frames: vec![frame([70, 70, 90, 255]), frame([170, 80, 160, 255])],
-                resizable: false,
-            })
-        };
-        let mut v = p.shared.view.lock().unwrap();
-        v.parts[0].pictures =
-            Arc::new([("toggle".into(), picture()), ("dial".into(), picture())].into());
-        let mut interface = v.parts[0].interface.as_ref().unwrap().as_ref().clone();
-        let key = "$CONTROL_PAR_ARRAY".to_owned();
-        interface.controls[0].properties.insert(key.clone(), crate::ksp::Value::IntArray(vec![0]));
-        let hash = panel::original_values(&interface);
-        interface.controls[0].properties.insert(key, crate::ksp::Value::IntArray(vec![1; 100_000]));
-        assert_eq!(panel::original_values(&interface), hash, "unsupported arrays do not invalidate scalar rendering");
-        interface.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::Int(1));
-        assert_ne!(panel::original_values(&interface), hash);
-    }
-    let mut h = Harness::new(&p, 1180., 760.);
-    let scene = h.ui.scene().unwrap();
-    let canvas = scene.surface("library-canvas-0").unwrap().frame;
-    let toggle = scene.surface("ksp-0-0").unwrap().frame;
-    assert!((toggle.x - canvas.x - 20.).abs() < 1. && (toggle.y - canvas.y - 30.).abs() < 1.);
-    h.press("ksp-0-0");
-    assert_eq!(control_value(&p, 0), crate::ksp::Value::Int(1));
-    let at = center(&h.ui, "ksp-0-1");
-    for dy in [0., -20., -60.] {
-        h.tick(pointer(Point::new(at.x, at.y + dy), true));
-    }
-    h.tick(pointer(Point::new(at.x, at.y - 60.), false));
-    h.idle(2);
-    assert!(matches!(control_value(&p,1),crate::ksp::Value::Int(n) if n > 10));
-    p.selection.write().unwrap().library_ui = false;
-    h.idle(3);
-    assert!(
-        h.ui.scene().unwrap().surface("library-canvas-0").is_none(),
-        "view switch rebuilds the stage"
-    );
-    assert_eq!(
-        control_value(&p, 0),
-        crate::ksp::Value::Int(1),
-        "switching preserves control state"
-    );
-}
 
 #[test]
 fn performance_controls_edit_the_script() {
@@ -1521,6 +1591,86 @@ fn performance_controls_edit_the_script() {
         crate::ksp::Value::Int(1),
         "a menu item sets the menu"
     );
+}
+
+/// The library's own view: shown by default once there is artwork, its
+/// controls at their own places editing the script; the header switches the
+/// part to the rebuilt view and back, and the choice is the part's.
+#[test]
+fn the_original_view_edits_the_script_and_switches() {
+    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_slider $vibrato(0, 100)\nset_control_par_str(get_ui_id($vibrato), $CONTROL_PAR_PICTURE, \"strip\")\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
+    let p = scripted_part(script);
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let frame = Arc::new(moose::mui::mui::scene::Image::rgba(40, 40, vec![255; 40 * 40 * 4]).unwrap());
+        let strip = Arc::new(artwork::Picture { frames: vec![frame; 11], stretch: [false; 2] });
+        view.parts[0].pictures = Arc::new([("strip".to_owned(), strip)].into());
+        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, vec![40; 632 * 268 * 4]).unwrap())], stretch: [false; 2] }));
+    }
+    let value = |n: usize| control_value(&p, n);
+    let mut h = Harness::new(&p, 1180., 760.);
+    let scene = h.ui.scene().unwrap();
+    assert!(scene.surface("kpv-0-1").is_some() && scene.surface("ksp-0-1").is_none(), "the original view by default");
+    let at = scene.surface("kpv-0-1").unwrap().frame;
+    assert_eq!((at.size.width, at.size.height), (40., 40.), "sized to its picture at 1x");
+    let origin = scene.surface("stage-0").unwrap().frame;
+    let left = origin.x + (origin.size.width - 632.) / 2.;
+    assert!((at.x - left - 200.).abs() < 1., "at its own place: {at:?} in {origin:?}");
+
+    h.press("kpv-0-0");
+    assert_eq!(value(0), crate::ksp::Value::Int(1), "a switch toggles on");
+    let knob = center(&h.ui, "kpv-0-1");
+    for y in [0., -10., -60.] {
+        h.tick(pointer(Point::new(knob.x, knob.y + y), true));
+    }
+    h.tick(pointer(Point::new(knob.x, knob.y - 60.), false));
+    h.idle(2);
+    let crate::ksp::Value::Int(dragged) = value(1) else { panic!("slider value") };
+    assert!(dragged > 10, "dragging up raises it, got {dragged}");
+    h.press("kpv-0-2");
+    h.press("menu-item-1");
+    assert_eq!(value(2), crate::ksp::Value::Int(1), "a menu item sets the menu");
+
+    // The header's view menu: Original, Vectorized, KONTRA.
+    h.press("view-0");
+    h.press("menu-item-2");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 2, "the part keeps its choice");
+    assert!(h.ui.scene().unwrap().surface("ksp-0-1").is_some(), "the rebuilt view");
+    h.press("view-0");
+    h.press("menu-item-1");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 3);
+    let scene = h.ui.scene().unwrap();
+    assert!(scene.surface("kpv-0-1").is_some() && scene.surface("ksp-0-1").is_none(), "the vectorized view");
+    h.press("view-0");
+    h.press("menu-item-0");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 1);
+    assert!(h.ui.scene().unwrap().surface("kpv-0-1").is_some());
+}
+
+/// The vectorized view keeps every control of the original where it was, at
+/// its size: only the drawing changes.
+#[test]
+fn the_vectorized_view_keeps_the_original_layout() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $vol(0, 100)\nmove_control_px($vol, 30, 40)\nset_control_par_str(get_ui_id($vol), $CONTROL_PAR_PICTURE, \"knob\")\ndeclare ui_switch $legato\nmove_control_px($legato, 120, 40)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nmove_control_px($mic, 200, 90)\ndeclare ui_label $title(1,1)\nset_text($title, \"Tone\")\nmove_control_px($title, 30, 100)\nend on");
+    {
+        let frame = Arc::new(moose::mui::mui::scene::Image::rgba(48, 50, vec![200; 48 * 50 * 4]).unwrap());
+        let knob = artwork::Picture { frames: vec![frame; 11], stretch: [false; 2] };
+        p.shared.view.lock().unwrap().parts[0].pictures = Arc::new([("knob".to_owned(), Arc::new(knob))].into());
+    }
+    let rects = |code: u8| {
+        p.selection.write().unwrap().parts[0].view = code;
+        let h = Harness::new(&p, 1180., 760.);
+        let scene = h.ui.scene().unwrap();
+        let stage = scene.surface("stage-0").map(|s| s.frame);
+        let controls: Vec<_> = (0..4).filter_map(|n| scene.surface(&format!("kpv-0-{n}")).map(|s| (n, s.frame))).collect();
+        (stage, controls)
+    };
+    let (original, vectorized) = (rects(1), rects(3));
+    assert!(original.0.is_some(), "the original view shows");
+    assert_eq!(original.1.len(), 3, "the slider, switch and menu take the pointer: {:?}", original.1);
+    assert_eq!(original, vectorized, "same places, same sizes");
+    let knob = original.1[0].1;
+    assert_eq!((knob.size.width, knob.size.height), (48., 50.), "sized as its picture in both");
 }
 
 #[test]
@@ -2097,5 +2247,95 @@ fn hue_walks_skip_orange() {
         let hues: Vec<f32> = (0..16).map(|n| golden_hue(from, n)).collect();
         assert!(hues.iter().all(|&h| !orange(h)), "{hues:?}");
         assert!(hues.windows(2).all(|w| (w[0] - w[1]).rem_euclid(360.).min((w[1] - w[0]).rem_euclid(360.)) > 60.));
+    }
+}
+
+/// Shape statistics of library performance views for the original view:
+/// sizes, kinds, pictures found and their frames. `KONTAKTO_SHOT` names
+/// the instruments; run with `--ignored --nocapture`. Prints no names.
+#[test]
+#[ignore]
+fn perf_view_stats() {
+    use crate::ksp::Value;
+    use std::collections::BTreeMap;
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let names = std::env::var("KONTAKTO_SHOT").unwrap_or_default();
+    for i in library_instruments(&files, &names) {
+        let script = scripted(&i);
+        let Some(u) = script.interface else {
+            println!("== {}: no interface ({})", i.name, script.status.lines().count());
+            continue;
+        };
+        let wall = artwork::performance(&i, Some(u.as_ref()));
+        let wall = match &wall {
+            Ok(Some(w)) => format!("{}x{}", w.frames[0].width, w.frames[0].height),
+            Ok(None) => "none".into(),
+            Err(e) => format!("err {e}"),
+        };
+        let pic_names = u.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+            Some(Value::Text(n)) if !n.is_empty() => Some(n.as_str()),
+            _ => None,
+        });
+        let pics = artwork::pictures(&i.path, pic_names.clone());
+        let named: std::collections::BTreeSet<&str> = pic_names.collect();
+        println!("== {} ui {}x{} perf {} wallpaper {wall}; pictures {}/{}", i.name, u.width, u.height, u.performance, pics.len(), named.len());
+        let mut kinds: BTreeMap<&str, (usize, usize, usize, usize)> = BTreeMap::new();
+        let mut props: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        for c in &u.controls {
+            let int = |k: &str| match c.properties.get(k) { Some(Value::Int(n)) => *n, _ => 0 };
+            let hidden = int("$CONTROL_PAR_HIDE") & 16 != 0;
+            let pic = match c.properties.get("$CONTROL_PAR_PICTURE") { Some(Value::Text(n)) if !n.is_empty() => Some(n.as_str()), _ => None };
+            let e = kinds.entry(c.kind.as_str()).or_default();
+            e.0 += 1;
+            e.1 += usize::from(!hidden);
+            e.2 += usize::from(pic.is_some());
+            if let Some(p) = pic.and_then(|n| pics.get(n)) {
+                let f = &p.frames[0];
+                e.3 += usize::from(f.width as i32 == int("$CONTROL_PAR_WIDTH") && f.height as i32 == int("$CONTROL_PAR_HEIGHT"));
+            }
+            for k in ["Z_LAYER", "FONT_TYPE", "TEXT_ALIGNMENT", "MOUSE_BEHAVIOUR", "PICTURE_STATE", "TEXTPOS_Y", "HIDE", "TEXT_COLOR"] {
+                if let Some(v) = c.properties.get(&format!("$CONTROL_PAR_{k}")) {
+                    *props.entry(format!("{}:{k}", c.kind)).or_default().entry(format!("{v:?}")).or_default() += 1;
+                }
+            }
+            for k in c.properties.keys().filter(|k| k.starts_with('#')) {
+                *props.entry("unnamed".into()).or_default().entry(k.clone()).or_default() += 1;
+            }
+        }
+        for (k, (n, vis, pic, sized)) in kinds {
+            println!("  {k:14} {n:4} visible {vis:4} picture {pic:4} sized-as-frame {sized}");
+        }
+        for (k, v) in props {
+            let mut v: Vec<_> = v.into_iter().collect();
+            v.sort_by_key(|x| std::cmp::Reverse(x.1));
+            v.truncate(6);
+            println!("  {k}: {v:?}");
+        }
+        let frames: BTreeMap<usize, usize> = pics.values().fold(BTreeMap::new(), |mut m, p| {
+            *m.entry(p.frames.len()).or_default() += 1;
+            m
+        });
+        println!("  frames per picture: {frames:?}");
+        // Where the unread pictures are, if anywhere: member paths' shapes only.
+        let nkrs: Vec<PathBuf> = i.path.ancestors().skip(1).take(4).flat_map(|d| {
+            let mut v: Vec<PathBuf> = std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect();
+            let subs: Vec<PathBuf> = v.iter().filter(|p| p.is_dir()).flat_map(|s| std::fs::read_dir(s).into_iter().flatten().flatten().map(|e| e.path())).collect();
+            v.extend(subs);
+            v.into_iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkr")))
+        }).collect();
+        for name in named.iter().filter(|n| !pics.contains_key(**n)) {
+            let want = format!("{}.png", name.to_lowercase());
+            let mut seen = Vec::new();
+            for nkr in &nkrs {
+                let Ok(mut f) = std::fs::File::open(nkr) else { continue };
+                let Ok(a) = ni_file::nkr::Archive::read(&mut f) else { continue };
+                for (k, e) in &a.entries {
+                    if k.to_lowercase().rsplit('/').next() == Some(want.as_str()) {
+                        seen.push(format!("depth {} encoded {}", k.matches('/').count(), e.encoded));
+                    }
+                }
+            }
+            println!("  unread picture (len {}): {seen:?}", name.len());
+        }
     }
 }

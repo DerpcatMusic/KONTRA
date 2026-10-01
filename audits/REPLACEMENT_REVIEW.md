@@ -212,7 +212,7 @@ The implementation keeps the existing typed bytecode VM, prepared storage and na
 | Area | Concrete remaining gap |
 |---|---|
 | Host and expressive MIDI | `note_controller` callbacks and their script-visible values; complete host song-position/time-signature plumbing; generated polyphonic-pressure routing. Existing host MPE routing is separate and already useful. |
-| Zone/sample API | Zone and loop queries/edits, user zones and sample replacement; `$NUM_ZONES` still has a placeholder. Libraries that inspect or remap sample data cannot be certified. |
+| Zone/sample API | Zone and loop queries/edits, user zones and sample replacement. `$NUM_ZONES` now reflects the imported instrument; this does not implement zone editing. Libraries that inspect or remap sample data cannot be certified. |
 | MIDI objects | MIDI-file/event editing, playback/export areas and the `mf_*` command family. Loop designers need actual event data and timing, not dummy IDs. |
 | UI | Table/XY/waveform/file-selector/meter widgets; indexed metadata; nested panels, original fonts and layering; Komplete UI. Array **values** are implemented without claiming those renderers exist. |
 | Engine services | Real purge/reload and async outcomes, dynamic IR/FX loading and unsupported engine parameters/effects. Returning a stored parameter value does not prove it affects sound. Time Machine Pro remains unavailable. |
@@ -222,6 +222,58 @@ These are substantial remaining families. It would be misleading to call this an
 
 ### Reduced verification workflow
 
-`bacon.toml` makes `bacon` a compile-only check. `bacon parity` explicitly uses nextest to select two focused regressions covering channels/waits/releases, generated RPN/NRPN, global UI ordering, custom event data, widget queries, changing menu rows, indexed values, nested `continue`, invalid array indexes and budgeted table snapshots. Nextest improves test selection/execution; it still compiles with Cargo. See [Bacon configuration](https://dystroy.org/bacon/config/) and [nextest filters](https://nexte.st/docs/selecting/).
+`bacon.toml` makes `bacon` a compile-only check. `bacon parity` explicitly uses nextest to select three focused regressions covering channels/waits/releases, generated RPN/NRPN, global UI ordering, custom event data, widget queries, changing menu rows, indexed values, nested `continue`, invalid array indexes and budgeted table snapshots. Nextest improves test selection/execution; it still compiles with Cargo. See [Bacon configuration](https://dystroy.org/bacon/config/) and [nextest filters](https://nexte.st/docs/selecting/).
 
 The broad test/benchmark pipeline was stopped at the user's request. Earlier Linux playback/format validation and Windows Wine results belong to earlier revisions; they are not relabeled as validation of this newer KSP work. The latest verification consists of the focused regressions and compilation, with shipping build results recorded separately. No repeat PGO training, full suite or validator sweep is required for ordinary editing.
+
+### Integration with the active working branch
+
+Integrated the committed `kontakt-parity` snapshot `824a8a7` (29 unique non-merge
+commits) on the secondary branch. The user's checkout was clean at inspection
+and was left untouched. This supersedes the older browser and two-mode UI
+interface described above: both panes render visible rows, the browser has
+folder trees/breadcrumbs, filter/sort/pins/drag ordering, and wheel-notch
+normalization happens in the native adapter without multiplying trackpad pixels.
+Each part chooses Original, Vectorized or KONTRA, with a persistent app default
+and scale. The competing original renderer was removed rather than maintained
+alongside `perf_view`.
+
+Also integrated linked Resources/scripts with case-insensitive and UTF-16
+handling, deeper artwork discovery, opcode fusion/branch compilation, channel
+articulation note-off fixes, averaged CPU reporting, IR initialization and added
+reverb/module parameter plumbing. Those commits are code changes, not a new
+claim of measured CPU gain or universal library compatibility.
+
+Merge resolutions retain per-channel callback contexts/commands, optional init,
+custom event data, typed indexed values, real-time preparation and block limits.
+Unknown builtins now diagnose and degrade at the call so later UI declarations
+remain usable; a bounded runaway initializer keeps its already-declared
+controls. Time Machine Pro still returns zero capacity and asynchronous failure,
+rather than advertising successfully allocated stretch voices. Meter attachment
+and waveform services still diagnose unsupported behavior.
+
+`$NUM_ZONES` now sizes tables using the imported zone count. The compiled-program
+cache includes that count; two instruments with the same script and different
+zone counts cannot reuse incorrect array dimensions. Key-range text storage is
+prepared before playback and recycled across replacement/removal. Both initial
+and state-restoration IR processor builds occur outside the editor mutex. Scalar
+view hashes avoid formatting/walking unsupported array values, and wallpaper
+frame state participates in view invalidation.
+
+Verification for this integration: six selected nextest regressions passed
+(channels/waits/releases, dynamic UI/custom data, zone-sized tables/cache,
+Original editing/view switching, Vectorized coordinates, 1,000-preset browsing).
+One additional allocation regression passed after adding key-range creation,
+overlap replacement, removal and text lookup to the existing first-use service
+check. Full suites, library audit sweeps and PGO training were not repeated.
+
+Unsupported dynamic effect loading now reports asynchronous failure instead of
+claiming success because its requested parameter was merely stored. The targeted
+stretch/effect failure regression checks that outcome while preserving later
+script callbacks and controls.
+
+Resource discovery/NKR reads are shared by GUI and headless builds in
+`src/resources.rs`; linked scripts and IRs no longer depend on the artwork
+module. Loose resource reads reject oversize files instead of silently returning
+a truncated 32 MiB prefix. The existing linked-script case/path regression also
+runs without the plugin feature.
