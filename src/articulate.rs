@@ -493,6 +493,15 @@ impl Router {
         self.route.by_channel()
     }
 
+    /// Physical input channels stopped by a channel-mode message.
+    pub(crate) fn stop_channels(&self, channel: u8) -> u16 {
+        let mut channels = 1u16 << (channel & 15);
+        if let Some((master, members)) = self.route.zone() && channel == master {
+            for member in members { channels |= 1 << member; }
+        }
+        channels
+    }
+
     /// The scripts' articulation may have changed some other way (a click):
     /// switch again before the next note.
     pub fn forget(&mut self) {
@@ -709,14 +718,20 @@ impl Router {
             }
             In::Pressure(_, value) => out(Out::Pressure(to, value)),
             In::PolyAt(_, note, value) => out(Out::PolyAt(to, self.key_of(channel, note), value)),
-            In::Cc(_, 123, _) if r.by_channel() => {
-                // Channel-mode scripts share a home channel, but a host stop
-                // belongs to the physical channel that sent it.
-                for (to, key) in std::mem::replace(&mut self.held[channel as usize], [(NONE, NONE); 128]) {
-                    if key != NONE {
-                        out(Out::NoteOffFrom(to, channel, key));
+            In::Cc(_, cc @ (120 | 123), value) => {
+                let channels = self.stop_channels(channel);
+                for owner in (0..16).filter(|owner| channels & (1 << owner) != 0) {
+                    let row = std::mem::replace(&mut self.held[owner], [(NONE, NONE); 128]);
+                    if cc == 123 && r.by_channel() {
+                        // Shared scripts still release only this physical input.
+                        for (to, key) in row {
+                            if key != NONE { out(Out::NoteOffFrom(to, owner as u8, key)); }
+                        }
                     }
                 }
+                // Selective Channel-mode CC120 requires engine event provenance;
+                // retain the existing engine-channel cut until that is available.
+                if cc == 120 || !r.by_channel() { out(Out::Cc(to, cc, value)); }
             }
             In::Cc(_, cc, value) => {
                 if r.zone().is_some() && self.rpn_cc(channel, cc, value) {
