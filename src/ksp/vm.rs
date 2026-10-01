@@ -765,9 +765,9 @@ fn pick(taken: bool, yes: usize, no: usize) -> usize {
 /// The `BrImm` at `p` that ends a chain, testing `x` (which it would have
 /// popped); any other op gets `x` pushed and runs next.
 #[inline(always)]
-fn br_imm(code: &[Op], s: &mut Vec<i32>, p: &mut usize, f: &mut u64, x: i32) {
+fn br_imm(code: &[Op], s: &mut Vec<i32>, p: &mut usize, f: &mut i64, x: i32) {
     if let Op::BrImm(cmp, n, to) = code[*p] {
-        *f = f.saturating_sub(1);
+        *f -= 1;
         *p = pick(cmp.test(x, n), *p + 3, to as usize);
     } else {
         s.push(x);
@@ -790,7 +790,9 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
     let row = t.ctx.poly_row * prog.poly;
     // Moved out so its length and capacity live in registers.
     let mut s = std::mem::take(&mut m.stk.ints);
-    let (mut p, mut f) = (*pc, *fuel);
+    // Fuel as a plain count down: it may go below zero between the checks,
+    // which test for `<= 0` where the saturating count tested for `== 0`.
+    let (mut p, mut f) = (*pc, i64::try_from(*fuel).unwrap_or(i64::MAX));
     macro_rules! pop {
         () => {
             s.pop().expect("compiler balanced the int stack")
@@ -817,8 +819,7 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
         }};
     }
     let result = loop {
-        let charged = f;
-        f = f.saturating_sub(1);
+        f -= 1;
         let op = code[p];
         p += 1;
         match op {
@@ -884,7 +885,7 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
             Op::Jump(to) => {
                 let back = (to as usize) < p;
                 p = to as usize;
-                if back && f == 0 {
+                if back && f <= 0 {
                     break Ok(Some(Yield::OutOfFuel));
                 }
             }
@@ -900,7 +901,7 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
                 }
             }
             Op::Call(func) => {
-                if f == 0 {
+                if f <= 0 {
                     p -= 1;
                     break Ok(Some(Yield::OutOfFuel));
                 }
@@ -980,14 +981,14 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
                 let x = &mut ints[a as usize];
                 *x = x.wrapping_add(n);
                 // The `Jump` at `p + 3`.
-                f = f.saturating_sub(1);
+                f -= 1;
                 let back = (to as usize) < p + 4;
                 p = to as usize;
-                if back && f == 0 {
+                if back && f <= 0 {
                     break Ok(Some(Yield::OutOfFuel));
                 }
                 if let Op::BrVarImm(cmp, b, k, exit) = code[p] {
-                    f = f.saturating_sub(1);
+                    f -= 1;
                     p = pick(cmp.test(ints[b as usize], k), p + 4, exit as usize);
                 }
             }
@@ -1012,7 +1013,7 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
                     let i = i32::from(n).wrapping_mul(ints[a as usize]);
                     let i = i.wrapping_add(ints[b as usize]);
                     let y = elem!(w, i, p + 6).map_or(0, |e| ints[e]).wrapping_add(k);
-                    f = f.saturating_sub(3);
+                    f -= 3;
                     p = pick(cmp.test(x, y), p + 10, to as usize);
                 } else {
                     s.push(x);
@@ -1022,28 +1023,28 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
                 let i = ints[a as usize].wrapping_add(ints[b as usize]);
                 let x = elem!(v, i, p + 3).map_or(0, |e| ints[e]);
                 s.push(x);
-                f = f.saturating_sub(3);
+                f -= 3;
                 p += 3;
             }
             Op::AddVars(a, b) => {
                 s.push(ints[a as usize].wrapping_add(ints[b as usize]));
-                f = f.saturating_sub(2);
+                f -= 2;
                 p += 2;
             }
             Op::LdIAdd(a, n) => {
                 s.push(ints[a as usize].wrapping_add(n));
-                f = f.saturating_sub(1);
+                f -= 1;
                 p += 2;
             }
             _ => {
                 p -= 1;
-                f = charged;
+                f += 1;
                 break Ok(None);
             }
         }
     };
     m.stk.ints = s;
-    (*pc, *fuel) = (p, f);
+    (*pc, *fuel) = (p, f.max(0) as u64);
     result
 }
 
