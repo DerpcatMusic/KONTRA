@@ -74,6 +74,8 @@ pub trait KspEngine {
     fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<EventId>;
     /// Freeze per-note controls before a release callback can wait or create notes.
     fn release_expression(&self, _at: u32, _voice: Option<EventId>, _channel: u8, _note: u8) -> Option<Expression> { None }
+    /// Stop following member controls at this frame while a child callback waits.
+    fn freeze_expression(&mut self, _at: u32, _voice: EventId, _expression: Expression) {}
     /// Release a voice. `event` is its note event now: release triggers use its
     /// key, velocity and groups (whole-sample notes fired them at the start).
     fn note_off(&mut self, at: u32, voice: EventId, event: &NoteSpec<'_>);

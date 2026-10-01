@@ -1536,6 +1536,65 @@ mod tests {
     }
 
     #[test]
+    fn same_frame_note_expression_sets_initial_gain_and_pan() {
+        use crate::{
+            audio::Sample,
+            engine::{Bank, NoteEvent},
+            import::{Group, Zone as SampleZone},
+        };
+        let setup = |scripted| {
+            let sample = Sample {
+                rate: 48000,
+                frames: vec![[0.25; 2]; 24000],
+            };
+            let bank = Bank::from_samples(
+                vec![Group::default()],
+                vec![SampleZone::default()],
+                vec![(std::path::PathBuf::new(), sample)],
+            )
+            .unwrap();
+            let mut e = Engine::default();
+            e.reset(48000.);
+            e.attack = 0.0001;
+            e.set_bank(Some(Box::new(bank)));
+            if scripted {
+                e.set_script(Some(Box::new(runtime("on init\nend on"))));
+            }
+            e
+        };
+        for scripted in [false, true] {
+            let mut actual = setup(scripted);
+            let mut r = router(&Articulate::default(), &Mpe::default());
+            feed(&mut r, &mut actual, In::NoteOn(0, 60, 100), 0);
+            feed(&mut r, &mut actual, In::NoteGain(0, 60, 0.25), 0);
+            feed(&mut r, &mut actual, In::NotePan(0, 60, 1.), 0);
+            let mut expected = setup(false);
+            expected.start_event(&NoteEvent {
+                volume: 0.25,
+                pan: 1.,
+                ..NoteEvent::new(0, 60, 100)
+            });
+            let (mut a, mut b, mut c, mut d) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
+            actual.render(&mut a, &mut b);
+            expected.render(&mut c, &mut d);
+            assert!(
+                a.iter()
+                    .zip(c)
+                    .chain(b.iter().zip(d))
+                    .all(|(a, b)| (a - b).abs() < 1e-5),
+                "scripted={scripted}: initial expression briefly used default gain/pan"
+            );
+            // Later edits still interpolate, preserving the existing click prevention.
+            feed(&mut r, &mut actual, In::NoteGain(0, 60, 0.75), 0);
+            actual.render(&mut a, &mut b);
+            assert!(
+                (b[0] - d[127]).abs() < 1e-5 && b[127] > b[0] * 2.,
+                "scripted={scripted}: live gain changed without its ramp"
+            );
+        }
+    }
+
+    #[test]
     fn mpe_script_generated_release_inherits_its_parent_expression() {
         use crate::{
             audio::Sample,
@@ -1854,6 +1913,56 @@ mod tests {
         );
         assert_eq!(ev(EventBody::NoteOn { group: 0, channel: 3, note: 60, velocity: 0 }), Some(In::NoteOff(3, 60)));
         assert_eq!(ev(EventBody::PerNoteCC { group: 0, channel: 0, note: 60, cc: 7, value: 0, registered: false }), None);
+    }
+
+    #[test]
+    fn mpe_following_transposed_child_freezes_before_its_release_wait() {
+        use crate::{audio::Sample, engine::Bank, import::{Group, Loop, Zone as SampleZone},
+            ksp::{LogEngine, Runtime}, modulation::{ModAssignment, ModSource, ModTarget}};
+        let setup = || {
+            let group = Group { mods: vec![ModAssignment { name: "CC74_VOLUME".into(),
+                source: ModSource::MidiCc(74), target: ModTarget::Volume, intensity: 0.5,
+                invert: false, lag_ms: 0, shaper: None }], ..Group::default() };
+            let groups = vec![group.clone(), Group { release_trigger: true, ..group }];
+            let path = std::path::PathBuf::from("child-tone");
+            let zones = (0..2).map(|group| SampleZone { group, sample: path.clone(),
+                loop_range: Some(Loop { start: 0, end: 1024, until_release: false, crossfade: 0 }),
+                ..SampleZone::default() }).collect();
+            let bank = Bank::from_samples(groups, zones, vec![(path, Sample { rate: 48000,
+                frames: (0..1024).map(|i| [(i as f32 * 0.07).sin() * 0.2; 2]).collect() })]).unwrap();
+            let scripts = ["on note\nignore_event($EVENT_ID)\nplay_note($EVENT_NOTE+12,$EVENT_VELOCITY,0,-1)\nend on",
+                "on note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\nignore_event($EVENT_ID)\nwait(40000)\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nnote_off($EVENT_ID)\nend on"];
+            let (rt, errors) = Runtime::with_scripts(&scripts, &mut LogEngine::new(Vec::new(),48000.),8,Vec::new());
+            assert!(errors.iter().all(Option::is_none),"{errors:?}");
+            let mut e = Engine::default(); e.reset(48000.); e.attack=0.0001; e.release=0.001;
+            e.set_bank(Some(Box::new(bank))); e.set_script(Some(Box::new(rt)));
+            (e,router(&Articulate::default(),&Mpe { zone: Zone::Lower,..Mpe::default() }))
+        };
+        let start = |e: &mut Engine,r: &mut Router,cc,gain,pan,tune| {
+            feed(r,e,In::Cc(1,74,cc),0); feed(r,e,In::NoteOn(1,60,100),0);
+            feed(r,e,In::NoteGain(1,60,gain),0); feed(r,e,In::NotePan(1,60,pan),0);
+            feed(r,e,In::NoteTune(1,60,tune),0);
+        };
+        let compare = |a: &mut Engine,o: &mut Engine,n: &mut Engine,phase| {
+            let audio = |e: &mut Engine| { let (mut l,mut r)=([0.;128],[0.;128]); e.render(&mut l,&mut r); (l,r) };
+            let (a,o,n)=(audio(a),audio(o),audio(n));
+            for i in 0..128 { assert!((a.0[i]-o.0[i]-n.0[i]).abs()<1e-5 && (a.1[i]-o.1[i]-n.1[i]).abs()<1e-5,
+                "{phase}, frame {i}: following transposed child inherited a reused member"); }
+        };
+        for rendered in [false,true] {
+            let (mut a,mut ar)=setup(); let (mut o,mut or)=setup(); let (mut n,mut nr)=setup();
+            start(&mut a,&mut ar,32,0.25,-1.,7.); start(&mut o,&mut or,32,0.25,-1.,7.);
+            if rendered { for e in [&mut a,&mut o,&mut n] { render(e); } }
+            for (e,r) in [(&mut a,&mut ar),(&mut o,&mut or)] {
+                feed(r,e,In::Cc(0,64,127),0); feed(r,e,In::NoteOff(1,60),0);
+            }
+            start(&mut a,&mut ar,96,0.75,1.,-5.); start(&mut n,&mut nr,96,0.75,1.,-5.);
+            compare(&mut a,&mut o,&mut n,"child waits after physical-off");
+            for _ in 0..16 { compare(&mut a,&mut o,&mut n,"child delayed release under sustain"); }
+            for (e,r) in [(&mut a,&mut ar),(&mut o,&mut or),(&mut n,&mut nr)] { feed(r,e,In::Cc(0,64,0),0); }
+            compare(&mut a,&mut o,&mut n,"child release sample");
+            assert!(a.voice_census().iter().any(|v|v.release_trigger),"child release sample must start");
+        }
     }
 
     #[test]

@@ -81,8 +81,10 @@ pub fn effects(instrument: &Instrument, script: Option<&Runtime>, rate: f32) -> 
 pub const MAX_COMMANDS: usize = 256;
 // Pedal-up and terminal fades have their own quota, never the note-off reserve.
 const MAX_STOP_COMMANDS: usize = 256;
+// A first freeze per existing voice or accepted queued start; separate from releases.
+const MAX_FREEZE_COMMANDS: usize = super::MAX_VOICES + MAX_COMMANDS;
 // One release per live script event, beyond the ordinary and stop budgets.
-pub(super) const COMMAND_CAPACITY: usize = MAX_COMMANDS + MAX_STOP_COMMANDS + crate::ksp::EVENT_CAPACITY;
+pub(super) const COMMAND_CAPACITY: usize = MAX_COMMANDS + MAX_STOP_COMMANDS + MAX_FREEZE_COMMANDS + crate::ksp::EVENT_CAPACITY;
 
 /// A worker request: copying the name never allocates on the audio thread.
 #[derive(Clone)]
@@ -139,6 +141,7 @@ pub(super) enum Kind {
         groups: GroupMask,
         expression: Option<Expression>,
     },
+    Freeze(Expression),
     Fade(Fade),
     Change(EventChange),
     Controller {
@@ -195,11 +198,17 @@ impl Host<'_> {
                 _ => false,
             }) { return true }
         }
+        // ponytail: bounded quota scans over at most COMMAND_CAPACITY entries;
+        // cache counts if dense MIDI profiles make this a hot path.
         let full = self.commands.len() == COMMAND_CAPACITY
             || if stop {
                 self.commands.iter().filter(|c| c.kind.is_stop()).count() >= MAX_STOP_COMMANDS
+            } else if matches!(kind, Kind::Freeze(_)) {
+                self.commands.iter().filter(|c| matches!(c.kind, Kind::Freeze(_))).count() >= MAX_FREEZE_COMMANDS
             } else {
-                self.commands.len() >= MAX_COMMANDS && !matches!(kind, Kind::Release { .. })
+                !matches!(kind, Kind::Release { .. }) && self.commands.iter()
+                    .filter(|c| !c.kind.is_stop() && !matches!(c.kind, Kind::Release { .. } | Kind::Freeze(_)))
+                    .count() >= MAX_COMMANDS
             };
         if full {
             self.player.dropped_commands += 1;
@@ -259,12 +268,37 @@ impl KspEngine for Host<'_> {
         let kind = Kind::Release {
             trigger: (n.length != NoteLength::Sample).then_some((n.note, n.velocity)),
             groups: *n.groups,
-            expression: self.commands.iter().find_map(|c| match c.kind {
+            expression: n.frozen_expression.or_else(|| self.commands.iter().find_map(|c| match c.kind {
                 Kind::Start { expression, .. } if c.id == voice => expression,
                 _ => None,
-            }).or_else(|| self.player.release_expression(voice, n.channel, n.note)),
+            })).or_else(|| self.player.release_expression(voice, n.channel, n.note)),
         };
         self.push(at, n.channel, voice, kind);
+    }
+
+    fn freeze_expression(&mut self, at: u32, voice: EventId, expression: Expression) {
+        // First freeze wins until a new Start for this event. Ignore events
+        // without an accepted engine source; they cannot consume this quota.
+        for c in self.commands.iter().rev().filter(|c| c.id == voice) {
+            match c.kind {
+                Kind::Freeze(_) => return,
+                Kind::Start { .. } => break,
+                _ => {}
+            }
+        }
+        let active = self.player.voices.iter().find(|v| v.event == voice);
+        if active.is_some_and(|v| v.frozen_expression.is_some()) { return; }
+        let channel = active.map(|v| v.channel);
+        if let Some(c) = self.commands.iter_mut().find(|c| c.id == voice && matches!(c.kind, Kind::Start { .. })) {
+            if c.at >= at && let Kind::Start { expression: x, .. } = &mut c.kind {
+                x.get_or_insert(expression);
+                return;
+            }
+            let channel = c.channel;
+            self.push(at, channel, voice, Kind::Freeze(expression));
+        } else if let Some(channel) = channel {
+            self.push(at, channel, voice, Kind::Freeze(expression));
+        }
     }
 
     fn fade(&mut self, at: u32, voice: EventId, fade: Fade) {
@@ -408,6 +442,12 @@ impl Player {
                 let latched = self.release_voices(bank, id).is_some_and(|event| event.4);
                 if let &Some((note, velocity)) = trigger {
                     self.trigger_release(bank, id, (channel, note, velocity), groups, latched, *expression, defaults);
+                }
+            }
+            &Kind::Freeze(expression) => {
+                for v in self.voices.iter_mut().filter(|v| v.event == id && v.frozen_expression.is_none()) {
+                    v.frozen_expression = Some(expression);
+                    v.settled = None;
                 }
             }
             &Kind::Fade(Fade::In { duration_us }) => {

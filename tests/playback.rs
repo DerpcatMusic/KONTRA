@@ -1533,6 +1533,41 @@ fn scripted(script: &str) -> Engine {
 }
 
 #[test]
+fn following_child_freezes_preserve_start_and_release_budgets_without_allocating() {
+    use kontakto::{articulate::{Articulate, In, Mpe, Route, Router, Zone, dispatch_to},
+        engine::{Rack, RACK_SLOTS}, ksp::LogEngine};
+    let scripts = ["on note\nignore_event($EVENT_ID)\nplay_note($EVENT_NOTE+12,$EVENT_VELOCITY,0,-1)\nend on",
+        "on release\nignore_event($EVENT_ID)\nwait(1000)\nnote_off($EVENT_ID)\nend on"];
+    let (rt, errors) = Runtime::with_scripts(&scripts,&mut LogEngine::new(Vec::new(),48000.),8,Vec::new());
+    assert!(errors.iter().all(Option::is_none),"{errors:?}");
+    let mut e = engine_with(layered(vec![Group::default()],&[0.1]));
+    e.attack=0.0001; e.release=0.001; e.set_script(Some(Box::new(rt)));
+    let mut rack = Box::new(Rack::default()); rack.parts[0]=e;
+    let mut routers: [Router; RACK_SLOTS] = std::array::from_fn(|_|Router::default());
+    routers[0].set_route(Route::new("",&Articulate::default(),&Mpe { zone: Zone::Lower,..Mpe::default() }));
+    for _ in 0..4 {
+        for _ in 0..100 { dispatch_to(&mut rack,&mut routers,1,In::NoteOn(1,60,100)); }
+        let (mut l,mut r)=([0.;128],[0.;128]); rack.parts[0].render(&mut l,&mut r);
+    }
+    assert_eq!(rack.parts[0].active_voices(),400);
+    let before=rack.parts[0].dropped_commands();
+    assert_eq!(allocations(|| {
+        // Four hundred child freezes exceed the ordinary quota. A new Start
+        // still fits, and the remaining ordinary quota fills with controllers.
+        dispatch_to(&mut rack,&mut routers,1,In::NoteOff(1,60));
+        dispatch_to(&mut rack,&mut routers,1,In::NoteOn(1,61,100));
+        for _ in 1..kontakto::engine::MAX_COMMANDS { rack.parts[0].cc(1,1,100); }
+        let (mut l,mut r)=([0.;128],[0.;128]);
+        // The old children's delayed Releases arrive into the full ordinary
+        // quota in this render and must retain their separate reservation.
+        for _ in 0..20 { rack.parts[0].render(&mut l,&mut r); }
+    }),0,"child snapshot scheduling allocated or freed on the audio thread");
+    assert_eq!(rack.parts[0].dropped_commands(),before,"freezes consumed Start or Release capacity");
+    assert_eq!(rack.parts[0].active_voices(),1,"all old children stop; the new child Start survives");
+    assert_eq!(rack.parts[0].voice_census()[0].note,73);
+}
+
+#[test]
 fn crowded_script_releases_never_leave_voices_held() {
     let mut e = scripted("on init\nend on\non note\nend on");
     // Accumulate more live input parents than the ordinary command budget,

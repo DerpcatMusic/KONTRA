@@ -1673,6 +1673,9 @@ impl Runtime {
                 if e.frozen_expression.is_none() {
                     e.frozen_expression = engine.release_expression(self.env.offset, e.voice, e.channel, e.note.clamp(0, 127) as u8);
                 }
+                if let Some((voice, expression)) = e.voice.zip(e.frozen_expression) {
+                    engine.freeze_expression(self.env.offset, voice, expression);
+                }
                 if slot >= slots {
                     if let Some(v) = e.voice.take() {
                         engine.note_off(self.env.offset, v, &e.spec(event));
@@ -1685,13 +1688,11 @@ impl Runtime {
                 e.released |= 1 << slot;
                 let children = e.children;
                 let count = e.child_count as usize;
+                let expression = e.frozen_expression;
                 for &child in &children[..count] {
-                    if self
-                        .env
-                        .events
-                        .get(child)
-                        .is_some_and(|c| c.follows_parent && c.origin == slot + 1)
-                    {
+                    if let Some(c) = self.env.events.get_mut(child)
+                        .filter(|c| c.follows_parent && c.origin == slot + 1) {
+                        if c.frozen_expression.is_none() { c.frozen_expression = expression; }
                         self.env.queue(Work::Release {
                             event: child,
                             slot: slot + 1,

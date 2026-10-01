@@ -1112,6 +1112,7 @@ impl Voice {
             self.settled = settled.then_some(cx.inputs);
         }
         let (modulation, semitones) = self.modulated;
+        let initial = self.pitch.0.is_nan();
         let semitones = semitones + group.tune + cx.tune + x.tune;
         if semitones != self.pitch.0 {
             self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));
@@ -1122,6 +1123,9 @@ impl Voice {
             level,
             (self.base_pan + group.pan + self.pan + x.pan).clamp(-1.0, 1.0),
         );
+        // Same-frame host expression may arrive after an unscripted note was
+        // spawned. Start at the final initial value; later edits still ramp.
+        if initial { self.gains = target; }
         let muted = target == [0.0; 2] && self.gains == [0.0; 2];
         // A sample ending mid-waveform ramps out over its last millisecond.
         let end = ((self.length as f64 - self.pos) / step) as f32;
