@@ -543,6 +543,8 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
             None => from_variable,
         }
             .or_else(|| item.bipolar.then(|| "Pan".to_owned()))
+            // Every control stays editable: a terse variable beats no control.
+            .or_else(|| (item.face != Face::Text).then(|| variable.trim_start_matches(['$', '~', '?', '%', '@', '!']).to_owned()))
             .unwrap_or_default();
     }
     let mut kept: Vec<Item> = read
