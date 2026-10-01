@@ -119,6 +119,8 @@ struct Watch {
     readouts: u64,
     cpu: f32,
     disk: f32,
+    /// The audio thread's render and rendered time when last sampled.
+    busy: (u64, u64),
     /// When the readouts were last sampled, and the disk counter then.
     cpu_at: Option<Instant>,
     disk_read: u64,
@@ -145,9 +147,17 @@ impl Watch {
         if due(self.cpu_at, READOUT_MS) {
             let since = self.cpu_at.map_or(0., |t| (now - t).as_secs_f32());
             self.cpu_at = Some(now);
-            // The audio thread keeps its peak load; ease it down between looks.
-            let peak = f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32);
-            self.cpu = peak.max(self.cpu * 0.8);
+            // Mean load since the last look, as Kontakt shows it. The peak
+            // block's wall time read 20-80% at idle: one preempted block in
+            // a tenth of a second is scheduling, not work.
+            let busy = (p.shared.busy_ns.load(Ordering::Relaxed), p.shared.span_ns.load(Ordering::Relaxed));
+            let (work, span) = (busy.0.saturating_sub(self.busy.0), busy.1.saturating_sub(self.busy.1));
+            self.busy = busy;
+            let load = if span > 0 { work as f32 / span as f32 } else { 0. };
+            self.cpu = load * 0.5 + self.cpu * 0.5;
+            if self.cpu < 0.005 {
+                self.cpu = 0.;
+            }
             meters.cpu.store(self.cpu.to_bits(), Ordering::Relaxed);
             // Disk throughput since the last look, eased; idle settles on 0.
             let counter = self.disk_counter.unwrap_or(&crate::audio::DISK_READ);

@@ -133,7 +133,7 @@ pub fn performance(
         return Ok(None);
     };
     let filename = png_name(&name).ok_or("Invalid instrument wallpaper name")?;
-    let bytes = Pictures::of(&instrument.path)
+    let bytes = Pictures::of(&instrument.path, "pictures")
         .read(&filename)?
         .ok_or_else(|| format!("Instrument wallpaper {filename} was not found"))?;
     decode(&bytes)
@@ -166,7 +166,7 @@ pub fn pictures<'a>(
     path: &Path,
     names: impl IntoIterator<Item = &'a str>,
 ) -> HashMap<String, Arc<Picture>> {
-    let mut source = Pictures::of(path);
+    let mut source = Pictures::of(path, "pictures");
     let mut out = HashMap::new();
     for name in names {
         if out.contains_key(name) {
@@ -257,6 +257,37 @@ impl Layout {
     }
 }
 
+/// `<dir>/Resources/<name>` and `<dir>/<name>`, matching each folder name
+/// without case: libraries made on Windows or macOS spell them freely.
+fn resource_dirs(dir: &Path, name: &str) -> Vec<PathBuf> {
+    let child = |dir: &Path, want: &str| -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(want))
+            .map(|e| e.path())
+            .collect()
+    };
+    let mut out: Vec<PathBuf> = child(dir, "Resources")
+        .iter()
+        .flat_map(|r| child(r, name))
+        .collect();
+    out.extend(child(dir, name));
+    out
+}
+
+/// The text of a script slot linked to `name` (as Kontakt stores it: a bare
+/// file name or any Windows or POSIX path ending in one) from the library's
+/// `Resources/scripts`, loose or in its resource container.
+pub fn linked_script(instrument: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
+    let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    if file.is_empty() || file == "." || file == ".." {
+        return Ok(None);
+    }
+    Pictures::of(instrument, "scripts").read(file)
+}
+
 /// Where a preset's pictures come from: `Resources/pictures` folders near
 /// it, else a resource container (`.nkr`) in or one folder below them.
 struct Pictures {
@@ -267,10 +298,12 @@ struct Pictures {
     open: Vec<(File, ni_file::nkr::Archive)>,
     key: Option<Option<std::sync::Arc<dyn ni_file::nis::LibraryKey>>>,
     instrument: PathBuf,
+    /// The `Resources` subfolder: `pictures` or `scripts`.
+    folder: &'static str,
 }
 
 impl Pictures {
-    fn of(instrument: &Path) -> Self {
+    fn of(instrument: &Path, folder_name: &'static str) -> Self {
         let mut files = HashMap::new();
         let mut containers = Vec::new();
         let nkrs = |dir: &Path| {
@@ -285,8 +318,8 @@ impl Pictures {
             found
         };
         for folder in instrument.ancestors().skip(1).take(4) {
-            for relative in ["Resources/pictures", "resources/pictures", "pictures"] {
-                for e in std::fs::read_dir(folder.join(relative))
+            for dir in resource_dirs(folder, folder_name) {
+                for e in std::fs::read_dir(dir)
                     .into_iter()
                     .flatten()
                     .flatten()
@@ -316,6 +349,7 @@ impl Pictures {
             open: Vec::new(),
             key: None,
             instrument: instrument.into(),
+            folder: folder_name,
         }
     }
 
@@ -324,7 +358,7 @@ impl Pictures {
         if let Some(path) = self.files.get(&file.to_lowercase()) {
             return read_bounded(path).map(Some);
         }
-        let member = format!("Resources/pictures/{file}");
+        let member = format!("Resources/{}/{file}", self.folder);
         for n in 0.. {
             if n == self.open.len() {
                 let Some(path) = (!self.containers.is_empty()).then(|| self.containers.remove(0))

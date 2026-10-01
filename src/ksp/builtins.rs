@@ -287,6 +287,10 @@ pub enum SysVar {
     Tempo,
     CurrentScriptSlot,
     UiId,
+    PlayedVoices,
+    DistanceBarStart,
+    Date(u8),
+    Time(u8),
 }
 
 pub fn sys_var(name: &str) -> Option<SysVar> {
@@ -321,6 +325,14 @@ pub fn sys_var(name: &str) -> Option<SysVar> {
         "$NI_BPM" | "$NI_TEMPO" => Tempo,
         "$CURRENT_SCRIPT_SLOT" => CurrentScriptSlot,
         "$NI_UI_ID" => UiId,
+        "$PLAYED_VOICES_TOTAL" | "$PLAYED_VOICES_INST" => PlayedVoices,
+        "$DISTANCE_BAR_START" => DistanceBarStart,
+        "$NI_DATE_YEAR" => Date(0),
+        "$NI_DATE_MONTH" => Date(1),
+        "$NI_DATE_DAY" => Date(2),
+        "$NI_TIME_HOUR" => Time(0),
+        "$NI_TIME_MINUTE" => Time(1),
+        "$NI_TIME_SECOND" => Time(2),
         _ => return None,
     })
 }
@@ -334,6 +346,8 @@ pub enum SysArray {
     PolyAt,
     /// Edit-mode group selection; nothing is selected in a player.
     GroupsSelected,
+    /// Held keys per pitch class, C first.
+    KeyDownOct,
 }
 
 impl SysArray {
@@ -344,6 +358,7 @@ impl SysArray {
             "%CC_TOUCHED" => Self::CcTouched,
             "%POLY_AT" => Self::PolyAt,
             "%GROUPS_SELECTED" => Self::GroupsSelected,
+            "%KEY_DOWN_OCT" => Self::KeyDownOct,
             _ => return None,
         })
     }
@@ -353,6 +368,7 @@ impl SysArray {
             Self::GroupsSelected => groups.clamp(1, 4096) as u32,
             Self::KeyDown | Self::PolyAt => 128,
             Self::Cc | Self::CcTouched => CC_SLOTS as u32,
+            Self::KeyDownOct => 12,
         }
     }
 }
@@ -502,7 +518,10 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_BUS_OFFSET" => 1000,
         "$NUM_ZONES" => 0,
         "$NI_VL_TMPRO_STANDARD" => VL_TMPRO_STANDARD,
-        "$NI_VL_TMPRO_HQ" => VL_TMPRO_HQ,
+        "$NI_VL_TMPRO_HQ" | "$NI_VL_TMRPO_HQ" => VL_TMPRO_HQ,
+        // A plugin with an editor, in 4/4 unless the host says otherwise.
+        "$NI_KONTAKT_IS_HEADLESS" | "$NI_KONTAKT_IS_STANDALONE" => 0,
+        "$SIGNATURE_NUM" | "$SIGNATURE_DENOM" => 4,
         _ => return None,
     })
 }
@@ -573,6 +592,26 @@ pub const SYMBOLS: &[&str] = &[
     "$CONTROL_PAR_WAVE_ALPHA",
     "$CONTROL_PAR_SLICEMARKERS_COLOR",
     "$CONTROL_PAR_BG_ALPHA",
+    // Level meters (`attach_level_meter`) and the rest of Kontakt 7's control set.
+    "$CONTROL_PAR_OFF_COLOR",
+    "$CONTROL_PAR_ON_COLOR",
+    "$CONTROL_PAR_OVERLOAD_COLOR",
+    "$CONTROL_PAR_PEAK_COLOR",
+    "$CONTROL_PAR_VERTICAL",
+    "$CONTROL_PAR_RANGE_MIN",
+    "$CONTROL_PAR_RANGE_MAX",
+    "$CONTROL_PAR_PARENT_PANEL",
+    "$CONTROL_PAR_CUSTOM_ID",
+    "$CONTROL_PAR_SHORT_NAME",
+    "$CONTROL_PAR_IDENTIFIER",
+    "$CONTROL_PAR_VALUEPOS_Y",
+    "$CONTROL_PAR_WF_VIS_MODE",
+    "$CONTROL_PAR_WAVETABLE_COLOR",
+    "$CONTROL_PAR_WAVETABLE_ALPHA",
+    "$CONTROL_PAR_DISABLE_TEXT_SHIFTING",
+    "$CONTROL_PAR_RECEIVE_DRAG_EVENTS",
+    "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
+    "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
 ];
 
 pub const CONTROL_PAR_VALUE: i32 = SYMBOL_BASE;

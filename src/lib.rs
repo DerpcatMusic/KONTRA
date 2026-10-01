@@ -23,3 +23,8 @@ mod routing;
 mod ui;
 #[cfg(feature="plugin")]
 pub use plugin::{Plugin, bench_host};
+/// The library folders the player scans, from its settings.
+#[cfg(feature="plugin")]
+pub fn library_roots() -> Vec<std::path::PathBuf> {
+    library::Settings::path().and_then(|p| library::Settings::load(&p)).map(|s| s.roots.into_iter().map(|r| r.path.into()).collect()).unwrap_or_default()
+}
