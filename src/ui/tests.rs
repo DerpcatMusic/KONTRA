@@ -321,9 +321,13 @@ fn the_browser_finds_by_library_and_folder() {
     };
     let shown = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
 
+    // Shut, the browser opens on Ctrl+F.
+    h.press("toggle-browser");
+    h.idle(30);
+    assert!(!shown(&h, "library-filter"), "the browser shuts");
     h.tick(key(Key::Char('f'), Mods { ctrl: true, ..Mods::default() }));
-    h.idle(2);
-    assert_eq!(h.ui.focus_key(), Some("library-filter"), "Ctrl+F goes to the library filter");
+    h.idle(30);
+    assert_eq!(h.ui.focus_key(), Some("library-filter"), "Ctrl+F opens the browser on the library filter");
     h.tick(Input { text: "lib 042".into(), ..Default::default() });
     h.idle(2);
     assert!(shown(&h, "library-42") && !shown(&h, "library-41"), "it narrows the libraries");

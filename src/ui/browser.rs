@@ -67,6 +67,8 @@ pub struct Browse {
     /// The browser's field holding the focus as the last frame ended: Esc
     /// takes the focus before the frame, so the field is told it this way.
     typing: Option<&'static str>,
+    /// Ctrl+F opened the browser: the filter takes the focus once it is drawn.
+    pub find: bool,
 }
 
 impl Browse {
@@ -194,7 +196,10 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // preset search, and back.
     let ctrl_f = |k: &KeyPress| matches!(k.key, Key::Char('f' | 'F')) && (k.mods.ctrl || k.mods.cmd);
     let slash = |k: &KeyPress| k.key == Key::Char('/') && !(k.mods.ctrl || k.mods.cmd);
-    if ui.shortcuts().iter().any(|k| ctrl_f(k) || slash(k)) || ui.keys("search").iter().any(ctrl_f) {
+    if std::mem::take(&mut cx.state.browse.find)
+        || ui.shortcuts().iter().any(|k| ctrl_f(k) || slash(k))
+        || ui.keys("search").iter().any(ctrl_f)
+    {
         focus_to = Some("library-filter".into());
     } else if ui.keys("library-filter").iter().any(ctrl_f) {
         focus_to = Some("search".into());
@@ -506,6 +511,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         Some(Source::Library(name)) if needle.is_empty() => grouped.get(name).map_or(0, Vec::len),
         _ => listed.iter().filter(|r| matches!(r, Row::Preset { .. })).count(),
     };
+    let counted = caption(count.to_string())
+        .text_size(SMALL)
+        .fill(secondary())
+        .tip(format!("{count} {}", if multis { "multis" } else { "instruments" }))
+        .id("browser-count");
     let scan_line = scan_line(ui, cx, scanning);
     let split = split_divider(ui, cx);
     let list = col(items)
@@ -534,7 +544,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     col![
         section_bar(
             "Browser",
-            vec![caption(count.to_string()).text_size(SMALL).fill(secondary()), add_el, hide_el]
+            vec![counted, add_el, hide_el]
         ),
         row(kinds).gap(INSET + TIGHT).pad(edges(0., INSET, 0., INSET)).shrink(0),
         scan_line,

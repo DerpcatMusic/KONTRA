@@ -1007,6 +1007,8 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
         match k.key {
             Key::Delete if loaded && cx.state.renaming.is_none() && cx.state.inline.is_none() && cx.state.typing.is_none() => cx.remove(slot),
             Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
+            // The browser shut: Ctrl+F opens it on its filter.
+            Key::Char('f' | 'F') if ctrl && !cx.state.browser => (cx.state.browser, cx.state.browse.find) = (true, true),
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
             Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && cx.state.inline.is_none() && cx.state.typing.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
             _ => {}
