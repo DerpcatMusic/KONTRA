@@ -120,6 +120,8 @@ pub(super) enum Kind {
     Start {
         note: u8,
         velocity: u8,
+        owner: Option<u8>,
+        counter_stop: Option<u64>,
         offset_us: u64,
         volume: f32,
         tune: f64,
@@ -230,6 +232,8 @@ impl KspEngine for Host<'_> {
         let kind = Kind::Start {
             note: n.note,
             velocity: n.velocity,
+            owner: n.owner,
+            counter_stop: None,
             offset_us: n.sample_offset_us.max(0) as u64,
             volume: 10f32.powf(n.volume_mdb as f32 / 20_000.0),
             tune: f64::from(n.tune_mc) / 100_000.0,
@@ -361,6 +365,8 @@ impl Player {
             &Kind::Start {
                 note,
                 velocity,
+                owner,
+                counter_stop,
                 offset_us,
                 volume,
                 tune,
@@ -373,6 +379,9 @@ impl Player {
                     channel,
                     note,
                     velocity,
+                    owner,
+                    counter_stop,
+                    release_held_ms: None,
                     groups: Some(groups),
                     offset_us,
                     volume,
@@ -420,6 +429,9 @@ impl Player {
             Kind::Controller { .. } => {}
             &Kind::ResetCounter(note) => {
                 self.key_on[channel as usize & 15][note as usize & 127] = self.now;
+                for v in self.voices.iter_mut().filter(|v| v.channel == channel && v.note == note && !v.release_trigger && v.counter_stop.is_none()) {
+                    v.counter_start = self.now;
+                }
             }
         }
     }

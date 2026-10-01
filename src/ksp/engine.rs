@@ -22,6 +22,8 @@ pub struct NoteSpec<'a> {
     /// KSP event ID, for logging and correlation only.
     pub event: i32,
     pub channel: u8,
+    /// Physical MIDI channel owning an input event; generated notes have none.
+    pub owner: Option<u8>,
     pub note: u8,
     pub velocity: u8,
     /// Sample start offset in microseconds.

@@ -119,6 +119,12 @@ pub struct NoteEvent<'a> {
     pub channel: u8,
     pub note: u8,
     pub velocity: u8,
+    /// Physical input ownership; independent/generated events use `None`.
+    pub owner: Option<u8>,
+    /// Physical key-up may precede application of a queued attack.
+    pub counter_stop: Option<u64>,
+    /// A release sample's frozen originating event duration in milliseconds.
+    pub release_held_ms: Option<f32>,
     /// Groups to consider; `None` uses the engine's allow mask.
     pub groups: Option<&'a GroupMask>,
     /// Start offset in microseconds, bounded by each zone's start-mod range.
@@ -139,6 +145,9 @@ impl NoteEvent<'_> {
             channel,
             note,
             velocity,
+            owner: None,
+            counter_stop: None,
+            release_held_ms: None,
             groups: None,
             offset_us: 0,
             volume: 1.0,
@@ -495,7 +504,7 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             return rt.note_on_from(&mut host, 0, owner, note, velocity.min(127));
         }
-        self.start_event(&NoteEvent::new(channel, note, velocity));
+        self.start_event(&NoteEvent { owner: Some(owner), ..NoteEvent::new(channel, note, velocity) });
     }
 
     pub fn note_off(&mut self, channel: u8, note: u8) {
@@ -505,6 +514,13 @@ impl Engine {
     pub(crate) fn note_off_from(&mut self, channel: u8, owner: u8, note: u8) {
         if channel >= 16 || owner >= 16 || note >= 128 {
             return;
+        }
+        for v in self.player.voices.iter_mut().filter(|v| v.channel == channel && v.note == note && v.owner == Some(owner) && v.held && !v.release_trigger) {
+            v.counter_stop.get_or_insert(self.player.now);
+        }
+        for c in self.commands.iter_mut().filter(|c| c.channel == channel) {
+            if let script::Kind::Start { note: key, owner: input, counter_stop, .. } = &mut c.kind
+                && *key == note && *input == Some(owner) { counter_stop.get_or_insert(self.player.now); }
         }
         // Capture at the physical key-up, before a delayed KSP release or
         // member reuse can replace this event's channel/key expression.
@@ -893,6 +909,7 @@ struct PendingRelease {
     groups: GroupMask,
     captured: bool,
     expression: Option<Expression>,
+    held_ms: f32,
 }
 
 /// Engine state apart from the bank, so voices can mutate while the bank is borrowed.
@@ -1186,7 +1203,7 @@ impl Player {
             note: ev.note,
             velocity: ev.velocity,
             counter: if release_trigger {
-                params::release_counter(group.release_counter_ms, self.held_ms(ev.channel, ev.note))
+                params::release_counter(group.release_counter_ms, ev.release_held_ms.unwrap_or_else(|| self.held_ms(ev.channel, ev.note)))
             } else {
                 0.0
             },
@@ -1255,6 +1272,9 @@ impl Player {
             channel: ev.channel,
             note: ev.note,
             velocity: ev.velocity,
+            counter_start: self.now,
+            counter_stop: ev.counter_stop,
+            owner: ev.owner,
             held: !release_trigger,
             sostenuto: false,
             released: false,
@@ -1397,6 +1417,7 @@ impl Player {
         {
             let event = first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger, false));
             event.4 |= v.sostenuto;
+            v.counter_stop.get_or_insert(self.now);
             let c = v.channel as usize & 15;
             if self.sustain[c] || v.sostenuto {
                 v.held = false;
@@ -1405,6 +1426,15 @@ impl Player {
             }
         }
         first
+    }
+
+    // ponytail: release-only or exhausted attack events use the key clock; retain
+    // event timing outside voices if those libraries need independent retrigger clocks.
+    fn event_held_ms(&self, source: EventId, channel: u8, note: u8) -> f32 {
+        self.voices.iter().find(|v| v.event == source).map_or_else(
+            || self.held_ms(channel, note),
+            |v| v.counter_stop.unwrap_or(self.now).saturating_sub(v.counter_start) as f32 * 1000. / self.rate as f32,
+        )
     }
 
     /// The originating voice may have been frozen at an earlier physical
@@ -1427,6 +1457,7 @@ impl Player {
         expression: Option<Expression>,
         defaults: Ahdsr,
     ) {
+        let held_ms = self.event_held_ms(source, channel, note);
         if channel < 16 && note < 128 && (latched || self.sustain[channel as usize]) {
             if self.pending_releases.iter().any(|r| r.source == source) { return; }
             if self.pending_releases.len() == crate::ksp::EVENT_CAPACITY {
@@ -1436,7 +1467,7 @@ impl Player {
                 return;
             }
             self.pending_releases.push(PendingRelease {
-                source, channel, note, velocity, groups: *groups, captured: latched, expression,
+                source, channel, note, velocity, groups: *groups, captured: latched, expression, held_ms,
             });
             return;
         }
@@ -1444,6 +1475,7 @@ impl Player {
         let event = NoteEvent {
             groups: Some(groups),
             frozen_expression: expression,
+            release_held_ms: Some(held_ms),
             ..NoteEvent::new(channel, note, velocity)
         };
         self.start(bank, &event, id, true, defaults);
@@ -1551,7 +1583,7 @@ impl Player {
             let r = self.pending_releases[i];
             if r.channel == channel && !r.captured {
                 let id = self.next_id();
-                let event = NoteEvent { groups: Some(&r.groups), frozen_expression: r.expression, ..NoteEvent::new(r.channel, r.note, r.velocity) };
+                let event = NoteEvent { groups: Some(&r.groups), frozen_expression: r.expression, release_held_ms: Some(r.held_ms), ..NoteEvent::new(r.channel, r.note, r.velocity) };
                 self.start(bank, &event, id, true, defaults);
             } else {
                 self.pending_releases[keep] = r;

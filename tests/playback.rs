@@ -300,22 +300,95 @@ fn release_trigger_counter_scales_release_volume_by_held_time() {
 }
 
 #[test]
+fn release_counter_keeps_each_same_pitch_events_duration() {
+    let setup = |scripted: bool| {
+        let mut release = counted_release();
+        release.mods.push(ModAssignment { name: "RTC_START".into(), source: ModSource::ReleaseTriggerCounter,
+            target: ModTarget::SampleStart, intensity: 1., invert: false, lag_ms: 0, shaper: None });
+        let groups = vec![Group::default(), release];
+        let zones = vec![Zone { sample: PathBuf::from("attack"), loop_range: Some(Loop {
+            start: 0, end: 100, until_release: false, crossfade: 0 }), ..Zone::default() },
+            Zone { group: 1, sample: PathBuf::from("release"), start_mod: Some(1000), ..Zone::default() }];
+        let ramp = Sample { rate: 48000, frames: (0..4000).map(|i| [i as f32 / 4000.; 2]).collect() };
+        let bank = Bank::from_samples(groups, zones, vec![(PathBuf::from("attack"), constant([0.; 2], 100)),
+            (PathBuf::from("release"), ramp)]).unwrap();
+        let mut e = engine_with(bank);
+        if scripted { e.set_script(runtime("on init\nend on")); }
+        e
+    };
+    for scripted in [false, true] {
+        for pedal in [false, true] {
+            let (mut actual, mut old, mut new) = (setup(scripted), setup(scripted), setup(scripted));
+            if pedal { for e in [&mut actual, &mut old, &mut new] { e.cc(0, 64, 127); } }
+            actual.note_on(0, 60, 100);
+            old.note_on(0, 60, 100);
+            for e in [&mut actual, &mut old, &mut new] { render(e, 4800); }
+            actual.note_on(0, 60, 100);
+            new.note_on(0, 60, 100);
+            for e in [&mut actual, &mut old, &mut new] { render(e, 2400); e.note_off(0, 60); }
+            if pedal {
+                for e in [&mut actual, &mut old, &mut new] { render(e, 9600); }
+                // A subsequent silent attack must not retime already released events.
+                actual.note_on(0, 60, 100);
+                for e in [&mut actual, &mut old, &mut new] { e.cc(0, 64, 0); }
+            }
+            let audio = |e: &mut Engine| {
+                let (mut l, mut r) = ([0.; 128], [0.; 128]);
+                e.render(&mut l, &mut r);
+                l
+            };
+            let (a, o, n) = (audio(&mut actual), audio(&mut old), audio(&mut new));
+            for i in 0..128 {
+                assert!((a[i] - o[i] - n[i]).abs() < 1e-5,
+                    "scripted={scripted}, pedal={pedal}, frame {i}: a retrigger changed another event's counter/start/volume");
+            }
+        }
+    }
+    // Generated events count their own lifetime, independent of the physical
+    // parent keys, even when a second same-pitch event starts later.
+    let generated = || {
+        let mut e = setup(false);
+        e.set_script(runtime("on note\nignore_event($EVENT_ID)\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,200000)\nend on"));
+        e
+    };
+    let (mut actual, mut old, mut new) = (generated(), generated(), generated());
+    actual.note_on(0, 60, 100);
+    old.note_on(0, 60, 100);
+    for e in [&mut actual, &mut old, &mut new] { render(e, 4800); }
+    actual.note_off(0, 60);
+    old.note_off(0, 60);
+    actual.note_on(0, 60, 100);
+    new.note_on(0, 60, 100);
+    actual.note_off(0, 60);
+    new.note_off(0, 60);
+    for _ in 0..100 {
+        let (a, o, n) = (render(&mut actual, 128), render(&mut old, 128), render(&mut new, 128));
+        for i in 0..128 {
+            assert!((a[i][0] - o[i][0] - n[i][0]).abs() < 1e-5, "generated event duration changed at frame {i}");
+        }
+    }
+}
+
+#[test]
 fn reset_rls_trig_counter_restarts_the_count() {
-    let mut i = instrument(vec![counted_release()], Vec::new());
-    i.scripts = vec![
-        "on init\nend on\non note\nwait(500000)\nreset_rls_trig_counter($EVENT_NOTE)\nend on"
-            .into(),
-    ];
-    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
-    assert!(errors.is_empty(), "{errors:?}");
-    let mut e = engine_with(layered(i.groups, &[0.4]));
-    assert!(e.set_script(rt).is_none());
-    e.note_on(0, 60, 100);
-    render(&mut e, 28800);
-    e.note_off(0, 60);
-    // Held 600 ms, counted from the reset at 500 ms: 100 ms.
-    let out = last(&mut e, 200)[0];
-    assert!((out - 0.4 * 0.9).abs() < 1e-3, "{out}");
+    for attack in [false, true] {
+        let groups = if attack { vec![Group::default(), counted_release()] } else { vec![counted_release()] };
+        let mut i = instrument(groups, Vec::new());
+        i.scripts = vec![
+            "on init\nend on\non note\nwait(500000)\nreset_rls_trig_counter($EVENT_NOTE)\nend on"
+                .into(),
+        ];
+        let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut e = engine_with(layered(i.groups, if attack { &[0., 0.4] } else { &[0.4] }));
+        assert!(e.set_script(rt).is_none());
+        e.note_on(0, 60, 100);
+        render(&mut e, 28800);
+        e.note_off(0, 60);
+        // Held 600 ms, counted from the reset at 500 ms: 100 ms.
+        let out = last(&mut e, 200)[0];
+        assert!((out - 0.4 * 0.9).abs() < 1e-3, "attack={attack}: {out}");
+    }
 }
 
 /// Pacific's release groups send the counter to sample start (RTC_PITCH): the

@@ -924,6 +924,10 @@ pub(crate) struct Voice {
     pub channel: u8,
     pub note: u8,
     pub velocity: u8,
+    /// Counter timing belongs to this event, independent of same-key retriggers.
+    pub counter_start: u64,
+    pub counter_stop: Option<u64>,
+    pub owner: Option<u8>,
     /// The key or event is still down.
     pub held: bool,
     /// This voice was held at the sostenuto pedal's down edge.

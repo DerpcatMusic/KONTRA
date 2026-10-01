@@ -98,6 +98,7 @@ pub struct Event {
     pub note: i32,
     pub velocity: i32,
     pub channel: u8,
+    pub owner: Option<u8>,
     pub pars: [i32; 16],
     pub volume: i32,
     pub tune: i32,
@@ -138,6 +139,7 @@ impl Event {
         note: 0,
         velocity: 0,
         channel: 0,
+        owner: None,
         pars: [0; 16],
         volume: 0,
         tune: 0,
@@ -173,6 +175,7 @@ impl Event {
         NoteSpec {
             event: id,
             channel: self.channel,
+            owner: self.owner,
             note: self.note.clamp(0, 127) as u8,
             velocity: self.velocity.clamp(1, 127) as u8,
             sample_offset_us: self.sample_offset_us,
@@ -1266,6 +1269,7 @@ impl Runtime {
         e.note = i32::from(note);
         e.velocity = i32::from(velocity);
         e.channel = self.env.input.channel;
+        e.owner = Some(owner.min(15));
         e.held = true;
         let keys = &mut self.env.input.keys[owner.min(15) as usize][note as usize];
         if keys.1 == 0 {
