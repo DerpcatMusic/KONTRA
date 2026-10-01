@@ -1131,13 +1131,21 @@ impl BackgroundTask for Load {
                 } else {
                     import::shared_program(Path::new(&part.path), part.program)?
                 };
-                // Progress by phase: parsed 5%, scripts 10%, the bank the rest.
+                // Progress by phase: parsed 5%, scripts and the bare bank the rest.
                 let progress = &params.shared.load_progress[slot];
                 progress.fetch_max(crate::engine::LOAD_DONE / 20, Ordering::Relaxed);
-                let (script, snapshot, _) =
-                    scripts(&instrument, &part.script_state, params.shared.rate());
+                // The scripts initialize while the bare bank builds: the part
+                // plays from it at once, and the preload follows.
+                let ((script, snapshot, _), bare) = std::thread::scope(|scope| {
+                    let (rate, instrument, state) = (params.shared.rate(), &instrument, &part.script_state);
+                    let scripts = scope.spawn(move || scripts(instrument, state, rate));
+                    let bare = (!instrument.zones.is_empty()).then(|| Bank::load_bare(instrument));
+                    let scripts = scripts.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+                    (scripts, bare)
+                });
                 progress.fetch_max(crate::engine::LOAD_DONE / 10, Ordering::Relaxed);
-                {
+                // The interface shows now; its artwork decodes once the part plays.
+                let art = {
                     let needs_art = {
                         let view = params.shared.view.lock().unwrap();
                         let v = &view.parts[slot];
@@ -1147,48 +1155,24 @@ impl BackgroundTask for Load {
                                 .is_none_or(|i| i.path != instrument.path)
                     };
                     let parsed = needs_art.then(|| script_interface(script.as_deref()));
-                    let art = parsed.as_ref().map(|parsed| {
-                        let interface = parsed.interface.as_deref();
-                        let wallpaper = artwork::performance(
-                            &instrument,
-                            interface.map(|u| u.wallpaper.as_str()),
-                        );
-                        let names =
-                            interface
-                                .into_iter()
-                                .flat_map(|u| &u.controls)
-                                .filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
-                                    Some(crate::ksp::Value::Text(name)) => Some(name.as_str()),
-                                    _ => None,
-                                });
-                        (wallpaper, artwork::pictures(&instrument.path, names))
-                    });
                     let mut view = params.shared.view.lock().unwrap();
                     let v = &mut view.parts[slot];
                     v.instrument = Some(instrument.clone());
                     v.program = part.program;
-                    if let Some(parsed) = parsed {
-                        v.interface = parsed.interface;
+                    parsed.map(|parsed| {
+                        v.interface = parsed.interface.clone();
                         v.script_slot = parsed.slot;
                         v.interface_status = parsed.status;
                         v.keys = parsed.keys;
-                    }
-                    if let Some((art, pictures)) = art {
-                        v.pictures = Arc::new(pictures);
-                        match art {
-                            Ok(image) => {
-                                v.wallpaper = image;
-                                v.wallpaper_status.clear();
-                            }
-                            Err(e) => {
-                                v.wallpaper = None;
-                                v.wallpaper_status = e;
-                            }
-                        }
-                    }
-                }
+                        // No other instrument's artwork under this interface meanwhile.
+                        v.pictures = Arc::default();
+                        v.wallpaper = None;
+                        v.wallpaper_status.clear();
+                        parsed.interface
+                    })
+                };
                 if instrument.zones.is_empty() {
-                    return Ok((instrument, None, script, snapshot, None));
+                    return Ok((instrument, None, script, snapshot, None, art));
                 }
                 // Every group plays; the stored group only selects what the mapping inspector shows.
                 if part.group == u32::MAX {
@@ -1210,16 +1194,9 @@ impl BackgroundTask for Load {
                 let budget = crate::engine::MEMORY_LIMIT
                     .min(crate::engine::memory_budget().saturating_sub(resident));
                 let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers);
-                // RAM only plays from a streaming bank while the RAM fills.
-                let bank = Box::new(Bank::load_counting(
-                    &instrument,
-                    budget,
-                    Streaming::Auto,
-                    controllers,
-                    &params.shared.load_progress[slot],
-                )?);
-                let fill = (streaming == Streaming::RamOnly).then(|| (budget, controllers.to_vec()));
-                Ok((instrument, Some(bank), script, snapshot, fill))
+                let bank = bare.transpose()?.map(Box::new);
+                let preload = Some((budget, controllers.to_vec()));
+                Ok((instrument, bank, script, snapshot, preload, art))
             })();
             let stale = params.selection.read().unwrap().parts.get(slot).map(|p| (&p.path, p.program))
                 != Some((&target.0, target.1));
@@ -1230,7 +1207,7 @@ impl BackgroundTask for Load {
             let mut view = params.shared.view.lock().unwrap();
             view.parts[slot].loading = false;
             match result {
-                Ok((instrument, bank, script, snapshot, fill)) => {
+                Ok((instrument, bank, script, snapshot, preload, art)) => {
                     let epoch = if script.is_some() {
                         next_epoch(&mut view, slot, snapshot, script.as_deref())
                     } else {
@@ -1262,13 +1239,68 @@ impl BackgroundTask for Load {
                             epoch,
                         },
                     ));
+                    if preload.is_some() {
+                        v.status += " · preloading…";
+                    }
+                    drop(view);
+                    if let Some(interface) = art {
+                        let interface = interface.as_deref();
+                        let wallpaper = artwork::performance(&instrument, interface.map(|u| u.wallpaper.as_str()));
+                        let names = (interface.into_iter().flat_map(|u| &u.controls))
+                            .filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+                                Some(crate::ksp::Value::Text(name)) => Some(name.as_str()),
+                                _ => None,
+                            });
+                        let pictures = artwork::pictures(&instrument.path, names);
+                        let mut view = params.shared.view.lock().unwrap();
+                        let v = &mut view.parts[slot];
+                        if params.shared.generation[slot].load(Ordering::Acquire) == generation {
+                            v.pictures = Arc::new(pictures);
+                            (v.wallpaper, v.wallpaper_status) = match wallpaper {
+                                Ok(image) => (image, String::new()),
+                                Err(e) => (None, e),
+                            };
+                        }
+                    }
+                    // The preload: the full bank takes over from the bare one,
+                    // playing voices carrying on (`Engine::upgrade_bank`).
+                    // ponytail: a newer selection waits for this preload; cancel
+                    // it mid-read if quick browsing needs that.
+                    let Some((budget, controllers)) = preload else { continue };
+                    let bank = Bank::load_counting(
+                        &instrument,
+                        budget,
+                        Streaming::Auto,
+                        &controllers,
+                        &AtomicU32::new(0),
+                    );
+                    if params.shared.generation[slot].load(Ordering::Acquire) != generation {
+                        continue;
+                    }
+                    let mut view = params.shared.view.lock().unwrap();
+                    let v = &mut view.parts[slot];
+                    match bank {
+                        Ok(mut bank) => {
+                            let residency = bank.take_residency();
+                            (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
+                            let bank = Handoff::Bank(Box::new(bank));
+                            let _ = params.shared.ready.force_push((slot, generation, bank));
+                            // After the bank in the queue: its heads resize the full bank.
+                            params.shared.residency.lock().unwrap()[slot] =
+                                residency.map(|r| (generation, r));
+                        }
+                        Err(e) => {
+                            v.status = v.status.replace(" · preloading…", "");
+                            v.status += &format!(" · preload failed, everything streams: {e:#}");
+                        }
+                    }
                     // RAM only: the part plays, streaming, while every sample
                     // loads whole; the resident bank then takes over and
                     // playing voices carry on from it.
                     // ponytail: the streaming bank stays resident until the fill
                     // lands (its preload twice over at peak); fill per sample
                     // into the playing bank if that peak matters.
-                    if let Some((budget, controllers)) = fill {
+                    if streaming == Streaming::RamOnly {
                         v.status += " · loading into RAM…";
                         drop(view);
                         let bank = Bank::load_counting(
