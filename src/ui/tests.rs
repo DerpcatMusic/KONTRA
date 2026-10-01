@@ -1957,5 +1957,26 @@ fn perf_view_stats() {
             m
         });
         println!("  frames per picture: {frames:?}");
+        // Where the unread pictures are, if anywhere: member paths' shapes only.
+        let nkrs: Vec<PathBuf> = i.path.ancestors().skip(1).take(4).flat_map(|d| {
+            let mut v: Vec<PathBuf> = std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect();
+            let subs: Vec<PathBuf> = v.iter().filter(|p| p.is_dir()).flat_map(|s| std::fs::read_dir(s).into_iter().flatten().flatten().map(|e| e.path())).collect();
+            v.extend(subs);
+            v.into_iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkr")))
+        }).collect();
+        for name in named.iter().filter(|n| !pics.contains_key(**n)) {
+            let want = format!("{}.png", name.to_lowercase());
+            let mut seen = Vec::new();
+            for nkr in &nkrs {
+                let Ok(mut f) = std::fs::File::open(nkr) else { continue };
+                let Ok(a) = ni_file::nkr::Archive::read(&mut f) else { continue };
+                for (k, e) in &a.entries {
+                    if k.to_lowercase().rsplit('/').next() == Some(want.as_str()) {
+                        seen.push(format!("depth {} encoded {}", k.matches('/').count(), e.encoded));
+                    }
+                }
+            }
+            println!("  unread picture (len {}): {seen:?}", name.len());
+        }
     }
 }

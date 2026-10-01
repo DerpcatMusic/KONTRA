@@ -10,7 +10,7 @@ use super::{Cx, theme::*};
 use crate::artwork::Picture;
 use crate::ksp::{Control, Interface, Value};
 use moose::mui::mui::prelude::*;
-use moose::mui::mui::scene::Fit;
+use moose::mui::mui::scene::{Fit, Image};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
@@ -137,13 +137,16 @@ pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -
         .map(|(n, c)| {
             let picture = pictures.get(prop(c, "$CONTROL_PAR_PICTURE")).filter(|p| !p.frames.is_empty()).cloned();
             let size = |k: &str, or: i32| f64::from(int(c, k).unwrap_or(or));
+            let kind = Kind::of(&c.kind);
             let (w, h) = match &picture {
                 Some(p) if !p.resizable => (f64::from(p.frames[0].width), f64::from(p.frames[0].height)),
+                // Kontakt's own knob has room for its name and value.
+                None if kind == Kind::Knob => (size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 52).max(52.)),
                 _ => (size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 18)),
             };
             Shown {
                 control: n,
-                kind: Kind::of(&c.kind),
+                kind,
                 x: size("$CONTROL_PAR_POS_X", 0),
                 y: size("$CONTROL_PAR_POS_Y", 0),
                 w,
@@ -250,13 +253,27 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let (w, h) = (f64::from(interface.width), f64::from(interface.height));
     let s = scale(room(ui, slot), w, cx.settings.view_scale);
     let mut layers = Vec::new();
-    if let Some(image) = wallpaper {
+    if let Some(image) = wallpaper.clone() {
         let (iw, ih) = (f64::from(image.width), f64::from(image.height));
         layers.push(block(iw * s, ih * s).fill(Fill::Image(image, Fit::Fill)).at(0., -HEADER * s));
     }
-    for shown in layout(&interface, &pictures) {
+    let drawn: Vec<(Shown, Option<Arc<Image>>)> = layout(&interface, &pictures)
+        .into_iter()
+        .map(|shown| {
+            let image = picture_frame(&shown, &interface.controls[shown.control], value(&interface.controls[shown.control]));
+            (shown, image)
+        })
+        .collect();
+    for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
-        layers.push(control(ui, cx, slot, &shown, c, s).at(shown.x * s, shown.y * s));
+        // What its text sits on: its own picture, else what is under it.
+        let (cx_, cy) = (shown.x + shown.w / 2., shown.y + shown.h / 2.);
+        let under = [(-0.25, 0.), (0., 0.), (0.25, 0.)]
+            .iter()
+            .filter_map(|(dx, _)| luma_under(&drawn[..=n], wallpaper.as_deref(), cx_ + dx * shown.w, cy))
+            .fold(None, |m: Option<(f32, u32)>, l| Some(m.map_or((l, 1), |(t, k)| (t + l, k + 1))))
+            .map(|(t, k)| t / k as f32);
+        layers.push(control(ui, cx, slot, shown, c, s, under).at(shown.x * s, shown.y * s));
     }
     let area = stack(layers)
         .w(w * s)
@@ -291,13 +308,9 @@ fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, Option<f64>)
     (super::panel::clean(&words), align, top)
 }
 
-fn ink() -> Color {
-    Color::srgb(0.86, 0.86, 0.86)
-}
-
 /// Text on a control `w` by `h` (scaled), aligned as the script asked.
-fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64) -> El {
-    let t = text(words).text_size(FONT * s).fill(ink()).lines(1).min_w(0);
+fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, ink: Color) -> El {
+    let t = text(words).text_size(FONT * s).fill(ink).lines(1).min_w(0);
     let justify = match align {
         1 => Justify::Center,
         2 => Justify::End,
@@ -310,17 +323,72 @@ fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64) ->
     }
 }
 
+/// A control's range as declared: a switch's is 0 to 1.
+fn range(kind: Kind, c: &Control) -> (f64, f64) {
+    let toggle = matches!(kind, Kind::Switch | Kind::Button);
+    (
+        f64::from(int(c, "$CONTROL_PAR_MIN_VALUE").filter(|_| !toggle).unwrap_or(0)),
+        f64::from(int(c, "$CONTROL_PAR_MAX_VALUE").filter(|_| !toggle).unwrap_or(if toggle { 1 } else { 127 })),
+    )
+}
+
+/// The frame of its picture a control shows at `now`: by value for knobs
+/// and sliders, by state for switches, as the script set it for the rest.
+fn picture_frame(shown: &Shown, c: &Control, now: f64) -> Option<Arc<Image>> {
+    let p = shown.picture.as_ref()?;
+    let n = p.frames.len();
+    let (min, max) = range(shown.kind, c);
+    let f = match shown.kind {
+        Kind::Knob | Kind::Slider => frame(now, min, max, n),
+        Kind::Switch | Kind::Button => switch_frame(now >= 1., n),
+        _ => usize::try_from(int(c, "$CONTROL_PAR_PICTURE_STATE").unwrap_or(0)).unwrap_or(0).min(n - 1),
+    };
+    p.frames.get(f).cloned()
+}
+
+/// Light text, or dark over something light: Kontakt's own fonts carry
+/// their colors, which are not known here.
+fn ink(under: Option<f32>) -> Color {
+    match under {
+        Some(l) if l > 0.6 => Color::srgb(0.1, 0.1, 0.1),
+        _ => Color::srgb(0.88, 0.88, 0.88),
+    }
+}
+
+/// How light (0 to 1) what lies under authored point `(x, y)` is: the
+/// topmost opaque picture of `below` there, else the wallpaper.
+fn luma_under(below: &[(Shown, Option<Arc<Image>>)], wallpaper: Option<&Image>, x: f64, y: f64) -> Option<f32> {
+    let at = |image: &Image, u: f64, v: f64| {
+        let (px, py) = (u.floor(), v.floor());
+        if px < 0. || py < 0. || px >= f64::from(image.width) || py >= f64::from(image.height) {
+            return None;
+        }
+        let i = (py as usize * image.width as usize + px as usize) * 4;
+        let c = image.rgba.get(i..i + 4)?;
+        (c[3] >= 128).then(|| (0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2])) / 255.)
+    };
+    for (s, image) in below.iter().rev() {
+        let Some(image) = image else { continue };
+        if x >= s.x && x < s.x + s.w && y >= s.y && y < s.y + s.h {
+            let u = (x - s.x) / s.w * f64::from(image.width);
+            let v = (y - s.y) / s.h * f64::from(image.height);
+            if let Some(l) = at(image, u, v) {
+                return Some(l);
+            }
+        }
+    }
+    at(wallpaper?, x, y + HEADER)
+}
+
 /// One control: its picture's frame or a plain stand-in, its text, and its
-/// pointer handling.
-fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s: f64) -> El {
+/// pointer handling. `under` is how light what its text sits on is.
+#[allow(clippy::too_many_arguments)]
+fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s: f64, under: Option<f32>) -> El {
     let id = format!("kpv-{slot}-{}", shown.control);
     let (w, h) = (shown.w * s, shown.h * s);
     let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
     let raw = value(c);
-    let (min, max) = (
-        f64::from(int(c, "$CONTROL_PAR_MIN_VALUE").unwrap_or(0)),
-        f64::from(int(c, "$CONTROL_PAR_MAX_VALUE").unwrap_or(if matches!(shown.kind, Kind::Switch | Kind::Button) { 1 } else { 127 })),
-    );
+    let (min, max) = range(shown.kind, c);
     let (lo, hi) = (min.min(max), min.max(max).max(min.min(max) + 1.));
     let reset = f64::from(int(c, "$CONTROL_PAR_DEFAULT_VALUE").unwrap_or(0)).clamp(lo, hi);
     let mut now = raw;
@@ -367,34 +435,28 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         }
         _ => interactive = false,
     }
-    let mut layers = Vec::new();
-    match &shown.picture {
-        Some(p) => {
-            let n = p.frames.len();
-            let f = match shown.kind {
-                Kind::Knob | Kind::Slider => frame(now, min, max, n),
-                Kind::Switch | Kind::Button => switch_frame(now >= 1., n),
-                _ => usize::try_from(int(c, "$CONTROL_PAR_PICTURE_STATE").unwrap_or(0)).unwrap_or(0).min(n - 1),
-            };
-            layers.push(block(w, h).fill(Fill::Image(p.frames[f].clone(), Fit::Fill)));
-        }
-        None => layers.push(plain(shown.kind, c, now, lo, hi, hide, s).w(w).h(h)),
-    }
+    let mut layers = vec![match picture_frame(shown, c, now) {
+        Some(image) => block(w, h).fill(Fill::Image(image, Fit::Fill)),
+        None => plain(shown.kind, c, now, lo, hi, hide, s).w(w).h(h),
+    }];
+    // Text on a plain control sits on its dark field.
+    let field = shown.picture.is_none() && !matches!(shown.kind, Kind::Label | Kind::Knob | Kind::Area);
+    let own_ink = ink(if field { None } else { under });
     let (said, align, top) = caption_of(c, shown.kind, now);
     if !said.is_empty() {
-        layers.push(words(said, align, top, w, h, s));
+        layers.push(words(said, align, top, w, h, s, own_ink));
     }
     if shown.kind == Kind::Knob && shown.picture.is_none() {
         // Kontakt's own knob: its name over it, its value under it.
         let name = prop(c, "$CONTROL_PAR_TEXT");
         let name = if name.is_empty() { c.variable.trim_start_matches(['$', '~']) } else { name };
         if hide & HIDE_TITLE == 0 {
-            layers.push(words(super::panel::clean(name), 1, Some(0.), w, h, s));
+            layers.push(words(super::panel::clean(name), 1, Some(0.), w, h, s, ink(under)));
         }
         if hide & HIDE_VALUE == 0 {
             let label = prop(c, "$CONTROL_PAR_LABEL");
             let shown_value = if label.is_empty() { format!("{}", now.round()) } else { super::panel::clean(label) };
-            layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s));
+            layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s, ink(under)));
         }
     }
     let el = stack(layers).w(w).h(h).clip();
@@ -483,7 +545,6 @@ fn plain(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, hide: i32, s: f6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moose::mui::mui::scene::Image;
     use std::collections::BTreeMap;
 
     fn control(kind: &str, props: &[(&str, Value)]) -> Control {
@@ -568,5 +629,19 @@ mod tests {
         assert_eq!(caption_of(&label, Kind::Label, 0.), ("Reverb".into(), 0, Some(3.)));
         let edit = control("ui_value_edit", &[("TEXT", Value::Text("Voices".into())), ("TEXT_ALIGNMENT", Value::Int(2))]);
         assert_eq!(caption_of(&edit, Kind::Value, 4.), ("Voices 4".into(), 2, None));
+    }
+
+    #[test]
+    fn text_ink_reads_what_lies_under_it() {
+        let white = Arc::new(Image::rgba(2, 2, vec![255u8; 16]).unwrap());
+        let clear = Arc::new(Image::rgba(2, 2, vec![0u8; 16]).unwrap());
+        let at = |x, y, w, h| Shown { control: 0, kind: Kind::Label, x, y, w, h, z: 0, picture: None };
+        let wallpaper = Image::rgba(1, 100, [0u8, 0, 0, 255].repeat(100)).unwrap();
+        let below = vec![(at(0., 0., 10., 10.), Some(white.clone())), (at(0., 0., 5., 5.), Some(clear))];
+        assert_eq!(luma_under(&below, Some(&wallpaper), 2., 2.), Some(1.), "a clear picture shows the one under it");
+        assert_eq!(luma_under(&below, Some(&wallpaper), 0., 20.), Some(0.), "else the wallpaper, below its header rows");
+        assert_eq!(luma_under(&below, None, 50., 50.), None);
+        assert_eq!(ink(Some(1.)), Color::srgb(0.1, 0.1, 0.1));
+        assert_eq!(ink(None), ink(Some(0.)));
     }
 }
