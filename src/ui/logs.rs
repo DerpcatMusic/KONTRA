@@ -396,7 +396,8 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         content.push(col![
             body("Support report preview").text_size(TEXT),
             caption(crate::build_info::LABEL).fill(secondary()).tip(crate::build_info::SUMMARY).lines(2),
-            caption("Build and audio settings, load summaries, recent events and rotated logs. No samples, scripts or access keys.").fill(secondary()).lines(3),
+            caption("Build and audio settings, load summaries, current logs and retained inactive sessions. No sample, script or access-key contents.").fill(secondary()).lines(3),
+            caption("Recent view: up to 2048 events / 2 MiB. Inactive history: 7 days / 64 MiB; active log rotation: up to 16 MiB.").fill(secondary()).lines(3),
             field(ui, "logs-export-path", &mut state.destination, "New report folder"),
             row![redact_el, caption(if state.redact { "Local paths are redacted" } else { "Local paths will be included" }).lines(2)].gap(SPACE).align(Align::Center),
         ].gap(TIGHT).align(Align::Stretch).pad(INSET).shrink(0).id("logs-preview"));
@@ -459,9 +460,27 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         );
     }
     if let Some(export) = state.export.and_then(diagnostics::export_status) {
+        let mut partial = false;
+        let mut warnings = String::new();
         let text = match export {
             ExportStatus::Running => "Exporting the report in the background…".to_owned(),
-            ExportStatus::Complete { path } => format!("Report saved to {}", path.display()),
+            ExportStatus::Complete {
+                path,
+                partial: incomplete,
+                warnings: gaps,
+            } => {
+                partial = incomplete;
+                warnings = gaps.join("\n");
+                if incomplete {
+                    format!(
+                        "Report saved to {} · Partial journal history · {} coverage warnings; details in report.json and README.txt.",
+                        path.display(),
+                        gaps.len()
+                    )
+                } else {
+                    format!("Report saved to {}", path.display())
+                }
+            }
             ExportStatus::Failed { error } => {
                 format!("Export failed: {error}. Choose a new writable folder and retry.")
             }
@@ -469,7 +488,9 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         content.push(
             body(text)
                 .text_size(TEXT)
-                .lines(3)
+                .when(partial, |e| e.fill(Role::Warning))
+                .tip(warnings)
+                .lines(4)
                 .pad((INSET, TIGHT))
                 .shrink(0)
                 .id("logs-export-status"),
