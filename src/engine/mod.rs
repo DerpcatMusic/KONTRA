@@ -873,6 +873,12 @@ impl Engine {
         &self.player.allowed
     }
 
+    /// Bounded pending work for worker-side support reports: commands, writes, releases.
+    #[cfg(feature = "plugin")]
+    pub(crate) fn pending_work(&self) -> [usize; 3] {
+        [self.commands.len(), self.writes.len(), self.player.pending_releases.len()]
+    }
+
     /// Last value of every controller per channel (KSP `%CC`).
     pub fn cc_state(&self) -> &[[u8; 128]; 16] {
         &self.player.cc
