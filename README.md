@@ -2,7 +2,7 @@
 
 KONTRA is a Rust sampler for instruments that use the Kontakt file format. It runs as a CLAP or VST3 plug-in and as a standalone application, using the MOOSE plug-in framework.
 
-KONTRA is an independent project. It is not affiliated with or endorsed by the owner of Kontakt, and it is not a replacement for Kontakt. Loading a preset does not mean that its controls, scripts, routing, or sound match Kontakt.
+KONTRA is being built as an independent alternative to Kontakt. It is not affiliated with or endorsed by the owner of Kontakt. Compatibility remains incomplete: loading a preset does not establish that its controls, scripts, routing, or sound match Kontakt.
 
 KONTRA ships no instrument libraries or sample collections. Use libraries you are licensed to use, under their license terms.
 
@@ -16,11 +16,22 @@ KONTRA ships no instrument libraries or sample collections. Use libraries you ar
 | Sample access | **Partial** | Reads WAV, AIFF, and NCW samples from loose files and NKX/NKR containers. The `library-access` feature uses access data supplied by compatible libraries. | Missing, damaged, unsupported, or inaccessible samples can prevent or degrade playback. The feature is enabled in Cargo's default feature set, but this does not cover every protected library. |
 | Audio and streaming | **Partial** | Sample playback, disk streaming, MIDI routing, and multiple outputs are implemented. Targeted playback tests and representative local patch checks exercise these paths. | No comprehensive Kontakt reference renders or real-DAW certification; timing and sound can differ. |
 | KSP scripts | **Partial** | Selected initialization, note, release, controller, and UI callbacks and commands run in the built-in script engine. Unsupported calls are diagnosed. | Many KSP services and newer APIs are absent, including note-controller and MIDI-input callbacks, sample/zone editing, and complete asynchronous file and effect loading. |
-| Instrument interface | **Partial** | The editor includes a library browser, mapping, groups, mixer, spectrum, keyboard, and supported imported controls. Parts can use Original, Vectorized, or KONTRA views. | Table, XY, waveform, file-selector and meter widgets, Komplete UI, and some original font and layer behavior are unsupported. |
+| Instrument interface | **Partial** | The editor includes a library browser, mapping, groups, mixer, spectrum, keyboard, imported controls, and zone waveforms. Original uses library artwork; Vectorized retains its background/layout with KONTRA knob and fader faces; KONTRA reorganizes controls. | Table, XY, file-selector and connected meter widgets, Komplete UI, and some original font and layer behavior remain incomplete or unsupported. |
 | Effects and modulation | **Partial** | Selected group filters, EQ, effects, and modulation paths are imported and processed. | Some effect and modulation types are skipped or pass through. Parameter laws and sound have not been validated against Kontakt. |
 | Articulations | **Partial** | Articulation mappings and channel-aware MIDI and script event routing are implemented. | Library-specific transitions, scripts, and every articulation have not been exhaustively checked. |
 | Kontakt parity | **Untested** | No compatibility guarantee is made. | A successful load or short render is not a reference comparison. |
 | Other sampler formats | **Unsupported** | None. | KONTRA does not load separate proprietary formats such as UVI, Toontrack, IK, or Ample Sound libraries. |
+
+### Representative patch checks
+
+These are local checks of specific patches, not guarantees for an entire library or exact Kontakt sound parity.
+
+| Patch | Verified | Remaining limits |
+|---|---|---|
+| Vista Harp | All 2,000 zones load; two-part loading and finite playback pass; three interface modes render. | Import/modulation warnings remain; no reference sound comparison. |
+| Areia Full Ensemble — Core Techniques | Sustained and repeated same-pitch short notes in Channel mode retain their release ownership and stop after all inputs release. | Library-specific script warnings remain; broader articulation and host testing is ongoing. |
+| Una Corda Cotton / Felt / Pure | All three scripts initialize without diagnostics after menu-value normalization. Cotton's Space callback controls its convolution send; its Vectorized interface passes the UI audit. | Every control and preset variation has not been exercised. |
+| Analog Strings | All 95,624 zones load; interface and finite playback checks pass without streaming underruns in the measured workload. | Unsupported modulation, effect/parameter behavior, live meters, and other warnings remain. |
 
 ### Plug-in build targets
 

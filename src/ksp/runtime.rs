@@ -126,6 +126,8 @@ pub struct Event {
     pub voice: Option<EventId>,
     /// MIDI key still down.
     pub held: bool,
+    /// Next MIDI event on the same input channel/key, oldest first.
+    next_input: i32,
     pub fade_in_us: i32,
 }
 
@@ -158,6 +160,7 @@ impl Event {
         at_engine: false,
         voice: None,
         held: false,
+        next_input: 0,
         fade_in_us: 0,
     };
 
@@ -207,7 +210,7 @@ impl Events {
                 let i = self
                     .slots
                     .iter()
-                    .position(|e| e.live && e.at_engine && e.length == NoteLength::Sample)?;
+                    .position(|e| e.live && e.at_engine && e.length == NoteLength::Sample && !(e.source < 0 && e.held))?;
                 i as u32
             }
         };
@@ -238,6 +241,11 @@ impl Events {
 
     fn free(&mut self, id: i32) {
         if let Some(e) = self.get_mut(id).filter(|e| e.live) {
+            // A script can stop a MIDI voice before the physical key lets go.
+            // Keep its event/link addressable until that key's release arrives.
+            if e.source < 0 && e.held {
+                return;
+            }
             e.live = false;
             self.free.push_back(Event::index(id) as u32);
         }
@@ -329,8 +337,8 @@ pub struct Input {
     pub channel: u8,
     pub cc: [i32; CC_SLOTS],
     pub pitch_bend: i32,
-    /// MIDI events per key, newest last; zero marks an empty entry.
-    keys: [[[i32; 4]; 128]; 16],
+    /// First/last MIDI event per input key; links live in the prepared event pool.
+    keys: [[(i32, i32); 128]; 16],
 }
 
 /// Shared runtime state visible to builtins.
@@ -384,7 +392,7 @@ impl Env {
                 channel: 0,
                 cc: [0; CC_SLOTS],
                 pitch_bend: 0,
-                keys: [[[0; 4]; 128]; 16],
+                keys: [[(0, 0); 128]; 16],
             },
             work: VecDeque::with_capacity(WORK_CAPACITY),
             timers: BinaryHeap::with_capacity(TIMER_CAPACITY),
@@ -993,6 +1001,9 @@ impl Runtime {
             let var = &prog.vars[v as usize];
             if let Some(value) = saved.get(&*var.name) {
                 write_value(&mut state.mem, var, value);
+                if let Some(c) = state.ui.control_of(v) {
+                    state.ui.controls[c].snap_menu(prog, &mut state.mem);
+                }
             }
         }
     }
@@ -1252,12 +1263,12 @@ impl Runtime {
         e.channel = self.env.input.channel;
         e.held = true;
         let keys = &mut self.env.input.keys[self.env.input.channel as usize][note as usize];
-        if let Some(free) = keys.iter_mut().find(|k| **k == 0) {
-            *free = id;
+        if keys.1 == 0 {
+            keys.0 = id;
         } else {
-            keys.rotate_left(1);
-            keys[3] = id;
+            self.env.events.get_mut(keys.1).expect("held MIDI event").next_input = id;
         }
+        keys.1 = id;
         self.key_down_oct(note);
         self.env.queue(Work::Note { event: id, slot: 0 });
         self.settle(engine);
@@ -1266,15 +1277,16 @@ impl Runtime {
     pub fn note_off(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8) {
         self.advance(engine, at);
         let note = note.min(127);
-        let keys = std::mem::take(&mut self.env.input.keys[self.env.input.channel as usize][note as usize]);
-        let held = self.env.input.keys.iter().any(|channel| channel[note as usize].iter().any(|&id| id != 0));
+        let (mut id, _) = std::mem::take(&mut self.env.input.keys[self.env.input.channel as usize][note as usize]);
+        let held = self.env.input.keys.iter().any(|channel| channel[note as usize].0 != 0);
         self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
         self.key_down_oct(note);
-        for id in keys.into_iter().filter(|&id| id != 0) {
-            if let Some(e) = self.env.events.get_mut(id) {
-                e.held = false;
-                self.env.queue(Work::Release { event: id, slot: 0 });
-            }
+        while id != 0 {
+            let Some(e) = self.env.events.get_mut(id) else { break };
+            e.held = false;
+            let next = std::mem::take(&mut e.next_input);
+            self.env.queue(Work::Release { event: id, slot: 0 });
+            id = next;
         }
         self.settle(engine);
     }
@@ -1754,7 +1766,7 @@ impl Runtime {
 
     fn key_down_oct(&mut self, note: u8) {
         let pc = usize::from(note % 12);
-        let held = (pc..128).step_by(12).filter(|&k| self.env.input.keys.iter().any(|channel| channel[k].iter().any(|&id| id != 0))).count();
+        let held = (pc..128).step_by(12).filter(|&k| self.env.input.keys.iter().any(|channel| channel[k].0 != 0)).count();
         self.set_sys(SysArray::KeyDownOct, pc, held as i32);
     }
 

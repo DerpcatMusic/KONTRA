@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "KONTRA: a Kontakt-compatible sampler (CLAP, VST3, standalone)"
-repository = "https://github.com/Matari-Audio/kontra"
+repository = "https://github.com/DerpcatMusic/KONTRA"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

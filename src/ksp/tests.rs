@@ -1428,3 +1428,36 @@ fn a_waveform_keeps_its_zone_flags_and_cursor() {
     assert_eq!(super::builtins::symbol("$UI_WF_PROP_FLAGS"), Some(super::builtins::UI_WF_PROP_FLAGS));
     assert_eq!(super::builtins::symbol("attached zone"), Some(super::builtins::ATTACHED_ZONE));
 }
+
+#[test]
+fn menus_snap_invalid_control_and_persistent_values_before_indexing() {
+    // Una Corda's room menu has values 60..89, sets VALUE to 0 in its
+    // control setup, and saves a stale value 2. Its captions index by item.
+    let source = r#"on init
+make_perfview
+declare !names[3] := ("First", "Second", "Last")
+declare ui_menu $room
+add_menu_item($room, "Room A", 60)
+add_menu_item($room, "Room B", 61)
+add_menu_item($room, "Room Z", 89)
+make_persistent($room)
+set_control_par(get_ui_id($room), $CONTROL_PAR_VALUE, 0)
+declare ui_label $init(1,1)
+declare ui_label $restored(1,1)
+set_text($init, !names[get_control_par(get_ui_id($room), $CONTROL_PAR_SELECTED_ITEM_IDX)])
+end on
+on persistence_changed
+set_text($restored, !names[get_control_par(get_ui_id($room), $CONTROL_PAR_SELECTED_ITEM_IDX)])
+end on"#;
+    for (saved, value, label) in [(2, 60, "First"), (61, 61, "Second"), (89, 89, "Last")] {
+        let mut engine = LogEngine::new(Vec::new(), 48000.);
+        let persisted = [("$room".into(), Value::Int(saved))].into();
+        let (rt, errors) = Runtime::with_scripts(&[source], &mut engine, 8, vec![persisted]);
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics());
+        let ui = rt.interface(0);
+        assert_eq!(prop(&ui, 0, "$CONTROL_PAR_VALUE"), value.to_string());
+        assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "First");
+        assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), label);
+    }
+}

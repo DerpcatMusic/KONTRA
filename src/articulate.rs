@@ -1011,6 +1011,21 @@ mod tests {
     }
 
     #[test]
+    fn shared_pitch_retriggers_release_the_sustained_note() {
+        let (mut e, mut r) = three_articulation_part();
+        feed(&mut r, &mut e, In::NoteOn(2, 60, 100), 0);
+        for channel in [0, 1].into_iter().cycle().take(12) {
+            feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0);
+            render(&mut e);
+            feed(&mut r, &mut e, In::NoteOff(channel, 60), 0);
+        }
+        assert!(!voices(&e, 60, false).is_empty(), "the sustained note must keep playing");
+        feed(&mut r, &mut e, In::NoteOff(2, 60), 0);
+        render(&mut e);
+        assert!(voices(&e, 60, false).is_empty(), "every same-pitch parent must receive its release");
+    }
+
+    #[test]
     fn velocity_splits_and_rescales() {
         let mut a = areia();
         a.mode = Mode::Velocity;
@@ -1200,6 +1215,44 @@ mod tests {
 #[cfg(test)]
 mod real {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the owner's local Areia library"]
+    #[cfg(feature = "plugin")]
+    fn areia_same_pitch_channel_retriggers_leave_no_stuck_sustain() {
+        let path = format!("{}/Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/07 Areia - Full Ens - Core Techniques.nki", crate::import::LIBRARY_ROOT);
+        let i = crate::import::read(std::path::Path::new(&path)).unwrap();
+        let mut e = crate::timing::engine_for(&i, 48000.0, crate::engine::MEMORY_LIMIT).unwrap();
+        let found = crate::timing::found(&i, &e);
+        let mut a = Articulate::default();
+        a.sync(&path, &found);
+        a.mode = Mode::Channel;
+        let row = |name: &str| a.articulations.iter().position(|a| a.name.contains(name)).unwrap();
+        let channels = [row("Sustained (NV-V)"), row("Spiccato Fast"), row("Spiccato Slow")].map(|n| a.articulations[n].channel);
+        let mut r = Router::default();
+        r.set_route(Route::new(&path, &a, &Mpe::default()));
+        e.cc(0, 1, 100);
+        for note in [65, 64, 62] {
+            feed(&mut r, &mut e, In::NoteOn(channels[0], note, 100), 0);
+            step(&mut e, 0.1);
+            let sustained = held(&e, note);
+            assert!(!sustained.is_empty(), "note {note} must sound before testing its release");
+            for channel in channels[1..].iter().copied().cycle().take(12) {
+                feed(&mut r, &mut e, In::NoteOn(channel, note, 100), 0);
+                step(&mut e, 0.04);
+                feed(&mut r, &mut e, In::NoteOff(channel, note), 0);
+                step(&mut e, 0.04);
+            }
+            assert!(held(&e, note).iter().any(|g| sustained.contains(g)), "the short notes must leave sustain playing");
+            feed(&mut r, &mut e, In::NoteOff(channels[0], note), 0);
+            step(&mut e, 0.3);
+            let stuck: Vec<_> = e.voice_census().into_iter().filter(|v| v.note == note && !v.released && !v.release_trigger && sustained.contains(&v.group)).collect();
+            assert!(stuck.is_empty(), "note {note}: sustain still held after every input released: {stuck:?}");
+        }
+        let diagnostics = e.script().unwrap().diagnostics();
+        println!("Areia runtime diagnostics: {diagnostics:?}");
+        assert!(!diagnostics.iter().any(|d| d.contains("exhausted") || d.contains("instruction budget")), "{diagnostics:?}");
+    }
 
     fn step(e: &mut Engine, seconds: f64) {
         let (mut l, mut r) = ([0f32; 256], [0f32; 256]);

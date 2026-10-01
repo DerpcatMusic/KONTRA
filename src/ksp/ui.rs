@@ -43,6 +43,15 @@ impl ControlState {
         self.menu.iter().position(|m| m.value == mem.ints[var.slot as usize])
     }
 
+    /// An unset or stale menu value selects its first item.
+    pub fn snap_menu(&self, prog: &Program, mem: &mut Memory) {
+        let Some(first) = self.menu.first().map(|i| i.value) else { return };
+        let var = &prog.vars[self.var as usize];
+        if var.ty == Ty::Int && var.len.is_none() && self.selected_menu(prog, mem).is_none() {
+            mem.ints[var.slot as usize] = first;
+        }
+    }
+
     pub fn visible_menu<'a>(&'a self, prog: &Program, mem: &Memory) -> impl Iterator<Item = &'a MenuItem> {
         let selected = self.selected_menu(prog, mem);
         // Kontakt keeps a hidden selected item until another item is selected.

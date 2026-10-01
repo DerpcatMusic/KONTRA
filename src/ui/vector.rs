@@ -217,17 +217,19 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
             }
             (Kind::Switch | Kind::Button, _) => {
                 let name = if said.trim().is_empty() { names.get(&s.control).cloned().unwrap_or_default() } else { said };
+                let tab = prop(c, "$CONTROL_PAR_HELP").split_once(':').is_some_and(|(title, _)| title.ends_with(" Tab"));
                 // A small switch's name that will not fit whole is its
                 // initials, as a mixer strip's S and M; more than two say
                 // nothing, so its frame stands alone. A step (-12) shrinks.
                 let step = name.trim().starts_with(['+', '-']);
-                let name = if !step && fitted(&name, s.w - 4., FONT).is_none() {
+                let name = if !step && fitted(&name, s.w - if tab { 0. } else { 4. }, FONT).is_none() {
                     let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).collect();
                     if initials.chars().count() <= 2 { initials } else { String::new() }
                 } else {
                     name
                 };
-                push(&mut words, &name, spot(&name, align), 0., s.h, align);
+                let room = if tab { (-2., s.w + 4.) } else { spot(&name, align) };
+                push(&mut words, &name, room, 0., s.h, align);
             }
             (Kind::Menu, _) => push(&mut words, &said, (0., if s.w > 30. { s.w - 14. } else { s.w }), 0., s.h, align),
             (Kind::Value | Kind::TextEdit, _) => push(&mut words, &said, (0., s.w), 0., s.h, align),
@@ -406,7 +408,7 @@ mod tests {
         let drawn = super::super::perf_view::layout(&u, &pictures).into_iter().map(|s| (s, None)).collect::<Vec<_>>();
         let plans = plan(&u, &pictures, &drawn);
         assert!(matches!(plans[0].face, Face::Normal));
-        assert!(plans[0].words.iter().any(|w| w.text == "W"));
+        assert!(plans[0].words.iter().any(|w| w.text == "Workbench"));
         let names = names(&u, &pictures, &drawn);
         assert_eq!(names.get(&0).map(String::as_str), Some("Workbench"));
         assert_eq!(names.get(&1).map(String::as_str), Some("Space"));

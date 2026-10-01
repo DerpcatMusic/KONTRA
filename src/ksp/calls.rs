@@ -1691,16 +1691,7 @@ fn allow(groups: &mut GroupMask, group: i32, allowed: bool) {
 /// menu's 0, a saved value from an older version) becomes the first item's,
 /// as Kontakt selects it. Scripts index arrays by it in `on init`.
 fn snap_menu(m: &mut Machine, c: usize) {
-    let control = &m.slot.ui.controls[c];
-    let Some(first) = control.menu.first().map(|i| i.value) else { return };
-    let var = &m.prog.vars[control.var as usize];
-    if var.ty != Ty::Int || var.len.is_some() {
-        return;
-    }
-    let now = m.slot.mem.ints[var.slot as usize];
-    if !control.menu.iter().any(|i| i.value == now) {
-        m.slot.mem.ints[var.slot as usize] = first;
-    }
+    m.slot.ui.controls[c].snap_menu(m.prog, &mut m.slot.mem);
 }
 
 fn set_value(m: &mut Machine, c: usize, value: i32) {
@@ -1708,6 +1699,7 @@ fn set_value(m: &mut Machine, c: usize, value: i32) {
     if var.ty == Ty::Int && var.len.is_none() {
         m.slot.mem.ints[var.slot as usize] = value;
     }
+    snap_menu(m, c);
 }
 
 fn control_value_slot(m: &Machine, id: i32, index: Option<i32>, ty: Ty) -> Exec<usize> {
