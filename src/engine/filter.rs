@@ -145,9 +145,9 @@ pub(crate) enum Shape {
     Geq,
 }
 
-/// Parameter of a group insert slot.
+/// Parameter of a filter, EQ or Stereo Modeller slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Knob {
+pub enum Knob {
     Cutoff,
     Resonance,
     Freq(u8),
@@ -854,6 +854,23 @@ impl Section {
     }
 }
 
+/// Saved rack knobs use the same units as the group filter.
+pub(crate) fn effect_knob(fx: &crate::fx::Effect, knob: Knob) -> Option<f32> {
+    match (&fx.params, knob) {
+        (Params::StereoModeller(s), Knob::Spread) => Some(s.spread),
+        (Params::StereoModeller(s), Knob::Pan) => Some(s.pan),
+        (Params::Filter(f), Knob::Type) => Some(f.filter_type as f32),
+        (Params::Filter(f), k) if k.fits(filter_type(f.filter_type)?.0, 0) => {
+            [f.cutoff, f.resonance, f.extra[0]].get(k.index()?).copied()
+        }
+        (Params::Eq(eq), k) if k.fits(Shape::Eq, eq.bands.len() as u8) => {
+            let i = k.index()?;
+            Some(normalized(eq.bands.get(i / 3)?)[i % 3])
+        }
+        _ => None,
+    }
+}
+
 /// A Filter/EQ effect in an instrument rack or bus: the group filter's
 /// sections at the stored knobs.
 pub(crate) struct RackFilter {
@@ -885,19 +902,36 @@ impl RackFilter {
         }
     }
 
-    /// Set knob `n` (normalized), as [`GroupFilter::set_knob`] does with
-    /// [`Knob::Field`]; false if the unit has no such knob.
-    pub(crate) fn set(&mut self, kind: Kind, n: u8, value: f32) -> bool {
-        if !Knob::Field(kind, n).fits(self.unit.shape, self.unit.sections) {
+    pub(crate) fn set_knob(&mut self, knob: Knob, value: f32) -> bool {
+        if knob == Knob::Type && !matches!(self.unit.shape, Shape::Eq | Shape::Geq) {
+            if self.unit.kind == value as i32 { return true }
+            let Some((shape, sections)) = filter_type(value as i32) else { return false };
+            (self.unit.shape, self.unit.sections, self.unit.kind) = (shape, sections, value as i32);
+            self.clear();
+        } else if knob.fits(self.unit.shape, self.unit.sections) {
+            self.unit.knobs[knob.index().unwrap()] = value.clamp(0.0, 1.0);
+        } else {
             return false;
         }
-        self.unit.knobs[n as usize] = value.clamp(0.0, 1.0);
         self.tune();
         true
     }
 
+    pub(crate) fn knob(&self, knob: Knob) -> Option<f32> {
+        if knob == Knob::Type && !matches!(self.unit.shape, Shape::Eq | Shape::Geq) {
+            return Some(self.unit.kind as f32);
+        }
+        knob.fits(self.unit.shape, self.unit.sections).then(|| self.unit.knobs[knob.index().unwrap()])
+    }
+
+    /// Set knob `n` (normalized), as [`GroupFilter::set_knob`] does with
+    /// [`Knob::Field`]; false if the unit has no such knob.
+    pub(crate) fn set(&mut self, kind: Kind, n: u8, value: f32) -> bool {
+        self.set_knob(Knob::Field(kind, n), value)
+    }
+
     pub(crate) fn get(&self, kind: Kind, n: u8) -> Option<f32> {
-        Knob::Field(kind, n).fits(self.unit.shape, self.unit.sections).then(|| self.unit.knobs[n as usize])
+        self.knob(Knob::Field(kind, n))
     }
 
     pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
