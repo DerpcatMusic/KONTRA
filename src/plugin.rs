@@ -384,6 +384,23 @@ pub struct Shared {
     /// Bumped with each publication: format wrappers poll it and tell the host.
     port_names_revision: AtomicU64,
 }
+/// How long an editor edit outranks a live view that disagrees with it.
+const EDIT_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Keep recent `edited` values over a live view begun before the scripts
+/// had them; an edit the view agrees with, or an old one, is done.
+fn settle_edits(edited: &mut Vec<(usize, i32, Instant)>, mut interface: Option<&mut crate::ksp::Interface>) {
+    edited.retain(|&(control, value, at)| {
+        let Some(c) = interface.as_deref_mut().and_then(|i| i.controls.get_mut(control)) else { return false };
+        let want = crate::ksp::Value::Int(value);
+        if at.elapsed() > EDIT_SETTLE || c.properties.get("$CONTROL_PAR_VALUE") == Some(&want) {
+            return false;
+        }
+        c.properties.insert("$CONTROL_PAR_VALUE".into(), want);
+        true
+    });
+}
+
 /// Parts' timing measurements, each on a thread of its own.
 #[derive(Default)]
 struct Measure {
@@ -431,6 +448,10 @@ pub(crate) struct PartView {
     pub(crate) keys: Arc<BTreeMap<u8, KeyState>>,
     /// Why the part's timing could not be measured.
     pub(crate) timing_status: String,
+    /// Controls set from the editor, their value and when: a live view the
+    /// scripts began before the edit reached them still shows the old value,
+    /// and would flick the control back for a frame.
+    pub(crate) edited: Vec<(usize, i32, Instant)>,
 }
 #[derive(Clone)]
 pub(crate) struct View {
@@ -787,6 +808,8 @@ impl Shared {
             c.properties
                 .insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::Int(value));
         }
+        v.edited.retain(|e| e.0 != control);
+        v.edited.push((control, value, Instant::now()));
     }
 
     /// Send the audio thread what changed in the parts' edits since last
@@ -1372,8 +1395,10 @@ impl BackgroundTask for Load {
             if epoch == 0 || epoch != v.script_epoch {
                 continue;
             }
-            if v.interface.as_deref() != live.interface.as_ref() {
-                v.interface = live.interface.clone().map(Arc::new);
+            let mut interface = live.interface.clone();
+            settle_edits(&mut v.edited, interface.as_mut());
+            if v.interface.as_deref() != interface.as_ref() {
+                v.interface = interface.map(Arc::new);
             }
             if *v.keys != live.keys {
                 v.keys = Arc::new(live.keys.clone());
@@ -2606,6 +2631,36 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A click's value holds over a live view begun before the scripts had
+    /// it, so the control does not flick back for a frame.
+    #[test]
+    fn an_edit_outranks_a_live_view_that_has_not_seen_it() {
+        use crate::ksp::{Control, Interface, Value};
+        let shown = |v: i32| {
+            let mut i = Interface::default();
+            i.controls.push(Control {
+                id: 0,
+                variable: "$b".into(),
+                kind: "ui_button".into(),
+                properties: [("$CONTROL_PAR_VALUE".to_owned(), Value::Int(v))].into(),
+                menu: Vec::new(),
+            });
+            i
+        };
+        let value = |i: &Interface| i.controls[0].properties["$CONTROL_PAR_VALUE"].clone();
+        let mut edited = vec![(0, 1, Instant::now())];
+        let mut stale = shown(0);
+        settle_edits(&mut edited, Some(&mut stale));
+        assert_eq!((value(&stale), edited.len()), (Value::Int(1), 1), "a stale view shows the edit");
+        let mut caught_up = shown(1);
+        settle_edits(&mut edited, Some(&mut caught_up));
+        assert!(edited.is_empty(), "a view that has it ends the edit");
+        let mut edited = vec![(0, 1, Instant::now() - EDIT_SETTLE * 2)];
+        let mut refused = shown(0);
+        settle_edits(&mut edited, Some(&mut refused));
+        assert_eq!((value(&refused), edited.len()), (Value::Int(0), 0), "a script that kept its value wins in the end");
+    }
 
     /// Routing never holds the selection while it waits for `view`, which
     /// the editor holds while reading the selection: both would stop.
