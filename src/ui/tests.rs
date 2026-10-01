@@ -359,6 +359,8 @@ fn the_browser_finds_by_library_and_folder() {
     // Esc clears the filter; a library dragged onto another goes before it.
     h.ui.focus("library-filter");
     tap(&mut h, Key::Escape);
+    // The list glides back to the chosen library: let it land first.
+    h.idle(30);
     h.drag("library-42", "library-41");
     let settings = p.shared.libraries.settings();
     assert_eq!(settings.sort, crate::library::Sort::Custom);
