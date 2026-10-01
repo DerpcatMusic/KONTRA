@@ -53,6 +53,8 @@ pub enum FxParam {
     Reverb(u8),
     /// Convolution predelay, early size, late size, as normalized script values.
     Convolution(u8),
+    /// Filter, EQ and Stereo Modeller knobs in instrument racks.
+    Filter(super::FilterParam),
     /// Value `n` (layout order) of a `kind` effect, 0..=1 as scripts set
     /// it (`fx::blocks` maps it onto the stored value).
     Field(Kind, u8),
@@ -518,6 +520,9 @@ impl FxProcessor {
                 *field = value.clamp(0.0, 1.0);
                 rv.set(p);
             }
+            (FxParam::Filter(knob), Dsp::Block(b)) => return b.set_filter(knob, value),
+            (FxParam::Filter(super::FilterParam::Spread), Dsp::Stereo { width, .. }) => *width = 1.0 + value.clamp(-1.0, 1.0),
+            (FxParam::Filter(super::FilterParam::Pan), Dsp::Stereo { gains, .. }) => *gains = balance(1.0, value),
             (FxParam::Field(kind, n), Dsp::Block(b)) => return b.set(kind, n, value),
             _ => return false,
         }
@@ -612,6 +617,9 @@ impl FxProcessor {
             (FxParam::Dry, _) => Some(s.dry),
             (FxParam::Convolution(n), _) => s.ir_settings?.values.get(n as usize).copied(),
             (FxParam::Reverb(n), Dsp::Reverb(_, p)) => { *p }.field(n).copied(),
+            (FxParam::Filter(knob), Dsp::Block(b)) => b.filter_param(knob),
+            (FxParam::Filter(super::FilterParam::Spread), Dsp::Stereo { width, .. }) => Some(*width - 1.0),
+            (FxParam::Filter(super::FilterParam::Pan), Dsp::Stereo { gains, .. }) => Some(gains[1] - gains[0]),
             (FxParam::Field(kind, n), Dsp::Block(b)) => b.get(kind, n),
             _ => None,
         }

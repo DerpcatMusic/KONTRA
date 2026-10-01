@@ -928,6 +928,7 @@ pub(crate) struct Voice {
     pub counter_start: u64,
     pub counter_stop: Option<u64>,
     pub owner: Option<(u8, u8)>,
+    pub input_channel: Option<u8>,
     /// The key or event is still down.
     pub held: bool,
     /// This voice was held at the sostenuto pedal's down edge.
@@ -996,6 +997,7 @@ pub(crate) struct Context<'a> {
     pub cc: &'a [[u8; 128]; 16],
     pub bend: &'a [f32; 16],
     pub mpe_zone: Option<(u8, u16)>,
+    pub mpe_master_bend_range: Option<f32>,
     pub pressure: &'a [u8; 16],
     /// Per-channel/key MPE and note expression.
     pub expression: &'a [[super::Expression; 128]; 16],
@@ -1103,17 +1105,20 @@ impl Voice {
         let key = self.owner.map_or(self.note, |(_, key)| key);
         let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][key as usize & 127]);
         let inputs = cx.inputs(self.channel, self.note, self.velocity, x);
+        let master = cx.mpe_zone.filter(|(master, members)| *master == self.channel || members & (1 << self.channel) != 0)
+            .and_then(|(master, _)| cx.mpe_master_bend_range.map(|range| (master, cx.bend[master as usize], range)));
+        let bend_pitch = master.map(|(manager, ..)| if manager == self.channel { 0. } else { cx.bend[self.channel as usize] });
         // Settled modulation (every controller at rest, as held ones soon
         // are) gives the same result until an input changes: the group's
         // table, a cache miss per voice, is not read.
         if self.settled != Some(cx.inputs) {
-            let (gain, semitones, settled) = group.mods.modulate(&mut self.mods, &inputs, n, cx.rate);
+            let (gain, semitones, settled) = group.mods.modulate(&mut self.mods, &inputs, n, cx.rate, bend_pitch);
             self.modulated = (gain, semitones);
             self.settled = settled.then_some(cx.inputs);
         }
         let (modulation, semitones) = self.modulated;
         let initial = self.pitch.0.is_nan();
-        let semitones = semitones + group.tune + cx.tune + x.tune;
+        let semitones = semitones + group.tune + cx.tune + x.tune + master.map_or(0., |(_, bend, range)| bend * range);
         if semitones != self.pitch.0 {
             self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));
         }

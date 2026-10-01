@@ -14,6 +14,7 @@ mod processor;
 mod reverb;
 
 pub use kind::{Kind, ksp_effect_type};
+pub use crate::engine::filter::Knob as FilterParam;
 pub use params::Params;
 pub use processor::{DIRECT, FxParam, FxProcessor, OUTS, PreparedIr, Rack};
 
@@ -263,6 +264,7 @@ impl ProgramFx {
             (FxParam::Type, _) => f32::from(fx.kind.ser_id()),
             (FxParam::Reverb(n), Params::Reverb(p)) => *{ *p }.field(n)?,
             (FxParam::Convolution(n), Params::Convolution(p)) => *params::IrSettings::from_convolution(p).values.get(n as usize)?,
+            (FxParam::Filter(knob), _) => crate::engine::filter::effect_knob(fx, knob)?,
             (FxParam::SendLevel(n), Params::SendLevels(levels)) => {
                 *levels.sends.get(n as usize)?
             }
