@@ -501,6 +501,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     cx.state.browse.typing = ["library-filter", "search"].into_iter().find(|id| ui.focused(*id));
     cx.state.pane = ui.focus_key().and_then(pane_of);
+    // How many presets are listed, folded away or not.
+    let count = match &cx.state.source {
+        Some(Source::Library(name)) if needle.is_empty() => grouped.get(name).map_or(0, Vec::len),
+        _ => listed.iter().filter(|r| matches!(r, Row::Preset { .. })).count(),
+    };
     let scan_line = scan_line(ui, cx, scanning);
     let split = split_divider(ui, cx);
     let list = col(items)
@@ -529,11 +534,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     col![
         section_bar(
             "Browser",
-            vec![caption(listed.len().to_string()).text_size(SMALL).fill(Role::Dim), add_el, hide_el]
+            vec![caption(count.to_string()).text_size(SMALL).fill(Role::Dim), add_el, hide_el]
         ),
         row(kinds).gap(INSET + TIGHT).pad(edges(0., INSET, 0., INSET)).shrink(0),
         scan_line,
-        row![filter.flex(1).min_w(0), sort_el]
+        row![filter.flex(1).min_w(0), sort_el.shrink(0)]
             .gap(TIGHT)
             .align(Align::Center)
             .pad(edges(SPACE, INSET, TIGHT, INSET))
@@ -541,7 +546,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         rule(),
         pane(sources_list, sources_bar).h(Len::Pct(cx.state.split * 100.)).shrink(0),
         split,
-        col![search].pad(edges(SPACE, INSET, SPACE, INSET)).shrink(0),
+        col![search.w(Len::Pct(100.))].pad(edges(SPACE, INSET, SPACE, INSET)).shrink(0),
         col(above).gap(0).align(Align::Stretch).shrink(0),
         pane(list, list_bar).flex(1).min_h(0),
     ]
@@ -813,6 +818,10 @@ fn crumbs(ui: &mut Ui, cx: &mut Cx, library: &Library, rows: &[Row]) -> Option<E
         Row::Preset { path, .. } => path.parent()?.to_path_buf(),
     };
     let inside = folder.strip_prefix(&library.dir).ok()?;
+    // One folder deep, its row says as much.
+    if inside.components().count() < 2 {
+        return None;
+    }
     let mut items = Vec::new();
     let mut path = library.dir.clone();
     for (n, part) in inside.components().enumerate() {
@@ -1020,7 +1029,7 @@ fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, nam
     if !text.is_empty() {
         layers.push(clear_el.anchor(Align::End, Align::Center));
     }
-    stack(layers).w(Len::Pct(100.)).h(CONTROL + TIGHT).shrink(0)
+    stack(layers).h(CONTROL + TIGHT).shrink(0)
 }
 
 /// The keys on the list: Up and Down (and the pages, Home and End) move the

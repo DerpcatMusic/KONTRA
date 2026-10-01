@@ -1087,7 +1087,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 34] = [
+    let states: [(&str, bool, &[&str]); 38] = [
         ("empty", false, &[]),
         // Libraries with no artwork: generated covers; one chosen.
         ("covers", false, &["library-2"]),
@@ -1101,6 +1101,13 @@ fn screenshot() {
         ("info", true, &["tab-info"]),
         ("library", false, &["library-1"]),
         ("multis", false, &["picker-multis"]),
+        // A library's folders, one opened by the keys, a part loaded.
+        ("browser-tree", true, &["library-2"]),
+        // The search inside a library: flat, each with its folder under it.
+        ("browser-search", false, &["library-2"]),
+        // The library filter typed into, and the sort menu.
+        ("browser-filter", false, &[]),
+        ("browser-sort", false, &["library-sort"]),
         ("settings", true, &["app-menu", "menu-item-3"]),
         ("menu", true, &["app-menu"]),
         ("save", true, &["app-menu", "menu-item-6"]),
@@ -1205,6 +1212,25 @@ fn screenshot() {
             let mut h = Harness::new(&p, f64::from(width), f64::from(height));
             for id in presses {
                 h.press(id);
+            }
+            let typed = |h: &mut Harness, id: &str, text: &str| {
+                h.ui.focus(id);
+                h.tick(Input { text: text.into(), ..Default::default() });
+                h.idle(2);
+            };
+            let tap = |h: &mut Harness, key: Key| {
+                h.tick(Input { keys: vec![KeyPress { key, mods: Mods::default() }], ..Default::default() });
+                h.idle(2);
+            };
+            match state {
+                "browser-tree" => {
+                    for key in [Key::Down, Key::Right, Key::Right, Key::Down] {
+                        tap(&mut h, key);
+                    }
+                }
+                "browser-search" => typed(&mut h, "search", "a"),
+                "browser-filter" => typed(&mut h, "library-filter", "a"),
+                _ => {}
             }
             if state == "unselected" {
                 h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
