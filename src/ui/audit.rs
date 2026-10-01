@@ -70,7 +70,10 @@ fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwor
         } else if s.picture.is_none() && !matches!(s.kind, Kind::Label | Kind::Area) {
             found.add(format!("vector fallback: {kind}"));
         }
-        if s.x < -0.5 || s.y < -0.5 || s.x + s.w > w + 0.5 || s.y + s.h > h + 0.5 {
+        // The view clips as Kontakt's does; a control mostly outside is lost.
+        let inside = (s.x + s.w).min(w) - s.x.max(0.);
+        let inside = inside.max(0.) * ((s.y + s.h).min(h) - s.y.max(0.)).max(0.);
+        if inside < 0.5 * s.w * s.h {
             found.add(format!("out of bounds: {kind}"));
         }
         let (said, ..) = caption_of(c, s.kind, value(c));
@@ -86,14 +89,15 @@ fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwor
             found.add("multi-line label drawn on one line");
         }
     }
-    // Two controls taking the same clicks: more than a quarter of the smaller.
+    // Two controls taking the same clicks: more than half of the larger.
+    // One inside another (a row with its own button) is by design.
     let takes = |s: &&Shown| !matches!(s.kind, Kind::Label | Kind::Area);
     let live: Vec<&Shown> = shown.iter().filter(takes).collect();
     for (n, a) in live.iter().enumerate() {
         for b in &live[n + 1..] {
             let iw = (a.x + a.w).min(b.x + b.w) - a.x.max(b.x);
             let ih = (a.y + a.h).min(b.y + b.h) - a.y.max(b.y);
-            if iw > 0. && ih > 0. && iw * ih > 0.25 * (a.w * a.h).min(b.w * b.h) {
+            if iw > 0. && ih > 0. && iw * ih > 0.5 * (a.w * a.h).max(b.w * b.h) {
                 let mut pair = [kind_name(a.kind), kind_name(b.kind)];
                 pair.sort();
                 found.add(format!("overlapping controls: {}/{}", pair[0], pair[1]));
@@ -216,7 +220,7 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found) -> Option<PartView>
         }
     };
     if let Some(w) = &wallpaper
-        && i64::from(w.width) != i64::from(u.width)
+        && (i64::from(w.width) - i64::from(u.width)).abs() > 2
     {
         found.add("wallpaper narrower or wider than the view");
     }
