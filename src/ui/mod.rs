@@ -25,6 +25,7 @@ mod chain;
 mod computer;
 mod cover;
 mod editor;
+mod fitted;
 mod header;
 mod instrument;
 mod keyboard;
@@ -70,7 +71,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
         .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .hide_pointer(theme::pointer_hidden)
-        .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready())
+        .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready() || fitted::ready())
         .fixed_zoom()
         .resizable((900, 600))
         .into_editor()

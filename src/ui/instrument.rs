@@ -111,7 +111,7 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     panel::deps(cx, slot).hash(&mut h);
     original.hash(&mut h);
     if original {
-        perf_view::deps(ui, cx, slot).hash(&mut h);
+        (perf_view::deps(ui, cx, slot), super::fitted::generation()).hash(&mut h);
     }
     h.finish()
 }
