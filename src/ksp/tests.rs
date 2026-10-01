@@ -960,3 +960,38 @@ fn group_lookups_match_exactly_and_report_only_near_misses() {
     assert_eq!(text, "0");
     assert!(diagnostics.iter().any(|d| d.contains("find_group")), "{diagnostics:?}");
 }
+
+/// The two out-of-bounds shapes the local libraries hit, both script bugs
+/// Kontakt shares: a label reading one name past a per-instrument name table
+/// (Afflatus), and a loop running nine voices over four-voice slots
+/// (Dolce, with its saved developer switches on). Each read is empty or 0,
+/// is reported, and the callback carries on.
+#[test]
+fn library_out_of_bounds_shapes_read_empty_and_continue() {
+    let source = "on init
+declare const $ARTS := 2
+declare const $VOICES := 4
+declare !names[$ARTS]
+!names[0] := \"Rip Slow\"
+declare %ids[$ARTS * $VOICES] := (-1)
+declare $art
+declare $n
+declare $found
+while ($art < $ARTS)
+  $n := 0
+  while ($n <= 8)
+    if (%ids[$VOICES * $art + $n] # -1)
+      inc($found)
+    end if
+    inc($n)
+  end while
+  inc($art)
+end while
+declare ui_label $l(1,1)
+set_text($l, \"[\" & !names[6] & \"]\" & $found)
+end on";
+    let ui = initialize(source, 0, 0).unwrap();
+    // The six reads past index 7 yield 0, which is not -1.
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "[]6");
+    assert!(ui.diagnostics.iter().any(|d| d.contains("out of bounds")), "{:?}", ui.diagnostics);
+}
