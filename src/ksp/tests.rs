@@ -1017,3 +1017,12 @@ fn modulator_lookups_match_exactly_and_report_only_near_misses() {
     assert_eq!(text, "0");
     assert!(diagnostics.iter().any(|d| d.contains("find_mod/find_target")), "{diagnostics:?}");
 }
+
+#[test]
+fn a_later_ui_control_callback_replaces_the_earlier() {
+    let script = "on init\ndeclare ui_switch $tab\ndeclare ui_label $l(1,1)\nend on\non ui_control($tab)\nset_text($l, \"generic\")\nend on\non ui_control($tab)\nset_text($l, \"tab\")\nend on";
+    let mut rig = Rig::new(&[script]);
+    assert_eq!(rig.rt.diagnostics(), Vec::<String>::new());
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert_eq!(prop(&rig.rt.interface(0), 1, "$CONTROL_PAR_TEXT"), "tab");
+}
