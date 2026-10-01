@@ -782,7 +782,7 @@ fn br_imm(code: &[Op], s: &mut Vec<i32>, p: &mut usize, f: &mut i64, x: i32) {
 /// loop that keeps the int stack, memory and code in registers. It stops
 /// before the first op it leaves to `step` (strings, reals, builtins,
 /// declarations) and returns `None`, without charging for that op.
-#[inline(never)]
+#[inline(always)]
 fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
     let prog = m.prog;
     let (code, elems) = (&prog.code[..], &prog.elems[..]);
