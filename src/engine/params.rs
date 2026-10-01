@@ -394,6 +394,13 @@ pub mod id {
     pub const RV2_DIFF: i32 = B + 106;
     pub const RV2_MOD: i32 = B + 107;
     pub const RV2_STEREO: i32 = B + 108;
+    pub const RV2_FREEZE: i32 = B + 109;
+    #[cfg(test)]
+    pub const RV2_EQ_LOW_FREQ: i32 = B + 110;
+    pub const RV2_EQ_LOW_GAIN: i32 = B + 111;
+    #[cfg(test)]
+    pub const RV2_EQ_HIGH_FREQ: i32 = B + 112;
+    pub const RV2_EQ_HIGH_GAIN: i32 = B + 113;
     pub const STEREO: i32 = B + 138;
     pub const STEREO_PAN: i32 = B + 139;
     pub const FREQ1: i32 = B + 157;
@@ -448,6 +455,8 @@ pub(crate) enum Address {
     /// A group insert slot's filter/EQ knob (normalized), bypass, output
     /// gain or Stereo Modeller setting.
     Filter(u16, u8, Knob),
+    /// The `$EFFECT_TYPE_*` of a group insert slot; read only.
+    GroupType(u16, u8),
 }
 
 /// The effect rack a KSP `generic` argument names.
@@ -540,10 +549,16 @@ impl Address {
             id::EFFECT_BYPASS => insert(Knob::Bypass, FxParam::Bypass)?,
             id::INSERT_EFFECT_OUTPUT_GAIN => insert(Knob::Output, FxParam::Wet)?,
             id::SEND_EFFECT_BYPASS => fx(FxParam::Bypass)?,
-            // Group insert effect types are not modelled.
+            id::EFFECT_TYPE if par.group >= 0 => {
+                Self::GroupType(group()?, u8::try_from(par.slot).ok().filter(|&s| s < 8)?)
+            }
             id::EFFECT_TYPE | id::SEND_EFFECT_TYPE => fx(FxParam::Type)?,
-            // Reverb (`$EFFECT_TYPE_REVERB2`), as its stored values; the EQ
-            // and freeze controls have no stored counterpart here.
+            // Reverb (`$EFFECT_TYPE_REVERB2`), as its stored values, which
+            // are the KSP values / 1e6 as for every other knob. Presets store
+            // two EQ values, 0 in every local preset: the high and low cut
+            // amounts (gains, 0 flat), not frequencies, which would not
+            // default to 0. The band frequencies are not stored and stay
+            // unmapped; freeze is not stored either.
             id::RV2_TYPE => fx(FxParam::Reverb(0))?,
             id::RV2_TIME => fx(FxParam::Reverb(1))?,
             id::RV2_SIZE => fx(FxParam::Reverb(2))?,
@@ -552,6 +567,9 @@ impl Address {
             id::RV2_DIFF => fx(FxParam::Reverb(5))?,
             id::RV2_PREDELAY => fx(FxParam::Reverb(6))?,
             id::RV2_STEREO => fx(FxParam::Reverb(9))?,
+            id::RV2_EQ_HIGH_GAIN => fx(FxParam::Reverb(7))?,
+            id::RV2_EQ_LOW_GAIN => fx(FxParam::Reverb(8))?,
+            id::RV2_FREEZE => fx(FxParam::Reverb(10))?,
             id::SEND_EFFECT_DRY_LEVEL => fx(FxParam::Dry)?,
             id::SEND_EFFECT_OUTPUT_GAIN => fx(FxParam::Wet)?,
             id::SENDLEVEL_0..=id::SENDLEVEL_7 => {
@@ -601,9 +619,9 @@ impl Address {
             },
             Self::Fx(_, _, FxParam::Output) if (0..OUTS as i32).contains(&value) => value as f32,
             Self::Fx(_, _, FxParam::Output) => -1.0,
-            Self::Fx(_, _, FxParam::Type) => value as f32,
+            Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => value as f32,
             // `$NI_REVERB2_TYPE_ROOM` (0) or `_HALL` (1).
-            Self::Fx(_, _, FxParam::Reverb(0)) => f32::from(value != 0),
+            Self::Fx(_, _, FxParam::Reverb(0 | 10)) => f32::from(value != 0),
             Self::Fx(_, _, FxParam::Reverb(_)) => x,
             Self::Group(_, p) | Self::Instrument(p) => match p {
                 GroupPar::Volume => volume(x),
@@ -644,8 +662,8 @@ impl Address {
                 };
             }
             Self::Fx(_, _, FxParam::Output) => return if v >= 0.0 { v as i32 } else { -1 },
-            Self::Fx(_, _, FxParam::Type) => return v as i32,
-            Self::Fx(_, _, FxParam::Reverb(0)) => return i32::from(v >= 0.5),
+            Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => return v as i32,
+            Self::Fx(_, _, FxParam::Reverb(0 | 10)) => return i32::from(v >= 0.5),
             Self::Fx(_, _, FxParam::Reverb(_)) => v,
             Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) => {
                 return i32::from(v != 0.0);
@@ -803,7 +821,7 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             let filter = settings.get_mut(g as usize).and_then(|s| s.filter.as_mut());
             return filter.is_some_and(|f| f.set_knob(slot, knob, value));
         }
-        Address::Instrument(_) | Address::Fx(..) => return false,
+        Address::Instrument(_) | Address::Fx(..) | Address::GroupType(..) => return false,
     }
     true
 }
@@ -866,6 +884,13 @@ pub(super) struct Write {
 
 /// Engine parameter changes one render can hold; later ones are dropped and counted.
 pub const MAX_WRITES: usize = 4096;
+
+/// `$EFFECT_TYPE_*` of group `g`'s insert `slot`, 0 when it is empty.
+pub(crate) fn group_type(groups: &[Group], g: u16, slot: u8) -> Option<f32> {
+    let fx = &groups.get(g as usize)?.fx;
+    let kind = fx.slots.iter().find(|fx| fx.slot == slot as usize).map(|fx| fx.kind.ser_id());
+    Some(f32::from(kind.unwrap_or(0)))
+}
 
 /// `find_mod`: position in `Group::modulators` of the first name `is` accepts.
 pub(crate) fn find_mod(groups: &[Group], group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
@@ -965,6 +990,11 @@ mod tests {
             (id::RV2_DIFF, "RV2_DIFF"),
             (id::RV2_MOD, "RV2_MOD"),
             (id::RV2_STEREO, "RV2_STEREO"),
+            (id::RV2_FREEZE, "RV2_FREEZE"),
+            (id::RV2_EQ_LOW_FREQ, "RV2_EQ_LOW_FREQ"),
+            (id::RV2_EQ_LOW_GAIN, "RV2_EQ_LOW_GAIN"),
+            (id::RV2_EQ_HIGH_FREQ, "RV2_EQ_HIGH_FREQ"),
+            (id::RV2_EQ_HIGH_GAIN, "RV2_EQ_HIGH_GAIN"),
             (id::SEND_EFFECT_BYPASS, "SEND_EFFECT_BYPASS"),
             (id::SEND_EFFECT_DRY_LEVEL, "SEND_EFFECT_DRY_LEVEL"),
             (id::SEND_EFFECT_OUTPUT_GAIN, "SEND_EFFECT_OUTPUT_GAIN"),
@@ -1079,6 +1109,36 @@ mod tests {
             ],
             ..Group::default()
         }
+    }
+
+    #[test]
+    fn group_insert_types_and_reverb_eq_freeze_resolve() {
+        use crate::fx::{Effect, Kind, Params};
+        let mut g = group();
+        g.fx.slots.push(Effect {
+            slot: 2,
+            kind: Kind::StereoModeller,
+            version: 0,
+            bypass: false,
+            output_gain: 1.0,
+            dry_level: 0.0,
+            params: Params::Opaque { bytes: 0 },
+        });
+        let groups = [g];
+        let par = |id, group, slot, generic| EnginePar { id, group, slot, generic };
+        let ty = |slot| Address::resolve(par(id::EFFECT_TYPE, 0, slot, -1), &groups);
+        assert_eq!((ty(2), ty(8)), (Some(Address::GroupType(0, 2)), None));
+        assert_eq!((group_type(&groups, 0, 2), group_type(&groups, 0, 1)), (Some(31.0), Some(0.0)));
+        // Reverb: the stored EQ values are the cut amounts; freeze is a switch.
+        let rv = |id| Address::resolve(par(id, -1, 0, 0), &[]).map(|a| match a {
+            Address::Fx(_, _, FxParam::Reverb(n)) => n,
+            _ => u8::MAX,
+        });
+        let unresolved = |id| Address::resolve(par(id, -1, 0, 0), &[]).is_none();
+        assert_eq!([id::RV2_EQ_HIGH_GAIN, id::RV2_EQ_LOW_GAIN, id::RV2_FREEZE].map(rv), [Some(7), Some(8), Some(10)]);
+        assert!(unresolved(id::RV2_EQ_LOW_FREQ) && unresolved(id::RV2_EQ_HIGH_FREQ));
+        let freeze = Address::Fx(Rack::Send, 0, FxParam::Reverb(10));
+        assert_eq!((freeze.decode(1_000_000), freeze.decode(0), freeze.encode(1.0)), (1.0, 0.0, 1));
     }
 
     #[test]

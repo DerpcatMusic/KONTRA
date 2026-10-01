@@ -788,16 +788,19 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 slot: s,
                 generic,
             };
-            if !m.engine.set_engine_par(m.env.offset, p, value) {
-                m.env
-                    .note("set_engine_par: parameter not implemented by the engine; value stored");
-                m.env.set_engine_par(p, value);
-            }
             // Loading an effect is asynchronous: the script gets an ID that
             // `on async_complete` reports. Other parameters apply at once.
             let loads = ["$ENGINE_PAR_EFFECT_TYPE", "$ENGINE_PAR_EFFECT_SUBTYPE", "$ENGINE_PAR_SEND_EFFECT_TYPE"]
                 .iter()
                 .any(|n| b::engine_par_id(n) == Some(id));
+            if !m.engine.set_engine_par(m.env.offset, p, value) {
+                m.env.note(if loads && b::engine_par_name(id) != Some("$ENGINE_PAR_EFFECT_SUBTYPE") {
+                    "set_engine_par: another effect loads only into instrument or bus racks during on init; value stored"
+                } else {
+                    "set_engine_par: parameter not implemented by the engine; value stored"
+                });
+                m.env.set_engine_par(p, value);
+            }
             let result = if loads { async_done(m, 1) } else { -1 };
             push_int(m, result)
         }

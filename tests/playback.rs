@@ -3,7 +3,7 @@ use kontakto::{
     engine::{
         Ahdsr, Bank, BusControls, Engine, EventChange, MAX_BLOCK, MAX_VOICES, Mix, NoteEvent,
         PRELOAD_FRAMES, Rack, Streaming,
-        load_scripts,
+        effects, load_scripts,
     },
     fx,
     import::{
@@ -2320,18 +2320,7 @@ fn reverb_send(script: &str) -> (Engine, Box<Runtime>) {
     use fx::{Chain, Effect, Kind, Params, params};
     let effect = |slot, kind, params| Effect { slot, kind, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0, params };
     let mut i = two_groups();
-    let reverb = params::Reverb {
-        room_type: 0.0,
-        time: 0.37,
-        size: 0.5,
-        damping: 0.5,
-        modulation: 0.5,
-        diffusion: 0.5,
-        predelay: 0.0,
-        high_cut: 0.0,
-        low_shelf: 0.0,
-        stereo: 1.0,
-    };
+    let reverb = params::Reverb::DEFAULT;
     let levels = params::SendLevels { sends: vec![1.0; 8], outputs: Vec::new() };
     i.fx.insert = Chain { slots: vec![effect(7, Kind::SendLevels, Params::SendLevels(levels))] };
     i.fx.send = Chain { slots: vec![effect(0, Kind::Reverb, Params::Reverb(reverb))] };
@@ -2339,7 +2328,7 @@ fn reverb_send(script: &str) -> (Engine, Box<Runtime>) {
     let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
     assert!(errors.is_empty(), "{errors:?}");
     let mut e = engine_with(layered(i.groups.clone(), &[0.1, 0.2]));
-    e.set_fx(i.fx.processor(e.rate() as f32, MAX_BLOCK));
+    e.set_fx(effects(&i, rt.as_deref(), e.rate() as f32));
     (e, rt.unwrap())
 }
 
@@ -2383,11 +2372,39 @@ end on"
     assert!(long > 4.0 * short, "RV2_TIME: {short} vs {long}");
     assert!(closed < 1e-9, "SENDLEVEL_0 at 0 still feeds the reverb: {closed}");
 
-    // Loading another effect is not supported, and says so.
-    let (_, rt) = reverb_send(
-        "on init\nset_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, $EFFECT_TYPE_GAINER, -1, 0, $NI_SEND_BUS)\nend on",
-    );
-    assert!(rt.diagnostics().iter().any(|d| d.contains("set_engine_par")), "{:?}", rt.diagnostics());
+    // `on init` loads other effects, built off the audio thread with the
+    // rest: a Gainer in place of the reverb leaves no tail, and a Reverb
+    // loaded into an empty send slot at its defaults rings, set by RV2_*.
+    let swap = |load: &str| {
+        let (mut e, rt) = reverb_send(&format!(
+            "on init
+declare %type_ok[1]
+{load}
+%type_ok[get_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, -1, 0, $NI_SEND_BUS) - $EFFECT_TYPE_GAINER] := 1
+end on"
+        ));
+        assert_eq!(rt.diagnostics(), Vec::<String>::new());
+        assert!(e.set_script(Some(rt)).is_none());
+        tail_energy(&mut e)
+    };
+    let gainer = "set_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, $EFFECT_TYPE_GAINER, -1, 0, $NI_SEND_BUS)";
+    assert!(swap(gainer) < 1e-9);
+    let moved = swap(&format!(
+        "{gainer}
+set_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, $EFFECT_TYPE_REVERB2, -1, 1, $NI_SEND_BUS)
+set_engine_par($ENGINE_PAR_RV2_TIME, 1000000, -1, 1, $NI_SEND_BUS)
+set_engine_par($ENGINE_PAR_SENDLEVEL_1, 630859, -1, 7, $NI_INSERT_BUS)"
+    ));
+    assert!(moved > 4.0 * short, "reverb loaded into send slot 1: {moved} vs {short}");
+
+    // While playing, another effect would allocate on the audio thread: it
+    // is refused, and says so.
+    let (mut e, rt) = reverb_send("on init\nend on\non note\nset_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, $EFFECT_TYPE_GAINER, -1, 0, $NI_SEND_BUS)\nend on");
+    assert!(e.set_script(Some(rt)).is_none());
+    e.note_on(0, 60, 127);
+    render(&mut e, 480);
+    let diagnostics = e.script().unwrap().diagnostics();
+    assert!(diagnostics.iter().any(|d| d.contains("during on init")), "{diagnostics:?}");
 }
 
 /// `load_ir_sample` in `on init`: a name without extension or case found in
