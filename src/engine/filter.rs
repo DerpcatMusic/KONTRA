@@ -367,6 +367,19 @@ struct Stage {
 
 /// Drive stages a voice runs; later ones pass through.
 const MAX_STAGES: usize = 2;
+/// Knob rows modulation reaches: the units', then the drive stages'.
+const ROWS: usize = MAX_UNITS + MAX_STAGES;
+
+/// A drive stage's value a modulation target names.
+pub(crate) fn stage_knob(param: &str) -> Option<(Kind, u8)> {
+    Some(match param {
+        "shaper" => (Kind::SurroundPanner, 0),
+        "distortionIntensity" => (Kind::Distortion, 1),
+        "bitdepth" => (Kind::LoFi, 0),
+        "downsample" => (Kind::LoFi, 1),
+        _ => return None,
+    })
+}
 
 /// A modulation route onto a unit's knob.
 #[derive(Clone, Debug, PartialEq)]
@@ -527,17 +540,19 @@ impl GroupFilter {
         if units.is_empty() && mixers.is_empty() && stages.is_empty() {
             return None;
         }
+        // Drive stages are routed as rows after the units'.
         let route = |m: &ModAssignment| {
             let ModTarget::Module { param, slot } = &m.target else {
                 return None;
             };
+            let sign = if m.invert { -1.0 } else { 1.0 };
+            if let Some((kind, n)) = stage_knob(param) {
+                let i = stages.iter().position(|s| s.slot == *slot && s.kind == kind)?;
+                return Some(Route { unit: (units.len() + i) as u8, knob: n, sign });
+            }
             let knob = Knob::parse(param)?;
             let unit = units.iter().position(|u| u.slot == *slot && knob.fits(u.shape, u.sections))?;
-            Some(Route {
-                unit: unit as u8,
-                knob: knob.index()? as u8,
-                sign: if m.invert { -1.0 } else { 1.0 },
-            })
+            Some(Route { unit: unit as u8, knob: knob.index()? as u8, sign })
         };
         let envs = (group.envelopes.iter().enumerate())
             .filter_map(|(i, e)| {
@@ -988,7 +1003,7 @@ impl VoiceFilter {
         if !f.envs.is_empty() || self.matrix != f.matrix || f.stages.iter().any(|s| !s.bypass) {
             return None;
         }
-        let mut knobs: [[f32; KNOBS]; MAX_UNITS] =
+        let mut knobs: [[f32; KNOBS]; ROWS] =
             std::array::from_fn(|u| f.units.get(u).map_or([0.0; KNOBS], |unit| unit.knobs));
         for ((r, i), value) in f.ext.iter().zip(&self.ext) {
             knobs[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * value;
@@ -1031,18 +1046,24 @@ impl VoiceFilter {
         self.drives.iter_mut().for_each(Drive::clear);
     }
 
-    /// Run drive stage `i` over one stretch of frames.
+    /// Run drive stage `i` over one stretch of frames; `m` is the
+    /// modulation of each of its values (normalized).
     #[inline]
-    fn drive(&mut self, f: &GroupFilter, i: usize, left: &mut [f32], right: &mut [f32], rate: f32) {
+    fn drive(&mut self, f: &GroupFilter, i: usize, m: &[f32; KNOBS], left: &mut [f32], right: &mut [f32], rate: f32) {
         let stage = &f.stages[i];
         if stage.bypass {
             self.drives[i].clear();
             return;
         }
+        let mut fields = stage.fields;
+        for (n, (v, d)) in fields.iter_mut().zip(m).enumerate().filter(|(_, (_, d))| **d != 0.0) {
+            let n = n as u8;
+            *v = blocks::stored(stage.kind, n, blocks::normalized(stage.kind, n, *v) + d);
+        }
         // Bitwise, so the NaN start compares unequal once.
-        if stage.fields.map(f32::to_bits) != self.drive_fields[i].map(f32::to_bits) {
-            self.drive_fields[i] = stage.fields;
-            self.drives[i].tune(stage.kind, &stage.fields, rate);
+        if fields.map(f32::to_bits) != self.drive_fields[i].map(f32::to_bits) {
+            self.drive_fields[i] = fields;
+            self.drives[i].tune(stage.kind, &fields, rate);
         }
         self.drives[i].process(left, right);
     }
@@ -1082,23 +1103,25 @@ impl VoiceFilter {
         let work = !f.units.is_empty() || !f.stages.is_empty();
         for (t, start) in (0..n).step_by(step).enumerate().take_while(|_| work) {
             let end = (start + step).min(n);
-            let mut knobs: [[f32; KNOBS]; MAX_UNITS] = std::array::from_fn(|u| {
+            // Units' knobs, then each drive stage's modulation (normalized).
+            let mut rows: [[f32; KNOBS]; ROWS] = std::array::from_fn(|u| {
                 f.units.get(u).map_or([0.0; KNOBS], |unit| unit.knobs)
             });
             for (e, (_, routes, _)) in f.envs.iter().enumerate() {
                 for (r, m) in routes.iter() {
-                    knobs[r.unit as usize][r.knob as usize] += r.sign * m.intensity * m.shape(levels[e][t]);
+                    rows[r.unit as usize][r.knob as usize] += r.sign * m.intensity * m.shape(levels[e][t]);
                 }
             }
             for ((r, i), value) in f.ext.iter().zip(&self.ext) {
-                knobs[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * value;
+                rows[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * value;
             }
             let mut s = 0;
             // Drive stages run between the units, in slot order.
             let mut next = 0;
-            for (unit, knobs) in f.units.iter().zip(&knobs) {
+            for (unit, knobs) in f.units.iter().zip(&rows) {
                 while next < f.stages.len() && f.stages[next].slot < unit.slot {
-                    self.drive(f, next, &mut left[start..end], &mut right[start..end], rate);
+                    let m = &rows[f.units.len() + next];
+                    self.drive(f, next, m, &mut left[start..end], &mut right[start..end], rate);
                     next += 1;
                 }
                 for b in 0..unit.sections as usize {
@@ -1119,7 +1142,8 @@ impl VoiceFilter {
                 s += unit.sections as usize;
             }
             for i in next..f.stages.len() {
-                self.drive(f, i, &mut left[start..end], &mut right[start..end], rate);
+                let m = &rows[f.units.len() + i];
+                self.drive(f, i, m, &mut left[start..end], &mut right[start..end], rate);
             }
         }
         if f.matrix != IDENTITY || self.matrix != IDENTITY {
@@ -1734,6 +1758,17 @@ mod tests {
         assert!(f.set_knob(2, Knob::Bypass, 1.0));
         assert!(voice.hold(&f, &table, RATE).is_some());
         assert!(!f.set_knob(2, Knob::Field(Kind::LoFi, 0), 0.5), "another effect's value");
+        // Modulation ("shaper") moves the shape in normalized units: -0.5
+        // takes shape 1 back to 0, a straight wire.
+        assert!(f.set_knob(2, Knob::Bypass, 0.0));
+        assert_eq!(stage_knob("shaper"), Some((Kind::SurroundPanner, 0)));
+        let mut m = [0.0; KNOBS];
+        m[0] = -0.5;
+        let mut l: [f32; 128] = std::array::from_fn(|j| (TAU * 100.0 * j as f32 / RATE).sin());
+        let mut r = l;
+        let dry = l;
+        voice.drive(&f, 0, &m, &mut l, &mut r, RATE);
+        assert!(l.iter().zip(&dry).all(|(a, b)| (a - b).abs() < 0.05));
     }
 
     #[test]

@@ -24,7 +24,7 @@ const SCRIPT_PREFIXES: &[&str] = &["$FILTER_TYPE_", "$EFFECT_TYPE_", "$ENGINE_PA
 /// Module parameters group modulation reaches in the engine.
 fn target_applied(target: &ModTarget) -> bool {
     match target {
-        ModTarget::Module { param, .. } => filter::Knob::parse(param).is_some(),
+        ModTarget::Module { param, .. } => filter::Knob::parse(param).is_some() || filter::stage_knob(param).is_some(),
         ModTarget::Group(_) => false,
         _ => true,
     }
