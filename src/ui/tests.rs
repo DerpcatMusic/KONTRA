@@ -1092,8 +1092,10 @@ fn lag() {
     };
     // This thread's time on a CPU, so a loaded machine does not count.
     let cpu_us = || {
-        let stat = std::fs::read_to_string("/proc/thread-self/schedstat").unwrap_or_default();
-        stat.split_whitespace().next().and_then(|n| n.parse::<f64>().ok()).unwrap_or(0.) / 1e3
+        let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: a valid out-pointer for one call.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) };
+        t.tv_sec as f64 * 1e6 + t.tv_nsec as f64 / 1e3
     };
     let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
     let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
