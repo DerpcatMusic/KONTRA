@@ -18,7 +18,7 @@ use crate::import;
 use crate::library::{Folder, Library};
 use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::Fit;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -63,7 +63,7 @@ pub struct Browse {
     /// The library and row last shown were put back.
     restored: bool,
     /// The lower pane's rows, and what they were made from, hashed.
-    rows: (u64, Arc<Vec<Row>>),
+    rows: (Option<u64>, Arc<Listed>),
     /// The browser's field holding the focus as the last frame ended: Esc
     /// takes the focus before the frame, so the field is told it this way.
     typing: Option<&'static str>,
@@ -113,6 +113,31 @@ impl Row {
             Row::Folder { .. } => format!("folder-{n}"),
             Row::Preset { .. } => format!("instrument-{n}"),
         }
+    }
+}
+
+/// Rows and their scroll/cursor metadata, rebuilt together when the list changes.
+#[derive(Default)]
+struct Listed {
+    rows: Vec<Row>,
+    tops: Vec<f64>,
+    indices: HashMap<String, usize>,
+    presets: usize,
+}
+
+impl Listed {
+    fn new(rows: Vec<Row>) -> Self {
+        let mut tops = Vec::with_capacity(rows.len() + 1);
+        let mut indices = HashMap::with_capacity(rows.len());
+        let (mut y, mut presets) = (0., 0);
+        for (n, row) in rows.iter().enumerate() {
+            tops.push(y);
+            y += row.height();
+            indices.entry(row.key()).or_insert(n);
+            presets += usize::from(matches!(row, Row::Preset { .. }));
+        }
+        tops.push(y);
+        Self { rows, tops, indices, presets }
     }
 }
 
@@ -409,11 +434,12 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         (&cx.state.source, &needle, &favorites, &recent, &dirs, &settings.folders).hash(&mut h);
         h.finish()
     };
-    if cx.state.browse.rows.0 != made_of || cx.state.browse.rows.1.is_empty() {
+    if cx.state.browse.rows.0 != Some(made_of) {
         let rows = list(cx, &arranged, &grouped, &favorites, &recent, &needle);
-        cx.state.browse.rows = (made_of, Arc::new(rows));
+        cx.state.browse.rows = (Some(made_of), Arc::new(Listed::new(rows)));
     }
     let listed = cx.state.browse.rows.1.clone();
+    let rows = &listed.rows;
     let listing = {
         let mut h = DefaultHasher::new();
         (&cx.state.source, &needle, multis).hash(&mut h);
@@ -437,7 +463,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // Into the presets, at the cursor (the first row when none), brought into view.
     let into_presets = |cx: &mut Cx| {
         let n = cursor_at(cx, &listed).unwrap_or(0);
-        let Some(row) = listed.get(n) else { return "search".to_owned() };
+        let Some(row) = rows.get(n) else { return "search".to_owned() };
         cx.state.cursor = Some(row.key());
         cx.state.browse.reveal_row = true;
         row.id(n)
@@ -472,17 +498,12 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             above.extend(crumbs(ui, cx, library, &listed));
         }
     }
-    if listed.is_empty() && !arranged.is_empty() {
+    if rows.is_empty() && !arranged.is_empty() {
         above.push(hint(empty));
     }
-    // Every row's top, and the list's height.
-    let mut tops = Vec::with_capacity(listed.len() + 1);
-    let mut y = 0.;
-    for row in listed.iter() {
-        tops.push(y);
-        y += row.height();
-    }
-    tops.push(y);
+    // The row offsets were measured when these rows were built.
+    let tops = &listed.tops;
+    let y = tops[rows.len()];
     let at = cursor_at(cx, &listed);
     let reveal = at.filter(|_| cx.state.browse.reveal_row).map(|n| (tops[n], tops[n + 1]));
     let (list_y, list_bar, revealed) = slide(ui, list_id, &mut cx.state.browse.list_y, y, reveal, fresh);
@@ -492,11 +513,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // Only the rows in view are built; spacers stand in for the rest.
     let shown = if view_h > 0. { view_h } else { 2000. };
     let first = tops.partition_point(|&t| t <= list_y).saturating_sub(1);
-    let last = tops[..listed.len()].partition_point(|&t| t < list_y + shown);
+    let last = tops[..rows.len()].partition_point(|&t| t < list_y + shown);
     let mut items = vec![block(1, tops[first]).shrink(0)];
     for n in first..last.max(first) {
-        items.push(match &listed[n] {
-            Row::Folder { .. } => folder(ui, cx, n, &listed[n]),
+        items.push(match &rows[n] {
+            Row::Folder { .. } => folder(ui, cx, n, &rows[n]),
             Row::Preset { path, depth, under } => preset(ui, cx, n, path, *depth, under),
         });
     }
@@ -512,7 +533,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let count = match &cx.state.source {
         Some(Source::Library(name)) if needle.is_empty() => grouped.get(name).map_or(0, Vec::len),
         None if needle.is_empty() => grouped.values().map(Vec::len).sum(),
-        _ => listed.iter().filter(|r| matches!(r, Row::Preset { .. })).count(),
+        _ => listed.presets,
     };
     let counted = caption(count.to_string())
         .text_size(SMALL)
@@ -665,9 +686,8 @@ fn folders(library: &Path, path: &Path) -> String {
         .join(" / ")
 }
 
-fn cursor_at(cx: &Cx, rows: &[Row]) -> Option<usize> {
-    let cursor = cx.state.cursor.as_deref()?;
-    rows.iter().position(|r| r.key() == cursor)
+fn cursor_at(cx: &Cx, listed: &Listed) -> Option<usize> {
+    listed.indices.get(cx.state.cursor.as_deref()?).copied()
 }
 
 /// Open or shut the folder at `path`, for good.
@@ -824,8 +844,9 @@ fn library_heading(library: &Library, size: Option<u64>) -> El {
 
 /// Where the cursor is in the library: its folders, each a step back to.
 /// None at the library's top.
-fn crumbs(ui: &mut Ui, cx: &mut Cx, library: &Library, rows: &[Row]) -> Option<El> {
-    let at = cursor_at(cx, rows)?;
+fn crumbs(ui: &mut Ui, cx: &mut Cx, library: &Library, listed: &Listed) -> Option<El> {
+    let at = cursor_at(cx, listed)?;
+    let rows = &listed.rows;
     let folder = match &rows[at] {
         Row::Folder { path, .. } => PathBuf::from(path),
         Row::Preset { path, .. } => path.parent()?.to_path_buf(),
@@ -1033,7 +1054,8 @@ fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, nam
 /// cursor, Right opens a folder or steps into it, Left shuts it or steps
 /// back to the folder above; Enter opens a folder or loads a preset
 /// (Shift+Enter into a new part).
-fn walk(ui: &mut Ui, cx: &mut Cx, rows: &[Row], page: usize, focus_to: &mut Option<String>) {
+fn walk(ui: &mut Ui, cx: &mut Cx, listed: &Listed, page: usize, focus_to: &mut Option<String>) {
+    let rows = &listed.rows;
     let from_search = ui.focused("search");
     let free = ui.focus_key().is_none_or(|k| k.starts_with("instrument-") || k.starts_with("folder-"));
     let keys: Vec<KeyPress> = if from_search {
@@ -1049,7 +1071,7 @@ fn walk(ui: &mut Ui, cx: &mut Cx, rows: &[Row], page: usize, focus_to: &mut Opti
     let last = rows.len() - 1;
     let unfocused = ui.focus_key().is_none();
     for k in keys {
-        let at = cursor_at(cx, rows);
+        let at = cursor_at(cx, listed);
         let parent = |n: usize| {
             let depth = rows[n].depth().checked_sub(1)?;
             (0..n).rev().find(|&i| matches!(&rows[i], Row::Folder { depth: d, .. } if *d == depth))
@@ -1246,4 +1268,47 @@ fn stem(path: &Path) -> String {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_rows_preserve_scroll_offsets_counts_and_cursor_positions() {
+        let mut rows = vec![Row::Folder {
+            path: "/virtual/Large/Instruments".into(),
+            name: "Instruments".into(),
+            depth: 0,
+            count: 10_000,
+            open: true,
+        }];
+        rows.extend((0..10_000).map(|n| Row::Preset {
+            path: format!("/virtual/Large/Instruments/Patch {n:05}.nki").into(),
+            depth: 1,
+            under: if n % 2 == 0 { "Instruments".into() } else { String::new() },
+        }));
+        // Duplicate favorites historically resolve to the first matching row.
+        rows.push(rows[1].clone());
+        let listed = Listed::new(rows);
+        let mut y = 0.;
+        for (n, row) in listed.rows.iter().enumerate() {
+            assert_eq!(listed.tops[n], y);
+            y += row.height();
+        }
+        assert_eq!(listed.tops.last(), Some(&y));
+        assert_eq!(listed.presets, 10_001);
+        for n in [0, 1, 5000, 10_000] {
+            let key = listed.rows[n].key();
+            assert_eq!(listed.indices.get(&key), Some(&n));
+        }
+        assert!(!listed.indices.contains_key("missing"));
+        let replacement = Listed::new(vec![listed.rows[10_000].clone()]);
+        assert_eq!(replacement.indices.get(&listed.rows[10_000].key()), Some(&0));
+        assert!(!replacement.indices.contains_key(&listed.rows[1].key()));
+        let empty = Listed::new(Vec::new());
+        assert_eq!(empty.tops, [0.]);
+        assert_eq!(empty.presets, 0);
+        assert!(empty.indices.is_empty());
+    }
 }
