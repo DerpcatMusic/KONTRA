@@ -25,6 +25,7 @@ const SCRIPT_PREFIXES: &[&str] = &["$FILTER_TYPE_", "$EFFECT_TYPE_", "$ENGINE_PA
 fn target_applied(target: &ModTarget) -> bool {
     match target {
         ModTarget::Module { param, .. } => filter::Knob::parse(param).is_some(),
+        ModTarget::Group(_) => false,
         _ => true,
     }
 }
@@ -36,7 +37,7 @@ fn target_name(target: &ModTarget) -> String {
         ModTarget::SampleStart => "playPos".into(),
         ModTarget::Attack => "ahdsr_attack (volume env)".into(),
         ModTarget::Release => "ahdsr_release (volume env)".into(),
-        ModTarget::Module { param, .. } => param.clone(),
+        ModTarget::Module { param, .. } | ModTarget::Group(param) => param.clone(),
     }
 }
 

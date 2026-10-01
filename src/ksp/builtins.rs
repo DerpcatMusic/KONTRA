@@ -458,8 +458,8 @@ pub fn real_constant(name: &str) -> Option<f64> {
 /// Enumerations scripts index arrays with or compare against, so they need Kontakt's
 /// small values rather than opaque ones. The KSP reference lists each family in
 /// this order without numbers; positions from 0 are assumed. The filter types are
-/// the type ids NKIs store (`audits/EFFECTS.md`); `$ENGINE_PAR_EFFECT_SUBTYPE`
-/// does not reach the filters yet, and the AR ids are a low-confidence match.
+/// the type ids NKIs store (`audits/EFFECTS.md`); the AR, Daft, phaser and
+/// formant ones are in `engine::filter::ksp_filter_type`.
 const VALUED: &[(&str, i32)] = &[
     ("$KNOB_UNIT_NONE", 0),
     ("$KNOB_UNIT_DB", 1),
@@ -502,13 +502,7 @@ const VALUED: &[(&str, i32)] = &[
     ("$FILTER_TYPE_BP4POLE", 7),
     ("$FILTER_TYPE_BR4POLE", 8),
     ("$FILTER_TYPE_LP6POLE", 9),
-    ("$FILTER_TYPE_VERSATILE", 19),
-    ("$FILTER_TYPE_AR_LP2", 52),
-    ("$FILTER_TYPE_AR_BP2", 53),
-    ("$FILTER_TYPE_AR_HP2", 54),
-    ("$FILTER_TYPE_AR_LP4", 55),
-    ("$FILTER_TYPE_AR_BP4", 56),
-    ("$FILTER_TYPE_AR_HP4", 57),
+    // Other `$FILTER_TYPE_*` values: `engine::filter::ksp_filter_type`.
     // Time units for `*_TIME_UNIT` / `*_FREQ_UNIT` engine parameters.
     ("$NI_SYNC_UNIT_ABS", 0),
     ("$NI_SYNC_UNIT_WHOLE", 1),

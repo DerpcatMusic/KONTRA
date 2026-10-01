@@ -1137,6 +1137,10 @@ mod tests {
         let ty = |slot| Address::resolve(par(id::EFFECT_TYPE, 0, slot, -1), &groups);
         assert_eq!((ty(2), ty(8)), (Some(Address::GroupType(0, 2)), None));
         assert_eq!((group_type(&groups, 0, 2), group_type(&groups, 0, 1)), (Some(31.0), Some(0.0)));
+        // A filter's type is its subtype; it decodes as the raw type id.
+        let sub = Address::resolve(par(id::EFFECT_SUBTYPE, 0, 1, -1), &groups);
+        assert_eq!(sub, Some(Address::Filter(0, 1, Knob::Type)));
+        assert_eq!((Address::Filter(0, 1, Knob::Type).decode(106), Address::Filter(0, 1, Knob::Type).encode(106.0)), (106.0, 106));
         // Reverb: the stored EQ values are the cut amounts; freeze is a switch.
         let rv = |id| Address::resolve(par(id, -1, 0, 0), &[]).map(|a| match a {
             Address::Fx(_, _, FxParam::Reverb(n)) => n,
