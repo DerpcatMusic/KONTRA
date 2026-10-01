@@ -6,6 +6,8 @@
 //! `on ui_control` runs.
 
 use super::menu::{self, Target};
+use super::vector::{Face as VFace, Mark, Plan};
+use super::wave::Peaks;
 use super::{Cx, theme::*};
 use crate::artwork::Picture;
 use crate::ksp::{Control, Interface, Value};
@@ -291,11 +293,17 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
             for (k, v) in &c.properties {
                 if matches!(
                     k.as_str(),
-                    "$CONTROL_PAR_VALUE" | "$CONTROL_PAR_LABEL" | "$CONTROL_PAR_HIDE" | "$CONTROL_PAR_TEXT" | "$CONTROL_PAR_POS_X" | "$CONTROL_PAR_POS_Y" | "$CONTROL_PAR_PARENT_PANEL"
+                    "$CONTROL_PAR_VALUE" | "$CONTROL_PAR_LABEL" | "$CONTROL_PAR_HIDE" | "$CONTROL_PAR_TEXT" | "$CONTROL_PAR_POS_X" | "$CONTROL_PAR_POS_Y" | "$CONTROL_PAR_PARENT_PANEL" | "$UI_WF_PROP_PLAY_CURSOR" | "attached zone"
                 ) {
                     format!("{v:?}").hash(&mut h);
                 }
             }
+        }
+    }
+    // A wave read since.
+    if let (Some(i), Some(u)) = (&v.instrument, &v.interface) {
+        for c in u.controls.iter().filter(|c| c.kind == "ui_waveform") {
+            attached(Some(i), c).and_then(super::wave::ask).is_some().hash(&mut h);
         }
     }
     cx.state.typing.as_ref().filter(|(p, ..)| *p == slot).hash(&mut h);
@@ -351,40 +359,32 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             layers.push(block(w * s, h * s).fill(Role::Background.alpha(0.8)));
         }
     }
-    let mut shown = layout(&interface, &pictures);
-    if vector {
-        // Our faces are solid where a picture let the words behind it show
-        // through: the script's text goes on top.
-        shown.sort_by_key(|s| s.kind == Kind::Label);
-    }
-    let drawn: Vec<(Shown, Option<Arc<Image>>)> = shown
+    // In the original's order either way: what covered a control there
+    // covers it here.
+    let drawn: Vec<(Shown, Option<Arc<Image>>)> = layout(&interface, &pictures)
         .into_iter()
         .map(|shown| {
             let c = &interface.controls[shown.control];
-            let image = if vector { None } else { picture_frame(&shown, c, value(c)) };
+            let image = picture_frame(&shown, c, value(c));
             (shown, image)
         })
         .collect();
-    // Names the wallpaper wrote beside the controls: ours say them.
-    let names = if vector { vector_names(&interface, &pictures) } else { HashMap::new() };
+    let plans = if vector { super::vector::plan(&interface, &pictures, &drawn) } else { Vec::new() };
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
-        // What its text sits on: its own picture, else what is under it.
-        let (cx_, cy) = (shown.x + shown.w / 2., shown.y + shown.h / 2.);
-        let under = [(-0.25, 0.), (0., 0.), (0.25, 0.)]
-            .iter()
-            .filter_map(|(dx, _)| luma_under(&drawn[..=n], wallpaper.as_deref(), cx_ + dx * shown.w, cy))
-            .fold(None, |m: Option<(f32, u32)>, l| Some(m.map_or((l, 1), |(t, k)| (t + l, k + 1))))
-            .map(|(t, k)| t / k as f32);
-        // A name the script's own text already gives beside it is not repeated.
-        let near = |o: &Shown| {
-            let t = &interface.controls[o.control];
-            o.kind == Kind::Label && !prop(t, "$CONTROL_PAR_TEXT").trim().is_empty()
-                && o.x < shown.x + shown.w + 8. && o.x + o.w > shown.x - 8.
-                && o.y < shown.y + shown.h + FONT * 2. && o.y + o.h > shown.y - FONT * 2.
+        let look = match plans.get(n) {
+            Some(plan) => Look::Vector(plan),
+            None => {
+                // What its text sits on: its own picture, else what is under it.
+                let (cx_, cy) = (shown.x + shown.w / 2., shown.y + shown.h / 2.);
+                let under = [-0.25, 0., 0.25]
+                    .iter()
+                    .filter_map(|dx| luma_under(&drawn[..=n], wallpaper.as_deref(), cx_ + dx * shown.w, cy))
+                    .fold(None, |m: Option<(f32, u32)>, l| Some(m.map_or((l, 1), |(t, k)| (t + l, k + 1))))
+                    .map(|(t, k)| t / k as f32);
+                Look::Original(under)
+            }
         };
-        let name = names.get(&shown.control).filter(|_| !drawn.iter().any(|(o, _)| near(o)));
-        let look = if vector { Look::Vector(name.map(String::as_str)) } else { Look::Original(under) };
         layers.push(control(ui, cx, slot, shown, c, s, look).at(shown.x * s, shown.y * s));
     }
     // Over everything: the value a drag is setting, or a value being typed.
@@ -437,7 +437,7 @@ fn type_in(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
 
 /// Text as the script spaced it (scripts pad with spaces to clear an icon),
 /// without glyphs from a library's private icon font, which ours can't draw.
-fn keep_spaces(text: &str) -> String {
+pub(super) fn keep_spaces(text: &str) -> String {
     text.chars()
         .filter(|c| !matches!(*c as u32, 0xE000..=0xF8FF))
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -555,6 +555,10 @@ fn range(kind: Kind, c: &Control) -> (f64, f64) {
 
 /// The frame of its picture a control shows at `now`: by value for knobs
 /// and sliders, by state for switches, as the script set it for the rest.
+pub(super) fn frame_of(shown: &Shown, c: &Control) -> Option<Arc<Image>> {
+    picture_frame(shown, c, value(c))
+}
+
 fn picture_frame(shown: &Shown, c: &Control, now: f64) -> Option<Arc<Image>> {
     let p = shown.picture.as_ref()?;
     let n = p.frames.len();
@@ -642,27 +646,15 @@ enum Look<'a> {
     /// Its picture, or KONTRA's face where it has none; how light what
     /// its text sits on is.
     Original(Option<f32>),
-    /// KONTRA's face, with the name the wallpaper wrote beside it.
-    Vector(Option<&'a str>),
-}
-
-/// The names the vectorized view writes under knobs: the ones KONTRA's
-/// own view finds, unless one of the script's labels says it already.
-fn vector_names(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> HashMap<usize, String> {
-    let said: std::collections::HashSet<String> = (interface.controls.iter())
-        .filter(|c| c.kind == "ui_label")
-        .map(|c| keep_spaces(prop(c, "$CONTROL_PAR_TEXT")).trim().to_lowercase())
-        .collect();
-    super::panel::names(interface, pictures)
-        .into_iter()
-        .filter(|(_, n)| !said.contains(&n.trim().to_lowercase()))
-        .collect()
+    /// KONTRA's face and words as planned.
+    Vector(&'a Plan),
 }
 
 /// One control: its picture's frame or KONTRA's face, its text, and its
 /// pointer handling.
 fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s: f64, look: Look) -> El {
     let vector = matches!(look, Look::Vector(_));
+    let marker_on_wave = matches!(look, Look::Vector(p) if p.face == VFace::Marker);
     let id = format!("kpv-{slot}-{}", shown.control);
     let (w, h) = (shown.w * s, shown.h * s);
     let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
@@ -680,7 +672,8 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
                 _ => raw,
             };
             let behaviour = int(c, "$CONTROL_PAR_MOUSE_BEHAVIOUR").unwrap_or(0);
-            let vertical = drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour);
+            // A marker on a wave moves along it.
+            let vertical = drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour) && !marker_on_wave;
             let before = now;
             let held = drive(ui, &id, &mut now, &(lo..=hi), travel(shown.kind, behaviour, hi - lo) * s, vertical, reset);
             if shown.kind == Kind::Value && ui.get(id.as_str()).double_clicked {
@@ -714,53 +707,68 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     let picture = if vector { None } else { picture_frame(shown, c, now) };
     let pictured = picture.is_some();
     let behaviour = int(c, "$CONTROL_PAR_MOUSE_BEHAVIOUR").unwrap_or(0);
-    let vertical = drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour);
+    let vertical = drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour) && !marker_on_wave;
     let round = shown.kind == Kind::Knob || shown.kind == Kind::Slider && knob_like(prop(c, "$CONTROL_PAR_PICTURE"), shown.w, shown.h);
     let lift = if cx.state.held.is_some_and(|(p, n, _)| (p, n) == (slot, shown.control)) { 1. } else { ui.state(id.as_str()).hover as f32 };
-    let mut layers = vec![match picture {
-        Some(image) => sliced(&image, shown.picture.as_ref().map_or([false; 2], |p| p.stretch), w, h, s),
-        None => face(shown.kind, c, now, lo, hi, vertical, round, s, lift).w(w).h(h),
-    }];
-    // Text on our face is our ink; on a picture it reads what lies under it.
-    let own_ink = match look {
-        Look::Original(under) if pictured || matches!(shown.kind, Kind::Label | Kind::Area) => Fill::from(ink(under)),
-        _ => Fill::from(Role::Ink),
+    let wave = (shown.kind == Kind::Waveform)
+        .then(|| attached(cx.view.parts[slot].instrument.as_deref(), c))
+        .flatten()
+        .and_then(super::wave::ask)
+        .map(|p| {
+            let cursor = int(c, "$UI_WF_PROP_PLAY_CURSOR").filter(|&v| v > 0).map(|v| p.at(v.into()));
+            (p, cursor)
+        });
+    let own = || face(shown.kind, c, now, lo, hi, vertical, round, s, lift, wave.clone(), vector).w(w).h(h);
+    let drawn = match (picture, look) {
+        (Some(image), _) => sliced(&image, shown.picture.as_ref().map_or([false; 2], |p| p.stretch), w, h, s),
+        (None, Look::Vector(plan)) => match plan.face {
+            VFace::Normal => own(),
+            VFace::Clear => block(w, h),
+            VFace::Cover => block(w, h).fill(Role::Background),
+            VFace::Panel(on) => block(w, h).fill(if on { Role::Raised } else { Role::Surface }),
+            VFace::Mark(m) => mark(m, now >= 1., s, lift).w(w).h(h),
+            VFace::Marker => marker(((now - lo) / (hi - lo)).clamp(0., 1.), s, lift).w(w).h(h),
+        },
+        (None, Look::Original(_)) => own(),
     };
-    let (mut said, align, top) = caption_of(c, shown.kind, now);
-    // A switch whose words were in its picture says its name instead.
-    if let Look::Vector(Some(name)) = look
-        && said.is_empty()
-        && matches!(shown.kind, Kind::Switch | Kind::Button)
-    {
-        said = name.to_owned();
-    }
-    if !said.is_empty() {
-        layers.push(words(said, align, top, w, h, s, own_ink.clone(), shown.kind == Kind::Label));
-    }
-    if shown.kind == Kind::Knob && !pictured {
-        // Kontakt's own knob: its name over it, its value under it.
-        let name = prop(c, "$CONTROL_PAR_TEXT");
-        let name = if name.is_empty() { c.variable.trim_start_matches(['$', '~']) } else { name };
-        if hide & HIDE_TITLE == 0 {
-            layers.push(words(keep_spaces(name), 1, Some(0.), w, h, s, own_ink.clone(), false));
+    let mut layers = vec![drawn];
+    let el = if let Look::Vector(plan) = look {
+        // Planned to fit, so nothing is clipped: a knob's name sits under it.
+        for words in &plan.words {
+            let justify = match words.align {
+                1 => Justify::Center,
+                2 => Justify::End,
+                _ => Justify::Start,
+            };
+            let line = row![text(words.text.clone()).text_size(words.size * s).fill(Role::Ink).lines(1)].justify(justify).align(Align::Center);
+            layers.push(line.w(words.w * s).h(words.h * s).at(words.x * s, words.y * s));
         }
-        if hide & HIDE_VALUE == 0 {
-            let label = prop(c, "$CONTROL_PAR_LABEL");
-            let shown_value = if label.is_empty() { format!("{}", now.round()) } else { keep_spaces(label) };
-            layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s, own_ink, false));
+        stack(layers).w(w).h(h)
+    } else {
+        // Text on our face is our ink; on a picture it reads what lies under it.
+        let own_ink = match look {
+            Look::Original(under) if pictured || matches!(shown.kind, Kind::Label | Kind::Area) => Fill::from(ink(under)),
+            _ => Fill::from(Role::Ink),
+        };
+        let (said, align, top) = caption_of(c, shown.kind, now);
+        if !said.is_empty() {
+            layers.push(words(said, align, top, w, h, s, own_ink.clone(), shown.kind == Kind::Label));
         }
-    }
-    let mut el = stack(layers).w(w).h(h).clip();
-    // A knob the wallpaper named: the name under it, where the wallpaper had it.
-    if let Look::Vector(Some(name)) = look
-        && round
-        && shown.w * s >= 16.
-        && shown.kind != Kind::Knob
-    {
-        let tag = words(name.to_owned(), 1, None, (shown.w * s).max(72. * s), FONT * s * 1.4, s, secondary(), false);
-        let off = (w - (shown.w * s).max(72. * s)) / 2.;
-        el = stack![el, tag.at(off, h)].w(w).h(h);
-    }
+        if shown.kind == Kind::Knob && !pictured {
+            // Kontakt's own knob: its name over it, its value under it.
+            let name = prop(c, "$CONTROL_PAR_TEXT");
+            let name = if name.is_empty() { c.variable.trim_start_matches(['$', '~']) } else { name };
+            if hide & HIDE_TITLE == 0 {
+                layers.push(words(keep_spaces(name), 1, Some(0.), w, h, s, own_ink.clone(), false));
+            }
+            if hide & HIDE_VALUE == 0 {
+                let label = prop(c, "$CONTROL_PAR_LABEL");
+                let shown_value = if label.is_empty() { format!("{}", now.round()) } else { keep_spaces(label) };
+                layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s, own_ink, false));
+            }
+        }
+        stack(layers).w(w).h(h).clip()
+    };
     if !interactive {
         return el;
     }
@@ -786,7 +794,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
 /// Nothing in it is translucent over what lies under it but its hairlines,
 /// so it never greys out a picture beneath.
 #[allow(clippy::too_many_arguments)]
-fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, round: bool, s: f64, lift: f32) -> El {
+fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, round: bool, s: f64, lift: f32, wave: Option<(Arc<Peaks>, Option<f64>)>, vector: bool) -> El {
     let t = ((value - lo) / (hi - lo)).clamp(0., 1.);
     let on = value >= 1.;
     let bars: Vec<f64> = match (kind, c.properties.get("$CONTROL_PAR_VALUE")) {
@@ -803,9 +811,9 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
     let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
     let bg = hide & HIDE_BG == 0;
     // A meter's own colours, 0AARRGGBBh; a script that leaves the alpha
-    // out means it opaque.
+    // out means it opaque. The vectorized view keeps to KONTRA's.
     let colour = |k: &str| {
-        int(c, k).map(|v| {
+        int(c, k).filter(|_| !vector).map(|v| {
             let v = v as u32;
             let byte = |shift: u32| ((v >> shift) & 0xff) as f32 / 255.;
             let a = if v >> 24 == 0 { 1. } else { byte(24) };
@@ -813,7 +821,7 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
         })
     };
     let meter = (colour("$CONTROL_PAR_BG_COLOR"), colour("$CONTROL_PAR_OFF_COLOR"));
-    let wave = colour("$CONTROL_PAR_WAVE_COLOR");
+    let (ink, cursor_ink) = (colour("$CONTROL_PAR_WAVE_COLOR"), colour("$CONTROL_PAR_WAVE_CURSOR_COLOR"));
     canvas(move |z| {
         let (w, h) = (z.width, z.height);
         let weight = (1.5 * s).max(1.);
@@ -828,7 +836,10 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
                 // Kontakt's own knob leaves rows for its name and value.
                 let text = if kind == Kind::Knob { FONT * 1.4 * s } else { 0. };
                 let (cx, cy) = (w / 2., h / 2.);
-                let r = (w.min(h - 2. * text) / 2. - weight).max(2.);
+                // A pictured knob kept a margin round its ring, where the library
+                // set its words: ours keeps inside it (see vector::hides).
+                let r = if kind == Kind::Knob { w.min(h - 2. * text) / 2. - weight } else { w.min(h) * 0.35 };
+                let r = r.max(2.);
                 let (start, sweep) = (0.75 * std::f64::consts::PI, 1.5 * std::f64::consts::PI);
                 d.push(Draw::fill(circle(cx, cy, r - weight * 1.5), Role::Raised.alpha(1.)));
                 d.push(Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.16 + 0.08 * lift), weight));
@@ -908,11 +919,91 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
                 if bg {
                     d.push(Draw::fill(rect(0., 0., w, h), meter.0.map_or(Role::Field.alpha(1.), Fill::from)));
                 }
-                d.push(Draw::fill(rect(0., (h / 2.).round(), w, 1.), wave.map_or(secondary(), Fill::from)));
+                let ink = ink.map_or(Fill::from(value_ink(0.)), Fill::from);
+                match &wave {
+                    Some((peaks, cursor)) => {
+                        d.push(Draw::fill(wave_path(&peaks.columns, w, h), ink));
+                        if let Some(t) = cursor {
+                            d.push(Draw::fill(rect((t * (w - 1.)).round(), 0., 1., h), cursor_ink.map_or(Fill::from(Role::Ink), Fill::from)));
+                        }
+                    }
+                    None => d.push(Draw::fill(rect(0., (h / 2.).round(), w, 1.), ink)),
+                }
             }
             Kind::Label | Kind::Area | Kind::Other => {}
         }
         d
+    })
+}
+
+/// The outline of `columns`' lows and highs across `w` by `h`, about its
+/// middle: one column of the drawing per point across.
+fn wave_path(columns: &[[f32; 2]], w: f64, h: f64) -> DrawPath {
+    let (n, across) = (columns.len().max(1), (w.ceil() as usize).max(1));
+    let mid = h / 2.;
+    let (mut top, mut foot) = (Vec::with_capacity(across + 1), Vec::with_capacity(across + 1));
+    for x in 0..across {
+        let (a, b) = (x * n / across, ((x + 1) * n / across).max(x * n / across + 1).min(n));
+        let (lo, hi) = columns[a..b].iter().fold((0f32, 0f32), |(l, m), c| (l.min(c[0]), m.max(c[1])));
+        // A silent stretch keeps a hairline.
+        let (lo, hi) = (f64::from(lo).min(-0.5 / mid), f64::from(hi).max(0.5 / mid));
+        for px in [x as f64, (x as f64 + 1.).min(w)] {
+            top.push(Point::new(px, mid - hi * mid));
+            foot.push(Point::new(px, mid - lo * mid));
+        }
+    }
+    top.extend(foot.into_iter().rev());
+    DrawPath::polyline(top, true)
+}
+
+/// Which zone of `instrument` waveform `c` shows (`attach_zone`).
+fn attached<'a>(instrument: Option<&'a crate::import::Instrument>, c: &Control) -> Option<&'a crate::import::Zone> {
+    instrument?.zones.get(usize::try_from(int(c, "attached zone")?).ok()?)
+}
+
+/// The wave waveform `c` of `instrument` shows, read now: the audit's.
+pub(super) fn wave_now(instrument: &crate::import::Instrument, c: &Control) -> Option<Arc<Peaks>> {
+    attached(Some(instrument), c).and_then(super::wave::now)
+}
+
+/// A small picture-only switch, vectorized: a ring, filled when on, or
+/// the arrow it stepped by.
+fn mark(m: Mark, on: bool, s: f64, lift: f32) -> El {
+    canvas(move |z| {
+        let (w, h) = (z.width, z.height);
+        let (cx, cy) = (w / 2., h / 2.);
+        let r = (w.min(h) / 2. - 1.).min(6. * s).max(2.);
+        let line = Role::Ink.alpha(0.55 + 0.45 * lift);
+        let weight = s.max(1.);
+        match m {
+            Mark::Dot => {
+                let mut d = vec![Draw::stroke(circle(cx, cy, r - weight / 2.), line, weight)];
+                if on {
+                    d.push(Draw::fill(circle(cx, cy, (r - 2.5 * weight).max(1.)), accent()));
+                }
+                d
+            }
+            Mark::Left | Mark::Right => {
+                let k = if m == Mark::Left { -1. } else { 1. };
+                let (dx, dy) = (r * 0.4, r * 0.8);
+                let points = [Point::new(cx - k * dx, cy - dy), Point::new(cx + k * dx, cy), Point::new(cx - k * dx, cy + dy)];
+                vec![Draw::stroke(DrawPath::polyline(points, false), line, weight * 1.5)]
+            }
+        }
+    })
+}
+
+/// A slider over a waveform, vectorized: a line at `t` across, with a
+/// handle at its head.
+fn marker(t: f64, s: f64, lift: f32) -> El {
+    canvas(move |z| {
+        let (w, h) = (z.width, z.height);
+        let x = (t * (w - 1.)).round();
+        let k = 5. * s;
+        vec![
+            Draw::fill(rect(x, 0., s.max(1.), h), value_ink(lift)),
+            Draw::fill(rect((x - k / 2.).clamp(0., w - k), 0., k, k), value_ink(lift)),
+        ]
     })
 }
 

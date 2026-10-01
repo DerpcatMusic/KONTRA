@@ -248,7 +248,7 @@ fn humps(ident: &str) -> String {
 /// The words of an identifier that may say what it does, lowercase: humps
 /// and separators split, look-words and numbering dropped, trailing digits
 /// cut (`onoff0`, `space2`).
-fn raw_words(ident: &str) -> Vec<String> {
+pub(super) fn raw_words(ident: &str) -> Vec<String> {
     // A letter and digits (`t1`, `k4`) number a page or a skin, not a function.
     let numbering = |w: &str| {
         let mut c = w.chars();
@@ -266,7 +266,7 @@ fn raw_words(ident: &str) -> Vec<String> {
 /// Readable words from an identifier: `pyramid_but_classic_mix_1_of_2`
 /// becomes "Classic Mix" when "pyramid" is a library prefix, and `Mas_sliDyn`
 /// "Dynamics" when "mas" is. None when nothing is left.
-fn words(ident: &str, prefixes: &[String]) -> Option<String> {
+pub(super) fn words(ident: &str, prefixes: &[String]) -> Option<String> {
     let mut parts = raw_words(ident);
     let lead = parts.iter().take_while(|w| prefixes.contains(w)).count();
     parts.drain(..lead);
@@ -295,7 +295,7 @@ fn readable(variable: &str) -> bool {
 /// The library's own prefixes: the first word most picture names share
 /// ("pyramid", "uc"), and the one most readable variable names share
 /// ("mas"). They say whose control it is, never what it does.
-fn prefixes(interface: &Interface) -> Vec<String> {
+pub(super) fn prefixes(interface: &Interface) -> Vec<String> {
     let leading = |names: &mut dyn Iterator<Item = String>| {
         let mut counts: HashMap<String, usize> = HashMap::new();
         let mut total = 0;
