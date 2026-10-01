@@ -18,6 +18,8 @@ pub struct ItemHeader {
     /// Integer that resolves to a [`DomainID`](super::DomainID).
     pub magic: Vec<u8>, // (+0xC, uint, 'hsin')
     pub header_flags: u32, // (0x10, uint)
+    /// Uninterpreted header word, retained for round trips.
+    pub reserved: u32,
     /// # Boost-compatible GUID
     ///
     /// https://www.boost.org/doc/libs/1\_43\_0/libs/uuid/index.html
@@ -30,7 +32,7 @@ impl ItemHeader {
         let version = reader.read_u32_le()?;
         let magic = reader.read_bytes(4)?;
         let header_flags = reader.read_u32_le()?;
-        let _unknown = reader.read_u32_le()?;
+        let reserved = reader.read_u32_le()?;
         let uuid = reader.read_bytes(16)?;
 
         if magic != b"hsin" {
@@ -48,6 +50,7 @@ impl ItemHeader {
             length,
             magic,
             header_flags,
+            reserved,
             uuid,
         })
     }
