@@ -174,6 +174,7 @@ impl Kind {
     /// Whether a rack slot of this kind plays (see `processor::Dsp`).
     pub fn has_dsp(self) -> bool {
         matches!(self, Kind::Gainer | Kind::StereoModeller | Kind::Reverb | Kind::Convolution | Kind::SendLevels)
+            || super::blocks::defaults(self).is_some()
     }
 
     /// Kontakt's display name, for warnings and reports.

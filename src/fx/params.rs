@@ -238,7 +238,22 @@ pub(super) fn defaults(kind: Kind) -> Params {
             ir_error: None,
             ir: None,
         })),
-        _ => Params::Opaque { bytes: 0 },
+        _ => match (layout(kind), super::blocks::defaults(kind)) {
+            (Some(layout), Some(values)) => Params::Fields(
+                layout
+                    .iter()
+                    .zip(values)
+                    .map(|(&(name, ty), &v)| Field {
+                        name,
+                        value: match ty {
+                            Ty::F => Value::Number(v),
+                            Ty::B => Value::Flag(v >= 0.5),
+                        },
+                    })
+                    .collect(),
+            ),
+            _ => Params::Opaque { bytes: 0 },
+        },
     }
 }
 
@@ -423,7 +438,10 @@ fn layout(kind: Kind) -> Option<&'static [(&'static str, Ty)]> {
             ("release_ms", F),
             ("link", B),
         ],
+        // Saturation: `$ENGINE_PAR_SHAPE` (-1..=1 stored) is the first.
         Kind::SurroundPanner => &[("param_0", F), ("param_1", F)],
+        // Two values, as `$ENGINE_PAR_LIM_*` lists them (low confidence).
+        Kind::Limiter => &[("in_gain", F), ("release", F)],
         Kind::Distortion => &[("param_0", F), ("drive", F), ("damping", F)],
         Kind::LoFi => &[
             ("bits", F),
@@ -493,6 +511,12 @@ fn layout(kind: Kind) -> Option<&'static [(&'static str, Ty)]> {
         ],
         _ => return None,
     })
+}
+
+/// Field names of `kind`'s layout.
+#[cfg(test)]
+pub(crate) fn layout_names(kind: Kind) -> Option<Vec<&'static str>> {
+    Some(layout(kind)?.iter().map(|(name, _)| *name).collect())
 }
 
 /// Little-endian cursor; `None` on truncation.

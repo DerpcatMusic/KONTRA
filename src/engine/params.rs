@@ -577,7 +577,16 @@ impl Address {
             id::SENDLEVEL_0..=id::SENDLEVEL_7 => {
                 fx(FxParam::SendLevel((par.id - id::SENDLEVEL_0) as u8))?
             }
-            _ => return None,
+            _ => match crate::ksp::engine_par_name(par.id)? {
+                // The formant filter's knobs: talk, sharp, size.
+                "$ENGINE_PAR_FORMANT_TALK" => slot(Knob::Cutoff)?,
+                "$ENGINE_PAR_FORMANT_SHARP" => slot(Knob::Resonance)?,
+                "$ENGINE_PAR_FORMANT_SIZE" => slot(Knob::Size)?,
+                name => {
+                    let (kind, n) = crate::fx::blocks::engine_par(name)?;
+                    insert(Knob::Field(kind, n), FxParam::Field(kind, n))?
+                }
+            },
         })
     }
 
@@ -624,7 +633,7 @@ impl Address {
             Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => value as f32,
             // `$NI_REVERB2_TYPE_ROOM` (0) or `_HALL` (1).
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => f32::from(value != 0),
-            Self::Fx(_, _, FxParam::Reverb(_)) => x,
+            Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Field(..)) => x,
             Self::Group(_, p) | Self::Instrument(p) => match p {
                 GroupPar::Volume => volume(x),
                 GroupPar::Pan => 2.0 * x - 1.0,
@@ -667,7 +676,7 @@ impl Address {
             Self::Fx(_, _, FxParam::Output) => return if v >= 0.0 { v as i32 } else { -1 },
             Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => return v as i32,
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => return i32::from(v >= 0.5),
-            Self::Fx(_, _, FxParam::Reverb(_)) => v,
+            Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Field(..)) => v,
             Self::Filter(_, _, Knob::Type) => return v as i32,
             Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) => {
                 return i32::from(v != 0.0);

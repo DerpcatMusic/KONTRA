@@ -6,6 +6,7 @@
 //! state; that call allocates everything, and [`FxProcessor::process`] never
 //! allocates, locks or panics.
 
+pub(crate) mod blocks;
 mod convolution;
 mod kind;
 pub mod params;
@@ -141,6 +142,9 @@ impl Effect {
             Params::Gainer(_) | Params::StereoModeller(_) | Params::Reverb(_) => true,
             Params::SendLevels(_) => true,
             Params::Convolution(c) => c.ir.is_some(),
+            Params::Filter(f) => crate::engine::filter::filter_type(f.filter_type).is_some(),
+            Params::Eq(_) => true,
+            Params::Fields(_) => self.kind.has_dsp(),
             _ => false,
         }
     }
@@ -247,6 +251,9 @@ impl ProgramFx {
             (FxParam::Reverb(n), Params::Reverb(p)) => *{ *p }.field(n)?,
             (FxParam::SendLevel(n), Params::SendLevels(levels)) => {
                 *levels.sends.get(n as usize)?
+            }
+            (FxParam::Field(kind, n), params) if kind == fx.kind => {
+                blocks::normalized(kind, n, *blocks::fields(params)?.get(n as usize)?)
             }
             _ => return None,
         })
