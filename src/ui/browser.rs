@@ -439,7 +439,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         cx.state.browse.rows = (Some(made_of), Arc::new(Listed::new(rows)));
     }
     let listed = cx.state.browse.rows.1.clone();
-    let rows = &listed.rows;
+    let listed_rows = &listed.rows;
     let listing = {
         let mut h = DefaultHasher::new();
         (&cx.state.source, &needle, multis).hash(&mut h);
@@ -463,7 +463,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // Into the presets, at the cursor (the first row when none), brought into view.
     let into_presets = |cx: &mut Cx| {
         let n = cursor_at(cx, &listed).unwrap_or(0);
-        let Some(row) = rows.get(n) else { return "search".to_owned() };
+        let Some(row) = listed_rows.get(n) else { return "search".to_owned() };
         cx.state.cursor = Some(row.key());
         cx.state.browse.reveal_row = true;
         row.id(n)
@@ -498,12 +498,12 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             above.extend(crumbs(ui, cx, library, &listed));
         }
     }
-    if rows.is_empty() && !arranged.is_empty() {
+    if listed_rows.is_empty() && !arranged.is_empty() {
         above.push(hint(empty));
     }
     // The row offsets were measured when these rows were built.
     let tops = &listed.tops;
-    let y = tops[rows.len()];
+    let y = tops[listed_rows.len()];
     let at = cursor_at(cx, &listed);
     let reveal = at.filter(|_| cx.state.browse.reveal_row).map(|n| (tops[n], tops[n + 1]));
     let (list_y, list_bar, revealed) = slide(ui, list_id, &mut cx.state.browse.list_y, y, reveal, fresh);
@@ -513,11 +513,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // Only the rows in view are built; spacers stand in for the rest.
     let shown = if view_h > 0. { view_h } else { 2000. };
     let first = tops.partition_point(|&t| t <= list_y).saturating_sub(1);
-    let last = tops[..rows.len()].partition_point(|&t| t < list_y + shown);
+    let last = tops[..listed_rows.len()].partition_point(|&t| t < list_y + shown);
     let mut items = vec![block(1, tops[first]).shrink(0)];
     for n in first..last.max(first) {
-        items.push(match &rows[n] {
-            Row::Folder { .. } => folder(ui, cx, n, &rows[n]),
+        items.push(match &listed_rows[n] {
+            Row::Folder { .. } => folder(ui, cx, n, &listed_rows[n]),
             Row::Preset { path, depth, under } => preset(ui, cx, n, path, *depth, under),
         });
     }
