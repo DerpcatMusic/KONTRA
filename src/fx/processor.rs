@@ -619,7 +619,8 @@ impl FxProcessor {
                 Stage::Tap(_) => {}
             }
         }
-        for ret in &mut self.returns {
+        // Bypassed send slots return nothing (audits/EFFECTS.md).
+        for ret in self.returns.iter_mut().filter(|r| !r.slot.bypass) {
             let [bl, br] = &mut ret.buffer;
             let (bl, br) = (&mut bl[..n], &mut br[..n]);
             ret.slot.process(bl, br);
