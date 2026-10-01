@@ -324,11 +324,7 @@ fn key_x(note: usize, octave: i16, width: f64) -> (f64, f64) {
 /// the keys play (port A on MIDI channel 1 or Omni, or with an articulation
 /// on channel 1), in rack order.
 fn shown_parts(cx: &Cx) -> Vec<usize> {
-    let loaded = |slot: usize| {
-        let part = cx.selection.parts.get(slot).filter(|p| !p.path.is_empty());
-        let instrument = cx.view.parts.get(slot).is_some_and(|v| v.instrument.is_some());
-        part.filter(|_| instrument)
-    };
+    let loaded = |slot: usize| cx.selection.parts.get(slot).filter(|p| !p.path.is_empty());
     if let Some(slot) = cx.state.chosen() {
         return loaded(slot).map(|_| slot).into_iter().collect();
     }
