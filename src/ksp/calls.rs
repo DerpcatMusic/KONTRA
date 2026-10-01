@@ -971,10 +971,16 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             push_real(m, 0.0)
         }
         GetUiWfProperty => {
-            // Waveforms show no play cursor or slices here.
-            ints::<2>(m);
-            m.stk.var();
-            push_int(m, 0)
+            // ponytail: one value per property, the index ignored; per-slice
+            // table values if a script reads them back.
+            let [p, _] = ints(m);
+            let v = m.stk.var();
+            let c = control_of(m, v)?;
+            let v = match m.slot.ui.controls[c].get(p) {
+                Some(Prop::Int(n)) => *n,
+                _ => 0,
+            };
+            push_int(m, v)
         }
         AttachLevelMeter => {
             ints::<5>(m);
@@ -1205,8 +1211,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         ShowLibraryTab => Ok(Step::Next),
         SetUiWfProperty => {
-            ints::<3>(m);
-            m.stk.var();
+            let [p, _, value] = ints(m);
+            let v = m.stk.var();
+            let c = control_of(m, v)?;
+            m.slot.ui.controls[c].set_int(p, value);
             Ok(Step::Next)
         }
         GetFontId => {
@@ -1362,8 +1370,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             }
         }
         AttachZone => {
-            ints::<2>(m);
-            m.stk.var();
+            let [zone, flags] = ints(m);
+            let v = m.stk.var();
+            let c = control_of(m, v)?;
+            let c = &mut m.slot.ui.controls[c];
+            c.set_int(b::ATTACHED_ZONE, zone);
+            c.set_int(b::UI_WF_PROP_FLAGS, flags);
             Ok(Step::Next)
         }
         // ---- Diagnostics -------------------------------------------------------------
