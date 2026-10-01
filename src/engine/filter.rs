@@ -32,7 +32,7 @@ const MAX_SECTIONS: usize = 8;
 const MAX_ENVS: usize = 4;
 const MAX_EXT: usize = 8;
 /// Knobs per unit: cutoff and resonance, or frequency, bandwidth and gain per band.
-const KNOBS: usize = 9;
+const KNOBS: usize = 12;
 
 /// Legacy and state-variable filter cutoff: `43.6 Hz · 2^(8.96 x)`, 43.6 Hz
 /// to 21.7 kHz (KSP community law `ep = 111607 · log2(f / 43.6)`).
@@ -140,6 +140,9 @@ pub(crate) enum Shape {
     Filter(Response),
     Model(Model),
     Eq,
+    /// Solid G-EQ: LF shelf or bell, two bells, HF shelf or bell; each
+    /// band's knobs `[gain, freq, q | bell]` (normalized).
+    Geq,
 }
 
 /// Parameter of a group insert slot.
@@ -195,7 +198,8 @@ impl Knob {
             Self::Freq(b) => 3 * b as usize,
             Self::Bandwidth(b) => 3 * b as usize + 1,
             Self::Gain(b) => 3 * b as usize + 2,
-            Self::Bypass | Self::Output | Self::Spread | Self::Pan | Self::Type | Self::Field(..) => return None,
+            Self::Field(_, n) => n as usize,
+            Self::Bypass | Self::Output | Self::Spread | Self::Pan | Self::Type => return None,
         })
     }
 
@@ -204,6 +208,7 @@ impl Knob {
         match (shape, self) {
             (Shape::Filter(_) | Shape::Model(_), Self::Cutoff | Self::Resonance) => true,
             (Shape::Model(m), Self::Size) => m.knobs() == 3,
+            (Shape::Geq, Self::Field(Kind::SolidGeq, n)) => (n as usize) < KNOBS,
             (Shape::Eq, Self::Freq(b) | Self::Bandwidth(b) | Self::Gain(b)) => b < sections,
             _ => false,
         }
@@ -236,6 +241,10 @@ impl Unit {
             Shape::Eq => {
                 let key = [k[3 * b], k[3 * b + 1], k[3 * b + 2]];
                 (key, (key[2] - 0.5).abs() < FLAT)
+            }
+            Shape::Geq => {
+                let key = [k[3 * b], k[3 * b + 1], k[3 * b + 2]];
+                (key, (key[0] - 0.5).abs() * 2.0 * GEQ_DB < 0.01)
             }
         }
     }
@@ -296,6 +305,30 @@ impl Proto {
                 let (hz, bw, db) = band_settings(key[0], key[1], key[2]);
                 Self::bell(hz, bw, db, rate)
             }
+            Shape::Geq => Self::geq(key, b, rate),
+        }
+    }
+
+    /// Solid G-EQ band `b`: gain ±15 dB about 0.5, frequency over the
+    /// band's range (log), Q 0.4..=4 (log) for the mid bells; the outer
+    /// bands are shelves (Q 0.71) unless their bell switch is on.
+    fn geq([gain, freq, shape]: [f32; 3], b: usize, rate: f32) -> Self {
+        let (lo, hi) = GEQ_RANGES[b.min(3)];
+        let hz = lo * (hi / lo).powf(freq);
+        let a = 10f32.powf(GEQ_DB * (2.0 * gain - 1.0) / 40.0);
+        let g = (std::f32::consts::PI * hz.min(0.49 * rate) / rate).tan();
+        let outer = b == 0 || b == 3;
+        if !outer || shape >= 0.5 {
+            let q = if outer { std::f32::consts::FRAC_1_SQRT_2 } else { 0.4 * 10f32.powf(shape) };
+            let k = 1.0 / (q * a);
+            return Self { g, k, m: [1.0, k * (a * a - 1.0), 0.0] };
+        }
+        // Simper's shelves: the corner moved by √A keeps the slope centred.
+        let k = std::f32::consts::SQRT_2;
+        if b == 0 {
+            Self { g: g / a.sqrt(), k, m: [1.0, k * (a - 1.0), a * a - 1.0] }
+        } else {
+            Self { g: g * a.sqrt(), k, m: [a * a, k * (1.0 - a) * a, 1.0 - a * a] }
         }
     }
 
@@ -391,6 +424,10 @@ fn units(chain: &Chain) -> impl Iterator<Item = Unit> + '_ {
                 }
                 (Shape::Eq, eq.bands.len() as u8)
             }
+            p if fx.kind == Kind::SolidGeq => {
+                knobs = blocks::fields(p)?;
+                (Shape::Geq, 4)
+            }
             _ => return None,
         };
         let kind = match &fx.params {
@@ -423,7 +460,7 @@ pub fn unsupported(chain: &Chain) -> Vec<String> {
                 out.push(format!("Group filter type {} is not implemented; audio passes through", f.filter_type));
             }
             Params::Filter(_) | Params::Eq(_) => {}
-            _ if Drive::supports(fx.kind) => {}
+            _ if Drive::supports(fx.kind) || fx.kind == Kind::SolidGeq => {}
             Params::StereoModeller(s) if s.pseudo_stereo => {
                 out.push("Group Stereo Modeller: pseudo stereo is not applied".into());
             }
@@ -613,7 +650,7 @@ impl GroupFilter {
     /// count rearranges them for the notes playing.
     fn set_type(&mut self, slot: u8, kind: i32) -> bool {
         let total: usize = self.units.iter().map(|u| u.sections as usize).sum();
-        let Some(u) = self.units.iter_mut().find(|u| u.slot == slot && u.shape != Shape::Eq) else {
+        let Some(u) = self.units.iter_mut().find(|u| u.slot == slot && !matches!(u.shape, Shape::Eq | Shape::Geq)) else {
             return false;
         };
         match filter_type(kind) {
@@ -805,6 +842,8 @@ impl Section {
 /// A Filter/EQ effect in an instrument rack or bus: the group filter's
 /// sections at the stored knobs.
 pub(crate) struct RackFilter {
+    unit: Unit,
+    rate: f32,
     sections: [Section; 4],
     active: usize,
 }
@@ -814,15 +853,36 @@ impl RackFilter {
     pub(crate) fn new(fx: &crate::fx::Effect, rate: f32) -> Option<Self> {
         let chain = Chain { slots: vec![fx.clone()] };
         let unit = units(&chain).next()?;
-        let mut out = Self { sections: [Section::default(); 4], active: 0 };
+        let mut out = Self { unit, rate, sections: [Section::default(); 4], active: 0 };
+        out.tune();
+        Some(out)
+    }
+
+    fn tune(&mut self) {
+        let unit = &self.unit;
+        self.active = 0;
         for b in 0..(unit.sections as usize).min(4) {
             let (key, flat) = unit.key(&unit.knobs, b);
             if !flat {
-                out.sections[out.active].coefficients(Proto::of(unit.shape, key, b, rate));
-                out.active += 1;
+                self.sections[self.active].coefficients(Proto::of(unit.shape, key, b, self.rate));
+                self.active += 1;
             }
         }
-        Some(out)
+    }
+
+    /// Set knob `n` (normalized), as [`GroupFilter::set_knob`] does with
+    /// [`Knob::Field`]; false if the unit has no such knob.
+    pub(crate) fn set(&mut self, kind: Kind, n: u8, value: f32) -> bool {
+        if !Knob::Field(kind, n).fits(self.unit.shape, self.unit.sections) {
+            return false;
+        }
+        self.unit.knobs[n as usize] = value.clamp(0.0, 1.0);
+        self.tune();
+        true
+    }
+
+    pub(crate) fn get(&self, kind: Kind, n: u8) -> Option<f32> {
+        Knob::Field(kind, n).fits(self.unit.shape, self.unit.sections).then(|| self.unit.knobs[n as usize])
     }
 
     pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
@@ -835,6 +895,10 @@ impl RackFilter {
         self.sections.iter_mut().for_each(|s| s.s = [0.0; 4]);
     }
 }
+
+/// Solid G-EQ gain span (±dB) and band ranges (Hz).
+const GEQ_DB: f32 = 15.0;
+const GEQ_RANGES: [(f32, f32); 4] = [(30.0, 450.0), (200.0, 2500.0), (600.0, 7000.0), (1500.0, 16_000.0)];
 
 /// EQ gain knobs this close to 0.5 (0 dB, ±0.01 dB) make a band an identity.
 const FLAT: f32 = 0.01 / (2.0 * GAIN_DB);
@@ -1606,7 +1670,7 @@ mod tests {
     /// and every modelled type plays finite audio.
     #[test]
     fn filter_types_switch_and_play() {
-        let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [0.6, 0.7, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2 };
+        let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [0.6, 0.7, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2 };
         let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [].into(), matrix: IDENTITY, envs: [].into(), ext: [].into() };
         let table = ModTable::default();
         let cc = [0u8; 128];
@@ -1639,7 +1703,7 @@ mod tests {
     #[test]
     fn drive_stages_bend_per_voice_in_slot_order() {
         // A low pass at slot 0, Saturation (shape 1) at slot 2.
-        let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2 };
+        let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2 };
         let mut fields = [0.0; blocks::FIELDS];
         fields[0] = 1.0;
         let stage = Stage { slot: 2, kind: Kind::SurroundPanner, fields, bypass: false, gain: 1.0 };
@@ -1670,6 +1734,19 @@ mod tests {
         assert!(f.set_knob(2, Knob::Bypass, 1.0));
         assert!(voice.hold(&f, &table, RATE).is_some());
         assert!(!f.set_knob(2, Knob::Field(Kind::LoFi, 0), 0.5), "another effect's value");
+    }
+
+    #[test]
+    fn geq_shelves_and_bells() {
+        let db = |p: Proto, hz: f32| 20.0 * p.gain(hz, RATE).log10();
+        // LF shelf +15 dB at 116 Hz; HF shelf -15 dB at 4.9 kHz.
+        let lf = Proto::geq([1.0, 0.5, 0.0], 0, RATE);
+        assert!((db(lf, 20.0) - 15.0).abs() < 1.5 && db(lf, 5000.0).abs() < 0.5, "{} {}", db(lf, 20.0), db(lf, 5000.0));
+        let hf = Proto::geq([0.0, 0.5, 0.0], 3, RATE);
+        assert!((db(hf, 20_000.0) + 15.0).abs() < 2.0 && db(hf, 200.0).abs() < 0.5, "{} {}", db(hf, 20_000.0), db(hf, 200.0));
+        // Bell switch on: a peak at the frequency, flat away from it.
+        let bell = Proto::geq([1.0, 0.5, 1.0], 0, RATE);
+        assert!((db(bell, 116.2) - 15.0).abs() < 0.3 && db(bell, 5000.0).abs() < 0.5);
     }
 
     #[test]

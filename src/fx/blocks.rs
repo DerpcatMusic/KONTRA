@@ -1,6 +1,6 @@
 //! DSP for the effects Kontakt stores as plain value lists
-//! ([`Params::Fields`]): dynamics, delays, modulation, drive, Lo-Fi and the
-//! Solid G-EQ, plus the rack Filter/EQ. Kontakt's algorithms and most of
+//! ([`Params::Fields`]): dynamics, delays, modulation, drive and Lo-Fi, plus
+//! the rack Filter/EQ and Solid G-EQ (the group filter's sections). Kontakt's algorithms and most of
 //! its knob laws are not public; each block reproduces the controls with a
 //! standard topology, and the laws (confidence in `audits/EFFECTS.md`) are
 //! the constants below.
@@ -45,6 +45,8 @@ enum Law {
     Lin(f32, f32),
     /// Stored in units, `max · x³`.
     Cube(f32),
+    /// The script's raw value (`$NI_SYNC_UNIT_*`), not scaled by 1e6.
+    Raw,
 }
 
 impl Law {
@@ -54,6 +56,7 @@ impl Law {
             Law::Norm => x,
             Law::Lin(lo, hi) => lo + (hi - lo) * x,
             Law::Cube(max) => max * x * x * x,
+            Law::Raw => (x * 1e6).round(),
         }
     }
 
@@ -62,6 +65,7 @@ impl Law {
             Law::Norm => v,
             Law::Lin(lo, hi) => (v - lo) / (hi - lo),
             Law::Cube(max) => (v / max).max(0.0).cbrt(),
+            Law::Raw => v.max(0.0) / 1e6,
         };
         x.clamp(0.0, 1.0)
     }
@@ -89,6 +93,10 @@ const PARS: &[(&str, Kind, u8, Law)] = &[
     ("$ENGINE_PAR_DL_DAMPING", Kind::Delay, 1, Law::Norm),
     ("$ENGINE_PAR_DL_PAN", Kind::Delay, 2, Law::Norm),
     ("$ENGINE_PAR_DL_FEEDBACK", Kind::Delay, 3, Law::Norm),
+    ("$ENGINE_PAR_DL_TIME_UNIT", Kind::Delay, 4, Law::Raw),
+    ("$ENGINE_PAR_CH_SPEED_UNIT", Kind::Chorus, 3, Law::Raw),
+    ("$ENGINE_PAR_FL_SPEED_UNIT", Kind::Flanger, 5, Law::Raw),
+    ("$ENGINE_PAR_PH_SPEED_UNIT", Kind::Phaser, 4, Law::Raw),
     ("$ENGINE_PAR_CH_DEPTH", Kind::Chorus, 0, Law::Norm),
     ("$ENGINE_PAR_CH_SPEED", Kind::Chorus, 1, Law::Norm),
     ("$ENGINE_PAR_CH_PHASE", Kind::Chorus, 2, Law::Norm),
@@ -393,97 +401,6 @@ impl Drive {
     }
 }
 
-/// Stereo biquad (RBJ cookbook), transposed direct form II.
-#[derive(Clone, Copy, Debug, Default)]
-struct Biquad {
-    b: [f32; 3],
-    a: [f32; 2],
-    s: [[f32; 2]; 2],
-}
-
-impl Biquad {
-    /// Peaking (`shelf` 0), low shelf (-1) or high shelf (1).
-    fn set(&mut self, shelf: i8, hz: f32, q: f32, gain_db: f32, rate: f32) {
-        let a = 10f32.powf(gain_db / 40.0);
-        let w = TAU * hz.min(0.45 * rate) / rate;
-        let (sin, cos) = w.sin_cos();
-        let alpha = sin / (2.0 * q);
-        let (b, den) = match shelf {
-            0 => ([1.0 + alpha * a, -2.0 * cos, 1.0 - alpha * a], [1.0 + alpha / a, -2.0 * cos, 1.0 - alpha / a]),
-            _ => shelf_coefficients(shelf, a, cos, alpha),
-        };
-        self.b = [b[0] / den[0], b[1] / den[0], b[2] / den[0]];
-        self.a = [den[1] / den[0], den[2] / den[0]];
-    }
-
-    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let ([b0, b1, b2], [a1, a2]) = (self.b, self.a);
-        for (ch, buf) in [left, right].into_iter().enumerate() {
-            let [mut z1, mut z2] = self.s[ch];
-            for x in buf.iter_mut() {
-                let y = b0 * *x + z1;
-                z1 = b1 * *x - a1 * y + z2 + ANTI_DENORMAL;
-                z2 = b2 * *x - a2 * y;
-                *x = y;
-            }
-            self.s[ch] = [z1, z2];
-        }
-    }
-}
-
-/// RBJ shelves: `shelf` -1 low, 1 high.
-fn shelf_coefficients(shelf: i8, a: f32, cos: f32, alpha: f32) -> ([f32; 3], [f32; 3]) {
-    let s = 2.0 * a.sqrt() * alpha;
-    let (p, m) = (a + 1.0, a - 1.0);
-    if shelf < 0 {
-        (
-            [a * (p - m * cos + s), 2.0 * a * (m - p * cos), a * (p - m * cos - s)],
-            [p + m * cos + s, -2.0 * (m + p * cos), p + m * cos - s],
-        )
-    } else {
-        (
-            [a * (p + m * cos + s), -2.0 * a * (m + p * cos), a * (p + m * cos - s)],
-            [p - m * cos + s, 2.0 * (m - p * cos), p - m * cos - s],
-        )
-    }
-}
-
-/// Solid G-EQ: LF shelf (or bell), two bells, HF shelf (or bell). Gains
-/// ±15 dB about 0.5; frequencies sweep each band's SSL range (log); Q
-/// 0.4..=4.
-struct Geq {
-    bands: [Biquad; 4],
-}
-
-impl Geq {
-    const RANGES: [(f32, f32); 4] = [(30.0, 450.0), (200.0, 2500.0), (600.0, 7000.0), (1500.0, 16_000.0)];
-
-    fn tune(&mut self, f: &Fields, rate: f32) {
-        let x = |i: usize| f[i].clamp(0.0, 1.0);
-        let hz = |band: usize, v: f32| {
-            let (lo, hi) = Self::RANGES[band];
-            lo * (hi / lo).powf(v)
-        };
-        let gain = |v: f32| 30.0 * (v - 0.5);
-        let q = |v: f32| 0.4 * 10f32.powf(v);
-        let lf = if x(2) >= 0.5 { 0 } else { -1 };
-        let hf = if x(11) >= 0.5 { 0 } else { 1 };
-        self.bands[0].set(lf, hz(0, x(1)), std::f32::consts::FRAC_1_SQRT_2, gain(x(0)), rate);
-        self.bands[1].set(0, hz(1, x(4)), q(x(5)), gain(x(3)), rate);
-        self.bands[2].set(0, hz(2, x(7)), q(x(8)), gain(x(6)), rate);
-        self.bands[3].set(hf, hz(3, x(10)), std::f32::consts::FRAC_1_SQRT_2, gain(x(9)), rate);
-    }
-
-    /// Flat bands (within 0.01 dB) are skipped.
-    fn process(&mut self, f: &Fields, left: &mut [f32], right: &mut [f32]) {
-        for (band, gain) in self.bands.iter_mut().zip([0, 3, 6, 9]) {
-            if (f[gain] - 0.5).abs() * 30.0 > 0.01 {
-                band.process(left, right);
-            }
-        }
-    }
-}
-
 /// Feed-forward (or feedback) compressor with a level detector in dB.
 struct Comp {
     threshold: f32,
@@ -675,8 +592,8 @@ impl Lines {
     }
 }
 
-/// Legacy Delay: time (free ms; synced units read as sixteenths at 120
-/// BPM), damping (a low-pass in the loop, 20 kHz..=1 kHz), pan (how much
+/// Legacy Delay: time (ms while the unit is -1, as stored, or
+/// `$NI_SYNC_UNIT_ABS`; other units read as sixteenths at 120 BPM), damping (a low-pass in the loop, 20 kHz..=1 kHz), pan (how much
 /// of the feedback crosses channels: ping-pong at 1) and feedback 0..=1.
 /// Wet only; the slot mixes the dry signal.
 struct Delay {
@@ -691,7 +608,7 @@ struct Delay {
 impl Delay {
     fn tune(&mut self, f: &Fields, rate: f32) {
         // ponytail: no host tempo here; synced delays assume 120 BPM.
-        let ms = if f[4] < 0.0 { f[0] } else { f[0] * 125.0 };
+        let ms = if f[4] <= 0.0 { f[0] } else { f[0] * 125.0 };
         self.frames = (ms.clamp(1.0, MAX_DELAY_S * 1000.0 - 10.0) * 0.001 * rate).max(1.0);
         self.damp = one_pole(20_000.0 * 0.05f32.powf(f[1].clamp(0.0, 1.0)), rate);
         self.cross = 0.5 * f[2].clamp(0.0, 1.0);
@@ -829,7 +746,6 @@ enum Dsp {
     Drive(Drive),
     Comp(Comp),
     Transient(Transient),
-    Geq(Geq),
     Delay(Delay),
     Sweep(Sweep),
     Phaser(Phaser),
@@ -848,7 +764,8 @@ impl Block {
     /// `None` for effects without DSP here. Allocates.
     pub(crate) fn new(fx: &Effect, rate: f32) -> Option<Box<Self>> {
         let kind = fx.kind;
-        if matches!(fx.params, Params::Filter(_) | Params::Eq(_)) {
+        // Filters, EQs and the Solid G-EQ: the group filter's sections.
+        if matches!(fx.params, Params::Filter(_) | Params::Eq(_)) || kind == Kind::SolidGeq {
             let dsp = Dsp::Filter(RackFilter::new(fx, rate)?);
             return Some(Box::new(Self { kind, fields: [0.0; FIELDS], rate, dsp }));
         }
@@ -859,7 +776,6 @@ impl Block {
             Kind::TransientMaster => {
                 Dsp::Transient(Transient { input: 1.0, attack: 0.0, sustain: 0.0, k: [1.0; 4], env: [FLOOR_DB; 2] })
             }
-            Kind::SolidGeq => Dsp::Geq(Geq { bands: [Biquad::default(); 4] }),
             Kind::Delay => Dsp::Delay(Delay {
                 lines: Lines::new((MAX_DELAY_S * rate) as usize),
                 frames: 1.0,
@@ -903,7 +819,6 @@ impl Block {
             }
             Dsp::Comp(c) => c.tune(kind, f, rate),
             Dsp::Transient(t) => t.tune(f, rate),
-            Dsp::Geq(g) => g.tune(f, rate),
             Dsp::Delay(d) => d.tune(f, rate),
             Dsp::Sweep(s) => s.tune(kind, f, rate),
             Dsp::Phaser(p) => p.tune(f, rate),
@@ -914,6 +829,9 @@ impl Block {
     /// Set stored `field` of a `kind` effect from a script's normalized
     /// value; false when this is another effect.
     pub(crate) fn set(&mut self, kind: Kind, field: u8, x: f32) -> bool {
+        if let Dsp::Filter(f) = &mut self.dsp {
+            return f.set(kind, field, stored(kind, field, x));
+        }
         let Some(v) = (kind == self.kind).then_some(()).and(self.fields.get_mut(field as usize)) else {
             return false;
         };
@@ -924,6 +842,9 @@ impl Block {
 
     /// A stored field as the script reads it.
     pub(crate) fn get(&self, kind: Kind, field: u8) -> Option<f32> {
+        if let Dsp::Filter(f) = &self.dsp {
+            return f.get(kind, field);
+        }
         (kind == self.kind).then_some(())?;
         Some(normalized(kind, field, *self.fields.get(field as usize)?))
     }
@@ -933,7 +854,6 @@ impl Block {
             Dsp::Drive(d) => d.clear(),
             Dsp::Comp(c) => c.clear(),
             Dsp::Transient(t) => t.env = [FLOOR_DB; 2],
-            Dsp::Geq(g) => g.bands.iter_mut().for_each(|b| b.s = [[0.0; 2]; 2]),
             Dsp::Delay(d) => {
                 d.lines.clear();
                 d.lp = [0.0; 2];
@@ -957,7 +877,7 @@ impl Block {
                 (rings * (s.base + s.depth)) as usize
             }
             Dsp::Comp(_) | Dsp::Transient(_) => ms(50.0),
-            Dsp::Phaser(_) | Dsp::Geq(_) | Dsp::Filter(_) => ms(100.0),
+            Dsp::Phaser(_) | Dsp::Filter(_) => ms(100.0),
             Dsp::Drive(_) => ms(10.0),
         }
     }
@@ -967,7 +887,6 @@ impl Block {
             Dsp::Drive(d) => d.process(left, right),
             Dsp::Comp(c) => c.process(left, right),
             Dsp::Transient(t) => t.process(left, right),
-            Dsp::Geq(g) => g.process(&self.fields, left, right),
             Dsp::Delay(d) => d.process(left, right),
             Dsp::Sweep(s) => s.process(left, right),
             Dsp::Phaser(p) => p.process(left, right),

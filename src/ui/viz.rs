@@ -217,6 +217,7 @@ pub fn filter_handles(s: &GroupSettings) -> Vec<Handle> {
                     active: !unit.bypass,
                 });
             }
+            Shape::Geq => {}
             Shape::Eq => {
                 for b in 0..unit.sections {
                     let k = &unit.knobs[3 * b as usize..];
