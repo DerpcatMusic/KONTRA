@@ -70,6 +70,12 @@ panic = "unwind"
 lto = "thin"
 strip = "symbols"
 
+# Fast verification keeps release optimization and assertion semantics, but skips
+# cross-crate ThinLTO. Nightly/manual shipping gates still test `release` itself.
+[profile.ci]
+inherits = "release"
+lto = false
+
 [profile.dev]
 debug = "line-tables-only"
 

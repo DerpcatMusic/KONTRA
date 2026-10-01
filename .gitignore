@@ -13,3 +13,6 @@
 # graft's local repository settings — not committed.
 /.graft/
 /.claude/worktrees/
+
+# Python workflow tests.
+/.github/scripts/__pycache__/
