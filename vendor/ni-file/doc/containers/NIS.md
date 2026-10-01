@@ -1,4 +1,4 @@
-# Native Instruments Sound Containers
+# NIS Sound Containers
 
 The most modern repository/container format for almost all types of NI files.
 
@@ -19,7 +19,7 @@ Maschine uses the domainID as `MAS2` and the itemID as `SLOT` for `Preset` child
 
 Each Item (which could be thought of as a record in a document store db or an element in an xml document) is identified by two properties: its domain and ID. The ID is a u16 number and the domain, a [FOURCC](https://en.wikipedia.org/wiki/FourCC), allows for application specific objects to be defined without breaking the format.
 
-The common domain is `nisd`, or Native Instruments Sound Domain. Other examples include `kon4` for Kontakt42 and `MAS2` for maschine. Most objects will be `nisd`.
+The common domain is `nisd`, the common sound domain. Other examples include `kon4` for Kontakt42 and `MAS2` for maschine. Most objects will be `nisd`.
 
 The type is used to determine which children might be present and the structure of the Items properties.
 
@@ -57,7 +57,7 @@ RepositoryRoot:
 
 The object directly under the root is a `Preset`, and the preset contains three standard objects including `EncryptionItem`, whose property contains a `SubtreeItem`, which wraps the inner document containing the actual preset data.
 
-This may sound complicated, and it is for a simple preset structure, and this is more evidence of Native Instruments over-engineered attempts at vendor lockin through complexity. But once fully reverse engineered and understood, it is manageable.
+This is a complicated structure for a preset, but it becomes manageable once its nested records are decoded.
 
 ### Preset
 

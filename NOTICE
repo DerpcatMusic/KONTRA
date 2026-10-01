@@ -1,5 +1,6 @@
 KONTRA
 Copyright 2026 Matari Audio
+Copyright 2026 DerpcatMusic and contributors
 
 This product is licensed under the Apache License, Version 2.0 (see
 LICENSE). Third-party components and their licenses are listed in
@@ -7,10 +8,10 @@ THIRD_PARTY.md.
 
 KONTRA is an independent educational and research project about sample
 playback and instrument file formats. It is not affiliated with,
-sponsored by, or endorsed by Native Instruments GmbH.
+sponsored by, or endorsed by the owner of Kontakt.
 
-Kontakt, Kontakt Player and NKI are trademarks of Native Instruments
-GmbH. Other product names are trademarks of their respective owners and
+Kontakt and Kontakt Player are trademarks of their owner.
+Other product names are trademarks of their respective owners and
 are used here only to describe compatibility.
 
 KONTRA ships no third-party instruments, samples, scripts or artwork.

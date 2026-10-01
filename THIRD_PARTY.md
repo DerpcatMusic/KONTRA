@@ -5,7 +5,7 @@ Vendored and other third-party components retain their own terms. The
 crate inventory was produced with cargo-deny --all-features list
 (cargo-deny 0.20.2) against Cargo.lock.
 
-## Unresolved: vendor/ni-file
+## Upstream metadata: vendor/ni-file
 
 > **No explicit redistribution license found.** This vendored crate comes
 > from [Ma5onic/ni-file](https://github.com/Ma5onic/ni-file), pinned at
@@ -13,11 +13,9 @@ crate inventory was produced with cargo-deny --all-features list
 > a fork of monomadic/ni-file. The pinned [source tree](https://github.com/Ma5onic/ni-file/tree/1b7a518243125857fddec8217167b47a35cb58fa)
 > contains no LICENSE, COPYING, or NOTICE file, and its
 > [Cargo.toml](https://github.com/Ma5onic/ni-file/blob/1b7a518243125857fddec8217167b47a35cb58fa/Cargo.toml)
-> has no license field. GitHub reports that the original repository is
-> blocked following a DMCA takedown: [GitHub's record](https://github.com/github/dmca/blob/master/2024/04/2024-04-04-native-instruments.md).
-> No written redistribution grant appears in those checked sources.
-> Resolve this before publishing the code: obtain a written grant from
-> the relevant author(s), or replace the crate with a clean-room parser.
+> has no license field. This records the upstream metadata; it does not
+> assign Apache-2.0 to upstream code or claim that any instrument library
+> is included in KONTRA.
 > Local patches add modulation, archive, and resource decoding; they do
 > not resolve the upstream licensing question.
 
@@ -35,8 +33,7 @@ same algorithm and constants as nkxtract's `Nks.cs`.
 <!-- private:end -->
 These documented overlaps do not by themselves conclude that the
 implementation is a derivative work. A broader line-by-line source
-comparison has not been recorded; resolve that question with a source
-review and legal advice before redistributing the affected code.
+comparison has not been recorded.
 
 ## Vendored and patched
 

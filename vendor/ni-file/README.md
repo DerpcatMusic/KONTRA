@@ -2,9 +2,9 @@
   <img src="assets/banner.jpg" />
 </p>
 
-# Native Instruments File Format
+# Kontakt Family File Formats
 
-A reverse engineering effort for the Native Instruments file formats.
+A reverse engineering effort for the the Kontakt developer file formats.
 
 This Rust library will serve as a reference implementation and is the result of countless hours of painstaking reverse engineering and research. As this repository also serves as a research base, the implementation will shift drastically for a while and the code will be under a state of refactoring.
 

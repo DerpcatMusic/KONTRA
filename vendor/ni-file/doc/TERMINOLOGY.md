@@ -1,25 +1,25 @@
 # Terminology
 
-- `NI` abbreviation for Native Instruments.
+- `NI` original format-family identifier.
 - `Patch/Instrument` A configuration of an instrument, including samples and settings.
 - `Preset` A pre-configured setting within a patch.
 - `Multi` A group of patches/instruments.
 - `NISound` / `NIS` most modern format for NI presets and instruments.
 - `Container` the structure of a NISound file.
-- `NKI` Native Instruments Kontakt Instrument
-- `NKS` Native Instruments Kontakt Secure Monolith (encrypted)
-- `NKX` Native Instruments Kontakt Xtra Secure Monolith (encrypted plus library key needed)
-- `NKM` Native Instruments Kontakt Multi
-- `NKB` Native Instruments Kontakt Bank
-- `NKP` Native Instruments Preset
-- `NKR` Native Instruments Resource
-- `NCW` Native Instruments Lossless Compression Audio File
-- `NKC` Native Instruments Cache
-- `NKSN` Native Instruments Snapshot
+- `NKI` Kontakt Instrument
+- `NKS` Kontakt Secure Monolith (encrypted)
+- `NKX` Kontakt Xtra Secure Monolith (encrypted plus library key needed)
+- `NKM` Kontakt Multi
+- `NKB` Kontakt Bank
+- `NKP` Preset
+- `NKR` Resource
+- `NCW` Lossless Compression Audio File
+- `NKC` Cache
+- `NKSN` Snapshot
 - `GP` unknown namespace, perhaps 'General Purpose'?
 - `PA` product authentication namespace
 - `AB` AudioBlock?
-- `NISD` Native Instruments Sound Domain. (a domainID).
+- `NISD` Sound Domain. (a domainID).
 - `StructuredObject` Generic structure for Kontakt patch chunks.
 - `K4PO` Kontakt 4 Public Object
 - `K4PL` Kontakt 4 Patch Library

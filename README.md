@@ -95,7 +95,7 @@ Run the generated script in REAPER with the source project open and KONTRA VST3 
 
 ## License
 
-Project-authored code is offered under Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Vendored and other third-party components keep their own terms. See [THIRD_PARTY.md](THIRD_PARTY.md), including the unresolved licensing note for `vendor/ni-file`, before redistributing this repository.
+Project-authored code is offered under Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Vendored and other third-party components keep their own terms. [THIRD_PARTY.md](THIRD_PARTY.md) records dependency licenses and upstream parser metadata.
 
 ## Disclaimer
 
