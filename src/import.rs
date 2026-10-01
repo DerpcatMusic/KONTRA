@@ -64,10 +64,10 @@ pub struct VoiceLimit {
     pub exclusion_group: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct Loop { pub start: usize, pub end: usize, pub until_release: bool, pub crossfade: usize }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct Zone {
     pub group: usize,
     pub sample: PathBuf,
@@ -321,6 +321,7 @@ pub fn source_inventory(path:&Path)->Result<serde_json::Value>{
 
 /// Program `index` of `path`, from the on-disk cache when it is current.
 fn read_inner(path: &Path, index: u32) -> Result<Instrument> {
+    if crate::creator::is_native(path) { return crate::creator::read_native(path); }
     let path = path.canonicalize()?;
     let dir = crate::cache::dir();
     if let Some(i) = dir.as_deref().and_then(|dir| crate::cache::load(dir, &path, index)) {
