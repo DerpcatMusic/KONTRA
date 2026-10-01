@@ -77,16 +77,16 @@ fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwor
             found.add(format!("out of bounds: {kind}"));
         }
         let (said, ..) = caption_of(c, s.kind, value(c));
-        if !said.trim().is_empty() && super::cover::advance(&said, FONT * 0.75) > s.w - 4. {
+        // A label breaks its lines and wraps where it is tall enough: it
+        // overflows when a line is wider than it, or the lines taller.
+        let lines = if s.kind == Kind::Label {
+            perf_view::break_lines(&said, s.w - 4., FONT * 0.75, s.h >= 2. * perf_view::LINE)
+        } else {
+            vec![said]
+        };
+        let wide = lines.iter().any(|l| !l.trim().is_empty() && super::cover::advance(l, FONT * 0.75) > s.w - 4.);
+        if wide || lines.len() > 1 && lines.len() as f64 * perf_view::LINE > s.h + 1. {
             found.add(format!("text overflow: {kind}"));
-        }
-        if let Some(t) = c.properties.get("$CONTROL_PAR_TEXT").and_then(|v| match v {
-            crate::ksp::Value::Text(t) => Some(t),
-            _ => None,
-        }) && t.trim_end().contains(['\n', '\r'])
-            && s.kind == Kind::Label
-        {
-            found.add("multi-line label drawn on one line");
         }
     }
     // Two controls taking the same clicks: more than half of the larger.
