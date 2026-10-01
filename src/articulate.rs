@@ -406,6 +406,9 @@ impl In {
 pub enum Out {
     NoteOn(u8, u8, u8),
     NoteOff(u8, u8),
+    /// Script channel, physical input channel, key, velocity.
+    NoteOnFrom(u8, u8, u8, u8),
+    NoteOffFrom(u8, u8, u8),
     Cc(u8, u8, u8),
     Bend(u8, u16),
     Pressure(u8, u8),
@@ -640,7 +643,11 @@ impl Router {
                 self.brightness[key as usize] = NONE;
                 self.set_expression(key, |x| *x = Expression { tune, ..Expression::default() }, out);
                 self.held[channel as usize][note as usize & 127] = (to, key);
-                out(Out::NoteOn(to, key, velocity));
+                if r.by_channel() && self.scripted {
+                    out(Out::NoteOnFrom(to, channel, key, velocity));
+                } else {
+                    out(Out::NoteOn(to, key, velocity));
+                }
             }
             In::NoteOff(_, note) => {
                 let (to, key) = match std::mem::replace(&mut self.held[channel as usize][note as usize & 127], (NONE, NONE)) {
@@ -650,10 +657,12 @@ impl Router {
                 if key == NONE {
                     return;
                 }
-                // Channel mode plays every channel on one: another channel's
-                // note on this key would end with it, in the engine and in
-                // scripts that track notes by key. The last one releases it.
-                // ponytail: an earlier note's release waits for the last one.
+                if r.by_channel() && self.scripted {
+                    out(Out::NoteOffFrom(to, channel, key));
+                    return;
+                }
+                // Unscripted notes still share the engine's channel/key pair.
+                // ponytail: use event ownership for unscripted channel mode too.
                 let shared = (0..16).any(|c| c != channel as usize && self.held[c][note as usize & 127] == (to, key));
                 if !shared {
                     out(Out::NoteOff(to, key));
@@ -767,6 +776,8 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
     match o {
         Out::NoteOn(c, n, v) => e.note_on(c, n, v),
         Out::NoteOff(c, n) => e.note_off(c, n),
+        Out::NoteOnFrom(c, owner, n, v) => e.note_on_from(c, owner, n, v),
+        Out::NoteOffFrom(c, owner, n) => e.note_off_from(c, owner, n),
         Out::Cc(c, cc, v) => e.cc(c, cc, v),
         Out::Bend(c, v) => e.pitch_bend(c, v),
         Out::Pressure(c, v) => e.channel_pressure(c, v),
@@ -988,7 +999,8 @@ mod tests {
         feed(&mut r, &mut e, In::NoteOff(0, 60), 0);
         feed(&mut r, &mut e, In::NoteOff(1, 60), 0);
         render(&mut e);
-        assert_eq!(voices(&e, 60, false), [0, 1, 2]);
+        assert_eq!(voices(&e, 60, false), [2], "each channel must release its own articulation");
+        assert!(e.key_down(0, 60), "the remaining legato note keeps the shared script key held");
         // The last one lets the key go.
         feed(&mut r, &mut e, In::NoteOff(2, 60), 0);
         render(&mut e);

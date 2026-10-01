@@ -1247,8 +1247,13 @@ impl Runtime {
     }
 
     pub fn note_on(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8, velocity: u8) {
+        self.note_on_from(engine, at, self.env.input.channel, note, velocity);
+    }
+
+    /// Physical input ownership can differ from the channel the script sees.
+    pub(crate) fn note_on_from(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: u8) {
         if velocity == 0 {
-            return self.note_off(engine, at, note);
+            return self.note_off_from(engine, at, owner, note);
         }
         self.advance(engine, at);
         let note = note.min(127);
@@ -1262,7 +1267,7 @@ impl Runtime {
         e.velocity = i32::from(velocity);
         e.channel = self.env.input.channel;
         e.held = true;
-        let keys = &mut self.env.input.keys[self.env.input.channel as usize][note as usize];
+        let keys = &mut self.env.input.keys[owner.min(15) as usize][note as usize];
         if keys.1 == 0 {
             keys.0 = id;
         } else {
@@ -1275,9 +1280,13 @@ impl Runtime {
     }
 
     pub fn note_off(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8) {
+        self.note_off_from(engine, at, self.env.input.channel, note);
+    }
+
+    pub(crate) fn note_off_from(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8) {
         self.advance(engine, at);
         let note = note.min(127);
-        let (mut id, _) = std::mem::take(&mut self.env.input.keys[self.env.input.channel as usize][note as usize]);
+        let (mut id, _) = std::mem::take(&mut self.env.input.keys[owner.min(15) as usize][note as usize]);
         let held = self.env.input.keys.iter().any(|channel| channel[note as usize].0 != 0);
         self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
         self.key_down_oct(note);
@@ -1289,6 +1298,19 @@ impl Runtime {
             id = next;
         }
         self.settle(engine);
+    }
+
+    /// Whether a different input still holds a note on this script channel.
+    pub(crate) fn key_down_except(&self, owner: u8, channel: u8, note: u8) -> bool {
+        self.env.input.keys.iter().enumerate().any(|(c, keys)| {
+            if c == owner as usize { return false; }
+            let mut id = keys[note.min(127) as usize].0;
+            while let Some(e) = self.env.events.get(id) {
+                if e.channel == channel { return true; }
+                id = e.next_input;
+            }
+            false
+        })
     }
 
     /// Controller 0..127; use `pitch_bend`/`channel_pressure` for the virtual ones.

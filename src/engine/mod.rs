@@ -473,30 +473,40 @@ impl Engine {
 
     /// Note input takes effect at the start of the next [`render`](Self::render).
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
-        if channel >= 16 || note >= 128 {
+        self.note_on_from(channel, channel, note, velocity);
+    }
+
+    pub(crate) fn note_on_from(&mut self, channel: u8, owner: u8, note: u8, velocity: u8) {
+        if channel >= 16 || owner >= 16 || note >= 128 {
             return;
         }
         if velocity == 0 {
-            return self.note_off(channel, note);
+            return self.note_off_from(channel, owner, note);
         }
         self.player.keys[channel as usize][note as usize] = velocity.min(127);
         self.player.key_on[channel as usize][note as usize] = self.player.now;
         if let Some((rt, mut host)) = self.scripted(channel) {
-            return rt.note_on(&mut host, 0, note, velocity.min(127));
+            return rt.note_on_from(&mut host, 0, owner, note, velocity.min(127));
         }
         self.player.pedal_releases[channel as usize][note as usize] = 0;
         self.start_event(&NoteEvent::new(channel, note, velocity));
     }
 
     pub fn note_off(&mut self, channel: u8, note: u8) {
-        if channel >= 16 || note >= 128 {
+        self.note_off_from(channel, channel, note);
+    }
+
+    pub(crate) fn note_off_from(&mut self, channel: u8, owner: u8, note: u8) {
+        if channel >= 16 || owner >= 16 || note >= 128 {
             return;
         }
         if self.script.is_some() {
-            self.player.keys[channel as usize][note as usize] = 0;
-            self.player.key_up[channel as usize][note as usize] = self.player.now;
+            if !self.script.as_ref().unwrap().key_down_except(owner, channel, note) {
+                self.player.keys[channel as usize][note as usize] = 0;
+                self.player.key_up[channel as usize][note as usize] = self.player.now;
+            }
             if let Some((rt, mut host)) = self.scripted(channel) {
-                rt.note_off(&mut host, 0, note);
+                rt.note_off_from(&mut host, 0, owner, note);
             }
             return;
         }
