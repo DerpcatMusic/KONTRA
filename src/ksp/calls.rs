@@ -682,11 +682,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         AllowGroup | DisallowGroup => {
             let [group] = ints(m);
             let id = m.t.ctx.event;
-            match m.env.events.get_mut(id).filter(|e| !e.at_engine) {
+            let release = m.t.ctx.kind == Kind::Cb(Callback::Release);
+            let note = m.t.ctx.kind == Kind::Cb(Callback::Note);
+            match m.env.events.get_mut(id).filter(|e| release || (note && !e.at_engine)) {
                 Some(e) => allow(&mut e.groups, group, f == AllowGroup),
                 None => m
                     .env
-                    .note("allow_group/disallow_group outside a note callback has no effect"),
+                    .note("allow_group/disallow_group needs a pending note or release callback"),
             }
             Ok(Step::Next)
         }

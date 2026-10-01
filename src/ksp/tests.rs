@@ -769,6 +769,14 @@ fn group_masks_and_voice_parameters() {
 }
 
 #[test]
+fn release_callbacks_select_groups_for_their_generated_notes() {
+    let mut rig = Rig::new(&["on release\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nplay_note(80,100,0,0)\nend on"]);
+    rig.on(0, 60).off(50, 60);
+    assert_eq!(rig.log(), ["play 60@0 v1 [0, 1, 2]", "play 80@50 v2 [1] sample", "off v1@50"]);
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+}
+
+#[test]
 fn event_par_array_addresses_the_current_event() {
     let script = "on init\nend on\non note\n%EVENT_PAR[$EVENT_PAR_1] := 5\nmessage(get_event_par($EVENT_ID, $EVENT_PAR_1) + %EVENT_PAR[$EVENT_PAR_1])\nend on";
     let mut rig = Rig::new(&[script]);
