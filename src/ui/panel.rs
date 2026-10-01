@@ -346,8 +346,9 @@ fn read(
         Some(Value::Text(s)) => s.as_str(),
         _ => "",
     };
-    // $HIDE_WHOLE_CONTROL; the other bits hide parts of a picture.
-    let hidden = int("HIDE").is_some_and(|h| h as i32 & 16 != 0);
+    // $HIDE_WHOLE_CONTROL, its own or a panel's it is in; the other bits
+    // hide parts of a picture.
+    let (x, y, hidden) = super::perf_view::placed(interface, control);
     let picture_name = text("PICTURE");
     // A logo that opens a credits page is branding, not a control.
     if [picture_name, c.variable.as_str()]
@@ -366,8 +367,8 @@ fn read(
         ),
     };
     let at = Rect {
-        x: int("POS_X").unwrap_or(0.),
-        y: int("POS_Y").unwrap_or(0.),
+        x,
+        y,
         w,
         h,
     };
@@ -1832,6 +1833,7 @@ mod tests {
 
     fn control(kind: &str, var: &str, props: &[(&str, Value)]) -> Control {
         Control {
+            id: 0,
             variable: var.into(),
             kind: kind.into(),
             properties: props

@@ -163,12 +163,42 @@ pub fn scale(avail: f64, width: f64, setting: f32) -> f64 {
     if fit >= 1. { fit.floor() } else { fit }
 }
 
+/// Where control `n` sits on the view, and whether it is hidden: a control
+/// in a `ui_panel` (`$CONTROL_PAR_PARENT_PANEL`) is placed from its panel's
+/// corner, and hidden with it, all the way up.
+// ponytail: finds each parent by a scan; index the IDs if views with
+// thousands of nested controls show up.
+pub(super) fn placed(interface: &Interface, n: usize) -> (f64, f64, bool) {
+    let (mut x, mut y, mut at) = (0., 0., n);
+    // A panel in itself, or a deeper chain than any script builds, stops.
+    for _ in 0..16 {
+        let c = &interface.controls[at];
+        if int(c, "$CONTROL_PAR_HIDE").unwrap_or(0) & HIDE_WHOLE != 0 {
+            return (x, y, true);
+        }
+        x += f64::from(int(c, "$CONTROL_PAR_POS_X").unwrap_or(0));
+        y += f64::from(int(c, "$CONTROL_PAR_POS_Y").unwrap_or(0));
+        let parent = int(c, "$CONTROL_PAR_PARENT_PANEL")
+            .and_then(|id| interface.controls.iter().position(|p| p.id == id && p.kind == "ui_panel"));
+        match parent {
+            Some(p) if p != at => at = p,
+            _ => break,
+        }
+    }
+    (x, y, false)
+}
+
 /// The visible controls in drawing order: back layer first, then as
 /// declared. Kontakt sizes a control to a picture that does not stretch.
+/// A panel only places and hides what is in it.
 pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec<Shown> {
     let mut out: Vec<Shown> = (interface.controls.iter().enumerate())
-        .filter(|(_, c)| int(c, "$CONTROL_PAR_HIDE").unwrap_or(0) & HIDE_WHOLE == 0)
-        .map(|(n, c)| {
+        .filter(|(_, c)| c.kind != "ui_panel")
+        .filter_map(|(n, c)| {
+            let (x, y, hidden) = placed(interface, n);
+            if hidden {
+                return None;
+            }
             let picture = pictures.get(prop(c, "$CONTROL_PAR_PICTURE")).filter(|p| !p.frames.is_empty()).cloned();
             let size = |k: &str, or: i32| f64::from(int(c, k).unwrap_or(or));
             let kind = Kind::of(&c.kind);
@@ -178,16 +208,16 @@ pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -
                 None if kind == Kind::Knob => (size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 52).max(52.)),
                 _ => (size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 18)),
             };
-            Shown {
+            Some(Shown {
                 control: n,
                 kind,
-                x: size("$CONTROL_PAR_POS_X", 0),
-                y: size("$CONTROL_PAR_POS_Y", 0),
+                x,
+                y,
                 w,
                 h,
                 z: int(c, "$CONTROL_PAR_Z_LAYER").unwrap_or(0),
                 picture,
-            }
+            })
         })
         .filter(|s| s.w > 0. && s.h > 0. && s.x < f64::from(interface.width) && s.y < f64::from(interface.height))
         .filter(|s| s.x + s.w > 0. && s.y + s.h > 0.)
@@ -253,7 +283,10 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
         // An edit may change the interface in place.
         for c in &i.controls {
             for (k, v) in &c.properties {
-                if matches!(k.as_str(), "$CONTROL_PAR_VALUE" | "$CONTROL_PAR_LABEL" | "$CONTROL_PAR_HIDE") {
+                if matches!(
+                    k.as_str(),
+                    "$CONTROL_PAR_VALUE" | "$CONTROL_PAR_LABEL" | "$CONTROL_PAR_HIDE" | "$CONTROL_PAR_TEXT" | "$CONTROL_PAR_POS_X" | "$CONTROL_PAR_POS_Y" | "$CONTROL_PAR_PARENT_PANEL"
+                ) {
                     format!("{v:?}").hash(&mut h);
                 }
             }
@@ -806,6 +839,7 @@ mod tests {
 
     fn control(kind: &str, props: &[(&str, Value)]) -> Control {
         Control {
+            id: 0,
             variable: "$c".into(),
             kind: kind.into(),
             properties: props.iter().map(|(k, v)| (format!("$CONTROL_PAR_{k}"), v.clone())).collect::<BTreeMap<_, _>>(),
@@ -883,6 +917,37 @@ mod tests {
         assert_eq!((shown[0].w, shown[0].h), (600., 300.), "a resizable picture stretches to the control");
         assert!(shown[2].picture.is_none(), "a missing picture falls back to a plain control");
         assert_eq!((shown[2].w, shown[2].h), (85., 18.));
+    }
+
+    #[test]
+    fn panels_place_and_hide_what_is_in_them() {
+        let with_id = |id: i32, kind: &str, props: &[(&str, Value)]| Control { id, ..control(kind, props) };
+        let at = |x: i32, y: i32, parent: i32| vec![("POS_X", Value::Int(x)), ("POS_Y", Value::Int(y)), ("PARENT_PANEL", Value::Int(parent))];
+        let mut interface = Interface {
+            performance: true,
+            width: 600,
+            height: 300,
+            controls: vec![
+                with_id(32768, "ui_panel", &[("POS_X", Value::Int(100)), ("POS_Y", Value::Int(50))]),
+                with_id(32769, "ui_panel", &at(10, 10, 32768)),
+                with_id(32770, "ui_knob", &at(5, 5, 32769)),
+                with_id(32771, "ui_button", &at(0, 0, 32768)),
+                // Not a panel: its parent ID is ignored.
+                with_id(32772, "ui_switch", &at(7, 8, 32771)),
+                // A panel in itself does not loop.
+                with_id(32773, "ui_panel", &at(1, 1, 32773)),
+            ],
+            ..Interface::default()
+        };
+        let pictures = HashMap::new();
+        let spots = |i: &Interface| layout(i, &pictures).iter().map(|s| (s.control, s.x, s.y)).collect::<Vec<_>>();
+        assert_eq!(spots(&interface), [(2, 115., 65.), (3, 100., 50.), (4, 7., 8.)], "children from their panels' corners; panels draw nothing");
+        // The inner panel hidden hides its knob; the outer hides both.
+        interface.controls[1].properties.insert("$CONTROL_PAR_HIDE".into(), Value::Int(HIDE_WHOLE));
+        assert_eq!(spots(&interface), [(3, 100., 50.), (4, 7., 8.)]);
+        interface.controls[1].properties.insert("$CONTROL_PAR_HIDE".into(), Value::Int(0));
+        interface.controls[0].properties.insert("$CONTROL_PAR_HIDE".into(), Value::Int(HIDE_WHOLE));
+        assert_eq!(spots(&interface), [(4, 7., 8.)]);
     }
 
     #[test]
