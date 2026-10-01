@@ -1904,10 +1904,23 @@ fn align(params: &SamplerParams) {
         shared.reported.store(told(&plan).to_bits(), Ordering::Relaxed);
     }
 }
+fn timing_for(p: &Part) -> std::borrow::Cow<'_, Timing> {
+    if p.timing.measured(&p.path, p.program) {
+        std::borrow::Cow::Borrowed(&p.timing)
+    } else {
+        // Keep the part-level controls, but discard measurements for another patch.
+        std::borrow::Cow::Owned(Timing {
+            override_ms: p.timing.override_ms,
+            exclude: p.timing.exclude,
+            ..Timing::default()
+        })
+    }
+}
+
 /// What the audio thread aligns by, from the persisted rack.
 pub(crate) fn plan(selection: &Selection) -> Plan {
     let parts = || selection.parts.iter().take(RACK_SLOTS).filter(|p| !p.path.is_empty());
-    let latency_ms = timing::reported_ms(parts().map(|p| p.timing.latest()));
+    let latency_ms = timing::reported_ms(parts().map(|p| timing_for(p).latest()));
     Plan {
         on: selection.auto_align,
         transport_only: selection.align_transport_only,
@@ -1917,7 +1930,7 @@ pub(crate) fn plan(selection: &Selection) -> Plan {
                 let a = &p.articulate;
                 let names: Vec<&str> =
                     if a.source == p.path { a.articulations.iter().map(|a| a.name.as_str()).collect() } else { Vec::new() };
-                Holds::of(&p.timing, &names, latency_ms)
+                Holds::of(timing_for(p).as_ref(), &names, latency_ms)
             })
         }),
     }
@@ -3777,7 +3790,7 @@ end on"
                 parts: [10.0, 30.0]
                     .map(|ms| Part {
                         path: "late.nki".into(),
-                        timing: Timing { loaded: attack(ms), ..Default::default() },
+                        timing: Timing { source: timing::source("late.nki", 0), loaded: attack(ms), ..Default::default() },
                         ..Default::default()
                     })
                     .into(),
@@ -3798,6 +3811,43 @@ end on"
         assert_eq!((first_sound(&held[0]), first_sound(&held[2])), (Some(100 + 1440), Some(100 + 1440)));
         assert_eq!(held[0][960..], unheld[0][..4096 - 960]);
         assert_eq!(held[2], unheld[2]);
+    }
+
+    #[test]
+    fn a_replaced_patch_ignores_stale_measurements_but_keeps_its_manual_offset() {
+        let selection = Selection {
+            auto_align: true,
+            parts: vec![
+                Part {
+                    path: "new.nki".into(),
+                    timing: Timing {
+                        source: timing::source("old.nki", 0),
+                        loaded: attack(100.0),
+                        override_ms: Some(80.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                Part {
+                    path: "anchor.nki".into(),
+                    timing: Timing {
+                        source: timing::source("anchor.nki", 0),
+                        loaded: attack(200.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let plan = plan(&selection);
+        assert_eq!(plan.latency_ms, 200.0);
+        let mut s = timing::Scheduler::default();
+        assert_eq!(
+            s.arrive(articulate::In::NoteOn(0, 60, 100), 0, &plan.parts[0], 48_000.0, &Router::default()),
+            None
+        );
+        assert_eq!(s.next_due(), Some(120 * 48), "the stale 100 ms measurement is ignored; the manual 80 ms offset remains");
     }
 
     /// One part, two articulations on their own channels whose samples are
@@ -3826,6 +3876,7 @@ end on"
                 path: "arts.nki".into(),
                 articulate: articulate.clone(),
                 timing: Timing {
+                    source: timing::source("arts.nki", 0),
                     loaded: attack(40.0),
                     arts: vec![
                         timing::Delay { name: "Short".into(), ..attack(5.0) },
