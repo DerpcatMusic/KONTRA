@@ -14,21 +14,21 @@ use super::vm::{self, Ctx, Forward, Kind, Machine, POLY_ROWS, SlotState, Stacks,
 use super::{HostState, Interface, KeyState, Value};
 use anyhow::{Result, bail};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
 
 /// `source` compiled for `setup`, one copy per process while any runtime
 /// holds it: parts and plugin instances playing one instrument run the same
 /// code over their own memory.
-fn compiled(source: &str, setup: &Setup) -> Result<Arc<Program>> {
-    type Compiled = std::collections::HashMap<(Box<str>, usize, usize, usize), Weak<Program>>;
+fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>) -> Result<Arc<Program>> {
+    type Compiled = std::collections::HashMap<(Box<str>, usize, usize, usize, BTreeSet<String>), Weak<Program>>;
     static COMPILED: Mutex<Option<Compiled>> = Mutex::new(None);
     let lock = || COMPILED.lock().unwrap_or_else(|e| e.into_inner());
-    let key = (Box::from(source), setup.groups, setup.outputs, setup.zones);
+    let key = (Box::from(source), setup.groups, setup.outputs, setup.zones, inherited.clone());
     if let Some(p) = lock().get_or_insert_default().get(&key).and_then(Weak::upgrade) {
         return Ok(p);
     }
-    let program = Arc::new(compile::compile(source, setup)?);
+    let program = Arc::new(compile::compile_with_conditions(source, setup, inherited)?);
     let mut compiled = lock();
     let compiled = compiled.get_or_insert_default();
     compiled.retain(|_, p| p.strong_count() > 0);
@@ -707,6 +707,12 @@ impl Runtime {
         self.programs.len()
     }
 
+    /// Final preprocessing state of the latest successful slot, including init.
+    pub fn condition(&self, name: &str) -> bool {
+        self.programs.iter().zip(&self.states).rev().find(|(_, state)| state.error.is_none())
+            .is_some_and(|(program, _)| program.conditions.contains(name))
+    }
+
     pub fn host(&self) -> &HostState {
         &self.env.host
     }
@@ -933,7 +939,9 @@ impl Runtime {
             zones: engine.zone_count(),
             outputs: self.outputs,
         };
-        let program = match compiled(source, &setup) {
+        let inherited = self.programs.iter().zip(&self.states).rev()
+            .find(|(_, state)| state.error.is_none()).map(|(p, _)| p.conditions.clone()).unwrap_or_default();
+        let program = match compiled(source, &setup, &inherited) {
             Ok(p) => p,
             Err(e) => {
                 self.programs.push(Arc::default());

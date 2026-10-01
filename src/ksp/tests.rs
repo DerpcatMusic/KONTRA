@@ -18,6 +18,40 @@ fn label(source: &str) -> String {
 }
 
 #[test]
+fn script_conditions_inherit_successful_slots_and_partition_the_compiled_cache() {
+    let set = "on init\nSET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(KEEP)\nend on";
+    let read = "on init\ndeclare ui_label $info(1,1)\nUSE_CODE_IF(NO_SYS_SCRIPT_PEDAL)\nset_text($info,\"disabled\")\nEND_USE_CODE\nUSE_CODE_IF_NOT(NO_SYS_SCRIPT_PEDAL)\nset_text($info,\"default\")\nEND_USE_CODE\nend on";
+    let mut engine = LogEngine::new(Vec::new(), 48000.0);
+    let (first, errors) = Runtime::with_scripts(&[set, read], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    assert!(first.condition("NO_SYS_SCRIPT_PEDAL"));
+    assert!(first.condition("KEEP"));
+    assert_eq!(prop(&first.interface(1), 0, "$CONTROL_PAR_TEXT"), "disabled");
+    // Keep the first runtime alive: the identical source and setup must not
+    // reuse its compiled conditional branch for a different inherited state.
+    let (second, errors) = Runtime::with_scripts(&["on init\nend on", read], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    assert!(!second.condition("NO_SYS_SCRIPT_PEDAL"));
+    assert_eq!(prop(&second.interface(1), 0, "$CONTROL_PAR_TEXT"), "default");
+    let reset = "on init\nRESET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nend on";
+    let (reset, errors) = Runtime::with_scripts(&[set, reset, read], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    assert!(!reset.condition("NO_SYS_SCRIPT_PEDAL"));
+    assert!(reset.condition("KEEP"));
+    assert_eq!(prop(&reset.interface(2), 0, "$CONTROL_PAR_TEXT"), "default");
+    for failed in [
+        "on init\nSET_CONDITION(FAILED)\nunknown_function()\nend on",
+        "on init\nSET_CONDITION(FAILED)\nwait(1)\nend on",
+    ] {
+        let (rt, errors) = Runtime::with_scripts(&[set, failed, read], &mut engine, 8, Vec::new());
+        assert!(errors[0].is_none() && errors[1].is_some() && errors[2].is_none(), "{errors:?}");
+        assert!(rt.condition("NO_SYS_SCRIPT_PEDAL"));
+        assert!(!rt.condition("FAILED"));
+        assert_eq!(prop(&rt.interface(2), 0, "$CONTROL_PAR_TEXT"), "disabled");
+    }
+}
+
+#[test]
 fn preprocessor_excludes_code_before_parsing_and_resolves_conditions_before_init() {
     let source = "on init
 declare ui_label $l(1,1)
