@@ -212,12 +212,12 @@ impl KspEngine for Host<'_> {
         Some(address.encode(value))
     }
 
-    fn find_mod(&self, group: usize, name: &str) -> Option<usize> {
-        params::find_mod(self.bank?.groups(), group, name)
+    fn find_mod(&self, group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+        params::find_mod(self.bank?.groups(), group, is)
     }
 
-    fn find_target(&self, group: usize, modulator: usize, name: &str) -> Option<usize> {
-        params::find_target(self.bank?.groups(), group, modulator, name)
+    fn find_target(&self, group: usize, modulator: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+        params::find_target(self.bank?.groups(), group, modulator, is)
     }
 
     fn voice_active(&self, voice: EventId) -> bool {
@@ -436,12 +436,12 @@ impl KspEngine for ScriptSetup<'_> {
         Some(address.encode(value))
     }
 
-    fn find_mod(&self, group: usize, name: &str) -> Option<usize> {
-        params::find_mod(self.groups, group, name)
+    fn find_mod(&self, group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+        params::find_mod(self.groups, group, is)
     }
 
-    fn find_target(&self, group: usize, modulator: usize, name: &str) -> Option<usize> {
-        params::find_target(self.groups, group, modulator, name)
+    fn find_target(&self, group: usize, modulator: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+        params::find_target(self.groups, group, modulator, is)
     }
 
     /// Decoded here, off the audio thread; the effects build with it.

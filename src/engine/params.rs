@@ -867,18 +867,9 @@ pub(super) struct Write {
 /// Engine parameter changes one render can hold; later ones are dropped and counted.
 pub const MAX_WRITES: usize = 4096;
 
-/// `find_mod`: position in `Group::modulators`.
-pub(crate) fn find_mod(groups: &[Group], group: usize, name: &str) -> Option<usize> {
-    let r = find_mod0(groups, group, name);
-    if r.is_none() && std::env::var_os("KDBG").is_some() { eprintln!("KDBG find_mod g={group}/{} name={name:?} have={:?}", groups.len(), groups.get(group).map(|g| g.modulators.iter().map(|m| m.name.as_str()).collect::<Vec<_>>())); }
-    r
-}
-fn find_mod0(groups: &[Group], group: usize, name: &str) -> Option<usize> {
-    groups
-        .get(group)?
-        .modulators
-        .iter()
-        .position(|m| m.name == name)
+/// `find_mod`: position in `Group::modulators` of the first name `is` accepts.
+pub(crate) fn find_mod(groups: &[Group], group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+    groups.get(group)?.modulators.iter().position(|m| is(&m.name))
 }
 
 /// `find_target`: position among the modulator's targets.
@@ -886,20 +877,9 @@ pub(crate) fn find_target(
     groups: &[Group],
     group: usize,
     modulator: usize,
-    name: &str,
+    is: &dyn Fn(&str) -> bool,
 ) -> Option<usize> {
-    let r = find_target0(groups, group, modulator, name);
-    if r.is_none() && std::env::var_os("KDBG").is_some() { eprintln!("KDBG find_target g={group}/{} m={modulator} name={name:?} have={:?}", groups.len(), groups.get(group).and_then(|g| g.modulators.get(modulator)).map(|m| (&m.name, &m.targets))); }
-    r
-}
-fn find_target0(groups: &[Group], group: usize, modulator: usize, name: &str) -> Option<usize> {
-    groups
-        .get(group)?
-        .modulators
-        .get(modulator)?
-        .targets
-        .iter()
-        .position(|t| t == name)
+    groups.get(group)?.modulators.get(modulator)?.targets.iter().position(|t| is(t))
 }
 
 #[cfg(test)]
@@ -1168,8 +1148,8 @@ mod tests {
     #[test]
     fn addresses_resolve_by_decoded_names() {
         let groups = [group()];
-        assert_eq!(find_mod(&groups, 0, "CC_VOLUME"), Some(2));
-        assert_eq!(find_target(&groups, 0, 0, "ENV_AHDSR_VOLUME"), Some(0));
+        assert_eq!(find_mod(&groups, 0, &|n| n == "CC_VOLUME"), Some(2));
+        assert_eq!(find_target(&groups, 0, 0, &|n| n == "ENV_AHDSR_VOLUME"), Some(0));
         let par = |id, slot, generic| EnginePar {
             id,
             group: 0,

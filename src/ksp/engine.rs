@@ -82,12 +82,12 @@ pub trait KspEngine {
     /// parameter; the runtime then stores the value itself and reports it.
     fn set_engine_par(&mut self, at: u32, par: EnginePar, value: i32) -> bool;
     fn engine_par(&self, par: EnginePar) -> Option<i32>;
-    /// Index of a named modulator within a group, if the engine knows it.
-    fn find_mod(&self, _group: usize, _name: &str) -> Option<usize> {
+    /// Index within a group of the first modulator whose name `is` accepts.
+    fn find_mod(&self, _group: usize, _is: &dyn Fn(&str) -> bool) -> Option<usize> {
         None
     }
-    /// Index of a named modulation target, if the engine knows it.
-    fn find_target(&self, _group: usize, _modulator: usize, _name: &str) -> Option<usize> {
+    /// Index of the first modulation target whose name `is` accepts.
+    fn find_target(&self, _group: usize, _modulator: usize, _is: &dyn Fn(&str) -> bool) -> Option<usize> {
         None
     }
     /// `load_ir_sample`: load impulse response `file` into convolution
@@ -265,12 +265,12 @@ impl KspEngine for LogEngine {
         self.pars.get(&par).copied()
     }
 
-    fn find_mod(&self, group: usize, name: &str) -> Option<usize> {
-        self.modulators.get(group)?.iter().position(|m| m.0 == name)
+    fn find_mod(&self, group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+        self.modulators.get(group)?.iter().position(|m| is(&m.0))
     }
 
-    fn find_target(&self, group: usize, modulator: usize, name: &str) -> Option<usize> {
+    fn find_target(&self, group: usize, modulator: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
         let targets = &self.modulators.get(group)?.get(modulator)?.1;
-        targets.iter().position(|t| t == name)
+        targets.iter().position(|t| is(t))
     }
 }

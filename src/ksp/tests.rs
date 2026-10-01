@@ -995,3 +995,25 @@ end on";
     assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "[]6");
     assert!(ui.diagnostics.iter().any(|d| d.contains("out of bounds")), "{:?}", ui.diagnostics);
 }
+
+#[test]
+fn modulator_lookups_match_exactly_and_report_only_near_misses() {
+    let run = |calls: &str| {
+        let script = format!("on init\ndeclare ui_label $l(1,1)\nset_text($l, {calls})\nend on");
+        let mut engine = LogEngine::new(vec!["a".into()], 48_000.0);
+        engine.modulators = vec![vec![
+            ("ENV_FLEX".into(), vec!["ENV_FLEX_VOLUME".into()]),
+            ("CC_VOLUME".into(), vec!["CC_VOLUME".into(), "Dyn. Range".into()]),
+        ]];
+        let (rt, _) = Runtime::with_scripts(&[script.as_str()], &mut engine, 8, Vec::new());
+        (prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), rt.diagnostics())
+    };
+    // A framework script asking for an AHDSR the group lacks: Kontakt's business.
+    let (text, diagnostics) = run(
+        "find_mod(0, \"CC_VOLUME\") & find_target(0, 1, \"Dyn. Range\") & find_mod(0, \"ENV_AHDSR\") & get_mod_idx(0, \"ENV_AHDSR\")",
+    );
+    assert_eq!((text.as_str(), diagnostics), ("110-1", Vec::<String>::new()));
+    let (text, diagnostics) = run("find_target(0, 1, \"dyn. range \")");
+    assert_eq!(text, "0");
+    assert!(diagnostics.iter().any(|d| d.contains("find_mod/find_target")), "{diagnostics:?}");
+}

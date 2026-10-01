@@ -744,14 +744,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 (g, module)
             };
             let name = m.stk.strs.pop();
-            let found = match (usize::try_from(g), usize::try_from(module)) {
-                (Ok(g), _) if by_mod => m.engine.find_mod(g, name),
-                (Ok(g), Ok(module)) => m.engine.find_target(g, module, name),
+            // As find_group: report only names that match ignoring case or spaces.
+            let find = |is: &dyn Fn(&str) -> bool| match (usize::try_from(g), usize::try_from(module)) {
+                (Ok(g), _) if by_mod => m.engine.find_mod(g, is),
+                (Ok(g), Ok(module)) => m.engine.find_target(g, module, is),
                 _ => None,
             };
-            if found.is_none() {
-                m.env
-                    .note("find_mod/find_target: modulator unknown to the engine; returned 0");
+            let found = find(&|n| n == name);
+            if found.is_none() && find(&|n| n.trim().eq_ignore_ascii_case(name.trim())).is_some() {
+                m.env.note("find_mod/find_target: name matches only ignoring case or spaces; not found");
             }
             let miss = if matches!(f, FindMod | FindTarget) { 0 } else { b::NOT_FOUND };
             push_int(m, found.map_or(miss, |i| i as i32))
@@ -788,7 +789,6 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 generic,
             };
             if !m.engine.set_engine_par(m.env.offset, p, value) {
-                if std::env::var_os("KDBG").is_some() { eprintln!("KDBG sep {:?} id={id} value={value} group={group} slot={s} generic={generic}", crate::ksp::engine::engine_par_name(id)); }
                 m.env
                     .note("set_engine_par: parameter not implemented by the engine; value stored");
                 m.env.set_engine_par(p, value);
