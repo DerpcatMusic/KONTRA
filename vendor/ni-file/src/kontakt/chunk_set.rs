@@ -11,6 +11,12 @@ use super::{
 pub struct KontaktChunks(pub Vec<Chunk>);
 
 impl KontaktChunks {
+    /// Write every raw chunk in original order, including repeated and unknown IDs.
+    pub fn write<W: std::io::Write>(&self, mut writer: W) -> Result<(), Error> {
+        for chunk in &self.0 { chunk.write(&mut writer)?; }
+        Ok(())
+    }
+
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let mut objects = Vec::new();
 

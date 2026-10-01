@@ -17,6 +17,15 @@ pub struct Chunk {
 }
 
 impl Chunk {
+    /// Write the raw chunk without interpreting or discarding unknown bytes.
+    pub fn write<W: std::io::Write>(&self, mut writer: W) -> Result<(), Error> {
+        let length = u32::try_from(self.data.len()).map_err(|_| Error::Static("Kontakt chunk too large"))?;
+        writer.write_all(&self.id.to_le_bytes())?;
+        writer.write_all(&length.to_le_bytes())?;
+        writer.write_all(&self.data)?;
+        Ok(())
+    }
+
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let id = reader.read_u16_le()?;
         let length = reader.read_u32_le()? as usize;

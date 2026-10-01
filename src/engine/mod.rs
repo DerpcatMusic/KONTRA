@@ -121,6 +121,8 @@ pub struct NoteEvent<'a> {
     pub velocity: u8,
     /// Physical channel and original engine input key, before KSP transposition.
     pub owner: Option<(u8, u8)>,
+    /// Physical input provenance, independent of key-follow lifetime.
+    pub input_channel: Option<u8>,
     /// Physical key-up may precede application of a queued attack.
     pub counter_stop: Option<u64>,
     /// A release sample's frozen originating event duration in milliseconds.
@@ -146,6 +148,7 @@ impl NoteEvent<'_> {
             note,
             velocity,
             owner: None,
+            input_channel: None,
             counter_stop: None,
             release_held_ms: None,
             groups: None,
@@ -327,6 +330,19 @@ impl Engine {
             rt.set_sample_rate(self.player.rate);
         }
         let old = std::mem::replace(&mut self.script, script);
+        self.player.native_sustain = !self.script.as_ref().is_some_and(|rt| rt.condition("NO_SYS_SCRIPT_PEDAL"));
+        self.player.native_release_triggers = !self.script.as_ref().is_some_and(|rt| rt.condition("NO_SYS_SCRIPT_RLS_TRIG"));
+        if !self.player.native_release_triggers { self.player.pending_releases.clear(); }
+        // Reconcile held notes when replacing a script with the pedal down.
+        // CC64 remains visible to scripts/modulation even when native hold is off.
+        let defaults = self.defaults();
+        for channel in 0..16 {
+            let on = self.player.native_sustain && self.player.cc[channel][64] >= 64;
+            let was_on = std::mem::replace(&mut self.player.sustain[channel], on);
+            if was_on && !on && let Some(bank) = self.bank.as_deref() {
+                self.player.pedal_up(bank, channel as u8, defaults);
+            }
+        }
         self.replay(|_| true);
         self.apply_init_controllers();
         old
@@ -496,6 +512,12 @@ impl Engine {
     }
 
     /// The runtime and its engine view, borrowed apart so scripts can drive voices.
+    fn scripted_from(&mut self, channel: u8, input_channel: u8) -> Option<(&mut Runtime, Host<'_>)> {
+        let (rt, host) = self.scripted(channel)?;
+        rt.set_input_channel(input_channel);
+        Some((rt, host))
+    }
+
     fn scripted(&mut self, channel: u8) -> Option<(&mut Runtime, Host<'_>)> {
         let rt = self.script.as_deref_mut()?;
         self.script_channel = channel;
@@ -530,7 +552,7 @@ impl Engine {
             return rt.note_on_from(&mut host, 0, owner, note, velocity.min(127));
         }
         self.player.input_keys[owner as usize][note as usize] = (channel, velocity.min(127));
-        self.start_event(&NoteEvent { owner: Some((owner, note)), ..NoteEvent::new(channel, note, velocity) });
+        self.start_event(&NoteEvent { owner: Some((owner, note)), input_channel: Some(owner), ..NoteEvent::new(channel, note, velocity) });
     }
 
     pub fn note_off(&mut self, channel: u8, note: u8) {
@@ -581,6 +603,10 @@ impl Engine {
     /// Controllers pass through the scripts; channel mode messages (120 and up)
     /// act on the engine directly so a script can never swallow a panic.
     pub fn cc(&mut self, channel: u8, cc: u8, value: u8) {
+        self.cc_from(channel, channel, cc, value);
+    }
+
+    pub(crate) fn cc_from(&mut self, channel: u8, input_channel: u8, cc: u8, value: u8) {
         if channel >= 16 || cc >= 128 {
             return;
         }
@@ -596,7 +622,7 @@ impl Engine {
         }
         if self.script.is_some() {
             if cc < 120 {
-                if let Some((rt, mut host)) = self.scripted(channel) {
+                if let Some((rt, mut host)) = self.scripted_from(channel, input_channel) {
                     rt.controller(&mut host, 0, cc, value.min(127));
                 }
                 return;
@@ -617,12 +643,58 @@ impl Engine {
             .cc(self.bank.as_deref(), channel, cc, value, defaults);
     }
 
+    /// Cut a physical performance context, including notes a script rerouted.
+    pub(crate) fn all_sound_off_from(&mut self, channel: u8, input_mask: u16) {
+        if channel >= 16 || input_mask == 0 { return; }
+        let selected = |input_channel: Option<u8>| input_channel.is_some_and(|input| input_mask & (1 << input.min(15)) != 0);
+        let mut affected = 1 << channel;
+        if let Some(rt) = self.script.as_deref_mut() { affected |= rt.all_sound_off_from(input_mask); }
+        self.commands.retain(|c| {
+            if !selected(c.input_channel) { return true; }
+            affected |= 1 << c.channel;
+            false
+        });
+        let fade = self.player.fade_frames(STEAL_FADE);
+        for v in self.player.voices.iter_mut().filter(|v| selected(v.input_channel)) {
+            affected |= 1 << v.channel;
+            v.fade.start(0.0, fade, true);
+        }
+        self.player.pending_releases.retain(|r| {
+            if !selected(r.input_channel) { return true; }
+            affected |= 1 << r.channel;
+            false
+        });
+        for input in (0..16).filter(|input| input_mask & (1 << input) != 0) {
+            for key in self.player.input_keys[input].iter_mut().filter(|key| key.1 > 0) {
+                affected |= 1 << key.0;
+                *key = (0, 0);
+            }
+        }
+        for channel in (0..16).filter(|channel| affected & (1 << channel) != 0) {
+            for note in 0..128 {
+                let held = if let Some(rt) = self.script.as_deref() {
+                    (0..16).any(|input| rt.key_down_from(input, channel as u8, note as u8))
+                } else {
+                    self.player.input_keys.iter().any(|row| row[note].0 == channel as u8 && row[note].1 > 0)
+                };
+                if !held {
+                    self.player.keys[channel][note] = 0;
+                    self.player.key_up[channel][note] = self.player.now;
+                }
+            }
+        }
+    }
+
     pub fn pitch_bend(&mut self, channel: u8, value: u16) {
+        self.pitch_bend_from(channel, channel, value);
+    }
+
+    pub(crate) fn pitch_bend_from(&mut self, channel: u8, input_channel: u8, value: u16) {
         if channel >= 16 {
             return;
         }
         let value = value.min(16383);
-        if let Some((rt, mut host)) = self.scripted(channel) {
+        if let Some((rt, mut host)) = self.scripted_from(channel, input_channel) {
             return rt.pitch_bend(&mut host, 0, i32::from(value) - 8192);
         }
         self.player.bend[channel as usize] = (f32::from(value) - 8192.0) / 8192.0;
@@ -631,8 +703,12 @@ impl Engine {
 
     /// Channel pressure (mono aftertouch modulation), through the scripts.
     pub fn channel_pressure(&mut self, channel: u8, value: u8) {
+        self.channel_pressure_from(channel, channel, value);
+    }
+
+    pub(crate) fn channel_pressure_from(&mut self, channel: u8, input_channel: u8, value: u8) {
         let (channel, value) = (channel.min(15), value.min(127));
-        if let Some((rt, mut host)) = self.scripted(channel) {
+        if let Some((rt, mut host)) = self.scripted_from(channel, input_channel) {
             return rt.channel_pressure(&mut host, 0, value);
         }
         self.player.pressure[channel as usize] = value;
@@ -687,7 +763,11 @@ impl Engine {
 
     /// Polyphonic key pressure; only scripts react to it.
     pub fn poly_pressure(&mut self, channel: u8, note: u8, value: u8) {
-        if let Some((rt, mut host)) = self.scripted(channel.min(15)) {
+        self.poly_pressure_from(channel, channel, note, value);
+    }
+
+    pub(crate) fn poly_pressure_from(&mut self, channel: u8, input_channel: u8, note: u8, value: u8) {
+        if let Some((rt, mut host)) = self.scripted_from(channel.min(15), input_channel) {
             rt.poly_pressure(&mut host, 0, note, value.min(127));
         }
     }
@@ -707,11 +787,11 @@ impl Engine {
         let Some(bank) = self.bank.as_deref() else {
             return;
         };
-        if let Some((channel, note, velocity, false, latched)) = self.player.release_voices(bank, id) {
+        if let Some((channel, note, velocity, false, latched, input_channel)) = self.player.release_voices(bank, id) {
             let allowed = self.player.allowed;
             let key = (channel, note, velocity);
             let expression = self.player.release_expression(id, channel, note);
-            self.player.trigger_release(bank, id, key, &allowed, latched, expression, defaults);
+            self.player.trigger_release(bank, id, key, &allowed, latched, expression, input_channel, defaults);
         }
     }
 
@@ -745,6 +825,13 @@ impl Engine {
             let master = master.min(15);
             (master, members & !(1 << master))
         });
+    }
+
+    pub(crate) fn set_mpe_master_bend_range(&mut self, range: Option<f32>) {
+        if self.player.mpe_master_bend_range != range {
+            self.player.mpe_master_bend_range = range;
+            self.player.touch();
+        }
     }
 
     /// Applied state plus earlier same-frame script commands, before the
@@ -940,6 +1027,7 @@ pub struct VoiceInfo {
 #[derive(Clone, Copy)]
 struct PendingRelease {
     source: EventId,
+    input_channel: Option<u8>,
     channel: u8,
     note: u8,
     velocity: u8,
@@ -972,9 +1060,13 @@ struct Player {
     /// Voices may share lanes.
     shared: bool,
     rate: f64,
+    /// KSP preprocessor flags bypass only these native system-script actions.
+    native_sustain: bool,
+    native_release_triggers: bool,
     sustain: [bool; 16],
     /// Pedals and stop messages on an MPE master affect its member channels.
     mpe_zone: Option<(u8, u16)>,
+    mpe_master_bend_range: Option<f32>,
     /// Release samples deferred by sustain or their own sostenuto capture.
     pending_releases: Vec<PendingRelease>,
     sostenuto_down: [bool; 16],
@@ -1029,8 +1121,11 @@ impl Player {
             dead: Vec::with_capacity(MAX_VOICES),
             shared: true,
             rate,
+            native_sustain: true,
+            native_release_triggers: true,
             sustain: [false; 16],
             mpe_zone: None,
+            mpe_master_bend_range: None,
             pending_releases: Vec::with_capacity(crate::ksp::EVENT_CAPACITY),
             sostenuto_down: [false; 16],
             bend: [0.0; 16],
@@ -1253,7 +1348,10 @@ impl Player {
                 0.0
             },
         };
-        let mods = settings.mods.start(&inputs);
+        let bend_pitch = self.mpe_zone.and_then(|(manager, members)| self.mpe_master_bend_range
+            .filter(|_| manager == ev.channel || members & (1 << c) != 0)
+            .map(|_| if manager == ev.channel { 0. } else { self.bend[c] }));
+        let mods = settings.mods.start(&inputs, bend_pitch);
         let modulated = (settings.mods.start_offset(&inputs) * play.start_mod as f32) as u64;
         let offset = ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)
             .min(play.start_mod);
@@ -1320,6 +1418,7 @@ impl Player {
             counter_start: self.now,
             counter_stop: ev.counter_stop,
             owner: ev.owner,
+            input_channel: ev.input_channel,
             held: !release_trigger,
             sostenuto: false,
             released: false,
@@ -1358,7 +1457,7 @@ impl Player {
             plan: Default::default(),
         };
         // Start at the voice's first-block gains, so it does not ramp in.
-        let (modulation, ..) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
+        let (modulation, ..) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0, bend_pitch);
         let pan = (zone.pan + settings.pan + ev.pan + expression.pan).clamp(-1.0, 1.0);
         voice.gains = balance(base_level * settings.gain * modulation * voice.volume * expression.gain, pan);
         if offset > 0 {
@@ -1448,31 +1547,31 @@ impl Player {
         while let Some(source) = self.voices.iter().find(|v| v.channel == channel
             && owner.map_or(v.note == note, |owner| v.owner.map_or(v.note == note, |input| input == (owner, note)))
             && v.held && !v.released && !v.release_trigger).map(|v| v.event) {
-            if let Some((channel, note, velocity, false, captured)) = self.release_voices(bank, source) {
+            if let Some((channel, note, velocity, false, captured, input_channel)) = self.release_voices(bank, source) {
                 found = true;
                 let expression = self.release_expression(source, channel, note);
-                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, expression, defaults);
+                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, expression, input_channel, defaults);
             }
         }
         // Release-only instruments can have a key but no attack voice.
         if !found && velocity > 0 {
             let source = self.next_id();
             let expression = self.release_expression(source, channel, note);
-            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, expression, defaults);
+            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, expression, owner, defaults);
         }
     }
 
     /// Release one event's voices; a held sustain pedal defers them like a key
     /// release. Returns the first voice's channel, note, velocity and whether
     /// it is itself a release trigger.
-    fn release_voices(&mut self, bank: &Bank, id: EventId) -> Option<(u8, u8, u8, bool, bool)> {
+    fn release_voices(&mut self, bank: &Bank, id: EventId) -> Option<(u8, u8, u8, bool, bool, Option<u8>)> {
         let mut first = None;
         for v in self
             .voices
             .iter_mut()
             .filter(|v| v.event == id && !v.released)
         {
-            let event = first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger, false));
+            let event = first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger, false, v.input_channel));
             event.4 |= v.sostenuto;
             v.counter_stop.get_or_insert(self.now);
             let c = v.channel as usize & 15;
@@ -1534,8 +1633,10 @@ impl Player {
         groups: &GroupMask,
         latched: bool,
         expression: Option<Expression>,
+        input_channel: Option<u8>,
         defaults: Ahdsr,
     ) {
+        if !self.native_release_triggers { return; }
         let held_ms = self.event_held_ms(source, channel, note);
         if channel < 16 && note < 128 && (latched || self.sustain[channel as usize]) {
             if self.pending_releases.iter().any(|r| r.source == source) { return; }
@@ -1546,7 +1647,7 @@ impl Player {
                 return;
             }
             self.pending_releases.push(PendingRelease {
-                source, channel, note, velocity, groups: *groups, captured: latched, expression, held_ms,
+                source, input_channel, channel, note, velocity, groups: *groups, captured: latched, expression, held_ms,
             });
             return;
         }
@@ -1555,6 +1656,7 @@ impl Player {
             groups: Some(groups),
             frozen_expression: expression,
             release_held_ms: Some(held_ms),
+            input_channel,
             ..NoteEvent::new(channel, note, velocity)
         };
         self.start(bank, &event, id, true, defaults);
@@ -1572,7 +1674,7 @@ impl Player {
             // General MIDI volume curve: 127 is unity.
             7 => self.volume = (f32::from(value) / 127.0).powi(2),
             10 => self.pan = ((f32::from(value) - 64.0) / 63.0).clamp(-1.0, 1.0),
-            64 => {
+            64 if self.native_sustain => {
                 let on = value >= 64;
                 if self.sustain[c] && !on {
                     self.sustain[c] = false;
@@ -1668,7 +1770,7 @@ impl Player {
             let r = self.pending_releases[i];
             if r.channel == channel && !r.captured {
                 let id = self.next_id();
-                let event = NoteEvent { groups: Some(&r.groups), frozen_expression: r.expression, release_held_ms: Some(r.held_ms), ..NoteEvent::new(r.channel, r.note, r.velocity) };
+                let event = NoteEvent { input_channel: r.input_channel, groups: Some(&r.groups), frozen_expression: r.expression, release_held_ms: Some(r.held_ms), ..NoteEvent::new(r.channel, r.note, r.velocity) };
                 self.start(bank, &event, id, true, defaults);
             } else {
                 self.pending_releases[keep] = r;
@@ -1729,6 +1831,7 @@ impl Player {
             cc: &self.cc,
             bend: &self.bend,
             mpe_zone: self.mpe_zone,
+            mpe_master_bend_range: self.mpe_master_bend_range,
             pressure: &self.pressure,
             expression: &self.expression,
             tune: self.instrument.2 + tune,

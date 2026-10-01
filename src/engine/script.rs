@@ -112,6 +112,7 @@ impl IrRequest {
 pub(super) struct Command {
     pub at: u32,
     pub channel: u8,
+    pub input_channel: Option<u8>,
     /// Target event; unused by controllers.
     pub id: EventId,
     pub kind: Kind,
@@ -183,11 +184,15 @@ impl Host<'_> {
 
     /// Queue in frame order (stable for equal frames) within the preallocated capacity.
     fn push(&mut self, at: u32, channel: u8, id: EventId, kind: Kind) -> bool {
+        self.push_from(at, channel, None, id, kind)
+    }
+
+    fn push_from(&mut self, at: u32, channel: u8, input_channel: Option<u8>, id: EventId, kind: Kind) -> bool {
         let stop = kind.is_stop();
         if stop {
             // Coalesce identical same-frame stops, without crossing a later
             // fade or opposite pedal state for the same target.
-            let prior = self.commands.iter().rev().find(|c| c.at == at && c.channel == channel && match (c.kind, kind) {
+            let prior = self.commands.iter().rev().find(|c| c.at == at && c.channel == channel && c.input_channel == input_channel && match (c.kind, kind) {
                 (Kind::Fade(_), Kind::Fade(_)) => c.id == id,
                 (Kind::Controller { cc: a, .. }, Kind::Controller { cc: b, .. }) => a == b,
                 _ => false,
@@ -216,7 +221,7 @@ impl Host<'_> {
             return false;
         }
         let i = self.commands.partition_point(|c| c.at <= at);
-        self.commands.insert(i, Command { at, channel, id, kind });
+        self.commands.insert(i, Command { at, channel, input_channel, id, kind });
         true
     }
 }
@@ -251,7 +256,7 @@ impl KspEngine for Host<'_> {
             groups: *n.groups,
             expression: n.frozen_expression,
         };
-        self.push(at, n.channel, id, kind).then_some(id)
+        self.push_from(at, n.channel, n.input_channel, id, kind).then_some(id)
     }
 
     fn release_expression(&self, at: u32, voice: Option<EventId>, channel: u8, note: u8) -> Option<Expression> {
@@ -273,10 +278,14 @@ impl KspEngine for Host<'_> {
                 _ => None,
             })).or_else(|| self.player.release_expression(voice, n.channel, n.note)),
         };
-        self.push(at, n.channel, voice, kind);
+        self.push_from(at, n.channel, n.input_channel, voice, kind);
     }
 
     fn freeze_expression(&mut self, at: u32, voice: EventId, expression: Expression) {
+        self.freeze_expression_from(at, self.channel, None, voice, expression);
+    }
+
+    fn freeze_expression_from(&mut self, at: u32, _channel: u8, input_channel: Option<u8>, voice: EventId, expression: Expression) {
         // First freeze wins until a new Start for this event. Ignore events
         // without an accepted engine source; they cannot consume this quota.
         for c in self.commands.iter().rev().filter(|c| c.id == voice) {
@@ -295,14 +304,18 @@ impl KspEngine for Host<'_> {
                 return;
             }
             let channel = c.channel;
-            self.push(at, channel, voice, Kind::Freeze(expression));
+            self.push_from(at, channel, input_channel, voice, Kind::Freeze(expression));
         } else if let Some(channel) = channel {
-            self.push(at, channel, voice, Kind::Freeze(expression));
+            self.push_from(at, channel, input_channel, voice, Kind::Freeze(expression));
         }
     }
 
     fn fade(&mut self, at: u32, voice: EventId, fade: Fade) {
         self.push(at, self.channel, voice, Kind::Fade(fade));
+    }
+
+    fn fade_from(&mut self, at: u32, channel: u8, input_channel: Option<u8>, voice: EventId, fade: Fade) {
+        self.push_from(at, channel, input_channel, voice, Kind::Fade(fade));
     }
 
     fn reset_release_counter(&mut self, at: u32, note: u8) {
@@ -313,13 +326,21 @@ impl KspEngine for Host<'_> {
         self.push(at, channel, EventId::default(), Kind::ResetCounter(note));
     }
 
+    fn reset_release_counter_from(&mut self, at: u32, channel: u8, input_channel: Option<u8>, note: u8) {
+        self.push_from(at, channel, input_channel, EventId::default(), Kind::ResetCounter(note));
+    }
+
     fn set_par(&mut self, at: u32, voice: EventId, par: VoicePar, value: i32) {
+        self.set_par_from(at, self.channel, None, voice, par, value);
+    }
+
+    fn set_par_from(&mut self, at: u32, channel: u8, input_channel: Option<u8>, voice: EventId, par: VoicePar, value: i32) {
         let change = match par {
             VoicePar::VolumeMdb => EventChange::Volume(10f32.powf(value as f32 / 20_000.0)),
             VoicePar::TuneMc => EventChange::Tune(f64::from(value) / 100_000.0),
             VoicePar::Pan => EventChange::Pan(value.clamp(-1000, 1000) as f32 / 1000.0),
         };
-        self.push(at, self.channel, voice, Kind::Change(change));
+        self.push_from(at, channel, input_channel, voice, Kind::Change(change));
     }
 
     fn controller(&mut self, at: u32, cc: u8, value: i32) {
@@ -328,6 +349,10 @@ impl KspEngine for Host<'_> {
 
     fn controller_on_channel(&mut self, at: u32, channel: u8, cc: u8, value: i32) {
         self.push(at, channel, EventId::default(), Kind::Controller { cc, value });
+    }
+
+    fn controller_from(&mut self, at: u32, channel: u8, input_channel: Option<u8>, cc: u8, value: i32) {
+        self.push_from(at, channel, input_channel, EventId::default(), Kind::Controller { cc, value });
     }
 
     fn group_count(&self) -> usize {
@@ -424,6 +449,7 @@ impl Player {
                     note,
                     velocity,
                     owner,
+                    input_channel: c.input_channel,
                     counter_stop,
                     release_held_ms: None,
                     groups: Some(groups),
@@ -441,7 +467,7 @@ impl Player {
             Kind::Release { trigger, groups, expression } => {
                 let latched = self.release_voices(bank, id).is_some_and(|event| event.4);
                 if let &Some((note, velocity)) = trigger {
-                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, *expression, defaults);
+                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, *expression, c.input_channel, defaults);
                 }
             }
             &Kind::Freeze(expression) => {

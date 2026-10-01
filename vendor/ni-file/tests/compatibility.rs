@@ -58,7 +58,7 @@ fn nks_extraction_checks_decompressed_length_and_returns_errors() {
 fn generic_nis_extraction_uses_the_existing_subtree_reader() {
     use ni_file::{NIFile, nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader, PresetChunkItemProperties}};
     let data_header = |item_id| ItemDataHeader { length: 20, domain_id: *b"NISD", item_id, version: 1 };
-    let container_header = ItemHeader { length: 40, magic: b"hsin".to_vec(), header_flags: 0, uuid: vec![0;16] };
+    let container_header = ItemHeader { length: 40, magic: b"hsin".to_vec(), header_flags: 0, reserved: 0, uuid: vec![0;16] };
     let mut props = 1u32.to_le_bytes().to_vec();
     props.extend(0u32.to_le_bytes());
     props.extend(1u32.to_le_bytes());
@@ -72,7 +72,7 @@ fn generic_nis_extraction_uses_the_existing_subtree_reader() {
     inner.extend(1u32.to_le_bytes());inner.extend(0u32.to_le_bytes());
     let mut subtree = 1u32.to_le_bytes().to_vec();subtree.push(0);subtree.extend(inner);
     let encryption = ItemData { header: data_header(0x74), inner: Some(Box::new(ItemData { header: data_header(0x73), inner: None, data: subtree })), data: vec![1,0,0,0,0] };
-    let preset = ItemContainer { header: container_header.clone(), data: ItemData { header: ItemDataHeader { domain_id: *b"NIK4", item_id: 3, ..data_header(3) }, inner: None, data: vec![] }, children: vec![ItemContainer { header: container_header, data: encryption, children: vec![] }] };
+    let preset = ItemContainer { header: container_header.clone(), data: ItemData { header: ItemDataHeader { domain_id: *b"NIK4", item_id: 3, ..data_header(3) }, inner: None, data: vec![] }, child_headers: vec![[0;12]], trailing_data: vec![], children: vec![ItemContainer { header: container_header, data: encryption, children: vec![], child_headers: vec![], trailing_data: vec![] }] };
     assert_eq!(NIFile::NISoundContainer(preset).inner_preset().unwrap(), b"test");
     props[..4].copy_from_slice(&2u32.to_le_bytes());
     assert!(PresetChunkItemProperties::read(Cursor::new(&props)).is_err());
@@ -532,5 +532,92 @@ mod modulation {
         let mut truncated = ahdsr(0.5);
         truncated.data.truncate(20);
         assert!(EnvelopeAhdsr::try_from(&truncated).is_err());
+    }
+}
+
+#[test]
+fn nis_and_raw_chunks_roundtrip_without_losing_opaque_metadata() {
+    use ni_file::{NIFile, nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader, SubtreeItem}};
+    use ni_file::kontakt::Chunk;
+    fn layer(domain_id: [u8;4], item_id: u32, data: Vec<u8>, inner: Option<ItemData>) -> ItemData {
+        ItemData { header: ItemDataHeader { length: 0, domain_id, item_id, version: 1 }, inner: inner.map(Box::new), data }
+    }
+    fn base() -> ItemData { layer(*b"NISD", 1, vec![1,0,0,0], None) }
+    fn item(data: ItemData) -> ItemContainer {
+        ItemContainer {
+            header: ItemHeader { length: 0, magic: b"hsin".to_vec(), header_flags: 0xa501, reserved: 0x12345678, uuid: (0..16).collect() },
+            data, children: vec![], child_headers: vec![], trailing_data: vec![0xc1,0xc2],
+        }
+    }
+    let chunks = KontaktChunks(vec![
+        Chunk { id: 0xf123, data: vec![0,1,2,0xff] },
+        Chunk { id: 6, data: b"uninterpreted script".to_vec() },
+        Chunk { id: 0xf123, data: vec![3,4] },
+    ]);
+    let mut preset = Vec::new();
+    chunks.write(&mut preset).unwrap();
+    let mut again = Vec::new();
+    KontaktChunks::read(Cursor::new(&preset)).unwrap().write(&mut again).unwrap();
+    assert_eq!(again, preset);
+    let mut properties = 1u32.to_le_bytes().to_vec();
+    properties.extend(0u32.to_le_bytes());
+    properties.extend(1u32.to_le_bytes());
+    properties.extend((preset.len() as u64).to_le_bytes());
+    properties.extend(&preset);
+    properties.extend([0x75,0x76,0x77]); // opaque preset property trailer
+    let inner = item(layer(*b"NISD", 0x6d, properties, Some(base())));
+    let mut inner_bytes = Vec::new();
+    inner.write(&mut inner_bytes).unwrap();
+    let subtree = SubtreeItem { inner_data: inner_bytes.clone() };
+    for (compressed, encrypted) in [(false,false), (true,false), (true,true)] {
+        let key = XorKey(0x39);
+        let access = encrypted.then_some(&key as &dyn ni_file::nis::LibraryKey);
+        let mut encoded_subtree = Vec::new();
+        subtree.write_with_key(&mut encoded_subtree, compressed, access).unwrap();
+        assert_eq!(SubtreeItem::read_with_key(Cursor::new(&encoded_subtree), access).unwrap().inner_data, inner_bytes);
+        let subtree_layer = layer(*b"NISD", 0x73, encoded_subtree.clone(), Some(base()));
+        let enc_layer = layer(*b"NISD", 0x74, vec![1,0,0,0, encrypted as u8], Some(subtree_layer));
+        let mut root = item(layer(*b"NIK4", 3, vec![0,0], Some(layer(*b"TEST", 0x9876, vec![9,8,7], Some(base())))));
+        root.children.push(item(enc_layer));
+        // Preserve deliberately noncanonical sibling index/domain/id, not inferred values.
+        let descriptor = [0xe9,3,0,0,b'4',b'K',b'I',b'N',0xde,0xad,0xbe,0xef];
+        root.child_headers.push(descriptor);
+        let mut bytes = Vec::new();
+        root.write(&mut bytes).unwrap();
+        let mut parsed = ItemContainer::read(Cursor::new(&bytes)).unwrap();
+        assert_eq!(parsed.header.reserved, 0x12345678);
+        assert_eq!(parsed.child_headers, [descriptor]);
+        assert_eq!(parsed.trailing_data, [0xc1,0xc2]);
+        let mut roundtrip = Vec::new();
+        NIFile::NISoundContainer(parsed.clone()).write(&mut roundtrip).unwrap();
+        assert_eq!(roundtrip, bytes);
+        assert_eq!(NIFile::NISoundContainer(parsed.clone()).inner_preset_with_key(access).unwrap(), preset);
+        if encrypted { assert!(NIFile::NISoundContainer(parsed.clone()).inner_preset().is_err()); }
+        // Changing opaque metadata recomputes nested lengths, preserving all children.
+        parsed.data.data.extend([0xf1; 21]);
+        let mut edited = Vec::new();
+        parsed.write(&mut edited).unwrap();
+        let reparsed = ItemContainer::read(Cursor::new(&edited)).unwrap();
+        assert_eq!(reparsed.header.length, bytes.len() as u64 + 21);
+        assert_eq!(reparsed.child_headers, [descriptor]);
+        assert_eq!(NIFile::NISoundContainer(reparsed).inner_preset_with_key(access).unwrap(), preset);
+        parsed.child_headers.clear();
+        assert!(parsed.write(&mut Vec::new()).is_err());
+    }
+    let mut output = Vec::new();
+    assert!(subtree.write_with_key(&mut output, false, Some(&XorKey(0x39))).is_err());
+    assert!(output.is_empty());
+    assert!(NIFile::NICompressedWave.write(&mut output).is_err());
+    assert!(output.is_empty());
+    let invalid = SubtreeItem { inner_data: vec![] };
+    assert!(invalid.write_with_key(&mut output, true, None).is_err());
+    assert!(output.is_empty());
+    // Declared lengths outside the C codec range fail before allocating output.
+    for (expanded, packed) in [(u32::MAX, 1u32), (1, u32::MAX)] {
+        let mut bytes = 1u32.to_le_bytes().to_vec();
+        bytes.push(1);
+        bytes.extend(expanded.to_le_bytes());
+        bytes.extend(packed.to_le_bytes());
+        assert!(SubtreeItem::read(Cursor::new(bytes)).is_err());
     }
 }

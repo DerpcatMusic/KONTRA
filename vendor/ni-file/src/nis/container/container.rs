@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use crate::{read_bytes::ReadBytesExt, Error, NIFileError};
 
@@ -10,6 +10,10 @@ pub struct ItemContainer {
     pub header: ItemHeader,
     pub data: ItemData,
     pub children: Vec<ItemContainer>,
+    /// Raw sibling-index, domain and item-id records, one per child.
+    pub child_headers: Vec<[u8; 12]>,
+    /// Uninterpreted bytes after the child table.
+    pub trailing_data: Vec<u8>,
 }
 
 impl ItemContainer {
@@ -22,11 +26,60 @@ impl ItemContainer {
             .ok_or(Error::Static("Invalid NIS item length"))?;
         let mut chunk_data = Cursor::new(reader.read_bytes(length)?);
 
-        Ok(ItemContainer {
+        let data = ItemData::read(&mut chunk_data)?;
+        let (children, child_headers) = Self::read_children(&mut chunk_data)?;
+        let trailing_data = chunk_data.read_all()?;
+        Ok(Self {
             header,
-            data: ItemData::read(&mut chunk_data)?,
-            children: ItemContainer::read_children(&mut chunk_data)?,
+            data,
+            children,
+            child_headers,
+            trailing_data,
         })
+    }
+
+    /// Serialized size, recomputed from the current data rather than cached headers.
+    pub fn encoded_len(&self) -> Result<u64, Error> {
+        if self.header.magic != b"hsin" || self.header.uuid.len() != 16 {
+            return Err(Error::Static("Invalid NIS item header"));
+        }
+        if self.child_headers.len() != self.children.len()
+            || u32::try_from(self.children.len()).is_err()
+        {
+            return Err(Error::Static("Invalid NIS child table"));
+        }
+        let mut length = 48u64
+            .checked_add(self.data.encoded_len()?)
+            .and_then(|n| n.checked_add(self.trailing_data.len() as u64))
+            .ok_or(Error::Static("NIS item size overflow"))?;
+        for child in &self.children {
+            let child_length = child.encoded_len()?;
+            length = length
+                .checked_add(12)
+                .and_then(|n| n.checked_add(child_length))
+                .ok_or(Error::Static("NIS item size overflow"))?;
+        }
+        Ok(length)
+    }
+
+    /// Write a lossless NIS container representation, including opaque encrypted data.
+    /// This does not regenerate preset checksums after editing internal preset bytes.
+    pub fn write<W: Write + ?Sized>(&self, writer: &mut W) -> Result<(), Error> {
+        writer.write_all(&self.encoded_len()?.to_le_bytes())?;
+        writer.write_all(&1u32.to_le_bytes())?;
+        writer.write_all(&self.header.magic)?;
+        writer.write_all(&self.header.header_flags.to_le_bytes())?;
+        writer.write_all(&self.header.reserved.to_le_bytes())?;
+        writer.write_all(&self.header.uuid)?;
+        self.data.write(writer)?;
+        writer.write_all(&1u32.to_le_bytes())?;
+        writer.write_all(&(self.children.len() as u32).to_le_bytes())?;
+        for (header, child) in self.child_headers.iter().zip(&self.children) {
+            writer.write_all(header)?;
+            child.write(writer)?;
+        }
+        writer.write_all(&self.trailing_data)?;
+        Ok(())
     }
 
     pub fn first_child(&self) -> Option<&ItemContainer> {
@@ -75,7 +128,9 @@ impl ItemContainer {
         self.find_data(&kind).map(I::try_from)
     }
 
-    fn read_children<R: ReadBytesExt>(mut buf: R) -> Result<Vec<ItemContainer>, Error> {
+    fn read_children<R: ReadBytesExt>(
+        mut buf: R,
+    ) -> Result<(Vec<ItemContainer>, Vec<[u8; 12]>), Error> {
         let version = buf.read_u32_le()?;
         if version != 1 {
             return Err(Error::VersionMismatch {
@@ -83,32 +138,16 @@ impl ItemContainer {
                 got: version,
             });
         }
-
         let num_children = buf.read_u32_le()?;
-
         let mut children = Vec::new();
-        if num_children > 0 {
-            for _ in 0..num_children {
-                // note: siblingIndex for soundinfoitem is 1001 to ensure it is last
-                let _index = buf.read_u32_le()?;
-
-                // childs domain id
-                let _domain_id = buf.read_u32_le()?;
-                let _item_id = buf.read_u32_le()?;
-
-                // let pos = buf.stream_position()?;
-                // let len = buf.read_u64_le()? as usize;
-                // buf.seek(io::SeekFrom::Start(pos))?;
-
-                let len = buf.read_u64_le()? as usize;
-                buf.seek(std::io::SeekFrom::Current(-8))?;
-
-                let data = Cursor::new(buf.read_bytes(len)?);
-
-                children.push(ItemContainer::read(data)?);
-            }
+        let mut headers = Vec::new();
+        for _ in 0..num_children {
+            let mut header = [0; 12];
+            buf.read_exact(&mut header)?;
+            children.push(ItemContainer::read(&mut buf)?);
+            headers.push(header);
         }
-        Ok(children)
+        Ok((children, headers))
     }
 }
 
