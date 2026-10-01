@@ -44,6 +44,9 @@ pub enum Kind {
     Area,
     /// `ui_level_meter`: Kontakt draws it from its colours, never a picture.
     Meter,
+    /// `ui_waveform`: its frame and zero line; the attached zone's wave
+    /// is not drawn yet.
+    Waveform,
     /// Any other kind (`ui_xy`, `ui_waveform`, a meter): a plain box.
     Other,
 }
@@ -62,6 +65,7 @@ impl Kind {
             "ui_text_edit" => Self::TextEdit,
             "ui_mouse_area" => Self::Area,
             "ui_level_meter" => Self::Meter,
+            "ui_waveform" => Self::Waveform,
             _ => Self::Other,
         }
     }
@@ -809,6 +813,7 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
         })
     };
     let meter = (colour("$CONTROL_PAR_BG_COLOR"), colour("$CONTROL_PAR_OFF_COLOR"));
+    let wave = colour("$CONTROL_PAR_WAVE_COLOR");
     canvas(move |z| {
         let (w, h) = (z.width, z.height);
         let weight = (1.5 * s).max(1.);
@@ -899,6 +904,12 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
                     d.push(Draw::fill(rect(0., 0., w, h), off));
                 }
             }
+            Kind::Waveform => {
+                if bg {
+                    d.push(Draw::fill(rect(0., 0., w, h), meter.0.map_or(Role::Field.alpha(1.), Fill::from)));
+                }
+                d.push(Draw::fill(rect(0., (h / 2.).round(), w, 1.), wave.map_or(secondary(), Fill::from)));
+            }
             Kind::Label | Kind::Area | Kind::Other => {}
         }
         d
@@ -930,6 +941,7 @@ mod tests {
         assert_eq!(caption_of(&m, Kind::Menu, -1.).0, "");
         assert_eq!(caption_of(&m, Kind::Menu, 0.).0, "Layer 1");
         assert_eq!(Kind::of("ui_level_meter"), Kind::Meter);
+        assert_eq!(Kind::of("ui_waveform"), Kind::Waveform);
     }
 
     fn picture(w: u32, h: u32, frames: usize, resizable: bool) -> Arc<Picture> {
