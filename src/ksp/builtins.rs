@@ -509,6 +509,24 @@ const VALUED: &[(&str, i32)] = &[
     ("$FILTER_TYPE_AR_LP4", 55),
     ("$FILTER_TYPE_AR_BP4", 56),
     ("$FILTER_TYPE_AR_HP4", 57),
+    // Time units for `*_TIME_UNIT` / `*_FREQ_UNIT` engine parameters.
+    ("$NI_SYNC_UNIT_ABS", 0),
+    ("$NI_SYNC_UNIT_WHOLE", 1),
+    ("$NI_SYNC_UNIT_WHOLE_TRIPLET", 2),
+    ("$NI_SYNC_UNIT_HALF", 3),
+    ("$NI_SYNC_UNIT_HALF_TRIPLET", 4),
+    ("$NI_SYNC_UNIT_QUARTER", 5),
+    ("$NI_SYNC_UNIT_QUARTER_TRIPLET", 6),
+    ("$NI_SYNC_UNIT_8TH", 7),
+    ("$NI_SYNC_UNIT_8TH_TRIPLET", 8),
+    ("$NI_SYNC_UNIT_16TH", 9),
+    ("$NI_SYNC_UNIT_16TH_TRIPLET", 10),
+    ("$NI_SYNC_UNIT_32ND", 11),
+    ("$NI_SYNC_UNIT_32ND_TRIPLET", 12),
+    ("$NI_SYNC_UNIT_64TH", 13),
+    ("$NI_SYNC_UNIT_64TH_TRIPLET", 14),
+    ("$NI_SYNC_UNIT_256TH", 15),
+    ("$NI_SYNC_UNIT_ZONE_LENGTH", 16),
 ];
 
 /// The name in a `VALUED` family (`"$KEY_COLOR_"`) that has this value.
@@ -885,6 +903,24 @@ pub const ENGINE_PARS: &[&str] = &[
     "$ENGINE_PAR_GAIN1",
     "$ENGINE_PAR_GAIN2",
     "$ENGINE_PAR_GAIN3",
+    // Parameters of effects and modulators KONTRA does not model yet.
+    "$ENGINE_PAR_FORMANT_SIZE",
+    "$ENGINE_PAR_FORMANT_TALK",
+    "$ENGINE_PAR_INTMOD_FREQUENCY",
+    "$ENGINE_PAR_INTMOD_PULSEWIDTH",
+    "$ENGINE_PAR_JMP_BASS",
+    "$ENGINE_PAR_JMP_MID",
+    "$ENGINE_PAR_JMP_PREAMP",
+    "$ENGINE_PAR_JMP_TREBLE",
+    "$ENGINE_PAR_LFO_RAND",
+    "$ENGINE_PAR_LFO_RECT",
+    "$ENGINE_PAR_LFO_SAW",
+    "$ENGINE_PAR_LFO_SINE",
+    "$ENGINE_PAR_LFO_TRI",
+    "$ENGINE_PAR_LIM_IN_GAIN",
+    "$ENGINE_PAR_LIM_RELEASE",
+    "$ENGINE_PAR_RV_PREDELAY",
+    "$ENGINE_PAR_RV_SIZE",
 ];
 
 pub fn engine_par_id(name: &str) -> Option<i32> {

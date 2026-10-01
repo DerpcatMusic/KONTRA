@@ -503,7 +503,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
     let size = reader.output_buffer_size()?;
-    if size > 32 * 1024 * 1024 {
+    // ANALOG STRINGS' macro film strips decode to 37 MB (732 x 12780 RGBA).
+    if size > 64 * 1024 * 1024 {
         return None;
     }
     let mut data = vec![0; size];
