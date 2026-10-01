@@ -141,6 +141,8 @@ def main():
     delete_ref("nightly-staging")
     assets = []
     for p, platform in zip(files, PLATFORMS):
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        assert p.with_suffix(".zip.sha256").read_text().strip() == digest + "  " + p.name, "Archive checksum mismatch: " + p.name
         with zipfile.ZipFile(p) as archive:
             assert archive.testzip() is None, p.name
             prefix = f"KONTRA-nightly-{platform}/"
@@ -152,11 +154,12 @@ def main():
                 binaries = ("KONTRA.clap", "KONTRA.vst3/Contents/x86_64-linux/KONTRA.so", "kontakto-standalone")
             for name in (*binaries, "LICENSE", "NOTICE", "THIRD_PARTY.md"):
                 assert archive.getinfo(prefix + name).file_size > 0, (p.name, name)
+            assert archive.read(prefix + "SOURCE_COMMIT.txt").decode().strip() == SHA, p.name
             info = [json.loads(archive.read(prefix + name)) for name in ("plugin-build-info.json", "build-info.json")]
         target = {"linux-x86_64": "x86_64-unknown-linux-gnu", "windows-x86_64": "x86_64-pc-windows-msvc", "macos-arm64": "aarch64-apple-darwin", "macos-x86_64": "x86_64-apple-darwin"}[platform]
         assert all(i["version"] == version and i["revision"] == SHA and i["target"] == target and i["profile"] == "release" and "library-access" in i["features"] for i in info), p.name
         assert "standalone" not in info[0]["features"] and "standalone" in info[1]["features"], p.name
-        assets.append(dict(name=p.name, platform=platform, size=p.stat().st_size, sha256=hashlib.sha256(p.read_bytes()).hexdigest(), plugin_build=info[0], standalone_build=info[1]))
+        assets.append(dict(name=p.name, platform=platform, size=p.stat().st_size, sha256=digest, plugin_build=info[0], standalone_build=info[1]))
     manifest = dict(version=version, revision=SHA, workflow_run=os.environ["GITHUB_RUN_ID"], assets=assets)
     data = (json.dumps(manifest, indent=2) + "\n").encode()
     Path("dist/release-manifest.json").write_bytes(data)

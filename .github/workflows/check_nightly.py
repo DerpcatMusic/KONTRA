@@ -94,7 +94,7 @@ else: raise AssertionError(a)
 save(); print(out,end="" if a[:2]==["release","download"] else "\n"); sys.exit(status)
 '''
 
-cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","cleanup-fails","rotation-fails")
+cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","cleanup-fails","rotation-fails")
 for case in cases:
     with tempfile.TemporaryDirectory(prefix="kontra-nightly-check-") as directory:
         root=Path(directory); root.joinpath("gh").write_text(mock_gh); root.joinpath("gh").chmod(0o755); root.joinpath("dist").mkdir()
@@ -107,7 +107,11 @@ for case in cases:
                     target={"linux-x86_64":"x86_64-unknown-linux-gnu","windows-x86_64":"x86_64-pc-windows-msvc","macos-arm64":"aarch64-apple-darwin","macos-x86_64":"x86_64-apple-darwin"}[platform]
                     z.writestr(f"KONTRA-nightly-{platform}/{name}",json.dumps(dict(version=version,revision="a"*40,target=target,profile="release",features=["library-access"]+(["standalone"] if name=="build-info.json" else []))))
                 binaries=("KONTRA.clap/Contents/MacOS/KONTRA","KONTRA.vst3/Contents/MacOS/KONTRA","kontakto-standalone") if platform.startswith("macos-") else (("KONTRA.clap","KONTRA.vst3/Contents/x86_64-win/KONTRA.vst3","kontakto-standalone.exe") if platform.startswith("windows-") else ("KONTRA.clap","KONTRA.vst3/Contents/x86_64-linux/KONTRA.so","kontakto-standalone"))
+                z.writestr(f"KONTRA-nightly-{platform}/SOURCE_COMMIT.txt", "a"*40+"\n")
                 for name in (*binaries,"LICENSE","NOTICE","THIRD_PARTY.md"): z.writestr(f"KONTRA-nightly-{platform}/{name}",b"fixture")
+            archive=root/f"dist/KONTRA-nightly-{platform}.zip"
+            digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+            archive.with_suffix(".zip.sha256").write_text(("0"*64 if case=="bad-checksum" else digest)+"  "+archive.name+"\n")
         old=[]; refs={}
         if case!="first":
             for i,tag in enumerate(("nightly","nightly-previous","v1.0.0"),1):
@@ -122,7 +126,7 @@ for case in cases:
         env=dict(os.environ,PATH=f"{root}:{os.environ['PATH']}",GITHUB_SHA="a"*40,GH_REPO="example/KONTRA",GITHUB_RUN_ID="7",GITHUB_OUTPUT=str(output))
         def run(command): return subprocess.run(["bash","--noprofile","--norc","-e","-o","pipefail","-c",command],cwd=root,env=env,capture_output=True,text=True)
         result=run(publish); state=json.loads(root.joinpath("state.json").read_text())
-        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest") else 0),(case,result.stderr)
+        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum") else 0),(case,result.stderr)
         if case=="rotation-fails":
             assert state["published"] and len(state["releases"])==2 and any(r["tag_name"]=="nightly-previous" for r in state["releases"])
             result=run(publish); assert result.returncode==0,result.stderr
@@ -156,7 +160,10 @@ for case in cases:
                         for name,data in entries.items():
                             if name.endswith("build-info.json"):
                                 info=json.loads(data);info.update(version=next_version,revision="f"*40);data=json.dumps(info).encode()
+                            elif name.endswith("SOURCE_COMMIT.txt"):
+                                data=("f"*40+"\n").encode()
                             z.writestr(name,data)
+                    path.with_suffix(".zip.sha256").write_text(hashlib.sha256(path.read_bytes()).hexdigest()+"  "+path.name+"\n")
                 result=run(publish);assert result.returncode==0,result.stderr
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert len(state["releases"])==2
@@ -177,4 +184,4 @@ for case in cases:
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
-print("Nightly checks passed: 9 retention/rerun/upload/cleanup scenarios and four stable README links.")
+print("Nightly checks passed: 10 retention/rerun/upload/checksum/cleanup scenarios and four stable README links.")

@@ -6,8 +6,9 @@ local logs, support reports, build output or machine-specific configuration.
 
 ## Local workflow
 
-The declared minimum is Rust 1.92, matching the pinned plugin framework. Current
-verification uses Rust 1.98.1; the minimum toolchain has not been independently tested.
+The declared minimum is Rust 1.92, matching the pinned plugin framework. CI and contributors
+use Rust 1.99.0, pinned in `rust-toolchain.toml` and verified in hosted CI. Local focused
+checks have also passed on Rust 1.98.1; the minimum has not been independently tested.
 
 Start from the current development branch, create a focused branch, and commit a
 coherent change after its relevant checks pass. Keep unrelated work separate.
@@ -26,8 +27,10 @@ cargo nextest run --release -E 'test(regression_name)'
 ```
 
 Nextest runs at most two tests concurrently and does not retry failures. Before
-merging, run the required CI checks, including `cargo test --release` for unit tests
-and doctests. Report failures and any checks that could not run. A parser success,
+merging, run the required [CI checks](docs/CI.md), including the full default-feature
+unit/integration/doctest suite with `cargo test --locked --profile ci`. Every nightly
+additionally runs this suite with the shipping `release` profile. Report failures
+and any checks that could not run. A parser success,
 render or synthetic regression establishes only the behavior it actually exercises.
 Update the compatibility notes when supported behavior or a known limit changes.
 

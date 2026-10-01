@@ -1,40 +1,87 @@
 name: CI
 
-# Linux runs the full gate; Windows only checks that everything compiles.
-# macOS packages are built by nightly.yml.
-
+# Keep the workflow present for every PR. Only known documentation-only changes
+# skip expensive jobs; `CI required` still reports success/failure.
 on:
   push:
     branches: [main]
-    paths-ignore: ['**.md', 'audits/**', 'LICENSE', 'NOTICE']
   pull_request:
-    paths-ignore: ['**.md', 'audits/**', 'LICENSE', 'NOTICE']
+  merge_group:
   workflow_dispatch:
+    inputs:
+      release_validation:
+        description: Test the shipping ThinLTO profile (slower)
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      release_validation:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_TARGET_DIR: target
+  # Snapshots call this same workflow at their exact source commit, in release mode.
+  CI_PROFILE: ${{ inputs.release_validation && 'release' || 'ci' }}
 
 jobs:
-  linux:
-    runs-on: ubuntu-latest
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Version consistency
         run: |
           python3 tools/version.py check
           python3 tools/version.py self-test
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Classify changes
+        id: changes
+        env:
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFTER: ${{ github.sha }}
+          FORCE: ${{ inputs.release_validation || (github.event_name != 'push' && github.event_name != 'pull_request') }}
+        run: python3 .github/scripts/ci_changes.py
+      - name: Workflow syntax and expression checks
+        run: bash .github/scripts/check_workflows.sh
+      - name: Workflow safety tests
+        run: |
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+          python3 .github/workflows/check_nightly.py
+
+  linux:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    concurrency:
+      group: ci-linux-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: stable
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Nightly shipping identity
+        if: inputs.release_validation
+        shell: bash
+        run: |
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          python3 tools/version.py nightly --write
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
           components: rustfmt, clippy
       - name: System libraries (X11, OpenGL/Vulkan, ALSA, JACK)
         run: |
@@ -47,30 +94,106 @@ jobs:
             libasound2-dev libjack-jackd2-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          key: linux-${{ env.CI_PROFILE }}-default
           save-if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
           cache-on-failure: true
-      # The tree predates rustfmt enforcement: report, don't fail. Make this
-      # step required after a one-time `cargo fmt` with no branches open.
-      - name: rustfmt
+      # Existing formatting debt remains advisory; do not reformat unrelated code.
+      - name: rustfmt (advisory)
         continue-on-error: true
         run: cargo fmt --all --check
       - name: clippy
-        run: cargo clippy --release --all-targets --features library-access
+        run: cargo clippy --locked --profile "$CI_PROFILE" --all-targets
       - name: test
-        run: cargo test --release
-      - name: test (library-access)
-        run: cargo test --release --features library-access --lib 'access::'
+        # library-access is already a default feature; this includes access::*.
+        run: cargo test --locked --profile "$CI_PROFILE"
 
   windows:
-    runs-on: windows-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 25
+    concurrency:
+      group: ci-windows-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          toolchain: stable
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Nightly shipping identity
+        if: inputs.release_validation
+        shell: bash
+        run: |
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          python3 tools/version.py nightly --write
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          key: windows-${{ env.CI_PROFILE }}-standalone
           save-if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
           cache-on-failure: true
       - name: check
-        run: cargo check --release --all-targets --features library-access,standalone
+        shell: bash
+        run: cargo check --locked --profile "$CI_PROFILE" --all-targets --features standalone
+
+  macos:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-15
+    timeout-minutes: 25
+    concurrency:
+      group: ci-macos-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Nightly shipping identity
+        if: inputs.release_validation
+        shell: bash
+        run: |
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          python3 tools/version.py nightly --write
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: macos-${{ env.CI_PROFILE }}-standalone
+          save-if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
+          cache-on-failure: true
+      - name: check
+        shell: bash
+        run: cargo check --locked --profile "$CI_PROFILE" --all-targets --features standalone
+
+  required:
+    name: CI required
+    if: always()
+    needs: [changes, linux, windows, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every applicable check
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          LINUX: ${{ needs.linux.result }}
+          WINDOWS: ${{ needs.windows.result }}
+          MACOS: ${{ needs.macos.result }}
+        run: |
+          test "$CHANGES" = success
+          if [ "$CODE" = true ]; then
+            test "$LINUX" = success
+            test "$WINDOWS" = success
+            test "$MACOS" = success
+          else
+            test "$CODE" = false
+            test "$LINUX" = skipped
+            test "$WINDOWS" = skipped
+            test "$MACOS" = skipped
+          fi
