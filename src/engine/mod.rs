@@ -528,6 +528,11 @@ impl Engine {
         if channel >= 16 || cc >= 128 {
             return;
         }
+        if cc == 123 && let Some((master, members)) = self.player.mpe_zone && channel == master {
+            for member in (0..16).filter(|m| members & (1 << m) != 0) {
+                self.cc(member, cc, value);
+            }
+        }
         if self.script.is_some() {
             if cc < 120 {
                 if let Some((rt, mut host)) = self.scripted(channel) {
@@ -660,6 +665,13 @@ impl Engine {
         if channel < 16 && note < 128 {
             self.player.expression[channel as usize][note as usize] = expression;
         }
+    }
+
+    pub(crate) fn set_mpe_zone(&mut self, zone: Option<(u8, u16)>) {
+        self.player.mpe_zone = zone.map(|(master, members)| {
+            let master = master.min(15);
+            (master, members & !(1 << master))
+        });
     }
 
     pub fn event_active(&self, id: EventId) -> bool {
@@ -847,8 +859,11 @@ struct Player {
     shared: bool,
     rate: f64,
     sustain: [bool; 16],
+    /// Pedals and stop messages on an MPE master affect its member channels.
+    mpe_zone: Option<(u8, u16)>,
     /// Keys latched by the sostenuto pedal (CC66).
     sostenuto: [[bool; 128]; 16],
+    sostenuto_down: [bool; 16],
     bend: [f32; 16],
     cc: [[u8; 128]; 16],
     /// Channel pressure.
@@ -899,7 +914,9 @@ impl Player {
             shared: true,
             rate,
             sustain: [false; 16],
+            mpe_zone: None,
             sostenuto: [[false; 128]; 16],
+            sostenuto_down: [false; 16],
             bend: [0.0; 16],
             cc: [[0; 128]; 16],
             pressure: [0; 16],
@@ -928,6 +945,7 @@ impl Player {
     fn reset_midi(&mut self) {
         self.sustain = [false; 16];
         self.sostenuto = [[false; 128]; 16];
+        self.sostenuto_down = [false; 16];
         self.bend = [0.0; 16];
         self.pressure = [0; 16];
         self.expression.fill([Expression::default(); 128]);
@@ -1374,9 +1392,17 @@ impl Player {
             // those no longer held by key or sustain.
             66 => {
                 let on = value >= 64;
+                if std::mem::replace(&mut self.sostenuto_down[c], on) == on {
+                    return;
+                }
                 let latched = std::mem::replace(&mut self.sostenuto[c], [false; 128]);
                 if on {
-                    self.sostenuto[c] = std::array::from_fn(|n| latched[n] || self.keys[c][n] > 0);
+                    // Scripts may queue these commands while input keys already
+                    // reflect later note-offs. Capture the voices sounding at
+                    // this command's time, only on the pedal's down edge.
+                    for v in self.voices.iter().filter(|v| v.channel == channel && v.held && !v.released && !v.release_trigger) {
+                        self.sostenuto[c][v.note as usize] = true;
+                    }
                 } else if let (Some(bank), false) = (bank, self.sustain[c]) {
                     self.pedal_up(bank, channel, &latched, defaults);
                 }
@@ -1404,6 +1430,17 @@ impl Player {
                 }
             }
             _ => {}
+        }
+        // Forward once at the engine boundary, after the script's controller
+        // callback. A script may consume or delay the pedal; member channels
+        // must not run copies of that callback.
+        if matches!(cc, 64 | 66 | 120 | 121)
+            && let Some((master, members)) = self.mpe_zone
+            && channel == master
+        {
+            for member in (0..16).filter(|m| members & (1 << m) != 0) {
+                self.cc(bank, member, cc, value, defaults);
+            }
         }
     }
 

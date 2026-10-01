@@ -717,7 +717,7 @@ impl Router {
                     }
                 }
                 out(Out::Cc(to, cc, value));
-                if r.master(channel) && !self.scripted {
+                if r.master(channel) && !self.scripted && !matches!(cc, 64 | 66 | 120 | 121 | 123) {
                     for m in r.zone().map(|z| z.1).into_iter().flatten() {
                         out(Out::Cc(m, cc, value));
                     }
@@ -800,6 +800,8 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
 /// arrive on `home`.
 pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
     r.follow(e);
+    let zone = if r.by_channel() { None } else { r.route.zone() };
+    e.set_mpe_zone(zone.map(|(master, members)| (master, members.fold(0u16, |mask, member| mask | (1 << member)))));
     r.input(ev, home, &mut |o| apply(e, o));
 }
 
@@ -1138,6 +1140,31 @@ mod tests {
 
     /// A synthetic MPE stream: lower zone, two notes on members 2 and 3,
     /// each bent, pressed and brightened on its own channel.
+    #[test]
+    fn mpe_master_pedals_hold_scripted_member_notes() {
+        for (zone, master, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+            let (mut e, _) = three_articulation_part();
+            let mut r = router(&Articulate::default(), &Mpe { zone, ..Mpe::default() });
+            feed(&mut r, &mut e, In::NoteOn(member, 60, 100), 0);
+            feed(&mut r, &mut e, In::Cc(master, 66, 127), 0);
+            feed(&mut r, &mut e, In::NoteOn(member, 62, 100), 0);
+            feed(&mut r, &mut e, In::Cc(master, 66, 100), 0);
+            feed(&mut r, &mut e, In::Cc(master, 64, 127), 0);
+            for note in [60, 62] {
+                feed(&mut r, &mut e, In::NoteOff(member, note), 0);
+            }
+            render(&mut e);
+            assert!(!voices(&e, 60, false).is_empty() && !voices(&e, 62, false).is_empty(), "{zone:?}: master sustain must hold both member notes");
+            feed(&mut r, &mut e, In::Cc(master, 64, 0), 0);
+            render(&mut e);
+            assert!(!voices(&e, 60, false).is_empty(), "sostenuto retains only its captured note");
+            assert!(voices(&e, 62, false).is_empty());
+            feed(&mut r, &mut e, In::Cc(master, 66, 0), 0);
+            render(&mut e);
+            assert!(voices(&e, 60, false).is_empty());
+        }
+    }
+
     #[test]
     fn mpe_same_pitch_members_keep_their_own_expression() {
         let mpe = Mpe { zone: Zone::Lower, ..Mpe::default() };
