@@ -355,10 +355,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             push_int(m, m.prog.vars[v as usize].len.unwrap_or(1) as i32)
         }
         Search => {
+            let bounds = if argc == 4 { Some(ints::<2>(m)) } else { None };
             let v = m.stk.var();
             let var = &m.prog.vars[v as usize];
-            charge(m, fuel, u64::from(var.len.unwrap_or(1)))?;
-            let range = var.slot as usize..(var.slot + var.len.unwrap_or(1)) as usize;
+            let len = var.len.unwrap_or(1) as i32;
+            let [lo, hi] = bounds.unwrap_or([0, len.saturating_sub(1)]);
+            let lo = lo.clamp(0, len);
+            let end = hi.saturating_add(1).clamp(lo, len);
+            let range = (var.slot + lo as u32) as usize..(var.slot + end as u32) as usize;
+            charge(m, fuel, range.len() as u64)?;
             let found = match var.ty {
                 Ty::Int => {
                     let x = m.stk.int();
@@ -370,7 +375,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 }
                 Ty::Str => None,
             };
-            push_int(m, found.map_or(-1, |i| i as i32))
+            push_int(m, found.map_or(-1, |i| lo + i as i32))
         }
         Sort => {
             let (lo, hi) = if argc == 4 {
@@ -384,7 +389,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let var = &m.prog.vars[v as usize];
             let len = var.len.unwrap_or(1) as i32;
             let lo = lo.unwrap_or(0).clamp(0, len);
-            let hi = hi.map_or(len, |h| (h + 1).clamp(lo, len));
+            let hi = hi.map_or(len, |h| h.saturating_add(1).clamp(lo, len));
             let range = (var.slot as i32 + lo) as usize..(var.slot as i32 + hi) as usize;
             let n = range.len() as u64;
             charge(m, fuel, n)?;
