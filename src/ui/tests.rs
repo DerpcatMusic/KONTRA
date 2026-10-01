@@ -877,6 +877,8 @@ fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bo
             p.selection.write().unwrap().parts.push(Part {
                 path: i.path.to_string_lossy().into(),
                 group: i.first_playable_group().unwrap_or(0) as u32,
+                // KONTAKTO_VIEW=3 shows the parts vectorized (see `Part::view`).
+                view: std::env::var("KONTAKTO_VIEW").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
                 ..Default::default()
             });
             let script = scripted(i);
@@ -1519,7 +1521,7 @@ fn the_original_view_edits_the_script_and_switches() {
     {
         let mut view = p.shared.view.lock().unwrap();
         let frame = Arc::new(moose::mui::mui::scene::Image::rgba(40, 40, vec![255; 40 * 40 * 4]).unwrap());
-        let strip = Arc::new(artwork::Picture { frames: vec![frame; 11], resizable: false });
+        let strip = Arc::new(artwork::Picture { frames: vec![frame; 11], stretch: [false; 2] });
         view.parts[0].pictures = Arc::new([("strip".to_owned(), strip)].into());
         view.parts[0].wallpaper = Some(Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, vec![40; 632 * 268 * 4]).unwrap()));
     }
@@ -1570,7 +1572,7 @@ fn the_vectorized_view_keeps_the_original_layout() {
     let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $vol(0, 100)\nmove_control_px($vol, 30, 40)\nset_control_par_str(get_ui_id($vol), $CONTROL_PAR_PICTURE, \"knob\")\ndeclare ui_switch $legato\nmove_control_px($legato, 120, 40)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nmove_control_px($mic, 200, 90)\ndeclare ui_label $title(1,1)\nset_text($title, \"Tone\")\nmove_control_px($title, 30, 100)\nend on");
     {
         let frame = Arc::new(moose::mui::mui::scene::Image::rgba(48, 50, vec![200; 48 * 50 * 4]).unwrap());
-        let knob = artwork::Picture { frames: vec![frame; 11], resizable: false };
+        let knob = artwork::Picture { frames: vec![frame; 11], stretch: [false; 2] };
         p.shared.view.lock().unwrap().parts[0].pictures = Arc::new([("knob".to_owned(), Arc::new(knob))].into());
     }
     let rects = |code: u8| {

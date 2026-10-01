@@ -1009,6 +1009,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 value,
                 visible: true,
             });
+            snap_menu(m, c);
             Ok(Step::Next)
         }
         SetMenuItemStr => {
@@ -1277,6 +1278,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             {
                 write_value(&mut m.slot.mem, var, value);
             }
+            if let Some(c) = m.slot.ui.control_of(v) {
+                snap_menu(m, c);
+            }
             Ok(Step::Next)
         }
         // ---- Program global storage ----------------------------------------------------
@@ -1391,6 +1395,22 @@ fn allow(groups: &mut GroupMask, group: i32, allowed: bool) {
         };
     } else if let Ok(g) = usize::try_from(group) {
         groups.set(g, allowed);
+    }
+}
+
+/// A menu shows one of its items: a value that is none of theirs (a fresh
+/// menu's 0, a saved value from an older version) becomes the first item's,
+/// as Kontakt selects it. Scripts index arrays by it in `on init`.
+fn snap_menu(m: &mut Machine, c: usize) {
+    let control = &m.slot.ui.controls[c];
+    let Some(first) = control.menu.first().map(|i| i.value) else { return };
+    let var = &m.prog.vars[control.var as usize];
+    if var.ty != Ty::Int || var.len.is_some() {
+        return;
+    }
+    let now = m.slot.mem.ints[var.slot as usize];
+    if !control.menu.iter().any(|i| i.value == now) {
+        m.slot.mem.ints[var.slot as usize] = first;
     }
 }
 

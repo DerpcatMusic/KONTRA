@@ -173,7 +173,7 @@ pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -
             let size = |k: &str, or: i32| f64::from(int(c, k).unwrap_or(or));
             let kind = Kind::of(&c.kind);
             let (w, h) = match &picture {
-                Some(p) if !p.resizable => (f64::from(p.frames[0].width), f64::from(p.frames[0].height)),
+                Some(p) => p.size(size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 18)),
                 // Kontakt's own knob has room for its name and value.
                 None if kind == Kind::Knob => (size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 52).max(52.)),
                 _ => (size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 18)),
@@ -312,7 +312,13 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             layers.push(block(w * s, h * s).fill(Role::Background.alpha(0.8)));
         }
     }
-    let drawn: Vec<(Shown, Option<Arc<Image>>)> = layout(&interface, &pictures)
+    let mut shown = layout(&interface, &pictures);
+    if vector {
+        // Our faces are solid where a picture let the words behind it show
+        // through: the script's text goes on top.
+        shown.sort_by_key(|s| s.kind == Kind::Label);
+    }
+    let drawn: Vec<(Shown, Option<Arc<Image>>)> = shown
         .into_iter()
         .map(|shown| {
             let c = &interface.controls[shown.control];
@@ -331,7 +337,15 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             .filter_map(|(dx, _)| luma_under(&drawn[..=n], wallpaper.as_deref(), cx_ + dx * shown.w, cy))
             .fold(None, |m: Option<(f32, u32)>, l| Some(m.map_or((l, 1), |(t, k)| (t + l, k + 1))))
             .map(|(t, k)| t / k as f32);
-        let look = if vector { Look::Vector(names.get(&shown.control).map(String::as_str)) } else { Look::Original(under) };
+        // A name the script's own text already gives beside it is not repeated.
+        let near = |o: &Shown| {
+            let t = &interface.controls[o.control];
+            o.kind == Kind::Label && !prop(t, "$CONTROL_PAR_TEXT").trim().is_empty()
+                && o.x < shown.x + shown.w + 8. && o.x + o.w > shown.x - 8.
+                && o.y < shown.y + shown.h + FONT * 2. && o.y + o.h > shown.y - FONT * 2.
+        };
+        let name = names.get(&shown.control).filter(|_| !drawn.iter().any(|(o, _)| near(o)));
+        let look = if vector { Look::Vector(name.map(String::as_str)) } else { Look::Original(under) };
         layers.push(control(ui, cx, slot, shown, c, s, look).at(shown.x * s, shown.y * s));
     }
     // Over everything: the value a drag is setting, or a value being typed.
@@ -418,7 +432,7 @@ fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, Option<f64>)
 
 /// Text on a control `w` by `h` (scaled), aligned as the script asked.
 fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, ink: impl Into<Fill>) -> El {
-    let t = text(words).text_size(FONT * s).fill(ink).lines(1).min_w(0);
+    let t = text(words.clone()).text_size(fit(&words, w - 4. * s, FONT * s)).fill(ink).lines(1).min_w(0);
     let justify = match align {
         1 => Justify::Center,
         2 => Justify::End,
@@ -429,6 +443,13 @@ fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, in
         Some(y) => line.h(FONT * s * 1.4).at(0., y * s),
         None => line.h(h).at(0., 0.),
     }
+}
+
+/// The size `text` is set at to fit `room` points: `size`, or smaller down
+/// to three quarters of it. Kontakt's own fonts are narrower than ours.
+pub fn fit(text: &str, room: f64, size: f64) -> f64 {
+    let wide = super::cover::advance(text, size);
+    if wide <= room || wide <= 0. { size } else { (size * room / wide).max(size * 0.75) }
 }
 
 /// A control's range as declared: a switch's is 0 to 1.
@@ -452,6 +473,41 @@ fn picture_frame(shown: &Shown, c: &Control, now: f64) -> Option<Arc<Image>> {
         _ => usize::try_from(int(c, "$CONTROL_PAR_PICTURE_STATE").unwrap_or(0)).unwrap_or(0).min(n - 1),
     };
     p.frames.get(f).cloned()
+}
+
+/// A picture's frame on a control `w` by `h` points: whole when it keeps its
+/// size, else cut along each way it stretches into two ends kept as drawn
+/// and the middle pixel (or two) stretched between them: a stretched menu
+/// keeps its rounded ends and its arrow, a one-pixel divider its width.
+// ponytail: cut again on every build; cache the cuts if big stretched
+// pictures show up in profiles.
+fn sliced(image: &Arc<Image>, stretch: [bool; 2], w: f64, h: f64, s: f64) -> El {
+    let (iw, ih) = (image.width, image.height);
+    let cuts = |on: bool, own: u32, to: f64| -> Vec<(u32, u32, f64)> {
+        let end = own.saturating_sub(1) / 2;
+        let e = f64::from(end) * s;
+        if !on || end == 0 || (to - f64::from(own) * s).abs() < 0.5 || to <= 2. * e {
+            return vec![(0, own, to)];
+        }
+        vec![(0, end, e), (end, own - 2 * end, to - 2. * e), (own - end, end, e)]
+    };
+    let (across, down) = (cuts(stretch[0], iw, w), cuts(stretch[1], ih, h));
+    if across.len() == 1 && down.len() == 1 {
+        return block(w, h).fill(Fill::Image(image.clone(), Fit::Fill));
+    }
+    let mut parts = Vec::new();
+    let mut y = 0.;
+    for &(sy, sh, th) in &down {
+        let mut x = 0.;
+        for &(sx, sw, tw) in &across {
+            if let Some(piece) = crate::artwork::crop(image, sx, sy, sw, sh) {
+                parts.push(block(tw, th).fill(Fill::Image(piece, Fit::Fill)).at(x, y));
+            }
+            x += tw;
+        }
+        y += th;
+    }
+    stack(parts).w(w).h(h)
 }
 
 /// Light text, or dark over something light: Kontakt's own fonts carry
@@ -570,7 +626,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     let round = shown.kind == Kind::Knob || shown.kind == Kind::Slider && knob_like(prop(c, "$CONTROL_PAR_PICTURE"), shown.w, shown.h);
     let lift = if cx.state.held.is_some_and(|(p, n, _)| (p, n) == (slot, shown.control)) { 1. } else { ui.state(id.as_str()).hover as f32 };
     let mut layers = vec![match picture {
-        Some(image) => block(w, h).fill(Fill::Image(image, Fit::Fill)),
+        Some(image) => sliced(&image, shown.picture.as_ref().map_or([false; 2], |p| p.stretch), w, h, s),
         None => face(shown.kind, c, now, lo, hi, vertical, round, s, lift).w(w).h(h),
     }];
     // Text on our face is our ink; on a picture it reads what lies under it.
@@ -578,7 +634,14 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         Look::Original(under) if pictured || matches!(shown.kind, Kind::Label | Kind::Area) => Fill::from(ink(under)),
         _ => Fill::from(Role::Ink),
     };
-    let (said, align, top) = caption_of(c, shown.kind, now);
+    let (mut said, align, top) = caption_of(c, shown.kind, now);
+    // A switch whose words were in its picture says its name instead.
+    if let Look::Vector(Some(name)) = look
+        && said.is_empty()
+        && matches!(shown.kind, Kind::Switch | Kind::Button)
+    {
+        said = name.to_owned();
+    }
     if !said.is_empty() {
         layers.push(words(said, align, top, w, h, s, own_ink.clone()));
     }
@@ -599,6 +662,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     // A knob the wallpaper named: the name under it, where the wallpaper had it.
     if let Look::Vector(Some(name)) = look
         && round
+        && shown.w * s >= 16.
         && shown.kind != Kind::Knob
     {
         let tag = words(name.to_owned(), 1, None, (shown.w * s).max(72. * s), FONT * s * 1.4, s, Role::Dim);
@@ -697,10 +761,13 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
                 d.push(Draw::fill(place(at - thumb / 2., mid - th / 2., thumb, th), value_ink(lift)));
             }
             Kind::Switch | Kind::Button => {
+                // On: raised, edged and marked in the accent; off: a field.
                 if on {
-                    boxed(&mut d, Fill::from(accent()));
+                    d.push(Draw::fill(rect(0., 0., w, h), Role::Raised.alpha(1.)));
+                    d.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), accent(), 1.));
+                    d.push(Draw::fill(rect(0., 0., (2. * s).max(2.), h), accent()));
                 } else {
-                    boxed(&mut d, Role::Raised.alpha(1.));
+                    boxed(&mut d, Role::Field.alpha(1.));
                 }
             }
             Kind::Menu => {
@@ -748,7 +815,7 @@ mod tests {
 
     fn picture(w: u32, h: u32, frames: usize, resizable: bool) -> Arc<Picture> {
         let frame = Arc::new(Image::rgba(w, h, vec![0u8; (w * h * 4) as usize]).unwrap());
-        Arc::new(Picture { frames: vec![frame; frames], resizable })
+        Arc::new(Picture { frames: vec![frame; frames], stretch: [resizable; 2] })
     }
 
     #[test]

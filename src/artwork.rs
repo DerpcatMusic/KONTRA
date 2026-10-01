@@ -126,7 +126,10 @@ pub fn performance(
     instrument: &crate::import::Instrument,
     computed: Option<&str>,
 ) -> Result<Option<Arc<Image>>, String> {
+    // A script that computed no name (an index it had not set yet) may
+    // still name one plainly.
     let Some(name) = computed
+        .filter(|n| !n.is_empty())
         .map(str::to_owned)
         .or_else(|| wallpaper(&instrument.scripts))
     else {
@@ -157,8 +160,22 @@ fn png_name(name: &str) -> Option<String> {
 #[derive(Debug)]
 pub struct Picture {
     pub frames: Vec<Arc<Image>>,
-    /// Stretches to the control; otherwise it keeps its own size.
-    pub resizable: bool,
+    /// Stretches to the control across and down (its sidecar's
+    /// "Horizontal" and "Vertical Resizable"); otherwise it keeps its own
+    /// size that way.
+    pub stretch: [bool; 2],
+}
+
+impl Picture {
+    /// The size it draws at on a control `w` by `h`: its own, but along a
+    /// way it stretches.
+    pub fn size(&self, w: f64, h: f64) -> (f64, f64) {
+        let f = &self.frames[0];
+        (
+            if self.stretch[0] { w } else { f64::from(f.width) },
+            if self.stretch[1] { h } else { f64::from(f.height) },
+        )
+    }
 }
 
 /// The control pictures named in `names` that the preset's library has.
@@ -185,7 +202,7 @@ pub fn pictures<'a>(
         }
         let picture = Picture {
             frames,
-            resizable: layout.resizable,
+            stretch: layout.stretch,
         };
         out.insert(name.to_owned(), Arc::new(picture));
     }
@@ -193,7 +210,7 @@ pub fn pictures<'a>(
 }
 
 /// A copy of the `w` by `h` pixels at `x`, `y`; `None` when empty.
-fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
+pub fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
     if w == 0 || h == 0 || x + w > image.width || y + h > image.height {
         return None;
     }
@@ -212,7 +229,7 @@ fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
 struct Layout {
     frames: u32,
     horizontal: bool,
-    resizable: bool,
+    stretch: [bool; 2],
 }
 
 impl Layout {
@@ -220,7 +237,7 @@ impl Layout {
         let mut layout = Self {
             frames: 1,
             horizontal: false,
-            resizable: false,
+            stretch: [false; 2],
         };
         for (key, value) in text.lines().filter_map(|l| l.split_once(':')) {
             let value = value.trim();
@@ -229,7 +246,8 @@ impl Layout {
             match key.trim().to_lowercase().as_str() {
                 "number of animations" => layout.frames = number,
                 "horizontal animation" => layout.horizontal = yes,
-                "horizontal resizable" | "vertical resizable" => layout.resizable |= yes,
+                "horizontal resizable" => layout.stretch[0] = yes,
+                "vertical resizable" => layout.stretch[1] = yes,
                 _ => {}
             }
         }
@@ -682,9 +700,15 @@ mod tests {
             super::Layout {
                 frames: 3,
                 horizontal: false,
-                resizable: false,
+                stretch: [false; 2],
             }
         );
+        // Windows line ends, spacing and case as libraries write them.
+        let strip = super::Layout::parse("Has Alpha Channel: yes\r\nnumber of animations : 4\r\nHorizontal Animation: YES\r\nVertical Resizable: yes\r\nHorizontal Resizable: no\r\n");
+        assert_eq!(strip, super::Layout { frames: 4, horizontal: true, stretch: [false, true] }, "a divider stretches down only");
+        let across = super::Image::rgba(4, 1, (0..16).collect::<Vec<u8>>()).unwrap();
+        assert_eq!(strip.cut(&across).iter().map(|f| f.rgba[0]).collect::<Vec<_>>(), [0, 4, 8, 12], "horizontal frames run left to right");
+        assert_eq!(super::Layout::parse("Number of Animations: 0").frames, 1, "none is one");
         // A 1x3 strip: red, green, blue.
         let image =
             super::Image::rgba(1, 3, vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]).unwrap();

@@ -359,9 +359,7 @@ fn read(
     let picture = pictures.get(picture_name);
     // Kontakt sizes a control to a picture that cannot stretch.
     let (w, h) = match picture {
-        Some(p) if !p.resizable && !p.frames.is_empty() => {
-            (f64::from(p.frames[0].width), f64::from(p.frames[0].height))
-        }
+        Some(p) if !p.frames.is_empty() => p.size(int("WIDTH").unwrap_or(85.), int("HEIGHT").unwrap_or(18.)),
         _ => (
             int("WIDTH").unwrap_or(85.),
             int("HEIGHT").unwrap_or(if c.kind == "ui_knob" { 52. } else { 18. }),
