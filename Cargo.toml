@@ -2,7 +2,7 @@
 name = "kontakto"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.92"
 license = "Apache-2.0"
 description = "KONTRA: a Kontakt-compatible sampler (CLAP, VST3, standalone)"
 repository = "https://github.com/DerpcatMusic/KONTRA"

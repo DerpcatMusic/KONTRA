@@ -6,7 +6,8 @@ local logs, support reports, build output or machine-specific configuration.
 
 ## Local workflow
 
-Use Rust 1.98 or newer, the project's declared supported baseline.
+The declared minimum is Rust 1.92, matching the pinned plugin framework. Current
+verification uses Rust 1.98.1; the minimum toolchain has not been independently tested.
 
 Start from the current development branch, create a focused branch, and commit a
 coherent change after its relevant checks pass. Keep unrelated work separate.
