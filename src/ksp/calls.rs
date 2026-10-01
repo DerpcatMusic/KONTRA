@@ -1369,7 +1369,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let [p, _, value] = ints(m);
             let v = m.stk.var();
             let c = control_of(m, v)?;
-            m.slot.ui.controls[c].set_int(p, value)?;
+            m.slot.ui.controls[c].set_int(p, value).map_err(Fault)?;
             Ok(Step::Next)
         }
         GetFontId => {
@@ -1526,8 +1526,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let v = m.stk.var();
             let c = control_of(m, v)?;
             let c = &mut m.slot.ui.controls[c];
-            c.set_int(b::ATTACHED_ZONE, zone)?;
-            c.set_int(b::UI_WF_PROP_FLAGS, flags)?;
+            c.set_int(b::ATTACHED_ZONE, zone).map_err(Fault)?;
+            c.set_int(b::UI_WF_PROP_FLAGS, flags).map_err(Fault)?;
             Ok(Step::Next)
         }
         // ---- Diagnostics -------------------------------------------------------------
