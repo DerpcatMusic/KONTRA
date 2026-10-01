@@ -110,7 +110,7 @@ for case in cases:
                 for name in (*binaries,"LICENSE","NOTICE","THIRD_PARTY.md"): z.writestr(f"KONTRA-nightly-{platform}/{name}",b"fixture")
         old=[]; refs={}
         if case!="first":
-            for i,tag in enumerate(("nightly","nightly-previous","v0.0.1"),1):
+            for i,tag in enumerate(("nightly","nightly-previous","v1.0.0"),1):
                 oldver=f"v0.1.0-nightly.2026090{i}.g{chr(97+i)*12}"
                 source=chr(97+i)*40
                 old.append(dict(id=i,tag_name=tag,target_commitish=source,draft=False,name="legacy",assets=[dict(name=f"KONTRA-nightly-{platform}.zip",state="uploaded",size=7,digest="sha256:"+hashlib.sha256(b"fixture").hexdigest()) for platform in platforms],body=f"<!-- kontra-source-tag: {oldver} -->" if i!=1 else "Legacy automated snapshot",published_at=f"2026-09-0{4-i}"))
@@ -135,8 +135,11 @@ for case in cases:
             newest=next(r for r in state["releases"] if r["tag_name"]=="nightly")
             assert newest["target_commitish"]=="a"*40 and newest["name"]=="KONTRA "+version
             assert state["refs"]["v"+version]=="a"*40 and state["refs"]["nightly"]=="a"*40
-            if case!="first": assert state["refs"]["nightly-previous"]=="b"*40
-            assert len([tag for tag in state["refs"] if tag.startswith(("v","legacy-g"))])==(1 if case=="first" else 2)
+            if case!="first":
+                assert state["refs"]["nightly-previous"]=="b"*40
+                assert state["refs"]["v1.0.0"]=="d"*40
+                assert not any(r["tag_name"]=="v1.0.0" for r in state["releases"])
+            assert len([tag for tag in state["refs"] if tag.startswith(("v","legacy-g")) and tag!="v1.0.0"])==(1 if case=="first" else 2)
             # A rerun must leave the same rollback and published release identities.
             before=state["releases"]
             result=run(publish); assert result.returncode==0,result.stderr
@@ -159,6 +162,7 @@ for case in cases:
                 assert len(state["releases"])==2
                 assert state["refs"]["nightly"]=="f"*40 and state["refs"]["nightly-previous"]=="a"*40
                 assert "legacy-g"+"b"*12 not in state["refs"]
+                assert state["refs"]["v1.0.0"]=="d"*40
                 before=state["releases"]
             result=run(cleanup); state=json.loads(root.joinpath("state.json").read_text())
             assert result.returncode==(1 if case=="cleanup-fails" else 0),(case,result.stderr)

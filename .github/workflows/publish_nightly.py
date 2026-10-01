@@ -26,7 +26,12 @@ def releases():
     return [r for page in api("releases", "--paginate", "--slurp") for r in page]
 
 
+def managed_ref(tag):
+    return re.fullmatch(r"nightly(?:-previous|-staging)?|legacy-g[0-9a-f]{12}|v\d+\.\d+\.\d+-nightly\.\d{8}\.g[0-9a-f]{12}", tag) is not None
+
+
 def delete_ref(tag):
+    assert managed_ref(tag), "Stable source tags must be preserved"
     # Missing tags are normal after an interrupted release rename.
     result = subprocess.run(["gh", "api", f"repos/{REPO}/git/refs/tags/{tag}", "--method", "DELETE"], capture_output=True)
     if result.returncode and b"HTTP 404" not in result.stderr:
@@ -94,9 +99,9 @@ def finish(release, manifest, manifest_bytes):
     for r in old:
         if previous and r["id"] == previous["id"]:
             continue
-        gh("release", "delete", r["tag_name"], "--yes", "--cleanup-tag")
+        gh("release", "delete", r["tag_name"], "--yes", *(["--cleanup-tag"] if managed_ref(r["tag_name"]) else []))
         marker = re.search(r"<!-- kontra-source-tag: (v[\w.\-]+|legacy-g[0-9a-f]{12}) -->", r.get("body") or "")
-        if marker and marker[1] != tag and (not previous or marker[0] not in (previous.get("body") or "")):
+        if marker and managed_ref(marker[1]) and marker[1] != tag and (not previous or marker[0] not in (previous.get("body") or "")):
             delete_ref(marker[1])
     if previous:
         if previous["tag_name"] != "nightly-previous":
@@ -164,7 +169,7 @@ Contents: CLAP plug-in, VST3 plug-in and standalone application. These builds ha
 macOS builds are signed ad hoc, not notarized: after unzipping, run `xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone`.
 x86_64 plug-ins require AVX2, FMA and BMI2. Linux requires Ubuntu 24.04-compatible system libraries.
 
-The project retains this snapshot and one previous complete release for rollback. Older downloads and their release/source tags are removed only after a complete replacement is published.
+The project retains this snapshot and one previous complete release for rollback. Older release records/downloads and managed nightly source tags are removed only after a complete replacement is published. Stable `vX.Y.Z` source tags are preserved.
 """)
     try:
         gh("release", "create", "nightly-staging", *map(str, files), "dist/release-manifest.json", "--draft", "--prerelease", "--target", SHA, "--title", "KONTRA " + version, "--notes-file", "notes.md")
