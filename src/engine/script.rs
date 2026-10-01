@@ -379,7 +379,7 @@ impl Player {
             Kind::Release { trigger, groups } => {
                 let latched = self.release_voices(bank, id).is_some_and(|event| event.4);
                 if let &Some((note, velocity)) = trigger {
-                    self.trigger_release(bank, (channel, note, velocity), groups, latched, defaults);
+                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, defaults);
                 }
             }
             &Kind::Fade(Fade::In { duration_us }) => {

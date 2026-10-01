@@ -2206,6 +2206,127 @@ fn saturated_controller_commands_still_deliver_sustain_pedal_up() {
     assert_eq!(e.dropped_commands(), before);
 }
 
+fn deferred_release_engine() -> Engine {
+    let release = Group { release_trigger: true, mods: vec![volume_mod(ModSource::Velocity, 0)], ..Group::default() };
+    let groups = vec![Group::default(), release.clone(), release];
+    let mut i = instrument(groups.clone(), Vec::new());
+    i.scripts = vec!["on note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nend on".into()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut e = engine_with(layered(groups, &[0.1, 0.2, 0.4]));
+    e.set_script(rt);
+    e
+}
+
+#[test]
+fn deferred_release_samples_keep_script_selected_groups() {
+    let mut e = deferred_release_engine();
+    e.cc(0, 64, 127);
+    e.note_on(0, 60, 100);
+    render(&mut e, 64);
+    e.note_off(0, 60);
+    render(&mut e, 64);
+    assert!(!e.voice_census().iter().any(|v| v.release_trigger));
+    e.cc(0, 64, 0);
+    render(&mut e, 1000);
+    let groups: Vec<_> = e.voice_census().iter().filter(|v| v.release_trigger).map(|v| v.group).collect();
+    assert_eq!(groups, [1], "pedal-up must use the release callback's exact group mask");
+}
+
+#[test]
+fn deferred_release_capacity_and_channel_cleanup_do_not_hold_voices() {
+    let mut e = engine_with(layered(vec![Group::default(), Group { release_trigger: true, ..Group::default() }], &[0.1, 0.2]));
+    let before = e.dropped_commands();
+    e.cc(1, 64, 127);
+    let id = e.start_event(&NoteEvent::new(1, 62, 100)).unwrap();
+    e.release_event(id);
+    e.cc(0, 64, 127);
+    assert_eq!(allocations(|| {
+        for _ in 0..4096 { // Plus the other channel: exceed the KSP event-pool bound once.
+            let id = e.start_event(&NoteEvent::new(0, 60, 100)).unwrap();
+            e.release_event(id);
+            e.release_event(id); // One event's repeated release must not fill another slot.
+            let (mut l, mut r) = ([0.; 1], [0.; 1]);
+            e.render(&mut l, &mut r);
+        }
+    }), 0);
+    // The first excess request is counted, including its repeated attempt.
+    assert_eq!(e.dropped_commands() - before, 2);
+    assert_eq!(allocations(|| e.cc(0, 64, 0)), 0);
+    assert!(e.voice_census().iter().filter(|v| v.channel == 0 && !v.release_trigger).all(|v| v.released),
+        "overflow must not stop ordinary pedal-up releasing attack voices");
+    // Queue a new pending sample to distinguish CC120 cleanup from pedal-up.
+    e.cc(0, 64, 127);
+    let id = e.start_event(&NoteEvent::new(0, 60, 100)).unwrap();
+    e.release_event(id);
+    // All-sound-off discards only this channel's deferred release samples.
+    assert_eq!(allocations(|| {
+        e.cc(0, 120, 0);
+        e.cc(0, 64, 0);
+        e.cc(1, 64, 0);
+        let (mut l, mut r) = ([0.; 1024], [0.; 1024]);
+        e.render(&mut l, &mut r);
+    }), 0);
+    let voices = e.voice_census();
+    assert!(voices.iter().all(|v| v.channel == 1 && v.release_trigger));
+    assert_eq!(voices.len(), 1, "another channel's pending release must survive cleanup");
+    // Reset clears pending records without later pedal-up replaying old samples.
+    e.cc(0, 64, 127);
+    let id = e.start_event(&NoteEvent::new(0, 60, 100)).unwrap();
+    e.release_event(id);
+    e.reset(48000.);
+    e.cc(0, 64, 0);
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0);
+}
+
+#[test]
+fn deferred_release_samples_keep_distinct_same_pitch_event_velocities() {
+    let mut reference = deferred_release_engine();
+    reference.note_on(0, 60, 40);
+    render(&mut reference, 64);
+    reference.note_off(0, 60);
+    render(&mut reference, 1000);
+    let old_gain = reference.voice_census().iter().find(|v| v.release_trigger).unwrap().gain;
+    let mut e = deferred_release_engine();
+    e.cc(0, 64, 127);
+    for velocity in [40, 100] {
+        e.note_on(0, 60, velocity);
+        render(&mut e, 64);
+        e.note_off(0, 60);
+        render(&mut e, 64);
+    }
+    assert_eq!(allocations(|| {
+        e.cc(0, 64, 0);
+        let (mut l, mut r) = ([0.; 1024], [0.; 1024]);
+        e.render(&mut l, &mut r);
+    }), 0);
+    let voices = e.voice_census();
+    let releases: Vec<_> = voices.iter().filter(|v| v.release_trigger).collect();
+    assert_eq!(releases.len(), 2, "both separate same-pitch release events must survive pedal deferral");
+    assert!(releases.iter().all(|v| v.group == 1));
+    assert!((releases[0].gain - old_gain).abs() < 1e-5);
+    assert!(releases[1].gain > releases[0].gain);
+    // Unscripted physical retriggers also have distinct engine event IDs,
+    // including two overlapping parents released by one physical key-up.
+    let mut bare = engine_with(layered(vec![Group::default(), Group {
+        release_trigger: true, mods: vec![volume_mod(ModSource::Velocity, 0)], ..Group::default()
+    }], &[0.1, 0.2]));
+    bare.cc(0, 64, 127);
+    bare.note_on(0, 60, 40);
+    bare.note_on(0, 60, 100);
+    bare.note_off(0, 60);
+    render(&mut bare, 64);
+    bare.cc(0, 64, 0);
+    render(&mut bare, 1000);
+    let voices = bare.voice_census();
+    let mut gains: Vec<_> = voices.iter().filter(|v| v.release_trigger).map(|v| v.gain).collect();
+    gains.sort_by(f32::total_cmp);
+    assert_eq!(gains.len(), 2);
+    assert!((gains[0] - old_gain).abs() < 1e-5);
+    assert!(gains[1] > gains[0]);
+}
+
 #[test]
 fn same_pitch_sostenuto_release_samples_keep_their_own_key_velocity() {
     let groups = vec![Group::default(), Group {

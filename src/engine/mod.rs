@@ -492,7 +492,6 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             return rt.note_on_from(&mut host, 0, owner, note, velocity.min(127));
         }
-        self.player.pedal_releases[channel as usize][note as usize] = 0;
         self.start_event(&NoteEvent::new(channel, note, velocity));
     }
 
@@ -649,7 +648,7 @@ impl Engine {
         if let Some((channel, note, velocity, false, latched)) = self.player.release_voices(bank, id) {
             let allowed = self.player.allowed;
             let key = (channel, note, velocity);
-            self.player.trigger_release(bank, key, &allowed, latched, defaults);
+            self.player.trigger_release(bank, id, key, &allowed, latched, defaults);
         }
     }
 
@@ -826,8 +825,7 @@ impl Engine {
         // leaving an unreleaseable voice or pedal; the drop counter reports it.
         let overflow = std::mem::take(&mut self.player.stop_overflow);
         for channel in (0..16).filter(|c| overflow & (1 << c) != 0) {
-            self.player.pedal_releases[channel as usize] = [0; 128];
-            self.player.sostenuto_releases[channel as usize] = [0; 128];
+            self.player.pending_releases.retain(|r| r.channel != channel);
             self.player.cc(self.bank.as_deref(), channel, 121, 0, defaults);
             self.player.cc(self.bank.as_deref(), channel, 120, 0, defaults);
         }
@@ -868,6 +866,18 @@ pub struct VoiceInfo {
     pub phase: voice::Phase,
 }
 
+/// One released event, retaining the script's release-sample selection until
+/// its pedals let go. Prepared storage also covers events with no attack zones.
+#[derive(Clone, Copy)]
+struct PendingRelease {
+    source: EventId,
+    channel: u8,
+    note: u8,
+    velocity: u8,
+    groups: GroupMask,
+    captured: bool,
+}
+
 /// Engine state apart from the bank, so voices can mutate while the bank is borrowed.
 struct Player {
     voices: Vec<Voice>,
@@ -894,9 +904,8 @@ struct Player {
     sustain: [bool; 16],
     /// Pedals and stop messages on an MPE master affect its member channels.
     mpe_zone: Option<(u8, u16)>,
-    /// Release samples deferred by captured voices, separate from sustain so
-    /// a later same-pitch restrike cannot inherit their deferred release.
-    sostenuto_releases: [[u8; 128]; 16],
+    /// Release samples deferred by sustain or their own sostenuto capture.
+    pending_releases: Vec<PendingRelease>,
     sostenuto_down: [bool; 16],
     bend: [f32; 16],
     cc: [[u8; 128]; 16],
@@ -906,8 +915,6 @@ struct Player {
     expression: Box<[[Expression; 128]; 16]>,
     /// Velocity of keys that are down.
     keys: [[u8; 128]; 16],
-    /// Release triggers deferred by the sustain pedal: note-on velocity.
-    pedal_releases: [[u8; 128]; 16],
     /// Frames rendered so far.
     now: u64,
     /// Frame each key went down (or its release counter was reset) and up:
@@ -951,14 +958,13 @@ impl Player {
             rate,
             sustain: [false; 16],
             mpe_zone: None,
-            sostenuto_releases: [[0; 128]; 16],
+            pending_releases: Vec::with_capacity(crate::ksp::EVENT_CAPACITY),
             sostenuto_down: [false; 16],
             bend: [0.0; 16],
             cc: [[0; 128]; 16],
             pressure: [0; 16],
             expression: Box::new([[Expression::default(); 128]; 16]),
             keys: [[0; 128]; 16],
-            pedal_releases: [[0; 128]; 16],
             now: 0,
             key_on: Box::new([[0; 128]; 16]),
             key_up: Box::new([[0; 128]; 16]),
@@ -982,7 +988,7 @@ impl Player {
     fn reset_midi(&mut self) {
         self.stop_overflow = 0;
         self.sustain = [false; 16];
-        self.sostenuto_releases = [[0; 128]; 16];
+        self.pending_releases.clear();
         self.sostenuto_down = [false; 16];
         self.bend = [0.0; 16];
         self.pressure = [0; 16];
@@ -992,7 +998,6 @@ impl Player {
             (cc[7], cc[10], cc[11]) = (127, 64, 127);
         }
         self.keys = [[0; 128]; 16];
-        self.pedal_releases = [[0; 128]; 16];
         (self.volume, self.pan) = (1.0, 0.0);
         self.tone = [0.0; 2];
         self.touch();
@@ -1343,20 +1348,21 @@ impl Player {
         if velocity > 0 {
             self.key_up[c][n] = self.now;
         }
-        let sustained = self.sustain[c];
-        let mut latched = false;
-        for v in &mut self.voices {
-            if v.channel == channel && v.note == note && v.held && !v.release_trigger {
-                v.held = false;
-                latched |= v.sostenuto;
-                if !sustained && !v.sostenuto {
-                    v.release(bank, &mut self.free);
-                }
+        let allowed = self.allowed;
+        let mut found = false;
+        // Layered voices share an event. Releasing that event clears held on
+        // every layer, so each distinct physical retrigger fires exactly once.
+        // ponytail: scan per event; index event voices if dense retrigger releases dominate.
+        while let Some(source) = self.voices.iter().find(|v| v.channel == channel && v.note == note && v.held && !v.released && !v.release_trigger).map(|v| v.event) {
+            if let Some((channel, note, velocity, false, captured)) = self.release_voices(bank, source) {
+                found = true;
+                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, defaults);
             }
         }
-        if velocity > 0 {
-            let allowed = self.allowed;
-            self.trigger_release(bank, (channel, note, velocity), &allowed, latched, defaults);
+        // Release-only instruments can have a key but no attack voice.
+        if !found && velocity > 0 {
+            let source = self.next_id();
+            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, defaults);
         }
     }
 
@@ -1383,24 +1389,28 @@ impl Player {
     }
 
     /// Start the release-trigger zones for a key release, limited to `groups`;
-    /// a held sustain pedal defers them to pedal-up (with the engine's groups).
+    /// pedals defer the exact event, velocity and group mask until pedal-up.
     fn trigger_release(
         &mut self,
         bank: &Bank,
+        source: EventId,
         (channel, note, velocity): (u8, u8, u8),
         groups: &GroupMask,
         latched: bool,
         defaults: Ahdsr,
     ) {
-        if channel < 16 && note < 128 {
-            if latched {
-                self.sostenuto_releases[channel as usize][note as usize] = velocity;
+        if channel < 16 && note < 128 && (latched || self.sustain[channel as usize]) {
+            if self.pending_releases.iter().any(|r| r.source == source) { return; }
+            if self.pending_releases.len() == crate::ksp::EVENT_CAPACITY {
+                // Only the excess release sample is lost; voice and pedal
+                // lifetimes have already advanced, and the loss is counted.
+                self.dropped_commands += 1;
                 return;
             }
-            if self.sustain[channel as usize] {
-                self.pedal_releases[channel as usize][note as usize] = velocity;
-                return;
-            }
+            self.pending_releases.push(PendingRelease {
+                source, channel, note, velocity, groups: *groups, captured: latched,
+            });
+            return;
         }
         let id = self.next_id();
         let event = NoteEvent {
@@ -1448,6 +1458,7 @@ impl Player {
                     }
                 } else {
                     for v in self.voices.iter_mut().filter(|v| v.channel == channel) { v.sostenuto = false; }
+                    for r in self.pending_releases.iter_mut().filter(|r| r.channel == channel) { r.captured = false; }
                     if let Some(bank) = bank { self.pedal_up(bank, channel, defaults); }
                 }
             }
@@ -1457,8 +1468,7 @@ impl Player {
                 for v in self.voices.iter_mut().filter(|v| v.channel == channel) {
                     v.fade.start(0.0, fade, true);
                 }
-                self.pedal_releases[c] = [0; 128];
-                self.sostenuto_releases[c] = [0; 128];
+                self.pending_releases.retain(|r| r.channel != channel);
             }
             121 => {
                 self.cc(bank, channel, 64, 0, defaults);
@@ -1503,15 +1513,21 @@ impl Player {
                 v.release(bank, &mut self.free);
             }
         }
-        for note in 0..128u8 {
-            let sustain = std::mem::take(&mut self.pedal_releases[c][note as usize]);
-            let captured = if self.sostenuto_down[c] { 0 } else { std::mem::take(&mut self.sostenuto_releases[c][note as usize]) };
-            for velocity in [sustain, captured].into_iter().filter(|&v| v > 0) {
+        // Compact survivors in place, preserving release order without a
+        // temporary allocation or quadratic shifts for a full pedal history.
+        let mut keep = 0;
+        for i in 0..self.pending_releases.len() {
+            let r = self.pending_releases[i];
+            if r.channel == channel && !r.captured {
                 let id = self.next_id();
-                let event = NoteEvent::new(channel, note, velocity);
+                let event = NoteEvent { groups: Some(&r.groups), ..NoteEvent::new(r.channel, r.note, r.velocity) };
                 self.start(bank, &event, id, true, defaults);
+            } else {
+                self.pending_releases[keep] = r;
+                keep += 1;
             }
         }
+        self.pending_releases.truncate(keep);
     }
 
     /// Under `load`, fade out released voices: first those below a floor
