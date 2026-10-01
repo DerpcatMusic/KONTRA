@@ -6,6 +6,21 @@ KONTRA is being built as an independent alternative to Kontakt. It is not affili
 
 KONTRA ships no instrument libraries or sample collections. Use libraries you are licensed to use, under their license terms.
 
+## Download the latest nightly
+
+[![Windows x64](https://img.shields.io/badge/Windows-x64-0078D4?style=for-the-badge)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-windows-x86_64.zip)
+[![macOS Apple silicon](https://img.shields.io/badge/macOS-Apple_silicon-222222?style=for-the-badge&logo=apple)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-macos-arm64.zip)
+[![macOS Intel](https://img.shields.io/badge/macOS-Intel-555555?style=for-the-badge&logo=apple)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-macos-x86_64.zip)
+[![Linux x64](https://img.shields.io/badge/Linux-x64-168B76?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-linux-x86_64.zip)
+
+Each ZIP contains the **CLAP plug-in, VST3 plug-in and standalone application**. These fixed links always serve the latest complete [nightly pre-release](https://github.com/DerpcatMusic/KONTRA/releases/tag/nightly). Every push or merge to public `main` starts all four builds on free GitHub-hosted runners; downloads update together after all builds and uploads succeed. The links become available after the first successful publication. See [build progress](https://github.com/DerpcatMusic/KONTRA/actions/workflows/nightly.yml) and the release notes for the source commit.
+
+Nightlies are experimental snapshots. Linux builds use Ubuntu 24.04 and require compatible system libraries. The x86_64 plug-ins require **AVX2, FMA and BMI2**. macOS builds are signed ad hoc and are not notarized; after extracting the ZIP, remove quarantine from the downloaded files if macOS blocks them:
+
+```sh
+xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone
+```
+
 ## Compatibility and known gaps
 
 **Full** means verified end to end for the named behavior. **Partial** means only a subset is implemented or exercised. **Unsupported** means the feature is not implemented. **Untested** means there is not enough reference or host testing to make a claim. **Experimental** means limited validation and an evolving interface. No broad compatibility area below is marked full.
@@ -48,7 +63,7 @@ The repository's nightly workflow builds these targets. A build target does not 
 | Linux x86_64 | Yes | Yes | Yes |
 | Windows x86_64 | Yes | Yes | Yes |
 | macOS arm64 | Yes | Yes | Yes |
-| macOS x86_64 | Optional workflow build | Optional workflow build | Optional workflow build |
+| macOS x86_64 | Yes | Yes | Yes |
 
 macOS bundles are signed ad hoc and are not notarized.
 
