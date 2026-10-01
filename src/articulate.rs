@@ -650,7 +650,7 @@ impl Router {
                 self.brightness[key as usize] = NONE;
                 self.set_expression(to, key, |x| *x = Expression { tune, ..Expression::default() }, out);
                 self.held[channel as usize][note as usize & 127] = (to, key);
-                if r.by_channel() && self.scripted {
+                if r.by_channel() {
                     out(Out::NoteOnFrom(to, channel, key, velocity));
                 } else {
                     out(Out::NoteOn(to, key, velocity));
@@ -669,12 +669,10 @@ impl Router {
                 if key == NONE {
                     return;
                 }
-                if r.by_channel() && self.scripted {
+                if r.by_channel() {
                     out(Out::NoteOffFrom(to, channel, key));
                     return;
                 }
-                // Unscripted notes still share the engine's channel/key pair.
-                // ponytail: use event ownership for unscripted channel mode too.
                 let shared = (0..16).any(|c| c != channel as usize && self.held[c][note as usize & 127] == (to, key));
                 if !shared {
                     out(Out::NoteOff(to, key));
@@ -701,7 +699,7 @@ impl Router {
             }
             In::Pressure(_, value) => out(Out::Pressure(to, value)),
             In::PolyAt(_, note, value) => out(Out::PolyAt(to, self.key_of(channel, note), value)),
-            In::Cc(_, 123, _) if r.by_channel() && self.scripted => {
+            In::Cc(_, 123, _) if r.by_channel() => {
                 // Channel-mode scripts share a home channel, but a host stop
                 // belongs to the physical channel that sent it.
                 for (to, key) in std::mem::replace(&mut self.held[channel as usize], [(NONE, NONE); 128]) {
@@ -936,19 +934,19 @@ mod tests {
             [
                 Out::NoteOn(0, 13, SWITCH_VELOCITY),
                 Out::NoteOff(0, 13),
-                Out::NoteOn(0, 60, 90),
+                Out::NoteOnFrom(0, 1, 60, 90),
                 Out::NoteOn(0, 14, SWITCH_VELOCITY),
                 Out::NoteOff(0, 14),
-                Out::NoteOn(0, 64, 80),
+                Out::NoteOnFrom(0, 2, 64, 80),
                 Out::NoteOn(0, 13, SWITCH_VELOCITY),
                 Out::NoteOff(0, 13),
-                Out::NoteOn(0, 67, 70),
+                Out::NoteOnFrom(0, 1, 67, 70),
             ]
         );
         // Releases go where their notes went.
-        assert_eq!(run(&mut r, &[In::NoteOff(2, 64)]), [Out::NoteOff(0, 64)]);
+        assert_eq!(run(&mut r, &[In::NoteOff(2, 64)]), [Out::NoteOffFrom(0, 2, 64)]);
         // The same articulation again needs no switch.
-        assert_eq!(run(&mut r, &[In::NoteOn(1, 62, 50)]), [Out::NoteOn(0, 62, 50)]);
+        assert_eq!(run(&mut r, &[In::NoteOn(1, 62, 50)]), [Out::NoteOnFrom(0, 1, 62, 50)]);
         // Something else may have switched: switch again.
         r.forget();
         assert_eq!(run(&mut r, &[In::NoteOn(1, 62, 50)])[0], Out::NoteOn(0, 13, SWITCH_VELOCITY));
@@ -1069,6 +1067,25 @@ mod tests {
     }
 
     #[test]
+    fn unscripted_channel_notes_release_their_own_same_pitch_voices() {
+        for stop in [false,true] {
+            let (mut e,mut r)=three_articulation_part();
+            e.set_script(None);
+            for channel in 0..2 { feed(&mut r,&mut e,In::NoteOn(channel,60,100),0); }
+            render(&mut e);
+            assert_eq!(voices(&e,60,false).len(),6);
+            feed(&mut r,&mut e,if stop { In::Cc(0,123,0) } else { In::NoteOff(0,60) },0);
+            render(&mut e);
+            assert_eq!(voices(&e,60,false).len(),3,"one channel's release must leave only the other's voices held");
+            assert!(e.key_down(0,60));
+            feed(&mut r,&mut e,In::NoteOff(1,60),0);
+            render(&mut e);
+            assert!(voices(&e,60,false).is_empty());
+            assert!(!e.key_down(0,60));
+        }
+    }
+
+    #[test]
     fn shared_pitch_retriggers_release_the_sustained_note() {
         let (mut e, mut r) = three_articulation_part();
         feed(&mut r, &mut e, In::NoteOn(2, 60, 100), 0);
@@ -1110,8 +1127,8 @@ mod tests {
         a.articulations[2].control = Some((1, 40));
         let mut r = router(&a, &Mpe::default());
         // Channel 2's articulation is off: the note plays as it is.
-        assert_eq!(run(&mut r, &[In::NoteOn(1, 60, 90)]), [Out::NoteOn(0, 60, 90)]);
-        assert_eq!(run(&mut r, &[In::NoteOn(2, 62, 90)]), [Out::Control(1, 40, 1), Out::NoteOn(0, 62, 90)]);
+        assert_eq!(run(&mut r, &[In::NoteOn(1, 60, 90)]), [Out::NoteOnFrom(0, 1, 60, 90)]);
+        assert_eq!(run(&mut r, &[In::NoteOn(2, 62, 90)]), [Out::Control(1, 40, 1), Out::NoteOnFrom(0, 2, 62, 90)]);
         // Channel mode hears the articulations' channels on an omni or set part.
         let c = PartControls { channel: 0, ..PartControls::default() };
         assert!(r.hears(&c, 0, 2) && !r.hears(&c, 0, 1) && !r.hears(&c, 1, 2));
