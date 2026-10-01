@@ -14,12 +14,12 @@ fn main() -> anyhow::Result<()> {
     let mut engine = LogEngine::new(groups, 48_000.0);
     let (mut rt, _) =
         Runtime::with_scripts(&instrument.scripts, &mut engine, 8, instrument.script_state.clone());
-    let (cycles, instructions) = (Counter::open(0), Counter::open(1));
+    let (cycles, instructions, misses) = (Counter::open(0), Counter::open(1), Counter::open(5));
     // Rounds of `chords / 10`; the quietest round counts.
-    let (mut best, mut total) = ((f64::MAX, 0.0), 0.0);
+    let (mut best, mut total) = ((f64::MAX, 0.0, 0.0), 0.0);
     for round in 0..10 {
         rt.env.spent = 0;
-        let start = (cycles.read(), instructions.read());
+        let start = (cycles.read(), instructions.read(), misses.read());
         for c in round * chords / 10..(round + 1) * chords / 10 {
             let keys = [0, 4, 7, 11].map(|k| 55 + (c * 5 % 12) as u8 + k);
             for key in keys {
@@ -40,20 +40,26 @@ fn main() -> anyhow::Result<()> {
         total += ops;
         let spent = (cycles.read() - start.0) as f64 / ops;
         if spent < best.0 {
-            best = (spent, (instructions.read() - start.1) as f64 / ops);
+            best = (
+                spent,
+                (instructions.read() - start.1) as f64 / ops,
+                (misses.read() - start.2) as f64 * 1000.0 / ops,
+            );
         }
     }
     println!(
-        "{}: {:.0} script instructions per chord · {:.2} cycles and {:.1} CPU instructions each",
+        "{}: {:.0} script instructions per chord · {:.2} cycles, {:.1} CPU instructions and {:.2} branch misses per 1000 each",
         instrument.name,
         total / chords as f64,
         best.0,
-        best.1
+        best.1,
+        best.2
     );
     Ok(())
 }
 
-/// A user-space hardware counter on this thread (perf_event_open); 0 = cycles.
+/// A user-space hardware counter on this thread (perf_event_open): 0 = cycles,
+/// 1 = instructions, 5 = branch misses.
 struct Counter(i32);
 
 impl Counter {
