@@ -680,13 +680,20 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             Ok(Step::Next)
         }
         // ---- Groups, modules and engine parameters -------------------------------------
-        FindGroup => {
+        // An exact match, as Kontakt's. A miss returns 0 (`find_group`) or
+        // `$NI_NOT_FOUND`; framework scripts look up names their instrument
+        // lacks, so only a near miss (case or outer spaces) is reported: that
+        // would be a name this importer decoded differently.
+        FindGroup | GetGroupIdx => {
             let name = m.stk.strs.pop();
-            let found = (0..m.engine.group_count()).find(|&g| m.engine.group_name(g) == name);
-            if found.is_none() {
-                m.env.note("find_group: group name not found; returned 0");
+            let groups = 0..m.engine.group_count();
+            let found = groups.clone().find(|&g| m.engine.group_name(g) == name);
+            let near = |g| m.engine.group_name(g).trim().eq_ignore_ascii_case(name.trim());
+            if found.is_none() && groups.clone().any(near) {
+                m.env.note("find_group: group name matches only ignoring case or spaces; not found");
             }
-            push_int(m, found.unwrap_or(0) as i32)
+            let miss = if f == FindGroup { 0 } else { b::NOT_FOUND };
+            push_int(m, found.map_or(miss, |g| g as i32))
         }
         GroupName => {
             let [g] = ints(m);
@@ -727,8 +734,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             m.stk.int();
             push_int(m, 1)
         }
-        FindMod | FindTarget => {
-            let (g, module) = if f == FindMod {
+        FindMod | FindTarget | GetModIdx | GetTargetIdx => {
+            let by_mod = matches!(f, FindMod | GetModIdx);
+            let (g, module) = if by_mod {
                 let [g] = ints(m);
                 (g, 0)
             } else {
@@ -737,7 +745,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             };
             let name = m.stk.strs.pop();
             let found = match (usize::try_from(g), usize::try_from(module)) {
-                (Ok(g), _) if f == FindMod => m.engine.find_mod(g, name),
+                (Ok(g), _) if by_mod => m.engine.find_mod(g, name),
                 (Ok(g), Ok(module)) => m.engine.find_target(g, module, name),
                 _ => None,
             };
@@ -745,7 +753,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 m.env
                     .note("find_mod/find_target: modulator unknown to the engine; returned 0");
             }
-            push_int(m, found.unwrap_or(0) as i32)
+            let miss = if matches!(f, FindMod | FindTarget) { 0 } else { b::NOT_FOUND };
+            push_int(m, found.map_or(miss, |i| i as i32))
         }
         GetEnginePar | GetEngineParDisp | GetEngineParDispExt => {
             let (p, v) = if f == GetEngineParDispExt {

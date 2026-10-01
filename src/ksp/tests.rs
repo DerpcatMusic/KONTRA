@@ -767,10 +767,11 @@ fn sign_and_root_math() {
 
 #[test]
 fn legacy_and_kontakt7_spellings() {
-    // `_pgs_*` and `get_group_idx` resolve to the commands they name.
+    // `_pgs_*` resolve to the commands they name; Kontakt 7's `get_*_idx`
+    // return `$NI_NOT_FOUND` where `find_*` return 0.
     assert_eq!(
-        label("on init\ndeclare ui_label $l(1,1)\n_pgs_create_key(K, 1)\n_pgs_set_key_val(K, 0, 5)\nset_text($l, _pgs_get_key_val(K, 0) & get_group_idx(\"b\") & get_mod_idx(0, \"x\"))\nend on"),
-        "500"
+        label("on init\ndeclare ui_label $l(1,1)\n_pgs_create_key(K, 1)\n_pgs_set_key_val(K, 0, 5)\nset_text($l, _pgs_get_key_val(K, 0) & get_group_idx(\"b\") & get_mod_idx(0, \"x\") & find_group(\"b\") & $NI_NOT_FOUND)\nend on"),
+        "5-1-10-1"
     );
 }
 
@@ -941,4 +942,21 @@ fn a_script_without_init_says_what_it_holds() {
         let e = format!("{:#}", initialize(source, 0, 0).unwrap_err());
         assert!(e.contains(want), "{e}");
     }
+}
+
+#[test]
+fn group_lookups_match_exactly_and_report_only_near_misses() {
+    let run = |names: &str| {
+        let script = format!("on init\ndeclare ui_label $l(1,1)\nset_text($l, {names})\nend on");
+        let mut engine = LogEngine::new(vec!["a".into(), "Strings Long".into()], 48_000.0);
+        let (rt, _) = Runtime::with_scripts(&[script.as_str()], &mut engine, 8, Vec::new());
+        (prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), rt.diagnostics())
+    };
+    // A name the instrument lacks is the script's business, as in Kontakt.
+    let (text, diagnostics) = run("find_group(\"Strings Long\") & find_group(\"Brass\") & get_group_idx(\"Brass\")");
+    assert_eq!((text.as_str(), diagnostics), ("10-1", Vec::<String>::new()));
+    // One that differs only in case or spaces may be decoded wrongly.
+    let (text, diagnostics) = run("find_group(\"strings long \")");
+    assert_eq!(text, "0");
+    assert!(diagnostics.iter().any(|d| d.contains("find_group")), "{diagnostics:?}");
 }

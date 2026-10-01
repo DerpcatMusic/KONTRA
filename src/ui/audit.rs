@@ -198,8 +198,9 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found) -> Option<PartView>
         found.add(format!("script: {}", general(e.split_once(": ").map_or(e, |x| x.1))));
     }
     let mut rt = rt?;
-    // A second of audio: listeners and waits run as they would once playing.
-    let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
+    // A second of audio: listeners and waits run as they would once playing,
+    // against the instrument's groups, modulators and effects.
+    let mut engine = crate::engine::ScriptSetup::new(i, 48_000.0);
     (0..100).for_each(|_| rt.process(&mut engine, 480));
     let script = crate::plugin::script_interface(Some(&rt));
     for d in script.status.lines().filter(|d| !d.trim().is_empty()) {
