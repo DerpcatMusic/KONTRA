@@ -4,7 +4,7 @@
 
 use super::builtins::{Ret, SysVar};
 use super::calls;
-use super::compile::{Callback, InitData, Op, Program, Ty, Var, VarId};
+use super::compile::{Callback, InitData, Op, Program, Ty, VarId};
 use super::engine::KspEngine;
 use super::idiom::Operand;
 use super::runtime::Env;
@@ -781,7 +781,7 @@ fn br_imm(code: &[Op], s: &mut Vec<i32>, p: &mut usize, f: &mut u64, x: i32) {
 #[inline(never)]
 fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
     let prog = m.prog;
-    let (code, vars): (&[Op], &[Var]) = (&prog.code, &prog.vars);
+    let (code, elems) = (&prog.code[..], &prog.elems[..]);
     let slot = m.slot.index;
     let mem = &mut m.slot.mem;
     let (ints, poly) = (&mut mem.ints[..], &mut mem.poly[..]);
@@ -806,9 +806,9 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
     // Like `element`.
     macro_rules! elem {
         ($v:expr, $i:expr, $at:expr) => {{
-            let var = &vars[$v as usize];
+            let (base, len) = elems[$v as usize];
             match u32::try_from($i) {
-                Ok(i) if i < var.len.unwrap_or(1) => Some((var.slot + i) as usize),
+                Ok(i) if i < len => Some((base + i) as usize),
                 _ => {
                     out_of_bounds(env, slot, $at);
                     None

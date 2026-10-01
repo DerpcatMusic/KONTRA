@@ -413,6 +413,9 @@ pub struct Program {
     pub reals: Vec<f64>,
     pub strings: Vec<Box<str>>,
     pub vars: Vec<Var>,
+    /// `(slot, length)` per `VarId`, scalars as length 1: the interpreter's
+    /// bounds checks, without `Var`'s other fields in the cache.
+    pub elems: Vec<(u32, u32)>,
     pub functions: Vec<u32>,
     pub inits: Vec<ArrayInit>,
     pub cases: Vec<CaseArm>,
@@ -635,6 +638,7 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
     thread(&mut c.p.code);
     fuse(&mut c.p.code);
     chain(&mut c.p.code);
+    c.p.elems = c.p.vars.iter().map(|v| (v.slot, v.len.unwrap_or(1))).collect();
     Ok(c.p)
 }
 
