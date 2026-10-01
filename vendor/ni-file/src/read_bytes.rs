@@ -48,10 +48,16 @@ pub trait ReadBytesExt: Read + Seek {
         let position = self.stream_position()?;
         let end = self.seek(std::io::SeekFrom::End(0))?;
         self.seek(std::io::SeekFrom::Start(position))?;
-        if bytes > 256 * 1024 * 1024 || bytes as u64 > end.saturating_sub(position) {
-            return Err(ReadBytesError::Generic(format!("Invalid byte count {bytes}")));
+        if bytes as u64 > end.saturating_sub(position) {
+            return Err(ReadBytesError::Generic(format!(
+                "Invalid byte count {bytes}"
+            )));
         }
-        let mut buf = vec![0u8; bytes];
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(bytes).map_err(|e| {
+            ReadBytesError::Generic(format!("Unable to allocate {bytes} bytes: {e}"))
+        })?;
+        buf.resize(bytes, 0);
         self.read_exact(&mut buf)
             .map_err(|_| ReadBytesError::Generic(format!("Failed to read {bytes} bytes")))?;
         Ok(buf)
@@ -64,75 +70,89 @@ pub trait ReadBytesExt: Read + Seek {
         Ok(compressed_data)
     }
 
+    fn read_endian<T: FromBytes>(&mut self, endian: Endian) -> io::Result<T> {
+        let size = std::mem::size_of::<T>();
+        let mut stack = [0; 8];
+        let mut heap = Vec::new();
+        let bytes = if size <= stack.len() {
+            &mut stack[..size]
+        } else {
+            heap.try_reserve_exact(size).map_err(io::Error::other)?;
+            heap.resize(size, 0);
+            heap.as_mut_slice()
+        };
+        self.read_exact(bytes)?;
+        Ok(match endian {
+            Endian::LE => T::from_le_bytes(bytes),
+            Endian::BE => T::from_be_bytes(bytes),
+        })
+    }
+
     /// Read a generic big-endian type
     fn read_be<T: FromBytes>(&mut self) -> io::Result<T> {
-        let mut buf = vec![0u8; std::mem::size_of::<T>()];
-        self.read_exact(&mut buf)?;
-        Ok(T::from_be_bytes(&buf))
+        self.read_endian(Endian::BE)
     }
 
     /// Read a generic little-endian type
     fn read_le<T: FromBytes>(&mut self) -> io::Result<T> {
-        let mut buf = vec![0u8; std::mem::size_of::<T>()];
-        self.read_exact(&mut buf)?;
-        Ok(T::from_le_bytes(&buf))
+        self.read_endian(Endian::LE)
     }
 
     fn read_bool(&mut self) -> io::Result<bool> {
         // TODO: return an error if not 1 or 0
-        Ok(self.read_le::<u8>()? == 1)
+        Ok(ReadBytesExt::read_le::<u8>(self)? == 1)
     }
 
     fn read_u16_le(&mut self) -> io::Result<u16> {
-        self.read_le::<u16>()
+        ReadBytesExt::read_le::<u16>(self)
     }
 
     fn read_u8(&mut self) -> io::Result<u8> {
-        self.read_le::<u8>()
+        ReadBytesExt::read_le::<u8>(self)
     }
 
     fn read_i8(&mut self) -> io::Result<i8> {
-        self.read_le::<i8>()
+        ReadBytesExt::read_le::<i8>(self)
     }
 
     fn read_u16_be(&mut self) -> io::Result<u16> {
-        self.read_be::<u16>()
+        ReadBytesExt::read_be::<u16>(self)
     }
 
     fn read_i16_le(&mut self) -> io::Result<i16> {
-        self.read_le::<i16>()
+        ReadBytesExt::read_le::<i16>(self)
     }
 
     fn read_u32_le(&mut self) -> io::Result<u32> {
-        self.read_le::<u32>()
+        ReadBytesExt::read_le::<u32>(self)
     }
 
     fn read_i32_be(&mut self) -> io::Result<i32> {
-        self.read_le::<i32>()
+        ReadBytesExt::read_be::<i32>(self)
     }
 
     fn read_u32_be(&mut self) -> io::Result<u32> {
-        self.read_le::<u32>()
+        ReadBytesExt::read_be::<u32>(self)
     }
 
     fn read_i32_le(&mut self) -> io::Result<i32> {
-        self.read_le::<i32>()
+        ReadBytesExt::read_le::<i32>(self)
     }
 
     fn read_f32_le(&mut self) -> io::Result<f32> {
-        self.read_le::<f32>()
+        ReadBytesExt::read_le::<f32>(self)
     }
 
     fn read_f64_le(&mut self) -> io::Result<f64> {
-        self.read_le::<f64>()
+        ReadBytesExt::read_le::<f64>(self)
     }
 
     fn read_u64_le(&mut self) -> io::Result<u64> {
-        self.read_le::<u64>()
+        ReadBytesExt::read_le::<u64>(self)
     }
 
     fn read_u64_be(&mut self) -> io::Result<u64> {
-        self.read_be::<u64>()
+        ReadBytesExt::read_be::<u64>(self)
     }
 
     fn read_string_utf8(&mut self) -> io::Result<String> {
@@ -203,8 +223,79 @@ impl<R: Read + Seek + ?Sized> ReadBytesExt for R {}
 
 #[cfg(test)]
 mod tests {
-    use super::ReadBytesExt;
+    use super::{FromBytes, ReadBytesExt};
     use std::io;
+
+    #[test]
+    fn scalar_endianness_widths_custom_types_and_truncation() {
+        macro_rules! check {
+            ($t:ty, $value:expr) => {
+                let value: $t = $value;
+                let le = value.to_le_bytes();
+                let be = value.to_be_bytes();
+                assert_eq!(
+                    ReadBytesExt::read_le::<$t>(&mut io::Cursor::new(le)).unwrap(),
+                    value
+                );
+                assert_eq!(
+                    ReadBytesExt::read_be::<$t>(&mut io::Cursor::new(be)).unwrap(),
+                    value
+                );
+                assert!(
+                    ReadBytesExt::read_le::<$t>(&mut io::Cursor::new(&le[..le.len() - 1])).is_err()
+                );
+                assert!(
+                    ReadBytesExt::read_be::<$t>(&mut io::Cursor::new(&be[..be.len() - 1])).is_err()
+                );
+            };
+        }
+        check!(u8, 0xa5);
+        check!(i8, -12);
+        check!(u16, 0xabcd);
+        check!(i16, -1234);
+        check!(u32, 0xabcdef12);
+        check!(i32, -1234567);
+        check!(u64, 0xabcdef1234567890);
+        check!(i64, -1234567890123);
+        check!(f32, 1.25);
+        check!(f64, -123.5);
+        assert_eq!(
+            io::Cursor::new(0x12345678u32.to_be_bytes())
+                .read_u32_be()
+                .unwrap(),
+            0x12345678
+        );
+        assert_eq!(
+            io::Cursor::new((-1234567i32).to_be_bytes())
+                .read_i32_be()
+                .unwrap(),
+            -1234567
+        );
+        #[derive(Debug, PartialEq)]
+        struct Wide([u8; 16]);
+        impl FromBytes for Wide {
+            fn from_le_bytes(bytes: &[u8]) -> Self {
+                Self(bytes.try_into().unwrap())
+            }
+            fn from_be_bytes(bytes: &[u8]) -> Self {
+                let mut bytes: [u8; 16] = bytes.try_into().unwrap();
+                bytes.reverse();
+                Self(bytes)
+            }
+        }
+        let bytes = std::array::from_fn::<_, 16, _>(|i| i as u8);
+        assert_eq!(
+            ReadBytesExt::read_le::<Wide>(&mut io::Cursor::new(bytes)).unwrap(),
+            Wide(bytes)
+        );
+        let mut reversed = bytes;
+        reversed.reverse();
+        assert_eq!(
+            ReadBytesExt::read_be::<Wide>(&mut io::Cursor::new(bytes)).unwrap(),
+            Wide(reversed)
+        );
+        assert!(io::Cursor::new([0; 3]).read_bytes(4).is_err());
+    }
 
     #[test]
     fn test_read_u32_le() {

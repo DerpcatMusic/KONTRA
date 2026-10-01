@@ -22,13 +22,25 @@ impl std::convert::TryFrom<&ItemData> for PresetChunkItemProperties {
 impl PresetChunkItemProperties {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, NIFileError> {
         // version == 1
-        assert_eq!(reader.read_u32_le()?, 1);
+        let version = reader.read_u32_le()?;
+        if version != 1 {
+            return Err(NIFileError::VersionMismatch {
+                expected: 1,
+                got: version,
+            });
+        }
 
         // auth checksum
         let _auth_checksum = reader.read_u32_le()?;
 
         // BinaryChunk::read
-        assert_eq!(reader.read_u32_le()?, 1);
+        let version = reader.read_u32_le()?;
+        if version != 1 {
+            return Err(NIFileError::VersionMismatch {
+                expected: 1,
+                got: version,
+            });
+        }
         let size = reader.read_u64_le()? as usize;
         let chunk = reader.read_bytes(size)?;
 
