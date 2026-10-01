@@ -330,6 +330,19 @@ impl Engine {
             rt.set_sample_rate(self.player.rate);
         }
         let old = std::mem::replace(&mut self.script, script);
+        self.player.native_sustain = !self.script.as_ref().is_some_and(|rt| rt.condition("NO_SYS_SCRIPT_PEDAL"));
+        self.player.native_release_triggers = !self.script.as_ref().is_some_and(|rt| rt.condition("NO_SYS_SCRIPT_RLS_TRIG"));
+        if !self.player.native_release_triggers { self.player.pending_releases.clear(); }
+        // Reconcile held notes when replacing a script with the pedal down.
+        // CC64 remains visible to scripts/modulation even when native hold is off.
+        let defaults = self.defaults();
+        for channel in 0..16 {
+            let on = self.player.native_sustain && self.player.cc[channel][64] >= 64;
+            let was_on = std::mem::replace(&mut self.player.sustain[channel], on);
+            if was_on && !on && let Some(bank) = self.bank.as_deref() {
+                self.player.pedal_up(bank, channel as u8, defaults);
+            }
+        }
         self.replay(|_| true);
         self.apply_init_controllers();
         old
@@ -1033,6 +1046,9 @@ struct Player {
     /// Voices may share lanes.
     shared: bool,
     rate: f64,
+    /// KSP preprocessor flags bypass only these native system-script actions.
+    native_sustain: bool,
+    native_release_triggers: bool,
     sustain: [bool; 16],
     /// Pedals and stop messages on an MPE master affect its member channels.
     mpe_zone: Option<(u8, u16)>,
@@ -1091,6 +1107,8 @@ impl Player {
             dead: Vec::with_capacity(MAX_VOICES),
             shared: true,
             rate,
+            native_sustain: true,
+            native_release_triggers: true,
             sustain: [false; 16],
             mpe_zone: None,
             mpe_master_bend_range: None,
@@ -1604,6 +1622,7 @@ impl Player {
         input_channel: Option<u8>,
         defaults: Ahdsr,
     ) {
+        if !self.native_release_triggers { return; }
         let held_ms = self.event_held_ms(source, channel, note);
         if channel < 16 && note < 128 && (latched || self.sustain[channel as usize]) {
             if self.pending_releases.iter().any(|r| r.source == source) { return; }
@@ -1641,7 +1660,7 @@ impl Player {
             // General MIDI volume curve: 127 is unity.
             7 => self.volume = (f32::from(value) / 127.0).powi(2),
             10 => self.pan = ((f32::from(value) - 64.0) / 63.0).clamp(-1.0, 1.0),
-            64 => {
+            64 if self.native_sustain => {
                 let on = value >= 64;
                 if self.sustain[c] && !on {
                     self.sustain[c] = false;
