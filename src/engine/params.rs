@@ -575,7 +575,11 @@ impl Address {
             id::SEND_EFFECT_DRY_LEVEL => fx(FxParam::Dry)?,
             id::SEND_EFFECT_OUTPUT_GAIN => fx(FxParam::Wet)?,
             id::SENDLEVEL_0..=id::SENDLEVEL_7 => {
-                fx(FxParam::SendLevel((par.id - id::SENDLEVEL_0) as u8))?
+                // Una Corda addresses its insert Send Levels with generic 0.
+                // These are the send inputs, not parameters of the return rack.
+                let rack = if par.generic == 0 { Rack::Insert } else { rack()? };
+                (par.group == -1).then_some(())?;
+                Self::Fx(rack, u8::try_from(par.slot).ok()?, FxParam::SendLevel((par.id - id::SENDLEVEL_0) as u8))
             }
             _ => match crate::ksp::engine_par_name(par.id)? {
                 // The formant filter's knobs: talk, sharp, size.

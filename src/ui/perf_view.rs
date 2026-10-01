@@ -284,7 +284,7 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let v = &cx.view.parts[slot];
     let mut h = DefaultHasher::new();
     (room(ui, slot).round() as i64, cx.settings.view_scale.to_bits()).hash(&mut h);
-    (shows(cx, slot), cx.settings.vector_backdrop).hash(&mut h);
+    shows(cx, slot).hash(&mut h);
     (Arc::as_ptr(&v.pictures) as usize, v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
     if let Some(i) = &v.interface {
         (Arc::as_ptr(i) as usize, i.width, i.height, i.wallpaper_state).hash(&mut h);
@@ -389,13 +389,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let dev = ui.scale().unwrap_or(1.);
     let px = |v: f64| (v * dev).round() / dev;
     let mut layers = Vec::new();
-    if let Some(image) = wallpaper.clone().filter(|_| !vector || cx.settings.vector_backdrop) {
+    if let Some(image) = wallpaper.clone() {
         let (iw, ih) = (px(f64::from(image.width) * s), px(f64::from(image.height) * s));
         let image = fitted::fitted(&image, (iw * dev).round() as u32, (ih * dev).round() as u32, slot);
         layers.push(block(iw, ih).fill(Fill::Image(image, Fit::Fill)).at(0., px(-HEADER * s)));
-        if vector {
-            layers.push(block(w * s, h * s).fill(Role::Background.alpha(0.8)));
-        }
     }
     // In the original's order either way: what covered a control there
     // covers it here.
@@ -411,8 +408,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {
-            Some(plan) => Look::Vector(plan),
-            None => {
+            Some(plan) if !matches!(shown.kind, Kind::Label | Kind::Area | Kind::Other) => Look::Vector(plan),
+            _ => {
                 // What its text sits on: its own picture, else what is under it.
                 let (cx_, cy) = (shown.x + shown.w / 2., shown.y + shown.h / 2.);
                 let under = [-0.25, 0., 0.25]
@@ -444,7 +441,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .w(px(w * s))
         .h(px(h * s))
         .shrink(0)
-        .fill(if vector { Fill::from(Role::Background) } else { Fill::from(Color::srgb(0., 0., 0.)) })
+        .fill(Color::srgb(0., 0., 0.))
         .clip()
         .named(if vector { "Vectorized performance view" } else { "Original performance view" });
     // Centred by a whole-pixel inset in the part's width (which the memo
@@ -761,7 +758,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
             let cursor = int(c, "$UI_WF_PROP_PLAY_CURSOR").filter(|&v| v > 0).map(|v| p.at(v.into()));
             (p, cursor)
         });
-    let own = || face(shown.kind, c, now, lo, hi, vertical, round, s, lift, wave.clone(), vector).w(w).h(h);
+    let own = || face(shown.kind, c, now, lo, hi, vertical, round, s, lift, ui.focus_visible(id.as_str()), wave.clone(), vector).w(w).h(h);
     let drawn = match (picture, look) {
         (Some(image), _) => sliced(&image, shown.picture.as_ref().map_or([false; 2], |p| p.stretch), w, h, s, dev, slot),
         (None, Look::Vector(plan)) => match plan.face {
@@ -829,6 +826,11 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         })
         .named(name);
     let el = if help.is_empty() { el } else { el.tip(help.to_owned()) };
+    let el = if matches!(shown.kind, Kind::Knob | Kind::Slider | Kind::Value) {
+        el.focusable().a11y(A11y::Slider { value: now, min: lo, max: hi })
+    } else {
+        el
+    };
     el.captures_wheel().id(id)
 }
 
@@ -837,8 +839,17 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
 /// Nothing in it is translucent over what lies under it but its hairlines,
 /// so it never greys out a picture beneath.
 #[allow(clippy::too_many_arguments)]
-fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, round: bool, s: f64, lift: f32, wave: Option<(Arc<Peaks>, Option<f64>)>, vector: bool) -> El {
+fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, round: bool, s: f64, lift: f32, focused: bool, wave: Option<(Arc<Peaks>, Option<f64>)>, vector: bool) -> El {
     let t = ((value - lo) / (hi - lo)).clamp(0., 1.);
+    if vector && matches!(kind, Kind::Knob | Kind::Slider) {
+        return if round {
+            // The same KONTRA dial, inside the bitmap's authored margin.
+            let text = if kind == Kind::Knob { FONT * 1.4 * s } else { 4. * s };
+            dial_face(t, 0., lift, focused).pad(edges(text, 4. * s, text, 4. * s))
+        } else {
+            fader_face(t, 0., None, vertical, lift, focused)
+        };
+    }
     let on = value >= 1.;
     let bars: Vec<f64> = match (kind, c.properties.get("$CONTROL_PAR_VALUE")) {
         (Kind::Table, Some(Value::IntArray(a))) => a.iter().map(|n| f64::from(*n)).collect(),

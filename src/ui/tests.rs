@@ -1812,14 +1812,34 @@ fn the_vectorized_view_keeps_the_original_layout() {
     {
         let frame = Arc::new(moose::mui::mui::scene::Image::rgba(48, 50, vec![200; 48 * 50 * 4]).unwrap());
         let knob = artwork::Picture { frames: vec![frame; 11], stretch: [false; 2] };
-        p.shared.view.lock().unwrap().parts[0].pictures = Arc::new([("knob".to_owned(), Arc::new(knob))].into());
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].pictures = Arc::new([("knob".to_owned(), Arc::new(knob))].into());
+        let wallpaper = Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, [210, 180, 140, 255].repeat(632 * 268)).unwrap());
+        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![wallpaper], stretch: [false; 2] }));
     }
     let rects = |code: u8| {
         p.selection.write().unwrap().parts[0].view = code;
-        let h = Harness::new(&p, 1180., 760.);
+        let mut h = Harness::new(&p, 1180., 760.);
         let scene = h.ui.scene().unwrap();
         let stage = scene.surface("stage-0").map(|s| s.frame);
         let controls: Vec<_> = (0..4).filter_map(|n| scene.surface(&format!("kpv-0-{n}")).map(|s| (n, s.frame))).collect();
+        let knob = controls[0].1;
+        let rgba = pixels(&h.ui, 1180, 760);
+        let at = ((knob.y + 60.) as usize * 1180 + (knob.x + 300.) as usize) * 4;
+        assert_eq!(&rgba[at..at + 4], &[210, 180, 140, 255], "the wallpaper keeps its original pixels");
+        if code == 3 {
+            h.press("kpv-0-1");
+            assert_eq!(control_value(&p, 1), crate::ksp::Value::Int(1));
+            let knob = center(&h.ui, "kpv-0-0");
+            for y in [0., -10., -60.] {
+                h.tick(pointer(Point::new(knob.x, knob.y + y), true));
+            }
+            h.tick(pointer(Point::new(knob.x, knob.y - 60.), false));
+            h.idle(2);
+            assert!(matches!(control_value(&p, 0), crate::ksp::Value::Int(v) if v > 0), "the native knob edits the script");
+            h.press("kpv-0-2");
+            assert!(h.ui.scene().unwrap().surface("menu-item-0").is_some(), "the menu still opens");
+        }
         (stage, controls)
     };
     let (original, vectorized) = (rects(1), rects(3));

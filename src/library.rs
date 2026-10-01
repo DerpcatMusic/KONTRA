@@ -63,8 +63,8 @@ pub struct Settings {
     /// Read once into `view_mode`, never written.
     #[serde(skip_serializing)]
     pub vector_view: bool,
-    /// The vectorized view draws the library's wallpaper, dimmed, behind
-    /// its controls.
+    /// Legacy dimmed-wallpaper preference; Vectorized keeps the library backdrop.
+    #[serde(skip_serializing)]
     pub vector_backdrop: bool,
     /// The original performance view's scale; 0 fits the part's width.
     pub view_scale: f32,

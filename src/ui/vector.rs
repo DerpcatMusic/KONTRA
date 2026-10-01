@@ -159,7 +159,7 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
             Kind::Switch | Kind::Button
                 if !said && s.w.min(s.h) <= 26. && s.w <= 2. * s.h
                     && !names.get(&s.control).is_some_and(|n| matches!(n.as_str(), "?" | "i") || n.starts_with(['+', '-']))
-                    && (s.kind == Kind::Switch || names.get(&s.control).is_some_and(|n| matches!(n.as_str(), "On" | "Off" | "Power"))) =>
+                    && names.get(&s.control).is_some_and(|n| matches!(n.as_str(), "On" | "Off" | "Power")) =>
             {
                 Face::Mark(Mark::Dot)
             }
@@ -221,7 +221,7 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
                 // initials, as a mixer strip's S and M; more than two say
                 // nothing, so its frame stands alone. A step (-12) shrinks.
                 let step = name.trim().starts_with(['+', '-']);
-                let name = if s.w < 30. && !step && advance(name.trim(), FONT) > s.w - 4. {
+                let name = if !step && fitted(&name, s.w - 4., FONT).is_none() {
                     let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).collect();
                     if initials.chars().count() <= 2 { initials } else { String::new() }
                 } else {
@@ -324,6 +324,14 @@ fn names(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, drawn:
         .into_iter()
         .filter(|(_, n)| !said.contains(&n.trim().to_lowercase()))
         .collect();
+    // A library's explicit tooltip heading beats a guessed picture prefix.
+    for (s, _) in drawn.iter().filter(|(s, _)| matches!(s.kind, Kind::Switch | Kind::Button)) {
+        if let Some((title, _)) = prop(&interface.controls[s.control], "$CONTROL_PAR_HELP").split_once(':') {
+            if title.ends_with(" Tab") || title.ends_with(" On/Off") {
+                names.insert(s.control, title.trim_end_matches(" Tab").trim_end_matches(" On/Off").to_owned());
+            }
+        }
+    }
     let near = |s: &Shown, o: &Shown| {
         let t = &interface.controls[o.control];
         o.kind == Kind::Label && !prop(t, "$CONTROL_PAR_TEXT").trim().is_empty()
@@ -390,6 +398,19 @@ fn names(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, drawn:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tooltip_headings_name_picture_only_tabs_and_switches() {
+        let u = crate::ksp::initialize("on init\nmake_perfview\nset_ui_height_px(100)\ndeclare ui_switch $tab\nset_text($tab, \"\")\nmove_control_px($tab, 10, 20)\nset_control_par(get_ui_id($tab), $CONTROL_PAR_WIDTH, 40)\nset_control_par(get_ui_id($tab), $CONTROL_PAR_HEIGHT, 24)\nset_control_par_str(get_ui_id($tab), $CONTROL_PAR_HELP, \"Workbench Tab: Opens the page\")\ndeclare ui_switch $space\nset_text($space, \"\")\nmove_control_px($space, 100, 20)\nset_control_par_str(get_ui_id($space), $CONTROL_PAR_HELP, \"Space On/Off: Activates convolution\")\nend on", 0, 8).unwrap();
+        let pictures = HashMap::new();
+        let drawn = super::super::perf_view::layout(&u, &pictures).into_iter().map(|s| (s, None)).collect::<Vec<_>>();
+        let plans = plan(&u, &pictures, &drawn);
+        assert!(matches!(plans[0].face, Face::Normal));
+        assert!(plans[0].words.iter().any(|w| w.text == "W"));
+        let names = names(&u, &pictures, &drawn);
+        assert_eq!(names.get(&0).map(String::as_str), Some("Workbench"));
+        assert_eq!(names.get(&1).map(String::as_str), Some("Space"));
+    }
 
     #[test]
     fn words_fit_or_go() {

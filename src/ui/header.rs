@@ -269,7 +269,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
 /// a library's own.
 fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     let libraries = &cx.p.shared.libraries;
-    let (mode, scale, backdrop) = (cx.settings.view_mode, cx.settings.view_scale, cx.settings.vector_backdrop);
+    let (mode, scale) = (cx.settings.view_mode, cx.settings.view_scale);
     let mut views = Vec::new();
     for to in crate::library::ViewMode::ALL {
         let (hit, el) = action(ui, format!("view-default-{to:?}"), to.label(), mode == to);
@@ -277,10 +277,6 @@ fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
             libraries.edit(|s| s.view_mode = to);
         }
         views.push(el);
-    }
-    let (wall, wall_el) = check(ui, "view-backdrop", "Vectorized: library wallpaper behind, dimmed", backdrop);
-    if wall {
-        libraries.edit(|s| s.vector_backdrop = !backdrop);
     }
     let mut scales = Vec::new();
     for (to, label) in [(0., "Fit"), (1., "1×"), (1.5, "1.5×"), (2., "2×")] {
@@ -295,8 +291,6 @@ fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
         segmented(views),
         caption("Scale").fill(secondary()).lines(1).shrink(0),
         segmented(scales),
-        wall_el,
-        caption("Wallpaper").fill(secondary()).lines(1).shrink(0),
     ]
     .gap(SPACE)
     .align(Align::Center)

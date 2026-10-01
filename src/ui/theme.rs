@@ -769,38 +769,9 @@ pub fn drive(
     r.held
 }
 
-/// A Koda-style slider: a thin track with its detent marked, a neutral fill
-/// from the origin to the value, a small square thumb, and a readout.
-pub fn fader(
-    ui: &mut Ui,
-    id: &str,
-    name: &str,
-    value: &mut f64,
-    range: RangeInclusive<f64>,
-    kind: Fader,
-    readout: impl Fn(f64) -> String,
-) -> (bool, El) {
-    let (lo, hi) = (*range.start(), *range.end());
-    let before = *value;
-    let (vertical, length) = (kind.vertical, kind.length);
-    let track = ui
-        .scene()
-        .and_then(|s| s.surface(id))
-        .map_or(TRAVEL, |s| {
-            if vertical {
-                s.frame.size.height
-            } else {
-                s.frame.size.width
-            }
-        })
-        .max(CONTROL);
-    let held = drive(ui, id, value, &range, track - SPACE, vertical, kind.reset);
-    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
-    let unit = |v: f64| ((v - lo) / (hi - lo)).clamp(0., 1.);
-    let (at, from) = (unit(*value), unit(kind.origin));
-    let detent = kind.detent.map(unit);
-    let focused = ui.focus_visible(id);
-    let track_el = canvas(move |s| {
+/// The shared KONTRA control face, fitted by its caller.
+pub fn fader_face(at: f64, from: f64, detent: Option<f64>, vertical: bool, lift: f32, focused: bool) -> El {
+    canvas(move |s| {
         // Drawn along x; a vertical fader swaps the axes and runs bottom-up.
         let (len, across) = if vertical {
             (s.height, s.width)
@@ -854,6 +825,40 @@ pub fn fader(
         }
         draw
     })
+}
+
+/// A Koda-style slider: a thin track with its detent marked, a neutral fill
+/// from the origin to the value, a small square thumb, and a readout.
+pub fn fader(
+    ui: &mut Ui,
+    id: &str,
+    name: &str,
+    value: &mut f64,
+    range: RangeInclusive<f64>,
+    kind: Fader,
+    readout: impl Fn(f64) -> String,
+) -> (bool, El) {
+    let (lo, hi) = (*range.start(), *range.end());
+    let before = *value;
+    let (vertical, length) = (kind.vertical, kind.length);
+    let track = ui
+        .scene()
+        .and_then(|s| s.surface(id))
+        .map_or(TRAVEL, |s| {
+            if vertical {
+                s.frame.size.height
+            } else {
+                s.frame.size.width
+            }
+        })
+        .max(CONTROL);
+    let held = drive(ui, id, value, &range, track - SPACE, vertical, kind.reset);
+    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
+    let unit = |v: f64| ((v - lo) / (hi - lo)).clamp(0., 1.);
+    let (at, from) = (unit(*value), unit(kind.origin));
+    let detent = kind.detent.map(unit);
+    let focused = ui.focus_visible(id);
+    let track_el = fader_face(at, from, detent, vertical, lift, focused)
     .cursor(if vertical {
         Cursor::ResizeV
     } else {
@@ -890,24 +895,9 @@ pub fn fader(
     (value.to_bits() != before.to_bits(), el)
 }
 
-/// A flat knob: a 270° track, a neutral arc from the origin to the value and
-/// a pointer. Drags vertically; wheel, arrows, double-click as a fader.
-pub fn dial(
-    ui: &mut Ui,
-    id: &str,
-    name: &str,
-    value: &mut f64,
-    range: RangeInclusive<f64>,
-    kind: Fader,
-) -> (bool, El) {
-    let (lo, hi) = (*range.start(), *range.end());
-    let before = *value;
-    let held = drive(ui, id, value, &range, TRAVEL, true, kind.reset);
-    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
-    let unit = |v: f64| ((v - lo) / (hi - lo)).clamp(0., 1.);
-    let (at, from) = (unit(*value), unit(kind.origin));
-    let focused = ui.focus_visible(id);
-    let el = canvas(move |s| {
+/// The shared KONTRA control face, fitted by its caller.
+pub fn dial_face(at: f64, from: f64, lift: f32, focused: bool) -> El {
+    canvas(move |s| {
         let (cx, cy) = (s.width / 2., s.height / 2.);
         let weight = TIGHT * 0.75;
         let r = s.width.min(s.height) / 2. - weight;
@@ -946,6 +936,26 @@ pub fn dial(
         }
         draw
     })
+}
+
+/// A flat knob: a 270° track, a neutral arc from the origin to the value and
+/// a pointer. Drags vertically; wheel, arrows, double-click as a fader.
+pub fn dial(
+    ui: &mut Ui,
+    id: &str,
+    name: &str,
+    value: &mut f64,
+    range: RangeInclusive<f64>,
+    kind: Fader,
+) -> (bool, El) {
+    let (lo, hi) = (*range.start(), *range.end());
+    let before = *value;
+    let held = drive(ui, id, value, &range, TRAVEL, true, kind.reset);
+    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
+    let unit = |v: f64| ((v - lo) / (hi - lo)).clamp(0., 1.);
+    let (at, from) = (unit(*value), unit(kind.origin));
+    let focused = ui.focus_visible(id);
+    let el = dial_face(at, from, lift, focused)
     .square(KNOB)
     .shrink(0)
     .cursor(Cursor::ResizeV)

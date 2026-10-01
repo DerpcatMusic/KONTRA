@@ -2608,7 +2608,7 @@ fn tail_energy(e: &mut Engine) -> f32 {
 /// the sound: a longer reverb rings longer, a closed send leaves no tail.
 #[test]
 fn scripts_name_loaded_effects_and_set_the_reverb_and_send() {
-    let script = |time: &str, send: &str| {
+    let script = |time: &str, send: &str, generic: i32| {
         format!(
             "on init
 declare %type_ok[1]
@@ -2616,23 +2616,27 @@ set_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, $EFFECT_TYPE_REVERB2, -1, 0, $NI_SE
 set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_SEND_LEVELS, -1, 7, $NI_INSERT_BUS)
 set_engine_par($ENGINE_PAR_RV2_TYPE, $NI_REVERB2_TYPE_HALL, -1, 0, $NI_SEND_BUS)
 set_engine_par($ENGINE_PAR_RV2_TIME, {time}, -1, 0, $NI_SEND_BUS)
-set_engine_par($ENGINE_PAR_SENDLEVEL_0, {send}, -1, 7, $NI_INSERT_BUS)
+set_engine_par($ENGINE_PAR_SENDLEVEL_0, {send}, -1, 7, {generic})
 {{ Out of bounds, and so a diagnostic, unless the types read back. }}
 %type_ok[get_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, -1, 0, $NI_SEND_BUS) - $EFFECT_TYPE_REVERB2] := 1
 %type_ok[get_engine_par($ENGINE_PAR_EFFECT_TYPE, -1, 7, $NI_INSERT_BUS) - $EFFECT_TYPE_SEND_LEVELS] := 1
 %type_ok[get_engine_par($ENGINE_PAR_RV2_TYPE, -1, 0, $NI_SEND_BUS) - $NI_REVERB2_TYPE_HALL] := 1
+%type_ok[get_engine_par($ENGINE_PAR_SENDLEVEL_0, -1, 7, {generic}) - {send}] := 1
 end on"
         )
     };
-    let run = |time: &str, send: &str| {
-        let (mut e, rt) = reverb_send(&script(time, send));
+    let run = |time: &str, send: &str, generic: i32| {
+        let (mut e, rt) = reverb_send(&script(time, send, generic));
         assert_eq!(rt.diagnostics(), Vec::<String>::new());
         assert!(e.set_script(Some(rt)).is_none());
         tail_energy(&mut e)
     };
-    let (short, long, closed) = (run("0", "630859"), run("1000000", "630859"), run("1000000", "0"));
+    let (short, long, closed) = (run("0", "630859", 1), run("1000000", "630859", 1), run("1000000", "0", 1));
     assert!(long > 4.0 * short, "RV2_TIME: {short} vs {long}");
     assert!(closed < 1e-9, "SENDLEVEL_0 at 0 still feeds the reverb: {closed}");
+    // Una Corda's Space knob uses generic 0 for the same insert send tap.
+    assert!((run("1000000", "630859", 0) - long).abs() < 1e-9);
+    assert!(run("1000000", "0", 0) < 1e-9);
 
     // `on init` loads other effects, built off the audio thread with the
     // rest: a Gainer in place of the reverb leaves no tail, and a Reverb
