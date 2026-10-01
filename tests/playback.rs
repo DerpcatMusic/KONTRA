@@ -1533,6 +1533,59 @@ fn scripted(script: &str) -> Engine {
 }
 
 #[test]
+fn ksp_system_conditions_control_native_sustain_and_release_without_blocking_manual_samples() {
+    let flags = "SET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)";
+    let disabled = format!("on init\n{flags}\nend on");
+    let groups = || vec![Group::default(), Group { release_trigger: true, ..Group::default() }];
+    for (directives, enabled) in [(String::new(), true), (flags.to_owned(), false),
+        (format!("{flags}\nRESET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nRESET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)"), true)] {
+        let mut e = engine_with(layered(groups(), &[0.1, 0.2]));
+        e.set_script(runtime(&format!("on init\n{directives}\nend on")));
+        for _ in 0..2 {
+            e.cc(0, 64, 127);
+            e.note_on(0, 60, 100);
+            e.note_off(0, 60);
+            render(&mut e, 1000);
+            assert_eq!(e.cc_state()[0][64], 127, "CC64 is still available for modulation");
+            assert_eq!(e.active_voices() > 0, enabled, "native sustain enabled={enabled}");
+            assert!(!e.voice_census().iter().any(|v| v.release_trigger));
+            e.cc(0, 64, 0);
+            render(&mut e, 1000);
+            assert_eq!(e.voice_census().iter().any(|v| v.release_trigger), enabled,
+                "automatic release triggers enabled={enabled}");
+            e.reset(48000.0);
+        }
+    }
+
+    let mut e = engine_with(layered(groups(), &[0.1, 0.2]));
+    e.set_script(runtime("on init\nend on"));
+    e.cc(0, 64, 127);
+    e.note_on(0, 60, 100);
+    e.note_off(0, 60);
+    render(&mut e, 64);
+    assert!(e.active_voices() > 0);
+    e.set_script(runtime(&disabled));
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0, "disabling native hold releases previously sustained voices");
+    assert_eq!(e.cc_state()[0][64], 127);
+    e.set_script(None);
+    e.note_on(0, 60, 100);
+    e.note_off(0, 60);
+    render(&mut e, 64);
+    assert!(e.active_voices() > 0, "removing the script restores the held pedal's native action");
+    e.cc(0, 64, 0);
+    render(&mut e, 1000);
+    assert!(e.voice_census().iter().any(|v| v.release_trigger));
+
+    e.reset(48000.0);
+    e.set_script(runtime(&format!("{disabled}\non note\nignore_event($EVENT_ID)\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,0)\nend on")));
+    e.note_on(0, 60, 100);
+    render(&mut e, 32);
+    assert_eq!(e.voice_census().iter().filter(|v| v.release_trigger).count(), 1,
+        "script-generated whole-sample notes can still play the release layer");
+}
+
+#[test]
 fn following_child_freezes_preserve_start_and_release_budgets_without_allocating() {
     use kontakto::{articulate::{Articulate, In, Mpe, Route, Router, Zone, dispatch_to},
         engine::{Rack, RACK_SLOTS}, ksp::LogEngine};
