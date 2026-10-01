@@ -33,6 +33,8 @@ use serde::{Deserialize, Serialize};
 /// Articulations a [`Route`] holds; lists longer than this route the rest as keyswitches.
 pub const MAX_ARTICULATIONS: usize = 64;
 const NONE: u8 = u8::MAX;
+/// A remap to no key: the articulation's keyswitch no longer switches.
+pub const CLEARED: u8 = u8::MAX;
 /// Velocity of an injected keyswitch.
 const SWITCH_VELOCITY: u8 = 100;
 
@@ -68,7 +70,7 @@ pub struct Articulation {
     pub high: u8,
     /// Takes part in channel and velocity mode.
     pub enabled: bool,
-    /// The key the player uses for it instead of `key`.
+    /// The key the player uses for it instead of `key`; [`CLEARED`]: none.
     pub remap: Option<u8>,
 }
 
@@ -277,14 +279,12 @@ impl Route {
         }
         route.count = a.articulations.len().min(MAX_ARTICULATIONS);
         // Originals first, so a remap onto another original key wins.
-        if !a.keep_original {
-            for a in &a.articulations {
-                if let (Some(key), Some(to)) = (a.key, a.remap)
-                    && key < 128
-                    && to != key
-                {
-                    route.keys[key as usize] = NONE;
-                }
+        for a in a.articulations.iter().filter(|r| !a.keep_original || r.remap == Some(CLEARED)) {
+            if let (Some(key), Some(to)) = (a.key, a.remap)
+                && key < 128
+                && to != key
+            {
+                route.keys[key as usize] = NONE;
             }
         }
         for a in &a.articulations {
@@ -1007,6 +1007,11 @@ mod tests {
         a.keep_original = false;
         let mut r = router(&a, &Mpe::default());
         assert_eq!(run(&mut r, &[In::NoteOn(0, 12, 90), In::NoteOff(0, 12)]), []);
+        // A cleared keyswitch no longer switches, original or not.
+        let mut cleared = areia();
+        cleared.articulations[1].remap = Some(CLEARED);
+        let mut r = router(&cleared, &Mpe::default());
+        assert_eq!(run(&mut r, &[In::NoteOn(0, 13, 90), In::NoteOn(0, 12, 90)]), [Out::NoteOn(0, 12, 90)]);
         // A list read from another instrument routes nothing.
         let mut r = Router::default();
         r.set_route(Route::new("other.nki", &a, &Mpe::default()));
@@ -1159,29 +1164,6 @@ mod real {
         let mut g: Vec<u32> = (e.voice_census().iter()).filter(|v| v.note == note && !v.released && !v.release_trigger).map(|v| v.group).collect();
         g.sort_unstable();
         g
-    }
-
-    #[test]
-    #[ignore = "probe"]
-    fn probe_keys() {
-        let path = std::env::var("NKI").unwrap();
-        let i = crate::import::read(std::path::Path::new(&path)).unwrap();
-        let mut e = crate::timing::engine_for(&i, 48000.0, crate::engine::MEMORY_LIMIT).unwrap();
-        step(&mut e, 0.3);
-        let view = crate::plugin::script_interface(e.script());
-        for (k, s) in view.keys.iter() {
-            println!("key {k}: {:?} {:?} {:?}", s.name, s.color, s.kind);
-        }
-        let mut ranges = std::collections::BTreeMap::<usize, (u8, u8, usize)>::new();
-        for z in i.zones.iter().filter(|z| z.available) {
-            let r = ranges.entry(z.group).or_insert((127, 0, 0));
-            r.0 = r.0.min(z.low_key);
-            r.1 = r.1.max(z.high_key);
-            r.2 += 1;
-        }
-        for (g, r) in ranges {
-            println!("group {g} {:?}: {:?}", i.groups[g].name, r);
-        }
     }
 
     /// Solo Cello in channel mode: pizzicato, spiccato and legato at once on

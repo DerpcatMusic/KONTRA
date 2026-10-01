@@ -34,9 +34,16 @@ pub enum Target {
     Routing,
     /// A mixer strip.
     Strip(Strip),
-    /// An articulation's keyswitch: remap it, or learn the key from MIDI
-    /// (keys held when learning started are ignored).
-    Keyswitch { part: usize, row: usize, learning: Option<u128> },
+    /// An articulation's keyswitch, channel or velocity range.
+    Articulation { part: usize, row: usize, field: ArtField },
+}
+
+/// Which of an articulation's settings a menu is about.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ArtField {
+    Key,
+    Channel,
+    Velocity,
 }
 
 #[derive(Clone, Debug)]
@@ -107,9 +114,17 @@ pub enum Command {
     StripRename(Strip),
     StripReset(Strip),
     StripRoute(Strip),
-    /// Play an articulation's keyswitch from another key; `None` restores it.
+    /// Play an articulation's keyswitch from another key; `None` restores
+    /// it, [`crate::articulate::CLEARED`] clears it.
     Remap(usize, usize, Option<u8>),
+    /// Take an articulation's keyswitch from the next key played.
     Learn(usize, usize),
+    /// An articulation's channel back to the library order's.
+    ResetChannel(usize, usize),
+    /// An articulation takes part in channel and velocity mode, or not.
+    TakePart(usize, usize),
+    /// Spread 1–127 evenly over the articulations taking part.
+    SplitVelocities(usize),
     KeepOriginal(usize),
     Mpe(usize, Zone),
     BendRange(usize, u8),
@@ -349,28 +364,40 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             }));
             items
         }
-        &Target::Keyswitch { part, row, learning } => {
+        &Target::Articulation { part, row, field } => {
+            use crate::articulate::CLEARED;
             let Some(a) = cx.selection.parts.get(part).map(|p| &p.articulate) else {
                 return Vec::new();
             };
-            let Some((key, remap)) = a.articulations.get(row).and_then(|r| Some((r.key?, r.remap))) else {
+            let Some(r) = a.articulations.get(row) else {
                 return Vec::new();
             };
-            let mut items = vec![
-                Item::Info(format!("{} · keyswitch {}", a.articulations[row].name, note_name(key))),
-                check(
-                    if learning.is_some() { "Press a key…" } else { "Learn from MIDI" },
-                    learning.is_some(),
-                    Command::Learn(part, row),
-                ),
-                check(format!("Original key {}", note_name(key)), remap.is_none(), Command::Remap(part, row, None)),
-                check("Original keys still switch", a.keep_original, Command::KeepOriginal(part)),
-                Item::Rule,
-            ];
-            items.extend((0..128u8).filter(|&n| n != key).map(|n| {
-                check(note_name(n), remap == Some(n), Command::Remap(part, row, Some(n)))
-            }));
-            items
+            let take_part = check("Plays by channel and velocity", r.enabled, Command::TakePart(part, row));
+            match field {
+                ArtField::Key => {
+                    let Some(key) = r.key else {
+                        return Vec::new();
+                    };
+                    vec![
+                        Item::Info(format!("{} · keyswitch {}", r.name, note_name(key))),
+                        act("Learn", "", Command::Learn(part, row)),
+                        check(format!("Reset to library default ({})", note_name(key)), r.remap.is_none(), Command::Remap(part, row, None)),
+                        check("Clear", r.remap == Some(CLEARED), Command::Remap(part, row, Some(CLEARED))),
+                        Item::Rule,
+                        check("Original keys still switch", a.keep_original, Command::KeepOriginal(part)),
+                    ]
+                }
+                ArtField::Channel => vec![
+                    Item::Info(format!("{} · channel {}", r.name, r.channel + 1)),
+                    check(format!("Reset to library default (Ch {})", row % 16 + 1), usize::from(r.channel) == row % 16, Command::ResetChannel(part, row)),
+                    take_part,
+                ],
+                ArtField::Velocity => vec![
+                    Item::Info(format!("{} · velocity {}–{}", r.name, r.low, r.high)),
+                    act("Reset: split evenly", "", Command::SplitVelocities(part)),
+                    take_part,
+                ],
+            }
         }
         Target::Strip(strip) => {
             let strip = *strip;
@@ -546,18 +573,6 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
         cx.state.menu = None;
         return None;
     }
-    if let Target::Keyswitch { part, row, learning: Some(held) } = menu.target {
-        let shared = &cx.p.shared;
-        let down = |n: usize| {
-            use std::sync::atomic::Ordering::Relaxed;
-            shared.heard[n].load(Relaxed) > 0 || shared.played[n].load(Relaxed) > 0
-        };
-        if let Some(n) = (0..128).find(|&n| down(n) && held & 1 << n == 0) {
-            run(ui, cx, Command::Remap(part, row, Some(n as u8)));
-            cx.state.menu = None;
-            return None;
-        }
-    }
     let items = items(cx, &menu.target);
     if items.is_empty() {
         cx.state.menu = None;
@@ -727,12 +742,21 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
                 r.remap = to.filter(|&to| Some(to) != r.key);
             }
         }
-        Command::Learn(part, row) => {
-            use std::sync::atomic::Ordering::Relaxed;
-            let down = |n: usize| shared.heard[n].load(Relaxed) > 0 || shared.played[n].load(Relaxed) > 0;
-            let held = (0..128).filter(|&n| down(n)).fold(0u128, |m, n| m | 1 << n);
-            let anchor = format!("art-key-{part}-{row}");
-            open_under(ui, cx, Target::Keyswitch { part, row, learning: Some(held) }, &anchor);
+        Command::Learn(part, row) => super::panel::begin(ui, cx, &format!("art-key-{part}-{row}")),
+        Command::ResetChannel(part, row) => {
+            if let Some(r) = cx.selection.parts.get_mut(part).and_then(|p| p.articulate.articulations.get_mut(row)) {
+                r.channel = (row % 16) as u8;
+            }
+        }
+        Command::TakePart(part, row) => {
+            if let Some(r) = cx.selection.parts.get_mut(part).and_then(|p| p.articulate.articulations.get_mut(row)) {
+                r.enabled ^= true;
+            }
+        }
+        Command::SplitVelocities(part) => {
+            if let Some(p) = cx.selection.parts.get_mut(part) {
+                p.articulate.split_velocities();
+            }
         }
         Command::KeepOriginal(part) => {
             if let Some(p) = cx.selection.parts.get_mut(part) {

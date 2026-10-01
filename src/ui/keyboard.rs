@@ -163,7 +163,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         bar,
         row![
             wheels,
-            col![strip, row(octaves).gap(1).h(CONTROL * 3.).clip()]
+            col![strip, row(octaves).gap(1).h(CONTROL * 3.).clip().id("keys")]
                 .gap(1)
                 .flex(1)
                 .min_w(0)

@@ -348,6 +348,10 @@ struct EditorState {
     renaming: Option<(usize, String)>,
     /// A bus's name while it is being edited.
     renaming_bus: Option<(usize, String)>,
+    /// An articulation's keyswitch, channel or velocity range being typed.
+    inline: Option<panel::Inline>,
+    /// The velocity split's boundary being dragged.
+    split_drag: Option<usize>,
     /// Buses below this index show a mixer strip even when unused.
     buses_shown: usize,
     /// Each library's color, thumbnail, banner and backdrop, made from its
@@ -814,6 +818,8 @@ fn build(
         cursor: None,
         renaming: None,
         renaming_bus: None,
+        inline: None,
+        split_drag: None,
         buses_shown: 1,
         art,
         libraries: Default::default(),
@@ -965,10 +971,10 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
     for k in keys {
         let ctrl = k.mods.ctrl || k.mods.cmd;
         match k.key {
-            Key::Delete if loaded && cx.state.renaming.is_none() => cx.remove(slot),
+            Key::Delete if loaded && cx.state.renaming.is_none() && cx.state.inline.is_none() => cx.remove(slot),
             Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
-            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() => cx.state.selected_none(),
+            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && cx.state.inline.is_none() => cx.state.selected_none(),
             _ => {}
         }
     }
