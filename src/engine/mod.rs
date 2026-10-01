@@ -1316,7 +1316,9 @@ impl Player {
                 0.0
             },
         };
-        let bend_pitch = master.and(self.mpe_master_bend_range).map(|_| self.bend[c]);
+        let bend_pitch = self.mpe_zone.and_then(|(manager, members)| self.mpe_master_bend_range
+            .filter(|_| manager == ev.channel || members & (1 << c) != 0)
+            .map(|_| if manager == ev.channel { 0. } else { self.bend[c] }));
         let mods = settings.mods.start(&inputs, bend_pitch);
         let modulated = (settings.mods.start_offset(&inputs) * play.start_mod as f32) as u64;
         let offset = ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)

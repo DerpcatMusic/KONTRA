@@ -2041,41 +2041,45 @@ end on"#;
         for scripted in [false, true] {
             for pitch_mod in [false, true] {
                 for (zone, master, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
-                    let mut e = engine(scripted, pitch_mod);
-                    let mut r = router(&Articulate::default(), &Mpe { zone, bend_range: 24, ..Mpe::default() });
-                    for channel in [master, member] { feed(&mut r, &mut e, In::Bend(channel, 12288), 0); }
-                    for (channel, semitones, cents) in [(master, 6, 25), (member, 12, 50)] {
-                        for (cc, value) in [(101, 0), (100, 0), (6, semitones), (38, cents)] {
-                            feed(&mut r, &mut e, In::Cc(channel, cc, value), 0);
+                    for on_master in [false, true] {
+                        let note_channel = if on_master { master } else { member };
+                        let mut e = engine(scripted, pitch_mod);
+                        let mut r = router(&Articulate::default(), &Mpe { zone, bend_range: 24, ..Mpe::default() });
+                        for channel in [master, member] { feed(&mut r, &mut e, In::Bend(channel, 12288), 0); }
+                        for (channel, semitones, cents) in [(master, 6, 25), (member, 12, 50)] {
+                            for (cc, value) in [(101, 0), (100, 0), (6, semitones), (38, cents)] {
+                                feed(&mut r, &mut e, In::Cc(channel, cc, value), 0);
+                            }
                         }
-                    }
-                    feed(&mut r, &mut e, In::NoteOn(member, 60, 100), 0);
-                    let mut reference = engine(scripted, pitch_mod);
-                    // Keep the same bend-to-volume source in the reference;
-                    // remove its library pitch offset from the explicit tune.
-                    reference.pitch_bend(member, 12288);
-                    reference.note_on(member, 60, 100);
-                    let phases = [
-                        (master, vec![], 9.375),
-                        // Reselecting RPN 0 without CC38 infers zero cents.
-                        (master, vec![(101, 0), (100, 0), (6, 0)], 6.25),
-                        (master, vec![(101, 127), (100, 127), (38, 99), (6, 96)], 6.25),
-                        (member, vec![(99, 0), (98, 0), (38, 99), (6, 96)], 6.25),
-                        // Either data-entry byte ordering is accepted.
-                        (member, vec![(100, 0), (101, 0), (38, 25), (6, 7)], 3.625),
-                        (member, vec![(101, 0), (100, 0), (6, 0)], 0.),
-                        // An explicit MCM restores ±2/±48, even after manual ranges.
-                        (master, vec![(101, 0), (100, 6), (6, 2)], 25.),
-                    ];
-                    for (channel, controls, tune) in phases {
-                        for (cc, value) in controls { feed(&mut r, &mut e, In::Cc(channel, cc, value), 0); }
-                        reference.set_expression_on(member, 60, Expression { tune: tune - if pitch_mod { 6. } else { 0. }, ..Expression::default() });
-                        let (mut actual, mut right, mut expected) = ([0.; 128], [0.; 128], [0.; 128]);
-                        e.render(&mut actual, &mut right);
-                        reference.render(&mut expected, &mut right);
-                        assert!(actual.iter().any(|v| *v != 0.));
-                        assert!(actual.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-5),
-                            "{zone:?}, scripted={scripted}, pitch_mod={pitch_mod}, tune={tune}: negotiated pitch lost or doubled");
+                        feed(&mut r, &mut e, In::NoteOn(note_channel, 60, 100), 0);
+                        let mut reference = engine(scripted, pitch_mod);
+                        // Keep the same bend-to-volume source in the reference;
+                        // remove its library pitch offset from the explicit tune.
+                        reference.pitch_bend(note_channel, 12288);
+                        reference.note_on(note_channel, 60, 100);
+                        let phases = [
+                            (master, vec![], 9.375, 3.125),
+                            // Reselecting RPN 0 without CC38 infers zero cents.
+                            (master, vec![(101, 0), (100, 0), (6, 0)], 6.25, 0.),
+                            (master, vec![(101, 127), (100, 127), (38, 99), (6, 96)], 6.25, 0.),
+                            (member, vec![(99, 0), (98, 0), (38, 99), (6, 96)], 6.25, 0.),
+                            // Either data-entry byte ordering is accepted.
+                            (member, vec![(100, 0), (101, 0), (38, 25), (6, 7)], 3.625, 0.),
+                            (member, vec![(101, 0), (100, 0), (6, 0)], 0., 0.),
+                            // An explicit MCM restores ±2/±48, even after manual ranges.
+                            (master, vec![(101, 0), (100, 6), (6, 2)], 25., 1.),
+                        ];
+                        for (channel, controls, tune, master_tune) in phases {
+                            let tune = if on_master { master_tune } else { tune };
+                            for (cc, value) in controls { feed(&mut r, &mut e, In::Cc(channel, cc, value), 0); }
+                            reference.set_expression_on(note_channel, 60, Expression { tune: tune - if pitch_mod { 6. } else { 0. }, ..Expression::default() });
+                            let (mut actual, mut right, mut expected) = ([0.; 128], [0.; 128], [0.; 128]);
+                            e.render(&mut actual, &mut right);
+                            reference.render(&mut expected, &mut right);
+                            assert!(actual.iter().any(|v| *v != 0.));
+                            assert!(actual.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-5),
+                                "{zone:?}, scripted={scripted}, pitch_mod={pitch_mod}, on_master={on_master}, tune={tune}: negotiated pitch lost or doubled");
+                        }
                     }
                 }
             }

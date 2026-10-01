@@ -1105,9 +1105,9 @@ impl Voice {
         let key = self.owner.map_or(self.note, |(_, key)| key);
         let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][key as usize & 127]);
         let inputs = cx.inputs(self.channel, self.note, self.velocity, x);
-        let master = cx.mpe_zone.filter(|(_, members)| members & (1 << self.channel) != 0)
-            .and_then(|(master, _)| cx.mpe_master_bend_range.map(|range| (cx.bend[master as usize], range)));
-        let bend_pitch = master.map(|_| cx.bend[self.channel as usize]);
+        let master = cx.mpe_zone.filter(|(master, members)| *master == self.channel || members & (1 << self.channel) != 0)
+            .and_then(|(master, _)| cx.mpe_master_bend_range.map(|range| (master, cx.bend[master as usize], range)));
+        let bend_pitch = master.map(|(manager, ..)| if manager == self.channel { 0. } else { cx.bend[self.channel as usize] });
         // Settled modulation (every controller at rest, as held ones soon
         // are) gives the same result until an input changes: the group's
         // table, a cache miss per voice, is not read.
@@ -1118,7 +1118,7 @@ impl Voice {
         }
         let (modulation, semitones) = self.modulated;
         let initial = self.pitch.0.is_nan();
-        let semitones = semitones + group.tune + cx.tune + x.tune + master.map_or(0., |(bend, range)| bend * range);
+        let semitones = semitones + group.tune + cx.tune + x.tune + master.map_or(0., |(_, bend, range)| bend * range);
         if semitones != self.pitch.0 {
             self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));
         }
