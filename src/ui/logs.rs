@@ -180,12 +180,10 @@ impl State {
                     return None;
                 }
                 if !library.is_empty()
-                    && !event
-                        .library
-                        .as_deref()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .contains(&library)
+                    && ![event.library.as_deref(), event.path.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .any(|text| text.to_lowercase().contains(&library))
                 {
                     return None;
                 }
@@ -501,7 +499,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
     );
     content.push(
         row![
-            field(ui, "logs-library", &mut state.library, "Library"),
+            field(ui, "logs-library", &mut state.library, "Library or folder"),
             field(ui, "logs-patch", &mut state.patch, "Patch or path"),
             field(ui, "logs-load", &mut state.load, "Exact load ID")
         ]
@@ -675,9 +673,20 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             time(event.timestamp_ms),
             level_name(event.level)
         );
+        let library = event
+            .library
+            .clone()
+            .or_else(|| {
+                event
+                    .path
+                    .as_deref()
+                    .and_then(|p| Path::new(p).parent())
+                    .map(|p| p.display().to_string())
+            })
+            .unwrap_or_else(|| "Application".into());
         let scope = format!(
             "{} · {} · load {}{}",
-            event.library.as_deref().unwrap_or("Application"),
+            library,
             event
                 .path
                 .as_deref()
@@ -913,11 +922,16 @@ mod tests {
                     },
                     if n % 2 == 0 { "Cello" } else { "Violin" }
                 )),
-                library: Some(if n % 2 == 0 {
-                    "Fixture Keys".into()
+                // Real loader events can carry a path before catalog identification.
+                library: if n == 1001 {
+                    None
                 } else {
-                    "Fixture Strings".into()
-                }),
+                    Some(if n % 2 == 0 {
+                        "Fixture Keys".into()
+                    } else {
+                        "Fixture Strings".into()
+                    })
+                },
                 program: Some(0),
                 part: Some(0),
                 script_slot: Some(0),
