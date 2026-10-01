@@ -749,13 +749,27 @@ fn out_of_bounds(env: &mut Env, slot: u8, pc: usize) {
 
 const OUT_OF_BOUNDS: &str = "Array index out of bounds (read 0, write ignored)";
 
+/// `if taken { yes } else { no }` as a jump, never a `cmov`: script branches
+/// predict well, and a predicted jump lets the next op's loads start before
+/// this one's compare resolves. As a `cmov`, every op waited on the last.
+#[inline(always)]
+fn pick(taken: bool, yes: usize, no: usize) -> usize {
+    if taken {
+        yes
+    } else {
+        // SAFETY: an empty asm block; it only keeps LLVM from merging the arms.
+        unsafe { std::arch::asm!("", options(nomem, nostack, preserves_flags)) };
+        no
+    }
+}
+
 /// The `BrImm` at `p` that ends a chain, testing `x` (which it would have
 /// popped); any other op gets `x` pushed and runs next.
 #[inline(always)]
 fn br_imm(code: &[Op], s: &mut Vec<i32>, p: &mut usize, f: &mut u64, x: i32) {
     if let Op::BrImm(cmp, n, to) = code[*p] {
         *f = f.saturating_sub(1);
-        *p = if cmp.test(x, n) { *p + 3 } else { to as usize };
+        *p = pick(cmp.test(x, n), *p + 3, to as usize);
     } else {
         s.push(x);
     }
@@ -955,22 +969,18 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
             Op::BrIAImm(v, cmp, n, to) => {
                 let i = pop!();
                 let x = elem!(v, i, p).map_or(0, |e| ints[e]);
-                p = if cmp.test(x, n) { p + 3 } else { to as usize };
+                p = pick(cmp.test(x, n), p + 3, to as usize);
             }
             Op::BrCmp(cmp, to) => {
                 let b = pop!();
                 let a = pop!();
-                p = if cmp.test(a, b) { p + 1 } else { to as usize };
+                p = pick(cmp.test(a, b), p + 1, to as usize);
             }
             Op::BrImm(cmp, n, to) => {
-                p = if cmp.test(pop!(), n) { p + 2 } else { to as usize };
+                p = pick(cmp.test(pop!(), n), p + 2, to as usize);
             }
             Op::BrVarImm(cmp, a, n, to) => {
-                p = if cmp.test(ints[a as usize], n) {
-                    p + 3
-                } else {
-                    to as usize
-                };
+                p = pick(cmp.test(ints[a as usize], n), p + 3, to as usize);
             }
             // Chains: each charges what the ops it runs cost one at a time,
             // and reports faults at their pcs.
@@ -986,11 +996,7 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
                 }
                 if let Op::BrVarImm(cmp, b, k, exit) = code[p] {
                     f = f.saturating_sub(1);
-                    p = if cmp.test(ints[b as usize], k) {
-                        p + 4
-                    } else {
-                        exit as usize
-                    };
+                    p = pick(cmp.test(ints[b as usize], k), p + 4, exit as usize);
                 }
             }
             Op::BrIAVar(v, a) => {
@@ -1015,7 +1021,7 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
                     let i = i.wrapping_add(ints[b as usize]);
                     let y = elem!(w, i, p + 6).map_or(0, |e| ints[e]).wrapping_add(k);
                     f = f.saturating_sub(3);
-                    p = if cmp.test(x, y) { p + 10 } else { to as usize };
+                    p = pick(cmp.test(x, y), p + 10, to as usize);
                 } else {
                     s.push(x);
                 }
