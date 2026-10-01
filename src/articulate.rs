@@ -730,7 +730,7 @@ impl Router {
                     }
                 }
                 out(Out::Cc(to, cc, value));
-                if r.master(channel) && !self.scripted && !matches!(cc, 64 | 66 | 120 | 121 | 123) {
+                if r.master(channel) && !self.scripted && cc == 74 {
                     for m in r.zone().map(|z| z.1).into_iter().flatten() {
                         out(Out::Cc(m, cc, value));
                     }
@@ -1156,6 +1156,75 @@ mod tests {
         assert!(!a.sync("lib.nki", &found));
         assert!(a.sync("other.nki", &found));
         assert_eq!(a.articulations[1].remap, None);
+    }
+
+    #[test]
+    fn mpe_master_mod_wheel_reaches_members_after_one_script_callback() {
+        use crate::{
+            audio::Sample,
+            engine::Bank,
+            import::{Group, Zone as SampleZone},
+            modulation::{ModAssignment, ModSource, ModTarget},
+        };
+        let engine = |scripted: bool| {
+            let group = Group {
+                mods: vec![ModAssignment {
+                    name: "CC1_VOLUME".into(),
+                    source: ModSource::MidiCc(1),
+                    target: ModTarget::Volume,
+                    intensity: 1.,
+                    invert: false,
+                    lag_ms: 0,
+                    shaper: None,
+                }],
+                ..Group::default()
+            };
+            let sample = Sample {
+                rate: 48000,
+                frames: vec![[0.25; 2]; 24000],
+            };
+            let bank = Bank::from_samples(
+                vec![group],
+                vec![SampleZone::default()],
+                vec![(std::path::PathBuf::new(), sample)],
+            )
+            .unwrap();
+            let mut e = Engine::default();
+            e.set_bank(Some(Box::new(bank)));
+            // Duplicated callbacks change pan, making the rendered comparison fail.
+            if scripted {
+                e.set_script(Some(Box::new(runtime("on init\ndeclare $calls\nend on\non controller\nif ($CC_NUM = 1)\ninc($calls)\nset_engine_par($ENGINE_PAR_PAN,500000+$calls*10000,-1,-1,-1)\nend if\nend on"))));
+            }
+            e
+        };
+        for scripted in [false, true] {
+            for (zone, master, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+                let mut actual = engine(scripted);
+                let mut r = router(
+                    &Articulate::default(),
+                    &Mpe {
+                        zone,
+                        ..Mpe::default()
+                    },
+                );
+                feed(&mut r, &mut actual, In::Cc(master, 1, 96), 0);
+                feed(&mut r, &mut actual, In::NoteOn(member, 60, 100), 0);
+                let mut expected = engine(scripted);
+                expected.cc(member, 1, 96);
+                expected.note_on(member, 60, 100);
+                let (mut left, mut right, mut ref_left, mut ref_right) =
+                    ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
+                actual.render(&mut left, &mut right);
+                expected.render(&mut ref_left, &mut ref_right);
+                assert!(
+                    left.iter()
+                        .zip(ref_left)
+                        .chain(right.iter().zip(ref_right))
+                        .all(|(a, b)| (a - b).abs() < 1e-5),
+                    "{zone:?}, scripted={scripted}: manager modulation or callback count differs"
+                );
+            }
+        }
     }
 
     /// Remembered member pressure sets a new note's initial expression.

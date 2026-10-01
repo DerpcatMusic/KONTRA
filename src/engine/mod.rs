@@ -1516,9 +1516,11 @@ impl Player {
             _ => {}
         }
         // Forward once at the engine boundary, after the script's controller
-        // callback. A script may consume or delay the pedal; member channels
+        // callback. A script may consume or delay a controller; member channels
         // must not run copies of that callback.
-        if matches!(cc, 64 | 66 | 120 | 121)
+        // Expressive CC74 is separate; data-entry/RPN selectors stay local.
+        // Engine::cc handles CC123 through the runtime's physical note owners.
+        if !matches!(cc, 6 | 38 | 74 | 96..=101 | 123)
             && let Some((master, members)) = self.mpe_zone
             && channel == master
         {
