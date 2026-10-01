@@ -259,10 +259,13 @@ pub struct Scheduler {
     /// Per channel and key: frames its note-on was held back (with
     /// [`MONO`]), [`UP`] when not held, [`SWITCH`] for a keyswitch taken over.
     held: [[u32; 128]; 16],
-    down: u32,
+    /// Per lane (channel mode: each channel plays its own articulation,
+    /// else one): notes down, and its latest note-on's and release's due
+    /// frames. A legato on one channel neither waits for nor counts another's.
+    down: [u32; 16],
     /// The latest note-on's, release's and controller's due frames.
-    last_on: u64,
-    last_off: u64,
+    last_on: [u64; 16],
+    last_off: [u64; 16],
     last_ctl: u64,
     /// Frames the latest note was held back: controllers go with it.
     ctl_hold: u64,
@@ -279,9 +282,9 @@ impl Default for Scheduler {
             len: 0,
             art: LOADED,
             held: [[UP; 128]; 16],
-            down: 0,
-            last_on: 0,
-            last_off: 0,
+            down: [0; 16],
+            last_on: [0; 16],
+            last_off: [0; 16],
             last_ctl: 0,
             ctl_hold: 0,
             overflows: 0,
@@ -323,6 +326,7 @@ impl Scheduler {
     /// Returns it when it must play at once (the queue is full).
     pub fn arrive(&mut self, ev: In, now: u64, holds: &Holds, rate: f64, router: &Router) -> Option<In> {
         let frames = |row, legato, velocity| holds.frames(row, legato, velocity, rate);
+        let lane = |channel: u8| if router.by_channel() { usize::from(channel & 15) } else { 0 };
         let (due, art) = match ev {
             In::NoteOn(channel, note, velocity) => {
                 let key = &mut self.held[usize::from(channel & 15)][usize::from(note & 127)];
@@ -337,15 +341,16 @@ impl Scheduler {
                 }
                 let picked = row.is_some();
                 let row = row.unwrap_or(self.art);
-                let hold = frames(row, self.down > 0, velocity);
+                let lane = lane(channel);
+                let hold = frames(row, self.down[lane] > 0, velocity);
                 // A legato script hears notes and releases in the order played.
-                let after = if holds.1[row.min(LOADED)] { self.last_on.max(self.last_off) } else { 0 };
+                let after = if holds.1[row.min(LOADED)] { self.last_on[lane].max(self.last_off[lane]) } else { 0 };
                 let due = (now + hold).max(after);
-                self.last_on = self.last_on.max(due);
+                self.last_on[lane] = self.last_on[lane].max(due);
                 self.ctl_hold = due - now;
                 let key = &mut self.held[usize::from(channel & 15)][usize::from(note & 127)];
                 if *key == UP || *key == SWITCH {
-                    self.down += 1;
+                    self.down[lane] += 1;
                 }
                 let mono = if holds.1[row.min(LOADED)] { MONO } else { 0 };
                 *key = ((due - now) as u32).min(MONO - 1) | mono;
@@ -358,14 +363,15 @@ impl Scheduler {
                     SWITCH => return None,
                     UP => (self.ctl_hold, false),
                     held => {
-                        self.down = self.down.saturating_sub(1);
+                        self.down[lane(channel)] = self.down[lane(channel)].saturating_sub(1);
                         (u64::from(held & !MONO), held & MONO != 0)
                     }
                 };
                 // Under a legato script a release never passes a note-on
                 // that came before it: an overlap stays one.
-                let due = if mono { (now + hold).max(self.last_on) } else { now + hold };
-                self.last_off = self.last_off.max(due);
+                let lane = lane(channel);
+                let due = if mono { (now + hold).max(self.last_on[lane]) } else { now + hold };
+                self.last_off[lane] = self.last_off[lane].max(due);
                 (due, NO_ART)
             }
             // Per note: with its note.
@@ -412,7 +418,8 @@ impl Scheduler {
         self.len = 0;
         self.head = 0;
         self.held = [[UP; 128]; 16];
-        (self.down, self.last_on, self.last_off, self.last_ctl, self.ctl_hold) = (0, 0, 0, 0, 0);
+        (self.down, self.last_on, self.last_off) = ([0; 16], [0; 16], [0; 16]);
+        (self.last_ctl, self.ctl_hold) = (0, 0);
     }
 }
 
@@ -1012,6 +1019,34 @@ mod tests {
         assert_eq!(
             drain(&mut s),
             [(230, In::NoteOn(0, 60, 100)), (230, In::NoteOn(0, 64, 100)), (330, In::NoteOff(0, 60))]
+        );
+    }
+
+    /// Channel mode: a legato on one channel and short notes on another
+    /// share the scripts but not a line. The legato's first note waits as a
+    /// first note, and neither of its notes waits for the other channel's.
+    #[test]
+    fn a_legato_channel_keeps_its_own_line() {
+        use crate::articulate::{Articulate, Mode, Mpe, Route};
+        let mut a = Articulate::default();
+        a.sync("lib.nki", &[("Legato".into(), Some(12), None), ("Pizz".into(), Some(13), None)]);
+        a.mode = Mode::Channel;
+        let mut r = Router::default();
+        r.set_route(Route::new("lib.nki", &a, &Mpe::default()));
+        let mut t = Timing::default();
+        t.arts = vec![
+            Delay { name: "Legato".into(), first: [Some(50.0); 3], legato: [Some(250.0); 3] },
+            Delay { name: "Pizz".into(), first: [Some(20.0); 3], legato: [Some(20.0); 3] },
+        ];
+        let h = Holds::of(&t, &["Legato", "Pizz"], 250.0);
+        let mut s = Scheduler::default();
+        s.arrive(In::NoteOn(1, 40, 100), 0, &h, RATE, &r);
+        s.arrive(In::NoteOn(0, 60, 100), 0, &h, RATE, &r);
+        s.arrive(In::NoteOff(1, 40), 500 * 48, &h, RATE, &r);
+        s.arrive(In::NoteOn(0, 62, 100), 500 * 48, &h, RATE, &r);
+        assert_eq!(
+            drain(&mut s),
+            [(200, In::NoteOn(0, 60, 100)), (230, In::NoteOn(1, 40, 100)), (500, In::NoteOn(0, 62, 100)), (730, In::NoteOff(1, 40))]
         );
     }
 }

@@ -440,6 +440,9 @@ pub struct Router {
     /// channel controllers once, not per member channel.
     scripted: bool,
     handles_pressure: bool,
+    /// The scripts [`Self::current`] is known for, by address: new ones
+    /// (a reload, restored values) start at the library's own articulation.
+    script: usize,
 }
 
 impl Default for Router {
@@ -456,6 +459,7 @@ impl Default for Router {
             brightness: [NONE; 128],
             scripted: false,
             handles_pressure: false,
+            script: 0,
         }
     }
 }
@@ -475,6 +479,11 @@ impl Router {
             self.route = route;
             self.forget();
         }
+    }
+
+    /// Each channel plays its own articulation.
+    pub fn by_channel(&self) -> bool {
+        self.route.by_channel()
     }
 
     /// The scripts' articulation may have changed some other way (a click):
@@ -537,9 +546,22 @@ impl Router {
     /// Switch the scripts to articulation `to` before a note on `channel`,
     /// unless they are there already.
     pub fn select(&mut self, to: usize, channel: u8, e: &mut Engine) {
+        self.follow(e);
         if to < self.route.count {
             self.switch(to, channel & 15, &mut |o| apply(e, o));
         }
+    }
+
+    /// Take in what `e`'s scripts are; replaced ones are switched again.
+    fn follow(&mut self, e: &Engine) {
+        let rt = e.script();
+        let script = rt.map_or(0, |rt| std::ptr::from_ref(rt) as usize);
+        if script != self.script {
+            self.script = script;
+            self.forget();
+        }
+        self.scripted = rt.is_some();
+        self.handles_pressure = rt.is_some_and(|rt| rt.handles_poly_at());
     }
 
     fn switch(&mut self, to: usize, channel: u8, out: &mut impl FnMut(Out)) {
@@ -757,8 +779,7 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
 /// Send `ev` through `r` to its part's engine `e`; notes in channel mode
 /// arrive on `home`.
 pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
-    r.scripted = e.script().is_some();
-    r.handles_pressure = e.script().is_some_and(|rt| rt.handles_poly_at());
+    r.follow(e);
     r.input(ev, home, &mut |o| apply(e, o));
 }
 
@@ -898,11 +919,21 @@ mod tests {
         assert_eq!(run(&mut r, &[In::NoteOn(1, 62, 50)])[0], Out::NoteOn(0, 13, SWITCH_VELOCITY));
     }
 
-    /// A scripted part with one group per articulation: its script keeps one
-    /// global articulation that keyswitches C-1, C#-1 and D-1 set, as
-    /// libraries do, and starts each note in that articulation's group.
+    /// A script that keeps one global articulation that keyswitches C-1,
+    /// C#-1 and D-1 set, as libraries do, and starts each note in that
+    /// articulation's group.
+    const GLOBAL_ARTICULATION: &str = "on init\ndeclare $art := 0\nend on\non note\nif ($EVENT_NOTE < 24)\n$art := $EVENT_NOTE - 12\nignore_event($EVENT_ID)\nelse\ndisallow_group($ALL_GROUPS)\nallow_group($art)\nend if\nend on";
+
+    fn runtime(script: &str) -> crate::ksp::Runtime {
+        use crate::ksp::{LogEngine, Runtime};
+        let (rt, errors) = Runtime::with_scripts(&[script], &mut LogEngine::new(Vec::new(), 48000.0), 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        rt
+    }
+
+    /// A scripted part with one group per articulation, playing [`GLOBAL_ARTICULATION`].
     fn three_articulation_part() -> (Engine, Router) {
-        use crate::{audio::Sample, engine::Bank, import::{Group, Zone}, ksp::{LogEngine, Runtime}};
+        use crate::{audio::Sample, engine::Bank, import::{Group, Zone}};
         let groups = ["Pizzicato", "Staccato", "Legato"].map(|name| Group { name: name.into(), ..Group::default() });
         let path = std::path::PathBuf::from("tone");
         let zones = (0..3)
@@ -910,9 +941,7 @@ mod tests {
             .collect();
         let tone = Sample { rate: 48000, frames: vec![[0.5; 2]; 48000] };
         let bank = Bank::from_samples(groups.to_vec(), zones, vec![(path, tone)]).unwrap();
-        let script = "on init\ndeclare $art := 0\nend on\non note\nif ($EVENT_NOTE < 24)\n$art := $EVENT_NOTE - 12\nignore_event($EVENT_ID)\nelse\ndisallow_group($ALL_GROUPS)\nallow_group($art)\nend if\nend on";
-        let (rt, errors) = Runtime::with_scripts(&[script], &mut LogEngine::new(Vec::new(), 48000.0), 8, Vec::new());
-        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let rt = runtime(GLOBAL_ARTICULATION);
         let mut e = Engine::default();
         e.reset(48000.0);
         e.set_bank(Some(Box::new(bank)));
@@ -965,6 +994,20 @@ mod tests {
         render(&mut e);
         assert_eq!((voices(&e, 60, false), voices(&e, 60, true)), (vec![], vec![0, 1, 2]));
         assert!(!e.key_down(0, 60));
+    }
+
+    /// A part whose scripts were replaced (an instrument or its saved
+    /// values reloaded) starts at the library's own articulation: the next
+    /// note switches again, even on the channel switched to last.
+    #[test]
+    fn replaced_scripts_are_switched_again() {
+        let (mut e, mut r) = three_articulation_part();
+        feed(&mut r, &mut e, In::NoteOn(2, 60, 100), 0);
+        feed(&mut r, &mut e, In::NoteOff(2, 60), 0);
+        e.set_script(Some(Box::new(runtime(GLOBAL_ARTICULATION))));
+        feed(&mut r, &mut e, In::NoteOn(2, 62, 100), 0);
+        render(&mut e);
+        assert_eq!(voices(&e, 62, false), [2]);
     }
 
     #[test]
@@ -1218,5 +1261,74 @@ mod real {
         }
         step(&mut e, 0.1);
         assert!(alone[2].iter().all(|g| held(&e, 50).contains(g)), "the legato was cut");
+    }
+
+    /// Solo Cello in channel mode over eight quantized beats: a legato line,
+    /// spiccato and pizzicato on the beat, in either order. Each note plays
+    /// the groups it plays with its channel alone (round robins aside).
+    #[test]
+    #[ignore = "requires the owner's local Solo library"]
+    fn solo_cello_keeps_three_lines_apart() {
+        let path = format!("{}/Solo/Instruments/01 Multi Patches/Solo - 03 Solo Cello.nki", crate::import::LIBRARY_ROOT);
+        let i = crate::import::read(std::path::Path::new(&path)).unwrap();
+        let fresh = || {
+            let mut e = crate::timing::engine_for(&i, 48000.0, crate::engine::MEMORY_LIMIT).unwrap();
+            step(&mut e, 0.3);
+            e
+        };
+        let found = crate::timing::found(&i, &fresh());
+        let mut a = Articulate::default();
+        a.sync(&path, &found);
+        a.mode = Mode::Channel;
+        let row = |name: &str| found.iter().position(|f| f.0.contains(name)).unwrap();
+        let groups: Vec<&str> = i.groups.iter().map(|g| g.name.split("RR").next().unwrap()).collect();
+        let lines = [
+            (row("Legato"), [50u8, 52, 53, 55, 57, 55, 53, 52]),
+            (row("Spiccato"), [62, 62, 64, 65, 62, 62, 64, 65]),
+            (row("Pizzicato"), [38, 43, 38, 43, 38, 43, 38, 43]),
+        ];
+        // Per beat and line: the groups its new note plays.
+        let play = |order: &[usize]| {
+            let mut e = fresh();
+            let mut r = Router::default();
+            r.set_route(Route::new(&path, &a, &Mpe::default()));
+            let ch = |l: usize| a.articulations[lines[l].0].channel;
+            let mut heard = vec![[const { Vec::new() }; 3]; 8];
+            for beat in 0..8 {
+                for &l in order.iter().filter(|&&l| l != 0 && beat > 0) {
+                    feed(&mut r, &mut e, In::NoteOff(ch(l), lines[l].1[beat - 1]), 0);
+                }
+                for &l in order {
+                    feed(&mut r, &mut e, In::NoteOn(ch(l), lines[l].1[beat], 100), 0);
+                }
+                // The legato's last note lets go just after the next began.
+                step(&mut e, 0.03);
+                if order.contains(&0) && beat > 0 {
+                    feed(&mut r, &mut e, In::NoteOff(ch(0), lines[0].1[beat - 1]), 0);
+                }
+                step(&mut e, 0.07);
+                for (v, &l) in e.voice_census().iter().flat_map(|v| order.iter().map(move |l| (v, l))) {
+                    if v.note == lines[l].1[beat] && !v.released && !v.release_trigger {
+                        heard[beat][l].push(groups[v.group as usize]);
+                    }
+                }
+                for g in &mut heard[beat] {
+                    g.sort_unstable();
+                    g.dedup();
+                }
+                step(&mut e, 0.4);
+            }
+            heard
+        };
+        let alone: Vec<_> = (0..3).map(|l| play(&[l])).collect();
+        for order in [[0, 1, 2], [2, 1, 0]] {
+            let together = play(&order);
+            for (beat, notes) in together.iter().enumerate() {
+                for l in 0..3 {
+                    assert!(!notes[l].is_empty(), "{order:?}: line {l} beat {beat} silent");
+                    assert_eq!(notes[l], alone[l][beat][l], "{order:?}: line {l} beat {beat}");
+                }
+            }
+        }
     }
 }
