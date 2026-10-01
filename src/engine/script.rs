@@ -120,7 +120,7 @@ pub(super) enum Kind {
     Start {
         note: u8,
         velocity: u8,
-        owner: Option<u8>,
+        owner: Option<(u8, u8)>,
         counter_stop: Option<u64>,
         offset_us: u64,
         volume: f32,
@@ -240,9 +240,19 @@ impl KspEngine for Host<'_> {
             pan: n.pan.clamp(-1000, 1000) as f32 / 1000.0,
             whole: n.length == NoteLength::Sample,
             groups: *n.groups,
-            expression: None,
+            expression: n.frozen_expression,
         };
         self.push(at, n.channel, id, kind).then_some(id)
+    }
+
+    fn release_expression(&self, at: u32, voice: Option<EventId>, channel: u8, note: u8) -> Option<Expression> {
+        if !self.player.mpe_zone.is_some_and(|(_, members)| channel < 16 && members & (1 << channel) != 0) { return None; }
+        voice.and_then(|id| {
+            self.commands.iter().find_map(|c| match c.kind {
+                Kind::Start { expression, .. } if c.id == id => expression,
+                _ => None,
+            }).or_else(|| self.player.voices.iter().find(|v| v.event == id).and_then(|v| v.frozen_expression))
+        }).or_else(|| Some(self.player.release_snapshot(self.commands, at, channel, note)))
     }
 
     fn note_off(&mut self, at: u32, voice: EventId, n: &NoteSpec<'_>) {

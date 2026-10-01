@@ -1536,6 +1536,108 @@ mod tests {
     }
 
     #[test]
+    fn mpe_script_generated_release_inherits_its_parent_expression() {
+        use crate::{
+            audio::Sample,
+            engine::Bank,
+            import::{Group, Zone as SampleZone},
+            modulation::{ModAssignment, ModSource, ModTarget},
+        };
+        for (delay, attack_rendered) in [(0, true), (1000, true), (1000, false)] {
+            let setup = || {
+                let release = Group {
+                    mods: vec![ModAssignment {
+                        name: "CC74_VOLUME".into(),
+                        source: ModSource::MidiCc(74),
+                        target: ModTarget::Volume,
+                        intensity: 1.,
+                        invert: false,
+                        lag_ms: 0,
+                        shaper: None,
+                    }],
+                    ..Group::default()
+                };
+                let zones = (0..2)
+                    .map(|group| SampleZone {
+                        group,
+                        ..SampleZone::default()
+                    })
+                    .collect();
+                let sample = Sample {
+                    rate: 48000,
+                    frames: vec![[0.25; 2]; 24000],
+                };
+                let bank = Bank::from_samples(
+                    vec![Group::default(), release],
+                    zones,
+                    vec![(std::path::PathBuf::new(), sample)],
+                )
+                .unwrap();
+                let wait = if delay > 0 { "wait(1000)\n" } else { "" };
+                let rt = runtime(&format!(
+                    "on note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\nignore_event($EVENT_ID)\n{wait}disallow_group($ALL_GROUPS)\nallow_group(1)\nplay_note($EVENT_NOTE,100,0,0)\nnote_off($EVENT_ID)\nend on"
+                ));
+                let mut e = Engine::default();
+                e.reset(48000.);
+                e.attack = 0.0001;
+                e.release = 0.001;
+                e.set_bank(Some(Box::new(bank)));
+                e.set_script(Some(Box::new(rt)));
+                (
+                    e,
+                    router(
+                        &Articulate::default(),
+                        &Mpe {
+                            zone: Zone::Lower,
+                            ..Mpe::default()
+                        },
+                    ),
+                )
+            };
+            let start = |e: &mut Engine, r: &mut Router, brightness, gain, pan| {
+                feed(r, e, In::Cc(1, 74, brightness), 0);
+                feed(r, e, In::NoteOn(1, 60, 100), 0);
+                feed(r, e, In::NoteGain(1, 60, gain), 0);
+                feed(r, e, In::NotePan(1, 60, pan), 0);
+            };
+            let (mut actual, mut ar) = setup();
+            let (mut old, mut or) = setup();
+            let (mut new, mut nr) = setup();
+            for (e, r) in [(&mut actual, &mut ar), (&mut old, &mut or)] {
+                start(e, r, 32, 0.25, -1.);
+                if attack_rendered {
+                    render(e);
+                }
+                feed(r, e, In::Cc(0, 64, 127), 0);
+                feed(r, e, In::NoteOff(1, 60), 0);
+            }
+            start(&mut actual, &mut ar, 96, 0.75, 1.);
+            start(&mut new, &mut nr, 96, 0.75, 1.);
+            for _ in 0..2 {
+                let audio = |e: &mut Engine| {
+                    let (mut l, mut r) = ([0.; 128], [0.; 128]);
+                    e.render(&mut l, &mut r);
+                    (l, r)
+                };
+                let (a, o, n) = (audio(&mut actual), audio(&mut old), audio(&mut new));
+                for i in 0..128 {
+                    assert!(
+                        (a.0[i] - o.0[i] - n.0[i]).abs() < 1e-5
+                            && (a.1[i] - o.1[i] - n.1[i]).abs() < 1e-5,
+                        "delay={delay}, attack_rendered={attack_rendered}, frame {i}: generated release lost its parent expression; actual={:?}, old={:?}, new={:?}; voices={:?} vs {:?} + {:?}",
+                        (a.0[i], a.1[i]),
+                        (o.0[i], o.1[i]),
+                        (n.0[i], n.1[i]),
+                        actual.voice_census(),
+                        old.voice_census(),
+                        new.voice_census()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn mpe_same_pitch_channel_reuse_preserves_pedal_held_expression() {
         let setup = || {
             let (e, _) = three_articulation_part();
@@ -1752,6 +1854,67 @@ mod tests {
         );
         assert_eq!(ev(EventBody::NoteOn { group: 0, channel: 3, note: 60, velocity: 0 }), Some(In::NoteOff(3, 60)));
         assert_eq!(ev(EventBody::PerNoteCC { group: 0, channel: 0, note: 60, cc: 7, value: 0, registered: false }), None);
+    }
+
+    #[test]
+    fn mpe_script_transposition_keeps_physical_expression_and_release_counter() {
+        use crate::{audio::Sample, engine::Bank, import::{Group, Loop, Zone as SampleZone}, modulation::{ModAssignment, ModSource, ModTarget}};
+        let setup = |transpose| {
+            let raw = ModAssignment { name: "CC74_VOLUME".into(), source: ModSource::MidiCc(74),
+                target: ModTarget::Volume, intensity: 0.5, invert: false, lag_ms: 0, shaper: None };
+            let groups = vec![Group { mods: vec![raw.clone()], ..Group::default() },
+                Group { release_trigger: true, release_counter_ms: 1000, mods: vec![raw,
+                    ModAssignment { name: "RTC_VOLUME".into(), source: ModSource::ReleaseTriggerCounter,
+                        target: ModTarget::Volume, intensity: 1., invert: false, lag_ms: 0, shaper: None }], ..Group::default() }];
+            let path = std::path::PathBuf::from("tone");
+            let zones = (0..2).map(|group| SampleZone { group, sample: path.clone(),
+                loop_range: Some(Loop { start: 0, end: 1024, until_release: false, crossfade: 0 }),
+                ..SampleZone::default() }).collect();
+            let bank = Bank::from_samples(groups, zones, vec![(path, Sample { rate: 48000,
+                frames: (0..1024).map(|i| [(i as f32 * 0.07).sin() * 0.2; 2]).collect() })]).unwrap();
+            let rt = runtime(&format!("on note\nchange_note($EVENT_ID,$EVENT_NOTE+{transpose})\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\nignore_event($EVENT_ID)\nwait(40000)\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nnote_off($EVENT_ID)\nend on"));
+            let mut e = Engine::default(); e.reset(48000.); e.attack = 0.0001; e.release = 0.001;
+            e.set_bank(Some(Box::new(bank))); e.set_script(Some(Box::new(rt)));
+            (e, router(&Articulate::default(), &Mpe { zone: Zone::Lower, ..Mpe::default() }))
+        };
+        let start = |e: &mut Engine, r: &mut Router, key, cc, gain, pan, tune| {
+            feed(r, e, In::Cc(1, 74, cc), 0);
+            feed(r, e, In::NoteOn(1, key, 100), 0);
+            feed(r, e, In::NoteGain(1, key, gain), 0);
+            feed(r, e, In::NotePan(1, key, pan), 0);
+            feed(r, e, In::NoteTune(1, key, tune), 0);
+        };
+        let advance = |e: &mut Engine, frames: usize| {
+            let (mut l, mut r) = ([0.; 128], [0.; 128]);
+            let mut left = frames;
+            while left > 0 { let n = left.min(128); e.render(&mut l[..n], &mut r[..n]); left -= n; }
+        };
+        let compare = |a: &mut Engine, o: &mut Engine, n: &mut Engine, phase| {
+            let audio = |e: &mut Engine| { let (mut l, mut r) = ([0.;128],[0.;128]); e.render(&mut l,&mut r); (l,r) };
+            let (a,o,n) = (audio(a),audio(o),audio(n));
+            for i in 0..128 { assert!((a.0[i]-o.0[i]-n.0[i]).abs()<1e-5 && (a.1[i]-o.1[i]-n.1[i]).abs()<1e-5,
+                "{phase}, frame {i}: script transposition lost physical expression/counter identity"); }
+        };
+        for held in [0, 4800] {
+            let (mut a, mut ar) = setup(12);
+            let (mut o, mut or) = setup(0);
+            let (mut n, mut nr) = setup(0);
+            start(&mut a,&mut ar,60,32,0.25,-1.,7.);
+            start(&mut o,&mut or,72,32,0.25,-1.,7.);
+            for e in [&mut a,&mut o,&mut n] { advance(e,held); }
+            if held > 0 { compare(&mut a,&mut o,&mut n,"held"); }
+            for (e,r,key) in [(&mut a,&mut ar,60),(&mut o,&mut or,72)] {
+                feed(r,e,In::Cc(0,64,127),0); feed(r,e,In::NoteOff(1,key),0);
+            }
+            start(&mut a,&mut ar,60,96,0.75,1.,-5.);
+            start(&mut n,&mut nr,72,96,0.75,1.,-5.);
+            for e in [&mut a,&mut o,&mut n] { advance(e,2400); }
+            compare(&mut a,&mut o,&mut n,"pedal held after delayed callback");
+            for (e,r) in [(&mut a,&mut ar),(&mut o,&mut or),(&mut n,&mut nr)] { feed(r,e,In::Cc(0,64,0),0); }
+            compare(&mut a,&mut o,&mut n,"release sample");
+            let gain = |e: &Engine| e.voice_census().into_iter().find(|v|v.release_trigger).expect("release sample").gain;
+            assert!((gain(&a)-gain(&o)).abs()<1e-5,"delayed script release retimed transposed note's counter");
+        }
     }
 
     #[test]

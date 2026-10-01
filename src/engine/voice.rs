@@ -927,7 +927,7 @@ pub(crate) struct Voice {
     /// Counter timing belongs to this event, independent of same-key retriggers.
     pub counter_start: u64,
     pub counter_stop: Option<u64>,
-    pub owner: Option<u8>,
+    pub owner: Option<(u8, u8)>,
     /// The key or event is still down.
     pub held: bool,
     /// This voice was held at the sostenuto pedal's down edge.
@@ -1100,7 +1100,8 @@ impl Voice {
     #[inline(always)]
     pub fn plan(&mut self, cx: &Context, n: usize, bus: Option<u8>, through: Option<[f32; 2]>) -> Option<Lane> {
         let group = &cx.bank.settings[self.group as usize];
-        let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][self.note as usize & 127]);
+        let key = self.owner.map_or(self.note, |(_, key)| key);
+        let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][key as usize & 127]);
         let inputs = cx.inputs(self.channel, self.note, self.velocity, x);
         // Settled modulation (every controller at rest, as held ones soon
         // are) gives the same result until an input changes: the group's

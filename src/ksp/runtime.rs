@@ -98,7 +98,8 @@ pub struct Event {
     pub note: i32,
     pub velocity: i32,
     pub channel: u8,
-    pub owner: Option<u8>,
+    pub owner: Option<(u8, u8)>,
+    pub frozen_expression: Option<crate::engine::Expression>,
     pub pars: [i32; 16],
     pub volume: i32,
     pub tune: i32,
@@ -140,6 +141,7 @@ impl Event {
         velocity: 0,
         channel: 0,
         owner: None,
+        frozen_expression: None,
         pars: [0; 16],
         volume: 0,
         tune: 0,
@@ -176,6 +178,7 @@ impl Event {
             event: id,
             channel: self.channel,
             owner: self.owner,
+            frozen_expression: self.frozen_expression,
             note: self.note.clamp(0, 127) as u8,
             velocity: self.velocity.clamp(1, 127) as u8,
             sample_offset_us: self.sample_offset_us,
@@ -546,7 +549,7 @@ impl Env {
         let parent_state = self
             .events
             .get(parent)
-            .map(|p| (p.groups, p.released & (1 << slot) != 0));
+            .map(|p| (p.groups, p.released & (1 << slot) != 0, p.frozen_expression));
         let e = self.events.get_mut(id).expect("fresh event");
         e.note = note;
         e.velocity = velocity;
@@ -562,15 +565,16 @@ impl Env {
             NoteLength::UntilNoteOff
         };
         e.follows_parent = duration_us < 0 && parent_state.is_some();
-        if let Some((groups, _)) = parent_state {
+        if let Some((groups, _, expression)) = parent_state {
             e.groups = groups;
+            e.frozen_expression = expression;
         }
         self.queue(Work::Note {
             event: id,
             slot: slot + 1,
         });
         match parent_state {
-            Some((_, true)) if duration_us < 0 => self.queue(Work::Release {
+            Some((_, true, _)) if duration_us < 0 => self.queue(Work::Release {
                 event: id,
                 slot: slot + 1,
             }),
@@ -1269,7 +1273,7 @@ impl Runtime {
         e.note = i32::from(note);
         e.velocity = i32::from(velocity);
         e.channel = self.env.input.channel;
-        e.owner = Some(owner.min(15));
+        e.owner = Some((owner.min(15), note));
         e.held = true;
         let keys = &mut self.env.input.keys[owner.min(15) as usize][note as usize];
         if keys.1 == 0 {
@@ -1297,6 +1301,9 @@ impl Runtime {
         while id != 0 {
             let Some(e) = self.env.events.get_mut(id) else { break };
             e.held = false;
+            if e.frozen_expression.is_none() {
+                e.frozen_expression = engine.release_expression(at, e.voice, e.channel, note);
+            }
             let next = std::mem::take(&mut e.next_input);
             self.env.queue(Work::Release { event: id, slot: 0 });
             id = next;
@@ -1663,6 +1670,9 @@ impl Runtime {
                 let Some(e) = self.env.events.get_mut(event) else {
                     return;
                 };
+                if e.frozen_expression.is_none() {
+                    e.frozen_expression = engine.release_expression(self.env.offset, e.voice, e.channel, e.note.clamp(0, 127) as u8);
+                }
                 if slot >= slots {
                     if let Some(v) = e.voice.take() {
                         engine.note_off(self.env.offset, v, &e.spec(event));

@@ -2,7 +2,7 @@
 //! on the audio thread at a frame offset within the current block.
 
 pub use super::builtins::{ENGINE_PAR_BASE, engine_par_name};
-pub use crate::engine::{EventId, GroupMask};
+pub use crate::engine::{EventId, Expression, GroupMask};
 use serde::Serialize;
 use std::fmt::Write as _;
 
@@ -22,8 +22,10 @@ pub struct NoteSpec<'a> {
     /// KSP event ID, for logging and correlation only.
     pub event: i32,
     pub channel: u8,
-    /// Physical MIDI channel owning an input event; generated notes have none.
-    pub owner: Option<u8>,
+    /// A released parent's expression, inherited by generated release samples.
+    pub frozen_expression: Option<Expression>,
+    /// Physical channel and original engine input key; generated notes have none.
+    pub owner: Option<(u8, u8)>,
     pub note: u8,
     pub velocity: u8,
     /// Sample start offset in microseconds.
@@ -70,6 +72,8 @@ pub struct EnginePar {
 
 pub trait KspEngine {
     fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<EventId>;
+    /// Freeze per-note controls before a release callback can wait or create notes.
+    fn release_expression(&self, _at: u32, _voice: Option<EventId>, _channel: u8, _note: u8) -> Option<Expression> { None }
     /// Release a voice. `event` is its note event now: release triggers use its
     /// key, velocity and groups (whole-sample notes fired them at the start).
     fn note_off(&mut self, at: u32, voice: EventId, event: &NoteSpec<'_>);

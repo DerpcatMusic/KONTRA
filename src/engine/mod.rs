@@ -119,8 +119,8 @@ pub struct NoteEvent<'a> {
     pub channel: u8,
     pub note: u8,
     pub velocity: u8,
-    /// Physical input ownership; independent/generated events use `None`.
-    pub owner: Option<u8>,
+    /// Physical channel and original engine input key, before KSP transposition.
+    pub owner: Option<(u8, u8)>,
     /// Physical key-up may precede application of a queued attack.
     pub counter_stop: Option<u64>,
     /// A release sample's frozen originating event duration in milliseconds.
@@ -507,7 +507,7 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             return rt.note_on_from(&mut host, 0, owner, note, velocity.min(127));
         }
-        self.start_event(&NoteEvent { owner: Some(owner), ..NoteEvent::new(channel, note, velocity) });
+        self.start_event(&NoteEvent { owner: Some((owner, note)), ..NoteEvent::new(channel, note, velocity) });
     }
 
     pub fn note_off(&mut self, channel: u8, note: u8) {
@@ -518,22 +518,22 @@ impl Engine {
         if channel >= 16 || owner >= 16 || note >= 128 {
             return;
         }
-        for v in self.player.voices.iter_mut().filter(|v| v.channel == channel && v.note == note && v.owner == Some(owner) && v.held && !v.release_trigger) {
+        for v in self.player.voices.iter_mut().filter(|v| v.channel == channel && v.owner == Some((owner, note)) && v.held && !v.release_trigger) {
             v.counter_stop.get_or_insert(self.player.now);
         }
         for c in self.commands.iter_mut().filter(|c| c.channel == channel) {
-            if let script::Kind::Start { note: key, owner: input, counter_stop, .. } = &mut c.kind
-                && *key == note && *input == Some(owner) { counter_stop.get_or_insert(self.player.now); }
+            if let script::Kind::Start { owner: input, counter_stop, .. } = &mut c.kind
+                && *input == Some((owner, note)) { counter_stop.get_or_insert(self.player.now); }
         }
         // Capture at the physical key-up, before a delayed KSP release or
         // member reuse can replace this event's channel/key expression.
         if self.player.mpe_zone.is_some_and(|(_, members)| members & (1 << channel) != 0) {
             let x = self.release_snapshot(channel, note);
             for c in self.commands.iter_mut().filter(|c| c.channel == channel) {
-                if let script::Kind::Start { note: key, expression, .. } = &mut c.kind
-                    && *key == note { expression.get_or_insert(x); }
+                if let script::Kind::Start { owner: input, expression, .. } = &mut c.kind
+                    && *input == Some((owner, note)) { expression.get_or_insert(x); }
             }
-            for v in self.player.voices.iter_mut().filter(|v| v.channel == channel && v.note == note && v.held && !v.release_trigger) {
+            for v in self.player.voices.iter_mut().filter(|v| v.channel == channel && v.owner == Some((owner, note)) && v.held && !v.release_trigger) {
                 v.frozen_expression.get_or_insert(x);
             }
         }
@@ -722,22 +722,14 @@ impl Engine {
     /// Applied state plus earlier same-frame script commands, before the
     /// release callback or reused member can replace these controller values.
     fn release_snapshot(&self, channel: u8, note: u8) -> Expression {
-        let mut x = self.player.member_snapshot(channel, note);
-        for c in self.commands.iter().filter(|c| c.channel == channel && c.at == 0) {
-            match c.kind {
-                script::Kind::Controller { cc: 74, value } => x.member_cc74 = Some(value.clamp(0, 127) as u8),
-                script::Kind::Controller { cc: 129, value } => x.member_pressure = Some(value.clamp(0, 127) as u8),
-                _ => {}
-            }
-        }
-        x
+        self.player.release_snapshot(&self.commands, 0, channel, note)
     }
 
     pub(crate) fn freeze_released_expression(&mut self, channel: u8, note: u8) {
         if channel >= 16 || note >= 128 { return; }
         let expression = self.release_snapshot(channel, note);
         for v in &mut self.player.voices {
-            if v.channel == channel && v.note == note && v.frozen_expression.is_none()
+            if v.channel == channel && v.owner.map_or(v.note, |(_, key)| key) == note && v.frozen_expression.is_none()
                 && (!v.held || self.commands.iter().any(|c| c.at == 0 && c.id == v.event
                     && matches!(c.kind, script::Kind::Release { .. }))) {
                 v.frozen_expression = Some(expression);
@@ -1214,7 +1206,8 @@ impl Player {
         let step = f64::from(sample.rate) / self.rate * zone.tune * key;
         let c = ev.channel as usize;
         let master = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0).map(|(master, _)| master as usize);
-        let expression = ev.frozen_expression.unwrap_or_default();
+        let expression_key = ev.owner.map_or(ev.note, |(_, key)| key);
+        let expression = ev.frozen_expression.unwrap_or(self.expression[c][expression_key as usize & 127]);
         let inputs = params::Inputs {
             cc: &self.cc[c],
             cc74: master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127)),
@@ -1334,8 +1327,8 @@ impl Player {
         };
         // Start at the voice's first-block gains, so it does not ramp in.
         let (modulation, ..) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
-        let pan = (zone.pan + settings.pan + ev.pan).clamp(-1.0, 1.0);
-        voice.gains = balance(base_level * settings.gain * modulation * voice.volume, pan);
+        let pan = (zone.pan + settings.pan + ev.pan + expression.pan).clamp(-1.0, 1.0);
+        voice.gains = balance(base_level * settings.gain * modulation * voice.volume * expression.gain, pan);
         if offset > 0 {
             voice.fade.fade_in(self.fade_frames(DECLICK));
         }
@@ -1457,6 +1450,18 @@ impl Player {
         )
     }
 
+    fn release_snapshot(&self, commands: &[script::Command], at: u32, channel: u8, note: u8) -> Expression {
+        let mut x = self.member_snapshot(channel, note);
+        for c in commands.iter().filter(|c| c.channel == channel && c.at <= at) {
+            match c.kind {
+                script::Kind::Controller { cc: 74, value } => x.member_cc74 = Some(value.clamp(0, 127) as u8),
+                script::Kind::Controller { cc: 129, value } => x.member_pressure = Some(value.clamp(0, 127) as u8),
+                _ => {}
+            }
+        }
+        x
+    }
+
     fn member_snapshot(&self, channel: u8, note: u8) -> Expression {
         Expression {
             member_cc74: Some(self.cc[channel as usize & 15][74]),
@@ -1468,9 +1473,11 @@ impl Player {
     /// The originating voice may have been frozen at an earlier physical
     /// key-up while the script delayed its release callback.
     fn release_expression(&self, source: EventId, channel: u8, note: u8) -> Option<Expression> {
-        self.voices.iter().find(|v| v.event == source).and_then(|v| v.frozen_expression)
+        let voice = self.voices.iter().find(|v| v.event == source);
+        let key = voice.and_then(|v| v.owner).map_or(note, |(_, key)| key);
+        voice.and_then(|v| v.frozen_expression)
             .or_else(|| self.mpe_zone.filter(|(_, members)| channel < 16 && members & (1 << channel) != 0)
-                .map(|_| self.member_snapshot(channel, note)))
+                .map(|_| self.member_snapshot(channel, key)))
     }
 
     /// Start the release-trigger zones for a key release, limited to `groups`;
