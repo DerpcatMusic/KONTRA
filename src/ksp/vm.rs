@@ -663,6 +663,8 @@ fn sys(m: &Machine, v: SysVar) -> i32 {
         SysVar::TransportRunning => bool_int(env.transport),
         SysVar::Tempo => env.tempo as i32,
         SysVar::CurrentScriptSlot => i32::from(m.slot.index),
+        // The control of `on ui_control(s)`; ui_control callbacks keep the value.
+        SysVar::UiId => ctx.value,
     }
 }
 

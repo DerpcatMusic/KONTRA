@@ -117,11 +117,13 @@ fn real_expressions_and_arrays() {
 fn whitespace_and_comments() {
     let source = "on\tinit\ndeclare{separator}ui_label $label(1,1)\ndeclare $n:=0\nwhile($n<1)\nif(1)\nselect($n)\ncase\t0\nset_text($label,\" keep  := spaces \")\nend\t select\nend  if\ninc($n)\nend\twhile\nend  on";
     assert_eq!(label(source), " keep  := spaces ");
+    // `iffy` is a name, not `if`: an unknown function.
     assert!(
         initialize("on init\niffy(1)\nend on", 0, 0)
-            .unwrap_err()
-            .to_string()
-            .contains("iffy")
+            .unwrap()
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("iffy"))
     );
 }
 
@@ -204,15 +206,16 @@ fn computed_ui_and_execution_limits() {
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_POS_X"), "100");
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "Mic 2");
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_HIDE"), "16");
-    assert!(
-        initialize("on init\nwhile (1)\nend while\nend on", 0, 0)
-            .unwrap_err()
-            .to_string()
-            .contains("budget")
-    );
+    // A runaway `on init` is stopped, not the script: what it declared stays.
+    let runaway = initialize("on init\ndeclare ui_knob $k(0,1,1)\nwhile (1)\nend while\nend on", 0, 0).unwrap();
+    assert_eq!(runaway.controls.len(), 1);
+    assert!(runaway.diagnostics.iter().any(|d| d.contains("budget")), "{:?}", runaway.diagnostics);
     let oob = initialize("on init\ndeclare %a[1]\n%a[2] := 1\nend on", 0, 0).unwrap();
     assert!(oob.diagnostics.iter().any(|d| d.contains("out of bounds")));
-    assert!(initialize("on init\nunknown_function()\nend on", 0, 0).is_err());
+    // Unknown functions do nothing and yield 0; the rest of the script runs.
+    let unknown = initialize("on init\ndeclare ui_label $l(1,1)\nunknown_function(1)\nset_text($l, unknown_value($l) & get_unknown_name() & \"!\")\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&unknown, 0, "$CONTROL_PAR_TEXT"), "0!");
+    assert!(unknown.diagnostics.iter().any(|d| d.starts_with("Unsupported KSP function: unknown_function (line 3)")), "{:?}", unknown.diagnostics);
     // Integer division by zero is 0, reported, and init goes on.
     let div = initialize("on init\ndeclare $z\ndeclare $a := 1/$z\nend on", 0, 0).unwrap();
     assert!(div.diagnostics.iter().any(|d| d.contains("division by zero")));
@@ -296,8 +299,8 @@ end on"#;
     let ui = initialize(oob, 0, 0).unwrap();
     assert!(ui.diagnostics.iter().any(|d| d.contains("out of bounds")));
     let spin = "on init\ndeclare %a[4]\ndeclare $i\nwhile (1)\n$i := 0\nwhile ($i < 4)\nif (%a[$i] = 1)\nend if\ninc($i)\nend while\nend while\nend on";
-    let error = initialize(spin, 0, 0).unwrap_err().to_string();
-    assert!(error.contains("budget"), "{error}");
+    let ui = initialize(spin, 0, 0).unwrap();
+    assert!(ui.diagnostics.iter().any(|d| d.contains("budget")), "{:?}", ui.diagnostics);
 }
 
 #[test]
@@ -593,9 +596,10 @@ fn runaway_callbacks_are_bounded() {
     for _ in 0..8 {
         rig.block(256);
     }
-    // The callback is preempted every block (2M instructions) and cut off after 5M;
-    // only then does its note move on to the engine, at the start of the third block.
-    assert_eq!(rig.log(), ["play 60@512 v1 [0, 1, 2]"]);
+    // The callback is preempted every block (4096 instructions a frame) and cut
+    // off after 5M; only then does its note move on to the engine, at the
+    // start of the fourth block.
+    assert_eq!(rig.log(), ["play 60@768 v1 [0, 1, 2]"]);
     assert!(
         rig.rt
             .diagnostics()
@@ -731,4 +735,121 @@ fn budgeted_persistence_refresh_matches_whole_and_reports_changes() {
     };
     assert_eq!((&table[999], &saved[0]["$x"]), (&Value::Int(1006), &Value::Int(999)));
     assert!(!rig.rt.refresh_persistence(&mut saved), "a second refresh finds nothing new");
+}
+
+// ---- Builtins added for coverage ---------------------------------------------------
+
+#[test]
+fn voice_limits_are_stored_and_completed() {
+    let script = "on init\ndeclare ui_label $l(1,1)\ndeclare $id\nset_text($l, get_voice_limit($NI_VL_TMPRO_STANDARD) & \",\" & get_voice_limit($NI_VL_TMPRO_HQ))\nend on\non note\n$id := set_voice_limit($NI_VL_TMPRO_HQ, 6)\nend on\non async_complete\nif ($NI_ASYNC_ID = $id)\nset_text($l, \"hq \" & get_voice_limit($NI_VL_TMPRO_HQ) & \" ok \" & $NI_ASYNC_EXIT_STATUS)\nend if\nend on";
+    let mut rig = Rig::new(&[script]);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "8,2");
+    rig.on(0, 60).block(64);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "hq 6 ok 1");
+}
+
+#[test]
+fn sign_and_root_math() {
+    assert_eq!(
+        label("on init\ndeclare ui_label $l(1,1)\nset_text($l, sgn(-7) & sgn(0) & sgn(3) & signbit(-1) & signbit(5) & sgn(-0.5) & signbit(2.0) & \":\" & exp2(3.0) & \":\" & cbrt(27.0))\nend on"),
+        "-10110-10:8:3"
+    );
+}
+
+#[test]
+fn legacy_and_kontakt7_spellings() {
+    // `_pgs_*` and `get_group_idx` resolve to the commands they name.
+    assert_eq!(
+        label("on init\ndeclare ui_label $l(1,1)\n_pgs_create_key(K, 1)\n_pgs_set_key_val(K, 0, 5)\nset_text($l, _pgs_get_key_val(K, 0) & get_group_idx(\"b\") & get_mod_idx(0, \"x\"))\nend on"),
+        "500"
+    );
+}
+
+#[test]
+fn keyranges_never_overlap() {
+    let source = "on init\ndeclare ui_label $l(1,1)\nset_keyrange(36, 47, \"Low\")\nset_keyrange(48, 60, \"Mid\")\nset_keyrange(45, 50, \"Over\")\nset_text($l, get_keyrange_name(36) & \"|\" & get_keyrange_name(40) & \"|\" & get_keyrange_min_note(47) & \"-\" & get_keyrange_max_note(47) & \"|\" & get_keyrange_name(55))\nremove_keyrange(46)\nadd_text_line($l, get_keyrange_name(46) & \".\")\nend on";
+    // "Over" replaced both ranges it touched; removing it clears 46.
+    assert_eq!(label(source), "||45-50|\n.");
+}
+
+#[test]
+fn display_of_a_hypothetical_engine_value() {
+    let shown = label("on init\ndeclare ui_label $l(1,1)\nset_text($l, get_engine_par_disp_ext($ENGINE_PAR_VOLUME, 500000, 0, -1, -1) & \"|\" & get_engine_par_disp($ENGINE_PAR_VOLUME, 0, -1, -1))\nend on");
+    let (ext, current) = shown.split_once('|').unwrap();
+    assert!(!ext.is_empty() && ext != current, "{shown}");
+}
+
+#[test]
+fn ui_and_debugger_commands_are_accepted() {
+    let ui = initialize("on init\ndeclare ui_waveform $w(6,6)\ndeclare ui_xy ?xy[2]\ndeclare ui_label $l(1,1)\nattach_level_meter(get_ui_id($l), 0, 0, 0, -1)\nwatch_var($l)\nwatch_array_idx(?xy, 0)\nset_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0.5, 0)\nset_text($l, get_ui_wf_property($w, $UI_WF_PROP_PLAY_CURSOR, 0) & get_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0))\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), "00");
+    assert!(!ui.diagnostics.iter().any(|d| d.starts_with("Unsupported")), "{:?}", ui.diagnostics);
+}
+
+#[test]
+fn unsupported_builtins_degrade_per_call() {
+    // `get_zone_par` is not implemented: init runs on, reads give 0, and an
+    // unknown built-in array reads 0 instead of failing the callback.
+    let ui = initialize("on init\ndeclare ui_label $l(1,1)\nset_text($l, \"z\" & get_zone_par(0, $ZONE_PAR_VOLUME) & %NI_FUTURE_ARRAY[3])\nend on\non note\nset_zone_par(0, 0, 0)\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "z00");
+    for name in ["get_zone_par", "set_zone_par"] {
+        assert!(ui.diagnostics.iter().any(|d| d.starts_with(&format!("Unsupported KSP function: {name}"))), "{:?}", ui.diagnostics);
+    }
+    assert!(ui.diagnostics.iter().any(|d| d.starts_with("Unsupported KSP variable: %NI_FUTURE_ARRAY")));
+}
+
+#[test]
+fn ui_controls_runs_before_the_control_callback() {
+    let script = "on init\nmake_perfview\ndeclare ui_knob $k(0, 10, 1)\ndeclare ui_label $l(1,1)\nend on\non ui_controls\nset_text($l, \"all \" & ($NI_UI_ID = get_ui_id($k)) & \" \" & $k)\nend on\non ui_control($k)\nadd_text_line($l, \"own\")\nend on";
+    let mut rig = Rig::new(&[script]);
+    // Out-of-range host values are clamped to the knob's range.
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 99);
+    assert_eq!(prop(&rig.rt.interface(0), 1, "$CONTROL_PAR_TEXT"), "all 1 10\nown");
+}
+
+#[test]
+fn move_control_to_zero_hides_and_back_shows() {
+    let ui = initialize("on init\ndeclare ui_knob $a(0,1,1)\ndeclare ui_knob $b(0,1,1)\nmove_control($a, 0, 0)\nmove_control($b, 0, 0)\nmove_control($b, 2, 1)\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_HIDE"), "16");
+    assert_eq!(prop(&ui, 1, "$CONTROL_PAR_HIDE"), "0");
+}
+
+// ---- Runaway scripts ---------------------------------------------------------------
+
+#[test]
+fn runaway_scripts_stay_alive_and_bounded() {
+    // An endless `on init` loop is stopped; the script and its controls stay,
+    // and its other callbacks still run.
+    let script = "on init\ndeclare ui_label $l(1,1)\nset_text($l, \"before\")\nwhile (1)\nend while\nend on\non note\nset_text($l, \"note\")\nend on\non ui_control($l)\nwhile (1)\nend while\nend on";
+    let mut engine = LogEngine::new(vec!["a".into()], 48_000.0);
+    let (mut rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    assert!(rt.diagnostics().iter().any(|d| d.contains("on init exceeded")));
+    assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "before");
+    rt.note_on(&mut engine, 0, 60, 100);
+    assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "note");
+    // An endless UI callback costs a bounded share of each block, then stops.
+    rt.ui_control(&mut engine, 0, 0, 1);
+    let start = std::time::Instant::now();
+    for _ in 0..64 {
+        rt.process(&mut engine, 128);
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(rt.diagnostics().iter().any(|d| d.contains("instruction budget")));
+    rt.note_on(&mut engine, 0, 61, 100);
+    assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "note");
+}
+
+#[test]
+fn pgs_and_async_ping_pong_cannot_hang() {
+    // Each answers a change with another change (and queued work, or a new
+    // asynchronous call): delivery is spread over blocks instead of looping.
+    let pgs = "on init\npgs_create_key(K, 1)\nend on\non pgs_changed\npgs_set_key_val(K, 0, pgs_get_key_val(K, 0) + 1)\nset_controller(1, 1)\nend on\non note\npgs_set_key_val(K, 0, 1)\nend on";
+    let retry = "on init\ndeclare $id\nend on\non note\n$id := load_ir_sample(\"x.wav\", 0, 0)\nend on\non async_complete\n$id := load_ir_sample(\"x.wav\", 0, 0)\nend on";
+    let mut engine = LogEngine::new(vec!["a".into()], 48_000.0);
+    let (mut rt, _) = Runtime::with_scripts(&[pgs, retry], &mut engine, 8, Vec::new());
+    rt.note_on(&mut engine, 0, 60, 100);
+    for _ in 0..4 {
+        rt.process(&mut engine, 128);
+    }
 }

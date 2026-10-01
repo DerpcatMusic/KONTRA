@@ -52,8 +52,13 @@ const SNAPSHOT_SLACK: usize = 64;
 const ENGINE_PAR_HEADROOM: usize = 1024;
 /// Instructions one callback may run between waits.
 pub const CALLBACK_FUEL: u64 = 5_000_000;
-/// Instructions all callbacks together may run per audio block; the rest is deferred.
-pub const BLOCK_FUEL: u64 = 2_000_000;
+/// Instructions all callbacks together may run per frame of an audio block
+/// (about 2 ns each, so under half the block's time); the rest is deferred.
+pub const FUEL_PER_FRAME: u64 = 4_096;
+/// Budget for the first block, and the floor for tiny ones.
+pub const BLOCK_FUEL: u64 = 512 * FUEL_PER_FRAME;
+/// `on async_complete` callbacks one settle delivers; the rest wait a block.
+const MAX_COMPLETIONS: u32 = 64;
 /// `on init` runs off the audio thread and may do far more work.
 pub const INIT_FUEL: u64 = 1_000_000_000;
 
@@ -335,6 +340,8 @@ pub struct Env {
     pub stop_waits: Vec<(i32, i32)>,
     pub listeners_changed: u8,
     pub pgs_changed: bool,
+    /// Time Machine Pro voice limits, standard and HQ (Kontakt's defaults).
+    pub voice_limits: [i32; 2],
 }
 
 impl Env {
@@ -372,6 +379,7 @@ impl Env {
             stop_waits: Vec::with_capacity(64),
             listeners_changed: 0,
             pgs_changed: false,
+            voice_limits: [8, 2],
         }
     }
 
@@ -726,7 +734,13 @@ impl Runtime {
                 "KSP line {}: wait() is not allowed in on init",
                 prog.line(t.pc - 1)
             ),
-            Ok(Yield::OutOfFuel) => bail!("KSP execution budget exhausted in on init"),
+            // Like Kontakt's runaway-loop guard, stop the callback, not the script:
+            // everything `on init` declared before the loop stays usable.
+            Ok(Yield::OutOfFuel) => self.env.fault(
+                slot,
+                t.pc,
+                "on init exceeded its instruction budget and was stopped",
+            ),
             Err(f) => bail!("KSP line {}: {}", prog.line(t.pc.saturating_sub(1)), f.0),
         }
         // Nothing plays yet, so init's notes are dropped; controllers it sets
@@ -1058,14 +1072,30 @@ impl Runtime {
             return;
         };
         let v = c.var;
-        let prog = &self.programs[slot];
+        // Host values (automation, articulations) stay within the control's range.
+        let range = |p| match c.get(p) {
+            Some(super::ui::Prop::Int(n)) => Some(*n),
+            _ => None,
+        };
+        let value = match (range(b::CONTROL_PAR_MIN_VALUE), range(b::CONTROL_PAR_MAX_VALUE)) {
+            (Some(a), Some(z)) => value.clamp(a.min(z), a.max(z)),
+            _ => value,
+        };
+        let prog = self.programs[slot].clone();
         let var = &prog.vars[v as usize];
         if var.ty == Ty::Int && var.len.is_none() {
             state.mem.ints[var.slot as usize] = value;
             self.changes += 1;
         }
+        // Kontakt runs the global `on ui_controls` first, then the control's own.
+        let mut ctx = Ctx::new(slot as u8, Kind::UiControl);
+        ctx.value = state.ui.var_id(v);
+        if let Some(entry) = prog.callback(Callback::UiControls) {
+            let mut ctx = ctx;
+            ctx.kind = Kind::Cb(Callback::UiControls);
+            self.spawn(engine, entry, ctx);
+        }
         if let Some(entry) = prog.ui_callbacks[v as usize] {
-            let ctx = Ctx::new(slot as u8, Kind::UiControl);
             self.spawn(engine, entry, ctx);
         }
         self.spawn_cb(
@@ -1100,6 +1130,10 @@ impl Runtime {
     /// Finish the current block: resume every callback due before its end.
     pub fn process(&mut self, engine: &mut dyn KspEngine, frames: u32) {
         let end = self.env.now + u64::from(frames);
+        // What the last settle left for later (see `settle`).
+        if self.env.pgs_changed || !self.env.async_done.is_empty() {
+            self.settle(engine);
+        }
         self.run_timers(engine, end);
         if self.env.block_fuel == 0 {
             self.env
@@ -1107,7 +1141,8 @@ impl Runtime {
         }
         self.env.now = end;
         self.env.offset = 0;
-        self.env.block_fuel = BLOCK_FUEL;
+        // The next block is likely this size; its budget scales with its time.
+        self.env.block_fuel = (u64::from(frames) * FUEL_PER_FRAME).max(BLOCK_FUEL / 8);
     }
 
     fn advance(&mut self, engine: &mut dyn KspEngine, at: u32) {
@@ -1172,6 +1207,13 @@ impl Runtime {
 
     /// Drain queued work and the follow-up callbacks it triggers.
     fn settle(&mut self, engine: &mut dyn KspEngine) {
+        // `on pgs_changed` runs once per settle: scripts that answer a change
+        // with another change would otherwise ping-pong here forever. Later
+        // changes are delivered by the next settle.
+        let mut pgs_delivered = false;
+        // Likewise for scripts that answer every completion with a new
+        // asynchronous call (a retry that can never succeed here).
+        let mut completions = 0;
         loop {
             while let Some(w) = self.env.work.pop_front() {
                 self.handle(engine, w);
@@ -1188,14 +1230,18 @@ impl Runtime {
                     }
                 }
             }
-            if let Some((slot, id, status)) = self.env.async_done.pop() {
+            if completions < MAX_COMPLETIONS
+                && let Some((slot, id, status)) = self.env.async_done.pop()
+            {
+                completions += 1;
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::AsyncComplete));
                 ctx.async_id = id;
                 ctx.async_status = status;
                 self.spawn_cb(engine, slot, Callback::AsyncComplete, ctx);
                 continue;
             }
-            if std::mem::take(&mut self.env.pgs_changed) {
+            if !pgs_delivered && std::mem::take(&mut self.env.pgs_changed) {
+                pgs_delivered = true;
                 for slot in 0..self.states.len() as u8 {
                     self.spawn_cb(
                         engine,

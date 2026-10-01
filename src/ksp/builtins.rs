@@ -42,7 +42,7 @@ macro_rules! builtins {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Builtin { $($id),* }
         impl Builtin {
-            pub fn from_name(name: &str) -> Option<Self> {
+            fn lookup(name: &str) -> Option<Self> {
                 match name { $($name => Some(Self::$id),)* _ => None }
             }
             pub fn sig(self) -> Sig {
@@ -52,6 +52,19 @@ macro_rules! builtins {
             }
         }
     };
+}
+
+impl Builtin {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::lookup(name).or_else(|| match name {
+            // Kontakt 7 names for the find_* commands.
+            "get_group_idx" => Some(Self::FindGroup),
+            "get_mod_idx" => Some(Self::FindMod),
+            "get_target_idx" => Some(Self::FindTarget),
+            // Kontakt 2's underscore spellings (`_set_engine_par`, `_pgs_key_exists`, ...).
+            _ => Self::lookup(name.strip_prefix('_').filter(|n| !n.starts_with(['_', '#']))?),
+        })
+    }
 }
 
 builtins! {
@@ -65,6 +78,12 @@ builtins! {
     MinReal "#min" [R R] 0 Real;
     MaxReal "#max" [R R] 0 Real;
     InRangeReal "#in_range" [R R R] 0 Int;
+    Sgn "sgn" [N] 0 Int;
+    Signbit "signbit" [N] 0 Int;
+    SgnReal "#sgn" [R] 0 Int;
+    SignbitReal "#signbit" [R] 0 Int;
+    Exp2 "exp2" [R] 0 Real;
+    Cbrt "cbrt" [R] 0 Real;
     ShLeft "sh_left" [I I] 0 Int;
     ShRight "sh_right" [I I] 0 Int;
     Random "random" [I I] 0 Int;
@@ -150,6 +169,9 @@ builtins! {
     SetEnginePar "set_engine_par" [I I I I I] 0 Int;
     OutputChannelName "output_channel_name" [I] 0 Str;
     LoadIrSample "load_ir_sample" [S I I] 0 Int;
+    GetEngineParDispExt "get_engine_par_disp_ext" [I I I I I] 0 Str;
+    GetVoiceLimit "get_voice_limit" [I] 0 Int;
+    SetVoiceLimit "set_voice_limit" [I I] 0 Int;
     // User interface.
     SetControlPar "set_control_par" [I I I] 0 Void;
     SetControlParStr "set_control_par_str" [I I S] 0 Void;
@@ -159,6 +181,10 @@ builtins! {
     GetControlParStr "get_control_par_str" [I I] 0 Str;
     GetControlParArr "get_control_par_arr" [I I I] 0 Int;
     GetControlParStrArr "get_control_par_str_arr" [I I I] 0 Str;
+    SetControlParRealArr "set_control_par_real_arr" [I I R I] 0 Void;
+    GetControlParRealArr "get_control_par_real_arr" [I I I] 0 Real;
+    GetUiWfProperty "get_ui_wf_property" [V I I] 0 Int;
+    AttachLevelMeter "attach_level_meter" [I I I I I] 0 Void;
     SetText "set_text" [V S] 0 Void;
     AddTextLine "add_text_line" [V S] 0 Void;
     SetKnobLabel "set_knob_label" [V S] 0 Void;
@@ -204,9 +230,14 @@ builtins! {
     GetKeyTriggerstate "get_key_triggerstate" [I] 0 Int;
     SetKeyrange "set_keyrange" [I I S] 0 Void;
     RemoveKeyrange "remove_keyrange" [I] 0 Void;
+    GetKeyrangeMinNote "get_keyrange_min_note" [I] 0 Int;
+    GetKeyrangeMaxNote "get_keyrange_max_note" [I] 0 Int;
+    GetKeyrangeName "get_keyrange_name" [I] 0 Str;
     // Diagnostics and preprocessor leftovers.
     Message "message" [S] 0 Void;
     DisableLogging "disable_logging" [I] 0 Void;
+    WatchVar "watch_var" [V] 0 Void;
+    WatchArrayIdx "watch_array_idx" [A I] 0 Void;
     SetCondition "SET_CONDITION" [K] 0 Void;
     ResetCondition "RESET_CONDITION" [K] 0 Void;
     // Persistence.
@@ -255,6 +286,7 @@ pub enum SysVar {
     TransportRunning,
     Tempo,
     CurrentScriptSlot,
+    UiId,
 }
 
 pub fn sys_var(name: &str) -> Option<SysVar> {
@@ -288,6 +320,7 @@ pub fn sys_var(name: &str) -> Option<SysVar> {
         "$NI_TRANSPORT_RUNNING" => TransportRunning,
         "$NI_BPM" | "$NI_TEMPO" => Tempo,
         "$CURRENT_SCRIPT_SLOT" => CurrentScriptSlot,
+        "$NI_UI_ID" => UiId,
         _ => return None,
     })
 }
@@ -344,6 +377,9 @@ pub fn instrument_control(id: i32) -> bool {
     (INST_ICON_ID..=INST_LIB_LAST_ID).contains(&id)
 }
 pub const FIRST_UI_ID: i32 = 32768;
+/// Time Machine Pro voice types for `get_voice_limit`/`set_voice_limit`.
+pub const VL_TMPRO_STANDARD: i32 = 0;
+pub const VL_TMPRO_HQ: i32 = 1;
 pub const HIDE_WHOLE_CONTROL: i32 = 16;
 
 pub mod event_par {
@@ -377,6 +413,7 @@ pub mod cb {
     pub const PGS_CHANGED: i32 = 10;
     pub const PERSISTENCE_CHANGED: i32 = 11;
     pub const ASYNC_COMPLETE: i32 = 12;
+    pub const UI_CONTROLS: i32 = 13;
 }
 
 pub mod signal {
@@ -454,6 +491,7 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_CB_TYPE_PGS" => cb::PGS_CHANGED,
         "$NI_CB_TYPE_PERSISTENCE_CHANGED" => cb::PERSISTENCE_CHANGED,
         "$NI_CB_TYPE_ASYNC_COMPLETE" => cb::ASYNC_COMPLETE,
+        "$NI_CB_TYPE_UI_CONTROLS" => cb::UI_CONTROLS,
         "$NI_SIGNAL_TIMER_MS" => signal::TIMER_MS,
         "$NI_SIGNAL_TIMER_BEAT" => signal::TIMER_BEAT,
         "$NI_SIGNAL_TRANSP_START" => signal::TRANSP_START,
@@ -463,6 +501,8 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_MAIN_BUS" => 2,
         "$NI_BUS_OFFSET" => 1000,
         "$NUM_ZONES" => 0,
+        "$NI_VL_TMPRO_STANDARD" => VL_TMPRO_STANDARD,
+        "$NI_VL_TMPRO_HQ" => VL_TMPRO_HQ,
         _ => return None,
     })
 }

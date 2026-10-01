@@ -136,6 +136,8 @@ fn async_done(m: &mut Machine, status: i32) -> i32 {
 /// Recoverable failures: recorded as diagnostics, the call yields its default value.
 pub const NO_CONTROL: Fault = Fault("ID does not refer to a UI control");
 pub const NO_PGS_KEY: Fault = Fault("Unknown PGS key");
+/// Kontakt keeps at most this many `set_keyrange` ranges per instrument.
+const MAX_KEYRANGES: usize = 16;
 
 pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
     use Builtin::*;
@@ -168,6 +170,26 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let lo = m.stk.real();
             let x = m.stk.real();
             push_int(m, (lo..=hi).contains(&x) as i32)
+        }
+        Sgn => {
+            let [a] = ints(m);
+            push_int(m, a.signum())
+        }
+        Signbit => {
+            let [a] = ints(m);
+            push_int(m, (a < 0) as i32)
+        }
+        SgnReal => {
+            let x = m.stk.real();
+            push_int(m, if x > 0.0 { 1 } else if x < 0.0 { -1 } else { 0 })
+        }
+        SignbitReal => {
+            let x = m.stk.real();
+            push_int(m, x.is_sign_negative() as i32)
+        }
+        Exp2 | Cbrt => {
+            let x = m.stk.real();
+            push_real(m, if f == Exp2 { x.exp2() } else { x.cbrt() })
         }
         ShLeft | ShRight => {
             let [a, n] = ints(m);
@@ -677,7 +699,28 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         PurgeGroup => {
             ints::<2>(m);
-            let id = m.env.next_async();
+            // Samples stay loaded, but scripts wait for the completion.
+            let id = async_done(m, 1);
+            push_int(m, id)
+        }
+        GetVoiceLimit => {
+            let [kind] = ints(m);
+            let limit = usize::try_from(kind)
+                .ok()
+                .and_then(|k| m.env.voice_limits.get(k))
+                .copied()
+                .ok_or(Fault("Invalid voice type"))?;
+            push_int(m, limit)
+        }
+        SetVoiceLimit => {
+            let [kind, value] = ints(m);
+            let limit = usize::try_from(kind)
+                .ok()
+                .and_then(|k| m.env.voice_limits.get_mut(k))
+                .ok_or(Fault("Invalid voice type"))?;
+            // Stored only: no engine mode here allocates Time Machine Pro voices.
+            *limit = value.max(0);
+            let id = async_done(m, 1);
             push_int(m, id)
         }
         GetPurgeState => {
@@ -704,13 +747,20 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             }
             push_int(m, found.unwrap_or(0) as i32)
         }
-        GetEnginePar | GetEngineParDisp => {
-            let p = engine_par(ints(m));
-            let v = m
-                .engine
-                .engine_par(p)
-                .or_else(|| m.env.engine_par(p))
-                .unwrap_or(0);
+        GetEnginePar | GetEngineParDisp | GetEngineParDispExt => {
+            let (p, v) = if f == GetEngineParDispExt {
+                // A hypothetical value, shown as if the parameter had it.
+                let [id, value, group, slot, generic] = ints(m);
+                (engine_par([id, group, slot, generic]), value)
+            } else {
+                let p = engine_par(ints(m));
+                let v = m
+                    .engine
+                    .engine_par(p)
+                    .or_else(|| m.env.engine_par(p))
+                    .unwrap_or(0);
+                (p, v)
+            };
             if f == GetEnginePar {
                 return push_int(m, v);
             }
@@ -793,14 +843,41 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             }
             Ok(Step::Next)
         }
-        SetControlParArr | SetControlParStrArr => {
-            if f == SetControlParArr {
-                ints::<4>(m);
-            } else {
-                ints::<3>(m);
-                m.stk.strs.pop();
+        SetControlParArr | SetControlParStrArr | SetControlParRealArr => {
+            match f {
+                SetControlParArr => drop(ints::<4>(m)),
+                SetControlParStrArr => {
+                    ints::<3>(m);
+                    m.stk.strs.pop();
+                }
+                _ => {
+                    ints::<3>(m);
+                    m.stk.real();
+                }
             }
             m.env.note("Array control parameters are not retained");
+            Ok(Step::Next)
+        }
+        GetControlParRealArr => {
+            ints::<3>(m);
+            push_real(m, 0.0)
+        }
+        GetUiWfProperty => {
+            // Waveforms show no play cursor or slices here.
+            ints::<2>(m);
+            m.stk.var();
+            push_int(m, 0)
+        }
+        AttachLevelMeter => {
+            ints::<5>(m);
+            Ok(Step::Next)
+        }
+        WatchVar | WatchArrayIdx => {
+            // Creator Tools' debugger only.
+            if f == WatchArrayIdx {
+                m.stk.int();
+            }
+            m.stk.var();
             Ok(Step::Next)
         }
         GetControlPar | GetControlParArr => {
@@ -897,9 +974,14 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let v = m.stk.var();
             let c = control_of(m, v)?;
             if f == MoveControl {
+                // Grid position 0 hides the control; moving it back shows it.
+                let control = &mut m.slot.ui.controls[c];
                 if x == 0 || y == 0 {
-                    m.slot.ui.controls[c].set_int(b::CONTROL_PAR_HIDE, 1);
+                    control.set_int(b::CONTROL_PAR_HIDE, b::HIDE_WHOLE_CONTROL);
                     return Ok(Step::Next);
+                }
+                if matches!(control.get(b::CONTROL_PAR_HIDE), Some(Prop::Int(b::HIDE_WHOLE_CONTROL))) {
+                    control.set_int(b::CONTROL_PAR_HIDE, 0);
                 }
                 x = x.saturating_sub(1).saturating_mul(92).saturating_add(66);
                 y = y.saturating_sub(1).saturating_mul(21).saturating_add(2);
@@ -984,8 +1066,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let c = control(m, id)?;
             push_int(m, m.slot.ui.controls[c].menu.len() as i32)
         }
-        SetSkinOffset | SetUiColor | SetSnapshotType | DisableLogging | FsNavigate
-        | RemoveKeyrange => {
+        SetSkinOffset | SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
             if f == FsNavigate {
                 m.stk.int();
             }
@@ -1120,9 +1201,46 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             push_int(m, v)
         }
         SetKeyrange => {
-            ints::<2>(m);
-            m.stk.strs.pop();
+            let [lo, hi] = ints(m);
+            let (lo, hi) = (midi_note(lo)?, midi_note(hi)?);
+            let (lo, hi) = (lo.min(hi), lo.max(hi));
+            let name = m.stk.strs.pop();
+            let ranges = &mut m.env.host.keyranges;
+            // Ranges never overlap: the newest one wins its keys.
+            ranges.retain(|&(l, h, _)| h < lo || l > hi);
+            if ranges.len() < MAX_KEYRANGES {
+                ranges.push((lo, hi, name.to_owned()));
+            } else {
+                m.env.note("set_keyrange: at most 16 key ranges; range dropped");
+            }
             Ok(Step::Next)
+        }
+        RemoveKeyrange => {
+            let [note] = ints(m);
+            m.env
+                .host
+                .keyranges
+                .retain(|&(l, h, _)| !(i32::from(l)..=i32::from(h)).contains(&note));
+            Ok(Step::Next)
+        }
+        GetKeyrangeMinNote | GetKeyrangeMaxNote | GetKeyrangeName => {
+            let [note] = ints(m);
+            let range = m
+                .env
+                .host
+                .keyranges
+                .iter()
+                .find(|&&(l, h, _)| (i32::from(l)..=i32::from(h)).contains(&note));
+            match (f, range) {
+                (GetKeyrangeName, r) => {
+                    let name = r.map_or("", |r| r.2.as_str());
+                    m.stk.strs.push_str(name);
+                    Ok(Step::Next)
+                }
+                (_, None) => Err(Fault("No key range at this note")),
+                (GetKeyrangeMinNote, Some(r)) => push_int(m, i32::from(r.0)),
+                (_, Some(r)) => push_int(m, i32::from(r.1)),
+            }
         }
         AttachZone => {
             ints::<2>(m);
