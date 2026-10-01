@@ -167,11 +167,14 @@ pub struct Expression {
     pub gain: f32,
     /// −1..=1, added to the voice's pan.
     pub pan: f32,
+    /// Raw member controls frozen at physical key-up; manager controls stay live.
+    pub member_cc74: Option<u8>,
+    pub member_pressure: Option<u8>,
 }
 
 impl Default for Expression {
     fn default() -> Self {
-        Self { tune: 0.0, gain: 1.0, pan: 0.0 }
+        Self { tune: 0.0, gain: 1.0, pan: 0.0, member_cc74: None, member_pressure: None }
     }
 }
 
@@ -525,7 +528,7 @@ impl Engine {
         // Capture at the physical key-up, before a delayed KSP release or
         // member reuse can replace this event's channel/key expression.
         if self.player.mpe_zone.is_some_and(|(_, members)| members & (1 << channel) != 0) {
-            let x = self.player.expression[channel as usize][note as usize];
+            let x = self.release_snapshot(channel, note);
             for c in self.commands.iter_mut().filter(|c| c.channel == channel) {
                 if let script::Kind::Start { note: key, expression, .. } = &mut c.kind
                     && *key == note { expression.get_or_insert(x); }
@@ -716,9 +719,23 @@ impl Engine {
         });
     }
 
+    /// Applied state plus earlier same-frame script commands, before the
+    /// release callback or reused member can replace these controller values.
+    fn release_snapshot(&self, channel: u8, note: u8) -> Expression {
+        let mut x = self.player.member_snapshot(channel, note);
+        for c in self.commands.iter().filter(|c| c.channel == channel && c.at == 0) {
+            match c.kind {
+                script::Kind::Controller { cc: 74, value } => x.member_cc74 = Some(value.clamp(0, 127) as u8),
+                script::Kind::Controller { cc: 129, value } => x.member_pressure = Some(value.clamp(0, 127) as u8),
+                _ => {}
+            }
+        }
+        x
+    }
+
     pub(crate) fn freeze_released_expression(&mut self, channel: u8, note: u8) {
         if channel >= 16 || note >= 128 { return; }
-        let expression = self.player.expression[channel as usize][note as usize];
+        let expression = self.release_snapshot(channel, note);
         for v in &mut self.player.voices {
             if v.channel == channel && v.note == note && v.frozen_expression.is_none()
                 && (!v.held || self.commands.iter().any(|c| c.at == 0 && c.id == v.event
@@ -1196,10 +1213,13 @@ impl Player {
         };
         let step = f64::from(sample.rate) / self.rate * zone.tune * key;
         let c = ev.channel as usize;
+        let master = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0).map(|(master, _)| master as usize);
+        let expression = ev.frozen_expression.unwrap_or_default();
         let inputs = params::Inputs {
             cc: &self.cc[c],
-            bend: self.bend[c],
-            pressure: self.pressure[c],
+            cc74: master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127)),
+            bend: self.bend[c] + master.map_or(0., |m| self.bend[m]),
+            pressure: master.map_or(self.pressure[c], |m| expression.member_pressure.unwrap_or(self.pressure[c]).max(self.pressure[m])),
             note: ev.note,
             velocity: ev.velocity,
             counter: if release_trigger {
@@ -1437,12 +1457,20 @@ impl Player {
         )
     }
 
+    fn member_snapshot(&self, channel: u8, note: u8) -> Expression {
+        Expression {
+            member_cc74: Some(self.cc[channel as usize & 15][74]),
+            member_pressure: Some(self.pressure[channel as usize & 15]),
+            ..self.expression[channel as usize & 15][note as usize & 127]
+        }
+    }
+
     /// The originating voice may have been frozen at an earlier physical
     /// key-up while the script delayed its release callback.
     fn release_expression(&self, source: EventId, channel: u8, note: u8) -> Option<Expression> {
         self.voices.iter().find(|v| v.event == source).and_then(|v| v.frozen_expression)
             .or_else(|| self.mpe_zone.filter(|(_, members)| channel < 16 && members & (1 << channel) != 0)
-                .map(|_| self.expression[channel as usize][note as usize & 127]))
+                .map(|_| self.member_snapshot(channel, note)))
     }
 
     /// Start the release-trigger zones for a key release, limited to `groups`;

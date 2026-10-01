@@ -697,9 +697,7 @@ impl Router {
                 for (to, key) in row.into_iter().filter(|h| h.1 != NONE) {
                     self.pressure(to, key, value, out);
                 }
-                if !self.scripted {
-                    out(Out::Pressure(channel, value));
-                }
+                out(Out::Pressure(to, value));
             }
             In::Pressure(_, value) => out(Out::Pressure(to, value)),
             In::PolyAt(_, note, value) => out(Out::PolyAt(to, self.key_of(channel, note), value)),
@@ -730,11 +728,6 @@ impl Router {
                     }
                 }
                 out(Out::Cc(to, cc, value));
-                if r.master(channel) && !self.scripted && cc == 74 {
-                    for m in r.zone().map(|z| z.1).into_iter().flatten() {
-                        out(Out::Cc(m, cc, value));
-                    }
-                }
             }
             In::NoteTune(_, note, semitones) => {
                 let key = self.key_of(channel, note);
@@ -1252,6 +1245,87 @@ mod tests {
     }
 
     #[test]
+    fn mpe_initial_pressure_reaches_raw_modulation_with_scripts() {
+        use crate::{
+            audio::Sample,
+            engine::Bank,
+            import::{Group, Zone as SampleZone},
+            modulation::{ModAssignment, ModSource, ModTarget},
+        };
+        let setup = |scripted| {
+            let group = Group {
+                mods: vec![ModAssignment {
+                    name: "PRESSURE_VOLUME".into(),
+                    source: ModSource::MonoAftertouch,
+                    target: ModTarget::Volume,
+                    intensity: 1.,
+                    invert: false,
+                    lag_ms: 0,
+                    shaper: None,
+                }],
+                ..Group::default()
+            };
+            let sample = Sample {
+                rate: 48000,
+                frames: vec![[0.25; 2]; 24000],
+            };
+            let bank = Bank::from_samples(
+                vec![group],
+                vec![SampleZone::default()],
+                vec![(std::path::PathBuf::new(), sample)],
+            )
+            .unwrap();
+            let mut e = Engine::default();
+            e.set_bank(Some(Box::new(bank)));
+            if scripted {
+                e.set_script(Some(Box::new(runtime("on init\nend on"))));
+            }
+            e
+        };
+        for scripted in [false, true] {
+            for (zone, master, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+                let mut actual = setup(scripted);
+                let mut ar = router(
+                    &Articulate::default(),
+                    &Mpe {
+                        zone,
+                        ..Mpe::default()
+                    },
+                );
+                feed(&mut ar, &mut actual, In::Pressure(member, 37), 0);
+                feed(&mut ar, &mut actual, In::Pressure(master, 64), 0);
+                feed(&mut ar, &mut actual, In::NoteOn(member, 60, 100), 0);
+                let mut expected = setup(scripted);
+                let mut er = router(
+                    &Articulate::default(),
+                    &Mpe {
+                        zone,
+                        ..Mpe::default()
+                    },
+                );
+                expected.channel_pressure(member, 64);
+                feed(&mut er, &mut expected, In::NoteOn(member, 60, 100), 0);
+                feed(
+                    &mut er,
+                    &mut expected,
+                    In::NoteGain(member, 60, pressure_gain(37)),
+                    0,
+                );
+                let (mut a, mut b, mut c, mut d) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
+                actual.render(&mut a, &mut b);
+                expected.render(&mut c, &mut d);
+                assert!(
+                    a.iter()
+                        .zip(c)
+                        .chain(b.iter().zip(d))
+                        .all(|(a, b)| (a - b).abs() < 1e-5),
+                    "{zone:?}, scripted={scripted}: initial member/manager pressure was lost"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn mpe_rpn_range_changes_update_active_notes_and_nrpn_does_not_change_range() {
         for (zone, members) in [(Zone::Lower, [1, 2]), (Zone::Upper, [14, 13])] {
             let mut r = router(&Articulate::default(), &Mpe { zone, ..Mpe::default() });
@@ -1348,6 +1422,114 @@ mod tests {
                 for i in 0..128 {
                     assert!((a.0[i] - o.0[i] - n.0[i]).abs() < 1e-5 && (a.1[i] - o.1[i] - n.1[i]).abs() < 1e-5,
                         "frame {i}: release sample followed the reused member's expression (master bend {master_bend})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mpe_member_controls_stop_modulating_released_notes_on_channel_reuse() {
+        use crate::{
+            audio::Sample,
+            engine::Bank,
+            import::{Group, Zone as SampleZone},
+            modulation::{ModAssignment, ModSource, ModTarget},
+        };
+        for source in [ModSource::MidiCc(74), ModSource::MonoAftertouch] {
+            for scripted in [false, true] {
+                for (zone, master, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+                    let setup = || {
+                        let group = Group {
+                            mods: vec![ModAssignment {
+                                name: "CC74_VOLUME".into(),
+                                source,
+                                target: ModTarget::Volume,
+                                intensity: 1.,
+                                invert: false,
+                                lag_ms: 0,
+                                shaper: None,
+                            }],
+                            ..Group::default()
+                        };
+                        let sample = Sample {
+                            rate: 48000,
+                            frames: vec![[0.25; 2]; 24000],
+                        };
+                        let bank = Bank::from_samples(
+                            vec![group],
+                            vec![SampleZone::default()],
+                            vec![(std::path::PathBuf::new(), sample)],
+                        )
+                        .unwrap();
+                        let mut e = Engine::default();
+                        e.reset(48000.);
+                        e.attack = 0.0001;
+                        e.set_bank(Some(Box::new(bank)));
+                        if scripted {
+                            e.set_script(Some(Box::new(runtime(
+                                "on init\ndeclare $ready := 1\nend on",
+                            ))));
+                        }
+                        (
+                            e,
+                            router(
+                                &Articulate::default(),
+                                &Mpe {
+                                    zone,
+                                    ..Mpe::default()
+                                },
+                            ),
+                        )
+                    };
+                    let start = |e: &mut Engine, r: &mut Router, brightness| {
+                        let control = if source == ModSource::MonoAftertouch {
+                            In::Pressure(member, brightness)
+                        } else {
+                            In::Cc(member, 74, brightness)
+                        };
+                        feed(r, e, control, 0);
+                        feed(r, e, In::NoteOn(member, 60, 100), 0);
+                        // Isolate raw modulation from KONTRA's pressure-volume fallback.
+                        feed(r, e, In::NoteGain(member, 60, 1.), 0);
+                    };
+                    let (mut actual, mut ar) = setup();
+                    let (mut old, mut or) = setup();
+                    let (mut new, mut nr) = setup();
+                    for (e, r) in [(&mut actual, &mut ar), (&mut old, &mut or)] {
+                        start(e, r, 32);
+                        render(e);
+                        feed(r, e, In::Cc(master, 64, 127), 0);
+                        feed(r, e, In::NoteOff(member, 60), 0);
+                    }
+                    start(&mut actual, &mut ar, 96);
+                    start(&mut new, &mut nr, 96);
+                    let audio = |e: &mut Engine| {
+                        let (mut l, mut r) = ([0.; 128], [0.; 128]);
+                        e.render(&mut l, &mut r);
+                        (l, r)
+                    };
+                    for manager_value in [0, 64] {
+                        for (e, r) in [
+                            (&mut actual, &mut ar),
+                            (&mut old, &mut or),
+                            (&mut new, &mut nr),
+                        ] {
+                            let control = if source == ModSource::MonoAftertouch {
+                                In::Pressure(master, manager_value)
+                            } else {
+                                In::Cc(master, 74, manager_value)
+                            };
+                            feed(r, e, control, 0);
+                        }
+                        let (a, o, n) = (audio(&mut actual), audio(&mut old), audio(&mut new));
+                        for i in 0..128 {
+                            assert!(
+                                (a.0[i] - o.0[i] - n.0[i]).abs() < 1e-5
+                                    && (a.1[i] - o.1[i] - n.1[i]).abs() < 1e-5,
+                                "{zone:?} scripted={scripted}, {source:?}, frame {i}: member control changed an older released note"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1504,7 +1686,7 @@ mod tests {
         }
         let mut last = None;
         r.input(In::Bend(1, 0), 0, &mut |o| last = Some(o));
-        assert_eq!(last, Some(Out::Expression(1, 60, Expression { tune: -12.0, gain: 1.0, pan: 0.0 })));
+        assert_eq!(last, Some(Out::Expression(1, 60, Expression { tune: -12.0, gain: 1.0, pan: 0.0, ..Expression::default() })));
         // Members are heard, other channels not, on a part set to channel 1.
         let c = PartControls { channel: 0, ..PartControls::default() };
         assert!(r.hears(&c, 0, 15) && r.hears(&c, 0, 3));
@@ -1539,7 +1721,7 @@ mod tests {
         r.input(In::NoteTune(0, 60, -3.5), 0, &mut |o| out.push(o));
         r.input(In::NoteGain(0, 60, 0.5), 0, &mut |o| out.push(o));
         r.input(In::NotePan(0, 60, 0.25), 0, &mut |o| out.push(o));
-        assert_eq!(out.last(), Some(&Out::Expression(0, 60, Expression { tune: -3.5, gain: 0.5, pan: 0.25 })));
+        assert_eq!(out.last(), Some(&Out::Expression(0, 60, Expression { tune: -3.5, gain: 0.5, pan: 0.25, ..Expression::default() })));
         // The next note on the key starts plain.
         r.input(In::NoteOff(0, 60), 0, &mut |o| out.push(o));
         r.input(In::NoteOn(0, 60, 100), 0, &mut |o| out.push(o));

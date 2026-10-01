@@ -1613,7 +1613,7 @@ mod tests {
             ("Solo Pads (2 filters, stereo modeller)", "Solo/Instruments/03 Sound Design/Solo - 01 Pads.nki", ""),
         ];
         let cc = [64u8; 128];
-        let input = Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
         for (name, path, group) in cases {
             let instrument = read(&std::path::Path::new(LIBRARY_ROOT).join(path)).unwrap();
             let g = instrument
@@ -1669,7 +1669,7 @@ mod tests {
         f.matrix = f.mix();
         let table = ModTable::default();
         let cc = [0u8; 128];
-        let input = Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
         let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
         let mut ctl = [0.0; MAX_BLOCK];
         let mut run = |f: &GroupFilter| {
@@ -1698,7 +1698,7 @@ mod tests {
         let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [].into(), matrix: IDENTITY, envs: [].into(), ext: [].into() };
         let table = ModTable::default();
         let cc = [0u8; 128];
-        let input = Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
         let mut ctl = [0.0; MAX_BLOCK];
         for kind in [13, 70, 90, 100, 101, 102, 103, 104, 105, 106, 107, SV_NOTCH4] {
             assert!(f.set_knob(0, Knob::Type, kind as f32), "{kind}");
@@ -1734,7 +1734,7 @@ mod tests {
         let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [stage].into(), matrix: IDENTITY, envs: [].into(), ext: [].into() };
         let table = ModTable::default();
         let cc = [0u8; 128];
-        let input = Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
         let mut ctl = [0.0; MAX_BLOCK];
         let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
         assert_eq!(voice.hold(&f, &table, RATE), None, "nonlinear voices are not shared");

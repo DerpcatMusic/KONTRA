@@ -1010,14 +1010,14 @@ pub(crate) struct Context<'a> {
 
 impl Context<'_> {
     /// Modulation inputs for a note on `channel`.
-    pub fn inputs(&self, channel: u8, note: u8, velocity: u8) -> Inputs<'_> {
+    pub fn inputs(&self, channel: u8, note: u8, velocity: u8, expression: super::Expression) -> Inputs<'_> {
         let c = channel as usize & 15;
-        let master_bend = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0)
-            .map_or(0., |(master, _)| self.bend[master as usize]);
+        let master = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0).map(|(master, _)| master as usize);
         Inputs {
             cc: &self.cc[c],
-            bend: self.bend[c] + master_bend,
-            pressure: self.pressure[c],
+            cc74: master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127)),
+            bend: self.bend[c] + master.map_or(0., |m| self.bend[m]),
+            pressure: master.map_or(self.pressure[c], |m| expression.member_pressure.unwrap_or(self.pressure[c]).max(self.pressure[m])),
             note,
             velocity,
             // Fixed at the note start, never read live.
@@ -1100,7 +1100,8 @@ impl Voice {
     #[inline(always)]
     pub fn plan(&mut self, cx: &Context, n: usize, bus: Option<u8>, through: Option<[f32; 2]>) -> Option<Lane> {
         let group = &cx.bank.settings[self.group as usize];
-        let inputs = cx.inputs(self.channel, self.note, self.velocity);
+        let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][self.note as usize & 127]);
+        let inputs = cx.inputs(self.channel, self.note, self.velocity, x);
         // Settled modulation (every controller at rest, as held ones soon
         // are) gives the same result until an input changes: the group's
         // table, a cache miss per voice, is not read.
@@ -1110,7 +1111,6 @@ impl Voice {
             self.settled = settled.then_some(cx.inputs);
         }
         let (modulation, semitones) = self.modulated;
-        let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][self.note as usize & 127]);
         let semitones = semitones + group.tune + cx.tune + x.tune;
         if semitones != self.pitch.0 {
             self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));

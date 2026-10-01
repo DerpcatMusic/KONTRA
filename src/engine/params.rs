@@ -164,6 +164,8 @@ impl From<&Group> for ModTable {
 #[derive(Clone, Copy)]
 pub(crate) struct Inputs<'a> {
     pub cc: &'a [u8; 128],
+    /// Combined MPE CC74, preserving a released note's member value.
+    pub cc74: Option<u8>,
     /// -1..=1.
     pub bend: f32,
     pub pressure: u8,
@@ -192,7 +194,7 @@ impl Inputs<'_> {
             Source::Velocity => f32::from(self.velocity) / 127.0,
             Source::Key => f32::from(self.note) / 127.0,
             Source::Constant => 1.0,
-            Source::Cc(cc) => f32::from(self.cc[cc as usize]) / 127.0,
+            Source::Cc(cc) => f32::from(if cc == 74 { self.cc74.unwrap_or(self.cc[74]) } else { self.cc[cc as usize] }) / 127.0,
             Source::Bend => (self.bend + 1.0) * 0.5,
             Source::Pressure => f32::from(self.pressure) / 127.0,
             Source::Counter => self.counter,
@@ -299,7 +301,7 @@ impl ModTable {
             for velocity in velocities.clone() {
                 for counter in counters.clone() {
                     let counter = f32::from(counter) / 127.0;
-                    let input = Inputs { cc, bend: 0.0, pressure: 0, note, velocity, counter };
+                    let input = Inputs { cc74: None, cc, bend: 0.0, pressure: 0, note, velocity, counter };
                     let x = self.start_offset(&input);
                     (low, high) = (low.min(x), high.max(x));
                 }
@@ -967,7 +969,7 @@ mod tests {
         };
         let table = ModTable::from(&group);
         let cc = [0u8; 128];
-        let at = |counter| table.start_offset(&Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter });
+        let at = |counter| table.start_offset(&Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter });
         // A 700 ms note under T = 1500 ms leaves 0.53 of the counter.
         let x = release_counter(1500, 700.0);
         assert!((x - 0.533).abs() < 1e-3);
@@ -1180,6 +1182,7 @@ mod tests {
         cc[11] = 127;
         let mut input = Inputs {
             cc: &cc,
+            cc74: None,
             bend: 0.0,
             pressure: 0,
             note: 60,
@@ -1222,6 +1225,7 @@ mod tests {
             };
             let input = Inputs {
                 cc: &cc,
+                cc74: None,
                 bend: 0.0,
                 pressure: 0,
                 note: 60,
