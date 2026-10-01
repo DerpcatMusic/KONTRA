@@ -39,7 +39,9 @@ mod spectrum;
 #[cfg(test)]
 mod tests;
 mod theme;
+mod vector;
 mod viz;
+mod wave;
 
 use crate::engine::RACK_SLOTS;
 pub(crate) use panel::{articulations, sections};

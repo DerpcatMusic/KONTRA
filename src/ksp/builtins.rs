@@ -464,8 +464,8 @@ pub fn real_constant(name: &str) -> Option<f64> {
 /// Enumerations scripts index arrays with or compare against, so they need Kontakt's
 /// small values rather than opaque ones. The KSP reference lists each family in
 /// this order without numbers; positions from 0 are assumed. The filter types are
-/// the type ids NKIs store (`audits/EFFECTS.md`); `$ENGINE_PAR_EFFECT_SUBTYPE`
-/// does not reach the filters yet, and the AR ids are a low-confidence match.
+/// the type ids NKIs store (`audits/EFFECTS.md`); the AR, Daft, phaser and
+/// formant ones are in `engine::filter::ksp_filter_type`.
 const VALUED: &[(&str, i32)] = &[
     ("$KNOB_UNIT_NONE", 0),
     ("$KNOB_UNIT_DB", 1),
@@ -508,13 +508,7 @@ const VALUED: &[(&str, i32)] = &[
     ("$FILTER_TYPE_BP4POLE", 7),
     ("$FILTER_TYPE_BR4POLE", 8),
     ("$FILTER_TYPE_LP6POLE", 9),
-    ("$FILTER_TYPE_VERSATILE", 19),
-    ("$FILTER_TYPE_AR_LP2", 52),
-    ("$FILTER_TYPE_AR_BP2", 53),
-    ("$FILTER_TYPE_AR_HP2", 54),
-    ("$FILTER_TYPE_AR_LP4", 55),
-    ("$FILTER_TYPE_AR_BP4", 56),
-    ("$FILTER_TYPE_AR_HP4", 57),
+    // Other `$FILTER_TYPE_*` values: `engine::filter::ksp_filter_type`.
     // Time units for `*_TIME_UNIT` / `*_FREQ_UNIT` engine parameters.
     ("$NI_SYNC_UNIT_ABS", 0),
     ("$NI_SYNC_UNIT_WHOLE", 1),
@@ -552,6 +546,9 @@ pub fn constant(name: &str) -> Option<i32> {
         return Some(v);
     }
     if let Some(v) = crate::fx::ksp_effect_type(name) {
+        return Some(v);
+    }
+    if let Some(v) = crate::engine::filter::ksp_filter_type(name) {
         return Some(v);
     }
     if let Some(n) = name
@@ -630,6 +627,11 @@ pub fn constant(name: &str) -> Option<i32> {
         // `$ENGINE_PAR_RV2_TYPE` values: Reverb's room/hall switch.
         "$NI_REVERB2_TYPE_ROOM" => 0,
         "$NI_REVERB2_TYPE_HALL" => 1,
+        // `attach_zone` flags, or'd together.
+        "$UI_WAVEFORM_USE_SLICES" => 1,
+        "$UI_WAVEFORM_USE_TABLE" => 2,
+        "$UI_WAVEFORM_TABLE_IS_BIPOLAR" => 4,
+        "$UI_WAVEFORM_USE_MIDI_DRAG" => 8,
         "$NI_VL_TMPRO_STANDARD" => VL_TMPRO_STANDARD,
         "$NI_VL_TMPRO_HQ" | "$NI_VL_TMRPO_HQ" => VL_TMPRO_HQ,
         // A plugin with an editor, in 4/4 unless the host says otherwise.
@@ -727,6 +729,14 @@ pub const SYMBOLS: &[&str] = &[
     "$CONTROL_PAR_RECEIVE_DRAG_EVENTS",
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
+    // `ui_waveform` properties (`set_ui_wf_property`), kept on the control.
+    "$UI_WF_PROP_PLAY_CURSOR",
+    "$UI_WF_PROP_FLAGS",
+    "$UI_WF_PROP_TABLE_VAL",
+    "$UI_WF_PROP_TABLE_IDX_HIGHLIGHT",
+    "$UI_WF_PROP_MIDI_DRAG_START_NOTE",
+    // The zone `attach_zone` showed in a waveform: no name a script can write.
+    "attached zone",
 ];
 
 pub const CONTROL_PAR_VALUE: i32 = SYMBOL_BASE;
@@ -764,6 +774,8 @@ const CONTROL_TYPES: &[(&str, &str)] = &[
 pub fn control_type(kind: &str) -> i32 {
     CONTROL_TYPES.iter().position(|(k, _)| *k == kind).unwrap_or(0) as i32
 }
+pub const UI_WF_PROP_FLAGS: i32 = SYMBOL_BASE + 82;
+pub const ATTACHED_ZONE: i32 = SYMBOL_BASE + 86;
 
 /// Engine parameters are published with stable IDs so an engine can map them once.
 pub const ENGINE_PAR_BASE: i32 = 0x0200_0000;

@@ -226,7 +226,7 @@ impl Engine {
                 }
                 let units = s.filter.as_deref().map_or(&[][..], |f| f.units());
                 for (chunk, unit) in values[6..].chunks_mut(KNOBS).zip(units) {
-                    chunk.copy_from_slice(&unit.knobs);
+                    chunk.copy_from_slice(&unit.knobs[..KNOBS]);
                 }
             }
             for (slot, v) in layer.iter().zip(values) {
@@ -272,9 +272,10 @@ impl Param {
         for (u, unit) in units.iter().enumerate().take(PROBE_UNITS) {
             let at = 6 + u * KNOBS;
             match unit.shape {
-                Shape::Filter(_) => {
+                Shape::Filter(_) | Shape::Model(_) => {
                     out.extend([(at, Self::Cutoff(unit.slot)), (at + 1, Self::Resonance(unit.slot))]);
                 }
+                Shape::Geq => {}
                 Shape::Eq => {
                     for b in 0..unit.sections {
                         let k = at + 3 * b as usize;

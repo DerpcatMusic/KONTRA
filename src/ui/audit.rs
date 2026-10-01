@@ -60,7 +60,7 @@ fn kind_name(k: Kind) -> &'static str {
 
 /// What the laid-out view `shown` of `u` gets wrong, as far as can be told
 /// without Kontakt to compare with.
-fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwork::Picture>>, found: &mut Found) {
+fn inspect(i: &import::Instrument, u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwork::Picture>>, found: &mut Found) {
     let (w, h) = (f64::from(u.width), f64::from(u.height));
     for s in shown {
         let c = &u.controls[s.control];
@@ -70,10 +70,12 @@ fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwor
         let named = prop(c, "$CONTROL_PAR_PICTURE");
         if !named.is_empty() && !pictures.contains_key(named) {
             found.add("missing picture");
-        } else if s.kind == Kind::Waveform {
-            found.add("waveform: zone wave is not drawn");
+        } else if s.kind == Kind::Waveform && perf_view::wave_now(i, c).is_none() {
+            found.add("waveform: zone's wave not drawn");
         } else if s.kind == Kind::Other && crate::diagnostics::widget_limit(&c.kind).is_none() {
-            found.add(format!("unsupported UI widget: {}", c.kind));
+            // A control with no picture named is Kontakt's stock one, drawn
+            // natively; only a kind with no drawing of its own falls back.
+            found.add(format!("vector fallback: {}", c.kind));
         }
         // The view clips as Kontakt's does; a control mostly outside is lost.
         let inside = (s.x + s.w).min(w) - s.x.max(0.);
@@ -98,8 +100,9 @@ fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwor
         }
     }
     // Two controls taking the same clicks: more than half of the larger.
-    // One inside another (a row with its own button) is by design.
-    let takes = |s: &&Shown| !matches!(s.kind, Kind::Label | Kind::Area);
+    // One inside another (a row with its own button) is by design, and a
+    // display takes none: a slider over a waveform is its marker.
+    let takes = |s: &&Shown| !matches!(s.kind, Kind::Label | Kind::Area | Kind::Waveform | Kind::Meter);
     let live: Vec<&Shown> = shown.iter().filter(takes).collect();
     for (n, a) in live.iter().enumerate() {
         for b in &live[n + 1..] {
@@ -114,7 +117,49 @@ fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwor
     }
 }
 
-/// `kontakto audit-ui [roots] [--shots DIR] [--json out.json]`.
+/// What the vectorized view of `u` draws wrong: words wider than their
+/// room, outside the view, over each other or under a control drawn over
+/// them.
+fn vectorized(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwork::Picture>>, found: &mut Found) {
+    use super::vector::plan;
+    let drawn: Vec<_> = shown.iter().map(|s| (s.clone(), perf_view::frame_of(s, &u.controls[s.control]))).collect();
+    let plans = plan(u, pictures, &drawn);
+    let (vw, vh) = (f64::from(u.width), f64::from(u.height));
+    // Each word's ink, absolute: (owner, x, y, w, h).
+    let mut inks = Vec::new();
+    for (n, (s, p)) in shown.iter().zip(&plans).enumerate() {
+        let kind = kind_name(s.kind);
+        for w in &p.words {
+            let (x, wide) = w.ink();
+            if super::cover::advance(&w.text, w.size) > w.w + 0.5 || w.size < FONT * super::vector::SMALLEST - 1e-9 {
+                found.add(format!("vectorized text overflow: {kind}"));
+            }
+            let (x, y) = (s.x + x, s.y + w.y + (w.h - w.size * 1.2).max(0.) / 2.);
+            let tall = w.size * 1.2;
+            if x < 0. || y < 0. || x + wide > vw + 0.5 || y + tall > vh + 0.5 {
+                found.add(format!("vectorized text outside the view: {kind}"));
+            }
+            inks.push((n, x, y, wide, tall));
+        }
+    }
+    let meets = |(ax, ay, aw, ah): (f64, f64, f64, f64), (bx, by, bw, bh): (f64, f64, f64, f64)| {
+        (ax + aw).min(bx + bw) - ax.max(bx) > 0.5 && (ay + ah).min(by + bh) - ay.max(by) > 0.5
+    };
+    for (k, a) in inks.iter().enumerate() {
+        if inks[k + 1..].iter().any(|b| b.0 != a.0 && meets((a.1, a.2, a.3, a.4), (b.1, b.2, b.3, b.4))) {
+            found.add("vectorized text over other text");
+        }
+        // A control drawn later with a face of its own covers it.
+        let covered = (shown.iter().zip(&plans).skip(a.0 + 1))
+            .filter_map(|(o, p)| super::vector::hides(o, &u.controls[o.control], p.face))
+            .any(|o| meets((a.1, a.2, a.3, a.4), (o.x, o.y, o.w, o.h)));
+        if covered {
+            found.add("vectorized text under a control");
+        }
+    }
+}
+
+/// `kontakto audit-ui [roots or presets] [--shots DIR] [--json out.json]`.
 pub fn run(args: &[String]) -> anyhow::Result<()> {
     let opt = |flag: &str| args.iter().position(|a| a == flag);
     let (shots_at, json_at) = (opt("--shots"), opt("--json"));
@@ -194,7 +239,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 if let (Some(dir), Some(part)) = (&shots, shown) {
                     trace.stage("render");
                     let stem = format!("{}-{program}", i.name.replace(['/', '\\'], "_"));
-                    for (code, mode) in [(1, "original"), (3, "vectorized")] {
+                    for (code, mode) in [(1, "original"), (2, "kontra"), (3, "vectorized")] {
                         if let Err(e) = shot(&part, code, &dir.join(format!("{stem}-{mode}.png"))) {
                             eprintln!("{name}: shot: {e:#}");
                             rendered = false;
@@ -280,7 +325,8 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
         found.add("wallpaper narrower or wider than the view");
     }
     let shown = perf_view::layout(&u, &pictures);
-    inspect(&u, &shown, &pictures, found);
+    inspect(i, &u, &shown, &pictures, found);
+    vectorized(&u, &shown, &pictures, found);
     Some(PartView {
         pictures,
         wallpaper,

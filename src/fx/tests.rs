@@ -90,7 +90,7 @@ fn send_levels_feed_parallel_send_slots() {
     let mut levels = effect(
         Kind::SendLevels,
         Params::SendLevels(params::SendLevels {
-            sends: vec![0.0, 0.5],
+            sends: vec![0.0, 0.5, 1.0],
             outputs: Vec::new(),
         }),
     );
@@ -99,12 +99,16 @@ fn send_levels_feed_parallel_send_slots() {
     unfed.slot = 0;
     let mut fed = gainer(3.0);
     fed.slot = 1;
+    // Fed but bypassed: returns nothing.
+    let mut off = gainer(1.0);
+    off.slot = 2;
+    off.bypass = true;
     let mut fx = ProgramFx {
         insert: Chain {
             slots: vec![levels],
         },
         send: Chain {
-            slots: vec![unfed, fed],
+            slots: vec![unfed, fed, off],
         },
         main: Chain {
             slots: vec![gainer(0.5)],

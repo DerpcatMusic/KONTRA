@@ -379,6 +379,7 @@ pub mod id {
     pub const MOD_TARGET_MP_INTENSITY: i32 = B + 17;
     pub const EFFECT_BYPASS: i32 = B + 22;
     pub const EFFECT_TYPE: i32 = B + 23;
+    pub const EFFECT_SUBTYPE: i32 = B + 24;
     pub const SEND_EFFECT_TYPE: i32 = B + 25;
     pub const SEND_EFFECT_BYPASS: i32 = B + 26;
     pub const SEND_EFFECT_DRY_LEVEL: i32 = B + 27;
@@ -546,6 +547,7 @@ impl Address {
             id::GAIN1..=id::GAIN3 => slot(Knob::Gain((par.id - id::GAIN1) as u8))?,
             id::STEREO => slot(Knob::Spread)?,
             id::STEREO_PAN => slot(Knob::Pan)?,
+            id::EFFECT_SUBTYPE => slot(Knob::Type)?,
             id::EFFECT_BYPASS => insert(Knob::Bypass, FxParam::Bypass)?,
             id::INSERT_EFFECT_OUTPUT_GAIN => insert(Knob::Output, FxParam::Wet)?,
             id::SEND_EFFECT_BYPASS => fx(FxParam::Bypass)?,
@@ -575,7 +577,16 @@ impl Address {
             id::SENDLEVEL_0..=id::SENDLEVEL_7 => {
                 fx(FxParam::SendLevel((par.id - id::SENDLEVEL_0) as u8))?
             }
-            _ => return None,
+            _ => match crate::ksp::engine_par_name(par.id)? {
+                // The formant filter's knobs: talk, sharp, size.
+                "$ENGINE_PAR_FORMANT_TALK" => slot(Knob::Cutoff)?,
+                "$ENGINE_PAR_FORMANT_SHARP" => slot(Knob::Resonance)?,
+                "$ENGINE_PAR_FORMANT_SIZE" => slot(Knob::Size)?,
+                name => {
+                    let (kind, n) = crate::fx::blocks::engine_par(name)?;
+                    insert(Knob::Field(kind, n), FxParam::Field(kind, n))?
+                }
+            },
         })
     }
 
@@ -622,7 +633,7 @@ impl Address {
             Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => value as f32,
             // `$NI_REVERB2_TYPE_ROOM` (0) or `_HALL` (1).
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => f32::from(value != 0),
-            Self::Fx(_, _, FxParam::Reverb(_)) => x,
+            Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Field(..)) => x,
             Self::Group(_, p) | Self::Instrument(p) => match p {
                 GroupPar::Volume => volume(x),
                 GroupPar::Pan => 2.0 * x - 1.0,
@@ -637,6 +648,7 @@ impl Address {
             },
             Self::Intensity { bipolar: true, .. } => 2.0 * x - 1.0,
             Self::Filter(_, _, Knob::Bypass) => f32::from(value != 0),
+            Self::Filter(_, _, Knob::Type) => value as f32,
             Self::Filter(_, _, Knob::Output) => effect_gain(x),
             // Afflatus sets 434210 where it stores spread -0.1316, Solo 500000 for 0.
             Self::Filter(_, _, Knob::Spread | Knob::Pan) => 2.0 * x - 1.0,
@@ -664,7 +676,8 @@ impl Address {
             Self::Fx(_, _, FxParam::Output) => return if v >= 0.0 { v as i32 } else { -1 },
             Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => return v as i32,
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => return i32::from(v >= 0.5),
-            Self::Fx(_, _, FxParam::Reverb(_)) => v,
+            Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Field(..)) => v,
+            Self::Filter(_, _, Knob::Type) => return v as i32,
             Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) => {
                 return i32::from(v != 0.0);
             }
@@ -981,6 +994,7 @@ mod tests {
             (id::MOD_TARGET_MP_INTENSITY, "MOD_TARGET_MP_INTENSITY"),
             (id::EFFECT_BYPASS, "EFFECT_BYPASS"),
             (id::EFFECT_TYPE, "EFFECT_TYPE"),
+            (id::EFFECT_SUBTYPE, "EFFECT_SUBTYPE"),
             (id::SEND_EFFECT_TYPE, "SEND_EFFECT_TYPE"),
             (id::RV2_PREDELAY, "RV2_PREDELAY"),
             (id::RV2_TIME, "RV2_TIME"),
@@ -1089,6 +1103,7 @@ mod tests {
                     volume_env: true,
                     flex: false,
                     envelope: None,
+                    kind: String::new(),
                 },
                 Modulator {
                     name: "VEL_VOLUME".into(),
@@ -1097,6 +1112,7 @@ mod tests {
                     volume_env: false,
                     flex: false,
                     envelope: None,
+                    kind: String::new(),
                 },
                 Modulator {
                     name: "CC_VOLUME".into(),
@@ -1105,6 +1121,7 @@ mod tests {
                     volume_env: false,
                     flex: false,
                     envelope: None,
+                    kind: String::new(),
                 },
             ],
             ..Group::default()
@@ -1129,6 +1146,10 @@ mod tests {
         let ty = |slot| Address::resolve(par(id::EFFECT_TYPE, 0, slot, -1), &groups);
         assert_eq!((ty(2), ty(8)), (Some(Address::GroupType(0, 2)), None));
         assert_eq!((group_type(&groups, 0, 2), group_type(&groups, 0, 1)), (Some(31.0), Some(0.0)));
+        // A filter's type is its subtype; it decodes as the raw type id.
+        let sub = Address::resolve(par(id::EFFECT_SUBTYPE, 0, 1, -1), &groups);
+        assert_eq!(sub, Some(Address::Filter(0, 1, Knob::Type)));
+        assert_eq!((Address::Filter(0, 1, Knob::Type).decode(106), Address::Filter(0, 1, Knob::Type).encode(106.0)), (106.0, 106));
         // Reverb: the stored EQ values are the cut amounts; freeze is a switch.
         let rv = |id| Address::resolve(par(id, -1, 0, 0), &[]).map(|a| match a {
             Address::Fx(_, _, FxParam::Reverb(n)) => n,
@@ -1233,7 +1254,7 @@ mod tests {
         // missing slot: Kontakt ignores those; an external modulator's are
         // left unmapped.
         let mut flex = group();
-        flex.modulators.insert(1, Modulator { name: "ENV_FLEX".into(), targets: Vec::new(), assignments: None, volume_env: false, flex: true, envelope: None });
+        flex.modulators.insert(1, Modulator { name: "ENV_FLEX".into(), targets: Vec::new(), assignments: None, volume_env: false, flex: true, envelope: None, kind: "flex".into() });
         let flex = [flex];
         assert!(Address::inert(par(id::ATTACK, 1, -1), &flex));
         assert!(Address::inert(par(id::RELEASE, 9, -1), &flex));

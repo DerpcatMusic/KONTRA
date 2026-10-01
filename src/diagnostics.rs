@@ -242,7 +242,7 @@ pub fn widget_limit(kind: &str) -> Option<&'static str> {
         }
         "ui_mouse_area" => Some("mouse-area callbacks are unavailable"),
         "ui_waveform" => {
-            Some("waveform frame is supported; sample waveform and editing are unavailable")
+            Some("waveform peaks and play cursor are supported; slice/table editing is unavailable")
         }
         "ui_xy" | "ui_wavetable" | "ui_file_selector" => {
             Some("this widget's drawing and interaction are unavailable")

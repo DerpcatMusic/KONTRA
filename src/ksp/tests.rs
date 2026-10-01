@@ -1418,3 +1418,13 @@ end on";
     assert!(hot.1.iter().any(|d| d.contains("out of bounds")), "{:?}", hot.1);
     assert_eq!(hot, reference);
 }
+
+#[test]
+fn a_waveform_keeps_its_zone_flags_and_cursor() {
+    let ui = initialize("on init\ndeclare ui_waveform $w(6,6)\ndeclare ui_label $l(1,1)\nattach_zone($w, 3, $UI_WAVEFORM_USE_SLICES .or. $UI_WAVEFORM_USE_MIDI_DRAG)\nset_ui_wf_property($w, $UI_WF_PROP_PLAY_CURSOR, 0, 250000)\nset_text($l, get_ui_wf_property($w, $UI_WF_PROP_FLAGS, 0) & \" \" & get_ui_wf_property($w, $UI_WF_PROP_PLAY_CURSOR, 0))\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "9 250000");
+    assert_eq!(ui.controls[0].properties.get("attached zone"), Some(&Value::Int(3)));
+    assert_eq!(ui.controls[0].properties.get("$UI_WF_PROP_PLAY_CURSOR"), Some(&Value::Int(250_000)));
+    assert_eq!(super::builtins::symbol("$UI_WF_PROP_FLAGS"), Some(super::builtins::UI_WF_PROP_FLAGS));
+    assert_eq!(super::builtins::symbol("attached zone"), Some(super::builtins::ATTACHED_ZONE));
+}
