@@ -99,6 +99,7 @@ pub struct Event {
     pub velocity: i32,
     pub channel: u8,
     pub owner: Option<(u8, u8)>,
+    pub input_channel: Option<u8>,
     pub frozen_expression: Option<crate::engine::Expression>,
     pub pars: [i32; 16],
     pub volume: i32,
@@ -144,6 +145,7 @@ impl Event {
         velocity: 0,
         channel: 0,
         owner: None,
+        input_channel: None,
         frozen_expression: None,
         pars: [0; 16],
         volume: 0,
@@ -183,6 +185,7 @@ impl Event {
             event: id,
             channel: self.channel,
             owner: self.owner,
+            input_channel: self.input_channel,
             frozen_expression: self.frozen_expression,
             note: self.note.clamp(0, 127) as u8,
             velocity: self.velocity.clamp(1, 127) as u8,
@@ -303,18 +306,21 @@ pub enum Work {
     },
     Controller {
         channel: u8,
+        input_channel: Option<u8>,
         cc: u8,
         value: i32,
         slot: u8,
     },
     PolyAt {
         channel: u8,
+        input_channel: Option<u8>,
         note: u8,
         value: i32,
         slot: u8,
     },
     Rpn {
         channel: u8,
+        input_channel: Option<u8>,
         nrpn: bool,
         address: i32,
         value: i32,
@@ -347,6 +353,7 @@ struct FaultRecord {
 /// Live MIDI state shared by all slots.
 pub struct Input {
     pub channel: u8,
+    pub input_channel: Option<u8>,
     pub cc: [i32; CC_SLOTS],
     pub pitch_bend: i32,
     /// First/last MIDI event per input key; links live in the prepared event pool.
@@ -402,6 +409,7 @@ impl Env {
             events: Events::new(),
             input: Input {
                 channel: 0,
+                input_channel: Some(0),
                 cc: [0; CC_SLOTS],
                 pitch_bend: 0,
                 keys: [[(0, 0); 128]; 16],
@@ -543,6 +551,7 @@ impl Env {
         slot: u8,
         parent: i32,
         channel: u8,
+        input_channel: Option<u8>,
         note: i32,
         velocity: i32,
         offset_us: i32,
@@ -555,11 +564,12 @@ impl Env {
         let parent_state = self
             .events
             .get(parent)
-            .map(|p| (p.groups, p.released & (1 << slot) != 0, p.frozen_expression, p.owner));
+            .map(|p| (p.groups, p.released & (1 << slot) != 0, p.frozen_expression, p.owner, p.input_channel));
         let e = self.events.get_mut(id).expect("fresh event");
         e.note = note;
         e.velocity = velocity;
         e.channel = channel;
+        e.input_channel = input_channel;
         e.sample_offset_us = i64::from(offset_us);
         e.source = i32::from(slot);
         e.origin = slot + 1;
@@ -571,7 +581,8 @@ impl Env {
             NoteLength::UntilNoteOff
         };
         e.follows_parent = duration_us < 0 && parent_state.is_some();
-        if let Some((groups, _, expression, owner)) = parent_state {
+        if let Some((groups, _, expression, owner, input_channel)) = parent_state {
+            e.input_channel = input_channel;
             e.groups = groups;
             e.frozen_expression = expression;
             // Following notes keep the input key even when a script transposes
@@ -583,7 +594,7 @@ impl Env {
             slot: slot + 1,
         });
         match parent_state {
-            Some((_, true, _, _)) if duration_us < 0 => self.queue(Work::Release {
+            Some((_, true, _, _, _)) if duration_us < 0 => self.queue(Work::Release {
                 event: id,
                 slot: slot + 1,
             }),
@@ -1260,6 +1271,11 @@ impl Runtime {
     /// Set by the MIDI ingress; queued work and suspended callbacks retain it.
     pub fn set_midi_channel(&mut self, channel: u8) {
         self.env.input.channel = channel.min(15);
+        self.env.input.input_channel = Some(channel.min(15));
+    }
+
+    pub(crate) fn set_input_channel(&mut self, input_channel: u8) {
+        self.env.input.input_channel = Some(input_channel.min(15));
     }
 
     pub fn note_on(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8, velocity: u8) {
@@ -1283,6 +1299,7 @@ impl Runtime {
         e.velocity = i32::from(velocity);
         e.channel = self.env.input.channel;
         e.owner = Some((owner.min(15), note));
+        e.input_channel = Some(owner.min(15));
         e.held = true;
         let keys = &mut self.env.input.keys[owner.min(15) as usize][note as usize];
         if keys.1 == 0 {
@@ -1337,8 +1354,17 @@ impl Runtime {
     /// Cancel existing note/input callbacks without invoking release callbacks.
     /// UI, listener and service callbacks retain their prepared state and timers.
     pub fn all_sound_off(&mut self, channel_mask: u16) {
+        self.cancel_sound(channel_mask, None);
+    }
+
+    pub(crate) fn all_sound_off_from(&mut self, channel: u8, input_mask: u16) {
+        self.cancel_sound(1 << channel.min(15), Some(input_mask));
+    }
+
+    fn cancel_sound(&mut self, channel_mask: u16, input_mask: Option<u16>) {
         if channel_mask == 0 { return; }
-        let selected = |channel: u8| channel_mask & (1 << channel.min(15)) != 0;
+        let selected = |channel: u8, input_channel: Option<u8>| channel_mask & (1 << channel.min(15)) != 0
+            && input_mask.is_none_or(|mask| input_channel.is_some_and(|c| mask & (1 << c.min(15)) != 0));
         // A physical input chain can contain events routed to different channels.
         // Detach selected roots before their rows are recycled.
         for owner in 0..16 {
@@ -1346,7 +1372,7 @@ impl Runtime {
                 let mut id = self.env.input.keys[owner][note].0;
                 let (mut first, mut last) = (0, 0);
                 while let Some(e) = self.env.events.get(id) {
-                    let (next, remove) = (e.next_input, selected(e.channel));
+                    let (next, remove) = (e.next_input, selected(e.channel, e.input_channel));
                     if !remove {
                         if first == 0 { first = id; }
                         if let Some(e) = self.env.events.get_mut(last) { e.next_input = id; }
@@ -1361,11 +1387,11 @@ impl Runtime {
         let events = &self.env.events;
         self.env.work.retain(|w| match *w {
             Work::Note { event, .. } | Work::Release { event, .. } =>
-                events.get(event).is_some_and(|e| !selected(e.channel)),
-            Work::Controller { channel, .. } | Work::PolyAt { channel, .. }
-                | Work::Rpn { channel, .. } => !selected(channel),
+                events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel)),
+            Work::Controller { channel, input_channel, .. } | Work::PolyAt { channel, input_channel, .. }
+                | Work::Rpn { channel, input_channel, .. } => !selected(channel, input_channel),
         });
-        for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected(e.channel)) {
+        for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected(e.channel, e.input_channel)) {
             e.held = false;
             e.next_input = 0;
             e.voice = None;
@@ -1374,13 +1400,13 @@ impl Runtime {
         for i in 0..self.threads.len() {
             let t = &self.threads[i];
             let input = matches!(t.ctx.kind, Kind::Cb(Callback::Controller | Callback::PolyAt | Callback::Rpn | Callback::Nrpn));
-            if !t.live || !(self.env.events.get(t.ctx.event).is_some_and(|e| selected(e.channel))
-                || input && selected(t.ctx.channel)) { continue; }
+            if !t.live || !(self.env.events.get(t.ctx.event).is_some_and(|e| selected(e.channel, e.input_channel))
+                || input && selected(t.ctx.channel, t.ctx.input_channel)) { continue; }
             let ctx = t.ctx;
             if matches!(ctx.kind, Kind::Cb(Callback::Controller)) {
                 // A budget-paused controller may not have forwarded yet. Keep
                 // the touched flag if an unrelated callback still owns it.
-                let touched = channel_mask != u16::MAX && self.threads.iter().any(|t| t.live && !selected(t.ctx.channel)
+                let touched = (input_mask.is_some() || channel_mask != u16::MAX) && self.threads.iter().any(|t| t.live && !selected(t.ctx.channel, t.ctx.input_channel)
                     && t.ctx.slot == ctx.slot && t.ctx.cc == ctx.cc
                     && t.ctx.forward == Forward::Controller);
                 self.write_sys(ctx.slot, SysArray::CcTouched, ctx.cc as usize, i32::from(touched));
@@ -1390,7 +1416,7 @@ impl Runtime {
         }
         for i in 0..self.env.events.slots.len() {
             let e = &self.env.events.slots[i];
-            if e.live && selected(e.channel) {
+            if e.live && selected(e.channel, e.input_channel) {
                 debug_assert_eq!(e.callbacks, 0);
                 let id = i32::from(e.generation) << EVENT_INDEX_BITS | i as i32;
                 self.env.events.free(id);
@@ -1458,7 +1484,7 @@ impl Runtime {
     fn cc(&mut self, engine: &mut dyn KspEngine, at: u32, cc: u8, value: i32) {
         self.advance(engine, at);
         self.env.input.cc[cc as usize] = value;
-        self.env.queue(Work::Controller { channel: self.env.input.channel, cc, value, slot: 0 });
+        self.env.queue(Work::Controller { channel: self.env.input.channel, input_channel: self.env.input.input_channel, cc, value, slot: 0 });
         self.settle(engine);
     }
 
@@ -1466,6 +1492,7 @@ impl Runtime {
         self.advance(engine, at);
         self.env.queue(Work::PolyAt {
             channel: self.env.input.channel,
+            input_channel: self.env.input.input_channel,
             note: note.min(127),
             value: i32::from(value),
             slot: 0,
@@ -1484,6 +1511,7 @@ impl Runtime {
         self.advance(engine, at);
         self.env.queue(Work::Rpn {
             channel: self.env.input.channel,
+            input_channel: self.env.input.input_channel,
             nrpn,
             address: i32::from(address),
             value: i32::from(value),
@@ -1766,6 +1794,7 @@ impl Runtime {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Note));
                         ctx.event = event;
                         ctx.channel = self.env.events.get(event).map_or(0, |e| e.channel);
+                        ctx.input_channel = self.env.events.get(event).and_then(|e| e.input_channel);
                         ctx.poly_row = Event::index(event) as u32;
                         ctx.forward = Forward::Note;
                         self.spawn_cb(engine, slot, Callback::Note, ctx);
@@ -1784,7 +1813,7 @@ impl Runtime {
                     e.frozen_expression = engine.release_expression(self.env.offset, e.voice, e.channel, e.note.clamp(0, 127) as u8);
                 }
                 if let Some((voice, expression)) = e.voice.zip(e.frozen_expression) {
-                    engine.freeze_expression(self.env.offset, voice, expression);
+                    engine.freeze_expression_from(self.env.offset, e.channel, e.input_channel, voice, expression);
                 }
                 if slot >= slots {
                     if let Some(v) = e.voice.take() {
@@ -1814,6 +1843,7 @@ impl Runtime {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Release));
                         ctx.event = event;
                         ctx.channel = self.env.events.get(event).map_or(0, |e| e.channel);
+                        ctx.input_channel = self.env.events.get(event).and_then(|e| e.input_channel);
                         ctx.poly_row = Event::index(event) as u32;
                         ctx.forward = Forward::Release;
                         self.spawn_cb(engine, slot, Callback::Release, ctx);
@@ -1824,14 +1854,15 @@ impl Runtime {
                     }),
                 }
             }
-            Work::Controller { channel, cc, value, slot } => {
+            Work::Controller { channel, input_channel, cc, value, slot } => {
                 if slot >= slots {
-                    return engine.controller_on_channel(self.env.offset, channel, cc, value);
+                    return engine.controller_from(self.env.offset, channel, input_channel, cc, value);
                 }
                 self.write_sys(slot, SysArray::Cc, cc as usize, value);
                 self.write_sys(slot, SysArray::CcTouched, cc as usize, 1);
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Controller));
                 ctx.channel = channel;
+                ctx.input_channel = input_channel;
                 ctx.cc = i32::from(cc);
                 ctx.value = value;
                 ctx.forward = Forward::Controller;
@@ -1839,25 +1870,28 @@ impl Runtime {
                     self.write_sys(slot, SysArray::CcTouched, cc as usize, 0);
                     self.env.queue(Work::Controller {
                         channel,
+                        input_channel,
                         cc,
                         value,
                         slot: slot + 1,
                     });
                 }
             }
-            Work::PolyAt { channel, note, value, slot } => {
+            Work::PolyAt { channel, input_channel, note, value, slot } => {
                 if slot >= slots {
                     return;
                 }
                 self.write_sys(slot, SysArray::PolyAt, note as usize, value);
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::PolyAt));
                 ctx.channel = channel;
+                ctx.input_channel = input_channel;
                 ctx.note = i32::from(note);
                 ctx.value = value;
                 ctx.forward = Forward::PolyAt;
                 if !self.spawn_cb(engine, slot, Callback::PolyAt, ctx) {
                     self.env.queue(Work::PolyAt {
                         channel,
+                        input_channel,
                         note,
                         value,
                         slot: slot + 1,
@@ -1866,6 +1900,7 @@ impl Runtime {
             }
             Work::Rpn {
                 channel,
+                input_channel,
                 nrpn,
                 address,
                 value,
@@ -1877,12 +1912,14 @@ impl Runtime {
                 let cb = if nrpn { Callback::Nrpn } else { Callback::Rpn };
                 let mut ctx = Ctx::new(slot, Kind::Cb(cb));
                 ctx.channel = channel;
+                ctx.input_channel = input_channel;
                 ctx.cc = address;
                 ctx.value = value;
                 ctx.forward = Forward::Rpn { nrpn };
                 if !self.spawn_cb(engine, slot, cb, ctx) {
                     self.env.queue(Work::Rpn {
                         channel,
+                        input_channel,
                         nrpn,
                         address,
                         value,
@@ -1903,8 +1940,10 @@ impl Runtime {
         let voice = engine.play_note(at, &e.spec(event));
         e.voice = voice;
         if let (Some(v), true) = (voice, e.fade_in_us > 0) {
-            engine.fade(
+            engine.fade_from(
                 at,
+                e.channel,
+                e.input_channel,
                 v,
                 Fade::In {
                     duration_us: e.fade_in_us,
@@ -2107,6 +2146,7 @@ impl Runtime {
                 if !ctx.ignore_controller {
                     self.env.queue(Work::Controller {
                         channel: ctx.channel,
+                        input_channel: ctx.input_channel,
                         cc,
                         value: ctx.value,
                         slot: next,
@@ -2117,6 +2157,7 @@ impl Runtime {
                 if !ctx.ignore_controller {
                     self.env.queue(Work::PolyAt {
                         channel: ctx.channel,
+                        input_channel: ctx.input_channel,
                         note: ctx.note as u8,
                         value: ctx.value,
                         slot: next,
@@ -2127,6 +2168,7 @@ impl Runtime {
                 if !ctx.ignore_controller {
                     self.env.queue(Work::Rpn {
                         channel: ctx.channel,
+                        input_channel: ctx.input_channel,
                         nrpn,
                         address: ctx.cc,
                         value: ctx.value,

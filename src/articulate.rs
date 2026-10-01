@@ -410,6 +410,11 @@ pub enum Out {
     NoteOnFrom(u8, u8, u8, u8),
     NoteOffFrom(u8, u8, u8),
     Cc(u8, u8, u8),
+    CcFrom(u8, u8, u8, u8),
+    SoundOffFrom(u8, u16),
+    BendFrom(u8, u8, u16),
+    PressureFrom(u8, u8, u8),
+    PolyAtFrom(u8, u8, u8, u8),
     Bend(u8, u16),
     Pressure(u8, u8),
     PolyAt(u8, u8, u8),
@@ -634,10 +639,21 @@ impl Router {
 
     /// Route one input to the part's engine: `home` is the part's channel,
     /// where channel mode plays everything.
-    pub fn input(&mut self, ev: In, home: u8, out: &mut impl FnMut(Out)) {
+    pub fn input(&mut self, ev: In, home: u8, output: &mut impl FnMut(Out)) {
         let r = self.route;
         let channel = ev.channel();
         let to = if r.by_channel() { home & 15 } else { channel };
+        let out = &mut |o| output(if r.by_channel() {
+            match o {
+                Out::NoteOn(c, n, v) => Out::NoteOnFrom(c, channel, n, v),
+                Out::NoteOff(c, n) => Out::NoteOffFrom(c, channel, n),
+                Out::Cc(c, cc, v) => Out::CcFrom(c, channel, cc, v),
+                Out::Bend(c, v) => Out::BendFrom(c, channel, v),
+                Out::Pressure(c, v) => Out::PressureFrom(c, channel, v),
+                Out::PolyAt(c, n, v) => Out::PolyAtFrom(c, channel, n, v),
+                o => o,
+            }
+        } else { o });
         match ev {
             In::NoteOn(_, note, velocity) => {
                 let key = r.keys[note as usize & 127];
@@ -729,9 +745,11 @@ impl Router {
                         }
                     }
                 }
-                // Selective Channel-mode CC120 requires engine event provenance;
-                // retain the existing engine-channel cut until that is available.
-                if cc == 120 || !r.by_channel() { out(Out::Cc(to, cc, value)); }
+                if cc == 120 && r.by_channel() {
+                    out(Out::SoundOffFrom(to, channels));
+                } else if !r.by_channel() {
+                    out(Out::Cc(to, cc, value));
+                }
             }
             In::Cc(_, cc, value) => {
                 if r.zone().is_some() && self.rpn_cc(channel, cc, value) {
@@ -823,6 +841,11 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
         Out::NoteOnFrom(c, owner, n, v) => e.note_on_from(c, owner, n, v),
         Out::NoteOffFrom(c, owner, n) => e.note_off_from(c, owner, n),
         Out::Cc(c, cc, v) => e.cc(c, cc, v),
+        Out::CcFrom(c, input, cc, v) => e.cc_from(c, input, cc, v),
+        Out::SoundOffFrom(c, mask) => e.all_sound_off_from(c, mask),
+        Out::BendFrom(c, input, v) => e.pitch_bend_from(c, input, v),
+        Out::PressureFrom(c, input, v) => e.channel_pressure_from(c, input, v),
+        Out::PolyAtFrom(c, input, n, v) => e.poly_pressure_from(c, input, n, v),
         Out::Bend(c, v) => e.pitch_bend(c, v),
         Out::Pressure(c, v) => e.channel_pressure(c, v),
         Out::PolyAt(c, n, v) => e.poly_pressure(c, n, v),
@@ -957,14 +980,14 @@ mod tests {
         assert_eq!(
             out,
             [
-                Out::NoteOn(0, 13, SWITCH_VELOCITY),
-                Out::NoteOff(0, 13),
+                Out::NoteOnFrom(0, 1, 13, SWITCH_VELOCITY),
+                Out::NoteOffFrom(0, 1, 13),
                 Out::NoteOnFrom(0, 1, 60, 90),
-                Out::NoteOn(0, 14, SWITCH_VELOCITY),
-                Out::NoteOff(0, 14),
+                Out::NoteOnFrom(0, 2, 14, SWITCH_VELOCITY),
+                Out::NoteOffFrom(0, 2, 14),
                 Out::NoteOnFrom(0, 2, 64, 80),
-                Out::NoteOn(0, 13, SWITCH_VELOCITY),
-                Out::NoteOff(0, 13),
+                Out::NoteOnFrom(0, 1, 13, SWITCH_VELOCITY),
+                Out::NoteOffFrom(0, 1, 13),
                 Out::NoteOnFrom(0, 1, 67, 70),
             ]
         );
@@ -974,7 +997,7 @@ mod tests {
         assert_eq!(run(&mut r, &[In::NoteOn(1, 62, 50)]), [Out::NoteOnFrom(0, 1, 62, 50)]);
         // Something else may have switched: switch again.
         r.forget();
-        assert_eq!(run(&mut r, &[In::NoteOn(1, 62, 50)])[0], Out::NoteOn(0, 13, SWITCH_VELOCITY));
+        assert_eq!(run(&mut r, &[In::NoteOn(1, 62, 50)])[0], Out::NoteOnFrom(0, 1, 13, SWITCH_VELOCITY));
     }
 
     /// A script that keeps one global articulation that keyswitches C-1,
@@ -1122,6 +1145,135 @@ mod tests {
             assert_eq!(voices(&e, 64, false).len(), 3, "stop={stop}: fresh input stopped working");
             assert!(e.script().unwrap().diagnostics().is_empty());
         }
+    }
+
+    #[test]
+    fn channel_sound_off_cancels_all_generated_lifetimes_on_only_its_physical_input() {
+        use crate::{audio::Sample, engine::Bank, import::{Group, Zone}, ksp::{LogEngine, Runtime}};
+        let script = r#"on init
+declare $art := 0
+declare %ids[2]
+declare ui_switch $go
+end on
+on note
+if ($EVENT_NOTE < 24)
+$art := $EVENT_NOTE - 12
+ignore_event($EVENT_ID)
+else
+disallow_group($ALL_GROUPS)
+allow_group($art)
+allow_group($art + 2)
+if ($EVENT_NOTE = 60)
+%ids[$art] := $EVENT_ID
+play_note(61,100,0,1000000)
+play_note(62,100,0,0)
+end if
+if ($EVENT_NOTE = 70)
+ignore_event($EVENT_ID)
+wait(40000)
+play_note(70,100,0,-1)
+end if
+end if
+end on
+on release
+if ($EVENT_NOTE = 64)
+play_note(67,100,0,0)
+end if
+if ($EVENT_NOTE = 66)
+wait(40000)
+play_note(68,100,0,0)
+end if
+end on
+on controller
+if ($CC_NUM = 20)
+set_rpn(1,100)
+wait(40000)
+play_note(72,100,0,0)
+end if
+if ($CC_NUM = $VCC_PITCH_BEND)
+wait(40000)
+play_note(76,100,0,0)
+end if
+if ($CC_NUM = $VCC_MONO_AT)
+wait(40000)
+play_note(75,100,0,0)
+end if
+end on
+on poly_at
+wait(40000)
+play_note(77,100,0,0)
+end on
+on ui_control($go)
+if ($go = 1)
+wait(40000)
+set_controller(7,63)
+play_note(74,100,0,0)
+else
+fade_in(%ids[0],2000)
+fade_in(%ids[1],2000)
+end if
+end on"#;
+        let groups: Vec<_> = (0..4).map(|g| Group { name: format!("group{g}"), release_trigger: g >= 2, ..Group::default() }).collect();
+        let path = std::path::PathBuf::from("tone");
+        let zones = (0..4).map(|group| Zone { group, sample: path.clone(), low_key: 48, high_key: 80, low_velocity: 1, high_velocity: 127, ..Zone::default() }).collect();
+        let bank = Bank::from_samples(groups, zones, vec![(path, Sample { rate: 48000, frames: vec![[0.5; 2]; 48000] })]).unwrap();
+        let (rt, errors) = Runtime::with_scripts(&[script, "on rpn\nwait(40000)\nplay_note(78,100,0,0)\nend on"], &mut LogEngine::new(Vec::new(), 48000.0), 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let mut e = Engine::default();
+        e.reset(48000.0);
+        e.set_bank(Some(Box::new(bank)));
+        e.set_script(Some(Box::new(rt)));
+        let mut a = Articulate::default();
+        a.sync("lib.nki", &[("first".into(), Some(12), None), ("second".into(), Some(13), None)]);
+        a.mode = Mode::Channel;
+        let mut r = router(&a, &Mpe::default());
+        e.cc(0, 64, 127);
+        for input in 0..2 {
+            for note in [60, 64, 66, 70] { feed(&mut r, &mut e, In::NoteOn(input, note, 100), 0); }
+            feed(&mut r, &mut e, In::Cc(input, 20, 100), 0);
+            feed(&mut r, &mut e, In::Bend(input, 10000), 0);
+            feed(&mut r, &mut e, In::Pressure(input, 100), 0);
+            feed(&mut r, &mut e, In::PolyAt(input, 60, 100), 0);
+        }
+        e.ui_control(0, 0, 1);
+        let advance = |e: &mut Engine, frames| { let (mut l, mut r) = (vec![0.; frames], vec![0.; frames]); e.render(&mut l, &mut r); };
+        advance(&mut e, 512);
+        for input in 0..2 {
+            for note in [64, 66] { feed(&mut r, &mut e, In::NoteOff(input, note), 0); }
+        }
+        advance(&mut e, 512); // Native note 64 releases are now pedal-deferred.
+        assert_eq!(voices(&e, 61, false), [0, 1], "timed children sound before abort");
+        assert!(e.voice_census().iter().any(|v| v.note == 62 && v.group == 2 && v.release_trigger));
+        // UI-created FadeIn commands still carry the target event's origin.
+        // Otherwise a queued ramp can overwrite the selected voice's cut fade.
+        e.ui_control(0, 0, 0);
+        feed(&mut r, &mut e, In::Cc(0, 120, 0), 0);
+        advance(&mut e, 4096); // Pass every canceled wait and the click-free fade.
+        for note in [60, 61, 62, 64, 66, 67, 68, 70] {
+            let groups: Vec<_> = e.voice_census().iter().filter(|v| v.note == note).map(|v| v.group).collect();
+            assert!(!groups.is_empty(), "unrelated input lost note {note}");
+            assert!(groups.iter().all(|g| *g == 1 || *g == 3), "selected input restarted note {note}: {groups:?}");
+        }
+        for note in [72, 75, 76, 77, 78] {
+            assert_eq!(e.voice_census().iter().filter(|v| v.note == note).count(), 4, "only unrelated performance callback may start {note}");
+        }
+        assert_eq!(e.voice_census().iter().filter(|v| v.note == 74).count(), 4, "UI callback has no physical origin");
+        assert_eq!(e.cc_state()[0][7], 63);
+        assert!(r.held[0].iter().all(|h| h.1 == NONE));
+        assert!(!e.script().unwrap().key_down_from(0, 0, 60));
+        assert!(e.script().unwrap().key_down_from(1, 0, 60));
+        e.cc(0, 64, 0);
+        advance(&mut e, 512);
+        let release_groups: Vec<_> = e.voice_census().iter().filter(|v| v.note == 64 && v.release_trigger).map(|v| v.group).collect();
+        assert_eq!(release_groups, [3], "pedal-up must not revive canceled native releases");
+        feed(&mut r, &mut e, In::NoteOn(0, 71, 100), 0);
+        advance(&mut e, 512);
+        assert_eq!(voices(&e, 71, false), [0], "fresh physical input remains usable");
+        assert!(e.script().unwrap().diagnostics().is_empty());
+        assert_eq!(e.dropped_commands(), 0);
+        e.cc(0, 120, 0);
+        advance(&mut e, 512);
+        assert!(e.voice_census().is_empty(), "engine-channel stop still cuts every origin, including UI");
     }
 
     #[test]
