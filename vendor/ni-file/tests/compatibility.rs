@@ -621,3 +621,39 @@ fn nis_and_raw_chunks_roundtrip_without_losing_opaque_metadata() {
         assert!(SubtreeItem::read(Cursor::new(bytes)).is_err());
     }
 }
+
+#[test]
+fn nested_nis_lengths_cannot_consume_bytes_outside_their_declared_body() {
+    use ni_file::nis::{ItemContainer, SubtreeItem};
+    fn header(length: u64) -> Vec<u8> {
+        let mut out = length.to_le_bytes().to_vec();
+        out.extend(1u32.to_le_bytes());out.extend(b"hsin");out.extend([0;24]);out
+    }
+    fn data_header(length: u64, id: u32) -> Vec<u8> {
+        let mut out = length.to_le_bytes().to_vec();
+        out.extend(b"DSIN");out.extend(id.to_le_bytes());out.extend(1u32.to_le_bytes());out
+    }
+    let empty_children = [1u32.to_le_bytes(), 0u32.to_le_bytes()].concat();
+    let mut invalid_layer = header(88);
+    invalid_layer.extend(data_header(40, 0x9876));
+    invalid_layer.extend(data_header(21, 1)); // its enclosing layer permits only the 20-byte header
+    invalid_layer.extend(&empty_children);
+    assert!(ItemContainer::read(Cursor::new(&invalid_layer)).is_err());
+    assert!(SubtreeItem { inner_data: invalid_layer }.item().is_err());
+
+    let mut child = header(72); // only 68 child bytes are actually inside the parent
+    child.extend(data_header(20, 1));child.extend(&empty_children);
+    let mut parent = header(148);
+    parent.extend(data_header(20, 1));parent.extend(1u32.to_le_bytes());parent.extend(1u32.to_le_bytes());
+    parent.extend([0;12]);parent.extend(child);
+    parent.extend([0xaa;4]); // bytes after the declared parent must not satisfy the child
+    assert!(ItemContainer::read(Cursor::new(&parent)).is_err());
+    assert!(SubtreeItem { inner_data: parent }.item().is_err());
+
+    let mut valid = header(68);valid.extend(data_header(20, 1));valid.extend(empty_children);
+    let mut cursor = Cursor::new(&valid);
+    ItemContainer::read(&mut cursor).unwrap();assert_eq!(cursor.position(), 68);
+    for length in 0..valid.len() {
+        assert!(SubtreeItem { inner_data: valid[..length].to_vec() }.item().is_err());
+    }
+}
