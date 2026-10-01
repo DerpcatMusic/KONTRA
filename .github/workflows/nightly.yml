@@ -42,6 +42,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Nightly version
+        shell: bash
+        run: |
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          python3 tools/version.py nightly --write
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
@@ -64,7 +70,19 @@ jobs:
         run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
       - name: CLAP and VST3 bundles
         shell: bash
-        run: cargo moose build --clap --vst3 ${FEATURES:+--features "$FEATURES"} --target ${{ matrix.target }}
+        run: |
+          cargo moose build --clap --vst3 ${FEATURES:+--features "$FEATURES"} --target ${{ matrix.target }}
+          python3 - <<'PYINFO'
+          import glob, json, os, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
+          matches = []
+          for path in glob.glob("target/${{ matrix.target }}/release/build/kontakto-*/out/kontra-build.json"):
+              info = json.loads(pathlib.Path(path).read_text())
+              if info["version"] == version and info["revision"] == os.environ["GITHUB_SHA"] and "standalone" not in info["features"]:
+                  matches.append(path)
+          assert len(matches) == 1, matches
+          pathlib.Path("plugin-build-info.json").write_bytes(pathlib.Path(matches[0]).read_bytes())
+          PYINFO
       - name: Standalone
         shell: bash
         run: cargo build --release --features "standalone${FEATURES:+,$FEATURES}" --bin kontakto-standalone --target ${{ matrix.target }}
@@ -77,6 +95,8 @@ jobs:
           exe=kontakto-standalone; [ "$RUNNER_OS" = Windows ] && exe=kontakto-standalone.exe
           cp "target/${{ matrix.target }}/release/$exe" "$stage/"
           cp LICENSE NOTICE THIRD_PARTY.md "$stage/"
+          cp plugin-build-info.json "$stage/"
+          "$stage/$exe" --build-info > "$stage/build-info.json"
           echo "STAGE=$stage" >> "$GITHUB_ENV"
       - name: Ad-hoc codesign (macOS)
         if: runner.os == 'macOS'
@@ -108,51 +128,27 @@ jobs:
       contents: write
       actions: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           pattern: KONTRA-nightly-*
           merge-multiple: true
+      - name: Nightly version
+        shell: bash
+        run: |
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          python3 tools/version.py nightly --write
       - name: Publish the nightly pre-release
         id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          # Download-artifact defaults to this run: never mix commits or reruns.
-          for platform in linux-x86_64 windows-x86_64 macos-arm64 macos-x86_64; do
-            test -s "dist/KONTRA-nightly-$platform.zip"
-          done
-          if [ "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" != "$GITHUB_SHA" ]; then
-            echo "Superseded by a newer main commit; keeping the current nightly."
-            exit 0
-          fi
-          short=${GITHUB_SHA::7}
-          cat > notes.md <<EOF
-          Automated build of [$short](https://github.com/$GH_REPO/commit/$GITHUB_SHA) ($(date -u +%Y-%m-%d)). Untested snapshot.
-
-          Contents per platform: KONTRA.clap, KONTRA.vst3 and kontakto-standalone.
-          macOS builds are signed ad hoc and not notarized: after unzipping, run
-          \`xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone\`.
-          x86_64 plug-ins require an x86-64-v3 CPU (AVX2, FMA and BMI2).
-          EOF
-          # Upload a complete replacement before touching the public release.
-          staging=nightly-staging
-          # A runner failure may leave a draft; keep staging history bounded.
-          leftover=$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | select(.tag_name == "nightly-staging") | .id')
-          if [ -n "$leftover" ]; then gh release delete "$staging" --yes; fi
-          trap 'gh release delete "$staging" --yes >/dev/null 2>&1 || true' EXIT
-          gh release create "$staging" dist/*.zip --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Nightly ${short}" --notes-file notes.md
-          if [ "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" != "$GITHUB_SHA" ]; then
-            gh release delete "$staging" --yes
-            exit 0
-          fi
-          previous=$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | select(.tag_name == "nightly") | .id')
-          if [ -n "$previous" ]; then gh release delete nightly --yes --cleanup-tag; fi
-          gh release edit "$staging" --tag nightly --draft=false --target "$GITHUB_SHA" --latest=false
-          trap - EXIT
-          echo "published=true" >> "$GITHUB_OUTPUT"
+        run: python3 .github/workflows/publish_nightly.py
       - name: Remove released Actions artifacts
         if: steps.publish.outputs.published == 'true'
         continue-on-error: true
