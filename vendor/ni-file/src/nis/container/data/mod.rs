@@ -5,7 +5,7 @@ pub use item_data_header::*;
 pub use item_type::*;
 
 use crate::{read_bytes::ReadBytesExt, Error};
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 
 #[derive(Clone, Debug)]
 pub struct ItemData {
@@ -15,6 +15,37 @@ pub struct ItemData {
 }
 
 impl ItemData {
+    pub fn encoded_len(&self) -> Result<u64, Error> {
+        if self.header.version != 1
+            || (self.header.item_type() == ItemType::Item) != self.inner.is_none()
+        {
+            return Err(Error::Static("Invalid NIS data layer"));
+        }
+        let inner_length = self
+            .inner
+            .as_ref()
+            .map_or(Ok(0), |inner| inner.encoded_len())?;
+        20u64
+            .checked_add(self.data.len() as u64)
+            .and_then(|n| n.checked_add(inner_length))
+            .ok_or(Error::Static("NIS data layer size overflow"))
+    }
+
+    /// Preserve layer identifiers and opaque properties; recompute all layer lengths.
+    pub fn write<W: Write + ?Sized>(&self, writer: &mut W) -> Result<(), Error> {
+        writer.write_all(&self.encoded_len()?.to_le_bytes())?;
+        let mut domain = self.header.domain_id;
+        domain.reverse();
+        writer.write_all(&domain)?;
+        writer.write_all(&self.header.item_id.to_le_bytes())?;
+        writer.write_all(&self.header.version.to_le_bytes())?;
+        if let Some(inner) = &self.inner {
+            inner.write(writer)?;
+        }
+        writer.write_all(&self.data)?;
+        Ok(())
+    }
+
     pub fn child(&self) -> Option<&ItemData> {
         self.inner.as_ref().map(Box::as_ref)
     }

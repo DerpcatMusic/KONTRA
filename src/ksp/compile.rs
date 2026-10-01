@@ -3,7 +3,7 @@
 
 use super::builtins::{self, Arg, Builtin, Ret, SysArray, SysVar};
 use super::lexer::{Interner, Sym, lex};
-use super::parser::{BinOp, Block, Declare, Expr, Stmt, StmtKind, UnOp, parse};
+use super::parser::{BinOp, Block, Declare, Expr, Stmt, StmtKind, UnOp, parse, preprocess};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -410,6 +410,8 @@ impl Callback {
 /// Immutable compiled script.
 #[derive(Debug, Default)]
 pub struct Program {
+    /// Final preprocessor symbols, including those inherited from earlier slots.
+    pub conditions: BTreeSet<String>,
     pub code: Vec<Op>,
     pub lines: Vec<u32>,
     pub reals: Vec<f64>,
@@ -515,12 +517,21 @@ fn spellings(syms: &Interner) -> HashMap<String, Vec<Sym>> {
 }
 
 pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
-    let tokens = lex(source)?;
+    compile_with_conditions(source, setup, &BTreeSet::new())
+}
+
+pub fn compile_with_conditions(
+    source: &str,
+    setup: &Setup,
+    inherited: &BTreeSet<String>,
+) -> Result<Program> {
+    let mut tokens = lex(source)?;
+    let conditions = preprocess(&mut tokens, inherited)?;
     let blocks = parse(&tokens)?;
     let mut c = Compiler {
         syms: &tokens.syms,
         setup,
-        p: Program::default(),
+        p: Program { conditions, ..Program::default() },
         var_ids: HashMap::new(),
         string_ids: HashMap::new(),
         auto_ids: HashMap::new(),
@@ -1576,6 +1587,10 @@ impl<'a> Compiler<'a> {
             (min..=max).contains(&args.len()),
             "{fname} expects {min}..{max} arguments, got {}",
             args.len()
+        );
+        ensure!(
+            !matches!(b, Builtin::Search | Builtin::Sort) || args.len() != 3,
+            "{fname} requires both range endpoints"
         );
         let mut num = None;
         for (e, kind) in args.iter().zip(sig.args) {

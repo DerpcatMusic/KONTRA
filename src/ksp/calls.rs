@@ -89,7 +89,7 @@ fn set_voice_par(m: &mut Machine, id: i32, which: VoicePar, value: i32, relative
         }
         let v = *field;
         if let Some(voice) = e.voice {
-            m.engine.set_par(m.env.offset, voice, which, v);
+            m.engine.set_par_from(m.env.offset, e.channel, e.input_channel, voice, which, v);
         }
     }
 }
@@ -355,10 +355,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             push_int(m, m.prog.vars[v as usize].len.unwrap_or(1) as i32)
         }
         Search => {
+            let bounds = if argc == 4 { Some(ints::<2>(m)) } else { None };
             let v = m.stk.var();
             let var = &m.prog.vars[v as usize];
-            charge(m, fuel, u64::from(var.len.unwrap_or(1)))?;
-            let range = var.slot as usize..(var.slot + var.len.unwrap_or(1)) as usize;
+            let len = var.len.unwrap_or(1) as i32;
+            let [lo, hi] = bounds.unwrap_or([0, len.saturating_sub(1)]);
+            let lo = lo.clamp(0, len);
+            let end = hi.saturating_add(1).clamp(lo, len);
+            let range = (var.slot + lo as u32) as usize..(var.slot + end as u32) as usize;
+            charge(m, fuel, range.len() as u64)?;
             let found = match var.ty {
                 Ty::Int => {
                     let x = m.stk.int();
@@ -370,7 +375,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 }
                 Ty::Str => None,
             };
-            push_int(m, found.map_or(-1, |i| i as i32))
+            push_int(m, found.map_or(-1, |i| lo + i as i32))
         }
         Sort => {
             let (lo, hi) = if argc == 4 {
@@ -384,7 +389,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let var = &m.prog.vars[v as usize];
             let len = var.len.unwrap_or(1) as i32;
             let lo = lo.unwrap_or(0).clamp(0, len);
-            let hi = hi.map_or(len, |h| (h + 1).clamp(lo, len));
+            let hi = hi.map_or(len, |h| h.saturating_add(1).clamp(lo, len));
             let range = (var.slot as i32 + lo) as usize..(var.slot as i32 + hi) as usize;
             let n = range.len() as u64;
             charge(m, fuel, n)?;
@@ -502,7 +507,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             };
             let id = m
                 .env
-                .play_note(slot, parent, m.t.ctx.channel, note, velocity.clamp(1, 127), offset, duration);
+                .play_note(slot, parent, m.t.ctx.channel, m.t.ctx.input_channel, note, velocity.clamp(1, 127), offset, duration);
             push_int(m, id)
         }
         NoteOff => {
@@ -576,11 +581,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 };
                 match (f, e.voice) {
                     (FadeIn, Some(v)) => {
-                        m.engine.fade(m.env.offset, v, Fade::In { duration_us: us })
+                        m.engine.fade_from(m.env.offset, e.channel, e.input_channel, v, Fade::In { duration_us: us })
                     }
                     (FadeIn, None) => e.fade_in_us = us,
-                    (_, Some(v)) => m.engine.fade(
+                    (_, Some(v)) => m.engine.fade_from(
                         m.env.offset,
+                        e.channel,
+                        e.input_channel,
                         v,
                         Fade::Out {
                             duration_us: us,
@@ -749,6 +756,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             {
                 Some(cc) => m.env.queue(super::runtime::Work::Controller {
                     channel: m.t.ctx.channel,
+                    input_channel: m.t.ctx.input_channel,
                     cc,
                     value,
                     slot: slot + 1,
@@ -764,13 +772,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return Err(Fault("RPN address or value out of range"));
             }
             m.env.queue(super::runtime::Work::Rpn {
-                channel: m.t.ctx.channel, nrpn: f == SetNrpn, address, value, slot: slot + 1,
+                channel: m.t.ctx.channel, input_channel: m.t.ctx.input_channel, nrpn: f == SetNrpn, address, value, slot: slot + 1,
             });
             Ok(Step::Next)
         }
         ResetRlsTrigCounter => {
             if let Ok(note) = u8::try_from(m.stk.int()).map(|n| n.min(127)) {
-                m.engine.reset_release_counter_on_channel(m.env.offset, m.t.ctx.channel, note);
+                m.engine.reset_release_counter_from(m.env.offset, m.t.ctx.channel, m.t.ctx.input_channel, note);
             }
             Ok(Step::Next)
         }
