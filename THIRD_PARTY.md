@@ -1,23 +1,25 @@
 # Third-party components
 
-KONTRA is Apache-2.0 (see `LICENSE` and `NOTICE`). It builds on the
-components below. Crate licenses were listed with
-`cargo deny --all-features list` (cargo-deny 0.20.2) against `Cargo.lock`.
+Project-authored code is offered under Apache-2.0 (see LICENSE and NOTICE).
+Vendored and other third-party components retain their own terms. The
+crate inventory was produced with cargo-deny --all-features list
+(cargo-deny 0.20.2) against Cargo.lock.
 
-## Unresolved: `vendor/ni-file`
+## Unresolved: vendor/ni-file
 
-> **No license.** `vendor/ni-file` has no license file and no `license`
-> field. It was vendored from [Ma5onic/ni-file](https://github.com/Ma5onic/ni-file)
-> (revision `1b7a518243125857fddec8217167b47a35cb58fa`), a fork of
-> `monomadic/ni-file`, which also has no license. The original repository
-> is blocked on GitHub after a DMCA takedown notice from Native
-> Instruments: [github/dmca 2024-04-04-native-instruments](https://github.com/github/dmca/blob/master/2024/04/2024-04-04-native-instruments.md).
-> Without a license grant, the upstream code is all rights reserved by
-> its author(s), and the takedown shows that Native Instruments objects to
-> it. **Resolve this before any public release:** get a written license
-> from the author(s), or replace the crate with a clean-room parser.
-> Local changes to it (modulation, archive and resource decoding) are
-> ours.
+> **No explicit redistribution license found.** This vendored crate comes
+> from [Ma5onic/ni-file](https://github.com/Ma5onic/ni-file), pinned at
+> [commit 1b7a518243125857fddec8217167b47a35cb58fa](https://github.com/Ma5onic/ni-file/commit/1b7a518243125857fddec8217167b47a35cb58fa),
+> a fork of monomadic/ni-file. The pinned [source tree](https://github.com/Ma5onic/ni-file/tree/1b7a518243125857fddec8217167b47a35cb58fa)
+> contains no LICENSE, COPYING, or NOTICE file, and its
+> [Cargo.toml](https://github.com/Ma5onic/ni-file/blob/1b7a518243125857fddec8217167b47a35cb58fa/Cargo.toml)
+> has no license field. GitHub reports that the original repository is
+> blocked following a DMCA takedown: [GitHub's record](https://github.com/github/dmca/blob/master/2024/04/2024-04-04-native-instruments.md).
+> No written redistribution grant appears in those checked sources.
+> Resolve this before publishing the code: obtain a written grant from
+> the relevant author(s), or replace the crate with a clean-room parser.
+> Local patches add modulation, archive, and resource decoding; they do
+> not resolve the upstream licensing question.
 
 ## Format references (not vendored)
 
@@ -31,8 +33,10 @@ same as nkxtract's.
 The keystream in `src/access.rs` (the `library-access` feature) uses the
 same algorithm and constants as nkxtract's `Nks.cs`.
 <!-- private:end -->
-Before a public release, get legal advice on whether these parts are
-derivative works of the GPL-3.0 references.
+These documented overlaps do not by themselves conclude that the
+implementation is a derivative work. A broader line-by-line source
+comparison has not been recorded; resolve that question with a source
+review and legal advice before redistributing the affected code.
 
 ## Vendored and patched
 
