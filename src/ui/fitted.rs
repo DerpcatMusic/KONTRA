@@ -18,18 +18,20 @@ type Made = HashMap<Key, (Arc<Image>, Option<Arc<Image>>)>;
 
 static MADE: LazyLock<Mutex<Made>> = LazyLock::new(Mutex::default);
 static READY: AtomicBool = AtomicBool::new(false);
-static GENERATION: AtomicU64 = AtomicU64::new(0);
-// ponytail: forgets everything when full; an LRU if window resizes thrash it.
-const MAX: usize = 4096;
+/// Per owner (a rack slot), bumped with each picture made for it.
+static GENERATION: [AtomicU64; 64] = [const { AtomicU64::new(0) }; 64];
+// ponytail: forgets everything when full (a rack of big views makes a few
+// thousand); an LRU if window resizes ever thrash it.
+const MAX: usize = 1 << 16;
 
-static WORKER: LazyLock<Mutex<Sender<(Key, Arc<Image>)>>> = LazyLock::new(|| {
-    let (tx, rx) = channel::<(Key, Arc<Image>)>();
+static WORKER: LazyLock<Mutex<Sender<(Key, Arc<Image>, usize)>>> = LazyLock::new(|| {
+    let (tx, rx) = channel::<(Key, Arc<Image>, usize)>();
     let _ = std::thread::Builder::new().name("kontakto-fitted".into()).spawn(move || {
-        for (key, source) in rx {
+        for (key, source, owner) in rx {
             let [w, h, ..] = key.2;
             let made = resize(&source, w, h).map(Arc::new);
             made_lock().insert(key, (source, made));
-            GENERATION.fetch_add(1, Ordering::Relaxed);
+            GENERATION[owner % 64].fetch_add(1, Ordering::Relaxed);
             READY.store(true, Ordering::Release);
         }
     });
@@ -49,15 +51,16 @@ pub fn ready() -> bool {
     READY.swap(false, Ordering::AcqRel)
 }
 
-/// Bumped with every picture made: a memo over pictures reads it.
-pub fn generation() -> u64 {
-    GENERATION.load(Ordering::Relaxed)
+/// Bumped with every picture made for `owner`: its memo reads it, and
+/// other owners' memos stay as built.
+pub fn generation(owner: usize) -> u64 {
+    GENERATION[owner % 64].load(Ordering::Relaxed)
 }
 
 /// `image` to draw at `w` x `h` device pixels: itself when that is its
 /// size or it would grow by a fraction, else shrunk or grown whole, as soon
-/// as that is made.
-pub fn fitted(image: &Arc<Image>, w: u32, h: u32) -> Arc<Image> {
+/// as that is made, for `owner`.
+pub fn fitted(image: &Arc<Image>, w: u32, h: u32, owner: usize) -> Arc<Image> {
     if (w, h) == (image.width, image.height) || w == 0 || h == 0 || image.width == 0 || image.height == 0 {
         return image.clone();
     }
@@ -73,7 +76,7 @@ pub fn fitted(image: &Arc<Image>, w: u32, h: u32) -> Arc<Image> {
         None => {
             made.insert(key, (image.clone(), None));
             drop(made);
-            let _ = WORKER.lock().unwrap_or_else(PoisonError::into_inner).send((key, image.clone()));
+            let _ = WORKER.lock().unwrap_or_else(PoisonError::into_inner).send((key, image.clone(), owner));
             image.clone()
         }
     }
@@ -115,12 +118,12 @@ mod tests {
     #[test]
     fn pictures_are_made_to_the_pixel_once() {
         let image = Arc::new(Image::rgba(4, 2, (0..32u8).map(|v| v * 8).collect::<Vec<u8>>()).unwrap());
-        assert!(Arc::ptr_eq(&fitted(&image, 4, 2), &image), "one to one is itself");
-        assert!(Arc::ptr_eq(&fitted(&image, 6, 3), &image), "a fractional growth is left to the renderer");
-        let first = fitted(&image, 8, 4);
+        assert!(Arc::ptr_eq(&fitted(&image, 4, 2, 0), &image), "one to one is itself");
+        assert!(Arc::ptr_eq(&fitted(&image, 6, 3, 0), &image), "a fractional growth is left to the renderer");
+        let first = fitted(&image, 8, 4, 0);
         assert!(Arc::ptr_eq(&first, &image), "the original stands in until it is made");
         let made = loop {
-            let f = fitted(&image, 8, 4);
+            let f = fitted(&image, 8, 4, 0);
             if !Arc::ptr_eq(&f, &image) {
                 break f;
             }

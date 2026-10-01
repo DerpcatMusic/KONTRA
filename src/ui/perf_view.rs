@@ -364,7 +364,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let mut layers = Vec::new();
     if let Some(image) = wallpaper.clone().filter(|_| !vector || cx.settings.vector_backdrop) {
         let (iw, ih) = (px(f64::from(image.width) * s), px(f64::from(image.height) * s));
-        let image = fitted::fitted(&image, (iw * dev).round() as u32, (ih * dev).round() as u32);
+        let image = fitted::fitted(&image, (iw * dev).round() as u32, (ih * dev).round() as u32, slot);
         layers.push(block(iw, ih).fill(Fill::Image(image, Fit::Fill)).at(0., px(-HEADER * s)));
         if vector {
             layers.push(block(w * s, h * s).fill(Role::Background.alpha(0.8)));
@@ -593,9 +593,9 @@ fn picture_frame(shown: &Shown, c: &Control, now: f64) -> Option<Arc<Image>> {
 /// size, else cut along each way it stretches into two ends kept as drawn
 /// and the middle pixel (or two) stretched between them: a stretched menu
 /// keeps its rounded ends and its arrow, a one-pixel divider its width.
-fn sliced(image: &Arc<Image>, stretch: [bool; 2], w: f64, h: f64, s: f64, dev: f64) -> El {
+fn sliced(image: &Arc<Image>, stretch: [bool; 2], w: f64, h: f64, s: f64, dev: f64, slot: usize) -> El {
     let fit = |image: &Arc<Image>, w: f64, h: f64| {
-        Fill::Image(fitted::fitted(image, (w * dev).round() as u32, (h * dev).round() as u32), Fit::Fill)
+        Fill::Image(fitted::fitted(image, (w * dev).round() as u32, (h * dev).round() as u32, slot), Fit::Fill)
     };
     let (iw, ih) = (image.width, image.height);
     let cuts = |on: bool, own: u32, to: f64| -> Vec<(u32, u32, f64)> {
@@ -742,7 +742,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     let round = shown.kind == Kind::Knob || shown.kind == Kind::Slider && knob_like(prop(c, "$CONTROL_PAR_PICTURE"), shown.w, shown.h);
     let lift = if cx.state.held.is_some_and(|(p, n, _)| (p, n) == (slot, shown.control)) { 1. } else { ui.state(id.as_str()).hover as f32 };
     let mut layers = vec![match picture {
-        Some(image) => sliced(&image, shown.picture.as_ref().map_or([false; 2], |p| p.stretch), w, h, s, dev),
+        Some(image) => sliced(&image, shown.picture.as_ref().map_or([false; 2], |p| p.stretch), w, h, s, dev, slot),
         None => face(shown.kind, c, now, lo, hi, vertical, round, s, lift).w(w).h(h),
     }];
     // Text on our face is our ink; on a picture it reads what lies under it.
