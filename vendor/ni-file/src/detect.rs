@@ -35,15 +35,23 @@ impl NIFileType {
     ///     println!("NISound detected!");
     /// }
     /// ```
-    pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
+    pub fn read<R: ReadBytesExt>(reader: R) -> Result<Self, Error> {
+        Self::read_with_nis(reader).map(|(kind, _)| kind)
+    }
+
+    // Detection already validates the NIS body. Keep it for callers that need the file.
+    pub(crate) fn read_with_nis<R: ReadBytesExt>(
+        mut reader: R,
+    ) -> Result<(Self, Option<ItemContainer>), Error> {
         let magic: u32 = reader.read_le()?;
 
         if let Some(nks) = NKSFileType::detect(magic) {
-            return Ok(NIFileType::NKSContainer(nks));
+            return Ok((NIFileType::NKSContainer(nks), None));
         }
 
         // TODO: differentiate LE/BE
-        Ok(match magic {
+        let mut container = None;
+        let kind = match magic {
             0x5AE5D6A4 | 0xA4D6E55A => NIFileType::KontaktMultiV1,
             0x54AC705E | 0x5E70AC54 => NIFileType::KontaktResource,
             0x4916E63C | 0x3CE61649 => NIFileType::NKSArchive,
@@ -54,11 +62,15 @@ impl NIFileType {
             _ => {
                 reader.rewind()?;
                 match ItemContainer::read(&mut reader) {
-                    Ok(_) => NIFileType::NISContainer,
+                    Ok(item) => {
+                        container = Some(item);
+                        NIFileType::NISContainer
+                    }
                     Err(_) => NIFileType::Unknown,
                 }
             }
-        })
+        };
+        Ok((kind, container))
     }
 }
 
