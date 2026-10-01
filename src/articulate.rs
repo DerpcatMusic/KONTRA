@@ -1299,7 +1299,12 @@ end on"#;
         assert_eq!(e.dropped_commands(), 0);
         e.cc(0, 120, 0);
         advance(&mut e, 512);
-        assert!(e.voice_census().is_empty(), "engine-channel stop still cuts every origin, including UI");
+        assert!(e.voice_census().iter().all(|v| v.channel == 5 && v.note == 61 && v.group == 1),
+            "engine-channel stop cuts every origin on home, including UI, preserving rerouted channels");
+        assert!(!voices(&e, 61, false).is_empty());
+        e.panic();
+        advance(&mut e, 512);
+        assert!(e.voice_census().is_empty(), "Panic cuts every logical channel");
     }
 
     #[test]
