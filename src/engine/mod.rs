@@ -213,7 +213,7 @@ impl Default for Engine {
             fx: FxProcessor::default(),
             player: Player::new(48000.0),
             script: None,
-            commands: Vec::with_capacity(MAX_COMMANDS),
+            commands: Vec::with_capacity(script::COMMAND_CAPACITY),
             writes: Vec::with_capacity(MAX_WRITES),
             ir_requests: Vec::with_capacity(32),
             script_channel: 0,

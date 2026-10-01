@@ -1459,6 +1459,28 @@ fn scripted(script: &str) -> Engine {
     e
 }
 
+#[test]
+fn crowded_script_releases_never_leave_voices_held() {
+    let mut e = scripted("on init\nend on\non note\nend on");
+    // Accumulate more live input parents than the ordinary command budget,
+    // rendering each batch so every accepted start is actually sounding.
+    for _ in 0..4 {
+        for _ in 0..100 { e.note_on(0, 60, 100); }
+        render(&mut e, 128);
+    }
+    assert!(e.voice_census().iter().filter(|v| !v.released).count() > 512);
+    let before = e.dropped_commands();
+    assert_eq!(allocations(|| {
+        for _ in 0..kontakto::engine::MAX_COMMANDS { e.cc(0, 1, 100); }
+        e.note_off(0, 60);
+        let (mut l, mut r) = ([0.; 128], [0.; 128]);
+        e.render(&mut l, &mut r);
+    }), 0);
+    assert_eq!(e.dropped_commands(), before, "releases must not compete with normal commands");
+    assert!(!e.key_down(0, 60));
+    assert!(e.voice_census().iter().all(|v| v.released), "every input parent must release its voices");
+}
+
 /// First frame with sound.
 fn onset(out: &[Frame]) -> Option<usize> {
     out.iter().position(|f| f[0] != 0.0)

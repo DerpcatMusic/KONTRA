@@ -79,6 +79,8 @@ pub fn effects(instrument: &Instrument, script: Option<&Runtime>, rate: f32) -> 
 
 /// Script engine calls one render can hold; the rest are dropped and counted.
 pub const MAX_COMMANDS: usize = 256;
+// One release per live script event, beyond the ordinary command budget.
+pub(super) const COMMAND_CAPACITY: usize = MAX_COMMANDS + crate::ksp::EVENT_CAPACITY;
 
 /// A worker request: copying the name never allocates on the audio thread.
 #[derive(Clone)]
@@ -164,7 +166,9 @@ impl Host<'_> {
 
     /// Queue in frame order (stable for equal frames) within the preallocated capacity.
     fn push(&mut self, at: u32, channel: u8, id: EventId, kind: Kind) -> bool {
-        if self.commands.len() == MAX_COMMANDS {
+        if self.commands.len() == COMMAND_CAPACITY
+            || (self.commands.len() >= MAX_COMMANDS && !matches!(kind, Kind::Release { .. }))
+        {
             self.player.dropped_commands += 1;
             return false;
         }
