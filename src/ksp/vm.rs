@@ -556,6 +556,11 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 *x = x.wrapping_add(n);
                 *pc += 3;
             }
+            Op::MulAdd(n, a, b) => {
+                let x = n.wrapping_mul(mem.ints[a as usize]);
+                s.ints.push(x.wrapping_add(mem.ints[b as usize]));
+                *pc += 4;
+            }
             Op::AddImm(n) => {
                 let a = s.int();
                 s.ints.push(a.wrapping_add(n));
