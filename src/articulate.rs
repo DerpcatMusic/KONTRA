@@ -499,6 +499,16 @@ impl Router {
         self.current = None;
     }
 
+    pub(crate) fn reset_midi(&mut self) {
+        self.forget();
+        self.held.fill([(NONE, NONE); 128]);
+        self.bend.fill(8192);
+        self.member_pressure.fill(None);
+        self.rpn.fill(Rpn { msb: 127, lsb: 127 });
+        self.expression.fill([Expression::default(); 128]);
+        self.brightness.fill(NONE);
+    }
+
     /// Whether the part takes `channel` on `port`: its own channel, a zone's,
     /// or one an articulation listens on.
     pub fn hears(&self, c: &PartControls, port: u8, channel: u8) -> bool {
@@ -1064,6 +1074,39 @@ mod tests {
         render(&mut e);
         assert!(voices(&e, 60, false).is_empty());
         assert!(!e.key_down(0, 60));
+    }
+
+    #[test]
+    fn sound_off_and_reset_cancel_waiting_script_notes() {
+        for stop in 0..4 {
+            let (mut e, _) = three_articulation_part();
+            e.set_script(Some(Box::new(runtime("on init\ndeclare ui_switch $go\nend on\non note\nignore_event($EVENT_ID)\nwait(10000)\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,-1)\nend on\non ui_control($go)\nset_controller(7,63)\nset_controller(64,127)\nend on"))));
+            e.note_on(1, 60, 100);
+            e.note_on(2, 62, 100);
+            e.ui_control(0, 0, 1);
+            match stop {
+                0 => e.cc(1, 120, 0),
+                1 => {
+                    e.set_mpe_zone(Some((0, (1 << 1) | (1 << 2))));
+                    e.cc(0, 120, 0);
+                }
+                2 => e.reset(48000.),
+                _ => e.panic(),
+            }
+            let (mut left, mut right) = ([0.; 1024], [0.; 1024]);
+            e.render(&mut left, &mut right);
+            if stop != 2 {
+                assert_eq!(e.cc_state()[0][7], 63, "stop={stop}: a queued UI volume edit was lost");
+                assert_eq!(e.cc_state()[0][64], if stop == 3 { 0 } else { 127 }, "stop={stop}: wrong sustain reset");
+            }
+            assert!(voices(&e, 60, false).is_empty(), "stop={stop}: a canceled callback restarted its note");
+            assert!(!e.key_down(1, 60), "stop={stop}: canceled input remained held");
+            assert_eq!(voices(&e, 62, false).len(), if stop == 0 { 3 } else { 0 }, "stop={stop}: wrong channel scope");
+            e.note_on(1, 64, 100);
+            e.render(&mut left, &mut right);
+            assert_eq!(voices(&e, 64, false).len(), 3, "stop={stop}: fresh input stopped working");
+            assert!(e.script().unwrap().diagnostics().is_empty());
+        }
     }
 
     #[test]

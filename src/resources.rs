@@ -143,11 +143,13 @@ impl Resources {
                 };
             }
             let (f, archive, _) = &mut self.open[n];
-            let Some(entry) = archive.find(&member) else {
+            let Some(entry) = archive.member(&mut *f, &member).map_err(|e| e.to_string())? else {
                 continue;
             };
+            let needs_key = entry.encoded && entry.key_index != 0xff;
+            archive.entries.insert(entry.name.to_lowercase(), entry);
             let key = match &self.key {
-                _ if !entry.encoded || entry.key_index == 0xff => &None,
+                _ if !needs_key => &None,
                 Some(key) => key,
                 None => self.key.insert(
                     crate::access::library_key(&self.instrument).map_err(|e| e.to_string())?,
@@ -172,7 +174,7 @@ impl Resources {
                 Ok(f) => f,
                 Err(e) => { self.failed_archives.push(format!("{}: {e}", path.display())); continue; }
             };
-            match ni_file::nkr::Archive::read(&mut f) {
+            match ni_file::nkr::Archive::read_index(&mut f) {
                 Ok(archive) => self.open.push((f, archive, path)),
                 Err(e) => self.failed_archives.push(format!("{}: {e}", path.display())),
             }
@@ -206,4 +208,68 @@ impl Resources {
 
 pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lazy_resources_validate_only_requested_headers_and_keep_keyed_reads() {
+        fn directory(out: &mut Vec<u8>, offset: usize, entries: &[(&str, u32, u16)]) {
+            out.resize(offset, 0);
+            out.extend(0x5e70ac54u32.to_le_bytes());
+            out.extend(0x111u16.to_le_bytes());
+            out.extend([0; 8]);
+            out.extend((entries.len() as u32).to_le_bytes());
+            out.extend([0; 4]);
+            for &(name, reference, kind) in entries {
+                let name: Vec<_> = name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+                out.extend(((name.len() + 8) as u16).to_le_bytes());
+                out.extend(reference.to_le_bytes());
+                out.extend(kind.to_le_bytes());
+                out.extend(name);
+            }
+        }
+        fn member(out: &mut Vec<u8>, offset: usize, key: u32, payload: &[u8]) {
+            out.resize(offset, 0);
+            out.extend(0x2ae905fau32.to_le_bytes());
+            out.extend(0x111u16.to_le_bytes());
+            out.extend([0; 4]);
+            out.extend(key.to_le_bytes());
+            out.extend((payload.len() as u32).to_le_bytes());
+            out.extend([0; 4]);
+            out.extend(payload);
+        }
+        struct Key;
+        impl ni_file::nis::LibraryKey for Key {
+            fn apply_at(&self, _: u64, bytes: &mut [u8]) {
+                for byte in bytes { *byte ^= 7; }
+            }
+        }
+        let mut bytes = Vec::new();
+        directory(&mut bytes, 0, &[("Resources", 128, 1)]);
+        directory(&mut bytes, 128, &[("pictures", 256, 1)]);
+        directory(&mut bytes, 256, &[("clear.bin", 512, 4), ("keyed.bin", 768, 4), ("broken.bin", 1024, 4)]);
+        member(&mut bytes, 512, 0xff, b"clear");
+        member(&mut bytes, 768, 0x100, &b"secret".iter().map(|b| b ^ 7).collect::<Vec<_>>());
+        bytes.resize(1046, 0);
+        let dir = std::env::temp_dir().join(format!("kontra-lazy-resources-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("resources.nkr"), bytes).unwrap();
+        let mut resources = Resources::of(&dir.join("instrument.nki"), "pictures");
+        assert!(resources.opened(0));
+        assert!(resources.open[0].1.entries.values().all(|e| !e.checked));
+        assert_eq!(resources.read("CLEAR.BIN").unwrap().unwrap(), b"clear");
+        assert!(resources.key.is_none());
+        assert_eq!(resources.open[0].1.entries.values().filter(|e| e.checked).count(), 1);
+        resources.key = Some(Some(std::sync::Arc::new(Key)));
+        assert_eq!(resources.read("keyed.bin").unwrap().unwrap(), b"secret");
+        assert_eq!(resources.read("KEYED.BIN").unwrap().unwrap(), b"secret");
+        assert_eq!(resources.open[0].1.entries.values().filter(|e| e.checked).count(), 2);
+        assert!(!resources.open[0].1.find("Resources/pictures/broken.bin").unwrap().checked);
+        assert!(resources.read("broken.bin").is_err());
+        drop(resources);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
