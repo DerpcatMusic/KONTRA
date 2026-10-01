@@ -13,13 +13,21 @@ KONTRA ships no instrument libraries or sample collections. Use libraries you ar
 [![macOS Intel](https://img.shields.io/badge/macOS-Intel-555555?style=for-the-badge&logo=apple)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-macos-x86_64.zip)
 [![Linux x64](https://img.shields.io/badge/Linux-x64-168B76?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-linux-x86_64.zip)
 
-Each ZIP contains the **CLAP plug-in, VST3 plug-in and standalone application**. These fixed links always serve the latest complete [nightly pre-release](https://github.com/DerpcatMusic/KONTRA/releases/tag/nightly). Every push or merge to public `main` starts all four builds on free GitHub-hosted runners; downloads update together after all builds and uploads succeed. The links become available after the first successful publication. See [build progress](https://github.com/DerpcatMusic/KONTRA/actions/workflows/nightly.yml) and the release notes for the source commit.
+Each ZIP contains the **CLAP plug-in, VST3 plug-in and standalone application**. These fixed links always serve the latest complete [nightly pre-release](https://github.com/DerpcatMusic/KONTRA/releases/tag/nightly). Every push or merge to public `main` starts all four builds on free GitHub-hosted runners. The same commit must pass release-profile Linux tests and native Windows/macOS compilation before packaging; downloads update together after all four builds and verified uploads succeed. The links become available after the first successful publication. See [build progress](https://github.com/DerpcatMusic/KONTRA/actions/workflows/nightly.yml) and the release notes for the source commit.
+
+The [Releases page](https://github.com/DerpcatMusic/KONTRA/releases) retains the newest complete snapshot and [one previous release for rollback](https://github.com/DerpcatMusic/KONTRA/releases/tag/nightly-previous). Release titles use SemVer, such as `0.2.0-nightly.20261002.g0123456789ab`; each includes a source tag and `release-manifest.json` with the commit, build identities and archive SHA256 checksums. The rolling tags keep these buttons stable; GitHub's “latest release” URLs exclude prereleases. Older release downloads and managed nightly source tags are removed after a complete replacement is verified and published; stable `vX.Y.Z` source tags are preserved. A previous snapshot becomes available after the second publication. Snapshots made before versioned build metadata are explicitly labeled legacy.
+
+GitHub permits up to 1,000 assets per release, each under 2 GiB, and currently documents no limit on total release size or download bandwidth. [Release limits](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases) are separate from [Actions storage and billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions): successful runs remove their transient build artifacts; unreleased artifacts expire after one day. Hosting limits and pricing can change.
 
 Nightlies are experimental snapshots. Linux builds use Ubuntu 24.04 and require compatible system libraries. The x86_64 plug-ins require **AVX2, FMA and BMI2**. macOS builds are signed ad hoc and are not notarized; after extracting the ZIP, remove quarantine from the downloaded files if macOS blocks them:
 
 ```sh
 xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone
 ```
+
+## Development and diagnostics
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and validation guidance, and [CHANGELOG.md](CHANGELOG.md) for release changes. To report a problem, open the **Logs** tab, choose **Export support report…**, review the preview and new-folder destination, then choose **Export report**. KONTRA creates a new support-report folder with build/system information and bounded recent logs. Paths are redacted by default; review the report before sharing it. The report excludes scripts, samples and credentials. Export failures are reported, including incomplete bundles.
 
 ## Compatibility and known gaps
 
@@ -70,7 +78,7 @@ macOS bundles are signed ad hoc and are not notarized.
 
 ## Build
 
-Install stable Rust and the pinned `cargo-moose` build tool:
+Install Rust 1.99.0 (pinned in `rust-toolchain.toml`) and the pinned `cargo-moose` build tool. See [CI and snapshot checks](docs/CI.md) for the faster development profile and shipping verification:
 
 ```sh
 cargo install --locked --git https://github.com/Matari-Audio/moose \

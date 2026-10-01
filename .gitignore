@@ -13,3 +13,5 @@
 # graft's local repository settings — not committed.
 /.graft/
 /.claude/worktrees/
+
+/.github/scripts/__pycache__/

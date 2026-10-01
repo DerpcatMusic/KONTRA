@@ -1533,6 +1533,86 @@ fn scripted(script: &str) -> Engine {
 }
 
 #[test]
+fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_samples() {
+    let dir = std::env::temp_dir().join(format!("kontakto-ksp-zone-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tone.wav");
+    write_wav(&path, 48000);
+    let zone = Zone { sample: path.clone(), low_key: 60, high_key: 60,
+        loop_range: Some(Loop { start: 0, end: 100, until_release: true, crossfade: 0 }),
+        ..Zone::default() };
+    let groups = vec![Group::default(), Group { muted: true, ..Group::default() },
+        Group { channel: 1, ..Group::default() }, Group { release_trigger: true, ..Group::default() }];
+    let zones = vec![zone.clone(), Zone { start: 48000, ..zone.clone() },
+        Zone { low_velocity: 90, ..zone.clone() }, Zone { group: 1, ..zone.clone() },
+        Zone { group: 2, ..zone.clone() }, Zone { group: 3, ..zone.clone() },
+        Zone { sample: dir.join("missing.wav"), low_key: 61, high_key: 61, ..zone.clone() },
+        Zone { low_key: 62, high_key: 62, high_velocity: 50, ..zone }];
+    let mut i = instrument(groups, zones);
+    i.scripts = vec![r#"on init
+        declare $id
+        message(get_num_zones() & ":" & get_zone_id(7))
+    end on
+    on note
+        if ($EVENT_NOTE = 65)
+            ignore_event($EVENT_ID)
+            $id := play_note(60, 100, 0, 0)
+        else
+            $id := $EVENT_ID
+            if ($EVENT_VELOCITY = 10)
+                disallow_group($ALL_GROUPS)
+            end if
+            if ($EVENT_VELOCITY = 110)
+                set_event_par($EVENT_ID, $EVENT_PAR_ZONE_ID, 999)
+            end if
+        end if
+        message(get_event_par($id, $EVENT_PAR_ZONE_ID))
+        wait(1)
+        message(get_event_par($id, $EVENT_PAR_ZONE_ID) & ":" & get_num_zones() & ":" & get_zone_id(2))
+    end on
+    on controller
+        if ($CC_NUM = 1)
+            message(get_event_par($id, $EVENT_PAR_ZONE_ID) & ":" & get_num_zones() & ":" & get_zone_id(2))
+        end if
+    end on"#.to_owned()];
+    let bank = Bank::load(&i).unwrap();
+    assert_eq!((bank.zones().len(), bank.skipped_zones), (6, 2));
+    let mut e = engine_with(bank);
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    e.set_script(rt);
+    assert_eq!(e.script().unwrap().last_message(), "8:8");
+    for (channel, note, velocity, expected) in [(0, 60, 100, 3), (0, 60, 50, 1),
+        (1, 60, 100, 5), (0, 60, 10, -1), (0, 61, 100, -1),
+        (0, 62, 100, -1), (0, 63, 100, -1), (0, 65, 100, 6)] {
+        e.panic();
+        e.note_on(channel, note, velocity);
+        // Before wait the MIDI event has not reached the playback host.
+        if note != 65 { assert_eq!(e.script().unwrap().last_message(), "0"); }
+        // The callback resumes before queued Start commands are applied.
+        let (mut left, mut right) = ([0.0; 64], [0.0; 64]);
+        assert_eq!(allocations(|| e.render(&mut left, &mut right)), 0);
+        let message = format!("{expected}:8:3");
+        assert_eq!(e.script().unwrap().last_message(), message, "queued channel={channel} note={note} velocity={velocity}");
+        e.cc(channel, 1, 1);
+        assert_eq!(e.script().unwrap().last_message(), message, "live channel={channel} note={note} velocity={velocity}");
+    }
+    e.panic();
+    e.note_on(0, 60, 100);
+    render(&mut e, 64);
+    e.note_off(0, 60);
+    render(&mut e, 1000);
+    e.cc(0, 1, 2);
+    assert_eq!(e.script().unwrap().last_message(), "0:8:3");
+    e.note_on(0, 60, 110);
+    render(&mut e, 64);
+    assert_eq!(e.script().unwrap().last_message(), "3:8:3");
+    assert!(e.script().unwrap().diagnostics().iter().any(|d| d.contains("EVENT_PAR_ZONE_ID is read-only")));
+    drop(e);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn ksp_system_conditions_control_native_sustain_and_release_without_blocking_manual_samples() {
     let flags = "SET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)";
     let disabled = format!("on init\n{flags}\nend on");

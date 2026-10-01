@@ -39,8 +39,6 @@ pub struct NoteSpec<'a> {
     pub tune_mc: i32,
     /// Event pan, -1000 (left) to 1000 (right).
     pub pan: i32,
-    /// Explicit zone from `$EVENT_PAR_ZONE_ID`, or -1 for normal mapping.
-    pub zone: i32,
     pub groups: &'a GroupMask,
 }
 
@@ -103,6 +101,10 @@ pub trait KspEngine {
     }
     fn group_count(&self) -> usize;
     fn zone_count(&self) -> usize { 0 }
+    /// Opaque positive identity of the source zone at `index`.
+    fn zone_id(&self, index: usize) -> Option<i32> {
+        (index < self.zone_count()).then(|| index as i32 + 1)
+    }
     fn group_name(&self, group: usize) -> &str;
     fn sample_rate(&self) -> f64;
     /// Set at frame `at`. Returns false when the engine does not implement the
@@ -142,6 +144,9 @@ pub trait KspEngine {
     fn reset_release_counter_from(&mut self, at: u32, channel: u8, _input_channel: Option<u8>, note: u8) {
         self.reset_release_counter_on_channel(at, channel, note);
     }
+    /// Highest zone identity among this event's sounding or queued voices;
+    /// -1 when an accepted queued event matches no playable zone.
+    fn voice_zone(&self, _voice: EventId) -> Option<i32> { None }
     /// Whether a voice is still sounding; drives `event_status` for sample-length notes.
     fn voice_active(&self, _voice: EventId) -> bool {
         true

@@ -753,7 +753,7 @@ fn save_multi_names_the_rack_and_writes_it_under_multis() {
     }
     let mut h = Harness::new(&p, 1180., 760.);
     h.press("app-menu");
-    h.press("menu-item-6");
+    h.press("menu-item-8");
     assert!(h.ui.scene().unwrap().surface("multi-name").is_some(), "Save multi… asks for a name");
     h.type_into("multi-name", "Duo/Night");
     let path = header::multi_path(&root.to_string_lossy(), "DuoNight");
@@ -1301,9 +1301,9 @@ fn screenshot() {
         // The library filter typed into, and the sort menu.
         ("browser-filter", false, &[]),
         ("browser-sort", false, &["library-sort"]),
-        ("settings", true, &["app-menu", "menu-item-3"]),
+        ("settings", true, &["app-menu", "menu-item-5"]),
         ("menu", true, &["app-menu"]),
-        ("save", true, &["app-menu", "menu-item-6"]),
+        ("save", true, &["app-menu", "menu-item-8"]),
         ("collapsed", true, &["toggle-browser", "keyboard-toggle"]),
         ("error", true, &[]),
         ("playing", true, &["qwerty"]),
@@ -1801,6 +1801,12 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
     h.press("tab-info");
     let frame = h.ui.scene().unwrap().surface("load-diagnostic-status").expect("failed imports still show their diagnostic report").frame;
     assert!(frame.y >= 0. && frame.y + frame.size.height < 760., "status is visible: {frame:?}");
+    h.press("tab-logs");
+    assert!(h.ui.scene().unwrap().surface("logs-export-preview").is_some(), "global Logs is available after a failed load");
+    h.press("logs-export-preview");
+    assert!(h.ui.scene().unwrap().surface("logs-export-path").is_some(), "export preview does not require a loaded instrument");
+    h.press("logs-export-preview");
+    h.press("tab-info");
     let rgba = pixels(&h.ui, 1180, 760);
     let path = Path::new("artifacts/library-parity/info-failed.png");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1867,6 +1873,22 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     assert!(changed(), "the first tick builds");
     std::thread::sleep(Duration::from_millis(110));
     assert!(!changed(), "nothing moved: no rebuild, however long");
+    let log = || crate::diagnostics::event(
+        crate::diagnostics::LogLevel::Info,
+        "ui_test",
+        "idle_visibility",
+        serde_json::json!({"reason": "synthetic journal visibility check"}),
+    );
+    log();
+    assert!(!changed(), "a hidden journal does not rebuild this editor");
+    meters.logs_visible.store(true, Ordering::Relaxed);
+    assert!(changed(), "opening Logs watches the journal");
+    log();
+    assert!(changed(), "a visible journal refreshes when an event arrives");
+    meters.logs_visible.store(false, Ordering::Relaxed);
+    assert!(changed(), "closing Logs stops watching the journal");
+    log();
+    assert!(!changed(), "later journal events leave the hidden pane idle");
     p.shared.voices.store(3, Ordering::Relaxed);
     assert!(!changed(), "readouts wait for their next look");
     std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
