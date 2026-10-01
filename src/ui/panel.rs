@@ -357,14 +357,9 @@ fn read(
         return None;
     }
     let picture = pictures.get(picture_name);
-    let knob = ["knob", "dial", "rotary"]
-        .iter()
-        .any(|k| picture_name.to_lowercase().contains(k));
     // Kontakt sizes a control to a picture that cannot stretch.
     let (w, h) = match picture {
-        Some(p) if !p.resizable && !p.frames.is_empty() => {
-            (f64::from(p.frames[0].width), f64::from(p.frames[0].height))
-        }
+        Some(p) if !p.frames.is_empty() => p.size(int("WIDTH").unwrap_or(85.), int("HEIGHT").unwrap_or(18.)),
         _ => (
             int("WIDTH").unwrap_or(85.),
             int("HEIGHT").unwrap_or(if c.kind == "ui_knob" { 52. } else { 18. }),
@@ -381,10 +376,9 @@ fn read(
     if at.x < 0. || at.y < 0. || at.x >= iw || !hidden && at.y >= ih || w <= 0. || h <= 0. {
         return None;
     }
-    let square = (0.6..=1.6).contains(&(w / h)) && w.min(h) >= 24.;
     let face = match c.kind.as_str() {
         "ui_knob" => Face::Knob,
-        "ui_slider" if knob || square => Face::Knob,
+        "ui_slider" if super::perf_view::knob_like(picture_name, w, h) => Face::Knob,
         "ui_slider" if w >= h => Face::Fader,
         "ui_slider" => Face::VFader,
         "ui_switch" | "ui_button" => Face::Toggle,
@@ -437,6 +431,11 @@ fn read(
         list: Vec::new(),
     };
     Some((item, picture_name.to_owned()))
+}
+
+/// Each visible control's name, as KONTRA's view gives it, by control.
+pub fn names(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> HashMap<usize, String> {
+    items(interface, pictures).into_iter().map(|i| (i.control, i.name)).collect()
 }
 
 /// Visible controls, named, with the labels that named them taken out.

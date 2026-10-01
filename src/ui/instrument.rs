@@ -2,6 +2,7 @@
 //! details, and plain-spoken notices.
 
 use super::{Cx, panel, perf_view, theme::*};
+use crate::library::ViewMode;
 use crate::import::Instrument;
 use moose::mui::mui::prelude::*;
 use std::path::Path;
@@ -96,7 +97,7 @@ fn sentence(text: &str) -> String {
 pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let v = &cx.view.parts[slot];
-    let original = instrument_of(cx, slot).is_some() && perf_view::shows(cx, slot);
+    let original = instrument_of(cx, slot).is_some() && perf_view::shows(cx, slot) != ViewMode::Kontra;
     let at = |a: Option<*const ()>| a.map_or(0, |p| p as usize);
     let mut h = DefaultHasher::new();
     slot.hash(&mut h);
@@ -117,7 +118,7 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
 
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let loaded = instrument_of(cx, slot).is_some();
-    if loaded && perf_view::shows(cx, slot) {
+    if loaded && perf_view::shows(cx, slot) != ViewMode::Kontra {
         // The articulation setup follows the controls whichever view shows them.
         if let Some(interface) = cx.view.parts[slot].interface.clone() {
             let pictures = cx.view.parts[slot].pictures.clone();

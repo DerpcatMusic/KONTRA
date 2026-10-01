@@ -172,6 +172,15 @@ fn select_and_broken_callbacks() {
 }
 
 #[test]
+fn a_menu_selects_its_first_item_for_init_to_read() {
+    // Afflatus picks its wallpaper by its menu's value minus one in `on init`.
+    let source = "on init\ndeclare !walls[2]\n!walls[0] := \"first\"\n!walls[1] := \"second\"\ndeclare ui_menu $look\nadd_menu_item($look, \"A\", 1)\nadd_menu_item($look, \"B\", 2)\nmake_persistent($look)\nread_persistent_var($look)\nset_control_par_str($INST_WALLPAPER_ID, $CONTROL_PAR_PICTURE, !walls[$look - 1])\nend on";
+    assert_eq!(initialize(source, 0, 0).unwrap().wallpaper, "first");
+    let chosen = source.replace("make_persistent($look)", "$look := 2");
+    assert_eq!(initialize(&chosen, 0, 0).unwrap().wallpaper, "second", "a value it has stays");
+}
+
+#[test]
 fn computed_ui_and_execution_limits() {
     let source = r#"on init
  declare $i

@@ -20,6 +20,8 @@ pub enum Target {
     LibrarySort,
     /// A rack slot.
     Part(usize),
+    /// How a rack slot shows its library's performance view.
+    View(usize),
     /// A key on the keyboard.
     Key(u8),
     /// The editor's own menu in the top bar.
@@ -71,6 +73,10 @@ pub enum Command {
     EditSound(usize),
     Mute(usize),
     Solo(usize),
+    /// How a part shows its performance view ([`crate::plugin::Part::view`]).
+    View(usize, u8),
+    /// The mode every part follows, which a part then follows too.
+    DefaultView(usize, crate::library::ViewMode),
     Move(usize, i32),
     Audition(u8),
     /// Show or hide the library folders strip.
@@ -269,6 +275,17 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Reveal in folder", "", Command::Reveal(path.clone())),
                 act("Copy path", "", Command::CopyPath(path.clone())),
             ]);
+            items
+        }
+        Target::View(slot) => {
+            let slot = *slot;
+            let now = super::perf_view::shows(cx, slot);
+            let mut items: Vec<Item> = (crate::library::ViewMode::ALL.iter())
+                .map(|&m| check(m.label(), now == m, Command::View(slot, super::perf_view::code(Some(m)))))
+                .collect();
+            if now != cx.settings.view_mode {
+                items.extend([Item::Rule, act(format!("Make {} the default", now.label()), "", Command::DefaultView(slot, now))]);
+            }
             items
         }
         Target::Part(slot) => {
@@ -700,6 +717,11 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             cx.state.tab = super::Tab::Sound;
         }
         Command::Mute(slot) => cx.selection.parts[slot].mute ^= true,
+        Command::View(slot, code) => cx.selection.parts[slot].view = code,
+        Command::DefaultView(slot, mode) => {
+            shared.libraries.edit(|s| s.view_mode = mode);
+            cx.selection.parts[slot].view = 0;
+        }
         Command::Solo(slot) => cx.selection.parts[slot].solo ^= true,
         Command::Move(slot, by) => cx.move_by(slot, by),
         Command::Audition(note) => shared.audition(Some(note)),

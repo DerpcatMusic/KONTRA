@@ -19,6 +19,7 @@
 //! [`Shared`]: crate::plugin::Shared
 
 mod art;
+pub(crate) mod audit;
 mod browser;
 mod chain;
 mod computer;
@@ -351,6 +352,8 @@ struct EditorState {
     meters: Arc<Meters>,
     /// Script control being dragged: part, control, unrounded value.
     held: Option<(usize, usize, f64)>,
+    /// A script value edit's number being typed: part, control, text.
+    typing: Option<(usize, usize, String)>,
     /// The context menu showing.
     menu: Option<menu::Menu>,
     /// The browser's keyboard cursor: a preset path, or a folder's.
@@ -841,6 +844,7 @@ fn build(
         last_poll: Instant::now() - Duration::from_secs(1),
         meters,
         held: None,
+        typing: None,
         menu: None,
         cursor: None,
         browse: Default::default(),
@@ -1000,10 +1004,10 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
     for k in keys {
         let ctrl = k.mods.ctrl || k.mods.cmd;
         match k.key {
-            Key::Delete if loaded && cx.state.renaming.is_none() && cx.state.inline.is_none() => cx.remove(slot),
+            Key::Delete if loaded && cx.state.renaming.is_none() && cx.state.inline.is_none() && cx.state.typing.is_none() => cx.remove(slot),
             Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
-            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && cx.state.inline.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
+            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && cx.state.inline.is_none() && cx.state.typing.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
             _ => {}
         }
     }

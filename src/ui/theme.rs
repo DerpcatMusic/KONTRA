@@ -606,8 +606,9 @@ pub fn wheel_taken() -> bool {
     WHEELED.with(|w| w.replace(false))
 }
 
-/// Pointer, wheel and keys on a continuous control `id`: drag across
-/// `travel` px (Shift is fine), wheel and arrows step, double-click resets.
+/// Pointer, wheel and keys on a continuous control `id`, as Kontakt's: drag
+/// along `vertical` (up or right increases) across `travel` px, Shift for
+/// fine; wheel and arrows step; double-click or Ctrl/Cmd-click resets.
 pub fn drive(
     ui: &mut Ui,
     id: &str,
@@ -631,7 +632,7 @@ pub fn drive(
         *value = (*value + dir.signum() * step).clamp(lo, hi);
     }
     stepped(ui, id, value, range);
-    if r.double_clicked {
+    if r.double_clicked || r.pressed && (r.mods.ctrl || r.mods.cmd) {
         *value = reset;
     }
     r.held
