@@ -353,6 +353,10 @@ pub struct Shared {
     pub(crate) watched: AtomicBool,
     /// Audio thread load (`f32` bits): render time over block time, peak-held.
     pub(crate) cpu: AtomicU64,
+    /// Render time and the audio time it rendered, in nanoseconds, summed:
+    /// the meter shows their ratio over its window, as Kontakt does.
+    pub(crate) busy_ns: AtomicU64,
+    pub(crate) span_ns: AtomicU64,
     /// Voice blocks whose streamed samples were not read in time (played
     /// silent) plus script engine calls dropped by a full queue, summed over
     /// the parts' engines since each was created.
@@ -478,6 +482,8 @@ impl Default for Shared {
             audible: AtomicU64::new(0),
             watched: AtomicBool::new(false),
             cpu: AtomicU64::new(0),
+            busy_ns: AtomicU64::new(0),
+            span_ns: AtomicU64::new(0),
             dropouts: AtomicU64::new(0),
             underruns: Default::default(),
             plan: ArrayQueue::new(1),
@@ -2101,7 +2107,10 @@ impl PluginLogic for Sampler {
         }
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
-            let load = (started.elapsed().as_secs_f64() * rate / frames as f64) as f32;
+            let busy = started.elapsed();
+            p.shared.busy_ns.fetch_add(busy.as_nanos() as u64, Ordering::Relaxed);
+            p.shared.span_ns.fetch_add((frames as f64 * 1e9 / rate) as u64, Ordering::Relaxed);
+            let load = (busy.as_secs_f64() * rate / frames as f64) as f32;
             p.shared
                 .cpu
                 .fetch_max(u64::from(load.to_bits()), Ordering::Relaxed);
