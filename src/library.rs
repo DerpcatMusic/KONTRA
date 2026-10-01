@@ -430,7 +430,7 @@ fn list(dir: &Path) -> Listing {
         match ext {
             "nicnt" => out.nicnt = out.nicnt.take().or(Some(path)),
             "nkx" | "nkc" | "nkr" => out.monolith = true,
-            "nki" | "nkm" => out.presets += 1,
+            "nki" | "nkm" | crate::creator::NATIVE => out.presets += 1,
             "wav" | "ncw" | "aif" | "aiff" | "flac" | "ogg" => out.audio += 1,
             _ if import::is_multi(&path) => out.presets += 1,
             _ => {}
@@ -596,7 +596,7 @@ fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
         }
         let path = e.path();
         if e.file_type().is_file()
-            && (path.extension().is_some_and(|x| x.eq_ignore_ascii_case("nki")) || import::is_multi(path))
+            && (crate::creator::is_instrument(path) || import::is_multi(path))
         {
             out.push(e.into_path());
         }

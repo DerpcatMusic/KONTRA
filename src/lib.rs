@@ -11,6 +11,7 @@ pub mod engine;
 pub mod articulate;
 pub mod timing;
 pub mod fx;
+pub mod creator;
 #[cfg(feature="plugin")]
 mod artwork;
 #[cfg(feature="plugin")]

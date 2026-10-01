@@ -1525,6 +1525,7 @@ dependencies = [
  "clap-sys",
  "crossbeam-queue",
  "dirs",
+ "fastlz",
  "hound",
  "libc",
  "moose",
