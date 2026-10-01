@@ -32,7 +32,7 @@ These are local checks of specific patches, not guarantees for an entire library
 
 | Patch | Verified | Remaining limits |
 |---|---|---|
-| Vista Harp | All 2,000 zones load; two-part loading and finite playback pass; three interface modes render. | Import/modulation warnings remain; no reference sound comparison. |
+| Vista Harp | All 2,000 zones load; two-part loading and finite playback pass; three interface modes render. A targeted pedal-release render confirms four damper voices rather than eight duplicated voices, removing about 6 dB of extra release level. | Import/modulation warnings remain; recorded dynamics and full Kontakt sound parity have not been compared. |
 | Areia Full Ensemble — Core Techniques | Sustained and repeated same-pitch short notes in Channel mode retain their release ownership and stop after all inputs release. | Library-specific script warnings remain; broader articulation and host testing is ongoing. |
 | Una Corda Cotton / Felt / Pure | All three scripts initialize without diagnostics after menu-value normalization. Cotton's Space callback controls its convolution send; its Vectorized interface passes the UI audit. | Every control and preset variation has not been exercised. |
 | Analog Strings | All 95,624 zones load; interface and finite playback checks pass without streaming underruns in the measured workload. | Unsupported modulation, effect/parameter behavior, live meters, and other warnings remain. |
