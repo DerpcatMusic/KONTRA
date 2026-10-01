@@ -70,8 +70,9 @@ fn main() -> Result<()> {
   Some("audit-ksp") => audit_ksp(&args[2..])?,
   #[cfg(feature = "plugin")]
   Some("audit-ui") => kontakto::audit_ui(&args[2..])?,
+  Some("create-library") => create_library(&args[2..])?,
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-ksp [root...] [--json out.json]\nkontakto audit-ui [root...] [--shots DIR] [--json out.json]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-ksp [root...] [--json out.json]\nkontakto audit-ui [root...] [--shots DIR] [--json out.json]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]\nkontakto create-library <samples folder> [--name NAME] [--vendor NAME] [--out DIR] [--kontra-only|--kontakt-only]"),
  }
  Ok(())
 }
@@ -1150,6 +1151,7 @@ fn audit_patch(path: &Path) -> Result<()> {
             (serde_json::json!({"status":"FAIL","reason":format!("{e:#}")}), "failed")
         }
     };
+    trace.detail("audit", row.clone());
     row["diagnostics"] = (*trace.finish(status)).clone();
     println!("{row}");
     result.map(|_| ())
@@ -1376,6 +1378,40 @@ fn audit_ksp(args: &[String]) -> Result<()> {
     println!("{:>11} {:>11}  {:<18} gap", "instruments", "occurrences", "kind");
     for (gap, (kind, who, n)) in ranked {
         println!("{:>11} {:>11}  {:<18} {gap}", who.len(), n, kind);
+    }
+    Ok(())
+}
+
+/// Make a KONTRA library and a Kontakt library from a folder of samples.
+fn create_library(args: &[String]) -> Result<()> {
+    let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let source = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with("--") && (*i == 0 || !matches!(args[i - 1].as_str(), "--name" | "--vendor" | "--out")))
+        .map(|(_, a)| a)
+        .context("create-library requires a folder of samples")?;
+    let only = |flag: &str| args.iter().any(|a| a == flag);
+    let options = kontakto::creator::Options {
+        source: source.into(),
+        name: value("--name").unwrap_or_default(),
+        vendor: value("--vendor").unwrap_or_default(),
+        out: value("--out").map_or_else(|| std::path::PathBuf::from("."), Into::into),
+        kontra: !only("--kontakt-only"),
+        kontakt: !only("--kontra-only"),
+    };
+    let created = kontakto::creator::create(&options, &|step| eprintln!("{step}"))?;
+    for i in &created.instruments {
+        println!("{}: {} samples, {} groups, {} velocity layers, {} zones", i.name, i.samples, i.groups, i.layers, i.zones);
+        for issue in &i.issues {
+            println!("  check: {issue}");
+        }
+    }
+    for path in &created.skipped {
+        println!("skipped (not WAV/AIFF): {}", path.display());
+    }
+    for path in created.kontra.iter().chain(&created.kontakt) {
+        println!("wrote {}", path.display());
     }
     Ok(())
 }

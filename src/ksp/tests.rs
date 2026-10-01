@@ -89,6 +89,16 @@ fn control_ids_follow_declaration_order() {
 }
 
 #[test]
+fn unit_and_key_constants_have_small_values_and_keep_their_names() {
+    let mut host = HostState::default();
+    let source = "on init\ndeclare %per_unit[7]\ndeclare ui_knob $k(0,100,1)\ndeclare ui_label $l(1,1)\n%per_unit[$KNOB_UNIT_ST] := 5\nset_knob_unit($k,$KNOB_UNIT_HZ)\nset_key_color(61,$KEY_COLOR_RED)\nset_key_type(61,$NI_KEY_TYPE_CONTROL)\nset_control_par(get_ui_id($k),$CONTROL_PAR_UNIT,$KNOB_UNIT_MS)\nset_text($l,%per_unit[6] & get_control_par(get_ui_id($k),$CONTROL_PAR_UNIT) & get_key_color(61) & get_key_type(61) & $KEY_COLOR_BLACK)\nend on";
+    let ui = initialize_with_host(source, 0, 0, &mut host).unwrap();
+    assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "540120");
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_UNIT"), "$KNOB_UNIT_MS");
+    assert_eq!(host.keyboard[&61].color, Some(crate::ksp::Value::Text("$KEY_COLOR_RED".into())));
+}
+
+#[test]
 fn shared_host_services_are_scoped_and_transactional() {
     let mut host = HostState::default();
     let first = "on init\npgs_create_key(MIC_LEVEL,2)\npgs_set_key_val(MIC_LEVEL,1,73)\npgs_create_str_key(PRESET_NAME)\npgs_set_str_key_val(PRESET_NAME,\"Warm\")\nset_key_pressed(60,1)\nset_key_pressed_support(1)\nset_key_pressed(61,1)\nset_key_name(61,\"Keyswitch\")\nset_key_color(61,$KEY_COLOR_RED)\nset_key_type(61,$NI_KEY_TYPE_CONTROL)\nset_listener($NI_SIGNAL_TIMER_MS,1000)\nchange_listener_par($NI_SIGNAL_TIMER_MS,2000)\nend on";
@@ -1266,4 +1276,145 @@ fn zone_sized_tables_and_compilation_cache_follow_the_instrument() {
         assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), zones.to_string());
         loaded.push(rt);
     }
+}
+
+#[test]
+fn modulator_lookups_match_exactly_and_report_only_near_misses() {
+    let run = |calls: &str| {
+        let script = format!("on init\ndeclare ui_label $l(1,1)\nset_text($l, {calls})\nend on");
+        let mut engine = LogEngine::new(vec!["a".into()], 48_000.0);
+        engine.modulators = vec![vec![
+            ("ENV_FLEX".into(), vec!["ENV_FLEX_VOLUME".into()]),
+            ("CC_VOLUME".into(), vec!["CC_VOLUME".into(), "Dyn. Range".into()]),
+        ]];
+        let (rt, _) = Runtime::with_scripts(&[script.as_str()], &mut engine, 8, Vec::new());
+        (prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), rt.diagnostics())
+    };
+    // A framework script asking for an AHDSR the group lacks: Kontakt's business.
+    let (text, diagnostics) = run(
+        "find_mod(0, \"CC_VOLUME\") & find_target(0, 1, \"Dyn. Range\") & find_mod(0, \"ENV_AHDSR\") & get_mod_idx(0, \"ENV_AHDSR\")",
+    );
+    assert_eq!((text.as_str(), diagnostics), ("110-1", Vec::<String>::new()));
+    let (text, diagnostics) = run("find_target(0, 1, \"dyn. range \")");
+    assert_eq!(text, "0");
+    assert!(diagnostics.iter().any(|d| d.contains("find_mod/find_target")), "{diagnostics:?}");
+}
+
+#[test]
+fn a_later_ui_control_callback_replaces_the_earlier() {
+    let script = "on init\ndeclare ui_switch $tab\ndeclare ui_label $l(1,1)\nend on\non ui_control($tab)\nset_text($l, \"generic\")\nend on\non ui_control($tab)\nset_text($l, \"tab\")\nend on";
+    let mut rig = Rig::new(&[script]);
+    assert_eq!(rig.rt.diagnostics(), Vec::<String>::new());
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert_eq!(prop(&rig.rt.interface(0), 1, "$CONTROL_PAR_TEXT"), "tab");
+}
+
+#[test]
+fn load_array_reads_library_files_in_init() {
+    let root = std::env::temp_dir().join(format!("kontakto-nka-{}", std::process::id()));
+    let meta = root.join("Library Data").join("Meta");
+    std::fs::create_dir_all(&meta).unwrap();
+    std::fs::create_dir_all(root.join("Instruments")).unwrap();
+    std::fs::create_dir_all(root.join("Data")).unwrap();
+    std::fs::write(root.join("Lib.nicnt"), []).unwrap();
+    std::fs::write(meta.join("ids.nka"), "%ids\n7\n-3\n").unwrap();
+    std::fs::write(meta.join("names.nka"), "!names\nWarm\n\n").unwrap();
+    std::fs::write(root.join("Data").join("table.nka"), "%table\n5\n").unwrap();
+    std::fs::write(meta.join("wrong.nka"), "%other\n1\n").unwrap();
+    let script = "on init
+declare ui_label $l(1,1)
+declare %ids[3]
+declare !names[2]
+declare %table[1]
+declare %other_name[1]
+declare $ok
+$ok := load_array_str(%ids, get_folder($GET_FOLDER_LIBRARY_DIR) & \"library data/meta/IDS.nka\")
+$ok := load_array_str(!names, get_folder($GET_FOLDER_LIBRARY_DIR) & \"Library Data/Meta/names.nka\")
+$ok := load_array(%table, 1)
+$ok := load_array_str(%other_name, get_folder($GET_FOLDER_LIBRARY_DIR) & \"Library Data/Meta/wrong.nka\")
+$ok := load_array(%other_name, 1)
+set_text($l, %ids[0] & %ids[1] & %ids[2] & !names[0] & %table[0] & %other_name[0] & get_folder($GET_FOLDER_PATCH_DIR))
+end on";
+    let mut engine = LogEngine::new(vec!["a".into()], 48_000.0);
+    engine.instrument = Some(root.join("Instruments").join("Lib.nki"));
+    let (rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    let patch = format!("{}/", root.join("Instruments").display());
+    // A missing file or another array's file loads nothing, as in Kontakt.
+    assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), format!("7-30Warm50{patch}"));
+    assert_eq!(rt.diagnostics(), Vec::<String>::new());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// `vm::hot`, the integer loop with its chained ops, runs note callbacks
+/// exactly like the op-at-a-time reference: same calls, same reports, and
+/// preempted by the block budget at the same points.
+#[test]
+fn integer_loop_matches_the_reference_interpreter() {
+    let script = "on init
+declare %a[64]
+declare %m[64]
+declare $r
+declare $i
+declare $j
+declare $k
+declare $sum
+declare polyphonic $p
+declare ui_label $label(1,1)
+while ($i < 64)
+  %a[$i] := ($i * 7) mod 13
+  inc($i)
+end while
+end on
+on note
+$p := $EVENT_NOTE mod 8
+$sum := 0
+$k := 0
+while ($k < 2500)
+  $i := 0
+  while ($i <= 16)
+    $r := $i mod 8
+    if (%a[$i] = 3)
+      inc($sum)
+    end if
+    if (%a[$p] > %m[8 * $r + $j] + 1)
+      $sum := $sum + %a[$i + $k]
+    end if
+    if (%m[8 * $j + $r] # 0 and $EVENT_NOTE > 10)
+      $sum := $sum - 1
+    end if
+    %m[8 * $r + $j] := $sum mod 5
+    $sum := $sum + $r
+    inc($i)
+  end while
+  $j := $k mod 8
+  set_text($label, $k)
+  if ($k mod 500 = 0)
+    play_note($EVENT_NOTE + 1, 100, 0, 1000)
+  end if
+  inc($k)
+end while
+set_text($label, $sum)
+end on";
+    let run = |reference: bool| {
+        super::vm::REFERENCE.set(reference);
+        let mut engine = LogEngine::new(vec!["a".into()], 48_000.0);
+        let (mut rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let mut log = Vec::new();
+        for key in [60, 67] {
+            rt.note_on(&mut engine, 0, key, 100);
+            for _ in 0..8 {
+                rt.process(&mut engine, 128);
+                let at = prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT");
+                log.push(format!("{at} {:?}", engine.calls));
+                engine.calls.clear();
+            }
+        }
+        (log, rt.diagnostics(), prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"))
+    };
+    let (hot, reference) = (run(false), run(true));
+    super::vm::REFERENCE.set(false);
+    assert!(hot.1.iter().any(|d| d.contains("out of bounds")), "{:?}", hot.1);
+    assert_eq!(hot, reference);
 }

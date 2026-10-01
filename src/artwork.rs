@@ -40,7 +40,7 @@ pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>
             for path in candidates {
                 let mut bytes = Vec::new();
                 if File::open(path)
-                    .and_then(|f| f.take(8 * 1024 * 1024).read_to_end(&mut bytes))
+                    .and_then(|mut f| f.read_to_end(&mut bytes))
                     .is_err()
                 {
                     continue;
@@ -291,7 +291,6 @@ impl Layout {
     }
 }
 
-/// `<dir>/Resources/<name>` and `<dir>/<name>`, matching each folder name
 fn wallpaper(scripts: &[String]) -> Option<String> {
     scripts
         .iter()
@@ -319,12 +318,12 @@ fn decode_report(bytes: &[u8]) -> Result<Image, String> {
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(|e| format!("PNG header: {e}"))?;
     let info = reader.info();
-    if u64::from(info.width) * u64::from(info.height) > 32 * 1024 * 1024 / 4 {
-        return Err("Decoded PNG exceeds the 32 MiB RGBA limit".into());
+    if u64::from(info.width) * u64::from(info.height) > 64 * 1024 * 1024 / 4 {
+        return Err("Decoded PNG exceeds the 64 MiB RGBA limit".into());
     }
     let size = reader.output_buffer_size().ok_or("PNG dimensions overflow")?;
-    if size > 32 * 1024 * 1024 {
-        return Err("Decoded PNG exceeds the 32 MiB limit".into());
+    if size > 64 * 1024 * 1024 {
+        return Err("Decoded PNG exceeds the 64 MiB limit".into());
     }
     let mut data = vec![0; size];
     let info = reader.next_frame(&mut data).map_err(|e| format!("PNG pixels: {e}"))?;

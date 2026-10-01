@@ -404,7 +404,10 @@ struct Listing {
 
 fn list(dir: &Path) -> Listing {
     let mut out = Listing::default();
-    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => { crate::diagnostics::resource(dir, "library directory", &e.to_string()); return out; }
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_lowercase();
@@ -426,7 +429,7 @@ fn list(dir: &Path) -> Listing {
         match ext {
             "nicnt" => out.nicnt = out.nicnt.take().or(Some(path)),
             "nkx" | "nkc" | "nkr" => out.monolith = true,
-            "nki" | "nkm" => out.presets += 1,
+            "nki" | "nkm" | crate::creator::NATIVE => out.presets += 1,
             "wav" | "ncw" | "aif" | "aiff" | "flac" | "ogg" => out.audio += 1,
             _ if import::is_multi(&path) => out.presets += 1,
             _ => {}
@@ -576,6 +579,9 @@ fn words(text: &str) -> Vec<&str> {
 
 /// Presets in a library folder, its sample folders left unread.
 fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
+    let mut trace = crate::diagnostics::LoadTrace::new(dir, 0, None);
+    trace.detail("operation", "preset_catalog");
+    trace.stage("catalog");
     let walk = walkdir::WalkDir::new(dir).follow_links(false).into_iter().filter_entry(|e| {
         !(e.depth() > 0 && e.file_type().is_dir() && {
             let name = e.file_name().to_string_lossy().to_lowercase();
@@ -583,20 +589,26 @@ fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
         })
     });
     let mut out = Vec::new();
-    for e in walk.flatten() {
+    for entry in walk {
         if progress.canceled() {
             break;
         }
+        let e = match entry {
+            Ok(e) => e,
+            Err(e) => { trace.issue("catalog", "directory_unreadable", e.to_string()); continue; }
+        };
         if e.file_type().is_dir() {
             progress.folders.fetch_add(1, Ordering::Relaxed);
         }
         let path = e.path();
         if e.file_type().is_file()
-            && (path.extension().is_some_and(|x| x.eq_ignore_ascii_case("nki")) || import::is_multi(path))
+            && (crate::creator::is_instrument(path) || import::is_multi(path))
         {
             out.push(e.into_path());
         }
     }
+    trace.detail("presets", out.len());
+    trace.finish(if progress.canceled() { "canceled" } else { "loaded" });
     out
 }
 
@@ -607,6 +619,9 @@ pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)
     let mut per_root = Vec::new();
     let mut seen = BTreeSet::new();
     for root in roots {
+        let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&root.path), 0, None);
+        trace.detail("operation", "library_discovery");
+        trace.stage("discover");
         let before = libraries.len();
         for c in detect(root, progress) {
             let key = std::fs::canonicalize(&c.dir).unwrap_or(c.dir.clone());
@@ -615,6 +630,7 @@ pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)
             }
             let found = presets(&c.dir, progress);
             if progress.canceled() {
+                trace.finish("canceled");
                 return None;
             }
             if found.is_empty() {
@@ -639,6 +655,8 @@ pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)
             });
             files.extend(found);
         }
+        trace.detail("libraries", libraries.len() - before);
+        trace.finish(if progress.canceled() { "canceled" } else { "cataloged" });
         per_root.push(libraries.len() - before);
     }
     let mut shelf = Shelf::new(libraries);

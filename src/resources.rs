@@ -35,6 +35,11 @@ pub fn linked_script(instrument: &Path, name: &str) -> Result<Option<Vec<u8>>, S
     Resources::of(instrument, "scripts").read(file)
 }
 
+/// Array data from the library's loose or archived Resources/data folder.
+pub fn data_file(instrument: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
+    Resources::of(instrument, "data").read(name)
+}
+
 /// The impulse response `load_ir_sample` names: an absolute path, or a file
 /// in the library's `Resources/ir_samples`, loose or in its resource
 /// container. Names match without case; a name without an extension
@@ -128,8 +133,11 @@ impl Resources {
 
     /// The bytes of `<folder>/<file>`, if the library has it.
     pub(crate) fn read(&mut self, file: &str) -> Result<Option<Vec<u8>>, String> {
+        // Analog Strings' macro film strips expand to 37 MiB. Pictures get
+        // more room than scripts/data; reject oversized resources before decoding.
+        let limit = if self.folder == "pictures" { 64 << 20 } else { 32 << 20 };
         if let Some(path) = self.files.get(&file.to_lowercase()) {
-            return read_bounded(path).map(Some);
+            return read_with_limit(path, limit).map(Some);
         }
         let member = format!("Resources/{}/{file}", self.folder);
         for n in 0.. {
@@ -142,8 +150,8 @@ impl Resources {
             let Some(entry) = archive.find(&member) else {
                 continue;
             };
-            if entry.size > 32 * 1024 * 1024 {
-                return Err(format!("{file} exceeds 32 MiB"));
+            if entry.size > limit {
+                return Err(format!("{file} exceeds the {} MiB resource limit", limit >> 20));
             }
             let key = match &self.key {
                 _ if !entry.encoded || entry.key_index == 0xff => &None,
@@ -204,12 +212,15 @@ impl Resources {
 }
 
 pub(crate) fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
+    read_with_limit(path, 32 << 20)
+}
+fn read_with_limit(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     File::open(path)
-        .and_then(|f| f.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes))
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > 32 * 1024 * 1024 {
-        return Err("Resource exceeds 32 MiB".into());
+        .and_then(|f| f.take(limit + 1).read_to_end(&mut bytes))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{}: resource exceeds {} MiB", path.display(), limit >> 20));
     }
     Ok(bytes)
 }

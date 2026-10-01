@@ -52,6 +52,8 @@ fn kind_name(k: Kind) -> &'static str {
         Kind::Table => "table",
         Kind::TextEdit => "text edit",
         Kind::Area => "mouse area",
+        Kind::Meter => "level meter",
+        Kind::Waveform => "waveform",
         Kind::Other => "other",
     }
 }
@@ -68,6 +70,8 @@ fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwor
         let named = prop(c, "$CONTROL_PAR_PICTURE");
         if !named.is_empty() && !pictures.contains_key(named) {
             found.add("missing picture");
+        } else if s.kind == Kind::Waveform {
+            found.add("waveform: zone wave is not drawn");
         } else if s.kind == Kind::Other && crate::diagnostics::widget_limit(&c.kind).is_none() {
             found.add(format!("unsupported UI widget: {}", c.kind));
         }
@@ -77,17 +81,20 @@ fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwor
         if inside < 0.5 * s.w * s.h {
             found.add(format!("out of bounds: {kind}"));
         }
-        let (said, ..) = caption_of(c, s.kind, value(c));
-        if !said.trim().is_empty() && super::cover::advance(&said, FONT * 0.75) > s.w - 4. {
+        let (said, _, top) = caption_of(c, s.kind, value(c));
+        // Text set below the control's foot ($CONTROL_PAR_TEXTPOS_Y 500:
+        // Areia's output buttons) is clipped away, as Kontakt hides it.
+        let said = if top.is_some_and(|y| y >= s.h) { String::new() } else { said };
+        // A label breaks its lines and wraps where it is tall enough: it
+        // overflows when a line is wider than it, or the lines taller.
+        let lines = if s.kind == Kind::Label {
+            perf_view::break_lines(&said, s.w - 4., FONT * 0.75, s.h >= 2. * perf_view::LINE)
+        } else {
+            vec![said]
+        };
+        let wide = lines.iter().any(|l| !l.trim().is_empty() && super::cover::advance(l, FONT * 0.75) > s.w - 4.);
+        if wide || lines.len() > 1 && lines.len() as f64 * perf_view::LINE > s.h + 1. {
             found.add(format!("text overflow: {kind}"));
-        }
-        if let Some(t) = c.properties.get("$CONTROL_PAR_TEXT").and_then(|v| match v {
-            crate::ksp::Value::Text(t) => Some(t),
-            _ => None,
-        }) && t.trim_end().contains(['\n', '\r'])
-            && s.kind == Kind::Label
-        {
-            found.add("multi-line label drawn on one line");
         }
     }
     // Two controls taking the same clicks: more than half of the larger.

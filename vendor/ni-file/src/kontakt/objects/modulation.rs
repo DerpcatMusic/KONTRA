@@ -13,7 +13,7 @@ use crate::{
 
 /// Target parameters stored without a module slot byte. Every other
 /// parameter (`eqGain1`, `filterCutoff`, `ahdsr_attack`, ...) carries one.
-const GROUP_TARGETS: [&str; 3] = ["volume", "pitch", "playPos"];
+const GROUP_TARGETS: [&str; 6] = ["volume", "pan", "pitch", "playPos", "loopStart", "loopLength"];
 const MAX_TARGETS: u32 = 16;
 const MAX_NAME_BYTES: u32 = 4096;
 const SHAPER_TABLE_LEN: usize = 128;

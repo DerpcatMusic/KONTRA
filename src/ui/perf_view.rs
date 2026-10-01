@@ -42,6 +42,11 @@ pub enum Kind {
     TextEdit,
     /// Takes the pointer in Kontakt, shows nothing: `ui_mouse_area`.
     Area,
+    /// `ui_level_meter`: Kontakt draws it from its colours, never a picture.
+    Meter,
+    /// `ui_waveform`: its frame and zero line; the attached zone's wave
+    /// is not drawn yet.
+    Waveform,
     /// Any other kind (`ui_xy`, `ui_waveform`, a meter): a plain box.
     Other,
 }
@@ -59,6 +64,8 @@ impl Kind {
             "ui_table" => Self::Table,
             "ui_text_edit" => Self::TextEdit,
             "ui_mouse_area" => Self::Area,
+            "ui_level_meter" => Self::Meter,
+            "ui_waveform" => Self::Waveform,
             _ => Self::Other,
         }
     }
@@ -169,20 +176,18 @@ pub fn scale(avail: f64, width: f64, setting: f32) -> f64 {
 // ponytail: finds each parent by a scan; index the IDs if views with
 // thousands of nested controls show up.
 pub(super) fn placed(interface: &Interface, n: usize) -> (f64, f64, bool) {
-    let (mut x, mut y, mut at) = (0., 0., n);
+    let (mut x, mut y, mut at, mut hidden) = (0., 0., n, false);
     // A valid parent chain cannot be longer than the control list.
     for _ in 0..interface.controls.len() {
         let c = &interface.controls[at];
-        if int(c, "$CONTROL_PAR_HIDE").unwrap_or(0) & HIDE_WHOLE != 0 {
-            return (x, y, true);
-        }
+        hidden |= int(c, "$CONTROL_PAR_HIDE").unwrap_or(0) & HIDE_WHOLE != 0;
         x += f64::from(int(c, "$CONTROL_PAR_POS_X").unwrap_or(0));
         y += f64::from(int(c, "$CONTROL_PAR_POS_Y").unwrap_or(0));
         let parent = int(c, "$CONTROL_PAR_PARENT_PANEL")
             .and_then(|id| interface.controls.iter().position(|p| p.id == id && p.kind == "ui_panel"));
         match parent {
             Some(p) if p != at => at = p,
-            _ => return (x, y, false),
+            _ => return (x, y, hidden),
         }
     }
     // Cyclic panels cannot be placed; keep their children out of the view.
@@ -481,7 +486,13 @@ pub(super) fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, O
     let own = prop(c, "$CONTROL_PAR_TEXT").to_owned();
     let words = match kind {
         Kind::Label | Kind::Switch | Kind::Button => own,
-        Kind::Menu => c.menu.iter().find(|(_, v)| f64::from(*v) == value).map(|(t, _)| t.clone()).unwrap_or_default(),
+        // A divider ("-----", "--- PASTE ---") that shares the value a
+        // script parks its menu on (-1) is no choice to show.
+        Kind::Menu => (c.menu.iter())
+            .find(|(_, v)| f64::from(*v) == value)
+            .map(|(t, _)| t.clone())
+            .filter(|t| !t.trim().starts_with("--"))
+            .unwrap_or_default(),
         Kind::Value if hide & HIDE_VALUE != 0 => String::new(),
         Kind::Value if hide & HIDE_TITLE != 0 || own.is_empty() => format!("{value}"),
         Kind::Value => format!("{own} {value}"),
@@ -494,18 +505,65 @@ pub(super) fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, O
     let default = if kind == Kind::Label { 0 } else { 1 };
     let align = int(c, "$CONTROL_PAR_TEXT_ALIGNMENT").unwrap_or(default);
     let top = int(c, "$CONTROL_PAR_TEXTPOS_Y").map(f64::from);
-    (keep_spaces(&words), align, top)
+    // A label keeps its lines (add_text_line, or a script's "\n").
+    let words = if kind == Kind::Label {
+        let lines = words.replace("\r\n", "\n").replace('\r', "\n").replace("\\n", "\n");
+        lines.split('\n').map(keep_spaces).collect::<Vec<_>>().join("\n").trim_end().to_owned()
+    } else {
+        keep_spaces(&words)
+    };
+    (words, align, top)
 }
 
-/// Text on a control `w` by `h` (scaled), aligned as the script asked.
-fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, ink: impl Into<Fill>) -> El {
-    let t = text(words.clone()).text_size(fit(&words, w - 4. * s, FONT * s)).fill(ink).lines(1).min_w(0);
+/// One line of a label's text, in authored points.
+pub(super) const LINE: f64 = FONT * 1.25;
+
+/// `text` as the lines a label `room` points wide shows at `size`: one per
+/// newline and, when `wrap`, a new one before a word that would run past
+/// the edge. A word wider than the room keeps a line of its own.
+pub fn break_lines(text: &str, room: f64, size: f64, wrap: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line: Option<String> = None;
+        // Split on single spaces so a script's padding stays as it spaced it.
+        for word in paragraph.split(' ') {
+            line = Some(match line {
+                None => word.to_owned(),
+                Some(l) if wrap && !l.trim().is_empty() && super::cover::advance(&format!("{l} {word}"), size) > room => {
+                    out.push(l);
+                    word.to_owned()
+                }
+                Some(l) => format!("{l} {word}"),
+            });
+        }
+        out.push(line.unwrap_or_default());
+    }
+    out
+}
+
+/// Text on a control `w` by `h` (scaled), aligned as the script asked; a
+/// label's on as many lines as its newlines and its height make, from
+/// `top` or centred.
+#[allow(clippy::too_many_arguments)]
+fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, ink: impl Into<Fill>, label: bool) -> El {
+    let ink: Fill = ink.into();
     let justify = match align {
         1 => Justify::Center,
         2 => Justify::End,
         _ => Justify::Start,
     };
-    let line = row![t].justify(justify).align(Align::Center).w(w).pad((2. * s, 0.));
+    let lh = LINE * s;
+    let lines = if label { break_lines(&words, w - 4. * s, FONT * s, h >= 2. * lh) } else { vec![words] };
+    let one = |t: String| {
+        let size = fit(&t, w - 4. * s, FONT * s);
+        row![text(t).text_size(size).fill(ink.clone()).lines(1).min_w(0)].justify(justify).align(Align::Center).w(w).pad((2. * s, 0.))
+    };
+    if lines.len() > 1 {
+        let tall = lh * lines.len() as f64;
+        let block = col(lines.into_iter().map(|t| one(t).h(lh))).gap(0).w(w).h(tall);
+        return block.at(0., top.map_or((h - tall) / 2., |y| y * s));
+    }
+    let line = one(lines.into_iter().next().unwrap_or_default());
     match top {
         Some(y) => line.h(FONT * s * 1.4).at(0., y * s),
         None => line.h(h).at(0., 0.),
@@ -710,19 +768,19 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         said = name.to_owned();
     }
     if !said.is_empty() {
-        layers.push(words(said, align, top, w, h, s, own_ink.clone()));
+        layers.push(words(said, align, top, w, h, s, own_ink.clone(), shown.kind == Kind::Label));
     }
     if shown.kind == Kind::Knob && !pictured {
         // Kontakt's own knob: its name over it, its value under it.
         let name = prop(c, "$CONTROL_PAR_TEXT");
         let name = if name.is_empty() { c.variable.trim_start_matches(['$', '~']) } else { name };
         if hide & HIDE_TITLE == 0 {
-            layers.push(words(keep_spaces(name), 1, Some(0.), w, h, s, own_ink.clone()));
+            layers.push(words(keep_spaces(name), 1, Some(0.), w, h, s, own_ink.clone(), false));
         }
         if hide & HIDE_VALUE == 0 {
             let label = prop(c, "$CONTROL_PAR_LABEL");
             let shown_value = if label.is_empty() { format!("{}", now.round()) } else { keep_spaces(label) };
-            layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s, own_ink));
+            layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s, own_ink, false));
         }
     }
     let mut el = stack(layers).w(w).h(h).clip();
@@ -732,7 +790,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         && shown.w * s >= 16.
         && shown.kind != Kind::Knob
     {
-        let tag = words(name.to_owned(), 1, None, (shown.w * s).max(72. * s), FONT * s * 1.4, s, Role::Dim);
+        let tag = words(name.to_owned(), 1, None, (shown.w * s).max(72. * s), FONT * s * 1.4, s, secondary(), false);
         let off = (w - (shown.w * s).max(72. * s)) / 2.;
         el = stack![el, tag.at(off, h)].w(w).h(h);
     }
@@ -779,6 +837,18 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
     };
     let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
     let bg = hide & HIDE_BG == 0;
+    // A meter's own colours, 0AARRGGBBh; a script that leaves the alpha
+    // out means it opaque.
+    let colour = |k: &str| {
+        int(c, k).map(|v| {
+            let v = v as u32;
+            let byte = |shift: u32| ((v >> shift) & 0xff) as f32 / 255.;
+            let a = if v >> 24 == 0 { 1. } else { byte(24) };
+            Color::srgba(byte(16), byte(8), byte(0), a)
+        })
+    };
+    let meter = (colour("$CONTROL_PAR_BG_COLOR"), colour("$CONTROL_PAR_OFF_COLOR"));
+    let wave = colour("$CONTROL_PAR_WAVE_COLOR");
     canvas(move |z| {
         let (w, h) = (z.width, z.height);
         let weight = (1.5 * s).max(1.);
@@ -845,7 +915,7 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
                 if w > 30. * s {
                     d.push(Draw::fill(
                         DrawPath::polyline([Point::new(x, y - k / 2.), Point::new(x + 2. * k, y - k / 2.), Point::new(x + k, y + k / 2.)], true),
-                        Role::Dim.alpha(1.),
+                        secondary(),
                     ));
                 }
             }
@@ -863,6 +933,19 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
             // A box Kontakt draws for a meter, a waveform, a pad: outlined
             // only, so it covers nothing.
             Kind::Other if bg => d.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), edge, 1.)),
+            // Unlit, as at silence: its background, its off colour inside.
+            Kind::Meter => {
+                d.push(Draw::fill(rect(0., 0., w, h), meter.0.map_or(Role::Field.alpha(1.), Fill::from)));
+                if let Some(off) = meter.1 {
+                    d.push(Draw::fill(rect(0., 0., w, h), off));
+                }
+            }
+            Kind::Waveform => {
+                if bg {
+                    d.push(Draw::fill(rect(0., 0., w, h), meter.0.map_or(Role::Field.alpha(1.), Fill::from)));
+                }
+                d.push(Draw::fill(rect(0., (h / 2.).round(), w, 1.), wave.map_or(secondary(), Fill::from)));
+            }
             Kind::Label | Kind::Area | Kind::Other => {}
         }
         d
@@ -882,6 +965,19 @@ mod tests {
             properties: props.iter().map(|(k, v)| (format!("$CONTROL_PAR_{k}"), v.clone())).collect::<BTreeMap<_, _>>(),
             menu: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_menu_parked_on_a_divider_shows_nothing() {
+        let menu = |items: &[(&str, i32)]| Control {
+            menu: items.iter().map(|(t, v)| ((*t).to_owned(), *v)).collect(),
+            ..control("ui_menu", &[])
+        };
+        let m = menu(&[("------------ PASTE ------------", -1), ("Layer 1", 0)]);
+        assert_eq!(caption_of(&m, Kind::Menu, -1.).0, "");
+        assert_eq!(caption_of(&m, Kind::Menu, 0.).0, "Layer 1");
+        assert_eq!(Kind::of("ui_level_meter"), Kind::Meter);
+        assert_eq!(Kind::of("ui_waveform"), Kind::Waveform);
     }
 
     fn picture(w: u32, h: u32, frames: usize, resizable: bool) -> Arc<Picture> {
@@ -1014,6 +1110,20 @@ mod tests {
         assert_eq!(caption_of(&label, Kind::Label, 0.), ("Reverb".into(), 0, Some(3.)));
         let edit = control("ui_value_edit", &[("TEXT", Value::Text("Voices".into())), ("TEXT_ALIGNMENT", Value::Int(2))]);
         assert_eq!(caption_of(&edit, Kind::Value, 4.), ("Voices 4".into(), 2, None));
+    }
+
+    #[test]
+    fn labels_break_at_newlines_and_wrap_when_tall() {
+        let label = control("ui_label", &[("TEXT", Value::Text("Mic\r\nPosition\\nClose".into()))]);
+        assert_eq!(caption_of(&label, Kind::Label, 0.).0, "Mic\nPosition\nClose", "add_text_line, CRLF and a script's \\n");
+        let switch = control("ui_switch", &[("TEXT", Value::Text("On\nOff".into()))]);
+        assert_eq!(caption_of(&switch, Kind::Switch, 0.).0, "On Off", "only labels keep lines");
+        let a = crate::ui::cover::advance("a", FONT);
+        let room = crate::ui::cover::advance("aa aa", FONT) + a / 2.;
+        assert_eq!(break_lines("aa aa aa", room, FONT, true), ["aa aa", "aa"], "wraps before the word that runs past the edge");
+        assert_eq!(break_lines("aa aa aa", room, FONT, false), ["aa aa aa"], "too short to wrap: one line");
+        assert_eq!(break_lines("aaaaaaaaaa b", room, FONT, true), ["aaaaaaaaaa", "b"], "a long word keeps its own line");
+        assert_eq!(break_lines("x\n\n  y", 1000., FONT, true), ["x", "", "  y"], "blank lines and padding kept");
     }
 
     #[test]

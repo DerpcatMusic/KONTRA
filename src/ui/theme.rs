@@ -80,6 +80,12 @@ pub fn hairline() -> Fill {
     Role::Ink.alpha(0.08)
 }
 
+/// Secondary text and glyphs: one solid grey, never ink faded by alpha, so
+/// what is behind never shows through a word.
+pub fn secondary() -> Fill {
+    Fill::from(Color::oklch(0.72, 0., 0.))
+}
+
 /// A value's fill on a track or a knob: neutral, brighter than the track.
 pub fn value_ink(lift: f32) -> Color {
     Color::oklch(0.78 + 0.1 * lift, 0., 0.)
@@ -180,7 +186,7 @@ pub fn vrule() -> El {
 pub fn section(label: &str) -> El {
     caption(label.to_uppercase())
         .text_size(SMALL - 1.)
-        .fill(Role::Dim)
+        .fill(secondary())
         .text_weight(Weight::SEMIBOLD)
         .lines(1)
         .min_w(0)
@@ -233,7 +239,7 @@ pub fn action(ui: &mut Ui, id: impl Into<Id>, label: &str, selected: bool) -> (b
     let el = row![
         body(label.to_owned())
             .text_size(TEXT)
-            .fill(if selected { Role::Ink } else { Role::Dim })
+            .fill(if selected { Fill::from(Role::Ink) } else { secondary() })
             .lines(1)
             .min_w(0)
     ]
@@ -259,7 +265,7 @@ pub fn latch(ui: &mut Ui, id: impl Into<Id>, label: &str, name: &str, on: bool) 
         body(label.to_owned())
             .text_size(SMALL)
             .text_weight(Weight::SEMIBOLD)
-            .fill(if on { Role::Ink } else { Role::Dim })
+            .fill(if on { Fill::from(Role::Ink) } else { secondary() })
             .lines(1)
             .min_w(0),
         spacer(),
@@ -453,11 +459,7 @@ pub fn icon_button(ui: &mut Ui, id: impl Into<Id>, icon: Icon, name: &str, on: b
     let id: Id = id.into();
     let hit = ui.get(id.clone()).activated();
     let hover = ui.state(id.clone()).hover as f32;
-    let ink = if on {
-        Role::Ink.alpha(1.)
-    } else {
-        Role::Ink.alpha(0.6 + 0.4 * hover)
-    };
+    let ink = if on || hover > 0.5 { Fill::from(Role::Ink) } else { secondary() };
     let el = stack![glyph(icon, TEXT + TIGHT, ink).centered()]
         .square(CONTROL)
         .when(on, |e| e.fill(Role::Raised))
@@ -467,6 +469,14 @@ pub fn icon_button(ui: &mut Ui, id: impl Into<Id>, icon: Icon, name: &str, on: b
         .tip(name.to_owned())
         .id(id);
     (hit, interactive(el, on))
+}
+
+/// An [`icon_button`] that does nothing now: its glyph in a solid dark grey.
+pub fn dead_icon(icon: Icon, name: &str) -> El {
+    stack![glyph(icon, TEXT + TIGHT, Fill::from(Color::oklch(0.42, 0., 0.))).centered()]
+        .square(CONTROL)
+        .disabled()
+        .named(name.to_owned())
 }
 
 /// A view switch: ink when current with a 1 px accent underline, dim otherwise.
@@ -483,7 +493,7 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool,
         spacer(),
         body(label.to_owned())
             .text_size(TEXT)
-            .fill(if current { Role::Ink } else { Role::Dim })
+            .fill(if current { Fill::from(Role::Ink) } else { secondary() })
             .lines(1),
         spacer(),
         block(Len::Pct(100.), 1).fill(underline)
@@ -511,7 +521,7 @@ pub fn dropdown(ui: &mut Ui, id: impl Into<Id>, text: &str, name: &str) -> (bool
             .lines(1)
             .flex(1)
             .min_w(0),
-        glyph(Icon::Down, TEXT, Role::Dim.alpha(1.))
+        glyph(Icon::Down, TEXT, secondary())
     ]
     .gap(TIGHT)
     .align(Align::Center)
@@ -537,12 +547,22 @@ pub fn number(
     range: RangeInclusive<f64>,
     display: String,
 ) -> El {
+    let id: Id = id.into();
     let reserve = display.clone();
-    let c = drag_value(ui, id, label, value, range).size(S);
+    // MUI's box drags sideways; ours goes up and down like a knob (up
+    // raises, Shift for fine): its sideways step is undone, ours applied.
+    let before = *value;
+    let c = drag_value(ui, id.clone(), label, value, range.clone()).size(S);
+    if ui.get(id.clone()).dragged {
+        *value = before;
+        ui.drag(id.clone(), value, range, TRAVEL, true);
+        grip(id.as_str());
+    }
     row![
-        caption(label).fill(Role::Dim).lines(1).flex(1).min_w(0),
+        caption(label).fill(secondary()).lines(1).flex(1).min_w(0),
         c.el.value_text(display)
             .el()
+            .cursor(Cursor::ResizeV)
             .h(CONTROL)
             .reserve(reserve)
             .min_w(CONTROL * 2.)
@@ -631,6 +651,30 @@ pub fn wheel_taken() -> bool {
     WHEELED.with(|w| w.replace(false))
 }
 
+thread_local! {
+    /// The control a drag last turned. Window threads may host several
+    /// editors; each asks its own `Ui` whether that ID is held there.
+    static GRIPPED: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// `id` is being dragged: the pointer hides until it lets go.
+pub fn grip(id: &str) {
+    GRIPPED.with(|g| {
+        if *g.borrow() != id {
+            *g.borrow_mut() = id.to_owned();
+        }
+    });
+}
+
+/// Whether the pointer hides now, as Kontakt's does: a knob, slider or
+/// number is being dragged. The window brings it back where it hid.
+pub fn pointer_hidden(ui: &Ui) -> bool {
+    GRIPPED.with(|g| {
+        let id = g.borrow();
+        !id.is_empty() && ui.get(id.as_str()).held
+    })
+}
+
 /// Pointer, wheel and keys on a continuous control `id`, as Kontakt's: drag
 /// along `vertical` (up or right increases) across `travel` px, Shift for
 /// fine; wheel and arrows step; double-click or Ctrl/Cmd-click resets.
@@ -645,6 +689,9 @@ pub fn drive(
 ) -> bool {
     let (lo, hi) = (*range.start(), *range.end());
     let r = ui.get(id);
+    if r.dragged {
+        grip(id);
+    }
     ui.drag(id, value, range.clone(), travel, vertical);
     if let Some(wheel) = ui.wheel(id) {
         WHEELED.with(|w| w.set(true));
@@ -964,7 +1011,7 @@ pub fn pan_wedge(ui: &mut Ui, id: &str, pan: &mut f64) -> El {
     .h(TIGHT * 2.)
     .shrink(0);
     let el = col![
-        caption(pan_short(at)).text_size(SMALL - 1.).fill(Role::Dim).reserve("R100"),
+        caption(pan_short(at)).text_size(SMALL - 1.).fill(secondary()).reserve("R100"),
         wedge
     ]
     .gap(2)
@@ -1033,7 +1080,7 @@ pub fn tune_field(ui: &mut Ui, id: &str, semitones: &mut f64, range: RangeInclus
     let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
     let text = if semitones.abs() < 0.005 { "0.00".to_owned() } else { format!("{:+.2}", *semitones) };
     let el = row![
-        glyph(Icon::Fork, TEXT, Role::Ink.alpha(0.5 + 0.4 * lift)),
+        glyph(Icon::Fork, TEXT, if lift > 0.5 { Fill::from(Role::Ink) } else { secondary() }),
         caption(text).text_size(SMALL).reserve("+36.00")
     ]
     .gap(2)
@@ -1106,7 +1153,7 @@ pub fn solo_mute(ui: &mut Ui, key: &str, solo: &mut bool, mute: &mut bool) -> El
             caption(letter.to_owned())
                 .text_size(SMALL)
                 .text_weight(Weight::SEMIBOLD)
-                .fill(if *on { Fill::from(Color::oklch(0.18, 0., 0.)) } else { Role::Dim.into() })
+                .fill(if *on { Fill::from(Color::oklch(0.18, 0., 0.)) } else { secondary() })
         ]
         .align(Align::Center)
         .justify(Justify::Center)
@@ -1131,9 +1178,9 @@ pub fn route(ui: &mut Ui, id: impl Into<Id>, icon: Icon, text: &str, widest: &st
     let id: Id = id.into();
     let hit = ui.get(id.clone()).activated();
     let el = row![
-        glyph(icon, TEXT + 2., Role::Ink.alpha(0.72)),
+        glyph(icon, TEXT + 2., secondary()),
         caption(text.to_owned()).text_size(SMALL).lines(1).reserve(widest.to_owned()),
-        glyph(Icon::Down, TIGHT * 2.5, Role::Ink.alpha(0.45))
+        glyph(Icon::Down, TIGHT * 2.5, secondary())
     ]
     .gap(3)
     .align(Align::Center)

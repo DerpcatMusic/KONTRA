@@ -77,10 +77,10 @@ pub struct VoiceLimit {
     pub exclusion_group: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct Loop { pub start: usize, pub end: usize, pub until_release: bool, pub crossfade: usize }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct Zone {
     pub group: usize,
     pub sample: PathBuf,
@@ -343,6 +343,7 @@ pub fn source_inventory(path:&Path)->Result<serde_json::Value>{
 
 /// Program `index` of `path`, from the on-disk cache when it is current.
 fn read_inner(path: &Path, index: u32) -> Result<Instrument> {
+    if crate::creator::is_native(path) { return crate::creator::read_native(path); }
     let path = path.canonicalize()?;
     let dir = crate::cache::dir();
     if let Some(i) = dir.as_deref().and_then(|dir| crate::cache::load(dir, &path, index)) {
@@ -730,7 +731,7 @@ pub fn presets(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for e in walkdir::WalkDir::new(root).follow_links(false) {
         let e = e?;
-        if e.file_type().is_file() && (e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("nki")) || is_multi(e.path())) { files.push(e.into_path()); }
+        if e.file_type().is_file() && (crate::creator::is_instrument(e.path()) || is_multi(e.path())) { files.push(e.into_path()); }
     }
     files.sort(); Ok(files)
 }
@@ -817,6 +818,11 @@ mod preset_tests {
         assert!(w.contains("mount -t ntfs3") && w.contains("/dev/nvme0n1p1 '/mnt/MAIN STORAGE'"), "{w}");
         assert_eq!(super::mount_of(info, std::path::Path::new("/mnt/MAIN/x")).unwrap().1, "ntfs3");
         assert!(!super::zero_read_warning(3, super::mount_of(info, std::path::Path::new("/home/x"))).contains("ntfs3"));
+    }
+    /// A zero-filled read (the NTFS runlist failure) is a clean error, not a panic.
+    #[test]
+    fn zero_filled_container_is_an_error() {
+        assert!(ni_file::NIFile::read(std::io::Cursor::new(vec![0u8; 4096])).is_err());
     }
     #[test]
     fn script_text_decodes_every_kontakt_encoding() {

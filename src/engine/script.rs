@@ -6,7 +6,7 @@
 
 use super::params::{self, Address, GroupPar, MAX_WRITES, Write};
 use super::{Ahdsr, Bank, EventChange, EventId, GroupMask, GroupSettings, NoteEvent, Player};
-use crate::fx::{FxParam, FxProcessor, ProgramFx, Rack, ScriptIr};
+use crate::fx::{FxParam, FxProcessor, Kind as FxKind, Load, ProgramFx, Rack, ScriptIr};
 use crate::import::{Group, Instrument};
 use crate::ksp::{EnginePar, Fade, KspEngine, NoteLength, NoteSpec, Persisted, Runtime, VoicePar};
 
@@ -29,7 +29,7 @@ pub fn load_scripts(
         Runtime::with_scripts(&instrument.scripts, &mut setup, SCRIPT_OUTPUTS, persisted);
     rt.init_engine_pars = setup.pars;
     rt.init_controllers = setup.controllers;
-    rt.init_irs = setup.irs;
+    rt.init_irs = setup.loads;
     let errors = errors
         .into_iter()
         .enumerate()
@@ -39,8 +39,8 @@ pub fn load_scripts(
     (Some(Box::new(rt)), errors)
 }
 
-/// The instrument's effects for `rate`, with the impulse responses
-/// `script`'s `on init` loaded. Allocates: build off the audio thread.
+/// The instrument's effects for `rate`, with the effects and impulse
+/// responses `script`'s `on init` loaded. Allocates: build off the audio thread.
 pub fn effects(instrument: &Instrument, script: Option<&Runtime>, rate: f32) -> FxProcessor {
     let irs = script.map_or(&[][..], |rt| &rt.init_irs);
     instrument.fx.processor_with(rate, super::MAX_BLOCK, irs)
@@ -197,6 +197,9 @@ impl KspEngine for Host<'_> {
             return self.bank.is_some_and(|b| Address::inert(par, b.groups()));
         };
         let value = address.decode(value);
+        if let Address::GroupType(g, s) = address {
+            return self.bank.and_then(|b| params::group_type(b.groups(), g, s)) == Some(value);
+        }
         if !loaded(address, value, |r, s| self.fx.param(r, s, FxParam::Type)) {
             return false;
         }
@@ -218,18 +221,19 @@ impl KspEngine for Host<'_> {
             None => match address {
                 Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param)?,
                 Address::Instrument(p) => instrument(self.player.instrument, p)?,
+                Address::GroupType(g, s) => params::group_type(self.bank?.groups(), g, s)?,
                 _ => params::read(&self.bank?.base, address)?,
             },
         };
         Some(address.encode(value))
     }
 
-    fn find_mod(&self, group: usize, name: &str) -> Option<usize> {
-        params::find_mod(self.bank?.groups(), group, name)
+    fn find_mod(&self, group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+        params::find_mod(self.bank?.groups(), group, is)
     }
 
-    fn find_target(&self, group: usize, modulator: usize, name: &str) -> Option<usize> {
-        params::find_target(self.bank?.groups(), group, modulator, name)
+    fn find_target(&self, group: usize, modulator: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+        params::find_target(self.bank?.groups(), group, modulator, is)
     }
 
     fn voice_active(&self, voice: EventId) -> bool {
@@ -313,8 +317,8 @@ impl Player {
 }
 
 /// False for `$ENGINE_PAR_EFFECT_TYPE` naming another effect than the one
-/// loaded (`kind` of a rack slot): loading effects is not supported, but
-/// naming the loaded one, as framework scripts do in `on init`, keeps it.
+/// loaded (`kind` of a rack slot): that would allocate on the audio thread.
+/// Naming the loaded one, as framework scripts do, keeps it.
 fn loaded(address: Address, value: f32, kind: impl Fn(Rack, u8) -> Option<f32>) -> bool {
     match address {
         Address::Fx(rack, slot, FxParam::Type) => kind(rack, slot) == Some(value),
@@ -339,7 +343,8 @@ fn instrument((volume, pan, tune): (f32, f32, f32), p: GroupPar) -> Option<f32> 
 pub struct ScriptSetup<'a> {
     groups: &'a [Group],
     zones: usize,
-    fx: &'a ProgramFx,
+    /// The instrument's effects with the ones scripts loaded.
+    fx: std::borrow::Cow<'a, ProgramFx>,
     path: &'a std::path::Path,
     rate: f64,
     settings: Vec<GroupSettings>,
@@ -348,7 +353,8 @@ pub struct ScriptSetup<'a> {
     effects: Vec<(Address, f32)>,
     pars: Vec<(EnginePar, i32)>,
     controllers: Vec<(u8, u8)>,
-    irs: Vec<ScriptIr>,
+    /// Effects and impulse responses loaded, in order.
+    loads: Vec<ScriptIr>,
 }
 
 impl<'a> ScriptSetup<'a> {
@@ -356,7 +362,7 @@ impl<'a> ScriptSetup<'a> {
         Self {
             groups: &instrument.groups,
             zones: instrument.zones.len(),
-            fx: &instrument.fx,
+            fx: std::borrow::Cow::Borrowed(&instrument.fx),
             path: &instrument.path,
             rate,
             settings: instrument.groups.iter().map(GroupSettings::from).collect(),
@@ -364,7 +370,7 @@ impl<'a> ScriptSetup<'a> {
             effects: Vec::new(),
             pars: Vec::new(),
             controllers: Vec::new(),
-            irs: Vec::new(),
+            loads: Vec::new(),
         }
     }
 
@@ -374,6 +380,26 @@ impl<'a> ScriptSetup<'a> {
             Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param).map(|_| address),
             _ => Some(address),
         }
+    }
+
+    /// `$ENGINE_PAR_EFFECT_TYPE` naming another effect: load it here, off
+    /// the audio thread; the effects build with it. False for a value
+    /// that names no effect.
+    fn load_kind(&mut self, rack: Rack, slot: u8, value: f32) -> bool {
+        let kind = match value as u16 {
+            0 => None,
+            id => Some(FxKind::from_ser_id(id)).filter(|k| !matches!(k, FxKind::Unknown(_))),
+        };
+        if (value != 0.0 && kind.is_none()) || !self.fx.to_mut().load_kind(rack, slot, kind) {
+            return false;
+        }
+        // The old effect's values and impulse response went with it.
+        self.effects.retain(|(a, _)| {
+            !matches!(a, Address::Fx(r, s, FxParam::Reverb(_) | FxParam::SendLevel(_)) if (*r, *s) == (rack, slot))
+        });
+        self.loads.retain(|l| (l.rack, l.slot) != (rack, slot));
+        self.loads.push(ScriptIr { rack, slot, load: Load::Kind(kind) });
+        true
     }
 }
 
@@ -416,8 +442,14 @@ impl KspEngine for ScriptSetup<'_> {
             return Address::inert(par, self.groups);
         };
         let v = address.decode(value);
-        if !loaded(address, v, |r, s| self.fx.param(r, s, FxParam::Type)) {
-            return false;
+        match address {
+            Address::GroupType(g, s) => return params::group_type(self.groups, g, s) == Some(v),
+            Address::Fx(rack, slot, FxParam::Type) if self.fx.param(rack, slot, FxParam::Type) != Some(v) => {
+                if !self.load_kind(rack, slot, v) {
+                    return false;
+                }
+            }
+            _ => {}
         }
         match address {
             Address::Fx(..) => match self.effects.iter_mut().find(|e| e.0 == address) {
@@ -448,17 +480,22 @@ impl KspEngine for ScriptSetup<'_> {
                 None => self.fx.param(rack, slot, param)?,
             },
             Address::Instrument(p) => instrument(self.instrument, p)?,
+            Address::GroupType(g, s) => params::group_type(self.groups, g, s)?,
             _ => params::read(&self.settings, address)?,
         };
         Some(address.encode(value))
     }
 
-    fn find_mod(&self, group: usize, name: &str) -> Option<usize> {
-        params::find_mod(self.groups, group, name)
+    fn find_mod(&self, group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+        params::find_mod(self.groups, group, is)
     }
 
-    fn find_target(&self, group: usize, modulator: usize, name: &str) -> Option<usize> {
-        params::find_target(self.groups, group, modulator, name)
+    fn find_target(&self, group: usize, modulator: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
+        params::find_target(self.groups, group, modulator, is)
+    }
+
+    fn instrument_path(&self) -> Option<&std::path::Path> {
+        Some(self.path)
     }
 
     /// Decoded here, off the audio thread; the effects build with it.
@@ -476,8 +513,8 @@ impl KspEngine for ScriptSetup<'_> {
         else {
             return Some(false);
         };
-        self.irs.retain(|i| (i.rack, i.slot) != (rack, slot));
-        self.irs.push(ir);
+        self.loads.retain(|l| (l.rack, l.slot) != (rack, slot) || matches!(l.load, Load::Kind(_)));
+        self.loads.push(ir);
         Some(true)
     }
 }

@@ -15,6 +15,7 @@ use std::{
 const LOG_LIMIT: u64 = 8 * 1024 * 1024;
 static NEXT_LOAD: AtomicU64 = AtomicU64::new(1);
 static JOURNAL: OnceLock<Mutex<Journal>> = OnceLock::new();
+static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 fn now() -> u128 {
     SystemTime::now()
@@ -38,6 +39,7 @@ impl Journal {
         #[cfg(test)]
         let root = std::env::temp_dir().join(format!("kontra-test-{}/logs", std::process::id()));
         let path = root.join(format!("session-{}-{}.jsonl", now(), std::process::id()));
+        let _ = LOG_PATH.set(path.clone());
         let result = std::fs::create_dir_all(&root)
             .and_then(|_| OpenOptions::new().create(true).append(true).open(&path));
         match result {
@@ -126,12 +128,13 @@ pub(crate) fn runtime(
 }
 
 pub fn log_path() -> Option<PathBuf> {
-    JOURNAL.get().map(|j| {
-        j.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .path
-            .clone()
-    })
+    // The editor must not wait behind a worker writing a slow log device.
+    LOG_PATH.get().cloned()
+}
+
+/// A resource/catalog operation on a loader, never during playback.
+pub(crate) fn resource(instrument: &Path, name: &str, error: &str) {
+    emit(json!({"event":"resource_issue","path":instrument,"resource":name,"message":error}));
 }
 
 /// One instrument attempt, including stages written *before* blocking work.
@@ -153,7 +156,7 @@ impl LoadTrace {
             NEXT_LOAD.fetch_add(1, Ordering::Relaxed)
         );
         let mut this = Self {
-            report: json!({"load_id":id,"path":path,"program":program,"part":part,"version":env!("CARGO_PKG_VERSION"),"import_hash":env!("KONTRA_IMPORT_HASH"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"status":"loading","stages_ms":{},"details":{},"issues":[]}),
+            report: json!({"load_id":id,"path":path,"program":program,"part":part,"version":env!("CARGO_PKG_VERSION"),"build_hash":env!("KONTRA_BUILD_HASH"),"import_hash":env!("KONTRA_IMPORT_HASH"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"status":"loading","stages_ms":{},"details":{},"issues":[]}),
             seen: Default::default(),
             started: Instant::now(),
             stage_started: Instant::now(),
@@ -234,9 +237,14 @@ pub fn widget_limit(kind: &str) -> Option<&'static str> {
     match kind {
         "ui_table" => Some("table rendering is supported; table editing is unavailable"),
         "ui_text_edit" => Some("text display is supported; text editing is unavailable"),
-        "ui_level_meter" => Some("live meter attachment and rendering are unavailable"),
+        "ui_level_meter" => {
+            Some("meter colours/frame are supported; live audio attachment is unavailable")
+        }
         "ui_mouse_area" => Some("mouse-area callbacks are unavailable"),
-        "ui_xy" | "ui_waveform" | "ui_wavetable" | "ui_file_selector" => {
+        "ui_waveform" => {
+            Some("waveform frame is supported; sample waveform and editing are unavailable")
+        }
+        "ui_xy" | "ui_wavetable" | "ui_file_selector" => {
             Some("this widget's drawing and interaction are unavailable")
         }
         _ => None,

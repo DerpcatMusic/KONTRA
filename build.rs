@@ -22,6 +22,12 @@ fn main() {
         visit(Path::new(source), &mut hash);
     }
     println!("cargo:rustc-env=KONTRA_IMPORT_HASH={hash:016x}");
+    let mut build_hash = 0xcbf2_9ce4_8422_2325_u64;
+    for source in ["src", "Cargo.toml", "Cargo.lock", "vendor/ni-file/src", "vendor/moose-mui/src", "vendor/mui-baseview/src"] {
+        println!("cargo:rerun-if-changed={source}");
+        visit(Path::new(source), &mut build_hash);
+    }
+    println!("cargo:rustc-env=KONTRA_BUILD_HASH={build_hash:016x}");
 }
 
 /// FNV-1a over every file's path and bytes, in name order.

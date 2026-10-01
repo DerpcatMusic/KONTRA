@@ -1525,6 +1525,7 @@ dependencies = [
  "clap-sys",
  "crossbeam-queue",
  "dirs",
+ "fastlz",
  "hound",
  "libc",
  "moose",
@@ -2032,6 +2033,7 @@ dependencies = [
  "objc",
  "raw-window-handle",
  "wgpu 30.0.1",
+ "x11-dl",
 ]
 
 [[package]]

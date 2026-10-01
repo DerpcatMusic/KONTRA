@@ -3,7 +3,7 @@
 //! Field meanings and confidence are documented in `audits/MODULATION.md`.
 //! Nothing here is applied to playback by itself.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use ni_file::kontakt::objects::{
     ExternalModArray32, Group as RawGroup, InternalModArray16, Modulator as RawModulator,
 };
@@ -28,6 +28,8 @@ pub enum ModTarget {
     Volume,
     /// Group pitch (`pitch`).
     Pitch,
+    /// Another group parameter (`pan`, `loopLength`); playback does not model it.
+    Group(String),
     /// Sample start position (`playPos`), scaled by the zone's `start_mod` range.
     SampleStart,
     /// Attack time of the group's volume AHDSR (`ahdsr_attack` on its slot).
@@ -215,7 +217,7 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                             param: target.param,
                             slot,
                         },
-                        (param, None) => bail!("Group-level modulation target {param} is unknown"),
+                        (_, None) => ModTarget::Group(target.param),
                     },
                     intensity: target.intensity,
                     invert: target.invert,
@@ -299,6 +301,52 @@ mod tests {
         assert_eq!(silent.velocity_to_volume(), 0.0);
         assert_eq!(silent.pitch_bend_range(), None);
         assert!(silent.cc_volume().is_none());
+    }
+
+    /// ANALOG STRINGS layouts: `pan`/`loopStart`/`loopLength` targets carry
+    /// no slot byte, and an LFO stores category 1 with its 0x08 object bare.
+    #[test]
+    fn group_targets_and_bare_lfos_parse() {
+        use ni_file::kontakt::{
+            Chunk, StructuredObject,
+            objects::{ExternalMod, InternalMod, Modulator},
+        };
+        fn name(out: &mut Vec<u8>, s: &str) {
+            out.extend((s.len() as u32).to_le_bytes());
+            out.extend(s.as_bytes());
+        }
+        let targets = |params: &[(&str, Option<u8>)]| {
+            let mut b = (params.len() as u32).to_le_bytes().to_vec();
+            for (param, slot) in params {
+                name(&mut b, param);
+                b.extend(0.5f32.to_le_bytes());
+                b.extend((-1i16).to_le_bytes());
+                b.push(0x10);
+                b.extend(15u16.to_le_bytes());
+                name(&mut b, "<none>");
+                b.extend(slot);
+                b.push(0); // invert
+            }
+            b.extend(std::iter::repeat_n(0, params.len())); // no shapers
+            b
+        };
+        let mut ext = targets(&[("pan", None), ("loopStart", None), ("loopLength", None), ("filterCutoff", Some(0))]);
+        name(&mut ext, "Loop_Start");
+        ext.extend(2u32.to_le_bytes()); // unassigned
+        ext.extend([0, 0]);
+        ext.extend(7u32.to_le_bytes());
+        let object = |version, private_data, children| StructuredObject { version, public_data: Vec::new(), private_data, children };
+        let p = ExternalMod(object(0x100, ext, Vec::new())).params().unwrap();
+        assert_eq!(p.targets.iter().map(|t| t.slot).collect::<Vec<_>>(), [None, None, None, Some(0)]);
+
+        let mut int = targets(&[("pan", None)]);
+        int.extend([0, 1, 1, 0]);
+        int.extend(187u32.to_le_bytes());
+        name(&mut int, "LFO_P1");
+        int.extend(1u32.to_le_bytes());
+        let lfo = Chunk { id: 0x08, data: Vec::new() };
+        let p = InternalMod(object(0x80, int, vec![lfo])).params().unwrap();
+        assert_eq!((p.name.as_str(), p.modulator), ("LFO_P1", Modulator::Other { chunk_id: 0x08 }));
     }
 
     #[test]

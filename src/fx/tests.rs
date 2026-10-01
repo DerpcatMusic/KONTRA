@@ -377,3 +377,26 @@ fn bench() {
         );
     }
 }
+
+#[test]
+fn loaded_kinds_replace_fill_and_empty_slots() {
+    let mut fx = ProgramFx::default();
+    fx.insert.slots.push(gainer(0.5));
+    let ty = |p: &FxProcessor, slot| p.param(Rack::Insert, slot, FxParam::Type);
+    let p = fx.processor(SR, 64);
+    // An empty slot reads `$EFFECT_TYPE_NONE`; no bus 3, no slot 8.
+    assert_eq!((ty(&p, 0), ty(&p, 1), ty(&p, 8)), (Some(19.0), Some(0.0), None));
+    assert_eq!(p.param(Rack::Bus(3), 0, FxParam::Type), None);
+    let load = |slot, kind| ScriptIr { rack: Rack::Insert, slot, load: Load::Kind(kind) };
+    let p = fx.processor_with(SR, 64, &[load(0, None), load(2, Some(Kind::Reverb)), load(3, Some(Kind::Delay))]);
+    // Types without DSP still read back; the reverb runs at its defaults.
+    assert_eq!((ty(&p, 0), ty(&p, 2), ty(&p, 3)), (Some(0.0), Some(89.0), Some(16.0)));
+    assert_eq!(p.param(Rack::Insert, 2, FxParam::Reverb(1)), Some(params::Reverb::DEFAULT.time));
+    let (mut l, mut r) = (vec![0.0; 64], vec![0.0; 64]);
+    l[0] = 1.0;
+    let mut p = p;
+    p.process(&mut l, &mut r);
+    assert!(l.iter().all(|v| v.is_finite()));
+    // The stored description is untouched.
+    assert_eq!(fx.insert.slots.len(), 1);
+}

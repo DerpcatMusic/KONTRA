@@ -98,6 +98,8 @@ pub struct MuiEditor<P: Params> {
     window: Option<Handle>,
     /// [`MuiEditor::on_key`], handed to each window it opens.
     keys: Option<window::KeyHook>,
+    /// [`MuiEditor::hide_pointer`], handed to each window it opens.
+    pointer: Option<window::PointerHook>,
 }
 
 /// Whole logical points, as the host's window API takes them.
@@ -150,6 +152,7 @@ impl<P: Params> MuiEditor<P> {
             scale: HostScale::default(),
             window: None,
             keys: None,
+            pointer: None,
         }
     }
 
@@ -188,6 +191,15 @@ impl<P: Params> MuiEditor<P> {
     #[must_use]
     pub fn on_key(mut self, f: impl FnMut(&Ui, &window::KeyEvent) -> bool + Send + 'static) -> Self {
         self.keys = Some(Arc::new(Mutex::new(f)));
+        self
+    }
+
+    /// Hide the pointer while `f` says so (a knob being dragged), and put it
+    /// back where it hid once `f` stops. Asked every display tick with the
+    /// frame's `Ui`, on the window's thread.
+    #[must_use]
+    pub fn hide_pointer(mut self, f: impl FnMut(&Ui) -> bool + Send + 'static) -> Self {
+        self.pointer = Some(Arc::new(Mutex::new(f)));
         self
     }
 
@@ -236,6 +248,9 @@ impl<P: Params> Editor for MuiEditor<P> {
         self.requests = Arc::default();
         if let Some(keys) = &self.keys {
             self.requests.on_key(Arc::clone(keys));
+        }
+        if let Some(pointer) = &self.pointer {
+            self.requests.on_pointer(Arc::clone(pointer));
         }
         self.window = window::open(
             &ParentWindow(parent),

@@ -84,6 +84,8 @@ pub enum Command {
     /// Add a library folder (`true`) or a folder of libraries.
     AddFolder(bool),
     ImportKontakt,
+    /// Make a library from a folder of samples ([`crate::creator`]).
+    CreateLibrary,
     Rescan,
     CancelScan,
     /// A library's cover, by its folder: a picture chosen for it, the
@@ -251,6 +253,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Add folder of libraries…", "", Command::AddFolder(false)),
                 act("Add library folder…", "", Command::AddFolder(true)),
                 act("Import from Kontakt", "", Command::ImportKontakt),
+                act("Create library from folder…", "", Command::CreateLibrary),
                 Item::Rule,
                 act("Library folders…", "", Command::Folders),
                 act("Reset library order to A–Z", "", Command::ResetLibraryOrder),
@@ -632,7 +635,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
             Item::Info(text) => {
                 height += ROW;
                 rows.push(
-                    row![caption(text).fill(Role::Dim).lines(1).min_w(0)]
+                    row![caption(text).fill(secondary()).lines(1).min_w(0)]
                         .align(Align::Center)
                         .pad((SPACE, 0))
                         .h(ROW)
@@ -662,7 +665,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                         .lines(1)
                         .flex(1)
                         .min_w(0),
-                    caption(hint).fill(Role::Dim)
+                    caption(hint).fill(secondary())
                 ]
                 .gap(SPACE)
                 .align(Align::Center)
@@ -738,6 +741,13 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Folders => cx.state.settings = !cx.state.settings,
         Command::AddFolder(single) => super::header::add_folder(cx, single),
         Command::ImportKontakt => shared.libraries.import_kontakt(),
+        Command::CreateLibrary => {
+            // Into the folder saved multis go: one the browser scans.
+            let out = super::header::root(cx).into();
+            if !cx.state.picker.ask(super::picker::Ask::Samples { out }) {
+                cx.state.notice = "No file dialog here: use `kontakto create-library <folder>`".into();
+            }
+        }
         Command::Rescan => shared.libraries.rescan(),
         Command::SortLibraries(sort) => shared.libraries.edit(|s| s.sort = sort),
         Command::Pin(dir) => shared.libraries.edit(|s| match s.pinned.iter().position(|d| *d == dir) {

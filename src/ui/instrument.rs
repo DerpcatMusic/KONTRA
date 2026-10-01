@@ -27,14 +27,14 @@ pub fn welcome(cx: &Cx) -> El {
     let mut lines = vec![
         title("Pick an instrument").text_weight(Weight::SEMIBOLD),
         body("Choose a library on the left and click an instrument, or drag it onto the rack. Multis load the whole rack.")
-            .fill(Role::Dim)
+            .fill(secondary())
             .lines(3)
             .max_size(Size::new(TEXT * 35., CONTROL * 3.)),
     ];
     if !cx.view.multi_status.is_empty() {
         lines.push(
             caption(cx.view.multi_status.clone())
-                .fill(Role::Dim)
+                .fill(secondary())
                 .lines(2),
         );
     }
@@ -155,7 +155,7 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     } else {
         "This instrument has no performance controls. Play it from the keyboard.".to_owned()
     };
-    row![caption(text).fill(Role::Dim).lines(3).min_w(0)]
+    row![caption(text).fill(secondary()).lines(3).min_w(0)]
         .align(Align::Center)
         .pad(INSET)
         .w(Len::Pct(100.))
@@ -273,7 +273,7 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
     }
     if let Some(report) = &v.load_report {
         rows.push(section("Load diagnostics"));
-        rows.push(body(format!("{} · {:.0} ms", report["status"].as_str().unwrap_or("unknown"), report["elapsed_ms"].as_f64().unwrap_or(0.))).lines(2));
+        rows.push(body(format!("{} · {:.0} ms", report["status"].as_str().unwrap_or("unknown"), report["elapsed_ms"].as_f64().unwrap_or(0.))).lines(2).id("load-diagnostic-status"));
         rows.push(caption(report["path"].as_str().unwrap_or_default()).fill(Role::Dim).lines(4));
         if let Some(path) = report["log_path"].as_str() { rows.push(caption(format!("Log file: {path}")).fill(Role::Dim).lines(4)); }
         if let Some(error) = report["logging_error"].as_str() { rows.push(body(format!("Could not write the log: {error}")).lines(4)); }
@@ -303,11 +303,11 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
         );
         rows.push(
             caption(i.path.display().to_string())
-                .fill(Role::Dim)
+                .fill(secondary())
                 .lines(4),
         );
         if !v.status.is_empty() {
-            rows.push(caption(v.status.clone()).fill(Role::Dim).lines(3));
+            rows.push(caption(v.status.clone()).fill(secondary()).lines(3));
         }
         if v.load_report.is_none() && !i.warnings.is_empty() {
             rows.push(section("Import notes").pad(edges(SPACE, 0., 0., 0.)));
@@ -316,7 +316,7 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
                 rows.push(
                     body(w)
                         .text_size(TEXT)
-                        .fill(Role::Dim)
+                        .fill(secondary())
                         .lines(6)
                         .shrink(0),
                 );
@@ -326,15 +326,15 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
     rows.push(section("Scripts").pad(edges(SPACE, 0., 0., 0.)));
     rows.push(
         body("Scripts drive the library controls and playback. Unsupported features and script errors are recorded in the diagnostics.")
-            .fill(Role::Dim)
+            .fill(secondary())
             .text_size(TEXT)
             .lines(4),
     );
     for line in v.interface_status.lines().chain(v.runtime_status.lines()).filter(|l| !l.is_empty()) {
-        rows.push(caption(line.to_owned()).fill(Role::Dim).lines(3).shrink(0));
+        rows.push(caption(line.to_owned()).fill(secondary()).lines(3).shrink(0));
     }
     if !v.wallpaper_status.is_empty() {
-        rows.push(caption(v.wallpaper_status.clone()).fill(Role::Dim).lines(3));
+        rows.push(caption(v.wallpaper_status.clone()).fill(secondary()).lines(3));
     }
     // Text in a scroll is measured without a width, so wraps short and
     // overlaps what follows: the column takes the width it was last laid

@@ -545,7 +545,8 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
         }
             .or_else(|| item.bipolar.then(|| "Pan".to_owned()))
             // Every control stays editable: a terse variable beats no control.
-            .or_else(|| (item.face != Face::Text).then(|| variable.trim_start_matches(['$', '~', '?', '%', '@', '!']).to_owned()))
+            // A menu stays nameless; its choice says what it is.
+            .or_else(|| (!matches!(item.face, Face::Text | Face::Menu)).then(|| variable.trim_start_matches(['$', '~', '?', '%', '@', '!']).to_owned()))
             .unwrap_or_default();
     }
     let mut kept: Vec<Item> = read
@@ -1356,7 +1357,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
             }
             let title = caption(name.to_owned())
                 .text_size(SMALL)
-                .fill(Role::Dim)
+                .fill(secondary())
                 .lines(1);
             match item.face {
                 Face::Knob => col![
@@ -1408,7 +1409,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
                 el
             } else {
                 col![
-                    caption(name.to_owned()).text_size(SMALL).fill(Role::Dim).lines(1),
+                    caption(name.to_owned()).text_size(SMALL).fill(secondary()).lines(1),
                     el
                 ]
                 .gap(TIGHT)
@@ -1423,7 +1424,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, part: usize, item: &Item) -> El {
             }
             el
         }
-        Face::Text => caption(name.to_owned()).fill(Role::Dim).lines(1).min_w(0),
+        Face::Text => caption(name.to_owned()).fill(secondary()).lines(1).min_w(0),
         Face::List => {
             let routed = routed(cx, part, &item.list);
             let mut rows = Vec::new();
@@ -1788,7 +1789,7 @@ fn entry(ui: &mut Ui, cx: &mut Cx, part: usize, e: &Entry, routed: Option<usize>
     cells.push(
         body(e.name.clone())
             .text_size(TEXT)
-            .fill(if e.on { Role::Ink } else { Role::Dim })
+            .fill(if e.on { Fill::from(Role::Ink) } else { secondary() })
             .lines(1)
             .min_w(0)
             .flex(1),
@@ -1799,7 +1800,7 @@ fn entry(ui: &mut Ui, cx: &mut Cx, part: usize, e: &Entry, routed: Option<usize>
         None => cells.extend(e.key.as_ref().map(|key| {
             row![
                 block(SMALL * 0.6, SMALL * 0.6).fill(Fill::from(keyswitch())),
-                caption(key.clone()).text_size(SMALL).fill(Role::Dim).reserve("C#-1"),
+                caption(key.clone()).text_size(SMALL).fill(secondary()).reserve("C#-1"),
             ]
             .gap(SPACE * 0.5)
             .align(Align::Center)
@@ -1964,6 +1965,10 @@ mod tests {
         interface.controls.push(control("ui_knob", "$tone", &with(at(20, 200, 32, 40), &[text("Tone")])));
         let s = sections(&interface, &HashMap::new());
         assert_eq!(s.iter().map(|s| s.band).collect::<Vec<_>>(), [0, 1]);
+        // Vista's output menu, named only by its obfuscated variable.
+        interface.controls.push(control("ui_menu", "$x0nzp", &at(200, 200, 90, 18)));
+        let named = super::names(&interface, &HashMap::new());
+        assert!(named.values().all(|n| n != "x0nzp"), "{named:?}");
     }
 
     #[test]

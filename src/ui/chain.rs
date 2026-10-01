@@ -37,6 +37,7 @@ pub fn target_name(t: &ModTarget) -> String {
     match t {
         ModTarget::Volume => "Volume".into(),
         ModTarget::Pitch => "Pitch".into(),
+        ModTarget::Group(param) => param.clone(),
         ModTarget::SampleStart => "Sample start".into(),
         ModTarget::Attack => "Attack".into(),
         ModTarget::Release => "Release".into(),
@@ -107,11 +108,11 @@ pub fn modulation(p: &Arc<SamplerParams>, group: &Group, index: u16, watch: u64)
     let assignment = |m: &ModAssignment, source: String| {
         line(vec![
             caption(source).text_size(TEXT).lines(1).shrink(0).reserve("Release velocity".to_owned()),
-            glyph(Icon::Right, TEXT, Role::Dim.alpha(1.)),
+            glyph(Icon::Right, TEXT, secondary()),
             caption(target_name(&m.target)).text_size(TEXT).lines(1).min_w(0).reserve("Resonance · slot 8".to_owned()),
             depth(m, p.clone(), watch, index),
             caption(if m.invert { format!("{} inv", percent(m.intensity)) } else { percent(m.intensity) })
-                .fill(Role::Dim)
+                .fill(secondary())
                 .lines(1)
                 .shrink(0)
                 .reserve("-100% inv".to_owned()),
@@ -129,7 +130,7 @@ pub fn modulation(p: &Arc<SamplerParams>, group: &Group, index: u16, watch: u64)
         }
     }
     if rows.is_empty() {
-        rows.push(caption("Nothing modulates this group.").fill(Role::Dim).lines(2).min_w(0));
+        rows.push(caption("Nothing modulates this group.").fill(secondary()).lines(2).min_w(0));
     }
     col(rows).gap(0).align(Align::Stretch).min_w(0).shrink(0)
 }
@@ -193,11 +194,11 @@ fn effect_line(e: &Effect, in_group: bool) -> El {
     let lit = played && !e.bypass;
     let mut cells = vec![
         bypass_light(!e.bypass),
-        caption(e.kind.name()).text_size(TEXT).fill(if lit { Role::Ink } else { Role::Dim }).lines(1).shrink(0),
-        caption(detail(e)).fill(Role::Dim).lines(1).flex(1).min_w(0),
+        caption(e.kind.name()).text_size(TEXT).fill(if lit { Fill::from(Role::Ink) } else { secondary() }).lines(1).shrink(0),
+        caption(detail(e)).fill(secondary()).lines(1).flex(1).min_w(0),
     ];
     if !played {
-        cells.push(caption("Not played").fill(Role::Dim).lines(1).shrink(0));
+        cells.push(caption("Not played").fill(secondary()).lines(1).shrink(0));
     }
     let state = match (e.bypass, played) {
         (true, _) => "bypassed",
@@ -228,7 +229,7 @@ pub fn effects(instrument: &Instrument, group: &Group) -> El {
         chain(name, &b.chain, false);
     }
     if rows.is_empty() {
-        rows.push(caption("No effects.").fill(Role::Dim).lines(1).min_w(0));
+        rows.push(caption("No effects.").fill(secondary()).lines(1).min_w(0));
     }
     col(rows).gap(0).align(Align::Stretch).min_w(0).shrink(0)
 }
@@ -244,7 +245,7 @@ pub fn inserts(instrument: Option<&Instrument>, rows: usize) -> El {
             let lit = played(e, false) && !e.bypass;
             row![
                 bypass_light(!e.bypass),
-                caption(e.kind.name()).fill(if lit { Role::Ink } else { Role::Dim }).lines(1).min_w(0)
+                caption(e.kind.name()).fill(if lit { Fill::from(Role::Ink) } else { secondary() }).lines(1).min_w(0)
             ]
             .gap(TIGHT)
             .align(Align::Center)
@@ -258,10 +259,10 @@ pub fn inserts(instrument: Option<&Instrument>, rows: usize) -> El {
         })
         .collect();
     if slots.len() > rows {
-        lines[rows - 1] = caption(format!("+{} more", slots.len() - rows + 1)).fill(Role::Dim).lines(1).h(SMALL + TIGHT).shrink(0);
+        lines[rows - 1] = caption(format!("+{} more", slots.len() - rows + 1)).fill(secondary()).lines(1).h(SMALL + TIGHT).shrink(0);
     }
     if lines.is_empty() {
-        lines.push(caption("No inserts").fill(Role::Dim).lines(1).h(SMALL + TIGHT).shrink(0));
+        lines.push(caption("No inserts").fill(secondary()).lines(1).h(SMALL + TIGHT).shrink(0));
     }
     // Every strip keeps the same room, so the faders below line up.
     while lines.len() < rows {
