@@ -150,7 +150,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: python3 .github/workflows/publish_nightly.py
       - name: Remove released Actions artifacts
-        if: steps.publish.outputs.published == 'true'
+        if: success()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
