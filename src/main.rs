@@ -934,6 +934,7 @@ fn ksp_run(path:&Path,notes:&[String])->Result<()> {
     let init_engine_pars=serde_json::json!(init_engine_pars);
     engine.calls.clear();
     let input=parse_notes(notes.iter().map(String::as_str))?;
+    kontakto::ksp::vm::PROF_ON.store(std::env::var_os("KPROF").is_some(),std::sync::atomic::Ordering::Relaxed);
     let end=input.last().map_or(0,|e|e.0)+(2.0*RATE) as u64;
     let mut next=input.iter().peekable();
     while rt.now()<end {
@@ -945,6 +946,7 @@ fn ksp_run(path:&Path,notes:&[String])->Result<()> {
         }
         rt.process(&mut engine,BLOCK);
     }
+    kontakto::ksp::vm::prof_dump();
     let report=serde_json::json!({
         "instrument":instrument.name,"groups":instrument.groups.len(),"slots":rt.slots(),
         "init_errors":init_errors,"init_ms":(init_ms*10.0).round()/10.0,"init_engine_pars":init_engine_pars,

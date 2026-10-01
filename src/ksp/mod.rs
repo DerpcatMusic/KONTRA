@@ -15,7 +15,7 @@ mod lexer;
 mod parser;
 mod runtime;
 mod ui;
-mod vm;
+pub mod vm;
 
 #[cfg(test)]
 mod tests;

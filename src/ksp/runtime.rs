@@ -327,6 +327,8 @@ pub struct Env {
     pub transport: bool,
     pub timer_origin: u64,
     pub block_fuel: u64,
+    /// Instructions callbacks have run outside `on init`, for benchmarks.
+    pub spent: u64,
     pub targets: Vec<i32>,
     pub message: String,
     /// Engine parameters the engine does not model, sorted by address.
@@ -369,6 +371,7 @@ impl Env {
             transport: false,
             timer_origin: 0,
             block_fuel: BLOCK_FUEL,
+            spent: 0,
             targets: Vec::with_capacity(EVENT_CAPACITY),
             message: String::with_capacity(256),
             engine_pars: Vec::with_capacity(ENGINE_PAR_HEADROOM),
@@ -1542,6 +1545,7 @@ impl Runtime {
             &mut fuel,
         );
         self.env.block_fuel -= budget - fuel;
+        self.env.spent += budget - fuel;
         self.threads[i as usize].spent += budget - fuel;
         match result {
             Ok(Yield::Done) => self.finish(i),
