@@ -37,6 +37,10 @@ pub enum Value {
     Int(i32),
     Real(f64),
     Text(String),
+    /// Dense snapshots keep numeric tables at their native element size.
+    /// Untagged serialization preserves the existing JSON array format.
+    IntArray(Vec<i32>),
+    RealArray(Vec<f64>),
     Array(Vec<Value>),
 }
 
@@ -56,6 +60,39 @@ pub struct KeyState {
     pub color: Option<Value>,
     pub kind: Option<Value>,
     pub pressed: bool,
+    #[serde(skip)]
+    pub color_buffer: String,
+    #[serde(skip)]
+    pub kind_buffer: String,
+}
+
+impl KeyState {
+    pub(super) fn set_symbol(
+        &mut self,
+        color: bool,
+        name: Option<&str>,
+        number: i32,
+        loading: bool,
+    ) -> vm::Exec<()> {
+        let (value, buffer) = if color {
+            (&mut self.color, &mut self.color_buffer)
+        } else {
+            (&mut self.kind, &mut self.kind_buffer)
+        };
+        if let Some(name) = name {
+            if let Some(Value::Text(text)) = value {
+                return vm::put_text(text, name, loading);
+            }
+            vm::put_text(buffer, name, loading)?;
+            *value = Some(Value::Text(std::mem::take(buffer)));
+        } else {
+            if let Some(Value::Text(text)) = value.take() {
+                *buffer = text;
+            }
+            *value = Some(Value::Int(number));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -106,8 +143,8 @@ pub fn saved_persistence(entries: &[String]) -> Persisted {
             let value = match name.as_bytes().first()? {
                 b'$' => ints().next()?.ok()?,
                 b'~' => reals().next()?.ok()?,
-                b'%' => Value::Array(ints().collect::<Result<_, _>>().ok()?),
-                b'?' => Value::Array(reals().collect::<Result<_, _>>().ok()?),
+            b'%' => Value::IntArray(rest.split_whitespace().map(str::parse).collect::<Result<_, _>>().ok()?),
+            b'?' => Value::RealArray(rest.split_whitespace().map(str::parse).collect::<Result<_, _>>().ok()?),
                 b'@' => Value::Text(rest.to_owned()),
                 b'!' => Value::Array(
                     rest.split('\n')

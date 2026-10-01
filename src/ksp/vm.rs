@@ -26,6 +26,8 @@ pub enum Yield {
     Wait(u64),
     /// The instruction budget ran out mid-callback.
     OutOfFuel,
+    /// Live host-block time allowance exhausted at a statement boundary.
+    OutOfTime,
 }
 
 /// What a builtin asks of the interpreter.
@@ -125,21 +127,24 @@ impl Default for Thread {
 pub struct StrStack {
     items: Vec<String>,
     len: usize,
+    pub frozen: bool,
 }
 
 impl StrStack {
-    pub fn push(&mut self) -> &mut String {
+    pub fn push(&mut self) -> Exec<&mut String> {
         if self.len == self.items.len() {
+            if self.frozen { return Err(Fault("KSP string stack capacity exhausted")); }
             self.items.push(String::with_capacity(64));
         }
         let s = &mut self.items[self.len];
         s.clear();
         self.len += 1;
-        s
+        Ok(s)
     }
 
-    pub fn push_str(&mut self, text: &str) {
-        self.push().push_str(text);
+    pub fn push_str(&mut self, text: &str) -> Exec<()> {
+        let loading = !self.frozen;
+        put_text(self.push()?, text, loading)
     }
 
     /// Remove the top entry; the returned text stays valid until the next push.
@@ -159,15 +164,60 @@ impl StrStack {
     }
 
     /// Pop the top entry and append it to the one below.
-    pub fn concat(&mut self) {
+    pub fn concat(&mut self) -> Exec<()> {
         self.len -= 1;
         let (below, top) = self.items.split_at_mut(self.len);
-        below[self.len - 1].push_str(&top[0]);
+        append_text(&mut below[self.len - 1], &top[0], !self.frozen)
     }
 
     pub fn clear(&mut self) {
         self.len = 0;
     }
+
+    pub fn prepare(&mut self, bytes: usize) {
+        while self.items.len() < 64 {
+            self.items.push(String::new());
+        }
+        for s in &mut self.items {
+            s.reserve(bytes.saturating_sub(s.len()));
+        }
+        self.frozen = true;
+    }
+}
+
+pub(super) fn append_text(dst: &mut String, src: &str, loading: bool) -> Exec<()> {
+    let len = dst.len().saturating_add(src.len());
+    if len > 65536 {
+        return Err(Fault("KSP string length limit"));
+    }
+    if !loading && len > dst.capacity() {
+        return Err(Fault("KSP realtime string capacity exhausted"));
+    }
+    dst.push_str(src);
+    Ok(())
+}
+
+pub(super) fn put_text(dst: &mut String, src: &str, loading: bool) -> Exec<()> {
+    if src.len() > 65536 {
+        return Err(Fault("KSP string length limit"));
+    }
+    if !loading && src.len() > dst.capacity() {
+        return Err(Fault("KSP realtime string capacity exhausted"));
+    }
+    dst.clear();
+    dst.push_str(src);
+    Ok(())
+}
+
+pub(super) fn format_text(dst: &mut String, args: std::fmt::Arguments, loading: bool) -> Exec<()> {
+    struct Writer<'a>(&'a mut String, bool);
+    impl std::fmt::Write for Writer<'_> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            append_text(self.0, text, self.1).map_err(|_| std::fmt::Error)
+        }
+    }
+    std::fmt::write(&mut Writer(dst, loading), args)
+        .map_err(|_| Fault("KSP formatted string capacity exhausted"))
 }
 
 #[derive(Default)]
@@ -187,7 +237,7 @@ impl Stacks {
             refs: Vec::with_capacity(n),
         };
         for _ in 0..16 {
-            s.strs.push();
+            s.strs.push().unwrap();
         }
         s.strs.clear();
         s
@@ -325,6 +375,12 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
         let op = code[*pc];
         *pc += 1;
         let s = &mut *m.stk;
+        if s.ints.len() == s.ints.capacity()
+            || s.reals.len() == s.reals.capacity()
+            || s.refs.len() == s.refs.capacity()
+        {
+            return Err(Fault("KSP operand stack capacity exhausted"));
+        }
         let mem = &mut m.slot.mem;
         macro_rules! int2 {
             (|$a:ident, $b:ident| $e:expr) => {{
@@ -352,18 +408,27 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             }};
         }
         match op {
+            Op::Checkpoint => {
+                if *fuel == 0 {
+                    *pc -= 1;
+                    return Ok(Yield::OutOfFuel);
+                }
+                if m.env.deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+                    *pc -= 1;
+                    return Ok(Yield::OutOfTime);
+                }
+            }
             Op::PushI(n) => s.ints.push(n),
             Op::PushR(i) => s.reals.push(m.prog.reals[i as usize]),
-            Op::PushS(i) => s.strs.push_str(&m.prog.strings[i as usize]),
+            Op::PushS(i) => s.strs.push_str(&m.prog.strings[i as usize])?,
             Op::LdI(i) => s.ints.push(mem.ints[i as usize]),
             Op::StI(i) => mem.ints[i as usize] = s.int(),
             Op::LdR(i) => s.reals.push(mem.reals[i as usize]),
             Op::StR(i) => mem.reals[i as usize] = s.real(),
-            Op::LdS(i) => s.strs.push_str(&mem.strs[i as usize]),
+            Op::LdS(i) => s.strs.push_str(&mem.strs[i as usize])?,
             Op::StS(i) => {
                 let dst = &mut mem.strs[i as usize];
-                dst.clear();
-                dst.push_str(s.strs.pop());
+                put_text(dst, s.strs.pop(), m.env.loading)?;
             }
             Op::LdPoly(i) => {
                 let row = m.t.ctx.poly_row * m.prog.poly;
@@ -400,8 +465,8 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             Op::LdSA(v) => {
                 let i = s.int();
                 match element(m, *pc, v, i) {
-                    Some(e) => m.stk.strs.push_str(&m.slot.mem.strs[e]),
-                    None => m.stk.strs.push_str(""),
+                    Some(e) => m.stk.strs.push_str(&m.slot.mem.strs[e])?,
+                    None => m.stk.strs.push_str("")?,
                 }
             }
             Op::StSA(v) => {
@@ -410,8 +475,7 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 let text = m.stk.strs.pop();
                 if let Some(e) = e {
                     let dst = &mut m.slot.mem.strs[e];
-                    dst.clear();
-                    dst.push_str(text);
+                    put_text(dst, text, m.env.loading)?;
                 }
             }
             Op::Sys(v) => {
@@ -425,11 +489,11 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             Op::PopS => drop(s.strs.pop()),
             Op::IToS => {
                 let n = s.int();
-                let _ = std::fmt::Write::write_fmt(s.strs.push(), format_args!("{n}"));
+                format_text(s.strs.push()?, format_args!("{n}"), m.env.loading)?;
             }
             Op::RToS => {
                 let n = s.real();
-                let _ = std::fmt::Write::write_fmt(s.strs.push(), format_args!("{n}"));
+                format_text(s.strs.push()?, format_args!("{n}"), m.env.loading)?;
             }
             Op::IAdd => int2!(|a, b| a.wrapping_add(b)),
             Op::ISub => int2!(|a, b| a.wrapping_sub(b)),
@@ -494,7 +558,7 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 s.ints.push(bool_int(equal == (op == Op::SEq)));
             }
             Op::Concat => {
-                s.strs.concat();
+                s.strs.concat()?;
                 if s.strs.top().len() > 65536 {
                     return Err(Fault("KSP string length limit"));
                 }
@@ -504,6 +568,9 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 *pc = t as usize;
                 if back && *fuel == 0 {
                     return Ok(Yield::OutOfFuel);
+                }
+                if back && m.env.deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+                    return Ok(Yield::OutOfTime);
                 }
             }
             Op::JumpIfZero(t) => {
@@ -529,6 +596,10 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 if *fuel == 0 {
                     *pc -= 1;
                     return Ok(Yield::OutOfFuel);
+                }
+                if m.env.deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+                    *pc -= 1;
+                    return Ok(Yield::OutOfTime);
                 }
                 let depth = m.t.depth as usize;
                 if depth >= MAX_CALL_DEPTH {
@@ -593,17 +664,17 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 *pc = l.run(*pc - 1, &m.prog.vars, &mut mem.ints, fuel, value);
             }
             Op::Declare(v) => declare(m, v)?,
-            Op::InitArray(i) => init_array(m, i),
+            Op::InitArray(i) => init_array(m, i)?,
             Op::Builtin(b, argc) => {
                 m.t.pc = *pc as u32;
-                let step = match calls::call(m, b, argc) {
+                let step = match calls::call(m, b, argc, fuel) {
                     Err(f) if f == calls::NO_CONTROL || f == calls::NO_PGS_KEY => {
                         m.env.fault(m.slot.index, m.t.pc, f.0);
                         match b.sig().ret {
                             Ret::Int | Ret::Num => m.stk.ints.push(0),
                             Ret::Real => m.stk.reals.push(0.0),
                             Ret::Str => {
-                                m.stk.strs.push();
+                                m.stk.strs.push()?;
                             }
                             Ret::Void => {}
                         }
@@ -668,6 +739,11 @@ fn sys(m: &Machine, v: SysVar) -> i32 {
 
 fn declare(m: &mut Machine, v: VarId) -> Exec<()> {
     let var = &m.prog.vars[v as usize];
+    if !m.env.loading && var.ui.is_some() && m.slot.ui.var_id(v) == 0 {
+        return Err(Fault(
+            "KSP UI controls must be declared during initialization",
+        ));
+    }
     let first = m.slot.ui.declare(v);
     if var.ui.is_none() {
         return Ok(());
@@ -700,7 +776,7 @@ fn declare(m: &mut Machine, v: VarId) -> Exec<()> {
     Ok(())
 }
 
-fn init_array(m: &mut Machine, i: u32) {
+fn init_array(m: &mut Machine, i: u32) -> Exec<()> {
     let init = &m.prog.inits[i as usize];
     let var = &m.prog.vars[init.var as usize];
     let (base, len) = (var.slot as usize, var.len.unwrap_or(0) as usize);
@@ -719,9 +795,9 @@ fn init_array(m: &mut Machine, i: u32) {
             let dst = &mut mem.strs[base..base + len];
             for (j, s) in dst.iter_mut().enumerate() {
                 let k = d[j.min(d.len() - 1)];
-                s.clear();
-                s.push_str(&m.prog.strings[k as usize]);
+                put_text(s, &m.prog.strings[k as usize], m.env.loading)?;
             }
         }
     }
+    Ok(())
 }

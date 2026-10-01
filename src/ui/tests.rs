@@ -1206,6 +1206,7 @@ fn scripted_part(script: &str) -> Arc<SamplerParams> {
             script_state: Vec::new(),
             kontakt_sample_bytes: 0.0,
             kontakt_preload: 0,
+            dependencies: Vec::new(),
         }));
     }
     p

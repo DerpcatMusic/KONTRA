@@ -195,9 +195,11 @@ pub(super) mod resident {
 
     /// By sample path and packing (loops pack uncompressed): each span's
     /// first frame and data.
-    type Registry = HashMap<(PathBuf, bool), Vec<(u64, Weak<Frames>)>>;
+    type Key = (PathBuf, bool, crate::audio::SourceVersion);
+    type Registry = HashMap<Key, Vec<(u64, Weak<Frames>)>>;
     static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
-    static SOURCES: Mutex<Option<HashMap<PathBuf, Weak<Source>>>> = Mutex::new(None);
+    static SOURCES: Mutex<Option<HashMap<(PathBuf, crate::audio::SourceVersion), Weak<Source>>>> =
+        Mutex::new(None);
 
     fn with<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
         let mut lock = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
@@ -206,7 +208,7 @@ pub(super) mod resident {
 
     /// A live span of `key` holding all of `range`, nothing before `from`,
     /// where the bank's previous span ends, and nothing past `limit`.
-    pub fn find(key: &(PathBuf, bool), range: &std::ops::Range<u64>, from: u64, limit: u64) -> Option<Span> {
+    pub fn find(key: &Key, range: &std::ops::Range<u64>, from: u64, limit: u64) -> Option<Span> {
         with(|r| {
             r.get(key)?.iter().find_map(|(start, data)| {
                 let data = data.upgrade()?;
@@ -233,15 +235,16 @@ pub(super) mod resident {
     pub fn source((source, path): (Source, &PathBuf)) -> Arc<Source> {
         let mut lock = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
         let sources = lock.get_or_insert_default();
-        if let Some(shared) = sources.get(path).and_then(Weak::upgrade) {
+        let key = (path.clone(), source.version);
+        if let Some(shared) = sources.get(&key).and_then(Weak::upgrade) {
             return shared;
         }
         let shared = Arc::new(source);
-        sources.insert(path.clone(), Arc::downgrade(&shared));
+        sources.insert(key, Arc::downgrade(&shared));
         shared
     }
 
-    pub fn insert(key: (PathBuf, bool), span: &Span) {
+    pub fn insert(key: Key, span: &Span) {
         with(|r| {
             let spans = r.entry(key).or_default();
             spans.retain(|(_, d)| d.strong_count() > 0);
@@ -405,6 +408,31 @@ impl Bank {
         controllers: &[(u8, u8)],
         progress: &AtomicU32,
     ) -> Result<Self> {
+        Self::load_cancelable(
+            instrument,
+            budget,
+            streaming,
+            controllers,
+            progress,
+            &|| false,
+        )
+    }
+
+    /// Stop superseded loads before resolving/opening another sample or
+    /// decoding another chunk. Cancellation never publishes a partial bank.
+    pub fn load_cancelable(
+        instrument: &Instrument,
+        budget: usize,
+        streaming: Streaming,
+        controllers: &[(u8, u8)],
+        progress: &AtomicU32,
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Self> {
+        let check = || -> Result<()> {
+            anyhow::ensure!(!canceled(), "Instrument load canceled");
+            Ok(())
+        };
+        check()?;
         let mut issues = Issues::default();
         resident::sweep();
         // Resolve each distinct sample once, then open them all in parallel.
@@ -428,7 +456,14 @@ impl Bank {
         // Vista 5 Violins). Import just read each member header, so these
         // reads come from the page cache.
         let mut sources = audio::Sources::default();
-        let resolved: Vec<_> = paths.iter().map(|path| sources.source(path)).collect();
+        let resolved: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                check()?;
+                sources.source(path)
+            })
+            .collect();
+        check()?;
         // Progress runs on from where the caller left it: opening every
         // sample takes the first tenth of the rest, reading them the others
         // by frames read. Only ever rises.
@@ -441,10 +476,12 @@ impl Bank {
         };
         let opens = AtomicUsize::new(0);
         let opened = parallel(resolved, |_: &mut (), source| {
+            check()?;
             advance(&opens, paths.len(), 1, (base, reads_from));
             let source = source?;
             anyhow::Ok((source.open()?, source))
         });
+        check()?;
         let mut readers: Vec<(Source, SampleReader, &PathBuf)> = Vec::new();
         let opened: Vec<Option<u32>> = opened
             .into_iter()
@@ -511,25 +548,28 @@ impl Bank {
              ((source, mut reader, path), (spans, streamed, looping))| {
                 // Frames another bank holds are shared, not read again. A
                 // shared span may reach past the planned range: more is resident.
-                let key = (path.clone(), !looping);
+                let key = (path.clone(), !looping, source.version);
                 let mut kept: Vec<Span> = Vec::with_capacity(spans.len());
                 let read_spans = || -> Result<()> {
                     for range in spans {
+                        check()?;
                         let len = (range.end - range.start) as usize;
-                        advance(&read, frames_to_read, len, (reads_from, LOAD_DONE as usize));
                         let from = kept.last().map_or(0, Span::end);
                         if !kept.is_empty() && range.end <= from {
+                            advance(&read, frames_to_read, len, (reads_from, LOAD_DONE as usize));
                             continue;
                         }
                         if let Some(span) = resident::find(&key, &range, from, u64::MAX) {
                             kept.push(span);
+                            advance(&read, frames_to_read, len, (reads_from, LOAD_DONE as usize));
                             continue;
                         }
                         let range = range.start.max(from)..range.end;
-                        let data = Frames::new(reader.read_pcm(range.clone(), !looping, ints, buf)?);
+                        let data = Frames::new(reader.read_pcm_cancelable(range.clone(), !looping, ints, buf, canceled)?);
                         let span = Span { start: range.start, data };
                         resident::insert(key.clone(), &span);
                         kept.push(span);
+                        advance(&read, frames_to_read, len, (reads_from, LOAD_DONE as usize));
                     }
                     Ok(())
                 };
@@ -537,6 +577,7 @@ impl Bank {
                 (spans, streamed, reader.rate, (source, path))
             },
         );
+        check()?;
         progress.store(LOAD_DONE, Ordering::Relaxed);
         let mut samples = Vec::with_capacity(decoded.len());
         let mut streamed = Vec::with_capacity(decoded.len());
@@ -1165,8 +1206,13 @@ pub(crate) fn parallel<T: Send, S: Default, R: Send>(
     items: Vec<T>,
     f: impl Fn(&mut S, T) -> R + Sync,
 ) -> Vec<R> {
+    // ponytail: serialize off-thread phases across instances; use a persistent
+    // loading pool if benchmarks show thread creation/queuing dominates.
+    static PHASE: Mutex<()> = Mutex::new(());
+    let _phase = PHASE.lock().unwrap_or_else(|e| e.into_inner());
     let threads = std::thread::available_parallelism()
         .map_or(1, NonZero::get)
+        .min(4)
         .min(items.len());
     let len = items.len();
     let queue = Mutex::new(items.into_iter().enumerate());

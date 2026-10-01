@@ -1453,6 +1453,89 @@ fn script_handoff_and_playback_do_not_allocate() {
     assert_eq!(snapshot[0]["$count"], Value::Int(4));
 }
 
+#[test]
+fn first_use_script_services_do_not_allocate_or_free() {
+    let script = r#"on init
+declare @text
+declare %values[4]
+declare !strings[2]
+declare $async
+declare ui_label $label(1,1)
+declare ui_menu $menu
+declare ui_knob $knob(0,100,1)
+make_persistent(@text)
+make_persistent(%values)
+make_persistent(!strings)
+end on
+on note
+@text := "0123456789012345678901234567890123456789" & "0123456789012345678901234567890123456789"
+set_text($label,@text)
+add_text_line($label,@text)
+set_control_par_str(get_ui_id($knob),$CONTROL_PAR_LABEL,@text)
+set_knob_unit($knob,$KNOB_UNIT_DB)
+set_knob_unit($knob,0)
+set_knob_unit($knob,$KNOB_UNIT_DB)
+add_menu_item($menu,@text,7)
+pgs_create_key(FIRST_USE,2)
+pgs_set_key_val(FIRST_USE,1,73)
+pgs_create_str_key(FIRST_TEXT)
+pgs_set_str_key_val(FIRST_TEXT,@text)
+%values[0] := 42
+!strings[0] := @text
+$async := save_array(%values,0)
+%values[0] := 0
+$async := load_array(%values,0)
+$async := save_array(!strings,0)
+!strings[0] := ""
+$async := load_array(!strings,0)
+%values[1] := pgs_get_key_val(FIRST_USE,1)
+!strings[1] := pgs_get_str_key_val(FIRST_TEXT)
+set_key_name(60,@text)
+set_key_color(60,$KEY_COLOR_RED)
+set_key_color(60,0)
+set_key_color(60,$KEY_COLOR_BLUE)
+set_key_type(60,$NI_KEY_TYPE_DEFAULT)
+message(@text)
+set_listener($NI_SIGNAL_TIMER_MS,1000)
+set_listener($NI_SIGNAL_TIMER_MS,0)
+end on"#;
+    let mut e = scripted(script);
+    let (mut left, mut right) = ([0.0; 512], [0.0; 512]);
+    let count = allocations(|| {
+        e.begin_audio_block(512, 1, true);
+        e.note_on(0, 60, 100);
+        e.render(&mut left, &mut right);
+    });
+    assert_eq!(count, 0, "first callback allocated or freed");
+    let rt = e.script().unwrap();
+    assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics());
+    let ui = rt.interface(0);
+    assert_eq!(ui.controls[1].menu.len(), 1);
+    let saved = rt.persistence();
+    assert_eq!(saved[0]["%values"], Value::IntArray(vec![42, 73, 0, 0]));
+    assert_eq!(
+        saved[0]["!strings"],
+        Value::Array(vec![Value::Text(rt.last_message().into()); 2])
+    );
+    assert_eq!(rt.last_message().len(), 80);
+}
+
+#[test]
+fn oversized_callback_text_faults_without_allocating() {
+    let mut e = scripted(
+        "on init\ndeclare @text\nend on\non note\n@text := \"x\"\nwhile (1)\n@text := @text & @text\nend while\nend on",
+    );
+    let count = allocations(|| e.note_on(0, 60, 100));
+    assert_eq!(count, 0);
+    assert!(
+        e.script()
+            .unwrap()
+            .diagnostics()
+            .iter()
+            .any(|d| d.contains("capacity"))
+    );
+}
+
 /// Volume modulation of `source` at full intensity, without a shaper.
 fn volume_mod(source: ModSource, lag_ms: u16) -> ModAssignment {
     ModAssignment {
@@ -1755,6 +1838,70 @@ fn ram_only_loads_samples_whole() {
         assert!(render(&mut a, 128) == render(&mut b, 128), "diverges in block {block}");
     }
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn canceled_load_does_not_publish_a_partial_bank_or_completion() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let path =
+        std::env::temp_dir().join(format!("kontra-canceled-bank-{}.wav", std::process::id()));
+    write_wav(&path, 131072);
+    let i = instrument(
+        vec![Group::default()],
+        vec![Zone {
+            sample: path.clone(),
+            ..Default::default()
+        }],
+    );
+    let calls = AtomicU32::new(0);
+    let progress = AtomicU32::new(0);
+    let canceled = || calls.fetch_add(1, Ordering::Relaxed) >= 8;
+    let result = Bank::load_cancelable(
+        &i,
+        usize::MAX,
+        Streaming::RamOnly,
+        &[],
+        &progress,
+        &canceled,
+    );
+    assert!(result.err().unwrap().to_string().contains("canceled"));
+    assert!(progress.load(Ordering::Relaxed) < kontakto::engine::LOAD_DONE);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn replacing_a_sample_does_not_reuse_a_live_preload() {
+    let path =
+        std::env::temp_dir().join(format!("kontra-replaced-sample-{}.wav", std::process::id()));
+    let write = |value, frames| {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut wav = hound::WavWriter::create(&path, spec).unwrap();
+        for _ in 0..frames * 2 {
+            wav.write_sample(value).unwrap();
+        }
+        wav.finalize().unwrap();
+    };
+    let i = instrument(
+        vec![Group::default()],
+        vec![Zone {
+            sample: path.clone(),
+            ..Default::default()
+        }],
+    );
+    write(0.25f32, 8192);
+    let mut old = engine_with(Bank::load(&i).unwrap());
+    write(0.5f32, 8193);
+    let mut new = engine_with(Bank::load(&i).unwrap());
+    old.note_on(0, 60, 127);
+    new.note_on(0, 60, 127);
+    assert!(close(last(&mut old, 64), [0.25; 2]));
+    assert!(close(last(&mut new, 64), [0.5; 2]));
+    std::fs::remove_file(path).unwrap();
 }
 
 /// The RAM-only fill finishing mid-note: a voice started on the streamed

@@ -174,7 +174,7 @@ fn plain_offsets_and_encrypted_members() {
         );
         b.extend(0x110u16.to_le_bytes());
         b.extend([0; 4]);
-        b.extend(0x100u32.to_le_bytes());
+        b.extend((if encrypted { 0x100u32 } else { 0xffu32 }).to_le_bytes());
         b.extend([0; 5]);
         b.extend(6u32.to_le_bytes());
         b.extend(vec![0; if encrypted { 8 } else { 4 }]);

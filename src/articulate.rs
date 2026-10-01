@@ -21,6 +21,7 @@
 //! own [`Router`] per rack slot.
 
 use crate::engine::{Engine, Expression, PartControls, RACK_SLOTS, Rack};
+#[cfg(feature = "plugin")]
 use moose::core::{
     EventBody,
     custom_state::{StateCursor, StateField},
@@ -188,6 +189,7 @@ pub enum Zone {
 }
 
 /// Kept in the host state as JSON, so fields added later load as their defaults.
+#[cfg(feature = "plugin")]
 macro_rules! json_state {
     ($($t:ty),*) => {$(
         impl StateField for $t {
@@ -200,6 +202,7 @@ macro_rules! json_state {
         }
     )*};
 }
+#[cfg(feature = "plugin")]
 json_state!(Articulate, Mpe);
 
 /// One articulation as the audio thread routes it.
@@ -346,6 +349,7 @@ pub enum In {
 impl In {
     /// A host event as a part takes it. Per-note MIDI 2.0 bodies (CLAP note
     /// expressions) stay per key; the rest of MIDI 2.0 narrows to MIDI 1.0.
+    #[cfg(feature = "plugin")]
     pub fn from_event(body: &EventBody) -> Option<Self> {
         let unit = |v: u32| (f64::from(v) / f64::from(u32::MAX)) as f32;
         let hi7 = |v: u32| (v >> 25) as u8;
@@ -1025,6 +1029,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "plugin")]
     fn host_events_read_per_note_and_narrow_the_rest() {
         let tune = midi::per_note_bend_from_semitones(-3.5);
         let ev = |body| In::from_event(&body);
@@ -1050,6 +1055,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "plugin")]
     fn settings_survive_the_host_state() {
         let mut a = areia();
         a.mode = Mode::Velocity;

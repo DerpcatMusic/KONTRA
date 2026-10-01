@@ -131,7 +131,7 @@ impl Tracked {
         let (ranges, _, looping) = spans(&plays, preload, cover);
         // Heads the same size other parts or instances hold are shared: a
         // longer one is not, or shrinking would free nothing.
-        let key = (source.path().to_path_buf(), !looping);
+        let key = (source.path().to_path_buf(), !looping, source.version);
         let mut reader = None;
         let (mut ints, mut frames) = (Vec::new(), Vec::new());
         let mut end = 0;

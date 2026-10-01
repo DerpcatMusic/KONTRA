@@ -4,11 +4,10 @@
 use super::builtins::{self as b, Builtin, event_par as par};
 use super::compile::{Callback, Ty, VarId};
 use super::engine::{EnginePar, Fade, GroupMask, VoicePar};
-use super::runtime::{read_value, write_value};
+use super::runtime::{read_value, refresh_value, write_value_rt};
 use super::ui::{MenuItem, Prop};
-use super::vm::{Exec, Fault, Kind, Machine, Step};
+use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text};
 use super::{KeyState, Value};
-use std::fmt::Write as _;
 
 fn ints<const N: usize>(m: &mut Machine) -> [i32; N] {
     let mut a = [0; N];
@@ -32,7 +31,7 @@ fn push_real(m: &mut Machine, v: f64) -> Exec<Step> {
 }
 
 fn push_fmt(m: &mut Machine, args: std::fmt::Arguments) -> Exec<Step> {
-    let _ = m.stk.strs.push().write_fmt(args);
+    super::vm::format_text(m.stk.strs.push()?, args, m.env.loading)?;
     Ok(Step::Next)
 }
 
@@ -137,7 +136,19 @@ fn async_done(m: &mut Machine, status: i32) -> i32 {
 pub const NO_CONTROL: Fault = Fault("ID does not refer to a UI control");
 pub const NO_PGS_KEY: Fault = Fault("Unknown PGS key");
 
-pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
+fn charge(m: &Machine, fuel: &mut u64, count: u64) -> Exec<()> {
+    if m.env.deadline.is_some() {
+        if count > *fuel {
+            return Err(Fault(
+                "Synchronous array operation exceeds audio block budget",
+            ));
+        }
+        *fuel -= count;
+    }
+    Ok(())
+}
+
+pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step> {
     use Builtin::*;
     let slot = m.slot.index;
     match f {
@@ -248,6 +259,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         Search => {
             let v = m.stk.var();
             let var = &m.prog.vars[v as usize];
+            charge(m, fuel, u64::from(var.len.unwrap_or(1)))?;
             let range = var.slot as usize..(var.slot + var.len.unwrap_or(1)) as usize;
             let found = match var.ty {
                 Ty::Int => {
@@ -276,6 +288,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let lo = lo.unwrap_or(0).clamp(0, len);
             let hi = hi.map_or(len, |h| (h + 1).clamp(lo, len));
             let range = (var.slot as i32 + lo) as usize..(var.slot as i32 + hi) as usize;
+            let n = range.len() as u64;
+            charge(m, fuel, n)?;
+            let width = if var.ty == Ty::Str { m.slot.mem.strs[range.clone()].iter().map(|s| s.len() as u64).max().unwrap_or(1) } else { 1 };
+            charge(m, fuel, n.saturating_mul(u64::from(n.max(1).ilog2()) + 1).saturating_mul(width.max(1)))?;
             let mem = &mut m.slot.mem;
             match var.ty {
                 Ty::Int => sort(&mut mem.ints[range], descending != 0, |a, b| a.cmp(b)),
@@ -288,6 +304,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let w = m.stk.var();
             let v = m.stk.var();
             let (a, c) = (&m.prog.vars[v as usize], &m.prog.vars[w as usize]);
+            let n = u64::from(a.len.unwrap_or(1));
+            charge(m, fuel, n)?;
+            let width = if a.ty == Ty::Str {
+                m.slot.mem.strs[a.slot as usize..a.slot as usize + n as usize].iter().map(|s| s.len() as u64).sum()
+            } else { n };
+            charge(m, fuel, width)?;
             let equal = a.ty == c.ty && a.len == c.len && {
                 let (x, y, n) = (
                     a.slot as usize,
@@ -311,12 +333,24 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             }
             let v = m.stk.var();
             let var = &m.prog.vars[v as usize];
+            let n = u64::from(var.len.unwrap_or(1));
+            charge(m, fuel, n)?;
+            let cost = if var.ty == Ty::Str {
+                m.slot.mem.strs[var.slot as usize..var.slot as usize + n as usize].iter().map(|s| s.len() as u64 + 1).sum()
+            } else { n };
+            charge(m, fuel, cost)?;
             let status = if matches!(f, SaveArray | SaveArrayStr) {
-                let value = read_value(&m.slot.mem, var);
-                m.env.saved_arrays.insert((slot, v), value);
+                if m.env.loading {
+                    m.env.saved_arrays.insert((slot, v), (read_value(&m.slot.mem, var), true));
+                } else {
+                    let (value, saved) = m.env.saved_arrays.get_mut(&(slot, v))
+                        .ok_or(Fault("KSP array save storage was not prepared"))?;
+                    refresh_value(&m.slot.mem, var, value);
+                    *saved = true;
+                }
                 1
-            } else if let Some(value) = m.env.saved_arrays.get(&(slot, v)) {
-                write_value(&mut m.slot.mem, var, value);
+            } else if let Some((value, true)) = m.env.saved_arrays.get(&(slot, v)) {
+                write_value_rt(&mut m.slot.mem, var, value, m.env.loading)?;
                 1
             } else {
                 m.env.note("load_array: no saved data in this session");
@@ -649,10 +683,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 _ => "$NI_SIGNAL_TRANSP_STOP",
             };
             if value == 0 {
-                m.slot.ui.listeners.remove(name);
+                if m.env.loading { m.slot.ui.listeners.remove(name); }
+                else if let Some(v) = m.slot.ui.listeners.get_mut(name) { *v = 0; }
             } else if !m.slot.ui.listeners.contains_key(name) || m.slot.ui.listeners[name] != value
             {
-                m.slot.ui.listeners.insert(name, value);
+                if let Some(v) = m.slot.ui.listeners.get_mut(name) { *v = value; }
+                else if m.env.loading { m.slot.ui.listeners.insert(name, value); }
+                else { return Err(Fault("KSP listener storage was not prepared")); }
             }
             m.env.listeners_changed |= 1 << slot;
             Ok(Step::Next)
@@ -672,7 +709,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 .ok()
                 .filter(|&g| g < m.engine.group_count())
                 .map_or("", |g| m.engine.group_name(g));
-            m.stk.strs.push_str(name);
+            m.stk.strs.push_str(name)?;
             Ok(Step::Next)
         }
         PurgeGroup => {
@@ -744,7 +781,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         OutputChannelName => {
             let [n] = ints(m);
             if n < 0 {
-                m.stk.strs.push_str("Default");
+                m.stk.strs.push_str("Default")?;
                 return Ok(Step::Next);
             }
             push_fmt(m, format_args!("Out {}", n + 1))
@@ -767,7 +804,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             if p == b::CONTROL_PAR_VALUE {
                 set_value(m, c, value);
             } else {
-                m.slot.ui.controls[c].set_int(p, value);
+                m.slot.ui.controls[c].set_int(p, value).map_err(Fault)?;
             }
             Ok(Step::Next)
         }
@@ -775,8 +812,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let [id, p] = ints(m);
             let text = m.stk.strs.pop();
             if id == b::INST_WALLPAPER_ID && p == b::CONTROL_PAR_PICTURE {
-                m.slot.ui.wallpaper.clear();
-                m.slot.ui.wallpaper.push_str(text);
+                put_text(&mut m.slot.ui.wallpaper, text, m.env.loading)?;
                 return Ok(Step::Next);
             }
             if b::instrument_control(id) {
@@ -786,10 +822,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];
             if p == b::CONTROL_PAR_VALUE && var.ty == Ty::Str && var.len.is_none() {
                 let dst = &mut m.slot.mem.strs[var.slot as usize];
-                dst.clear();
-                dst.push_str(text);
+                put_text(dst, text, m.env.loading)?;
             } else {
-                m.slot.ui.controls[c].set_str(p, text);
+                m.slot.ui.controls[c].set_str(p, text).map_err(Fault)?;
             }
             Ok(Step::Next)
         }
@@ -833,7 +868,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             }
             let [id, p] = ints(m);
             if b::instrument_control(id) {
-                m.stk.strs.push_str("");
+                m.stk.strs.push_str("")?;
                 return Ok(Step::Next);
             }
             let c = control(m, id)?;
@@ -846,7 +881,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 }
                 _ => "",
             };
-            m.stk.strs.push_str(text);
+            m.stk.strs.push_str(text)?;
             Ok(Step::Next)
         }
         SetText | AddTextLine | SetKnobLabel | SetControlHelp => {
@@ -862,15 +897,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 SetKnobLabel => b::CONTROL_PAR_LABEL,
                 _ => b::CONTROL_PAR_HELP,
             };
-            let s = m.slot.ui.controls[c].str_mut(p);
+            let s = m.slot.ui.controls[c].str_mut(p).map_err(Fault)?;
             if f == AddTextLine {
                 if !s.is_empty() {
-                    s.push('\n');
+                    append_text(s, "\n", m.env.loading)?;
                 }
             } else {
                 s.clear();
             }
-            s.push_str(text);
+            append_text(s, text, m.env.loading)?;
             if s.len() > 65536 {
                 return Err(Fault("KSP string length limit"));
             }
@@ -889,7 +924,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             match m.prog.symbol_name(value).filter(|_| f == SetKnobUnit) {
                 Some(name) => m.slot.ui.controls[c].set_str(p, name),
                 None => m.slot.ui.controls[c].set_int(p, value),
-            }
+            }.map_err(Fault)?;
             Ok(Step::Next)
         }
         MoveControl | MoveControlPx => {
@@ -898,15 +933,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let c = control_of(m, v)?;
             if f == MoveControl {
                 if x == 0 || y == 0 {
-                    m.slot.ui.controls[c].set_int(b::CONTROL_PAR_HIDE, 1);
+                    m.slot.ui.controls[c].set_int(b::CONTROL_PAR_HIDE, 1).map_err(Fault)?;
                     return Ok(Step::Next);
                 }
                 x = x.saturating_sub(1).saturating_mul(92).saturating_add(66);
                 y = y.saturating_sub(1).saturating_mul(21).saturating_add(2);
             }
             let control = &mut m.slot.ui.controls[c];
-            control.set_int(b::CONTROL_PAR_POS_X, x);
-            control.set_int(b::CONTROL_PAR_POS_Y, y);
+            control.set_int(b::CONTROL_PAR_POS_X, x).map_err(Fault)?;
+            control.set_int(b::CONTROL_PAR_POS_Y, y).map_err(Fault)?;
             Ok(Step::Next)
         }
         AddMenuItem => {
@@ -918,15 +953,18 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 .ui
                 .control_of(v)
                 .ok_or(Fault("Command requires a declared UI control"))?;
-            let menu = &mut m.slot.ui.controls[c].menu;
-            if menu.len() >= 4096 {
-                return Err(Fault("Menu item limit"));
+            let control = &mut m.slot.ui.controls[c];
+            if control.menu.len() >= 4096 { return Err(Fault("Menu item limit")); }
+            if m.env.loading {
+                control.menu.push(MenuItem { text: text.to_owned(), value, visible: true });
+            } else {
+                let item = control.spare_menu.last_mut().ok_or(Fault("KSP runtime menu capacity exhausted"))?;
+                put_text(&mut item.text, text, false)?;
+                item.value = value;
+                item.visible = true;
+                let item = control.spare_menu.pop().unwrap();
+                control.menu.push(item);
             }
-            menu.push(MenuItem {
-                text: text.to_owned(),
-                value,
-                visible: true,
-            });
             Ok(Step::Next)
         }
         SetMenuItemStr => {
@@ -937,8 +975,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 .ok()
                 .and_then(|i| m.slot.ui.controls[c].menu.get_mut(i))
             {
-                item.text.clear();
-                item.text.push_str(text);
+                put_text(&mut item.text, text, m.env.loading)?;
             }
             Ok(Step::Next)
         }
@@ -965,7 +1002,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 .ok()
                 .and_then(|i| menu.get(i))
                 .map_or("", |item| item.text.as_str());
-            m.stk.strs.push_str(text);
+            m.stk.strs.push_str(text)?;
             Ok(Step::Next)
         }
         GetMenuItemValue | GetMenuItemVisibility => {
@@ -1004,8 +1041,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         SetScriptTitle => {
             let text = m.stk.strs.pop();
-            m.slot.ui.title.clear();
-            m.slot.ui.title.push_str(text);
+            put_text(&mut m.slot.ui.title, text, m.env.loading)?;
             Ok(Step::Next)
         }
         MakePerfview => {
@@ -1025,12 +1061,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         }
         GetFolder => {
             m.stk.int();
-            m.stk.strs.push();
+            m.stk.strs.push()?;
             Ok(Step::Next)
         }
         FsGetFilename => {
             ints::<2>(m);
-            m.stk.strs.push();
+            m.stk.strs.push()?;
             Ok(Step::Next)
         }
         // ---- Keyboard display ----------------------------------------------------------
@@ -1051,8 +1087,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 .keyboard
                 .entry(midi_note(note)?)
                 .or_insert_with(KeyState::default);
-            key.name.clear();
-            key.name.push_str(text);
+            put_text(&mut key.name, text, m.env.loading)?;
             Ok(Step::Next)
         }
         SetKeyColor | SetKeyType | SetKeyPressed => {
@@ -1066,21 +1101,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                     return Ok(Step::Next);
                 }
             }
-            let shown = match m.prog.symbol_name(value) {
-                Some(name) if f != SetKeyPressed => Value::Text(name.to_owned()),
-                _ => Value::Int(value),
-            };
-            let key = m
-                .env
-                .host
-                .keyboard
-                .entry(note)
-                .or_insert_with(KeyState::default);
-            match f {
-                SetKeyColor => key.color = Some(shown),
-                SetKeyType => key.kind = Some(shown),
-                _ => key.pressed = value == 1,
-            }
+            let name = m.prog.symbol_name(value);
+            let key = m.env.host.keyboard.entry(note).or_insert_with(KeyState::default);
+            if f == SetKeyPressed { key.pressed = value == 1; }
+            else { key.set_symbol(f == SetKeyColor, name, value, m.env.loading)?; }
             Ok(Step::Next)
         }
         GetKeyName => {
@@ -1092,7 +1116,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 .keyboard
                 .get(&note)
                 .map_or("", |k| k.name.as_str());
-            m.stk.strs.push_str(name);
+            m.stk.strs.push_str(name)?;
             Ok(Step::Next)
         }
         GetKeyColor | GetKeyType | GetKeyTriggerstate => {
@@ -1132,8 +1156,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
         // ---- Diagnostics -------------------------------------------------------------
         Message => {
             let text = m.stk.strs.pop();
-            m.env.message.clear();
-            m.env.message.push_str(text);
+            put_text(&mut m.env.message, text, m.env.loading)?;
             Ok(Step::Next)
         }
         SetCondition | ResetCondition => {
@@ -1157,7 +1180,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 .get(slot as usize)
                 .and_then(|p| p.get(&*var.name))
             {
-                write_value(&mut m.slot.mem, var, value);
+                write_value_rt(&mut m.slot.mem, var, value, m.env.loading)?;
             }
             Ok(Step::Next)
         }
@@ -1178,11 +1201,14 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 }
                 Some(_) => {}
                 None if m.env.host.pgs_ints.len() >= 4096 => return Err(Fault("PGS key limit")),
-                None => m
-                    .env
-                    .host
-                    .pgs_ints
-                    .push((name.to_string(), vec![0; size as usize])),
+                None if m.env.loading => m.env.host.pgs_ints.push((name.to_string(), vec![0; size as usize])),
+                None => {
+                    let at = m.env.spare_pgs_ints.iter().position(|(k, _)| k == &**name)
+                        .ok_or(Fault("KSP PGS storage was not prepared"))?;
+                    let mut key = m.env.spare_pgs_ints.swap_remove(at);
+                    key.1.truncate(size as usize);
+                    m.env.host.pgs_ints.push(key);
+                }
             }
             Ok(Step::Next)
         }
@@ -1224,7 +1250,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 if m.env.host.pgs_strs.len() >= 4096 {
                     return Err(Fault("PGS key limit"));
                 }
-                m.env.host.pgs_strs.push((name.to_string(), String::new()));
+                if m.env.loading { m.env.host.pgs_strs.push((name.to_string(), String::new())); }
+                else {
+                    let at = m.env.spare_pgs_strs.iter().position(|(k, _)| k == &**name)
+                        .ok_or(Fault("KSP PGS string storage was not prepared"))?;
+                    let key = m.env.spare_pgs_strs.swap_remove(at);
+                    m.env.host.pgs_strs.push(key);
+                }
             }
             Ok(Step::Next)
         }
@@ -1249,8 +1281,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 return Err(Fault("PGS string memory limit"));
             }
             let dst = &mut m.env.host.pgs_strs[i].1;
-            dst.clear();
-            dst.push_str(text);
+            put_text(dst, text, m.env.loading)?;
             m.env.pgs_changed = true;
             Ok(Step::Next)
         }
@@ -1258,7 +1289,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let key = m.stk.var();
             let i = pgs_str_key(m, key).ok_or(NO_PGS_KEY)?;
             let (strs, host) = (&mut m.stk.strs, &m.env.host);
-            strs.push_str(&host.pgs_strs[i].1);
+            strs.push_str(&host.pgs_strs[i].1)?;
             Ok(Step::Next)
         }
     }

@@ -111,6 +111,16 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
         let mut skipped = 0;
         for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
             let params = modulator.params()?;
+            if params.unknown_flags[0] != 0 {
+                out.warnings.push(format!("Internal modulator {} has an undecoded mode/bypass flag; envelope bypass is not applied", params.name));
+            }
+            match &params.modulator {
+                RawModulator::Ahdsr(env) if env.unknown_flag != 0 => out.warnings.push(
+                    "AHDSR mode switches are not decoded; AHD-only/retrigger behavior may differ".into()),
+                RawModulator::Flex(_) => out.warnings.push(
+                    "Flex one-shot/loop switches are not decoded; playback uses sustain and key-release behavior".into()),
+                _ => {}
+            }
             // The first volume envelope of each kind; the voice multiplies them.
             let volume = params.targets.iter().any(|t| t.param == "volume");
             let volume_env = match params.modulator {

@@ -366,6 +366,12 @@ impl Engine {
         self.script.as_deref()
     }
 
+    pub fn begin_audio_block(&mut self, frames: usize, parts: usize, offline: bool) {
+        if let Some(rt) = &mut self.script {
+            rt.begin_audio_block(frames, parts, offline);
+        }
+    }
+
     /// The instrument's effects, and what it played past its own output.
     pub fn fx(&self) -> &FxProcessor {
         &self.fx

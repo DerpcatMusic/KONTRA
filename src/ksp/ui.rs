@@ -31,6 +31,9 @@ pub struct ControlState {
     pub var: VarId,
     pub props: Vec<(i32, Prop)>,
     pub menu: Vec<MenuItem>,
+    pub frozen: bool,
+    pub spare_menu: Vec<MenuItem>,
+    pub spare_text: Vec<(i32, String)>,
 }
 
 impl ControlState {
@@ -38,32 +41,40 @@ impl ControlState {
         self.props.iter().find(|(p, _)| *p == par).map(|(_, v)| v)
     }
 
-    pub fn set_int(&mut self, par: i32, value: i32) {
+    pub fn set_int(&mut self, par: i32, value: i32) -> Result<(), &'static str> {
+        let full = self.frozen && self.props.len() == self.props.capacity();
         match self.props.iter_mut().find(|(p, _)| *p == par) {
+            Some((_, v @ Prop::Str(_))) if self.frozen => {
+                let Prop::Str(text) = std::mem::replace(v, Prop::Int(value)) else { unreachable!() };
+                self.spare_text.push((par, text));
+            }
             Some((_, v)) => *v = Prop::Int(value),
+            None if full => return Err("KSP property capacity exhausted"),
             None => self.props.push((par, Prop::Int(value))),
         }
+        Ok(())
     }
 
-    pub fn set_str(&mut self, par: i32, value: &str) {
-        match self.props.iter_mut().find(|(p, _)| *p == par) {
-            Some((_, Prop::Str(s))) => {
-                s.clear();
-                s.push_str(value);
+    pub fn set_str(&mut self, par: i32, value: &str) -> Result<(), &'static str> {
+        let loading = !self.frozen;
+        let dst = self.str_mut(par)?;
+        super::vm::put_text(dst, value, loading).map_err(|e| e.0)
+    }
+
+    pub fn str_mut(&mut self, par: i32) -> Result<&mut String, &'static str> {
+        let i = match self.props.iter().position(|(p, _)| *p == par) {
+            Some(i) if matches!(self.props[i].1, Prop::Str(_)) => i,
+            Some(i) if self.frozen => {
+                let at = self
+                    .spare_text
+                    .iter()
+                    .position(|(p, _)| *p == par)
+                    .ok_or("KSP string property was not prepared")?;
+                self.props[i].1 = Prop::Str(self.spare_text.swap_remove(at).1);
+                i
             }
-            Some((_, v)) => *v = Prop::Str(value.to_owned()),
-            None => self.props.push((par, Prop::Str(value.to_owned()))),
-        }
-    }
-
-    pub fn str_mut(&mut self, par: i32) -> &mut String {
-        let i = match self
-            .props
-            .iter()
-            .position(|(p, v)| *p == par && matches!(v, Prop::Str(_)))
-        {
-            Some(i) => i,
-            None => {
+            None if self.frozen => return Err("KSP string property was not prepared"),
+            _ => {
                 self.props.retain(|(p, _)| *p != par);
                 self.props.push((par, Prop::Str(String::new())));
                 self.props.len() - 1
@@ -72,7 +83,63 @@ impl ControlState {
         let Prop::Str(s) = &mut self.props[i].1 else {
             unreachable!()
         };
-        s
+        Ok(s)
+    }
+
+    pub fn prepare(&mut self, bytes: usize, menu: bool) {
+        self.frozen = false;
+        self.props.reserve(64);
+        self.spare_text.retain(|(par, _)| {
+            !self
+                .props
+                .iter()
+                .any(|(p, v)| p == par && matches!(v, Prop::Str(_)))
+        });
+        self.spare_text.reserve(self.props.len() + 5);
+        for par in [
+            b::CONTROL_PAR_TEXT,
+            b::CONTROL_PAR_LABEL,
+            b::CONTROL_PAR_HELP,
+            b::CONTROL_PAR_PICTURE,
+        ] {
+            if self.get(par).is_none() {
+                self.set_str(par, "").unwrap();
+            }
+        }
+        for (_, p) in &mut self.props {
+            if let Prop::Str(s) = p {
+                s.reserve(bytes.saturating_sub(s.len()));
+            }
+        }
+        if !matches!(self.get(b::CONTROL_PAR_UNIT), Some(Prop::Str(_)))
+            && !self
+                .spare_text
+                .iter()
+                .any(|(p, _)| *p == b::CONTROL_PAR_UNIT)
+        {
+            if self.get(b::CONTROL_PAR_UNIT).is_none() {
+                self.set_int(b::CONTROL_PAR_UNIT, 0).unwrap();
+            }
+            self.spare_text
+                .push((b::CONTROL_PAR_UNIT, String::with_capacity(bytes)));
+        }
+        for item in &mut self.menu {
+            item.text.reserve(bytes.saturating_sub(item.text.len()));
+        }
+        if menu {
+            // ponytail: 16 additional runtime menu rows; raise this bounded
+            // headroom if a real instrument requires more dynamic rows.
+            self.menu.reserve(16);
+            self.spare_menu.reserve(16);
+            while self.spare_menu.len() < 16 {
+                self.spare_menu.push(MenuItem {
+                    text: String::with_capacity(bytes),
+                    value: 0,
+                    visible: true,
+                });
+            }
+        }
+        self.frozen = true;
     }
 }
 
@@ -96,7 +163,7 @@ impl Ui {
     pub fn new(vars: usize) -> Self {
         Self {
             var_ids: vec![0; vars],
-            id_controls: Vec::new(),
+            id_controls: Vec::with_capacity(vars),
             controls: Vec::new(),
             performance: false,
             width: 632,
@@ -135,21 +202,24 @@ impl Ui {
             var: v,
             props: Vec::with_capacity(8),
             menu: Vec::new(),
+            spare_menu: Vec::new(),
+            spare_text: Vec::new(),
+            frozen: false,
         };
-        c.set_int(b::CONTROL_PAR_POS_X, 0);
-        c.set_int(b::CONTROL_PAR_POS_Y, 0);
-        c.set_int(b::CONTROL_PAR_WIDTH, 85);
+        c.set_int(b::CONTROL_PAR_POS_X, 0)?;
+        c.set_int(b::CONTROL_PAR_POS_Y, 0)?;
+        c.set_int(b::CONTROL_PAR_WIDTH, 85)?;
         c.set_int(
             b::CONTROL_PAR_HEIGHT,
             if kind == "ui_knob" { 40 } else { 18 },
-        );
-        c.set_int(b::CONTROL_PAR_HIDE, 0);
+        )?;
+        c.set_int(b::CONTROL_PAR_HIDE, 0)?;
         if matches!(kind, "ui_knob" | "ui_slider" | "ui_value_edit") {
             let [min, max, ..] = params else {
                 return Err("Control range missing");
             };
-            c.set_int(b::CONTROL_PAR_MIN_VALUE, *min);
-            c.set_int(b::CONTROL_PAR_MAX_VALUE, *max);
+            c.set_int(b::CONTROL_PAR_MIN_VALUE, *min)?;
+            c.set_int(b::CONTROL_PAR_MAX_VALUE, *max)?;
         }
         let id = (self.var_ids[v as usize] - FIRST_UI_ID) as usize;
         self.id_controls[id] = self.controls.len() as u32;
@@ -239,18 +309,8 @@ impl Ui {
                     (Ty::Int, None) => Value::Int(mem.ints[slot]),
                     (Ty::Real, None) => Value::Real(mem.reals[slot]),
                     (Ty::Str, None) => Value::Text(mem.strs[slot].clone()),
-                    (Ty::Int, Some(n)) => Value::Array(
-                        mem.ints[slot..slot + n as usize]
-                            .iter()
-                            .map(|&x| Value::Int(x))
-                            .collect(),
-                    ),
-                    (Ty::Real, Some(n)) => Value::Array(
-                        mem.reals[slot..slot + n as usize]
-                            .iter()
-                            .map(|&x| Value::Real(x))
-                            .collect(),
-                    ),
+                    (Ty::Int, Some(n)) => Value::IntArray(mem.ints[slot..slot + n as usize].to_vec()),
+                    (Ty::Real, Some(n)) => Value::RealArray(mem.reals[slot..slot + n as usize].to_vec()),
                     (Ty::Str, Some(n)) => Value::Array(
                         mem.strs[slot..slot + n as usize]
                             .iter()
@@ -291,6 +351,7 @@ impl Ui {
             listeners: self
                 .listeners
                 .iter()
+                .filter(|(_, value)| **value != 0)
                 .map(|(k, v)| ((*k).to_owned(), *v))
                 .collect(),
         }

@@ -5,7 +5,7 @@ fn text(v: &Value) -> String {
         Value::Int(n) => n.to_string(),
         Value::Real(n) => n.to_string(),
         Value::Text(s) => s.clone(),
-        Value::Array(_) => "[array]".into(),
+        Value::Array(_) | Value::IntArray(_) | Value::RealArray(_) => "[array]".into(),
     }
 }
 
@@ -315,7 +315,7 @@ fn saved_persistence_decodes_every_kind() {
     assert_eq!(saved["$a"], Value::Int(5));
     assert_eq!(
         saved["%b"],
-        Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        Value::IntArray(vec![1, 2, 3])
     );
     assert_eq!(saved["~c"], Value::Real(1.5));
     assert_eq!(saved["@d"], Value::Text("two words".into()));
@@ -400,6 +400,73 @@ impl Rig {
 }
 
 const PASS: &str = "on init\nend on";
+
+#[test]
+fn managed_audio_budget_is_shared_by_segments_and_rejects_large_sync_arrays() {
+    let mut rig =
+        Rig::new(&["on init\ndeclare $n\nend on\non note\nwhile (1)\ninc($n)\nend while\nend on"]);
+    rig.rt.begin_audio_block(64, 16, false);
+    rig.on(0, 60);
+    let fuel = rig.rt.env.block_fuel;
+    assert!(fuel < 64 * 2048 / 16);
+    for _ in 0..16 {
+        rig.block(4);
+    }
+    assert_eq!(
+        rig.rt.env.block_fuel, fuel,
+        "MIDI/render segmentation refilled script fuel"
+    );
+    rig.rt.begin_audio_block(64, 16, false);
+    assert_eq!(rig.rt.env.block_fuel, 64 * 2048 / 16);
+
+    let mut bulk = Rig::new(&[
+        "on init\ndeclare %a[100000]\nmake_persistent(%a)\n%a[0] := 2\n%a[99999] := 1\nend on\non note\nsort(%a,0)\nend on",
+    ]);
+    bulk.rt.begin_audio_block(64, 16, false);
+    bulk.on(0, 60);
+    assert!(
+        bulk.rt
+            .diagnostics()
+            .iter()
+            .any(|d| d.contains("array operation exceeds"))
+    );
+    let saved = bulk.rt.persistence();
+    let Value::IntArray(values) = &saved[0]["%a"] else {
+        panic!("compact int array")
+    };
+    assert_eq!(values[0], 2, "the oversized sort ran");
+    let source = format!(
+        "on init\ndeclare $n\nmake_persistent($n)\nend on\non note\n{}end on",
+        "inc($n)\n".repeat(20000)
+    );
+    let mut straight = Rig::new(&[&source]);
+    straight.rt.begin_audio_block(64, 16, false);
+    straight.on(0, 60);
+    let Value::Int(n) = straight.rt.persistence()[0]["$n"] else {
+        panic!("int counter")
+    };
+    assert!(n < 20000, "a straight-line callback escaped the deadline");
+}
+
+#[test]
+fn compact_arrays_keep_the_existing_json_format() {
+    let ints = Value::IntArray(vec![1, -2, 3]);
+    let reals = Value::RealArray(vec![0.5, 1.25]);
+    for v in [ints, reals] {
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), v);
+    }
+    assert_eq!(
+        serde_json::from_str::<Value>("[1,2]").unwrap(),
+        Value::IntArray(vec![1, 2])
+    );
+    assert!(matches!(
+        serde_json::from_str::<Value>("[1,\"text\"]").unwrap(),
+        Value::Array(_)
+    ));
+    let old = Value::Array(vec![Value::Int(1), Value::Int(2)]);
+    assert_eq!(serde_json::to_string(&old).unwrap(), "[1,2]");
+}
 
 #[test]
 fn events_pass_through_slots_in_order() {
@@ -726,9 +793,9 @@ fn budgeted_persistence_refresh_matches_whole_and_reports_changes() {
     while !rig.rt.refresh_persistence_within(&mut saved, &mut at, 64) {}
     assert!(at.changed);
     assert!(saved == rig.rt.persistence(), "piecewise equals whole");
-    let Value::Array(table) = &saved[0]["%table"] else {
+    let Value::IntArray(table) = &saved[0]["%table"] else {
         panic!("a persistent array saves as one")
     };
-    assert_eq!((&table[999], &saved[0]["$x"]), (&Value::Int(1006), &Value::Int(999)));
+    assert_eq!((&table[999], &saved[0]["$x"]), (&1006, &Value::Int(999)));
     assert!(!rig.rt.refresh_persistence(&mut saved), "a second refresh finds nothing new");
 }

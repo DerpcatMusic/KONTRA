@@ -317,13 +317,16 @@ pub struct Env {
     pub transport: bool,
     pub timer_origin: u64,
     pub block_fuel: u64,
+    pub(super) deadline: Option<std::time::Instant>,
     pub targets: Vec<i32>,
     pub message: String,
     /// Engine parameters the engine does not model, sorted by address.
     engine_pars: Vec<(EnginePar, i32)>,
     /// Set while `on init` runs off the audio thread: storage may grow.
-    loading: bool,
-    pub saved_arrays: BTreeMap<(u8, VarId), Value>,
+    pub(super) loading: bool,
+    pub saved_arrays: BTreeMap<(u8, VarId), (Value, bool)>,
+    pub spare_pgs_ints: Vec<(String, Vec<i32>)>,
+    pub spare_pgs_strs: Vec<(String, String)>,
     pub persisted: Vec<Persisted>,
     /// Distinct service notes, preallocated so noting never allocates.
     pub notes: Vec<&'static str>,
@@ -357,11 +360,14 @@ impl Env {
             transport: false,
             timer_origin: 0,
             block_fuel: BLOCK_FUEL,
+            deadline: None,
             targets: Vec::with_capacity(EVENT_CAPACITY),
             message: String::with_capacity(256),
             engine_pars: Vec::with_capacity(ENGINE_PAR_HEADROOM),
             loading: false,
             saved_arrays: BTreeMap::new(),
+            spare_pgs_ints: Vec::new(),
+            spare_pgs_strs: Vec::new(),
             persisted,
             notes: Vec::with_capacity(NOTE_CAPACITY),
             faults: Vec::with_capacity(FAULT_CAPACITY),
@@ -568,6 +574,9 @@ pub struct Runtime {
     pub init_controllers: Vec<(u8, u8)>,
     /// Counts script runs and host writes to script memory; see [`changes`](Self::changes).
     changes: u64,
+    /// Host-block budget survives internal render segments and MIDI splits.
+    audio_block: bool,
+    audio_time: Option<std::time::Duration>,
 }
 
 impl Runtime {
@@ -588,6 +597,8 @@ impl Runtime {
             free_threads: (0..THREAD_CAPACITY as u16).rev().collect(),
             outputs,
             changes: 0,
+            audio_block: false,
+            audio_time: None,
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
             init_controllers: Vec::new(),
@@ -620,7 +631,11 @@ impl Runtime {
     }
 
     pub fn into_host(self) -> HostState {
-        self.env.host
+        let mut host = self.env.host;
+        host.keyboard.retain(|_, k| {
+            !k.name.is_empty() || k.color.is_some() || k.kind.is_some() || k.pressed
+        });
+        host
     }
 
     pub fn now(&self) -> u64 {
@@ -640,14 +655,183 @@ impl Runtime {
         }
     }
 
+    /// Called once per host block, before UI/MIDI callbacks. Divide the
+    /// rack's instruction/time allowance across its scripted parts. Offline
+    /// rendering retains the large deterministic allowance without a timer.
+    pub fn begin_audio_block(&mut self, frames: usize, parts: usize, offline: bool) {
+        self.audio_block = true;
+        self.env.deadline = None;
+        self.env.block_fuel = if offline {
+            BLOCK_FUEL
+        } else {
+            (frames as u64).saturating_mul(2048) / parts.max(1) as u64
+        };
+        self.audio_time = (!offline).then(|| {
+            std::time::Duration::from_secs_f64(
+                frames as f64 / self.env.sample_rate * 0.4 / parts.max(1) as f64,
+            )
+        });
+    }
+
     /// Compile a script into the next slot and run `on init`, off the audio
     /// thread. Shared host state is committed only if initialization succeeds.
     pub fn load(&mut self, engine: &mut dyn KspEngine, source: &str) -> Result<()> {
         self.env.loading = true;
+        self.stacks.strs.frozen = false;
+        for state in &mut self.states {
+            for control in &mut state.ui.controls {
+                control.frozen = false;
+            }
+        }
         let result = self.load_slot(engine, source);
         self.env.loading = false;
         self.env.engine_pars.reserve(ENGINE_PAR_HEADROOM);
+        self.prepare_realtime();
         result
+    }
+
+    /// Reserve first-use callback storage off-thread, then freeze capacities.
+    fn prepare_realtime(&mut self) {
+        let desired = self
+            .programs
+            .iter()
+            .flat_map(|p| &p.strings)
+            .map(|s| s.len())
+            .max()
+            .unwrap_or(0)
+            .clamp(512, 65536);
+        let text_cells = 64
+            + 3 * 128
+            + self.env.host.pgs_strs.len()
+            + self
+                .programs
+                .iter()
+                .map(|p| p.pgs_str_keys.len())
+                .sum::<usize>()
+            + self
+                .programs
+                .iter()
+                .zip(&self.states)
+                .map(|(p, state)| {
+                    2 + state
+                        .ui
+                        .controls
+                        .iter()
+                        .map(|c| {
+                            c.props.len()
+                                + 5
+                                + c.menu.len()
+                                + if p.vars[c.var as usize].ui.as_deref() == Some("ui_menu") {
+                                    16
+                                } else {
+                                    0
+                                }
+                        })
+                        .sum::<usize>()
+                })
+                .sum::<usize>();
+        // At most 16 MiB of added UI/host text headroom; large string arrays
+        // have their separate 4 MiB-per-slot allowance below.
+        let text_bytes = desired.min((16 << 20) / text_cells.max(1));
+        self.stacks.strs.prepare(text_bytes);
+        for (prog, state) in self.programs.iter().zip(&mut self.states) {
+            // Bound added headroom even for million-element string arrays.
+            let per_string = ((4 << 20) / state.mem.strs.len().max(1)).min(text_bytes);
+            for s in &mut state.mem.strs {
+                s.reserve(per_string.saturating_sub(s.len()));
+            }
+            let dynamic_menu = prog.code.iter().any(|op| {
+                matches!(
+                    op,
+                    compile::Op::Builtin(super::builtins::Builtin::AddMenuItem, _)
+                )
+            });
+            for control in &mut state.ui.controls {
+                let menu = dynamic_menu
+                    && prog.vars[control.var as usize].ui.as_deref() == Some("ui_menu");
+                control.prepare(text_bytes, menu);
+            }
+            for s in [&mut state.ui.title, &mut state.ui.wallpaper] {
+                s.reserve(text_bytes.saturating_sub(s.len()));
+            }
+            for name in [
+                "$NI_SIGNAL_TIMER_MS",
+                "$NI_SIGNAL_TIMER_BEAT",
+                "$NI_SIGNAL_TRANSP_START",
+                "$NI_SIGNAL_TRANSP_STOP",
+            ] {
+                state.ui.listeners.entry(name).or_insert(0);
+            }
+            state.persistent.reserve(prog.vars.len());
+            for &v in &prog.saved_arrays {
+                let entry = self
+                    .env
+                    .saved_arrays
+                    .entry((state.index, v))
+                    .or_insert_with(|| (read_value(&state.mem, &prog.vars[v as usize]), false));
+                let mut i = prog.vars[v as usize].slot as usize;
+                each_text_in(&mut entry.0, &mut |s| {
+                    s.reserve(state.mem.strs[i].capacity().saturating_sub(s.len()));
+                    i += 1;
+                });
+            }
+            for &key in &prog.pgs_int_keys {
+                let name = &*prog.strings[key as usize];
+                if !self
+                    .env
+                    .host
+                    .pgs_ints
+                    .iter()
+                    .chain(&self.env.spare_pgs_ints)
+                    .any(|(k, _)| k == name)
+                {
+                    self.env.spare_pgs_ints.push((name.into(), vec![0; 256]));
+                }
+            }
+            for &key in &prog.pgs_str_keys {
+                let name = &*prog.strings[key as usize];
+                if !self
+                    .env
+                    .host
+                    .pgs_strs
+                    .iter()
+                    .chain(&self.env.spare_pgs_strs)
+                    .any(|(k, _)| k == name)
+                {
+                    self.env
+                        .spare_pgs_strs
+                        .push((name.into(), String::with_capacity(text_bytes)));
+                }
+            }
+        }
+        self.env
+            .host
+            .pgs_ints
+            .reserve(self.env.spare_pgs_ints.len());
+        self.env
+            .host
+            .pgs_strs
+            .reserve(self.env.spare_pgs_strs.len());
+        for (_, s) in &mut self.env.host.pgs_strs {
+            s.reserve(text_bytes.saturating_sub(s.len()));
+        }
+        self.env
+            .message
+            .reserve(text_bytes.saturating_sub(self.env.message.len()));
+        for note in 0..128 {
+            let key = self.env.host.keyboard.entry(note).or_default();
+            key.name.reserve(text_bytes.saturating_sub(key.name.len()));
+            for (value, spare) in [
+                (&mut key.color, &mut key.color_buffer),
+                (&mut key.kind, &mut key.kind_buffer),
+            ] {
+                let text = match value {
+                    Some(Value::Text(text)) => text,
+                    _ => spare,
+                };
+                text.reserve(text_bytes.saturating_sub(text.len()));
+            }
+        }
     }
 
     fn load_slot(&mut self, engine: &mut dyn KspEngine, source: &str) -> Result<()> {
@@ -726,7 +910,7 @@ impl Runtime {
                 "KSP line {}: wait() is not allowed in on init",
                 prog.line(t.pc - 1)
             ),
-            Ok(Yield::OutOfFuel) => bail!("KSP execution budget exhausted in on init"),
+            Ok(Yield::OutOfFuel | Yield::OutOfTime) => bail!("KSP execution budget exhausted in on init"),
             Err(f) => bail!("KSP line {}: {}", prog.line(t.pc.saturating_sub(1)), f.0),
         }
         // Nothing plays yet, so init's notes are dropped; controllers it sets
@@ -859,6 +1043,7 @@ impl Runtime {
                     color: Some(Value::Text(text())),
                     kind: Some(Value::Text(text())),
                     pressed: false,
+                    ..Default::default()
                 };
                 (n, key)
             })
@@ -1107,7 +1292,9 @@ impl Runtime {
         }
         self.env.now = end;
         self.env.offset = 0;
-        self.env.block_fuel = BLOCK_FUEL;
+        if !self.audio_block {
+            self.env.block_fuel = BLOCK_FUEL;
+        }
     }
 
     fn advance(&mut self, engine: &mut dyn KspEngine, at: u32) {
@@ -1467,6 +1654,11 @@ impl Runtime {
             .block_fuel
             .min(self.fuel_cap.saturating_sub(t.spent));
         let mut fuel = budget;
+        let started = self.audio_time.map(|time| {
+            let now = std::time::Instant::now();
+            self.env.deadline = Some(now + time);
+            now
+        });
         let result = vm::exec(
             &mut Machine {
                 prog: &self.programs[slot],
@@ -1480,6 +1672,13 @@ impl Runtime {
         );
         self.env.block_fuel -= budget - fuel;
         self.threads[i as usize].spent += budget - fuel;
+        if let Some(started) = started {
+            let remaining = self.audio_time.unwrap().saturating_sub(started.elapsed());
+            self.audio_time = Some(remaining);
+            if remaining.is_zero() {
+                self.env.block_fuel = 0;
+            }
+        }
         match result {
             Ok(Yield::Done) => self.finish(i),
             Ok(Yield::Wait(at)) => {
@@ -1505,7 +1704,7 @@ impl Runtime {
                 );
                 self.finish(i);
             }
-            Ok(Yield::OutOfFuel) => {
+            Ok(Yield::OutOfFuel | Yield::OutOfTime) => {
                 // Block budget spent: continue at the start of the next block.
                 let generation = self.threads[i as usize].generation;
                 let at = self.env.clock();
@@ -1611,18 +1810,8 @@ pub fn read_value(mem: &vm::Memory, var: &compile::Var) -> Value {
         (Ty::Int, None, _) => Value::Int(mem.ints[s]),
         (Ty::Real, None, _) => Value::Real(mem.reals[s]),
         (Ty::Str, None, _) => Value::Text(mem.strs[s].clone()),
-        (Ty::Int, Some(n), _) => Value::Array(
-            mem.ints[s..s + n as usize]
-                .iter()
-                .map(|&x| Value::Int(x))
-                .collect(),
-        ),
-        (Ty::Real, Some(n), _) => Value::Array(
-            mem.reals[s..s + n as usize]
-                .iter()
-                .map(|&x| Value::Real(x))
-                .collect(),
-        ),
+        (Ty::Int, Some(n), _) => Value::IntArray(mem.ints[s..s + n as usize].to_vec()),
+        (Ty::Real, Some(n), _) => Value::RealArray(mem.reals[s..s + n as usize].to_vec()),
         (Ty::Str, Some(n), _) => Value::Array(
             mem.strs[s..s + n as usize]
                 .iter()
@@ -1686,6 +1875,24 @@ fn refresh_range(
     let s = var.slot as usize;
     match (var.len, value) {
         (None, v) if range.start == 0 && !range.is_empty() => one(s, v),
+        (Some(n), Value::IntArray(items)) if var.ty == Ty::Int => {
+            let end = range.end.min(n as usize).min(items.len());
+            let start = range.start.min(end);
+            let mut changed = false;
+            for (i, value) in items[start..end].iter_mut().enumerate() {
+                changed |= set(value, mem.ints[s + start + i]);
+            }
+            changed
+        }
+        (Some(n), Value::RealArray(items)) if var.ty == Ty::Real => {
+            let end = range.end.min(n as usize).min(items.len());
+            let start = range.start.min(end);
+            let mut changed = false;
+            for (i, value) in items[start..end].iter_mut().enumerate() {
+                changed |= set(value, mem.reals[s + start + i]);
+            }
+            changed
+        }
         (Some(n), Value::Array(items)) => {
             let end = range.end.min(n as usize).min(items.len());
             let start = range.start.min(end);
@@ -1755,6 +1962,14 @@ pub fn write_value(mem: &mut vm::Memory, var: &compile::Var, value: &Value) {
     };
     match (var.len, value) {
         (None, v) => one(mem, s, v),
+        (Some(n), Value::IntArray(items)) if var.ty == Ty::Int => {
+            let len = (n as usize).min(items.len());
+            mem.ints[s..s + len].copy_from_slice(&items[..len]);
+        }
+        (Some(n), Value::RealArray(items)) if var.ty == Ty::Real => {
+            let len = (n as usize).min(items.len());
+            mem.reals[s..s + len].copy_from_slice(&items[..len]);
+        }
         (Some(n), Value::Array(items)) => {
             for (i, v) in items.iter().take(n as usize).enumerate() {
                 one(mem, s + i, v);
@@ -1762,4 +1977,35 @@ pub fn write_value(mem: &mut vm::Memory, var: &compile::Var, value: &Value) {
         }
         _ => {}
     }
+}
+
+/// Validate every string before writing, so a realtime restore cannot grow
+/// storage or leave a partially restored array.
+pub(super) fn write_value_rt(
+    mem: &mut vm::Memory,
+    var: &compile::Var,
+    value: &Value,
+    loading: bool,
+) -> vm::Exec<()> {
+    if !loading && var.ty == Ty::Str && !var.poly {
+        let fits = |i: usize, value: &Value| match value {
+            Value::Text(text) => text.len() <= mem.strs[i].capacity(),
+            _ => true,
+        };
+        let base = var.slot as usize;
+        let valid = match (var.len, value) {
+            (None, value) => fits(base, value),
+            (Some(n), Value::Array(items)) => items
+                .iter()
+                .take(n as usize)
+                .enumerate()
+                .all(|(i, v)| fits(base + i, v)),
+            _ => true,
+        };
+        if !valid {
+            return Err(vm::Fault("KSP realtime restore string capacity exhausted"));
+        }
+    }
+    write_value(mem, var, value);
+    Ok(())
 }

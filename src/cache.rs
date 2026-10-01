@@ -25,6 +25,7 @@ use std::sync::Arc;
 /// Everything but zones and impulses.
 #[derive(Serialize, Deserialize)]
 struct Head<'a> {
+    dependencies: Cow<'a, [Dependency]>,
     name: Cow<'a, str>,
     groups: Cow<'a, [Group]>,
     warnings: Cow<'a, [String]>,
@@ -35,6 +36,40 @@ struct Head<'a> {
     voice_groups: Cow<'a, [Option<VoiceLimit>]>,
     kontakt_sample_bytes: f64,
     kontakt_preload: i32,
+}
+
+/// Metadata only: validating an archive never reads its sample payload.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Dependency {
+    path: PathBuf,
+    version: Option<(u64, u128)>,
+}
+
+pub(crate) fn version(path: &Path) -> Option<(u64, u128)> {
+    let meta = path.metadata().ok()?;
+    Some((
+        meta.len(),
+        meta.modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos(),
+    ))
+}
+
+pub(crate) fn dependencies(paths: impl IntoIterator<Item = PathBuf>) -> Vec<Dependency> {
+    let paths: std::collections::BTreeSet<_> = paths.into_iter().collect();
+    paths
+        .into_iter()
+        .map(|path| Dependency {
+            version: version(&path),
+            path,
+        })
+        .collect()
+}
+
+pub(crate) fn current(dependencies: &[Dependency]) -> bool {
+    dependencies.iter().all(|d| version(&d.path) == d.version)
 }
 
 /// `~/.cache/kontra` (or the platform's cache folder).
@@ -52,7 +87,7 @@ pub fn load(dir: &Path, path: &Path, program: u32) -> Option<Instrument> {
 /// Store `instrument` (program `program` of the canonical preset `path`),
 /// unless a sample is missing. Failures only cost the next load a parse.
 pub fn store(dir: &Path, path: &Path, program: u32, instrument: &Instrument) {
-    if !instrument.missing_samples.is_empty() {
+    if !instrument.missing_samples.is_empty() || !current(&instrument.dependencies) {
         return;
     }
     let Some(mut bytes) = stamp(path, program) else {
@@ -62,7 +97,12 @@ pub fn store(dir: &Path, path: &Path, program: u32, instrument: &Instrument) {
         return;
     }
     let entry = entry(dir, path, program);
-    let tmp = entry.with_extension(format!("tmp{}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = entry.with_extension(format!(
+        "tmp{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let written = std::fs::create_dir_all(dir)
         .and_then(|()| std::fs::write(&tmp, &bytes))
         .and_then(|()| std::fs::rename(&tmp, &entry));
@@ -97,6 +137,7 @@ fn stamp(path: &Path, program: u32) -> Option<Vec<u8>> {
 
 fn encode(i: &Instrument, out: &mut Vec<u8>) -> serde_json::Result<()> {
     let head = serde_json::to_vec(&Head {
+        dependencies: Cow::Borrowed(&i.dependencies),
         name: Cow::Borrowed(&i.name),
         groups: Cow::Borrowed(&i.groups),
         warnings: Cow::Borrowed(&i.warnings),
@@ -191,6 +232,9 @@ fn encode(i: &Instrument, out: &mut Vec<u8>) -> serde_json::Result<()> {
 fn decode(bytes: &[u8], path: &Path) -> Option<Instrument> {
     let mut r = Reader(bytes);
     let head: Head = serde_json::from_slice(r.bytes()?).ok()?;
+    if !current(&head.dependencies) {
+        return None;
+    }
 
     let paths = (0..r.len(8)?)
         .map(|_| {
@@ -266,6 +310,7 @@ fn decode(bytes: &[u8], path: &Path) -> Option<Instrument> {
     drop(slots);
 
     Some(Instrument {
+        dependencies: head.dependencies.into_owned(),
         path: path.into(),
         name: head.name.into_owned(),
         groups: head.groups.into_owned(),
@@ -406,5 +451,39 @@ mod tests {
         std::fs::write(&path, b"preset, edited").unwrap();
         assert!(load(&dir, &path, 0).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn changes_to_sample_archive_access_data_and_impulses_invalidate() {
+        let dir =
+            std::env::temp_dir().join(format!("kontra-cache-dependencies-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.nki");
+        std::fs::write(&path, b"preset").unwrap();
+        for name in [
+            "sample.wav",
+            "library.nkx",
+            "access.nicnt",
+            "impulse.wav",
+            "missing.wav",
+        ] {
+            let dependency = dir.join(name);
+            if name != "missing.wav" {
+                std::fs::write(&dependency, b"old").unwrap();
+            }
+            let instrument = Instrument {
+                path: path.clone(),
+                dependencies: dependencies([dependency.clone()]),
+                ..Default::default()
+            };
+            store(&dir, &path, 0, &instrument);
+            assert!(load(&dir, &path, 0).is_some());
+            std::fs::write(&dependency, b"replacement data").unwrap();
+            assert!(!current(&instrument.dependencies));
+            assert!(
+                load(&dir, &path, 0).is_none(),
+                "{name} retained a stale cache"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

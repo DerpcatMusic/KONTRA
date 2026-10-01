@@ -39,6 +39,8 @@ pub type VarId = u32;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Op {
+    /// Safe suspension point between statements in long straight-line bodies.
+    Checkpoint,
     PushI(i32),
     PushR(u32),
     PushS(u32),
@@ -337,6 +339,9 @@ pub struct Program {
     /// Blocks that failed to compile, disabled at runtime.
     pub errors: Vec<String>,
     pub diagnostics: BTreeSet<String>,
+    pub saved_arrays: Vec<VarId>,
+    pub pgs_int_keys: Vec<u32>,
+    pub pgs_str_keys: Vec<u32>,
 }
 
 /// Script-local automatic symbol values start here.
@@ -856,8 +861,12 @@ impl<'a> Compiler<'a> {
     // ---- Statements ------------------------------------------------------------------
 
     fn stmts(&mut self, body: &[Stmt]) -> Result<()> {
-        for s in body {
+        for (i, s) in body.iter().enumerate() {
             self.line = s.line;
+            // Short loop bodies retain their native scan/copy optimization.
+            if body.len() >= 16 && i % 16 == 0 {
+                self.emit(Op::Checkpoint);
+            }
             self.stmt(s)
                 .with_context(|| format!("KSP line {}", s.line))?;
         }
@@ -1397,6 +1406,9 @@ impl<'a> Compiler<'a> {
                         "{fname} requires an array"
                     );
                     self.emit(Op::Ref(v));
+                    if matches!(b, Builtin::SaveArray | Builtin::SaveArrayStr) && !self.p.saved_arrays.contains(&v) {
+                        self.p.saved_arrays.push(v);
+                    }
                 }
                 Arg::K => {
                     let (Expr::Ident(s) | Expr::Str(s)) = e else {
@@ -1404,6 +1416,12 @@ impl<'a> Compiler<'a> {
                     };
                     let id = self.string(*s);
                     self.emit(Op::Ref(id));
+                    let keys = match b {
+                        Builtin::PgsCreateKey => Some(&mut self.p.pgs_int_keys),
+                        Builtin::PgsCreateStrKey => Some(&mut self.p.pgs_str_keys),
+                        _ => None,
+                    };
+                    if let Some(keys) = keys && !keys.contains(&id) { keys.push(id); }
                 }
             }
         }

@@ -981,6 +981,8 @@ fn hash_value(v: &Value, h: &mut DefaultHasher) {
         Value::Int(n) => n.hash(h),
         Value::Real(r) => r.to_bits().hash(h),
         Value::Text(t) => t.hash(h),
+        Value::IntArray(a) => a.iter().for_each(|n| n.hash(h)),
+        Value::RealArray(a) => a.iter().for_each(|r| r.to_bits().hash(h)),
         Value::Array(a) => a.iter().for_each(|v| hash_value(v, h)),
     }
 }

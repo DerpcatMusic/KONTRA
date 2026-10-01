@@ -20,7 +20,7 @@ The black-and-white keyboard sends note-on at mouse press and note-off at releas
 
 ## Compatibility
 
-This is currently **a multi-instrument rack**, not a complete Kontakt replacement. Every unmuted group plays (solo, MIDI channel and release-trigger flags respected); the Groups tab is an inspector. Binary NKI groups/zones, key/velocity maps and crossfades, tuning, sample boundaries and start offsets, forward loops with crossfades, WAV/AIFF/NCW, NKX members, voice groups (limits, kill modes, exclusion), polyphony, sustain, pedal-aware release triggers and pitch bend are implemented. Each sample keeps a short preload in RAM and streams the rest from disk; missing or damaged samples skip their zones and are counted. KSP playback callbacks, scripted articulation/legato/round-robin and Kontakt effects/modulation are not implemented. `kontakto bench <voices>` measures real-time voices per core. Import diagnostics identify these limits. A successful parse or nonzero render is not evidence of Kontakt sonic parity.
+This is currently **a multi-instrument rack**, not a complete Kontakt replacement. Binary NKI groups/zones, key/velocity maps and crossfades, tuning, sample boundaries and start offsets, forward loops with crossfades, WAV/AIFF/NCW, NKX members, voice groups (limits, kill modes, exclusion), polyphony, sustain, pedal-aware release triggers and pitch bend are implemented. KSP playback callbacks drive supported scripted articulation, legato and round-robin behavior; supported native envelopes, modulation and effects also run. Unsupported script services, source engines, effects and envelope mode switches remain compatibility limits. The Groups tab is an inspector. Each sample keeps a short preload in RAM and streams the rest from disk; missing or damaged samples skip their zones and are counted. `kontakto bench <voices>` measures real-time voices per core. A successful parse or nonzero render is not evidence of Kontakt sonic parity. See the dated [replacement review](audits/REPLACEMENT_REVIEW.md) and [library playback audit](audits/LIBRARIES.md).
 
 Encrypted preset subtrees and supported encrypted archive members use the owning library's existing HU/JDX fields in its `.nicnt`. AES/legacy resource decoding happens in memory before decompression; each archive caches its generated cipher stream. No access keys are embedded, logged or written to plugin state. Missing keys and invalid decompression produce errors. Legacy archive ciphers other than the supported library-key scheme are rejected. A `.nicnt` created only for library registration may have no access fields; readable Vista presets do not need them.
 
@@ -39,6 +39,8 @@ cargo test --test playback -- --include-ignored
 The parser tests cover sparse loop slots, group ownership, truncation, clear/encrypted archive members, direct/encoded offsets, deterministic resource cipher vectors, wrong keys and decompression size bounds. Playback tests cover mapping, pitch, reverse, boundaries, polyphony, sustain, all-group layering, release triggers under the pedal, loop-crossfade continuity, steal fades, envelopes, voice groups, zone crossfades, streamed-versus-RAM equality, file resolution, layering, mute/solo, MIDI-port isolation, routing changes and separate audio buses. Native MUI input tests exercise drag-to-add, reordering, typed routing edits, mute/remove and piano press/release. Plugin process tests check bus isolation and MIDI-thru timestamps. Proprietary samples, keys, preset contents and renders are excluded from version control. Upstream ni-file unit tests depend on author fixtures absent from this checkout; its synthetic `compatibility` target is the runnable parser check.
 
 ## Local audit, 2026-09-29
+
+Historical results below predate the filesystem repair and playback runtime. Current representative playback results are in [audits/LIBRARIES.md](audits/LIBRARIES.md); they do not certify every preset or articulation.
 
 All **778 installed NKI instruments parse**, up from 56 before encrypted subtree support. All 722 previously encrypted presets now decode with their library metadata. **118 instruments have no missing sample references**: 100 Solo, 7 Vista and 11 Pacific. The other 660 report missing or damaged resources; successful parsing does not make those resources recoverable. This audit validates mappings and reference resolution, not every sample payload or scripted playback.
 
@@ -102,3 +104,31 @@ Service semantics: NI's [PGS reference](https://docs.native-instruments.com/ni-t
 
 
 Control IDs now follow Kontakt declaration order starting at 32768, including ordinary variables and constants. Control access translates those IDs separately from storage indexes and rejects IDs that refer to non-controls. This fixes scripts that calculate control IDs; knob labels, units and help text are also retained as properties, with string-property lookup supported. [NI UI command reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands).
+
+
+## Performance hardening branch, 2026-10-01
+
+`codex/performance-hardening` implements priorities 1–6 from the [replacement review](audits/REPLACEMENT_REVIEW.md): shared streaming workers, positional archive reads and bounded decoded-block reuse; compact script persistence; host-block script budgets; prepared first-use callback storage; bounded loader work and cancellation; and dependency-aware parsed/resident caches. It is based on `bb7dca9`; the separate `87a18dc` SIMD/PGO/library-browser revision has not been merged into this branch.
+
+Four streaming workers serve all banks and instances of the same loaded plugin module. Readers and decoded blocks are bounded, and the last bank shuts workers down before plugin unload. Loading phases use at most four decode workers across instances. Cancellation is checked between import/script stages and during sample reads; it cannot interrupt arbitrary parser work or an in-progress filesystem read.
+
+Live script work shares a block allowance across MIDI/render segments and scales with frames, sample rate and scripted parts. Oversized synchronous array operations and exhausted prepared callback storage report diagnostics. Preparation caps extra text storage at 16 MiB per runtime and 4 MiB per slot's string variables; individual callback strings are limited to 64 KiB. These are explicit compatibility limits, not permission to silently allocate on the audio thread. Cache validation uses size/mtime metadata for presets, samples/archives, resources, impulses, library metadata and searched directories; edits that preserve both size and timestamp require explicit cache clearing.
+
+Build profiles preserve panic unwinding, which the importer and plugin boundary use. `dev` has line-table debug information with dependency debug information disabled; `debugging` restores full debug information, and `dsp-dev` uses LLVM optimization level 1. `release` remains the reference. `thin` and `maxperf` allow measured ThinLTO/fat-LTO comparisons; `minsize` uses optimization level `s` with unwinding retained. None forces the build machine's CPU instructions on customers.
+
+```sh
+cargo build --profile dsp-dev
+# Optional Linux linker configuration; requires clang and mold on PATH:
+cargo --config .cargo/fast-linux.toml build --profile thin
+cargo --config .cargo/fast-linux.toml build --profile maxperf
+
+# Plugin callback benchmark: duration is per idle/playing/tail phase.
+cargo run --release --bin kontakto -- bench-host 3 8 /path/to/patch.nki --frames=64 --rate=48000
+# Repeat the patch path for a multi-part workload. Reports deadline misses,
+# stream/command dropouts, voice counts, CPU, RSS and script diagnostics.
+
+# Full-speed code checks; the screenshot generator remains separately runnable:
+RUST_MIN_STACK=16777216 cargo test --release --lib --test playback -- --skip ui::tests::screenshot
+```
+
+Pinned nightly Cranelift failed a `catch_unwind` smoke test on this machine; the same source passed with LLVM. It is therefore not enabled for plugin development. PGO needs a reproducible representative library/event corpus and holdout measurements before adopting a performance claim. BOLT, nightly dependency hints and size-first standard-library builds remain experiments, rather than default shipping settings. Compiler guidance: [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html), [build performance](https://doc.rust-lang.org/cargo/guide/build-performance.html), and [rustc PGO](https://doc.rust-lang.org/rustc/profile-guided-optimization.html).

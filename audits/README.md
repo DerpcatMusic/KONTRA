@@ -1,5 +1,7 @@
 # Local library compatibility inventory
 
+**Historical static inventory, 2026-09-29.** The implementation-gap counts below predate the playback runtime, DSP and filesystem repair. Use [LIBRARIES.md](LIBRARIES.md) for representative playback checks and [REPLACEMENT_REVIEW.md](REPLACEMENT_REVIEW.md) for the dated code review; these old counts are not the current support matrix.
+
 Static NKI/NKM and resource-reference audit; no full audio decode or Kontakt behavioral validation. Chunk presence does not prove activation. Opaque private fields remain unmapped.
 
 Generated with `kontakto audit` (plain JSON or gzip), `kontakto audit-structure`, `kontakto audit-scripts`, then `python3 tools/summarize_audit.py`.

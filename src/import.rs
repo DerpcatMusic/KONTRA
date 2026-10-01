@@ -117,6 +117,9 @@ pub struct Instrument {
     /// per-instrument DFD preload override (0 = the global default).
     pub kontakt_sample_bytes: f64,
     pub kontakt_preload: i32,
+    /// Files and directories used by resolution, captured when parsed.
+    #[serde(skip)]
+    pub dependencies: Vec<crate::cache::Dependency>,
 }
 
 /// ni-file is a research parser with panic paths. Keep those off the host thread.
@@ -180,8 +183,6 @@ pub fn read_program(path:&Path,program:u32)->Result<Instrument> {
 
 /// [`read_program`], shared: parts and plugin instances in one process that
 /// load the same program hold one parsed copy while any of them lives.
-/// ponytail: a preset edited on disk meanwhile keeps its first parse until
-/// every part lets go; stamp entries as `cache.rs` does if that matters.
 pub fn shared_program(path: &Path, program: u32) -> Result<std::sync::Arc<Instrument>> {
     use std::sync::{Arc, Mutex, Weak};
     type Parsed = std::collections::HashMap<(PathBuf, u32), Weak<Instrument>>;
@@ -189,7 +190,9 @@ pub fn shared_program(path: &Path, program: u32) -> Result<std::sync::Arc<Instru
     let key = (std::fs::canonicalize(path).unwrap_or_else(|_| path.into()), program);
     let lock = || PARSED.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(i) = lock().get_or_insert_default().get(&key).and_then(Weak::upgrade) {
-        return Ok(i);
+        if i.missing_samples.is_empty() && crate::cache::current(&i.dependencies) {
+            return Ok(i);
+        }
     }
     let instrument = Arc::new(read_program(path, program)?);
     let mut parsed = lock();
@@ -361,6 +364,12 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     let parent = path.parent().context("Instrument has no parent")?;
     let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
     let mut resolver = Resolver::new(root);
+    let mut dependency_paths = vec![path.clone(), root.to_path_buf()];
+    // Include absent resource paths too: installing them invalidates the entry.
+    if let Some(container) = resource_container(&c)? {
+        dependency_paths.push(parent.join(container.replace('\\', "/")));
+    }
+    dependency_paths.extend(library_metadata(&path));
     let mut missing_samples = Vec::new();
     let (mut names, mut order, mut zone_ids) = (HashMap::new(), Vec::new(), Vec::new());
     let data = &p.0.find_first(0x34).context("Missing zone list")?.data;
@@ -442,7 +451,9 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
                     (None, Some(nkr), Some(at)) => resolver.resolve(parent, &format!("{nkr}/{}", &name[at..]))?,
                     _ => None,
                 };
-                crate::audio::decode(&ir.context("file missing or its archive member is unreadable")?, max_frames)
+                let ir = ir.context("file missing or its archive member is unreadable")?;
+                dependency_paths.push(ir.clone());
+                crate::audio::decode(&ir, max_frames)
             });
             warnings.extend(fx.warnings());
             fx
@@ -458,7 +469,31 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         Ok(v) => v.map_or((None, Vec::new()), |(limit, groups)| (Some(limit), groups)),
         Err(e) => { warnings.push(format!("Voice groups ignored: {e:#}")); (None, Vec::new()) }
     };
-    Ok(Instrument { path, name: program.name, groups, zones, warnings, missing_samples, scripts, voice_limit, voice_groups, fx, script_state, kontakt_sample_bytes: program.num_bytes_samples_total, kontakt_preload: program.dfd_channel_preload_size })
+    dependency_paths.extend(zones.iter().map(|z| z.sample.clone()));
+    dependency_paths.extend(resolver.dependencies.iter().cloned());
+    // Virtual members depend on their container, once per archive, not on
+    // thousands of nonexistent filesystem paths underneath it.
+    let dependency_paths = dependency_paths.into_iter().map(|p| {
+        archive_member_where(&p, |a| resolver.archives.contains_key(a.as_os_str()))
+            .map_or(p.clone(), |(archive, _)| archive)
+    });
+    let dependencies = crate::cache::dependencies(dependency_paths);
+    Ok(Instrument {
+        path,
+        name: program.name,
+        groups,
+        zones,
+        warnings,
+        missing_samples,
+        scripts,
+        voice_limit,
+        voice_groups,
+        fx,
+        script_state,
+        kontakt_sample_bytes: program.num_bytes_samples_total,
+        kontakt_preload: program.dfd_channel_preload_size,
+        dependencies,
+    })
 }
 
 /// (mount point, fs type, source) of the deepest mount containing `path`, from mountinfo text.
@@ -510,6 +545,7 @@ fn voice_groups(data: &[u8]) -> Result<(VoiceLimit, Vec<Option<VoiceLimit>>)> {
 
 pub struct Resolver {
     root: PathBuf,
+    dependencies: std::collections::HashSet<PathBuf>,
     index: Option<HashMap<String, Vec<PathBuf>>>,
     /// Lazily indexed archives with an open handle for member headers.
     archives: HashMap<OsString, (ni_file::nkr::Archive, File)>,
@@ -524,10 +560,21 @@ pub struct Resolver {
     pub undownloaded: std::collections::HashSet<PathBuf>,
 }
 impl Resolver {
-    pub fn new(root: &Path) -> Self { Self { root: root.into(), index: None, archives: HashMap::new(), canonical: HashMap::new(), is_file: HashMap::new(), undownloaded: Default::default() } }
+    pub fn new(root: &Path) -> Self {
+        Self {
+            root: root.into(),
+            dependencies: Default::default(),
+            index: None,
+            archives: HashMap::new(),
+            canonical: HashMap::new(),
+            is_file: HashMap::new(),
+            undownloaded: Default::default(),
+        }
+    }
     pub fn resolve(&mut self, parent: &Path, name: &str) -> Result<Option<PathBuf>> {
         let name = name.replace('\\', "/");
         let direct = parent.join(&name);
+        self.dependencies.insert(direct.clone());
         // Archive members first: a path inside an archive file is never a file itself.
         if let Some((archive, member)) = self.archive_member(&direct) {
             if !self.archives.contains_key(archive.as_os_str()) {
@@ -543,8 +590,9 @@ impl Resolver {
         let basename = name.rsplit('/').next().unwrap_or(&name).to_lowercase();
         let index = self.index.get_or_insert_with(|| {
             let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
-            for e in walkdir::WalkDir::new(&self.root).follow_links(false).into_iter().filter_map(Result::ok).filter(|e| e.file_type().is_file()) {
-                index.entry(e.file_name().to_string_lossy().to_lowercase()).or_default().push(e.into_path());
+            for e in walkdir::WalkDir::new(&self.root).follow_links(false).into_iter().filter_map(Result::ok) {
+                if e.file_type().is_dir() { self.dependencies.insert(e.into_path()); }
+                else if e.file_type().is_file() { index.entry(e.file_name().to_string_lossy().to_lowercase()).or_default().push(e.into_path()); }
             }
             index
         });
@@ -659,6 +707,29 @@ impl Instrument {
 }
 
 /// Read only the access fields supplied with this library; never log or persist them.
+pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for parent in path.ancestors().skip(1) {
+        paths.push(parent.into());
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            paths.extend(
+                entries
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.extension()
+                            .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
+                    }),
+            );
+        }
+        if parent.join("Samples").is_dir() {
+            break;
+        }
+    }
+    paths.sort();
+    paths
+}
+
 pub(crate) fn library_key(path: &Path) -> Result<Option<ni_file::nis::LibraryKey>> {
     for parent in path.ancestors().skip(1) {
         for entry in std::fs::read_dir(parent)? {

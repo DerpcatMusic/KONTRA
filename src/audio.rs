@@ -590,12 +590,15 @@ pub fn decode(path: &Path, max_frames: usize) -> Result<Sample> {
     })
 }
 
+pub(crate) type SourceVersion = (Option<(u64, u128)>, u64);
+
 /// Where a sample's bytes live: a plain file or an archive member.
 #[derive(Clone)]
 pub struct Source {
     /// Virtual path; its extension selects the codec.
     path: PathBuf,
-    file: PathBuf,
+    handle: Arc<File>,
+    pub(crate) version: SourceVersion,
     offset: u64,
     len: Option<u64>,
     key: Option<Arc<LibraryKey>>,
@@ -612,8 +615,9 @@ pub struct Sources {
 /// An archive's directory, open file and (once needed) library key.
 struct Indexed {
     index: Archive,
-    file: File,
+    file: Arc<File>,
     key: OnceLock<Result<Option<Arc<LibraryKey>>, String>>,
+    version: SourceVersion,
 }
 
 impl Sources {
@@ -625,7 +629,8 @@ impl Sources {
         let Some((archive, member)) = found else {
             return Ok(Source {
                 path: path.into(),
-                file: path.into(),
+                handle: Arc::new(File::open(path)?),
+                version: (crate::cache::version(path), 0),
                 offset: 0,
                 len: None,
                 key: None,
@@ -636,7 +641,14 @@ impl Sources {
             let index = Archive::read_index(&mut file)
                 .with_context(|| format!("Archive {}", archive.display()))?;
             let key = OnceLock::new();
-            self.archives.insert(archive.clone().into(), Indexed { index, file, key });
+            use std::hash::{Hash, Hasher};
+            let mut access = std::collections::hash_map::DefaultHasher::new();
+            for path in crate::import::library_metadata(&archive) {
+                path.hash(&mut access);
+                crate::cache::version(&path).hash(&mut access);
+            }
+            let version = (crate::cache::version(&archive), access.finish());
+            self.archives.insert(archive.clone().into(), Indexed { index, file: Arc::new(file), key, version });
         }
         let indexed = &self.archives[archive.as_os_str()];
         let entry = indexed
@@ -665,7 +677,8 @@ impl Sources {
         };
         Ok(Source {
             path: path.into(),
-            file: archive,
+            handle: indexed.file.clone(),
+            version: indexed.version,
             offset: entry.offset,
             len: Some(entry.size),
             key,
@@ -704,24 +717,17 @@ impl Source {
     fn is_unwritten(&self) -> bool {
         let mut head = [0u8; 64];
         let len = self.len.map_or(head.len() as u64, |l| l.min(head.len() as u64)) as usize;
-        File::open(&self.file)
-            .and_then(|mut f| {
-                f.seek(SeekFrom::Start(self.offset))?;
-                f.read_exact(&mut head[..len])
-            })
+        FileAt { file: &self.handle, pos: self.offset }.read_exact(&mut head[..len])
             .is_ok_and(|()| len > 0 && head[..len].iter().all(|&b| b == 0))
     }
 
     fn bytes(&self, counted: bool) -> Result<Bytes> {
-        let mut file = File::open(&self.file)
-            .with_context(|| format!("Opening sample {}", self.file.display()))?;
         let len = match self.len {
             Some(len) => len,
-            None => file.metadata()?.len(),
+            None => self.handle.metadata()?.len(),
         };
-        file.seek(SeekFrom::Start(self.offset))?;
         Ok(Bytes {
-            file,
+            file: self.handle.clone(),
             base: self.offset,
             len,
             pos: 0,
@@ -767,7 +773,7 @@ pub static DISK_READ: AtomicU64 = AtomicU64::new(0);
 
 /// A byte window of a file, decrypted on the fly when keyed.
 struct Bytes {
-    file: File,
+    file: Arc<File>,
     base: u64,
     len: u64,
     pos: u64,
@@ -779,7 +785,11 @@ struct Bytes {
 impl Read for Bytes {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let room = self.len.saturating_sub(self.pos).min(buf.len() as u64) as usize;
-        let n = self.file.read(&mut buf[..room])?;
+        let n = FileAt {
+            file: &self.file,
+            pos: self.base + self.pos,
+        }
+        .read(&mut buf[..room])?;
         if self.counted {
             DISK_READ.fetch_add(n as u64, Ordering::Relaxed);
         }
@@ -799,7 +809,9 @@ impl Seek for Bytes {
             SeekFrom::Current(n) => self.pos.checked_add_signed(n),
         }
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before start"))?;
-        self.file.seek(SeekFrom::Start(self.base + pos))?;
+        self.base
+            .checked_add(pos)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek overflow"))?;
         self.pos = pos;
         Ok(pos)
     }
@@ -945,6 +957,18 @@ impl SampleReader {
         ints: &mut Vec<[i32; 2]>,
         frames: &mut Vec<Frame>,
     ) -> Result<Pcm> {
+        self.read_pcm_cancelable(range, compress, ints, frames, &|| false)
+    }
+
+    pub fn read_pcm_cancelable(
+        &mut self,
+        range: std::ops::Range<u64>,
+        compress: bool,
+        ints: &mut Vec<[i32; 2]>,
+        frames: &mut Vec<Frame>,
+        canceled: &dyn Fn() -> bool,
+    ) -> Result<Pcm> {
+        ensure!(!canceled(), "Sample load canceled");
         let len = (range.end - range.start) as usize;
         if let (Codec::Ncw(codec), Some(bits)) = (&mut self.codec, self.bits)
             && !codec.float
@@ -952,14 +976,20 @@ impl SampleReader {
         {
             ints.clear();
             ints.resize(len, [0; 2]);
-            codec.read_ints(range.start, ints)?;
+            for (i, chunk) in ints.chunks_mut(65536).enumerate() {
+                ensure!(!canceled(), "Sample load canceled");
+                codec.read_ints(range.start + (i * 65536) as u64, chunk)?;
+            }
             if let Some(pcm) = Pcm::pack_ints(ints, bits, compress) {
                 return Ok(pcm);
             }
         }
         frames.clear();
         frames.resize(len, [0.0; 2]);
-        self.read(range.start, frames)?;
+        for (i, chunk) in frames.chunks_mut(65536).enumerate() {
+            ensure!(!canceled(), "Sample load canceled");
+            self.read(range.start + (i * 65536) as u64, chunk)?;
+        }
         Ok(Pcm::pack(frames, compress))
     }
 
@@ -1115,6 +1145,44 @@ impl PcmCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_file_readers_seek_independently_and_decode_can_be_canceled() {
+        let path =
+            std::env::temp_dir().join(format!("kontra-cancel-read-{}.wav", std::process::id()));
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut wav = hound::WavWriter::create(&path, spec).unwrap();
+        for i in 0..131072 {
+            for x in [i as f32 / 262144.0, -0.5] {
+                wav.write_sample(x).unwrap();
+            }
+        }
+        wav.finalize().unwrap();
+        let source = Sources::default().source(&path).unwrap();
+        let (mut a, mut b) = (source.open().unwrap(), source.open().unwrap());
+        let mut out = [[0.0; 2]; 1];
+        a.read(90000, &mut out).unwrap();
+        b.read(3, &mut out).unwrap();
+        assert_eq!(out[0], [3.0 / 262144.0, -0.5]);
+        a.read(90001, &mut out).unwrap();
+        assert_eq!(out[0], [90001.0 / 262144.0, -0.5]);
+        let calls = std::cell::Cell::new(0);
+        let cancel = || {
+            calls.set(calls.get() + 1);
+            calls.get() >= 3
+        };
+        let mut frames = Vec::new();
+        let result = a.read_pcm_cancelable(0..131072, false, &mut Vec::new(), &mut frames, &cancel);
+        assert!(result.err().unwrap().to_string().contains("canceled"));
+        assert_eq!(frames[65535][1], -0.5);
+        assert_eq!(frames[65536], [0.0; 2], "decoded beyond the canceled chunk");
+        std::fs::remove_file(path).unwrap();
+    }
 
     /// The disk readout counts streaming, not loading. Library tests never
     /// stream, so only this test's streamed read moves the counter.

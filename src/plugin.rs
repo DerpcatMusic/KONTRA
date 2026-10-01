@@ -1062,7 +1062,7 @@ impl BackgroundTask for Load {
             if loaded {
                 continue;
             }
-            let cached = {
+            {
                 let mut view = params.shared.view.lock().unwrap();
                 let v = &mut view.parts[slot];
                 (v.attempted, v.streaming) = (Some(target.clone()), streaming);
@@ -1072,12 +1072,16 @@ impl BackgroundTask for Load {
                 v.script_epoch = 0;
                 v.snapshot = None;
                 v.live = None;
-                v.instrument
-                    .as_ref()
-                    .filter(|i| i.path == Path::new(&part.path) && v.program == part.program)
-                    .cloned()
             };
             let generation = params.shared.generation[slot].fetch_add(1, Ordering::AcqRel) + 1;
+            let canceled = || {
+                let current = params.selection.read().unwrap();
+                current.parts.get(slot).is_none_or(|p| {
+                    p.path != part.path || p.program != part.program
+                        || p.streaming != part.streaming || p.streaming(current.streaming) != streaming
+                })
+                    || params.shared.generation[slot].load(Ordering::Acquire) != generation
+            };
             if part.path.is_empty() {
                 params.shared.view.lock().unwrap().parts[slot] = PartView {
                     attempted: Some(target),
@@ -1097,16 +1101,15 @@ impl BackgroundTask for Load {
                 continue;
             }
             let result = (|| -> anyhow::Result<_> {
-                let instrument = if let Some(i) = cached {
-                    i
-                } else {
-                    import::shared_program(Path::new(&part.path), part.program)?
-                };
+                anyhow::ensure!(!canceled(), "Instrument load canceled");
+                let instrument = import::shared_program(Path::new(&part.path), part.program)?;
+                anyhow::ensure!(!canceled(), "Instrument load canceled");
                 // Progress by phase: parsed 5%, scripts 10%, the bank the rest.
                 let progress = &params.shared.load_progress[slot];
                 progress.fetch_max(crate::engine::LOAD_DONE / 20, Ordering::Relaxed);
                 let (script, snapshot, _) =
                     scripts(&instrument, &part.script_state, params.shared.rate());
+                anyhow::ensure!(!canceled(), "Instrument load canceled");
                 progress.fetch_max(crate::engine::LOAD_DONE / 10, Ordering::Relaxed);
                 {
                     let needs_art = {
@@ -1182,23 +1185,21 @@ impl BackgroundTask for Load {
                     .min(crate::engine::memory_budget().saturating_sub(resident));
                 let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers);
                 // RAM only plays from a streaming bank while the RAM fills.
-                let bank = Box::new(Bank::load_counting(
+                let bank = Box::new(Bank::load_cancelable(
                     &instrument,
                     budget,
                     Streaming::Auto,
                     controllers,
                     &params.shared.load_progress[slot],
+                    &canceled,
                 )?);
                 let fill = (streaming == Streaming::RamOnly).then(|| (budget, controllers.to_vec()));
                 Ok((instrument, Some(bank), script, snapshot, fill))
             })();
-            let current = params.selection.read().unwrap();
-            if current.parts.get(slot).map(|p| (&p.path, p.program)) != Some((&target.0, target.1))
-            {
+            if canceled() {
                 params.shared.view.lock().unwrap().parts[slot].loading = false;
                 continue;
             }
-            drop(current);
             let mut view = params.shared.view.lock().unwrap();
             view.parts[slot].loading = false;
             match result {
@@ -1242,15 +1243,16 @@ impl BackgroundTask for Load {
                     if let Some((budget, controllers)) = fill {
                         v.status += " · loading into RAM…";
                         drop(view);
-                        let bank = Bank::load_counting(
+                        let bank = Bank::load_cancelable(
                             &instrument,
                             budget,
                             Streaming::RamOnly,
                             &controllers,
                             &AtomicU32::new(0),
+                            &canceled,
                         );
                         // Superseded while filling: the newer load has its own bank.
-                        if params.shared.generation[slot].load(Ordering::Acquire) != generation {
+                        if canceled() {
                             continue;
                         }
                         let mut view = params.shared.view.lock().unwrap();
@@ -1731,9 +1733,6 @@ impl PluginLogic for Sampler {
         }
         // Held back only while aligning; once not, what was held plays at once.
         let holding = s.align.holding(cx.transport.playing);
-        if !holding && s.align.next_due().is_some() {
-            s.align.flush(&mut s.rack, &mut s.routers);
-        }
         if let Some(routes) = p.shared.routes.pop() {
             for (r, route) in s.routers.iter_mut().zip(routes) {
                 r.set_route(route);
@@ -1815,6 +1814,13 @@ impl PluginLogic for Sampler {
                 },
             };
             let _ = p.shared.discard.push(retired);
+        }
+        let scripted = s.rack.parts.iter().filter(|e| e.script().is_some()).count();
+        for engine in &mut s.rack.parts {
+            engine.begin_audio_block(frames, scripted, offline);
+        }
+        if !holding && s.align.next_due().is_some() {
+            s.align.flush(&mut s.rack, &mut s.routers);
         }
         while let Some((slot, o)) = p.shared.overrides.pop() {
             if let Some(engine) = s.rack.parts.get_mut(slot) {
@@ -2254,12 +2260,43 @@ fn census(voices: &[crate::engine::VoiceInfo]) {
 pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Result<()> {
     use moose::core::bus_routing::{BusActivation, BusRouting};
     use std::time::Duration;
-    const FRAMES: usize = 512;
-    const RATE: f64 = 48000.;
+    let frames: usize = paths
+        .iter()
+        .find_map(|p| p.strip_prefix("--frames="))
+        .map(str::parse)
+        .transpose()?
+        .unwrap_or(512);
+    let rate: f64 = paths
+        .iter()
+        .find_map(|p| p.strip_prefix("--rate="))
+        .map(str::parse)
+        .transpose()?
+        .unwrap_or(48000.0);
+    anyhow::ensure!((1..=32768).contains(&frames), "Invalid host buffer size");
+    anyhow::ensure!(
+        rate.is_finite() && (8000.0..=384000.0).contains(&rate),
+        "Invalid sample rate"
+    );
+    anyhow::ensure!(
+        seconds.is_finite() && seconds * rate >= frames as f64 && notes <= 128,
+        "Invalid benchmark duration/note count"
+    );
+    for option in paths.iter().filter(|p| p.starts_with("--")) {
+        anyhow::ensure!(
+            option == "--ram-only"
+                || option.starts_with("--frames=")
+                || option.starts_with("--rate="),
+            "Unknown benchmark option {option}"
+        );
+    }
     let p = Arc::new(SamplerParams::new());
     let ram_only = paths.iter().any(|p| p == "--ram-only");
     let paths: Vec<_> = paths.iter().filter(|p| !p.starts_with("--")).cloned().collect();
     let paths = &paths[..];
+    anyhow::ensure!(
+        (1..=RACK_SLOTS).contains(&paths.len()),
+        "Benchmark requires 1..16 instruments"
+    );
     let mut selection = p.selection.write().unwrap();
     if ram_only {
         selection.streaming = Streaming::RamOnly;
@@ -2274,18 +2311,18 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     drop(selection);
     let mut dsp = Dsp::default();
     let transport = TransportInfo::default();
-    let mut data = vec![vec![0f32; FRAMES]; 2 * BUSES];
+    let mut data = vec![vec![0f32; frames]; 2 * BUSES];
     let mut outgoing = EventList::with_capacity(64);
     let (instructions, cycles) = (Counter::open(1), Counter::open(0));
     let mut process = |dsp: &mut Dsp, events: &EventList| {
         let mut channels: Vec<_> = data.iter_mut().map(|v| v.as_mut_slice()).collect();
-        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, FRAMES);
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, frames);
         let mut routing = BusRouting::new();
         for _ in 0..BUSES {
             routing.push_output(2, BusActivation::Active);
         }
         outgoing.clear();
-        let mut cx = ProcessContext::new(&transport, RATE, FRAMES, &mut outgoing)
+        let mut cx = ProcessContext::new(&transport, rate, frames, &mut outgoing)
             .with_bus_routing(routing);
         let count = |c: &Option<Counter>| c.as_ref().map_or(0, Counter::read);
         let (started, cpu) = (Instant::now(), thread_cpu());
@@ -2298,7 +2335,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     Sampler::reset(
         &mut dsp,
         &p,
-        &AudioConfig::new(RATE, FRAMES),
+        &AudioConfig::new(rate, frames),
     );
     let none = EventList::with_capacity(0);
     let (load_start, load_cpu) = (Instant::now(), cpu_clock(2));
@@ -2316,6 +2353,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         // Keyswitches sit low: play the upper part of the range.
         (low.max(36)..=high.min(96)).collect()
     };
+    anyhow::ensure!(!keys.is_empty(), "No playable benchmark keys in 36..96");
     let stop = Arc::new(AtomicBool::new(false));
     let loader = {
         let (p, stop) = (p.clone(), stop.clone());
@@ -2326,9 +2364,9 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             }
         })
     };
-    let block = Duration::from_secs_f64(FRAMES as f64 / RATE);
-    let blocks = (seconds * RATE) as usize / FRAMES;
-    let every = (RATE / notes.max(1) as f64) as usize;
+    let block = Duration::from_secs_f64(frames as f64 / rate);
+    let blocks = (seconds * rate) as usize / frames;
+    let every = (rate / notes.max(1) as f64) as usize;
     let (mut held, mut started) = (std::collections::VecDeque::new(), 0usize);
     let mut events = EventList::with_capacity(64);
     // Idle instructions per block, so playing ones divide into a cost per voice.
@@ -2354,8 +2392,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         let (start, mut pace) = (Instant::now(), crate::engine::Pace::start());
         for b in 0..blocks {
             events.clear();
-            let frame = b * FRAMES;
-            while playing && started * every < frame + FRAMES {
+            let frame = b * frames;
+            while playing && started * every < frame + frames {
                 let note = |on: bool, key: u8| {
                     let body = if on {
                         EventBody::NoteOn { group: 0, channel: 0, note: key, velocity: 100 }
@@ -2395,10 +2433,11 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             }
             process(&mut dsp, &off);
         }
-        let deadline = FRAMES as f64 / RATE * 1e3;
+        let deadline = frames as f64 / rate * 1e3;
         let mean_voices = voice_blocks as f64 / times.len() as f64;
         let mean_audible = audible_blocks as f64 / times.len() as f64;
         let whole = (cpu_clock(2) - process_cpu) / start.elapsed().as_secs_f64();
+        let missed = times.iter().filter(|&&ms| ms > deadline).count();
         println!(
             "{phase}: {} blocks · mean {mean_voices:.0} ({mean_audible:.0} audible), peak {voices} voices · peak reported CPU {:.1}% · whole process {:.1}% of a core · RSS+swap {:.0} MiB, samples {:.0} MiB · {} dropouts",
             times.len(),
@@ -2410,6 +2449,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         );
         let freed: u64 = p.shared.view.lock().unwrap().parts.iter().map(|v| v.freed).sum();
         println!("  smart memory: {} MiB freed", freed >> 20);
+        println!("  callback deadline misses: {missed}");
         if counts.iter().any(|&c| c > 0.) {
             let mut sorted = counts.clone();
             sorted.sort_by(f64::total_cmp);
@@ -2417,8 +2457,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             let mean = counts.iter().sum::<f64>() / counts.len() as f64;
             let mean_cycles = cycle_counts.iter().sum::<f64>() / cycle_counts.len() as f64;
             let per_voice = if playing && mean_voices >= 1. {
-                let voice_frames = mean_voices * FRAMES as f64;
-                let audible_frames = mean_audible.max(1.) * FRAMES as f64;
+                let voice_frames = mean_voices * frames as f64;
+                let audible_frames = mean_audible.max(1.) * frames as f64;
                 format!(
                     " · {:.1} k per voice · {:.1} instructions, {:.1} cycles per voice-frame · {:.1} cycles per audible voice-frame",
                     (mean - idle) * 1e3 / mean_voices,
@@ -2469,6 +2509,13 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     }
     stop.store(true, Ordering::Relaxed);
     let _ = loader.join();
+    for (part, engine) in dsp.rack.parts.iter().enumerate() {
+        if let Some(rt) = engine.script() {
+            for diagnostic in rt.diagnostics() {
+                eprintln!("part {} script: {diagnostic}", part + 1);
+            }
+        }
+    }
     Ok(())
 }
 #[cfg(test)]

@@ -13,13 +13,14 @@ use super::map::{LoopMap, PlayMap, Run};
 use crate::audio::{Frame, SampleReader, Source};
 use std::{
     alloc::Layout,
+    collections::{HashMap, VecDeque},
     ptr::NonNull,
     sync::{
-        Arc,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence},
+        mpsc,
     },
-    thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Ring capacity in frames: ≈170 ms at 48 kHz and unity pitch, and larger
@@ -28,10 +29,8 @@ pub(crate) const RING: u64 = 8192;
 /// Concurrently streaming voices per bank: one per voice, so every voice can
 /// stream. Rings are touched only once used, so idle slots cost no RAM.
 pub(crate) const SLOTS: usize = super::MAX_VOICES;
-/// Streamer threads per bank, each serving an interleaved share of the
-/// slots, so one thread waiting on the disk does not stall every voice and
-/// the disk sees several requests at once. Idle threads sleep until a voice
-/// needs them, so extra threads cost nothing while silent.
+/// Fixed process-wide pool, shared by every part and plugin instance.
+/// Each worker owns one stripe of each bank: rings still have one producer.
 const THREADS: usize = 4;
 /// Slots with fewer frames than this buffered ahead of the voice are served
 /// before any other: a starting voice has only its preload to cover the
@@ -288,13 +287,13 @@ fn tag(seq: u32) -> u16 {
 pub(crate) struct Streamer {
     shared: Arc<Shared>,
     sources: Arc<[Option<Arc<Source>>]>,
-    threads: Vec<JoinHandle<()>>,
+    _pool: Arc<Pool>,
 }
 
 struct Shared {
     slots: Box<[Slot]>,
     /// One per thread; slot `i` is served by thread `i % THREADS`.
-    wakes: Box<[Wake]>,
+    wakes: Arc<[Wake]>,
     /// Every slot's ring in one zeroed allocation: the kernel maps pages on
     /// first write, so rings no voice streamed into stay unbacked.
     _rings: Rings,
@@ -366,34 +365,40 @@ unsafe impl Sync for Rings {}
 impl Streamer {
     /// `sources[i]` is `Some` for every sample that is not fully resident.
     pub fn spawn(sources: Vec<Option<Arc<Source>>>) -> std::io::Result<Self> {
+        let pool = pool()?;
         let rings = Rings::new();
-        // SAFETY: slot `i`'s ring starts in bounds of the allocation.
+        // SAFETY: slot i's ring is in bounds; Shared retains rings and wakes.
         let ring = |i: usize| unsafe { rings.0.add(i * RING as usize) };
-        let wakes: Box<[Wake]> = (0..THREADS).map(|_| Wake::default()).collect();
-        let wake = |i: usize| NonNull::from(&wakes[i % THREADS]);
+        let wake = |i: usize| NonNull::from(&pool.wakes[i % THREADS]);
         let shared = Arc::new(Shared {
             slots: (0..SLOTS).map(|i| Slot::new(ring(i), wake(i))).collect(),
-            wakes,
+            wakes: pool.wakes.clone(),
             _rings: rings,
             stop: AtomicBool::new(false),
             rings: Arc::default(),
         });
         let sources: Arc<[Option<Arc<Source>>]> = sources.into();
-        let threads = (0..THREADS)
-            .map(|stripe| {
-                let (shared, sources) = (shared.clone(), sources.clone());
-                std::thread::Builder::new()
-                    .name("kontakto-stream".into())
-                    .spawn(move || Worker::new(sources).run(&shared, stripe))
-            })
-            .collect::<std::io::Result<Vec<JoinHandle<()>>>>()?;
-        for (wake, thread) in shared.wakes.iter().zip(&threads) {
-            let _ = wake.thread.set(thread.thread().clone());
+        for (stripe, sender) in pool.senders.iter().enumerate() {
+            let job = Job {
+                shared: shared.clone(),
+                sources: sources.clone(),
+                stripe,
+                cursors: (stripe..SLOTS)
+                    .step_by(THREADS)
+                    .map(|_| Cursor::default())
+                    .collect(),
+                idle: Instant::now(),
+            };
+            if sender.send(job).is_err() {
+                shared.stop.store(true, Ordering::Release);
+                return Err(std::io::Error::other("streaming worker stopped"));
+            }
+            pool.wakes[stripe].thread.get().unwrap().unpark();
         }
         Ok(Self {
             shared,
             sources,
-            threads,
+            _pool: pool,
         })
     }
 
@@ -416,11 +421,70 @@ impl Streamer {
 impl Drop for Streamer {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
+        for wake in self.shared.wakes.iter() {
+            if let Some(thread) = wake.thread.get() {
+                thread.unpark();
+            }
+        }
+    }
+}
+
+/// Registered off the audio thread; dropped by its worker after cancellation.
+struct Job {
+    shared: Arc<Shared>,
+    sources: Arc<[Option<Arc<Source>>]>,
+    stripe: usize,
+    cursors: Vec<Cursor>,
+    idle: Instant,
+}
+
+struct Pool {
+    wakes: Arc<[Wake]>,
+    senders: Vec<mpsc::Sender<Job>>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Pool {
+    fn drop(&mut self) {
+        // Banks retire off the audio thread. Stop the last pool before a DAW
+        // can unload this library and unmap the workers' executable code.
+        self.senders.clear();
+        for wake in self.wakes.iter() {
+            if let Some(thread) = wake.thread.get() {
+                thread.unpark();
+            }
+        }
         for thread in self.threads.drain(..) {
-            thread.thread().unpark();
             let _ = thread.join();
         }
     }
+}
+
+fn pool() -> std::io::Result<Arc<Pool>> {
+    static POOL: Mutex<Weak<Pool>> = Mutex::new(Weak::new());
+    let mut shared = POOL.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(pool) = shared.upgrade() {
+        return Ok(pool);
+    }
+    let wakes: Arc<[Wake]> = (0..THREADS).map(|_| Wake::default()).collect();
+    let mut pool = Pool {
+        wakes: wakes.clone(),
+        senders: Vec::new(),
+        threads: Vec::new(),
+    };
+    for stripe in 0..THREADS {
+        let (sender, receiver) = mpsc::channel();
+        let wake = wakes.clone();
+        let thread = std::thread::Builder::new()
+            .name(format!("kontakto-stream-{stripe}"))
+            .spawn(move || Worker::new().run(receiver, &wake[stripe]))?;
+        let _ = wakes[stripe].thread.set(thread.thread().clone());
+        pool.senders.push(sender);
+        pool.threads.push(thread);
+    }
+    let pool = Arc::new(pool);
+    *shared = Arc::downgrade(&pool);
+    Ok(pool)
 }
 
 #[derive(Default)]
@@ -428,89 +492,105 @@ struct Cursor {
     seq: u32,
     config: Option<Config>,
     next: u64,
-    /// The slot's open sample, kept across restarts of the same sample and
-    /// closed when the slot stops: one open file per streaming voice.
-    reader: Option<(u32, SampleReader)>,
     pages: Pages,
 }
 
 struct Worker {
-    sources: Arc<[Option<Arc<Source>>]>,
+    decoded: Decoded,
     frames: Vec<Frame>,
     partners: Vec<Frame>,
 }
 
 impl Worker {
-    fn new(sources: Arc<[Option<Arc<Source>>]>) -> Self {
+    fn new() -> Self {
         let chunk = vec![[0.0; 2]; CHUNK as usize];
         Self {
-            sources,
+            decoded: Decoded::default(),
             frames: chunk.clone(),
             partners: chunk,
         }
     }
 
-    /// Serve every `THREADS`th slot from `stripe`.
-    /// Each round first tops up slots about to run dry, then fills the rest
-    /// one chunk each, restarting as soon as a voice starts. With no voice
-    /// streaming the thread sleeps until one does.
-    fn run(mut self, shared: &Shared, stripe: usize) {
-        let slots = || shared.slots.iter().skip(stripe).step_by(THREADS);
-        let wake = &shared.wakes[stripe];
-        let mut cursors: Vec<Cursor> = slots().map(|_| Cursor::default()).collect();
-        while !shared.stop.load(Ordering::Acquire) {
-            let epoch = wake.epoch.load(Ordering::Acquire);
-            let (mut busy, mut active) = (false, false);
-            for (slot, cursor) in slots().zip(&mut cursors) {
-                busy |= self.serve(slot, cursor, URGENT, &shared.rings);
-                active |= cursor.config.is_some();
+    fn run(mut self, receiver: mpsc::Receiver<Job>, wake: &Wake) {
+        let mut jobs: Vec<Job> = Vec::new();
+        loop {
+            jobs.extend(receiver.try_iter());
+            jobs.retain(|job| !job.shared.stop.load(Ordering::Acquire));
+            if jobs.len() > 1 {
+                jobs.rotate_left(1);
             }
-            for (slot, cursor) in slots().zip(&mut cursors) {
+            let epoch = wake.epoch.load(Ordering::Acquire);
+            let (mut busy, mut active, mut touched) = (false, false, false);
+            // Urgent work across ALL banks precedes speculative ring fill.
+            for lead in [URGENT, RING] {
+                for job in &mut jobs {
+                    let slots = job.shared.slots.iter().skip(job.stripe).step_by(THREADS);
+                    for (slot, cursor) in slots.zip(&mut job.cursors) {
+                        if job.shared.stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        busy |= self.serve(slot, cursor, lead, &job.shared.rings, &job.sources);
+                    }
+                }
                 if wake.epoch.load(Ordering::Acquire) != epoch {
                     break;
                 }
-                busy |= self.serve(slot, cursor, RING, &shared.rings);
+            }
+            for job in &mut jobs {
+                let playing = job.cursors.iter().any(|c| c.config.is_some());
+                active |= playing;
+                if playing {
+                    job.idle = Instant::now();
+                }
+                if !playing && job.idle.elapsed() >= RECLAIM_AFTER {
+                    let slots = job.shared.slots.iter().skip(job.stripe).step_by(THREADS);
+                    for (slot, cursor) in slots.zip(&mut job.cursors) {
+                        if cursor.pages == Pages::Touched && slot.reclaim() {
+                            cursor.pages = Pages::Reclaimed;
+                            job.shared.rings.touched.fetch_sub(1, Ordering::Relaxed);
+                            job.shared.rings.reclaimed.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+                touched |= job.cursors.iter().any(|c| c.pages == Pages::Touched);
             }
             if busy || wake.epoch.load(Ordering::Acquire) != epoch {
                 continue;
             }
             if active {
                 std::thread::park_timeout(Duration::from_millis(1));
-            } else if cfg!(target_os = "linux") && cursors.iter().any(|c| c.pages == Pages::Touched) {
-                // A wakeup left from busier times returns at once: count
-                // only a whole quiet wait.
-                let idle = std::time::Instant::now();
-                std::thread::park_timeout(RECLAIM_AFTER);
-                if wake.epoch.load(Ordering::Acquire) != epoch || idle.elapsed() < RECLAIM_AFTER {
-                    continue;
-                }
-                let touched = slots().zip(&mut cursors).filter(|(_, c)| c.pages == Pages::Touched);
-                for (slot, cursor) in touched {
-                    if slot.reclaim() {
-                        cursor.pages = Pages::Reclaimed;
-                        shared.rings.touched.fetch_sub(1, Ordering::Relaxed);
-                        shared.rings.reclaimed.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
             } else {
-                std::thread::park();
+                // Close readers and release decoded blocks when idle.
+                self.decoded.clear();
+                if touched {
+                    std::thread::park_timeout(RECLAIM_AFTER);
+                } else if jobs.is_empty() {
+                    match receiver.recv() {
+                        Ok(job) => jobs.push(job),
+                        Err(_) => return,
+                    }
+                } else {
+                    std::thread::park();
+                }
             }
         }
     }
 
     /// Decode one chunk for a slot with fewer than `lead` frames buffered
     /// ahead of its consumer; true if work was done.
-    fn serve(&mut self, slot: &Slot, cursor: &mut Cursor, lead: u64, rings: &RingUse) -> bool {
+    fn serve(
+        &mut self,
+        slot: &Slot,
+        cursor: &mut Cursor,
+        lead: u64,
+        rings: &RingUse,
+        sources: &[Option<Arc<Source>>],
+    ) -> bool {
         if let Some((seq, config)) = slot.snapshot(cursor.seq) {
-            let reader = cursor
-                .reader
-                .take()
-                .filter(|(sample, _)| config.is_some_and(|c| c.sample == *sample));
             *cursor = Cursor {
                 seq,
                 config,
                 next: config.map_or(0, |c| c.from),
-                reader,
                 pages: cursor.pages,
             };
         }
@@ -526,16 +606,8 @@ impl Worker {
             return false;
         }
         let n = (limit - cursor.next).min(CHUNK);
-        if cursor.reader.is_none() {
-            cursor.reader = self
-                .sources
-                .get(config.sample as usize)
-                .and_then(Option::as_ref)
-                .and_then(|source| source.open_stream().ok())
-                .map(|reader| (config.sample, reader));
-        }
-        let reader = cursor.reader.as_mut().map(|(_, reader)| reader);
-        self.fill(reader, &config, cursor.next, n as usize);
+        let source = sources.get(config.sample as usize).and_then(Option::as_ref);
+        self.fill(source, &config, cursor.next, n as usize);
         if cursor.pages != Pages::Touched {
             if cursor.pages == Pages::Reclaimed {
                 rings.reclaimed.fetch_sub(1, Ordering::Relaxed);
@@ -561,13 +633,7 @@ impl Worker {
     }
 
     /// Decode virtual frames `[v, v + n)` into `self.frames`.
-    fn fill(
-        &mut self,
-        mut reader: Option<&mut SampleReader>,
-        config: &Config,
-        mut v: u64,
-        n: usize,
-    ) {
+    fn fill(&mut self, source: Option<&Arc<Source>>, config: &Config, mut v: u64, n: usize) {
         let mut done = 0;
         while done < n {
             let Some(run) = config.map.run(v, config.wraps) else {
@@ -575,15 +641,15 @@ impl Worker {
                 return;
             };
             let len = (run.len as usize).min(n - done);
-            self.decode_run(reader.as_deref_mut(), &run, done, len);
+            self.decode_run(source, &run, done, len);
             done += len;
             v += len as u64;
         }
     }
 
-    fn decode_run(&mut self, reader: Option<&mut SampleReader>, run: &Run, at: usize, len: usize) {
+    fn decode_run(&mut self, source: Option<&Arc<Source>>, run: &Run, at: usize, len: usize) {
         let out = &mut self.frames[at..at + len];
-        let Some(reader) = reader else {
+        let Some(source) = source else {
             out.fill([0.0; 2]);
             return;
         };
@@ -592,7 +658,7 @@ impl Worker {
         } else {
             run.frame
         };
-        if reader.read(low, out).is_err() {
+        if self.decoded.read(source, low, out).is_err() {
             out.fill([0.0; 2]);
         }
         if run.reverse {
@@ -600,7 +666,7 @@ impl Worker {
         }
         if let Some(blend) = run.blend {
             let partners = &mut self.partners[..len];
-            if reader.read(blend.partner, partners).is_err() {
+            if self.decoded.read(source, blend.partner, partners).is_err() {
                 partners.fill([0.0; 2]);
             }
             for (i, (frame, partner)) in out.iter_mut().zip(partners.iter()).enumerate() {
@@ -610,9 +676,135 @@ impl Worker {
     }
 }
 
+/// Worker-local caches: no lock contention, bounded across every loaded bank.
+/// Arc keys keep pointer identities valid until a block/reader is evicted.
+const READERS: usize = 64;
+const BLOCKS: usize = 128;
+#[derive(Default)]
+struct Decoded {
+    readers: HashMap<usize, (Arc<Source>, SampleReader, u64)>,
+    blocks: HashMap<(usize, u64), (Arc<Source>, Box<[Frame]>)>,
+    order: VecDeque<(usize, u64)>,
+    clock: u64,
+    #[cfg(test)]
+    decodes: usize,
+}
+
+impl Decoded {
+    fn clear(&mut self) {
+        self.readers.clear();
+        self.blocks.clear();
+        self.order.clear();
+    }
+
+    fn read(
+        &mut self,
+        source: &Arc<Source>,
+        mut start: u64,
+        mut out: &mut [Frame],
+    ) -> anyhow::Result<()> {
+        let id = Arc::as_ptr(source) as usize;
+        while !out.is_empty() {
+            let base = start / CHUNK * CHUNK;
+            let key = (id, base);
+            if !self.blocks.contains_key(&key) {
+                self.clock = self.clock.wrapping_add(1);
+                if !self.readers.contains_key(&id) {
+                    let reader = source.open_stream()?;
+                    if self.readers.len() == READERS {
+                        let oldest = *self.readers.iter().min_by_key(|(_, r)| r.2).unwrap().0;
+                        self.readers.remove(&oldest);
+                    }
+                    self.readers
+                        .insert(id, (source.clone(), reader, self.clock));
+                }
+                let (_, reader, used) = self.readers.get_mut(&id).unwrap();
+                *used = self.clock;
+                let mut frames = vec![[0.0; 2]; CHUNK as usize].into_boxed_slice();
+                reader.read(base, &mut frames)?;
+                #[cfg(test)]
+                {
+                    self.decodes += 1;
+                }
+                if self.blocks.len() == BLOCKS {
+                    self.blocks.remove(&self.order.pop_front().unwrap());
+                }
+                self.blocks.insert(key, (source.clone(), frames));
+                self.order.push_back(key);
+            }
+            let offset = (start - base) as usize;
+            let n = out.len().min(CHUNK as usize - offset);
+            out[..n].copy_from_slice(&self.blocks[&key].1[offset..offset + n]);
+            out = &mut out[n..];
+            start += n as u64;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn banks_share_workers_and_dropped_jobs_are_released() {
+        let a = Streamer::spawn(Vec::new()).unwrap();
+        let b = Streamer::spawn(Vec::new()).unwrap();
+        assert!(Arc::ptr_eq(&a.shared.wakes, &b.shared.wakes));
+        assert_eq!(a.shared.wakes.len(), THREADS);
+        let weak = Arc::downgrade(&a.shared);
+        drop(a);
+        drop(b);
+        let until = Instant::now() + Duration::from_secs(2);
+        while weak.strong_count() != 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(weak.strong_count(), 0, "workers retained a dropped bank");
+    }
+
+    #[test]
+    fn decoding_is_shared_and_reader_and_block_caches_are_bounded() {
+        let path =
+            std::env::temp_dir().join(format!("kontra-stream-cache-{}.wav", std::process::id()));
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut wav = hound::WavWriter::create(&path, spec).unwrap();
+        for _ in 0..CHUNK * (BLOCKS as u64 + 2) {
+            wav.write_sample(0.25f32).unwrap();
+            wav.write_sample(-0.5f32).unwrap();
+        }
+        wav.finalize().unwrap();
+        let mut sources = crate::audio::Sources::default();
+        let source = Arc::new(sources.source(&path).unwrap());
+        let mut cache = Decoded::default();
+        let mut out = [[0.0; 2]; 64];
+        cache.read(&source, CHUNK - 20, &mut out).unwrap();
+        assert!(out.iter().all(|x| *x == [0.25, -0.5]));
+        assert_eq!(cache.decodes, 2);
+        cache.read(&source.clone(), CHUNK, &mut out).unwrap();
+        assert_eq!(cache.decodes, 2, "another voice decoded a cached block");
+        for i in 0..BLOCKS + 2 {
+            cache.read(&source, i as u64 * CHUNK, &mut out).unwrap();
+        }
+        assert_eq!(cache.blocks.len(), BLOCKS);
+        for _ in 0..READERS + 2 {
+            let source = Arc::new(sources.source(&path).unwrap());
+            cache.read(&source, 0, &mut out).unwrap();
+        }
+        assert_eq!(cache.readers.len(), READERS);
+        assert_eq!(cache.blocks.len(), BLOCKS);
+        cache
+            .read(&source, CHUNK * (BLOCKS as u64 + 2), &mut out)
+            .unwrap();
+        assert!(out.iter().all(|x| *x == [0.0; 2]));
+        cache.clear();
+        assert!(cache.blocks.is_empty() && cache.readers.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn copy_reads_across_the_ring_wrap() {
