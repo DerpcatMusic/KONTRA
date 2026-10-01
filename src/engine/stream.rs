@@ -687,7 +687,10 @@ struct Decoded {
     order: VecDeque<(usize, u64)>,
     clock: u64,
     decode_failures: u64,
-    last_error: Option<Instant>,
+    // ponytail: READERS recent failures retain repeat counts; raise that ceiling
+    // if more concurrent failures need stable suppression. Weak references never
+    // keep retired banks alive; oldest reports are evicted when this set fills.
+    errors: HashMap<usize, (Weak<Source>, Option<Instant>, u64)>,
     #[cfg(test)]
     decodes: usize,
 }
@@ -697,17 +700,26 @@ impl Decoded {
         self.readers.clear();
         self.blocks.clear();
         self.order.clear();
+        self.errors.clear();
     }
 
     fn read(&mut self, source: &Arc<Source>, start: u64, out: &mut [Frame]) -> anyhow::Result<()> {
         let result = self.read_frames(source, start, out);
         if let Err(error) = &result {
             self.decode_failures += 1;
-            // One summary per decoder worker/second, including suppressed failures.
-            if self.last_error.is_none_or(|last| last.elapsed() >= Duration::from_secs(1)) {
-                self.last_error = Some(Instant::now());
+            let id = Arc::as_ptr(source) as usize;
+            self.errors.retain(|_, (source, _, _)| source.strong_count() > 0);
+            if !self.errors.contains_key(&id) && self.errors.len() == READERS {
+                let oldest = *self.errors.iter().min_by_key(|(_, error)| error.1).unwrap().0;
+                self.errors.remove(&oldest);
+            }
+            let (_, last, failures) = self.errors.entry(id).or_insert_with(|| (Arc::downgrade(source), None, 0));
+            *failures += 1;
+            // First failure of every source is visible; repeats coalesce once/second.
+            if last.is_none_or(|last| last.elapsed() >= Duration::from_secs(1)) {
+                *last = Some(Instant::now());
                 crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "streaming", "decode_failed", serde_json::json!({
-                    "path":source.path(), "frame":start, "decode_failures":self.decode_failures,
+                    "path":source.path(), "frame":start, "decode_failures":self.decode_failures, "source_decode_failures":*failures,
                     "reason":format!("{error:#}"), "fallback":"silence",
                 }));
             }
@@ -838,20 +850,48 @@ mod tests {
     }
     #[test]
     fn streamed_decode_failure_silences_audio_and_throttles_reports() {
-        let path = std::env::temp_dir().join(format!("kontra-stream-broken-{}.wav", std::process::id()));
-        std::fs::write(&path, [0u8; 256]).unwrap();
-        let source = Arc::new(crate::audio::Sources::default().source(&path).unwrap());
+        let _diagnostics = crate::diagnostics::acquire();
+        let paths = [0, 1].map(|n| std::env::temp_dir().join(format!("kontra-stream-broken-{}-{n}.wav", std::process::id())));
+        let sources = paths.each_ref().map(|path| {
+            std::fs::write(path, [0u8; 256]).unwrap();
+            Arc::new(crate::audio::Sources::default().source(path).unwrap())
+        });
         let mut worker = Worker::new();
         let run = PlayMap { start:0, end:64, reverse:false, looped:None }.run(0, 0).unwrap();
         worker.frames[..64].fill([1.0; 2]);
-        worker.decode_run(Some(&source), &run, 0, 64);
+        worker.decode_run(Some(&sources[0]), &run, 0, 64);
         assert!(worker.frames[..64].iter().all(|f| *f == [0.0; 2]));
-        assert_eq!(worker.decoded.decode_failures, 1);
-        let first = worker.decoded.last_error.unwrap();
-        worker.decode_run(Some(&source), &run, 0, 64);
-        assert_eq!(worker.decoded.decode_failures, 2);
-        assert_eq!(worker.decoded.last_error, Some(first), "repeated failures retain counters without formatting/log spam");
-        std::fs::remove_file(path).unwrap();
+        let first_id = Arc::as_ptr(&sources[0]) as usize;
+        let first = worker.decoded.errors[&first_id].1.unwrap();
+        worker.decode_run(Some(&sources[0]), &run, 0, 64);
+        assert_eq!(worker.decoded.errors[&first_id].1, Some(first), "repeated source does not format/log again within one second");
+        worker.decode_run(Some(&sources[1]), &run, 0, 64);
+        assert_eq!(worker.decoded.decode_failures, 3);
+        assert_eq!(worker.decoded.errors.len(), 2);
+        assert_eq!(worker.decoded.errors[&first_id].2, 2);
+        let snapshot = serde_json::to_value(crate::diagnostics::snapshot()).unwrap();
+        let events = snapshot["events"].as_array().unwrap();
+        for path in &paths {
+            assert_eq!(events.iter().filter(|event| event["code"] == "decode_failed" && event["path"] == path.to_string_lossy().as_ref()).count(), 1,
+                "both new sources must be identified immediately, without repeat spam");
+        }
+        worker.decoded.errors.get_mut(&first_id).unwrap().1 = Some(Instant::now() - Duration::from_secs(2));
+        worker.decode_run(Some(&sources[0]), &run, 0, 64);
+        let snapshot = serde_json::to_value(crate::diagnostics::snapshot()).unwrap();
+        assert!(snapshot["events"].as_array().unwrap().iter().any(|event|
+            event["code"] == "decode_failed" && event["path"] == paths[0].to_string_lossy().as_ref()
+                && event["data"]["source_decode_failures"] == 3 && event["data"]["decode_failures"] == 4),
+            "the next summary includes all suppressed failures");
+        let retiring: Vec<_> = (0..READERS + 2).map(|_| Arc::new(crate::audio::Sources::default().source(&paths[1]).unwrap())).collect();
+        for source in &retiring { worker.decode_run(Some(source), &run, 0, 64); }
+        assert_eq!(worker.decoded.errors.len(), READERS, "bookkeeping never grows past the existing reader-cache ceiling");
+        drop(retiring);
+        worker.decode_run(Some(&sources[0]), &run, 0, 64);
+        assert!(worker.decoded.errors.len() <= sources.len());
+        assert!(!worker.decoded.errors.values().any(|(source, _, _)| source.strong_count() == 0), "retired source identities are pruned before reuse");
+        worker.decoded.clear();
+        assert!(worker.decoded.errors.is_empty());
+        for path in paths { std::fs::remove_file(path).unwrap(); }
     }
 
 }
