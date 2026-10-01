@@ -376,12 +376,22 @@ pub mod id {
     pub const MOD_TARGET_INTENSITY: i32 = B + 16;
     pub const MOD_TARGET_MP_INTENSITY: i32 = B + 17;
     pub const EFFECT_BYPASS: i32 = B + 22;
+    pub const EFFECT_TYPE: i32 = B + 23;
+    pub const SEND_EFFECT_TYPE: i32 = B + 25;
     pub const SEND_EFFECT_BYPASS: i32 = B + 26;
     pub const SEND_EFFECT_DRY_LEVEL: i32 = B + 27;
     pub const SEND_EFFECT_OUTPUT_GAIN: i32 = B + 28;
     pub const INSERT_EFFECT_OUTPUT_GAIN: i32 = B + 29;
     pub const SENDLEVEL_0: i32 = B + 30;
     pub const SENDLEVEL_7: i32 = B + 37;
+    pub const RV2_PREDELAY: i32 = B + 101;
+    pub const RV2_TIME: i32 = B + 102;
+    pub const RV2_TYPE: i32 = B + 103;
+    pub const RV2_SIZE: i32 = B + 104;
+    pub const RV2_DAMPING: i32 = B + 105;
+    pub const RV2_DIFF: i32 = B + 106;
+    pub const RV2_MOD: i32 = B + 107;
+    pub const RV2_STEREO: i32 = B + 108;
     pub const STEREO: i32 = B + 138;
     pub const STEREO_PAN: i32 = B + 139;
     pub const FREQ1: i32 = B + 157;
@@ -424,6 +434,8 @@ pub(crate) enum Address {
     Instrument(GroupPar),
     /// Volume envelope of a group.
     Envelope(u16, Stage),
+    /// A group's module envelope (filter, EQ), by `Group::envelopes` index.
+    ModEnvelope(u16, u8, Stage),
     /// A modulation assignment's intensity; `bipolar` for the MP variant.
     Intensity {
         group: u16,
@@ -485,7 +497,7 @@ impl Address {
             }
             id::ATTACK | id::ATK_CURVE | id::DECAY | id::SUSTAIN | id::RELEASE | id::HOLD => {
                 let g = group()?;
-                modulator(g)?.volume_env.then_some(())?;
+                let m = modulator(g)?;
                 let stage = match par.id {
                     id::ATTACK => Stage::Attack,
                     id::ATK_CURVE => Stage::Curve,
@@ -494,7 +506,11 @@ impl Address {
                     id::SUSTAIN => Stage::Sustain,
                     _ => Stage::Release,
                 };
-                Self::Envelope(g, stage)
+                match (m.volume_env, m.envelope) {
+                    (true, _) => Self::Envelope(g, stage),
+                    (_, Some(e)) => Self::ModEnvelope(g, u8::try_from(e).ok()?, stage),
+                    _ => return None,
+                }
             }
             id::MOD_TARGET_INTENSITY | id::MOD_TARGET_MP_INTENSITY => {
                 let g = group()?;
@@ -517,6 +533,18 @@ impl Address {
             id::EFFECT_BYPASS => insert(Knob::Bypass, FxParam::Bypass)?,
             id::INSERT_EFFECT_OUTPUT_GAIN => insert(Knob::Output, FxParam::Wet)?,
             id::SEND_EFFECT_BYPASS => fx(FxParam::Bypass)?,
+            // Group insert effect types are not modelled.
+            id::EFFECT_TYPE | id::SEND_EFFECT_TYPE => fx(FxParam::Type)?,
+            // Reverb (`$EFFECT_TYPE_REVERB2`), as its stored values; the EQ
+            // and freeze controls have no stored counterpart here.
+            id::RV2_TYPE => fx(FxParam::Reverb(0))?,
+            id::RV2_TIME => fx(FxParam::Reverb(1))?,
+            id::RV2_SIZE => fx(FxParam::Reverb(2))?,
+            id::RV2_DAMPING => fx(FxParam::Reverb(3))?,
+            id::RV2_MOD => fx(FxParam::Reverb(4))?,
+            id::RV2_DIFF => fx(FxParam::Reverb(5))?,
+            id::RV2_PREDELAY => fx(FxParam::Reverb(6))?,
+            id::RV2_STEREO => fx(FxParam::Reverb(9))?,
             id::SEND_EFFECT_DRY_LEVEL => fx(FxParam::Dry)?,
             id::SEND_EFFECT_OUTPUT_GAIN => fx(FxParam::Wet)?,
             id::SENDLEVEL_0..=id::SENDLEVEL_7 => {
@@ -526,11 +554,29 @@ impl Address {
         })
     }
 
+    /// Whether Kontakt itself ignores `par`, which [`resolve`](Self::resolve)
+    /// cannot map: AHDSR stages addressed to a flex envelope or to a
+    /// modulator slot the group does not have.
+    pub(crate) fn inert(par: EnginePar, groups: &[Group]) -> bool {
+        let stage = matches!(
+            par.id,
+            id::ATTACK | id::ATK_CURVE | id::DECAY | id::SUSTAIN | id::RELEASE | id::HOLD
+        );
+        let group = usize::try_from(par.group).ok().and_then(|g| groups.get(g));
+        let slot = usize::try_from(par.slot).ok();
+        stage
+            && group.zip(slot).is_some_and(|(g, m)| g.modulators.get(m).is_none_or(|m| m.flex))
+    }
+
     /// Held by the bank's group settings.
     pub(crate) fn is_group(&self) -> bool {
         matches!(
             self,
-            Self::Group(..) | Self::Envelope(..) | Self::Intensity { .. } | Self::Filter(..)
+            Self::Group(..)
+                | Self::Envelope(..)
+                | Self::ModEnvelope(..)
+                | Self::Intensity { .. }
+                | Self::Filter(..)
         )
     }
 
@@ -548,12 +594,16 @@ impl Address {
             },
             Self::Fx(_, _, FxParam::Output) if (0..OUTS as i32).contains(&value) => value as f32,
             Self::Fx(_, _, FxParam::Output) => -1.0,
+            Self::Fx(_, _, FxParam::Type) => value as f32,
+            // `$NI_REVERB2_TYPE_ROOM` (0) or `_HALL` (1).
+            Self::Fx(_, _, FxParam::Reverb(0)) => f32::from(value != 0),
+            Self::Fx(_, _, FxParam::Reverb(_)) => x,
             Self::Group(_, p) | Self::Instrument(p) => match p {
                 GroupPar::Volume => volume(x),
                 GroupPar::Pan => 2.0 * x - 1.0,
                 _ => (2.0 * x - 1.0) * TUNE_RANGE,
             },
-            Self::Envelope(_, stage) => match stage {
+            Self::Envelope(_, stage) | Self::ModEnvelope(_, _, stage) => match stage {
                 Stage::Sustain => x,
                 // Solo sets 1000000, 750000 and 333333 where its presets store 1, 0.5, -0.33.
                 Stage::Curve => 2.0 * x - 1.0,
@@ -587,6 +637,9 @@ impl Address {
                 };
             }
             Self::Fx(_, _, FxParam::Output) => return if v >= 0.0 { v as i32 } else { -1 },
+            Self::Fx(_, _, FxParam::Type) => return v as i32,
+            Self::Fx(_, _, FxParam::Reverb(0)) => return i32::from(v >= 0.5),
+            Self::Fx(_, _, FxParam::Reverb(_)) => v,
             Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) => {
                 return i32::from(v != 0.0);
             }
@@ -595,7 +648,7 @@ impl Address {
                 GroupPar::Pan => (v + 1.0) * 0.5,
                 _ => (v / TUNE_RANGE + 1.0) * 0.5,
             },
-            Self::Envelope(_, stage) => match stage {
+            Self::Envelope(_, stage) | Self::ModEnvelope(_, _, stage) => match stage {
                 Stage::Sustain => v,
                 Stage::Curve => (v + 1.0) * 0.5,
                 Stage::Attack | Stage::Hold => time_value(v, SHORT),
@@ -717,11 +770,8 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
                 GroupPar::Output => group.bus = (value >= 0.0).then_some(value as u8),
             }
         }
-        Address::Envelope(g, stage) => {
-            let Some(env) = settings
-                .get_mut(g as usize)
-                .and_then(|s| s.envelope.as_mut())
-            else {
+        Address::Envelope(..) | Address::ModEnvelope(..) => {
+            let Some((env, stage)) = envelope(settings, address) else {
                 return false;
             };
             match stage {
@@ -751,6 +801,17 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
     true
 }
 
+/// The envelope `address` names and the stage.
+fn envelope(settings: &mut [GroupSettings], address: Address) -> Option<(&mut Ahdsr, Stage)> {
+    match address {
+        Address::Envelope(g, stage) => Some((settings.get_mut(g as usize)?.envelope.as_mut()?, stage)),
+        Address::ModEnvelope(g, e, stage) => {
+            Some((settings.get_mut(g as usize)?.filter.as_mut()?.envelope(e)?, stage))
+        }
+        _ => None,
+    }
+}
+
 /// Current value of a group-level parameter.
 pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> {
     match address {
@@ -763,8 +824,11 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
                 GroupPar::Output => group.bus.map_or(-1.0, f32::from),
             })
         }
-        Address::Envelope(g, stage) => {
-            let env = settings.get(g as usize)?.envelope?;
+        Address::Envelope(g, stage) | Address::ModEnvelope(g, _, stage) => {
+            let env = match address {
+                Address::ModEnvelope(_, e, _) => *settings.get(g as usize)?.filter.as_ref()?.envelope_at(e)?,
+                _ => settings.get(g as usize)?.envelope?,
+            };
             Some(match stage {
                 Stage::Attack => env.attack,
                 Stage::Curve => env.curve,
@@ -894,6 +958,16 @@ mod tests {
             (id::MOD_TARGET_INTENSITY, "MOD_TARGET_INTENSITY"),
             (id::MOD_TARGET_MP_INTENSITY, "MOD_TARGET_MP_INTENSITY"),
             (id::EFFECT_BYPASS, "EFFECT_BYPASS"),
+            (id::EFFECT_TYPE, "EFFECT_TYPE"),
+            (id::SEND_EFFECT_TYPE, "SEND_EFFECT_TYPE"),
+            (id::RV2_PREDELAY, "RV2_PREDELAY"),
+            (id::RV2_TIME, "RV2_TIME"),
+            (id::RV2_TYPE, "RV2_TYPE"),
+            (id::RV2_SIZE, "RV2_SIZE"),
+            (id::RV2_DAMPING, "RV2_DAMPING"),
+            (id::RV2_DIFF, "RV2_DIFF"),
+            (id::RV2_MOD, "RV2_MOD"),
+            (id::RV2_STEREO, "RV2_STEREO"),
             (id::SEND_EFFECT_BYPASS, "SEND_EFFECT_BYPASS"),
             (id::SEND_EFFECT_DRY_LEVEL, "SEND_EFFECT_DRY_LEVEL"),
             (id::SEND_EFFECT_OUTPUT_GAIN, "SEND_EFFECT_OUTPUT_GAIN"),
@@ -986,18 +1060,24 @@ mod tests {
                     targets: vec!["ENV_AHDSR_VOLUME".into()],
                     assignments: None,
                     volume_env: true,
+                    flex: false,
+                    envelope: None,
                 },
                 Modulator {
                     name: "VEL_VOLUME".into(),
                     targets: vec![String::new()],
                     assignments: Some(0),
                     volume_env: false,
+                    flex: false,
+                    envelope: None,
                 },
                 Modulator {
                     name: "CC_VOLUME".into(),
                     targets: vec![String::new()],
                     assignments: Some(1),
                     volume_env: false,
+                    flex: false,
+                    envelope: None,
                 },
             ],
             ..Group::default()
@@ -1092,6 +1172,23 @@ mod tests {
             Some(Address::Envelope(0, Stage::Attack))
         );
         assert_eq!(Address::resolve(par(id::ATTACK, 1, -1), &groups), None);
+        // A flex envelope (slot 1 here) has no AHDSR stages, nor has a
+        // missing slot: Kontakt ignores those; an external modulator's are
+        // left unmapped.
+        let mut flex = group();
+        flex.modulators.insert(1, Modulator { name: "ENV_FLEX".into(), targets: Vec::new(), assignments: None, volume_env: false, flex: true, envelope: None });
+        let flex = [flex];
+        assert!(Address::inert(par(id::ATTACK, 1, -1), &flex));
+        assert!(Address::inert(par(id::RELEASE, 9, -1), &flex));
+        assert!(!Address::inert(par(id::ATTACK, 2, -1), &flex));
+        assert!(!Address::inert(par(id::VOLUME, 1, -1), &flex));
+        // A filter envelope is addressed by its `Group::envelopes` index.
+        let mut filter = group();
+        filter.modulators[1].envelope = Some(3);
+        assert_eq!(
+            Address::resolve(par(id::DECAY, 1, -1), &[filter]),
+            Some(Address::ModEnvelope(0, 3, Stage::Decay))
+        );
         let bus = EnginePar {
             id: id::VOLUME,
             group: -1,

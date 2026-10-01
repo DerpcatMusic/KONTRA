@@ -12,7 +12,7 @@ pub mod params;
 mod processor;
 mod reverb;
 
-pub use kind::Kind;
+pub use kind::{Kind, ksp_effect_type};
 pub use params::Params;
 pub use processor::{DIRECT, FxParam, FxProcessor, OUTS, Rack};
 
@@ -203,6 +203,8 @@ impl ProgramFx {
             (FxParam::Bypass, _) => f32::from(fx.bypass),
             (FxParam::Wet, _) => fx.output_gain,
             (FxParam::Dry, _) => fx.dry_level,
+            (FxParam::Type, _) => f32::from(fx.kind.ser_id()),
+            (FxParam::Reverb(n), Params::Reverb(p)) => *{ *p }.field(n)?,
             (FxParam::SendLevel(n), Params::SendLevels(levels)) => {
                 *levels.sends.get(n as usize)?
             }

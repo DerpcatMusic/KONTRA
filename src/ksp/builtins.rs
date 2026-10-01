@@ -449,6 +449,9 @@ pub fn real_constant(name: &str) -> Option<f64> {
 
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
+    if let Some(v) = crate::fx::ksp_effect_type(name) {
+        return Some(v);
+    }
     if let Some(n) = name
         .strip_prefix("$MARK_")
         .and_then(|n| n.parse::<u32>().ok())
@@ -516,6 +519,9 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_INSERT_BUS" => 1,
         "$NI_MAIN_BUS" => 2,
         "$NI_BUS_OFFSET" => 1000,
+        // `$ENGINE_PAR_RV2_TYPE` values: Reverb's room/hall switch.
+        "$NI_REVERB2_TYPE_ROOM" => 0,
+        "$NI_REVERB2_TYPE_HALL" => 1,
         "$NUM_ZONES" => 0,
         "$NI_VL_TMPRO_STANDARD" => VL_TMPRO_STANDARD,
         "$NI_VL_TMPRO_HQ" | "$NI_VL_TMRPO_HQ" => VL_TMPRO_HQ,

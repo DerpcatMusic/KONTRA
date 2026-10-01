@@ -1495,6 +1495,8 @@ fn modulated_groups() -> Instrument {
             targets: vec![String::new()],
             assignments: Some(0),
             volume_env: false,
+            flex: false,
+            envelope: None,
         }],
         ..Group::default()
     };
@@ -2310,4 +2312,80 @@ fn shared_filters_match_voices_filtered_alone_within_120_db() {
     assert!((0.5..=1.0).contains(&peak), "near full scale: {peak}");
     assert!(error > 0.0, "filters were shared");
     assert!(error < 1e-6, "{:.1} dB", 20.0 * error.log10());
+}
+
+/// Two groups whose output taps send slot 0 (a Reverb) through a Send
+/// Levels slot at insert 7, as Audio Imperia and Solo store them.
+fn reverb_send(script: &str) -> (Engine, Box<Runtime>) {
+    use fx::{Chain, Effect, Kind, Params, params};
+    let effect = |slot, kind, params| Effect { slot, kind, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0, params };
+    let mut i = two_groups();
+    let reverb = params::Reverb {
+        room_type: 0.0,
+        time: 0.37,
+        size: 0.5,
+        damping: 0.5,
+        modulation: 0.5,
+        diffusion: 0.5,
+        predelay: 0.0,
+        high_cut: 0.0,
+        low_shelf: 0.0,
+        stereo: 1.0,
+    };
+    let levels = params::SendLevels { sends: vec![1.0; 8], outputs: Vec::new() };
+    i.fx.insert = Chain { slots: vec![effect(7, Kind::SendLevels, Params::SendLevels(levels))] };
+    i.fx.send = Chain { slots: vec![effect(0, Kind::Reverb, Params::Reverb(reverb))] };
+    i.scripts = vec![script.to_owned()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut e = engine_with(layered(i.groups.clone(), &[0.1, 0.2]));
+    e.set_fx(i.fx.processor(e.rate() as f32, MAX_BLOCK));
+    (e, rt.unwrap())
+}
+
+/// Energy after the voices end: the reverb tail.
+fn tail_energy(e: &mut Engine) -> f32 {
+    e.note_on(0, 60, 127);
+    render(e, 4800);
+    e.note_off(0, 60);
+    render(e, 48000).iter().skip(480).map(|f| f[0] * f[0] + f[1] * f[1]).sum()
+}
+
+/// The framework scripts' `on init`: name the effects already loaded, then
+/// set the reverb. Naming the loaded type keeps the effect, reading it back
+/// gives `$EFFECT_TYPE_*`, and `$ENGINE_PAR_RV2_*` and the send level reach
+/// the sound: a longer reverb rings longer, a closed send leaves no tail.
+#[test]
+fn scripts_name_loaded_effects_and_set_the_reverb_and_send() {
+    let script = |time: &str, send: &str| {
+        format!(
+            "on init
+declare %type_ok[1]
+set_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, $EFFECT_TYPE_REVERB2, -1, 0, $NI_SEND_BUS)
+set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_SEND_LEVELS, -1, 7, $NI_INSERT_BUS)
+set_engine_par($ENGINE_PAR_RV2_TYPE, $NI_REVERB2_TYPE_HALL, -1, 0, $NI_SEND_BUS)
+set_engine_par($ENGINE_PAR_RV2_TIME, {time}, -1, 0, $NI_SEND_BUS)
+set_engine_par($ENGINE_PAR_SENDLEVEL_0, {send}, -1, 7, $NI_INSERT_BUS)
+{{ Out of bounds, and so a diagnostic, unless the types read back. }}
+%type_ok[get_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, -1, 0, $NI_SEND_BUS) - $EFFECT_TYPE_REVERB2] := 1
+%type_ok[get_engine_par($ENGINE_PAR_EFFECT_TYPE, -1, 7, $NI_INSERT_BUS) - $EFFECT_TYPE_SEND_LEVELS] := 1
+%type_ok[get_engine_par($ENGINE_PAR_RV2_TYPE, -1, 0, $NI_SEND_BUS) - $NI_REVERB2_TYPE_HALL] := 1
+end on"
+        )
+    };
+    let run = |time: &str, send: &str| {
+        let (mut e, rt) = reverb_send(&script(time, send));
+        assert_eq!(rt.diagnostics(), Vec::<String>::new());
+        assert!(e.set_script(Some(rt)).is_none());
+        tail_energy(&mut e)
+    };
+    let (short, long, closed) = (run("0", "630859"), run("1000000", "630859"), run("1000000", "0"));
+    assert!(long > 4.0 * short, "RV2_TIME: {short} vs {long}");
+    assert!(closed < 1e-9, "SENDLEVEL_0 at 0 still feeds the reverb: {closed}");
+
+    // Loading another effect is not supported, and says so.
+    let (_, rt) = reverb_send(
+        "on init\nset_engine_par($ENGINE_PAR_SEND_EFFECT_TYPE, $EFFECT_TYPE_GAINER, -1, 0, $NI_SEND_BUS)\nend on",
+    );
+    assert!(rt.diagnostics().iter().any(|d| d.contains("set_engine_par")), "{:?}", rt.diagnostics());
 }

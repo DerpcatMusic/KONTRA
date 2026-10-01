@@ -6,7 +6,7 @@
 
 use super::params::{self, Address, GroupPar, MAX_WRITES, Write};
 use super::{Ahdsr, Bank, EventChange, EventId, GroupMask, GroupSettings, NoteEvent, Player};
-use crate::fx::{FxProcessor, ProgramFx};
+use crate::fx::{FxParam, FxProcessor, ProgramFx, Rack};
 use crate::import::{Group, Instrument};
 use crate::ksp::{EnginePar, Fade, KspEngine, NoteLength, NoteSpec, Persisted, Runtime, VoicePar};
 
@@ -174,14 +174,17 @@ impl KspEngine for Host<'_> {
     /// Modelled parameters are queued for their frame, like notes.
     fn set_engine_par(&mut self, at: u32, par: EnginePar, value: i32) -> bool {
         let Some(address) = self.address(par) else {
-            return false;
+            return self.bank.is_some_and(|b| Address::inert(par, b.groups()));
         };
+        let value = address.decode(value);
+        if !loaded(address, value, |r, s| self.fx.param(r, s, FxParam::Type)) {
+            return false;
+        }
         if self.writes.len() == MAX_WRITES {
             self.player.dropped_commands += 1;
             return true;
         }
         let i = self.writes.partition_point(|w| w.at <= at);
-        let value = address.decode(value);
         self.writes.insert(i, Write { at, address, value });
         true
     }
@@ -288,6 +291,16 @@ impl Player {
     }
 }
 
+/// False for `$ENGINE_PAR_EFFECT_TYPE` naming another effect than the one
+/// loaded (`kind` of a rack slot): loading effects is not supported, but
+/// naming the loaded one, as framework scripts do in `on init`, keeps it.
+fn loaded(address: Address, value: f32, kind: impl Fn(Rack, u8) -> Option<f32>) -> bool {
+    match address {
+        Address::Fx(rack, slot, FxParam::Type) => kind(rack, slot) == Some(value),
+        _ => true,
+    }
+}
+
 /// Instrument volume, pan or tune from `(volume, pan, tune)`.
 fn instrument((volume, pan, tune): (f32, f32, f32), p: GroupPar) -> Option<f32> {
     match p {
@@ -371,9 +384,12 @@ impl KspEngine for ScriptSetup<'_> {
 
     fn set_engine_par(&mut self, _at: u32, par: EnginePar, value: i32) -> bool {
         let Some(address) = self.address(par) else {
-            return false;
+            return Address::inert(par, self.groups);
         };
         let v = address.decode(value);
+        if !loaded(address, v, |r, s| self.fx.param(r, s, FxParam::Type)) {
+            return false;
+        }
         match address {
             Address::Fx(..) => match self.effects.iter_mut().find(|e| e.0 == address) {
                 Some(e) => e.1 = v,
