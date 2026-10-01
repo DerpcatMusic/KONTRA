@@ -1919,7 +1919,7 @@ mod tests {
     fn mpe_following_transposed_child_freezes_before_its_release_wait() {
         use crate::{audio::Sample, engine::Bank, import::{Group, Loop, Zone as SampleZone},
             ksp::{LogEngine, Runtime}, modulation::{ModAssignment, ModSource, ModTarget}};
-        let setup = || {
+        let setup = |generated| {
             let group = Group { mods: vec![ModAssignment { name: "CC74_VOLUME".into(),
                 source: ModSource::MidiCc(74), target: ModTarget::Volume, intensity: 0.5,
                 invert: false, lag_ms: 0, shaper: None }], ..Group::default() };
@@ -1930,7 +1930,8 @@ mod tests {
                 ..SampleZone::default() }).collect();
             let bank = Bank::from_samples(groups, zones, vec![(path, Sample { rate: 48000,
                 frames: (0..1024).map(|i| [(i as f32 * 0.07).sin() * 0.2; 2]).collect() })]).unwrap();
-            let scripts = ["on note\nignore_event($EVENT_ID)\nplay_note($EVENT_NOTE+12,$EVENT_VELOCITY,0,-1)\nend on",
+            let scripts = [if generated { "on note\nignore_event($EVENT_ID)\nplay_note($EVENT_NOTE+12,$EVENT_VELOCITY,0,-1)\nend on" }
+                else { "on note\nchange_note($EVENT_ID,$EVENT_NOTE+12)\nend on" },
                 "on note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\nignore_event($EVENT_ID)\nwait(40000)\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nnote_off($EVENT_ID)\nend on"];
             let (rt, errors) = Runtime::with_scripts(&scripts, &mut LogEngine::new(Vec::new(),48000.),8,Vec::new());
             assert!(errors.iter().all(Option::is_none),"{errors:?}");
@@ -1950,9 +1951,16 @@ mod tests {
                 "{phase}, frame {i}: following transposed child inherited a reused member"); }
         };
         for rendered in [false,true] {
-            let (mut a,mut ar)=setup(); let (mut o,mut or)=setup(); let (mut n,mut nr)=setup();
+            let (mut a,mut ar)=setup(true); let (mut o,mut or)=setup(false); let (mut n,mut nr)=setup(false);
             start(&mut a,&mut ar,32,0.25,-1.,7.); start(&mut o,&mut or,32,0.25,-1.,7.);
-            if rendered { for e in [&mut a,&mut o,&mut n] { render(e); } }
+            if rendered {
+                compare(&mut a,&mut o,&mut n,"child initial physical expression");
+                for (e,r) in [(&mut a,&mut ar),(&mut o,&mut or)] {
+                    feed(r,e,In::NoteGain(1,60,0.5),0); feed(r,e,In::NotePan(1,60,-0.5),0);
+                    feed(r,e,In::NoteTune(1,60,3.),0);
+                }
+                compare(&mut a,&mut o,&mut n,"child live physical expression");
+            }
             for (e,r) in [(&mut a,&mut ar),(&mut o,&mut or)] {
                 feed(r,e,In::Cc(0,64,127),0); feed(r,e,In::NoteOff(1,60),0);
             }

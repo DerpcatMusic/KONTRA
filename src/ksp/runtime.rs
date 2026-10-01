@@ -126,6 +126,9 @@ pub struct Event {
     pub release_ignored: bool,
     pub at_engine: bool,
     pub voice: Option<EventId>,
+    /// Live callbacks retain their event and polyphonic memory through waits.
+    callbacks: u16,
+    recycle_pending: bool,
     /// MIDI key still down.
     pub held: bool,
     /// Next MIDI event on the same input channel/key, oldest first.
@@ -163,6 +166,8 @@ impl Event {
         release_ignored: false,
         at_engine: false,
         voice: None,
+        callbacks: 0,
+        recycle_pending: false,
         held: false,
         next_input: 0,
         fade_in_us: 0,
@@ -216,7 +221,7 @@ impl Events {
                 let i = self
                     .slots
                     .iter()
-                    .position(|e| e.live && e.at_engine && e.length == NoteLength::Sample && !(e.source < 0 && e.held))?;
+                    .position(|e| e.live && e.callbacks == 0 && e.at_engine && e.length == NoteLength::Sample && !(e.source < 0 && e.held))?;
                 i as u32
             }
         };
@@ -248,8 +253,9 @@ impl Events {
     fn free(&mut self, id: i32) {
         if let Some(e) = self.get_mut(id).filter(|e| e.live) {
             // A script can stop a MIDI voice before the physical key lets go.
-            // Keep its event/link addressable until that key's release arrives.
-            if e.source < 0 && e.held {
+            // Keep its event/link and callback row until key-up and callback completion.
+            if e.callbacks > 0 || (e.source < 0 && e.held) {
+                e.recycle_pending = true;
                 return;
             }
             e.live = false;
@@ -549,7 +555,7 @@ impl Env {
         let parent_state = self
             .events
             .get(parent)
-            .map(|p| (p.groups, p.released & (1 << slot) != 0, p.frozen_expression));
+            .map(|p| (p.groups, p.released & (1 << slot) != 0, p.frozen_expression, p.owner));
         let e = self.events.get_mut(id).expect("fresh event");
         e.note = note;
         e.velocity = velocity;
@@ -565,16 +571,19 @@ impl Env {
             NoteLength::UntilNoteOff
         };
         e.follows_parent = duration_us < 0 && parent_state.is_some();
-        if let Some((groups, _, expression)) = parent_state {
+        if let Some((groups, _, expression, owner)) = parent_state {
             e.groups = groups;
             e.frozen_expression = expression;
+            // Following notes keep the input key even when a script transposes
+            // them. Independent timed/one-shot notes have their own lifetime.
+            if e.follows_parent { e.owner = owner; }
         }
         self.queue(Work::Note {
             event: id,
             slot: slot + 1,
         });
         match parent_state {
-            Some((_, true, _)) if duration_us < 0 => self.queue(Work::Release {
+            Some((_, true, _, _)) if duration_us < 0 => self.queue(Work::Release {
                 event: id,
                 slot: slot + 1,
             }),
@@ -1846,6 +1855,7 @@ impl Runtime {
         };
         self.env.next_callback_id = self.env.next_callback_id % i32::MAX + 1;
         ctx.callback_id = self.env.next_callback_id;
+        if let Some(e) = self.env.events.get_mut(ctx.event) { e.callbacks += 1; }
         if !matches!(ctx.kind, Kind::Cb(Callback::Note | Callback::Release)) {
             ctx.poly_row = POLY_ROWS - 1;
         }
@@ -1943,9 +1953,14 @@ impl Runtime {
     fn finish(&mut self, i: u16) {
         self.yielded(i);
         let t = &mut self.threads[i as usize];
+        let event = t.ctx.event;
         t.live = false;
         t.generation = t.generation.wrapping_add(1);
         self.free_threads.push(i);
+        if let Some(e) = self.env.events.get_mut(event) {
+            e.callbacks -= 1;
+            if e.callbacks == 0 && e.recycle_pending { self.env.events.free(event); }
+        }
     }
 
     /// First yield of a callback: pass its event on unless the script ignored it.
