@@ -185,7 +185,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El 
     if signals.is_empty() {
         signals.push(
             caption("Load an instrument to give it a strip.")
-                .fill(Role::Dim)
+                .fill(secondary())
                 .pad(INSET)
                 .shrink(0),
         );
@@ -281,7 +281,7 @@ fn toolbar(ui: &mut Ui, cx: &mut Cx, fits: bool) -> El {
     }
     let mut items = vec![section("Outputs"), outputs, section("Strips"), segmented(vec![narrow, wide]), spacer()];
     if !fits && spectrum_on {
-        items.push(caption("No room for the spectrum").fill(Role::Dim).lines(1).min_w(0));
+        items.push(caption("No room for the spectrum").fill(secondary()).lines(1).min_w(0));
     }
     items.extend([section("Spectrum"), segmented(vec![off, part, master])]);
     strip(items)
@@ -292,7 +292,7 @@ fn toolbar(ui: &mut Ui, cx: &mut Cx, fits: bool) -> El {
 /// A titled run of strips, hairlines between them.
 fn group(title: &str, subtitle: String, strips: Vec<El>) -> El {
     col![
-        row![section(title), caption(subtitle).fill(Role::Dim).lines(1)]
+        row![section(title), caption(subtitle).fill(secondary()).lines(1)]
             .gap(SPACE)
             .align(Align::Center)
             .pad(edges(0., 0., TIGHT, TIGHT))
@@ -500,12 +500,12 @@ fn bus_strip(ui: &mut Ui, cx: &mut Cx, n: usize) -> El {
     let bus = cx.selection.bus(n);
     let sources = sources(cx, n);
     let sources_el = row![
-        glyph(Icon::AudioIn, TEXT, Role::Dim.alpha(1.)),
+        glyph(Icon::AudioIn, TEXT, secondary()),
         caption(match sources {
             0 => "No input".to_owned(),
             n => format!("{n} in"),
         })
-        .fill(Role::Dim)
+        .fill(secondary())
         .lines(1)
         .min_w(0)
     ]
@@ -571,7 +571,7 @@ fn master_strip(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) ->
             .align(Align::Start)
             .h(NAME)
             .shrink(0),
-        row![caption("All buses").fill(Role::Dim).lines(1).min_w(0)]
+        row![caption("All buses").fill(secondary()).lines(1).min_w(0)]
             .align(Align::Center)
             .pad((TIGHT, 0))
             .h(CONTROL - 2.)
@@ -584,8 +584,8 @@ fn master_strip(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) ->
         blank(super::theme::STRIP),
         blank(SEND),
         row![
-            glyph(Icon::AudioOut, TEXT, Role::Dim.alpha(1.)),
-            caption("Host").fill(Role::Dim).lines(1).min_w(0)
+            glyph(Icon::AudioOut, TEXT, secondary()),
+            caption("Host").fill(secondary()).lines(1).min_w(0)
         ]
         .gap(TIGHT)
         .align(Align::Center)
@@ -658,7 +658,7 @@ fn strip_name(ui: &mut Ui, cx: &mut Cx, strip: Strip) -> El {
         body(name.clone())
             .text_size(SMALL)
             .text_weight(Weight::SEMIBOLD)
-            .fill(if muted { Role::Dim } else { Role::Ink })
+            .fill(if muted { secondary() } else { Fill::from(Role::Ink) })
             .lines(2)
             .min_w(0)
     ]
@@ -732,11 +732,11 @@ fn route(ui: &mut Ui, id: &str, icon: Icon, chip: Option<Color>, text: String, n
     let edge = chip.map_or(Role::Ink.alpha(0.), Fill::from);
     let mut cells = vec![
         block(2, Len::Pct(100.)).fill(edge).shrink(0),
-        glyph(icon, TEXT, Role::Ink.alpha(0.72)),
+        glyph(icon, TEXT, secondary()),
         body(text.clone()).text_size(SMALL).lines(1).flex(1).min_w(0),
     ];
     if caret {
-        cells.push(glyph(Icon::Down, TIGHT * 2.5, Role::Ink.alpha(0.45)));
+        cells.push(glyph(Icon::Down, TIGHT * 2.5, secondary()));
     }
     let el = row(cells)
     .gap(TIGHT)
@@ -772,7 +772,7 @@ fn send_level(ui: &mut Ui, id: &str, db: &mut f64, on: bool) -> El {
     .flex(1)
     .min_w(0)
     .h(Len::Pct(100.));
-    let readout = caption(if on { db_short(*db) } else { String::new() }).fill(Role::Dim).lines(1).shrink(0).reserve("-00.0".to_owned());
+    let readout = caption(if on { db_short(*db) } else { String::new() }).fill(secondary()).lines(1).shrink(0).reserve("-00.0".to_owned());
     row![bar, readout]
         .gap(TIGHT)
         .align(Align::Center)

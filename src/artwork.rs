@@ -39,7 +39,7 @@ pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>
             for path in candidates {
                 let mut bytes = Vec::new();
                 if File::open(path)
-                    .and_then(|f| f.take(8 * 1024 * 1024).read_to_end(&mut bytes))
+                    .and_then(|mut f| f.read_to_end(&mut bytes))
                     .is_err()
                 {
                     continue;
@@ -415,9 +415,6 @@ impl Pictures {
             let Some(entry) = archive.find(&member) else {
                 continue;
             };
-            if entry.size > 32 * 1024 * 1024 {
-                return Err(format!("{file} exceeds 32 MiB"));
-            }
             let key = match &self.key {
                 _ if !entry.encoded || entry.key_index == 0xff => &None,
                 Some(key) => key,
@@ -473,11 +470,7 @@ impl Pictures {
 }
 
 fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|f| f.take(32 * 1024 * 1024).read_to_end(&mut bytes))
-        .map_err(|e| e.to_string())?;
-    Ok(bytes)
+    std::fs::read(path).map_err(|e| e.to_string())
 }
 fn wallpaper(scripts: &[String]) -> Option<String> {
     scripts
@@ -499,14 +492,11 @@ fn wallpaper(scripts: &[String]) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
-    let mut decoder = png::Decoder::new(Cursor::new(bytes));
+    // No size cap: libraries ship film strips of any length.
+    let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: usize::MAX });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
     let size = reader.output_buffer_size()?;
-    // ANALOG STRINGS' macro film strips decode to 37 MB (732 x 12780 RGBA).
-    if size > 64 * 1024 * 1024 {
-        return None;
-    }
     let mut data = vec![0; size];
     let info = reader.next_frame(&mut data).ok()?;
     let data = &data[..info.buffer_size()];

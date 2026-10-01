@@ -62,6 +62,8 @@ pub struct KeyState {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Control {
+    /// Its UI ID (`get_ui_id`): what `$CONTROL_PAR_PARENT_PANEL` names.
+    pub id: i32,
     pub variable: String,
     pub kind: String,
     pub properties: BTreeMap<String, Value>,

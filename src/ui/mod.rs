@@ -69,6 +69,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, ui, at, paths, dropped))
         .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
+        .hide_pointer(theme::pointer_hidden)
         .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready())
         .fixed_zoom()
         .resizable((900, 600))
@@ -1011,6 +1012,8 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
         match k.key {
             Key::Delete if loaded && cx.state.renaming.is_none() && cx.state.inline.is_none() && cx.state.typing.is_none() => cx.remove(slot),
             Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
+            // The browser shut: Ctrl+F opens it on its filter.
+            Key::Char('f' | 'F') if ctrl && !cx.state.browser => (cx.state.browser, cx.state.browse.find) = (true, true),
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
             Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && cx.state.inline.is_none() && cx.state.typing.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
             _ => {}
@@ -1064,7 +1067,6 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
             .fill(Role::Level(3))
             .stroke(accent())
             .stroke_width(1)
-            .opacity(0.94)
             .at(at.x + INSET, at.y + SPACE),
     )
 }

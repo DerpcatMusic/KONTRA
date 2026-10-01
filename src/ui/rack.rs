@@ -344,8 +344,8 @@ fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
         format!("Add an instrument · {loaded} of 16")
     };
     let el = row![
-        glyph(Icon::Plus, TEXT, Role::Ink.alpha(if dragging { 0.9 } else { 0.5 })),
-        caption(text).fill(Role::Dim).lines(1)
+        glyph(Icon::Plus, TEXT, if dragging { Fill::from(Role::Ink) } else { secondary() }),
+        caption(text).fill(secondary()).lines(1)
     ]
     .gap(SPACE)
     .align(Align::Center)
@@ -432,7 +432,7 @@ pub(super) fn load_chip(done: f64, words: bool) -> El {
     };
     caption(text)
         .text_size(SMALL - 1.)
-        .fill(Role::Dim)
+        .fill(secondary())
         .lines(1)
         .shrink(0)
         .named("Loading")
@@ -481,11 +481,12 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     if fold {
         cx.selection.parts[slot].collapsed = !collapsed;
     }
-    let (previous, prev_el) = icon_button(ui, format!("preset-prev-{slot}"), Icon::Left, "Previous preset", false);
-    let (next, next_el) = icon_button(ui, format!("preset-next-{slot}"), Icon::Right, "Next preset", false);
     let [before, after] = neighbors(cx, slot);
-    let prev_el = prev_el.when(before.is_none(), |e| e.disabled().opacity(0.3));
-    let next_el = next_el.when(after.is_none(), |e| e.disabled().opacity(0.3));
+    let arrow = |ui: &mut Ui, id: String, icon: Icon, name: &str, there: bool| {
+        if there { icon_button(ui, id, icon, name, false) } else { (false, dead_icon(icon, name)) }
+    };
+    let (previous, prev_el) = arrow(ui, format!("preset-prev-{slot}"), Icon::Left, "Previous preset", before.is_some());
+    let (next, next_el) = arrow(ui, format!("preset-next-{slot}"), Icon::Right, "Next preset", after.is_some());
     if let Some(path) = before.filter(|_| previous).or(after.filter(|_| next)) {
         cx.replace(slot, path);
     }
@@ -561,7 +562,7 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let chip = match progress {
         Some(_) if narrow => None,
         Some(done) => Some(load_chip(done, true)),
-        None => failed.then(|| caption("Failed to load").text_size(SMALL - 1.).fill(Role::Dim).lines(1).shrink(0)),
+        None => failed.then(|| caption("Failed to load").text_size(SMALL - 1.).fill(secondary()).lines(1).shrink(0)),
     };
     let mut name_row = vec![title, prev_el, next_el];
     name_row.extend(chip);
@@ -703,7 +704,7 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     body(name.clone())
         .text_size(TEXT + 1.)
         .text_weight(Weight::SEMIBOLD)
-        .fill(if muted { Role::Dim } else { Role::Ink })
+        .fill(if muted { secondary() } else { Fill::from(Role::Ink) })
         .lines(1)
         .min_w(0)
         .shrink(1)

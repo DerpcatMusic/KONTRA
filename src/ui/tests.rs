@@ -321,9 +321,13 @@ fn the_browser_finds_by_library_and_folder() {
     };
     let shown = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
 
+    // Shut, the browser opens on Ctrl+F.
+    h.press("toggle-browser");
+    h.idle(30);
+    assert!(!shown(&h, "library-filter"), "the browser shuts");
     h.tick(key(Key::Char('f'), Mods { ctrl: true, ..Mods::default() }));
-    h.idle(2);
-    assert_eq!(h.ui.focus_key(), Some("library-filter"), "Ctrl+F goes to the library filter");
+    h.idle(30);
+    assert_eq!(h.ui.focus_key(), Some("library-filter"), "Ctrl+F opens the browser on the library filter");
     h.tick(Input { text: "lib 042".into(), ..Default::default() });
     h.idle(2);
     assert!(shown(&h, "library-42") && !shown(&h, "library-41"), "it narrows the libraries");
@@ -2254,4 +2258,47 @@ fn perf_view_stats() {
             println!("  unread picture (len {}): {seen:?}", name.len());
         }
     }
+}
+
+/// KONTRA's number boxes drag as its knobs do: up raises, sideways does
+/// nothing, Shift is finer; and the pointer hides while one is dragged.
+#[test]
+fn number_boxes_drag_up_and_down() {
+    let mut ui = theme::ui();
+    let mut v = 50.;
+    let frame = |ui: &mut Ui, v: &mut f64, input: Input| {
+        let shown = format!("{v:.0}");
+        let el = theme::number(ui, "n", "Amount", v, 0.0..=100.0, shown);
+        ui.frame(col![el].w(300.), Some(Size::new(300., 100.)), input, 1. / 60.).unwrap();
+    };
+    frame(&mut ui, &mut v, Input::default());
+    frame(&mut ui, &mut v, Input::default());
+    let at = center(&ui, "n");
+    let drag = |ui: &mut Ui, v: &mut f64, dx: f64, dy: f64, shift: bool| {
+        let before = *v;
+        // Held still a frame at the end, as a hand rests before letting go.
+        let steps = [(0., 0., true), (dx / 4., dy / 4., true), (dx, dy, true), (dx, dy, true), (dx, dy, false)];
+        for (n, (x, y, down)) in steps.into_iter().enumerate() {
+            let mut input = pointer(Point::new(at.x + x, at.y + y), down);
+            input.pointer.mods.shift = shift;
+            frame(ui, v, input);
+            if n == 3 {
+                assert!(theme::pointer_hidden(ui), "the pointer hides while the box is dragged");
+            }
+        }
+        // Long enough apart that the next press is not a double-click.
+        for _ in 0..60 {
+            frame(ui, v, Input::default());
+        }
+        assert!(!theme::pointer_hidden(ui), "and comes back once let go");
+        *v - before
+    };
+    let up = drag(&mut ui, &mut v, 0., -40., false);
+    assert!(up > 1., "dragging up raises it, by {up}");
+    let down = drag(&mut ui, &mut v, 0., 40., false);
+    assert!(down < -1., "dragging down lowers it, by {down}");
+    let sideways = drag(&mut ui, &mut v, 60., 0., false);
+    assert!(sideways.abs() < 1e-9, "sideways leaves it, moved {sideways}");
+    let fine = drag(&mut ui, &mut v, 0., -40., true);
+    assert!(fine > 0. && fine < up / 2., "Shift is finer: {fine} against {up}");
 }

@@ -43,6 +43,11 @@ const LINES_PER_NOTCH: f64 = 6.;
 /// MUI routes it. `true` takes the key: MUI and the host never see it.
 pub type KeyHook = Arc<Mutex<dyn FnMut(&mui::Ui, &KeyEvent) -> bool + Send>>;
 
+/// KONTAKTO patch: asked every tick with the frame's `Ui`: whether the
+/// pointer hides now (a knob being dragged). When it stops, the pointer
+/// comes back where it hid.
+pub type PointerHook = Arc<Mutex<dyn FnMut(&mui::Ui) -> bool + Send>>;
+
 /// Requests from the host's thread, applied by the window's next tick,
 /// which is the only place baseview's `WindowContext` can be touched.
 #[derive(Default)]
@@ -52,12 +57,19 @@ pub struct Requests {
     redraw: AtomicBool,
     /// KONTAKTO patch: see [`KeyHook`].
     keys: Mutex<Option<KeyHook>>,
+    /// KONTAKTO patch: see [`PointerHook`].
+    pointer: Mutex<Option<PointerHook>>,
 }
 
 impl Requests {
     /// KONTAKTO patch: hand every key event to `hook` first.
     pub fn on_key(&self, hook: KeyHook) {
         *self.keys.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+    }
+
+    /// KONTAKTO patch: let `hook` hide the pointer; see [`PointerHook`].
+    pub fn on_pointer(&self, hook: PointerHook) {
+        *self.pointer.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
 
     /// Resize the child window to `width` x `height` logical points.
@@ -176,6 +188,10 @@ pub struct Handler<V> {
     scale: f64,
     /// The keyboard capture last asked of baseview.
     captured: Option<bool>,
+    /// KONTAKTO patch: where the pointer last was, in physical pixels, and
+    /// where it hid, while a [`PointerHook`] hides it.
+    pointer_at: Option<PhysicalPosition<f64>>,
+    hidden_at: Option<PhysicalPosition<f64>>,
     /// The queue and the frame schedule.
     pub driver: Driver,
 }
@@ -199,6 +215,8 @@ impl<V: View> Handler<V> {
             parented: false,
             scale,
             captured: None,
+            pointer_at: None,
+            hidden_at: None,
             driver: Driver::new(size, scale, Box::new(Clipboard::default())),
         }
     }
@@ -265,6 +283,7 @@ impl<V: View> Handler<V> {
         // host-thread close() or state load must not wait with it.
         // ponytail: one scene clone per painted frame; have `Ui` hand out an
         // `Arc<ResolvedScene>` if it shows in a profile.
+        let mut hide = false;
         let scene = {
             let mut s = lock(&self.shared);
             let a11y = self.a11y.as_mut();
@@ -279,6 +298,12 @@ impl<V: View> Handler<V> {
                 self.driver.redraw();
             }
             let fresh = self.driver.advance(&mut s, now);
+            // KONTAKTO patch: the app says whether the pointer hides.
+            let hook = self.requests.pointer.lock().ok().and_then(|h| h.clone());
+            if let Some(hook) = hook {
+                let mut hook = hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                hide = hook(&s.ui);
+            }
             // Keys typed into a field must not reach the host's shortcuts;
             // every other key does. Windows only; a no-op elsewhere, where an
             // ignored key already goes to the host. Only on a change: each
@@ -329,7 +354,20 @@ impl<V: View> Handler<V> {
                 }
             }
         }
-        let cursor = native_cursor(self.driver.cursor());
+        // KONTAKTO patch: hidden where a drag began; back there after.
+        match (hide, self.hidden_at) {
+            (true, None) => self.hidden_at = self.pointer_at,
+            (false, Some(at)) => {
+                platform::warp_pointer(window, at.x, at.y, self.scale);
+                self.hidden_at = None;
+            }
+            _ => {}
+        }
+        let cursor = if self.hidden_at.is_some() {
+            MouseCursor::Hidden
+        } else {
+            native_cursor(self.driver.cursor())
+        };
         if self.applied_cursor != Some(cursor) {
             let _ = window.set_mouse_cursor(cursor);
             self.applied_cursor = Some(cursor);
@@ -380,7 +418,11 @@ impl<V: View> Handler<V> {
                 MouseEvent::CursorMoved {
                     position,
                     modifiers,
-                } => d.pointer_moved(points(position), mods(modifiers)),
+                } => {
+                    // KONTAKTO patch: kept to put a hidden pointer back.
+                    self.pointer_at = Some(position);
+                    d.pointer_moved(points(position), mods(modifiers));
+                }
                 MouseEvent::ButtonPressed { button, modifiers }
                 | MouseEvent::ButtonReleased { button, modifiers } => {
                     if let Some(b) = mouse_button(button) {

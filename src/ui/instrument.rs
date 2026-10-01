@@ -27,14 +27,14 @@ pub fn welcome(cx: &Cx) -> El {
     let mut lines = vec![
         title("Pick an instrument").text_weight(Weight::SEMIBOLD),
         body("Choose a library on the left and click an instrument, or drag it onto the rack. Multis load the whole rack.")
-            .fill(Role::Dim)
+            .fill(secondary())
             .lines(3)
             .max_size(Size::new(TEXT * 35., CONTROL * 3.)),
     ];
     if !cx.view.multi_status.is_empty() {
         lines.push(
             caption(cx.view.multi_status.clone())
-                .fill(Role::Dim)
+                .fill(secondary())
                 .lines(2),
         );
     }
@@ -155,7 +155,7 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     } else {
         "This instrument has no performance controls. Play it from the keyboard.".to_owned()
     };
-    row![caption(text).fill(Role::Dim).lines(3).min_w(0)]
+    row![caption(text).fill(secondary()).lines(3).min_w(0)]
         .align(Align::Center)
         .pad(INSET)
         .w(Len::Pct(100.))
@@ -280,11 +280,11 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
         );
         rows.push(
             caption(i.path.display().to_string())
-                .fill(Role::Dim)
+                .fill(secondary())
                 .lines(4),
         );
         if !v.status.is_empty() {
-            rows.push(caption(v.status.clone()).fill(Role::Dim).lines(3));
+            rows.push(caption(v.status.clone()).fill(secondary()).lines(3));
         }
         if !i.warnings.is_empty() {
             rows.push(section("Import notes").pad(edges(SPACE, 0., 0., 0.)));
@@ -293,7 +293,7 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
                 rows.push(
                     body(w)
                         .text_size(TEXT)
-                        .fill(Role::Dim)
+                        .fill(secondary())
                         .lines(6)
                         .shrink(0),
                 );
@@ -303,15 +303,15 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
     rows.push(section("Scripts").pad(edges(SPACE, 0., 0., 0.)));
     rows.push(
         body("Scripts play the groups they choose; long samples stream from disk. Performance controls are rebuilt from the script's layout and drive it directly.")
-            .fill(Role::Dim)
+            .fill(secondary())
             .text_size(TEXT)
             .lines(4),
     );
     for line in v.interface_status.lines().filter(|l| !l.is_empty()) {
-        rows.push(caption(line.to_owned()).fill(Role::Dim).lines(3).shrink(0));
+        rows.push(caption(line.to_owned()).fill(secondary()).lines(3).shrink(0));
     }
     if !v.wallpaper_status.is_empty() {
-        rows.push(caption(v.wallpaper_status.clone()).fill(Role::Dim).lines(3));
+        rows.push(caption(v.wallpaper_status.clone()).fill(secondary()).lines(3));
     }
     // Text in a scroll is measured without a width, so wraps short and
     // overlaps what follows: the column takes the width it was last laid
