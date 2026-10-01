@@ -1436,6 +1436,10 @@ mod tests {
             .send(Command::Flush(reply))
             .unwrap();
         done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let journal = std::fs::read_to_string(&session.path).unwrap();
+        let started: Value = serde_json::from_str(journal.lines().next().unwrap()).unwrap();
+        assert_eq!(started["event"], "session_started");
+        assert_eq!(started["data"]["build"], build_identity());
         let event = lock(&session.history).events.back().unwrap().0.clone();
         assert_eq!(
             (event.script_slot, event.line, event.script_epoch),
