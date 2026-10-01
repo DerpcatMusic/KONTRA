@@ -987,6 +987,7 @@ pub(crate) struct Context<'a> {
     pub slots: &'a [Slot],
     pub cc: &'a [[u8; 128]; 16],
     pub bend: &'a [f32; 16],
+    pub mpe_zone: Option<(u8, u16)>,
     pub pressure: &'a [u8; 16],
     /// Per-channel/key MPE and note expression.
     pub expression: &'a [[super::Expression; 128]; 16],
@@ -1003,9 +1004,11 @@ impl Context<'_> {
     /// Modulation inputs for a note on `channel`.
     pub fn inputs(&self, channel: u8, note: u8, velocity: u8) -> Inputs<'_> {
         let c = channel as usize & 15;
+        let master_bend = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0)
+            .map_or(0., |(master, _)| self.bend[master as usize]);
         Inputs {
             cc: &self.cc[c],
-            bend: self.bend[c],
+            bend: self.bend[c] + master_bend,
             pressure: self.pressure[c],
             note,
             velocity,

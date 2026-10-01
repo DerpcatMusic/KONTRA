@@ -1533,6 +1533,7 @@ impl Player {
             slots: bank.slots(),
             cc: &self.cc,
             bend: &self.bend,
+            mpe_zone: self.mpe_zone,
             pressure: &self.pressure,
             expression: &self.expression,
             tune: self.instrument.2 + tune,

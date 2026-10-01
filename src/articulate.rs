@@ -678,13 +678,6 @@ impl Router {
             }
             In::Bend(_, value) => {
                 out(Out::Bend(to, value));
-                // Unscripted voices bend by their own channel: the master's
-                // bend reaches every member.
-                if r.master(channel) && !self.scripted {
-                    for m in r.zone().map(|z| z.1).into_iter().flatten() {
-                        out(Out::Bend(m, value));
-                    }
-                }
             }
             In::Pressure(_, value) if r.member(channel) => {
                 let row = self.held[channel as usize];
@@ -1140,6 +1133,40 @@ mod tests {
 
     /// A synthetic MPE stream: lower zone, two notes on members 2 and 3,
     /// each bent, pressed and brightened on its own channel.
+    #[test]
+    fn mpe_master_and_member_bends_combine_with_scripts() {
+        use crate::{audio::Sample, engine::Bank, import::{Group, Zone as SampleZone}, modulation::{ModAssignment, ModSource, ModTarget}};
+        let engine = |scripted: bool| {
+            let group = Group { mods: vec![ModAssignment {
+                name: "PB_PITCH".into(), source: ModSource::PitchBend, target: ModTarget::Pitch,
+                intensity: 1.0, invert: false, lag_ms: 0, shaper: None,
+            }], ..Group::default() };
+            let sample = Sample { rate: 48000, frames: (0..24000).map(|i| [i as f32 / 24000.; 2]).collect() };
+            let bank = Bank::from_samples(vec![group], vec![SampleZone::default()], vec![(std::path::PathBuf::new(), sample)]).unwrap();
+            let mut e = Engine::default();
+            e.set_bank(Some(Box::new(bank)));
+            if scripted { e.set_script(Some(Box::new(runtime("on init\nend on")))); }
+            e
+        };
+        for scripted in [false, true] {
+            for (zone, master, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+                let mut e = engine(scripted);
+                let mut r = router(&Articulate::default(), &Mpe { zone, ..Mpe::default() });
+                feed(&mut r, &mut e, In::Bend(master, 12288), 0);
+                feed(&mut r, &mut e, In::Bend(member, 12288), 0);
+                feed(&mut r, &mut e, In::NoteOn(member, 60, 100), 0);
+                let mut reference = engine(scripted);
+                reference.pitch_bend(member, 12288);
+                reference.note_on(member, 60, 100);
+                reference.set_expression_on(member, 60, Expression { tune: 24., ..Expression::default() });
+                let (mut actual, mut right, mut expected) = ([0.; 128], [0.; 128], [0.; 128]);
+                e.render(&mut actual, &mut right);
+                reference.render(&mut expected, &mut right);
+                assert!(actual.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-5), "{zone:?}, scripted={scripted}: master bend was lost or duplicated");
+            }
+        }
+    }
+
     #[test]
     fn mpe_master_pedals_hold_scripted_member_notes() {
         for (zone, master, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
