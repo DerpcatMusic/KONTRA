@@ -1470,10 +1470,16 @@ pub fn deps(cx: &Cx, slot: usize) -> u64 {
     if let Some(p) = cx.selection.parts.get(slot) {
         format!("{:?}{:?}", p.articulate, p.mpe).hash(&mut h);
     }
+    // A cell being typed, and the keys a keyswitch may learn from.
+    if let Some(e) = &cx.state.inline {
+        (&e.id, &e.text, keys_down(&cx.p.shared)).hash(&mut h);
+    }
+    cx.state.split_drag.hash(&mut h);
     h.finish()
 }
 
-/// Above the articulation list: how its notes pick one.
+/// Above the articulation list: how its notes pick one and, by velocity,
+/// the split of 1–127 between them.
 fn routing_bar(ui: &mut Ui, cx: &mut Cx, part: usize) -> El {
     use crate::articulate::Mode;
     let a = &cx.selection.parts[part].articulate;
@@ -1487,81 +1493,246 @@ fn routing_bar(ui: &mut Ui, cx: &mut Cx, part: usize) -> El {
         // Text grounds on its own fill, not the seams' hairline.
         let el = if mode == now { el } else { el.fill(Role::Field) };
         modes.push(el.tip(match mode {
-            Mode::Keyswitch => "Keyswitches pick the articulation",
-            Mode::Channel => "Each articulation plays on its own MIDI channel",
-            Mode::Velocity => "Each articulation plays in its own velocity range",
+            Mode::Keyswitch => "Keyswitches pick the articulation. The part hears its own MIDI channel",
+            Mode::Channel => "Each articulation plays on its own MIDI channel. The part hears every channel listed, whatever its own",
+            Mode::Velocity => "Each articulation plays in its own velocity range. The part hears its own MIDI channel",
         }));
     }
     let mut cells = vec![segmented(modes), spacer()];
     if now == Mode::Velocity {
-        let mut v = f64::from(fixed);
         let text = if fixed == 0 { "Scaled".to_owned() } else { format!("Vel {fixed}") };
-        let name = "Velocity played: scaled from the note's place in its range, or fixed";
-        cells.push(field(ui, format!("art-fixed-{part}"), name, &mut v, 0.0..=127.0, text, "Scaled"));
-        cx.selection.parts[part].articulate.fixed_velocity = v.round() as u8;
+        let tip = "Velocity played: 0 scales the note's place in its range to 1–127, a number plays at that".to_owned();
+        let (el, typed) = cell(ui, cx, format!("art-fixed-{part}"), None, text, "Scaled", tip, false, None);
+        if let Some(v) = typed.and_then(|t| t.trim().trim_start_matches("Vel").trim().parse::<u8>().ok()) {
+            cx.selection.parts[part].articulate.fixed_velocity = v.min(127);
+        }
+        cells.push(el);
     }
-    row(cells).gap(SPACE).align(Align::Center).pad(edges(0., TIGHT, 0., 0.)).h(CONTROL).fill(Role::Field).named("Articulation routing")
+    let bar = row(cells).gap(SPACE).align(Align::Center).pad(edges(0., TIGHT, 0., 0.)).h(CONTROL).fill(Role::Field);
+    if now != Mode::Velocity {
+        return bar.named("Articulation routing");
+    }
+    col![bar, velocity_split(ui, cx, part)].gap(1).align(Align::Stretch).shrink(0).named("Articulation routing")
 }
 
-/// A small number to drag or type, inline in a list row.
-fn field(ui: &mut Ui, id: String, name: &str, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: String, widest: &str) -> El {
-    drag_value(ui, id, name, value, range)
-        .size(Xs)
+/// MIDI channel `channel`'s color: the part that has it when every part
+/// gets its own channel wears the same.
+pub fn channel_color(channel: u8) -> Color {
+    part_color(usize::from(channel))
+}
+
+/// Velocity mode: one bar over 1–127, a segment per articulation taking
+/// part in its color. Dragging the line between two moves their boundary.
+fn velocity_split(ui: &mut Ui, cx: &mut Cx, part: usize) -> El {
+    let id = format!("art-split-{part}");
+    let a = &cx.selection.parts[part].articulate;
+    let rows: Vec<usize> = (0..a.articulations.len()).filter(|&n| a.articulations[n].enabled).collect();
+    let width = ui.scene().and_then(|s| s.surface(&id)).map_or(0., |s| s.frame.size.width);
+    let x_of = |v: f64| v / 127. * width;
+    let r = ui.get(id.as_str());
+    let pointer = ui.local(id.as_str()).map(|p| p.x);
+    // The boundary nearest the press is the one dragged.
+    if r.pressed
+        && let Some(x) = pointer
+    {
+        cx.state.split_drag = (rows.windows(2).enumerate())
+            .min_by(|(_, p), (_, q)| {
+                let d = |w: &[usize]| (x_of(f64::from(a.articulations[w[0]].high)) - x).abs();
+                d(p).total_cmp(&d(q))
+            })
+            .map(|(k, _)| k);
+    }
+    if !r.held {
+        cx.state.split_drag = None;
+    }
+    if let (Some(k), Some(x), true) = (cx.state.split_drag, pointer, width > 0.)
+        && let [below, above] = rows[k..k + 2]
+    {
+        let arts = &mut cx.selection.parts[part].articulate.articulations;
+        let (low, high) = (arts[below].low, arts[above].high.max(arts[below].low + 1));
+        let v = ((x / width * 127.).round() as u8).clamp(low, high - 1);
+        (arts[below].high, arts[above].low) = (v, v + 1);
+    }
+    let segments: Vec<(f64, f64, Color)> = (rows.iter())
+        .map(|&n| {
+            let r = &cx.selection.parts[part].articulate.articulations[n];
+            (f64::from(r.low - 1) / 127., f64::from(r.high) / 127., channel_color(r.channel))
+        })
+        .collect();
+    let tip = "Velocity split: drag a line between two articulations to move their boundary".to_owned();
+    canvas(move |s| {
+        let mut draw = vec![Draw::fill(rect(0., 0., s.width, s.height), hairline())];
+        for &(from, to, color) in &segments {
+            let (x0, x1) = ((from * s.width).round(), (to * s.width).round());
+            draw.push(Draw::fill(rect(x0, 0., (x1 - x0 - 1.).max(1.), s.height), color));
+        }
+        draw
+    })
+    .w(Len::Pct(100.))
+    .h(SPACE * 1.5)
+    .shrink(0)
+    .cursor(Cursor::ResizeH)
+    .tip(tip.clone())
+    .named(tip)
+    .id(id)
+}
+
+/// A cell being typed into, or a keyswitch learning from the next key played.
+#[derive(Clone, Debug, Default)]
+pub struct Inline {
+    /// The cell's id.
+    pub id: String,
+    pub text: String,
+    /// Keys down when it began, one bit each: those are not learned.
+    pub held: u128,
+}
+
+/// The keys down now, from MIDI or the keys on screen, one bit each.
+pub fn keys_down(shared: &crate::plugin::Shared) -> u128 {
+    use std::sync::atomic::Ordering::Relaxed;
+    let down = |n: usize| shared.heard[n].load(Relaxed) > 0 || shared.played[n].load(Relaxed) > 0;
+    (0..128).filter(|&n| down(n)).fold(0, |m, n| m | 1 << n)
+}
+
+/// Start typing into cell `id`.
+pub fn begin(ui: &mut Ui, cx: &mut Cx, id: &str) {
+    cx.state.inline = Some(Inline { id: id.to_owned(), text: String::new(), held: keys_down(&cx.p.shared) });
+    ui.focus(format!("{id}-edit"));
+}
+
+/// An articulation's keyswitch, channel or velocity range, in its row: a
+/// click types it in place (a keyswitch also takes the next key played), a
+/// right-click opens `menu`. Returns what was typed or played.
+#[allow(clippy::too_many_arguments)]
+fn cell(ui: &mut Ui, cx: &mut Cx, id: String, swatch: Option<Color>, text: String, widest: &str, tip: String, learns: bool, menu: Option<Target>) -> (El, Option<String>) {
+    let edit = format!("{id}-edit");
+    if let Some(menu) = menu
+        && ui.get(id.as_str()).clicked_with(Button::Secondary)
+    {
+        menu::open_under(ui, cx, menu, &id);
+    }
+    let Some(mut state) = cx.state.inline.take_if(|e| e.id == id) else {
+        if ui.get(id.as_str()).activated() {
+            begin(ui, cx, &id);
+        }
+        let swatch = swatch.map(|c| block(SMALL * 0.6, SMALL * 0.6).fill(Fill::from(c)));
+        let label = caption(text).text_size(SMALL).fill(Role::Ink).lines(1).reserve(widest.to_owned());
+        let el = row(swatch.into_iter().chain([label]).collect::<Vec<_>>())
+            .gap(SPACE * 0.5)
+            .align(Align::Center)
+            .pad((TIGHT, 0))
+            .h(STRIP)
+            .shrink(0);
+        return (interactive(el.focusable().a11y(A11y::Button).named(tip.clone()).tip(tip).id(id), false), None);
+    };
+    let mut learned = None;
+    if learns {
+        let now = keys_down(&cx.p.shared);
+        learned = (0..128u8).find(|&n| now & 1 << n != 0 && state.held & 1 << n == 0).map(note_name);
+        // A key let go counts again when pressed again.
+        state.held &= now;
+    }
+    let existed = ui.scene().and_then(|s| s.surface(&edit)).is_some();
+    if !existed {
+        ui.focus(edit.as_str());
+    }
+    let field = text_edit(ui, edit.as_str(), &mut state.text, TextOpts::default());
+    // The keys on screen play into it; a click anywhere else ends it.
+    let escape = ui.keys(edit.as_str()).iter().any(|k| k.key == Key::Escape);
+    let outside = existed && ui.dismissed(&[edit.as_str(), "keys"]);
+    let typed = (field.changed.submitted || outside && !escape).then(|| state.text.trim().to_owned()).filter(|t| !t.is_empty());
+    let done = learned.or(typed);
+    let el = field
         .el
-        .value_text(text)
-        .el()
-        .h(STRIP - 4.)
-        .reserve(widest.to_owned())
+        .h(STRIP)
+        .w(CONTROL * 2.5)
+        .radius(0)
         .shrink(0)
-        .tip(name.to_owned())
+        .named(tip.clone())
+        .tip(if learns { format!("{tip}\nType a note (C-1, D#2) or a number, or play a key") } else { tip });
+    if done.is_none() && !escape && !outside {
+        cx.state.inline = Some(state);
+    }
+    (el, done)
 }
 
-/// A routed row's own settings: whether it takes part, and its channel or
-/// velocity range.
-fn routing_cells(ui: &mut Ui, cx: &mut Cx, part: usize, n: usize) -> Vec<El> {
-    use crate::articulate::Mode;
+/// A typed key: a note name ("C-1", "d#2") or a MIDI number.
+fn typed_key(text: &str) -> Option<u8> {
+    let text = text.trim();
+    if let Ok(n) = text.parse::<u8>() {
+        return (n < 128).then_some(n);
+    }
+    let mut chars = text.chars();
+    let first = chars.next()?.to_ascii_uppercase();
+    crate::articulate::parse_note(&format!("{first}{}", chars.as_str()))
+}
+
+/// A typed velocity range: "19-36", "19–36" or "19 36".
+fn typed_range(text: &str) -> Option<(u8, u8)> {
+    let mut ends = text.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).map(str::parse::<u8>);
+    let low = ends.next()?.ok()?.clamp(1, 127);
+    let high = ends.next().map_or(Some(low), Result::ok)?.clamp(1, 127);
+    Some((low.min(high), low.max(high)))
+}
+
+/// A routed row's own cell: its keyswitch by keys, its channel by channel,
+/// its velocity range by velocity.
+fn routing_cell(ui: &mut Ui, cx: &mut Cx, part: usize, n: usize) -> Option<El> {
+    use super::menu::ArtField;
+    use crate::articulate::{CLEARED, Mode};
     let a = &cx.selection.parts[part].articulate;
     let (mode, art) = (a.mode, a.articulations[n].clone());
-    if mode == Mode::Keyswitch {
-        return Vec::new();
+    let target = |field| Some(Target::Articulation { part, row: n, field });
+    let (el, typed) = match mode {
+        Mode::Keyswitch => {
+            let key = art.key?;
+            let shown = match art.remap {
+                Some(CLEARED) => "None".to_owned(),
+                Some(to) => note_name(to),
+                None => note_name(key),
+            };
+            // The library's red on its own key; moved or cleared, the mark of one it never set.
+            let swatch = if art.remap.is_some() { keyswitch_mark() } else { keyswitch() };
+            let tip = match art.remap {
+                Some(CLEARED) => format!("{}: keyswitch {} cleared. Click to set a key", art.name, note_name(key)),
+                Some(to) => format!("{}: keyswitch {}, played from {}. Click to change", art.name, note_name(key), note_name(to)),
+                None => format!("{}: keyswitch {shown}. Click to change", art.name),
+            };
+            let (el, typed) = cell(ui, cx, format!("art-key-{part}-{n}"), Some(swatch), shown, "C#-1", tip, true, target(ArtField::Key));
+            if let Some(to) = typed.as_deref().and_then(typed_key) {
+                cx.selection.parts[part].articulate.articulations[n].remap = (to != key).then_some(to);
+            }
+            return Some(el);
+        }
+        Mode::Channel => {
+            let text = if art.enabled { format!("Ch {}", art.channel + 1) } else { "Off".into() };
+            let tip = format!("{}: MIDI channel. Click to type 1–16, or 0 to leave it out", art.name);
+            let swatch = art.enabled.then(|| channel_color(art.channel));
+            cell(ui, cx, format!("art-ch-{part}-{n}"), swatch, text, "Ch 16", tip, false, target(ArtField::Channel))
+        }
+        Mode::Velocity => {
+            let text = if art.enabled { format!("{}–{}", art.low, art.high) } else { "Off".into() };
+            let tip = format!("{}: velocity range. Click to type it, as 20-64, or 0 to leave it out", art.name);
+            let swatch = art.enabled.then(|| channel_color(art.channel));
+            cell(ui, cx, format!("art-vel-{part}-{n}"), swatch, text, "127–127", tip, false, target(ArtField::Velocity))
+        }
+    };
+    let row = &mut cx.selection.parts[part].articulate.articulations[n];
+    match typed.as_deref().map(str::trim) {
+        Some("0" | "off" | "Off") => row.enabled = false,
+        Some(t) if mode == Mode::Channel => {
+            if let Some(c) = t.trim_start_matches("Ch").trim().parse::<u8>().ok().filter(|c| (1..=16).contains(c)) {
+                (row.channel, row.enabled) = (c - 1, true);
+            }
+        }
+        Some(t) => {
+            if let Some((low, high)) = typed_range(t) {
+                (row.low, row.high, row.enabled) = (low, high, true);
+            }
+        }
+        None => {}
     }
-    let mut cells = Vec::new();
-    let mut edited = art.clone();
-    // Channel or lowest velocity 0 leaves the articulation out.
-    if mode == Mode::Channel {
-        let mut ch = if art.enabled { f64::from(art.channel) + 1. } else { 0. };
-        let text = if art.enabled { format!("Ch {}", art.channel + 1) } else { "Off".into() };
-        let name = format!("{}: MIDI channel", art.name);
-        cells.push(field(ui, format!("art-ch-{part}-{n}"), &name, &mut ch, 0.0..=16.0, text, "Ch 16"));
-        edited.enabled = ch >= 1.;
-        edited.channel = (ch.round() as u8).clamp(1, 16) - 1;
-    } else {
-        // Where the range sits in 1..=127, and its ends.
-        let width = CONTROL * 2.;
-        let at = |v: u8| width * f64::from(v.saturating_sub(1)) / 126.;
-        let span = (at(art.high) - at(art.low)).max(2.);
-        cells.push(
-            row![block(at(art.low), 3), block(span, 3).fill(Fill::from(accent()))]
-                .w(width)
-                .h(3)
-                .fill(hairline())
-                .opacity(if art.enabled { 1. } else { 0.3 })
-                .shrink(0),
-        );
-        let (mut low, mut high) = (if art.enabled { f64::from(art.low) } else { 0. }, f64::from(art.high));
-        let text = if art.enabled { art.low.to_string() } else { "Off".into() };
-        let name = format!("{}: lowest velocity", art.name);
-        cells.push(field(ui, format!("art-low-{part}-{n}"), &name, &mut low, 0.0..=127.0, text, "Off"));
-        let name = format!("{}: highest velocity", art.name);
-        cells.push(field(ui, format!("art-high-{part}-{n}"), &name, &mut high, 1.0..=127.0, art.high.to_string(), "127"));
-        edited.enabled = low >= 1.;
-        edited.low = (low.round() as u8).max(1);
-        edited.high = (high.round() as u8).max(edited.low);
-    }
-    if edited != art {
-        cx.selection.parts[part].articulate.articulations[n] = edited;
-    }
-    cells
+    Some(el)
 }
 
 /// Articulations a panel without a list names on the keyboard, as a list.
@@ -1617,41 +1788,19 @@ fn entry(ui: &mut Ui, cx: &mut Cx, part: usize, e: &Entry, routed: Option<usize>
             .min_w(0)
             .flex(1),
     );
-    if let Some(n) = routed {
-        cells.extend(routing_cells(ui, cx, part, n));
-    }
-    let remap = routed.and_then(|n| cx.selection.parts[part].articulate.articulations[n].remap);
-    if let Some(key) = &e.key {
+    match routed {
+        Some(n) => cells.extend(routing_cell(ui, cx, part, n)),
         // Neutral text; the keyboard's keyswitch color rides on a swatch.
-        // A remapped keyswitch shows the key that plays it, in ink.
-        let badge = row![
-            block(SMALL * 0.6, SMALL * 0.6).fill(Fill::from(keyswitch())),
-            caption(remap.map_or_else(|| key.clone(), note_name))
-                .text_size(SMALL)
-                .fill(if remap.is_some() { Role::Ink } else { Role::Dim })
-                .reserve("C#-1"),
-        ]
-        .gap(SPACE * 0.5)
-        .align(Align::Center)
-        .shrink(0);
-        cells.push(match routed {
-            Some(n) => {
-                let id = format!("art-key-{part}-{n}");
-                if ui.get(id.as_str()).activated() {
-                    let target = Target::Keyswitch { part, row: n, learning: None };
-                    menu::open_under(ui, cx, target, &id);
-                }
-                let tip = match remap {
-                    Some(to) => format!("{}: keyswitch {key}, played from {}", e.name, note_name(to)),
-                    None => format!("{}: keyswitch {key}. Click to remap", e.name),
-                };
-                interactive(
-                    badge.pad((TIGHT, 0)).h(STRIP - 2.).focusable().a11y(A11y::Button).named(tip.clone()).tip(tip).id(id),
-                    false,
-                )
-            }
-            None => badge,
-        });
+        None => cells.extend(e.key.as_ref().map(|key| {
+            row![
+                block(SMALL * 0.6, SMALL * 0.6).fill(Fill::from(keyswitch())),
+                caption(key.clone()).text_size(SMALL).fill(Role::Dim).reserve("C#-1"),
+            ]
+            .gap(SPACE * 0.5)
+            .align(Align::Center)
+            .pad((TIGHT, 0))
+            .shrink(0)
+        })),
     }
     for item in &e.extras {
         cells.push(control(ui, cx, part, item).h(STRIP - 2.));

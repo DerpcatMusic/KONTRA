@@ -995,7 +995,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 34] = [
+    let states: [(&str, bool, &[&str]); 37] = [
         ("empty", false, &[]),
         // Libraries with no artwork: generated covers; one chosen.
         ("covers", false, &["library-2"]),
@@ -1038,6 +1038,11 @@ fn screenshot() {
         // Auto-align on: the settings and a part's timing.
         ("timing", true, &["app-menu"]),
         ("timing-part", true, &["more-0"]),
+        // The articulation list in each of its modes (instruments with one).
+        ("arts-channel", true, &["art-mode-0-Channel"]),
+        ("arts-velocity", true, &["art-mode-0-Velocity"]),
+        // A keyswitch clicked: typed in place, or learned from a key.
+        ("arts-editing", true, &["art-key-0-1"]),
     ];
     // KONTAKTO_STATES="perform,rack" renders only those states.
     let only = std::env::var("KONTAKTO_STATES").unwrap_or_default();
@@ -1258,6 +1263,76 @@ fn scripted_part(script: &str) -> Arc<SamplerParams> {
 fn control_value(p: &SamplerParams, n: usize) -> crate::ksp::Value {
     let view = p.shared.view.lock().unwrap();
     view.parts[0].interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"].clone()
+}
+
+/// An articulation's keyswitch is typed or played in place, its channel and
+/// velocity range typed; a right-click offers learn, reset and clear.
+#[test]
+fn articulation_cells_type_learn_and_reset() {
+    use crate::articulate::{CLEARED, Mode};
+    let p = scripted_part("on init\nmake_perfview\ndeclare ui_knob $tone(0, 100, 1)\nend on");
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let key = |name: &str| crate::ksp::KeyState { name: name.into(), color: Some(crate::ksp::Value::Text("$KEY_COLOR_RED".into())), ..Default::default() };
+        view.parts[0].keys = Arc::new([(24, key("Legato")), (25, key("Staccato"))].into_iter().collect());
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(3);
+    let arts = |p: &SamplerParams| p.selection.read().unwrap().parts[0].articulate.clone();
+    assert_eq!(arts(&p).articulations.len(), 2, "the named keys are the list");
+
+    h.type_into("art-key-0-1", "d#2");
+    assert_eq!(arts(&p).articulations[1].remap, Some(51), "a typed note");
+    h.type_into("art-key-0-1", "37");
+    assert_eq!(arts(&p).articulations[1].remap, Some(37), "a typed MIDI number");
+
+    // Clicked, it takes the next key played; one already down does not count.
+    p.shared.heard[60].store(100, Ordering::Relaxed);
+    h.press("art-key-0-0");
+    p.shared.heard[48].store(100, Ordering::Relaxed);
+    h.idle(3);
+    assert_eq!(arts(&p).articulations[0].remap, Some(48), "learned from a key");
+    assert!(h.ui.scene().unwrap().surface("art-key-0-0-edit").is_none(), "and done");
+    p.shared.heard[48].store(0, Ordering::Relaxed);
+    p.shared.heard[60].store(0, Ordering::Relaxed);
+
+    // Right-click: the library's name, Learn, Reset, Clear; no list of notes.
+    let right_click = |h: &mut Harness, id: &str| {
+        let at = center(&h.ui, id);
+        for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+            h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
+        }
+        h.idle(2);
+    };
+    right_click(&mut h, "art-key-0-1");
+    assert!(h.ui.scene().unwrap().surface("menu-item-6").is_none(), "a short menu");
+    h.press("menu-item-3");
+    assert_eq!(arts(&p).articulations[1].remap, Some(CLEARED), "Clear");
+    right_click(&mut h, "art-key-0-1");
+    h.press("menu-item-2");
+    assert_eq!(arts(&p).articulations[1].remap, None, "Reset to library default");
+
+    p.selection.write().unwrap().parts[0].articulate.mode = Mode::Channel;
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("art-key-0-1").is_none(), "channel mode shows channels, not keys");
+    h.type_into("art-ch-0-1", "9");
+    assert_eq!(arts(&p).articulations[1].channel, 8);
+    right_click(&mut h, "art-ch-0-1");
+    h.press("menu-item-1");
+    assert_eq!(arts(&p).articulations[1].channel, 1, "back to its place in the list");
+
+    p.selection.write().unwrap().parts[0].articulate.mode = Mode::Velocity;
+    h.idle(2);
+    h.type_into("art-vel-0-0", "1-40");
+    assert_eq!((arts(&p).articulations[0].low, arts(&p).articulations[0].high), (1, 40));
+    // Dragging the split's line moves the boundary between the two.
+    let bar = h.ui.scene().unwrap().surface("art-split-0").unwrap().frame;
+    let y = bar.y + bar.size.height / 2.;
+    for (x, down) in [(bar.x + bar.size.width * 40. / 127., true), (bar.x + bar.size.width * 0.75, true), (bar.x + bar.size.width * 0.75, false)] {
+        h.tick(pointer(Point::new(x, y), down));
+    }
+    let a = arts(&p);
+    assert_eq!((a.articulations[0].high, a.articulations[1].low), (95, 96), "{a:?}");
 }
 
 /// Wide switches stacked at one pitch, one set, read as a list: each row

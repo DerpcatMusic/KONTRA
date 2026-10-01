@@ -7,7 +7,9 @@
 //! the one the scripts last switched to, its keyswitch (a note-on and
 //! note-off, or the list row's control) goes in first, at the same sample.
 //! The scripts switch, then play the note with it. A chord of mixed
-//! articulations switches before each of its notes, in order.
+//! articulations switches before each of its notes, in order. Channel mode
+//! plays every channel on the part's own, so notes from several channels on
+//! one key share it: it is released when the last of them is.
 //!
 //! MPE: notes on a zone's member channels take their channel's pitch bend
 //! (48 semitones by default) as their own tuning, their channel pressure as
@@ -31,6 +33,8 @@ use serde::{Deserialize, Serialize};
 /// Articulations a [`Route`] holds; lists longer than this route the rest as keyswitches.
 pub const MAX_ARTICULATIONS: usize = 64;
 const NONE: u8 = u8::MAX;
+/// A remap to no key: the articulation's keyswitch no longer switches.
+pub const CLEARED: u8 = u8::MAX;
 /// Velocity of an injected keyswitch.
 const SWITCH_VELOCITY: u8 = 100;
 
@@ -66,7 +70,7 @@ pub struct Articulation {
     pub high: u8,
     /// Takes part in channel and velocity mode.
     pub enabled: bool,
-    /// The key the player uses for it instead of `key`.
+    /// The key the player uses for it instead of `key`; [`CLEARED`]: none.
     pub remap: Option<u8>,
 }
 
@@ -275,14 +279,12 @@ impl Route {
         }
         route.count = a.articulations.len().min(MAX_ARTICULATIONS);
         // Originals first, so a remap onto another original key wins.
-        if !a.keep_original {
-            for a in &a.articulations {
-                if let (Some(key), Some(to)) = (a.key, a.remap)
-                    && key < 128
-                    && to != key
-                {
-                    route.keys[key as usize] = NONE;
-                }
+        for a in a.articulations.iter().filter(|r| !a.keep_original || r.remap == Some(CLEARED)) {
+            if let (Some(key), Some(to)) = (a.key, a.remap)
+                && key < 128
+                && to != key
+            {
+                route.keys[key as usize] = NONE;
             }
         }
         for a in &a.articulations {
@@ -619,7 +621,15 @@ impl Router {
                     (_, NONE) => (to, r.keys[note as usize & 127]),
                     held => held,
                 };
-                if key != NONE {
+                if key == NONE {
+                    return;
+                }
+                // Channel mode plays every channel on one: another channel's
+                // note on this key would end with it, in the engine and in
+                // scripts that track notes by key. The last one releases it.
+                // ponytail: an earlier note's release waits for the last one.
+                let shared = (0..16).any(|c| c != channel as usize && self.held[c][note as usize & 127] == (to, key));
+                if !shared {
                     out(Out::NoteOff(to, key));
                 }
             }
@@ -884,6 +894,75 @@ mod tests {
         assert_eq!(run(&mut r, &[In::NoteOn(1, 62, 50)])[0], Out::NoteOn(0, 13, SWITCH_VELOCITY));
     }
 
+    /// A scripted part with one group per articulation: its script keeps one
+    /// global articulation that keyswitches C-1, C#-1 and D-1 set, as
+    /// libraries do, and starts each note in that articulation's group.
+    fn three_articulation_part() -> (Engine, Router) {
+        use crate::{audio::Sample, engine::Bank, import::{Group, Zone}, ksp::{LogEngine, Runtime}};
+        let groups = ["Pizzicato", "Staccato", "Legato"].map(|name| Group { name: name.into(), ..Group::default() });
+        let path = std::path::PathBuf::from("tone");
+        let zones = (0..3)
+            .map(|group| Zone { group, sample: path.clone(), low_key: 48, high_key: 72, low_velocity: 1, high_velocity: 127, ..Zone::default() })
+            .collect();
+        let tone = Sample { rate: 48000, frames: vec![[0.5; 2]; 48000] };
+        let bank = Bank::from_samples(groups.to_vec(), zones, vec![(path, tone)]).unwrap();
+        let script = "on init\ndeclare $art := 0\nend on\non note\nif ($EVENT_NOTE < 24)\n$art := $EVENT_NOTE - 12\nignore_event($EVENT_ID)\nelse\ndisallow_group($ALL_GROUPS)\nallow_group($art)\nend if\nend on";
+        let (rt, errors) = Runtime::with_scripts(&[script], &mut LogEngine::new(Vec::new(), 48000.0), 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let mut e = Engine::default();
+        e.reset(48000.0);
+        e.set_bank(Some(Box::new(bank)));
+        e.set_script(Some(Box::new(rt)));
+        let found: Vec<Found> = (groups.iter().enumerate()).map(|(n, g)| (g.name.clone(), Some(12 + n as u8), None)).collect();
+        let mut a = Articulate::default();
+        a.sync("lib.nki", &found);
+        a.mode = Mode::Channel;
+        (e, router(&a, &Mpe::default()))
+    }
+
+    fn render(e: &mut Engine) {
+        let (mut l, mut r) = ([0f32; 64], [0f32; 64]);
+        e.render(&mut l, &mut r);
+    }
+
+    /// The groups of the voices playing `note`, by whether they were released.
+    fn voices(e: &Engine, note: u8, released: bool) -> Vec<u32> {
+        let mut g: Vec<u32> = (e.voice_census().iter()).filter(|v| v.note == note && v.released == released).map(|v| v.group).collect();
+        g.sort_unstable();
+        g
+    }
+
+    /// Pizzicato, staccato and legato on channels 1, 2 and 3 at the same
+    /// sample: each note plays its own articulation's group, and a release
+    /// on one channel never ends another channel's note on the same key.
+    #[test]
+    fn simultaneous_notes_on_three_channels_keep_their_articulations() {
+        let (mut e, mut r) = three_articulation_part();
+        for (channel, note) in [(0, 60), (1, 62), (2, 64)] {
+            feed(&mut r, &mut e, In::NoteOn(channel, note, 100), 0);
+        }
+        render(&mut e);
+        assert_eq!([voices(&e, 60, false), voices(&e, 62, false), voices(&e, 64, false)], [[0], [1], [2]]);
+
+        // The same line doubled on all three: one key, three articulations.
+        let (mut e, mut r) = three_articulation_part();
+        for channel in 0..3 {
+            feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0);
+        }
+        render(&mut e);
+        assert_eq!(voices(&e, 60, false), [0, 1, 2]);
+        // The short pizzicato's release cuts neither staccato nor legato.
+        feed(&mut r, &mut e, In::NoteOff(0, 60), 0);
+        feed(&mut r, &mut e, In::NoteOff(1, 60), 0);
+        render(&mut e);
+        assert_eq!(voices(&e, 60, false), [0, 1, 2]);
+        // The last one lets the key go.
+        feed(&mut r, &mut e, In::NoteOff(2, 60), 0);
+        render(&mut e);
+        assert_eq!((voices(&e, 60, false), voices(&e, 60, true)), (vec![], vec![0, 1, 2]));
+        assert!(!e.key_down(0, 60));
+    }
+
     #[test]
     fn velocity_splits_and_rescales() {
         let mut a = areia();
@@ -928,6 +1007,11 @@ mod tests {
         a.keep_original = false;
         let mut r = router(&a, &Mpe::default());
         assert_eq!(run(&mut r, &[In::NoteOn(0, 12, 90), In::NoteOff(0, 12)]), []);
+        // A cleared keyswitch no longer switches, original or not.
+        let mut cleared = areia();
+        cleared.articulations[1].remap = Some(CLEARED);
+        let mut r = router(&cleared, &Mpe::default());
+        assert_eq!(run(&mut r, &[In::NoteOn(0, 13, 90), In::NoteOn(0, 12, 90)]), [Out::NoteOn(0, 12, 90)]);
         // A list read from another instrument routes nothing.
         let mut r = Router::default();
         r.set_route(Route::new("other.nki", &a, &Mpe::default()));
@@ -1061,5 +1145,71 @@ mod tests {
         let mut c = StateCursor::new(&buf);
         assert_eq!(Articulate::read_field(&mut c), Some(a));
         assert_eq!(Mpe::read_field(&mut c), Some(mpe));
+    }
+}
+
+#[cfg(test)]
+mod real {
+    use super::*;
+
+    fn step(e: &mut Engine, seconds: f64) {
+        let (mut l, mut r) = ([0f32; 256], [0f32; 256]);
+        for _ in 0..(seconds * e.rate()) as usize / 256 {
+            e.render(&mut l, &mut r);
+        }
+    }
+
+    /// Groups of the voices on `note` still held.
+    fn held(e: &Engine, note: u8) -> Vec<u32> {
+        let mut g: Vec<u32> = (e.voice_census().iter()).filter(|v| v.note == note && !v.released && !v.release_trigger).map(|v| v.group).collect();
+        g.sort_unstable();
+        g
+    }
+
+    /// Solo Cello in channel mode: pizzicato, spiccato and legato at once on
+    /// one key each play their own groups, and the short notes' releases
+    /// leave the legato alone.
+    #[test]
+    #[ignore = "requires the owner's local Solo library"]
+    fn solo_cello_plays_three_articulations_on_three_channels() {
+        let path = format!("{}/Solo/Instruments/01 Multi Patches/Solo - 03 Solo Cello.nki", crate::import::LIBRARY_ROOT);
+        let i = crate::import::read(std::path::Path::new(&path)).unwrap();
+        let part = |found: &[Found]| {
+            let mut e = crate::timing::engine_for(&i, 48000.0, crate::engine::MEMORY_LIMIT).unwrap();
+            step(&mut e, 0.3);
+            let mut a = Articulate::default();
+            a.sync(&path, found);
+            a.mode = Mode::Channel;
+            let mut r = Router::default();
+            r.set_route(Route::new(&path, &a, &Mpe::default()));
+            (e, r, a)
+        };
+        let found = crate::timing::found(&i, &part(&[]).0);
+        let row = |name: &str| found.iter().position(|f| f.0.contains(name)).unwrap();
+        let arts = [row("Pizzicato"), row("Spiccato"), row("Legato")];
+        // Each alone, as a reference.
+        let alone: Vec<Vec<u32>> = (arts.iter())
+            .map(|&n| {
+                let (mut e, mut r, a) = part(&found);
+                feed(&mut r, &mut e, In::NoteOn(a.articulations[n].channel, 50, 100), 0);
+                step(&mut e, 0.1);
+                held(&e, 50)
+            })
+            .collect();
+        assert!(alone.iter().all(|g| !g.is_empty()));
+        // Round robins move a group by one or two: compare by fives.
+        let family = |g: &[u32]| g.iter().map(|g| g / 5).collect::<std::collections::BTreeSet<_>>();
+        let (mut e, mut r, a) = part(&found);
+        for &n in &arts {
+            feed(&mut r, &mut e, In::NoteOn(a.articulations[n].channel, 50, 100), 0);
+        }
+        step(&mut e, 0.1);
+        assert_eq!(family(&held(&e, 50)), family(&alone.concat()));
+        // Pizzicato and spiccato end; the legato plays on.
+        for &n in &arts[..2] {
+            feed(&mut r, &mut e, In::NoteOff(a.articulations[n].channel, 50), 0);
+        }
+        step(&mut e, 0.1);
+        assert!(alone[2].iter().all(|g| held(&e, 50).contains(g)), "the legato was cut");
     }
 }
