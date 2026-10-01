@@ -416,6 +416,7 @@ pub enum Out {
     /// A script control set (script slot, control, value), as a click on it.
     Control(usize, usize, i32),
     Expression(u8, u8, Expression),
+    FreezeExpression(u8, u8),
 }
 
 /// MIDI state of the member channels' RPNs: parameter number, being set.
@@ -639,6 +640,9 @@ impl Router {
                     self.switch(a, to, out);
                 }
                 // A new note on a key starts from its channel's expression.
+                if r.member(channel) {
+                    out(Out::FreezeExpression(to, key));
+                }
                 let tune = if r.member(channel) { self.member_tune(channel) } else { 0.0 };
                 self.brightness[key as usize] = NONE;
                 self.set_expression(to, key, |x| *x = Expression { tune, ..Expression::default() }, out);
@@ -786,6 +790,7 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
         Out::PolyAt(c, n, v) => e.poly_pressure(c, n, v),
         Out::Control(slot, control, value) => e.ui_control(slot, control, value),
         Out::Expression(c, n, x) => e.set_expression_on(c, n, x),
+        Out::FreezeExpression(c, n) => e.freeze_released_expression(c, n),
     }
 }
 
@@ -1131,8 +1136,42 @@ mod tests {
         assert_eq!(a.articulations[1].remap, None);
     }
 
-    /// A synthetic MPE stream: lower zone, two notes on members 2 and 3,
-    /// each bent, pressed and brightened on its own channel.
+    /// A member can be reused before its former pedal-held note has ended.
+    #[test]
+    fn mpe_same_pitch_channel_reuse_preserves_pedal_held_expression() {
+        let setup = || {
+            let (e, _) = three_articulation_part();
+            (e, router(&Articulate::default(), &Mpe { zone: Zone::Lower, ..Mpe::default() }))
+        };
+        let start = |e: &mut Engine, r: &mut Router, gain, pan| {
+            feed(r, e, In::NoteOn(1, 60, 100), 0);
+            feed(r, e, In::NoteGain(1, 60, gain), 0);
+            feed(r, e, In::NotePan(1, 60, pan), 0);
+        };
+        let (mut actual, mut ar) = setup();
+        let (mut old, mut or) = setup();
+        for (e, r) in [(&mut actual, &mut ar), (&mut old, &mut or)] {
+            start(e, r, 0.25, -1.);
+            render(e);
+            feed(r, e, In::Cc(0, 64, 127), 0);
+            feed(r, e, In::NoteOff(1, 60), 0);
+        }
+        // The old release is queued for the same frame as the new attack.
+        start(&mut actual, &mut ar, 0.75, 1.);
+        let (mut new, mut nr) = setup();
+        start(&mut new, &mut nr, 0.75, 1.);
+        let audio = |e: &mut Engine| {
+            let (mut l, mut r) = ([0.; 128], [0.; 128]);
+            e.render(&mut l, &mut r);
+            (l, r)
+        };
+        let (a, o, n) = (audio(&mut actual), audio(&mut old), audio(&mut new));
+        for i in 0..128 {
+            assert!((a.0[i] - o.0[i] - n.0[i]).abs() < 1e-5 && (a.1[i] - o.1[i] - n.1[i]).abs() < 1e-5,
+                "frame {i}: reused member changed the older pedal-held note");
+        }
+    }
+
     #[test]
     fn mpe_master_and_member_bends_combine_with_scripts() {
         use crate::{audio::Sample, engine::Bank, import::{Group, Zone as SampleZone}, modulation::{ModAssignment, ModSource, ModTarget}};

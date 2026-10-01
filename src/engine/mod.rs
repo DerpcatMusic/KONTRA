@@ -646,10 +646,10 @@ impl Engine {
         let Some(bank) = self.bank.as_deref() else {
             return;
         };
-        if let Some((channel, note, velocity, false)) = self.player.release_voices(bank, id) {
+        if let Some((channel, note, velocity, false, latched)) = self.player.release_voices(bank, id) {
             let allowed = self.player.allowed;
             let key = (channel, note, velocity);
-            self.player.trigger_release(bank, key, &allowed, defaults);
+            self.player.trigger_release(bank, key, &allowed, latched, defaults);
         }
     }
 
@@ -683,6 +683,18 @@ impl Engine {
             let master = master.min(15);
             (master, members & !(1 << master))
         });
+    }
+
+    pub(crate) fn freeze_released_expression(&mut self, channel: u8, note: u8) {
+        if channel >= 16 || note >= 128 { return; }
+        let expression = self.player.expression[channel as usize][note as usize];
+        for v in &mut self.player.voices {
+            if v.channel == channel && v.note == note && v.frozen_expression.is_none()
+                && (!v.held || self.commands.iter().any(|c| c.at == 0 && c.id == v.event
+                    && matches!(c.kind, script::Kind::Release { .. }))) {
+                v.frozen_expression = Some(expression);
+            }
+        }
     }
 
     pub fn event_active(&self, id: EventId) -> bool {
@@ -809,6 +821,16 @@ impl Engine {
                 self.player.apply(bank, c, defaults);
             }
         }
+        // Recovery runs after every queued command: a pending pedal-down must
+        // not undo it. Extreme stop pressure cuts this channel rather than
+        // leaving an unreleaseable voice or pedal; the drop counter reports it.
+        let overflow = std::mem::take(&mut self.player.stop_overflow);
+        for channel in (0..16).filter(|c| overflow & (1 << c) != 0) {
+            self.player.pedal_releases[channel as usize] = [0; 128];
+            self.player.sostenuto_releases[channel as usize] = [0; 128];
+            self.player.cc(self.bank.as_deref(), channel, 121, 0, defaults);
+            self.player.cc(self.bank.as_deref(), channel, 120, 0, defaults);
+        }
         self.commands.clear();
         self.writes.clear();
     }
@@ -872,8 +894,9 @@ struct Player {
     sustain: [bool; 16],
     /// Pedals and stop messages on an MPE master affect its member channels.
     mpe_zone: Option<(u8, u16)>,
-    /// Keys latched by the sostenuto pedal (CC66).
-    sostenuto: [[bool; 128]; 16],
+    /// Release samples deferred by captured voices, separate from sustain so
+    /// a later same-pitch restrike cannot inherit their deferred release.
+    sostenuto_releases: [[u8; 128]; 16],
     sostenuto_down: [bool; 16],
     bend: [f32; 16],
     cc: [[u8; 128]; 16],
@@ -904,6 +927,8 @@ struct Player {
     tone: [f32; 2],
     underruns: u64,
     dropped_commands: u64,
+    /// Channels requiring click-free recovery after the bounded stop quota fills.
+    stop_overflow: u16,
     /// Stamp of what modulation reads (see [`voice::Context::inputs`]):
     /// bumped by every controller, bend, pressure and group write.
     inputs: u32,
@@ -926,7 +951,7 @@ impl Player {
             rate,
             sustain: [false; 16],
             mpe_zone: None,
-            sostenuto: [[false; 128]; 16],
+            sostenuto_releases: [[0; 128]; 16],
             sostenuto_down: [false; 16],
             bend: [0.0; 16],
             cc: [[0; 128]; 16],
@@ -947,6 +972,7 @@ impl Player {
             tone: [0.0; 2],
             underruns: 0,
             dropped_commands: 0,
+            stop_overflow: 0,
             inputs: 0,
         };
         player.reset_midi();
@@ -954,8 +980,9 @@ impl Player {
     }
 
     fn reset_midi(&mut self) {
+        self.stop_overflow = 0;
         self.sustain = [false; 16];
-        self.sostenuto = [[false; 128]; 16];
+        self.sostenuto_releases = [[0; 128]; 16];
         self.sostenuto_down = [false; 16];
         self.bend = [0.0; 16];
         self.pressure = [0; 16];
@@ -1207,8 +1234,10 @@ impl Player {
             note: ev.note,
             velocity: ev.velocity,
             held: !release_trigger,
+            sostenuto: false,
             released: false,
             release_trigger,
+            frozen_expression: None,
             age: self.clock,
             sample: play.sample,
             span: span_index,
@@ -1314,39 +1343,37 @@ impl Player {
         if velocity > 0 {
             self.key_up[c][n] = self.now;
         }
-        let sustained = self.pedal(channel, note);
+        let sustained = self.sustain[c];
+        let mut latched = false;
         for v in &mut self.voices {
             if v.channel == channel && v.note == note && v.held && !v.release_trigger {
                 v.held = false;
-                if !sustained {
+                latched |= v.sostenuto;
+                if !sustained && !v.sostenuto {
                     v.release(bank, &mut self.free);
                 }
             }
         }
         if velocity > 0 {
-            if sustained {
-                self.pedal_releases[c][n] = velocity;
-            } else {
-                let id = self.next_id();
-                let event = NoteEvent::new(channel, note, velocity);
-                self.start(bank, &event, id, true, defaults);
-            }
+            let allowed = self.allowed;
+            self.trigger_release(bank, (channel, note, velocity), &allowed, latched, defaults);
         }
     }
 
     /// Release one event's voices; a held sustain pedal defers them like a key
     /// release. Returns the first voice's channel, note, velocity and whether
     /// it is itself a release trigger.
-    fn release_voices(&mut self, bank: &Bank, id: EventId) -> Option<(u8, u8, u8, bool)> {
+    fn release_voices(&mut self, bank: &Bank, id: EventId) -> Option<(u8, u8, u8, bool, bool)> {
         let mut first = None;
         for v in self
             .voices
             .iter_mut()
             .filter(|v| v.event == id && !v.released)
         {
-            first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger));
-            let (c, n) = (v.channel as usize & 15, v.note as usize & 127);
-            if self.sustain[c] || self.sostenuto[c][n] {
+            let event = first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger, false));
+            event.4 |= v.sostenuto;
+            let c = v.channel as usize & 15;
+            if self.sustain[c] || v.sostenuto {
                 v.held = false;
             } else {
                 v.release(bank, &mut self.free);
@@ -1362,11 +1389,18 @@ impl Player {
         bank: &Bank,
         (channel, note, velocity): (u8, u8, u8),
         groups: &GroupMask,
+        latched: bool,
         defaults: Ahdsr,
     ) {
-        if channel < 16 && note < 128 && self.pedal(channel, note) {
-            self.pedal_releases[channel as usize][note as usize] = velocity;
-            return;
+        if channel < 16 && note < 128 {
+            if latched {
+                self.sostenuto_releases[channel as usize][note as usize] = velocity;
+                return;
+            }
+            if self.sustain[channel as usize] {
+                self.pedal_releases[channel as usize][note as usize] = velocity;
+                return;
+            }
         }
         let id = self.next_id();
         let event = NoteEvent {
@@ -1393,8 +1427,7 @@ impl Player {
                 if self.sustain[c] && !on {
                     self.sustain[c] = false;
                     if let Some(bank) = bank {
-                        let free = self.sostenuto[c].map(|latched| !latched);
-                        self.pedal_up(bank, channel, &free, defaults);
+                        self.pedal_up(bank, channel, defaults);
                     }
                 }
                 self.sustain[c] = on;
@@ -1406,16 +1439,16 @@ impl Player {
                 if std::mem::replace(&mut self.sostenuto_down[c], on) == on {
                     return;
                 }
-                let latched = std::mem::replace(&mut self.sostenuto[c], [false; 128]);
                 if on {
                     // Scripts may queue these commands while input keys already
                     // reflect later note-offs. Capture the voices sounding at
                     // this command's time, only on the pedal's down edge.
-                    for v in self.voices.iter().filter(|v| v.channel == channel && v.held && !v.released && !v.release_trigger) {
-                        self.sostenuto[c][v.note as usize] = true;
+                    for v in self.voices.iter_mut().filter(|v| v.channel == channel && v.held && !v.released && !v.release_trigger) {
+                        v.sostenuto = true;
                     }
-                } else if let (Some(bank), false) = (bank, self.sustain[c]) {
-                    self.pedal_up(bank, channel, &latched, defaults);
+                } else {
+                    for v in self.voices.iter_mut().filter(|v| v.channel == channel) { v.sostenuto = false; }
+                    if let Some(bank) = bank { self.pedal_up(bank, channel, defaults); }
                 }
             }
             // All sound off: a click-free cut, well short of any release.
@@ -1425,6 +1458,7 @@ impl Player {
                     v.fade.start(0.0, fade, true);
                 }
                 self.pedal_releases[c] = [0; 128];
+                self.sostenuto_releases[c] = [0; 128];
             }
             121 => {
                 self.cc(bank, channel, 64, 0, defaults);
@@ -1455,16 +1489,13 @@ impl Player {
         }
     }
 
-    /// Whether a pedal keeps `note` sounding after its key goes up.
-    fn pedal(&self, channel: u8, note: u8) -> bool {
-        self.sustain[channel as usize] || self.sostenuto[channel as usize][note as usize]
-    }
-
-    /// A pedal let go: release the `notes` whose keys are up.
-    fn pedal_up(&mut self, bank: &Bank, channel: u8, notes: &[bool; 128], defaults: Ahdsr) {
+    /// A pedal let go: release voices whose own key and pedal holds are gone.
+    fn pedal_up(&mut self, bank: &Bank, channel: u8, defaults: Ahdsr) {
+        let c = channel as usize;
+        if self.sustain[c] { return }
         for v in &mut self.voices {
             if v.channel == channel
-                && notes[v.note as usize & 127]
+                && !v.sostenuto
                 && !v.held
                 && !v.released
                 && !v.release_trigger
@@ -1472,10 +1503,10 @@ impl Player {
                 v.release(bank, &mut self.free);
             }
         }
-        for note in (0..128u8).filter(|&n| notes[n as usize]) {
-            let velocity =
-                std::mem::take(&mut self.pedal_releases[channel as usize][note as usize]);
-            if velocity > 0 {
+        for note in 0..128u8 {
+            let sustain = std::mem::take(&mut self.pedal_releases[c][note as usize]);
+            let captured = if self.sostenuto_down[c] { 0 } else { std::mem::take(&mut self.sostenuto_releases[c][note as usize]) };
+            for velocity in [sustain, captured].into_iter().filter(|&v| v > 0) {
                 let id = self.next_id();
                 let event = NoteEvent::new(channel, note, velocity);
                 self.start(bank, &event, id, true, defaults);

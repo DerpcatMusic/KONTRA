@@ -2166,6 +2166,128 @@ fn sostenuto_holds_only_the_notes_down_when_pressed() {
     assert_eq!(last(&mut e, 1000), [0.5, 0.25]);
 }
 
+#[test]
+fn sostenuto_restrikes_do_not_inherit_an_older_same_pitch_voice_latch() {
+    for scripted in [false, true] {
+        let mut e = engine();
+        if scripted { e.set_script(runtime("on init\nend on\non note\nend on")); }
+        e.note_on(0, 60, 127);
+        render(&mut e, 64);
+        e.cc(0, 66, 127);
+        render(&mut e, 64);
+        e.note_off(0, 60);
+        render(&mut e, 1000);
+        assert_eq!(e.active_voices(), 1);
+        e.note_on(0, 60, 127);
+        render(&mut e, 64);
+        e.note_off(0, 60);
+        render(&mut e, 1000);
+        assert_eq!(e.active_voices(), 1, "scripted={scripted}: only the voice captured at pedal-down may remain");
+        e.cc(0, 66, 0);
+        render(&mut e, 1000);
+        assert_eq!(e.active_voices(), 0);
+    }
+}
+
+#[test]
+fn saturated_controller_commands_still_deliver_sustain_pedal_up() {
+    let mut e = scripted("on init\nend on\non note\nend on");
+    e.note_on(0, 60, 100);
+    e.cc(0, 64, 127);
+    render(&mut e, 64);
+    e.note_off(0, 60);
+    render(&mut e, 1000);
+    assert!(e.active_voices() > 0);
+    let before = e.dropped_commands();
+    for _ in 0..kontakto::engine::MAX_COMMANDS { e.cc(0, 1, 100); }
+    e.cc(0, 64, 0);
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0, "pedal-up must survive ordinary controller pressure");
+    assert_eq!(e.dropped_commands(), before);
+}
+
+#[test]
+fn same_pitch_sostenuto_release_samples_keep_their_own_key_velocity() {
+    let groups = vec![Group::default(), Group {
+        release_trigger: true,
+        mods: vec![ModAssignment { name: "VEL_VOLUME".into(), source: ModSource::Velocity, target: ModTarget::Volume,
+            intensity: 1., invert: false, lag_ms: 0, shaper: None }],
+        ..Group::default()
+    }];
+    let release_gain = |velocity| {
+        let mut reference = engine_with(layered(groups.clone(), &[0.1, 0.4]));
+        reference.note_on(0, 60, velocity);
+        reference.note_off(0, 60);
+        render(&mut reference, 1000);
+        reference.voice_census().iter().find(|v| v.release_trigger).unwrap().gain
+    };
+    let (old_gain, new_gain) = (release_gain(40), release_gain(100));
+    let mut e = engine_with(layered(groups, &[0.1, 0.4]));
+    e.note_on(0, 60, 40);
+    e.cc(0, 66, 127);
+    e.note_off(0, 60);
+    render(&mut e, 64);
+    assert!(!e.voice_census().iter().any(|v| v.release_trigger));
+    e.cc(0, 64, 127);
+    e.note_on(0, 60, 100);
+    e.note_off(0, 60);
+    e.cc(0, 64, 0);
+    render(&mut e, 1000);
+    let voices = e.voice_census();
+    let released: Vec<_> = voices.iter().filter(|v| v.release_trigger).map(|v| if (v.gain - old_gain).abs() < 1e-5 { 40 } else if (v.gain - new_gain).abs() < 1e-5 { 100 } else { panic!("unexpected release gain {}", v.gain) }).collect();
+    assert_eq!(released, [100], "the sustain-only restrike releases while the old captured note stays held");
+    e.cc(0, 66, 0);
+    render(&mut e, 1000);
+    let voices = e.voice_census();
+    let mut released: Vec<_> = voices.iter().filter(|v| v.release_trigger).map(|v| if (v.gain - old_gain).abs() < 1e-5 { 40 } else if (v.gain - new_gain).abs() < 1e-5 { 100 } else { panic!("unexpected release gain {}", v.gain) }).collect();
+    released.sort_unstable();
+    assert_eq!(released, [40, 100], "sostenuto-up fires the original captured key's release velocity");
+}
+
+#[test]
+fn exhausted_stop_quota_recovers_pedals_without_consuming_note_off_reserve() {
+    let mut e = scripted("on init\ndeclare %ids[400]\ndeclare $count\ndeclare $i\nend on\non note\nif ($count < 400)\n%ids[$count] := $EVENT_ID\ninc($count)\nend if\nend on\non controller\nif ($CC_NUM = 2)\n$i := 0\nwhile ($i < $count)\nfade_out(%ids[$i],1000,1)\ninc($i)\nend while\nend if\nend on");
+    for _ in 0..4 {
+        for _ in 0..100 { e.note_on(0, 60, 100); }
+        render(&mut e, 128);
+    }
+    e.cc(0, 64, 127);
+    render(&mut e, 64);
+    let before = e.dropped_commands();
+    assert_eq!(allocations(|| {
+        for _ in 0..kontakto::engine::MAX_COMMANDS { e.cc(0, 1, 100); }
+        e.cc(0, 2, 100); // 400 distinct terminal fades exhaust the separate quota.
+        e.cc(0, 64, 0); // Genuine pedal-up must recover even after the fades.
+        let after_stops = e.dropped_commands();
+        e.note_off(0, 60); // All 400 live parents still have reserved note-offs.
+        assert_eq!(e.dropped_commands(), after_stops);
+        let (mut l, mut r) = ([0.; 1024], [0.; 1024]);
+        e.render(&mut l, &mut r);
+        e.render(&mut l, &mut r);
+    }), 0);
+    assert!(e.dropped_commands() > before, "the bounded recovery must be observable");
+    assert_eq!(e.active_voices(), 0);
+    // The recovery also resets the pedal, so subsequent notes do not stick.
+    e.note_on(0, 60, 100);
+    render(&mut e, 64);
+    e.note_off(0, 60);
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0);
+}
+
+#[test]
+fn saturated_commands_do_not_drop_a_delayed_script_release_stop_fade() {
+    let mut e = scripted("on init\ndeclare $i\nend on\non release\nignore_event($EVENT_ID)\nwait(1000)\n$i := 0\nwhile ($i < 400)\nfade_out($EVENT_ID,1000,1)\ninc($i)\nend while\nend on");
+    e.note_on(0, 60, 100);
+    render(&mut e, 64);
+    let before = e.dropped_commands();
+    e.note_off(0, 60);
+    for _ in 0..kontakto::engine::MAX_COMMANDS { e.cc(0, 1, 100); }
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0, "the delayed stopping fade must survive controller pressure");
+    assert_eq!(e.dropped_commands(), before, "identical same-frame stopping fades are coalesced");
+}
+
 /// Note-on with velocity 0 is a note-off; a note-off before the note's first
 /// render still ends it; duplicate note-ons all end at the key's note-off.
 #[test]

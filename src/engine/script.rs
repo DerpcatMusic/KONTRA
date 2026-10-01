@@ -79,8 +79,10 @@ pub fn effects(instrument: &Instrument, script: Option<&Runtime>, rate: f32) -> 
 
 /// Script engine calls one render can hold; the rest are dropped and counted.
 pub const MAX_COMMANDS: usize = 256;
-// One release per live script event, beyond the ordinary command budget.
-pub(super) const COMMAND_CAPACITY: usize = MAX_COMMANDS + crate::ksp::EVENT_CAPACITY;
+// Pedal-up and terminal fades have their own quota, never the note-off reserve.
+const MAX_STOP_COMMANDS: usize = 256;
+// One release per live script event, beyond the ordinary and stop budgets.
+pub(super) const COMMAND_CAPACITY: usize = MAX_COMMANDS + MAX_STOP_COMMANDS + crate::ksp::EVENT_CAPACITY;
 
 /// A worker request: copying the name never allocates on the audio thread.
 #[derive(Clone)]
@@ -143,6 +145,14 @@ pub(super) enum Kind {
     ResetCounter(u8),
 }
 
+impl Kind {
+    fn is_stop(self) -> bool {
+        matches!(self, Self::Fade(Fade::Out { stop: true, .. })
+            | Self::Controller { cc: 120 | 121 | 123, .. })
+            || matches!(self, Self::Controller { cc: 64 | 66, value } if value < 64)
+    }
+}
+
 /// The engine as the runtime sees it during one call, borrowed from `Engine`.
 pub(super) struct Host<'a> {
     pub channel: u8,
@@ -166,10 +176,30 @@ impl Host<'_> {
 
     /// Queue in frame order (stable for equal frames) within the preallocated capacity.
     fn push(&mut self, at: u32, channel: u8, id: EventId, kind: Kind) -> bool {
-        if self.commands.len() == COMMAND_CAPACITY
-            || (self.commands.len() >= MAX_COMMANDS && !matches!(kind, Kind::Release { .. }))
-        {
+        let stop = kind.is_stop();
+        if stop {
+            // Coalesce identical same-frame stops, without crossing a later
+            // fade or opposite pedal state for the same target.
+            let prior = self.commands.iter().rev().find(|c| c.at == at && c.channel == channel && match (c.kind, kind) {
+                (Kind::Fade(_), Kind::Fade(_)) => c.id == id,
+                (Kind::Controller { cc: a, .. }, Kind::Controller { cc: b, .. }) => a == b,
+                _ => false,
+            });
+            if prior.is_some_and(|c| match (c.kind, kind) {
+                (Kind::Fade(Fade::Out { duration_us: a, stop: true }), Kind::Fade(Fade::Out { duration_us: b, stop: true })) => a == b,
+                (Kind::Controller { value: a, .. }, Kind::Controller { value: b, .. }) => a == b,
+                _ => false,
+            }) { return true }
+        }
+        let full = self.commands.len() == COMMAND_CAPACITY
+            || if stop {
+                self.commands.iter().filter(|c| c.kind.is_stop()).count() >= MAX_STOP_COMMANDS
+            } else {
+                self.commands.len() >= MAX_COMMANDS && !matches!(kind, Kind::Release { .. })
+            };
+        if full {
             self.player.dropped_commands += 1;
+            if stop && channel < 16 { self.player.stop_overflow |= 1 << channel; }
             return false;
         }
         let i = self.commands.partition_point(|c| c.at <= at);
@@ -347,9 +377,9 @@ impl Player {
                 }
             }
             Kind::Release { trigger, groups } => {
-                self.release_voices(bank, id);
+                let latched = self.release_voices(bank, id).is_some_and(|event| event.4);
                 if let &Some((note, velocity)) = trigger {
-                    self.trigger_release(bank, (channel, note, velocity), groups, defaults);
+                    self.trigger_release(bank, (channel, note, velocity), groups, latched, defaults);
                 }
             }
             &Kind::Fade(Fade::In { duration_us }) => {

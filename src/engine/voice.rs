@@ -926,10 +926,14 @@ pub(crate) struct Voice {
     pub velocity: u8,
     /// The key or event is still down.
     pub held: bool,
+    /// This voice was held at the sostenuto pedal's down edge.
+    pub sostenuto: bool,
     /// The envelope has been released.
     pub released: bool,
     /// Started by a note release; ignores later note-offs and pedal changes.
     pub release_trigger: bool,
+    /// A former MPE note keeps its expression when its member channel is reused.
+    pub frozen_expression: Option<super::Expression>,
     pub age: u64,
     pub sample: u32,
     pub span: u32,
@@ -1102,7 +1106,7 @@ impl Voice {
             self.settled = settled.then_some(cx.inputs);
         }
         let (modulation, semitones) = self.modulated;
-        let x = cx.expression[self.channel as usize & 15][self.note as usize & 127];
+        let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][self.note as usize & 127]);
         let semitones = semitones + group.tune + cx.tune + x.tune;
         if semitones != self.pitch.0 {
             self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));
