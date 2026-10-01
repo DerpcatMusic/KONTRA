@@ -21,7 +21,7 @@ for platform in platforms:
 assert "nightly-build-${{ matrix.name }}\n      cancel-in-progress: true" in workflow
 assert "nightly-publish\n      cancel-in-progress: false" in workflow
 assert "retention-days: 1" in workflow
-assert "if: steps.publish.outputs.published == 'true'" in cleanup_step
+assert "if: success()" in cleanup_step
 assert "continue-on-error: true" in cleanup_step
 
 mock_gh = r'''#!/usr/bin/env python3
@@ -49,10 +49,10 @@ if a[0]=="api":
         assert arg("--method")=="DELETE"
         s["refs"].pop(path.split("tags/",1)[1],None); out="{}"
     elif "/actions/runs/" in path or path.startswith("actions/runs/"):
-        assert s["promoted"] and path=="actions/runs/7/artifacts"
+        assert (s["promoted"] or s["case"] in ("stale-before","stale-after")) and path=="actions/runs/7/artifacts"
         out="100\n101\n102\n103"
     elif path.startswith("actions/artifacts/"):
-        assert s["promoted"] and arg("--method")=="DELETE"
+        assert (s["promoted"] or s["case"] in ("stale-before","stale-after")) and arg("--method")=="DELETE"
         s["deleted"].append(int(path.rsplit("/",1)[1])); status=int(s["case"]=="cleanup-fails"); out="{}"
     else: raise AssertionError(a)
 elif a[:2]==["release","create"]:
@@ -167,5 +167,10 @@ for case in cases:
         else:
             assert len(state["releases"])==3 and not state["deleted"]
             assert state["refs"]["nightly"]=="b"*40 and state["refs"]["nightly-previous"]=="c"*40
+            if case in ("stale-before","stale-after"):
+                before=state["releases"]
+                result=run(cleanup);assert result.returncode==0,result.stderr
+                state=json.loads(root.joinpath("state.json").read_text())
+                assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
 print("Nightly checks passed: 9 retention/rerun/upload/cleanup scenarios and four stable README links.")
