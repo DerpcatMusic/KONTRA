@@ -264,7 +264,15 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
 }
 
 /// What was loaded and what could not be.
-pub fn info(ui: &Ui, cx: &Cx) -> El {
+pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
+    let (logs, logs_el) = action(ui, "info-open-logs", "Open Logs for this load", false);
+    if logs {
+        cx.state.logs.load = cx.part_view().load_report.as_ref().map(|report| {
+            report["load_id"].as_str().map(str::to_owned)
+                .or_else(|| report["load_id"].as_u64().map(|id| id.to_string())).unwrap_or_default()
+        }).unwrap_or_default();
+        cx.state.tab = super::Tab::Logs;
+    }
     let v = cx.part_view();
     let mut rows = Vec::new();
     if v.loading {
@@ -288,12 +296,8 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
         let issues: Vec<_> = ["issues", "script_restore", "artwork", "preload", "ram_fill"].into_iter().flat_map(|key| {
             if key == "issues" { report[key].as_array() } else { report[key]["issues"].as_array() }.into_iter().flatten()
         }).collect();
-        {
-            for issue in issues.iter().take(64) {
-                rows.push(body(format!("{} [{}]: {}", issue["stage"].as_str().unwrap_or("load"), issue["code"].as_str().unwrap_or("warning"), issue["message"].as_str().unwrap_or_default())).text_size(TEXT).lines(6).shrink(0));
-            }
-            if issues.len() > 64 { rows.push(caption(format!("{} more issues are recorded in the log file.", issues.len() - 64)).fill(Role::Dim).lines(2)); }
-        }
+        rows.push(caption(format!("{} recorded issues. Open Logs to inspect messages, stages and reasons for this load.", issues.len())).fill(secondary()).lines(3));
+        rows.push(logs_el);
     }
     if let Some(i) = current(cx) {
         rows.push(section("Instrument"));

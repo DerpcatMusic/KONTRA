@@ -1801,6 +1801,12 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
     h.press("tab-info");
     let frame = h.ui.scene().unwrap().surface("load-diagnostic-status").expect("failed imports still show their diagnostic report").frame;
     assert!(frame.y >= 0. && frame.y + frame.size.height < 760., "status is visible: {frame:?}");
+    h.press("tab-logs");
+    assert!(h.ui.scene().unwrap().surface("logs-export-preview").is_some(), "global Logs is available after a failed load");
+    h.press("logs-export-preview");
+    assert!(h.ui.scene().unwrap().surface("logs-export-path").is_some(), "export preview does not require a loaded instrument");
+    h.press("logs-export-preview");
+    h.press("tab-info");
     let rgba = pixels(&h.ui, 1180, 760);
     let path = Path::new("artifacts/library-parity/info-failed.png");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
