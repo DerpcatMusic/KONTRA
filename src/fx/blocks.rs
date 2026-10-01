@@ -45,6 +45,8 @@ enum Law {
     Lin(f32, f32),
     /// Stored in units, `max · x³`.
     Cube(f32),
+    /// Stored in units, `lo · (hi/lo)^x`.
+    Log(f32, f32),
     /// The script's raw value (`$NI_SYNC_UNIT_*`), not scaled by 1e6.
     Raw,
 }
@@ -56,6 +58,7 @@ impl Law {
             Law::Norm => x,
             Law::Lin(lo, hi) => lo + (hi - lo) * x,
             Law::Cube(max) => max * x * x * x,
+            Law::Log(lo, hi) => lo * (hi / lo).powf(x),
             Law::Raw => (x * 1e6).round(),
         }
     }
@@ -65,6 +68,7 @@ impl Law {
             Law::Norm => v,
             Law::Lin(lo, hi) => (v - lo) / (hi - lo),
             Law::Cube(max) => (v / max).max(0.0).cbrt(),
+            Law::Log(lo, hi) => (v.max(lo) / lo).ln() / (hi / lo).ln(),
             Law::Raw => v.max(0.0) / 1e6,
         };
         x.clamp(0.0, 1.0)
@@ -73,7 +77,7 @@ impl Law {
 
 /// Compressor threshold, -60..=0 dB.
 const THRESHOLD: Law = Law::Lin(-60.0, 0.0);
-/// Compressor attack and release, Limiter release (ms).
+/// Compressor attack and release (ms).
 const ATTACK: Law = Law::Cube(1000.0);
 const RELEASE: Law = Law::Cube(5000.0);
 /// Delay time (ms).
@@ -87,8 +91,12 @@ const PARS: &[(&str, Kind, u8, Law)] = &[
     ("$ENGINE_PAR_RATIO", Kind::Compressor, 2, Law::Norm),
     ("$ENGINE_PAR_COMP_ATTACK", Kind::Compressor, 3, ATTACK),
     ("$ENGINE_PAR_COMP_DECAY", Kind::Compressor, 4, RELEASE),
-    ("$ENGINE_PAR_LIM_IN_GAIN", Kind::Limiter, 0, Law::Lin(0.0, 24.0)),
-    ("$ENGINE_PAR_LIM_RELEASE", Kind::Limiter, 1, Law::Cube(1000.0)),
+    // ANALOG STRINGS' script sets in-gain 500011 and release 0 on a slot
+    // storing 0.00053 dB and 10 ms: (0.500011 - 0.5) · 48 = 0.00053, so
+    // -24..=+24 dB (high confidence); release starts at 10 ms, its top
+    // and curve are a guess.
+    ("$ENGINE_PAR_LIM_IN_GAIN", Kind::Limiter, 0, Law::Lin(-24.0, 24.0)),
+    ("$ENGINE_PAR_LIM_RELEASE", Kind::Limiter, 1, Law::Log(10.0, 1000.0)),
     ("$ENGINE_PAR_DL_TIME", Kind::Delay, 0, DELAY_TIME),
     ("$ENGINE_PAR_DL_DAMPING", Kind::Delay, 1, Law::Norm),
     ("$ENGINE_PAR_DL_PAN", Kind::Delay, 2, Law::Norm),
@@ -1054,5 +1062,9 @@ mod tests {
         assert_eq!(b.get(Kind::Compressor, 1), Some(0.5));
         assert!(!b.set(Kind::Delay, 0, 0.5));
         assert!((stored(Kind::Delay, 0, normalized(Kind::Delay, 0, 500.0)) - 500.0).abs() < 0.01);
+        // What ANALOG STRINGS' script sets and its preset stores.
+        assert!((stored(Kind::Limiter, 0, 0.500011) - 0.00053).abs() < 1e-4);
+        assert_eq!(stored(Kind::Limiter, 1, 0.0), 10.0);
+        assert!((normalized(Kind::Limiter, 1, 100.0) - 0.5).abs() < 1e-5);
     }
 }
