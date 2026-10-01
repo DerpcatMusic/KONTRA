@@ -35,6 +35,9 @@ use mui::vello::kurbo::Affine;
 use raw_window_handle::HasWindowHandle;
 
 const GPU_RETRY: Duration = Duration::from_millis(500);
+/// KONTAKTO patch: MUI lines per wheel notch (see the wheel event below).
+/// baseview does not read the system's scroll-lines setting, so this is fixed.
+const LINES_PER_NOTCH: f64 = 6.;
 
 /// KONTAKTO patch: an app's look at every key event, down and up, before
 /// MUI routes it. `true` takes the key: MUI and the host never see it.
@@ -387,7 +390,14 @@ impl<V: View> Handler<V> {
                 }
                 MouseEvent::WheelScrolled { delta, modifiers } => {
                     let wheel = match delta {
-                        ScrollDelta::Lines { x, y } => Wheel::Lines(f64::from(x), f64::from(y)),
+                        // KONTAKTO patch: baseview reports one line per notch on every
+                        // platform, and MUI makes a line one text height
+                        // (13 points): half a list row. A notch moves three
+                        // rows, about what desktop lists scroll; trackpads
+                        // send pixels and stay exact.
+                        ScrollDelta::Lines { x, y } => {
+                            Wheel::Lines(f64::from(x) * LINES_PER_NOTCH, f64::from(y) * LINES_PER_NOTCH)
+                        }
                         ScrollDelta::Pixels { x, y } => Wheel::Pixels(f64::from(x), f64::from(y)),
                     };
                     d.wheel(wheel, mods(modifiers));
