@@ -428,11 +428,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .fill(if vector { Fill::from(Role::Background) } else { Fill::from(Color::srgb(0., 0., 0.)) })
         .clip()
         .named(if vector { "Vectorized performance view" } else { "Original performance view" });
-    // Centred by a whole-pixel inset: centring by layout halves odd pixels.
-    let row_id = format!("kpv-row-{slot}");
-    let room = ui.scene().and_then(|sc| sc.surface(&row_id)).map_or(0., |r| r.frame.size.width);
-    let inset = (((room - px(w * s)) / 2. * dev).floor() / dev).max(0.);
-    row![area].pad(edges(0., 0., 0., inset)).align(Align::Start).w(Len::Pct(100.)).id(row_id)
+    // Centred by a whole-pixel inset in the part's width (which the memo
+    // over this reads): centring by layout halves odd pixels.
+    let inset = (((room(ui, slot) - px(w * s)) / 2. * dev).floor() / dev).max(0.);
+    row![area].pad(edges(0., 0., 0., inset)).align(Align::Start).w(Len::Pct(100.))
 }
 
 /// A value edit's number being typed: Enter or a click away sets it, Esc
