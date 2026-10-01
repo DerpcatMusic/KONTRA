@@ -247,7 +247,6 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
             .shrink(0),
     ];
     body.extend(rows);
-    body.push(view_settings(ui, cx));
     body.push(
         row![
             field.el.flex(1).min_w(0).h(CONTROL).named("A folder to add, typed"),
@@ -255,9 +254,10 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         ]
         .gap(SPACE)
         .align(Align::Center)
-        .pad(edges(0., SPACE, SPACE, INSET))
+        .pad(edges(0., SPACE, 0., INSET))
         .shrink(0),
     );
+    body.push(view_settings(ui, cx));
     col![col(body).gap(TIGHT).align(Align::Stretch), rule()]
         .gap(0)
         .shrink(0)
@@ -299,7 +299,7 @@ fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     ]
     .gap(SPACE)
     .align(Align::Center)
-    .pad(edges(TIGHT, SPACE, 0., INSET))
+    .pad(edges(TIGHT, SPACE, SPACE, INSET))
     .shrink(0)
 }
 
