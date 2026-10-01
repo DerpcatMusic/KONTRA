@@ -337,46 +337,50 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
     }
 }
 
+/// The ops [`hot`] leaves to [`step`], as a pattern.
+macro_rules! cold {
+    () => {
+        Op::PushR(_)
+        | Op::PushS(_)
+        | Op::LdR(_)
+        | Op::StR(_)
+        | Op::LdS(_)
+        | Op::StS(_)
+        | Op::LdRA(_)
+        | Op::StRA(_)
+        | Op::LdSA(_)
+        | Op::StSA(_)
+        | Op::UiId(_)
+        | Op::Ref(_)
+        | Op::PopR
+        | Op::PopS
+        | Op::IToS
+        | Op::RToS
+        | Op::RAdd
+        | Op::RSub
+        | Op::RMul
+        | Op::RDiv
+        | Op::RMod
+        | Op::RNeg
+        | Op::REq
+        | Op::RNe
+        | Op::RLt
+        | Op::RGt
+        | Op::RLe
+        | Op::RGe
+        | Op::SEq
+        | Op::SNe
+        | Op::Concat
+        | Op::Builtin(..)
+        | Op::Declare(_)
+        | Op::InitArray(_)
+        | Op::Loop(_)
+    };
+}
+
 /// Whether [`hot`] runs `op`.
 fn is_hot(op: Op) -> bool {
-    !matches!(
-        op,
-        Op::PushR(_)
-            | Op::PushS(_)
-            | Op::LdR(_)
-            | Op::StR(_)
-            | Op::LdS(_)
-            | Op::StS(_)
-            | Op::LdRA(_)
-            | Op::StRA(_)
-            | Op::LdSA(_)
-            | Op::StSA(_)
-            | Op::UiId(_)
-            | Op::Ref(_)
-            | Op::PopR
-            | Op::PopS
-            | Op::IToS
-            | Op::RToS
-            | Op::RAdd
-            | Op::RSub
-            | Op::RMul
-            | Op::RDiv
-            | Op::RMod
-            | Op::RNeg
-            | Op::REq
-            | Op::RNe
-            | Op::RLt
-            | Op::RGt
-            | Op::RLe
-            | Op::RGe
-            | Op::SEq
-            | Op::SNe
-            | Op::Concat
-            | Op::Builtin(..)
-            | Op::Declare(_)
-            | Op::InitArray(_)
-            | Op::Loop(_)
-    )
+    !matches!(op, cold!())
 }
 
 /// Run the op at `pc`, already charged. This is every op's reference
@@ -1036,7 +1040,7 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
                 f -= 1;
                 p += 2;
             }
-            _ => {
+            cold!() => {
                 p -= 1;
                 f += 1;
                 break Ok(None);
