@@ -704,8 +704,15 @@ impl Router {
                 }
             }
             In::Cc(_, cc, value) => {
-                if r.zone().is_some() {
-                    self.rpn_cc(channel, cc, value);
+                if r.zone().is_some() && self.rpn_cc(channel, cc, value) {
+                    // Member sensitivity is shared by the zone and takes
+                    // effect immediately, including bends already sounding.
+                    for member in r.zone().map(|z| z.1).into_iter().flatten() {
+                        let tune = self.member_tune(member);
+                        for (to, key) in self.held[member as usize].into_iter().filter(|h| h.1 != NONE) {
+                            self.set_expression(to, key, |x| x.tune = tune, out);
+                        }
+                    }
                 }
                 if cc == 74 && r.member(channel) {
                     let row = self.held[channel as usize];
@@ -756,13 +763,18 @@ impl Router {
 
     /// Follow RPN 0 (pitch bend range) on member channels and the MPE
     /// configuration message (RPN 6) on the master channel.
-    fn rpn_cc(&mut self, channel: u8, cc: u8, value: u8) {
+    fn rpn_cc(&mut self, channel: u8, cc: u8, value: u8) -> bool {
         let rpn = &mut self.rpn[channel as usize];
         match cc {
             101 => rpn.msb = value,
             100 => rpn.lsb = value,
+            98 | 99 => *rpn = Rpn { msb: 127, lsb: 127 },
             6 => match (rpn.msb, rpn.lsb) {
-                (0, 0) if self.route.member(channel) => self.bend_range = value.clamp(1, 96),
+                (0, 0) if self.route.member(channel) => {
+                    let before = self.bend_range;
+                    self.bend_range = value.min(96);
+                    return before != self.bend_range;
+                }
                 (0, 6) if self.route.master(channel) => {
                     if value == 0 {
                         self.route.mpe.zone = Zone::Off;
@@ -774,6 +786,7 @@ impl Router {
             },
             _ => {}
         }
+        false
     }
 }
 
@@ -1136,7 +1149,34 @@ mod tests {
         assert_eq!(a.articulations[1].remap, None);
     }
 
-    /// A member can be reused before its former pedal-held note has ended.
+    /// Range negotiation updates the zone and excludes unrelated NRPN data.
+    #[test]
+    fn mpe_rpn_range_changes_update_active_notes_and_nrpn_does_not_change_range() {
+        for (zone, members) in [(Zone::Lower, [1, 2]), (Zone::Upper, [14, 13])] {
+            let mut r = router(&Articulate::default(), &Mpe { zone, ..Mpe::default() });
+            let mut output = Vec::new();
+            for (channel, note) in members.into_iter().zip([60, 62]) {
+                r.input(In::Bend(channel, 12288), 0, &mut |o| output.push(o));
+                r.input(In::NoteOn(channel, note, 100), 0, &mut |o| output.push(o));
+            }
+            for range in [12, 0] {
+                output.clear();
+                for (cc, value) in [(101, 0), (100, 0), (6, range)] {
+                    r.input(In::Cc(members[0], cc, value), 0, &mut |o| output.push(o));
+                }
+                for (channel, note) in members.into_iter().zip([60, 62]) {
+                    assert!(output.contains(&Out::Expression(channel, note, Expression { tune: f32::from(range) / 2., ..Expression::default() })), "{zone:?}: live range {range} did not update member {channel}");
+                }
+            }
+            output.clear();
+            for (cc, value) in [(99, 0), (98, 0), (6, 96)] {
+                r.input(In::Cc(members[0], cc, value), 0, &mut |o| output.push(o));
+            }
+            r.input(In::Bend(members[0], 0), 0, &mut |o| output.push(o));
+            assert!(!output.iter().any(|o| matches!(o, Out::Expression(..))), "NRPN data entry changed the zero pitch range");
+        }
+    }
+
     #[test]
     fn mpe_same_pitch_channel_reuse_preserves_pedal_held_expression() {
         let setup = || {
