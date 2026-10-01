@@ -21,6 +21,10 @@ mod library;
 #[cfg(feature="plugin")]
 mod plugin;
 #[cfg(feature="plugin")]
+pub mod project_migration;
+#[cfg(feature="plugin")]
+pub(crate) use plugin::{Part as MigrationPart, SavedMulti as MigrationSavedMulti, Selection as MigrationSelection};
+#[cfg(feature="plugin")]
 mod routing;
 #[cfg(feature="plugin")]
 mod ui;

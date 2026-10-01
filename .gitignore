@@ -7,6 +7,9 @@
 
 /audits/*.json*
 
+# Python migration-tool cache.
+/tools/__pycache__/
+
 # graft's local repository settings — not committed.
 /.graft/
 /.claude/worktrees/

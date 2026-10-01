@@ -8,7 +8,7 @@ KONTRA ships no instrument libraries or sample collections. Use libraries you ar
 
 ## Compatibility and known gaps
 
-**Full** means verified end to end for the named behavior. **Partial** means only a subset is implemented or exercised. **Unsupported** means the feature is not implemented. **Untested** means there is not enough reference or host testing to make a claim. **Experimental** means work is present but has not been validated in a real host. No broad compatibility area below is marked full.
+**Full** means verified end to end for the named behavior. **Partial** means only a subset is implemented or exercised. **Unsupported** means the feature is not implemented. **Untested** means there is not enough reference or host testing to make a claim. **Experimental** means limited validation and an evolving interface. No broad compatibility area below is marked full.
 
 | Area | Status | Implemented | Known limits |
 |---|---|---|---|
@@ -22,7 +22,7 @@ KONTRA ships no instrument libraries or sample collections. Use libraries you ar
 | Convolution IR selection | **Partial** | Cotton's Vintage/Room menus, Size stretching and Distance predelay work through worker-built kernels. Selected IRs and requested controls survive DAW and JSON state reload, including a sample-rate change. | Unequal early/late sizes use a diagnosed uniform stretch; separate boundaries, filters, reverse and unknown saved flags remain unmapped. Other responses and Kontakt sound equivalence remain untested. |
 | Articulations | **Partial** | Articulation mappings and channel-aware MIDI and script event routing are implemented. Scripted Channel mode tracks physical input separately, supports independent same-pitch releases, and honors release-callback group selection. | Library-specific transitions, scripts, and every articulation have not been exhaustively checked. |
 | MIDI and MPE | **Partial** | Scripted channel stops release their physical inputs. Same-pitch MPE members retain independent tuning, gain and pan. Lower/upper MPE master sustain and sostenuto work without duplicating script callbacks; sostenuto captures sounding voices on its down edge. | Release-tail channel reuse, combined MPE/channel articulation, master pitch/pressure and broader real-host behavior remain under review. |
-| REAPER project migration | **Experimental** | An in-progress migration tool uses explicit track mapping and a project-specific state path. | No host proof yet; this does not establish compatibility across REAPER versions or other DAWs. |
+| REAPER project migration | **Experimental** | Explicit SavedMulti mappings replace selected Kontakt instances in a copied RPP. An isolated REAPER check verified state through save/reopen and retained two tracks, MIDI and a send. | Opaque Kontakt state, parameter automation and nested containers are not translated. Other DAWs, host versions and sonic parity remain unverified. |
 | Kontakt parity | **Untested** | No compatibility guarantee is made. | A successful load or short render is not a reference comparison. |
 | Other sampler formats | **Unsupported** | None. | KONTRA does not load separate proprietary formats such as UVI, Toontrack, IK, or Ample Sound libraries. |
 
@@ -69,6 +69,27 @@ cargo run --release --bin kontakto
 ```
 
 `cargo moose install --clap --vst3 --user` installs the plug-ins into user plug-in folders.
+
+## Experimental REAPER migration
+
+Inventory a project without changing it:
+
+```sh
+python3 tools/migrate_project.py '/path/to/song.RPP'
+```
+
+Save the desired instruments, routing and controls as a KONTRA `.kontra-multi`, then map each instance explicitly. Track and FX indices are zero-based. Build the CLI with its default plug-in feature, and prepare a ReaScript:
+
+```sh
+cargo build --release --bin kontakto
+python3 tools/migrate_project.py '/path/to/song.RPP' \
+  --map '0:0=/path/to/Strings.kontra-multi' \
+  --output-copy '/path/to/song-kontra.RPP' \
+  --reaper-script '/path/to/migrate.lua' \
+  --state-exporter target/release/kontakto
+```
+
+Run the generated script in REAPER with the source project open and KONTRA VST3 installed. It creates a copy beside the source to preserve relative media paths, refuses existing output paths, verifies installed state after save/reopen, and writes a migration report. Unsupported mappings are reported; Kontakt's opaque state is not recovered. Review the report and listen to the copy before using it.
 
 ## License
 
