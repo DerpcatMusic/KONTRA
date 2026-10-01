@@ -912,6 +912,29 @@ mod tests {
         tick(ui, state, params, Input::default());
     }
 
+    fn wait_export(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> ExportStatus {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            state.refresh(params);
+            tick(ui, state, params, Input::default());
+            if state.export_thread.is_none() {
+                if let Some(error) = &state.export_error {
+                    panic!("Could not start export: {error}");
+                }
+                if let Some(status) = state.export.and_then(diagnostics::export_status)
+                    && !matches!(status, ExportStatus::Running)
+                {
+                    return status;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "support export did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn the_global_log_panel_filters_and_virtualizes_retained_history() {
         let params = Arc::new(SamplerParams::new());
@@ -1080,5 +1103,51 @@ mod tests {
             !state.filter(state.snapshot.clone().as_ref().unwrap()),
             "unchanged filters reuse the index"
         );
+
+        // The actual export handoff also works with a selected path but no loaded bank.
+        params
+            .selection
+            .write()
+            .unwrap()
+            .parts
+            .push(crate::plugin::Part {
+                path: "/virtual/private-user/Diagnostic Test.nki".into(),
+                ..Default::default()
+            });
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let destination =
+            std::env::temp_dir().join(format!("kontra-log-ui-{}-{stamp}", std::process::id()));
+        state.destination = destination.to_string_lossy().into_owned();
+        press(&mut ui, &mut state, &params, "logs-export-preview");
+        press(&mut ui, &mut state, &params, "logs-export");
+        let ExportStatus::Complete { path, .. } = wait_export(&mut ui, &mut state, &params) else {
+            panic!("support report should export")
+        };
+        assert_eq!(path, destination);
+        for file in ["report.json", "events.jsonl", "journal.jsonl", "README.txt"] {
+            assert!(destination.join(file).is_file(), "missing {file}");
+        }
+        let report_before = std::fs::read(destination.join("report.json")).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&report_before).contains("/virtual/private-user"),
+            "default export redacts local paths"
+        );
+        assert!(ui.scene().unwrap().surface("logs-export-status").is_some());
+        press(&mut ui, &mut state, &params, "logs-export");
+        assert!(
+            matches!(
+                wait_export(&mut ui, &mut state, &params),
+                ExportStatus::Failed { .. }
+            ),
+            "an existing destination fails without overwrite"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("report.json")).unwrap(),
+            report_before
+        );
+        std::fs::remove_dir_all(destination).unwrap();
     }
 }
