@@ -16,6 +16,8 @@ pub enum Ask {
     Multi { from: PathBuf, name: String },
     /// A picture to show as the cover of the library in `library`.
     Artwork { library: PathBuf },
+    /// A folder of samples to make a library of, in `out`.
+    Samples { out: PathBuf },
 }
 
 /// What came back.
@@ -23,6 +25,8 @@ pub enum Picked {
     Folder(PathBuf, bool),
     Multi(PathBuf),
     Artwork { library: PathBuf, picture: PathBuf },
+    /// A library made from samples: where, or why not.
+    Created(Result<PathBuf, String>),
 }
 
 #[derive(Default)]
@@ -101,6 +105,15 @@ fn show(ask: Ask) -> Option<Picked> {
             .add_filter("Pictures", &["png", "jpg", "jpeg"])
             .pick_file()
             .map(|picture| Picked::Artwork { library, picture }),
+        Ask::Samples { out } => {
+            let source = rfd::FileDialog::new().set_title("A folder of WAV or AIFF samples").pick_folder()?;
+            // Made here, on the dialog's thread: it reads every sample, which takes a while.
+            let options = crate::creator::Options { source, name: String::new(), vendor: String::new(), out, kontra: true, kontakt: true };
+            Some(Picked::Created(match crate::creator::create(&options, &|_| {}) {
+                Ok(created) => Ok(created.kontra.unwrap_or_default()),
+                Err(e) => Err(format!("{e:#}")),
+            }))
+        }
         Ask::Multi { from, name } => {
             let _ = std::fs::create_dir_all(&from);
             rfd::FileDialog::new()

@@ -661,7 +661,7 @@ pub fn presets(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for e in walkdir::WalkDir::new(root).follow_links(false) {
         let e = e?;
-        if e.file_type().is_file() && (e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("nki")) || is_multi(e.path())) { files.push(e.into_path()); }
+        if e.file_type().is_file() && (crate::creator::is_instrument(e.path()) || is_multi(e.path())) { files.push(e.into_path()); }
     }
     files.sort(); Ok(files)
 }

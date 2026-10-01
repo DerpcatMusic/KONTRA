@@ -84,6 +84,8 @@ pub enum Command {
     /// Add a library folder (`true`) or a folder of libraries.
     AddFolder(bool),
     ImportKontakt,
+    /// Make a library from a folder of samples ([`crate::creator`]).
+    CreateLibrary,
     Rescan,
     CancelScan,
     /// A library's cover, by its folder: a picture chosen for it, the
@@ -244,6 +246,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Add folder of libraries…", "", Command::AddFolder(false)),
                 act("Add library folder…", "", Command::AddFolder(true)),
                 act("Import from Kontakt", "", Command::ImportKontakt),
+                act("Create library from folder…", "", Command::CreateLibrary),
                 Item::Rule,
                 act("Library folders…", "", Command::Folders),
             ];
@@ -728,6 +731,13 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Folders => cx.state.settings = !cx.state.settings,
         Command::AddFolder(single) => super::header::add_folder(cx, single),
         Command::ImportKontakt => shared.libraries.import_kontakt(),
+        Command::CreateLibrary => {
+            // Into the folder saved multis go: one the browser scans.
+            let out = super::header::root(cx).into();
+            if !cx.state.picker.ask(super::picker::Ask::Samples { out }) {
+                cx.state.notice = "No file dialog here: use `kontakto create-library <folder>`".into();
+            }
+        }
         Command::Rescan => shared.libraries.rescan(),
         Command::SortLibraries(sort) => shared.libraries.edit(|s| s.sort = sort),
         Command::Pin(dir) => shared.libraries.edit(|s| match s.pinned.iter().position(|d| *d == dir) {

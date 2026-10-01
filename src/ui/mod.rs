@@ -759,7 +759,7 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
         }
         return true;
     }
-    let nki = |p: &PathBuf| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki"));
+    let nki = |p: &PathBuf| crate::creator::is_instrument(p);
     if paths.is_empty() || !paths.iter().all(nki) {
         return false;
     }
@@ -987,6 +987,11 @@ fn picked(cx: &mut Cx) {
                 cx.state.notice = format!("The multi was not saved: {e:#}");
             }
         }
+        Some(picker::Picked::Created(Ok(path))) => {
+            cx.p.shared.libraries.rescan();
+            cx.state.notice = format!("Library created in {}", path.display());
+        }
+        Some(picker::Picked::Created(Err(e))) => cx.state.notice = format!("No library was created: {e}"),
         None => {}
     }
 }
