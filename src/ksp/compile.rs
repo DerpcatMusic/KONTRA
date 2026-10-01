@@ -11,6 +11,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 pub const MAX_ARRAY_LEN: u32 = 1_000_000;
 pub const MAX_TOTAL_ELEMENTS: u32 = 16_000_000;
 const MAX_VARS: usize = 1 << 20;
+/// Diagnostic prefixes for what a script uses that this runtime lacks; the
+/// coverage audit counts them.
+pub const UNSUPPORTED_FUNCTION: &str = "Unsupported KSP function: ";
+pub const UNSUPPORTED_VARIABLE: &str = "Unsupported KSP variable: ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ty {
@@ -270,10 +274,12 @@ pub enum Callback {
     PgsChanged,
     PersistenceChanged,
     AsyncComplete,
+    /// Kontakt 7's global UI callback; `$NI_UI_ID` names the control.
+    UiControls,
 }
 
 impl Callback {
-    const COUNT: usize = 12;
+    const COUNT: usize = 13;
 
     fn from_name(name: &str) -> Option<Self> {
         Some(match name {
@@ -289,6 +295,7 @@ impl Callback {
             "pgs_changed" => Self::PgsChanged,
             "persistence_changed" => Self::PersistenceChanged,
             "async_complete" => Self::AsyncComplete,
+            "ui_controls" => Self::UiControls,
             _ => return None,
         })
     }
@@ -308,6 +315,7 @@ impl Callback {
             Self::PgsChanged => cb::PGS_CHANGED,
             Self::PersistenceChanged => cb::PERSISTENCE_CHANGED,
             Self::AsyncComplete => cb::ASYNC_COMPLETE,
+            Self::UiControls => cb::UI_CONTROLS,
         }
     }
 }
@@ -1201,6 +1209,20 @@ impl<'a> Compiler<'a> {
             self.emit(Op::Builtin(Builtin::GetEventPar, 2));
             return Ok(Ty::Int);
         }
+        // An uppercase array nobody declared is a built-in this runtime lacks:
+        // reads give 0 rather than failing the callback.
+        if let (Some(_), Some(b'A'..=b'Z')) = (index, name.as_bytes().get(1)) {
+            self.p.diagnostics.insert(format!(
+                "{UNSUPPORTED_VARIABLE}{name} (line {}): reads 0",
+                self.line
+            ));
+            let ty = match name.as_bytes()[0] {
+                b'?' => Ty::Real,
+                b'!' => Ty::Str,
+                _ => Ty::Int,
+            };
+            return Ok(self.unsupported_value(ty));
+        }
         ensure!(index.is_none(), "Undeclared array {name}");
         if let Some(x) = builtins::real_constant(name) {
             self.p.reals.push(x);
@@ -1337,6 +1359,44 @@ impl<'a> Compiler<'a> {
         Ok(result)
     }
 
+    /// A function this runtime lacks. Kontakt rejects unknown names when it
+    /// compiles, but a script written for a newer Kontakt should still run:
+    /// the call does nothing (its arguments are not evaluated) and yields an
+    /// empty value of the type its name suggests.
+    fn unsupported(&mut self, fname: &str, want_value: bool) -> Option<Ty> {
+        self.p.diagnostics.insert(format!(
+            "{UNSUPPORTED_FUNCTION}{fname} (line {}): does nothing, returns 0",
+            self.line
+        ));
+        if !want_value {
+            return None;
+        }
+        Some(self.unsupported_value(
+            if fname.contains("real") {
+                Ty::Real
+            } else if fname.ends_with("name") || fname.ends_with("_str") || fname == "get_sample" {
+                Ty::Str
+            } else {
+                Ty::Int
+            },
+        ))
+    }
+
+    fn unsupported_value(&mut self, ty: Ty) -> Ty {
+        match ty {
+            Ty::Int => self.emit(Op::PushI(0)),
+            Ty::Real => {
+                self.p.reals.push(0.0);
+                self.emit(Op::PushR(self.p.reals.len() as u32 - 1));
+            }
+            Ty::Str => {
+                self.p.strings.push("".into());
+                self.emit(Op::PushS(self.p.strings.len() as u32 - 1));
+            }
+        }
+        ty
+    }
+
     fn call(&mut self, name: Sym, args: &[Expr], want_value: bool) -> Result<Option<Ty>> {
         let fname = self.name(name);
         match (fname, args) {
@@ -1360,8 +1420,9 @@ impl<'a> Compiler<'a> {
             }
             _ => {}
         }
-        let b = Builtin::from_name(fname)
-            .with_context(|| format!("Unsupported KSP function: {fname}"))?;
+        let Some(b) = Builtin::from_name(fname) else {
+            return Ok(self.unsupported(fname, want_value));
+        };
         let sig = b.sig();
         let max = sig.args.len();
         let min = max - sig.optional as usize;
@@ -1422,6 +1483,8 @@ impl<'a> Compiler<'a> {
             (Builtin::Min, Some(Ty::Real)) => Builtin::MinReal,
             (Builtin::Max, Some(Ty::Real)) => Builtin::MaxReal,
             (Builtin::InRange, Some(Ty::Real)) => Builtin::InRangeReal,
+            (Builtin::Sgn, Some(Ty::Real)) => Builtin::SgnReal,
+            (Builtin::Signbit, Some(Ty::Real)) => Builtin::SignbitReal,
             _ => b,
         };
         self.emit(Op::Builtin(b, args.len() as u8));

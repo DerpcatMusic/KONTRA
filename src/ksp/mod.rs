@@ -48,6 +48,8 @@ pub struct HostState {
     pub(crate) pgs_strs: Vec<(String, String)>,
     pub keyboard: BTreeMap<u8, KeyState>,
     pub script_pressed: bool,
+    /// `set_keyrange` entries (lowest key, highest key, name); they never overlap.
+    pub keyranges: Vec<(u8, u8, String)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
