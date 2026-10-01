@@ -1272,30 +1272,13 @@ impl Player {
         self.clock += 1;
         let mask = ev.groups.unwrap_or(&self.allowed);
         self.pending.clear();
-        for &z in bank.zones_on(ev.note) {
+        for z in bank.matching_zones(ev.channel, ev.note, ev.velocity, release_trigger, mask)
+            .take(self.pending.capacity()) {
             let zone = &bank.zones()[z as usize];
-            let group = &bank.groups()[zone.group];
-            let eligible = bank.playable[zone.group]
-                && group.release_trigger == release_trigger
-                && (group.channel < 0 || group.channel == i16::from(ev.channel))
-                && mask.contains(zone.group)
-                && (zone.low_velocity..=zone.high_velocity).contains(&ev.velocity);
-            if eligible && self.pending.len() < self.pending.capacity() {
-                let gain = edge_gain(
-                    ev.velocity,
-                    zone.low_velocity,
-                    zone.high_velocity,
-                    zone.fade_low_velocity,
-                    zone.fade_high_velocity,
-                ) * edge_gain(
-                    ev.note,
-                    zone.low_key,
-                    zone.high_key,
-                    zone.fade_low_key,
-                    zone.fade_high_key,
-                );
-                self.pending.push((z, gain));
-            }
+            let gain = edge_gain(ev.velocity, zone.low_velocity, zone.high_velocity,
+                zone.fade_low_velocity, zone.fade_high_velocity)
+                * edge_gain(ev.note, zone.low_key, zone.high_key, zone.fade_low_key, zone.fade_high_key);
+            self.pending.push((z, gain));
         }
         for i in 0..self.pending.len() {
             let (zone, gain) = self.pending[i];
@@ -1410,6 +1393,7 @@ impl Player {
         settings.mods.scale_envelope(&mut envelope, &inputs);
         let mut voice = Voice {
             event,
+            zone_id: play.zone_id,
             group: zone.group as u32,
             voice_group: settings.voice_group,
             channel: ev.channel,
