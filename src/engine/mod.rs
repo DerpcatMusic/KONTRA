@@ -507,6 +507,7 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             return rt.note_on_from(&mut host, 0, owner, note, velocity.min(127));
         }
+        self.player.input_keys[owner as usize][note as usize] = (channel, velocity.min(127));
         self.start_event(&NoteEvent { owner: Some((owner, note)), ..NoteEvent::new(channel, note, velocity) });
     }
 
@@ -549,7 +550,7 @@ impl Engine {
         }
         let defaults = self.defaults();
         if let Some(bank) = self.bank.as_deref() {
-            self.player.note_off(bank, channel, note, defaults);
+            self.player.note_off(bank, channel, note, Some(owner), defaults);
         } else {
             self.player.keys[channel as usize][note as usize] = 0;
         }
@@ -958,6 +959,8 @@ struct Player {
     expression: Box<[[Expression; 128]; 16]>,
     /// Velocity of keys that are down.
     keys: [[u8; 128]; 16],
+    /// Unscripted physical inputs: engine channel and velocity. Prepared off-thread.
+    input_keys: Box<[[(u8, u8); 128]; 16]>,
     /// Frames rendered so far.
     now: u64,
     /// Frame each key went down (or its release counter was reset) and up:
@@ -1008,6 +1011,7 @@ impl Player {
             pressure: [0; 16],
             expression: Box::new([[Expression::default(); 128]; 16]),
             keys: [[0; 128]; 16],
+            input_keys: Box::new([[(0, 0); 128]; 16]),
             now: 0,
             key_on: Box::new([[0; 128]; 16]),
             key_up: Box::new([[0; 128]; 16]),
@@ -1041,6 +1045,7 @@ impl Player {
             (cc[7], cc[10], cc[11]) = (127, 64, 127);
         }
         self.keys = [[0; 128]; 16];
+        self.input_keys.fill([(0, 0); 128]);
         (self.volume, self.pan) = (1.0, 0.0);
         self.tone = [0.0; 2];
         self.touch();
@@ -1389,13 +1394,23 @@ impl Player {
         }
     }
 
-    fn note_off(&mut self, bank: &Bank, channel: u8, note: u8, defaults: Ahdsr) {
+    fn note_off(&mut self, bank: &Bank, channel: u8, note: u8, owner: Option<u8>, defaults: Ahdsr) {
         if channel >= 16 || note >= 128 {
             return;
         }
         let (c, n) = (channel as usize, note as usize);
-        let velocity = std::mem::take(&mut self.keys[c][n]);
-        if velocity > 0 {
+        let velocity = if let Some(owner) = owner {
+            let input = &mut self.input_keys[owner as usize][n];
+            if input.0 == channel { std::mem::take(&mut input.1) } else { 0 }
+        } else {
+            for row in self.input_keys.iter_mut().filter(|r| r[n].0 == channel) { row[n].1 = 0; }
+            self.keys[c][n]
+        };
+        let remaining = self.input_keys.iter().filter(|r| r[n].0 == channel).map(|r| r[n].1).max().unwrap_or(0);
+        // Direct start_event callers may have no physical-input record.
+        let velocity = if velocity == 0 && remaining == 0 { self.keys[c][n] } else { velocity };
+        self.keys[c][n] = remaining;
+        if velocity > 0 && remaining == 0 {
             self.key_up[c][n] = self.now;
         }
         let allowed = self.allowed;
@@ -1403,7 +1418,9 @@ impl Player {
         // Layered voices share an event. Releasing that event clears held on
         // every layer, so each distinct physical retrigger fires exactly once.
         // ponytail: scan per event; index event voices if dense retrigger releases dominate.
-        while let Some(source) = self.voices.iter().find(|v| v.channel == channel && v.note == note && v.held && !v.released && !v.release_trigger).map(|v| v.event) {
+        while let Some(source) = self.voices.iter().find(|v| v.channel == channel
+            && owner.map_or(v.note == note, |owner| v.owner.map_or(v.note == note, |input| input == (owner, note)))
+            && v.held && !v.released && !v.release_trigger).map(|v| v.event) {
             if let Some((channel, note, velocity, false, captured)) = self.release_voices(bank, source) {
                 found = true;
                 let expression = self.release_expression(source, channel, note);
@@ -1576,7 +1593,7 @@ impl Player {
             123 => {
                 if let Some(bank) = bank {
                     for note in 0..128 {
-                        self.note_off(bank, channel, note, defaults);
+                        self.note_off(bank, channel, note, None, defaults);
                     }
                 }
             }

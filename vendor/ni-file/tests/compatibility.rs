@@ -6,6 +6,79 @@ use ni_file::{
     nkr::Archive,
 };
 use std::io::Cursor;
+
+#[test]
+fn malformed_nis_lengths_and_children_return_errors() {
+    use ni_file::nis::{ItemContainer, ItemData, ItemDataHeader, ItemType};
+    let mut frame = 39u64.to_le_bytes().to_vec();
+    frame.extend(1u32.to_le_bytes());
+    frame.extend(b"hsin");
+    frame.extend([0; 24]);
+    assert!(ItemContainer::read(Cursor::new(&frame)).is_err());
+    let mut data = 19u64.to_le_bytes().to_vec();
+    data.extend(b"DSIN");
+    data.extend(1u32.to_le_bytes());
+    data.extend(1u32.to_le_bytes());
+    assert!(ItemData::read(Cursor::new(&data)).is_err());
+    let header = ItemDataHeader { length: 20, domain_id: [0xff; 4], item_id: 1, version: 1 };
+    assert!(matches!(header.item_type(), ItemType::Unknown(1, _)));
+    // A minimal empty item followed by an unsupported child-list version.
+    data[..8].copy_from_slice(&20u64.to_le_bytes());
+    frame[..8].copy_from_slice(&68u64.to_le_bytes());
+    frame.extend(data);
+    frame.extend(2u32.to_le_bytes());
+    frame.extend(0u32.to_le_bytes());
+    assert!(ItemContainer::read(Cursor::new(frame)).is_err());
+}
+
+#[test]
+fn nks_extraction_checks_decompressed_length_and_returns_errors() {
+    use ni_file::{NIFile, kontakt::objects::{BPatchHeader, BPatchHeaderV42}, nks::container::NKSContainer};
+    let mut header = vec![0; 212];
+    header[..4].copy_from_slice(&0xEA37631Au32.to_le_bytes());
+    let mut h = BPatchHeaderV42::read_le(Cursor::new(&header)).unwrap();
+    h.decompressed_length = 4;
+    let mut nks = NKSContainer { header: BPatchHeader::BPatchHeaderV42(h), compressed_data: vec![3,b't',b'e',b's',b't'], meta_info: None };
+    assert_eq!(nks.decompressed_preset().unwrap(), b"test");
+    if let BPatchHeader::BPatchHeaderV42(h) = &mut nks.header { h.decompressed_length = 5; }
+    assert!(nks.decompressed_preset().is_err());
+    if let BPatchHeader::BPatchHeaderV42(h) = &mut nks.header { h.decompressed_length = u32::MAX; }
+    assert!(nks.decompressed_preset().is_err());
+    nks.compressed_data.clear();
+    assert!(nks.preset().is_err());
+    assert!(NKSContainer::read(Cursor::new([0;4])).is_err());
+    assert!(BPatchHeaderV42::read_le(Cursor::new([0;212])).is_err());
+    assert!(NIFile::NICompressedWave.inner_preset().is_err());
+    if let BPatchHeader::BPatchHeaderV42(h) = &mut nks.header { h.decompressed_length = 4; }
+    nks.compressed_data = vec![3,b't',b'e',b's',b't'];
+    assert_eq!(NIFile::NKSContainer(nks).inner_preset().unwrap(), b"test");
+}
+
+#[test]
+fn generic_nis_extraction_uses_the_existing_subtree_reader() {
+    use ni_file::{NIFile, nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader, PresetChunkItemProperties}};
+    let data_header = |item_id| ItemDataHeader { length: 20, domain_id: *b"NISD", item_id, version: 1 };
+    let container_header = ItemHeader { length: 40, magic: b"hsin".to_vec(), header_flags: 0, uuid: vec![0;16] };
+    let mut props = 1u32.to_le_bytes().to_vec();
+    props.extend(0u32.to_le_bytes());
+    props.extend(1u32.to_le_bytes());
+    props.extend(4u64.to_le_bytes());
+    props.extend(b"test");
+    // Encoded PresetChunkItem with its empty base Item and no child containers.
+    let mut inner = (40u64 + 40 + props.len() as u64 + 8).to_le_bytes().to_vec();
+    inner.extend(1u32.to_le_bytes());inner.extend(b"hsin");inner.extend([0;24]);
+    inner.extend((40u64 + props.len() as u64).to_le_bytes());inner.extend(b"DSIN");inner.extend(0x6du32.to_le_bytes());inner.extend(1u32.to_le_bytes());
+    inner.extend(20u64.to_le_bytes());inner.extend(b"DSIN");inner.extend(1u32.to_le_bytes());inner.extend(1u32.to_le_bytes());inner.extend(&props);
+    inner.extend(1u32.to_le_bytes());inner.extend(0u32.to_le_bytes());
+    let mut subtree = 1u32.to_le_bytes().to_vec();subtree.push(0);subtree.extend(inner);
+    let encryption = ItemData { header: data_header(0x74), inner: Some(Box::new(ItemData { header: data_header(0x73), inner: None, data: subtree })), data: vec![1,0,0,0,0] };
+    let preset = ItemContainer { header: container_header.clone(), data: ItemData { header: ItemDataHeader { domain_id: *b"NIK4", item_id: 3, ..data_header(3) }, inner: None, data: vec![] }, children: vec![ItemContainer { header: container_header, data: encryption, children: vec![] }] };
+    assert_eq!(NIFile::NISoundContainer(preset).inner_preset().unwrap(), b"test");
+    props[..4].copy_from_slice(&2u32.to_le_bytes());
+    assert!(PresetChunkItemProperties::read(Cursor::new(&props)).is_err());
+    props[..4].copy_from_slice(&1u32.to_le_bytes());props[8..12].copy_from_slice(&2u32.to_le_bytes());
+    assert!(PresetChunkItemProperties::read(Cursor::new(props)).is_err());
+}
 #[test]
 fn loop_slots_are_a_mask_not_a_count() {
     let mut data = vec![0b10001];
