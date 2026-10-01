@@ -522,12 +522,22 @@ pub fn number(
     range: RangeInclusive<f64>,
     display: String,
 ) -> El {
+    let id: Id = id.into();
     let reserve = display.clone();
-    let c = drag_value(ui, id, label, value, range).size(S);
+    // MUI's box drags sideways; ours goes up and down like a knob (up
+    // raises, Shift for fine): its sideways step is undone, ours applied.
+    let before = *value;
+    let c = drag_value(ui, id.clone(), label, value, range.clone()).size(S);
+    if ui.get(id.clone()).dragged {
+        *value = before;
+        ui.drag(id.clone(), value, range, TRAVEL, true);
+        grip(id.as_str());
+    }
     row![
         caption(label).fill(secondary()).lines(1).flex(1).min_w(0),
         c.el.value_text(display)
             .el()
+            .cursor(Cursor::ResizeV)
             .h(CONTROL)
             .reserve(reserve)
             .min_w(CONTROL * 2.)
@@ -616,6 +626,30 @@ pub fn wheel_taken() -> bool {
     WHEELED.with(|w| w.replace(false))
 }
 
+thread_local! {
+    /// The control a drag last turned. Window threads may host several
+    /// editors; each asks its own `Ui` whether that ID is held there.
+    static GRIPPED: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// `id` is being dragged: the pointer hides until it lets go.
+pub fn grip(id: &str) {
+    GRIPPED.with(|g| {
+        if *g.borrow() != id {
+            *g.borrow_mut() = id.to_owned();
+        }
+    });
+}
+
+/// Whether the pointer hides now, as Kontakt's does: a knob, slider or
+/// number is being dragged. The window brings it back where it hid.
+pub fn pointer_hidden(ui: &Ui) -> bool {
+    GRIPPED.with(|g| {
+        let id = g.borrow();
+        !id.is_empty() && ui.get(id.as_str()).held
+    })
+}
+
 /// Pointer, wheel and keys on a continuous control `id`, as Kontakt's: drag
 /// along `vertical` (up or right increases) across `travel` px, Shift for
 /// fine; wheel and arrows step; double-click or Ctrl/Cmd-click resets.
@@ -630,6 +664,9 @@ pub fn drive(
 ) -> bool {
     let (lo, hi) = (*range.start(), *range.end());
     let r = ui.get(id);
+    if r.dragged {
+        grip(id);
+    }
     ui.drag(id, value, range.clone(), travel, vertical);
     if let Some(wheel) = ui.wheel(id) {
         WHEELED.with(|w| w.set(true));
