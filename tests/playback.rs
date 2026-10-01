@@ -1585,7 +1585,7 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
     for (channel, note, velocity, expected) in [(0, 60, 100, 3), (0, 60, 50, 1),
         (1, 60, 100, 5), (0, 60, 10, -1), (0, 61, 100, -1),
         (0, 62, 100, -1), (0, 63, 100, -1), (0, 65, 100, 6)] {
-        e.reset_midi();
+        e.panic();
         e.note_on(channel, note, velocity);
         // Before wait the MIDI event has not reached the playback host.
         if note != 65 { assert_eq!(e.script().unwrap().last_message(), "0"); }
@@ -1597,7 +1597,7 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
         e.cc(channel, 1, 1);
         assert_eq!(e.script().unwrap().last_message(), message, "live channel={channel} note={note} velocity={velocity}");
     }
-    e.reset_midi();
+    e.panic();
     e.note_on(0, 60, 100);
     render(&mut e, 64);
     e.note_off(0, 60);
