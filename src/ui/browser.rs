@@ -389,7 +389,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // The rows are summed above; the empty state and hints are measured.
     let measured = ui.scene().and_then(|s| s.surface("browser-sources-content")).map_or(0., |s| s.frame.size.height);
     let (sources_y, sources_bar, revealed) =
-        slide(ui, &sources_id, &mut cx.state.browse.sources_y, measured.max(top + TIGHT), reveal);
+        slide(ui, &sources_id, &mut cx.state.browse.sources_y, measured.max(top + TIGHT), reveal, false);
     if revealed || chosen_at.is_none() {
         cx.state.browse.reveal_source = false;
     }
@@ -419,7 +419,8 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         (&cx.state.source, &needle, multis).hash(&mut h);
         h.finish()
     };
-    if cx.state.browse.listing != listing {
+    let fresh = cx.state.browse.listing != listing;
+    if fresh {
         cx.state.browse.listing = listing;
         cx.state.browse.list_y = 0.;
     }
@@ -484,7 +485,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     tops.push(y);
     let at = cursor_at(cx, &listed);
     let reveal = at.filter(|_| cx.state.browse.reveal_row).map(|n| (tops[n], tops[n + 1]));
-    let (list_y, list_bar, revealed) = slide(ui, list_id, &mut cx.state.browse.list_y, y, reveal);
+    let (list_y, list_bar, revealed) = slide(ui, list_id, &mut cx.state.browse.list_y, y, reveal, fresh);
     if revealed || at.is_none() {
         cx.state.browse.reveal_row = false;
     }
@@ -933,18 +934,17 @@ fn progress_bar(done: f64) -> El {
 
 /// A pane slid by the browser itself, so a row can be brought into view:
 /// the wheel and the bar at its edge move it to `y`, and `reveal`, a row's
-/// top and bottom, brings that row in. Returns where it is slid to, its bar
-/// when it overflows, and whether `reveal` was done.
-fn slide(ui: &mut Ui, id: &str, y: &mut f64, content_h: f64, reveal: Option<(f64, f64)>) -> (f64, Option<El>, bool) {
+/// top and bottom, brings that row in. Returns where it is drawn, its bar
+/// when it overflows, and whether `reveal` was done. A `fresh` list is
+/// drawn where it is put, not glided to.
+fn slide(ui: &mut Ui, id: &str, y: &mut f64, content_h: f64, reveal: Option<(f64, f64)>, fresh: bool) -> (f64, Option<El>, bool) {
+    let from = *y;
     let view_h = ui.scene().and_then(|s| s.surface(id)).map_or(0., |s| s.frame.size.height);
     if let Some(w) = ui.wheel(id) {
         *y += w.y;
     }
     let bar_id = format!("{id}-bar");
-    let bar = ui.get(bar_id.as_str());
-    if bar.dragged && view_h > 0. {
-        *y += bar.drag_delta.y * content_h / view_h;
-    }
+    bar_drag(ui, &bar_id, y, view_h, content_h);
     let revealed = view_h > 0. && reveal.is_some();
     if let Some((top, bottom)) = reveal.filter(|_| view_h > 0.) {
         if top < *y {
@@ -954,26 +954,11 @@ fn slide(ui: &mut Ui, id: &str, y: &mut f64, content_h: f64, reveal: Option<(f64
         }
     }
     *y = y.clamp(0., (content_h - view_h).max(0.));
-    let bar = (view_h > 0. && content_h > view_h + 0.5).then(|| scrollbar(ui, &bar_id, *y, view_h, content_h));
-    (*y, bar, revealed)
-}
-
-/// A pane's scroll thumb: drag it to slide the pane.
-fn scrollbar(ui: &mut Ui, id: &str, y: f64, view_h: f64, content_h: f64) -> El {
-    let r = ui.get(id);
-    let lift = ui.state(id).hover.max(if r.held { 1. } else { 0. }) as f32;
-    canvas(move |s| {
-        let len = (s.height * view_h / content_h).max(CONTROL);
-        let at = (s.height - len) * (y / (content_h - view_h)).clamp(0., 1.);
-        let w = 3. + 2. * f64::from(lift);
-        vec![Draw::fill(rect(s.width - w - 1., at + 2., w, len - 4.), Role::Ink.alpha(0.18 + 0.3 * lift))]
-    })
-    .w(8)
-    .h(Len::Pct(100.))
-    .shrink(0)
-    .a11y(A11y::Slider { value: y, min: 0., max: content_h - view_h })
-    .named("Scroll the list")
-    .id(id.to_owned())
+    // The rows are built for where it is drawn, gliding to `y`.
+    let snap = fresh || leaps(from, *y) || ui.get(bar_id.as_str()).held;
+    let drawn = glide(ui, id, *y, snap);
+    let bar = (view_h > 0. && content_h > view_h + 0.5).then(|| scrollbar(ui, &bar_id, "Scroll the list", drawn, view_h, content_h));
+    (drawn, bar, revealed)
 }
 
 /// The divider between the panes: drag it to share out the height, double-
@@ -994,16 +979,16 @@ fn split_divider(ui: &mut Ui, cx: &mut Cx) -> El {
     if r.released || r.double_clicked {
         cx.selection.browser_split = cx.state.split as f32;
     }
-    let lift = ui.state(id).hover.max(if r.held { 1. } else { 0. }) as f32;
+    let lift = edge_lift(ui, id);
+    // A hairline at rest, the accent under the hand; grabbed a little wide.
     canvas(move |s| {
-        let t = if lift > 0.5 { 2. } else { 1. };
-        vec![Draw::fill(
-            rect(0., ((s.height - t) / 2.).round(), s.width, t),
-            Role::Ink.alpha(0.08 + 0.25 * lift),
-        )]
+        let mid = (s.height / 2.).floor();
+        let mut d = vec![Draw::fill(rect(0., mid, s.width, 1.), Role::Ink.alpha(0.08))];
+        d.extend(edge_mark(s, mid + 0.5, false, lift));
+        d
     })
     .w(Len::Pct(100.))
-    .h(5)
+    .h(EDGE_GRAB + 3.)
     .shrink(0)
     .cursor(Cursor::ResizeV)
     .tip("Drag to share out the height, double-click to reset")
@@ -1180,6 +1165,7 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: 
     )
     .centered()]
     .square(TEXT + 2.)
+    .cursor(Cursor::Hand)
     .focusable()
     .a11y(A11y::Toggle { on: favorite })
     .named(if favorite { "Remove from favorites" } else { "Add to favorites" })

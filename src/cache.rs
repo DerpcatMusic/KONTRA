@@ -12,7 +12,7 @@
 //! then zones and impulse audio in little-endian binary; zones are the bulk
 //! (93k in Areia) and would take far longer to parse as JSON.
 
-use crate::audio::Sample;
+use crate::audio::{Header, Sample, Source, Sources};
 use crate::fx::{Params, ProgramFx, params::Impulse};
 use crate::import::{Group, Instrument, Loop, VoiceLimit, Zone};
 use crate::ksp::Persisted;
@@ -282,6 +282,109 @@ fn decode(bytes: &[u8], path: &Path) -> Option<Instrument> {
     })
 }
 
+/// Each of `paths` (a preset's distinct samples, in order) with its source
+/// and header as a load of `preset` stored them, if every file holding
+/// them is unchanged: a load then opens no sample before it plays.
+/// Entries are keyed by the preset and its sample paths, and stamped with
+/// each holding file's size and modification time.
+pub fn headers(dir: &Path, preset: &Path, paths: &[&Path]) -> Option<Vec<(Source, Header)>> {
+    let bytes = std::fs::read(headers_entry(dir, preset, paths)).ok()?;
+    let mut r = Reader(bytes.strip_prefix(HEADERS)?);
+    let files = (0..r.len(8)?)
+        .map(|_| {
+            // SAFETY: written from `as_encoded_bytes` on this platform.
+            let file = PathBuf::from(unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(r.bytes()?) });
+            let stamp = r.array::<24>()?;
+            (file_stamp(&file)? == stamp).then_some(file)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if r.len(37)? != paths.len() {
+        return None;
+    }
+    let mut sources = Sources::default();
+    let headers = (paths.iter())
+        .map(|&path| {
+            let file = files.get(r.u32()? as usize)?.clone();
+            let (offset, len) = (r.u64()?, r.u64()?);
+            let len = (len != u64::MAX).then_some(len);
+            let (rate, frames, bits) = (r.u32()?, r.u64()?, r.u32()?);
+            let [keyed] = r.array()?;
+            let header = Header {
+                rate,
+                frames,
+                bits: u16::try_from(bits).ok(),
+            };
+            Some((sources.rebuild(path, file, offset, len, keyed != 0).ok()?, header))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    r.0.is_empty().then_some(headers)
+}
+
+/// Store what [`headers`] reads back. Failures only cost the next load its opens.
+pub fn store_headers(dir: &Path, preset: &Path, paths: &[&Path], headers: &[(&Source, Header)]) {
+    let mut bytes = HEADERS.to_vec();
+    let mut w = Writer(&mut bytes);
+    let mut ids = std::collections::HashMap::new();
+    let mut files = Vec::new();
+    let records: Vec<_> = (headers.iter())
+        .map(|(source, header)| {
+            let (file, offset, len, keyed) = source.parts();
+            let id = *ids.entry(file).or_insert_with(|| {
+                files.push(file);
+                files.len() as u32 - 1
+            });
+            (id, offset, len, keyed, header)
+        })
+        .collect();
+    w.u64(files.len() as u64);
+    for file in files {
+        let Some(stamp) = file_stamp(file) else { return };
+        w.bytes(file.as_os_str().as_encoded_bytes());
+        w.0.extend_from_slice(&stamp);
+    }
+    w.u64(records.len() as u64);
+    for (id, offset, len, keyed, header) in records {
+        w.u32(id);
+        w.u64(offset);
+        w.u64(len.unwrap_or(u64::MAX));
+        w.u32(header.rate);
+        w.u64(header.frames);
+        w.u32(header.bits.map_or(u32::MAX, u32::from));
+        w.0.push(keyed as u8);
+    }
+    let entry = headers_entry(dir, preset, paths);
+    let tmp = entry.with_extension(format!("tmp{}", std::process::id()));
+    let written = std::fs::create_dir_all(dir)
+        .and_then(|()| std::fs::write(&tmp, &bytes))
+        .and_then(|()| std::fs::rename(&tmp, &entry));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+const HEADERS: &[u8] = b"KONTRA headers 1\n";
+
+// ponytail: never evicted, like instrument entries; ≈37 bytes a sample
+// (860 KiB for ANALOG STRINGS).
+fn headers_entry(dir: &Path, preset: &Path, paths: &[&Path]) -> PathBuf {
+    let mut h = std::hash::DefaultHasher::new();
+    preset.as_os_str().as_encoded_bytes().hash(&mut h);
+    for path in paths {
+        path.as_os_str().as_encoded_bytes().hash(&mut h);
+    }
+    dir.join(format!("{:016x}.headers", h.finish()))
+}
+
+/// A file's size and modification time (ns).
+fn file_stamp(path: &Path) -> Option<[u8; 24]> {
+    let meta = path.metadata().ok()?;
+    let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let mut out = [0; 24];
+    out[..8].copy_from_slice(&meta.len().to_le_bytes());
+    out[8..].copy_from_slice(&mtime.as_nanos().to_le_bytes());
+    Some(out)
+}
+
 struct Writer<'a>(&'a mut Vec<u8>);
 
 impl Writer<'_> {
@@ -405,6 +508,29 @@ mod tests {
         std::fs::write(&entry, &bytes).unwrap();
         std::fs::write(&path, b"preset, edited").unwrap();
         assert!(load(&dir, &path, 0).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sample_headers_round_trip_and_changed_files_miss() {
+        let dir = std::env::temp_dir().join(format!("kontra-headers-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (preset, sample) = (dir.join("a.nki"), dir.join("1.wav"));
+        let spec = hound::WavSpec { channels: 1, sample_rate: 44_100, bits_per_sample: 24, sample_format: hound::SampleFormat::Int };
+        let mut w = hound::WavWriter::create(&sample, spec).unwrap();
+        (0..100).for_each(|i| w.write_sample(i).unwrap());
+        w.finalize().unwrap();
+        let source = Sources::default().source(&sample).unwrap();
+        let header = source.open().unwrap().header();
+        assert_eq!(header, Header { rate: 44_100, frames: 100, bits: Some(24) });
+        let paths = [sample.as_path()];
+        store_headers(&dir, &preset, &paths, &[(&source, header)]);
+        let back = headers(&dir, &preset, &paths).expect("a fresh entry hits");
+        assert_eq!((back[0].0.parts(), back[0].1), (source.parts(), header));
+        assert!(headers(&dir, &dir.join("b.nki"), &paths).is_none(), "another preset misses");
+        // The sample changed: stale.
+        std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&sample).unwrap(), b"x").unwrap();
+        assert!(headers(&dir, &preset, &paths).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

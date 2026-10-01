@@ -25,6 +25,7 @@ mod chain;
 mod computer;
 mod cover;
 mod editor;
+mod fitted;
 mod header;
 mod instrument;
 mod keyboard;
@@ -70,7 +71,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
         .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .hide_pointer(theme::pointer_hidden)
-        .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready())
+        .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready() || fitted::ready())
         .fixed_zoom()
         .resizable((900, 600))
         .into_editor()
@@ -411,6 +412,8 @@ struct EditorState {
     /// ([`crate::plugin::Scope::source`]; 0 for none).
     analyser: spectrum::Analyser,
     scope: usize,
+    /// The window's size when its resize corner was grabbed.
+    corner: Option<Size>,
 }
 
 impl EditorState {
@@ -567,16 +570,8 @@ impl Cx<'_> {
     /// Add an instrument to the first free slot and show it.
     fn add(&mut self, path: String) {
         self.remember(&path);
-        let (port, channel) = self.selection.next_input();
-        match add_part(
-            &mut self.selection,
-            Part {
-                path,
-                port,
-                channel,
-                ..Default::default()
-            },
-        ) {
+        let part = new_part(&self.selection, &self.settings, path);
+        match add_part(&mut self.selection, part) {
             Some(slot) => self.show(slot),
             None => {
                 self.state.notice =
@@ -651,6 +646,19 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 }
 
 /// Put `part` in the first empty slot; `None` when the rack is full.
+/// A part for `path` on the input and output the settings give new parts.
+fn new_part(selection: &Selection, settings: &crate::library::Settings, path: String) -> Part {
+    let (port, channel) = settings.new_input.unwrap_or_else(|| selection.next_input());
+    Part {
+        path,
+        port,
+        channel,
+        output: settings.new_output.unwrap_or(0),
+        output_manual: settings.new_output.is_some(),
+        ..Default::default()
+    }
+}
+
 fn add_part(selection: &mut Selection, part: Part) -> Option<usize> {
     let slot = selection
         .parts
@@ -790,16 +798,8 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
                     Some(slot)
                 }
                 None => {
-                    let (port, channel) = selection.next_input();
-                    add_part(
-                        &mut selection,
-                        Part {
-                            path,
-                            port,
-                            channel,
-                            ..Default::default()
-                        },
-                    )
+                    let part = new_part(&selection, &p.shared.libraries.settings(), path);
+                    add_part(&mut selection, part)
                 }
             };
             if let Some(slot) = slot {
@@ -839,7 +839,8 @@ fn build(
         octave: 2,
         keyboard_for: None,
         selected: 0,
-        unselected: false,
+        // Every part shows until one is clicked.
+        unselected: true,
         notice: String::new(),
         root: String::new(),
         last_poll: Instant::now() - Duration::from_secs(1),
@@ -874,6 +875,7 @@ fn build(
         mixer: Default::default(),
         analyser: Default::default(),
         scope: 0,
+        corner: None,
     };
     move |ui, bridge| {
         // The loader also runs from the audio thread; poll here so a stopped host still loads.
@@ -958,7 +960,7 @@ fn build(
         shell.push(row(middle).gap(0).flex(1).min_h(0));
         shell.push(rule());
         shell.push(keys);
-        let mut layers = vec![col(shell).gap(0).full()];
+        let mut layers = vec![col(shell).gap(0).full(), resize_corner(ui, &mut state.corner, window, bridge)];
         layers.extend(menu);
         layers.extend(ghost);
         stack(layers)
@@ -1036,20 +1038,63 @@ fn splitter(ui: &mut Ui, cx: &mut Cx, width: f64) -> El {
     if r.released || r.double_clicked {
         cx.selection.browser_width = state.sidebar as f32;
     }
-    let lift = ui.state("splitter").hover.max(if r.held { 1. } else { 0. }) as f32;
+    let lift = theme::edge_lift(ui, "splitter");
+    // A hairline at rest, the accent under the hand; grabbed a little wide.
     canvas(move |s| {
-        vec![Draw::fill(
-            rect(0., 0., if lift > 0.5 { 2. } else { 1. }, s.height),
-            Role::Ink.alpha(0.08 + 0.25 * lift),
-        )]
+        let mut d = vec![Draw::fill(rect(0., 0., 1., s.height), Role::Ink.alpha(0.08))];
+        d.extend(theme::edge_mark(s, 1., true, lift));
+        d
     })
-    .w(4)
+    .w(theme::EDGE_GRAB + 2.)
     .h(Len::Pct(100.))
     .shrink(0)
     .cursor(Cursor::ResizeH)
     .tip("Drag to resize the browser, double-click to reset")
     .named("Resize browser")
     .id("splitter")
+}
+
+/// The window's resize corner, bottom right: drag it to size the window
+/// (the host decides), with the diagonal cursor and a grip that warms.
+fn resize_corner(ui: &mut Ui, from: &mut Option<Size>, window: Size, bridge: &mut Bridge<SamplerParams>) -> El {
+    let id = "window-corner";
+    let r = ui.get(id);
+    if r.pressed {
+        *from = Some(window);
+    }
+    if let (true, Some(from)) = (r.dragged, *from) {
+        let (w, h) = ((from.width + r.drag_total.x).max(900.), (from.height + r.drag_total.y).max(600.));
+        if (w.round(), h.round()) != (window.width.round(), window.height.round())
+            && let Some(c) = bridge.context()
+        {
+            // A host that sizes only from its own frame says no; nothing to undo.
+            let _ = c.request_resize(w.round() as u32, h.round() as u32);
+        }
+    }
+    if r.released {
+        *from = None;
+    }
+    moose::mui::window::resize_corner(r.hovered || r.held);
+    let lift = theme::edge_lift(ui, id);
+    canvas(move |s| {
+        let ink = if lift > 0.01 { Fill::from(accent().with_alpha(0.35 + 0.55 * lift)) } else { Role::Ink.alpha(0.2) };
+        // Two short diagonals in the corner, on pixel centres.
+        [4., 8.]
+            .into_iter()
+            .map(|d| {
+                let path = moose::mui::mui::geometry::Path::polyline(
+                    [Point::new(s.width - d - 1.5, s.height - 1.5), Point::new(s.width - 1.5, s.height - d - 1.5)],
+                    false,
+                );
+                Draw::stroke(path, ink.clone(), 1.)
+            })
+            .collect()
+    })
+    .square(theme::EDGE_GRAB * 2. + 2.)
+    .anchor(Align::End, Align::End)
+    .tip("Drag to resize the window")
+    .named("Resize the window")
+    .id(id)
 }
 
 /// What a drag carries, following the pointer.

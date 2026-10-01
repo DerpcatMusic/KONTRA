@@ -411,6 +411,17 @@ mod tests {
         (bank.settings[g].envelope.unwrap().sustain, bank.base[g].envelope.unwrap().sustain)
     }
 
+    /// The preload landing (`Engine::upgrade_bank`) keeps what scripts set:
+    /// overrides then recompute from it, not from the library's stored values.
+    #[test]
+    fn script_values_survive_a_bank_upgrade() {
+        let mut e = engine();
+        assert!(e.write(Address::Envelope(0, Stage::Sustain), 0.4));
+        e.upgrade_bank(engine().set_bank(None).unwrap());
+        e.set_override(Override { group: Some(0), param: Param::Sustain, offset: 0.0 });
+        assert_eq!(sustain(&e, 0), (0.4, 0.4));
+    }
+
     /// Overrides ride on what the library and its scripts set, never replace it.
     #[test]
     fn overrides_offset_script_values_and_reset_to_them() {

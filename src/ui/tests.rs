@@ -152,21 +152,21 @@ fn the_computer_keyboard_plays_while_switched_on() {
     h.press("qwerty");
     assert!(read(&p.selection).qwerty, "the top bar switches it on");
     assert!(send(&mut h, key(1, "a", true)));
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 100))));
+    assert_eq!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, Play::Note(60, 100))), "nothing focused, every part plays");
     assert!(send(&mut h, key(1, "a", true)), "a repeat is swallowed");
     assert!(p.shared.keyboard.pop().is_none(), "and plays nothing");
     assert!(send(&mut h, key(2, "x", true)), "X steps the octave");
     assert!(send(&mut h, key(3, "V", true)), "V the velocity");
     assert!(send(&mut h, key(4, "k", true)));
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(84, 120))));
+    assert_eq!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, Play::Note(84, 120))));
     assert!(send(&mut h, key(1, "a", false)));
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 0))), "the note its key started stops");
+    assert_eq!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, Play::Note(60, 0))), "the note its key started stops");
     assert!(!send(&mut h, key(2, "x", false)), "ups of other keys pass");
     h.ui.focus("search");
     h.idle(2);
     assert!(!send(&mut h, key(5, "s", true)), "a text field keeps its typing");
     h.press("qwerty");
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(84, 0))), "switching off lets go");
+    assert_eq!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, Play::Note(84, 0))), "switching off lets go");
     assert!(!send(&mut h, key(4, "k", false)));
 }
 
@@ -263,7 +263,7 @@ fn closing_the_editor_lets_go_of_the_keys() {
     }), Some(60));
     let mut editor = editor(p.clone());
     editor.close();
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 0))), "closing lets the note go");
+    assert_eq!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, Play::Note(60, 0))), "closing lets the note go");
     assert!(p.shared.played.iter().all(|v| v.load(Ordering::Relaxed) == 0), "and unlights it");
     // Reopened, the gesture the close cut short sends nothing more.
     h.ui.close();
@@ -359,6 +359,8 @@ fn the_browser_finds_by_library_and_folder() {
     // Esc clears the filter; a library dragged onto another goes before it.
     h.ui.focus("library-filter");
     tap(&mut h, Key::Escape);
+    // The list glides back to the chosen library: let it land first.
+    h.idle(30);
     h.drag("library-42", "library-41");
     let settings = p.shared.libraries.settings();
     assert_eq!(settings.sort, crate::library::Sort::Custom);
@@ -1076,6 +1078,111 @@ fn frame_cost() {
         shared.shared.heard[note].store(if i % 2 == 0 { 100 } else { 0 }, Ordering::Relaxed);
         Input::default()
     });
+    }
+}
+
+/// The lag audit: per scenario, a frame's build+layout p50/p99 and a CPU
+/// raster's p50, in microseconds of this thread's CPU time, with the
+/// owner's libraries. Run with
+/// `--ignored --nocapture`; `KONTAKTO_SHOT` picks the 16-part rack.
+#[test]
+#[ignore]
+fn lag() {
+    use moose::mui::mui::vello::{
+        self,
+        vello_cpu::{Pixmap, RenderContext, Resources},
+    };
+    // This thread's time on a CPU, so a loaded machine does not count.
+    let cpu_us = || {
+        let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: a valid out-pointer for one call.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) };
+        t.tv_sec as f64 * 1e6 + t.tv_nsec as f64 / 1e3
+    };
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
+        "03 Areia - 6 Celli - Core Techniques,Vista - 3 Cellos,Una Corda Pure,ANALOG STRINGS".into()
+    });
+    let library = library_instruments(&files, &chosen);
+    let racks: Vec<(&str, Vec<Arc<import::Instrument>>)> = vec![
+        ("16 parts", library.iter().cycle().take(16).cloned().collect()),
+        ("ANALOG", library_instruments(&files, "ANALOG STRINGS")),
+        ("Areia", library_instruments(&files, "03 Areia - 6 Celli - Core Techniques")),
+    ];
+    let (w, hgt) = (1600u16, 1000u16);
+    let mut raster = RenderContext::new(w, hgt);
+    let mut resources = Resources::default();
+    let mut cache = vello::Cache::default();
+    let mut pix = Pixmap::new(w, hgt);
+    for (name, instruments) in racks {
+        let p = racked(&files, &instruments, true, "perform");
+        let mut h = Harness::new(&p, f64::from(w), f64::from(hgt));
+        h.settle_art();
+        let mut measure = |h: &mut Harness, label: &str, input: &mut dyn FnMut(usize, &Ui) -> Input| {
+            let n = 200;
+            let (mut frame, mut paint) = (Vec::new(), Vec::new());
+            for i in 0..n {
+                let input = input(i, &h.ui);
+                let t = cpu_us();
+                h.tick(input);
+                frame.push(cpu_us() - t);
+                if i % 4 == 0 {
+                    let t = cpu_us();
+                    raster.reset();
+                    vello::paint(
+                        &mut vello::Cpu { ctx: &mut raster, resources: &mut resources, cache: &mut cache },
+                        h.ui.scene().unwrap(),
+                        vello::kurbo::Affine::IDENTITY,
+                    )
+                    .unwrap();
+                    raster.flush();
+                    raster.render(&mut pix, &mut resources);
+                    paint.push(cpu_us() - t);
+                }
+            }
+            let q = |v: &mut Vec<f64>, at: f64| {
+                v.sort_by(f64::total_cmp);
+                v[((v.len() - 1) as f64 * at) as usize]
+            };
+            println!(
+                "{name:>8} {label:>12}: build+layout p50 {:>6.0} p99 {:>6.0} us   cpu paint p50 {:>6.0} us",
+                q(&mut frame, 0.5),
+                q(&mut frame, 0.99),
+                q(&mut paint, 0.5)
+            );
+        };
+        measure(&mut h, "idle", &mut |_, _| Input::default());
+        let list = center(&h.ui, "browser-list");
+        measure(&mut h, "browser", &mut |i, _| Input {
+            wheel: Vec2::new(0., if i % 100 < 50 { 60. } else { -60. }),
+            ..pointer(list, false)
+        });
+        h.idle(30);
+        let knob = center(&h.ui, "volume-0");
+        measure(&mut h, "knob", &mut |i, _| pointer(Point::new(knob.x, knob.y - (i % 40) as f64), i % 60 != 59));
+        h.idle(30);
+        let edge = center(&h.ui, "resize-0");
+        measure(&mut h, "resize", &mut |i, _| {
+            pointer(Point::new(edge.x, edge.y - (i % 80) as f64), i % 100 != 99)
+        });
+        h.idle(30);
+        let rack = center(&h.ui, "rack-view");
+        measure(&mut h, "rack scroll", &mut |i, _| Input {
+            wheel: Vec2::new(0., if i % 100 < 50 { 60. } else { -60. }),
+            ..pointer(rack, false)
+        });
+        h.idle(30);
+        let tabs = ["tab-mixer", "tab-rack", "tab-mapping", "tab-sound", "tab-info", "tab-rack"];
+        measure(&mut h, "tabs", &mut |i, ui| {
+            let at = center(ui, tabs[(i / 10) % tabs.len()]);
+            pointer(at, i % 10 == 0)
+        });
+        h.press("tab-mixer");
+        h.idle(30);
+        let fader = center(&h.ui, "mix-fader-0");
+        measure(&mut h, "mixer fader", &mut |i, _| pointer(Point::new(fader.x, fader.y - (i % 40) as f64), i % 60 != 59));
+        h.press("tab-rack");
+        h.idle(30);
     }
 }
 
@@ -2301,4 +2408,58 @@ fn number_boxes_drag_up_and_down() {
     assert!(sideways.abs() < 1e-9, "sideways leaves it, moved {sideways}");
     let fine = drag(&mut ui, &mut v, 0., -40., true);
     assert!(fine > 0. && fine < up / 2., "Shift is finer: {fine} against {up}");
+}
+
+#[test]
+fn a_wheel_notch_scrolls_five_rows_and_a_fling_speeds_up() {
+    use moose::mui::window::notch_lines;
+    use std::time::Duration;
+    let mut run = 0;
+    // One notch, from rest: 120 points, five list rows.
+    let first = notch_lines(1., None, &mut run) * TEXT;
+    assert_eq!(first, 120.);
+    // Fast notches the same way: each further, to a cap.
+    let fast = Some(Duration::from_millis(20));
+    let steps: Vec<f64> = (0..12).map(|_| notch_lines(1., fast, &mut run) * TEXT).collect();
+    assert!(steps.windows(2).all(|w| w[1] >= w[0]) && steps[0] > first, "{steps:?}");
+    assert_eq!(steps[11], first * 3.);
+    // A turn or a pause starts over.
+    assert_eq!(notch_lines(-1., fast, &mut run) * TEXT, -first);
+    assert_eq!(notch_lines(-1., fast, &mut run) * TEXT, -first * 1.25);
+    assert_eq!(notch_lines(-1., Some(Duration::from_millis(300)), &mut run) * TEXT, -first);
+}
+
+/// What the pointer shows over each kind of thing: resize arrows over the
+/// edges, a few points either side of their line too, the hand over
+/// buttons, the I-beam over text, and the knob's up-down.
+#[test]
+fn the_cursor_follows_what_is_under_the_pointer() {
+    let p = two_parts();
+    let mut h = Harness::new(&p, 1180., 760.);
+    let cursor_at = |h: &mut Harness, at: Point| {
+        let root = (h.build)(&mut h.ui, &mut h.bridge);
+        h.ui.frame(root, Some(h.size), pointer(at, false), 1. / 60.).unwrap().cursor
+    };
+    let frame = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).unwrap_or_else(|| panic!("no {id}")).frame;
+    let split = frame(&h, "splitter");
+    for dx in [1., EDGE_GRAB] {
+        assert_eq!(cursor_at(&mut h, Point::new(split.x + dx, split.y + 200.)), Cursor::ResizeH, "browser edge +{dx}");
+    }
+    let divider = frame(&h, "browser-split");
+    for dy in [-EDGE_GRAB / 2., EDGE_GRAB / 2.] {
+        let at = Point::new(divider.x + 40., divider.y + divider.size.height / 2. + dy);
+        assert_eq!(cursor_at(&mut h, at), Cursor::ResizeV, "browser divider {dy:+}");
+    }
+    let edge = frame(&h, "resize-0");
+    for dy in [1., EDGE_GRAB] {
+        let at = Point::new(edge.x + edge.size.width / 2., edge.y + edge.size.height - dy);
+        assert_eq!(cursor_at(&mut h, at), Cursor::ResizeV, "part edge -{dy}");
+    }
+    for (id, want) in [("tab-mixer", Cursor::Hand), ("search", Cursor::Text), ("volume-0", Cursor::ResizeV)] {
+        let at = center(&h.ui, id);
+        assert_eq!(cursor_at(&mut h, at), want, "{id}");
+    }
+    let corner = frame(&h, "window-corner");
+    cursor_at(&mut h, Point::new(corner.x + corner.size.width - 2., corner.y + corner.size.height - 2.));
+    assert!(h.ui.get("window-corner").hovered, "the window's resize corner");
 }

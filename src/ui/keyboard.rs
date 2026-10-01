@@ -23,7 +23,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     let looks = looks(cx, &parts);
     // Center the keys on a newly shown instrument's range.
     let shown = parts.first().and_then(|&s| cx.selection.parts.get(s)).map(|p| (p.path.clone(), p.program));
-    let used = |l: &Look| *l != Look::Unmapped;
+    let used = |l: &Look| !matches!(l, Look::Unmapped);
     let span = looks
         .iter()
         .position(used)
@@ -48,6 +48,12 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     if up {
         cx.state.octave = (cx.state.octave + 1).min(MAX_OCTAVE);
     }
+    // Esc lets go too, but a host may keep Esc for itself.
+    let (all, all_el) = icon_button(ui, "keyboard-all", Icon::Close, "Show every part", false);
+    if all {
+        cx.state.selected_none();
+    }
+    let all_el = cx.state.chosen().is_some().then_some(all_el);
     let open = cx.state.keyboard;
     let (toggle, toggle_el) = icon_button(
         ui,
@@ -70,9 +76,8 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         note_name((first + OCTAVES * 12 - 1) as u8)
     );
     let plays = match playable(&looks) {
-        _ if parts.len() > 1 => "Every part on channel 1 or Omni".to_owned(),
+        _ if cx.state.chosen().is_none() => "Every part · the keys play channel 1 or Omni · click a part to focus it".to_owned(),
         Some((low, high)) => format!("Plays {} – {}", note_name(low as u8), note_name(high as u8)),
-        None if cx.state.chosen().is_none() => "Every part on channel 1 or Omni".to_owned(),
         None => String::new(),
     };
     let computer = &cx.state.computer;
@@ -99,6 +104,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         ]
         .into_iter()
         .chain(qwerty)
+        .chain(all_el)
         .chain([cluster(vec![down_el, up_el, toggle_el])])
         .collect::<Vec<_>>(),
     )
@@ -290,7 +296,7 @@ fn range_strip(looks: [Look; 128], octave: i16) -> El {
                         continue;
                     };
                     let fill = match (pass, look) {
-                        (false, Look::Mapped) => Fill::from(Color::oklch(0.66, 0.1, MAPPED_HUE)),
+                        (false, Look::Mapped(hue)) => Fill::from(Color::oklch(0.66, 0.1, *hue)),
                         (true, Look::Colored(c)) => Fill::from(*c),
                         _ => continue,
                     };
@@ -320,20 +326,14 @@ fn key_x(note: usize, octave: i16, width: f64) -> (f64, f64) {
     (o.floor() * (octave_w + 1.) + x * octave_w, w * octave_w)
 }
 
-/// The parts the keys show: the selected one or, with none selected, those
-/// the keys play (port A on MIDI channel 1 or Omni, or with an articulation
-/// on channel 1), in rack order.
+/// The parts the keys show: the selected one or, with none selected, every
+/// loaded part on any port or channel, in rack order.
 fn shown_parts(cx: &Cx) -> Vec<usize> {
-    let loaded = |slot: usize| cx.selection.parts.get(slot).filter(|p| !p.path.is_empty());
-    if let Some(slot) = cx.state.chosen() {
-        return loaded(slot).map(|_| slot).into_iter().collect();
+    let loaded = |slot: usize| cx.selection.parts.get(slot).is_some_and(|p| !p.path.is_empty());
+    match cx.state.chosen() {
+        Some(slot) => loaded(slot).then_some(slot).into_iter().collect(),
+        None => (cx.selection.order.iter().map(|&s| s as usize)).filter(|&slot| loaded(slot)).collect(),
     }
-    let hears = |p: &crate::plugin::Part| {
-        let a = &p.articulate;
-        let by_channel = a.mode == crate::articulate::Mode::Channel && a.source == p.path;
-        p.port == 0 && (p.channel <= 0 || by_channel && a.articulations.iter().any(|r| r.enabled && r.channel == 0))
-    };
-    (cx.selection.order.iter().map(|&s| s as usize)).filter(|&slot| loaded(slot).is_some_and(hears)).collect()
 }
 
 /// The keys part `slot`'s instrument maps, walked once per instrument: tens
@@ -418,14 +418,12 @@ fn mapped_keys(i: &crate::import::Instrument) -> [bool; 128] {
     mapped
 }
 
-/// The green of a key that plays.
-const MAPPED_HUE: f32 = 150.;
-
 /// What a key does for the parts shown.
 #[derive(Clone, Copy, PartialEq)]
 enum Look {
     Unmapped,
-    Mapped,
+    /// Plays, tinted in its part's hue.
+    Mapped(f32),
     Colored(Color),
 }
 
@@ -434,7 +432,7 @@ impl Look {
     fn rank(self) -> u8 {
         match self {
             Look::Unmapped => 0,
-            Look::Mapped => 1,
+            Look::Mapped(_) => 1,
             Look::Colored(_) => 2,
         }
     }
@@ -442,8 +440,9 @@ impl Look {
 
 /// The lowest and highest keys that play notes (keyswitches aside).
 fn playable(looks: &[Look; 128]) -> Option<(usize, usize)> {
-    let low = looks.iter().position(|l| *l == Look::Mapped)?;
-    Some((low, looks.iter().rposition(|l| *l == Look::Mapped).unwrap_or(low)))
+    let plays = |l: &Look| matches!(l, Look::Mapped(_));
+    let low = looks.iter().position(plays)?;
+    Some((low, looks.iter().rposition(plays).unwrap_or(low)))
 }
 
 /// Part `slot`'s keys: those its zones map play, then the colors its
@@ -451,11 +450,12 @@ fn playable(looks: &[Look; 128]) -> Option<(usize, usize)> {
 /// keyswitches, marked where the library leaves them plain.
 fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
     let mapped = mapped(cx, slot);
-    let mut looks = mapped.map(|m| if m { Look::Mapped } else { Look::Unmapped });
+    let hue = part_color(slot).hue();
+    let mut looks = mapped.map(|m| if m { Look::Mapped(hue) } else { Look::Unmapped });
     if let Some(v) = cx.view.parts.get(slot) {
         for (&note, state) in v.keys.iter() {
             if let Some(look) = state.color.as_ref().and_then(key_color) {
-                looks[note.min(127) as usize] = look;
+                looks[note.min(127) as usize] = if look == Look::Mapped(0.) { Look::Mapped(hue) } else { look };
             }
         }
     }
@@ -469,7 +469,7 @@ fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
     }
     // A remapped keyswitch's look moves to the key that plays it; a cleared
     // one's key plays nothing.
-    let plain = |from: usize| if mapped[from] { Look::Mapped } else { Look::Unmapped };
+    let plain = |from: usize| if mapped[from] { Look::Mapped(hue) } else { Look::Unmapped };
     for r in &a.articulations {
         let (Some(from), Some(to)) = (r.key.map(|k| k as usize & 127), r.remap.map(usize::from)) else { continue };
         let look = looks[from];
@@ -585,9 +585,9 @@ fn key(
     let face = match (look, black) {
         (Look::Colored(c), false) => c,
         (Look::Colored(c), true) => Color::oklch(c.lightness() * 0.62, c.chroma(), c.hue()),
-        // A key that plays is tinted green: faintly on white, deeper on black.
-        (Look::Mapped, false) => Color::oklch(0.93, 0.035, MAPPED_HUE),
-        (Look::Mapped, true) => Color::oklch(0.33, 0.075, MAPPED_HUE),
+        // A key that plays is tinted in its part's hue: faintly on white, deeper on black.
+        (Look::Mapped(hue), false) => Color::oklch(0.93, 0.035, hue),
+        (Look::Mapped(hue), true) => Color::oklch(0.33, 0.075, hue),
         (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
         (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
     };
@@ -653,7 +653,7 @@ fn key_color(value: &Value) -> Option<Look> {
         Value::Text(name) => name
             .trim_start_matches('$')
             .trim_start_matches("KEY_COLOR_"),
-        _ => return Some(Look::Mapped),
+        _ => return Some(Look::Mapped(0.)),
     };
     let hue = match name {
         "RED" => return Some(Look::Colored(keyswitch())),
@@ -675,7 +675,7 @@ fn key_color(value: &Value) -> Option<Look> {
         "" | "NONE" | "DEFAULT" => return None,
         "INACTIVE" => return Some(Look::Unmapped),
         // WHITE, BLACK and unnamed values.
-        _ => return Some(Look::Mapped),
+        _ => return Some(Look::Mapped(0.)),
     };
     Some(Look::Colored(Color::oklch(0.68, 0.16, hue)))
 }
@@ -693,7 +693,7 @@ mod tests {
         assert!((red.hue() - 25.).abs() < 1. && red.chroma() > 0.18, "a crisp red");
         assert!(color("$KEY_COLOR_NONE").is_none(), "NONE falls back to the mapping");
         assert!(color("$KEY_COLOR_DEFAULT").is_none(), "DEFAULT falls back to the mapping");
-        assert!(color("$KEY_COLOR_BLACK") == Some(Look::Mapped), "BLACK shows a key that plays");
+        assert!(color("$KEY_COLOR_BLACK") == Some(Look::Mapped(0.)), "BLACK shows a key that plays");
         assert!(color("$KEY_COLOR_INACTIVE") == Some(Look::Unmapped), "INACTIVE is dim");
         const { assert!(MAX_OCTAVE * 12 + OCTAVES * 12 <= 128) };
     }

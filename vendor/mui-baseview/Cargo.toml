@@ -2,9 +2,10 @@
 # window's raw key events, down and up, reach an app hook before MUI's key
 # routing (`Requests::on_key`). MUI hands the app key presses only, and a
 # computer keyboard that plays notes has to hear the key come up. And a wheel
-# notch scrolls three list rows rather than half of one. And an app hook
+# notch scrolls five list rows rather than half of one, more in a fast run. And an app hook
 # (`Requests::on_pointer`) hides the pointer while a knob is dragged and puts
-# it back where the drag began (`platform::warp_pointer`).
+# it back where the drag began (`platform::warp_pointer`). And `resize_corner`
+# shows the diagonal resize cursor MUI has no `Cursor` for.
 # Every change carries a `KONTAKTO patch:` comment.
 [package]
 name = "mui-baseview"
