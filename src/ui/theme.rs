@@ -616,6 +616,88 @@ impl Fader {
 }
 
 thread_local! {
+    /// Where the held scrollbar's thumb was grabbed, from its top: one
+    /// pointer holds one bar at a time.
+    static BAR_GRAB: std::cell::Cell<f64> = const { std::cell::Cell::new(0.) };
+}
+
+/// A thumb's top and length on a track `track` long, for a pane `view_h`
+/// tall over `content_h` scrolled to `y`.
+fn thumb(track: f64, y: f64, view_h: f64, content_h: f64) -> (f64, f64) {
+    let len = (track * view_h / content_h).max(CONTROL).min(track);
+    (((track - len) * (y / (content_h - view_h)).clamp(0., 1.)).round(), len)
+}
+
+/// A self-scrolled pane's bar under the hand: the thumb follows the
+/// pointer from where it was grabbed, and a press on the track beside it
+/// jumps the thumb's middle there, with no drag threshold to cross.
+pub fn bar_drag(ui: &mut Ui, id: &str, y: &mut f64, view_h: f64, content_h: f64) {
+    let r = ui.get(id);
+    let (Some(at), true) = (ui.local(id), r.held && content_h > view_h && view_h > 0.) else { return };
+    let track = ui.scene().and_then(|s| s.surface(id)).map_or(view_h, |s| s.frame.size.height);
+    let (top, len) = thumb(track, *y, view_h, content_h);
+    if r.pressed {
+        BAR_GRAB.with(|g| g.set(if (top..top + len).contains(&at.y) { at.y - top } else { len / 2. }));
+    }
+    let span = (track - len).max(1.);
+    *y = ((at.y - BAR_GRAB.with(std::cell::Cell::get)) / span * (content_h - view_h)).clamp(0., content_h - view_h);
+}
+
+/// Where a self-scrolled pane draws, gliding to `y`: on whole points, so
+/// text and lines stay sharp. `snap` puts it there at once: under a held
+/// bar, or across a jump too far to glide through; the glide unread for a
+/// frame starts over from there.
+pub fn glide(ui: &mut Ui, id: &str, y: f64, snap: bool) -> f64 {
+    if snap { y.round() } else { ui.tween_with(format!("{id}-glide"), y, quick()).round() }
+}
+
+/// A jump from `from` to `to` too far to glide through: another list, Home, End.
+pub fn leaps(from: f64, to: f64) -> bool {
+    (to - from).abs() > 1500.
+}
+
+/// A self-scrolled pane's bar: a thin thumb that warms under the pointer.
+pub fn scrollbar(ui: &mut Ui, id: &str, name: &str, y: f64, view_h: f64, content_h: f64) -> El {
+    let r = ui.get(id);
+    let lift = ui.state(id).hover.max(if r.held { 1. } else { 0. }) as f32;
+    canvas(move |s| {
+        let (at, len) = thumb(s.height, y, view_h, content_h);
+        let w = 3. + 2. * f64::from(lift);
+        vec![Draw::fill(rect(s.width - w - 1., at + 2., w, len - 4.), Role::Ink.alpha(0.18 + 0.3 * lift))]
+    })
+    .w(8)
+    .h(Len::Pct(100.))
+    .shrink(0)
+    .a11y(A11y::Slider { value: y, min: 0., max: content_h - view_h })
+    .named(name.to_owned())
+    .id(id.to_owned())
+}
+
+/// The grab margin around a resizable edge, each side.
+pub const EDGE_GRAB: f64 = 6.;
+
+/// A resizable edge's mark: a 1 px accent line, 2 px held, at `at` along
+/// the cross axis of a strip `s`, shown as the edge warms (`lift`, 0..1).
+pub fn edge_mark(s: Size, at: f64, vertical_line: bool, lift: f32) -> Vec<Draw> {
+    if lift <= 0.01 {
+        return Vec::new();
+    }
+    let t = if lift > 0.9 { 2. } else { 1. };
+    let ink = Fill::from(accent().with_alpha(0.35 + 0.55 * lift));
+    vec![if vertical_line {
+        Draw::fill(rect((at - t / 2.).round(), 0., t, s.height), ink)
+    } else {
+        Draw::fill(rect(0., (at - t / 2.).round(), s.width, t), ink)
+    }]
+}
+
+/// How warm a resizable edge is: hovered, or 1 while held.
+pub fn edge_lift(ui: &mut Ui, id: &str) -> f32 {
+    let held = ui.get(id).held;
+    ui.state(id).hover.max(if held { 1. } else { 0. }) as f32
+}
+
+thread_local! {
     /// A control turned by the wheel since [`wheel_taken`] last looked.
     static WHEELED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

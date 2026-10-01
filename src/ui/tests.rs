@@ -1080,7 +1080,8 @@ fn frame_cost() {
 }
 
 /// The lag audit: per scenario, a frame's build+layout p50/p99 and a CPU
-/// raster's p50, in microseconds, with the owner's libraries. Run with
+/// raster's p50, in microseconds of this thread's CPU time, with the
+/// owner's libraries. Run with
 /// `--ignored --nocapture`; `KONTAKTO_SHOT` picks the 16-part rack.
 #[test]
 #[ignore]
@@ -1089,7 +1090,11 @@ fn lag() {
         self,
         vello_cpu::{Pixmap, RenderContext, Resources},
     };
-    use std::time::Instant;
+    // This thread's time on a CPU, so a loaded machine does not count.
+    let cpu_us = || {
+        let stat = std::fs::read_to_string("/proc/thread-self/schedstat").unwrap_or_default();
+        stat.split_whitespace().next().and_then(|n| n.parse::<f64>().ok()).unwrap_or(0.) / 1e3
+    };
     let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
     let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
         "03 Areia - 6 Celli - Core Techniques,Vista - 3 Cellos,Una Corda Pure,ANALOG STRINGS".into()
@@ -1114,11 +1119,11 @@ fn lag() {
             let (mut frame, mut paint) = (Vec::new(), Vec::new());
             for i in 0..n {
                 let input = input(i, &h.ui);
-                let t = Instant::now();
+                let t = cpu_us();
                 h.tick(input);
-                frame.push(t.elapsed().as_secs_f64() * 1e6);
+                frame.push(cpu_us() - t);
                 if i % 4 == 0 {
-                    let t = Instant::now();
+                    let t = cpu_us();
                     raster.reset();
                     vello::paint(
                         &mut vello::Cpu { ctx: &mut raster, resources: &mut resources, cache: &mut cache },
@@ -1128,7 +1133,7 @@ fn lag() {
                     .unwrap();
                     raster.flush();
                     raster.render(&mut pix, &mut resources);
-                    paint.push(t.elapsed().as_secs_f64() * 1e6);
+                    paint.push(cpu_us() - t);
                 }
             }
             let q = |v: &mut Vec<f64>, at: f64| {
@@ -2399,4 +2404,23 @@ fn number_boxes_drag_up_and_down() {
     assert!(sideways.abs() < 1e-9, "sideways leaves it, moved {sideways}");
     let fine = drag(&mut ui, &mut v, 0., -40., true);
     assert!(fine > 0. && fine < up / 2., "Shift is finer: {fine} against {up}");
+}
+
+#[test]
+fn a_wheel_notch_scrolls_five_rows_and_a_fling_speeds_up() {
+    use moose::mui::window::notch_lines;
+    use std::time::Duration;
+    let mut run = 0;
+    // One notch, from rest: 120 points, five list rows.
+    let first = notch_lines(1., None, &mut run) * TEXT;
+    assert_eq!(first, 120.);
+    // Fast notches the same way: each further, to a cap.
+    let fast = Some(Duration::from_millis(20));
+    let steps: Vec<f64> = (0..12).map(|_| notch_lines(1., fast, &mut run) * TEXT).collect();
+    assert!(steps.windows(2).all(|w| w[1] >= w[0]) && steps[0] > first, "{steps:?}");
+    assert_eq!(steps[11], first * 3.);
+    // A turn or a pause starts over.
+    assert_eq!(notch_lines(-1., fast, &mut run) * TEXT, -first);
+    assert_eq!(notch_lines(-1., fast, &mut run) * TEXT, -first * 1.25);
+    assert_eq!(notch_lines(-1., Some(Duration::from_millis(300)), &mut run) * TEXT, -first);
 }
