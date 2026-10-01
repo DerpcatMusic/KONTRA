@@ -497,7 +497,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
     let size = reader.output_buffer_size()?;
-    if size > 32 * 1024 * 1024 {
+    // Output's macro strips are 180 frames of 732 by 71: 37 MB unpacked.
+    if size > 64 * 1024 * 1024 {
         return None;
     }
     let mut data = vec![0; size];
