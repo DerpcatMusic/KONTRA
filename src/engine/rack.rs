@@ -238,6 +238,9 @@ impl Rack {
             e.cc(channel, cc, value);
         }
     }
+    pub fn panic(&mut self) {
+        for e in &mut self.parts { e.panic(); }
+    }
 
     pub fn pitch_bend(&mut self, channel: u8, value: u16) {
         for e in &mut self.parts {

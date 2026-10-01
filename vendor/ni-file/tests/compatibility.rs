@@ -248,15 +248,24 @@ fn plain_offsets_and_encrypted_members() {
         b.extend(6u32.to_le_bytes());
         b.extend(vec![0; if encrypted { 8 } else { 4 }]);
         b.extend(payload);
-        let a = Archive::read(Cursor::new(&b)).unwrap();
-        assert_eq!(
-            a.read_entry_with_key(Cursor::new(&b), "x", Some(&key))
-                .unwrap(),
-            b"sample"
-        );
-        if encrypted {
-            assert!(a.read_entry(Cursor::new(&b), "x").is_err());
+        for a in [
+            Archive::read(Cursor::new(&b)).unwrap(),
+            Archive::read_index(Cursor::new(&b)).unwrap(),
+        ] {
+            assert_eq!(
+                a.read_entry_with_key(Cursor::new(&b), "x", Some(&key))
+                    .unwrap(),
+                b"sample"
+            );
+            if encrypted {
+                assert!(a.read_entry(Cursor::new(&b), "x").is_err());
+            } else {
+                assert_eq!(a.read_entry(Cursor::new(&b), "x").unwrap(), b"sample");
+            }
         }
+        b.pop();
+        let a = Archive::read_index(Cursor::new(&b)).unwrap();
+        assert!(a.read_entry_with_key(Cursor::new(&b), "x", Some(&key)).is_err());
     }
 }
 

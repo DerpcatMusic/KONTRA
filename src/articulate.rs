@@ -493,10 +493,29 @@ impl Router {
         self.route.by_channel()
     }
 
+    /// Physical input channels stopped by a channel-mode message.
+    pub(crate) fn stop_channels(&self, channel: u8) -> u16 {
+        let mut channels = 1u16 << (channel & 15);
+        if let Some((master, members)) = self.route.zone() && channel == master {
+            for member in members { channels |= 1 << member; }
+        }
+        channels
+    }
+
     /// The scripts' articulation may have changed some other way (a click):
     /// switch again before the next note.
     pub fn forget(&mut self) {
         self.current = None;
+    }
+
+    pub(crate) fn reset_midi(&mut self) {
+        self.forget();
+        self.held.fill([(NONE, NONE); 128]);
+        self.bend.fill(8192);
+        self.member_pressure.fill(None);
+        self.rpn.fill(Rpn { msb: 127, lsb: 127 });
+        self.expression.fill([Expression::default(); 128]);
+        self.brightness.fill(NONE);
     }
 
     /// Whether the part takes `channel` on `port`: its own channel, a zone's,
@@ -699,14 +718,20 @@ impl Router {
             }
             In::Pressure(_, value) => out(Out::Pressure(to, value)),
             In::PolyAt(_, note, value) => out(Out::PolyAt(to, self.key_of(channel, note), value)),
-            In::Cc(_, 123, _) if r.by_channel() => {
-                // Channel-mode scripts share a home channel, but a host stop
-                // belongs to the physical channel that sent it.
-                for (to, key) in std::mem::replace(&mut self.held[channel as usize], [(NONE, NONE); 128]) {
-                    if key != NONE {
-                        out(Out::NoteOffFrom(to, channel, key));
+            In::Cc(_, cc @ (120 | 123), value) => {
+                let channels = self.stop_channels(channel);
+                for owner in (0..16).filter(|owner| channels & (1 << owner) != 0) {
+                    let row = std::mem::replace(&mut self.held[owner], [(NONE, NONE); 128]);
+                    if cc == 123 && r.by_channel() {
+                        // Shared scripts still release only this physical input.
+                        for (to, key) in row {
+                            if key != NONE { out(Out::NoteOffFrom(to, owner as u8, key)); }
+                        }
                     }
                 }
+                // Selective Channel-mode CC120 requires engine event provenance;
+                // retain the existing engine-channel cut until that is available.
+                if cc == 120 || !r.by_channel() { out(Out::Cc(to, cc, value)); }
             }
             In::Cc(_, cc, value) => {
                 if r.zone().is_some() && self.rpn_cc(channel, cc, value) {
@@ -1064,6 +1089,39 @@ mod tests {
         render(&mut e);
         assert!(voices(&e, 60, false).is_empty());
         assert!(!e.key_down(0, 60));
+    }
+
+    #[test]
+    fn sound_off_and_reset_cancel_waiting_script_notes() {
+        for stop in 0..4 {
+            let (mut e, _) = three_articulation_part();
+            e.set_script(Some(Box::new(runtime("on init\ndeclare ui_switch $go\nend on\non note\nignore_event($EVENT_ID)\nwait(10000)\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,-1)\nend on\non ui_control($go)\nset_controller(7,63)\nset_controller(64,127)\nend on"))));
+            e.note_on(1, 60, 100);
+            e.note_on(2, 62, 100);
+            e.ui_control(0, 0, 1);
+            match stop {
+                0 => e.cc(1, 120, 0),
+                1 => {
+                    e.set_mpe_zone(Some((0, (1 << 1) | (1 << 2))));
+                    e.cc(0, 120, 0);
+                }
+                2 => e.reset(48000.),
+                _ => e.panic(),
+            }
+            let (mut left, mut right) = ([0.; 1024], [0.; 1024]);
+            e.render(&mut left, &mut right);
+            if stop != 2 {
+                assert_eq!(e.cc_state()[0][7], 63, "stop={stop}: a queued UI volume edit was lost");
+                assert_eq!(e.cc_state()[0][64], if stop == 3 { 0 } else { 127 }, "stop={stop}: wrong sustain reset");
+            }
+            assert!(voices(&e, 60, false).is_empty(), "stop={stop}: a canceled callback restarted its note");
+            assert!(!e.key_down(1, 60), "stop={stop}: canceled input remained held");
+            assert_eq!(voices(&e, 62, false).len(), if stop == 0 { 3 } else { 0 }, "stop={stop}: wrong channel scope");
+            e.note_on(1, 64, 100);
+            e.render(&mut left, &mut right);
+            assert_eq!(voices(&e, 64, false).len(), 3, "stop={stop}: fresh input stopped working");
+            assert!(e.script().unwrap().diagnostics().is_empty());
+        }
     }
 
     #[test]

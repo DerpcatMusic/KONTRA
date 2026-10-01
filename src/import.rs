@@ -809,14 +809,14 @@ mod preset_tests {
     #[test]
     fn zero_reads_on_kernel_ntfs_name_the_ntfs3_remount() {
         let info = "22 1 0:21 / / rw - btrfs /dev/nvme1n1p2 rw\n\
-                    99 22 259:7 / /path/to/storage rw,noatime - ntfs /dev/nvme0n1p1 rw,errors=continue\n\
-                    98 22 259:8 / /path/to/storage rw - ntfs3 /dev/sda1 rw\n";
-        let lib = std::path::Path::new("/path/to/storage STORAGE/Libraries/Kontakt/Areia");
+                    99 22 259:7 / /test-volumes/MAIN\\040STORAGE rw,noatime - ntfs /dev/nvme0n1p1 rw,errors=continue\n\
+                    98 22 259:8 / /test-volumes/MAIN rw - ntfs3 /dev/sda1 rw\n";
+        let lib = std::path::Path::new("/test-volumes/MAIN STORAGE/Libraries/Kontakt/Areia");
         let m = super::mount_of(info, lib).unwrap();
-        assert_eq!((m.0.to_str().unwrap(), m.1.as_str(), m.2.as_str()), ("/path/to/storage STORAGE", "ntfs", "/dev/nvme0n1p1"));
+        assert_eq!((m.0.to_str().unwrap(), m.1.as_str(), m.2.as_str()), ("/test-volumes/MAIN STORAGE", "ntfs", "/dev/nvme0n1p1"));
         let w = super::zero_read_warning(3, Some(m));
-        assert!(w.contains("mount -t ntfs3") && w.contains("/dev/nvme0n1p1 '/path/to/storage STORAGE'"), "{w}");
-        assert_eq!(super::mount_of(info, std::path::Path::new("/path/to/storage/x")).unwrap().1, "ntfs3");
+        assert!(w.contains("mount -t ntfs3") && w.contains("/dev/nvme0n1p1 '/test-volumes/MAIN STORAGE'"), "{w}");
+        assert_eq!(super::mount_of(info, std::path::Path::new("/test-volumes/MAIN/x")).unwrap().1, "ntfs3");
         assert!(!super::zero_read_warning(3, super::mount_of(info, std::path::Path::new("/home/x"))).contains("ntfs3"));
     }
     /// A zero-filled read (the NTFS runlist failure) is a clean error, not a panic.

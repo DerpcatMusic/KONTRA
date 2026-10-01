@@ -266,6 +266,8 @@ pub struct Scheduler {
     /// The latest note-on's, release's and controller's due frames.
     last_on: [u64; 16],
     last_off: [u64; 16],
+    /// A fresh note must not pass an earlier queued stop on its physical channel.
+    stop_due: [u64; 16],
     last_ctl: u64,
     /// Frames the latest note was held back: controllers go with it.
     ctl_hold: u64,
@@ -285,6 +287,7 @@ impl Default for Scheduler {
             down: [0; 16],
             last_on: [0; 16],
             last_off: [0; 16],
+            stop_due: [0; 16],
             last_ctl: 0,
             ctl_hold: 0,
             overflows: 0,
@@ -345,7 +348,7 @@ impl Scheduler {
                 let hold = frames(row, self.down[lane] > 0, velocity);
                 // A legato script hears notes and releases in the order played.
                 let after = if holds.1[row.min(LOADED)] { self.last_on[lane].max(self.last_off[lane]) } else { 0 };
-                let due = (now + hold).max(after);
+                let due = (now + hold).max(after).max(self.stop_due[usize::from(channel & 15)]);
                 self.last_on[lane] = self.last_on[lane].max(due);
                 self.ctl_hold = due - now;
                 let key = &mut self.held[usize::from(channel & 15)][usize::from(note & 127)];
@@ -388,10 +391,21 @@ impl Scheduler {
                 ((now + hold).max(self.last_ctl), NO_ART)
             }
             // All notes or sound off: after every note already waiting.
-            In::Cc(_, 120.., _) => {
+            In::Cc(channel, cc @ 120.., _) => {
                 let latest = if self.len > 0 { self.at(self.len - 1).due } else { 0 };
                 let due = (now + self.ctl_hold).max(latest);
                 self.last_ctl = due;
+                if matches!(cc, 120 | 123) {
+                    let channels = router.stop_channels(channel);
+                    for c in (0..16).filter(|c| channels & (1 << c) != 0) {
+                        self.held[c].fill(UP);
+                        self.stop_due[c] = self.stop_due[c].max(due);
+                    }
+                    self.down.fill(0);
+                    for (c, row) in self.held.iter().enumerate() {
+                        self.down[lane(c as u8)] += row.iter().filter(|&&held| held != UP && held != SWITCH).count() as u32;
+                    }
+                }
                 (due, NO_ART)
             }
             In::Cc(..) | In::Bend(..) | In::Pressure(..) => {
@@ -419,6 +433,7 @@ impl Scheduler {
         self.head = 0;
         self.held = [[UP; 128]; 16];
         (self.down, self.last_on, self.last_off) = ([0; 16], [0; 16], [0; 16]);
+        self.stop_due.fill(0);
         (self.last_ctl, self.ctl_hold) = (0, 0);
     }
 }
@@ -1048,5 +1063,66 @@ mod tests {
             drain(&mut s),
             [(200, In::NoteOn(0, 60, 100)), (230, In::NoteOn(1, 40, 100)), (500, In::NoteOn(0, 62, 100)), (730, In::NoteOff(1, 40))]
         );
+    }
+
+    #[test]
+    fn channel_stops_clear_held_notes_and_fence_fresh_notes() {
+        use crate::articulate::{Articulate, Mode, Mpe, Route, Zone};
+        let r = Router::default();
+        let h = holds(50.0, 250.0, 250.0);
+        for cc in [120, 123] {
+            let mut s = Scheduler::default();
+            s.arrive(In::NoteOn(0, 60, 100), 0, &h, RATE, &r);
+            s.arrive(In::Cc(0, cc, 0), 500 * 48, &h, RATE, &r);
+            s.arrive(In::NoteOn(0, 62, 100), 1000 * 48, &h, RATE, &r);
+            assert_eq!(drain(&mut s), [(200, In::NoteOn(0, 60, 100)), (700, In::Cc(0, cc, 0)), (1200, In::NoteOn(0, 62, 100))]);
+
+            // A new polyphonic articulation with no hold still stays behind
+            // the queued stop, including when their due frames are equal.
+            let mut s = Scheduler::default();
+            s.arrive(In::NoteOn(0, 60, 100), 0, &h, RATE, &r);
+            s.arrive(In::Cc(0, cc, 0), 10 * 48, &h, RATE, &r);
+            s.arrive(In::NoteOn(0, 62, 100), 20 * 48, &holds(250.0, 250.0, 250.0), RATE, &r);
+            assert_eq!(drain(&mut s), [(200, In::NoteOn(0, 60, 100)), (210, In::Cc(0, cc, 0)), (210, In::NoteOn(0, 62, 100))]);
+        }
+
+        let mut a = Articulate::default();
+        a.sync("lib.nki", &[("Legato".into(), Some(12), None), ("Short".into(), Some(13), None)]);
+        a.mode = Mode::Channel;
+        let mut r = Router::default();
+        r.set_route(Route::new("lib.nki", &a, &Mpe::default()));
+        let mut t = Timing::default();
+        t.arts = vec![
+            Delay { name: "Legato".into(), first: [Some(50.0); 3], legato: [Some(250.0); 3] },
+            Delay { name: "Short".into(), first: [Some(250.0); 3], legato: [Some(250.0); 3] },
+        ];
+        let h = Holds::of(&t, &["Legato", "Short"], 250.0);
+        let mut s = Scheduler::default();
+        s.arrive(In::NoteOn(0, 60, 100), 0, &h, RATE, &r);
+        s.arrive(In::NoteOn(1, 65, 100), 0, &h, RATE, &r);
+        s.arrive(In::Cc(0, 123, 0), 10 * 48, &h, RATE, &r);
+        s.arrive(In::NoteOn(1, 67, 100), 20 * 48, &h, RATE, &r);
+        s.arrive(In::NoteOn(0, 62, 100), 20 * 48, &h, RATE, &r);
+        assert_eq!(s.down, [1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(drain(&mut s), [(0, In::NoteOn(1, 65, 100)), (20, In::NoteOn(1, 67, 100)), (200, In::NoteOn(0, 60, 100)), (200, In::Cc(0, 123, 0)), (220, In::NoteOn(0, 62, 100))]);
+
+        // Manager stops forget all zone members; a member stop leaves the
+        // other member's keys down. The shared lane is counted from survivors.
+        r.set_route(Route::new("", &Articulate::default(), &Mpe { zone: Zone::Lower, members: 2, ..Mpe::default() }));
+        for (channel, remaining) in [(0, 0), (1, 1)] {
+            let mut s = Scheduler::default();
+            let h = holds(50.0, 250.0, 250.0);
+            for member in 1..=2 { s.arrive(In::NoteOn(member, 60, 100), 0, &h, RATE, &r); }
+            s.arrive(In::Cc(channel, 123, 0), 500 * 48, &h, RATE, &r);
+            assert_eq!(s.down[0], remaining);
+            assert_eq!(s.held[1][60], UP);
+            assert_eq!(s.held[2][60] == UP, channel == 0);
+            assert_eq!(s.stop_due[2] > 0, channel == 0);
+        }
+        let mut s = Scheduler::default();
+        s.arrive(In::NoteOn(1, 60, 100), 0, &h, RATE, &r);
+        s.arrive(In::Cc(1, 121, 0), 500 * 48, &h, RATE, &r);
+        assert_eq!(s.down[0], 1, "reset controllers keeps keys held");
+        assert_eq!(s.stop_due, [0; 16]);
     }
 }
