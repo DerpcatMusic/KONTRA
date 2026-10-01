@@ -1079,6 +1079,104 @@ fn frame_cost() {
     }
 }
 
+/// The lag audit: per scenario, a frame's build+layout p50/p99 and a CPU
+/// raster's p50, in microseconds, with the owner's libraries. Run with
+/// `--ignored --nocapture`; `KONTAKTO_SHOT` picks the 16-part rack.
+#[test]
+#[ignore]
+fn lag() {
+    use moose::mui::mui::vello::{
+        self,
+        vello_cpu::{Pixmap, RenderContext, Resources},
+    };
+    use std::time::Instant;
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
+        "03 Areia - 6 Celli - Core Techniques,Vista - 3 Cellos,Una Corda Pure,ANALOG STRINGS".into()
+    });
+    let library = library_instruments(&files, &chosen);
+    let racks: Vec<(&str, Vec<Arc<import::Instrument>>)> = vec![
+        ("16 parts", library.iter().cycle().take(16).cloned().collect()),
+        ("ANALOG", library_instruments(&files, "ANALOG STRINGS")),
+        ("Areia", library_instruments(&files, "03 Areia - 6 Celli - Core Techniques")),
+    ];
+    let (w, hgt) = (1600u16, 1000u16);
+    let mut raster = RenderContext::new(w, hgt);
+    let mut resources = Resources::default();
+    let mut cache = vello::Cache::default();
+    let mut pix = Pixmap::new(w, hgt);
+    for (name, instruments) in racks {
+        let p = racked(&files, &instruments, true, "perform");
+        let mut h = Harness::new(&p, f64::from(w), f64::from(hgt));
+        h.settle_art();
+        let mut measure = |h: &mut Harness, label: &str, input: &mut dyn FnMut(usize, &Ui) -> Input| {
+            let n = 200;
+            let (mut frame, mut paint) = (Vec::new(), Vec::new());
+            for i in 0..n {
+                let input = input(i, &h.ui);
+                let t = Instant::now();
+                h.tick(input);
+                frame.push(t.elapsed().as_secs_f64() * 1e6);
+                if i % 4 == 0 {
+                    let t = Instant::now();
+                    raster.reset();
+                    vello::paint(
+                        &mut vello::Cpu { ctx: &mut raster, resources: &mut resources, cache: &mut cache },
+                        h.ui.scene().unwrap(),
+                        vello::kurbo::Affine::IDENTITY,
+                    )
+                    .unwrap();
+                    raster.flush();
+                    raster.render(&mut pix, &mut resources);
+                    paint.push(t.elapsed().as_secs_f64() * 1e6);
+                }
+            }
+            let q = |v: &mut Vec<f64>, at: f64| {
+                v.sort_by(f64::total_cmp);
+                v[((v.len() - 1) as f64 * at) as usize]
+            };
+            println!(
+                "{name:>8} {label:>12}: build+layout p50 {:>6.0} p99 {:>6.0} us   cpu paint p50 {:>6.0} us",
+                q(&mut frame, 0.5),
+                q(&mut frame, 0.99),
+                q(&mut paint, 0.5)
+            );
+        };
+        measure(&mut h, "idle", &mut |_, _| Input::default());
+        let list = center(&h.ui, "browser-list");
+        measure(&mut h, "browser", &mut |i, _| Input {
+            wheel: Vec2::new(0., if i % 100 < 50 { 60. } else { -60. }),
+            ..pointer(list, false)
+        });
+        h.idle(30);
+        let knob = center(&h.ui, "volume-0");
+        measure(&mut h, "knob", &mut |i, _| pointer(Point::new(knob.x, knob.y - (i % 40) as f64), i % 60 != 59));
+        h.idle(30);
+        let edge = center(&h.ui, "resize-0");
+        measure(&mut h, "resize", &mut |i, _| {
+            pointer(Point::new(edge.x, edge.y - (i % 80) as f64), i % 100 != 99)
+        });
+        h.idle(30);
+        let rack = center(&h.ui, "rack-view");
+        measure(&mut h, "rack scroll", &mut |i, _| Input {
+            wheel: Vec2::new(0., if i % 100 < 50 { 60. } else { -60. }),
+            ..pointer(rack, false)
+        });
+        h.idle(30);
+        let tabs = ["tab-mixer", "tab-rack", "tab-mapping", "tab-sound", "tab-info", "tab-rack"];
+        measure(&mut h, "tabs", &mut |i, ui| {
+            let at = center(ui, tabs[(i / 10) % tabs.len()]);
+            pointer(at, i % 10 == 0)
+        });
+        h.press("tab-mixer");
+        h.idle(30);
+        let fader = center(&h.ui, "mix-fader-0");
+        measure(&mut h, "mixer fader", &mut |i, _| pointer(Point::new(fader.x, fader.y - (i % 40) as f64), i % 60 != 59));
+        h.press("tab-rack");
+        h.idle(30);
+    }
+}
+
 /// Renders the editor in its main states to `.impeccable/review/` (git-ignored)
 /// for a visual check. Uses the owner's library when present.
 #[test]
