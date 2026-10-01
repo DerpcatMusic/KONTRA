@@ -317,7 +317,7 @@ impl SamplerParams {
                 "gain":part.gain, "pan":part.pan, "tune":part.tune, "mute":part.mute, "solo":part.solo,
                 "articulation":part.articulate, "mpe":part.mpe, "timing":part.timing,
                 "streaming":part.streaming(selection.streaming), "generation":self.shared.generation[slot].load(Ordering::Relaxed),
-                "script_epoch":v.script_epoch, "status":v.status, "load":v.load_report,
+                "script_epoch":v.script_epoch, "status":v.status, "load":v.load_report.as_deref(),
                 "runtime_status":v.runtime_status,
             })
         }).collect();

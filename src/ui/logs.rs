@@ -999,10 +999,8 @@ mod tests {
             },
             build: json!({"fixture":true}),
         };
-        let mut state = State {
-            snapshot: Some(Arc::new(snapshot)),
-            ..Default::default()
-        };
+        let mut state = State::default();
+        state.snapshot = Some(Arc::new(snapshot));
         for _ in 0..3 {
             tick(&mut ui, &mut state, &params, Input::default());
         }
