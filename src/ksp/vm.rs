@@ -888,16 +888,8 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
                     break Ok(Some(Yield::OutOfFuel));
                 }
             }
-            Op::JumpIfZero(to) => {
-                if pop!() == 0 {
-                    p = to as usize;
-                }
-            }
-            Op::JumpIfNonZero(to) => {
-                if pop!() != 0 {
-                    p = to as usize;
-                }
-            }
+            Op::JumpIfZero(to) => p = pick(pop!() == 0, to as usize, p),
+            Op::JumpIfNonZero(to) => p = pick(pop!() != 0, to as usize, p),
             Op::Case(c) => {
                 let arm = prog.cases[c as usize];
                 let v = s[s.len() - 1];
