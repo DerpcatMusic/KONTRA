@@ -351,7 +351,6 @@ fn is_hot(op: Op) -> bool {
             | Op::StRA(_)
             | Op::LdSA(_)
             | Op::StSA(_)
-            | Op::Sys(_)
             | Op::UiId(_)
             | Op::Ref(_)
             | Op::PopR
@@ -840,6 +839,7 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
                     ints[e] = value;
                 }
             }
+            Op::Sys(v) => s.push(sys_of(&t.ctx, env, slot, v)),
             Op::PopI => drop(pop!()),
             Op::IAdd => int2!(|a, b| a.wrapping_add(b)),
             Op::ISub => int2!(|a, b| a.wrapping_sub(b)),
@@ -1056,8 +1056,11 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
 }
 
 fn sys(m: &Machine, v: SysVar) -> i32 {
-    let ctx = &m.t.ctx;
-    let env = &*m.env;
+    sys_of(&m.t.ctx, m.env, m.slot.index, v)
+}
+
+#[inline(never)]
+fn sys_of(ctx: &Ctx, env: &Env, slot: u8, v: SysVar) -> i32 {
     let event = || env.events.get(ctx.event);
     match v {
         SysVar::EventId => ctx.event,
@@ -1090,7 +1093,7 @@ fn sys(m: &Machine, v: SysVar) -> i32 {
         SysVar::SongPosition => 0,
         SysVar::TransportRunning => bool_int(env.transport),
         SysVar::Tempo => env.tempo as i32,
-        SysVar::CurrentScriptSlot => i32::from(m.slot.index),
+        SysVar::CurrentScriptSlot => i32::from(slot),
         // The control of `on ui_control(s)`; ui_control callbacks keep the value.
         SysVar::UiId => ctx.value,
         SysVar::PlayedVoices => env.events.live_count() as i32,
