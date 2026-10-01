@@ -544,7 +544,8 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
         }
             .or_else(|| item.bipolar.then(|| "Pan".to_owned()))
             // Every control stays editable: a terse variable beats no control.
-            .or_else(|| (item.face != Face::Text).then(|| variable.trim_start_matches(['$', '~', '?', '%', '@', '!']).to_owned()))
+            // A menu stays nameless; its choice says what it is.
+            .or_else(|| (!matches!(item.face, Face::Text | Face::Menu)).then(|| variable.trim_start_matches(['$', '~', '?', '%', '@', '!']).to_owned()))
             .unwrap_or_default();
     }
     let mut kept: Vec<Item> = read
@@ -1961,6 +1962,10 @@ mod tests {
         interface.controls.push(control("ui_knob", "$tone", &with(at(20, 200, 32, 40), &[text("Tone")])));
         let s = sections(&interface, &HashMap::new());
         assert_eq!(s.iter().map(|s| s.band).collect::<Vec<_>>(), [0, 1]);
+        // Vista's output menu, named only by its obfuscated variable.
+        interface.controls.push(control("ui_menu", "$x0nzp", &at(200, 200, 90, 18)));
+        let named = super::names(&interface, &HashMap::new());
+        assert!(named.values().all(|n| n != "x0nzp"), "{named:?}");
     }
 
     #[test]
