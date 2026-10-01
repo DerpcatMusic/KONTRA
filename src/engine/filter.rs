@@ -743,6 +743,40 @@ impl Section {
     }
 }
 
+/// A Filter/EQ effect in an instrument rack or bus: the group filter's
+/// sections at the stored knobs.
+pub(crate) struct RackFilter {
+    sections: [Section; 4],
+    active: usize,
+}
+
+impl RackFilter {
+    /// `None` for an unknown filter type.
+    pub(crate) fn new(fx: &crate::fx::Effect, rate: f32) -> Option<Self> {
+        let chain = Chain { slots: vec![fx.clone()] };
+        let unit = units(&chain).next()?;
+        let mut out = Self { sections: [Section::default(); 4], active: 0 };
+        for b in 0..(unit.sections as usize).min(4) {
+            let (key, flat) = unit.key(&unit.knobs, b);
+            if !flat {
+                out.sections[out.active].coefficients(Proto::of(unit.shape, key, b, rate));
+                out.active += 1;
+            }
+        }
+        Some(out)
+    }
+
+    pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for s in &mut self.sections[..self.active] {
+            s.process(left, right);
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.sections.iter_mut().for_each(|s| s.s = [0.0; 4]);
+    }
+}
+
 /// EQ gain knobs this close to 0.5 (0 dB, ±0.01 dB) make a band an identity.
 const FLAT: f32 = 0.01 / (2.0 * GAIN_DB);
 
