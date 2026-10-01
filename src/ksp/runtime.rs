@@ -1302,15 +1302,16 @@ impl Runtime {
 
     /// Whether a different input still holds a note on this script channel.
     pub(crate) fn key_down_except(&self, owner: u8, channel: u8, note: u8) -> bool {
-        self.env.input.keys.iter().enumerate().any(|(c, keys)| {
-            if c == owner as usize { return false; }
-            let mut id = keys[note.min(127) as usize].0;
-            while let Some(e) = self.env.events.get(id) {
-                if e.channel == channel { return true; }
-                id = e.next_input;
-            }
-            false
-        })
+        (0..16).any(|c| c != owner && self.key_down_from(c, channel, note))
+    }
+
+    pub(crate) fn key_down_from(&self, owner: u8, channel: u8, note: u8) -> bool {
+        let mut id = self.env.input.keys[owner.min(15) as usize][note.min(127) as usize].0;
+        while let Some(e) = self.env.events.get(id) {
+            if e.channel == channel { return true; }
+            id = e.next_input;
+        }
+        false
     }
 
     /// Controller 0..127; use `pitch_bend`/`channel_pressure` for the virtual ones.

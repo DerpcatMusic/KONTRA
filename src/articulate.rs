@@ -697,6 +697,15 @@ impl Router {
             }
             In::Pressure(_, value) => out(Out::Pressure(to, value)),
             In::PolyAt(_, note, value) => out(Out::PolyAt(to, self.key_of(channel, note), value)),
+            In::Cc(_, 123, _) if r.by_channel() && self.scripted => {
+                // Channel-mode scripts share a home channel, but a host stop
+                // belongs to the physical channel that sent it.
+                for (to, key) in std::mem::replace(&mut self.held[channel as usize], [(NONE, NONE); 128]) {
+                    if key != NONE {
+                        out(Out::NoteOffFrom(to, channel, key));
+                    }
+                }
+            }
             In::Cc(_, cc, value) => {
                 if r.zone().is_some() {
                     self.rpn_cc(channel, cc, value);
@@ -1020,6 +1029,28 @@ mod tests {
         feed(&mut r, &mut e, In::NoteOn(2, 62, 100), 0);
         render(&mut e);
         assert_eq!(voices(&e, 62, false), [2]);
+    }
+
+    #[test]
+    fn all_notes_off_releases_only_its_physical_channel() {
+        let (mut e, mut r) = three_articulation_part();
+        for channel in 0..3 {
+            feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0);
+        }
+        render(&mut e);
+        feed(&mut r, &mut e, In::Cc(1, 123, 0), 0);
+        render(&mut e);
+        assert_eq!(voices(&e, 60, false), [0, 2], "channel 2 stop must leave channels 1 and 3 held");
+        assert!(e.key_down(0, 60));
+
+        // The engine's home-channel stop (audition/host cleanup) releases all
+        // physical owners routed to it, including repeated notes after a stop.
+        feed(&mut r, &mut e, In::NoteOn(1, 60, 100), 0);
+        render(&mut e);
+        e.cc(0, 123, 0);
+        render(&mut e);
+        assert!(voices(&e, 60, false).is_empty());
+        assert!(!e.key_down(0, 60));
     }
 
     #[test]

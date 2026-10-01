@@ -537,9 +537,11 @@ impl Engine {
                 return;
             }
             if cc == 123 {
-                for note in 0..128 {
-                    if self.key_down(channel, note) {
-                        self.note_off(channel, note);
+                for owner in 0..16 {
+                    for note in 0..128 {
+                        if self.script.as_ref().is_some_and(|rt| rt.key_down_from(owner, channel, note)) {
+                            self.note_off_from(channel, owner, note);
+                        }
                     }
                 }
                 return;
