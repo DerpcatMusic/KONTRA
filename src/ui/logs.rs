@@ -97,7 +97,7 @@ impl Drop for State {
     }
 }
 impl State {
-    fn refresh(&mut self) {
+    fn refresh(&mut self, params: &Arc<SamplerParams>) {
         if self.export_thread.is_some() {
             if let Some(answer) = super::lock(&self.export_answer).take() {
                 let _ = self.export_thread.take().unwrap().join();
@@ -130,9 +130,12 @@ impl State {
         }
         self.requested = Some(revision);
         let reader = self.reader.clone();
+        let keepalive = params.clone();
         let spawned = std::thread::Builder::new()
             .name("kontra-log-view".into())
             .spawn(move || {
+                // Keep Shared's journal lease alive until this worker has finished.
+                let _keepalive = keepalive;
                 let answer = std::panic::catch_unwind(diagnostics::snapshot).map_err(|_| {
                     "Could not read the diagnostic journal. Retry refresh.".to_owned()
                 });
@@ -247,7 +250,7 @@ impl State {
 }
 
 pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
-    cx.state.logs.refresh();
+    cx.state.logs.refresh(cx.p);
     draw(ui, &mut cx.state.logs, cx.p)
 }
 
@@ -301,7 +304,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
     let (refresh, refresh_el) = action(ui, "logs-refresh", "Refresh", false);
     if refresh {
         state.requested = None;
-        state.refresh();
+        state.refresh(params);
     }
     let (open, open_el) = action(ui, "logs-folder", "Open log folder", false);
     let path = status
