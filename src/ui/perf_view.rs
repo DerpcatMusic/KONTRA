@@ -169,13 +169,12 @@ pub fn scale(avail: f64, width: f64, setting: f32) -> f64 {
 // ponytail: finds each parent by a scan; index the IDs if views with
 // thousands of nested controls show up.
 pub(super) fn placed(interface: &Interface, n: usize) -> (f64, f64, bool) {
-    let (mut x, mut y, mut at) = (0., 0., n);
+    let (mut x, mut y, mut at, mut hidden) = (0., 0., n, false);
     // A panel in itself, or a deeper chain than any script builds, stops.
+    // A hidden control still has its place: a list brings rows back.
     for _ in 0..16 {
         let c = &interface.controls[at];
-        if int(c, "$CONTROL_PAR_HIDE").unwrap_or(0) & HIDE_WHOLE != 0 {
-            return (x, y, true);
-        }
+        hidden |= int(c, "$CONTROL_PAR_HIDE").unwrap_or(0) & HIDE_WHOLE != 0;
         x += f64::from(int(c, "$CONTROL_PAR_POS_X").unwrap_or(0));
         y += f64::from(int(c, "$CONTROL_PAR_POS_Y").unwrap_or(0));
         let parent = int(c, "$CONTROL_PAR_PARENT_PANEL")
@@ -185,7 +184,7 @@ pub(super) fn placed(interface: &Interface, n: usize) -> (f64, f64, bool) {
             _ => break,
         }
     }
-    (x, y, false)
+    (x, y, hidden)
 }
 
 /// The visible controls in drawing order: back layer first, then as
