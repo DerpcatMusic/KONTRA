@@ -30,6 +30,7 @@ mod keyboard;
 mod menu;
 mod mixer;
 mod panel;
+mod perf_view;
 mod picker;
 mod rack;
 mod spectrum;
@@ -374,6 +375,8 @@ struct EditorState {
     ranges: HashMap<usize, (std::sync::Weak<import::Instrument>, [bool; 128])>,
     /// Each part's performance view as last read.
     panels: HashMap<usize, panel::Cache>,
+    /// Pictures the original views asked for, by instrument, read or not.
+    perf_asked: std::collections::HashSet<(PathBuf, String)>,
     started: Instant,
     /// The computer keyboard's octave, velocity and held keys.
     computer: Arc<computer::Computer>,
@@ -831,6 +834,7 @@ fn build(
         neighbors: Default::default(),
         ranges: HashMap::new(),
         panels: HashMap::new(),
+        perf_asked: Default::default(),
         started: Instant::now(),
         computer,
         gliss: None,

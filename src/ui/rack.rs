@@ -260,7 +260,7 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
             let mut body: Vec<El> = instrument::notices(cx, slot).into_iter().collect();
             // Kept as drawn while nothing it shows moves: meters and keys
             // redraw around it, not through it.
-            let deps = (instrument::stage_deps(cx, slot), cx.selection.appearance);
+            let deps = (instrument::stage_deps(ui, cx, slot), cx.selection.appearance);
             deps.hash(shape);
             let stage = ui.memo(format!("stage-memo-{slot}"), deps, |ui| instrument::stage(ui, cx, slot));
             body.push(behind(cx, slot, stage));
@@ -489,6 +489,16 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     if let Some(path) = before.filter(|_| previous).or(after.filter(|_| next)) {
         cx.replace(slot, path);
     }
+    // The library's own performance view or ours, when it has one.
+    let view_el = super::perf_view::available(&cx.view.parts[slot]).then(|| {
+        let original = super::perf_view::shows(cx, slot);
+        let tip = if original { "Show KONTRA's controls" } else { "Show the library's own interface" };
+        let (hit, el) = icon_button(ui, format!("view-{slot}"), Icon::Picture, tip, original);
+        if hit {
+            cx.selection.parts[slot].view = if original { 2 } else { 1 };
+        }
+        el
+    });
     let more_id = format!("more-{slot}");
     let (more, more_el) = icon_button(ui, more_id.as_str(), Icon::More, "Part menu", false);
     if more {
@@ -555,7 +565,10 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     name_row.extend(chip);
     let name_row = row(name_row).gap(0).align(Align::Center).flex(1).min_w(0);
     let mix = cluster(vec![midi_el, output_el, pan_el, gain_el, tune_el]).gap(SPACE);
-    let tail = cluster(vec![switches, dot, more_el, remove_el]).gap(TIGHT + 1.);
+    let mut tail = vec![switches, dot];
+    tail.extend(view_el);
+    tail.extend([more_el, remove_el]);
+    let tail = cluster(tail).gap(TIGHT + 1.);
     let body = row![fold_el, name_row, mix, tail]
         .gap(if narrow { TIGHT } else { SPACE })
         .align(Align::Center)

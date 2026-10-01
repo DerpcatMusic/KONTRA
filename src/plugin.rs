@@ -72,6 +72,9 @@ pub struct Part {
     pub mic_buses: Vec<i16>,
     /// What plays on each of those channels, as the library names it.
     pub mic_names: Vec<String>,
+    /// Which performance view the part shows: 0 follows the app's setting,
+    /// 1 the library's original, 2 KONTRA's own controls.
+    pub view: u8,
 }
 impl Part {
     /// Where the part's samples play from, given the rack's setting.
@@ -134,6 +137,7 @@ impl Default for Part {
             output_manual: false,
             mic_buses: Vec::new(),
             mic_names: Vec::new(),
+            view: 0,
         }
     }
 }
@@ -2582,6 +2586,7 @@ mod tests {
                     output_manual: true,
                     mic_buses: vec![-1, 4],
                     mic_names: vec![String::new(), "Close".into()],
+                    view: 2,
                     ..Default::default()
                 },
             ],

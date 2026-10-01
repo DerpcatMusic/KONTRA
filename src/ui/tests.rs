@@ -1391,6 +1391,52 @@ fn performance_controls_edit_the_script() {
     );
 }
 
+/// The library's own view: shown by default once there is artwork, its
+/// controls at their own places editing the script; the header switches the
+/// part to the rebuilt view and back, and the choice is the part's.
+#[test]
+fn the_original_view_edits_the_script_and_switches() {
+    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_slider $vibrato(0, 100)\nset_control_par_str(get_ui_id($vibrato), $CONTROL_PAR_PICTURE, \"strip\")\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
+    let p = scripted_part(script);
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let frame = Arc::new(moose::mui::mui::scene::Image::rgba(40, 40, vec![255; 40 * 40 * 4]).unwrap());
+        let strip = Arc::new(artwork::Picture { frames: vec![frame; 11], resizable: false });
+        view.parts[0].pictures = Arc::new([("strip".to_owned(), strip)].into());
+        view.parts[0].wallpaper = Some(Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, vec![40; 632 * 268 * 4]).unwrap()));
+    }
+    let value = |n: usize| control_value(&p, n);
+    let mut h = Harness::new(&p, 1180., 760.);
+    let scene = h.ui.scene().unwrap();
+    assert!(scene.surface("kpv-0-1").is_some() && scene.surface("ksp-0-1").is_none(), "the original view by default");
+    let at = scene.surface("kpv-0-1").unwrap().frame;
+    assert_eq!((at.size.width, at.size.height), (40., 40.), "sized to its picture at 1x");
+    let origin = scene.surface("stage-0").unwrap().frame;
+    let left = origin.x + (origin.size.width - 632.) / 2.;
+    assert!((at.x - left - 200.).abs() < 1., "at its own place: {at:?} in {origin:?}");
+
+    h.press("kpv-0-0");
+    assert_eq!(value(0), crate::ksp::Value::Int(1), "a switch toggles on");
+    let knob = center(&h.ui, "kpv-0-1");
+    for y in [0., -10., -60.] {
+        h.tick(pointer(Point::new(knob.x, knob.y + y), true));
+    }
+    h.tick(pointer(Point::new(knob.x, knob.y - 60.), false));
+    h.idle(2);
+    let crate::ksp::Value::Int(dragged) = value(1) else { panic!("slider value") };
+    assert!(dragged > 10, "dragging up raises it, got {dragged}");
+    h.press("kpv-0-2");
+    h.press("menu-item-1");
+    assert_eq!(value(2), crate::ksp::Value::Int(1), "a menu item sets the menu");
+
+    h.press("view-0");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 2, "the part keeps its choice");
+    assert!(h.ui.scene().unwrap().surface("ksp-0-1").is_some(), "the rebuilt view");
+    h.press("view-0");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 1);
+    assert!(h.ui.scene().unwrap().surface("kpv-0-1").is_some());
+}
+
 #[test]
 fn idle_editor_rebuilds_only_when_something_moves() {
     let p = Arc::new(SamplerParams::new());
@@ -1963,5 +2009,95 @@ fn hue_walks_skip_orange() {
         let hues: Vec<f32> = (0..16).map(|n| golden_hue(from, n)).collect();
         assert!(hues.iter().all(|&h| !orange(h)), "{hues:?}");
         assert!(hues.windows(2).all(|w| (w[0] - w[1]).rem_euclid(360.).min((w[1] - w[0]).rem_euclid(360.)) > 60.));
+    }
+}
+
+/// Shape statistics of library performance views for the original view:
+/// sizes, kinds, pictures found and their frames. `KONTAKTO_SHOT` names
+/// the instruments; run with `--ignored --nocapture`. Prints no names.
+#[test]
+#[ignore]
+fn perf_view_stats() {
+    use crate::ksp::Value;
+    use std::collections::BTreeMap;
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let names = std::env::var("KONTAKTO_SHOT").unwrap_or_default();
+    for i in library_instruments(&files, &names) {
+        let script = scripted(&i);
+        let Some(u) = script.interface else {
+            println!("== {}: no interface ({})", i.name, script.status.lines().count());
+            continue;
+        };
+        let wall = artwork::performance(&i, Some(u.wallpaper.as_str()));
+        let wall = match &wall {
+            Ok(Some(w)) => format!("{}x{}", w.width, w.height),
+            Ok(None) => "none".into(),
+            Err(e) => format!("err {e}"),
+        };
+        let pic_names = u.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+            Some(Value::Text(n)) if !n.is_empty() => Some(n.as_str()),
+            _ => None,
+        });
+        let pics = artwork::pictures(&i.path, pic_names.clone());
+        let named: std::collections::BTreeSet<&str> = pic_names.collect();
+        println!("== {} ui {}x{} perf {} wallpaper {wall}; pictures {}/{}", i.name, u.width, u.height, u.performance, pics.len(), named.len());
+        let mut kinds: BTreeMap<&str, (usize, usize, usize, usize)> = BTreeMap::new();
+        let mut props: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        for c in &u.controls {
+            let int = |k: &str| match c.properties.get(k) { Some(Value::Int(n)) => *n, _ => 0 };
+            let hidden = int("$CONTROL_PAR_HIDE") & 16 != 0;
+            let pic = match c.properties.get("$CONTROL_PAR_PICTURE") { Some(Value::Text(n)) if !n.is_empty() => Some(n.as_str()), _ => None };
+            let e = kinds.entry(c.kind.as_str()).or_default();
+            e.0 += 1;
+            e.1 += usize::from(!hidden);
+            e.2 += usize::from(pic.is_some());
+            if let Some(p) = pic.and_then(|n| pics.get(n)) {
+                let f = &p.frames[0];
+                e.3 += usize::from(f.width as i32 == int("$CONTROL_PAR_WIDTH") && f.height as i32 == int("$CONTROL_PAR_HEIGHT"));
+            }
+            for k in ["Z_LAYER", "FONT_TYPE", "TEXT_ALIGNMENT", "MOUSE_BEHAVIOUR", "PICTURE_STATE", "TEXTPOS_Y", "HIDE", "TEXT_COLOR"] {
+                if let Some(v) = c.properties.get(&format!("$CONTROL_PAR_{k}")) {
+                    *props.entry(format!("{}:{k}", c.kind)).or_default().entry(format!("{v:?}")).or_default() += 1;
+                }
+            }
+            for k in c.properties.keys().filter(|k| k.starts_with('#')) {
+                *props.entry("unnamed".into()).or_default().entry(k.clone()).or_default() += 1;
+            }
+        }
+        for (k, (n, vis, pic, sized)) in kinds {
+            println!("  {k:14} {n:4} visible {vis:4} picture {pic:4} sized-as-frame {sized}");
+        }
+        for (k, v) in props {
+            let mut v: Vec<_> = v.into_iter().collect();
+            v.sort_by_key(|x| std::cmp::Reverse(x.1));
+            v.truncate(6);
+            println!("  {k}: {v:?}");
+        }
+        let frames: BTreeMap<usize, usize> = pics.values().fold(BTreeMap::new(), |mut m, p| {
+            *m.entry(p.frames.len()).or_default() += 1;
+            m
+        });
+        println!("  frames per picture: {frames:?}");
+        // Where the unread pictures are, if anywhere: member paths' shapes only.
+        let nkrs: Vec<PathBuf> = i.path.ancestors().skip(1).take(4).flat_map(|d| {
+            let mut v: Vec<PathBuf> = std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect();
+            let subs: Vec<PathBuf> = v.iter().filter(|p| p.is_dir()).flat_map(|s| std::fs::read_dir(s).into_iter().flatten().flatten().map(|e| e.path())).collect();
+            v.extend(subs);
+            v.into_iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkr")))
+        }).collect();
+        for name in named.iter().filter(|n| !pics.contains_key(**n)) {
+            let want = format!("{}.png", name.to_lowercase());
+            let mut seen = Vec::new();
+            for nkr in &nkrs {
+                let Ok(mut f) = std::fs::File::open(nkr) else { continue };
+                let Ok(a) = ni_file::nkr::Archive::read(&mut f) else { continue };
+                for (k, e) in &a.entries {
+                    if k.to_lowercase().rsplit('/').next() == Some(want.as_str()) {
+                        seen.push(format!("depth {} encoded {}", k.matches('/').count(), e.encoded));
+                    }
+                }
+            }
+            println!("  unread picture (len {}): {seen:?}", name.len());
+        }
     }
 }
