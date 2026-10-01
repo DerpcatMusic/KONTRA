@@ -308,6 +308,8 @@ impl Span {
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct ZonePlay {
     pub sample: u32,
+    /// Positive source identity, preserved when other zones fail to load.
+    pub zone_id: u32,
     pub map: PlayMap,
     /// Maximum start offset in frames.
     pub start_mod: u64,
@@ -340,6 +342,7 @@ pub struct Bank {
     /// every bank of one instrument: parts and instances share one copy
     /// (17 MiB a part on Areia).
     zones: Arc<[Zone]>,
+    source_zone_count: usize,
     /// What voices play: [`Bank::base`] with the player's overrides on top.
     pub settings: Vec<GroupSettings>,
     /// The library's values as its scripts have set them, under the
@@ -484,10 +487,10 @@ impl Bank {
             store_headers(&instrument.path, &paths, &headers);
         }
         trace.mark("open");
-        let (zones, zone_samples) = keep_zones(instrument, &zone_ids, &opened, &mut issues);
+        let (zones, zone_samples, source_ids) = keep_zones(instrument, &zone_ids, &opened, &mut issues);
         let info = readers.iter().map(|(_, r, _)| (r.rate, r.frames)).collect();
         let mut builder =
-            Builder::new(instrument.groups.clone(), zones, zone_samples, info, issues)?;
+            Builder::new(instrument.groups.clone(), zones, zone_samples, source_ids, info, issues)?;
         builder.limits(instrument);
 
         let frame_bytes: Vec<_> = readers
@@ -675,9 +678,9 @@ impl Bank {
                 }
             })
             .collect();
-        let (zones, zone_samples) = keep_zones(instrument, &zone_ids, &opened, &mut issues);
+        let (zones, zone_samples, source_ids) = keep_zones(instrument, &zone_ids, &opened, &mut issues);
         let info = kept.iter().map(|(_, h, _)| (h.rate, h.frames)).collect();
-        let mut builder = Builder::new(instrument.groups.clone(), zones, zone_samples, info, issues)?;
+        let mut builder = Builder::new(instrument.groups.clone(), zones, zone_samples, source_ids, info, issues)?;
         builder.limits(instrument);
         let empty = Frames::new(Pcm::pack(&[], false));
         let mut samples = Vec::with_capacity(kept.len());
@@ -720,7 +723,8 @@ impl Bank {
             .iter()
             .map(|(_, s)| (s.rate, s.frames.len() as u64))
             .collect();
-        let builder = Builder::new(groups, zones, zone_samples, info, Issues::default())?;
+        let source_ids = (1..=zones.len() as u32).collect();
+        let builder = Builder::new(groups, zones, zone_samples, source_ids, info, Issues::default())?;
         let samples: Vec<_> = samples
             .into_iter()
             .map(|(_, s)| SampleData {
@@ -747,6 +751,23 @@ impl Bank {
 
     pub fn zones(&self) -> &[Zone] {
         &self.zones
+    }
+
+    /// All source zones, including mappings whose samples could not be loaded.
+    pub(crate) fn zone_count(&self) -> usize { self.source_zone_count }
+
+    /// The same mapping selection used by queued script queries and voice starts.
+    pub(crate) fn matching_zones<'a>(&'a self, channel: u8, note: u8, velocity: u8,
+        release_trigger: bool, mask: &'a crate::ksp::GroupMask) -> impl Iterator<Item = u32> + 'a {
+        self.zones_on(note).iter().copied().filter_map(move |z| {
+            let zone = &self.zones[z as usize];
+            let group = &self.groups[zone.group];
+            (self.playable[zone.group]
+                && group.release_trigger == release_trigger
+                && (group.channel < 0 || group.channel == i16::from(channel))
+                && mask.contains(zone.group)
+                && (zone.low_velocity..=zone.high_velocity).contains(&velocity)).then_some(z)
+        })
     }
 
     pub fn sample_count(&self) -> usize {
@@ -816,6 +837,7 @@ struct Layout {
 struct Builder {
     groups: Vec<Group>,
     zones: Vec<Zone>,
+    source_zone_count: usize,
     plays: Vec<ZonePlay>,
     settings: Vec<GroupSettings>,
     voice_groups: Vec<Option<VoiceGroup>>,
@@ -828,14 +850,16 @@ impl Builder {
         groups: Vec<Group>,
         zones: Vec<Zone>,
         samples: Vec<u32>,
+        source_ids: Vec<u32>,
         info: Vec<(u32, u64)>,
         mut issues: Issues,
     ) -> Result<Self> {
         // `info[sample]` is `(rate, frames)`.
         let total = zones.len();
+        let source_zone_count = total + issues.skipped;
         let mut kept = Vec::with_capacity(total);
         let mut plays = Vec::with_capacity(total);
-        for (zone, sample) in zones.into_iter().zip(samples) {
+        for ((zone, sample), zone_id) in zones.into_iter().zip(samples).zip(source_ids) {
             let (_, frames) = info[sample as usize];
             let Some(group) = groups.get(zone.group) else {
                 issues.skip(format_args!("zone refers to missing group {}", zone.group));
@@ -855,6 +879,7 @@ impl Builder {
                         .min(map.end - map.start - 1);
                     plays.push(ZonePlay {
                         sample,
+                        zone_id,
                         map,
                         start_mod,
                     });
@@ -875,6 +900,7 @@ impl Builder {
         Ok(Self {
             groups,
             zones: kept,
+            source_zone_count,
             plays,
             settings,
             voice_groups: Vec::new(),
@@ -1120,6 +1146,7 @@ impl Builder {
         Ok(Bank {
             groups: self.groups,
             zones: intern(&ZONES, zones),
+            source_zone_count: self.source_zone_count,
             base: self.settings.clone(),
             settings: self.settings,
             plays: intern(&PLAYS, plays),
@@ -1295,20 +1322,22 @@ fn keep_zones(
     zone_ids: &[Option<usize>],
     opened: &[Option<u32>],
     issues: &mut Issues,
-) -> (Vec<Zone>, Vec<u32>) {
+) -> (Vec<Zone>, Vec<u32>, Vec<u32>) {
     let mut zones = Vec::new();
     let mut zone_samples = Vec::new();
-    for (zone, id) in instrument.zones.iter().zip(zone_ids) {
+    let mut source_ids = Vec::new();
+    for (index, (zone, id)) in instrument.zones.iter().zip(zone_ids).enumerate() {
         match id.map(|id| opened[id]) {
             None => issues.skip(format_args!("unavailable {}", zone.sample.display())),
             Some(None) => issues.skip(format_args!("unreadable {}", zone.sample.display())),
             Some(Some(id)) => {
                 zones.push(zone.clone());
                 zone_samples.push(id);
+                source_ids.push(index as u32 + 1);
             }
         }
     }
-    (zones, zone_samples)
+    (zones, zone_samples, source_ids)
 }
 
 /// Load phase timings on stderr when `KONTRA_LOAD_TRACE` is set.
