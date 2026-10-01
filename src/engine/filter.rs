@@ -55,33 +55,55 @@ pub enum Response {
     Notch,
 }
 
-/// Kontakt filter type id → response and 2-pole section count. Low/high
-/// direction is medium confidence, pole counts low (see `audits/EFFECTS.md`).
-pub(crate) fn filter_type(id: i32) -> Option<(Response, u8)> {
+mod models;
+pub(crate) use models::Model;
+
+/// Kontakt filter type id → shape and 2-pole section count. Low/high
+/// direction of 2..9 and 52..57 is medium confidence, pole counts low; the
+/// modelled ids' evidence is in `audits/EFFECTS.md`.
+pub(crate) fn filter_type(id: i32) -> Option<(Shape, u8)> {
     use Response::*;
-    Some(match id {
-        2 => (Low, 1),
-        3 => (High, 1),
-        4 => (Band, 1),
-        5 => (Low, 2),
-        6 => (High, 2),
-        7 => (Band, 2),
-        8 => (Notch, 2),
-        9 => (Low, 3),
-        52 => (Low, 1),
-        53 => (Band, 1),
-        54 => (High, 1),
-        55 => (Low, 2),
-        56 => (Band, 2),
-        57 => (High, 2),
+    let ladder = |response, poles, compensate| Model::Ladder { response, poles, compensate };
+    let svf = |response, sections| (Shape::Filter(response), sections);
+    let model = match id {
+        2 => return Some(svf(Low, 1)),
+        3 => return Some(svf(High, 1)),
+        4 => return Some(svf(Band, 1)),
+        5 => return Some(svf(Low, 2)),
+        6 => return Some(svf(High, 2)),
+        7 => return Some(svf(Band, 2)),
+        8 | SV_NOTCH4 => return Some(svf(Notch, 2)),
+        9 => return Some(svf(Low, 3)),
+        52 => return Some(svf(Low, 1)),
+        53 => return Some(svf(Band, 1)),
+        54 => return Some(svf(High, 1)),
+        55 => return Some(svf(Low, 2)),
+        56 => return Some(svf(Band, 2)),
+        57 => return Some(svf(High, 2)),
+        13 => Model::Phaser,
+        70 | 71 | 90 => Model::Formant,
+        100 => ladder(Low, 2, true),
+        101 => ladder(Low, 4, true),
+        102 => ladder(High, 2, true),
+        103 => ladder(High, 4, true),
+        104 => ladder(Band, 2, true),
+        105 => ladder(Band, 4, true),
+        106 => ladder(Low, 4, false),
+        107 => ladder(High, 4, false),
         _ => return None,
-    })
+    };
+    Some((Shape::Model(model), model.sections()))
 }
 
-/// KSP `$FILTER_TYPE_*` constants by the type id the engine stores. The
-/// classic ids follow the guessed order of `filter_type`; types no local
-/// preset stores get KONTRA-internal ids from 1000 (Kontakt's own values are
-/// opaque to scripts, so only consistency matters).
+/// KONTRA's id for `$FILTER_TYPE_SV_NOTCH4`, which no local preset stores.
+const SV_NOTCH4: i32 = 1000;
+
+/// KSP `$FILTER_TYPE_*` constants: the type ids presets store, so scripts
+/// read back what they set. 2..9 follow the reference's order; AR_LP2 is
+/// 100 (ANALOG STRINGS sets it on exactly the groups storing 100), the
+/// other AR and Daft ids continue that run in reference order and the
+/// phaser and formant ids are the remaining ones its presets store (low
+/// confidence). Types no local preset stores get ids from 1000.
 const KSP_FILTER_TYPES: &[(&str, i32)] = &[
     ("$FILTER_TYPE_LP2POLE", 2),
     ("$FILTER_TYPE_HP2POLE", 3),
@@ -91,12 +113,18 @@ const KSP_FILTER_TYPES: &[(&str, i32)] = &[
     ("$FILTER_TYPE_BP4POLE", 7),
     ("$FILTER_TYPE_BR4POLE", 8),
     ("$FILTER_TYPE_LP6POLE", 9),
-    ("$FILTER_TYPE_SV_LP2", 52),
-    ("$FILTER_TYPE_SV_BP2", 53),
-    ("$FILTER_TYPE_SV_HP2", 54),
-    ("$FILTER_TYPE_SV_LP4", 55),
-    ("$FILTER_TYPE_SV_BP4", 56),
-    ("$FILTER_TYPE_SV_HP4", 57),
+    ("$FILTER_TYPE_PHASER", 13),
+    ("$FILTER_TYPE_FORMANT_1", 70),
+    ("$FILTER_TYPE_FORMANT_2", 71),
+    ("$FILTER_TYPE_AR_LP2", 100),
+    ("$FILTER_TYPE_AR_LP4", 101),
+    ("$FILTER_TYPE_AR_HP2", 102),
+    ("$FILTER_TYPE_AR_HP4", 103),
+    ("$FILTER_TYPE_AR_BP2", 104),
+    ("$FILTER_TYPE_AR_BP4", 105),
+    ("$FILTER_TYPE_DAFT_LP", 106),
+    ("$FILTER_TYPE_DAFT_HP", 107),
+    ("$FILTER_TYPE_SV_NOTCH4", SV_NOTCH4),
 ];
 
 /// Value of a KSP `$FILTER_TYPE_*` constant.
@@ -106,7 +134,9 @@ pub fn ksp_filter_type(name: &str) -> Option<i32> {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Shape {
+    /// A state-variable response, the same on every section.
     Filter(Response),
+    Model(Model),
     Eq,
 }
 
@@ -126,6 +156,10 @@ pub(crate) enum Knob {
     Spread,
     /// Stereo Modeller pan, -1 ..= 1 (`$ENGINE_PAR_STEREO_PAN`).
     Pan,
+    /// Formant size, the third knob of a formant filter.
+    Size,
+    /// The filter type id (`$ENGINE_PAR_EFFECT_SUBTYPE`).
+    Type,
 }
 
 impl Knob {
@@ -133,8 +167,9 @@ impl Knob {
     pub(crate) fn parse(name: &str) -> Option<Self> {
         let band = |rest: &str| rest.parse::<u8>().ok().filter(|b| (1..=3).contains(b)).map(|b| b - 1);
         Some(match name {
-            "filterCutoff" => Self::Cutoff,
-            "filterResonance" => Self::Resonance,
+            "filterCutoff" | "formantTalk" => Self::Cutoff,
+            "filterResonance" | "filterQ" | "formantSharp" => Self::Resonance,
+            "formantSize" => Self::Size,
             _ => {
                 if let Some(b) = name.strip_prefix("eqGain") {
                     Self::Gain(band(b)?)
@@ -152,17 +187,19 @@ impl Knob {
         Some(match self {
             Self::Cutoff => 0,
             Self::Resonance => 1,
+            Self::Size => 2,
             Self::Freq(b) => 3 * b as usize,
             Self::Bandwidth(b) => 3 * b as usize + 1,
             Self::Gain(b) => 3 * b as usize + 2,
-            Self::Bypass | Self::Output | Self::Spread | Self::Pan => return None,
+            Self::Bypass | Self::Output | Self::Spread | Self::Pan | Self::Type => return None,
         })
     }
 
     /// Whether a unit of `shape` with `sections` holds this knob.
     fn fits(self, shape: Shape, sections: u8) -> bool {
         match (shape, self) {
-            (Shape::Filter(_), Self::Cutoff | Self::Resonance) => true,
+            (Shape::Filter(_) | Shape::Model(_), Self::Cutoff | Self::Resonance) => true,
+            (Shape::Model(m), Self::Size) => m.knobs() == 3,
             (Shape::Eq, Self::Freq(b) | Self::Bandwidth(b) | Self::Gain(b)) => b < sections,
             _ => false,
         }
@@ -180,6 +217,8 @@ pub(crate) struct Unit {
     pub(crate) knobs: [f32; KNOBS],
     pub(crate) bypass: bool,
     gain: f32,
+    /// Kontakt filter type id (EQs: 22..24).
+    kind: i32,
 }
 
 impl Unit {
@@ -189,6 +228,7 @@ impl Unit {
         let k = knobs.map(|k| k.clamp(0.0, 1.0));
         match self.shape {
             Shape::Filter(_) => ([k[0], k[1], 0.0], false),
+            Shape::Model(_) => ([k[0], k[1], k[2]], false),
             Shape::Eq => {
                 let key = [k[3 * b], k[3 * b + 1], k[3 * b + 2]];
                 (key, (key[2] - 0.5).abs() < FLAT)
@@ -239,10 +279,11 @@ impl Proto {
         Self { g, k, m: [1.0, k * (a * a - 1.0), 0.0] }
     }
 
-    /// A unit's section from normalized knobs: `[cutoff, resonance, _]` or
-    /// `[freq, bandwidth, gain]`.
-    fn of(shape: Shape, key: [f32; 3], rate: f32) -> Self {
+    /// A unit's section `b` from normalized knobs: `[cutoff, resonance, _]`
+    /// (a model's third knob) or `[freq, bandwidth, gain]`.
+    fn of(shape: Shape, key: [f32; 3], b: usize, rate: f32) -> Self {
         match shape {
+            Shape::Model(model) => model.proto(key, b, rate),
             Shape::Filter(response) => {
                 let (hz, q) = filter_settings(key[0], key[1]);
                 Self::filter(response, hz, q, rate)
@@ -321,9 +362,8 @@ fn units(chain: &Chain) -> impl Iterator<Item = Unit> + '_ {
         let mut knobs = [0.0; KNOBS];
         let (shape, sections) = match &fx.params {
             Params::Filter(f) => {
-                let (response, sections) = filter_type(f.filter_type)?;
-                knobs[..2].copy_from_slice(&[f.cutoff, f.resonance]);
-                (Shape::Filter(response), sections)
+                knobs[..5].copy_from_slice(&[f.cutoff, f.resonance, f.extra[0], f.extra[1], f.extra[2]]);
+                filter_type(f.filter_type)?
             }
             Params::Eq(eq) => {
                 for (k, band) in knobs.chunks_mut(3).zip(&eq.bands) {
@@ -333,6 +373,10 @@ fn units(chain: &Chain) -> impl Iterator<Item = Unit> + '_ {
             }
             _ => return None,
         };
+        let kind = match &fx.params {
+            Params::Filter(f) => f.filter_type,
+            _ => 21 + i32::from(sections),
+        };
         Some(Unit {
             slot: fx.slot as u8,
             shape,
@@ -340,6 +384,7 @@ fn units(chain: &Chain) -> impl Iterator<Item = Unit> + '_ {
             knobs,
             bypass: fx.bypass,
             gain: fx.output_gain,
+            kind,
         })
     })
 }
@@ -484,7 +529,7 @@ impl GroupFilter {
             for b in 0..unit.sections as usize {
                 let (key, flat) = unit.key(&unit.knobs, b);
                 if !flat {
-                    gain *= Proto::of(unit.shape, key, rate).gain(hz, rate);
+                    gain *= Proto::of(unit.shape, key, b, rate).gain(hz, rate);
                 }
             }
         }
@@ -499,6 +544,7 @@ impl GroupFilter {
             Knob::Bypass => unit.map(|u| u.bypass).or(mixer.map(|m| m.bypass)).map(f32::from),
             Knob::Output => unit.map(|u| u.gain).or(mixer.map(|m| m.gain)),
             Knob::Spread | Knob::Pan => Some(mixer?.stereo?[usize::from(knob == Knob::Pan)]),
+            Knob::Type => unit.map(|u| u.kind as f32),
             _ => {
                 let unit = unit.filter(|u| knob.fits(u.shape, u.sections))?;
                 Some(unit.knobs[knob.index()?])
@@ -516,8 +562,28 @@ impl GroupFilter {
         self.envs.iter().find(|e| e.2 == i).map(|e| &e.0)
     }
 
+    /// Switch a filter slot to another filter type. The voices' section
+    /// states stay where they are, so a switch that changes the section
+    /// count rearranges them for the notes playing.
+    fn set_type(&mut self, slot: u8, kind: i32) -> bool {
+        let total: usize = self.units.iter().map(|u| u.sections as usize).sum();
+        let Some(u) = self.units.iter_mut().find(|u| u.slot == slot && u.shape != Shape::Eq) else {
+            return false;
+        };
+        match filter_type(kind) {
+            Some((shape, sections)) if total - u.sections as usize + sections as usize <= MAX_SECTIONS => {
+                (u.shape, u.sections, u.kind) = (shape, sections, kind);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Set a slot's parameter (`set_engine_par`); false if the slot lacks it.
     pub(crate) fn set_knob(&mut self, slot: u8, knob: Knob, value: f32) -> bool {
+        if knob == Knob::Type {
+            return self.set_type(slot, value as i32);
+        }
         let unit = self.units.iter_mut().find(|u| u.slot == slot);
         let mixer = self.mixers.iter_mut().find(|m| m.slot == slot);
         match (knob, unit, mixer) {
@@ -778,7 +844,7 @@ impl VoiceFilter {
                 }
                 if k != self.tuned[s + b] {
                     self.tuned[s + b] = k;
-                    self.sections[s + b].coefficients(Proto::of(unit.shape, k, rate));
+                    self.sections[s + b].coefficients(Proto::of(unit.shape, k, b, rate));
                 }
                 key.c[active] = self.sections[s + b].c;
                 self.slots[active] = (s + b) as u8;
@@ -859,7 +925,7 @@ impl VoiceFilter {
                     }
                     if key != *tuned {
                         *tuned = key;
-                        section.coefficients(Proto::of(unit.shape, key, rate));
+                        section.coefficients(Proto::of(unit.shape, key, b, rate));
                     }
                     section.process(&mut left[start..end], &mut right[start..end]);
                 }
@@ -1371,7 +1437,7 @@ mod tests {
 
     #[test]
     fn mixers_gains_and_bypass_follow_the_rack() {
-        let unit = |slot, shape, bypass, gain| Unit { slot, shape, sections: 1, knobs: [0.5; KNOBS], bypass, gain };
+        let unit = |slot, shape, bypass, gain| Unit { slot, shape, sections: 1, knobs: [0.5; KNOBS], bypass, gain, kind: 2 };
         let mut f = GroupFilter {
             units: [
                 Unit { knobs: [0.0; KNOBS], ..unit(0, Shape::Filter(Response::Low), true, 0.5) },
@@ -1408,6 +1474,40 @@ mod tests {
         assert!((l - 0.25).abs() < 1e-3 && (r - 0.5).abs() < 1e-3, "{l} {r}");
         assert!(!f.set_knob(1, Knob::Cutoff, 0.3), "an EQ has no cutoff");
     }
+    /// `$ENGINE_PAR_EFFECT_SUBTYPE` switches a slot among filter types,
+    /// and every modelled type plays finite audio.
+    #[test]
+    fn filter_types_switch_and_play() {
+        let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [0.6, 0.7, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2 };
+        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), matrix: IDENTITY, envs: [].into(), ext: [].into() };
+        let table = ModTable::default();
+        let cc = [0u8; 128];
+        let input = Inputs { cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let mut ctl = [0.0; MAX_BLOCK];
+        for kind in [13, 70, 90, 100, 101, 102, 103, 104, 105, 106, 107, SV_NOTCH4] {
+            assert!(f.set_knob(0, Knob::Type, kind as f32), "{kind}");
+            assert_eq!(f.knob(0, Knob::Type), Some(kind as f32));
+            let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
+            let mut seed = 1u32;
+            for _ in 0..50 {
+                let mut noise = [0.0f32; 128];
+                for x in &mut noise {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    *x = (seed >> 9) as f32 / (1u32 << 22) as f32 - 1.0;
+                }
+                let (mut l, mut r) = (noise, noise);
+                voice.process(&f, &table, &mut ctl, &mut l, &mut r, RATE);
+                assert!(l.iter().chain(&r).all(|x| x.is_finite() && x.abs() < 100.0), "{kind}");
+            }
+        }
+        // A daft low pass passes the bass, its high pass does not.
+        f.set_knob(0, Knob::Type, 106.0);
+        let low = f.magnitude(60.0, RATE);
+        f.set_knob(0, Knob::Type, 107.0);
+        assert!(low > 10.0 * f.magnitude(60.0, RATE));
+        assert!(!f.set_knob(0, Knob::Type, 4242.0), "unknown types are refused");
+    }
+
     #[test]
     fn stays_finite_under_fast_modulation() {
         let mut s = Section::default();

@@ -377,6 +377,7 @@ pub mod id {
     pub const MOD_TARGET_MP_INTENSITY: i32 = B + 17;
     pub const EFFECT_BYPASS: i32 = B + 22;
     pub const EFFECT_TYPE: i32 = B + 23;
+    pub const EFFECT_SUBTYPE: i32 = B + 24;
     pub const SEND_EFFECT_TYPE: i32 = B + 25;
     pub const SEND_EFFECT_BYPASS: i32 = B + 26;
     pub const SEND_EFFECT_DRY_LEVEL: i32 = B + 27;
@@ -535,6 +536,7 @@ impl Address {
             id::GAIN1..=id::GAIN3 => slot(Knob::Gain((par.id - id::GAIN1) as u8))?,
             id::STEREO => slot(Knob::Spread)?,
             id::STEREO_PAN => slot(Knob::Pan)?,
+            id::EFFECT_SUBTYPE => slot(Knob::Type)?,
             id::EFFECT_BYPASS => insert(Knob::Bypass, FxParam::Bypass)?,
             id::INSERT_EFFECT_OUTPUT_GAIN => insert(Knob::Output, FxParam::Wet)?,
             id::SEND_EFFECT_BYPASS => fx(FxParam::Bypass)?,
@@ -617,6 +619,7 @@ impl Address {
             },
             Self::Intensity { bipolar: true, .. } => 2.0 * x - 1.0,
             Self::Filter(_, _, Knob::Bypass) => f32::from(value != 0),
+            Self::Filter(_, _, Knob::Type) => value as f32,
             Self::Filter(_, _, Knob::Output) => effect_gain(x),
             // Afflatus sets 434210 where it stores spread -0.1316, Solo 500000 for 0.
             Self::Filter(_, _, Knob::Spread | Knob::Pan) => 2.0 * x - 1.0,
@@ -645,6 +648,7 @@ impl Address {
             Self::Fx(_, _, FxParam::Type) => return v as i32,
             Self::Fx(_, _, FxParam::Reverb(0)) => return i32::from(v >= 0.5),
             Self::Fx(_, _, FxParam::Reverb(_)) => v,
+            Self::Filter(_, _, Knob::Type) => return v as i32,
             Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) => {
                 return i32::from(v != 0.0);
             }
@@ -964,6 +968,7 @@ mod tests {
             (id::MOD_TARGET_MP_INTENSITY, "MOD_TARGET_MP_INTENSITY"),
             (id::EFFECT_BYPASS, "EFFECT_BYPASS"),
             (id::EFFECT_TYPE, "EFFECT_TYPE"),
+            (id::EFFECT_SUBTYPE, "EFFECT_SUBTYPE"),
             (id::SEND_EFFECT_TYPE, "SEND_EFFECT_TYPE"),
             (id::RV2_PREDELAY, "RV2_PREDELAY"),
             (id::RV2_TIME, "RV2_TIME"),

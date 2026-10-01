@@ -206,7 +206,7 @@ pub fn filter_handles(s: &GroupSettings) -> Vec<Handle> {
     for unit in f.units() {
         let slot = unit.slot;
         match unit.shape {
-            Shape::Filter(_) => {
+            Shape::Filter(_) | Shape::Model(_) => {
                 let (hz, _) = filter_settings(unit.knobs[0], unit.knobs[1]);
                 let db = 20. * f.magnitude(hz, RATE).max(1e-6).log10();
                 out.push(Handle {

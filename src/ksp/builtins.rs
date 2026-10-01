@@ -454,6 +454,9 @@ pub fn constant(name: &str) -> Option<i32> {
     if let Some(v) = crate::fx::ksp_effect_type(name) {
         return Some(v);
     }
+    if let Some(v) = crate::engine::filter::ksp_filter_type(name) {
+        return Some(v);
+    }
     if let Some(n) = name
         .strip_prefix("$MARK_")
         .and_then(|n| n.parse::<u32>().ok())
