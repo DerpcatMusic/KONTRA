@@ -335,7 +335,12 @@ impl Pictures {
             found.sort();
             found
         };
-        for folder in instrument.ancestors().skip(1).take(4) {
+        // Four folders up, and further for an instrument filed deeper than
+        // that, as far as the first folder with any resources.
+        for (depth, folder) in instrument.ancestors().skip(1).take(8).enumerate() {
+            if depth >= 4 && !(files.is_empty() && containers.is_empty()) {
+                break;
+            }
             for dir in resource_dirs(folder, folder_name) {
                 for e in std::fs::read_dir(dir)
                     .into_iter()
