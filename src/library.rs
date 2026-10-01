@@ -82,6 +82,12 @@ pub struct Settings {
     /// The library the browser last showed, by folder, and the row chosen in it.
     pub last_library: String,
     pub last_row: String,
+    /// The MIDI input new parts take: `None` the next free channel
+    /// (Kontakt's auto-increment), else that port and channel (-1 omni).
+    pub new_input: Option<(u8, i16)>,
+    /// The output bus new parts play through: `None` routes them as the
+    /// rack's Outputs choice says, else that bus, held as if picked by hand.
+    pub new_output: Option<u8>,
 }
 
 /// How a part shows its library's performance view.

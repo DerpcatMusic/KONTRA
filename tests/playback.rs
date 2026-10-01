@@ -830,6 +830,113 @@ fn streamed_playback_matches_ram_playback() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A bare bank (nothing resident: what the plugin plays while the preload
+/// loads) sounds as the preloaded bank does, and a note started on it carries
+/// on identically when the preloaded bank takes over mid-note.
+#[test]
+fn notes_during_the_preload_sound_as_after_it() {
+    let dir = std::env::temp_dir().join(format!("kontakto-bare-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("long24.wav");
+    write_wav_bits(&path, 120_000, 24);
+    let plain = Zone {
+        sample: path.clone(),
+        ..Zone::default()
+    };
+    let looped = Zone {
+        loop_range: Some(Loop {
+            start: 30_000,
+            end: 90_000,
+            until_release: true,
+            crossfade: 3000,
+        }),
+        start_mod: Some(4000),
+        ..plain.clone()
+    };
+    let reverse = Group {
+        reverse: true,
+        ..Group::default()
+    };
+    let cases = [(Group::default(), plain.clone()), (Group::default(), looped), (reverse, plain)];
+    for (n, (group, zone)) in cases.into_iter().enumerate() {
+        let instrument = instrument(vec![group], vec![zone]);
+        let full = || Bank::load(&instrument).unwrap();
+        assert_eq!(full().streamed_samples(), 1, "case {n} streams past its preload");
+        let mut engines = [full(), Bank::load_bare(&instrument).unwrap(), Bank::load_bare(&instrument).unwrap()].map(|bank| {
+            let mut e = engine_with(bank);
+            e.blocking_streams = true;
+            e
+        });
+        let mut note = NoteEvent::new(0, 60, 100);
+        note.offset_us = 50_000;
+        let ids = engines.each_mut().map(|e| e.start_event(&note).unwrap());
+        let [reference, bare, handed] = &mut engines;
+        for block in 0..600 {
+            if block == 40 {
+                handed.upgrade_bank(Box::new(full()));
+            }
+            if block == 400 {
+                for (e, id) in [&mut *reference, &mut *bare, &mut *handed].into_iter().zip(ids) {
+                    e.release_event(id);
+                }
+            }
+            let expected = render(reference, 128);
+            assert!(render(bare, 128) == expected, "case {n}: the bare bank diverges in block {block}");
+            assert!(render(handed, 128) == expected, "case {n}: the handover diverges in block {block}");
+        }
+        assert!(engines.iter().all(|e| e.underruns() == 0), "case {n}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// At real-time pace, never waiting on the disk, a note on a bare bank
+/// starts once its first frames have streamed instead of losing its attack:
+/// late by whole blocks, at most 50 ms (`START_HOLD`), and from then on as
+/// the preloaded bank plays it.
+#[test]
+fn bare_bank_notes_start_late_not_clipped() {
+    let dir = std::env::temp_dir().join(format!("kontakto-hold-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("long24.wav");
+    write_wav_bits(&path, 120_000, 24);
+    let instrument = instrument(
+        vec![Group::default()],
+        vec![Zone {
+            sample: path,
+            ..Zone::default()
+        }],
+    );
+    let mut reference = engine_with(Bank::load(&instrument).unwrap());
+    reference.blocking_streams = true;
+    let mut live = engine_with(Bank::load_bare(&instrument).unwrap());
+    reference.note_on(0, 60, 100);
+    let blocks = 40u32;
+    let expected: Vec<Frame> = (0..blocks).flat_map(|_| render(&mut reference, MAX_BLOCK)).collect();
+    let block = std::time::Duration::from_secs_f64(MAX_BLOCK as f64 / 48_000.0);
+    // Rendered at once: the streamer has had no time yet.
+    live.note_on(0, 60, 100);
+    let start = std::time::Instant::now();
+    let mut played = Vec::new();
+    for b in 0..blocks {
+        played.extend(render(&mut live, MAX_BLOCK));
+        if let Some(wait) = (start + block * (b + 1)).checked_duration_since(std::time::Instant::now()) {
+            std::thread::sleep(wait);
+        }
+    }
+    let onset = |frames: &[Frame]| frames.iter().position(|f| *f != [0.0; 2]);
+    let late = onset(&played).expect("the note sounds") - onset(&expected).unwrap();
+    assert_eq!(late % MAX_BLOCK, 0, "a waiting voice starts at a block");
+    assert!(late <= 2400 + MAX_BLOCK, "{late} frames late");
+    assert!(played[late..late + 1024] == expected[..1024], "the attack plays whole");
+    // The preload landing while the voice waits: it plays from RAM at once.
+    let mut live = engine_with(Bank::load_bare(&instrument).unwrap());
+    live.note_on(0, 60, 100);
+    live.upgrade_bank(Box::new(Bank::load(&instrument).unwrap()));
+    let first = render(&mut live, MAX_BLOCK);
+    assert!(first[..] == expected[..MAX_BLOCK], "no wait once the start is resident");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// 512 voices streaming from 32 files with the minimum preload, rendered at
 /// real-time pace without waiting for the disk: the streamer keeps up.
 #[test]

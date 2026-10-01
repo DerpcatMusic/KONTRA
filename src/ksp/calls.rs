@@ -155,7 +155,7 @@ fn library_dir(instrument: &std::path::Path) -> String {
 /// path is not there (libraries are made on case-insensitive systems).
 fn read_path(path: &str) -> Option<Vec<u8>> {
     let path = std::path::Path::new(path);
-    if let Ok(bytes) = crate::resources::read_bounded(path) {
+    if let Ok(bytes) = crate::resources::read_file(path) {
         return Some(bytes);
     }
     let mut at = std::path::PathBuf::from("/");
@@ -166,7 +166,7 @@ fn read_path(path: &str) -> Option<Vec<u8>> {
         })?;
         at = next;
     }
-    crate::resources::read_bounded(&at).ok()
+    crate::resources::read_file(&at).ok()
 }
 
 /// An `.nka` file's values for an array of type `ty` named `name`: the

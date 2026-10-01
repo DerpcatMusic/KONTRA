@@ -1179,81 +1179,46 @@ impl BackgroundTask for Load {
                 // Progress by phase: parsed 5%, scripts 10%, the bank the rest.
                 let progress = &params.shared.load_progress[slot];
                 progress.fetch_max(crate::engine::LOAD_DONE / 20, Ordering::Relaxed);
-                set_stage(&mut trace, "scripts");
-                let (script, snapshot, script_errors) =
-                    scripts(&instrument, &part.script_state, params.shared.rate());
+                set_stage(&mut trace, "scripts_and_sample_headers");
+                let ((script, snapshot, script_errors), bare) = std::thread::scope(|scope| {
+                    let (rate, instrument, state) = (params.shared.rate(), &instrument, &part.script_state);
+                    let scripts = scope.spawn(move || scripts(instrument, state, rate));
+                    let bare = (!instrument.zones.is_empty()).then(|| Bank::load_bare_cancelable(instrument, &canceled));
+                    let scripts = scripts.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+                    (scripts, bare)
+                });
                 for e in script_errors { trace.issue("scripts", "initialization_failed", e); }
                 if let Some(rt) = script.as_deref() {
                     for d in rt.diagnostics() { trace.issue("scripts", crate::diagnostics::code(&d), d); }
                 }
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
-                set_stage(&mut trace, "artwork");
                 progress.fetch_max(crate::engine::LOAD_DONE / 10, Ordering::Relaxed);
-                {
-                    let needs_art = {
-                        let view = params.shared.view.lock().unwrap();
-                        let v = &view.parts[slot];
-                        v.program != part.program
-                            || v.instrument
-                                .as_ref()
-                                .is_none_or(|i| i.path != instrument.path)
-                    };
-                    let parsed = needs_art.then(|| script_interface(script.as_deref()));
-                    let art = parsed.as_ref().map(|parsed| {
-                        let interface = parsed.interface.as_deref();
-                        let wallpaper = artwork::performance(
-                            &instrument,
-                            interface,
-                        );
-                        let names =
-                            interface
-                                .into_iter()
-                                .flat_map(|u| &u.controls)
-                                .filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
-                                    Some(crate::ksp::Value::Text(name)) => Some(name.as_str()),
-                                    _ => None,
-                                });
-                        let (pictures, errors) = artwork::pictures_report(&instrument.path, names);
-                        for e in errors { trace.issue("artwork", crate::diagnostics::code(&e), e); }
-                        if let Err(e) = &wallpaper { trace.issue("artwork", crate::diagnostics::code(e), e); }
-                        trace.detail("pictures_loaded", pictures.len());
-                        trace.detail("performance_view", interface.is_some_and(|u| u.performance));
-                        trace.detail("controls", interface.map_or(0, |u| u.controls.len()));
-                        for c in interface.into_iter().flat_map(|u| &u.controls) {
-                            if let Some(reason) = crate::diagnostics::widget_limit(&c.kind) {
-                                trace.issue("ui", "unsupported", format!("{} ({}): {reason}", c.kind, c.variable));
-                            }
-                        }
-                        (wallpaper, pictures)
-                    });
+                // Publish controls now; decode their artwork after audio is ready.
+                let needs_art = {
+                    let view = params.shared.view.lock().unwrap();
+                    let v = &view.parts[slot];
+                    v.program != part.program || v.instrument.as_ref().is_none_or(|i| i.path != instrument.path)
+                };
+                let parsed = needs_art.then(|| script_interface(script.as_deref()));
+                let art = {
                     let mut view = params.shared.view.lock().unwrap();
                     let v = &mut view.parts[slot];
                     v.instrument = Some(instrument.clone());
                     v.program = part.program;
-                    if let Some(parsed) = parsed {
-                        v.interface = parsed.interface;
+                    parsed.map(|parsed| {
+                        v.interface = parsed.interface.clone();
                         v.script_slot = parsed.slot;
                         v.interface_status = parsed.status;
                         v.keys = parsed.keys;
-                    }
-                    if let Some((art, pictures)) = art {
-                        v.pictures = Arc::new(pictures);
-                        match art {
-                            Ok(image) => {
-                                v.wallpaper = image;
-                                v.wallpaper_status.clear();
-                            }
-                            Err(e) => {
-                                v.wallpaper = None;
-                                v.wallpaper_status = e;
-                            }
-                        }
-                    }
-                }
-                set_stage(&mut trace, "samples");
+                        v.pictures = Arc::default();
+                        v.wallpaper = None;
+                        v.wallpaper_status.clear();
+                        parsed.interface
+                    })
+                };
                 if instrument.zones.is_empty() {
                     trace.issue("samples", "unsupported", "Controller instrument has no sample bank; standalone controller playback is unavailable");
-                    return Ok((instrument, None, script, snapshot, None));
+                    return Ok((instrument, None, script, snapshot, None, art));
                 }
                 // Every group plays; the stored group only selects what the mapping inspector shows.
                 if part.group == u32::MAX {
@@ -1276,17 +1241,9 @@ impl BackgroundTask for Load {
                     .min(crate::engine::memory_budget().saturating_sub(resident));
                 trace.detail("memory_budget_bytes", budget);
                 let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers);
-                // RAM only plays from a streaming bank while the RAM fills.
-                let bank = Box::new(Bank::load_cancelable(
-                    &instrument,
-                    budget,
-                    Streaming::Auto,
-                    controllers,
-                    &params.shared.load_progress[slot],
-                    &canceled,
-                )?);
-                let fill = (streaming == Streaming::RamOnly).then(|| (budget, controllers.to_vec()));
-                Ok((instrument, Some(bank), script, snapshot, fill))
+                let bank = bare.transpose()?.map(Box::new);
+                let preload = Some((budget, controllers.to_vec()));
+                Ok((instrument, bank, script, snapshot, preload, art))
             })();
             if canceled() {
                 let report = trace.finish("canceled");
@@ -1298,12 +1255,12 @@ impl BackgroundTask for Load {
             // Building UI snapshots and convolution/FX state can be large.
             // Keep both outside the editor's view lock, including controller patches.
             if result.is_ok() { set_stage(&mut trace, "effects"); }
-            let result = result.map(|(instrument, bank, script, snapshot, fill)| {
+            let result = result.map(|(instrument, bank, script, snapshot, preload, art)| {
                 let live = script.as_deref().map(|rt| Box::new(rt.live()));
                 let rate = params.shared.rate();
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
                 let fx = crate::engine::effects(&instrument, script.as_deref(), rate as f32);
-                (instrument, bank, script, snapshot, fill, live, fx, rate, irs)
+                (instrument, bank, script, snapshot, preload, art, live, fx, rate, irs)
             });
             if canceled() {
                 let report = trace.finish("canceled");
@@ -1313,7 +1270,7 @@ impl BackgroundTask for Load {
                 continue;
             }
             let status = match &result {
-                Ok((_, bank, _, _, _, _, _, _, _)) => {
+                Ok((_, bank, _, _, _, _, _, _, _, _)) => {
                     if let Some(b) = bank.as_deref() {
                         trace.detail("samples_loaded", b.sample_count());
                         trace.detail("samples_streamed", b.streamed_samples());
@@ -1337,7 +1294,7 @@ impl BackgroundTask for Load {
             view.parts[slot].runtime_status.clear();
             view.parts[slot].diagnostics_lent = None;
             match result {
-                Ok((instrument, bank, script, snapshot, fill, live, fx, rate, irs)) => {
+                Ok((instrument, bank, script, snapshot, preload, art, live, fx, rate, irs)) => {
                     let epoch = if script.is_some() {
                         next_epoch(&mut view, slot, snapshot, live)
                     } else {
@@ -1367,13 +1324,107 @@ impl BackgroundTask for Load {
                             epoch,
                         },
                     ));
+                    if preload.is_some() {
+                        v.status += " · preloading…";
+                    }
+                    drop(view);
+                    if let Some(interface) = art {
+                        let parent_id = params.shared.view.lock().unwrap().parts[slot].load_report.as_ref().map(|r| r["load_id"].clone());
+                        let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
+                        trace.detail("operation", "artwork");
+                        trace.detail("parent_load_id", parent_id);
+                        trace.stage("artwork");
+                        let interface = interface.as_deref();
+                        let wallpaper = artwork::performance(&instrument, interface);
+                        let names = interface.into_iter().flat_map(|u| &u.controls)
+                            .filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+                                Some(crate::ksp::Value::Text(name)) => Some(name.as_str()),
+                                _ => None,
+                            });
+                        let (pictures, errors) = artwork::pictures_report(&instrument.path, names);
+                        for e in errors { trace.issue("artwork", crate::diagnostics::code(&e), e); }
+                        if let Err(e) = &wallpaper { trace.issue("artwork", crate::diagnostics::code(e), e); }
+                        trace.detail("pictures_loaded", pictures.len());
+                        trace.detail("performance_view", interface.is_some_and(|u| u.performance));
+                        trace.detail("controls", interface.map_or(0, |u| u.controls.len()));
+                        for c in interface.into_iter().flat_map(|u| &u.controls) {
+                            if let Some(reason) = crate::diagnostics::widget_limit(&c.kind) {
+                                trace.issue("ui", "unsupported", format!("{} ({}): {reason}", c.kind, c.variable));
+                            }
+                        }
+                        let report = trace.finish(if canceled() { "canceled" } else { "loaded" });
+                        if canceled() { continue; }
+                        let mut view = params.shared.view.lock().unwrap();
+                        let v = &mut view.parts[slot];
+                        if let Some(load) = &mut v.load_report {
+                            let load = Arc::make_mut(load);
+                            if report["status"] != "loaded" { load["status"] = "partial".into(); }
+                            load["artwork"] = (*report).clone();
+                        }
+                        v.pictures = Arc::new(pictures);
+                        (v.wallpaper, v.wallpaper_status) = match wallpaper {
+                            Ok(image) => (image, String::new()),
+                            Err(e) => (None, e),
+                        };
+                    }
+                    // The preload: the full bank takes over from the bare one,
+                    // playing voices carrying on (`Engine::upgrade_bank`).
+                    let Some((budget, controllers)) = preload else { continue };
+                    let parent_id = params.shared.view.lock().unwrap().parts[slot].load_report.as_ref().map(|r| r["load_id"].clone());
+                    let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
+                    trace.detail("operation", "preload");
+                    trace.detail("parent_load_id", parent_id);
+                    trace.stage("samples");
+                    let bank = Bank::load_cancelable(
+                        &instrument,
+                        budget,
+                        Streaming::Auto,
+                        &controllers,
+                        &AtomicU32::new(0),
+                        &canceled,
+                    );
+                    if canceled() { trace.finish("canceled"); continue; }
+                    let status = match &bank {
+                        Ok(bank) => {
+                            trace.detail("resident_bytes", bank.bytes);
+                            trace.detail("samples_loaded", bank.sample_count());
+                            trace.detail("zones_skipped", bank.skipped_zones);
+                            if let Some(w) = &bank.warning { trace.issue("samples", "streaming_warning", w); }
+                            for e in &bank.issues { trace.issue("samples", "zone_skipped", e); }
+                            "loaded"
+                        }
+                        Err(e) => { trace.fail(format!("{e:#}")); "failed" }
+                    };
+                    let report = trace.finish(status);
+                    let mut view = params.shared.view.lock().unwrap();
+                    let v = &mut view.parts[slot];
+                    if let Some(load) = &mut v.load_report {
+                        let load = Arc::make_mut(load);
+                        if report["status"] != "loaded" { load["status"] = "partial".into(); }
+                        load["preload"] = (*report).clone();
+                    }
+                    match bank {
+                        Ok(mut bank) => {
+                            let residency = bank.take_residency();
+                            (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
+                            let bank = Handoff::Bank(Box::new(bank));
+                            let _ = params.shared.ready.force_push((slot, generation, bank));
+                            // After the bank in the queue: its heads resize the full bank.
+                            params.shared.residency.lock().unwrap()[slot] =
+                                residency.map(|r| (generation, r));
+                        }
+                        Err(e) => {
+                            v.status = v.status.replace(" · preloading…", "");
+                            v.status += &format!(" · preload failed, everything streams: {e:#}");
+                        }
+                    }
                     // RAM only: the part plays, streaming, while every sample
                     // loads whole; the resident bank then takes over and
                     // playing voices carry on from it.
                     // ponytail: the streaming bank stays resident until the fill
                     // lands (its preload twice over at peak); fill per sample
                     // into the playing bank if that peak matters.
-                    if let Some((budget, controllers)) = fill {
+                    if streaming == Streaming::RamOnly {
                         v.status += " · loading into RAM…";
                         let parent_id = v.load_report.as_ref().map(|r| r["load_id"].clone());
                         drop(view);

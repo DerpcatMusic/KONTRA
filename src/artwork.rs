@@ -1,5 +1,5 @@
 //! Read local library artwork once, on the import worker. No copies on disk.
-use crate::resources::{Resources as Pictures, read_bounded};
+use crate::resources::{Resources as Pictures, read_file};
 use moose::mui::mui::scene::Image;
 use std::{
     collections::HashMap,
@@ -74,7 +74,7 @@ pub fn own_hue(dir: &Path) -> Option<f32> {
         .collect();
     pictures.sort();
     pictures.dedup();
-    let loose = pictures.iter().take(12).filter_map(|p| decode(&read_bounded(p).ok()?));
+    let loose = pictures.iter().take(12).filter_map(|p| decode(&read_file(p).ok()?));
     let mut hues: Vec<f32> = loose.filter_map(|i| tint(&i)).collect();
     if hues.is_empty() {
         let mut nkrs: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -107,15 +107,15 @@ pub fn own_hue(dir: &Path) -> Option<f32> {
 
 /// A PNG or JPEG picture the player chose, at most 32 MiB.
 pub fn decode_file(path: &Path) -> Option<Image> {
-    let bytes = read_bounded(path).ok()?;
+    let bytes = read_file(path).ok()?;
     if bytes.starts_with(b"\x89PNG") {
         return decode(&bytes);
     }
     use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
     let options = DecoderOptions::default()
         .jpeg_set_out_colorspace(ColorSpace::RGBA)
-        .set_max_width(8192)
-        .set_max_height(8192);
+        .set_max_width(usize::MAX)
+        .set_max_height(usize::MAX);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(&bytes[..]), options);
     let rgba = decoder.decode().ok()?;
     let info = decoder.info()?;
@@ -227,16 +227,19 @@ pub fn pictures_report<'a>(
 
 /// A copy of the `w` by `h` pixels at `x`, `y`; `None` when empty.
 pub fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
-    if w == 0 || h == 0 || x + w > image.width || y + h > image.height {
+    if w == 0 || h == 0 || x.checked_add(w)? > image.width || y.checked_add(h)? > image.height {
         return None;
     }
+    if x == 0 && y == 0 && w == image.width && h == image.height {
+        return Some(Arc::new(image.clone()));
+    }
     let stride = image.width as usize * 4;
-    let rgba: Vec<u8> = (y as usize..(y + h) as usize)
-        .flat_map(|row| {
-            let at = row * stride + x as usize * 4;
-            image.rgba[at..at + w as usize * 4].iter().copied()
-        })
-        .collect();
+    let mut rgba = Vec::new();
+    rgba.try_reserve_exact((w as usize).checked_mul(h as usize)?.checked_mul(4)?).ok()?;
+    for row in y as usize..(y + h) as usize {
+        let at = row * stride + x as usize * 4;
+        rgba.extend_from_slice(&image.rgba[at..at + w as usize * 4]);
+    }
     Image::rgba(w, h, rgba).map(Arc::new)
 }
 
@@ -314,34 +317,39 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decode_report(bytes).ok()
 }
 fn decode_report(bytes: &[u8]) -> Result<Image, String> {
-    let mut decoder = png::Decoder::new(Cursor::new(bytes));
+    let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: usize::MAX });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(|e| format!("PNG header: {e}"))?;
-    let info = reader.info();
-    if u64::from(info.width) * u64::from(info.height) > 64 * 1024 * 1024 / 4 {
-        return Err("Decoded PNG exceeds the 64 MiB RGBA limit".into());
-    }
     let size = reader.output_buffer_size().ok_or("PNG dimensions overflow")?;
-    if size > 64 * 1024 * 1024 {
-        return Err("Decoded PNG exceeds the 64 MiB limit".into());
-    }
-    let mut data = vec![0; size];
+    let mut data = Vec::new();
+    data.try_reserve_exact(size).map_err(|e| format!("PNG pixel allocation ({size} bytes): {e}"))?;
+    data.resize(size, 0);
     let info = reader.next_frame(&mut data).map_err(|e| format!("PNG pixels: {e}"))?;
-    let data = &data[..info.buffer_size()];
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => data.to_vec(),
-        png::ColorType::Rgb => data
-            .chunks_exact(3)
-            .flat_map(|c| [c[0], c[1], c[2], 255])
-            .collect(),
-        png::ColorType::Grayscale => data.iter().flat_map(|v| [*v, *v, *v, 255]).collect(),
-        png::ColorType::GrayscaleAlpha => data
-            .chunks_exact(2)
-            .flat_map(|c| [c[0], c[0], c[0], c[1]])
-            .collect(),
+    data.truncate(info.buffer_size());
+    let channels = match info.color_type {
+        png::ColorType::Rgba => 4,
+        png::ColorType::Rgb => 3,
+        png::ColorType::Grayscale => 1,
+        png::ColorType::GrayscaleAlpha => 2,
         _ => return Err(format!("Unsupported PNG colour type: {:?}", info.color_type)),
     };
-    Image::rgba(info.width, info.height, rgba).ok_or_else(|| "Invalid PNG dimensions or RGBA length".into())
+    if channels != 4 {
+        let pixels = data.len() / channels;
+        let size = pixels.checked_mul(4).ok_or("PNG RGBA dimensions overflow")?;
+        data.try_reserve_exact(size - data.len()).map_err(|e| format!("PNG RGBA allocation ({size} bytes): {e}"))?;
+        data.resize(size, 0);
+        // Expand backwards in the decode buffer: no second full pixel copy.
+        for i in (0..pixels).rev() {
+            let at = i * channels;
+            let c = match channels {
+                3 => [data[at], data[at + 1], data[at + 2], 255],
+                2 => [data[at], data[at], data[at], data[at + 1]],
+                _ => [data[at], data[at], data[at], 255],
+            };
+            data[i * 4..i * 4 + 4].copy_from_slice(&c);
+        }
+    }
+    Image::rgba(info.width, info.height, data).ok_or_else(|| "Invalid PNG dimensions or RGBA length".into())
 }
 /// `image` cropped to cover `w` × `h` from its middle and shrunk to it by
 /// area averaging, once, so a list of thumbnails scales nothing per frame.
@@ -566,6 +574,25 @@ mod tests {
         assert!(super::decode(&bytes[..12]).is_none());
         assert!(super::decode(b"not an image").is_none());
         assert!(super::decode_report(b"not an image").err().unwrap().starts_with("PNG header:"));
+    }
+
+    #[test]
+    fn png_filmstrips_have_no_fixed_size_ceiling() {
+        let (w, h) = (4096, 4097); // RGBA exceeds the previous 64 MiB ceiling.
+        let mut bytes = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut bytes, w, h);
+            e.set_color(png::ColorType::Grayscale);
+            let mut e = e.write_header().unwrap();
+            e.write_image_data(&vec![123; w as usize * h as usize]).unwrap();
+        }
+        let image = super::decode_report(&bytes).unwrap();
+        assert_eq!(image.rgba.len(), w as usize * h as usize * 4);
+        assert_eq!(&image.rgba[..4], &[123, 123, 123, 255]);
+        assert_eq!(&image.rgba[image.rgba.len() - 4..], &[123, 123, 123, 255]);
+        let frame = super::Layout::parse("").cut(&image).pop().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&frame.rgba, &image.rgba), "a full frame shares its pixels");
+        assert!(super::crop(&image, u32::MAX, 0, 2, 1).is_none());
     }
 
     #[test]

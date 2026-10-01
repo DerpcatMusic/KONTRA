@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// without case: libraries made on Windows or macOS spell them freely.
@@ -133,11 +132,8 @@ impl Resources {
 
     /// The bytes of `<folder>/<file>`, if the library has it.
     pub(crate) fn read(&mut self, file: &str) -> Result<Option<Vec<u8>>, String> {
-        // Analog Strings' macro film strips expand to 37 MiB. Pictures get
-        // more room than scripts/data; reject oversized resources before decoding.
-        let limit = if self.folder == "pictures" { 64 << 20 } else { 32 << 20 };
         if let Some(path) = self.files.get(&file.to_lowercase()) {
-            return read_with_limit(path, limit).map(Some);
+            return read_file(path).map(Some);
         }
         let member = format!("Resources/{}/{file}", self.folder);
         for n in 0.. {
@@ -150,9 +146,6 @@ impl Resources {
             let Some(entry) = archive.find(&member) else {
                 continue;
             };
-            if entry.size > limit {
-                return Err(format!("{file} exceeds the {} MiB resource limit", limit >> 20));
-            }
             let key = match &self.key {
                 _ if !entry.encoded || entry.key_index == 0xff => &None,
                 Some(key) => key,
@@ -211,16 +204,6 @@ impl Resources {
     }
 }
 
-pub(crate) fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
-    read_with_limit(path, 32 << 20)
-}
-fn read_with_limit(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|f| f.take(limit + 1).read_to_end(&mut bytes))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    if bytes.len() as u64 > limit {
-        return Err(format!("{}: resource exceeds {} MiB", path.display(), limit >> 20));
-    }
-    Ok(bytes)
+pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
 }

@@ -17,7 +17,7 @@ use std::{
     io::{self, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -768,6 +768,7 @@ pub(crate) type SourceVersion = (Option<(u64, u128)>, u64);
 pub struct Source {
     /// Virtual path; its extension selects the codec.
     path: PathBuf,
+    file: PathBuf,
     handle: Arc<File>,
     pub(crate) version: SourceVersion,
     offset: u64,
@@ -781,60 +782,79 @@ pub struct Sources {
     /// By the path's bytes: hashing a `Path` walks its components, one
     /// hasher write each, and every sample looks its archive up.
     archives: HashMap<OsString, Indexed>,
+    /// Library keys by archive, once needed.
+    keys: HashMap<OsString, Result<Option<Arc<dyn LibraryKey>>, String>>,
+    handles: HashMap<OsString, (Arc<File>, SourceVersion)>,
 }
 
-/// An archive's directory, open file and (once needed) library key.
+/// An archive's directory and open file.
 struct Indexed {
     index: Archive,
     file: Arc<File>,
-    key: OnceLock<Result<Option<Arc<dyn LibraryKey>>, String>>,
-    version: SourceVersion,
+}
+
+/// What opening a sample found: with its [`Source`], enough to map and
+/// stream it without opening it again (see `cache::headers`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Header {
+    pub rate: u32,
+    pub frames: u64,
+    /// Declared bits per sample.
+    pub bits: Option<u16>,
 }
 
 impl Sources {
     /// The source of `path`, reading its archive's directory once per archive.
     pub fn source(&mut self, path: &Path) -> Result<Source> {
-        // An archive already read is a file: no stat per member.
-        let archives = &self.archives;
-        let found = crate::import::archive_member_where(path, |p| archives.contains_key(p.as_os_str()) || p.is_file());
-        let Some((archive, member)) = found else {
-            return Ok(Source {
-                path: path.into(),
-                handle: Arc::new(File::open(path)?),
-                version: (crate::cache::version(path), 0),
-                offset: 0,
-                len: None,
-                key: None,
+        self.sources(&[path]).pop().expect("one source per path")
+    }
+
+    /// [`Sources::source`] of each of `paths`, in order. Archive directories
+    /// are read once each, sequentially; member headers, one random read
+    /// each into a multi-gigabyte archive, are read on every core: serially
+    /// they took 8.8 of 11 s loading ANALOG STRINGS from a cold page cache.
+    pub fn sources(&mut self, paths: &[&Path]) -> Vec<Result<Source>> {
+        let mut found = Vec::with_capacity(paths.len());
+        for &path in paths {
+            let archives = &self.archives;
+            let member = crate::import::archive_member_where(path, |p| {
+                archives.contains_key(p.as_os_str()) || p.is_file()
             });
-        };
-        if !self.archives.contains_key(archive.as_os_str()) {
-            let mut file = File::open(&archive)?;
-            let index = Archive::read_index(&mut file)
-                .with_context(|| format!("Archive {}", archive.display()))?;
-            let key = OnceLock::new();
-            use std::hash::{Hash, Hasher};
-            let mut access = std::collections::hash_map::DefaultHasher::new();
-            for path in crate::import::library_metadata(&archive) {
-                path.hash(&mut access);
-                crate::cache::version(&path).hash(&mut access);
-            }
-            let version = (crate::cache::version(&archive), access.finish());
-            self.archives.insert(archive.clone().into(), Indexed { index, file: Arc::new(file), key, version });
+            found.push(match member {
+                Some((archive, member)) => self.index(&archive).map(|()| Some((archive, member))),
+                None => Ok(None),
+            });
         }
-        let indexed = &self.archives[archive.as_os_str()];
-        let entry = indexed
-            .index
-            .member(FileAt { file: &indexed.file, pos: 0 }, &member)?
-            .context("Archive member not found")?;
-        ensure!(
-            entry.valid,
-            "{}",
-            entry.issue.unwrap_or("Invalid archive member")
-        );
-        let key = if entry.encoded && entry.key_index != 0xff {
-            ensure!(entry.key_index == 0x100, "Unsupported legacy NKX cipher");
-            let key = indexed.key.get_or_init(|| {
-                crate::access::library_key(&archive).map_err(|e| format!("{e:#}"))
+        let archives = &self.archives;
+        let entries = crate::engine::parallel(found.iter().collect(), |_: &mut (), found| {
+            let Ok(Some((archive, member))) = found else { return Ok(None) };
+            let indexed = &archives[archive.as_os_str()];
+            let entry = indexed
+                .index
+                .member(FileAt { file: &indexed.file, pos: 0 }, member)?
+                .context("Archive member not found")?;
+            ensure!(entry.valid, "{}", entry.issue.unwrap_or("Invalid archive member"));
+            anyhow::Ok(Some((entry.offset, entry.size, entry.encoded, entry.key_index)))
+        });
+        (paths.iter().zip(found).zip(entries))
+            .map(|((&path, found), entry)| {
+                let Some((archive, _)) = found? else {
+                    return self.rebuild(path, path.into(), 0, None, false);
+                };
+                let (offset, size, encoded, key_index) = entry?.expect("archive members have entries");
+                let keyed = encoded && key_index != 0xff;
+                ensure!(!keyed || key_index == 0x100, "Unsupported legacy NKX cipher");
+                self.rebuild(path, archive, offset, Some(size), keyed)
+            })
+            .collect()
+    }
+
+    /// The source of `path` from its [`Source::parts`], reading nothing but
+    /// a keyed archive's library key, once.
+    pub fn rebuild(&mut self, path: &Path, file: PathBuf, offset: u64, len: Option<u64>, keyed: bool) -> Result<Source> {
+        let key = if keyed {
+            let key = self.keys.entry(file.clone().into()).or_insert_with(|| {
+                crate::access::library_key(&file).map_err(|e| format!("{e:#}"))
             });
             Some(
                 key.clone()
@@ -844,14 +864,44 @@ impl Sources {
         } else {
             None
         };
+        if !self.handles.contains_key(file.as_os_str()) {
+            let handle = match self.archives.get(file.as_os_str()) {
+                Some(indexed) => indexed.file.clone(),
+                None => Arc::new(File::open(&file)?),
+            };
+            use std::hash::{Hash, Hasher};
+            let mut access = std::collections::hash_map::DefaultHasher::new();
+            if len.is_some() {
+                for path in crate::import::library_metadata(&file) {
+                    path.hash(&mut access);
+                    crate::cache::version(&path).hash(&mut access);
+                }
+            }
+            let version = (crate::cache::version(&file), access.finish());
+            self.handles.insert(file.clone().into(), (handle, version));
+        }
+        let (handle, version) = &self.handles[file.as_os_str()];
         Ok(Source {
             path: path.into(),
-            handle: indexed.file.clone(),
-            version: indexed.version,
-            offset: entry.offset,
-            len: Some(entry.size),
+            file,
+            handle: handle.clone(),
+            version: *version,
+            offset,
+            len,
             key,
         })
+    }
+
+    /// Read `archive`'s directory, once.
+    fn index(&mut self, archive: &Path) -> Result<()> {
+        if !self.archives.contains_key(archive.as_os_str()) {
+            let mut file = File::open(archive)?;
+            let index = Archive::read_index(&mut file)
+                .with_context(|| format!("Archive {}", archive.display()))?;
+            let file = Arc::new(file);
+            self.archives.insert(archive.into(), Indexed { index, file });
+        }
+        Ok(())
     }
 }
 
@@ -863,6 +913,12 @@ impl Source {
 
     pub fn open(&self) -> Result<SampleReader> {
         self.open_counted(false)
+    }
+
+    /// The file holding the sample, its byte range there and whether it
+    /// is encrypted: what [`Sources::rebuild`] takes back.
+    pub fn parts(&self) -> (&Path, u64, Option<u64>, bool) {
+        (&self.file, self.offset, self.len, self.key.is_some())
     }
 
     /// [`Source::open`] for the streamer: its reads count in [`DISK_READ`].
@@ -1032,6 +1088,14 @@ struct PcmCodec {
 const SKIP_AHEAD: u64 = 16384;
 
 impl SampleReader {
+    pub fn header(&self) -> Header {
+        Header {
+            rate: self.rate,
+            frames: self.frames,
+            bits: self.bits,
+        }
+    }
+
     fn open(source: &Source, counted: bool) -> Result<Self> {
         let bytes = source.bytes(counted)?;
         let ncw = source

@@ -72,7 +72,7 @@ fn main() -> Result<()> {
   Some("audit-ui") => kontakto::audit_ui(&args[2..])?,
   Some("create-library") => create_library(&args[2..])?,
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-ksp [root...] [--json out.json]\nkontakto audit-ui [root...] [--shots DIR] [--json out.json]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]\nkontakto create-library <samples folder> [--name NAME] [--vendor NAME] [--out DIR] [--kontra-only|--kontakt-only]"),
+  _=> println!("kontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-ksp [root...] [--json out.json]\nkontakto audit-ui [root...] [--shots DIR] [--json out.json]\nkontakto audit-archives [folder]\nkontakto render [--dry] [--no-script] [--realtime] [--bare] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]\nkontakto create-library <samples folder> [--name NAME] [--vendor NAME] [--out DIR] [--kontra-only|--kontakt-only]"),
  }
  Ok(())
 }
@@ -263,7 +263,11 @@ fn render(args: &[String]) -> Result<()> {
         .filter(|s| *s != "all")
         .map(|s| s.parse())
         .transpose()?;
-    let (bank, scripts) = load(&instrument)?;
+    let (mut bank, scripts) = load(&instrument)?;
+    // `--bare`: from the bank the plugin plays while the preload loads.
+    if flag("--bare") {
+        bank = Bank::load_bare(&instrument)?;
+    }
     if bank.skipped_zones > 0 {
         eprintln!(
             "Skipped {} zones: {}",
@@ -574,22 +578,43 @@ fn bench(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Import, bank load and script init time plus resident memory of each instrument.
+/// Import, bank load and script init time plus resident memory of each
+/// instrument, loaded as the plugin does: the scripts initialize while a
+/// bare bank (nothing resident) builds; a note then plays from it at real-time
+/// pace, and the full bank loads. "first note" is from the start of import
+/// to the first audible block.
 fn bench_load(path: &Path) -> Result<()> {
     let name = path.file_stem().unwrap_or_default().to_string_lossy();
     let started = std::time::Instant::now();
     let instrument = import::read(path)?;
     let import_ms = started.elapsed().as_secs_f64() * 1e3;
-    let started = std::time::Instant::now();
-    let scripts = load_scripts(&instrument, instrument.script_state.clone(), RATE);
-    let init_ms = started.elapsed().as_secs_f64() * 1e3;
-    let controllers = scripts.0.as_deref().map_or(&[][..], |rt| &rt.init_controllers[..]);
+    let ms = |at: std::time::Instant| at.elapsed().as_secs_f64() * 1e3;
+    let (scripts, init_ms, bare, bare_ms) = std::thread::scope(|scope| {
+        let scripts = scope.spawn(|| {
+            let at = std::time::Instant::now();
+            let scripts = load_scripts(&instrument, instrument.script_state.clone(), RATE);
+            (scripts, ms(at))
+        });
+        let at = std::time::Instant::now();
+        let bare = Bank::load_bare(&instrument);
+        let bare_ms = ms(at);
+        let (scripts, init_ms) = scripts.join().expect("script init panicked");
+        (scripts, init_ms, bare, bare_ms)
+    });
+    let controllers: Vec<(u8, u8)> = scripts.0.as_deref().map_or(Vec::new(), |rt| rt.init_controllers.clone());
+    let first_note = match bare {
+        Ok(bare) => first_note(&instrument, bare, scripts).map_or("silent".into(), |(at, held)| {
+            format!("{:.0} ms (held {held:.0} ms for the disk)", ms(started) - ms(at))
+        }),
+        Err(e) => format!("bare load failed: {e:#}"),
+    };
+    let faults = page_faults();
     let started = std::time::Instant::now();
     let bank = match Bank::load_counting(
         &instrument,
         kontakto::engine::MEMORY_LIMIT,
         kontakto::engine::Streaming::Auto,
-        controllers,
+        &controllers,
         &Default::default(),
     ) {
         Ok(bank) => bank,
@@ -599,6 +624,9 @@ fn bench_load(path: &Path) -> Result<()> {
         }
     };
     let load_ms = started.elapsed().as_secs_f64() * 1e3;
+    let faults = page_faults().zip(faults).map_or(String::new(), |((min, maj), (min0, maj0))| {
+        format!(" ({} minor, {} major faults)", min - min0, maj - maj0)
+    });
     let (mib, preload, samples, streamed, zones, skipped) = (
         bank.bytes as f64 / (1 << 20) as f64,
         bank.preload,
@@ -612,7 +640,7 @@ fn bench_load(path: &Path) -> Result<()> {
     }
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(bank)));
-    install_scripts(&mut engine, scripts);
+    // Scripts moved to the first note's engine; RSS counts the bank alone.
     let status = |key: &str| {
         std::fs::read_to_string("/proc/self/status")
             .ok()
@@ -624,11 +652,45 @@ fn bench_load(path: &Path) -> Result<()> {
     };
     let (rss, peak) = (status("VmRSS:"), status("VmHWM:"));
     println!(
-        "{name}: {mib:.1} MiB resident (preload {preload}) · RSS {rss:.0} MiB (peak {peak:.0}) · {samples} samples ({streamed} streamed) · {zones} zones ({skipped} skipped) · import {import_ms:.0} ms · load {load_ms:.0} ms · scripts {init_ms:.0} ms · Kontakt stores {:.0} MiB of samples, preload override {}",
+        "{name}: {mib:.1} MiB resident (preload {preload}) · RSS {rss:.0} MiB (peak {peak:.0}) · {samples} samples ({streamed} streamed) · {zones} zones ({skipped} skipped) · import {import_ms:.0} ms · scripts {init_ms:.0} ms · bare {bare_ms:.0} ms · first note {first_note} · load {load_ms:.0} ms{faults} · Kontakt stores {:.0} MiB of samples, preload override {}",
         instrument.kontakt_sample_bytes / (1 << 20) as f64,
         instrument.kontakt_preload
     );
     Ok(())
+}
+
+/// Play a note on `bank` (a bare one: everything streams) at real-time
+/// pace until a block is audible: when that block was due, and how long
+/// voices held for the disk. `None` if two seconds stay silent.
+fn first_note(instrument: &import::Instrument, bank: Bank, scripts: Scripts) -> Option<(std::time::Instant, f64)> {
+    let group = instrument.first_playable_group()?;
+    let zones = || bank.zones().iter().filter(|z| z.group == group);
+    let low = zones().map(|z| z.low_key).min()?;
+    let high = zones().map(|z| z.high_key).max()?;
+    let mut engine = Engine::default();
+    engine.set_bank(Some(Box::new(bank)));
+    engine.set_script(scripts.0);
+    let block = std::time::Duration::from_secs_f64(MAX_BLOCK as f64 / RATE);
+    let (mut left, mut right) = ([0f32; MAX_BLOCK], [0f32; MAX_BLOCK]);
+    let mut pace = kontakto::engine::Pace::start();
+    let start = std::time::Instant::now();
+    engine.note_on(0, ((u16::from(low) + u16::from(high)) / 2) as u8, 100);
+    for b in 0..(2.0 * RATE) as u32 / MAX_BLOCK as u32 {
+        engine.render(&mut left, &mut right);
+        if left.iter().chain(&right).any(|x| x.abs() > 1e-4) {
+            let due = start + block * b;
+            return Some((due, (due - start).as_secs_f64() * 1e3));
+        }
+        pace.until(block * (b + 1));
+    }
+    None
+}
+
+/// This process's minor and major page faults so far (Linux).
+fn page_faults() -> Option<(u64, u64)> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    Some((fields.get(7)?.parse().ok()?, fields.get(9)?.parse().ok()?))
 }
 
 /// Time an instrument with and without its scripts on a dense stream: a legato

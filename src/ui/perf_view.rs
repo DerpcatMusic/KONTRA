@@ -1017,6 +1017,20 @@ mod tests {
     }
 
     #[test]
+    fn stretched_pictures_keep_their_edges_and_center() {
+        let row = [[255,0,0,255], [255,0,0,255], [0,255,0,255], [0,0,255,255], [0,0,255,255]].concat();
+        let image = Arc::new(Image::rgba(5, 5, row.repeat(5)).unwrap());
+        let mut ui = crate::ui::theme::ui();
+        let root = sliced(&image, [true; 2], 21., 15., 1.);
+        ui.frame(root, Some(Size::new(21., 15.)), Input::default(), 0.).unwrap();
+        let rgba = crate::ui::tests::pixels(&ui, 21, 15);
+        let pixel = |x: usize| &rgba[(7 * 21 + x) * 4..(7 * 21 + x) * 4 + 4];
+        assert_eq!(pixel(0), &[255, 0, 0, 255]);
+        assert_eq!(pixel(10), &[0, 255, 0, 255]);
+        assert_eq!(pixel(20), &[0, 0, 255, 255]);
+    }
+
+    #[test]
     fn scale_is_whole_when_it_fits() {
         assert_eq!(scale(1180., 632., 0.), 1.);
         assert_eq!(scale(1300., 632., 0.), 2.);

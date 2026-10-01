@@ -152,21 +152,21 @@ fn the_computer_keyboard_plays_while_switched_on() {
     h.press("qwerty");
     assert!(read(&p.selection).qwerty, "the top bar switches it on");
     assert!(send(&mut h, key(1, "a", true)));
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 100))));
+    assert_eq!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, Play::Note(60, 100))), "nothing focused, every part plays");
     assert!(send(&mut h, key(1, "a", true)), "a repeat is swallowed");
     assert!(p.shared.keyboard.pop().is_none(), "and plays nothing");
     assert!(send(&mut h, key(2, "x", true)), "X steps the octave");
     assert!(send(&mut h, key(3, "V", true)), "V the velocity");
     assert!(send(&mut h, key(4, "k", true)));
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(84, 120))));
+    assert_eq!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, Play::Note(84, 120))));
     assert!(send(&mut h, key(1, "a", false)));
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 0))), "the note its key started stops");
+    assert_eq!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, Play::Note(60, 0))), "the note its key started stops");
     assert!(!send(&mut h, key(2, "x", false)), "ups of other keys pass");
     h.ui.focus("search");
     h.idle(2);
     assert!(!send(&mut h, key(5, "s", true)), "a text field keeps its typing");
     h.press("qwerty");
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(84, 0))), "switching off lets go");
+    assert_eq!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, Play::Note(84, 0))), "switching off lets go");
     assert!(!send(&mut h, key(4, "k", false)));
 }
 
@@ -263,7 +263,7 @@ fn closing_the_editor_lets_go_of_the_keys() {
     }), Some(60));
     let mut editor = editor(p.clone());
     editor.close();
-    assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 0))), "closing lets the note go");
+    assert_eq!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, Play::Note(60, 0))), "closing lets the note go");
     assert!(p.shared.played.iter().all(|v| v.load(Ordering::Relaxed) == 0), "and unlights it");
     // Reopened, the gesture the close cut short sends nothing more.
     h.ui.close();
@@ -1779,7 +1779,7 @@ fn a_preset_is_in_the_nearest_library_above_it() {
 }
 
 /// The window as pixels, RGBA, painted from the last frame's scene.
-fn pixels(ui: &Ui, width: u16, height: u16) -> Vec<u8> {
+pub(super) fn pixels(ui: &Ui, width: u16, height: u16) -> Vec<u8> {
     use moose::mui::mui::vello::{
         self,
         vello_cpu::{Pixmap, RenderContext, Resources},
