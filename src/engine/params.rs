@@ -188,6 +188,15 @@ pub(crate) fn release_counter(t_ms: i32, held_ms: f32) -> f32 {
 }
 
 impl Inputs<'_> {
+    /// Negotiated MPE master pitch is added independently by the voice;
+    /// other bend destinations still read the combined controller normally.
+    fn read_mod(&self, source: Source, target: Target, bend_pitch: Option<f32>) -> f32 {
+        if source == Source::Bend && target == Target::Pitch {
+            if let Some(bend) = bend_pitch { return (bend + 1.) * 0.5; }
+        }
+        self.read(source)
+    }
+
     /// Unshaped source value, 0..=1.
     fn read(&self, source: Source) -> f32 {
         match source {
@@ -204,12 +213,12 @@ impl Inputs<'_> {
 
 impl ModTable {
     /// Initial per-voice values: every source at its current value, unlagged.
-    pub(crate) fn start(&self, input: &Inputs) -> [f32; VOICE_MODS] {
+    pub(crate) fn start(&self, input: &Inputs, bend_pitch: Option<f32>) -> [f32; VOICE_MODS] {
         let mut values = [0.0; VOICE_MODS];
         for (value, &i) in values.iter_mut().zip(&self.voiced) {
             let m = &self.mods[i as usize];
-            if let Some((source, _)) = m.route {
-                *value = m.shape(input.read(source));
+            if let Some((source, target)) = m.route {
+                *value = m.shape(input.read_mod(source, target, bend_pitch));
             }
         }
         values
@@ -231,6 +240,7 @@ impl ModTable {
         input: &Inputs,
         frames: usize,
         rate: f32,
+        bend_pitch: Option<f32>,
     ) -> (f32, f32, bool) {
         let (mut gain, mut semitones, mut settled) = (1.0, 0.0, true);
         for (value, &i) in values.iter_mut().zip(&self.voiced) {
@@ -239,7 +249,7 @@ impl ModTable {
                 continue;
             };
             if source.live() {
-                let x = m.shape(input.read(source));
+                let x = m.shape(input.read_mod(source, target, bend_pitch));
                 approach(value, x, m.lag, frames, rate);
                 settled &= *value == x;
             }
@@ -492,6 +502,7 @@ impl Address {
         let slot = |knob| Some(Self::Filter(group()?, u8::try_from(par.slot).ok()?, knob));
         // Group inserts are addressed by group; the racks by `group == -1`.
         let insert = |knob, param| if par.group >= 0 { slot(knob) } else { fx(param) };
+        let filter = |knob| insert(knob, FxParam::Filter(knob));
         Some(match par.id {
             id::VOLUME | id::PAN | id::TUNE | id::OUTPUT_CHANNEL => {
                 let p = match par.id {
@@ -542,14 +553,14 @@ impl Address {
                     bipolar: par.id == id::MOD_TARGET_MP_INTENSITY,
                 }
             }
-            id::CUTOFF => slot(Knob::Cutoff)?,
-            id::RESONANCE => slot(Knob::Resonance)?,
-            id::FREQ1..=id::FREQ3 => slot(Knob::Freq((par.id - id::FREQ1) as u8))?,
-            id::BW1..=id::BW3 => slot(Knob::Bandwidth((par.id - id::BW1) as u8))?,
-            id::GAIN1..=id::GAIN3 => slot(Knob::Gain((par.id - id::GAIN1) as u8))?,
-            id::STEREO => slot(Knob::Spread)?,
-            id::STEREO_PAN => slot(Knob::Pan)?,
-            id::EFFECT_SUBTYPE => slot(Knob::Type)?,
+            id::CUTOFF => filter(Knob::Cutoff)?,
+            id::RESONANCE => filter(Knob::Resonance)?,
+            id::FREQ1..=id::FREQ3 => filter(Knob::Freq((par.id - id::FREQ1) as u8))?,
+            id::BW1..=id::BW3 => filter(Knob::Bandwidth((par.id - id::BW1) as u8))?,
+            id::GAIN1..=id::GAIN3 => filter(Knob::Gain((par.id - id::GAIN1) as u8))?,
+            id::STEREO => filter(Knob::Spread)?,
+            id::STEREO_PAN => filter(Knob::Pan)?,
+            id::EFFECT_SUBTYPE => filter(Knob::Type)?,
             id::EFFECT_BYPASS => insert(Knob::Bypass, FxParam::Bypass)?,
             id::INSERT_EFFECT_OUTPUT_GAIN => insert(Knob::Output, FxParam::Wet)?,
             id::SEND_EFFECT_BYPASS => fx(FxParam::Bypass)?,
@@ -588,9 +599,9 @@ impl Address {
                 "$ENGINE_PAR_IRC_LENGTH_RATIO_ER" => fx(FxParam::Convolution(1))?,
                 "$ENGINE_PAR_IRC_LENGTH_RATIO_LR" => fx(FxParam::Convolution(2))?,
                 // The formant filter's knobs: talk, sharp, size.
-                "$ENGINE_PAR_FORMANT_TALK" => slot(Knob::Cutoff)?,
-                "$ENGINE_PAR_FORMANT_SHARP" => slot(Knob::Resonance)?,
-                "$ENGINE_PAR_FORMANT_SIZE" => slot(Knob::Size)?,
+                "$ENGINE_PAR_FORMANT_TALK" => filter(Knob::Cutoff)?,
+                "$ENGINE_PAR_FORMANT_SHARP" => filter(Knob::Resonance)?,
+                "$ENGINE_PAR_FORMANT_SIZE" => filter(Knob::Size)?,
                 name => {
                     let (kind, n) = crate::fx::blocks::engine_par(name)?;
                     insert(Knob::Field(kind, n), FxParam::Field(kind, n))?
@@ -639,7 +650,7 @@ impl Address {
             },
             Self::Fx(_, _, FxParam::Output) if (0..OUTS as i32).contains(&value) => value as f32,
             Self::Fx(_, _, FxParam::Output) => -1.0,
-            Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => value as f32,
+            Self::Fx(_, _, FxParam::Type | FxParam::Filter(Knob::Type)) | Self::GroupType(..) => value as f32,
             // `$NI_REVERB2_TYPE_ROOM` (0) or `_HALL` (1).
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => f32::from(value != 0),
             Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => x,
@@ -660,9 +671,9 @@ impl Address {
             Self::Filter(_, _, Knob::Type) => value as f32,
             Self::Filter(_, _, Knob::Output) => effect_gain(x),
             // Afflatus sets 434210 where it stores spread -0.1316, Solo 500000 for 0.
-            Self::Filter(_, _, Knob::Spread | Knob::Pan) => 2.0 * x - 1.0,
+            Self::Filter(_, _, Knob::Spread | Knob::Pan) | Self::Fx(_, _, FxParam::Filter(Knob::Spread | Knob::Pan)) => 2.0 * x - 1.0,
             // Stored knobs are the KSP value / 1e6: Solo sets 1000000 and 0 where it stores 1 and 0.
-            Self::Filter(..) => x,
+            Self::Filter(..) | Self::Fx(_, _, FxParam::Filter(_)) => x,
             // Square law: Areia sets 704316 where its presets store 0.4961.
             Self::Intensity { .. } => x * x,
             Self::Fx(_, _, FxParam::Bypass) => f32::from(value != 0),
@@ -683,7 +694,7 @@ impl Address {
                 };
             }
             Self::Fx(_, _, FxParam::Output) => return if v >= 0.0 { v as i32 } else { -1 },
-            Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => return v as i32,
+            Self::Fx(_, _, FxParam::Type | FxParam::Filter(Knob::Type)) | Self::GroupType(..) => return v as i32,
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => return i32::from(v >= 0.5),
             Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => v,
             Self::Filter(_, _, Knob::Type) => return v as i32,
@@ -703,12 +714,13 @@ impl Address {
             },
             Self::Intensity { bipolar: true, .. }
             | Self::Fx(_, _, FxParam::Pan)
-            | Self::Filter(_, _, Knob::Spread | Knob::Pan) => (v + 1.0) * 0.5,
+            | Self::Filter(_, _, Knob::Spread | Knob::Pan)
+            | Self::Fx(_, _, FxParam::Filter(Knob::Spread | Knob::Pan)) => (v + 1.0) * 0.5,
             Self::Intensity { .. } => v.abs().sqrt(),
             Self::Filter(_, _, Knob::Output) | Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => {
                 (v.max(0.0) / EFFECT_MAX_GAIN).cbrt()
             }
-            Self::Filter(..) => v,
+            Self::Filter(..) | Self::Fx(_, _, FxParam::Filter(_)) => v,
             Self::Fx(..) => volume_value(v),
         };
         (x.clamp(0.0, 1.0) * UNIT).round() as i32
@@ -1189,15 +1201,15 @@ mod tests {
             velocity: 64,
             counter: 0.0,
         };
-        let mut values = table.start(&input);
-        let (gain, ..) = table.modulate(&mut values, &input, 128, 48000.0);
+        let mut values = table.start(&input, None);
+        let (gain, ..) = table.modulate(&mut values, &input, 128, 48000.0, None);
         let expected = (64.0f32 / 127.0).powi(2);
         assert!((gain - expected).abs() < 1e-5, "{gain} vs {expected}");
 
         // CC11 drops to 0: after one lag time constant 63% of the way down.
         let quiet = [0; 128];
         input.cc = &quiet;
-        let (gain, ..) = table.modulate(&mut values, &input, 4800, 48000.0);
+        let (gain, ..) = table.modulate(&mut values, &input, 4800, 48000.0, None);
         assert!((gain / expected - (-1.0f32).exp()).abs() < 1e-4, "{gain}");
     }
 

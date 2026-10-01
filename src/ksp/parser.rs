@@ -3,8 +3,100 @@
 
 use super::lexer::{Punct, Sym, Tok, Tokens, kw};
 use anyhow::{Result, bail, ensure};
+use std::collections::BTreeSet;
 
 const MAX_DEPTH: usize = 256;
+
+/// Kontakt's conditions are resolved before parsing, including directives in
+/// callbacks which never run. Excluded code contributes no declarations or ops.
+/// The resulting symbols are inherited by the following script slot.
+pub fn preprocess(t: &mut Tokens, inherited: &BTreeSet<String>) -> Result<BTreeSet<String>> {
+    let mut conditions = inherited.clone();
+    let mut regions = Vec::new();
+    let (mut read, mut write) = (0, 0);
+    while read < t.toks.len() {
+        let active = regions.last().copied().unwrap_or(true);
+        let name = match t.toks[read] {
+            Tok::Ident(s) => t.syms.name(s),
+            _ => "",
+        };
+        let line = t.lines[read];
+        if matches!(
+            name,
+            "SET_CONDITION"
+                | "RESET_CONDITION"
+                | "USE_CODE_IF"
+                | "USE_CODE_IF_NOT"
+                | "END_USE_CODE"
+        ) {
+            ensure!(
+                read == 0 || t.toks[read - 1] == Tok::Newline,
+                "Preprocessor directive must start a statement at line {line}"
+            );
+            let end = if name == "END_USE_CODE" {
+                ensure!(
+                    regions.pop().is_some(),
+                    "Unmatched END_USE_CODE at line {line}"
+                );
+                read + 1
+            } else {
+                let Some(
+                    [
+                        Tok::Punct(Punct::LParen),
+                        Tok::Ident(symbol),
+                        Tok::Punct(Punct::RParen),
+                    ],
+                ) = t.toks.get(read + 1..read + 4)
+                else {
+                    bail!("{name} requires a condition symbol at line {line}")
+                };
+                let symbol = t.syms.name(*symbol);
+                ensure!(
+                    symbol.starts_with(|c: char| c.is_ascii_alphabetic())
+                        && symbol
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || c == b'_'),
+                    "Invalid condition symbol at line {line}"
+                );
+                match name {
+                    "SET_CONDITION" if active => {
+                        conditions.insert(symbol.to_owned());
+                    }
+                    "RESET_CONDITION" if active => {
+                        conditions.remove(symbol);
+                    }
+                    "USE_CODE_IF" | "USE_CODE_IF_NOT" => {
+                        ensure!(
+                            regions.len() < MAX_DEPTH,
+                            "Preprocessor nesting limit at line {line}"
+                        );
+                        regions.push(
+                            active && (conditions.contains(symbol) == (name == "USE_CODE_IF")),
+                        );
+                    }
+                    _ => {}
+                }
+                read + 4
+            };
+            ensure!(
+                matches!(t.toks.get(end), Some(Tok::Newline | Tok::Eof)),
+                "Unexpected token after {name} at line {line}"
+            );
+            read = end;
+            continue;
+        }
+        if active || matches!(t.toks[read], Tok::Newline | Tok::Eof) {
+            t.toks[write] = t.toks[read];
+            t.lines[write] = line;
+            write += 1;
+        }
+        read += 1;
+    }
+    ensure!(regions.is_empty(), "Unclosed USE_CODE_IF region");
+    t.toks.truncate(write);
+    t.lines.truncate(write);
+    Ok(conditions)
+}
 
 #[derive(Clone, Debug)]
 pub enum Expr {
@@ -145,6 +237,9 @@ pub fn parse(t: &Tokens) -> Result<Vec<Block>> {
         let Tok::Ident(name) = p.next() else {
             bail!("Expected callback or function name at line {line}")
         };
+        if function && p.eat(Punct::LParen) {
+            p.need(Punct::RParen)?;
+        }
         let arg = if !function && p.eat(Punct::LParen) {
             let Tok::Var(v) = p.next() else {
                 bail!("Expected ui_control variable at line {line}")
@@ -354,6 +449,9 @@ impl Parser<'_> {
                 let Tok::Ident(name) = self.next() else {
                     bail!("Expected function name at line {line}")
                 };
+                if self.eat(Punct::LParen) {
+                    self.need(Punct::RParen)?;
+                }
                 StmtKind::Call(name)
             }
             Tok::Var(name) => {

@@ -44,7 +44,7 @@
     }
 */
 
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use crate::nis::{ItemContainer, ItemData, ItemType};
 use crate::read_bytes::ReadBytesExt;
@@ -79,10 +79,15 @@ impl SubtreeItem {
         }
         let inner_data = if reader.read_bool()? {
             let expanded = reader.read_u32_le()? as usize;
-            if expanded == 0 || expanded > 256 * 1024 * 1024 {
+            if expanded == 0 || i32::try_from(expanded).is_err() {
                 return Err(Error::Static("Invalid expanded subtree size"));
             }
             let compressed_size = reader.read_u32_le()? as usize;
+            if i32::try_from(compressed_size).is_err() {
+                return Err(Error::Static(
+                    "Compressed subtree exceeds FastLZ length range",
+                ));
+            }
             let mut compressed = reader.read_bytes(compressed_size)?;
             if let Some(key) = key {
                 key.apply(&mut compressed);
@@ -90,7 +95,11 @@ impl SubtreeItem {
             if compressed.is_empty() {
                 return Err(Error::Static("Empty compressed subtree"));
             }
-            let mut output = vec![0; expanded];
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(expanded)
+                .map_err(|_| Error::Static("Unable to allocate expanded subtree"))?;
+            output.resize(expanded, 0);
             let result = fastlz::decompress(&compressed, &mut output)
                 .map_err(|_| Error::Static("Invalid compressed subtree"))?;
             if result.len() != expanded {
@@ -111,6 +120,65 @@ impl SubtreeItem {
         };
 
         Ok(SubtreeItem { inner_data })
+    }
+
+    /// Encode the subtree, optionally compressing and applying a caller-provided
+    /// symmetric keystream. Encryption markers in the containing item must match.
+    pub fn write_with_key<W: Write>(
+        &self,
+        mut writer: W,
+        compressed: bool,
+        key: Option<&dyn LibraryKey>,
+    ) -> Result<(), Error> {
+        if !compressed && key.is_some() {
+            return Err(Error::Static("Unsupported uncompressed encrypted subtree"));
+        }
+        // Validate that the body is one complete NIS item before writing any bytes.
+        let mut reader = Cursor::new(&self.inner_data);
+        ItemContainer::read(&mut reader)?;
+        if reader.position() != self.inner_data.len() as u64 {
+            return Err(Error::Static("Trailing data after subtree item"));
+        }
+        let packed = if compressed {
+            if self.inner_data.is_empty() || i32::try_from(self.inner_data.len()).is_err() {
+                return Err(Error::Static("Invalid expanded subtree size"));
+            }
+            // FastLZ needs >5% scratch space and returns its output size as a signed int.
+            let capacity = self
+                .inner_data
+                .len()
+                .checked_add(self.inner_data.len() / 16)
+                .and_then(|n| n.checked_add(128))
+                .filter(|&n| i32::try_from(n).is_ok())
+                .ok_or(Error::Static(
+                    "Compressed subtree exceeds FastLZ length range",
+                ))?;
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(capacity)
+                .map_err(|_| Error::Static("Unable to allocate compressed subtree"))?;
+            output.resize(capacity, 0);
+            let length = fastlz::compress(&self.inner_data, &mut output)
+                .map_err(|_| Error::Static("Subtree compression failed"))?
+                .len();
+            output.truncate(length);
+            if let Some(key) = key {
+                key.apply(&mut output);
+            }
+            Some(output)
+        } else {
+            None
+        };
+        writer.write_all(&1u32.to_le_bytes())?;
+        writer.write_all(&[compressed as u8])?;
+        if let Some(packed) = packed {
+            writer.write_all(&(self.inner_data.len() as u32).to_le_bytes())?;
+            writer.write_all(&(packed.len() as u32).to_le_bytes())?;
+            writer.write_all(&packed)?;
+        } else {
+            writer.write_all(&self.inner_data)?;
+        }
+        Ok(())
     }
 
     pub fn item(&self) -> Result<ItemContainer, Error> {
@@ -147,7 +215,8 @@ mod tests {
 /// A caller-supplied keystream for encrypted presets and archive members.
 /// ni-file derives no keys; implementations live outside this crate.
 pub trait LibraryKey: Send + Sync {
-    /// Decrypt `bytes` that start `offset` bytes into the resource.
+    /// XOR the symmetric keystream into bytes starting `offset` bytes into the resource.
+    /// Applying the same stream twice restores the original bytes.
     fn apply_at(&self, offset: u64, bytes: &mut [u8]);
     fn apply(&self, bytes: &mut [u8]) {
         self.apply_at(0, bytes);

@@ -848,6 +848,20 @@ impl Block {
         true
     }
 
+    pub(crate) fn set_filter(&mut self, knob: crate::engine::filter::Knob, value: f32) -> bool {
+        match &mut self.dsp {
+            Dsp::Filter(f) => f.set_knob(knob, value),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn filter_param(&self, knob: crate::engine::filter::Knob) -> Option<f32> {
+        match &self.dsp {
+            Dsp::Filter(f) => f.knob(knob),
+            _ => None,
+        }
+    }
+
     /// A stored field as the script reads it.
     pub(crate) fn get(&self, kind: Kind, field: u8) -> Option<f32> {
         if let Dsp::Filter(f) = &self.dsp {

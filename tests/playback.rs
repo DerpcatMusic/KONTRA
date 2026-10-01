@@ -1533,6 +1533,59 @@ fn scripted(script: &str) -> Engine {
 }
 
 #[test]
+fn ksp_system_conditions_control_native_sustain_and_release_without_blocking_manual_samples() {
+    let flags = "SET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)";
+    let disabled = format!("on init\n{flags}\nend on");
+    let groups = || vec![Group::default(), Group { release_trigger: true, ..Group::default() }];
+    for (directives, enabled) in [(String::new(), true), (flags.to_owned(), false),
+        (format!("{flags}\nRESET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nRESET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)"), true)] {
+        let mut e = engine_with(layered(groups(), &[0.1, 0.2]));
+        e.set_script(runtime(&format!("on init\n{directives}\nend on")));
+        for _ in 0..2 {
+            e.cc(0, 64, 127);
+            e.note_on(0, 60, 100);
+            e.note_off(0, 60);
+            render(&mut e, 1000);
+            assert_eq!(e.cc_state()[0][64], 127, "CC64 is still available for modulation");
+            assert_eq!(e.active_voices() > 0, enabled, "native sustain enabled={enabled}");
+            assert!(!e.voice_census().iter().any(|v| v.release_trigger));
+            e.cc(0, 64, 0);
+            render(&mut e, 1000);
+            assert_eq!(e.voice_census().iter().any(|v| v.release_trigger), enabled,
+                "automatic release triggers enabled={enabled}");
+            e.reset(48000.0);
+        }
+    }
+
+    let mut e = engine_with(layered(groups(), &[0.1, 0.2]));
+    e.set_script(runtime("on init\nend on"));
+    e.cc(0, 64, 127);
+    e.note_on(0, 60, 100);
+    e.note_off(0, 60);
+    render(&mut e, 64);
+    assert!(e.active_voices() > 0);
+    e.set_script(runtime(&disabled));
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0, "disabling native hold releases previously sustained voices");
+    assert_eq!(e.cc_state()[0][64], 127);
+    e.set_script(None);
+    e.note_on(0, 60, 100);
+    e.note_off(0, 60);
+    render(&mut e, 64);
+    assert!(e.active_voices() > 0, "removing the script restores the held pedal's native action");
+    e.cc(0, 64, 0);
+    render(&mut e, 1000);
+    assert!(e.voice_census().iter().any(|v| v.release_trigger));
+
+    e.reset(48000.0);
+    e.set_script(runtime(&format!("{disabled}\non note\nignore_event($EVENT_ID)\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,0)\nend on")));
+    e.note_on(0, 60, 100);
+    render(&mut e, 32);
+    assert_eq!(e.voice_census().iter().filter(|v| v.release_trigger).count(), 1,
+        "script-generated whole-sample notes can still play the release layer");
+}
+
+#[test]
 fn following_child_freezes_preserve_start_and_release_budgets_without_allocating() {
     use kontakto::{articulate::{Articulate, In, Mpe, Route, Router, Zone, dispatch_to},
         engine::{Rack, RACK_SLOTS}, ksp::LogEngine};
@@ -3152,4 +3205,76 @@ fn unavailable_effects_report_async_failure() {
     e.render(&mut left, &mut right);
     let ui = e.script().unwrap().interface(0);
     assert_eq!(ui.controls[0].properties["$CONTROL_PAR_TEXT"], Value::Text("0".into()));
+}
+
+#[test]
+fn instrument_rack_filter_eq_and_stereo_controls_change_playing_audio() {
+    use fx::{Chain, Effect, FxParam, Kind, Params, Rack as FxRack, params};
+    let effect = |slot, kind, params| Effect { slot, kind, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0, params };
+    let mut i = instrument(vec![Group::default()], vec![Zone::default()]);
+    i.fx.insert = Chain { slots: vec![
+        effect(0, Kind::Filter, Params::Filter(params::Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3] })),
+        effect(1, Kind::Filter, Params::Eq(params::Eq { bands: vec![params::EqBand { freq_hz: 3000.0, bandwidth_oct: 1.0, gain_db: 0.0 }] })),
+        effect(2, Kind::StereoModeller, Params::StereoModeller(params::StereoModeller { spread: 0.0, pan: 0.0, pseudo_stereo: false })),
+    ] };
+    i.scripts = vec!["on init
+        declare ui_knob $cut(0,1000000,1)
+        declare ui_knob $eq(0,1000000,1)
+        declare ui_knob $width(0,1000000,1)
+        declare ui_knob $pan(0,1000000,1)
+        declare ui_knob $type(2,3,1)
+        $cut := get_engine_par($ENGINE_PAR_CUTOFF,-1,0,$NI_INSERT_BUS)
+        $eq := get_engine_par($ENGINE_PAR_GAIN1,-1,1,$NI_INSERT_BUS)
+        $width := get_engine_par($ENGINE_PAR_STEREO,-1,2,$NI_INSERT_BUS)
+        $pan := get_engine_par($ENGINE_PAR_STEREO_PAN,-1,2,$NI_INSERT_BUS)
+        $type := get_engine_par($ENGINE_PAR_EFFECT_SUBTYPE,-1,0,$NI_INSERT_BUS)
+        end on
+        on ui_control($cut)
+        set_engine_par($ENGINE_PAR_CUTOFF,$cut,-1,0,$NI_INSERT_BUS)
+        end on
+        on ui_control($eq)
+        set_engine_par($ENGINE_PAR_GAIN1,$eq,-1,1,$NI_INSERT_BUS)
+        end on
+        on ui_control($width)
+        set_engine_par($ENGINE_PAR_STEREO,$width,-1,2,$NI_INSERT_BUS)
+        end on
+        on ui_control($pan)
+        set_engine_par($ENGINE_PAR_STEREO_PAN,$pan,-1,2,$NI_INSERT_BUS)
+        end on
+        on ui_control($type)
+        set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE,$type,-1,0,$NI_INSERT_BUS)
+        end on".into()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut sample = sine(16.0, 48000);
+    for [l, r] in &mut sample.frames { *l *= 0.1; *r *= 0.3; }
+    let bank = Bank::from_samples(i.groups.clone(), i.zones.clone(), vec![(PathBuf::new(), sample)]).unwrap();
+    let mut e = engine_with(bank);
+    e.set_fx(effects(&i, rt.as_deref(), 48000.0));
+    e.set_script(rt);
+    e.note_on(0, 60, 127);
+    let rms = |out: &[Frame], ch| (out[2048..].iter().map(|f| f[ch] * f[ch]).sum::<f32>() / (out.len() - 2048) as f32).sqrt();
+    let baseline = render(&mut e, 4096);
+    assert!(rms(&baseline, 0) > 0.01);
+    e.ui_control(0, 0, 150000);
+    let closed = render(&mut e, 4096);
+    assert!(rms(&closed, 0) < rms(&baseline, 0) * 0.01, "cutoff must filter the existing note");
+    e.ui_control(0, 0, 1000000);
+    render(&mut e, 4096);
+    e.ui_control(0, 1, 1000000);
+    let boosted = render(&mut e, 4096);
+    assert!(rms(&boosted, 0) > rms(&baseline, 0) * 6.0, "EQ gain must retune the existing band");
+    e.ui_control(0, 1, 500000);
+    e.ui_control(0, 2, 0);
+    let mono = render(&mut e, 4096);
+    assert!(mono[2048..].iter().all(|f| (f[0] - f[1]).abs() < 1e-6), "width zero must collapse stereo");
+    e.ui_control(0, 3, 1000000);
+    let right = render(&mut e, 4096);
+    assert!(rms(&right, 0) == 0.0 && rms(&right, 1) > 0.01, "stereo pan must not move the instrument bus pan");
+    e.ui_control(0, 0, 150000);
+    e.ui_control(0, 4, 3);
+    let highpass = render(&mut e, 4096);
+    assert!(rms(&highpass, 1) > rms(&baseline, 1) * 0.5, "subtype must replace the low-pass coefficients");
+    assert_eq!(e.fx().param(FxRack::Insert, 0, FxParam::Filter(fx::FilterParam::Type)), Some(3.0));
+    assert!(e.script().unwrap().diagnostics().is_empty(), "{:?}", e.script().unwrap().diagnostics());
 }

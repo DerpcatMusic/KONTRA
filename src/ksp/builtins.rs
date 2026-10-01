@@ -108,7 +108,7 @@ builtins! {
     TicksToMs "ticks_to_ms" [I] 0 Int;
     // Arrays.
     NumElements "num_elements" [A] 0 Int;
-    Search "search" [A N] 0 Int;
+    Search "search" [A N I I] 2 Int;
     Sort "sort" [A I I I] 2 Void;
     ArrayEqual "array_equal" [A A] 0 Int;
     LoadArray "load_array" [A I] 0 Int;

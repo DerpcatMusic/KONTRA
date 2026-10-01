@@ -18,6 +18,116 @@ fn label(source: &str) -> String {
 }
 
 #[test]
+fn script_conditions_inherit_successful_slots_and_partition_the_compiled_cache() {
+    let set = "on init\nSET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(KEEP)\nend on";
+    let read = "on init\ndeclare ui_label $info(1,1)\nUSE_CODE_IF(NO_SYS_SCRIPT_PEDAL)\nset_text($info,\"disabled\")\nEND_USE_CODE\nUSE_CODE_IF_NOT(NO_SYS_SCRIPT_PEDAL)\nset_text($info,\"default\")\nEND_USE_CODE\nend on";
+    let mut engine = LogEngine::new(Vec::new(), 48000.0);
+    let (first, errors) = Runtime::with_scripts(&[set, read], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    assert!(first.condition("NO_SYS_SCRIPT_PEDAL"));
+    assert!(first.condition("KEEP"));
+    assert_eq!(prop(&first.interface(1), 0, "$CONTROL_PAR_TEXT"), "disabled");
+    // Keep the first runtime alive: the identical source and setup must not
+    // reuse its compiled conditional branch for a different inherited state.
+    let (second, errors) = Runtime::with_scripts(&["on init\nend on", read], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    assert!(!second.condition("NO_SYS_SCRIPT_PEDAL"));
+    assert_eq!(prop(&second.interface(1), 0, "$CONTROL_PAR_TEXT"), "default");
+    let reset = "on init\nRESET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nend on";
+    let (reset, errors) = Runtime::with_scripts(&[set, reset, read], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    assert!(!reset.condition("NO_SYS_SCRIPT_PEDAL"));
+    assert!(reset.condition("KEEP"));
+    assert_eq!(prop(&reset.interface(2), 0, "$CONTROL_PAR_TEXT"), "default");
+    for failed in [
+        // Bare unsupported builtins only warn; a missing authored function
+        // fails compilation, while wait is rejected during init execution.
+        "on init\nSET_CONDITION(FAILED)\ncall missing_function\nend on",
+        "on init\nSET_CONDITION(FAILED)\nwait(1)\nend on",
+    ] {
+        let (rt, errors) = Runtime::with_scripts(&[set, failed, read], &mut engine, 8, Vec::new());
+        assert!(errors[0].is_none() && errors[1].is_some() && errors[2].is_none(), "{errors:?}");
+        assert!(rt.condition("NO_SYS_SCRIPT_PEDAL"));
+        assert!(!rt.condition("FAILED"));
+        assert_eq!(prop(&rt.interface(2), 0, "$CONTROL_PAR_TEXT"), "disabled");
+    }
+}
+
+#[test]
+fn preprocessor_excludes_code_before_parsing_and_resolves_conditions_before_init() {
+    let source = "on init
+declare ui_label $l(1,1)
+if (0)
+SET_CONDITION(ENABLED)
+end if
+USE_CODE_IF(ENABLED)
+declare $value := 7
+USE_CODE_IF_NOT(ENABLED)
+this is not KSP
+RESET_CONDITION(ENABLED)
+END_USE_CODE
+END_USE_CODE
+USE_CODE_IF_NOT(ENABLED)
+declare $value := 99
+unsupported_function()
+END_USE_CODE
+call display()
+end on
+function display()
+set_text($l,$value)
+end function";
+    let ui = initialize(source, 0, 0).unwrap();
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "7");
+    assert!(ui.diagnostics.is_empty(), "{:?}", ui.diagnostics);
+
+    let setup = compile::Setup {
+        groups: 0,
+        outputs: 0,
+        zones: 0,
+    };
+    let first = compile::compile(source, &setup).unwrap();
+    assert!(first.conditions.contains("ENABLED"));
+    let next = compile::compile_with_conditions("on init\nUSE_CODE_IF(ENABLED)\ndeclare $inherited := 1\nEND_USE_CODE\nRESET_CONDITION(ENABLED)\nUSE_CODE_IF_NOT(ENABLED)\ndeclare $reset := 2\nEND_USE_CODE\nend on", &setup, &first.conditions).unwrap();
+    assert!(next.conditions.is_empty());
+    assert_eq!(
+        next.vars
+            .iter()
+            .map(|v| v.name.as_ref())
+            .collect::<Vec<_>>(),
+        ["$inherited", "$reset"]
+    );
+    for bad in [
+        "END_USE_CODE",
+        "USE_CODE_IF(X)",
+        "SET_CONDITION(1)",
+        "SET_CONDITION(X, Y)",
+    ] {
+        assert!(
+            compile::compile(&format!("on init\n{bad}\nend on"), &setup).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn array_search_and_sort_use_inclusive_ranges_and_require_both_endpoints() {
+    let source = "on init
+declare %a[7] := (8,5,4,8,2,8,1)
+declare ui_label $l(1,1)
+set_text($l, search(%a,8) & \":\" & search(%a,8,1,3) & \":\" & search(%a,8,4,4) & \":\" & search(%a,8,5,5))
+sort(%a,0,1,4)
+set_text($l,get_control_par_str(get_ui_id($l),$CONTROL_PAR_TEXT) & \":\" & %a[0] & %a[1] & %a[2] & %a[3] & %a[4] & %a[5] & %a[6])
+sort(%a,0,0,2147483647)
+set_text($l,get_control_par_str(get_ui_id($l),$CONTROL_PAR_TEXT) & \":\" & search(%a,8,0,2147483647))
+end on";
+    assert_eq!(label(source), "0:3:-1:5:8245881:4");
+    for call in ["search(%a,8,1)", "sort(%a,0,1)"] {
+        let error = initialize(&format!("on init\ndeclare %a[4]\n{call}\nend on"), 0, 0).unwrap_err();
+        assert!(error.to_string().contains("both range endpoints"), "{error:#}");
+    }
+}
+
+#[test]
 fn unsupported_stretch_limits_do_not_abort_the_performance_ui() {
     let ui = initialize("on init\ndeclare ui_label $l(1,1)\nset_text($l,get_voice_limit($NI_VL_TMPRO_STANDARD) & \":\" & get_voice_limit($NI_VL_TMPRO_HQ))\nset_voice_limit($NI_VL_TMPRO_STANDARD,8)\nend on", 0, 8).unwrap();
     assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "0:0");
