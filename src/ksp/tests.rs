@@ -40,7 +40,9 @@ fn script_conditions_inherit_successful_slots_and_partition_the_compiled_cache()
     assert!(reset.condition("KEEP"));
     assert_eq!(prop(&reset.interface(2), 0, "$CONTROL_PAR_TEXT"), "default");
     for failed in [
-        "on init\nSET_CONDITION(FAILED)\nunknown_function()\nend on",
+        // Bare unsupported builtins only warn; a missing authored function
+        // fails compilation, while wait is rejected during init execution.
+        "on init\nSET_CONDITION(FAILED)\ncall missing_function\nend on",
         "on init\nSET_CONDITION(FAILED)\nwait(1)\nend on",
     ] {
         let (rt, errors) = Runtime::with_scripts(&[set, failed, read], &mut engine, 8, Vec::new());
