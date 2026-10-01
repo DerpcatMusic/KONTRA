@@ -196,7 +196,7 @@ pub fn panel(shape: Arc<Shape>, name: &str) -> El {
     .named(name.to_owned());
     col![
         graph,
-        row![caption("20 Hz").fill(Role::Dim), spacer(), caption("1 kHz").fill(Role::Dim), spacer(), caption("20 kHz").fill(Role::Dim)]
+        row![caption("20 Hz").fill(secondary()), spacer(), caption("1 kHz").fill(secondary()), spacer(), caption("20 kHz").fill(secondary())]
             .shrink(0)
     ]
     .gap(TIGHT)

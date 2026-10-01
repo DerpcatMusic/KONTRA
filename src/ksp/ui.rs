@@ -258,6 +258,7 @@ impl Ui {
                 };
                 properties.insert("$CONTROL_PAR_VALUE".into(), value);
                 Control {
+                    id: self.var_ids[c.var as usize],
                     variable: var.name.to_string(),
                     kind: var.ui.as_deref().unwrap_or_default().to_owned(),
                     properties,

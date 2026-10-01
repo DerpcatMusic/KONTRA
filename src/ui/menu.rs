@@ -625,7 +625,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
             Item::Info(text) => {
                 height += ROW;
                 rows.push(
-                    row![caption(text).fill(Role::Dim).lines(1).min_w(0)]
+                    row![caption(text).fill(secondary()).lines(1).min_w(0)]
                         .align(Align::Center)
                         .pad((SPACE, 0))
                         .h(ROW)
@@ -655,7 +655,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                         .lines(1)
                         .flex(1)
                         .min_w(0),
-                    caption(hint).fill(Role::Dim)
+                    caption(hint).fill(secondary())
                 ]
                 .gap(SPACE)
                 .align(Align::Center)

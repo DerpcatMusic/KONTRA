@@ -84,7 +84,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
             note_name(from + 17),
             computer.velocity.load(Ordering::Relaxed)
         );
-        caption(text).text_size(SMALL).fill(Role::Dim).shrink(0)
+        caption(text).text_size(SMALL).fill(secondary()).shrink(0)
     });
     let bar = row(
         [
@@ -92,7 +92,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
             caption(shown_range).text_size(SMALL).reserve("C#-2 – C#-2"),
             caption(plays)
                 .text_size(SMALL)
-                .fill(Role::Dim)
+                .fill(secondary())
                 .lines(1)
                 .flex(1)
                 .min_w(0),
