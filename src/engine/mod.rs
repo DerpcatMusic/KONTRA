@@ -419,6 +419,8 @@ impl Engine {
             .iter()
             .map(|v| VoiceInfo {
                 group: v.group,
+                channel: v.channel,
+                note: v.note,
                 released: v.released,
                 release_trigger: v.release_trigger,
                 streams: v.stream.is_some_and(|s| !s.paused),
@@ -742,6 +744,8 @@ impl Engine {
 #[derive(Clone, Copy, Debug)]
 pub struct VoiceInfo {
     pub group: u32,
+    pub channel: u8,
+    pub note: u8,
     pub released: bool,
     pub release_trigger: bool,
     pub streams: bool,
