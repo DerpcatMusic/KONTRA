@@ -995,3 +995,76 @@ end on";
     assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "[]6");
     assert!(ui.diagnostics.iter().any(|d| d.contains("out of bounds")), "{:?}", ui.diagnostics);
 }
+
+/// `vm::hot`, the integer loop with its chained ops, runs note callbacks
+/// exactly like the op-at-a-time reference: same calls, same reports, and
+/// preempted by the block budget at the same points.
+#[test]
+fn integer_loop_matches_the_reference_interpreter() {
+    let script = "on init
+declare %a[64]
+declare %m[64]
+declare $r
+declare $i
+declare $j
+declare $k
+declare $sum
+declare polyphonic $p
+declare ui_label $label(1,1)
+while ($i < 64)
+  %a[$i] := ($i * 7) mod 13
+  inc($i)
+end while
+end on
+on note
+$p := $EVENT_NOTE mod 8
+$sum := 0
+$k := 0
+while ($k < 2500)
+  $i := 0
+  while ($i <= 16)
+    $r := $i mod 8
+    if (%a[$i] = 3)
+      inc($sum)
+    end if
+    if (%a[$p] > %m[8 * $r + $j] + 1)
+      $sum := $sum + %a[$i + $k]
+    end if
+    if (%m[8 * $j + $r] # 0 and $EVENT_NOTE > 10)
+      $sum := $sum - 1
+    end if
+    %m[8 * $r + $j] := $sum mod 5
+    $sum := $sum + $r
+    inc($i)
+  end while
+  $j := $k mod 8
+  set_text($label, $k)
+  if ($k mod 500 = 0)
+    play_note($EVENT_NOTE + 1, 100, 0, 1000)
+  end if
+  inc($k)
+end while
+set_text($label, $sum)
+end on";
+    let run = |reference: bool| {
+        super::vm::REFERENCE.set(reference);
+        let mut engine = LogEngine::new(vec!["a".into()], 48_000.0);
+        let (mut rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let mut log = Vec::new();
+        for key in [60, 67] {
+            rt.note_on(&mut engine, 0, key, 100);
+            for _ in 0..8 {
+                rt.process(&mut engine, 128);
+                let at = prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT");
+                log.push(format!("{at} {:?}", engine.calls));
+                engine.calls.clear();
+            }
+        }
+        (log, rt.diagnostics(), prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"))
+    };
+    let (hot, reference) = (run(false), run(true));
+    super::vm::REFERENCE.set(false);
+    assert!(hot.1.iter().any(|d| d.contains("out of bounds")), "{:?}", hot.1);
+    assert_eq!(hot, reference);
+}
