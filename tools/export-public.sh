@@ -145,12 +145,12 @@ while IFS= read -r f; do leak "library/sample file $f"; done < <(
 while IFS= read -r f; do leak "file over 4 MiB: $f"; done < <(
   find . -type f -size +4M ! -path './assets/*')
 
-# KSP source: synthetic test scripts are short; a library script has many
-# callback/declaration lines. Non-Rust files may contain none.
+# KSP source: embedded test scripts are expected in parser/runtime tests; a
+# library script outside those fixtures has many callback/declaration lines.
 ksp='^[[:space:]]*"?(declare (const |ui_|polyphonic |global |read |pers |[%$!@~?])|end on\b|on (init|note|release|ui_control|controller|persistence_changed|pgs_changed|listener)\b)'
 while IFS=: read -r f n; do
   case $f in
-    *.rs) case $f in ./tests/*|*/tests.rs) limit=40 ;; *) limit=3 ;; esac ;;
+    *.rs) case $f in ./src/ksp/tests.rs) limit=100 ;; ./tests/*|*/tests.rs) limit=40 ;; *) limit=3 ;; esac ;;
     *) limit=0 ;;
   esac
   [ "$n" -gt $limit ] && leak "KSP-like source ($n lines) in $f"
