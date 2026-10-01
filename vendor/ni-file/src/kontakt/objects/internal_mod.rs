@@ -13,8 +13,10 @@ use super::{
 
 const CHUNK_ID: u16 = 0x0D;
 const ENVELOPE_ID: u16 = 0x07;
-/// Category stored after the name; external assignments store 1 or 2 there too.
-const INTERNAL_CATEGORY: u32 = 2;
+/// Category stored after the name: 2 wraps the modulator in an 0x07
+/// envelope wrapper; 1 stores it directly (an 0x08 LFO object in ANALOG
+/// STRINGS). External assignments store 1 or 2 there too.
+const CATEGORIES: [u32; 2] = [1, 2];
 
 /// # InternalMod
 ///
@@ -67,7 +69,7 @@ impl InternalMod {
         let unknown_id = reader.read_u32_le()?;
         let name = read_name(&mut reader)?;
         let category = reader.read_u32_le()?;
-        if category != INTERNAL_CATEGORY {
+        if !CATEGORIES.contains(&category) {
             return Err(Error::Generic(format!(
                 "Unexpected internal modulator category {category}"
             )));
@@ -85,10 +87,10 @@ impl InternalMod {
 
     /// The envelope wrapper (0x07) holds the concrete modulator chunk.
     fn modulator(&self) -> Result<Modulator, Error> {
-        let wrapper = self
-            .0
-            .find_first(ENVELOPE_ID)
-            .ok_or(KontaktError::MissingChunk(ENVELOPE_ID))?;
+        let Some(wrapper) = self.0.find_first(ENVELOPE_ID) else {
+            let inner = self.0.children.first().ok_or(KontaktError::MissingChunk(ENVELOPE_ID))?;
+            return Ok(Modulator::Other { chunk_id: inner.id });
+        };
         let wrapper = StructuredObject::try_from(wrapper)?;
         let inner = wrapper
             .children

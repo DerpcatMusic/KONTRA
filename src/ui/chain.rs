@@ -37,6 +37,7 @@ pub fn target_name(t: &ModTarget) -> String {
     match t {
         ModTarget::Volume => "Volume".into(),
         ModTarget::Pitch => "Pitch".into(),
+        ModTarget::Group(param) => param.clone(),
         ModTarget::SampleStart => "Sample start".into(),
         ModTarget::Attack => "Attack".into(),
         ModTarget::Release => "Release".into(),

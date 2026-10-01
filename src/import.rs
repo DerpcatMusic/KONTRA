@@ -715,6 +715,11 @@ mod preset_tests {
         assert_eq!(super::mount_of(info, std::path::Path::new("/mnt/MAIN/x")).unwrap().1, "ntfs3");
         assert!(!super::zero_read_warning(3, super::mount_of(info, std::path::Path::new("/home/x"))).contains("ntfs3"));
     }
+    /// A zero-filled read (the NTFS runlist failure) is a clean error, not a panic.
+    #[test]
+    fn zero_filled_container_is_an_error() {
+        assert!(ni_file::NIFile::read(std::io::Cursor::new(vec![0u8; 4096])).is_err());
+    }
     #[test]
     fn script_text_decodes_every_kontakt_encoding() {
         let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain("on init\nend on".encode_utf16().flat_map(u16::to_le_bytes)).collect();

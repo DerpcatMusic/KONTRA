@@ -125,6 +125,68 @@ fn pgs_str_key(m: &Machine, key: u32) -> Option<usize> {
     m.env.host.pgs_strs.iter().position(|(k, _)| **k == **name)
 }
 
+/// `path` as Kontakt prints a folder: `/` separators and a trailing `/`.
+fn dir(path: &std::path::Path) -> String {
+    let mut s = path.to_string_lossy().replace('\\', "/");
+    if !s.ends_with('/') {
+        s.push('/');
+    }
+    s
+}
+
+/// `$GET_FOLDER_LIBRARY_DIR` of `instrument`: the nearest folder above it
+/// with a `.nicnt`, else the one holding its `Instruments` folder, else
+/// its own.
+fn library_dir(instrument: &std::path::Path) -> String {
+    let has_nicnt = |d: &std::path::Path| {
+        std::fs::read_dir(d).into_iter().flatten().flatten().any(|e| {
+            e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("nicnt"))
+        })
+    };
+    let ancestors = || instrument.ancestors().skip(1);
+    let found = ancestors().find(|d| has_nicnt(d)).or_else(|| {
+        ancestors()
+            .find(|d| d.file_name().is_some_and(|n| n.eq_ignore_ascii_case("instruments")))
+            .and_then(|d| d.parent())
+    });
+    dir(found.unwrap_or_else(|| instrument.parent().unwrap_or(instrument)))
+}
+
+/// A file a script names, matching names without case when the exact
+/// path is not there (libraries are made on case-insensitive systems).
+fn read_path(path: &str) -> Option<Vec<u8>> {
+    let path = std::path::Path::new(path);
+    if let Ok(bytes) = std::fs::read(path) {
+        return Some(bytes);
+    }
+    let mut at = std::path::PathBuf::from("/");
+    for part in path.components().skip(1) {
+        let want = part.as_os_str().to_string_lossy();
+        let next = std::fs::read_dir(&at).ok()?.flatten().map(|e| e.path()).find(|p| {
+            p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&want))
+        })?;
+        at = next;
+    }
+    std::fs::read(at).ok()
+}
+
+/// An `.nka` file's values for an array of type `ty` named `name`: the
+/// array's name, then one value per line. `None` when the name differs.
+fn nka(bytes: &[u8], ty: Ty, name: &str) -> Option<Value> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut lines = text.lines().map(|l| l.strip_suffix('\r').unwrap_or(l));
+    let head = lines.next()?.trim();
+    if head.trim_start_matches(['%', '!', '?', '$', '@', '~']) != name {
+        return None;
+    }
+    let value = |l: &str| match ty {
+        Ty::Int => Value::Int(l.trim().parse().unwrap_or(0)),
+        Ty::Real => Value::Real(l.trim().parse().unwrap_or(0.0)),
+        Ty::Str => Value::Text(l.to_owned()),
+    };
+    Some(Value::Array(lines.map(value).collect()))
+}
+
 fn async_done(m: &mut Machine, status: i32) -> i32 {
     let id = m.env.next_async();
     if m.env.async_done.len() < m.env.async_done.capacity() {
@@ -326,11 +388,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             push_int(m, equal as i32)
         }
         LoadArray | LoadArrayStr | SaveArray | SaveArrayStr => {
-            if matches!(f, LoadArray | SaveArray) {
-                m.stk.int();
+            let (mode, path) = if matches!(f, LoadArray | SaveArray) {
+                (m.stk.int(), None)
             } else {
-                m.stk.strs.pop();
-            }
+                (-1, Some(m.stk.strs.pop().to_owned()))
+            };
             let v = m.stk.var();
             let var = &m.prog.vars[v as usize];
             let status = if matches!(f, SaveArray | SaveArrayStr) {
@@ -340,8 +402,29 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             } else if let Some(value) = m.env.saved_arrays.get(&(slot, v)) {
                 write_value(&mut m.slot.mem, var, value);
                 1
+            } else if mode == 0 {
+                m.env.note("load_array: no file dialog here; nothing saved in this session");
+                0
+            } else if let Some(instrument) = m.engine.instrument_path() {
+                // Mode 1: the library's Data folder; 2: the resource
+                // container's `data`; a path: that file. A file that is not
+                // there is the script's business, as in Kontakt.
+                let name = var.name.trim_start_matches(['%', '!', '?', '$', '@', '~']);
+                let bytes = match (mode, &path) {
+                    (_, Some(path)) => read_path(path),
+                    (1, _) => read_path(&format!("{}Data/{name}.nka", library_dir(instrument))),
+                    (2, _) => crate::artwork::data_file(instrument, &format!("{name}.nka")),
+                    _ => None,
+                };
+                match bytes.and_then(|b| nka(&b, var.ty, name)) {
+                    Some(value) => {
+                        write_value(&mut m.slot.mem, var, &value);
+                        1
+                    }
+                    None => 0,
+                }
             } else {
-                m.env.note("load_array: no saved data in this session");
+                m.env.note("load_array: files load only during on init");
                 0
             };
             let id = async_done(m, status);
@@ -744,14 +827,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 (g, module)
             };
             let name = m.stk.strs.pop();
-            let found = match (usize::try_from(g), usize::try_from(module)) {
-                (Ok(g), _) if by_mod => m.engine.find_mod(g, name),
-                (Ok(g), Ok(module)) => m.engine.find_target(g, module, name),
+            // As find_group: report only names that match ignoring case or spaces.
+            let find = |is: &dyn Fn(&str) -> bool| match (usize::try_from(g), usize::try_from(module)) {
+                (Ok(g), _) if by_mod => m.engine.find_mod(g, is),
+                (Ok(g), Ok(module)) => m.engine.find_target(g, module, is),
                 _ => None,
             };
-            if found.is_none() {
-                m.env
-                    .note("find_mod/find_target: modulator unknown to the engine; returned 0");
+            let found = find(&|n| n == name);
+            if found.is_none() && find(&|n| n.trim().eq_ignore_ascii_case(name.trim())).is_some() {
+                m.env.note("find_mod/find_target: name matches only ignoring case or spaces; not found");
             }
             let miss = if matches!(f, FindMod | FindTarget) { 0 } else { b::NOT_FOUND };
             push_int(m, found.map_or(miss, |i| i as i32))
@@ -787,16 +871,19 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 slot: s,
                 generic,
             };
-            if !m.engine.set_engine_par(m.env.offset, p, value) {
-                m.env
-                    .note("set_engine_par: parameter not implemented by the engine; value stored");
-                m.env.set_engine_par(p, value);
-            }
             // Loading an effect is asynchronous: the script gets an ID that
             // `on async_complete` reports. Other parameters apply at once.
             let loads = ["$ENGINE_PAR_EFFECT_TYPE", "$ENGINE_PAR_EFFECT_SUBTYPE", "$ENGINE_PAR_SEND_EFFECT_TYPE"]
                 .iter()
                 .any(|n| b::engine_par_id(n) == Some(id));
+            if !m.engine.set_engine_par(m.env.offset, p, value) {
+                m.env.note(if loads && b::engine_par_name(id) != Some("$ENGINE_PAR_EFFECT_SUBTYPE") {
+                    "set_engine_par: another effect loads only into instrument or bus racks during on init; value stored"
+                } else {
+                    "set_engine_par: parameter not implemented by the engine; value stored"
+                });
+                m.env.set_engine_par(p, value);
+            }
             let result = if loads { async_done(m, 1) } else { -1 };
             push_int(m, result)
         }
@@ -834,6 +921,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             let c = control(m, id)?;
             if p == b::CONTROL_PAR_VALUE {
                 set_value(m, c, value);
+            } else if let Some(unit) = b::named("$KNOB_UNIT_", value).filter(|_| p == b::CONTROL_PAR_UNIT) {
+                // The UI reads units by name.
+                m.slot.ui.controls[c].set_str(p, unit);
             } else {
                 m.slot.ui.controls[c].set_int(p, value);
             }
@@ -917,6 +1007,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             } else {
                 match m.slot.ui.controls[c].get(p) {
                     Some(Prop::Int(n)) => *n,
+                    Some(Prop::Str(s)) if p == b::CONTROL_PAR_UNIT => b::constant(s).unwrap_or(0),
                     _ => 0,
                 }
             };
@@ -981,7 +1072,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                 HidePart => b::CONTROL_PAR_HIDE,
                 _ => return Ok(Step::Next),
             };
-            match m.prog.symbol_name(value).filter(|_| f == SetKnobUnit) {
+            match b::named("$KNOB_UNIT_", value).filter(|_| f == SetKnobUnit) {
                 Some(name) => m.slot.ui.controls[c].set_str(p, name),
                 None => m.slot.ui.controls[c].set_int(p, value),
             }
@@ -1124,8 +1215,14 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             push_int(m, n)
         }
         GetFolder => {
-            m.stk.int();
-            m.stk.strs.push();
+            let [which] = ints(m);
+            let folder = match (m.engine.instrument_path(), which) {
+                (Some(i), b::GET_FOLDER_LIBRARY_DIR) => library_dir(i),
+                (Some(i), b::GET_FOLDER_PATCH_DIR) => dir(i.parent().unwrap_or(i)),
+                // No factory library, and no other folder outside on init.
+                _ => String::new(),
+            };
+            m.stk.strs.push_str(&folder);
             Ok(Step::Next)
         }
         FsGetFilename => {
@@ -1166,7 +1263,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                     return Ok(Step::Next);
                 }
             }
-            let shown = match m.prog.symbol_name(value) {
+            // The keyboard reads colors and types by name.
+            let family = if f == SetKeyColor { "$KEY_COLOR_" } else { "$NI_KEY_TYPE_" };
+            let shown = match b::named(family, value) {
                 Some(name) if f != SetKeyPressed => Value::Text(name.to_owned()),
                 _ => Value::Int(value),
             };
@@ -1214,6 +1313,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
                     }
                 }) {
                     Some(Value::Int(n)) => *n,
+                    Some(Value::Text(name)) => b::constant(name).unwrap_or(0),
                     _ => 0,
                 },
             };

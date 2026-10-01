@@ -76,7 +76,8 @@ pub struct EqBand {
 pub const EQ_TYPES: std::ops::RangeInclusive<i32> = 22..=24;
 
 /// `BParFXGaloisReverb`: Kontakt's modern "Reverb" (`$EFFECT_TYPE_REVERB2`).
-/// Ten normalized values in `$ENGINE_PAR_RV2_*` order.
+/// Ten normalized values in `$ENGINE_PAR_RV2_*` order, then the freeze
+/// switch, which presets do not store.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Reverb {
     /// 0 Room, 1 Hall.
@@ -90,9 +91,27 @@ pub struct Reverb {
     pub high_cut: f32,
     pub low_shelf: f32,
     pub stereo: f32,
+    /// `$ENGINE_PAR_RV2_FREEZE`: 1.0 holds the tail and mutes the input.
+    #[serde(default)]
+    pub freeze: f32,
 }
 
 impl Reverb {
+    /// The values most local presets store, for a Reverb a script loads.
+    pub const DEFAULT: Self = Self {
+        room_type: 0.0,
+        time: 0.37,
+        size: 0.5,
+        damping: 0.5,
+        modulation: 0.5,
+        diffusion: 0.5,
+        predelay: 0.0,
+        high_cut: 0.0,
+        low_shelf: 0.0,
+        stereo: 1.0,
+        freeze: 0.0,
+    };
+
     /// Value `i` in `$ENGINE_PAR_RV2_*` order (see the fields).
     pub fn field(&mut self, i: u8) -> Option<&mut f32> {
         Some(match i {
@@ -106,6 +125,7 @@ impl Reverb {
             7 => &mut self.high_cut,
             8 => &mut self.low_shelf,
             9 => &mut self.stereo,
+            10 => &mut self.freeze,
             _ => return None,
         })
     }
@@ -189,6 +209,35 @@ pub enum Value {
     Flag(bool),
 }
 
+/// A freshly loaded `kind` (`$ENGINE_PAR_EFFECT_TYPE`). Kontakt's own
+/// defaults are not stored anywhere; these are the values local presets
+/// keep. Kinds without DSP pass audio through.
+pub(super) fn defaults(kind: Kind) -> Params {
+    let band = IrBand { length_ratio: 1.0, low_cut_hz: 20.0, high_cut_hz: 20_000.0 };
+    match kind {
+        Kind::Gainer => Params::Gainer(Gainer { gain: 1.0 }),
+        Kind::SendLevels => Params::SendLevels(SendLevels { sends: vec![0.0; 8], outputs: Vec::new() }),
+        Kind::StereoModeller => Params::StereoModeller(StereoModeller { spread: 0.0, pan: 0.0, pseudo_stereo: false }),
+        Kind::Reverb => Params::Reverb(Reverb::DEFAULT),
+        // Passes audio through until a script loads an impulse response.
+        Kind::Convolution => Params::Convolution(Box::new(Convolution {
+            unknown: [-1.0, 0.0],
+            predelay_ms: 0.0,
+            early: band,
+            late: band,
+            unknown_9: -1.0,
+            flags: [false, true, true, true, false],
+            curve_x: Vec::new(),
+            curve_db: Vec::new(),
+            ir_index: -1,
+            ir_file: None,
+            ir_error: None,
+            ir: None,
+        })),
+        _ => Params::Opaque { bytes: 0 },
+    }
+}
+
 pub(super) fn parse(kind: Kind, data: &[u8]) -> Params {
     let mut r = Reader(data);
     let typed = match kind {
@@ -209,6 +258,7 @@ pub(super) fn parse(kind: Kind, data: &[u8]) -> Params {
                 high_cut: h,
                 low_shelf: i,
                 stereo: j,
+                freeze: 0.0,
             })
         }),
         _ => layout(kind).and_then(|layout| fields(&mut r, layout)),

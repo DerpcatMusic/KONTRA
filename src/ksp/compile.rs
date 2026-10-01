@@ -654,10 +654,10 @@ impl<'a> Compiler<'a> {
                 "{} is not a UI control",
                 self.name(arg)
             );
-            ensure!(
-                self.p.ui_callbacks[v as usize].replace(entry).is_none(),
-                "Duplicate ui_control callback"
-            );
+            // A later callback for the same control replaces the earlier
+            // one, as in Kontakt: generated frameworks (Output's) override
+            // their generic value handler for tab buttons this way.
+            self.p.ui_callbacks[v as usize] = Some(entry);
         } else if let Some(cb) = Callback::from_name(name) {
             ensure!(
                 self.p.callbacks[cb as usize].replace(entry).is_none(),

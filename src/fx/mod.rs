@@ -28,18 +28,32 @@ use std::{collections::HashMap, sync::Arc};
 /// Longest impulse response loaded (seconds at the IR's own rate).
 const MAX_IR_SECONDS: usize = 20;
 
-/// An impulse response a script loaded into a convolution slot.
+/// What a script's `on init` loaded into an effect slot; effects build
+/// with it ([`ProgramFx::processor_with`]).
 #[derive(Clone)]
 pub struct ScriptIr {
     pub rack: Rack,
     pub slot: u8,
-    pub file: std::path::PathBuf,
-    pub ir: Impulse,
+    pub load: Load,
+}
+
+#[derive(Clone)]
+pub enum Load {
+    /// `load_ir_sample`: an impulse response for a convolution slot.
+    Ir { file: std::path::PathBuf, ir: Impulse },
+    /// `$ENGINE_PAR_EFFECT_TYPE`: another effect, at its defaults; `None`
+    /// empties the slot.
+    Kind(Option<Kind>),
 }
 
 impl PartialEq for ScriptIr {
     fn eq(&self, o: &Self) -> bool {
-        (self.rack, self.slot, &self.file) == (o.rack, o.slot, &o.file)
+        (self.rack, self.slot) == (o.rack, o.slot)
+            && match (&self.load, &o.load) {
+                (Load::Ir { file: a, .. }, Load::Ir { file: b, .. }) => a == b,
+                (Load::Kind(a), Load::Kind(b)) => a == b,
+                _ => false,
+            }
     }
 }
 
@@ -47,7 +61,7 @@ impl ScriptIr {
     /// Decode `file` as the impulse response for `rack`/`slot`.
     pub fn load(rack: Rack, slot: u8, file: std::path::PathBuf) -> Result<Self> {
         let ir = crate::audio::decode(&file, MAX_IR_SECONDS * 192_000)?;
-        Ok(Self { rack, slot, file, ir: Impulse(Arc::new(ir)) })
+        Ok(Self { rack, slot, load: Load::Ir { file, ir: Impulse(Arc::new(ir)) } })
     }
 }
 
@@ -221,7 +235,10 @@ impl ProgramFx {
                 }
             }
         };
-        let fx = chain.slots.iter().find(|fx| fx.slot == slot as usize)?;
+        let Some(fx) = chain.slots.iter().find(|fx| fx.slot == slot as usize) else {
+            // `$EFFECT_TYPE_NONE`.
+            return (param == FxParam::Type && slot < 8).then_some(0.0);
+        };
         Some(match (param, &fx.params) {
             (FxParam::Bypass, _) => f32::from(fx.bypass),
             (FxParam::Wet, _) => fx.output_gain,
@@ -297,30 +314,75 @@ impl ProgramFx {
         }
     }
 
-    /// The convolution slot at `rack`/`slot`, if there is one.
-    fn convolution(&mut self, rack: Rack, slot: u8) -> Option<&mut params::Convolution> {
-        let chain = match rack {
+    fn chain_mut(&mut self, rack: Rack) -> Option<&mut Chain> {
+        Some(match rack {
             Rack::Insert => &mut self.insert,
             Rack::Send => &mut self.send,
             Rack::Main => &mut self.main,
             Rack::Bus(b) => &mut self.buses.iter_mut().find(|bus| bus.index == b as usize)?.chain,
-        };
+        })
+    }
+
+    /// The convolution slot at `rack`/`slot`, if there is one.
+    fn convolution(&mut self, rack: Rack, slot: u8) -> Option<&mut params::Convolution> {
+        let chain = self.chain_mut(rack)?;
         match &mut chain.slots.iter_mut().find(|fx| fx.slot == slot as usize)?.params {
             Params::Convolution(c) => Some(c),
             _ => None,
         }
     }
 
-    /// [`processor`](Self::processor) with the impulse responses scripts
-    /// loaded (`load_ir_sample`) in place of the preset's.
-    pub fn processor_with(&self, sample_rate: f32, max_block: usize, irs: &[ScriptIr]) -> FxProcessor {
-        if irs.is_empty() {
+    /// Load `kind` at its defaults into `rack`/`slot` (`None` empties it),
+    /// as `$ENGINE_PAR_EFFECT_TYPE` does. Bypass and levels stay with the
+    /// slot. False when there is no such rack or slot.
+    pub fn load_kind(&mut self, rack: Rack, slot: u8, kind: Option<Kind>) -> bool {
+        let Some(chain) = self.chain_mut(rack).filter(|_| slot < 8) else {
+            return false;
+        };
+        let at = chain.slots.iter().position(|fx| fx.slot == slot as usize);
+        match (kind, at) {
+            (None, Some(i)) => {
+                chain.slots.remove(i);
+            }
+            (None, None) => {}
+            (Some(kind), Some(i)) => {
+                let fx = &mut chain.slots[i];
+                (fx.kind, fx.params) = (kind, params::defaults(kind));
+            }
+            (Some(kind), None) => {
+                let i = chain.slots.partition_point(|fx| fx.slot < slot as usize);
+                let fx = Effect {
+                    slot: slot as usize,
+                    kind,
+                    version: 0,
+                    bypass: false,
+                    output_gain: 1.0,
+                    dry_level: 0.0,
+                    params: params::defaults(kind),
+                };
+                chain.slots.insert(i, fx);
+            }
+        }
+        true
+    }
+
+    /// [`processor`](Self::processor) with what scripts loaded in `on init`
+    /// (`loads`, in order) in place of the preset's effects.
+    pub fn processor_with(&self, sample_rate: f32, max_block: usize, loads: &[ScriptIr]) -> FxProcessor {
+        if loads.is_empty() {
             return self.processor(sample_rate, max_block);
         }
         let mut fx = self.clone();
-        for ir in irs {
-            if let Some(c) = fx.convolution(ir.rack, ir.slot) {
-                (c.ir, c.ir_file, c.ir_error) = (Some(ir.ir.clone()), Some(ir.file.display().to_string()), None);
+        for l in loads {
+            match &l.load {
+                Load::Kind(kind) => {
+                    fx.load_kind(l.rack, l.slot, *kind);
+                }
+                Load::Ir { file, ir } => {
+                    if let Some(c) = fx.convolution(l.rack, l.slot) {
+                        (c.ir, c.ir_file, c.ir_error) = (Some(ir.clone()), Some(file.display().to_string()), None);
+                    }
+                }
             }
         }
         fx.processor(sample_rate, max_block)
