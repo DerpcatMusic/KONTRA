@@ -923,12 +923,18 @@ fn bare_bank_notes_start_late_not_clipped() {
             std::thread::sleep(wait);
         }
     }
-    std::fs::remove_dir_all(dir).unwrap();
     let onset = |frames: &[Frame]| frames.iter().position(|f| *f != [0.0; 2]);
     let late = onset(&played).expect("the note sounds") - onset(&expected).unwrap();
     assert_eq!(late % MAX_BLOCK, 0, "a waiting voice starts at a block");
     assert!(late <= 2400 + MAX_BLOCK, "{late} frames late");
     assert!(played[late..late + 1024] == expected[..1024], "the attack plays whole");
+    // The preload landing while the voice waits: it plays from RAM at once.
+    let mut live = engine_with(Bank::load_bare(&instrument).unwrap());
+    live.note_on(0, 60, 100);
+    live.upgrade_bank(Box::new(Bank::load(&instrument).unwrap()));
+    let first = render(&mut live, MAX_BLOCK);
+    assert!(first[..] == expected[..MAX_BLOCK], "no wait once the start is resident");
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// 512 voices streaming from 32 files with the minimum preload, rendered at

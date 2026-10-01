@@ -1060,9 +1060,13 @@ impl Voice {
             return false;
         }
         let need = (self.limit + START_LEAD).min(self.length);
+        // The preload landed meanwhile (`Engine::upgrade_bank`): the start is
+        // resident, or the stream is paused for the voice to reconfigure.
+        let resident = self.limit > (self.pos as u64).saturating_sub(1);
         let ready = cx.blocking
+            || resident
             || self.stream.is_none_or(|s| {
-                cx.slots[s.slot as usize].published(s.tag).is_some_and(|end| end >= need)
+                s.paused || cx.slots[s.slot as usize].published(s.tag).is_some_and(|end| end >= need)
             });
         if ready || self.hold <= n as u32 {
             self.hold = 0;
