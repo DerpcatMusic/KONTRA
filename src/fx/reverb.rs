@@ -79,6 +79,7 @@ pub struct Reverb {
     width: f32,
     /// Frames the network takes to decay by 60 dB.
     rt60: f32,
+    rate: f32,
 }
 
 /// One-pole lowpass coefficient for cutoff `hz`.
@@ -87,46 +88,65 @@ fn one_pole(hz: f32, sample_rate: f32) -> f32 {
 }
 
 impl Reverb {
+    /// Buffers are sized for the largest room any setting reaches, so
+    /// [`set`](Self::set) can change every parameter without allocating.
     pub fn new(p: &params::Reverb, sample_rate: f32) -> Self {
+        let ms = |v: f32| v * 0.001 * sample_rate;
+        // Hall at full size and full modulation.
+        let (scale, mod_depth) = (1.5, ms(1.5));
+        let longest = ms(BASE_MS[LINES - 1] * scale);
+        let lines = vec![[0.0; LINES]; ((longest + mod_depth) as usize + 4).next_power_of_two()];
+        let allpass_max = ALLPASS_MS.map(|t| ms(t * scale).max(1.0) as usize);
+        let mut rv = Self {
+            pos: 0,
+            predelay: Line::new(ms(MAX_PREDELAY_MS) as usize),
+            predelay_len: 0,
+            allpass: std::array::from_fn(|_| allpass_max.map(Line::new)),
+            allpass_len: allpass_max,
+            diffusion: 0.0,
+            lines: lines.into(),
+            delay: [0.0; LINES],
+            feedback: [0.0; LINES],
+            damp_coef: 0.0,
+            damp_state: [0.0; LINES],
+            mod_depth: 0.0,
+            lfo_phase: 0.0,
+            lfo_step: TAU * 0.7 / sample_rate,
+            lfo: [0.0, 1.0],
+            input_coef: 0.0,
+            input_state: [0.0; 2],
+            shelf_coef: one_pole(250.0, sample_rate),
+            shelf_gain: 0.0,
+            shelf_state: [0.0; 2],
+            width: 0.0,
+            rt60: 0.0,
+            rate: sample_rate,
+        };
+        rv.set(p);
+        rv
+    }
+
+    /// Apply new settings (a script's `$ENGINE_PAR_RV2_*`) without
+    /// allocating; the tail keeps ringing through the change.
+    pub fn set(&mut self, p: &params::Reverb) {
+        let sample_rate = self.rate;
         let n = |v: f32| v.clamp(0.0, 1.0);
         let ms = |v: f32| v * 0.001 * sample_rate;
         let hall = p.room_type >= 0.5;
         let scale = (0.5 + n(p.size)) * if hall { 1.0 } else { 0.55 };
         let rt60 = 0.2 * 100f32.powf(n(p.time));
-        let mod_depth = ms(n(p.modulation) * 1.5);
-
-        let delay = BASE_MS.map(|base| ms(base * scale));
-        let longest = delay.iter().fold(0f32, |m, &d| m.max(d));
-        let lines = vec![[0.0; LINES]; ((longest + mod_depth) as usize + 4).next_power_of_two()];
+        self.mod_depth = ms(n(p.modulation) * 1.5);
+        self.delay = BASE_MS.map(|base| ms(base * scale));
         // Each pass through a line of length d must lose 60 dB over rt60.
-        let feedback = delay.map(|d| 10f32.powf(-3.0 * d / (rt60 * sample_rate)));
-        let predelay_len = ms(n(p.predelay) * MAX_PREDELAY_MS) as usize;
-        let allpass_len = ALLPASS_MS.map(|t| ms(t * scale).max(1.0) as usize);
-
-        Self {
-            pos: 0,
-            predelay: Line::new(ms(MAX_PREDELAY_MS) as usize),
-            predelay_len,
-            allpass: std::array::from_fn(|_| allpass_len.map(Line::new)),
-            allpass_len,
-            diffusion: 0.75 * n(p.diffusion),
-            lines: lines.into(),
-            delay,
-            feedback,
-            damp_coef: one_pole(18_000.0 * 0.05f32.powf(n(p.damping)), sample_rate),
-            damp_state: [0.0; LINES],
-            mod_depth,
-            lfo_phase: 0.0,
-            lfo_step: TAU * 0.7 / sample_rate,
-            lfo: [0.0, 1.0],
-            input_coef: one_pole(20_000.0 * 0.025f32.powf(n(p.high_cut)), sample_rate),
-            input_state: [0.0; 2],
-            shelf_coef: one_pole(250.0, sample_rate),
-            shelf_gain: 10f32.powf(-18.0 * n(p.low_shelf) / 20.0) - 1.0,
-            shelf_state: [0.0; 2],
-            width: n(p.stereo),
-            rt60: rt60 * sample_rate,
-        }
+        self.feedback = self.delay.map(|d| 10f32.powf(-3.0 * d / (rt60 * sample_rate)));
+        self.predelay_len = ms(n(p.predelay) * MAX_PREDELAY_MS) as usize;
+        self.allpass_len = ALLPASS_MS.map(|t| ms(t * scale).max(1.0) as usize);
+        self.diffusion = 0.75 * n(p.diffusion);
+        self.damp_coef = one_pole(18_000.0 * 0.05f32.powf(n(p.damping)), sample_rate);
+        self.input_coef = one_pole(20_000.0 * 0.025f32.powf(n(p.high_cut)), sample_rate);
+        self.shelf_gain = 10f32.powf(-18.0 * n(p.low_shelf) / 20.0) - 1.0;
+        self.width = n(p.stereo);
+        self.rt60 = rt60 * sample_rate;
     }
 
     /// Frames of output after input at most `peak` falls silent, until it

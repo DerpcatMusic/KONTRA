@@ -273,8 +273,9 @@ pub struct GroupFilter {
     /// they are linear and the filters treat both channels alike, so the
     /// order does not matter.
     matrix: Matrix,
-    /// Module envelopes and what they drive (intensity and shaper in `Mod`).
-    envs: Box<[(Ahdsr, Box<[(Route, Mod)]>)]>,
+    /// Module envelopes and what they drive (intensity and shaper in `Mod`),
+    /// with their index in `Group::envelopes`.
+    envs: Box<[(Ahdsr, Box<[(Route, Mod)]>, u8)]>,
     /// External assignments: index into the group's `ModTable`.
     ext: Box<[(Route, u16)]>,
 }
@@ -396,12 +397,10 @@ impl GroupFilter {
                 sign: if m.invert { -1.0 } else { 1.0 },
             })
         };
-        let envs = group
-            .envelopes
-            .iter()
-            .filter_map(|e| {
+        let envs = (group.envelopes.iter().enumerate())
+            .filter_map(|(i, e)| {
                 let routes: Box<[_]> = e.targets.iter().filter_map(|m| Some((route(m)?, Mod::from(m)))).collect();
-                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes))
+                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes, i as u8))
             })
             .take(MAX_ENVS)
             .collect();
@@ -479,6 +478,16 @@ impl GroupFilter {
                 Some(unit.knobs[knob.index()?])
             }
         }
+    }
+
+    /// Module envelope `i` of the group (`Group::envelopes`), if it drives
+    /// anything here; voices starting later follow changes to it.
+    pub(crate) fn envelope(&mut self, i: u8) -> Option<&mut Ahdsr> {
+        self.envs.iter_mut().find(|e| e.2 == i).map(|e| &mut e.0)
+    }
+
+    pub(crate) fn envelope_at(&self, i: u8) -> Option<&Ahdsr> {
+        self.envs.iter().find(|e| e.2 == i).map(|e| &e.0)
     }
 
     /// Set a slot's parameter (`set_engine_par`); false if the slot lacks it.
@@ -697,7 +706,7 @@ impl VoiceFilter {
             slots: [0; LANE_SECTIONS],
         };
         if let Some(f) = filter {
-            for (env, (params, _)) in out.envs.iter_mut().zip(&f.envs) {
+            for (env, (params, ..)) in out.envs.iter_mut().zip(&f.envs) {
                 *env = Envelope::new(params, rate);
             }
             for (value, (_, i)) in out.ext.iter_mut().zip(&f.ext) {
@@ -803,7 +812,7 @@ impl VoiceFilter {
             let mut knobs: [[f32; KNOBS]; MAX_UNITS] = std::array::from_fn(|u| {
                 f.units.get(u).map_or([0.0; KNOBS], |unit| unit.knobs)
             });
-            for (e, (_, routes)) in f.envs.iter().enumerate() {
+            for (e, (_, routes, _)) in f.envs.iter().enumerate() {
                 for (r, m) in routes.iter() {
                     knobs[r.unit as usize][r.knob as usize] += r.sign * m.intensity * m.shape(levels[e][t]);
                 }

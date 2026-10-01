@@ -57,10 +57,6 @@ macro_rules! builtins {
 impl Builtin {
     pub fn from_name(name: &str) -> Option<Self> {
         Self::lookup(name).or_else(|| match name {
-            // Kontakt 7 names for the find_* commands.
-            "get_group_idx" => Some(Self::FindGroup),
-            "get_mod_idx" => Some(Self::FindMod),
-            "get_target_idx" => Some(Self::FindTarget),
             // Kontakt 2's underscore spellings (`_set_engine_par`, `_pgs_key_exists`, ...).
             _ => Self::lookup(name.strip_prefix('_').filter(|n| !n.starts_with(['_', '#']))?),
         })
@@ -159,6 +155,10 @@ builtins! {
     ChangeListenerPar "change_listener_par" [I I] 0 Void;
     // Groups, modules and engine parameters.
     FindGroup "find_group" [S] 0 Int;
+    // Kontakt 7's find_* commands: `$NI_NOT_FOUND` rather than 0 for a miss.
+    GetGroupIdx "get_group_idx" [S] 0 Int;
+    GetModIdx "get_mod_idx" [I S] 0 Int;
+    GetTargetIdx "get_target_idx" [I I S] 0 Int;
     GroupName "group_name" [I] 0 Str;
     PurgeGroup "purge_group" [I I] 0 Int;
     GetPurgeState "get_purge_state" [I] 0 Int;
@@ -378,6 +378,8 @@ pub const CC_SLOTS: usize = 130;
 pub const VCC_PITCH_BEND: i32 = 128;
 pub const VCC_MONO_AT: i32 = 129;
 
+/// `$NI_NOT_FOUND`, what the `get_*_idx` commands return for a miss.
+pub const NOT_FOUND: i32 = -1;
 pub const ALL_GROUPS: i32 = 0x3FFF_FFFF;
 pub const ALL_EVENTS: i32 = 0x3FFF_FFFE;
 /// `by_marks` results carry this flag; plain event IDs never do.
@@ -449,6 +451,9 @@ pub fn real_constant(name: &str) -> Option<f64> {
 
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
+    if let Some(v) = crate::fx::ksp_effect_type(name) {
+        return Some(v);
+    }
     if let Some(n) = name
         .strip_prefix("$MARK_")
         .and_then(|n| n.parse::<u32>().ok())
@@ -516,6 +521,10 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_INSERT_BUS" => 1,
         "$NI_MAIN_BUS" => 2,
         "$NI_BUS_OFFSET" => 1000,
+        "$NI_NOT_FOUND" => NOT_FOUND,
+        // `$ENGINE_PAR_RV2_TYPE` values: Reverb's room/hall switch.
+        "$NI_REVERB2_TYPE_ROOM" => 0,
+        "$NI_REVERB2_TYPE_HALL" => 1,
         "$NUM_ZONES" => 0,
         "$NI_VL_TMPRO_STANDARD" => VL_TMPRO_STANDARD,
         "$NI_VL_TMPRO_HQ" | "$NI_VL_TMRPO_HQ" => VL_TMPRO_HQ,
