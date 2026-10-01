@@ -1454,7 +1454,7 @@ fn routed(cx: &Cx, part: usize, list: &[Entry]) -> bool {
 }
 
 /// Keep `part`'s articulation setup in step with what its panel shows.
-fn sync(cx: &mut Cx, part: usize, sections: &[Section]) {
+pub(super) fn sync(cx: &mut Cx, part: usize, sections: &[Section]) {
     let v = &cx.view.parts[part];
     let found = articulations(sections, v.script_slot, &v.keys);
     if let Some(p) = cx.selection.parts.get_mut(part).filter(|p| !p.path.is_empty()) {

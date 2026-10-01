@@ -57,6 +57,11 @@ pub struct Settings {
     pub covers: BTreeMap<String, Cover>,
     /// The libraries Kontakt knows about were looked for, on the first run.
     pub imported: bool,
+    /// Parts show KONTRA's own controls, not the library's original
+    /// performance view, unless a part chooses otherwise.
+    pub vector_view: bool,
+    /// The original performance view's scale; 0 fits the part's width.
+    pub view_scale: f32,
 }
 
 impl Settings {

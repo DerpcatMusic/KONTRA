@@ -1890,3 +1890,72 @@ fn hue_walks_skip_orange() {
         assert!(hues.windows(2).all(|w| (w[0] - w[1]).rem_euclid(360.).min((w[1] - w[0]).rem_euclid(360.)) > 60.));
     }
 }
+
+/// Shape statistics of library performance views for the original view:
+/// sizes, kinds, pictures found and their frames. `KONTAKTO_SHOT` names
+/// the instruments; run with `--ignored --nocapture`. Prints no names.
+#[test]
+#[ignore]
+fn perf_view_stats() {
+    use crate::ksp::Value;
+    use std::collections::BTreeMap;
+    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let names = std::env::var("KONTAKTO_SHOT").unwrap_or_default();
+    for i in library_instruments(&files, &names) {
+        let script = scripted(&i);
+        let Some(u) = script.interface else {
+            println!("== {}: no interface ({})", i.name, script.status.lines().count());
+            continue;
+        };
+        let wall = artwork::performance(&i, Some(u.wallpaper.as_str()));
+        let wall = match &wall {
+            Ok(Some(w)) => format!("{}x{}", w.width, w.height),
+            Ok(None) => "none".into(),
+            Err(e) => format!("err {e}"),
+        };
+        let pic_names = u.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+            Some(Value::Text(n)) if !n.is_empty() => Some(n.as_str()),
+            _ => None,
+        });
+        let pics = artwork::pictures(&i.path, pic_names.clone());
+        let named: std::collections::BTreeSet<&str> = pic_names.collect();
+        println!("== {} ui {}x{} perf {} wallpaper {wall}; pictures {}/{}", i.name, u.width, u.height, u.performance, pics.len(), named.len());
+        let mut kinds: BTreeMap<&str, (usize, usize, usize, usize)> = BTreeMap::new();
+        let mut props: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        for c in &u.controls {
+            let int = |k: &str| match c.properties.get(k) { Some(Value::Int(n)) => *n, _ => 0 };
+            let hidden = int("$CONTROL_PAR_HIDE") & 16 != 0;
+            let pic = match c.properties.get("$CONTROL_PAR_PICTURE") { Some(Value::Text(n)) if !n.is_empty() => Some(n.as_str()), _ => None };
+            let e = kinds.entry(c.kind.as_str()).or_default();
+            e.0 += 1;
+            e.1 += usize::from(!hidden);
+            e.2 += usize::from(pic.is_some());
+            if let Some(p) = pic.and_then(|n| pics.get(n)) {
+                let f = &p.frames[0];
+                e.3 += usize::from(f.width as i32 == int("$CONTROL_PAR_WIDTH") && f.height as i32 == int("$CONTROL_PAR_HEIGHT"));
+            }
+            for k in ["Z_LAYER", "FONT_TYPE", "TEXT_ALIGNMENT", "MOUSE_BEHAVIOUR", "PICTURE_STATE", "TEXTPOS_Y", "HIDE", "TEXT_COLOR"] {
+                if let Some(v) = c.properties.get(&format!("$CONTROL_PAR_{k}")) {
+                    *props.entry(format!("{}:{k}", c.kind)).or_default().entry(format!("{v:?}")).or_default() += 1;
+                }
+            }
+            for k in c.properties.keys().filter(|k| k.starts_with('#')) {
+                *props.entry("unnamed".into()).or_default().entry(k.clone()).or_default() += 1;
+            }
+        }
+        for (k, (n, vis, pic, sized)) in kinds {
+            println!("  {k:14} {n:4} visible {vis:4} picture {pic:4} sized-as-frame {sized}");
+        }
+        for (k, v) in props {
+            let mut v: Vec<_> = v.into_iter().collect();
+            v.sort_by_key(|x| std::cmp::Reverse(x.1));
+            v.truncate(6);
+            println!("  {k}: {v:?}");
+        }
+        let frames: BTreeMap<usize, usize> = pics.values().fold(BTreeMap::new(), |mut m, p| {
+            *m.entry(p.frames.len()).or_default() += 1;
+            m
+        });
+        println!("  frames per picture: {frames:?}");
+    }
+}
