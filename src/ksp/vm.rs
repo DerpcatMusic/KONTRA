@@ -572,6 +572,29 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 m.stk.ints.push(x);
                 *pc += 1;
             }
+            Op::LdIA2(v, a, b, n) => {
+                let i = i32::from(n).wrapping_mul(mem.ints[a as usize]);
+                let i = i.wrapping_add(mem.ints[b as usize]);
+                let x = element(m, *pc + 5, v, i).map_or(0, |e| m.slot.mem.ints[e]);
+                m.stk.ints.push(x);
+                *pc += 5;
+            }
+            Op::LdIAPoly(v, p) => {
+                let i = mem.poly[(m.t.ctx.poly_row * m.prog.poly + p) as usize];
+                let x = element(m, *pc + 1, v, i).map_or(0, |e| m.slot.mem.ints[e]);
+                m.stk.ints.push(x);
+                *pc += 1;
+            }
+            Op::BrIAImm(v, cmp, n, t) => {
+                let i = s.int();
+                let x = element(m, *pc, v, i).map_or(0, |e| m.slot.mem.ints[e]);
+                *pc = if cmp.test(x, n) { *pc + 3 } else { t as usize };
+            }
+            Op::BrCmp(cmp, t) => {
+                let b = s.int();
+                let a = s.int();
+                *pc = if cmp.test(a, b) { *pc + 1 } else { t as usize };
+            }
             Op::BrImm(cmp, n, t) => {
                 *pc = if cmp.test(s.int(), n) {
                     *pc + 2

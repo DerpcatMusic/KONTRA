@@ -732,3 +732,42 @@ fn budgeted_persistence_refresh_matches_whole_and_reports_changes() {
     assert_eq!((&table[999], &saved[0]["$x"]), (&Value::Int(1006), &Value::Int(999)));
     assert!(!rig.rt.refresh_persistence(&mut saved), "a second refresh finds nothing new");
 }
+
+/// Conditions compiled as branches and the fused index/compare ops give the
+/// value form's results: short-circuit `and`/`or`, flattened 2D indexes,
+/// and an out-of-bounds read that yields 0 and is reported.
+#[test]
+fn branch_conditions_and_fused_indexes_match_the_value_form() {
+    let source = "on init
+declare %a[12] := (5, 0, 7, 1, 0, 3, 9, 2, 0, 4, 6, 8)
+declare $i
+declare $j
+declare $n
+declare $hits
+declare $gt
+declare ui_label $label(1,1)
+while ($i < 3 and $n < 100)
+  $j := 0
+  while ($j < 4)
+    if ((%a[4 * $i + $j] > 2 and %a[4 * $i + $j] # 9) or $j = 3)
+      inc($hits)
+    end if
+    if (not (%a[$j] = 0) and ($i = 1 or $j = 0))
+      $n := $n + %a[4 * $i + $j]
+    end if
+    if ($j > $i)
+      inc($gt)
+    end if
+    inc($j)
+  end while
+  inc($i)
+end while
+if (%a[$hits + 100] = 0 or 0)
+  $n := $n + 1000
+end if
+set_text($label, $hits & \":\" & $n & \":\" & $gt)
+end on";
+    let ui = initialize(source, 0, 0).unwrap();
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "8:1016:6");
+    assert!(ui.diagnostics.iter().any(|d| d.contains("out of bounds")), "{:?}", ui.diagnostics);
+}

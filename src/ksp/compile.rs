@@ -117,6 +117,14 @@ pub enum Op {
     AddImm(i32),
     /// `PushI n; LdI a; IMul; LdI b; IAdd`, as `(n, a, b)`: a flattened 2D index.
     MulAdd(i32, u32, u32),
+    /// The same index followed by `LdIA v`, as `(v, a, b, n)` for `n` that fits.
+    LdIA2(VarId, u32, u32, i16),
+    /// `LdPoly p; LdIA v`, as `(v, p)`.
+    LdIAPoly(VarId, u32),
+    /// `LdIA v; PushI n; <cmp>; JumpIfZero t`.
+    BrIAImm(VarId, Cmp, i32, u32),
+    /// `<cmp>; JumpIfZero t`: pop b and a, jump to `t` unless `a cmp b`.
+    BrCmp(Cmp, u32),
     /// `LdI a; LdIA v`, as `(v, a)`.
     LdIAVar(VarId, u32),
     /// `PushI n; <cmp>; JumpIfZero t`: pop x and jump to `t` unless `x cmp n`.
@@ -212,7 +220,17 @@ fn fuse(code: &mut [Op]) {
             [Op::PushI(n), op, Op::JumpIfZero(t), ..] if let Some(cmp) = Cmp::of(op) => {
                 Op::BrImm(cmp, n, t)
             }
+            [Op::PushI(n), Op::LdI(a), Op::IMul, Op::LdI(b), Op::IAdd, Op::LdIA(v), ..]
+                if let Ok(n) = i16::try_from(n) =>
+            {
+                Op::LdIA2(v, a, b, n)
+            }
             [Op::PushI(n), Op::LdI(a), Op::IMul, Op::LdI(b), Op::IAdd, ..] => Op::MulAdd(n, a, b),
+            [Op::LdIA(v), Op::PushI(n), op, Op::JumpIfZero(t), ..] if let Some(cmp) = Cmp::of(op) => {
+                Op::BrIAImm(v, cmp, n, t)
+            }
+            [Op::LdPoly(p), Op::LdIA(v), ..] => Op::LdIAPoly(v, p),
+            [op, Op::JumpIfZero(t), ..] if let Some(cmp) = Cmp::of(op) => Op::BrCmp(cmp, t),
             [Op::LdI(a), Op::LdIA(v), ..] => Op::LdIAVar(v, a),
             [Op::PushI(n), Op::IAdd, ..] => Op::AddImm(n),
             [Op::PushI(n), Op::ISub, ..] => Op::AddImm(n.wrapping_neg()),
