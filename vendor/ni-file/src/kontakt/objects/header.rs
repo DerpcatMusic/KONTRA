@@ -144,7 +144,9 @@ impl BPatchHeaderV2 {
         let mut reader = Cursor::new(data);
 
         let header_magic = reader.read_u32_le()?;
-        assert_eq!(header_magic, u32::swap_bytes(0x722A013E));
+        if header_magic != u32::swap_bytes(0x722A013E) {
+            return Err(NKSError::InvalidMagicNumber(header_magic));
+        }
 
         let patch_type: PatchType = reader.read_u16_le()?.into();
         let patch_version = NKIAppVersion {
@@ -234,10 +236,9 @@ impl BPatchHeaderV42 {
         let mut reader = Cursor::new(data);
 
         let magic: u32 = reader.read_le()?;
-        assert_eq!(
-            magic, 0xEA37631A,
-            "Invalid BPatchHeaderV42 magic number: expected 0x1a6337ea got 0x{magic:x}"
-        );
+        if magic != 0xEA37631A {
+            return Err(NKSError::InvalidMagicNumber(magic));
+        }
 
         let patch_type: PatchType = reader.read_u16_le()?.into();
         let patch_version = NKIAppVersion {
@@ -255,7 +256,6 @@ impl BPatchHeaderV42 {
         let created_at: time::Date = datetime.date();
 
         let u_a = reader.read_u32_le()?;
-        assert_eq!(u_a, 0, "u_a should be 0");
 
         let number_of_zones = reader.read_u16_le()?;
         let number_of_groups = reader.read_u16_le()?;

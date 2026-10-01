@@ -15,8 +15,12 @@ pub struct ItemContainer {
 impl ItemContainer {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let header = ItemHeader::read(&mut reader)?;
-        let length = header.length - 40;
-        let mut chunk_data = Cursor::new(reader.read_bytes(length as usize)?);
+        let length = header
+            .length
+            .checked_sub(40)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or(Error::Static("Invalid NIS item length"))?;
+        let mut chunk_data = Cursor::new(reader.read_bytes(length)?);
 
         Ok(ItemContainer {
             header,
@@ -73,7 +77,12 @@ impl ItemContainer {
 
     fn read_children<R: ReadBytesExt>(mut buf: R) -> Result<Vec<ItemContainer>, Error> {
         let version = buf.read_u32_le()?;
-        debug_assert_eq!(version, 1);
+        if version != 1 {
+            return Err(Error::VersionMismatch {
+                expected: 1,
+                got: version,
+            });
+        }
 
         let num_children = buf.read_u32_le()?;
 

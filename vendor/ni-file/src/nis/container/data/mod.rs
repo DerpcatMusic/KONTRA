@@ -21,7 +21,11 @@ impl ItemData {
 
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let header = ItemDataHeader::read(&mut reader)?;
-        let length = header.length as usize - 20;
+        let length = header
+            .length
+            .checked_sub(20)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or(Error::Static("Invalid NIS item data length"))?;
 
         match header.item_type() {
             ItemType::Item => {

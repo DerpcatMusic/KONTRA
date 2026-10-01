@@ -27,9 +27,8 @@ impl NKSContainer {
 
         // NOTE: 0xab85ef01 is also valid
         match magic {
-            0xB36EE55E | 0x7FA89012 | 0xA4D6E55A | 0x10874353 =>{
-            },
-            _ => panic!("Invalid NKSContainer magic number: expected 0xB36EE55E | 0x7FA89012 | 0xA4D6E55A got 0x{magic:x}")
+            0xB36EE55E | 0x7FA89012 | 0xA4D6E55A | 0x10874353 => {}
+            _ => return Err(NKSError::InvalidMagicNumber(magic)),
         };
 
         // For BPatchHeaderV1, this field is zlib_start
@@ -39,7 +38,11 @@ impl NKSContainer {
         let compressed_data = match header {
             BPatchHeader::BPatchHeaderV1(_) => reader.read_all()?,
             BPatchHeader::BPatchHeaderV2(ref h) => match h.is_monolith {
-                true => unimplemented!("monolith"),
+                true => {
+                    return Err(NKSError::Decompression(
+                        "Legacy NKS monoliths are unsupported".into(),
+                    ))
+                }
                 false => {
                     if compressed_length == 0 {
                         let mut buf = Vec::new();
@@ -51,7 +54,11 @@ impl NKSContainer {
                 }
             },
             BPatchHeader::BPatchHeaderV42(ref h) => match h.is_monolith {
-                true => unimplemented!("monolith"),
+                true => {
+                    return Err(NKSError::Decompression(
+                        "Legacy NKS monoliths are unsupported".into(),
+                    ))
+                }
                 false => reader.read_bytes(compressed_length)?,
             },
         };
@@ -80,19 +87,13 @@ impl NKSContainer {
 
     /// Decompress raw internal preset data
     pub fn decompressed_preset(&self) -> Result<Vec<u8>, Error> {
-        assert!(self.compressed_data.len() > 0, "no compressed data");
+        if self.compressed_data.is_empty() {
+            return Err(Error::Static("No compressed preset data"));
+        }
         let reader = Cursor::new(&self.compressed_data);
 
         Ok(match &self.header {
-            BPatchHeader::BPatchHeaderV1(_) => {
-                // zlib compression
-                let mut decoder = ZlibDecoder::new(reader);
-                let mut decompressed_data = Vec::new();
-                decoder.read_to_end(&mut decompressed_data)?;
-
-                decompressed_data
-            }
-            BPatchHeader::BPatchHeaderV2(_) => {
+            BPatchHeader::BPatchHeaderV1(_) | BPatchHeader::BPatchHeaderV2(_) => {
                 // zlib compression
                 let mut decoder = ZlibDecoder::new(reader);
                 let mut decompressed_data = Vec::new();
@@ -105,47 +106,45 @@ impl NKSContainer {
                 // let decompressed_data = lz77::decompress(reader).expect("lz77");
 
                 let decompressed_size = h.decompressed_length as usize;
-
-                let decompressed_data = &mut vec![0_u8; decompressed_size];
-                fastlz::decompress(&self.compressed_data, decompressed_data)
-                    .map_err(|_| Error::Generic("fastlz".into()))?
-                    .to_vec();
-
-                assert_eq!(h.decompressed_length as usize, decompressed_data.len());
-
-                decompressed_data.to_vec()
+                // The FastLZ binding passes both lengths to its C API as signed ints.
+                if decompressed_size == 0
+                    || i32::try_from(decompressed_size).is_err()
+                    || i32::try_from(self.compressed_data.len()).is_err()
+                {
+                    return Err(Error::Static("Invalid expanded NKS preset size"));
+                }
+                let mut decompressed_data = Vec::new();
+                decompressed_data
+                    .try_reserve_exact(decompressed_size)
+                    .map_err(|_| Error::Static("Unable to allocate expanded NKS preset"))?;
+                decompressed_data.resize(decompressed_size, 0);
+                let result = fastlz::decompress(&self.compressed_data, &mut decompressed_data)
+                    .map_err(|_| Error::Static("Invalid compressed NKS preset"))?;
+                if result.len() != decompressed_size {
+                    return Err(Error::Static("NKS decompression length mismatch"));
+                }
+                decompressed_data
             }
         })
     }
 
     /// Decompress internal preset data and return a KontaktPreset
     pub fn preset(&self) -> Result<KontaktPreset, Error> {
-        assert!(self.compressed_data.len() > 0, "No compressed data");
-
-        let reader = Cursor::new(&self.compressed_data);
+        let data = self.decompressed_preset()?;
 
         Ok(match &self.header {
             BPatchHeader::BPatchHeaderV1(_) => {
-                // zlib compression
-                let mut decoder = ZlibDecoder::new(reader);
-                let mut decompressed_data = Vec::new();
-                decoder.read_to_end(&mut decompressed_data)?;
-                let mut raw_preset = Cursor::new(decompressed_data);
+                let mut raw_preset = Cursor::new(data);
 
                 KontaktPreset::KontaktV1(KontaktV1::read(&mut raw_preset)?)
             }
             BPatchHeader::BPatchHeaderV2(_) => {
-                // zlib compression
-                let mut decoder = ZlibDecoder::new(reader);
-                let mut decompressed_data = Vec::new();
-                decoder.read_to_end(&mut decompressed_data)?;
-                let raw_preset = Cursor::new(decompressed_data);
+                let raw_preset = Cursor::new(data);
 
                 KontaktPreset::KontaktV2(KontaktV2::read(raw_preset)?)
             }
             BPatchHeader::BPatchHeaderV42(header) => {
                 // fastlz compression
-                let data = self.decompressed_preset()?;
                 let header: BPatchHeaderV42 = header.clone(); // an ugly clone
 
                 KontaktPatch { header, data }.preset()?
