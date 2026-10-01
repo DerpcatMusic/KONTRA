@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline release safety check: python3 .github/workflows/check_nightly.py."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -73,7 +74,7 @@ print(output)
 sys.exit(status)
 '''
 
-for case in ("current", "first", "leftover", "stale-before", "stale-after", "upload-fails", "missing-asset", "cleanup-fails"):
+for case in ("current", "first", "leftover", "stale-before", "stale-after", "upload-fails", "missing-asset", "bad-checksum", "cleanup-fails"):
     with tempfile.TemporaryDirectory(prefix="kontra-nightly-check-") as directory:
         root = Path(directory)
         root.joinpath("gh").write_text(mock_gh)
@@ -81,7 +82,10 @@ for case in ("current", "first", "leftover", "stale-before", "stale-after", "upl
         root.joinpath("dist").mkdir()
         for platform in platforms:
             if case != "missing-asset" or platform != platforms[-1]:
-                root.joinpath(f"dist/KONTRA-nightly-{platform}.zip").write_bytes(b"archive")
+                filename = f"KONTRA-nightly-{platform}.zip"
+                root.joinpath(f"dist/{filename}").write_bytes(b"archive")
+                digest = hashlib.sha256(b"corrupt" if case == "bad-checksum" else b"archive").hexdigest()
+                root.joinpath(f"dist/{filename}.sha256").write_text(f"{digest}  {filename}\n")
         initial = dict(case=case, nightly=case != "first", draft=case == "leftover", heads=0, uploaded=False, promoted=False, calls=[], deleted=[])
         root.joinpath("state.json").write_text(json.dumps(initial))
         output = root / "outputs"
@@ -89,7 +93,7 @@ for case in ("current", "first", "leftover", "stale-before", "stale-after", "upl
         env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", GITHUB_SHA="a" * 40, GH_REPO="example/KONTRA", GITHUB_RUN_ID="7", GITHUB_OUTPUT=str(output))
         result = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", publish], cwd=root, env=env, capture_output=True, text=True)
         state = json.loads(root.joinpath("state.json").read_text())
-        assert result.returncode == (1 if case in ("upload-fails", "missing-asset") else 0), (case, result.stderr)
+        assert result.returncode == (1 if case in ("upload-fails", "missing-asset", "bad-checksum") else 0), (case, result.stderr)
         assert state["promoted"] == (case in ("current", "first", "leftover", "cleanup-fails")), case
         assert state["nightly"] and not state["draft"], (case, state)
         assert ("published=true" in output.read_text()) == state["promoted"], case
@@ -101,4 +105,4 @@ for case in ("current", "first", "leftover", "stale-before", "stale-after", "upl
             assert state["nightly"] and state["promoted"] and not state["draft"]
         else:
             assert not state["deleted"]
-print("Nightly checks passed: 8 release/cleanup scenarios and all four README asset links.")
+print("Nightly checks passed: 9 release/cleanup scenarios and all four README asset links.")

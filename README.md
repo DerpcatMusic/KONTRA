@@ -13,7 +13,7 @@ KONTRA ships no instrument libraries or sample collections. Use libraries you ar
 [![macOS Intel](https://img.shields.io/badge/macOS-Intel-555555?style=for-the-badge&logo=apple)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-macos-x86_64.zip)
 [![Linux x64](https://img.shields.io/badge/Linux-x64-168B76?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/download/nightly/KONTRA-nightly-linux-x86_64.zip)
 
-Each ZIP contains the **CLAP plug-in, VST3 plug-in and standalone application**. These fixed links always serve the latest complete [nightly pre-release](https://github.com/DerpcatMusic/KONTRA/releases/tag/nightly). Every push or merge to public `main` starts all four builds on free GitHub-hosted runners; downloads update together after all builds and uploads succeed. The links become available after the first successful publication. See [build progress](https://github.com/DerpcatMusic/KONTRA/actions/workflows/nightly.yml) and the release notes for the source commit.
+Each ZIP contains the **CLAP plug-in, VST3 plug-in and standalone application**. These fixed links always serve the latest complete [nightly pre-release](https://github.com/DerpcatMusic/KONTRA/releases/tag/nightly). At 03:23 UTC daily, new build-relevant changes on public `main` start a snapshot on GitHub-hosted runners; maintainers can also run Nightly manually. The exact source commit must pass release-profile tests and native compile checks before all four packages build. Downloads update together after all builds, archive checks and uploads succeed. Documentation-only changes do not trigger scheduled rebuilds. The links become available after the first successful publication. See [build progress](https://github.com/DerpcatMusic/KONTRA/actions/workflows/nightly.yml) and the release notes for the source commit.
 
 Nightlies are experimental snapshots. Linux builds use Ubuntu 24.04 and require compatible system libraries. The x86_64 plug-ins require **AVX2, FMA and BMI2**. macOS builds are signed ad hoc and are not notarized; after extracting the ZIP, remove quarantine from the downloaded files if macOS blocks them:
 
@@ -70,7 +70,9 @@ macOS bundles are signed ad hoc and are not notarized.
 
 ## Build
 
-Install stable Rust and the pinned `cargo-moose` build tool:
+See [CI and snapshot checks](docs/CI.md) for each check, local commands and manual runs.
+
+Install Rust via rustup (the repository pins its tested toolchain) and the pinned `cargo-moose` build tool:
 
 ```sh
 cargo install --locked --git https://github.com/Matari-Audio/moose \

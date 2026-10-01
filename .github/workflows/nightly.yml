@@ -1,12 +1,12 @@
 name: Nightly
 
-# Every public main update builds all platforms for the rolling `nightly`
-# pre-release. Builds may be superseded; publishing must finish uninterrupted.
+# Build a changed public-main snapshot daily, or explicitly on demand.
+# Verify this exact candidate before packaging. Publishing is never cancelled.
 # Standard GitHub-hosted runners are free for public repositories.
 
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '23 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -22,8 +22,37 @@ env:
   FEATURES: library-access
 
 jobs:
-  build:
+  candidate:
     if: github.ref == 'refs/heads/main' && !github.event.repository.private
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check for build-relevant changes since the published snapshot
+        id: changes
+        env:
+          BEFORE: refs/tags/nightly
+          AFTER: ${{ github.sha }}
+          # Manual dispatch intentionally allows rechecking the same revision.
+          FORCE: ${{ github.event_name == 'workflow_dispatch' }}
+        run: python3 .github/scripts/ci_changes.py
+
+  verify:
+    needs: candidate
+    if: needs.candidate.outputs.code == 'true'
+    uses: ./.github/workflows/ci.yml
+    with:
+      release_validation: true
+
+  build:
+    needs: [candidate, verify]
+    if: needs.candidate.outputs.code == 'true' && needs.verify.result == 'success'
     concurrency:
       group: nightly-build-${{ matrix.name }}
       cancel-in-progress: true
@@ -42,9 +71,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
-          toolchain: stable
+          toolchain: 1.99.0
           targets: ${{ matrix.target }}
       - name: System libraries
         if: runner.os == 'Linux'
@@ -58,7 +87,7 @@ jobs:
             libasound2-dev libjack-jackd2-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: ${{ matrix.target }}
+          key: release-${{ matrix.target }}-library-access-standalone
       - name: Install cargo-moose
         shell: bash
         run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
@@ -67,7 +96,7 @@ jobs:
         run: cargo moose build --clap --vst3 ${FEATURES:+--features "$FEATURES"} --target ${{ matrix.target }}
       - name: Standalone
         shell: bash
-        run: cargo build --release --features "standalone${FEATURES:+,$FEATURES}" --bin kontakto-standalone --target ${{ matrix.target }}
+        run: cargo build --locked --release --features "standalone${FEATURES:+,$FEATURES}" --bin kontakto-standalone --target ${{ matrix.target }}
       - name: Stage
         shell: bash
         run: |
@@ -77,6 +106,7 @@ jobs:
           exe=kontakto-standalone; [ "$RUNNER_OS" = Windows ] && exe=kontakto-standalone.exe
           cp "target/${{ matrix.target }}/release/$exe" "$stage/"
           cp LICENSE NOTICE THIRD_PARTY.md "$stage/"
+          printf '%s\n' "$GITHUB_SHA" > "$stage/SOURCE_COMMIT.txt"
           echo "STAGE=$stage" >> "$GITHUB_ENV"
       - name: Ad-hoc codesign (macOS)
         if: runner.os == 'macOS'
@@ -91,15 +121,23 @@ jobs:
             Windows) 7z a -tzip "$STAGE.zip" "$STAGE" > /dev/null ;;
             *) zip -qry "$STAGE.zip" "$STAGE" ;;
           esac
+          # GitHub artifact digest warnings alone are not a fail-closed ZIP check.
+          if [ "$RUNNER_OS" = macOS ]; then
+            shasum -a 256 "$STAGE.zip" > "$STAGE.zip.sha256"
+          else
+            sha256sum "$STAGE.zip" > "$STAGE.zip.sha256"
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.STAGE }}
-          path: ${{ env.STAGE }}.zip
+          path: |
+            ${{ env.STAGE }}.zip
+            ${{ env.STAGE }}.zip.sha256
           if-no-files-found: error
           retention-days: 1
 
   release:
-    needs: build
+    needs: [candidate, verify, build]
     runs-on: ubuntu-latest
     concurrency:
       group: nightly-publish
@@ -122,6 +160,7 @@ jobs:
           # Download-artifact defaults to this run: never mix commits or reruns.
           for platform in linux-x86_64 windows-x86_64 macos-arm64 macos-x86_64; do
             test -s "dist/KONTRA-nightly-$platform.zip"
+            (cd dist && sha256sum --check "KONTRA-nightly-$platform.zip.sha256")
           done
           if [ "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" != "$GITHUB_SHA" ]; then
             echo "Superseded by a newer main commit; keeping the current nightly."
@@ -129,7 +168,7 @@ jobs:
           fi
           short=${GITHUB_SHA::7}
           cat > notes.md <<EOF
-          Automated build of [$short](https://github.com/$GH_REPO/commit/$GITHUB_SHA) ($(date -u +%Y-%m-%d)). Untested snapshot.
+          Automated build of [$short](https://github.com/$GH_REPO/commit/$GITHUB_SHA) ($(date -u +%Y-%m-%d)). Passed automated release-profile CI at this source commit; experimental snapshot, not DAW certification.
 
           Contents per platform: KONTRA.clap, KONTRA.vst3 and kontakto-standalone.
           macOS builds are signed ad hoc and not notarized: after unzipping, run
