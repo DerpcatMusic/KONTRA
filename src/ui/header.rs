@@ -173,54 +173,122 @@ fn meter_bar(level: f32) -> El {
     .named("Output level")
 }
 
-/// The library folder, shown under the top bar while it is being set.
+/// The library folders, managed under the top bar: each with what was
+/// found in it and a remove button; adding one, picked or typed; scanning
+/// them again.
 pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
+    let libraries = &cx.p.shared.libraries;
+    let scanned = cx.view.scanned == libraries.wanted();
+    let mut rows = Vec::new();
+    for (n, root) in cx.settings.roots.iter().enumerate() {
+        let (remove, remove_el) = icon_button(ui, format!("root-remove-{n}"), Icon::Close, "Remove this folder", false);
+        if remove {
+            libraries.remove_root(n);
+        }
+        let found = match cx.view.shelf.per_root.get(n) {
+            _ if !scanned => "Scanning".to_owned(),
+            Some(1) => "1 library".to_owned(),
+            Some(k) => format!("{k} libraries"),
+            None => "Scanning".to_owned(),
+        };
+        let kind = if root.single { "Library" } else { "Folder of libraries" };
+        rows.push(
+            row![
+                body(root.path.clone()).text_size(TEXT).lines(1).flex(1).min_w(0),
+                caption(format!("{kind} · {found}")).fill(Role::Dim).lines(1).shrink(0),
+                remove_el
+            ]
+            .gap(SPACE)
+            .align(Align::Center)
+            .pad(edges(0., SPACE, 0., INSET))
+            .shrink(0),
+        );
+    }
+    if cx.settings.roots.is_empty() {
+        rows.push(
+            col![caption("No library folders yet. Add the folder that holds your Kontakt libraries, or one library's own folder.")
+                .fill(Role::Dim)
+                .lines(2)]
+            .align(Align::Start)
+            .pad(edges(0., INSET, 0., INSET))
+            .shrink(0),
+        );
+    }
+    // Typed, for a desktop with no file dialog.
     let field = text_input(ui, "root", &mut cx.state.root);
+    let (add, add_el) = action(ui, "root-add", "Add", false);
+    let typed = cx.state.root.trim().to_owned();
+    if add && !typed.is_empty() {
+        libraries.add_root(std::path::Path::new(&typed), false);
+        cx.state.root.clear();
+    }
+    let (many, many_el) = action(ui, "root-pick-many", "Add folder of libraries…", false);
+    let (one, one_el) = action(ui, "root-pick-one", "Add library folder…", false);
+    if many || one {
+        add_folder(cx, one);
+    }
+    let (import, import_el) = action(ui, "root-import", "Import from Kontakt", false);
+    if import {
+        cx.p.shared.libraries.import_kontakt();
+    }
     let (scan, scan_el) = action(ui, "scan", "Rescan", false);
     if scan {
-        cx.selection.root = cx.state.root.clone();
-        // Forget the scanned root so the loader scans again even when it is unchanged.
-        super::lock(&cx.p.shared.view).root.clear();
+        cx.p.shared.libraries.rescan();
     }
     let (close, close_el) = icon_button(ui, "settings-close", Icon::Close, "Close", false);
     if close {
         cx.state.settings = false;
     }
-    col![
+    let mut body = vec![
+        row![section("Library folders").flex(1), many_el, one_el, import_el, scan_el, close_el]
+            .gap(SPACE)
+            .align(Align::Center)
+            .pad(edges(SPACE, SPACE, 0., INSET))
+            .shrink(0),
+    ];
+    body.extend(rows);
+    body.push(
         row![
-            section("Library folder"),
-            field
-                .el
-                .flex(1)
-                .min_w(0)
-                .h(CONTROL)
-                .named("Library folder"),
-            scan_el,
-            close_el
+            field.el.flex(1).min_w(0).h(CONTROL).named("A folder to add, typed"),
+            add_el
         ]
         .gap(SPACE)
         .align(Align::Center)
-        .pad((INSET, SPACE)),
-        rule()
-    ]
-    .gap(0)
-    .shrink(0)
-    .fill(Role::Surface)
+        .pad(edges(0., SPACE, SPACE, INSET))
+        .shrink(0),
+    );
+    col![col(body).gap(TIGHT).align(Align::Stretch), rule()]
+        .gap(0)
+        .shrink(0)
+        .fill(Role::Surface)
 }
 
-/// Where a multi named `name` is saved: the library folder's `Multis`, so
-/// the browser lists it with the rest.
+/// Ask for a library folder (`single`) or a folder of libraries to add;
+/// with no file dialog to ask, the library folders strip takes it typed.
+pub fn add_folder(cx: &mut Cx, single: bool) {
+    let from = (cx.settings.roots.first())
+        .map(|r| std::path::PathBuf::from(&r.path))
+        .or_else(dirs::home_dir)
+        .unwrap_or_default();
+    if !cx.state.picker.ask(super::picker::Ask::Folder { from, single }) {
+        cx.state.settings = true;
+    }
+}
+
+/// Where a multi named `name` is saved: `root`'s `Multis`, so the browser
+/// lists it with the rest.
 pub fn multi_path(root: &str, name: &str) -> std::path::PathBuf {
     std::path::Path::new(root)
         .join("Multis")
         .join(format!("{name}.{}", crate::import::SAVED_MULTI))
 }
 
-/// The library folder, or the default when none is set.
+/// The folder whose `Multis` saved multis go in: the first folder of
+/// libraries, else the app's data folder (which is scanned too).
 pub fn root(cx: &Cx) -> String {
-    match cx.selection.root.as_str() {
-        "" => crate::import::LIBRARY_ROOT.to_owned(),
-        root => root.to_owned(),
+    match cx.settings.roots.iter().find(|r| !r.single) {
+        Some(root) => root.path.clone(),
+        None => crate::library::data_dir().unwrap_or_default().to_string_lossy().into_owned(),
     }
 }
 
@@ -230,7 +298,7 @@ pub fn save_multi_as(cx: &mut Cx, path: &std::path::Path) -> anyhow::Result<()> 
     let name = stem(&path.to_string_lossy());
     crate::plugin::SavedMulti::of(&name, &cx.selection).save(path)?;
     cx.selection.multi = path.to_string_lossy().into_owned();
-    super::lock(&cx.p.shared.view).root.clear();
+    cx.p.shared.libraries.rescan();
     Ok(())
 }
 

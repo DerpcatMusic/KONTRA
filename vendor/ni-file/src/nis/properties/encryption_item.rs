@@ -28,7 +28,7 @@ impl std::convert::TryFrom<&ItemData> for EncryptionItem {
 impl EncryptionItem {
     pub fn read_with_key(
         frame: &ItemData,
-        key: Option<&super::subtree_item::LibraryKey>,
+        key: Option<&dyn super::subtree_item::LibraryKey>,
     ) -> Result<Self, NIFileError> {
         let subtree_frame = frame
             .child()

@@ -1,109 +1,144 @@
-# Kontakto
+# KONTRA
 
-Native Linux Kontakt sampler workbench using MOOSE + MUI. CLAP, VST3 and standalone targets. Reads the installed library folder directly; library files are never modified or extracted in place.
+KONTRA is a sampler that loads instruments in the Kontakt format. It is
+written in Rust by Matari Audio on the [MOOSE](https://github.com/Matari-Audio/moose)
+plug-in framework, and runs as a CLAP or VST3 plug-in or as a standalone
+application.
+
+It is an independent learning and research project: a study of how a
+large sample-based instrument is put together, from file formats and
+disk streaming to scripting and effects. It is not affiliated with or
+endorsed by Native Instruments, and it is not a replacement for Kontakt.
+Compatibility is measured against real instruments. A preset that loads
+is not proof that it sounds as it does in Kontakt.
+
+KONTRA ships no instruments, samples, scripts or artwork. You need your
+own, legally obtained libraries.
+
+## Features
+
+- Reads NKI instruments and NKM multis: groups, zones, key and velocity
+  maps, crossfades, tuning, loops, release triggers and voice groups.
+- Samples in WAV, AIFF and NCW, as loose files or members of NKX/NKR
+  containers.
+- Disk streaming: each sample keeps a short preload in memory and streams
+  the rest, within a memory budget per instrument and per rack.
+- A rack of up to 16 instruments, each with its own MIDI port and
+  channel, audio output, level and pan. Four MIDI inputs and eight stereo
+  outputs are declared to the host.
+- A KSP script engine for performance scripts (callbacks, events and
+  instrument user interfaces), with diagnostics for what it does not
+  support.
+- Group modulation (envelopes, controllers, script modulation), group filters and
+  EQs, and the common Kontakt effects.
+- A native editor: library browser with each library's own artwork,
+  mapping, groups, mixer, spectrum and an on-screen keyboard.
+- A command-line tool (`kontakto`) to inspect, audit and render
+  instruments offline.
+
+Missing or damaged samples are skipped and reported; KONTRA never
+modifies library files.
+<!-- private:start -->
+
+### Encrypted library content
+
+Some libraries encrypt their presets and sample containers. The
+`library-access` Cargo feature reads the library's own access data from
+its `.nicnt` and decrypts that content in memory. It is off by default;
+without it, encrypted content fails to load with "Encrypted library
+content is not supported in this build." The nightly builds of this
+repository enable it. Build it into a local install with:
 
 ```sh
 cargo moose install --clap --vst3 --user
 cargo run --release --features standalone --bin kontakto-standalone
-cargo run --release --no-default-features --bin kontakto -- scan
-cargo run --release --no-default-features --bin kontakto -- inspect '/path/to/instrument.nki'
-cargo run --release --no-default-features --bin kontakto -- inspect-mods '/path/to/instrument.nki'
-cargo run --release --no-default-features --bin kontakto -- audit > audit.json
-cargo run --release --no-default-features --bin kontakto -- render '/path/to/instrument.nki' /tmp/instrument.wav
+cargo run --release --bin kontakto -- bench-load '/path/to/instrument.nki'
 ```
+<!-- private:end -->
 
-Default library root: `/mnt/MAIN_STORAGE/Libraries/Kontakt`. Change it under Folders. The right browser displays local library artwork at its source aspect ratio, with separate Instruments (NKI) and Multis (NKM) filters. Samples, archives and mic/round-robin groups never populate the preset picker. Click an already loaded instrument to focus it; drag to add another instance. Click or drag an NKI into the rack; drop onto an existing instrument name to replace that part. Drag rack names to reorder without reloading their engines. Duplicate, remove, mute, solo and panic are wired to playback.
+## Plug-in formats
 
-The rack holds 16 instruments, each with an independently selected group, MIDI input port/channel, stereo output, level and pan. Drag numeric values or double-click to type; channel 0 means Omni. Four MIDI input ports and eight stereo audio buses are declared to the host. Activate/connect auxiliary outputs in the DAW before selecting them. MIDI thru forwards note, controller and pitch-bend messages to one MIDI output. Device connections belong to the host. File-manager drops accept a single NKM or one or more NKIs; a drop on a rack name replaces that part, with remaining files added to free slots. Unsupported files and drops exceeding rack capacity are refused.
+| Format | Linux | macOS | Windows |
+|---|---|---|---|
+| CLAP | `KONTRA.clap` | `KONTRA.clap` bundle | `KONTRA.clap` |
+| VST3 | `KONTRA.vst3` folder | `KONTRA.vst3` bundle | `KONTRA.vst3` folder |
+| Standalone | `kontakto-standalone` | `kontakto-standalone` | `kontakto-standalone.exe` |
 
-The black-and-white keyboard sends note-on at mouse press and note-off at release; keyboard Enter and Audition play a short preview. Mapping, Groups and Info inspect the selected rack part. The editor reflows at actual window size from 900×640 upward. Imports, artwork reads and decoding run outside the audio callback. Host state saves the entire rack, ordering, routing and controls. Resident samples aim for 1 GiB per part and 2 GiB per rack; an instrument that does not fit keeps a smaller preload and streams more (start-offset ranges first), and never fails to load on the budget.
+## Building
 
-## Compatibility
-
-This is currently **a multi-instrument rack**, not a complete Kontakt replacement. Binary NKI groups/zones, key/velocity maps and crossfades, tuning, sample boundaries and start offsets, forward loops with crossfades, WAV/AIFF/NCW, NKX members, voice groups (limits, kill modes, exclusion), polyphony, sustain, pedal-aware release triggers and pitch bend are implemented. KSP playback callbacks drive supported scripted articulation, legato and round-robin behavior; supported native envelopes, modulation and effects also run. Unsupported script services, source engines, effects and envelope mode switches remain compatibility limits. The Groups tab is an inspector. Each sample keeps a short preload in RAM and streams the rest from disk; missing or damaged samples skip their zones and are counted. `kontakto bench <voices>` measures real-time voices per core. A successful parse or nonzero render is not evidence of Kontakt sonic parity. See the dated [replacement review](audits/REPLACEMENT_REVIEW.md) and [library playback audit](audits/LIBRARIES.md).
-
-Encrypted preset subtrees and supported encrypted archive members use the owning library's existing HU/JDX fields in its `.nicnt`. AES/legacy resource decoding happens in memory before decompression; each archive caches its generated cipher stream. No access keys are embedded, logged or written to plugin state. Missing keys and invalid decompression produce errors. Legacy archive ciphers other than the supported library-key scheme are rejected. A `.nicnt` created only for library registration may have no access fields; readable Vista presets do not need them.
-
-An archive directory/member pointing to zero-filled or invalid bytes is reported as damaged or missing. Intact siblings remain usable. Decryption cannot recover absent sample data. The audit lists missing references separately from instrument parse errors. It evaluates bounded KSP initialization previews, but does not decode every sample or execute playback callbacks.
-
-## Checks
+You need a stable Rust toolchain (edition 2024) and `cargo-moose`, the
+MOOSE build tool, installed from the same MOOSE revision that
+`Cargo.toml` pins:
 
 ```sh
-cargo test --lib --test playback
-cargo test --manifest-path vendor/ni-file/Cargo.toml --test compatibility
-cargo test --manifest-path vendor/ncw/Cargo.toml
-# Requires this machine's local Vista and Una Corda libraries:
-cargo test --test playback -- --include-ignored
+cargo install --locked --git https://github.com/Matari-Audio/moose \
+  --rev bffa4677d0b82119d38566ce7e932dc5c463d497 cargo-moose
 ```
 
-The parser tests cover sparse loop slots, group ownership, truncation, clear/encrypted archive members, direct/encoded offsets, deterministic resource cipher vectors, wrong keys and decompression size bounds. Playback tests cover mapping, pitch, reverse, boundaries, polyphony, sustain, all-group layering, release triggers under the pedal, loop-crossfade continuity, steal fades, envelopes, voice groups, zone crossfades, streamed-versus-RAM equality, file resolution, layering, mute/solo, MIDI-port isolation, routing changes and separate audio buses. Native MUI input tests exercise drag-to-add, reordering, typed routing edits, mute/remove and piano press/release. Plugin process tests check bus isolation and MIDI-thru timestamps. Proprietary samples, keys, preset contents and renders are excluded from version control. Upstream ni-file unit tests depend on author fixtures absent from this checkout; its synthetic `compatibility` target is the runnable parser check.
+### Linux
 
-## Local audit, 2026-09-29
-
-Historical results below predate the filesystem repair and playback runtime. Current representative playback results are in [audits/LIBRARIES.md](audits/LIBRARIES.md); they do not certify every preset or articulation.
-
-All **778 installed NKI instruments parse**, up from 56 before encrypted subtree support. All 722 previously encrypted presets now decode with their library metadata. **118 instruments have no missing sample references**: 100 Solo, 7 Vista and 11 Pacific. The other 660 report missing or damaged resources; successful parsing does not make those resources recoverable. This audit validates mappings and reference resolution, not every sample payload or scripted playback.
-
-Una Corda Cotton, Vista Harp and a Pacific cello pizzicato group produced finite, nonzero offline renders. The expanded rack passed clap-validator and pluginval after correcting its fixed eight-output VST3 topology. Current runs and local evidence are under ignored `artifacts/`; summary: `artifacts/audit-summary.json`.
-
-## Source provenance
-
-- MOOSE: `Matari-Audio/moose`, revision `bffa4677d0b82119d38566ce7e932dc5c463d497`.
-- `vendor/moose-mui`: MOOSE revision above, with a small `MuiEditor::on_files` and `on_cancel` callbacks exposing MUI’s existing native file-drop handling; original Truce license retained. The latter releases editor-held notes on focus loss.
-- `vendor/ni-file`: [Ma5onic/ni-file](https://github.com/Ma5onic/ni-file), revision `1b7a518243125857fddec8217167b47a35cb58fa`; local parser, archive and resource-decoding fixes. The checkout does not include an explicit license grant; resolve that before publishing or distributing this project as FOSS.
-- `vendor/ncw`: [monomadic/ncw](https://github.com/monomadic/ncw), revision `75af0c022f4c1b80d76e51199d5947a51cd8faf8`, version 0.4.0, MIT/Apache-2.0. Upgraded from ni-file's 0.1.2 dependency; upstream codec source and tests retained.
-- Archive/resource format research: [nkxtract](https://github.com/maxton/nkxtract) (`ca40dbf546bc35e1a7a7ab207968862704d7cad8`) and [unnks](https://github.com/JimiHFord/unnks) (`eb595382db60dd3391e984173a219a03ebecc622`). Those reference projects are GPL-licensed. This repository has not been cleared for redistribution.
-
-UI font: Noto Sans variable from google/fonts, bundled under the SIL Open Font License in `assets/OFL.txt`. UI visual references: Kontakt Player overview and https://kodasampler.com/; no product artwork is bundled.
-
-Preset selection opens a dedicated Instrument view. A bounded KSP initializer resolves integer/string variables, arrays, arithmetic, conditions, loops, called functions, control IDs, labels, menus, positions and hidden panels. Vista Harp (47 controls) and Vista 3 Cellos (48 controls) initialize successfully. The native view displays the authored layout as a **disabled preview**, over the named local wallpaper; custom widget skins are approximated, saved values are not restored, and control/MIDI callbacks are not executed. Working manual level, pan and audition remain separate. Raw group selection lives only in the Groups editor; Previous/Next in the performance view navigates complete instruments or multis from the same library. Unsupported initialization fails explicitly; no partial script drives audio. No library UI assets are bundled.
-
-`cargo run --no-default-features --bin kontakto -- ui <instrument.nki>` emits the resolved interface and compatibility diagnostics as JSON. Initialization is limited by source size, token/nesting counts, array storage, control counts, evaluated value allocation and an instruction budget; it runs on the import worker, never the audio thread. Source behavior follows the [NI KSP UI commands](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands). This is an initialization subset, not a complete KSP interpreter.
-
-NKM import unwraps Kontakt's AppSpecific container and loads each embedded program from the shared sample table into a rack part. The three installed Chorus multis are recognized; Traditional Syllables contains a controller plus Women and Men instruments. A controller with zero zones remains a named part without being treated as a missing sample. Missing-reference diagnostics consider only samples used by that program. Native NKM routing, bank/master processing and multiscript behavior are not restored; missing Chorus resources still prevent its sampled parts from playing. Program banks with multiple switchable programs and multis beyond 16 parts are rejected. Inspect metadata with `kontakto inspect-multi <multi.nkm>`.
-
-## Complete local requirement inventory
-
-[The per-library compatibility matrix](audits/README.md) covers all 781 preset files (778 NKI + 3 NKM), containing 787 programs across eight libraries. Every program parses. Of these, 666 have missing/damaged references; the 121 complete reference sets include three zero-zone multi controllers. This is a static requirements inventory, not a claim of full playback compatibility. Effect/module presence includes default and bypassed objects, and opaque private parameters still require research.
+Install the X11, OpenGL, ALSA and JACK development packages. On Debian or
+Ubuntu:
 
 ```sh
-kontakto audit > audits/library-compatibility.json
-kontakto audit-structure > audits/source-structures.json
-kontakto audit-scripts > audits/script-requirements.json
-python3 tools/summarize_audit.py
+sudo apt-get install build-essential pkg-config libx11-dev libx11-xcb-dev \
+  libxcb1-dev libxcb-icccm4-dev libxcursor-dev libxkbcommon-dev \
+  libxkbcommon-x11-dev libxrandr-dev libgl1-mesa-dev libvulkan-dev \
+  libasound2-dev libjack-jackd2-dev
 ```
 
-The ignored JSON reports retain affected paths, script callbacks/calls, uppercase variable/constant references, UI control types, initialization blockers and nested effect/modulation chunk IDs. Script-only rescans avoid sample/archive resolution. Static script scanning accepts up to 128 MiB independently of the stricter execution limits, so large scripts remain visible in the inventory even when the preview cannot execute them. No script source, access keys or sample payloads are included in these reports.
+### macOS
 
-This pass also fixes group-condition lookup by chunk ID, malformed condition errors, and KSP continuation lines, hexadecimal integer literals and bitwise expressions. KSP syntax references: [NI arithmetic operators](https://www.native-instruments.com/fileadmin/ni_media/downloads/manuals/kontakt/KSP_Reference_Manual_26_08_2020_ENGLISH.pdf) and [control parameters](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters). These parser additions do not implement KSP playback callbacks, native Kontakt DSP or missing resources.
+Install the Xcode command-line tools (`xcode-select --install`).
+Locally built bundles are signed ad hoc. They are not notarized, so
+macOS may quarantine downloaded builds; clear that with
+`xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3`.
 
-Missing-resource lists are deduplicated by stored path; every zone still retains its own availability state.
+### Windows
 
-## Shared-cause compatibility work
+Install Visual Studio Build Tools with the "Desktop development with
+C++" workload.
 
-[Script correlations](audits/CORRELATIONS.md) compare the same 796 active script slots before and after shared parser changes. Initialization previews increased from 7 to 31; this does not imply scripted playback. The interpreter now handles first-match `select/case` ranges, real-number variables/arrays/arithmetic, explicit numeric conversions (including legacy names), and bit shifts. Initialization parses only reached functions and caches their parsed bodies. Flat array literals use the global parse budget while each expression retains a separate 512-token bound; execution, nesting and allocation ceilings remain enforced. Unexecuted playback callbacks are not validated as working code. Shared lexical handling also accepts tabs and repeated whitespace, comment separators, and parenthesized control statements without a space; quoted text remains unchanged and `:=` inside labels is not an assignment. This clears six Una Corda block-parser failures across three presets, which now stop at unimplemented PGS/listener services; completed initialization remains 31.
-
-[Resource correlations](audits/RESOURCES.md) group unresolved member references by archive instead of treating every affected preset as a separate defect. `kontakto audit-archives > audits/archive-health.json` checks container indexes and member headers, not full sample payloads. Invalid member headers are also summarized in importer diagnostics. Observed zero-filled headers in sampled Afflatus and Areia containers cannot be repaired by changing script parsing or decryption.
+### Build and install
 
 ```sh
-python3 tools/compare_scripts.py audits/script-baseline.json audits/script-requirements.json > audits/CORRELATIONS.md
-kontakto audit-archives > audits/archive-health.json
-python3 tools/correlate_resources.py
+cargo moose install --clap --vst3 --user     # plug-ins into your user plug-in folders
+cargo moose build --clap --vst3              # bundles into target/bundles/ only
+cargo run --release --features standalone --bin kontakto-standalone
+cargo run --release --bin kontakto -- inspect '/path/to/instrument.nki'
+cargo run --release --bin kontakto           # lists every subcommand
 ```
 
-Language behavior follows NI's [control statements](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements), [arithmetic reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators), and [legacy conversion aliases](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/version-history).
+`cargo moose` builds x86_64 plug-ins for x86-64-v3 (AVX2) by default;
+pass `--target-cpu baseline` for older CPUs.
 
+### Tests
 
-## Shared initialization services and resource damage
+```sh
+cargo test --release
+```
 
-[Host-service audit](audits/HOST-SERVICES.md): initialization previews increased from 31 to 36 across the same 796 script slots. PGS integer/string storage now lives per instrument and is shared across initialization slots, with key/index/memory checks. Failed slots roll back their shared-state writes. Keyboard setters/getters retain state, and listener registration validates signal types and intervals. PGS-change and listener callbacks are not dispatched; keyboard metadata is not connected to the live keybed. These remain explicitly diagnosed initialization previews, not scripted playback.
+Tests that need locally installed libraries are marked `#[ignore]`.
 
-[Recovery checks](audits/RECOVERY.md): all 951,741 invalid member headers were verified zero-filled, and local duplicate/sibling searches found no replacement candidates. Archive parsing now preserves intact siblings when another member has a truncated header/payload or unsupported version, and reports each reason separately. It does not overwrite files or manufacture missing sample data. `audit-archives` reports `member_issues` while retaining the existing aggregate fields.
+## Nightly builds
 
-Service semantics: NI's [PGS reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/advanced-concepts), [keyboard commands](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands), and [listener commands](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands).
+A scheduled workflow builds CLAP, VST3 and standalone binaries for
+Linux x86_64, macOS (arm64 and x86_64) and Windows x86_64 whenever there
+are new commits, and publishes them as the `nightly` pre-release.
+Nightlies are untested snapshots.
 
+## License
 
-Control IDs now follow Kontakt declaration order starting at 32768, including ordinary variables and constants. Control access translates those IDs separately from storage indexes and rejects IDs that refer to non-controls. This fixes scripts that calculate control IDs; knob labels, units and help text are also retained as properties, with string-property lookup supported. [NI UI command reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands).
+Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Third-party
+components and their licenses are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
+
+## Disclaimer
+
+KONTRA is provided AS IS, without warranty of any kind, and the authors
+are not liable for any damages arising from its use. Kontakt, Kontakt
+Player and NKI are trademarks of Native Instruments GmbH, used here only
+to describe file compatibility. Use KONTRA only with libraries you are
+licensed to use, and within the terms of those licenses.
 
 
 ## Performance hardening branch, 2026-10-01

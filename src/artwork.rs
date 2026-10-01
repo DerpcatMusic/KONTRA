@@ -8,21 +8,14 @@ use std::{
     sync::Arc,
 };
 
-pub fn scan(root: &Path, files: &[PathBuf]) -> HashMap<String, Arc<Image>> {
-    let names: std::collections::BTreeSet<_> = files
+/// Each library's own artwork, by library name: a `wallpaper.png`, else
+/// the product wallpaper in its `.nicnt`, else a panel-sized picture in a
+/// resource container (`.nkr`) beside it.
+pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>> {
+    libraries
         .iter()
-        .filter_map(|p| {
-            p.strip_prefix(root)
-                .ok()?
-                .components()
-                .next()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        })
-        .collect();
-    names
-        .into_iter()
-        .filter_map(|name| {
-            let folder = root.join(&name);
+        .filter_map(|library| {
+            let (name, folder) = (library.name.clone(), &library.dir);
             let mut candidates = vec![folder.join("wallpaper.png")];
             if let Ok(entries) = std::fs::read_dir(&folder) {
                 let mut containers: Vec<_> = entries
@@ -68,6 +61,66 @@ pub fn scan(root: &Path, files: &[PathBuf]) -> HashMap<String, Arc<Image>> {
         })
         .collect()
 }
+/// The dominant hue of a library's own pictures, for a library with no
+/// artwork: loose pictures in its `Resources` folders, else those in a
+/// resource container it can read. At most a dozen are looked at.
+pub fn own_hue(dir: &Path) -> Option<f32> {
+    let mut pictures: Vec<PathBuf> = ["Resources/pictures", "resources/pictures", "Resources", "resources"]
+        .iter()
+        .flat_map(|sub| std::fs::read_dir(dir.join(sub)).into_iter().flatten().flatten())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")))
+        .collect();
+    pictures.sort();
+    pictures.dedup();
+    let loose = pictures.iter().take(12).filter_map(|p| decode(&read_bounded(p).ok()?));
+    let mut hues: Vec<f32> = loose.filter_map(|i| tint(&i)).collect();
+    if hues.is_empty() {
+        let mut nkrs: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkr")))
+            .collect();
+        nkrs.sort();
+        for nkr in nkrs.iter().take(2) {
+            let Ok(mut f) = File::open(nkr) else { continue };
+            let Ok(archive) = ni_file::nkr::Archive::read(&mut f) else { continue };
+            // Only what reads without a key.
+            let mut names: Vec<&String> = (archive.entries.iter())
+                .filter(|(n, e)| !e.encoded && e.size < 4 << 20 && n.to_lowercase().ends_with(".png"))
+                .map(|(n, _)| n)
+                .collect();
+            names.sort();
+            for name in names.into_iter().take(12) {
+                let Ok(bytes) = archive.read_entry(&mut f, name) else { continue };
+                hues.extend(decode(&bytes).and_then(|i| tint(&i)));
+            }
+        }
+    }
+    // The hue most of them share: the median of the circle, near enough.
+    hues.sort_by(f32::total_cmp);
+    hues.get(hues.len() / 2).copied()
+}
+
+/// A PNG or JPEG picture the player chose, at most 32 MiB.
+pub fn decode_file(path: &Path) -> Option<Image> {
+    let bytes = read_bounded(path).ok()?;
+    if bytes.starts_with(b"\x89PNG") {
+        return decode(&bytes);
+    }
+    use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
+    let options = DecoderOptions::default()
+        .jpeg_set_out_colorspace(ColorSpace::RGBA)
+        .set_max_width(8192)
+        .set_max_height(8192);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(&bytes[..]), options);
+    let rgba = decoder.decode().ok()?;
+    let info = decoder.info()?;
+    Image::rgba(u32::from(info.width), u32::from(info.height), rgba)
+}
+
 /// Resolve the selected preset's named wallpaper, never an arbitrary PNG in its NKR.
 pub fn performance(
     instrument: &crate::import::Instrument,
@@ -212,7 +265,7 @@ struct Pictures {
     /// Containers to try in order, opened on first use.
     containers: Vec<PathBuf>,
     open: Vec<(File, ni_file::nkr::Archive)>,
-    key: Option<Option<ni_file::nis::LibraryKey>>,
+    key: Option<Option<std::sync::Arc<dyn ni_file::nis::LibraryKey>>>,
     instrument: PathBuf,
 }
 
@@ -294,13 +347,14 @@ impl Pictures {
                 return Err(format!("{file} exceeds 32 MiB"));
             }
             let key = match &self.key {
+                _ if !entry.encoded || entry.key_index == 0xff => &None,
                 Some(key) => key,
                 None => self.key.insert(
-                    crate::import::library_key(&self.instrument).map_err(|e| e.to_string())?,
+                    crate::access::library_key(&self.instrument).map_err(|e| e.to_string())?,
                 ),
             };
             return archive
-                .read_entry_with_key(f, &member, key.as_ref())
+                .read_entry_with_key(f, &member, key.as_deref())
                 .map(Some)
                 .map_err(|e| e.to_string());
         }
@@ -334,7 +388,7 @@ fn wallpaper(scripts: &[String]) -> Option<String> {
         .last()
         .filter(|name| !name.is_empty())
 }
-fn decode(bytes: &[u8]) -> Option<Image> {
+pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;

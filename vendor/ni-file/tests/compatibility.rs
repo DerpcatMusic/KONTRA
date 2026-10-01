@@ -93,23 +93,19 @@ fn clear_nkx_member_and_bad_sibling_are_independent() {
     assert!(Archive::read(Cursor::new(b)).is_err());
 }
 
+/// A stand-in keystream: ni-file only plumbs a caller-supplied key through.
+struct XorKey(u8);
+impl ni_file::nis::LibraryKey for XorKey {
+    fn apply_at(&self, offset: u64, bytes: &mut [u8]) {
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b ^= self.0.wrapping_add((offset + i as u64) as u8);
+        }
+    }
+}
+
 #[test]
-fn resource_cipher_and_invalid_compression() {
-    use ni_file::nis::{LibraryKey, SubtreeItem};
-    let key = LibraryKey::new([0; 32], [0; 16]);
-    let mut bytes = vec![0; 65568];
-    key.apply(&mut bytes);
-    assert_eq!(
-        &bytes[..32],
-        &[
-            0xd2, 0x49, 0xf2, 0x9d, 0x7b, 0x04, 0x69, 0xed, 0x56, 0x08, 0xaa, 0xcc, 0x8f, 0x26,
-            0xe2, 0xce, 0x60, 0x69, 0x27, 0xdf, 0xce, 0xaa, 0x1d, 0x20, 0xb7, 0xf7, 0x7a, 0xb0,
-            0x72, 0x90, 0x7e, 0x8f
-        ]
-    );
-    assert_eq!(&bytes[..32], &bytes[65536..]);
-    key.apply(&mut bytes);
-    assert!(bytes.iter().all(|b| *b == 0));
+fn invalid_compression() {
+    use ni_file::nis::SubtreeItem;
     let mut bad = 1u32.to_le_bytes().to_vec();
     bad.push(1);
     bad.extend(100u32.to_le_bytes());
@@ -123,7 +119,7 @@ fn resource_cipher_and_invalid_compression() {
 #[test]
 fn encrypted_subtree_requires_the_matching_key() {
     use ni_file::nis::{LibraryKey, SubtreeItem};
-    let key = LibraryKey::new([0; 32], [0; 16]);
+    let key = XorKey(0x5a);
     let mut payload = vec![3, b't', b'e', b's', b't'];
     key.apply(&mut payload);
     let mut frame = 1u32.to_le_bytes().to_vec();
@@ -139,7 +135,7 @@ fn encrypted_subtree_requires_the_matching_key() {
     );
     assert!(SubtreeItem::read_with_key(
         Cursor::new(&frame),
-        Some(&LibraryKey::new([1; 32], [0; 16]))
+        Some(&XorKey(0x33))
     )
     .is_err());
 }
@@ -148,7 +144,7 @@ fn encrypted_subtree_requires_the_matching_key() {
 fn plain_offsets_and_encrypted_members() {
     use ni_file::nis::LibraryKey;
     for encrypted in [false, true] {
-        let key = LibraryKey::new([7; 32], [9; 16]);
+        let key = XorKey(7);
         let mut payload = b"sample".to_vec();
         if encrypted {
             key.apply(&mut payload);
@@ -188,21 +184,6 @@ fn plain_offsets_and_encrypted_members() {
         if encrypted {
             assert!(a.read_entry(Cursor::new(&b), "x").is_err());
         }
-    }
-}
-
-#[test]
-fn key_stream_is_position_relative_across_wraps() {
-    use ni_file::nis::LibraryKey;
-    let key = LibraryKey::new([3; 32], [5; 16]);
-    let plain: Vec<u8> = (0..300_000u32).map(|i| (i * 31) as u8).collect();
-    let mut whole = plain.clone();
-    key.apply(&mut whole);
-    // Any split decrypts to the same bytes, including runs across the 64 KiB wrap.
-    for (at, len) in [(0, 1), (65_530, 20), (65_536, 65_536), (1_000, 200_000), (299_999, 1)] {
-        let mut part = whole[at..at + len].to_vec();
-        key.apply_at(at as u64, &mut part);
-        assert_eq!(part, &plain[at..at + len], "at {at}");
     }
 }
 

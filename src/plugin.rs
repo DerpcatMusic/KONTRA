@@ -1,5 +1,5 @@
 use crate::articulate::{self, Articulate, In, Mpe, Route, Router};
-use crate::artwork;
+use crate::{artwork, library};
 use crate::{
     engine::{
         BUSES, Bank, BusControls, Engine, Heads, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Rack, Residency,
@@ -179,6 +179,8 @@ impl Bus {
 }
 #[derive(State, Default, Clone, PartialEq)]
 pub struct Selection {
+    /// The library folder projects once kept; the app's settings keep the
+    /// library folders now ([`library::Settings`]). Kept so old projects open.
     pub root: String,
     pub parts: Vec<Part>,
     pub order: Vec<u32>,
@@ -339,6 +341,8 @@ pub struct Shared {
     pub(crate) panic: AtomicBool,
     pub(crate) midi_thru: AtomicBool,
     pub(crate) multi_request: Mutex<Option<String>>,
+    /// The app's library folders and the scan of them.
+    pub(crate) libraries: library::Scanner,
     pub(crate) view: Mutex<View>,
     /// Voices sounding across the rack, reported by the audio thread.
     pub(crate) voices: AtomicU64,
@@ -423,7 +427,9 @@ pub(crate) struct View {
     pub(crate) script_epoch: u64,
     pub(crate) multi_status: String,
     pub(crate) artwork: HashMap<String, Arc<Image>>,
-    pub(crate) root: String,
+    /// The libraries found, and which scan found them ([`library::Scanner::wanted`]).
+    pub(crate) shelf: Arc<library::Shelf>,
+    pub(crate) scanned: u64,
     pub(crate) files: Arc<Vec<PathBuf>>,
     pub(crate) parts: [PartView; RACK_SLOTS],
     pub(crate) status: String,
@@ -467,6 +473,7 @@ impl Default for Shared {
             panic: AtomicBool::new(false),
             midi_thru: AtomicBool::new(false),
             multi_request: Mutex::new(None),
+            libraries: library::Scanner::default(),
             voices: AtomicU64::new(0),
             audible: AtomicU64::new(0),
             watched: AtomicBool::new(false),
@@ -484,7 +491,8 @@ impl Default for Shared {
                 script_epoch: 0,
                 multi_status: String::new(),
                 artwork: Default::default(),
-                root: String::new(),
+                shelf: Arc::default(),
+                scanned: 0,
                 files: Arc::default(),
                 parts: std::array::from_fn(|_| PartView::default()),
                 status: "Choose a library and select a preset".into(),
@@ -965,17 +973,19 @@ impl BackgroundTask for Load {
             }
             match result {
                 Ok((parts, status)) => {
-                    let mut current = params.selection.write().unwrap();
-                    if *current == before {
-                        current.order = (0..parts.len() as u32).collect();
-                        current.parts = parts;
-                        current.multi = path;
-                        params.shared.focus_request.store(0, Ordering::Release);
-                        params.shared.view.lock().unwrap().multi_status = status;
-                    } else {
-                        params.shared.view.lock().unwrap().multi_status =
-                            "Multi load canceled because the rack changed".into();
-                    }
+                    let status = {
+                        let mut current = params.selection.write().unwrap();
+                        if *current == before {
+                            current.order = (0..parts.len() as u32).collect();
+                            current.parts = parts;
+                            current.multi = path;
+                            params.shared.focus_request.store(0, Ordering::Release);
+                            status
+                        } else {
+                            "Multi load canceled because the rack changed".into()
+                        }
+                    };
+                    params.shared.view.lock().unwrap().multi_status = status;
                 }
                 Err(e) => {
                     params.shared.view.lock().unwrap().multi_status =
@@ -988,30 +998,25 @@ impl BackgroundTask for Load {
             .shared
             .midi_thru
             .store(selection.midi_thru, Ordering::Release);
-        let root = if selection.root.is_empty() {
-            import::LIBRARY_ROOT
-        } else {
-            &selection.root
-        };
-        if params.shared.view.lock().unwrap().root != root {
-            let result = import::presets(Path::new(root));
-            let artwork = result
-                .as_ref()
-                .ok()
-                .map(|f| artwork::scan(Path::new(root), f))
-                .unwrap_or_default();
+        // A finished library scan replaces what the browser lists.
+        let installed = params.shared.view.lock().unwrap().scanned;
+        if let Some((generation, scanned)) = params.shared.libraries.poll(installed) {
             let mut view = params.shared.view.lock().unwrap();
-            view.root = root.into();
-            view.artwork = artwork;
-            match result {
-                Ok(files) => {
-                    view.files = Arc::new(files);
-                    view.status = format!("{} presets", view.files.len());
+            view.scanned = generation;
+            match scanned {
+                Some(scanned) => {
+                    view.status = format!("{} libraries · {} presets", scanned.shelf.libraries.len(), scanned.files.len());
+                    if let Some(imported) = &scanned.imported {
+                        view.status += &match imported.len() {
+                            0 => " · nothing new from Kontakt".to_owned(),
+                            n => format!(" · {n} folders from Kontakt"),
+                        };
+                    }
+                    view.shelf = scanned.shelf;
+                    view.files = scanned.files;
+                    view.artwork = scanned.artwork;
                 }
-                Err(e) => {
-                    view.files = Arc::default();
-                    view.status = format!("Scan failed: {e:#}");
-                }
+                None => view.status = "Library scan canceled".into(),
             }
         }
         route(params);
@@ -1490,11 +1495,15 @@ fn smart_memory(shared: &Shared) {
 /// port names once they settle.
 fn route(params: &SamplerParams) {
     let shared = &params.shared;
+    // `reroute` takes `view`, which the editor holds while it reads the
+    // selection: never hold the selection's lock across it.
+    let mut routed = params.selection.read().unwrap().clone();
+    let before = routed.clone();
+    shared.reroute(&mut routed);
     let names = {
         let mut current = params.selection.write().unwrap();
-        let mut routed = current.clone();
-        shared.reroute(&mut routed);
-        if routed != *current {
+        // Changed meanwhile: the next pass routes the new selection.
+        if routed != before && *current == before {
             *current = routed;
         }
         routing::port_names(&current)
@@ -1548,8 +1557,8 @@ fn align(params: &SamplerParams) {
     let shared = &params.shared;
     let done = std::mem::take(&mut *shared.measure.done.lock().unwrap());
     if !done.is_empty() {
+        let mut statuses = Vec::new();
         let mut current = params.selection.write().unwrap();
-        let mut view = shared.view.lock().unwrap();
         for (slot, source, result) in done {
             let Some(p) = current.parts.get_mut(slot).filter(|p| timing::source(&p.path, p.program) == source) else {
                 continue;
@@ -1557,14 +1566,19 @@ fn align(params: &SamplerParams) {
             match result {
                 Ok(t) => {
                     p.timing = Timing { override_ms: p.timing.override_ms, exclude: p.timing.exclude, ..t };
-                    view.parts[slot].timing_status.clear();
+                    statuses.push((slot, String::new()));
                 }
                 // Not measured again until the part changes.
                 Err(e) => {
                     p.timing.source = source;
-                    view.parts[slot].timing_status = format!("Timing not measured: {e}");
+                    statuses.push((slot, format!("Timing not measured: {e}")));
                 }
             }
+        }
+        drop(current);
+        let mut view = shared.view.lock().unwrap();
+        for (slot, status) in statuses {
+            view.parts[slot].timing_status = status;
         }
     }
     let selection = params.selection.read().unwrap().clone();
@@ -2521,6 +2535,27 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Routing never holds the selection while it waits for `view`, which
+    /// the editor holds while reading the selection: both would stop.
+    #[test]
+    fn routing_waits_for_the_view_without_holding_the_selection() {
+        let p = Arc::new(SamplerParams::new());
+        let view = p.shared.view.lock().unwrap();
+        let router = {
+            let p = p.clone();
+            std::thread::spawn(move || route(&p))
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(1);
+        let mut readable = true;
+        while Instant::now() < deadline {
+            readable &= p.selection.try_read().is_ok();
+            std::thread::yield_now();
+        }
+        drop(view);
+        router.join().unwrap();
+        assert!(readable, "routing held the selection while it waited for the view");
+    }
     use std::{alloc::{GlobalAlloc, Layout, System}, cell::Cell};
 
     struct Counting;
@@ -2988,7 +3023,6 @@ mod tests {
                 ..Default::default()
             },
         ];
-        p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
         Load.run(&p);
         assert!(
             p.shared.view.lock().unwrap().parts[0].wallpaper.is_some(),
@@ -3103,7 +3137,6 @@ mod tests {
     #[ignore = "requires the owner's local Chorus multi"]
     fn real_multi_opens_embedded_instruments() {
         let p = SamplerParams::new();
-        p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
         p.shared.queue_multi(format!(
             "{}/Audio Imperia CHORUS/Multis/10 Chorus - Ensemble - Traditional Syllables.nkm",
             import::LIBRARY_ROOT
@@ -3146,7 +3179,6 @@ mod tests {
     #[test]
     fn failed_multi_keeps_the_rack() {
         let p = SamplerParams::new();
-        p.shared.view.lock().unwrap().root = import::LIBRARY_ROOT.into();
         let before = p.selection.read().unwrap().clone();
         p.shared.queue_multi("/missing.nkm".into());
         Load.run(&p);
