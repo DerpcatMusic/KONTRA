@@ -869,6 +869,11 @@ pub const MAX_WRITES: usize = 4096;
 
 /// `find_mod`: position in `Group::modulators`.
 pub(crate) fn find_mod(groups: &[Group], group: usize, name: &str) -> Option<usize> {
+    let r = find_mod0(groups, group, name);
+    if r.is_none() && std::env::var_os("KDBG").is_some() { eprintln!("KDBG find_mod g={group}/{} name={name:?} have={:?}", groups.len(), groups.get(group).map(|g| g.modulators.iter().map(|m| m.name.as_str()).collect::<Vec<_>>())); }
+    r
+}
+fn find_mod0(groups: &[Group], group: usize, name: &str) -> Option<usize> {
     groups
         .get(group)?
         .modulators
@@ -883,6 +888,11 @@ pub(crate) fn find_target(
     modulator: usize,
     name: &str,
 ) -> Option<usize> {
+    let r = find_target0(groups, group, modulator, name);
+    if r.is_none() && std::env::var_os("KDBG").is_some() { eprintln!("KDBG find_target g={group}/{} m={modulator} name={name:?} have={:?}", groups.len(), groups.get(group).and_then(|g| g.modulators.get(modulator)).map(|m| (&m.name, &m.targets))); }
+    r
+}
+fn find_target0(groups: &[Group], group: usize, modulator: usize, name: &str) -> Option<usize> {
     groups
         .get(group)?
         .modulators
