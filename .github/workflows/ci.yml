@@ -1,7 +1,7 @@
 name: CI
 
 # Linux runs the full gate; Windows only checks that everything compiles.
-# macOS (10x minutes in a private repository) is built by nightly.yml only.
+# macOS packages are built by nightly.yml.
 
 on:
   push:
@@ -21,6 +21,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_TARGET_DIR: target
 
 jobs:
   linux:

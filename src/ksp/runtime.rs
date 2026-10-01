@@ -1334,6 +1334,107 @@ impl Runtime {
         false
     }
 
+    /// Cancel existing note/input callbacks without invoking release callbacks.
+    /// UI, listener and service callbacks retain their prepared state and timers.
+    pub fn all_sound_off(&mut self, channel_mask: u16) {
+        if channel_mask == 0 { return; }
+        let selected = |channel: u8| channel_mask & (1 << channel.min(15)) != 0;
+        // A physical input chain can contain events routed to different channels.
+        // Detach selected roots before their rows are recycled.
+        for owner in 0..16 {
+            for note in 0..128 {
+                let mut id = self.env.input.keys[owner][note].0;
+                let (mut first, mut last) = (0, 0);
+                while let Some(e) = self.env.events.get(id) {
+                    let (next, remove) = (e.next_input, selected(e.channel));
+                    if !remove {
+                        if first == 0 { first = id; }
+                        if let Some(e) = self.env.events.get_mut(last) { e.next_input = id; }
+                        last = id;
+                    }
+                    id = next;
+                }
+                if let Some(e) = self.env.events.get_mut(last) { e.next_input = 0; }
+                self.env.input.keys[owner][note] = (first, last);
+            }
+        }
+        let events = &self.env.events;
+        self.env.work.retain(|w| match *w {
+            Work::Note { event, .. } | Work::Release { event, .. } =>
+                events.get(event).is_some_and(|e| !selected(e.channel)),
+            Work::Controller { channel, .. } | Work::PolyAt { channel, .. }
+                | Work::Rpn { channel, .. } => !selected(channel),
+        });
+        for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected(e.channel)) {
+            e.held = false;
+            e.next_input = 0;
+            e.voice = None;
+            e.recycle_pending = true;
+        }
+        for i in 0..self.threads.len() {
+            let t = &self.threads[i];
+            let input = matches!(t.ctx.kind, Kind::Cb(Callback::Controller | Callback::PolyAt | Callback::Rpn | Callback::Nrpn));
+            if !t.live || !(self.env.events.get(t.ctx.event).is_some_and(|e| selected(e.channel))
+                || input && selected(t.ctx.channel)) { continue; }
+            let ctx = t.ctx;
+            if matches!(ctx.kind, Kind::Cb(Callback::Controller)) {
+                // A budget-paused controller may not have forwarded yet. Keep
+                // the touched flag if an unrelated callback still owns it.
+                let touched = channel_mask != u16::MAX && self.threads.iter().any(|t| t.live && !selected(t.ctx.channel)
+                    && t.ctx.slot == ctx.slot && t.ctx.cc == ctx.cc
+                    && t.ctx.forward == Forward::Controller);
+                self.write_sys(ctx.slot, SysArray::CcTouched, ctx.cc as usize, i32::from(touched));
+            }
+            self.threads[i].ctx.forward = Forward::None;
+            self.finish(i as u16);
+        }
+        for i in 0..self.env.events.slots.len() {
+            let e = &self.env.events.slots[i];
+            if e.live && selected(e.channel) {
+                debug_assert_eq!(e.callbacks, 0);
+                let id = i32::from(e.generation) << EVENT_INDEX_BITS | i as i32;
+                self.env.events.free(id);
+            }
+        }
+        let (events, threads) = (&self.env.events, &self.threads);
+        self.env.timers.retain(|Reverse(t)| match t.kind {
+            TimerKind::Release { event, .. } => events.get(event).is_some(),
+            TimerKind::Resume { thread, generation } => {
+                let t = &threads[thread as usize];
+                t.live && t.generation == generation
+            }
+            TimerKind::Listener { .. } => true,
+        });
+        self.env.stop_waits.retain(|(id, _)| threads.iter().any(|t| t.live && t.ctx.callback_id == *id));
+        for note in 0..128 {
+            let held = self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
+            self.set_sys(SysArray::KeyDown, note, i32::from(held));
+        }
+        for note in 0..12 { self.key_down_oct(note); }
+        self.changes += 1;
+    }
+
+    /// Synchronize a full Panic/reset's controller state without script callbacks.
+    /// With no replacement state, reset performance controls while retaining
+    /// volume, pan and other controls, as the engine's CC121 does.
+    pub fn reset_controllers(&mut self, controllers: Option<&[u8; 128]>) {
+        if let Some(controllers) = controllers {
+            for (cc, &value) in controllers.iter().enumerate() {
+                self.env.input.cc[cc] = i32::from(value);
+            }
+        } else {
+            for (cc, value) in [(1, 0), (11, 127), (64, 0), (66, 0)] { self.env.input.cc[cc] = value; }
+        }
+        self.env.input.cc[b::VCC_PITCH_BEND as usize] = 0;
+        self.env.input.cc[b::VCC_MONO_AT as usize] = 0;
+        self.env.input.pitch_bend = 0;
+        for cc in 0..CC_SLOTS {
+            self.set_sys(SysArray::Cc, cc, self.env.input.cc[cc]);
+            self.set_sys(SysArray::CcTouched, cc, 0);
+        }
+        self.changes += 1;
+    }
+
     /// Controller 0..127; use `pitch_bend`/`channel_pressure` for the virtual ones.
     pub fn controller(&mut self, engine: &mut dyn KspEngine, at: u32, cc: u8, value: u8) {
         self.cc(engine, at, cc.min(127), i32::from(value));
