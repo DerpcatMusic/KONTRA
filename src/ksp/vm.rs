@@ -1149,69 +1149,6 @@ fn declare(m: &mut Machine, v: VarId) -> Exec<()> {
     Ok(())
 }
 
-// TEMP-PROFILE
-thread_local! {
-    pub static PROF: std::cell::RefCell<std::collections::HashMap<usize, (Vec<Op>, Vec<u64>)>> = Default::default();
-    pub static NGRAM: std::cell::RefCell<(usize, usize, std::collections::HashMap<(usize, usize, usize), u64>)> = Default::default();
-}
-pub static PROF_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-pub fn prof_hit(code: &[Op], pc: usize) {
-    if !PROF_ON.load(std::sync::atomic::Ordering::Relaxed) { return; }
-    PROF.with(|p| {
-        let mut p = p.borrow_mut();
-        let e = p.entry(code.as_ptr() as usize).or_insert_with(|| (code.to_vec(), vec![0; code.len()]));
-        e.1[pc] += 1;
-    });
-    NGRAM.with(|n| {
-        let mut n = n.borrow_mut();
-        let (a, b) = (n.0, n.1);
-        *n.2.entry((a, b, pc)).or_default() += 1;
-        n.0 = b;
-        n.1 = pc;
-    });
-}
-fn kind(op: &Op) -> String {
-    let s = format!("{op:?}");
-    match op {
-        Op::Builtin(..) => s,
-        _ => s.split('(').next().unwrap().to_string(),
-    }
-}
-pub fn prof_dump() {
-    PROF.with(|p| {
-        let p = p.borrow();
-        let code = &p.values().max_by_key(|(c, _)| c.len()).unwrap().0;
-        for (_, (code, counts)) in p.iter() {
-            let total: u64 = counts.iter().sum();
-            if total == 0 { continue; }
-            eprintln!("=== program: {} ops executed", total);
-            let max = *counts.iter().max().unwrap();
-            for pc in 0..code.len() {
-                if counts[pc] * 200 >= max {
-                    eprintln!("{pc:6} {:10} {:?}", counts[pc], code[pc]);
-                }
-            }
-        }
-        // ponytail: assumes the hot program is the largest one.
-        let mut pairs = std::collections::HashMap::<String, u64>::new();
-        let mut triples = std::collections::HashMap::<String, u64>::new();
-        NGRAM.with(|n| {
-            for (&(a, b, c), &k) in n.borrow().2.iter() {
-                let g = |i: usize| code.get(i).map_or("?".into(), kind);
-                *pairs.entry(format!("{} > {}", g(b), g(c))).or_default() += k;
-                *triples.entry(format!("{} > {} > {}", g(a), g(b), g(c))).or_default() += k;
-            }
-        });
-        for (name, m) in [("PAIR", pairs), ("TRIPLE", triples)] {
-            let mut v: Vec<_> = m.into_iter().collect();
-            v.sort_by_key(|x| std::cmp::Reverse(x.1));
-            for (k, c) in v.iter().take(40) {
-                eprintln!("{name} {c:10} {k}");
-            }
-        }
-    });
-}
-
 fn init_array(m: &mut Machine, i: u32) {
     let init = &m.prog.inits[i as usize];
     let var = &m.prog.vars[init.var as usize];

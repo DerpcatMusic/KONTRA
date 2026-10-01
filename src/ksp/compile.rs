@@ -170,19 +170,6 @@ impl Op {
             op => op,
         }
     }
-
-    /// Ops a superinstruction stands for: where it continues when it does
-    /// not jump. Chains count as the op they replaced.
-    pub fn width(self) -> usize {
-        match self.replaced() {
-            Self::AddImm(_) | Self::LdIAVar(..) | Self::LdIAPoly(..) | Self::BrCmp(..) => 2,
-            Self::BrImm(..) => 3,
-            Self::AddVarImm(..) | Self::BrIAImm(..) | Self::BrVarImm(..) => 4,
-            Self::MulAdd(..) => 5,
-            Self::LdIA2(..) => 6,
-            _ => 1,
-        }
-    }
 }
 
 /// Integer comparison of a fused branch. Bit 0, 1 and 2 of each value say
