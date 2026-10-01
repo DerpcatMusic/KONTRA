@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, VecDeque},
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -697,19 +697,55 @@ impl Journal {
     }
 }
 
-/// Each active session is exclusively locked. Crash logs become eligible as
-/// soon as the OS releases that lock; no PID guessing or platform-specific code.
-fn retain_sessions(root: &Path, current: &Path) -> std::io::Result<()> {
-    let mut inactive = Vec::new();
+/// Normalize rotations to their session base even if a crash happened between
+/// renaming the primary and creating its replacement. Both callers use the
+/// same catalog, lock name and metadata fallback for those orphan rotations.
+fn session_catalog(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut sessions = BTreeSet::new();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
         let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        if path == current
-            || !name.starts_with("session-")
+        if !name.starts_with("session-")
             || !name.ends_with(".jsonl")
-            || name.ends_with(".previous.jsonl")
+            || !entry.file_type()?.is_file()
         {
+            continue;
+        }
+        let base = name
+            .strip_suffix(".previous.jsonl")
+            .map(|name| root.join(format!("{name}.jsonl")))
+            .unwrap_or(path);
+        sessions.insert(base);
+    }
+    Ok(sessions.into_iter().collect())
+}
+fn session_metadata(path: &Path) -> std::io::Result<(SystemTime, u64)> {
+    let primary = match std::fs::metadata(path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let previous = match std::fs::metadata(path.with_extension("previous.jsonl")) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let modified = primary
+        .as_ref()
+        .or(previous.as_ref())
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?
+        .modified()?;
+    Ok((
+        modified,
+        primary.map(|m| m.len()).unwrap_or(0) + previous.map(|m| m.len()).unwrap_or(0),
+    ))
+}
+/// Crash logs become eligible as soon as the OS releases the session lock.
+fn retain_sessions(root: &Path, current: &Path) -> std::io::Result<()> {
+    let mut inactive = Vec::new();
+    for path in session_catalog(root)? {
+        if path == current {
             continue;
         }
         let guard = OpenOptions::new()
@@ -723,14 +759,13 @@ fn retain_sessions(root: &Path, current: &Path) -> std::io::Result<()> {
             Err(std::fs::TryLockError::WouldBlock) => continue,
             Err(std::fs::TryLockError::Error(error)) => return Err(error),
         }
-        let metadata = match std::fs::metadata(&path) {
+        let (modified, bytes) = match session_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
         };
         let previous = path.with_extension("previous.jsonl");
-        let bytes = metadata.len() + std::fs::metadata(&previous).map(|m| m.len()).unwrap_or(0);
-        inactive.push((metadata.modified()?, path, previous, bytes, guard));
+        inactive.push((modified, path, previous, bytes, guard));
     }
     inactive.sort_by_key(|(modified, ..)| std::cmp::Reverse(*modified));
     let mut kept = 0_u64;
@@ -881,27 +916,15 @@ fn export_journals(
     if let Err(error) = retain_sessions(root, current) {
         warnings.push(format!("Previous session retention failed: {error}"));
     }
-    let entries = match std::fs::read_dir(root) {
+    let entries = match session_catalog(root) {
         Ok(entries) => entries,
         Err(error) => {
             warnings.push(format!("Previous session catalog unavailable: {error}"));
             return (Vec::new(), guards, 0);
         }
     };
-    for entry in entries {
-        let path = match entry {
-            Ok(entry) => entry.path(),
-            Err(error) => {
-                warnings.push(format!("Previous session entry unavailable: {error}"));
-                continue;
-            }
-        };
-        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        if path == current
-            || !name.starts_with("session-")
-            || !name.ends_with(".jsonl")
-            || name.ends_with(".previous.jsonl")
-        {
+    for path in entries {
+        if path == current {
             continue;
         }
         let guard = match OpenOptions::new()
@@ -929,8 +952,8 @@ fn export_journals(
         }
     }
     sessions.sort_by_key(|(path, _)| {
-        std::fs::metadata(path)
-            .and_then(|m| m.modified())
+        session_metadata(path)
+            .map(|(modified, _)| modified)
             .unwrap_or(UNIX_EPOCH)
     });
     let mut paths = Vec::new();
@@ -1539,6 +1562,19 @@ mod tests {
         assert_eq!(private["audio"]["sample_rate"], 48000);
         let bundle = directory.join("bundle");
         std::fs::write(directory.join("logs/session-crash.jsonl"), b"{\"event\":\"load_started\",\"load_id\":\"previous-crash\",\"stage\":\"samples\",\"path\":\"/private/alice/Harp.nki\"}\n\"valid JSON but not an event object\"\n").unwrap();
+        let orphan = directory.join("logs/session-orphan.previous.jsonl");
+        std::fs::write(
+            &orphan,
+            b"{\"event\":\"stage_started\",\"load_id\":\"orphan-crash\",\"stage\":\"samples\"}\n",
+        )
+        .unwrap();
+        assert!(!orphan.with_file_name("session-orphan.jsonl").exists());
+        let catalog = session_catalog(&directory.join("logs")).unwrap();
+        assert_eq!(
+            catalog.iter().filter(|p| **p == journal.path).count(),
+            1,
+            "primary plus rotation must map to one session"
+        );
         export_bundle(
             &bundle,
             &private,
@@ -1560,6 +1596,37 @@ mod tests {
             std::fs::read_to_string(bundle.join("journal.jsonl"))
                 .unwrap()
                 .contains("previous-crash")
+        );
+        assert!(
+            std::fs::read_to_string(bundle.join("journal.jsonl"))
+                .unwrap()
+                .contains("orphan-crash")
+        );
+        assert!(
+            report["journal_source_sessions"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("orphan"))
+        );
+        File::options()
+            .write(true)
+            .open(&orphan)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60))
+            .unwrap();
+        retain_sessions(&directory.join("logs"), &session.path).unwrap();
+        assert!(
+            !orphan.exists(),
+            "orphan rotations must honor age retention"
+        );
+        File::create(&orphan)
+            .unwrap()
+            .set_len(65 * 1024 * 1024)
+            .unwrap();
+        retain_sessions(&directory.join("logs"), &session.path).unwrap();
+        assert!(
+            !orphan.exists(),
+            "orphan rotations must count toward the byte budget"
         );
         assert!(report["malformed_journal_rows_omitted"].as_u64().unwrap() >= 1);
         for name in ["report.json", "events.jsonl", "journal.jsonl", "README.txt"] {
