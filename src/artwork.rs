@@ -87,16 +87,24 @@ pub fn own_hue(dir: &Path) -> Option<f32> {
         nkrs.sort();
         for nkr in nkrs.iter().take(2) {
             let Ok(mut f) = File::open(nkr) else { continue };
-            let Ok(archive) = ni_file::nkr::Archive::read(&mut f) else { continue };
+            let Ok(mut archive) = ni_file::nkr::Archive::read_index(&mut f) else { continue };
             // Only what reads without a key.
-            let mut names: Vec<&String> = (archive.entries.iter())
-                .filter(|(n, e)| !e.encoded && e.size < 4 << 20 && n.to_lowercase().ends_with(".png"))
-                .map(|(n, _)| n)
+            let mut names: Vec<String> = (archive.entries.keys())
+                .filter(|n| n.ends_with(".png"))
+                .cloned()
                 .collect();
             names.sort();
-            for name in names.into_iter().take(12) {
-                let Ok(bytes) = archive.read_entry(&mut f, name) else { continue };
-                hues.extend(decode(&bytes).and_then(|i| tint(&i)));
+            let mut eligible = 0;
+            for name in names {
+                let Ok(Some(entry)) = archive.member(&mut f, &name) else { continue };
+                if !entry.valid || entry.encoded || entry.size >= 4 << 20 { continue; }
+                archive.entries.insert(name.clone(), entry);
+                eligible += 1;
+                let bytes = archive.read_entry(&mut f, &name);
+                if let Ok(bytes) = bytes {
+                    hues.extend(decode(&bytes).and_then(|i| tint(&i)));
+                }
+                if eligible == 12 { break; }
             }
         }
     }

@@ -964,6 +964,14 @@ impl Shared {
         }
     }
 
+    fn reset_midi(&self) {
+        while self.keyboard.pop().is_some() {}
+        for owner in &self.key_owners { owner.store(128, Ordering::Release); }
+        for lit in self.played.iter().chain(&self.heard) { lit.store(0, Ordering::Relaxed); }
+        self.bend.store(8192, Ordering::Relaxed);
+        self.modulation.store(0, Ordering::Relaxed);
+    }
+
     /// Move the pitch wheel (0..=16383) for `slot`, as the keys play it.
     pub(crate) fn bend(&self, slot: usize, value: u16) {
         self.bend.store(u32::from(value), Ordering::Relaxed);
@@ -2088,11 +2096,11 @@ impl PluginLogic for Sampler {
             .store(c.sample_rate.to_bits(), Ordering::Release);
         s.until_poll = 0;
         s.audition_left.fill(0);
+        s.key_slots.0.fill(0);
         s.align.clear();
+        for router in &mut s.routers { router.reset_midi(); }
         // The voices are gone, and the host's releases for them may be too.
-        for lit in &p.shared.heard {
-            lit.store(0, Ordering::Relaxed);
-        }
+        p.shared.reset_midi();
         // So are the sound editor's voice dots.
         for tap in &p.shared.probe.voices {
             tap.store(0, Ordering::Relaxed);
@@ -2282,17 +2290,11 @@ impl PluginLogic for Sampler {
             e.cutoff = p.cutoff.value() * r.cutoff_scale();
         }
         if p.shared.panic.swap(false, Ordering::AcqRel) {
-            while p.shared.keyboard.pop().is_some() {}
-            for owner in &p.shared.key_owners {
-                owner.store(128, Ordering::Release);
-            }
-            for lit in p.shared.played.iter().chain(&p.shared.heard) {
-                lit.store(0, Ordering::Relaxed);
-            }
-            for channel in 0..16 {
-                s.rack.cc(channel, 120, 0);
-                s.rack.cc(channel, 121, 0);
-            }
+            p.shared.reset_midi();
+            s.key_slots.0.fill(0);
+            s.align.clear();
+            for router in &mut s.routers { router.reset_midi(); }
+            s.rack.panic();
             s.audition_left.fill(0);
         }
         while let Some((slot, play)) = p.shared.keyboard.pop() {
@@ -3672,6 +3674,15 @@ end on"#.into()],
             crate::ksp::Value::Int(1),
             "edits persist"
         );
+        p.shared.panic.store(true, Ordering::Release);
+        p.shared.bend.store(10000, Ordering::Relaxed);
+        p.shared.modulation.store(127, Ordering::Relaxed);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0,
+            "Panic must not allocate or free on the audio thread");
+        assert_eq!(p.shared.bend.load(Ordering::Relaxed), 8192);
+        assert_eq!(p.shared.modulation.load(Ordering::Relaxed), 0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$legato"], crate::ksp::Value::Int(1),
+            "Panic must preserve edited instrument controls");
     }
     /// The keys lit by the host's notes go out with its all-notes-off and
     /// all-sound-off (what a host sends on stop), and when it resets the

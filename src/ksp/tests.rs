@@ -755,6 +755,91 @@ fn a_released_parent_survives_its_waiting_note_callback() {
 }
 
 #[test]
+fn all_sound_off_cancels_waiting_notes_and_inputs_without_canceling_ui() {
+    let mut rig = Rig::new(&[r#"on init
+declare ui_switch $go
+declare ui_label $info(1,1)
+end on
+on note
+if ($EVENT_NOTE = 60)
+ignore_event($EVENT_ID)
+wait(10000)
+play_note(72,100,0,-1)
+end if
+if ($EVENT_NOTE = 61)
+play_note(73,100,0,20000)
+play_note(74,100,0,0)
+end if
+end on
+on release
+ignore_event($EVENT_ID)
+wait(10000)
+play_note(75,100,0,0)
+end on
+on controller
+wait(10000)
+play_note(76,100,0,0)
+end on
+on ui_control($go)
+wait(10000)
+set_text($info,"ui kept:" & %CC[64] & ":" & %CC[$VCC_PITCH_BEND] & ":" & %CC[$VCC_MONO_AT] & ":" & $go)
+end on"#]);
+    rig.rt.set_midi_channel(2);
+    // The same physical key chain includes selected and unrelated channels.
+    rig.rt.note_on_from(&mut rig.engine, 0, 5, 60, 100);
+    rig.rt.note_on_from(&mut rig.engine, 0, 5, 60, 100);
+    rig.on(0, 61).off(0, 61);
+    rig.rt.controller(&mut rig.engine, 0, 1, 127);
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    rig.rt.set_midi_channel(7);
+    rig.rt.note_on_from(&mut rig.engine, 0, 5, 60, 100);
+    rig.rt.controller(&mut rig.engine, 0, 1, 90);
+    rig.engine.calls.clear();
+    rig.rt.all_sound_off(1 << 2);
+    assert!(!rig.rt.key_down_from(5, 2, 60));
+    assert!(rig.rt.key_down_from(5, 7, 60));
+    assert!(rig.engine.calls.is_empty(), "cancellation must not forward or release events");
+    rig.block(1024);
+    let plays: Vec<_> = rig.engine.calls.iter().filter_map(|c| match c {
+        EngineCall::PlayNote { channel, note, .. } => Some((*channel, *note)),
+        _ => None,
+    }).collect();
+    assert_eq!(plays, [(7, 72), (7, 76)]);
+    assert!(!rig.engine.calls.iter().any(|c| matches!(c, EngineCall::NoteOff { .. })),
+        "the canceled timed child must not fire its release timer");
+    assert_eq!(prop(&rig.rt.interface(0), 1, "$CONTROL_PAR_TEXT"), "ui kept:0:0:0:1");
+    rig.rt.controller(&mut rig.engine, 0, 64, 127);
+    rig.rt.controller(&mut rig.engine, 0, 7, 63);
+    rig.rt.pitch_bend(&mut rig.engine, 0, 4096);
+    rig.rt.channel_pressure(&mut rig.engine, 0, 127);
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 0);
+    assert_eq!(rig.rt.env.input.cc[64], 127);
+    rig.engine.calls.clear();
+    rig.rt.all_sound_off(u16::MAX);
+    rig.rt.reset_controllers(None);
+    assert_eq!(rig.rt.env.events.live_count(), 0, "canceled callback rows must be reusable");
+    assert_eq!(rig.rt.env.input.cc[64], 0);
+    assert_eq!(rig.rt.env.input.cc[11], 127);
+    assert_eq!(rig.rt.env.input.cc[7], 63, "Panic must preserve channel volume");
+    assert_eq!(rig.rt.env.input.pitch_bend, 0);
+    assert!(rig.engine.calls.is_empty(), "controller synchronization must not invoke callbacks");
+    rig.block(1024);
+    assert_eq!(prop(&rig.rt.interface(0), 1, "$CONTROL_PAR_TEXT"), "ui kept:0:0:0:0");
+    assert!(rig.engine.calls.is_empty(), "old controller callbacks must remain canceled");
+    let mut controllers = [0; 128];
+    controllers[7] = 127;
+    rig.rt.reset_controllers(Some(&controllers));
+    assert_eq!(rig.rt.env.input.cc[7], 127, "a full reset uses engine defaults");
+    rig.engine.calls.clear();
+    rig.rt.set_midi_channel(2);
+    rig.on(0, 60).block(1024);
+    assert!(rig.engine.calls.iter().any(|c| matches!(c, EngineCall::PlayNote { channel: 2, note: 72, .. })));
+    rig.rt.all_sound_off(u16::MAX);
+    assert_eq!(rig.rt.env.events.live_count(), 0);
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+}
+
+#[test]
 fn fades_and_durations() {
     let script = "on init\ndeclare $id\nend on\non note\nfade_in($EVENT_ID, 2000)\nwait(1000)\nfade_out($EVENT_ID, 5000, 1)\n$id := play_note(40, 100, 0, 20000)\nend on";
     let mut rig = Rig::new(&[script]);
@@ -895,10 +980,10 @@ fn runaway_callbacks_are_bounded() {
     for _ in 0..8 {
         rig.block(256);
     }
-    // The callback is preempted every block (4096 instructions a frame) and cut
-    // off after 5M; only then does its note move on to the engine, at the
-    // start of the fourth block.
-    assert_eq!(rig.log(), ["play 60@768 v1 [0, 1, 2]"]);
+    // Each block has a 512-frame budget of 4096 instructions per frame. The
+    // callback is cut off after 5M; its note reaches the engine at the start
+    // of the third block.
+    assert_eq!(rig.log(), ["play 60@512 v1 [0, 1, 2]"]);
     assert!(
         rig.rt
             .diagnostics()
@@ -1086,8 +1171,9 @@ fn display_of_a_hypothetical_engine_value() {
 
 #[test]
 fn ui_and_debugger_commands_are_accepted() {
-    let ui = initialize("on init\ndeclare ui_waveform $w(6,6)\ndeclare ui_xy ?xy[2]\ndeclare ui_label $l(1,1)\nattach_level_meter(get_ui_id($l), 0, 0, 0, -1)\nwatch_var($l)\nwatch_array_idx(?xy, 0)\nset_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0.5, 0)\nset_text($l, get_ui_wf_property($w, $UI_WF_PROP_PLAY_CURSOR, 0) & get_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0))\nend on", 0, 0).unwrap();
-    assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), "00");
+    let ui = initialize("on init\ndeclare ui_waveform $w(6,6)\ndeclare ui_xy ?xy[2]\ndeclare ui_label $l(1,1)\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter), -1, -1, 0, -1)\nwatch_var($l)\nwatch_array_idx(?xy, 0)\nset_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0.5, 0)\nset_text($l, get_ui_wf_property($w, $UI_WF_PROP_PLAY_CURSOR, 0) & get_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0))\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), "00.5");
+    assert!(ui.diagnostics.iter().any(|d| d.contains("KSP level meter attachments are unavailable")), "{:?}", ui.diagnostics);
     assert!(!ui.diagnostics.iter().any(|d| d.starts_with("Unsupported")), "{:?}", ui.diagnostics);
 }
 
@@ -1216,9 +1302,16 @@ fn sine_era_framework_in_slot_two() {
     // The shape of Heavyocity and Orchestral Tools frameworks: the second slot
     // builds meters and loads impulses from nested functions.
     let first = "on init\ndeclare $x\nend on";
-    let second = "function style\nset_control_par(get_ui_id($meter), $CONTROL_PAR_BG_COLOR, 0)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_OFF_COLOR, 0)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_ON_COLOR, 0FF00h)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_OVERLOAD_COLOR, 0FF0000h)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_PEAK_COLOR, 0FFFFFFh)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_VERTICAL, 1)\nattach_level_meter(get_ui_id($meter), -1, -1, 0, $NI_BUS_OFFSET + 1)\nend function\nfunction build\ncall style\n$voices := get_voice_limit($NI_VL_TMPRO_STANDARD)\nset_engine_par($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, 500000, -1, 0, $NI_BUS_OFFSET + 1)\nend function\non init\ndeclare ui_label $l(1,1)\ndeclare ui_level_meter $meter\ndeclare ui_waveform $wave(6,6)\ndeclare $id\ndeclare $voices\ncall build\nset_text($l, get_control_par(get_ui_id($meter), $CONTROL_PAR_ON_COLOR) & \" \" & get_control_par(get_ui_id($meter), $CONTROL_PAR_VERTICAL) & \" \" & $voices)\nend on\non note\n$id := load_ir_sample(\"Hall.wav\", 0, $NI_BUS_OFFSET + 1)\nwait_async($id)\nadd_text_line($l, \"ir \" & $NI_ASYNC_EXIT_STATUS & get_engine_par_disp($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, -1, 0, $NI_BUS_OFFSET + 1))\nend on";
-    let mut rig = Rig::new(&[first, second]);
-    assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "65280 1 8");
+    let second = "function style\nset_control_par(get_ui_id($meter), $CONTROL_PAR_BG_COLOR, 0)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_OFF_COLOR, 0)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_ON_COLOR, 0FF00h)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_OVERLOAD_COLOR, 0FF0000h)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_PEAK_COLOR, 0FFFFFFh)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_VERTICAL, 1)\nattach_level_meter(get_ui_id($meter), -1, -1, 0, 1)\nend function\nfunction build\ncall style\n$voices := get_voice_limit($NI_VL_TMPRO_STANDARD)\nset_engine_par($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, 500000, -1, 0, $NI_BUS_OFFSET + 1)\nend function\non init\ndeclare ui_label $l(1,1)\ndeclare ui_level_meter $meter\ndeclare ui_waveform $wave(6,6)\ndeclare $id\ndeclare $voices\ncall build\nset_text($l, get_control_par(get_ui_id($meter), $CONTROL_PAR_ON_COLOR) & \" \" & get_control_par(get_ui_id($meter), $CONTROL_PAR_VERTICAL) & \" \" & $voices)\nend on\non note\n$id := load_ir_sample(\"Hall.wav\", 0, $NI_BUS_OFFSET + 1)\nwait_async($id)\nadd_text_line($l, \"ir \" & $NI_ASYNC_EXIT_STATUS & get_engine_par_disp($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, -1, 0, $NI_BUS_OFFSET + 1))\nend on";
+    let mut engine = LogEngine::new(vec!["a".into(), "b".into(), "c".into()], 48_000.0);
+    let (rt, errors) = Runtime::with_scripts(&[first, second], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    let diagnostics = rt.diagnostics();
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+    assert!(diagnostics.iter().any(|d| d.contains("KSP level meter attachments are unavailable")), "{diagnostics:?}");
+    assert!(diagnostics.iter().any(|d| d.contains("Time Machine Pro is unavailable")), "{diagnostics:?}");
+    let mut rig = Rig { rt, engine };
+    assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "65280 1 0");
     assert!(
         !rig.rt.diagnostics().iter().any(|d| d.contains("Unsupported")),
         "{:?}",
@@ -1229,14 +1322,12 @@ fn sine_era_framework_in_slot_two() {
 }
 
 #[test]
-fn a_script_without_init_says_what_it_holds() {
-    for (source, want) in [
-        ("  \n", "the script text is empty"),
-        ("on note\nend on\nfunction f\nend function", "holds only 2 block(s): on note, function f"),
-    ] {
-        let e = format!("{:#}", initialize(source, 0, 0).unwrap_err());
-        assert!(e.contains(want), "{e}");
-    }
+fn empty_scripts_fail_but_note_only_scripts_initialize() {
+    let e = format!("{:#}", initialize("  \n", 0, 0).unwrap_err());
+    assert!(e.contains("No readable KSP callbacks"), "{e}");
+    let ui = initialize("on note\nend on\nfunction f\nend function", 0, 0).unwrap();
+    assert!(ui.controls.is_empty());
+    assert!(ui.diagnostics.is_empty(), "{:?}", ui.diagnostics);
 }
 
 #[test]
