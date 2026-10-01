@@ -119,6 +119,16 @@ pub enum Op {
     AddVarImm(u32, i32),
     /// `PushI n; IAdd`.
     AddImm(i32),
+    /// `PushI n; LdI a; IMul; LdI b; IAdd`, as `(n, a, b)`: a flattened 2D index.
+    MulAdd(i32, u32, u32),
+    /// The same index followed by `LdIA v`, as `(v, a, b, n)` for `n` that fits.
+    LdIA2(VarId, u32, u32, i16),
+    /// `LdPoly p; LdIA v`, as `(v, p)`.
+    LdIAPoly(VarId, u32),
+    /// `LdIA v; PushI n; <cmp>; JumpIfZero t`.
+    BrIAImm(VarId, Cmp, i32, u32),
+    /// `<cmp>; JumpIfZero t`: pop b and a, jump to `t` unless `a cmp b`.
+    BrCmp(Cmp, u32),
     /// `LdI a; LdIA v`, as `(v, a)`.
     LdIAVar(VarId, u32),
     /// `PushI n; <cmp>; JumpIfZero t`: pop x and jump to `t` unless `x cmp n`.
@@ -214,8 +224,20 @@ fn fuse(code: &mut [Op]) {
             [Op::PushI(n), op, Op::JumpIfZero(t), ..] if let Some(cmp) = Cmp::of(op) => {
                 Op::BrImm(cmp, n, t)
             }
+            [Op::PushI(n), Op::LdI(a), Op::IMul, Op::LdI(b), Op::IAdd, Op::LdIA(v), ..]
+                if let Ok(n) = i16::try_from(n) =>
+            {
+                Op::LdIA2(v, a, b, n)
+            }
+            [Op::PushI(n), Op::LdI(a), Op::IMul, Op::LdI(b), Op::IAdd, ..] => Op::MulAdd(n, a, b),
+            [Op::LdIA(v), Op::PushI(n), op, Op::JumpIfZero(t), ..] if let Some(cmp) = Cmp::of(op) => {
+                Op::BrIAImm(v, cmp, n, t)
+            }
+            [Op::LdPoly(p), Op::LdIA(v), ..] => Op::LdIAPoly(v, p),
+            [op, Op::JumpIfZero(t), ..] if let Some(cmp) = Cmp::of(op) => Op::BrCmp(cmp, t),
             [Op::LdI(a), Op::LdIA(v), ..] => Op::LdIAVar(v, a),
             [Op::PushI(n), Op::IAdd, ..] => Op::AddImm(n),
+            [Op::PushI(n), Op::ISub, ..] => Op::AddImm(n.wrapping_neg()),
             _ => continue,
         };
     }
@@ -897,16 +919,15 @@ impl<'a> Compiler<'a> {
                 _ => self.call(*name, args, false).map(drop),
             },
             StmtKind::If(cond, yes, no) => {
-                self.expr_ty(cond, Ty::Int)?;
-                let skip = self.here();
-                self.emit(Op::JumpIfZero(0));
+                let mut skip = Vec::new();
+                self.branch_unless(cond, &mut skip)?;
                 self.stmts(yes)?;
                 if no.is_empty() {
-                    self.patch(skip);
+                    skip.into_iter().for_each(|at| self.patch(at));
                 } else {
                     let end = self.here();
                     self.emit(Op::Jump(0));
-                    self.patch(skip);
+                    skip.into_iter().for_each(|at| self.patch(at));
                     self.stmts(no)?;
                     self.patch(end);
                 }
@@ -914,12 +935,11 @@ impl<'a> Compiler<'a> {
             }
             StmtKind::While(cond, body) => {
                 let top = self.label();
-                self.expr_ty(cond, Ty::Int)?;
-                let exit = self.here();
-                self.emit(Op::JumpIfZero(0));
+                let mut exit = Vec::new();
+                self.branch_unless(cond, &mut exit)?;
                 self.stmts(body)?;
                 self.emit(Op::Jump(top));
-                self.patch(exit);
+                exit.into_iter().for_each(|at| self.patch(at));
                 Ok(())
             }
             StmtKind::Select(value, cases) => {
@@ -1267,6 +1287,35 @@ impl<'a> Compiler<'a> {
             }
         }
         self.emit(op);
+    }
+
+    /// A condition as jumps: falls through when `cond` holds, else jumps to a
+    /// target the caller patches into each of `misses`. `and`/`or` become
+    /// plain branches, short-circuiting as their value form does, without
+    /// building the 0/1 the value form needs.
+    fn branch_unless(&mut self, cond: &Expr, misses: &mut Vec<u32>) -> Result<()> {
+        match cond {
+            Expr::Binary(BinOp::And, a, b) => {
+                self.branch_unless(a, misses)?;
+                self.branch_unless(b, misses)
+            }
+            Expr::Binary(BinOp::Or, a, b) => {
+                let mut next = Vec::new();
+                self.branch_unless(a, &mut next)?;
+                let taken = self.here();
+                self.emit(Op::Jump(0));
+                next.into_iter().for_each(|at| self.patch(at));
+                self.branch_unless(b, misses)?;
+                self.patch(taken);
+                Ok(())
+            }
+            _ => {
+                self.expr_ty(cond, Ty::Int)?;
+                misses.push(self.here());
+                self.emit(Op::JumpIfZero(0));
+                Ok(())
+            }
+        }
     }
 
     fn binary(&mut self, op: BinOp, a: &Expr, b: &Expr) -> Result<Ty> {

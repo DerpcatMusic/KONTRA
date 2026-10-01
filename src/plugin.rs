@@ -2150,6 +2150,19 @@ moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 
 /// This thread's CPU time in seconds (Linux), which a busy machine's
 /// preemption does not inflate the way wall time does; 0 elsewhere.
+/// Minor page faults, voluntary and involuntary context switches this
+/// thread has taken (Linux; zeros elsewhere).
+fn thread_usage() -> [i64; 3] {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: getrusage fills one rusage for the calling thread.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut usage) };
+        [usage.ru_minflt, usage.ru_nvcsw, usage.ru_nivcsw]
+    }
+    #[cfg(not(target_os = "linux"))]
+    [0; 3]
+}
 fn thread_cpu() -> f64 {
     cpu_clock(3)
 }
@@ -2275,6 +2288,10 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     const RATE: f64 = 48000.;
     let p = Arc::new(SamplerParams::new());
     let ram_only = paths.iter().any(|p| p == "--ram-only");
+    // Quantized chords, as a DAW plays a grid: every 250 ms each part (on its
+    // own MIDI channel) releases its last chord and starts 3 or 4 notes at once.
+    let chords = paths.iter().any(|p| p == "--chords");
+    let fifo = paths.iter().any(|p| p == "--fifo");
     let paths: Vec<_> = paths.iter().filter(|p| !p.starts_with("--")).cloned().collect();
     let paths = &paths[..];
     let mut selection = p.selection.write().unwrap();
@@ -2283,8 +2300,10 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     }
     selection.parts = paths
         .iter()
-        .map(|path| Part {
+        .enumerate()
+        .map(|(i, path)| Part {
             path: path.clone(),
+            channel: if chords { i as i16 } else { -1 },
             ..Default::default()
         })
         .collect();
@@ -2326,13 +2345,18 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     }
     let loaded = (dsp.rack.parts.iter().take(paths.len())).filter(|e| e.bank().is_some()).count();
     anyhow::ensure!(loaded == paths.len(), "only {loaded} of {} parts loaded", paths.len());
-    let keys: Vec<u8> = {
-        let b = dsp.rack.parts[0].bank().unwrap();
-        let low = b.zones().iter().map(|z| z.low_key).min().unwrap_or(48);
-        let high = b.zones().iter().map(|z| z.high_key).max().unwrap_or(72);
-        // Keyswitches sit low: play the upper part of the range.
-        (low.max(36)..=high.min(96)).collect()
-    };
+    let part_keys: Vec<Vec<u8>> = (0..paths.len())
+        .map(|i| {
+            let b = dsp.rack.parts[i].bank().unwrap();
+            let low = b.zones().iter().map(|z| z.low_key).min().unwrap_or(48);
+            let high = b.zones().iter().map(|z| z.high_key).max().unwrap_or(72);
+            // Keyswitches sit low: play the upper part of the range.
+            (low.max(36)..=high.min(96).max(low.max(36))).collect()
+        })
+        .collect();
+    let keys = part_keys[0].clone();
+    let mut chord_held: Vec<Vec<u8>> = vec![Vec::new(); paths.len()];
+    let beat = (RATE * 0.25) as usize;
     let stop = Arc::new(AtomicBool::new(false));
     let loader = {
         let (p, stop) = (p.clone(), stop.clone());
@@ -2343,6 +2367,15 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             }
         })
     };
+    // As a host's audio thread: SCHED_FIFO 85 for this thread alone, so the
+    // loader, streamer and other processes cannot preempt it.
+    #[cfg(target_os = "linux")]
+    if fifo {
+        let param = libc::sched_param { sched_priority: 85 };
+        // SAFETY: sets this thread's own policy; tid 0 is the caller.
+        let failed = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) } != 0;
+        anyhow::ensure!(!failed, "SCHED_FIFO refused: {}", std::io::Error::last_os_error());
+    }
     let block = Duration::from_secs_f64(FRAMES as f64 / RATE);
     let blocks = (seconds * RATE) as usize / FRAMES;
     let every = (RATE / notes.max(1) as f64) as usize;
@@ -2367,12 +2400,30 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         let process_cpu = cpu_clock(2);
         let (mut times, mut cpus) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
         let (mut counts, mut cycle_counts) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
+        let (mut faults, mut onsets) = (Vec::with_capacity(blocks), Vec::with_capacity(blocks));
         let (mut voices, mut cpu, mut voice_blocks, mut audible_blocks) = (0, 0f32, 0usize, 0usize);
         let (start, mut pace) = (Instant::now(), crate::engine::Pace::start());
         for b in 0..blocks {
             events.clear();
             let frame = b * FRAMES;
-            while playing && started * every < frame + FRAMES {
+            let mut beats = 0;
+            while playing && chords && started * beat < frame + FRAMES {
+                let at = (started * beat).saturating_sub(frame) as u32;
+                for (part, keys) in part_keys.iter().enumerate() {
+                    let channel = part as u8;
+                    for key in chord_held[part].drain(..) {
+                        events.push(Event::new(at, EventBody::NoteOff { group: 0, channel, note: key, velocity: 0 }));
+                    }
+                    for n in 0..3 + (started + part) % 2 {
+                        let key = keys[(started * 5 + n * 4) % keys.len()];
+                        events.push(Event::new(at, EventBody::NoteOn { group: 0, channel, note: key, velocity: 90 }));
+                        chord_held[part].push(key);
+                    }
+                }
+                started += 1;
+                beats += 1;
+            }
+            while playing && !chords && started * every < frame + FRAMES {
                 let note = |on: bool, key: u8| {
                     let body = if on {
                         EventBody::NoteOn { group: 0, channel: 0, note: key, velocity: 100 }
@@ -2391,7 +2442,11 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
                 held.push_back(key);
                 started += 1;
             }
+            let usage_before = thread_usage();
             let (wall, cpu_ms, millions, spent) = process(&mut dsp, &events);
+            let usage = thread_usage();
+            faults.push(std::array::from_fn::<i64, 3, _>(|i| usage[i] - usage_before[i]));
+            onsets.push(beats > 0);
             cycle_counts.push(spent);
             times.push(wall);
             cpus.push(cpu_ms);
@@ -2409,6 +2464,11 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             let mut off = EventList::with_capacity(64);
             for key in held.drain(..) {
                 off.push(Event::new(0, EventBody::NoteOff { group: 0, channel: 0, note: key, velocity: 0 }));
+            }
+            for (part, keys) in chord_held.iter_mut().enumerate() {
+                for key in keys.drain(..) {
+                    off.push(Event::new(0, EventBody::NoteOff { group: 0, channel: part as u8, note: key, velocity: 0 }));
+                }
             }
             process(&mut dsp, &off);
         }
@@ -2469,6 +2529,36 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
                 at(1.0) / mean,
                 mean / deadline * 100.,
             );
+        }
+        if onsets.iter().any(|&o| o) {
+            // Blocks that start notes against the rest: the note-on cost.
+            for (name, onset) in [("note-on blocks", true), ("other blocks", false)] {
+                let pick = |v: &[f64]| -> Vec<f64> { v.iter().zip(&onsets).filter(|(_, o)| **o == onset).map(|(t, _)| *t).collect() };
+                let (mut t, mut m) = (pick(&cpus), pick(&counts));
+                let f: Vec<f64> = faults.iter().zip(&onsets).filter(|(_, o)| **o == onset).map(|(f, _)| f[0] as f64).collect();
+                let switches: (i64, i64) = faults.iter().zip(&onsets).filter(|(_, o)| **o == onset).fold((0, 0), |a, (f, _)| (a.0 + f[1], a.1 + f[2]));
+                let off: Vec<f64> = times.iter().zip(&cpus).zip(&onsets).filter(|(_, o)| **o == onset).map(|((w, c), _)| w - c).collect();
+                t.sort_by(f64::total_cmp);
+                m.sort_by(f64::total_cmp);
+                let at = |v: &[f64], q: f64| v.get(((v.len().max(1) - 1) as f64 * q) as usize).copied().unwrap_or(0.);
+                let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+                println!(
+                    "  {name} ({}): CPU mean {:.3} ms · p99 {:.3} · max {:.3} · instructions mean {:.3} M · p99 {:.3} · max {:.3} · minor faults mean {:.1} · max {:.0} · off-CPU (wall − CPU) mean {:.3} ms · max {:.3} · context switches {} voluntary, {} involuntary",
+                    t.len(),
+                    mean(&t),
+                    at(&t, 0.99),
+                    at(&t, 1.),
+                    mean(&m),
+                    at(&m, 0.99),
+                    at(&m, 1.),
+                    mean(&f),
+                    f.iter().copied().fold(0., f64::max),
+                    mean(&off),
+                    off.iter().copied().fold(0., f64::max),
+                    switches.0,
+                    switches.1,
+                );
+            }
         }
         let times = &cpus;
         let mut sorted = times.clone();

@@ -1174,21 +1174,26 @@ impl Player {
                     }
                 }
             }
-            let (live, victim) = victim(
-                &self.voices,
-                |v| v.voice_group == Some(group),
-                rule.kill_mode,
-                rule.prefer_released,
-            );
-            if live >= rule.max_voices && let Some(i) = victim {
-                let fade = self.fade_frames(rule.fade);
-                self.voices[i].fade.start(0.0, fade, true);
+            // Live voices are at most all voices: below the limit, no scan.
+            if self.voices.len() >= rule.max_voices {
+                let (live, victim) = victim(
+                    &self.voices,
+                    |v| v.voice_group == Some(group),
+                    rule.kill_mode,
+                    rule.prefer_released,
+                );
+                if live >= rule.max_voices && let Some(i) = victim {
+                    let fade = self.fade_frames(rule.fade);
+                    self.voices[i].fade.start(0.0, fade, true);
+                }
             }
         }
-        let (live, victim) = victim(&self.voices, |_| true, 1, true);
-        if live >= bank.polyphony && let Some(i) = victim {
-            let fade = self.fade_frames(STEAL_FADE);
-            self.voices[i].fade.start(0.0, fade, true);
+        if self.voices.len() >= bank.polyphony {
+            let (live, victim) = victim(&self.voices, |_| true, 1, true);
+            if live >= bank.polyphony && let Some(i) = victim {
+                let fade = self.fade_frames(STEAL_FADE);
+                self.voices[i].fade.start(0.0, fade, true);
+            }
         }
         if self.voices.len() == MAX_VOICES {
             // Storage is full of fading voices: cut the quietest.
