@@ -506,9 +506,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     cx.state.browse.typing = ["library-filter", "search"].into_iter().find(|id| ui.focused(*id));
     cx.state.pane = ui.focus_key().and_then(pane_of);
-    // How many presets are listed, folded away or not.
+    // How many presets are listed, folded away or not; all of them before
+    // a library is chosen.
     let count = match &cx.state.source {
         Some(Source::Library(name)) if needle.is_empty() => grouped.get(name).map_or(0, Vec::len),
+        None if needle.is_empty() => grouped.values().map(Vec::len).sum(),
         _ => listed.iter().filter(|r| matches!(r, Row::Preset { .. })).count(),
     };
     let counted = caption(count.to_string())
