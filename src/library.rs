@@ -190,15 +190,21 @@ impl Settings {
                 Sort::Recent => (u64::MAX - self.used.get(dir.as_ref()).map_or(0, |&t| t + 1), String::new()),
                 Sort::Vendor => (u64::from(l.vendor.is_empty()), l.vendor.to_lowercase()),
             };
-            (place(&self.pinned, &dir), rank, vendor, l.name.to_lowercase())
+            (!self.pinned.iter().any(|p| *p == dir), rank, vendor, l.name.to_lowercase())
         });
         out
     }
 
     /// Move the library in folder `from` to just before `before` (the end
     /// when `None`), `shown` being every library's folder as listed: the
-    /// listing becomes the player's own order.
+    /// listing becomes the player's own order. Dropped among the pinned, it
+    /// is pinned; among the rest, it is not.
     pub fn reorder(&mut self, shown: &[String], from: &str, before: Option<&str>) {
+        let pin = before.is_some_and(|b| self.pinned.iter().any(|p| p == b));
+        self.pinned.retain(|p| p != from);
+        if pin {
+            self.pinned.push(from.to_owned());
+        }
         let mut order: Vec<String> = shown.iter().filter(|d| *d != from).cloned().collect();
         let at = before.and_then(|b| order.iter().position(|d| d == b)).unwrap_or(order.len());
         order.insert(at, from.to_owned());
@@ -1010,8 +1016,13 @@ mod tests {
         s.reorder(&shown, "/libs/Areia", None);
         assert_eq!(s.order, ["/libs/Kinder Piano", "/libs/Areia", "/libs/Tundra"]);
 
-        // Pinned leads; the other sorts.
+        // Pinned leads; the other sorts. Dropped before a pinned one, it is pinned.
         s.pinned = vec!["/libs/Kinder Piano".into()];
+        let shown: Vec<String> = s.arrange(&all).iter().map(|l| l.dir.to_string_lossy().into()).collect();
+        s.reorder(&shown, "/libs/Tundra", Some("/libs/Kinder Piano"));
+        assert_eq!(names(&s, &all), ["Tundra", "Kinder Piano", "Areia"]);
+        s.reorder(&shown, "/libs/Tundra", None);
+        assert_eq!(s.pinned, ["/libs/Kinder Piano"], "and dropped among the rest, not");
         s.sort = Sort::Vendor;
         assert_eq!(names(&s, &more), ["Kinder Piano", "Areia", "Tundra", "Alpha"]);
         s.pinned.clear();

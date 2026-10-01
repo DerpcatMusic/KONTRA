@@ -1,20 +1,30 @@
 //! The browser, split like Bitwig's: the libraries above, with Favorites and
-//! Recent over them, and the chosen one's presets below, grouped by folder.
-//! The search filters the presets below (every library when none is
-//! chosen). Click selects, double-click or Enter loads, drag drops onto the
-//! rack, right-click offers the rest; the arrows walk each pane and Tab
-//! crosses between them. The divider and the browser's edge both drag.
+//! Recent over them, and the chosen one's presets below, in its folders.
+//!
+//! The libraries list in the order the player picks (dragged by hand, by
+//! name, by last use or by vendor; pinned ones first), and a filter over
+//! them (Ctrl+F or /) narrows them by name or vendor: the arrows walk the
+//! matches, Enter opens one, Esc clears. A library shows its folders as on
+//! disk, each folding open and shut and remembered; the search lists flat
+//! matches instead, each with its folder under it. Click selects, Enter
+//! loads into the selected part, Shift+Enter into a new one, double-click
+//! loads, drag drops onto the rack, right-click offers the rest; the arrows
+//! walk each pane (Left and Right fold), and Tab crosses between them. The
+//! divider and the browser's edge both drag. The library and row last
+//! shown come back with the editor.
 
 use super::{Cx, RackDrag, menu, theme::*};
 use crate::import;
+use crate::library::{Folder, Library};
 use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::Fit;
 use std::collections::BTreeMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// What the lower pane lists.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Source {
     Favorites,
     Recent,
@@ -25,6 +35,88 @@ pub enum Source {
 pub const SPLIT: f64 = 0.36;
 pub const SPLIT_MIN: f64 = 0.14;
 pub const SPLIT_MAX: f64 = 0.7;
+
+/// A row of the lower pane, and one with its folder under it. Every row is
+/// one of these heights: the list builds only the rows in view.
+const ROW: f64 = TEXT * 2. + 2.;
+const ROW2: f64 = TEXT * 3. + 4.;
+/// A library's row in the upper pane, and the rule under Recent.
+const SOURCE_ROW: f64 = THUMB.1 + 2. * TIGHT;
+const SOURCE_RULE: f64 = 2. * INSET + 1.;
+/// How far a folder level steps in.
+const INDENT: f64 = TEXT;
+
+/// The browser's own state between frames.
+#[derive(Default)]
+pub struct Browse {
+    /// The quick filter over the libraries, and as it was last drawn.
+    pub filter: String,
+    filtered: String,
+    /// How far each pane is slid.
+    sources_y: f64,
+    list_y: f64,
+    /// What the lower pane lists, hashed: it starts at the top when this changes.
+    listing: u64,
+    /// Bring the chosen library, and the cursor's row, into view.
+    reveal_source: bool,
+    reveal_row: bool,
+    /// The library and row last shown were put back.
+    restored: bool,
+    /// The lower pane's rows, and what they were made from, hashed.
+    rows: (u64, Arc<Vec<Row>>),
+    /// The browser's field holding the focus as the last frame ended: Esc
+    /// takes the focus before the frame, so the field is told it this way.
+    typing: Option<&'static str>,
+}
+
+impl Browse {
+    /// Esc this frame was meant for one of the browser's fields.
+    pub fn typing(&self) -> bool {
+        self.typing.is_some()
+    }
+}
+
+/// A row of the lower pane: a folder of the chosen library, or a preset.
+#[derive(Clone, Debug)]
+enum Row {
+    Folder { path: String, name: String, depth: usize, count: usize, open: bool },
+    /// `under` is its folder, shown under its name in a flat list.
+    Preset { path: PathBuf, depth: usize, under: String },
+}
+
+impl Row {
+    /// What the cursor holds when on this row.
+    fn key(&self) -> String {
+        match self {
+            Row::Folder { path, .. } => path.clone(),
+            Row::Preset { path, .. } => path.to_string_lossy().into_owned(),
+        }
+    }
+
+    fn depth(&self) -> usize {
+        match self {
+            Row::Folder { depth, .. } | Row::Preset { depth, .. } => *depth,
+        }
+    }
+
+    fn height(&self) -> f64 {
+        match self {
+            Row::Preset { under, .. } if !under.is_empty() => ROW2,
+            _ => ROW,
+        }
+    }
+
+    fn id(&self, n: usize) -> String {
+        match self {
+            Row::Folder { .. } => format!("folder-{n}"),
+            Row::Preset { .. } => format!("instrument-{n}"),
+        }
+    }
+}
+
+/// A library being dragged to a new place in the list, by folder.
+#[derive(Clone)]
+struct LibraryDrag(String);
 
 pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let view = cx.view;
@@ -42,10 +134,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         }
         (*files, *shelf, *kind, *grouped) = (Arc::downgrade(&view.files), scanned, multis, Arc::new(by));
     }
-    let libraries: BTreeMap<String, Vec<&PathBuf>> = grouped
-        .iter()
-        .map(|(name, files)| (name.clone(), files.iter().map(|&n| &view.files[n]).collect()))
-        .collect();
+    let grouped = grouped.clone();
+    let settings = cx.settings.clone();
+    // The libraries as listed: pinned ones, then by the sort chosen.
+    let arranged: Vec<&Library> = settings.arrange(grouped.keys().filter_map(|name| view.shelf.named(name)));
+    let dirs: Vec<String> = arranged.iter().map(|l| l.dir.to_string_lossy().into_owned()).collect();
     // Favorites and recents of the kind picked.
     let kind = |paths: &[String]| -> Vec<PathBuf> {
         paths
@@ -61,6 +154,16 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         if let Some(done) = super::rack::loading(cx, slot) {
             let at = loading.entry(cx.library_of(Path::new(&part.path))).or_default();
             (at.0, at.1) = (at.0 + done, at.1 + 1);
+        }
+    }
+    // Back where the player left off, once the libraries are in.
+    if !cx.state.browse.restored && !arranged.is_empty() {
+        cx.state.browse.restored = true;
+        let at = dirs.iter().position(|d| *d == settings.last_library);
+        if let (None, Some(at)) = (&cx.state.source, at) {
+            cx.state.source = Some(Source::Library(arranged[at].name.clone()));
+            cx.state.cursor = (!settings.last_row.is_empty()).then(|| settings.last_row.clone());
+            (cx.state.browse.reveal_source, cx.state.browse.reveal_row) = (true, true);
         }
     }
 
@@ -84,57 +187,135 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         kinds.push(el);
     }
 
-    // The upper pane: the two pseudo-entries, then every library.
-    let mut sources = vec![
-        ("source-favorites".to_owned(), Source::Favorites),
-        ("source-recent".to_owned(), Source::Recent),
-    ];
-    for (idx, name) in libraries.keys().enumerate() {
-        sources.push((format!("library-{idx}"), Source::Library(name.clone())));
+    // Where the focus goes, moved once every row has read this frame's keys
+    // with the focus where it was: a key acts once.
+    let mut focus_to: Option<String> = None;
+    // Ctrl+F or / goes to the library filter; Ctrl+F there goes on to the
+    // preset search, and back.
+    let ctrl_f = |k: &KeyPress| matches!(k.key, Key::Char('f' | 'F')) && (k.mods.ctrl || k.mods.cmd);
+    let slash = |k: &KeyPress| k.key == Key::Char('/') && !(k.mods.ctrl || k.mods.cmd);
+    if ui.shortcuts().iter().any(|k| ctrl_f(k) || slash(k)) || ui.keys("search").iter().any(ctrl_f) {
+        focus_to = Some("library-filter".into());
+    } else if ui.keys("library-filter").iter().any(ctrl_f) {
+        focus_to = Some("search".into());
+    }
+    // Esc in a field clears it and keeps it focused; in an empty one it lets go.
+    let escaped = (cx.state.browse.typing.take()).filter(|_| ui.shortcuts().iter().any(|k| k.key == Key::Escape));
+    for (id, text) in [("library-filter", &mut cx.state.browse.filter), ("search", &mut cx.state.search)] {
+        if escaped == Some(id) && !text.is_empty() {
+            text.clear();
+            focus_to = Some(id.into());
+        }
+    }
+    let filter_keys = ui.keys("library-filter").to_vec();
+    let filter = search_field(ui, "library-filter", &mut cx.state.browse.filter, "Filter libraries", "Filter libraries by name or vendor");
+    let (sort, sort_el) = dropdown(ui, "library-sort", settings.sort.label(), "Sort the libraries");
+    if sort {
+        menu::open_under(ui, cx, menu::Target::LibrarySort, "library-sort");
+    }
+
+    // The upper pane: the two pseudo-entries, then every library the filter
+    // lets through.
+    let words: Vec<String> = cx.state.browse.filter.to_lowercase().split_whitespace().map(str::to_owned).collect();
+    let mut sources = Vec::new();
+    if words.is_empty() {
+        sources.push(("source-favorites".to_owned(), Source::Favorites));
+        sources.push(("source-recent".to_owned(), Source::Recent));
+    }
+    for (n, library) in arranged.iter().enumerate() {
+        let hay = format!("{} {}", library.name, library.vendor).to_lowercase();
+        if words.iter().all(|w| hay.contains(w.as_str())) {
+            sources.push((format!("library-{n}"), Source::Library(library.name.clone())));
+        }
     }
     // Which folder each row shows, for a picture dropped on one.
-    *super::lock(&cx.state.picker.rows) =
-        libraries.keys().map(|name| view.shelf.named(name).map(|l| l.dir.clone())).collect();
-    if cx.state.source.as_ref().is_some_and(|s| !sources.iter().any(|(_, t)| t == s)) {
+    *super::lock(&cx.state.picker.rows) = arranged.iter().map(|l| Some(l.dir.clone())).collect();
+    // A new filter picks its first match, unless the chosen one still matches.
+    let chosen_listed = |cx: &Cx| sources.iter().any(|(_, s)| Some(s) == cx.state.source.as_ref());
+    if cx.state.browse.filter != cx.state.browse.filtered {
+        cx.state.browse.filtered = cx.state.browse.filter.clone();
+        if !words.is_empty() && !chosen_listed(cx) && let Some((_, first)) = sources.first() {
+            cx.state.source = Some(first.clone());
+            cx.state.cursor = None;
+        }
+        cx.state.browse.reveal_source = true;
+    }
+    if cx.state.source.as_ref().is_some_and(|s| matches!(s, Source::Library(name) if !grouped.contains_key(name))) {
         cx.state.source = None;
     }
     // Enter on an entry opens it and moves on to its presets.
     let mut enter = false;
+    let step = |at: Option<usize>, key: Key, len: usize| match (key, at) {
+        (Key::Down, None) => Some(0),
+        (Key::Down, Some(n)) => Some((n + 1).min(len - 1)),
+        (Key::Up, Some(n)) => Some(n.saturating_sub(1)),
+        (Key::Up, None) => Some(len - 1),
+        _ => None,
+    };
+    for k in &filter_keys {
+        let at = sources.iter().position(|(_, s)| Some(s) == cx.state.source.as_ref());
+        if let Some(next) = step(at, k.key, sources.len()).filter(|_| !sources.is_empty()) {
+            cx.state.source = Some(sources[next].1.clone());
+            cx.state.cursor = None;
+            cx.state.browse.reveal_source = true;
+        }
+        if k.key == Key::Enter && at.is_some() {
+            enter = true;
+            keep_place(cx);
+        }
+    }
     let mut rows = Vec::new();
+    // Where the chosen entry sits in the pane, to bring it into view.
+    let (mut top, mut chosen_at) = (TIGHT, None);
+    let pinned = |dir: &str| settings.pinned.iter().any(|p| p == dir);
+    let dragging = ui.dragging::<LibraryDrag>().map(|d| d.0.clone());
     for (n, (id, source)) in sources.iter().enumerate() {
         let r = ui.get(id.as_str());
         if r.clicked_with(Button::Primary) {
             // A second click lets the library go: the search spans them all.
             cx.state.source = (cx.state.source.as_ref() != Some(source)).then(|| source.clone());
             cx.state.cursor = None;
+            keep_place(cx);
         }
         if r.key_activated {
             cx.state.source = Some(source.clone());
             cx.state.cursor = None;
             enter = true;
+            keep_place(cx);
         }
         if let (true, Source::Library(name)) = (r.clicked_with(Button::Secondary), source) {
             menu::open(ui, cx, menu::Target::Library(name.clone()));
         }
         if ui.focused(id.as_str()) {
-            let step = ui.shortcuts().iter().fold(0i32, |at, k| match k.key {
-                Key::Down => at + 1,
-                Key::Up => at - 1,
-                _ => at,
-            });
-            if step != 0 {
-                let next = (n as i32 + step).clamp(0, sources.len() as i32 - 1) as usize;
+            let walked = ui.shortcuts().iter().fold(None, |at, k| step(at.or(Some(n)), k.key, sources.len()).or(at));
+            if let Some(next) = walked.filter(|&next| next != n) {
                 cx.state.source = Some(sources[next].1.clone());
                 cx.state.cursor = None;
-                ui.focus(sources[next].0.clone());
+                cx.state.browse.reveal_source = true;
+                focus_to = Some(sources[next].0.clone());
             }
+        }
+        // A library dragged onto another goes before it.
+        let dir = match source {
+            Source::Library(name) => view.shelf.named(name).map(|l| l.dir.to_string_lossy().into_owned()),
+            _ => None,
+        };
+        let mut over = false;
+        if let Some(dir) = &dir {
+            if r.dragged && r.button == Some(Button::Primary) {
+                ui.start_drag(id.as_str(), LibraryDrag(dir.clone()));
+            }
+            if let Some(LibraryDrag(from)) = ui.dropped_on::<LibraryDrag>(id.as_str()) {
+                cx.p.shared.libraries.edit(|s| s.reorder(&dirs, &from, Some(dir)));
+            }
+            over = r.drop_target && dragging.as_ref().is_some_and(|from| from != dir);
         }
         let (label, count, thumb) = match source {
             Source::Favorites => ("Favorites".to_owned(), favorites.len(), symbol(Icon::Star)),
             Source::Recent => ("Recent".to_owned(), recent.len(), symbol(Icon::Recent)),
             Source::Library(name) => (
                 library_label(name),
-                libraries[name].len(),
+                grouped[name].len(),
                 match cx.looks(name).and_then(|l| l.thumb.clone()) {
                     Some(image) => block(THUMB.0, THUMB.1)
                         .fill(Fill::Image(image, Fit::Cover))
@@ -144,96 +325,119 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             ),
         };
         let chosen = cx.state.source.as_ref() == Some(source);
+        if chosen {
+            chosen_at = Some((top, top + SOURCE_ROW));
+        }
         let progress = match source {
             Source::Library(name) => loading.get(name).map(|(sum, n)| sum / *n as f64),
             _ => None,
         };
         let about = match source {
-            Source::Library(name) => view.shelf.named(name).map(about),
+            Source::Library(name) => view.shelf.named(name).map(|l| about(l, dir.as_deref().is_some_and(pinned))),
             _ => None,
         };
-        rows.push(source_row(id, label, count, thumb, chosen, progress, about));
-        if n == 1 {
+        let el = source_row(id, label, count, thumb, chosen, progress, about);
+        rows.push(if over {
+            stack![el, block(Len::Pct(100.), 2).fill(accent()).anchor(Align::Start, Align::Start)].shrink(0)
+        } else {
+            el
+        });
+        top += SOURCE_ROW;
+        // A rule under Recent, and under the pinned libraries.
+        let last_pinned = dir.as_deref().is_some_and(pinned)
+            && sources.get(n + 1).is_some_and(|(_, s)| match s {
+                Source::Library(name) => !view.shelf.named(name).is_some_and(|l| pinned(&l.dir.to_string_lossy())),
+                _ => false,
+            });
+        if source == &Source::Recent || last_pinned {
             rows.push(rule().pad((TIGHT, INSET)));
+            top += SOURCE_RULE;
         }
     }
+    // Dropped past the last library, it goes to the end.
+    if dragging.is_some() && !arranged.is_empty() {
+        if let Some(LibraryDrag(from)) = ui.dropped_on::<LibraryDrag>("libraries-end") {
+            cx.p.shared.libraries.edit(|s| s.reorder(&dirs, &from, None));
+        }
+        let over = ui.get("libraries-end").drop_target;
+        rows.push(
+            col![block(Len::Pct(100.), 2).fill(if over { Fill::from(accent()) } else { Role::Ink.alpha(0.) })]
+                .h(CONTROL)
+                .shrink(0)
+                .id("libraries-end"),
+        );
+        top += CONTROL;
+    }
     let scanning = cx.p.shared.libraries.scanning();
-    if libraries.is_empty() && scanning.is_none() {
+    if arranged.is_empty() && scanning.is_none() {
         if view.files.is_empty() {
             // First, so its buttons are in view above favorites and recent.
             rows.insert(0, empty_state(ui, cx));
         } else {
             rows.push(hint(if multis { "No multis in these libraries." } else { "No instruments in these libraries." }));
         }
+    } else if sources.is_empty() {
+        rows.push(hint("No library matches that filter."));
+    }
+    let reveal = chosen_at.filter(|_| cx.state.browse.reveal_source);
+    let sources_id = format!("browser-sources-{multis}");
+    // The rows are summed above; the empty state and hints are measured.
+    let measured = ui.scene().and_then(|s| s.surface("browser-sources-content")).map_or(0., |s| s.frame.size.height);
+    let (sources_y, sources_bar, revealed) =
+        slide(ui, &sources_id, &mut cx.state.browse.sources_y, measured.max(top + TIGHT), reveal);
+    if revealed || chosen_at.is_none() {
+        cx.state.browse.reveal_source = false;
     }
 
     // The lower pane: the chosen source's presets, the search filtering them.
-    let search = search_field(ui, cx, multis);
+    let search = search_field(
+        ui,
+        "search",
+        &mut cx.state.search,
+        if multis { "Search multis" } else { "Search instruments" },
+        "Search presets",
+    );
     let needle = cx.state.search.to_lowercase();
-    let matches = |p: &Path| needle.is_empty() || stem(p).to_lowercase().contains(&needle);
-    let mut groups: Vec<(String, Vec<PathBuf>)> = Vec::new();
-    let mut push = |group: String, path: PathBuf| match groups.last_mut() {
-        Some((g, paths)) if *g == group => paths.push(path),
-        _ => groups.push((group, vec![path])),
+    let made_of = {
+        let mut h = DefaultHasher::new();
+        (Arc::as_ptr(&view.files) as usize, view.files.len(), Arc::as_ptr(&view.shelf) as usize, multis).hash(&mut h);
+        (&cx.state.source, &needle, &favorites, &recent, &dirs, &settings.folders).hash(&mut h);
+        h.finish()
     };
+    if cx.state.browse.rows.0 != made_of || cx.state.browse.rows.1.is_empty() {
+        let rows = list(cx, &arranged, &grouped, &favorites, &recent, &needle);
+        cx.state.browse.rows = (made_of, Arc::new(rows));
+    }
+    let listed = cx.state.browse.rows.1.clone();
+    let listing = {
+        let mut h = DefaultHasher::new();
+        (&cx.state.source, &needle, multis).hash(&mut h);
+        h.finish()
+    };
+    if cx.state.browse.listing != listing {
+        cx.state.browse.listing = listing;
+        cx.state.browse.list_y = 0.;
+    }
     let empty = match &cx.state.source {
-        Some(Source::Favorites) => {
-            favorites.into_iter().filter(|p| matches(p)).for_each(|p| push(String::new(), p));
-            "Star a preset to keep it here."
-        }
-        Some(Source::Recent) => {
-            recent.into_iter().filter(|p| matches(p)).for_each(|p| push(String::new(), p));
-            "Presets you open show up here."
-        }
-        Some(Source::Library(name)) => {
-            let dir = view.shelf.named(name).map(|l| l.dir.clone()).unwrap_or_default();
-            for path in libraries[name].iter().filter(|p| matches(p)) {
-                push(subfolder(&dir, path), (*path).clone());
-            }
-            "Nothing here matches that search."
-        }
-        None if !needle.is_empty() => {
-            for (name, files) in &libraries {
-                for path in files.iter().filter(|p| matches(p)) {
-                    push(library_label(name), (*path).clone());
-                }
-            }
-            "Nothing matches that search."
-        }
+        Some(Source::Favorites) => "Star a preset to keep it here.",
+        Some(Source::Recent) => "Presets you open show up here.",
+        Some(Source::Library(_)) => "Nothing here matches that search.",
+        None if !needle.is_empty() => "Nothing matches that search.",
         None => "Choose a library above, or search them all.",
     };
-    let mut items = Vec::new();
-    if let Some(Source::Library(name)) = &cx.state.source
-        && let Some(library) = view.shelf.named(name)
-    {
-        let size = cx.p.shared.libraries.size(&library.dir);
-        items.push(library_heading(library, size));
-    }
-    let mut listed: Vec<PathBuf> = Vec::new();
-    for (group, paths) in groups {
-        let mut section = Vec::new();
-        if !group.is_empty() {
-            section.push(group_heading(&group, paths.len()));
-        }
-        for path in paths {
-            section.push(preset(ui, cx, listed.len(), &path));
-            listed.push(path);
-        }
-        items.push(col(section).gap(0).shrink(0));
-    }
-    if listed.is_empty() && !libraries.is_empty() {
-        items.push(hint(empty));
-    }
-    walk(ui, cx, &listed);
-    let into_presets = || {
-        if listed.is_empty() {
-            "search".to_owned()
-        } else {
-            "instrument-0".to_owned()
-        }
+    let list_id = "browser-list";
+    let view_h = ui.scene().and_then(|s| s.surface(list_id)).map_or(0., |s| s.frame.size.height);
+    walk(ui, cx, &listed, ((view_h / ROW) as usize).max(1), &mut focus_to);
+    // Into the presets, at the cursor (the first row when none), brought into view.
+    let into_presets = |cx: &mut Cx| {
+        let n = cursor_at(cx, &listed).unwrap_or(0);
+        let Some(row) = listed.get(n) else { return "search".to_owned() };
+        cx.state.cursor = Some(row.key());
+        cx.state.browse.reveal_row = true;
+        row.id(n)
     };
     if enter {
-        ui.focus(into_presets());
+        focus_to = Some(into_presets(cx));
     }
     // Tab crosses the panes: into the presets at the cursor, back to the
     // chosen entry. The Ui has moved the focus on by now; this overrides it.
@@ -242,32 +446,86 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         .is_some_and(|k| ui.keys(k.to_owned()).iter().any(|k| k.key == Key::Tab));
     if tabbed {
         match cx.state.pane {
-            Some(Pane::Sources) => {
-                let at = cx.state.cursor.as_ref().and_then(|c| {
-                    listed.iter().position(|p| p.to_string_lossy() == c.as_str())
-                });
-                ui.focus(at.map_or_else(into_presets, |n| format!("instrument-{n}")));
-            }
+            Some(Pane::Sources) => focus_to = Some(into_presets(cx)),
             Some(Pane::Presets) => {
                 let chosen = sources.iter().find(|(_, s)| Some(s) == cx.state.source.as_ref());
                 if let Some((id, _)) = chosen.or(sources.first()) {
-                    ui.focus(id.clone());
+                    focus_to = Some(id.clone());
                 }
             }
             None => {}
         }
     }
-    cx.state.pane = ui.focus_key().and_then(pane_of);
+    let mut above = Vec::new();
+    if let Some(Source::Library(name)) = &cx.state.source
+        && let Some(library) = view.shelf.named(name)
+    {
+        let size = cx.p.shared.libraries.size(&library.dir);
+        above.push(library_heading(library, size));
+        if needle.is_empty() {
+            above.extend(crumbs(ui, cx, library, &listed));
+        }
+    }
+    if listed.is_empty() && !arranged.is_empty() {
+        above.push(hint(empty));
+    }
+    // Every row's top, and the list's height.
+    let mut tops = Vec::with_capacity(listed.len() + 1);
+    let mut y = 0.;
+    for row in listed.iter() {
+        tops.push(y);
+        y += row.height();
+    }
+    tops.push(y);
+    let at = cursor_at(cx, &listed);
+    let reveal = at.filter(|_| cx.state.browse.reveal_row).map(|n| (tops[n], tops[n + 1]));
+    let (list_y, list_bar, revealed) = slide(ui, list_id, &mut cx.state.browse.list_y, y, reveal);
+    if revealed || at.is_none() {
+        cx.state.browse.reveal_row = false;
+    }
+    // Only the rows in view are built; spacers stand in for the rest.
+    let shown = if view_h > 0. { view_h } else { 2000. };
+    let first = tops.partition_point(|&t| t <= list_y).saturating_sub(1);
+    let last = tops[..listed.len()].partition_point(|&t| t < list_y + shown);
+    let mut items = vec![block(1, tops[first]).shrink(0)];
+    for n in first..last.max(first) {
+        items.push(match &listed[n] {
+            Row::Folder { .. } => folder(ui, cx, n, &listed[n]),
+            Row::Preset { path, depth, under } => preset(ui, cx, n, path, *depth, under),
+        });
+    }
+    items.push(block(1, y - tops[last.max(first)]).shrink(0));
 
+    if let Some(id) = focus_to {
+        ui.focus(id);
+    }
+    cx.state.browse.typing = ["library-filter", "search"].into_iter().find(|id| ui.focused(*id));
+    cx.state.pane = ui.focus_key().and_then(pane_of);
     let scan_line = scan_line(ui, cx, scanning);
     let split = split_divider(ui, cx);
-    let source_key = match &cx.state.source {
-        Some(Source::Library(name)) => name.as_str(),
-        Some(Source::Favorites) => "*favorites",
-        Some(Source::Recent) => "*recent",
-        None => "",
+    let list = col(items)
+        .gap(0)
+        .align(Align::Stretch)
+        .w(Len::Pct(100.))
+        .h(Len::Pct(100.))
+        .scroll()
+        .no_scrollbar()
+        .scrolled(0., list_y)
+        .id(list_id);
+    let sources_list = col![col(rows).gap(0).align(Align::Stretch).pad((0, TIGHT)).shrink(0).id("browser-sources-content")]
+        .gap(0)
+        .align(Align::Stretch)
+        .w(Len::Pct(100.))
+        .h(Len::Pct(100.))
+        .scroll()
+        .no_scrollbar()
+        .scrolled(0., sources_y)
+        .id(sources_id);
+    let pane = |el: El, bar: Option<El>| {
+        let mut layers = vec![el];
+        layers.extend(bar.map(|b| b.anchor(Align::End, Align::Start)));
+        stack(layers).w(Len::Pct(100.))
     };
-    let list_id = format!("browser-{source_key}-{multis}-{needle}");
     col![
         section_bar(
             "Browser",
@@ -275,25 +533,17 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         ),
         row(kinds).gap(INSET + TIGHT).pad(edges(0., INSET, 0., INSET)).shrink(0),
         scan_line,
+        row![filter.flex(1).min_w(0), sort_el]
+            .gap(TIGHT)
+            .align(Align::Center)
+            .pad(edges(SPACE, INSET, TIGHT, INSET))
+            .shrink(0),
         rule(),
-        col(rows)
-            .gap(0)
-            .align(Align::Stretch)
-            .pad((TIGHT, 0))
-            .h(Len::Pct(cx.state.split * 100.))
-            .shrink(0)
-            .scroll()
-            .id(format!("browser-sources-{multis}")),
+        pane(sources_list, sources_bar).h(Len::Pct(cx.state.split * 100.)).shrink(0),
         split,
         col![search].pad(edges(SPACE, INSET, SPACE, INSET)).shrink(0),
-        col(items)
-            .gap(0)
-            .align(Align::Stretch)
-            .pad(edges(0., 0., SPACE, 0.))
-            .flex(1)
-            .min_h(0)
-            .scroll()
-            .id(list_id),
+        col(above).gap(0).align(Align::Stretch).shrink(0),
+        pane(list, list_bar).flex(1).min_h(0),
     ]
     .gap(0)
     .h(Len::Pct(100.))
@@ -301,6 +551,142 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     .fill(Role::Surface)
     .clip()
     .id("browser")
+}
+
+/// The lower pane's rows: the chosen library's folders as on disk, or flat
+/// matches of the search with their folders under them.
+fn list(
+    cx: &Cx,
+    arranged: &[&Library],
+    grouped: &super::Libraries,
+    favorites: &[PathBuf],
+    recent: &[PathBuf],
+    needle: &str,
+) -> Vec<Row> {
+    let view = cx.view;
+    let words: Vec<&str> = needle.split_whitespace().collect();
+    // A preset's library and its folders inside it.
+    let place = |path: &Path| -> (String, String) {
+        match view.shelf.of(path) {
+            Some(l) => (library_label(&l.name), folders(&l.dir, path)),
+            None => (String::new(), path.parent().map(stem).unwrap_or_default()),
+        }
+    };
+    // Its name or its folders hold every word.
+    let hit = |path: &Path, folders: &str| {
+        words.is_empty() || {
+            let hay = format!("{} {folders}", stem(path)).to_lowercase();
+            words.iter().all(|w| hay.contains(w))
+        }
+    };
+    let flat = |path: &Path, with_library: bool| -> Option<Row> {
+        let (library, folders) = place(path);
+        hit(path, &folders).then(|| {
+            let under = match (with_library, library.is_empty(), folders.is_empty()) {
+                (true, false, false) => format!("{library} / {folders}"),
+                (true, false, true) => library,
+                _ => folders,
+            };
+            Row::Preset { path: path.to_path_buf(), depth: 0, under }
+        })
+    };
+    let files = |name: &str| -> Vec<&Path> {
+        grouped.get(name).into_iter().flatten().map(|&n| view.files[n].as_path()).collect()
+    };
+    match &cx.state.source {
+        Some(Source::Favorites) => favorites.iter().filter_map(|p| flat(p, true)).collect(),
+        Some(Source::Recent) => recent.iter().filter_map(|p| flat(p, true)).collect(),
+        Some(Source::Library(name)) if !words.is_empty() => files(name).into_iter().filter_map(|p| flat(p, false)).collect(),
+        Some(Source::Library(name)) => {
+            let Some(library) = view.shelf.named(name) else { return Vec::new() };
+            let paths = files(name);
+            let tree = Folder::tree(&library.dir, paths.iter().copied());
+            let mut out = Vec::new();
+            flatten(&tree, 0, &cx.settings.folders, &paths, &mut out);
+            out
+        }
+        None if !words.is_empty() => arranged
+            .iter()
+            .flat_map(|l| files(&l.name))
+            .filter_map(|p| flat(p, true))
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// `folder`'s rows: its folders, each followed by its own rows when open,
+/// then its presets. A folder that is all its parent holds starts open.
+fn flatten(folder: &Folder, depth: usize, open: &BTreeMap<String, bool>, paths: &[&Path], out: &mut Vec<Row>) {
+    let only = folder.folders.len() == 1 && folder.presets.is_empty();
+    for sub in &folder.folders {
+        let is_open = open.get(&sub.path).copied().unwrap_or(only);
+        out.push(Row::Folder {
+            path: sub.path.clone(),
+            name: sub.name.clone(),
+            depth,
+            count: sub.count,
+            open: is_open,
+        });
+        if is_open {
+            flatten(sub, depth + 1, open, paths, out);
+        }
+    }
+    for &n in &folder.presets {
+        out.push(Row::Preset { path: paths[n].to_path_buf(), depth, under: String::new() });
+    }
+}
+
+/// The folders between a library and a preset: "Instruments / Legato".
+fn folders(library: &Path, path: &Path) -> String {
+    let folder = path.parent().and_then(|p| p.strip_prefix(library).ok());
+    folder
+        .into_iter()
+        .flat_map(|f| f.components())
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+fn cursor_at(cx: &Cx, rows: &[Row]) -> Option<usize> {
+    let cursor = cx.state.cursor.as_deref()?;
+    rows.iter().position(|r| r.key() == cursor)
+}
+
+/// Open or shut the folder at `path`, for good.
+fn set_open(cx: &Cx, path: &str, open: bool) {
+    cx.p.shared.libraries.edit(|s| {
+        s.folders.insert(path.to_owned(), open);
+    });
+}
+
+/// Keep the library shown and the row chosen, to come back to.
+fn keep_place(cx: &Cx) {
+    let library = match &cx.state.source {
+        Some(Source::Library(name)) => cx.view.shelf.named(name).map(|l| l.dir.to_string_lossy().into_owned()),
+        _ => None,
+    }
+    .unwrap_or_default();
+    let row = cx.state.cursor.clone().unwrap_or_default();
+    if cx.settings.last_library != library || cx.settings.last_row != row {
+        cx.p.shared.libraries.edit(|s| (s.last_library, s.last_row) = (library, row));
+    }
+}
+
+/// Load `path` into the selected part, or into a new one when `new` (or
+/// when no part with an instrument is selected). A multi replaces the rack.
+fn load(cx: &mut Cx, path: &Path, new: bool) {
+    let text = path.to_string_lossy().into_owned();
+    cx.state.cursor = Some(text.clone());
+    keep_place(cx);
+    let selected = (cx.state.chosen()).filter(|&s| cx.selection.parts.get(s).is_some_and(|p| !p.path.is_empty()));
+    match selected {
+        _ if import::is_multi(path) => cx.open(path),
+        _ if new => cx.add(text),
+        // Already in the rack: shown, not loaded twice.
+        _ if cx.selection.parts.iter().any(|p| p.path == text && p.program == 0) => cx.open(path),
+        Some(slot) => cx.replace(slot, text),
+        _ => cx.open(path),
+    }
 }
 
 /// The pane a focused id sits in, for Tab to cross from.
@@ -313,7 +699,7 @@ pub enum Pane {
 fn pane_of(id: &str) -> Option<Pane> {
     if id.starts_with("library-") || id.starts_with("source-") {
         Some(Pane::Sources)
-    } else if id.starts_with("instrument-") || id.starts_with("star-") || id == "search" {
+    } else if id.starts_with("instrument-") || id.starts_with("folder-") || id.starts_with("star-") || id == "search" {
         Some(Pane::Presets)
     } else {
         None
@@ -365,7 +751,8 @@ fn source_row(
     ]
     .gap(SPACE)
     .align(Align::Center)
-    .pad(edges(TIGHT, INSET, TIGHT, 0.))
+    .pad(edges(0., INSET, 0., 0.))
+    .h(SOURCE_ROW)
     .when(chosen, |e| e.fill(Role::Raised))
     .focusable()
     .a11y(A11y::Button)
@@ -373,7 +760,7 @@ fn source_row(
     .tip({
         let verb = if chosen { "Click again to search every library" } else { "Show its presets below" };
         match about {
-            Some(about) => format!("{about}\n{verb}, right-click for its cover"),
+            Some(about) => format!("{about}\n{verb}, drag to reorder, right-click for more"),
             None => verb.to_owned(),
         }
     })
@@ -384,18 +771,21 @@ fn source_row(
 
 /// A library's tooltip: its vendor, and whether it has a library file or
 /// was recognized by its folders.
-fn about(library: &crate::library::Library) -> String {
+fn about(library: &Library, pinned: bool) -> String {
     let mut out = library_label(&library.name);
     if !library.vendor.is_empty() {
         out += &format!(" by {}", library.vendor);
     }
     out += if library.registered { "\nHas a library file" } else { "\nFound by its folders, no library file" };
+    if pinned {
+        out += "\nPinned to the top";
+    }
     out
 }
 
 /// The chosen library over its presets: its name, vendor, how many
 /// instruments and multis, and its size on disk once measured.
-fn library_heading(library: &crate::library::Library, size: Option<u64>) -> El {
+fn library_heading(library: &Library, size: Option<u64>) -> El {
     let plural = |n: usize, one: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") };
     let mut facts = vec![plural(library.instruments, "instrument")];
     if library.multis > 0 {
@@ -412,6 +802,53 @@ fn library_heading(library: &crate::library::Library, size: Option<u64>) -> El {
     }
     lines.push(caption(facts.join(" · ")).fill(Role::Dim).lines(1).min_w(0));
     col(lines).gap(2).align(Align::Start).pad(edges(TIGHT, INSET, SPACE, INSET)).shrink(0)
+}
+
+/// Where the cursor is in the library: its folders, each a step back to.
+/// None at the library's top.
+fn crumbs(ui: &mut Ui, cx: &mut Cx, library: &Library, rows: &[Row]) -> Option<El> {
+    let at = cursor_at(cx, rows)?;
+    let folder = match &rows[at] {
+        Row::Folder { path, .. } => PathBuf::from(path),
+        Row::Preset { path, .. } => path.parent()?.to_path_buf(),
+    };
+    let inside = folder.strip_prefix(&library.dir).ok()?;
+    let mut items = Vec::new();
+    let mut path = library.dir.clone();
+    for (n, part) in inside.components().enumerate() {
+        path.push(part);
+        let key = path.to_string_lossy().into_owned();
+        let id = format!("crumb-{n}");
+        if ui.get(id.as_str()).activated() {
+            cx.state.cursor = Some(key.clone());
+            cx.state.browse.reveal_row = true;
+        }
+        if n > 0 {
+            items.push(caption("/").fill(Role::Dim).shrink(0));
+        }
+        let here = cx.state.cursor.as_deref() == Some(key.as_str());
+        let name = part.as_os_str().to_string_lossy().into_owned();
+        items.push(interactive(
+            row![caption(name.clone()).fill(if here { Role::Ink } else { Role::Dim }).lines(1).min_w(0)]
+                .pad((TIGHT, 0))
+                .min_w(0)
+                .focusable()
+                .a11y(A11y::Button)
+                .named(format!("Back to {name}"))
+                .tip(format!("Back to {name}"))
+                .id(id),
+            here,
+        ));
+    }
+    (!items.is_empty()).then(|| {
+        row(items)
+            .gap(0)
+            .align(Align::Center)
+            .pad(edges(0., INSET, TIGHT, INSET - TIGHT))
+            .clip()
+            .shrink(0)
+            .named("Folders")
+    })
 }
 
 /// Under the tabs while libraries are looked for: how far, and a stop.
@@ -473,6 +910,51 @@ fn progress_bar(done: f64) -> El {
     .named("Load progress")
 }
 
+/// A pane slid by the browser itself, so a row can be brought into view:
+/// the wheel and the bar at its edge move it to `y`, and `reveal`, a row's
+/// top and bottom, brings that row in. Returns where it is slid to, its bar
+/// when it overflows, and whether `reveal` was done.
+fn slide(ui: &mut Ui, id: &str, y: &mut f64, content_h: f64, reveal: Option<(f64, f64)>) -> (f64, Option<El>, bool) {
+    let view_h = ui.scene().and_then(|s| s.surface(id)).map_or(0., |s| s.frame.size.height);
+    if let Some(w) = ui.wheel(id) {
+        *y += w.y;
+    }
+    let bar_id = format!("{id}-bar");
+    let bar = ui.get(bar_id.as_str());
+    if bar.dragged && view_h > 0. {
+        *y += bar.drag_delta.y * content_h / view_h;
+    }
+    let revealed = view_h > 0. && reveal.is_some();
+    if let Some((top, bottom)) = reveal.filter(|_| view_h > 0.) {
+        if top < *y {
+            *y = top;
+        } else if bottom > *y + view_h {
+            *y = bottom - view_h;
+        }
+    }
+    *y = y.clamp(0., (content_h - view_h).max(0.));
+    let bar = (view_h > 0. && content_h > view_h + 0.5).then(|| scrollbar(ui, &bar_id, *y, view_h, content_h));
+    (*y, bar, revealed)
+}
+
+/// A pane's scroll thumb: drag it to slide the pane.
+fn scrollbar(ui: &mut Ui, id: &str, y: f64, view_h: f64, content_h: f64) -> El {
+    let r = ui.get(id);
+    let lift = ui.state(id).hover.max(if r.held { 1. } else { 0. }) as f32;
+    canvas(move |s| {
+        let len = (s.height * view_h / content_h).max(CONTROL);
+        let at = (s.height - len) * (y / (content_h - view_h)).clamp(0., 1.);
+        let w = 3. + 2. * f64::from(lift);
+        vec![Draw::fill(rect(s.width - w - 1., at + 2., w, len - 4.), Role::Ink.alpha(0.18 + 0.3 * lift))]
+    })
+    .w(8)
+    .h(Len::Pct(100.))
+    .shrink(0)
+    .a11y(A11y::Slider { value: y, min: 0., max: content_h - view_h })
+    .named("Scroll the list")
+    .id(id.to_owned())
+}
+
 /// The divider between the panes: drag it to share out the height, double-
 /// click to reset. The saved state takes it when let go.
 fn split_divider(ui: &mut Ui, cx: &mut Cx) -> El {
@@ -508,17 +990,14 @@ fn split_divider(ui: &mut Ui, cx: &mut Cx) -> El {
     .id(id)
 }
 
-/// The search field with its glyph, placeholder and clear button. The arrows
+/// A search field with its glyph, placeholder and clear button. The arrows
 /// and Enter still work from inside it.
-fn search_field(ui: &mut Ui, cx: &mut Cx, multis: bool) -> El {
-    if ui.keys("search").iter().any(|k| k.key == Key::Escape) {
-        cx.state.search.clear();
-    }
-    let field = text_input(ui, "search", &mut cx.state.search);
-    let placeholder = cx.state.search.is_empty() && !ui.focused("search");
-    let (clear, clear_el) = icon_button(ui, "search-clear", Icon::Close, "Clear the search", false);
+fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, name: &str) -> El {
+    let field = text_input(ui, id, text);
+    let empty = text.is_empty() && !ui.focused(id);
+    let (clear, clear_el) = icon_button(ui, format!("{id}-clear"), Icon::Close, "Clear", false);
     if clear {
-        cx.state.search.clear();
+        text.clear();
     }
     let mut layers = vec![
         field
@@ -526,34 +1005,31 @@ fn search_field(ui: &mut Ui, cx: &mut Cx, multis: bool) -> El {
             .w(Len::Pct(100.))
             .h(CONTROL + TIGHT)
             .pad(edges(0., CONTROL + TIGHT, 0., CONTROL))
-            .named("Search presets"),
+            .named(name.to_owned()),
         glyph(Icon::Search, TEXT + 2., Role::Ink.alpha(0.45))
             .anchor(Align::Start, Align::Center)
             .offset(SPACE, 0.),
-        row![
-            caption(if multis {
-                "Search multis"
-            } else {
-                "Search instruments"
-            })
-            .fill(Role::Dim)
-        ]
-        .align(Align::Center)
-        .pad(edges(0., 0., 0., CONTROL + TIGHT))
-        .h(CONTROL + TIGHT)
-        .when(!placeholder, |e| e.opacity(0.))
-        .disabled(),
+        row![caption(placeholder.to_owned()).fill(Role::Dim).lines(1).min_w(0)]
+            .align(Align::Center)
+            .pad(edges(0., 0., 0., CONTROL + TIGHT))
+            .h(CONTROL + TIGHT)
+            .min_w(0)
+            .when(!empty, |e| e.opacity(0.))
+            .disabled(),
     ];
-    if !cx.state.search.is_empty() {
+    if !text.is_empty() {
         layers.push(clear_el.anchor(Align::End, Align::Center));
     }
     stack(layers).w(Len::Pct(100.)).h(CONTROL + TIGHT).shrink(0)
 }
 
-/// Up and Down move the cursor along `listed`, Enter loads it.
-fn walk(ui: &mut Ui, cx: &mut Cx, listed: &[PathBuf]) {
+/// The keys on the list: Up and Down (and the pages, Home and End) move the
+/// cursor, Right opens a folder or steps into it, Left shuts it or steps
+/// back to the folder above; Enter opens a folder or loads a preset
+/// (Shift+Enter into a new part).
+fn walk(ui: &mut Ui, cx: &mut Cx, rows: &[Row], page: usize, focus_to: &mut Option<String>) {
     let from_search = ui.focused("search");
-    let free = ui.focus_key().is_none_or(|k| k.starts_with("instrument-"));
+    let free = ui.focus_key().is_none_or(|k| k.starts_with("instrument-") || k.starts_with("folder-"));
     let keys: Vec<KeyPress> = if from_search {
         ui.keys("search").to_vec()
     } else if free {
@@ -561,57 +1037,108 @@ fn walk(ui: &mut Ui, cx: &mut Cx, listed: &[PathBuf]) {
     } else {
         Vec::new()
     };
-    if listed.is_empty() {
+    if rows.is_empty() {
         return;
     }
-    let at = cx
-        .state
-        .cursor
-        .as_ref()
-        .and_then(|c| listed.iter().position(|p| p.to_string_lossy() == *c));
+    let last = rows.len() - 1;
+    let unfocused = ui.focus_key().is_none();
     for k in keys {
+        let at = cursor_at(cx, rows);
+        let parent = |n: usize| {
+            let depth = rows[n].depth().checked_sub(1)?;
+            (0..n).rev().find(|&i| matches!(&rows[i], Row::Folder { depth: d, .. } if *d == depth))
+        };
         let next = match (k.key, at) {
             (Key::Down, None) => Some(0),
-            (Key::Down, Some(n)) => Some((n + 1).min(listed.len() - 1)),
+            (Key::Down, Some(n)) => Some((n + 1).min(last)),
             (Key::Up, Some(n)) => Some(n.saturating_sub(1)),
-            (Key::Up, None) => Some(listed.len() - 1),
-            (Key::Enter, Some(n)) if from_search || ui.focus_key().is_none() => {
-                cx.open(&listed[n].clone());
+            (Key::Up, None) => Some(last),
+            (Key::PageDown, n) => Some(n.map_or(0, |n| (n + page).min(last))),
+            (Key::PageUp, n) => Some(n.map_or(0, |n| n.saturating_sub(page))),
+            (Key::Home, _) if !from_search => Some(0),
+            (Key::End, _) if !from_search => Some(last),
+            (Key::Right, Some(n)) if !from_search => match &rows[n] {
+                Row::Folder { open: false, path, .. } => {
+                    set_open(cx, path, true);
+                    None
+                }
+                Row::Folder { open: true, .. } => Some((n + 1).min(last)),
+                _ => None,
+            },
+            (Key::Left, Some(n)) if !from_search => match &rows[n] {
+                Row::Folder { open: true, path, .. } => {
+                    set_open(cx, path, false);
+                    None
+                }
+                _ => parent(n),
+            },
+            (Key::Enter, Some(n)) if from_search || unfocused => {
+                match &rows[n] {
+                    Row::Folder { path, open, .. } => set_open(cx, path, !open),
+                    Row::Preset { path, .. } => load(cx, &path.clone(), k.mods.shift),
+                }
                 None
             }
             (Key::Enter, None) if from_search => {
-                cx.open(&listed[0].clone());
+                if let Some(Row::Preset { path, .. }) = rows.iter().find(|r| matches!(r, Row::Preset { .. })) {
+                    load(cx, &path.clone(), k.mods.shift);
+                }
                 None
             }
             _ => None,
         };
         if let Some(n) = next {
-            cx.state.cursor = Some(listed[n].to_string_lossy().into_owned());
+            cx.state.cursor = Some(rows[n].key());
+            cx.state.browse.reveal_row = true;
             if !from_search {
-                ui.focus(format!("instrument-{n}"));
+                *focus_to = Some(rows[n].id(n));
             }
         }
     }
 }
 
-/// A list section's heading: it sticks to the top while its section scrolls.
-fn group_heading(label: &str, count: usize) -> El {
-    row![
-        section(label).flex(1),
-        caption(count.to_string()).text_size(SMALL).fill(Role::Dim)
+/// A folder row: click or Enter opens or shuts it, the arrow shows which,
+/// and how many presets it holds in all.
+fn folder(ui: &mut Ui, cx: &mut Cx, n: usize, row: &Row) -> El {
+    let Row::Folder { path, name, depth, count, open } = row else { return block(0, ROW) };
+    let id = row.id(n);
+    let r = ui.get(id.as_str());
+    // A double-click's second click leaves it as the first left it.
+    if (r.clicked_with(Button::Primary) && !r.double_clicked) || r.key_activated {
+        cx.state.cursor = Some(path.clone());
+        set_open(cx, path, !open);
+        keep_place(cx);
+    }
+    let cursor = cx.state.cursor.as_deref() == Some(path.as_str());
+    let el = row![
+        glyph(if *open { Icon::Down } else { Icon::Right }, TEXT, Role::Dim.alpha(1.)).shrink(0),
+        body(name.clone())
+            .text_size(TEXT)
+            .fill(if cursor { Role::Ink } else { Role::Dim })
+            .lines(1)
+            .flex(1)
+            .min_w(0),
+        caption(count.to_string()).text_size(SMALL).fill(Role::Dim).shrink(0),
     ]
-    .gap(SPACE)
+    .gap(TIGHT)
     .align(Align::Center)
-    .pad((INSET, TIGHT + 1.))
-    .fill(Role::Surface)
-    .sticky()
-    .shrink(0)
+    .pad(edges(0., SPACE, 0., SPACE + *depth as f64 * INDENT))
+    .h(ROW)
+    .when(cursor, |e| e.fill(Role::Raised))
+    .focusable()
+    .a11y(A11y::Button)
+    .named(format!("{name}, {count} presets, {}", if *open { "open" } else { "shut" }))
+    .tip(format!("{name}\nClick to {}, Left and Right fold", if *open { "shut" } else { "open" }))
+    .id(id)
+    .shrink(0);
+    interactive(el, cursor)
 }
 
-/// One preset row: click selects, double-click or Enter loads, drag drops it
-/// onto the rack, right-click opens its menu. A star at its end, shown on
-/// hover and kept once set, makes it a favorite.
-fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
+/// One preset row: click selects, Enter loads into the selected part
+/// (Shift+Enter into a new one), double-click loads, drag drops it onto the
+/// rack, right-click opens its menu. A star at its end, shown on hover and
+/// kept once set, makes it a favorite. `under`, when set, is its folder.
+fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: &str) -> El {
     let id = format!("instrument-{n}");
     let star_id = format!("star-{n}");
     let text = path.to_string_lossy().into_owned();
@@ -642,9 +1169,13 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
     if r.clicked_with(Button::Primary) {
         cx.state.cursor = Some(text.clone());
     }
-    if r.double_clicked || r.key_activated {
+    if r.double_clicked {
         cx.state.cursor = Some(text.clone());
+        keep_place(cx);
         cx.open(path);
+    } else if r.key_activated {
+        let shift = ui.keys(id.as_str()).iter().any(|k| k.mods.shift);
+        load(cx, path, shift);
     }
     if r.clicked_with(Button::Secondary) {
         cx.state.cursor = Some(text.clone());
@@ -655,30 +1186,38 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
     }
     let cursor = cx.state.cursor.as_deref() == Some(text.as_str());
     let verb = if import::is_multi(path) {
-        "Double-click to load this multi into the rack"
+        "Double-click or Enter to load this multi into the rack"
     } else {
-        "Double-click to load, drag onto the rack"
+        "Enter loads into the selected part, Shift+Enter or double-click into a new one; drag onto the rack"
     };
-    let el = row![
-        block(1, TEXT).fill(if loaded {
-            Fill::from(accent())
-        } else {
-            Role::Ink.alpha(0.)
-        }),
-        body(without_library(&stem(path), &cx.library_of(path)).to_owned())
-            .text_size(TEXT)
-            .fill(if loaded || cursor { Role::Ink } else { Role::Dim })
-            .lines(1)
+    let name = body(without_library(&stem(path), &cx.library_of(path)).to_owned())
+        .text_size(TEXT)
+        .fill(if loaded || cursor { Role::Ink } else { Role::Dim })
+        .lines(1)
+        .min_w(0);
+    let name = if under.is_empty() {
+        name.flex(1)
+    } else {
+        col![name, caption(under.to_owned()).fill(Role::Dim).lines(1).min_w(0)]
+            .gap(1)
+            .align(Align::Start)
             .flex(1)
-            .min_w(0),
+            .min_w(0)
+    };
+    // Presets in a folder line up with its name, past its arrow.
+    let indent = if depth > 0 { depth as f64 * INDENT - SPACE } else { 0. };
+    let el = row![
+        block(1, TEXT).fill(if loaded { Fill::from(accent()) } else { Role::Ink.alpha(0.) }),
+        name,
         match loading {
             Some(done) => super::rack::load_chip(done, false),
             None => star,
-        }
+        },
     ]
     .gap(INSET - 1.)
     .align(Align::Center)
-    .pad((SPACE, TIGHT + 1.))
+    .pad(edges(0., SPACE, 0., SPACE + indent))
+    .h(if under.is_empty() { ROW } else { ROW2 })
     .when(cursor, |e| e.fill(Role::Raised))
     .focusable()
     .a11y(A11y::Button)
@@ -687,18 +1226,6 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path) -> El {
     .id(id)
     .shrink(0);
     interactive(el, cursor)
-}
-
-/// The folders between a library and a preset, without "Instruments"/"Multis".
-fn subfolder(library: &Path, path: &Path) -> String {
-    let folder = path.parent().and_then(|p| p.strip_prefix(library).ok());
-    folder
-        .into_iter()
-        .flat_map(|f| f.components())
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .filter(|c| !matches!(c.to_lowercase().as_str(), "instruments" | "multis"))
-        .collect::<Vec<_>>()
-        .join(" / ")
 }
 
 fn hint(text: &str) -> El {

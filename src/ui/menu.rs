@@ -16,6 +16,8 @@ pub enum Target {
     Library(String),
     /// The browser's add button: library folders.
     Libraries,
+    /// How the browser lists the libraries.
+    LibrarySort,
     /// A rack slot.
     Part(usize),
     /// A key on the keyboard.
@@ -76,6 +78,9 @@ pub enum Command {
     ChangeArtwork(String),
     GeneratedCover(String),
     ResetCover(String),
+    /// How the browser lists the libraries; a library pinned above the rest, by folder.
+    SortLibraries(crate::library::Sort),
+    Pin(String),
     SaveMulti,
     Browser,
     Keyboard,
@@ -200,9 +205,19 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             if chosen.is_some() {
                 items.push(act(if own { "Reset to its artwork" } else { "Reset cover" }, "", Command::ResetCover(dir.clone())));
             }
-            items.extend([Item::Rule, act("Reveal in folder", "", Command::Reveal(dir.clone())), act("Copy path", "", Command::CopyPath(dir))]);
+            let pinned = cx.settings.pinned.contains(&dir);
+            items.extend([
+                Item::Rule,
+                act(if pinned { "Unpin" } else { "Pin to top" }, "", Command::Pin(dir.clone())),
+                act("Reveal in folder", "", Command::Reveal(dir.clone())),
+                act("Copy path", "", Command::CopyPath(dir)),
+            ]);
             items
         }
+        Target::LibrarySort => crate::library::Sort::ALL
+            .into_iter()
+            .map(|sort| check(sort.label(), cx.settings.sort == sort, Command::SortLibraries(sort)))
+            .collect(),
         Target::Libraries => {
             let mut items = vec![
                 act("Add folder of libraries…", "", Command::AddFolder(false)),
@@ -677,6 +692,13 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::AddFolder(single) => super::header::add_folder(cx, single),
         Command::ImportKontakt => shared.libraries.import_kontakt(),
         Command::Rescan => shared.libraries.rescan(),
+        Command::SortLibraries(sort) => shared.libraries.edit(|s| s.sort = sort),
+        Command::Pin(dir) => shared.libraries.edit(|s| match s.pinned.iter().position(|d| *d == dir) {
+            Some(at) => {
+                s.pinned.remove(at);
+            }
+            None => s.pinned.push(dir),
+        }),
         Command::CancelScan => shared.libraries.cancel(),
         Command::ChangeArtwork(library) => {
             if !cx.state.picker.ask(super::picker::Ask::Artwork { library: library.into() }) {

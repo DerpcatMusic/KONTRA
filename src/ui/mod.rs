@@ -342,8 +342,10 @@ struct EditorState {
     held: Option<(usize, usize, f64)>,
     /// The context menu showing.
     menu: Option<menu::Menu>,
-    /// The browser's keyboard cursor: a preset path.
+    /// The browser's keyboard cursor: a preset path, or a folder's.
     cursor: Option<String>,
+    /// The browser's library filter, scroll and rows.
+    browse: browser::Browse,
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
     /// A bus's name while it is being edited.
@@ -494,6 +496,18 @@ impl Cx<'_> {
     }
 
     fn remember(&mut self, path: &str) {
+        // Its library was used now: the browser can list by that.
+        if let Some(library) = self.view.shelf.of(Path::new(path)) {
+            let dir = library.dir.to_string_lossy().into_owned();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            if self.settings.used.get(&dir) != Some(&now) {
+                self.p.shared.libraries.edit(|s| {
+                    s.used.insert(dir, now);
+                });
+            }
+        }
         let recent = &mut self.selection.recent;
         recent.retain(|p| p != path);
         recent.insert(0, path.to_owned());
@@ -814,6 +828,7 @@ fn build(
         held: None,
         menu: None,
         cursor: None,
+        browse: Default::default(),
         renaming: None,
         renaming_bus: None,
         buses_shown: 1,
@@ -971,7 +986,7 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
             Key::Delete if loaded && cx.state.renaming.is_none() => cx.remove(slot),
             Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
-            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() => cx.state.selected_none(),
+            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
             _ => {}
         }
     }
