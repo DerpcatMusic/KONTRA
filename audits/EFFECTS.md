@@ -286,10 +286,13 @@ Filter type ids (`engine::filter::filter_type`, `KSP_FILTER_TYPES`):
 | SV_NOTCH4 | 1000 (no preset stores it) | | none |
 
 `$ENGINE_PAR_EFFECT_SUBTYPE` (group slots) switches the filter type: the script's value is
-the type id itself (ANALOG STRINGS sets 106 on slots storing 106). Ladders are 2 or 4
-pole Moog-style cascades with optional passband compensation (AR) or none (Daft);
-formant: two resonant band passes per vowel pair moved by Talk, sharpened by Sharp,
-shifted by Size (`FORMANT_TALK/SHARP/SIZE`); phaser: 4 allpass sections swept by cutoff.
+the type id itself (ANALOG STRINGS sets 106 on slots storing 106). All are the linear
+response of the analog topology factored into the same TPT sections
+(`src/engine/filter/models.rs`): ladders are 2 or 4 one-pole stages in a feedback loop,
+pass band compensated (AR) or dropping by `1 + k` (Daft); formant: three vowel formants
+as peaking sections, Talk morphing A-E-I-O-U, Size shifting, Sharp narrowing them
+(`FORMANT_TALK/SHARP/SIZE`); phaser: four first-order all-passes summed with the input
+(its feedback is not modelled).
 
 Rack effects (`src/fx/blocks.rs`; stored values are what presets hold, scripts set
 normalized x = value/1e6 through a law):
