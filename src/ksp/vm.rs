@@ -317,12 +317,79 @@ pub fn exec(m: &mut Machine, fuel: &mut u64) -> Exec<Yield> {
 
 #[inline(always)]
 fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
-    let code = &m.prog.code;
     loop {
-        // Fuel is only checked at loop back-edges and calls: those are statement
-        // boundaries, so a preempted thread never leaves operands on the shared stacks.
-        *fuel = fuel.saturating_sub(1);
-        let op = code[*pc];
+        if !reference()
+            && let Some(y) = hot(m, pc, fuel)?
+        {
+            return Ok(y);
+        }
+        loop {
+            // Fuel is only checked at loop back-edges and calls: those are statement
+            // boundaries, so a preempted thread never leaves operands on the shared stacks.
+            *fuel = fuel.saturating_sub(1);
+            if let Some(y) = step(m, pc, fuel)? {
+                return Ok(y);
+            }
+            if !reference() && is_hot(m.prog.code[*pc]) {
+                break;
+            }
+        }
+    }
+}
+
+/// The ops [`hot`] leaves to [`step`], as a pattern.
+macro_rules! cold {
+    () => {
+        Op::PushR(_)
+        | Op::PushS(_)
+        | Op::LdR(_)
+        | Op::StR(_)
+        | Op::LdS(_)
+        | Op::StS(_)
+        | Op::LdRA(_)
+        | Op::StRA(_)
+        | Op::LdSA(_)
+        | Op::StSA(_)
+        | Op::UiId(_)
+        | Op::Ref(_)
+        | Op::PopR
+        | Op::PopS
+        | Op::IToS
+        | Op::RToS
+        | Op::RAdd
+        | Op::RSub
+        | Op::RMul
+        | Op::RDiv
+        | Op::RMod
+        | Op::RNeg
+        | Op::REq
+        | Op::RNe
+        | Op::RLt
+        | Op::RGt
+        | Op::RLe
+        | Op::RGe
+        | Op::SEq
+        | Op::SNe
+        | Op::Concat
+        | Op::Builtin(..)
+        | Op::Declare(_)
+        | Op::InitArray(_)
+        | Op::Loop(_)
+    };
+}
+
+/// Whether [`hot`] runs `op`.
+fn is_hot(op: Op) -> bool {
+    !matches!(op, cold!())
+}
+
+/// Run the op at `pc`, already charged. This is every op's reference
+/// implementation; [`hot`] repeats the integer ones without the stack's and
+/// the machine's indirections.
+#[inline(never)]
+fn step(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
+    {
+        let op = m.prog.code[*pc].replaced();
         *pc += 1;
         let s = &mut *m.stk;
         let mem = &mut m.slot.mem;
@@ -503,7 +570,7 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 let back = (t as usize) < *pc;
                 *pc = t as usize;
                 if back && *fuel == 0 {
-                    return Ok(Yield::OutOfFuel);
+                    return Ok(Some(Yield::OutOfFuel));
                 }
             }
             Op::JumpIfZero(t) => {
@@ -528,7 +595,7 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             Op::Call(f) => {
                 if *fuel == 0 {
                     *pc -= 1;
-                    return Ok(Yield::OutOfFuel);
+                    return Ok(Some(Yield::OutOfFuel));
                 }
                 let depth = m.t.depth as usize;
                 if depth >= MAX_CALL_DEPTH {
@@ -545,12 +612,12 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             Op::Exit => {
                 // NI: `exit` in a function leaves only that function.
                 if m.t.depth == 0 {
-                    return Ok(Yield::Done);
+                    return Ok(Some(Yield::Done));
                 }
                 m.t.depth -= 1;
                 *pc = m.t.calls[m.t.depth as usize] as usize;
             }
-            Op::Halt => return Ok(Yield::Done),
+            Op::Halt => return Ok(Some(Yield::Done)),
             Op::AddVarImm(a, n) => {
                 let x = &mut mem.ints[a as usize];
                 *x = x.wrapping_add(n);
@@ -609,6 +676,13 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                     t as usize
                 };
             }
+            Op::IncBr(..)
+            | Op::BrIAVar(..)
+            | Op::BrIA2(..)
+            | Op::BrPolyIA2(..)
+            | Op::LdIASum(..)
+            | Op::AddVars(..)
+            | Op::LdIAdd(..) => unreachable!("chains run as the op they replaced"),
             Op::Loop(l) => {
                 let l = &m.prog.loops[l as usize];
                 let value = match l.operand() {
@@ -641,10 +715,10 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
                 };
                 match step {
                     Step::Next => {}
-                    Step::Wait(at) => return Ok(Yield::Wait(at)),
+                    Step::Wait(at) => return Ok(Some(Yield::Wait(at))),
                     Step::Exit => {
                         if m.t.depth == 0 {
-                            return Ok(Yield::Done);
+                            return Ok(Some(Yield::Done));
                         }
                         m.t.depth -= 1;
                         *pc = m.t.calls[m.t.depth as usize] as usize;
@@ -653,11 +727,337 @@ fn run(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Yield> {
             }
         }
     }
+    Ok(None)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: run every op through [`step`], the reference implementation.
+    pub static REFERENCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[inline(always)]
+fn reference() -> bool {
+    #[cfg(test)]
+    return REFERENCE.get();
+    #[cfg(not(test))]
+    false
+}
+
+#[cold]
+#[inline(never)]
+fn out_of_bounds(env: &mut Env, slot: u8, pc: usize) {
+    env.fault(slot, pc as u32, OUT_OF_BOUNDS);
+}
+
+const OUT_OF_BOUNDS: &str = "Array index out of bounds (read 0, write ignored)";
+
+/// `if taken { yes } else { no }` as a jump, never a `cmov`: script branches
+/// predict well, and a predicted jump lets the next op's loads start before
+/// this one's compare resolves. As a `cmov`, every op waited on the last.
+#[inline(always)]
+fn pick(taken: bool, yes: usize, no: usize) -> usize {
+    if taken {
+        yes
+    } else {
+        // SAFETY: an empty asm block; it only keeps LLVM from merging the arms.
+        unsafe { std::arch::asm!("", options(nomem, nostack, preserves_flags)) };
+        no
+    }
+}
+
+/// The `BrImm` at `p` that ends a chain, testing `x` (which it would have
+/// popped); any other op gets `x` pushed and runs next.
+#[inline(always)]
+fn br_imm(code: &[Op], s: &mut Vec<i32>, p: &mut usize, f: &mut i64, x: i32) {
+    if let Op::BrImm(cmp, n, to) = code[*p] {
+        *f -= 1;
+        *p = pick(cmp.test(x, n), *p + 3, to as usize);
+    } else {
+        s.push(x);
+    }
+}
+
+/// [`step`]'s integer core, for the ops that dominate real scripts, as one
+/// loop that keeps the int stack, memory and code in registers. It stops
+/// before the first op it leaves to `step` (strings, reals, builtins,
+/// declarations) and returns `None`, without charging for that op.
+#[inline(always)]
+fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
+    let prog = m.prog;
+    let (code, elems) = (&prog.code[..], &prog.elems[..]);
+    let slot = m.slot.index;
+    let mem = &mut m.slot.mem;
+    let (ints, poly) = (&mut mem.ints[..], &mut mem.poly[..]);
+    let env = &mut *m.env;
+    let t = &mut *m.t;
+    let row = t.ctx.poly_row * prog.poly;
+    // Moved out so its length and capacity live in registers.
+    let mut s = std::mem::take(&mut m.stk.ints);
+    // Fuel as a plain count down: it may go below zero between the checks,
+    // which test for `<= 0` where the saturating count tested for `== 0`.
+    let (mut p, mut f) = (*pc, i64::try_from(*fuel).unwrap_or(i64::MAX));
+    macro_rules! pop {
+        () => {
+            s.pop().expect("compiler balanced the int stack")
+        };
+    }
+    macro_rules! int2 {
+        (|$a:ident, $b:ident| $e:expr) => {{
+            let $b = pop!();
+            let $a = pop!();
+            s.push($e);
+        }};
+    }
+    // Like `element`.
+    macro_rules! elem {
+        ($v:expr, $i:expr, $at:expr) => {{
+            let (base, len) = elems[$v as usize];
+            match u32::try_from($i) {
+                Ok(i) if i < len => Some((base + i) as usize),
+                _ => {
+                    out_of_bounds(env, slot, $at);
+                    None
+                }
+            }
+        }};
+    }
+    let result = loop {
+        f -= 1;
+        let op = code[p];
+        p += 1;
+        match op {
+            Op::PushI(n) => s.push(n),
+            Op::LdI(i) => s.push(ints[i as usize]),
+            Op::StI(i) => ints[i as usize] = pop!(),
+            Op::LdPoly(i) => s.push(poly[(row + i) as usize]),
+            Op::StPoly(i) => poly[(row + i) as usize] = pop!(),
+            Op::LdIA(v) => {
+                let i = pop!();
+                let x = elem!(v, i, p).map_or(0, |e| ints[e]);
+                s.push(x);
+            }
+            Op::StIA(v) => {
+                let value = pop!();
+                let i = pop!();
+                if let Some(e) = elem!(v, i, p) {
+                    ints[e] = value;
+                }
+            }
+            Op::Sys(v) => s.push(sys_of(&t.ctx, env, slot, v)),
+            Op::PopI => drop(pop!()),
+            Op::IAdd => int2!(|a, b| a.wrapping_add(b)),
+            Op::ISub => int2!(|a, b| a.wrapping_sub(b)),
+            Op::IMul => int2!(|a, b| a.wrapping_mul(b)),
+            Op::IDiv => {
+                let b = pop!();
+                let a = pop!();
+                if b == 0 {
+                    env.fault(slot, p as u32, DIV_ZERO);
+                }
+                s.push(if b == 0 { 0 } else { a.wrapping_div(b) });
+            }
+            Op::IMod => {
+                let b = pop!();
+                let a = pop!();
+                if b == 0 {
+                    env.fault(slot, p as u32, DIV_ZERO);
+                }
+                s.push(if b == 0 { 0 } else { a.wrapping_rem(b) });
+            }
+            Op::INeg => {
+                let a = pop!();
+                s.push(a.wrapping_neg());
+            }
+            Op::IBitAnd => int2!(|a, b| a & b),
+            Op::IBitOr => int2!(|a, b| a | b),
+            Op::IBitXor => int2!(|a, b| a ^ b),
+            Op::IBitNot => {
+                let a = pop!();
+                s.push(!a);
+            }
+            Op::INot => {
+                let a = pop!();
+                s.push(bool_int(a == 0));
+            }
+            Op::IEq => int2!(|a, b| bool_int(a == b)),
+            Op::INe => int2!(|a, b| bool_int(a != b)),
+            Op::ILt => int2!(|a, b| bool_int(a < b)),
+            Op::IGt => int2!(|a, b| bool_int(a > b)),
+            Op::ILe => int2!(|a, b| bool_int(a <= b)),
+            Op::IGe => int2!(|a, b| bool_int(a >= b)),
+            Op::Jump(to) => {
+                let back = (to as usize) < p;
+                p = to as usize;
+                if back && f <= 0 {
+                    break Ok(Some(Yield::OutOfFuel));
+                }
+            }
+            Op::JumpIfZero(to) => p = pick(pop!() == 0, to as usize, p),
+            Op::JumpIfNonZero(to) => p = pick(pop!() != 0, to as usize, p),
+            Op::Case(c) => {
+                let arm = prog.cases[c as usize];
+                let v = s[s.len() - 1];
+                if (arm.low..=arm.high).contains(&v) {
+                    s.pop();
+                } else {
+                    p = arm.miss as usize;
+                }
+            }
+            Op::Call(func) => {
+                if f <= 0 {
+                    p -= 1;
+                    break Ok(Some(Yield::OutOfFuel));
+                }
+                let depth = t.depth as usize;
+                if depth >= MAX_CALL_DEPTH {
+                    break Err(Fault("KSP call nesting limit"));
+                }
+                t.calls[depth] = p as u32;
+                t.depth += 1;
+                p = prog.functions[func as usize] as usize;
+            }
+            Op::Ret => {
+                t.depth -= 1;
+                p = t.calls[t.depth as usize] as usize;
+            }
+            Op::Exit => {
+                if t.depth == 0 {
+                    break Ok(Some(Yield::Done));
+                }
+                t.depth -= 1;
+                p = t.calls[t.depth as usize] as usize;
+            }
+            Op::Halt => break Ok(Some(Yield::Done)),
+            Op::AddVarImm(a, n) => {
+                let x = &mut ints[a as usize];
+                *x = x.wrapping_add(n);
+                p += 3;
+            }
+            Op::MulAdd(n, a, b) => {
+                let x = n.wrapping_mul(ints[a as usize]);
+                s.push(x.wrapping_add(ints[b as usize]));
+                p += 4;
+            }
+            Op::AddImm(n) => {
+                let a = pop!();
+                s.push(a.wrapping_add(n));
+                p += 1;
+            }
+            Op::LdIAVar(v, a) => {
+                let i = ints[a as usize];
+                let x = elem!(v, i, p).map_or(0, |e| ints[e]);
+                s.push(x);
+                p += 1;
+            }
+            Op::LdIA2(v, a, b, n) => {
+                let i = i32::from(n).wrapping_mul(ints[a as usize]);
+                let i = i.wrapping_add(ints[b as usize]);
+                let x = elem!(v, i, p + 5).map_or(0, |e| ints[e]);
+                s.push(x);
+                p += 5;
+            }
+            Op::LdIAPoly(v, at) => {
+                let i = poly[(row + at) as usize];
+                let x = elem!(v, i, p + 1).map_or(0, |e| ints[e]);
+                s.push(x);
+                p += 1;
+            }
+            Op::BrIAImm(v, cmp, n, to) => {
+                let i = pop!();
+                let x = elem!(v, i, p).map_or(0, |e| ints[e]);
+                p = pick(cmp.test(x, n), p + 3, to as usize);
+            }
+            Op::BrCmp(cmp, to) => {
+                let b = pop!();
+                let a = pop!();
+                p = pick(cmp.test(a, b), p + 1, to as usize);
+            }
+            Op::BrImm(cmp, n, to) => {
+                p = pick(cmp.test(pop!(), n), p + 2, to as usize);
+            }
+            Op::BrVarImm(cmp, a, n, to) => {
+                p = pick(cmp.test(ints[a as usize], n), p + 3, to as usize);
+            }
+            // Chains: each charges what the ops it runs cost one at a time,
+            // and reports faults at their pcs.
+            Op::IncBr(a, n, to) => {
+                let x = &mut ints[a as usize];
+                *x = x.wrapping_add(n);
+                // The `Jump` at `p + 3`.
+                f -= 1;
+                let back = (to as usize) < p + 4;
+                p = to as usize;
+                if back && f <= 0 {
+                    break Ok(Some(Yield::OutOfFuel));
+                }
+                if let Op::BrVarImm(cmp, b, k, exit) = code[p] {
+                    f -= 1;
+                    p = pick(cmp.test(ints[b as usize], k), p + 4, exit as usize);
+                }
+            }
+            Op::BrIAVar(v, a) => {
+                let x = elem!(v, ints[a as usize], p).map_or(0, |e| ints[e]);
+                p += 1;
+                br_imm(code, &mut s, &mut p, &mut f, x);
+            }
+            Op::BrIA2(v, a, b, n) => {
+                let i = i32::from(n).wrapping_mul(ints[a as usize]);
+                let i = i.wrapping_add(ints[b as usize]);
+                let x = elem!(v, i, p + 5).map_or(0, |e| ints[e]);
+                p += 5;
+                br_imm(code, &mut s, &mut p, &mut f, x);
+            }
+            Op::BrPolyIA2(v, at) => {
+                let x = elem!(v, poly[(row + at) as usize], p + 1).map_or(0, |e| ints[e]);
+                p += 1;
+                if let (Op::LdIA2(w, a, b, n), Op::AddImm(k), Op::BrCmp(cmp, to)) =
+                    (code[p], code[p + 6], code[p + 8])
+                {
+                    let i = i32::from(n).wrapping_mul(ints[a as usize]);
+                    let i = i.wrapping_add(ints[b as usize]);
+                    let y = elem!(w, i, p + 6).map_or(0, |e| ints[e]).wrapping_add(k);
+                    f -= 3;
+                    p = pick(cmp.test(x, y), p + 10, to as usize);
+                } else {
+                    s.push(x);
+                }
+            }
+            Op::LdIASum(v, a, b) => {
+                let i = ints[a as usize].wrapping_add(ints[b as usize]);
+                let x = elem!(v, i, p + 3).map_or(0, |e| ints[e]);
+                s.push(x);
+                f -= 3;
+                p += 3;
+            }
+            Op::AddVars(a, b) => {
+                s.push(ints[a as usize].wrapping_add(ints[b as usize]));
+                f -= 2;
+                p += 2;
+            }
+            Op::LdIAdd(a, n) => {
+                s.push(ints[a as usize].wrapping_add(n));
+                f -= 1;
+                p += 2;
+            }
+            cold!() => {
+                p -= 1;
+                f += 1;
+                break Ok(None);
+            }
+        }
+    };
+    m.stk.ints = s;
+    (*pc, *fuel) = (p, f.max(0) as u64);
+    result
 }
 
 fn sys(m: &Machine, v: SysVar) -> i32 {
-    let ctx = &m.t.ctx;
-    let env = &*m.env;
+    sys_of(&m.t.ctx, m.env, m.slot.index, v)
+}
+
+#[inline(never)]
+fn sys_of(ctx: &Ctx, env: &Env, slot: u8, v: SysVar) -> i32 {
     let event = || env.events.get(ctx.event);
     match v {
         SysVar::EventId => ctx.event,
@@ -690,7 +1090,7 @@ fn sys(m: &Machine, v: SysVar) -> i32 {
         SysVar::SongPosition => 0,
         SysVar::TransportRunning => bool_int(env.transport),
         SysVar::Tempo => env.tempo as i32,
-        SysVar::CurrentScriptSlot => i32::from(m.slot.index),
+        SysVar::CurrentScriptSlot => i32::from(slot),
         // The control of `on ui_control(s)`; ui_control callbacks keep the value.
         SysVar::UiId => ctx.value,
         SysVar::PlayedVoices => env.events.live_count() as i32,
