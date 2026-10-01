@@ -26,6 +26,8 @@ pub struct NoteSpec<'a> {
     pub frozen_expression: Option<Expression>,
     /// Physical channel and original input key, inherited by following notes.
     pub owner: Option<(u8, u8)>,
+    /// Cancellation provenance, inherited even by independent generated notes.
+    pub input_channel: Option<u8>,
     pub note: u8,
     pub velocity: u8,
     /// Sample start offset in microseconds.
@@ -81,11 +83,23 @@ pub trait KspEngine {
     fn note_off(&mut self, at: u32, voice: EventId, event: &NoteSpec<'_>);
     fn fade(&mut self, at: u32, voice: EventId, fade: Fade);
     fn set_par(&mut self, at: u32, voice: EventId, par: VoicePar, value: i32);
+    fn freeze_expression_from(&mut self, at: u32, _channel: u8, _input_channel: Option<u8>, voice: EventId, expression: Expression) {
+        self.freeze_expression(at, voice, expression);
+    }
+    fn fade_from(&mut self, at: u32, _channel: u8, _input_channel: Option<u8>, voice: EventId, fade: Fade) {
+        self.fade(at, voice, fade);
+    }
+    fn set_par_from(&mut self, at: u32, _channel: u8, _input_channel: Option<u8>, voice: EventId, par: VoicePar, value: i32) {
+        self.set_par(at, voice, par, value);
+    }
     /// A controller that passed every slot: 0..127, 128 pitch bend (-8192..8191),
     /// 129 channel pressure.
     fn controller(&mut self, at: u32, cc: u8, value: i32);
     fn controller_on_channel(&mut self, at: u32, _channel: u8, cc: u8, value: i32) {
         self.controller(at, cc, value);
+    }
+    fn controller_from(&mut self, at: u32, channel: u8, _input_channel: Option<u8>, cc: u8, value: i32) {
+        self.controller_on_channel(at, channel, cc, value);
     }
     fn group_count(&self) -> usize;
     fn zone_count(&self) -> usize { 0 }
@@ -124,6 +138,9 @@ pub trait KspEngine {
     fn reset_release_counter(&mut self, _at: u32, _note: u8) {}
     fn reset_release_counter_on_channel(&mut self, at: u32, _channel: u8, note: u8) {
         self.reset_release_counter(at, note);
+    }
+    fn reset_release_counter_from(&mut self, at: u32, channel: u8, _input_channel: Option<u8>, note: u8) {
+        self.reset_release_counter_on_channel(at, channel, note);
     }
     /// Whether a voice is still sounding; drives `event_status` for sample-length notes.
     fn voice_active(&self, _voice: EventId) -> bool {
