@@ -259,14 +259,20 @@ impl Session {
                 (None, None)
             }
         };
-        Arc::new(Self {
+        let session = Arc::new(Self {
             id,
             path,
             started: Instant::now(),
             history,
             sender: Mutex::new(sender),
             worker: Mutex::new(worker),
-        })
+        });
+        emit_to(&session, json!({
+            "level":"info", "module":"system", "event":"session_started", "code":"session_started",
+            "data":{"build":build_identity(), "os":std::env::consts::OS, "arch":std::env::consts::ARCH,
+                "pid":std::process::id()},
+        }));
+        session
     }
 }
 
