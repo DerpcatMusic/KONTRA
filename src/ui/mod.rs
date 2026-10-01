@@ -1059,7 +1059,6 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
             .fill(Role::Level(3))
             .stroke(accent())
             .stroke_width(1)
-            .opacity(0.94)
             .at(at.x + INSET, at.y + SPACE),
     )
 }

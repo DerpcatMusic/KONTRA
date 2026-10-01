@@ -665,7 +665,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         && shown.w * s >= 16.
         && shown.kind != Kind::Knob
     {
-        let tag = words(name.to_owned(), 1, None, (shown.w * s).max(72. * s), FONT * s * 1.4, s, Role::Dim);
+        let tag = words(name.to_owned(), 1, None, (shown.w * s).max(72. * s), FONT * s * 1.4, s, secondary());
         let off = (w - (shown.w * s).max(72. * s)) / 2.;
         el = stack![el, tag.at(off, h)].w(w).h(h);
     }
@@ -776,7 +776,7 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
                 if w > 30. * s {
                     d.push(Draw::fill(
                         DrawPath::polyline([Point::new(x, y - k / 2.), Point::new(x + 2. * k, y - k / 2.), Point::new(x + k, y + k / 2.)], true),
-                        Role::Dim.alpha(1.),
+                        secondary(),
                     ));
                 }
             }

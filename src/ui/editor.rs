@@ -163,7 +163,7 @@ fn curves(cx: &mut Cx, slot: usize, group: u32, instrument: &Arc<crate::import::
 
 pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let Some((slot, group, instrument)) = group_of(cx) else {
-        return col![caption("This instrument has no groups to edit.").fill(Role::Dim).lines(2)].pad(INSET).flex(1);
+        return col![caption("This instrument has no groups to edit.").fill(secondary()).lines(2)].pad(INSET).flex(1);
     };
     let watch = Probe::watching(slot, group as usize);
     cx.p.shared.probe.watch.store(watch, Relaxed);
@@ -356,7 +356,7 @@ fn value_field(ui: &mut Ui, cx: &mut Cx, slot: usize, group: u16, p: Param, v: f
     }
     caption(viz::readout(p, v))
         .text_size(TEXT)
-        .fill(if changed { Role::Ink } else { Role::Dim })
+        .fill(if changed { Fill::from(Role::Ink) } else { secondary() })
         .lines(1)
         .shrink(0)
         .reserve(viz::widest(p).to_owned())
@@ -397,7 +397,7 @@ fn panel(
     let mut actions = Vec::new();
     // Says what the grey behind the curve is.
     if heard.is_some() {
-        actions.push(caption("Grey: the part's output").fill(Role::Dim).lines(1).min_w(0).pad(edges(0., INSET - TIGHT, 0., 0.)));
+        actions.push(caption("Grey: the part's output").fill(secondary()).lines(1).min_w(0).pad(edges(0., INSET - TIGHT, 0., 0.)));
     }
     if params.iter().any(|&p| edited(p)) {
         let (hit, el) = action(ui, format!("{}-reset", graph.id()), "Reset", false);
@@ -411,7 +411,7 @@ fn panel(
     }
     // Bars keep one height with or without their reset, so the graphs line up.
     let mut rows = vec![section_bar(title, actions).min_h(CONTROL + 2. * TIGHT)];
-    let note = || caption(empty).fill(Role::Dim).lines(3).pad((INSET, SPACE)).min_w(0);
+    let note = || caption(empty).fill(secondary()).lines(3).pad((INSET, SPACE)).min_w(0);
     // No envelope has no graph; no filter still shows the flat response.
     if handles.is_empty() && graph == Graph::Envelope {
         rows.push(note());
@@ -492,7 +492,7 @@ fn panel(
     );
     if graph == Graph::Response {
         rows.push(
-            row![caption("20 Hz").fill(Role::Dim), spacer(), caption("1 kHz").fill(Role::Dim), spacer(), caption("20 kHz").fill(Role::Dim)]
+            row![caption("20 Hz").fill(secondary()), spacer(), caption("1 kHz").fill(secondary()), spacer(), caption("20 kHz").fill(secondary())]
                 .pad((INSET, TIGHT))
                 .shrink(0),
         );
@@ -675,7 +675,7 @@ fn zones(cx: &Cx, group: u32, instrument: &crate::import::Instrument, tint: Colo
     col![
         col![
             map,
-            row![caption(note_name(0)).fill(Role::Dim), spacer(), caption(note_name(127)).fill(Role::Dim)].shrink(0)
+            row![caption(note_name(0)).fill(secondary()), spacer(), caption(note_name(127)).fill(secondary())].shrink(0)
         ]
         .gap(TIGHT)
         .pad(edges(0., INSET, SPACE, INSET))

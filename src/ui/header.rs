@@ -119,7 +119,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         // Squeezed to a letter or two, it says nothing: the loading bar and
         // the parts' own headers carry it, and the words stay in a tip.
         caption(if roomy { activity.clone() } else { String::new() })
-            .fill(Role::Dim)
+            .fill(secondary())
             .lines(1)
             .flex(1)
             .min_w(0)
@@ -195,7 +195,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         rows.push(
             row![
                 body(root.path.clone()).text_size(TEXT).lines(1).flex(1).min_w(0),
-                caption(format!("{kind} · {found}")).fill(Role::Dim).lines(1).shrink(0),
+                caption(format!("{kind} · {found}")).fill(secondary()).lines(1).shrink(0),
                 remove_el
             ]
             .gap(SPACE)
@@ -207,7 +207,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     if cx.settings.roots.is_empty() {
         rows.push(
             col![caption("No library folders yet. Add the folder that holds your Kontakt libraries, or one library's own folder.")
-                .fill(Role::Dim)
+                .fill(secondary())
                 .lines(2)]
             .align(Align::Start)
             .pad(edges(0., INSET, 0., INSET))
@@ -290,12 +290,12 @@ fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
         scales.push(el);
     }
     row![
-        caption("Performance view").fill(Role::Dim).lines(1).shrink(0),
+        caption("Performance view").fill(secondary()).lines(1).shrink(0),
         segmented(views),
-        caption("Scale").fill(Role::Dim).lines(1).shrink(0),
+        caption("Scale").fill(secondary()).lines(1).shrink(0),
         segmented(scales),
         wall_el,
-        caption("Wallpaper").fill(Role::Dim).lines(1).shrink(0),
+        caption("Wallpaper").fill(secondary()).lines(1).shrink(0),
     ]
     .gap(SPACE)
     .align(Align::Center)
@@ -379,7 +379,7 @@ pub fn save_multi(ui: &mut Ui, cx: &mut Cx) -> El {
     } else {
         cx.state.save_error.clone()
     };
-    let error = Some(caption(note).fill(Role::Dim).lines(1).shrink(0));
+    let error = Some(caption(note).fill(secondary()).lines(1).shrink(0));
     let mut line = vec![
         section("Save multi"),
         field.el.flex(1).min_w(0).h(CONTROL).named("Multi name"),

@@ -534,7 +534,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     col![
         section_bar(
             "Browser",
-            vec![caption(count.to_string()).text_size(SMALL).fill(Role::Dim), add_el, hide_el]
+            vec![caption(count.to_string()).text_size(SMALL).fill(secondary()), add_el, hide_el]
         ),
         row(kinds).gap(INSET + TIGHT).pad(edges(0., INSET, 0., INSET)).shrink(0),
         scan_line,
@@ -716,7 +716,7 @@ pub const THUMB: (f64, f64) = (TEXT * 3., TEXT * 1.75);
 
 /// A pseudo-entry's mark where a library shows its artwork.
 fn symbol(icon: Icon) -> El {
-    stack![glyph(icon, TEXT, Role::Ink.alpha(0.6)).centered()]
+    stack![glyph(icon, TEXT, secondary()).centered()]
         .w(THUMB.0)
         .h(THUMB.1)
         .fill(Role::Field)
@@ -737,7 +737,7 @@ fn source_row(
 ) -> El {
     let name = body(label.clone())
         .text_size(TEXT)
-        .fill(if chosen || loading.is_some() { Role::Ink } else { Role::Dim })
+        .fill(if chosen || loading.is_some() { Fill::from(Role::Ink) } else { secondary() })
         .lines(1)
         .min_w(0);
     let named = format!("{label}, {count} presets");
@@ -746,7 +746,7 @@ fn source_row(
             col![name, progress_bar(done)].gap(3).align(Align::Start).flex(1).min_w(0),
             super::rack::load_chip(done, false),
         ),
-        None => (name.flex(1), caption(count.to_string()).text_size(SMALL).fill(Role::Dim)),
+        None => (name.flex(1), caption(count.to_string()).text_size(SMALL).fill(secondary())),
     };
     let el = row![
         block(2, THUMB.1).fill(if chosen { Fill::from(accent()) } else { Role::Ink.alpha(0.) }),
@@ -803,9 +803,9 @@ fn library_heading(library: &Library, size: Option<u64>) -> El {
     });
     let mut lines = vec![body(library_label(&library.name)).text_size(TEXT).lines(1).min_w(0)];
     if !library.vendor.is_empty() {
-        lines.push(caption(library.vendor.clone()).fill(Role::Dim).lines(1).min_w(0));
+        lines.push(caption(library.vendor.clone()).fill(secondary()).lines(1).min_w(0));
     }
-    lines.push(caption(facts.join(" · ")).fill(Role::Dim).lines(1).min_w(0));
+    lines.push(caption(facts.join(" · ")).fill(secondary()).lines(1).min_w(0));
     col(lines).gap(2).align(Align::Start).pad(edges(TIGHT, INSET, SPACE, INSET)).shrink(0)
 }
 
@@ -833,12 +833,12 @@ fn crumbs(ui: &mut Ui, cx: &mut Cx, library: &Library, rows: &[Row]) -> Option<E
             cx.state.browse.reveal_row = true;
         }
         if n > 0 {
-            items.push(caption("/").fill(Role::Dim).shrink(0));
+            items.push(caption("/").fill(secondary()).shrink(0));
         }
         let here = cx.state.cursor.as_deref() == Some(key.as_str());
         let name = part.as_os_str().to_string_lossy().into_owned();
         items.push(interactive(
-            row![caption(name.clone()).fill(if here { Role::Ink } else { Role::Dim }).lines(1).min_w(0)]
+            row![caption(name.clone()).fill(if here { Fill::from(Role::Ink) } else { secondary() }).lines(1).min_w(0)]
                 .pad((TIGHT, 0))
                 .min_w(0)
                 .focusable()
@@ -871,7 +871,7 @@ fn scan_line(ui: &mut Ui, cx: &mut Cx, scanning: Option<(usize, usize)>) -> El {
     }
     let found = if found == 1 { "1 library".to_owned() } else { format!("{found} libraries") };
     row![
-        caption(format!("Scanning · {folders} folders · {found}")).fill(Role::Dim).lines(1).flex(1).min_w(0),
+        caption(format!("Scanning · {folders} folders · {found}")).fill(secondary()).lines(1).flex(1).min_w(0),
         stop_el
     ]
     .gap(SPACE)
@@ -894,7 +894,7 @@ fn empty_state(ui: &mut Ui, cx: &mut Cx) -> El {
             "Add the folder that holds your Kontakt libraries: each library in it is found, \
              with or without a library file. Or add one library's own folder."
         )
-        .fill(Role::Dim)
+        .fill(secondary())
         .lines(5),
         many_el,
         one_el,
@@ -1015,10 +1015,10 @@ fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, nam
             .h(CONTROL + TIGHT)
             .pad(edges(0., CONTROL + TIGHT, 0., CONTROL))
             .named(name.to_owned()),
-        glyph(Icon::Search, TEXT + 2., Role::Ink.alpha(0.45))
+        glyph(Icon::Search, TEXT + 2., secondary())
             .anchor(Align::Start, Align::Center)
             .offset(SPACE, 0.),
-        row![caption(placeholder.to_owned()).fill(Role::Dim).lines(1).min_w(0)]
+        row![caption(placeholder.to_owned()).fill(secondary()).lines(1).min_w(0)]
             .align(Align::Center)
             .pad(edges(0., 0., 0., CONTROL + TIGHT))
             .h(CONTROL + TIGHT)
@@ -1120,14 +1120,14 @@ fn folder(ui: &mut Ui, cx: &mut Cx, n: usize, row: &Row) -> El {
     }
     let cursor = cx.state.cursor.as_deref() == Some(path.as_str());
     let el = row![
-        glyph(if *open { Icon::Down } else { Icon::Right }, TEXT, Role::Dim.alpha(1.)).shrink(0),
+        glyph(if *open { Icon::Down } else { Icon::Right }, TEXT, secondary()).shrink(0),
         body(name.clone())
             .text_size(TEXT)
-            .fill(if cursor { Role::Ink } else { Role::Dim })
+            .fill(if cursor { Fill::from(Role::Ink) } else { secondary() })
             .lines(1)
             .flex(1)
             .min_w(0),
-        caption(count.to_string()).text_size(SMALL).fill(Role::Dim).shrink(0),
+        caption(count.to_string()).text_size(SMALL).fill(secondary()).shrink(0),
     ]
     .gap(TIGHT)
     .align(Align::Center)
@@ -1164,7 +1164,7 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: 
     let star = stack![glyph(
         if favorite { Icon::StarFilled } else { Icon::Star },
         TEXT,
-        Role::Ink.alpha(if favorite { 0.85 } else { 0.4 + 0.5 * star_hover }),
+        if favorite || star_hover > 0.5 { Fill::from(Role::Ink) } else { secondary() },
     )
     .centered()]
     .square(TEXT + 2.)
@@ -1201,13 +1201,13 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: 
     };
     let name = body(without_library(&stem(path), &cx.library_of(path)).to_owned())
         .text_size(TEXT)
-        .fill(if loaded || cursor { Role::Ink } else { Role::Dim })
+        .fill(if loaded || cursor { Fill::from(Role::Ink) } else { secondary() })
         .lines(1)
         .min_w(0);
     let name = if under.is_empty() {
         name.flex(1)
     } else {
-        col![name, caption(under.to_owned()).fill(Role::Dim).lines(1).min_w(0)]
+        col![name, caption(under.to_owned()).fill(secondary()).lines(1).min_w(0)]
             .gap(1)
             .align(Align::Start)
             .flex(1)
@@ -1238,7 +1238,7 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: 
 }
 
 fn hint(text: &str) -> El {
-    col![body(text).fill(Role::Dim).text_size(TEXT).lines(4)]
+    col![body(text).fill(secondary()).text_size(TEXT).lines(4)]
         .pad(edges(SPACE, INSET, SPACE, INSET))
         .shrink(0)
 }
