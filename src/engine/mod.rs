@@ -32,7 +32,7 @@ pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
-pub use script::{MAX_COMMANDS, ScriptSetup, effects, load_scripts};
+pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts};
 pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 
 use crate::fx::FxProcessor;
@@ -186,6 +186,7 @@ pub struct Engine {
     commands: Vec<Command>,
     /// Script engine parameter changes for the next render, ordered by frame.
     writes: Vec<Write>,
+    ir_requests: Vec<IrRequest>,
     /// MIDI channel of the latest input routed to the script; its notes play there.
     script_channel: u8,
     /// Envelope attack (s) for groups without their own envelope.
@@ -215,6 +216,7 @@ impl Default for Engine {
             script: None,
             commands: Vec::with_capacity(MAX_COMMANDS),
             writes: Vec::with_capacity(MAX_WRITES),
+            ir_requests: Vec::with_capacity(32),
             script_channel: 0,
             attack: 0.002,
             release: 0.15,
@@ -235,6 +237,7 @@ impl Engine {
         self.player.touch();
         self.commands.clear();
         self.writes.clear();
+        self.ir_requests.clear();
         let old = std::mem::replace(&mut self.bank, bank);
         self.player.free.clear();
         let slots = self.bank.as_deref().map_or(0, |b| b.slots().len());
@@ -305,6 +308,7 @@ impl Engine {
     pub fn set_script(&mut self, mut script: Option<Box<Runtime>>) -> Option<Box<Runtime>> {
         self.commands.clear();
         self.writes.clear();
+        self.ir_requests.clear();
         if let Some(rt) = script.as_deref_mut() {
             rt.set_sample_rate(self.player.rate);
         }
@@ -467,6 +471,7 @@ impl Engine {
             player: &mut self.player,
             commands: &mut self.commands,
             writes: &mut self.writes,
+            ir_requests: &mut self.ir_requests,
         };
         Some((rt, host))
     }
@@ -574,6 +579,32 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             rt.ui_control(&mut host, slot, control, value);
         }
+    }
+
+    pub fn pop_ir_request(&mut self) -> Option<IrRequest> {
+        if self.ir_requests.is_empty() { None } else { Some(self.ir_requests.remove(0)) }
+    }
+
+    pub fn retry_ir_request(&mut self, request: IrRequest) -> Result<(), IrRequest> {
+        if self.ir_requests.len() == self.ir_requests.capacity() { return Err(request) }
+        self.ir_requests.push(request);
+        Ok(())
+    }
+
+    /// Install an off-thread-built IR, retaining slot gains and returning the
+    /// old DSP for disposal off the audio thread. Failures keep the old IR.
+    pub fn finish_ir(&mut self, slot: u8, id: i32, ir: Option<crate::fx::PreparedIr>) -> Option<crate::fx::PreparedIr> {
+        let (loaded, retired) = match ir {
+            Some(ir) => match self.fx.replace_ir(ir) {
+                Ok(old) => (true, Some(old)),
+                Err(ir) => (false, Some(ir)),
+            },
+            None => (false, None),
+        };
+        if let Some((rt, mut host)) = self.scripted(self.script_channel) {
+            rt.async_complete(&mut host, slot, id, loaded);
+        }
+        retired
     }
 
     /// Polyphonic key pressure; only scripts react to it.

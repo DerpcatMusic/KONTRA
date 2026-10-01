@@ -988,9 +988,14 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         LoadIrSample => {
             let [slot, generic] = ints(m);
             let file = m.stk.strs.pop();
+            let id = m.env.next_async();
+            let request = m.engine.request_ir_sample(&file, slot, generic, m.slot.index, id);
+            if request == Some(true) {
+                return push_int(m, id);
+            }
             // Asynchronous in Kontakt: `on async_complete` reports 1 once
             // loaded, 0 when not found.
-            let loaded = m.engine.load_ir_sample(&file, slot, generic);
+            let loaded = request.or_else(|| m.engine.load_ir_sample(&file, slot, generic));
             match loaded {
                 Some(true) => {}
                 Some(false) => m.env.note(
@@ -999,7 +1004,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 None => m.env.note("load_ir_sample: impulse responses load only while on init runs"),
             }
             let loaded = loaded == Some(true);
-            let id = async_done(m, i32::from(loaded));
+            if m.env.async_done.len() < m.env.async_done.capacity() {
+                m.env.async_done.push((m.slot.index, id, i32::from(loaded)));
+            }
             push_int(m, id)
         }
         // ---- User interface ------------------------------------------------------------

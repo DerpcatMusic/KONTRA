@@ -189,6 +189,20 @@ enum Dsp {
     Block(Box<Block>),
 }
 
+/// A replacement convolution DSP built and retired on the worker thread.
+pub struct PreparedIr {
+    rack: Rack,
+    slot: u8,
+    dsp: Dsp,
+}
+
+impl PreparedIr {
+    pub(super) fn new(rack: Rack, slot: u8, p: &params::Convolution, rate: f32, block: usize) -> Option<Self> {
+        let ir = prepare_ir(p, rate)?;
+        Some(Self { rack, slot, dsp: Dsp::Convolution(Box::new(ir.map(|ch| Convolver::new(&ch, block)))) })
+    }
+}
+
 impl ProgramFx {
     /// Builds the DSP state for `sample_rate`; `process` calls are split into
     /// blocks of at most `max_block` frames. Unimplemented slots are left
@@ -497,6 +511,14 @@ impl FxProcessor {
             _ => return false,
         }
         true
+    }
+
+    /// Swap only the convolution DSP; preserve all current routing and gains.
+    pub fn replace_ir(&mut self, mut ir: PreparedIr) -> Result<PreparedIr, PreparedIr> {
+        let Some(slot) = self.slot_mut(ir.rack, ir.slot) else { return Err(ir) };
+        if !matches!(slot.dsp, Dsp::Convolution(_)) { return Err(ir) }
+        std::mem::swap(&mut slot.dsp, &mut ir.dsp);
+        Ok(ir)
     }
 
     /// Current value of a script-controllable parameter.

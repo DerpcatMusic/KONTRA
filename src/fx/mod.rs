@@ -15,7 +15,7 @@ mod reverb;
 
 pub use kind::{Kind, ksp_effect_type};
 pub use params::Params;
-pub use processor::{DIRECT, FxParam, FxProcessor, OUTS, Rack};
+pub use processor::{DIRECT, FxParam, FxProcessor, OUTS, PreparedIr, Rack};
 
 use anyhow::{Context, Result, ensure};
 use ni_file::kontakt::{
@@ -379,6 +379,16 @@ impl ProgramFx {
         if loads.is_empty() {
             return self.processor(sample_rate, max_block);
         }
+        self.with_loads(loads).processor(sample_rate, max_block)
+    }
+
+    /// Build just the IR's slot off the audio thread.
+    pub fn prepare_ir(&self, rack: Rack, slot: u8, sample_rate: f32, max_block: usize, loads: &[ScriptIr]) -> Option<PreparedIr> {
+        let mut fx = self.with_loads(loads);
+        PreparedIr::new(rack, slot, fx.convolution(rack, slot)?, sample_rate, max_block)
+    }
+
+    fn with_loads(&self, loads: &[ScriptIr]) -> Self {
         let mut fx = self.clone();
         for l in loads {
             match &l.load {
@@ -392,7 +402,7 @@ impl ProgramFx {
                 }
             }
         }
-        fx.processor(sample_rate, max_block)
+        fx
     }
 
     /// Compatibility notes: active effects that pass through, ignored params.

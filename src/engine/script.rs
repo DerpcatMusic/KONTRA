@@ -49,6 +49,23 @@ pub fn effects(instrument: &Instrument, script: Option<&Runtime>, rate: f32) -> 
 /// Script engine calls one render can hold; the rest are dropped and counted.
 pub const MAX_COMMANDS: usize = 256;
 
+/// A worker request: copying the name never allocates on the audio thread.
+#[derive(Clone)]
+pub struct IrRequest {
+    pub rack: Rack,
+    pub slot: u8,
+    pub script_slot: u8,
+    pub id: i32,
+    file: [u8; 1024],
+    len: usize,
+}
+
+impl IrRequest {
+    pub fn file(&self) -> &str {
+        std::str::from_utf8(&self.file[..self.len]).unwrap()
+    }
+}
+
 /// One engine call, applied at frame `at` of the next render.
 #[derive(Clone, Copy)]
 pub(super) struct Command {
@@ -97,6 +114,7 @@ pub(super) struct Host<'a> {
     pub player: &'a mut Player,
     pub commands: &'a mut Vec<Command>,
     pub writes: &'a mut Vec<Write>,
+    pub ir_requests: &'a mut Vec<IrRequest>,
 }
 
 impl Host<'_> {
@@ -122,6 +140,18 @@ impl Host<'_> {
 }
 
 impl KspEngine for Host<'_> {
+    fn request_ir_sample(&mut self, file: &str, slot: i32, generic: i32, script_slot: u8, id: i32) -> Option<bool> {
+        let Some((rack, slot)) = params::rack(generic).zip(u8::try_from(slot).ok())
+            .filter(|&(r, s)| self.fx.param(r, s, FxParam::Type) == Some(f32::from(crate::fx::Kind::Convolution.ser_id())))
+        else { return Some(false) };
+        if file.len() > 1024 || self.ir_requests.len() == self.ir_requests.capacity() {
+            return Some(false);
+        }
+        let mut request = IrRequest { rack, slot, script_slot, id, file: [0; 1024], len: file.len() };
+        request.file[..file.len()].copy_from_slice(file.as_bytes());
+        self.ir_requests.push(request);
+        Some(true)
+    }
     fn play_note(&mut self, at: u32, n: &NoteSpec<'_>) -> Option<EventId> {
         self.bank?;
         let id = self.player.next_id();

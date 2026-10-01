@@ -1370,6 +1370,18 @@ impl Runtime {
         self.settle(engine);
     }
 
+    /// A worker finished an asynchronous load for this script slot.
+    pub fn async_complete(&mut self, engine: &mut dyn KspEngine, slot: u8, id: i32, loaded: bool) {
+        if slot as usize >= self.states.len() { return; }
+        if !loaded {
+            self.env.note("load_ir_sample: file not found, or that slot holds no convolution effect");
+        }
+        if self.env.async_done.len() < self.env.async_done.capacity() {
+            self.env.async_done.push((slot, id, i32::from(loaded)));
+        }
+        self.settle(engine);
+    }
+
     /// A host-side edit of control `control` (index into `Interface::controls`).
     pub fn ui_control(
         &mut self,

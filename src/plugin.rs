@@ -303,6 +303,9 @@ pub struct Shared {
     lives: ArrayQueue<(usize, u64, Box<Live>)>,
     /// Edits of script controls from the performance view.
     edits: ArrayQueue<Edit>,
+    /// IR loads requested by scripts: part, instrument generation, script epoch.
+    ir_requests: ArrayQueue<(usize, u64, u64, crate::engine::IrRequest)>,
+    ir_ready: ArrayQueue<(usize, u64, IrHandoff)>,
     /// Host sample rate (`f64` bits) that effect processors are built for.
     pub(crate) rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
@@ -481,6 +484,8 @@ impl Default for Shared {
             live_requests: ArrayQueue::new(2 * RACK_SLOTS),
             lives: ArrayQueue::new(2 * RACK_SLOTS),
             edits: ArrayQueue::new(256),
+            ir_requests: ArrayQueue::new(64),
+            ir_ready: ArrayQueue::new(64),
             rate: AtomicU64::new(48000f64.to_bits()),
             key_owners: std::array::from_fn(|_| AtomicU64::new(128)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
@@ -715,6 +720,13 @@ struct Edit {
     value: i32,
 }
 /// Loader-built state for one rack slot, installed by the audio thread.
+struct IrHandoff {
+    ir: Option<crate::fx::PreparedIr>,
+    epoch: u64,
+    rate: f64,
+    request: crate::engine::IrRequest,
+}
+
 enum Handoff {
     /// A new instrument, or an empty slot, with its effects and initialized scripts.
     Part {
@@ -744,6 +756,38 @@ struct Retired {
     fx: Option<FxProcessor>,
     script: Option<Box<Runtime>>,
     heads: Option<Heads>,
+    ir: Option<crate::fx::PreparedIr>,
+}
+
+/// Resolve and build requested convolution replacements off the audio thread.
+fn load_irs(params: &SamplerParams) {
+    while !params.shared.ir_ready.is_full() {
+        let Some((part, generation, epoch, request)) = params.shared.ir_requests.pop() else { break };
+        let source = {
+            let view = params.shared.view.lock().unwrap();
+            let v = &view.parts[part];
+            (v.script_epoch == epoch && generation == params.shared.generation[part].load(Ordering::Acquire))
+                .then(|| v.instrument.clone().map(|i| (i, v.irs.clone()))).flatten()
+        };
+        let Some((instrument, mut irs)) = source else { continue };
+        let rate = params.shared.rate();
+        let loaded = crate::resources::ir_sample(&instrument.path, request.file())
+            .and_then(|file| crate::fx::ScriptIr::load(request.rack, request.slot, file).ok());
+        let ir = loaded.and_then(|loaded| {
+            irs.retain(|l| (l.rack, l.slot) != (request.rack, request.slot) || matches!(l.load, crate::fx::Load::Kind(_)));
+            irs.push(loaded);
+            instrument.fx.prepare_ir(request.rack, request.slot, rate as f32, MAX_BLOCK, &irs)
+        });
+        let mut view = params.shared.view.lock().unwrap();
+        let v = &mut view.parts[part];
+        if v.script_epoch != epoch || generation != params.shared.generation[part].load(Ordering::Acquire) {
+            continue;
+        }
+        let loaded = ir.is_some();
+        // Only this serialized worker produces; the audio thread only pops.
+        params.shared.ir_ready.push((part, generation, IrHandoff { ir, epoch, rate, request })).ok().unwrap();
+        if loaded { v.irs = irs; }
+    }
 }
 /// Persistent script values to restore: the host's saved state, else the instrument's.
 fn persisted(saved: &str, i: &Instrument) -> Vec<Persisted> {
@@ -1509,6 +1553,7 @@ impl BackgroundTask for Load {
                 }
             }
         }
+        load_irs(params);
         // The host changed sample rate since these effects were built: rebuild them here, off the audio thread.
         let rate = params.shared.rate();
         for slot in 0..RACK_SLOTS {
@@ -2048,6 +2093,7 @@ impl PluginLogic for Sampler {
                         bank: engine.set_bank(bank),
                         fx: Some(engine.set_fx(fx)),
                         heads: None,
+                        ir: None,
                     }
                 }
                 Handoff::Fx(fx) if current => Retired {
@@ -2083,6 +2129,7 @@ impl PluginLogic for Sampler {
                     fx: Some(fx),
                     script,
                     heads: None,
+                    ir: None,
                 },
                 Handoff::Heads(heads) => Retired {
                     heads: Some(heads),
@@ -2103,6 +2150,20 @@ impl PluginLogic for Sampler {
             };
             let _ = p.shared.discard.push(retired);
         }
+        while !p.shared.discard.is_full() {
+            let Some((slot, generation, IrHandoff { ir, epoch, rate: ir_rate, request })) = p.shared.ir_ready.pop() else { break };
+            let engine = &mut s.rack.parts[slot];
+            let current = generation == p.shared.generation[slot].load(Ordering::Acquire) && epoch == s.script_epoch[slot];
+            let ir = if !current { ir } else if ir_rate == engine.rate() {
+                engine.finish_ir(request.script_slot, request.id, ir)
+            } else {
+                if let Err(request) = engine.retry_ir_request(request) {
+                    engine.finish_ir(request.script_slot, request.id, None);
+                }
+                ir
+            };
+            let _ = p.shared.discard.push(Retired { ir, ..Retired::default() });
+        }
         let scripted = s.rack.parts.iter().filter(|e| e.script().is_some()).count();
         for engine in &mut s.rack.parts {
             engine.begin_audio_block(frames, scripted, offline);
@@ -2121,6 +2182,13 @@ impl PluginLogic for Sampler {
                 s.routers[e.part].forget();
                 let picked = s.routers[e.part].articulation_of_control(e.slot, e.control);
                 s.align.picked(e.part, picked);
+            }
+        }
+        for (part, engine) in s.rack.parts.iter_mut().enumerate() {
+            while !p.shared.ir_requests.is_full() {
+                let Some(request) = engine.pop_ir_request() else { break };
+                let generation = p.shared.generation[part].load(Ordering::Acquire);
+                let _ = p.shared.ir_requests.push((part, generation, s.script_epoch[part], request));
             }
         }
         // Refresh lent live views and persistence snapshots in place, one at
@@ -3144,6 +3212,167 @@ mod tests {
         assert_eq!(report["issues"][0]["stage"], "import");
         assert!(!report["issues"][0]["message"].as_str().unwrap().is_empty());
         assert!(report["log_path"].as_str().is_some());
+    }
+
+    #[test]
+    #[ignore = "requires the owner's local Una Corda library"]
+    fn una_corda_menus_load_real_ir_files_after_init() {
+        let path = Path::new(import::LIBRARY_ROOT).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
+        let i = Arc::new(import::read(&path).unwrap());
+        let (rt, errors) = crate::engine::load_scripts(&i, i.script_state.clone(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let rt = rt.unwrap();
+        let p = SamplerParams::new();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            let v = &mut view.parts[0];
+            v.instrument = Some(i.clone()); v.script_epoch = 1; v.fx_rate = 48000.; v.irs = rt.init_irs.clone();
+        }
+        let mut engine = Engine::default();
+        engine.set_bank(Some(Box::new(Bank::from_samples(i.groups.clone(), Vec::new(), Vec::new()).unwrap())));
+        engine.set_fx(crate::engine::effects(&i, Some(&rt), 48000.));
+        engine.set_script(Some(rt));
+        let mix = |e: &Engine| [crate::fx::FxParam::Wet, crate::fx::FxParam::Dry, crate::fx::FxParam::Bypass]
+            .map(|par| e.fx().param(crate::fx::Rack::Send, 0, par));
+        let saved_mix = mix(&engine);
+        for (name, value, file) in [
+            ("$T3_mnuType", 1, "GI_UC_IR_Vintage_EMT140_Dark.ncw"),
+            ("$T3_mnuReverb", 1, "GI_UC_IR_Room_Intimate Chamber.ncw"),
+        ] {
+            let control = engine.script().unwrap().interface(0).controls.iter().position(|c| c.variable == name).unwrap();
+            engine.ui_control(0, control, value);
+            for _ in 0..4 { engine.render(&mut [0.; 128], &mut [0.; 128]); }
+            let request = engine.pop_ir_request().expect("the actual menu queues a live IR load");
+            assert_eq!(request.file(), file);
+            println!("{name}={value} requests {}", request.file());
+            p.shared.ir_requests.push((0, 0, 1, request)).ok().unwrap();
+            assert!(engine.pop_ir_request().is_none());
+            load_irs(&p);
+            let (_, _, IrHandoff { ir, request, .. }) = p.shared.ir_ready.pop().unwrap();
+            assert!(ir.is_some(), "the real NCW is decoded and its replacement DSP is built");
+            let retired = engine.finish_ir(request.script_slot, request.id, ir);
+            assert!(retired.is_some(), "the new DSP replaced the old one");
+            let view = p.shared.view.lock().unwrap();
+            let loaded = view.parts[0].irs.iter().find(|l| l.rack == crate::fx::Rack::Send && l.slot == 0).unwrap();
+            let crate::fx::Load::Ir { file: loaded_file, ir: impulse } = &loaded.load else { panic!("IR") };
+            assert_eq!(loaded_file.file_name().unwrap().to_string_lossy().to_ascii_lowercase(), file.to_ascii_lowercase());
+            println!("installed {} ({} frames at {} Hz)", loaded_file.display(), impulse.0.frames.len(), impulse.0.rate);
+            assert_eq!(mix(&engine), saved_mix, "switching spaces preserves live return settings");
+        }
+        let notes = engine.script().unwrap().diagnostics();
+        println!("remaining diagnostics: {notes:?}");
+        assert!(!notes.iter().any(|n| n.contains("load_ir_sample")), "{notes:?}");
+    }
+
+    #[test]
+    fn live_ir_loads_complete_after_install_without_audio_allocations() {
+        use crate::{audio::Sample, fx::{Chain, Effect, Kind, Load as FxLoad, Params as FxParams, params::{Convolution, Impulse, IrBand}}, import::Group};
+        let dir = std::env::temp_dir().join(format!("kontra-live-ir-{}", std::process::id()));
+        let resources = dir.join("Resources/ir_samples");
+        std::fs::create_dir_all(&resources).unwrap();
+        let mut wav = Vec::new();
+        wav.extend(b"RIFF"); wav.extend(40u32.to_le_bytes()); wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes()); wav.extend(3u16.to_le_bytes()); wav.extend(1u16.to_le_bytes());
+        wav.extend(48000u32.to_le_bytes()); wav.extend(192000u32.to_le_bytes());
+        wav.extend(4u16.to_le_bytes()); wav.extend(32u16.to_le_bytes()); wav.extend(b"data");
+        wav.extend(4u32.to_le_bytes()); wav.extend(0.5f32.to_le_bytes());
+        std::fs::write(resources.join("Room.wav"), wav).unwrap();
+        let band = IrBand { length_ratio: 1., low_cut_hz: 20., high_cut_hz: 20000. };
+        let i = Instrument {
+            path: dir.join("Instrument.nki"), groups: vec![Group::default()],
+            fx: crate::fx::ProgramFx { insert: Chain { slots: vec![Effect {
+                slot: 0, kind: Kind::Convolution, version: 0, bypass: false, output_gain: 1., dry_level: 0.,
+                params: FxParams::Convolution(Box::new(Convolution {
+                    unknown: [0.; 2], predelay_ms: 0., early: band, late: band, unknown_9: 0.,
+                    flags: [false; 5], curve_x: Vec::new(), curve_db: Vec::new(), ir_index: -1,
+                    ir_file: None, ir_error: None,
+                    ir: Some(Impulse(Arc::new(Sample { rate: 48000, frames: vec![[1.; 2]] }))),
+                })),
+            }] }, ..Default::default() },
+            scripts: vec!["on init\nmake_perfview\ndeclare ui_switch $room\ndeclare $id\nend on\non ui_control($room)\nif ($room = 1)\n$id := load_ir_sample(\"room\", 0, $NI_INSERT_BUS)\nelse\n$id := load_ir_sample(\"missing\", 0, $NI_INSERT_BUS)\nend if\nend on\non async_complete\nmessage($NI_ASYNC_ID & \":\" & $NI_ASYNC_EXIT_STATUS)\nend on".into()],
+            ..Default::default()
+        };
+        let (rt, errors) = crate::engine::load_scripts(&i, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let p = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        dsp.script_epoch[0] = 1;
+        dsp.rack.parts[0].set_bank(Some(Box::new(Bank::from_samples(i.groups.clone(), Vec::new(), Vec::new()).unwrap())));
+        dsp.rack.parts[0].set_fx(crate::engine::effects(&i, rt.as_deref(), 48000.));
+        dsp.rack.parts[0].set_script(rt);
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            let v = &mut view.parts[0];
+            v.instrument = Some(Arc::new(i)); v.script_epoch = 1; v.fx_rate = 48000.;
+        }
+        let mut outputs = vec![vec![0.; 64]; 2];
+        let mut refs: Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 64);
+        let transport = TransportInfo::default();
+        let mut midi_out = EventList::with_capacity(0);
+        let mut cx = ProcessContext::new(&transport, 48000., 64, &mut midi_out);
+        let events = EventList::with_capacity(0);
+        let tick = |dsp: &mut Dsp, buffer: &mut AudioBuffer, cx: &mut ProcessContext| {
+            Sampler::process(dsp, &p, buffer, &events, cx);
+        };
+        assert_eq!(allocations(|| {
+            dsp.rack.parts[0].ui_control(0, 0, 1);
+            tick(&mut dsp, &mut buffer, &mut cx);
+        }), 0, "queuing the IR allocated or freed on the audio thread");
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "", "completion waits for installation");
+        assert_eq!(p.shared.ir_requests.len(), 1);
+        let pending = p.shared.ir_requests.pop().unwrap();
+        for _ in 0..p.shared.ready.capacity() {
+            p.shared.ready.push((0, 0, Handoff::Fx(FxProcessor::default()))).ok().unwrap();
+            p.shared.ir_ready.push((0, 0, IrHandoff { ir: None, epoch: 0, rate: 48000., request: pending.3.clone() })).ok().unwrap();
+        }
+        p.shared.ir_requests.push(pending).ok().unwrap();
+        load_irs(&p);
+        assert!(p.shared.ready.is_full(), "IR loads never evict queued instrument or FX handoffs");
+        assert_eq!(p.shared.ir_requests.len(), 1, "backpressure leaves the request pending");
+        while p.shared.ready.pop().is_some() {}
+        while p.shared.ir_ready.pop().is_some() {}
+        load_irs(&p);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "");
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0, "installing or completing the IR allocated or freed on the audio thread");
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "1:1");
+        assert_eq!(p.shared.discard.len(), 1, "the worker receives the old kernel");
+        while p.shared.discard.pop().is_some() {}
+        let before = p.shared.view.lock().unwrap().parts[0].irs.clone();
+        assert!(matches!(before[0].load, FxLoad::Ir { .. }));
+        dsp.rack.parts[0].ui_control(0, 0, 0);
+        tick(&mut dsp, &mut buffer, &mut cx);
+        load_irs(&p);
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0");
+        assert!(p.shared.view.lock().unwrap().parts[0].irs == before, "failed loads keep the IR");
+        dsp.rack.parts[0].ui_control(0, 0, 1);
+        tick(&mut dsp, &mut buffer, &mut cx);
+        load_irs(&p);
+        p.shared.rate.store(44100f64.to_bits(), Ordering::Release);
+        dsp.rack.parts[0].reset(44100.);
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0", "wrong-rate kernels are retried without installation or premature completion");
+        assert_eq!(p.shared.ir_requests.len(), 1);
+        load_irs(&p);
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:1", "the original request ID completes after rebuilding at the new rate");
+        dsp.rack.parts[0].ui_control(0, 0, 1);
+        tick(&mut dsp, &mut buffer, &mut cx);
+        load_irs(&p);
+        dsp.script_epoch[0] = 2;
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:1", "a replaced script never gets a stale completion");
+        dsp.script_epoch[0] = 1;
+        dsp.rack.parts[0].ui_control(0, 0, 1);
+        tick(&mut dsp, &mut buffer, &mut cx);
+        p.shared.generation[0].store(1, Ordering::Release);
+        load_irs(&p);
+        assert!(p.shared.ir_ready.is_empty(), "replaced instruments discard queued loads");
+        dsp.rack.parts[0].ui_control(0, 0, 1);
+        dsp.rack.parts[0].set_script(None);
+        assert!(dsp.rack.parts[0].pop_ir_request().is_none(), "script replacement clears requests before they receive the new epoch");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

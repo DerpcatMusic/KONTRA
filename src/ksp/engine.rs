@@ -107,6 +107,11 @@ pub trait KspEngine {
     fn load_ir_sample(&mut self, _file: &str, _slot: i32, _generic: i32) -> Option<bool> {
         None
     }
+    /// Queue an IR load off the audio thread. True defers completion until
+    /// the host installs it; false fails immediately; None uses the init loader.
+    fn request_ir_sample(&mut self, _file: &str, _slot: i32, _generic: i32, _script_slot: u8, _id: i32) -> Option<bool> {
+        None
+    }
     /// `reset_rls_trig_counter`: restart `note`'s release-trigger counter.
     fn reset_release_counter(&mut self, _at: u32, _note: u8) {}
     fn reset_release_counter_on_channel(&mut self, at: u32, _channel: u8, note: u8) {

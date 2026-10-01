@@ -42,6 +42,32 @@ fn convolution(ir: &[f32]) -> Effect {
     fx
 }
 
+#[test]
+fn live_ir_swap_keeps_the_slot_mix_and_rejects_other_effects() {
+    let fx = ProgramFx { insert: Chain { slots: vec![convolution(&[1.0])] }, ..Default::default() };
+    let mut p = fx.processor(SR, 64);
+    p.set_param(Rack::Insert, 0, FxParam::Wet, 0.25);
+    p.set_param(Rack::Insert, 0, FxParam::Dry, 0.5);
+    let loaded = ScriptIr { rack: Rack::Insert, slot: 0, load: Load::Ir {
+        file: "other.wav".into(),
+        ir: Impulse(Arc::new(Sample { rate: SR as u32, frames: vec![[2.0; 2]] })),
+    }};
+    let ir = fx.prepare_ir(Rack::Insert, 0, SR, 64, std::slice::from_ref(&loaded)).unwrap();
+    let old = p.replace_ir(ir).ok().expect("convolution slot");
+    assert_eq!(p.param(Rack::Insert, 0, FxParam::Wet), Some(0.25));
+    assert_eq!(p.param(Rack::Insert, 0, FxParam::Dry), Some(0.5));
+    let mut left = [1.0; 64];
+    let mut right = left;
+    p.process(&mut left, &mut right);
+    assert!(left.iter().chain(&right).all(|v| (*v - 1.0).abs() < 1e-6));
+    let mut gain = chain(vec![gainer(3.0)]);
+    assert!(gain.replace_ir(old).is_err(), "a stale IR cannot replace another effect");
+    let mut left = [1.0; 64];
+    let mut right = left;
+    gain.process(&mut left, &mut right);
+    assert!(left.iter().chain(&right).all(|v| *v == 3.0));
+}
+
 /// A processor running `slots` as the insert rack, in 64-frame blocks.
 fn chain(slots: Vec<Effect>) -> FxProcessor {
     ProgramFx {
