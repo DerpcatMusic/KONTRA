@@ -579,6 +579,9 @@ pub struct Runtime {
     /// `on init` or `on persistence_changed`), in call order.
     /// The playing engine applies them on install and after a reset.
     pub init_controllers: Vec<(u8, u8)>,
+    /// Impulse responses `on init` loaded (`load_ir_sample`), last per slot;
+    /// effects build with them ([`crate::fx::ProgramFx::processor_with`]).
+    pub init_irs: Vec<crate::fx::ScriptIr>,
     /// Counts script runs and host writes to script memory; see [`changes`](Self::changes).
     changes: u64,
 }
@@ -604,6 +607,7 @@ impl Runtime {
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
             init_controllers: Vec::new(),
+            init_irs: Vec::new(),
         }
     }
 

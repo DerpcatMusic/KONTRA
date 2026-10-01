@@ -6,7 +6,7 @@
 
 use super::params::{self, Address, GroupPar, MAX_WRITES, Write};
 use super::{Ahdsr, Bank, EventChange, EventId, GroupMask, GroupSettings, NoteEvent, Player};
-use crate::fx::{FxParam, FxProcessor, ProgramFx, Rack};
+use crate::fx::{FxParam, FxProcessor, ProgramFx, Rack, ScriptIr};
 use crate::import::{Group, Instrument};
 use crate::ksp::{EnginePar, Fade, KspEngine, NoteLength, NoteSpec, Persisted, Runtime, VoicePar};
 
@@ -29,6 +29,7 @@ pub fn load_scripts(
         Runtime::with_scripts(&instrument.scripts, &mut setup, SCRIPT_OUTPUTS, persisted);
     rt.init_engine_pars = setup.pars;
     rt.init_controllers = setup.controllers;
+    rt.init_irs = setup.irs;
     let errors = errors
         .into_iter()
         .enumerate()
@@ -36,6 +37,13 @@ pub fn load_scripts(
         .collect();
     crate::audio::trim_heap();
     (Some(Box::new(rt)), errors)
+}
+
+/// The instrument's effects for `rate`, with the impulse responses
+/// `script`'s `on init` loaded. Allocates: build off the audio thread.
+pub fn effects(instrument: &Instrument, script: Option<&Runtime>, rate: f32) -> FxProcessor {
+    let irs = script.map_or(&[][..], |rt| &rt.init_irs);
+    instrument.fx.processor_with(rate, super::MAX_BLOCK, irs)
 }
 
 /// Script engine calls one render can hold; the rest are dropped and counted.
@@ -318,6 +326,7 @@ fn instrument((volume, pan, tune): (f32, f32, f32), p: GroupPar) -> Option<f32> 
 pub struct ScriptSetup<'a> {
     groups: &'a [Group],
     fx: &'a ProgramFx,
+    path: &'a std::path::Path,
     rate: f64,
     settings: Vec<GroupSettings>,
     instrument: (f32, f32, f32),
@@ -325,6 +334,7 @@ pub struct ScriptSetup<'a> {
     effects: Vec<(Address, f32)>,
     pars: Vec<(EnginePar, i32)>,
     controllers: Vec<(u8, u8)>,
+    irs: Vec<ScriptIr>,
 }
 
 impl<'a> ScriptSetup<'a> {
@@ -332,12 +342,14 @@ impl<'a> ScriptSetup<'a> {
         Self {
             groups: &instrument.groups,
             fx: &instrument.fx,
+            path: &instrument.path,
             rate,
             settings: instrument.groups.iter().map(GroupSettings::from).collect(),
             instrument: (1.0, 0.0, 0.0),
             effects: Vec::new(),
             pars: Vec::new(),
             controllers: Vec::new(),
+            irs: Vec::new(),
         }
     }
 
@@ -430,5 +442,25 @@ impl KspEngine for ScriptSetup<'_> {
 
     fn find_target(&self, group: usize, modulator: usize, name: &str) -> Option<usize> {
         params::find_target(self.groups, group, modulator, name)
+    }
+
+    /// Decoded here, off the audio thread; the effects build with it.
+    /// Only a convolution slot takes an impulse response.
+    fn load_ir_sample(&mut self, file: &str, slot: i32, generic: i32) -> Option<bool> {
+        let convolution = f32::from(crate::fx::Kind::Convolution.ser_id());
+        let Some((rack, slot)) = params::rack(generic)
+            .zip(u8::try_from(slot).ok())
+            .filter(|&(r, s)| self.fx.param(r, s, FxParam::Type) == Some(convolution))
+        else {
+            return Some(false);
+        };
+        let Some(ir) = crate::artwork::ir_sample(self.path, file)
+            .and_then(|path| ScriptIr::load(rack, slot, path).ok())
+        else {
+            return Some(false);
+        };
+        self.irs.retain(|i| (i.rack, i.slot) != (rack, slot));
+        self.irs.push(ir);
+        Some(true)
     }
 }

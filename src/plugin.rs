@@ -411,6 +411,8 @@ pub(crate) struct PartView {
     pub(crate) freed: u64,
     /// Rate of the effects handed to the audio thread; 0 when none were.
     pub(crate) fx_rate: f64,
+    /// Impulse responses the runtime's `on init` loaded, built into the effects.
+    pub(crate) irs: Vec<crate::fx::ScriptIr>,
     /// `Part::script_state` the audio thread's runtime matches (loaded from or last saved).
     pub(crate) script_state: String,
     /// Epoch of the runtime last handed to the audio thread.
@@ -1063,6 +1065,17 @@ impl BackgroundTask for Load {
                 let mut view = params.shared.view.lock().unwrap();
                 let epoch = next_epoch(&mut view, slot, snapshot, script.as_deref());
                 view.parts[slot].script_state = part.script_state.clone();
+                // Restored values may load other impulse responses.
+                let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
+                if irs != view.parts[slot].irs {
+                    let fx = instrument.fx.processor_with(view.parts[slot].fx_rate as f32, MAX_BLOCK, &irs);
+                    view.parts[slot].irs = irs;
+                    let _ = params.shared.ready.force_push((
+                        slot,
+                        params.shared.generation[slot].load(Ordering::Acquire),
+                        Handoff::Fx(fx),
+                    ));
+                }
                 let _ = params.shared.ready.force_push((
                     slot,
                     params.shared.generation[slot].load(Ordering::Acquire),
@@ -1237,7 +1250,8 @@ impl BackgroundTask for Load {
                     });
                     let rate = params.shared.rate();
                     v.fx_rate = rate;
-                    let fx = instrument.fx.processor(rate as f32, MAX_BLOCK);
+                    v.irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
+                    let fx = instrument.fx.processor_with(rate as f32, MAX_BLOCK, &v.irs);
                     let _ = params.shared.ready.force_push((
                         slot,
                         generation,
@@ -1301,9 +1315,10 @@ impl BackgroundTask for Load {
                 v.instrument
                     .clone()
                     .filter(|_| v.fx_rate != 0. && v.fx_rate != rate)
+                    .map(|i| (i, v.irs.clone()))
             };
-            let Some(instrument) = stale else { continue };
-            let fx = instrument.fx.processor(rate as f32, MAX_BLOCK);
+            let Some((instrument, irs)) = stale else { continue };
+            let fx = instrument.fx.processor_with(rate as f32, MAX_BLOCK, &irs);
             params.shared.view.lock().unwrap().parts[slot].fx_rate = rate;
             let _ = params.shared.ready.force_push((
                 slot,

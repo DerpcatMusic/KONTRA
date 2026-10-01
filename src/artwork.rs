@@ -306,6 +306,25 @@ pub fn linked_script(instrument: &Path, name: &str) -> Result<Option<Vec<u8>>, S
     Pictures::of(instrument, "scripts").read(file)
 }
 
+/// The impulse response `load_ir_sample` names: an absolute path, or a file
+/// in the library's `Resources/ir_samples`, loose or in its resource
+/// container. Names match without case; a name without an extension
+/// matches any audio file; files in `ir_samples` subfolders match by name.
+pub fn ir_sample(instrument: &Path, name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return path.is_file().then(|| path.into());
+    }
+    let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let names: Vec<String> = if path.extension().is_some() {
+        vec![file.into()]
+    } else {
+        ["wav", "aif", "aiff", "ncw"].iter().map(|e| format!("{file}.{e}")).collect()
+    };
+    let mut source = Pictures::of(instrument, "ir_samples");
+    names.iter().find_map(|n| source.path(n))
+}
+
 /// Where a preset's pictures come from: `Resources/pictures` folders near
 /// it, else a resource container (`.nkr`) in or one folder below them.
 struct Pictures {
@@ -313,10 +332,10 @@ struct Pictures {
     files: HashMap<String, PathBuf>,
     /// Containers to try in order, opened on first use.
     containers: Vec<PathBuf>,
-    open: Vec<(File, ni_file::nkr::Archive)>,
+    open: Vec<(File, ni_file::nkr::Archive, PathBuf)>,
     key: Option<Option<std::sync::Arc<dyn ni_file::nis::LibraryKey>>>,
     instrument: PathBuf,
-    /// The `Resources` subfolder: `pictures` or `scripts`.
+    /// The `Resources` subfolder: `pictures`, `scripts` or `ir_samples`.
     folder: &'static str,
 }
 
@@ -383,20 +402,10 @@ impl Pictures {
         }
         let member = format!("Resources/{}/{file}", self.folder);
         for n in 0.. {
-            if n == self.open.len() {
-                let Some(path) = (!self.containers.is_empty()).then(|| self.containers.remove(0))
-                else {
-                    return Ok(None);
-                };
-                let Ok(mut f) = File::open(&path) else {
-                    continue;
-                };
-                let Ok(archive) = ni_file::nkr::Archive::read(&mut f) else {
-                    continue;
-                };
-                self.open.push((f, archive));
+            if !self.opened(n) {
+                return Ok(None);
             }
-            let (f, archive) = &mut self.open[n];
+            let (f, archive, _) = &mut self.open[n];
             let Some(entry) = archive.find(&member) else {
                 continue;
             };
@@ -416,6 +425,44 @@ impl Pictures {
                 .map_err(|e| e.to_string());
         }
         Ok(None)
+    }
+
+    /// Whether container `n` is open, opening the next ones as needed.
+    fn opened(&mut self, n: usize) -> bool {
+        while n == self.open.len() {
+            if self.containers.is_empty() {
+                return false;
+            }
+            let path = self.containers.remove(0);
+            let Ok(mut f) = File::open(&path) else { continue };
+            if let Ok(archive) = ni_file::nkr::Archive::read(&mut f) {
+                self.open.push((f, archive, path));
+            }
+        }
+        true
+    }
+
+    /// The path of `<folder>/<file>`, or of `file` in any folder below it
+    /// in a container, for [`crate::audio::decode`].
+    fn path(&mut self, file: &str) -> Option<PathBuf> {
+        let file = file.to_lowercase();
+        if let Some(path) = self.files.get(&file) {
+            return Some(path.clone());
+        }
+        let folder = format!("resources/{}/", self.folder);
+        let nested = format!("/{file}");
+        let member = |k: &&String| {
+            k.strip_prefix(&folder).is_some_and(|rest| rest == file || rest.ends_with(&nested))
+        };
+        let mut n = 0;
+        while self.opened(n) {
+            let (_, archive, path) = &self.open[n];
+            if let Some(k) = archive.entries.keys().filter(member).min_by_key(|k| k.len()) {
+                return Some(path.join(&archive.entries[k].name));
+            }
+            n += 1;
+        }
+        None
     }
 }
 

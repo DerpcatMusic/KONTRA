@@ -30,7 +30,7 @@ pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
-pub use script::{MAX_COMMANDS, ScriptSetup, load_scripts};
+pub use script::{MAX_COMMANDS, ScriptSetup, effects, load_scripts};
 pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 
 use crate::fx::FxProcessor;

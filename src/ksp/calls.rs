@@ -809,11 +809,20 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8) -> Exec<Step> {
             push_fmt(m, format_args!("Out {}", n + 1))
         }
         LoadIrSample => {
-            ints::<2>(m);
-            m.stk.strs.pop();
-            m.env
-                .note("load_ir_sample: impulse responses are not loaded");
-            let id = async_done(m, 0);
+            let [slot, generic] = ints(m);
+            let file = m.stk.strs.pop();
+            // Asynchronous in Kontakt: `on async_complete` reports 1 once
+            // loaded, 0 when not found.
+            let loaded = m.engine.load_ir_sample(&file, slot, generic);
+            match loaded {
+                Some(true) => {}
+                Some(false) => m.env.note(
+                    "load_ir_sample: file not found, or that slot holds no convolution effect",
+                ),
+                None => m.env.note("load_ir_sample: impulse responses load only while on init runs"),
+            }
+            let loaded = loaded == Some(true);
+            let id = async_done(m, i32::from(loaded));
             push_int(m, id)
         }
         // ---- User interface ------------------------------------------------------------

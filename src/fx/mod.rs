@@ -28,6 +28,29 @@ use std::{collections::HashMap, sync::Arc};
 /// Longest impulse response loaded (seconds at the IR's own rate).
 const MAX_IR_SECONDS: usize = 20;
 
+/// An impulse response a script loaded into a convolution slot.
+#[derive(Clone)]
+pub struct ScriptIr {
+    pub rack: Rack,
+    pub slot: u8,
+    pub file: std::path::PathBuf,
+    pub ir: Impulse,
+}
+
+impl PartialEq for ScriptIr {
+    fn eq(&self, o: &Self) -> bool {
+        (self.rack, self.slot, &self.file) == (o.rack, o.slot, &o.file)
+    }
+}
+
+impl ScriptIr {
+    /// Decode `file` as the impulse response for `rack`/`slot`.
+    pub fn load(rack: Rack, slot: u8, file: std::path::PathBuf) -> Result<Self> {
+        let ir = crate::audio::decode(&file, MAX_IR_SECONDS * 192_000)?;
+        Ok(Self { rack, slot, file, ir: Impulse(Arc::new(ir)) })
+    }
+}
+
 /// One slot of an 8-slot Kontakt effect rack.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Effect {
@@ -272,6 +295,35 @@ impl ProgramFx {
                 Err(e) => c.ir_error = Some(e.clone()),
             }
         }
+    }
+
+    /// The convolution slot at `rack`/`slot`, if there is one.
+    fn convolution(&mut self, rack: Rack, slot: u8) -> Option<&mut params::Convolution> {
+        let chain = match rack {
+            Rack::Insert => &mut self.insert,
+            Rack::Send => &mut self.send,
+            Rack::Main => &mut self.main,
+            Rack::Bus(b) => &mut self.buses.iter_mut().find(|bus| bus.index == b as usize)?.chain,
+        };
+        match &mut chain.slots.iter_mut().find(|fx| fx.slot == slot as usize)?.params {
+            Params::Convolution(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// [`processor`](Self::processor) with the impulse responses scripts
+    /// loaded (`load_ir_sample`) in place of the preset's.
+    pub fn processor_with(&self, sample_rate: f32, max_block: usize, irs: &[ScriptIr]) -> FxProcessor {
+        if irs.is_empty() {
+            return self.processor(sample_rate, max_block);
+        }
+        let mut fx = self.clone();
+        for ir in irs {
+            if let Some(c) = fx.convolution(ir.rack, ir.slot) {
+                (c.ir, c.ir_file, c.ir_error) = (Some(ir.ir.clone()), Some(ir.file.display().to_string()), None);
+            }
+        }
+        fx.processor(sample_rate, max_block)
     }
 
     /// Compatibility notes: active effects that pass through, ignored params.

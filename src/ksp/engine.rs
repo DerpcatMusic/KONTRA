@@ -90,6 +90,12 @@ pub trait KspEngine {
     fn find_target(&self, _group: usize, _modulator: usize, _name: &str) -> Option<usize> {
         None
     }
+    /// `load_ir_sample`: load impulse response `file` into convolution
+    /// `slot` of rack `generic`. Whether it loaded; `None` when this engine
+    /// cannot load impulse responses.
+    fn load_ir_sample(&mut self, _file: &str, _slot: i32, _generic: i32) -> Option<bool> {
+        None
+    }
     /// `reset_rls_trig_counter`: restart `note`'s release-trigger counter.
     fn reset_release_counter(&mut self, _at: u32, _note: u8) {}
     /// Whether a voice is still sounding; drives `event_status` for sample-length notes.

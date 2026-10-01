@@ -2389,3 +2389,84 @@ end on"
     );
     assert!(rt.diagnostics().iter().any(|d| d.contains("set_engine_par")), "{:?}", rt.diagnostics());
 }
+
+/// `load_ir_sample` in `on init`: a name without extension or case found in
+/// the library's `Resources/ir_samples` loads into an empty convolution
+/// insert, and the effects then convolve with it; `on async_complete`
+/// reports 1 for it and 0 for a file that is not there.
+#[test]
+fn load_ir_sample_fills_the_convolution_slot_and_reports_status() {
+    use fx::{Chain, Effect, Kind, Params, params};
+    let dir = std::env::temp_dir().join(format!("kontakto-ir-{}", std::process::id()));
+    let irs = dir.join("Resources").join("IR_Samples");
+    std::fs::create_dir_all(&irs).unwrap();
+    write_wav(&irs.join("Room.WAV"), 4410);
+    let band = params::IrBand { length_ratio: 1.0, low_cut_hz: 20.0, high_cut_hz: 20_000.0 };
+    let conv = params::Convolution {
+        unknown: [0.0; 2],
+        predelay_ms: 0.0,
+        early: band,
+        late: band,
+        unknown_9: 0.0,
+        flags: [false; 5],
+        curve_x: Vec::new(),
+        curve_db: Vec::new(),
+        ir_index: -1,
+        ir_file: None,
+        ir_error: None,
+        ir: None,
+    };
+    let mut i = two_groups();
+    i.path = dir.join("Instrument.nki");
+    i.fx.insert = Chain {
+        slots: vec![Effect {
+            slot: 0,
+            kind: Kind::Convolution,
+            version: 0,
+            bypass: false,
+            output_gain: 1.0,
+            dry_level: 0.0,
+            params: Params::Convolution(Box::new(conv)),
+        }],
+    };
+    i.scripts = vec!["on init
+declare $found
+declare $missing
+declare $done
+declare %ok[1]
+$found := load_ir_sample(\"room\", 0, $NI_INSERT_BUS)
+$missing := load_ir_sample(\"nothing\", 0, $NI_INSERT_BUS)
+end on
+on async_complete
+{ Out of bounds, and so a diagnostic, unless the status is right. }
+if ($NI_ASYNC_ID = $found)
+  %ok[$NI_ASYNC_EXIT_STATUS - 1] := 1
+end if
+if ($NI_ASYNC_ID = $missing)
+  %ok[$NI_ASYNC_EXIT_STATUS] := 1
+end if
+inc($done)
+message($done)
+end on"
+        .into()];
+    let tail = |with_ir: bool| {
+        let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+        assert!(errors.is_empty(), "{errors:?}");
+        let rt = rt.unwrap();
+        assert_eq!(rt.init_irs.len(), 1);
+        let mut e = engine_with(layered(i.groups.clone(), &[0.1, 0.2]));
+        e.set_fx(kontakto::engine::effects(&i, with_ir.then_some(&*rt), e.rate() as f32));
+        e.set_script(Some(rt));
+        let energy = tail_energy(&mut e);
+        let rt = e.script().unwrap();
+        assert_eq!(rt.last_message(), "2");
+        let diagnostics = rt.diagnostics();
+        assert!(diagnostics.iter().all(|d| !d.contains("out of bounds")), "{diagnostics:?}");
+        assert!(diagnostics.iter().any(|d| d.contains("load_ir_sample: file not found")), "{diagnostics:?}");
+        energy
+    };
+    let (dry, wet) = (tail(false), tail(true));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(dry < 1e-9, "no impulse response, yet a tail: {dry}");
+    assert!(wet > 1e-3, "the loaded impulse response leaves no tail: {wet}");
+}

@@ -296,7 +296,8 @@ fn render(args: &[String]) -> Result<()> {
     engine.blocking_streams = !realtime;
     engine.set_bank(Some(Box::new(bank)));
     if !dry {
-        engine.set_fx(instrument.fx.processor(engine.rate() as f32, MAX_BLOCK));
+        let script = scripts.0.as_deref().filter(|_| !no_script);
+        engine.set_fx(kontakto::engine::effects(&instrument, script, engine.rate() as f32));
     }
     if let Some(g) = group {
         engine.set_all_groups_allowed(false);
@@ -432,7 +433,7 @@ fn voices(path: &Path, notes: &str) -> Result<()> {
     let mut engine = Engine::default();
     engine.blocking_streams = true;
     engine.set_bank(Some(Box::new(bank)));
-    engine.set_fx(instrument.fx.processor(engine.rate() as f32, MAX_BLOCK));
+    engine.set_fx(kontakto::engine::effects(&instrument, scripts.0.as_deref(), engine.rate() as f32));
     install_scripts(&mut engine, scripts);
     let input = parse_notes(notes.split(','))?;
     let last = input.last().map_or(0, |e| e.0);
@@ -659,7 +660,7 @@ fn bench_script(path: &Path, seconds: f64) -> Result<()> {
     let input = parse_notes(specs.iter().map(String::as_str))?;
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(bank)));
-    engine.set_fx(instrument.fx.processor(RATE as f32, MAX_BLOCK));
+    engine.set_fx(kontakto::engine::effects(&instrument, scripts.0.as_deref(), RATE as f32));
     install_scripts(&mut engine, scripts);
     let init_ms = started.elapsed().as_secs_f64() * 1e3;
     let slots = engine.script().map_or(0, |rt| rt.slots());
@@ -1159,7 +1160,7 @@ fn audit_patch(path: &Path) -> Result<()> {
     let mut warnings = instrument.warnings.len() + usize::from(bank.warning.is_some());
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(bank)));
-    engine.set_fx(instrument.fx.processor(RATE as f32, MAX_BLOCK));
+    engine.set_fx(kontakto::engine::effects(&instrument, script.as_deref(), RATE as f32));
     engine.set_script(script);
     row["load_ms"] = (started.elapsed().as_millis() as u64).into();
     row["script_errors"] = errors.len().into();

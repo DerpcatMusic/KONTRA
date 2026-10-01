@@ -448,6 +448,16 @@ pub(crate) enum Address {
     Filter(u16, u8, Knob),
 }
 
+/// The effect rack a KSP `generic` argument names.
+pub(crate) fn rack(generic: i32) -> Option<Rack> {
+    Some(match generic {
+        0 => Rack::Send,
+        1 => Rack::Insert,
+        2 => Rack::Main,
+        g => Rack::Bus(u8::try_from(g - BUS_OFFSET).ok().filter(|&b| b < BUSES)?),
+    })
+}
+
 impl Address {
     /// Map a KSP address onto the engine, or `None` when it is not modelled.
     pub(crate) fn resolve(par: EnginePar, groups: &[Group]) -> Option<Self> {
@@ -462,12 +472,7 @@ impl Address {
         };
         let rack = || {
             (par.group == -1).then_some(())?;
-            Some(match par.generic {
-                0 => Rack::Send,
-                1 => Rack::Insert,
-                2 => Rack::Main,
-                g => Rack::Bus(u8::try_from(g - BUS_OFFSET).ok().filter(|&b| b < BUSES)?),
-            })
+            rack(par.generic)
         };
         let fx = |param| Some(Self::Fx(rack()?, u8::try_from(par.slot).ok()?, param));
         let slot = |knob| Some(Self::Filter(group()?, u8::try_from(par.slot).ok()?, knob));
