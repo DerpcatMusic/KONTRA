@@ -657,3 +657,28 @@ fn nested_nis_lengths_cannot_consume_bytes_outside_their_declared_body() {
         assert!(SubtreeItem { inner_data: valid[..length].to_vec() }.item().is_err());
     }
 }
+
+#[test]
+fn generic_nis_read_reuses_detection_and_preserves_stream_consumption() {
+    use ni_file::NIFile;
+    use std::io::{Read, Seek, SeekFrom};
+    struct Counted { bytes: Cursor<Vec<u8>>, read: usize }
+    impl Read for Counted {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.bytes.read(out)?;self.read += n;Ok(n)
+        }
+    }
+    impl Seek for Counted {
+        fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> { self.bytes.seek(from) }
+    }
+    let mut bytes = 68u64.to_le_bytes().to_vec();
+    bytes.extend(1u32.to_le_bytes());bytes.extend(b"hsin");bytes.extend([0;24]);
+    bytes.extend(20u64.to_le_bytes());bytes.extend(b"DSIN");bytes.extend(1u32.to_le_bytes());bytes.extend(1u32.to_le_bytes());
+    bytes.extend(1u32.to_le_bytes());bytes.extend(0u32.to_le_bytes());
+    let mut reader = Counted { bytes: Cursor::new(bytes.clone()), read: 0 };
+    assert!(matches!(NIFile::read(&mut reader).unwrap(), NIFile::NISoundContainer(_)));
+    assert_eq!(reader.read, bytes.len() + 4); // one signature probe and one complete parse
+    assert_eq!(reader.bytes.position(), bytes.len() as u64);
+    bytes[60..64].copy_from_slice(&2u32.to_le_bytes()); // corrupt child-list version
+    assert!(NIFile::read(Cursor::new(&bytes)).is_err());
+}
