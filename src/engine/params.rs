@@ -582,6 +582,9 @@ impl Address {
                 Self::Fx(rack, u8::try_from(par.slot).ok()?, FxParam::SendLevel((par.id - id::SENDLEVEL_0) as u8))
             }
             _ => match crate::ksp::engine_par_name(par.id)? {
+                "$ENGINE_PAR_IRC_PREDELAY" => fx(FxParam::Convolution(0))?,
+                "$ENGINE_PAR_IRC_LENGTH_RATIO_ER" => fx(FxParam::Convolution(1))?,
+                "$ENGINE_PAR_IRC_LENGTH_RATIO_LR" => fx(FxParam::Convolution(2))?,
                 // The formant filter's knobs: talk, sharp, size.
                 "$ENGINE_PAR_FORMANT_TALK" => slot(Knob::Cutoff)?,
                 "$ENGINE_PAR_FORMANT_SHARP" => slot(Knob::Resonance)?,
@@ -637,7 +640,7 @@ impl Address {
             Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => value as f32,
             // `$NI_REVERB2_TYPE_ROOM` (0) or `_HALL` (1).
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => f32::from(value != 0),
-            Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Field(..)) => x,
+            Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => x,
             Self::Group(_, p) | Self::Instrument(p) => match p {
                 GroupPar::Volume => volume(x),
                 GroupPar::Pan => 2.0 * x - 1.0,
@@ -680,7 +683,7 @@ impl Address {
             Self::Fx(_, _, FxParam::Output) => return if v >= 0.0 { v as i32 } else { -1 },
             Self::Fx(_, _, FxParam::Type) | Self::GroupType(..) => return v as i32,
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => return i32::from(v >= 0.5),
-            Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Field(..)) => v,
+            Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => v,
             Self::Filter(_, _, Knob::Type) => return v as i32,
             Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) => {
                 return i32::from(v != 0.0);
@@ -793,7 +796,11 @@ pub fn display(id: i32, value: i32) -> Option<Disp> {
         id::CUTOFF => Disp::Num(43.6 * (8.96 * x).exp2(), 1),
         // Stereo Modeller spread: 0 % mono, 100 % as recorded, 200 % widest.
         id::STEREO => Disp::Num(x * 200.0, 1),
-        _ => return None,
+        _ => match crate::ksp::engine_par_name(id)? {
+            "$ENGINE_PAR_IRC_PREDELAY" => Disp::Num(crate::fx::params::IrSettings::predelay_ms(x), 2),
+            "$ENGINE_PAR_IRC_LENGTH_RATIO_ER" | "$ENGINE_PAR_IRC_LENGTH_RATIO_LR" => Disp::Num(50. + 100. * x, 1),
+            _ => return None,
+        },
     })
 }
 

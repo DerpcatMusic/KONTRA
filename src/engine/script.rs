@@ -21,19 +21,50 @@ pub fn load_scripts(
     persisted: Vec<Persisted>,
     rate: f64,
 ) -> (Option<Box<Runtime>>, Vec<String>) {
+    load_scripts_with_ir(instrument, persisted, rate, &[])
+}
+
+pub fn load_scripts_with_ir(
+    instrument: &Instrument,
+    persisted: Vec<Persisted>,
+    rate: f64,
+    ir_settings: &[crate::fx::IrSlotSettings],
+) -> (Option<Box<Runtime>>, Vec<String>) {
     if instrument.scripts.is_empty() {
         return (None, Vec::new());
     }
     let mut setup = ScriptSetup::new(instrument, rate);
+    // Kontakt saves engine state separately from script variables. Seed it
+    // before init so authored get_engine_par calls see the restored values.
+    let mut restore_errors = Vec::new();
+    for saved in ir_settings {
+        let (rack, slot, settings) = (saved.rack, saved.slot, saved.settings);
+        if setup.fx.param(rack, slot, FxParam::Convolution(0)).is_none()
+            || !settings.values.iter().chain([&settings.size]).all(|v| v.is_finite() && (0. ..=1.).contains(v)) { continue }
+        if let Some(file) = &saved.file {
+            match ScriptIr::load(rack, slot, file.clone()) {
+                Ok(ir) => setup.loads.push(ir),
+                Err(error) => {
+                    let error = format!("restore impulse response {}: {error:#}", file.display());
+                    crate::diagnostics::resource(&instrument.path, &file.to_string_lossy(), &error);
+                    restore_errors.push(error);
+                }
+            }
+        }
+        setup.loads.push(ScriptIr { rack, slot, load: Load::Convolution(settings) });
+        for (n, value) in settings.values.into_iter().enumerate() {
+            setup.effects.push((Address::Fx(rack, slot, FxParam::Convolution(n as u8)), value));
+        }
+    }
     let (mut rt, errors) =
         Runtime::with_scripts(&instrument.scripts, &mut setup, SCRIPT_OUTPUTS, persisted);
     rt.init_engine_pars = setup.pars;
     rt.init_controllers = setup.controllers;
     rt.init_irs = setup.loads;
-    let errors = errors
+    let errors = restore_errors.into_iter().chain(errors
         .into_iter()
         .enumerate()
-        .filter_map(|(slot, e)| Some(format!("Script {}: {}", slot + 1, e?)))
+        .filter_map(|(slot, e)| Some(format!("Script {}: {}", slot + 1, e?))))
         .collect();
     crate::audio::trim_heap();
     (Some(Box::new(rt)), errors)
@@ -56,11 +87,15 @@ pub struct IrRequest {
     pub slot: u8,
     pub script_slot: u8,
     pub id: i32,
+    pub settings: crate::fx::params::IrSettings,
     file: [u8; 1024],
     len: usize,
 }
 
 impl IrRequest {
+    pub(crate) fn rebuild(rack: Rack, slot: u8, settings: crate::fx::params::IrSettings) -> Self {
+        Self { rack, slot, settings, script_slot: 0, id: -1, file: [0; 1024], len: 0 }
+    }
     pub fn file(&self) -> &str {
         std::str::from_utf8(&self.file[..self.len]).unwrap()
     }
@@ -147,7 +182,8 @@ impl KspEngine for Host<'_> {
         if file.len() > 1024 || self.ir_requests.len() == self.ir_requests.capacity() {
             return Some(false);
         }
-        let mut request = IrRequest { rack, slot, script_slot, id, file: [0; 1024], len: file.len() };
+        let settings = self.fx.ir_settings(rack, slot).unwrap_or(crate::fx::params::IrSettings::DEFAULT);
+        let mut request = IrRequest { rack, slot, script_slot, id, settings, file: [0; 1024], len: file.len() };
         request.file[..file.len()].copy_from_slice(file.as_bytes());
         self.ir_requests.push(request);
         Some(true)
@@ -425,7 +461,7 @@ impl<'a> ScriptSetup<'a> {
         }
         // The old effect's values and impulse response went with it.
         self.effects.retain(|(a, _)| {
-            !matches!(a, Address::Fx(r, s, FxParam::Reverb(_) | FxParam::SendLevel(_)) if (*r, *s) == (rack, slot))
+            !matches!(a, Address::Fx(r, s, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::SendLevel(_)) if (*r, *s) == (rack, slot))
         });
         self.loads.retain(|l| (l.rack, l.slot) != (rack, slot));
         self.loads.push(ScriptIr { rack, slot, load: Load::Kind(kind) });
@@ -472,6 +508,17 @@ impl KspEngine for ScriptSetup<'_> {
             return Address::inert(par, self.groups);
         };
         let v = address.decode(value);
+        if let Address::Fx(rack, slot, FxParam::Convolution(n)) = address {
+            let mut settings = self.loads.iter().rev().find_map(|l| match l.load {
+                Load::Convolution(s) if (l.rack, l.slot) == (rack, slot) => Some(s), _ => None,
+            }).unwrap_or_else(|| {
+                let values = [0, 1, 2].map(|n| self.fx.param(rack, slot, FxParam::Convolution(n)).unwrap_or(crate::fx::params::IrSettings::DEFAULT.values[n as usize]));
+                crate::fx::params::IrSettings { values, size: values[2] }
+            });
+            if !settings.set(n, v) { return false }
+            self.loads.retain(|l| (l.rack, l.slot) != (rack, slot) || !matches!(l.load, Load::Convolution(_)));
+            self.loads.push(ScriptIr { rack, slot, load: Load::Convolution(settings) });
+        }
         match address {
             Address::GroupType(g, s) => return params::group_type(self.groups, g, s) == Some(v),
             Address::Fx(rack, slot, FxParam::Type) if self.fx.param(rack, slot, FxParam::Type) != Some(v) => {
@@ -543,7 +590,7 @@ impl KspEngine for ScriptSetup<'_> {
         else {
             return Some(false);
         };
-        self.loads.retain(|l| (l.rack, l.slot) != (rack, slot) || matches!(l.load, Load::Kind(_)));
+        self.loads.retain(|l| (l.rack, l.slot) != (rack, slot) || !matches!(l.load, Load::Ir { .. }));
         self.loads.push(ir);
         Some(true)
     }

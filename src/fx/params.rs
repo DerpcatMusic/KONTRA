@@ -142,6 +142,48 @@ pub struct IrBand {
     pub high_cut_hz: f32,
 }
 
+/// Script values (0..1): predelay, early size, late size. Until the saved
+/// early/late boundary is identified, the last size edit stretches the whole IR.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct IrSettings {
+    pub values: [f32; 3],
+    pub size: f32,
+}
+
+impl IrSettings {
+    pub const DEFAULT: Self = Self { values: [0., 0.5, 0.5], size: 0.5 };
+    pub fn from_convolution(p: &Convolution) -> Self {
+        let values = [
+            ((p.predelay_ms.max(0.) / 2. + 1.).ln() / 151f32.ln()).clamp(0., 1.),
+            (p.early.length_ratio - 0.5).clamp(0., 1.),
+            (p.late.length_ratio - 0.5).clamp(0., 1.),
+        ];
+        Self { values, size: values[2] }
+    }
+
+    pub fn set(&mut self, field: u8, value: f32) -> bool {
+        let Some(v) = self.values.get_mut(field as usize) else { return false };
+        let next = value.clamp(0., 1.);
+        // Replaying unchanged script values after a rate rebuild must retain
+        // which band was last edited for the uniform-size fallback.
+        if *v != next && field != 0 { self.size = next; }
+        *v = next;
+        true
+    }
+
+    pub fn predelay_ms(value: f32) -> f32 {
+        // Una Corda's authored millisecond table follows the same logarithmic
+        // time law as the envelopes, with a 300 ms maximum and 2 ms offset.
+        2. * (151f32.powf(value.clamp(0., 1.)) - 1.)
+    }
+
+    pub(super) fn apply(self, p: &mut Convolution) {
+        p.predelay_ms = Self::predelay_ms(self.values[0]);
+        p.early.length_ratio = 0.5 + self.size;
+        p.late.length_ratio = p.early.length_ratio;
+    }
+}
+
 /// `BParFXIRC`. The impulse response is an index into the preset's
 /// "other files" table, not an inline path.
 #[derive(Debug, Clone, Serialize, Deserialize)]

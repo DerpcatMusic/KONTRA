@@ -3,7 +3,7 @@ use crate::{artwork, library};
 use crate::{
     engine::{
         BUSES, Bank, BusControls, Engine, Heads, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Rack, Residency,
-        Streaming, TUNE_RANGE, load_scripts,
+        Streaming, TUNE_RANGE,
         overrides::{Edits, Override, Probe},
     },
     fx::{DIRECT, FxProcessor, OUTS},
@@ -13,6 +13,8 @@ use crate::{
     ksp::{Interface, KeyState, Live, Persisted, Refresh, Runtime},
 };
 use crossbeam_queue::ArrayQueue;
+#[cfg(test)]
+use crate::engine::load_scripts;
 use moose::mui::mui::scene::Image;
 use moose::prelude::*;
 use std::{
@@ -42,6 +44,8 @@ pub struct Part {
     pub program: u32,
     /// Script persistent variables as JSON (`Vec<Persisted>`); empty uses the instrument's saved values.
     pub script_state: String,
+    /// Requested convolution controls; old host states default to the authored values.
+    pub ir_settings: Vec<crate::fx::IrSlotSettings>,
     /// The name the player gave the part; empty shows the instrument's.
     pub name: String,
     /// The rack shows only the part's header, one slim line of it.
@@ -110,6 +114,14 @@ impl StateField for Timing {
         Some(serde_json::from_str(&String::read_field(cursor)?).unwrap_or_default())
     }
 }
+impl StateField for crate::fx::IrSlotSettings {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        serde_json::to_string(self).unwrap_or_default().write_field(buf);
+    }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        serde_json::from_str(&String::read_field(cursor)?).ok()
+    }
+}
 impl Default for Part {
     fn default() -> Self {
         Self {
@@ -125,6 +137,7 @@ impl Default for Part {
             mute: false,
             solo: false,
             script_state: String::new(),
+            ir_settings: Vec::new(),
             name: String::new(),
             collapsed: false,
             height: 0.,
@@ -295,9 +308,9 @@ pub struct Shared {
     ready: ArrayQueue<(usize, u64, Handoff)>,
     discard: ArrayQueue<Retired>,
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
-    snapshot_requests: ArrayQueue<(usize, Box<Vec<Persisted>>)>,
+    snapshot_requests: ArrayQueue<(usize, Box<PersistenceSnapshot>)>,
     /// Refreshed snapshots, and whether any value in them changed.
-    snapshots: ArrayQueue<(usize, u64, Box<Vec<Persisted>>, bool)>,
+    snapshots: ArrayQueue<(usize, u64, Box<PersistenceSnapshot>, bool)>,
     /// Live script views, lent and refreshed the same way.
     live_requests: ArrayQueue<(usize, Box<Live>)>,
     lives: ArrayQueue<(usize, u64, Box<Live>)>,
@@ -438,10 +451,11 @@ pub(crate) struct PartView {
     pub(crate) irs: Vec<crate::fx::ScriptIr>,
     /// `Part::script_state` the audio thread's runtime matches (loaded from or last saved).
     pub(crate) script_state: String,
+    pub(crate) ir_settings: Vec<crate::fx::IrSlotSettings>,
     /// Epoch of the runtime last handed to the audio thread.
     pub(crate) script_epoch: u64,
     /// Snapshot buffer for this slot's runtime while the loader holds it.
-    pub(crate) snapshot: Option<Box<Vec<Persisted>>>,
+    pub(crate) snapshot: Option<Box<PersistenceSnapshot>>,
     /// When `snapshot` was last lent out.
     pub(crate) snapshot_lent: Option<Instant>,
     /// Live view buffer for this slot's runtime while the loader holds it.
@@ -767,17 +781,48 @@ fn load_irs(params: &SamplerParams) {
             let view = params.shared.view.lock().unwrap();
             let v = &view.parts[part];
             (v.script_epoch == epoch && generation == params.shared.generation[part].load(Ordering::Acquire))
-                .then(|| v.instrument.clone().map(|i| (i, v.irs.clone()))).flatten()
+                .then(|| v.instrument.clone().map(|i| (i, v.irs.clone(), v.program))).flatten()
         };
-        let Some((instrument, mut irs)) = source else { continue };
+        let Some((instrument, mut irs, program)) = source else { continue };
         let rate = params.shared.rate();
-        let loaded = crate::resources::ir_sample(&instrument.path, request.file())
-            .and_then(|file| crate::fx::ScriptIr::load(request.rack, request.slot, file).ok());
-        let ir = loaded.and_then(|loaded| {
-            irs.retain(|l| (l.rack, l.slot) != (request.rack, request.slot) || matches!(l.load, crate::fx::Load::Kind(_)));
-            irs.push(loaded);
-            instrument.fx.prepare_ir(request.rack, request.slot, rate as f32, MAX_BLOCK, &irs)
-        });
+        let mut resolved = None;
+        let load = if request.id < 0 { Ok(None) } else {
+            match crate::resources::ir_sample(&instrument.path, request.file()) {
+                Some(file) => {
+                    resolved = Some(file.clone());
+                    crate::fx::ScriptIr::load(request.rack, request.slot, file)
+                        .map(Some).map_err(|e| format!("{e:#}"))
+                }
+                None => Err("impulse response could not be resolved in the library resources".into()),
+            }
+        };
+        let report = |code, error: &str| {
+            crate::diagnostics::resource(&instrument.path, request.file(), error);
+            crate::diagnostics::runtime(&instrument.path, program, part, epoch, None, &[serde_json::json!({
+                "code":code, "message":error, "requested":request.file(), "resolved":resolved,
+                "rack":format!("{:?}", request.rack), "slot":request.slot,
+            })]);
+        };
+        let ir = match load {
+            Ok(loaded) => {
+                if let Some(loaded) = loaded {
+                    irs.retain(|l| (l.rack, l.slot) != (request.rack, request.slot) || !matches!(l.load, crate::fx::Load::Ir { .. }));
+                    irs.push(loaded);
+                }
+                irs.retain(|l| (l.rack, l.slot) != (request.rack, request.slot) || !matches!(l.load, crate::fx::Load::Convolution(_)));
+                irs.push(crate::fx::ScriptIr { rack: request.rack, slot: request.slot, load: crate::fx::Load::Convolution(request.settings) });
+                if request.settings.values[1] != request.settings.values[2] {
+                    crate::diagnostics::runtime(&instrument.path, program, part, epoch, None, &[serde_json::json!({
+                        "code":"convolution_uniform_size", "message":"Separate early/late boundary is unavailable; the last size edit stretches the whole impulse response",
+                        "rack":format!("{:?}", request.rack), "slot":request.slot, "values":request.settings.values,
+                    })]);
+                }
+                let ir = instrument.fx.prepare_ir(request.rack, request.slot, rate as f32, MAX_BLOCK, &irs);
+                if ir.is_none() { report("ir_build_failed", "convolution slot or its impulse response is unavailable"); }
+                ir
+            }
+            Err(error) => { report("ir_load_failed", &error); None }
+        };
         let mut view = params.shared.view.lock().unwrap();
         let v = &mut view.parts[part];
         if v.script_epoch != epoch || generation != params.shared.generation[part].load(Ordering::Acquire) {
@@ -793,22 +838,30 @@ fn load_irs(params: &SamplerParams) {
 fn persisted(saved: &str, i: &Instrument) -> Vec<Persisted> {
     serde_json::from_str(saved).unwrap_or_else(|_| i.script_state.clone())
 }
+#[derive(Clone)]
+pub(crate) struct PersistenceSnapshot {
+    script: Vec<Persisted>,
+    /// Worker-prepared slot list: audio updates values in place, including
+    /// edits whose new kernel has not finished building yet.
+    ir: Vec<crate::fx::IrSlotSettings>,
+}
 /// Initialize `i`'s scripts off the audio thread, with a snapshot buffer shaped for them.
 fn scripts(
     i: &Instrument,
     saved: &str,
+    ir_settings: &[crate::fx::IrSlotSettings],
     rate: f64,
 ) -> (
     Option<Box<Runtime>>,
-    Option<Box<Vec<Persisted>>>,
+    Option<Box<PersistenceSnapshot>>,
     Vec<String>,
 ) {
-    let (script, errors) = load_scripts(i, persisted(saved, i), rate);
+    let (script, errors) = crate::engine::load_scripts_with_ir(i, persisted(saved, i), rate, ir_settings);
     // Nothing persistent: no snapshots to trade with the audio thread.
     let snapshot = script
         .as_ref()
-        .map(|rt| rt.persistence())
-        .filter(|s| s.iter().any(|p| !p.is_empty()))
+        .map(|rt| PersistenceSnapshot { script: rt.persistence(), ir: i.fx.ir_settings_with(&rt.init_irs) })
+        .filter(|s| !s.ir.is_empty() || s.script.iter().any(|p| !p.is_empty()))
         .map(Box::new);
     (script, snapshot, errors)
 }
@@ -816,7 +869,7 @@ fn scripts(
 fn next_epoch(
     view: &mut View,
     slot: usize,
-    snapshot: Option<Box<Vec<Persisted>>>,
+    snapshot: Option<Box<PersistenceSnapshot>>,
     live: Option<Box<Live>>,
 ) -> u64 {
     view.script_epoch += 1;
@@ -1126,7 +1179,7 @@ impl BackgroundTask for Load {
                     v.attempted.as_ref() == Some(&target)
                         && v.fx_rate != 0.
                         && !i.scripts.is_empty()
-                        && part.script_state != v.script_state
+                        && (part.script_state != v.script_state || part.ir_settings != v.ir_settings)
                 })
             };
             if let Some(instrument) = restore {
@@ -1134,7 +1187,7 @@ impl BackgroundTask for Load {
                 trace.detail("operation", "script_restore");
                 trace.stage("scripts");
                 let (script, snapshot, errors) =
-                    scripts(&instrument, &part.script_state, params.shared.rate());
+                    scripts(&instrument, &part.script_state, &part.ir_settings, params.shared.rate());
                 for e in &errors { trace.issue("scripts", "initialization_failed", e); }
                 if let Some(rt) = script.as_deref() {
                     for e in rt.diagnostics() { trace.issue("scripts", crate::diagnostics::code(&e), e); }
@@ -1154,6 +1207,7 @@ impl BackgroundTask for Load {
                 let mut view = params.shared.view.lock().unwrap();
                 let epoch = next_epoch(&mut view, slot, snapshot, live);
                 view.parts[slot].script_state = part.script_state.clone();
+                view.parts[slot].ir_settings = part.ir_settings.clone();
                 view.parts[slot].interface_status = interface_status;
                 view.parts[slot].runtime_status.clear();
                 if let Some(load) = &mut view.parts[slot].load_report {
@@ -1249,7 +1303,8 @@ impl BackgroundTask for Load {
                 set_stage(&mut trace, "scripts_and_sample_headers");
                 let ((script, snapshot, script_errors), bare) = std::thread::scope(|scope| {
                     let (rate, instrument, state) = (params.shared.rate(), &instrument, &part.script_state);
-                    let scripts = scope.spawn(move || scripts(instrument, state, rate));
+                    let ir_settings = &part.ir_settings;
+                    let scripts = scope.spawn(move || scripts(instrument, state, ir_settings, rate));
                     let bare = (!instrument.zones.is_empty()).then(|| Bank::load_bare_cancelable(instrument, &canceled));
                     let scripts = scripts.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
                     (scripts, bare)
@@ -1373,6 +1428,7 @@ impl BackgroundTask for Load {
                         residency.map(|r| (generation, r));
                     let v = &mut view.parts[slot];
                     v.script_state = part.script_state.clone();
+                v.ir_settings = part.ir_settings.clone();
                     v.active = instrument.name.clone();
                     v.bytes = bank.as_ref().map(|b| b.bytes).unwrap_or(0);
                     v.freed = 0;
@@ -1575,11 +1631,21 @@ impl BackgroundTask for Load {
             ));
         }
         // Save script values the audio thread reported, then lend the buffers out again.
-        while let Some((slot, epoch, mut snapshot, changed)) = params.shared.snapshots.pop() {
+        while let Some((slot, epoch, mut snapshot, mut changed)) = params.shared.snapshots.pop() {
             let mut view = params.shared.view.lock().unwrap();
             let v = &mut view.parts[slot];
             if epoch == 0 || epoch != v.script_epoch {
                 continue;
+            }
+            // File paths stay on the worker. The audio snapshot only updates
+            // the small requested parameter values in these prepared records.
+            for value in &mut snapshot.ir {
+                if let Some(file) = v.irs.iter().rev().find_map(|l| match &l.load {
+                    crate::fx::Load::Ir { file, .. } if (l.rack, l.slot) == (value.rack, value.slot) => Some(file), _ => None,
+                }) && value.file.as_ref() != Some(file) {
+                    value.file = Some(file.clone());
+                    changed = true;
+                }
             }
             // Unchanged: the saved JSON already holds it, unless nothing is
             // saved yet. Serializing megabytes of script tables ten times a
@@ -1588,13 +1654,14 @@ impl BackgroundTask for Load {
                 v.snapshot = Some(snapshot);
                 continue;
             }
-            if !crate::ksp::settle_persistence(&mut snapshot) {
+            if !crate::ksp::settle_persistence(&mut snapshot.script) {
                 v.snapshot = Some(snapshot);
                 continue;
             }
-            let json = serde_json::to_string(&*snapshot).unwrap_or_default();
+            let json = serde_json::to_string(&snapshot.script).unwrap_or_default();
+            let ir_settings = snapshot.ir.clone();
             v.snapshot = Some(snapshot);
-            if json == v.script_state {
+            if json == v.script_state && ir_settings == v.ir_settings {
                 continue;
             }
             // The part as the rack names it: the instrument's own path is
@@ -1603,6 +1670,7 @@ impl BackgroundTask for Load {
             // round rebuilt its scripts from stale ones, ten times a second.
             let target = v.attempted.clone();
             v.script_state = json.clone();
+            v.ir_settings = ir_settings.clone();
             drop(view);
             let mut current = params.selection.write().unwrap();
             if let Some(p) = current
@@ -1611,6 +1679,7 @@ impl BackgroundTask for Load {
                 .filter(|p| target.as_ref() == Some(&(p.path.clone(), p.program)))
             {
                 p.script_state = json;
+                p.ir_settings = ir_settings;
             }
         }
         // Show what the scripts changed since the last round.
@@ -1705,7 +1774,7 @@ pub struct Dsp {
     /// The lent live view and persistence snapshot being refreshed, a budget
     /// a block: slot, epoch and [`Runtime::changes`] at the start, buffer, progress.
     live: Option<Lent<Box<Live>>>,
-    snapshot: Option<Lent<Box<Vec<Persisted>>>>,
+    snapshot: Option<Lent<Box<PersistenceSnapshot>>>,
     /// Per slot, epoch and changes the buffers last refreshed whole hold:
     /// while the scripts do not run they are current and need no refresh.
     live_seen: [(u64, u64); RACK_SLOTS],
@@ -2154,7 +2223,8 @@ impl PluginLogic for Sampler {
             let Some((slot, generation, IrHandoff { ir, epoch, rate: ir_rate, request })) = p.shared.ir_ready.pop() else { break };
             let engine = &mut s.rack.parts[slot];
             let current = generation == p.shared.generation[slot].load(Ordering::Acquire) && epoch == s.script_epoch[slot];
-            let ir = if !current { ir } else if ir_rate == engine.rate() {
+            let settings_current = engine.fx().ir_settings(request.rack, request.slot).is_none_or(|s| s == request.settings);
+            let ir = if !current { ir } else if ir_rate == engine.rate() && settings_current {
                 engine.finish_ir(request.script_slot, request.id, ir)
             } else {
                 if let Err(request) = engine.retry_ir_request(request) {
@@ -2184,13 +2254,6 @@ impl PluginLogic for Sampler {
                 s.align.picked(e.part, picked);
             }
         }
-        for (part, engine) in s.rack.parts.iter_mut().enumerate() {
-            while !p.shared.ir_requests.is_full() {
-                let Some(request) = engine.pop_ir_request() else { break };
-                let generation = p.shared.generation[part].load(Ordering::Acquire);
-                let _ = p.shared.ir_requests.push((part, generation, s.script_epoch[part], request));
-            }
-        }
         // Refresh lent live views and persistence snapshots in place, one at
         // a time and a budget a block; the loader shows and saves them.
         let version = |s: &Dsp, slot: usize| {
@@ -2211,20 +2274,6 @@ impl PluginLogic for Sampler {
             if done && let Some((slot, seen, live, _)) = s.live.take() {
                 s.live_seen[slot] = seen;
                 let _ = p.shared.lives.push((slot, seen.0, live));
-            }
-        }
-        if s.snapshot.is_none() && !p.shared.snapshots.is_full() {
-            s.snapshot = (p.shared.snapshot_requests.pop())
-                .map(|(slot, saved)| (slot, version(s, slot), saved, Refresh::default()));
-        }
-        if let Some((slot, seen, saved, at)) = &mut s.snapshot {
-            let done = seen.0 != s.script_epoch[*slot]
-                || *seen == s.snapshot_seen[*slot]
-                || (s.rack.parts[*slot].script())
-                    .is_none_or(|rt| rt.refresh_persistence_within(saved, at, REFRESH_BUDGET));
-            if done && let Some((slot, seen, saved, at)) = s.snapshot.take() {
-                s.snapshot_seen[slot] = seen;
-                let _ = p.shared.snapshots.push((slot, seen.0, saved, at.changed));
             }
         }
         for (e, r) in s.rack.parts.iter_mut().zip(&s.routers) {
@@ -2418,6 +2467,36 @@ impl PluginLogic for Sampler {
                 p.shared.scope.push(&s.rack.tapped[..len]);
             }
             at += len;
+        }
+        if s.snapshot.is_none() && !p.shared.snapshots.is_full() {
+            s.snapshot = (p.shared.snapshot_requests.pop())
+                .map(|(slot, saved)| (slot, version(s, slot), saved, Refresh::default()));
+        }
+        if let Some((slot, seen, saved, at)) = &mut s.snapshot {
+            let done = seen.0 != s.script_epoch[*slot]
+                || *seen == s.snapshot_seen[*slot]
+                || (s.rack.parts[*slot].script())
+                    .is_none_or(|rt| rt.refresh_persistence_within(&mut saved.script, at, REFRESH_BUDGET));
+            if done && let Some((slot, seen, saved, at)) = s.snapshot.take() {
+                let mut saved = saved;
+                let mut changed = at.changed;
+                for value in &mut saved.ir {
+                    if let Some(settings) = s.rack.parts[slot].fx().ir_settings(value.rack, value.slot) {
+                        changed |= value.settings != settings;
+                        value.settings = settings;
+                    }
+                }
+                s.snapshot_seen[slot] = seen;
+                let _ = p.shared.snapshots.push((slot, seen.0, saved, changed));
+            }
+        }
+        // Parameter writes have rendered: capture the block's latest settings.
+        for (part, engine) in s.rack.parts.iter_mut().enumerate() {
+            while !p.shared.ir_requests.is_full() {
+                let Some(request) = engine.pop_ir_request() else { break };
+                let generation = p.shared.generation[part].load(Ordering::Acquire);
+                let _ = p.shared.ir_requests.push((part, generation, s.script_epoch[part], request));
+            }
         }
         p.shared.blocks.fetch_add(1, Ordering::Relaxed);
         s.align.clock += frames as u64;
@@ -3253,15 +3332,77 @@ mod tests {
             let retired = engine.finish_ir(request.script_slot, request.id, ir);
             assert!(retired.is_some(), "the new DSP replaced the old one");
             let view = p.shared.view.lock().unwrap();
-            let loaded = view.parts[0].irs.iter().find(|l| l.rack == crate::fx::Rack::Send && l.slot == 0).unwrap();
+            let loaded = view.parts[0].irs.iter().find(|l| l.rack == crate::fx::Rack::Send && l.slot == 0 && matches!(l.load, crate::fx::Load::Ir { .. })).unwrap();
             let crate::fx::Load::Ir { file: loaded_file, ir: impulse } = &loaded.load else { panic!("IR") };
             assert_eq!(loaded_file.file_name().unwrap().to_string_lossy().to_ascii_lowercase(), file.to_ascii_lowercase());
             println!("installed {} ({} frames at {} Hz)", loaded_file.display(), impulse.0.frames.len(), impulse.0.rate);
             assert_eq!(mix(&engine), saved_mix, "switching spaces preserves live return settings");
         }
+        for (name, value, field, expected) in [
+            ("$T3_sliSize", 0, 2, 0),
+            ("$T3_sliSize", 500000, 2, 500000),
+            ("$T3_sliSize", 1000000, 2, 1000000),
+            ("$T3_sliDistance", 5722 * 5, 0, 250000),
+            ("$T3_sliDistance", 5722 * 40, 0, 606445),
+            ("$T3_sliDistance", 5722 * 100, 0, 783203),
+        ] {
+            let control = engine.script().unwrap().interface(0).controls.iter().position(|c| c.variable == name).unwrap();
+            engine.ui_control(0, control, value);
+            for _ in 0..4 { engine.render(&mut [0.; 128], &mut [0.; 128]); }
+            let request = engine.pop_ir_request().expect("the actual knob queues a settings rebuild");
+            assert!(request.id < 0 && request.file().is_empty());
+            assert_eq!((request.settings.values[field] * 1e6).round() as i32, expected);
+            println!("{name}={value}: requested engine value {expected}");
+            p.shared.ir_requests.push((0, 0, 1, request)).ok().unwrap();
+            assert!(engine.pop_ir_request().is_none());
+            load_irs(&p);
+            let (_, _, IrHandoff { ir, request, .. }) = p.shared.ir_ready.pop().unwrap();
+            assert!(ir.is_some());
+            assert!(engine.finish_ir(request.script_slot, request.id, ir).is_some());
+            assert_eq!((engine.fx().param(crate::fx::Rack::Send, 0, crate::fx::FxParam::Convolution(field as u8)).unwrap() * 1e6).round() as i32, expected);
+            assert_eq!(mix(&engine), saved_mix);
+            let view = p.shared.view.lock().unwrap();
+            assert!(view.parts[0].irs.iter().any(|l| matches!(&l.load, crate::fx::Load::Ir { file, .. } if file.file_name().unwrap().to_string_lossy().eq_ignore_ascii_case("GI_UC_IR_Room_Intimate Chamber.ncw"))));
+        }
         let notes = engine.script().unwrap().diagnostics();
         println!("remaining diagnostics: {notes:?}");
         assert!(!notes.iter().any(|n| n.contains("load_ir_sample")), "{notes:?}");
+        assert!(!notes.iter().any(|n| n.contains("parameter not implemented")), "{notes:?}");
+        let initial = Part { path: path.to_string_lossy().into_owned(), ..Default::default() };
+        let streaming = initial.streaming(p.selection.read().unwrap().streaming);
+        p.selection.write().unwrap().parts = vec![initial];
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.parts[0].attempted = Some((path.to_string_lossy().into_owned(), 0));
+            view.parts[0].streaming = streaming;
+        }
+        p.shared.snapshots.push((0, 1, Box::new(PersistenceSnapshot {
+            script: engine.script().unwrap().persistence(),
+            ir: vec![crate::fx::IrSlotSettings { rack: crate::fx::Rack::Send, slot: 0, settings: engine.fx().ir_settings(crate::fx::Rack::Send, 0).unwrap(), file: None }],
+        }), true)).ok().unwrap();
+        Load.run(&p);
+        let part = p.selection.read().unwrap().parts[0].clone();
+        assert_eq!(part.ir_settings.len(), 1);
+        assert!(part.ir_settings[0].file.as_ref().unwrap().file_name().unwrap().to_string_lossy().eq_ignore_ascii_case("GI_UC_IR_Room_Intimate Chamber.ncw"));
+        // Both DAW custom state and multi/export JSON preserve the typed field.
+        let mut bytes = Vec::new();
+        part.write_field(&mut bytes);
+        let saved = Part::read_field(&mut moose::core::custom_state::StateCursor::new(&bytes)).unwrap();
+        assert!(saved == part);
+        let saved: Part = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(serde_json::from_str::<Part>("{}").unwrap().ir_settings.is_empty());
+        let (restored, _, errors) = scripts(&i, &saved.script_state, &saved.ir_settings, 44100.);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(restored.as_ref().unwrap().init_irs.iter().any(|l| matches!(&l.load, crate::fx::Load::Ir { file, .. } if file.file_name().unwrap().to_string_lossy().eq_ignore_ascii_case("GI_UC_IR_Room_Intimate Chamber.ncw"))), "reload retains the selected room's actual impulse response");
+        let fx = crate::engine::effects(&i, restored.as_deref(), 44100.);
+        engine.reset(44100.);
+        engine.set_fx(fx);
+        engine.set_script(restored);
+        for _ in 0..4 { engine.render(&mut [0.; 128], &mut [0.; 128]); }
+        let restored = engine.fx().ir_settings(crate::fx::Rack::Send, 0).unwrap();
+        assert_eq!((restored.values[2] * 1e6).round() as i32, 1000000);
+        assert_eq!((restored.values[0] * 1e6).round() as i32, 783203);
+        println!("Size and Distance restored from DAW/multi state at 44100 Hz");
     }
 
     #[test]
@@ -3277,6 +3418,7 @@ mod tests {
         wav.extend(4u16.to_le_bytes()); wav.extend(32u16.to_le_bytes()); wav.extend(b"data");
         wav.extend(4u32.to_le_bytes()); wav.extend(0.5f32.to_le_bytes());
         std::fs::write(resources.join("Room.wav"), wav).unwrap();
+        std::fs::write(resources.join("Broken.wav"), b"invalid audio").unwrap();
         let band = IrBand { length_ratio: 1., low_cut_hz: 20., high_cut_hz: 20000. };
         let i = Instrument {
             path: dir.join("Instrument.nki"), groups: vec![Group::default()],
@@ -3289,7 +3431,33 @@ mod tests {
                     ir: Some(Impulse(Arc::new(Sample { rate: 48000, frames: vec![[1.; 2]] }))),
                 })),
             }] }, ..Default::default() },
-            scripts: vec!["on init\nmake_perfview\ndeclare ui_switch $room\ndeclare $id\nend on\non ui_control($room)\nif ($room = 1)\n$id := load_ir_sample(\"room\", 0, $NI_INSERT_BUS)\nelse\n$id := load_ir_sample(\"missing\", 0, $NI_INSERT_BUS)\nend if\nend on\non async_complete\nmessage($NI_ASYNC_ID & \":\" & $NI_ASYNC_EXIT_STATUS)\nend on".into()],
+            scripts: vec![r#"on init
+make_perfview
+declare ui_slider $room(0, 2)
+declare ui_slider $size(0, 1000000)
+declare ui_slider $distance(0, 1000000)
+declare $id
+end on
+on ui_control($room)
+if ($room = 1)
+$id := load_ir_sample("room", 0, $NI_INSERT_BUS)
+else
+if ($room = 2)
+$id := load_ir_sample("broken", 0, $NI_INSERT_BUS)
+else
+$id := load_ir_sample("missing", 0, $NI_INSERT_BUS)
+end if
+end if
+end on
+on ui_control($size)
+set_engine_par($ENGINE_PAR_IRC_LENGTH_RATIO_LR, $size, -1, 0, $NI_INSERT_BUS)
+end on
+on ui_control($distance)
+set_engine_par($ENGINE_PAR_IRC_PREDELAY, $distance, -1, 0, $NI_INSERT_BUS)
+end on
+on async_complete
+message($NI_ASYNC_ID & ":" & $NI_ASYNC_EXIT_STATUS)
+end on"#.into()],
             ..Default::default()
         };
         let (rt, errors) = crate::engine::load_scripts(&i, Vec::new(), 48000.);
@@ -3346,23 +3514,68 @@ mod tests {
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0");
         assert!(p.shared.view.lock().unwrap().parts[0].irs == before, "failed loads keep the IR");
+        // Knob edits coalesce into one worker rebuild, retaining the loaded IR
+        // and exact requested values without issuing an async-file completion.
+        let snapshot = PersistenceSnapshot {
+            script: dsp.rack.parts[0].script().unwrap().persistence(),
+            ir: vec![crate::fx::IrSlotSettings { rack: crate::fx::Rack::Insert, slot: 0, settings: crate::fx::params::IrSettings::DEFAULT, file: None }],
+        };
+        p.shared.snapshot_requests.push((0, Box::new(snapshot))).ok().unwrap();
+        assert_eq!(allocations(|| {
+            dsp.rack.parts[0].ui_control(0, 1, 1000000);
+            dsp.rack.parts[0].ui_control(0, 2, 250000);
+            tick(&mut dsp, &mut buffer, &mut cx);
+        }), 0);
+        let (_, _, snapshot, changed) = p.shared.snapshots.pop().expect("host state snapshot before worker completion");
+        assert!(changed);
+        assert_eq!(snapshot.ir[0].settings.values, [0.25, 0.5, 1.]);
+        assert_eq!(p.shared.ir_requests.len(), 1);
+        let settings = p.shared.ir_requests.pop().unwrap();
+        assert!(settings.3.id < 0 && settings.3.file().is_empty());
+        assert_eq!(settings.3.settings.values, [0.25, 0.5, 1.]);
+        p.shared.ir_requests.push(settings).ok().unwrap();
+        load_irs(&p);
+        // A newer edit arriving while the worker builds must win. Execute that
+        // callback before the handoff so the obsolete kernel is rejected.
+        assert_eq!(allocations(|| {
+            dsp.rack.parts[0].ui_control(0, 1, 0);
+            dsp.rack.parts[0].render(&mut [0.; 64], &mut [0.; 64]);
+            tick(&mut dsp, &mut buffer, &mut cx);
+        }), 0);
+        assert_eq!(p.shared.ir_requests.len(), 1, "stale settings rebuild at the latest requested values");
+        load_irs(&p);
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
+        assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().values, [0.25, 0.5, 0.]);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0");
+        dsp.rack.parts[0].ui_control(0, 0, 2);
+        tick(&mut dsp, &mut buffer, &mut cx);
+        load_irs(&p);
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:0");
+        let journal = std::fs::read_to_string(crate::diagnostics::log_path().unwrap()).unwrap();
+        assert!(journal.lines().any(|line| {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return false };
+            let data = &v["data"];
+            data["code"] == "ir_load_failed" && data["requested"] == "broken" && data["resolved"].as_str().is_some_and(|p| p.ends_with("Broken.wav"))
+                && v["part"] == 0 && data["message"].as_str().is_some_and(|s| s.contains("decoding failed") && s.contains("no suitable format reader"))
+        }), "the worker preserves the requested name, resolved path, part and decoder's failure reason");
         dsp.rack.parts[0].ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
         p.shared.rate.store(44100f64.to_bits(), Ordering::Release);
         dsp.rack.parts[0].reset(44100.);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0", "wrong-rate kernels are retried without installation or premature completion");
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:0", "wrong-rate kernels are retried without installation or premature completion");
         assert_eq!(p.shared.ir_requests.len(), 1);
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:1", "the original request ID completes after rebuilding at the new rate");
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "4:1", "the original request ID completes after rebuilding at the new rate");
         dsp.rack.parts[0].ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
         dsp.script_epoch[0] = 2;
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:1", "a replaced script never gets a stale completion");
+        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "4:1", "a replaced script never gets a stale completion");
         dsp.script_epoch[0] = 1;
         dsp.rack.parts[0].ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
@@ -3388,7 +3601,7 @@ mod tests {
             let epoch = next_epoch(
                 &mut view,
                 0,
-                Some(Box::new(rt.persistence())),
+                Some(Box::new(PersistenceSnapshot { script: rt.persistence(), ir: Vec::new() })),
                 Some(Box::new(rt.live())),
             );
             let parsed = script_interface(Some(&rt));
@@ -3430,7 +3643,7 @@ mod tests {
         Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
         let (slot, _, live) = p.shared.lives.pop().unwrap();
         p.shared.live_requests.push((slot, live)).ok().unwrap();
-        let saved = Box::new(dsp.rack.parts[0].script().unwrap().persistence());
+        let saved = Box::new(PersistenceSnapshot { script: dsp.rack.parts[0].script().unwrap().persistence(), ir: Vec::new() });
         p.shared.snapshot_requests.push((0, saved)).ok().unwrap();
         // As if the scripts changed since: both refresh in full.
         (dsp.live_seen[0], dsp.snapshot_seen[0]) = ((u64::MAX, 0), (u64::MAX, 0));

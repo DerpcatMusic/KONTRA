@@ -18,7 +18,7 @@ pub const DIRECT: u8 = BUSES as u8;
 
 /// An effect rack a script addresses (`$NI_INSERT_BUS`, `$NI_SEND_BUS`,
 /// `$NI_MAIN_BUS`, `$NI_BUS_OFFSET + n`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Rack {
     Insert,
     Send,
@@ -51,6 +51,8 @@ pub enum FxParam {
     Type,
     /// Reverb value `n` in `$ENGINE_PAR_RV2_*` order, 0..=1.
     Reverb(u8),
+    /// Convolution predelay, early size, late size, as normalized script values.
+    Convolution(u8),
     /// Value `n` (layout order) of a `kind` effect, 0..=1 as scripts set
     /// it (`fx::blocks` maps it onto the stored value).
     Field(Kind, u8),
@@ -155,6 +157,8 @@ struct Slot {
     dry: f32,
     /// The input kept for the dry mix.
     dry_buffer: [Box<[f32]>; 2],
+    ir_settings: Option<params::IrSettings>,
+    ir_dirty: bool,
 }
 
 /// An instrument bus: groups render into `input`; its chain, fader and pan
@@ -194,12 +198,13 @@ pub struct PreparedIr {
     rack: Rack,
     slot: u8,
     dsp: Dsp,
+    pub(super) settings: params::IrSettings,
 }
 
 impl PreparedIr {
     pub(super) fn new(rack: Rack, slot: u8, p: &params::Convolution, rate: f32, block: usize) -> Option<Self> {
         let ir = prepare_ir(p, rate)?;
-        Some(Self { rack, slot, dsp: Dsp::Convolution(Box::new(ir.map(|ch| Convolver::new(&ch, block)))) })
+        Some(Self { rack, slot, dsp: Dsp::Convolution(Box::new(ir.map(|ch| Convolver::new(&ch, block)))), settings: params::IrSettings::from_convolution(p) })
     }
 }
 
@@ -500,6 +505,12 @@ impl FxProcessor {
             (FxParam::Bypass, _) => s.bypass = value != 0.0,
             (FxParam::Wet, _) => s.wet = gain,
             (FxParam::Dry, _) => s.dry = gain,
+            (FxParam::Convolution(n), _) => {
+                let Some(settings) = s.ir_settings.as_mut() else { return false };
+                let before = *settings;
+                if !settings.set(n, value) { return false }
+                s.ir_dirty |= before != *settings;
+            }
             (FxParam::Reverb(n), Dsp::Reverb(rv, p)) => {
                 let Some(field) = p.field(n) else {
                     return false;
@@ -518,7 +529,49 @@ impl FxProcessor {
         let Some(slot) = self.slot_mut(ir.rack, ir.slot) else { return Err(ir) };
         if !matches!(slot.dsp, Dsp::Convolution(_)) { return Err(ir) }
         std::mem::swap(&mut slot.dsp, &mut ir.dsp);
+        slot.ir_settings = Some(ir.settings);
+        slot.ir_dirty = false;
         Ok(ir)
+    }
+
+    pub fn ir_settings(&self, rack: Rack, slot: u8) -> Option<params::IrSettings> {
+        self.slot(rack, slot)?.ir_settings
+    }
+
+    pub(super) fn init_ir_settings(&mut self, rack: Rack, slot: u8, settings: params::IrSettings) {
+        if let Some(s) = self.slot_mut(rack, slot).filter(|s| s.ir_settings.is_some()) {
+            s.ir_settings = Some(settings);
+            s.ir_dirty = false;
+        }
+    }
+
+    pub fn ir_request_settings(&mut self, rack: Rack, slot: u8) -> Option<params::IrSettings> {
+        let s = self.slot_mut(rack, slot)?;
+        s.ir_dirty = false;
+        s.ir_settings
+    }
+
+    pub fn mark_ir_changed(&mut self, rack: Rack, slot: u8) {
+        if let Some(s) = self.slot_mut(rack, slot) { s.ir_dirty = s.ir_settings.is_some(); }
+    }
+
+    /// Coalesce writes made during the block into one worker request per slot.
+    pub fn take_ir_change(&mut self) -> Option<(Rack, u8, params::IrSettings)> {
+        let slots = self.insert.iter_mut().filter_map(|s| match s {
+            Stage::Effect(s) => Some((Rack::Insert, s)), Stage::Tap(_) => None,
+        }).chain(self.returns.iter_mut().map(|r| (Rack::Send, &mut r.slot)))
+            .chain(self.main.iter_mut().map(|s| (Rack::Main, s)))
+            .chain(self.buses.iter_mut().flat_map(|b| {
+                let rack = Rack::Bus(b.index);
+                b.chain.iter_mut().map(move |s| (rack, s))
+            }));
+        for (rack, s) in slots {
+            if s.ir_dirty && let Some(settings) = s.ir_settings {
+                s.ir_dirty = false;
+                return Some((rack, s.index, settings));
+            }
+        }
+        None
     }
 
     /// Current value of a script-controllable parameter.
@@ -557,6 +610,7 @@ impl FxProcessor {
             (FxParam::Bypass, _) => Some(f32::from(s.bypass)),
             (FxParam::Wet, _) => Some(s.wet),
             (FxParam::Dry, _) => Some(s.dry),
+            (FxParam::Convolution(n), _) => s.ir_settings?.values.get(n as usize).copied(),
             (FxParam::Reverb(n), Dsp::Reverb(_, p)) => { *p }.field(n).copied(),
             (FxParam::Field(kind, n), Dsp::Block(b)) => b.get(kind, n),
             _ => None,
@@ -682,6 +736,8 @@ impl Slot {
             wet: if unset { 1.0 } else { fx.output_gain },
             dry: fx.dry_level,
             dry_buffer: [zeros(max_block), zeros(max_block)],
+            ir_settings: match &fx.params { Params::Convolution(p) => Some(params::IrSettings::from_convolution(p)), _ => None },
+            ir_dirty: false,
         })
     }
 
@@ -790,12 +846,13 @@ fn mix(out: &mut [f32], input: &[f32], level: f32) {
     }
 }
 
-/// Resamples (linear), trims and predelays the IR for `sample_rate`.
+/// Resamples (linear), stretches and predelays the IR for `sample_rate`.
 fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]> {
     let ir = &p.ir.as_ref()?.0;
-    let ratio = ir.rate as f32 / sample_rate;
-    let keep = p.late.length_ratio.clamp(0.0, 1.0);
-    let len = ((ir.frames.len() as f32 / ratio) * keep) as usize;
+    // Size stretches time, including reflections; it does not trim the tail.
+    // Until the saved early/late boundary is identified, use uniform late size.
+    let ratio = ir.rate as f32 / sample_rate / p.late.length_ratio.clamp(0.5, 1.5);
+    let len = (ir.frames.len() as f32 / ratio).ceil() as usize;
     let pre = (p.predelay_ms.max(0.0) * 0.001 * sample_rate) as usize;
     // ponytail: linear interpolation aliases slightly on rate changes; use a
     // windowed-sinc resampler if IR brightness at 44.1k<->48k ever matters.

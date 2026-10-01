@@ -68,6 +68,49 @@ fn live_ir_swap_keeps_the_slot_mix_and_rejects_other_effects() {
     assert!(left.iter().chain(&right).all(|v| *v == 3.0));
 }
 
+#[test]
+fn convolution_size_stretches_reflections_and_predelay_offsets_them() {
+    let mut impulse = [0.; 32];
+    impulse[8] = 1.;
+    let fx = ProgramFx { insert: Chain { slots: vec![convolution(&impulse)] }, ..Default::default() };
+    for (size, predelay, peak) in [(0., 0., 4), (0.5, 0., 8), (1., 0., 12), (0.5, 0.25, 248)] {
+        let settings = params::IrSettings { values: [predelay, size, size], size };
+        let loads = [ScriptIr { rack: Rack::Insert, slot: 0, load: Load::Convolution(settings) }];
+        let mut p = fx.processor_with(SR, 64, &loads);
+        assert_eq!(p.ir_settings(Rack::Insert, 0), Some(settings));
+        let mut output = Vec::new();
+        for block in 0..8 {
+            let mut left = [0.; 64];
+            if block == 0 { left[0] = 1.; }
+            let mut right = left;
+            p.process(&mut left, &mut right);
+            assert!(left.iter().all(|v| v.is_finite()));
+            output.extend(left);
+        }
+        let found = output.iter().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())).unwrap().0;
+        assert_eq!(found, peak, "size={size}, predelay={predelay}");
+        assert!((output[peak] - 1.).abs() < 1e-5);
+    }
+    // These points come from Una Corda's authored millisecond lookup table.
+    for (raw, ms) in [(81055., 1.), (250000., 5.), (606445., 40.), (783203., 100.)] {
+        assert!((params::IrSettings::predelay_ms(raw / 1e6) - ms).abs() < 0.25);
+    }
+    // Requested split values survive rate rebuilds even though the current
+    // renderer uses the last edited size uniformly without an ER/LR boundary.
+    let settings = params::IrSettings { values: [0.25, 0.5, 1.], size: 1. };
+    let early_last = params::IrSettings { size: 0.5, ..settings };
+    let mut replayed = early_last;
+    for (n, value) in settings.values.into_iter().enumerate() { assert!(replayed.set(n as u8, value)); }
+    assert_eq!(replayed, early_last, "unchanged parameter replay preserves the last edited size");
+    let loads = [ScriptIr { rack: Rack::Insert, slot: 0, load: Load::Convolution(settings) }];
+    let p = fx.processor_with(44100., 64, &loads);
+    assert_eq!(p.ir_settings(Rack::Insert, 0), Some(settings));
+    for (n, want) in settings.values.iter().enumerate() {
+        assert_eq!(p.param(Rack::Insert, 0, FxParam::Convolution(n as u8)), Some(*want));
+        assert_eq!(fx.param(Rack::Insert, 0, FxParam::Convolution(n as u8)), Some(params::IrSettings::DEFAULT.values[n]));
+    }
+}
+
 /// A processor running `slots` as the insert rack, in 64-frame blocks.
 fn chain(slots: Vec<Effect>) -> FxProcessor {
     ProgramFx {

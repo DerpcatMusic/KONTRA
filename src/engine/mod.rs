@@ -32,7 +32,7 @@ pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
-pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts};
+pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_ir};
 pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 
 use crate::fx::FxProcessor;
@@ -588,11 +588,22 @@ impl Engine {
     }
 
     pub fn pop_ir_request(&mut self) -> Option<IrRequest> {
-        if self.ir_requests.is_empty() { None } else { Some(self.ir_requests.remove(0)) }
+        if !self.ir_requests.is_empty() {
+            let mut request = self.ir_requests.remove(0);
+            if let Some(settings) = self.fx.ir_request_settings(request.rack, request.slot) { request.settings = settings; }
+            Some(request)
+        } else {
+            self.fx.take_ir_change().map(|(rack, slot, settings)| IrRequest::rebuild(rack, slot, settings))
+        }
     }
 
-    pub fn retry_ir_request(&mut self, request: IrRequest) -> Result<(), IrRequest> {
+    pub fn retry_ir_request(&mut self, mut request: IrRequest) -> Result<(), IrRequest> {
+        if request.id < 0 {
+            self.fx.mark_ir_changed(request.rack, request.slot);
+            return Ok(());
+        }
         if self.ir_requests.len() == self.ir_requests.capacity() { return Err(request) }
+        if let Some(settings) = self.fx.ir_request_settings(request.rack, request.slot) { request.settings = settings; }
         self.ir_requests.push(request);
         Ok(())
     }
@@ -607,7 +618,7 @@ impl Engine {
             },
             None => (false, None),
         };
-        if let Some((rt, mut host)) = self.scripted(self.script_channel) {
+        if id >= 0 && let Some((rt, mut host)) = self.scripted(self.script_channel) {
             rt.async_complete(&mut host, slot, id, loaded);
         }
         retired

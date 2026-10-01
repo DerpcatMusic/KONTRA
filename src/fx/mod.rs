@@ -45,6 +45,18 @@ pub enum Load {
     /// `$ENGINE_PAR_EFFECT_TYPE`: another effect, at its defaults; `None`
     /// empties the slot.
     Kind(Option<Kind>),
+    /// Convolution settings, retained across worker/rate rebuilds.
+    Convolution(params::IrSettings),
+}
+
+/// Requested convolution values owned by one effect slot in saved host state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IrSlotSettings {
+    pub rack: Rack,
+    pub slot: u8,
+    pub settings: params::IrSettings,
+    #[serde(default)]
+    pub file: Option<std::path::PathBuf>,
 }
 
 impl PartialEq for ScriptIr {
@@ -53,6 +65,7 @@ impl PartialEq for ScriptIr {
             && match (&self.load, &o.load) {
                 (Load::Ir { file: a, .. }, Load::Ir { file: b, .. }) => a == b,
                 (Load::Kind(a), Load::Kind(b)) => a == b,
+                (Load::Convolution(a), Load::Convolution(b)) => a == b,
                 _ => false,
             }
     }
@@ -249,6 +262,7 @@ impl ProgramFx {
             (FxParam::Dry, _) => fx.dry_level,
             (FxParam::Type, _) => f32::from(fx.kind.ser_id()),
             (FxParam::Reverb(n), Params::Reverb(p)) => *{ *p }.field(n)?,
+            (FxParam::Convolution(n), Params::Convolution(p)) => *params::IrSettings::from_convolution(p).values.get(n as usize)?,
             (FxParam::SendLevel(n), Params::SendLevels(levels)) => {
                 *levels.sends.get(n as usize)?
             }
@@ -379,13 +393,43 @@ impl ProgramFx {
         if loads.is_empty() {
             return self.processor(sample_rate, max_block);
         }
-        self.with_loads(loads).processor(sample_rate, max_block)
+        let mut out = self.with_loads(loads).processor(sample_rate, max_block);
+        for l in loads {
+            if let Load::Convolution(settings) = l.load {
+                out.init_ir_settings(l.rack, l.slot, settings);
+            }
+        }
+        out
+    }
+
+    /// Prepare the fixed slot list for the audio thread's lent state snapshot.
+    pub fn ir_settings_with(&self, loads: &[ScriptIr]) -> Vec<IrSlotSettings> {
+        let fx = self.with_loads(loads);
+        [(Rack::Insert, &fx.insert), (Rack::Send, &fx.send), (Rack::Main, &fx.main)]
+            .into_iter().chain(fx.buses.iter().filter_map(|b| Some((Rack::Bus(u8::try_from(b.index).ok()?), &b.chain))))
+            .flat_map(|(rack, chain)| chain.slots.iter().filter_map(move |s| {
+                let Params::Convolution(p) = &s.params else { return None };
+                let slot = u8::try_from(s.slot).ok()?;
+                let settings = loads.iter().rev().find_map(|l| match l.load {
+                    Load::Convolution(v) if (l.rack, l.slot) == (rack, slot) => Some(v), _ => None,
+                }).unwrap_or_else(|| params::IrSettings::from_convolution(p));
+                let file = loads.iter().rev().find_map(|l| match &l.load {
+                    Load::Ir { file, .. } if (l.rack, l.slot) == (rack, slot) => Some(file.clone()), _ => None,
+                });
+                Some(IrSlotSettings { rack, slot, settings, file })
+            })).collect()
     }
 
     /// Build just the IR's slot off the audio thread.
     pub fn prepare_ir(&self, rack: Rack, slot: u8, sample_rate: f32, max_block: usize, loads: &[ScriptIr]) -> Option<PreparedIr> {
         let mut fx = self.with_loads(loads);
-        PreparedIr::new(rack, slot, fx.convolution(rack, slot)?, sample_rate, max_block)
+        let p = fx.convolution(rack, slot)?;
+        let mut ir = PreparedIr::new(rack, slot, p, sample_rate, max_block)?;
+        if let Some(settings) = loads.iter().rev().find_map(|l| match l.load {
+            Load::Convolution(s) if (l.rack, l.slot) == (rack, slot) => Some(s),
+            _ => None,
+        }) { ir.settings = settings; }
+        Some(ir)
     }
 
     fn with_loads(&self, loads: &[ScriptIr]) -> Self {
@@ -399,6 +443,9 @@ impl ProgramFx {
                     if let Some(c) = fx.convolution(l.rack, l.slot) {
                         (c.ir, c.ir_file, c.ir_error) = (Some(ir.clone()), Some(file.display().to_string()), None);
                     }
+                }
+                Load::Convolution(settings) => {
+                    if let Some(p) = fx.convolution(l.rack, l.slot) { settings.apply(p); }
                 }
             }
         }
