@@ -1165,6 +1165,7 @@ fn frame_cost() {
 /// `--ignored --nocapture`; `KONTAKTO_SHOT` picks the 16-part rack.
 #[test]
 #[ignore]
+#[cfg(target_os = "linux")]
 fn lag() {
     use moose::mui::mui::vello::{
         self,
