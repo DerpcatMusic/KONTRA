@@ -99,6 +99,38 @@ fn value(c: &Control) -> f64 {
     }
 }
 
+/// Whether a slider `w` by `h` with `picture` is drawn as a knob: named so,
+/// or near square and big enough to turn.
+pub fn knob_like(picture: &str, w: f64, h: f64) -> bool {
+    let named = ["knob", "dial", "rotary"].iter().any(|k| picture.to_lowercase().contains(k));
+    named || (0.6..=1.6).contains(&(w / h)) && w.min(h) >= 24.
+}
+
+/// Whether a continuous control drags up and down, as in Kontakt: a knob or
+/// a value edit always does, horizontal movement ignored; a slider follows
+/// the sign of `$CONTROL_PAR_MOUSE_BEHAVIOUR` (negative is vertical), else
+/// its own shape.
+pub fn drags_vertically(kind: Kind, w: f64, h: f64, picture: &str, behaviour: i32) -> bool {
+    match kind {
+        Kind::Slider if !knob_like(picture, w, h) => match behaviour {
+            0 => h > w,
+            b => b < 0,
+        },
+        _ => true,
+    }
+}
+
+/// How far a drag runs the whole range, in authored pixels: the size of
+/// `$CONTROL_PAR_MOUSE_BEHAVIOUR` is its speed, a value edit a few pixels
+/// a step.
+pub fn travel(kind: Kind, behaviour: i32, span: f64) -> f64 {
+    match (kind, behaviour) {
+        (Kind::Value, _) => (span * 3.).clamp(60., 600.),
+        (_, 0) => 200.,
+        (_, b) => (100_000. / f64::from(b.unsigned_abs())).clamp(60., 600.),
+    }
+}
+
 /// The frame of an `frames`-long strip a knob or slider at `value` shows.
 pub fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
     if frames <= 1 {
@@ -210,6 +242,7 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
             }
         }
     }
+    cx.state.typing.as_ref().filter(|(p, ..)| *p == slot).hash(&mut h);
     h.finish()
 }
 
@@ -275,6 +308,21 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             .map(|(t, k)| t / k as f32);
         layers.push(control(ui, cx, slot, shown, c, s, under).at(shown.x * s, shown.y * s));
     }
+    // Over everything: the value a drag is setting, or a value being typed.
+    let find = |n: usize| drawn.iter().find(|(d, _)| d.control == n).map(|(d, _)| d.clone());
+    if let Some((shown, v)) = cx.state.held.filter(|(p, ..)| *p == slot).and_then(|(_, n, v)| Some((find(n)?, v))) {
+        let c = &interface.controls[shown.control];
+        let label = prop(c, "$CONTROL_PAR_LABEL");
+        let said = if label.is_empty() || shown.kind == Kind::Value { format!("{}", v.round()) } else { keep_spaces(label) };
+        let tag = text(said).text_size(FONT * s).fill(Role::Ink).lines(1).pad((2. * s, 4. * s)).fill(Role::Raised).radius(3.);
+        let (wide, tall) = ((shown.w * s).max(80. * s), FONT * s * 1.8);
+        let y = if shown.y * s >= tall { shown.y * s - tall } else { (shown.y + shown.h) * s };
+        layers.push(row![tag].justify(Justify::Center).w(wide).h(tall).at(shown.x * s + shown.w * s / 2. - wide / 2., y));
+    }
+    if let Some(shown) = cx.state.typing.as_ref().filter(|(p, ..)| *p == slot).and_then(|(_, n, _)| find(*n)) {
+        let el = type_in(ui, cx, slot, &shown, &interface.controls[shown.control], s);
+        layers.push(el.at(shown.x * s, shown.y * s));
+    }
     let area = stack(layers)
         .w(w * s)
         .h(h * s)
@@ -283,6 +331,29 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .clip()
         .named("Original performance view");
     row![area].justify(Justify::Center).align(Align::Start).w(Len::Pct(100.))
+}
+
+/// A value edit's number being typed: Enter or a click away sets it, Esc
+/// leaves it.
+fn type_in(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s: f64) -> El {
+    let id = format!("kpv-type-{slot}");
+    let existed = ui.scene().and_then(|sc| sc.surface(&id)).is_some();
+    if !existed {
+        ui.focus(id.as_str());
+    }
+    let Some((_, _, typed)) = cx.state.typing.as_mut() else { return block(0, 0) };
+    let field = text_edit(ui, id.as_str(), typed, TextOpts::default());
+    let cancel = ui.keys(id.as_str()).iter().any(|k| k.key == Key::Escape);
+    if cancel {
+        cx.state.typing = None;
+    } else if field.changed.submitted || (existed && !ui.focused(id.as_str())) {
+        let typed = cx.state.typing.take().map(|(.., t)| t).unwrap_or_default();
+        let (min, max) = range(shown.kind, c);
+        if let Ok(v) = typed.trim().parse::<f64>() {
+            cx.p.shared.edit_control(slot, shown.control, v.clamp(min.min(max), min.max(max)).round() as i32);
+        }
+    }
+    field.el.w(shown.w * s).h(shown.h * s).named("Type a value")
 }
 
 /// Text as the script spaced it (scripts pad with spaces to clear an icon),
@@ -411,17 +482,14 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
                 Some((p, n, v)) if (p, n) == key => v,
                 _ => raw,
             };
-            // Kontakt's drag: negative behaviour is across, its size the speed.
             let behaviour = int(c, "$CONTROL_PAR_MOUSE_BEHAVIOUR").unwrap_or(0);
-            let travel = match (shown.kind, behaviour) {
-                (Kind::Value, _) => ((hi - lo) * 3.).clamp(60., 600.),
-                (_, 0) => 200.,
-                (_, b) => (100_000. / f64::from(b.unsigned_abs())).clamp(60., 600.),
-            };
-            let held = drive(ui, &id, &mut now, &(lo..=hi), travel * s, behaviour >= 0, reset);
-            let r = ui.get(id.as_str());
-            if r.pressed && (r.mods.ctrl || r.mods.cmd) {
-                now = reset;
+            let vertical = drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour);
+            let before = now;
+            let held = drive(ui, &id, &mut now, &(lo..=hi), travel(shown.kind, behaviour, hi - lo) * s, vertical, reset);
+            if shown.kind == Kind::Value && ui.get(id.as_str()).double_clicked {
+                // A value edit types on a double-click, as Kontakt's does.
+                now = before;
+                cx.state.typing = Some((slot, shown.control, format!("{}", raw.round())));
             }
             if held {
                 cx.state.held = Some((slot, shown.control, now));
@@ -481,7 +549,15 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     };
     let el = el
         .cursor(match shown.kind {
-            Kind::Knob | Kind::Slider | Kind::Value => Cursor::Grab,
+            Kind::Knob | Kind::Slider | Kind::Value if ui.get(id.as_str()).held => Cursor::Grabbing,
+            Kind::Knob | Kind::Slider | Kind::Value => {
+                let behaviour = int(c, "$CONTROL_PAR_MOUSE_BEHAVIOUR").unwrap_or(0);
+                if drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour) {
+                    Cursor::ResizeV
+                } else {
+                    Cursor::ResizeH
+                }
+            }
             _ => Cursor::Hand,
         })
         .named(name);
@@ -587,6 +663,22 @@ mod tests {
         assert_eq!(frame(3., 0., 10., 1), 0);
         assert_eq!((switch_frame(false, 6), switch_frame(true, 6)), (0, 1));
         assert_eq!(switch_frame(true, 1), 0, "a one-frame switch shows its only frame");
+    }
+
+    #[test]
+    fn drags_run_as_in_kontakt() {
+        assert!(drags_vertically(Kind::Knob, 200., 20., "", 500), "a knob drags up and down whatever its behaviour");
+        assert!(drags_vertically(Kind::Slider, 48., 50., "", 800), "a slider drawn as a knob too");
+        assert!(drags_vertically(Kind::Slider, 120., 20., "big_knob", 0), "named a knob");
+        assert!(!drags_vertically(Kind::Slider, 120., 20., "fader", 0), "a wide slider drags across");
+        assert!(drags_vertically(Kind::Slider, 20., 120., "fader", 0), "a tall one up and down");
+        assert!(drags_vertically(Kind::Slider, 120., 20., "fader", -500), "negative behaviour is vertical");
+        assert!(!drags_vertically(Kind::Slider, 20., 120., "fader", 500), "positive is horizontal");
+        assert!(drags_vertically(Kind::Value, 80., 18., "", 0), "a value edit drags up and down");
+        assert_eq!(travel(Kind::Slider, 0, 127.), 200.);
+        assert_eq!(travel(Kind::Slider, -1000, 127.), 100.);
+        assert_eq!(travel(Kind::Slider, 5000, 127.), 60., "the fastest still has room");
+        assert_eq!(travel(Kind::Value, 0, 10.), 60.);
     }
 
     #[test]
