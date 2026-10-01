@@ -296,6 +296,93 @@ fn a_header_is_one_line_at_any_width() {
     }
 }
 
+/// A hundred libraries of a hundred presets each, in folders. The filter
+/// (Ctrl+F) narrows the libraries and opens one from the keys; a library
+/// shows its folders, which the arrows fold and walk; Enter loads into the
+/// selected part; libraries reorder by dragging; and a search over all of
+/// them builds only the rows in view, yet brings the cursor into it.
+#[test]
+fn the_browser_finds_by_library_and_folder() {
+    let mut files: Vec<PathBuf> = (0..100)
+        .flat_map(|lib| (0..100).map(move |n| format!("/virtual/Lib {lib:03}/Instruments/{} Part/Patch {n:03}.nki", n / 25).into()))
+        .collect();
+    files.sort();
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &files));
+        v.files = Arc::new(files);
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let key = |key: Key, mods: Mods| Input { keys: vec![KeyPress { key, mods }], ..Default::default() };
+    let tap = |h: &mut Harness, k: Key| {
+        h.tick(key(k, Mods::default()));
+        h.idle(2);
+    };
+    let shown = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
+
+    h.tick(key(Key::Char('f'), Mods { ctrl: true, ..Mods::default() }));
+    h.idle(2);
+    assert_eq!(h.ui.focus_key(), Some("library-filter"), "Ctrl+F goes to the library filter");
+    h.tick(Input { text: "lib 042".into(), ..Default::default() });
+    h.idle(2);
+    assert!(shown(&h, "library-42") && !shown(&h, "library-41"), "it narrows the libraries");
+    tap(&mut h, Key::Enter);
+    assert_eq!(h.ui.focus_key(), Some("folder-0"), "Enter opens the match");
+    // Instruments, all the library holds, starts open over its four folders.
+    assert!(shown(&h, "folder-4") && !shown(&h, "instrument-5"));
+    tap(&mut h, Key::Down);
+    tap(&mut h, Key::Right);
+    assert!(shown(&h, "instrument-2"), "Right opens a folder");
+    assert_eq!(p.shared.libraries.settings().folders.get("/virtual/Lib 042/Instruments/0 Part"), Some(&true));
+    tap(&mut h, Key::Right);
+    assert_eq!(h.ui.focus_key(), Some("instrument-2"), "and steps into it");
+    tap(&mut h, Key::Left);
+    assert_eq!(h.ui.focus_key(), Some("folder-1"), "Left steps back to its folder");
+    tap(&mut h, Key::Left);
+    assert!(!shown(&h, "instrument-2"), "and shuts it");
+    tap(&mut h, Key::Right);
+    tap(&mut h, Key::Right);
+    tap(&mut h, Key::Enter);
+    let path = |p: &SamplerParams| p.selection.read().unwrap().parts.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
+    assert_eq!(path(&p), ["/virtual/Lib 042/Instruments/0 Part/Patch 000.nki"]);
+    tap(&mut h, Key::Down);
+    tap(&mut h, Key::Enter);
+    assert_eq!(path(&p), ["/virtual/Lib 042/Instruments/0 Part/Patch 001.nki"], "Enter loads into the selected part");
+    let settings = p.shared.libraries.settings();
+    assert_eq!((settings.last_library.as_str(), settings.used.len()), ("/virtual/Lib 042", 1), "the place is kept");
+
+    // Esc clears the filter; a library dragged onto another goes before it.
+    h.ui.focus("library-filter");
+    tap(&mut h, Key::Escape);
+    h.drag("library-42", "library-41");
+    let settings = p.shared.libraries.settings();
+    assert_eq!(settings.sort, crate::library::Sort::Custom);
+    assert_eq!(settings.order[40..43], ["/virtual/Lib 040", "/virtual/Lib 042", "/virtual/Lib 041"]);
+
+    // Every library searched (a second click on the chosen one lets it go):
+    // ten thousand matches, a screenful built.
+    let at = center(&h.ui, "library-41");
+    for down in [true, false] {
+        h.tick(pointer(at, down));
+    }
+    h.idle(2);
+    assert!(!shown(&h, "folder-0"), "no library chosen");
+    h.ui.focus("search");
+    let start = Instant::now();
+    h.tick(Input { text: "patch".into(), ..Default::default() });
+    eprintln!("search over 10k presets: {:?}", start.elapsed());
+    h.idle(2);
+    let built = |h: &Harness| (0..10_000).filter(|n| shown(h, &format!("instrument-{n}"))).collect::<Vec<_>>();
+    assert!((3..60).contains(&built(&h).len()), "{} rows built", built(&h).len());
+    for _ in 0..40 {
+        h.tick(key(Key::PageDown, Mods::default()));
+    }
+    h.idle(2);
+    let cursor = built(&h);
+    assert!(cursor.first().is_some_and(|&n| n > 200), "the cursor's row is brought into view: {cursor:?}");
+}
+
 #[test]
 fn rack_interactions() {
     let p = Arc::new(SamplerParams::new());
@@ -314,8 +401,13 @@ fn rack_interactions() {
     h.press("library-0");
     h.drag("instrument-0", "rack-drop");
     assert_eq!(parts(&p).len(), 1, "a preset dropped on the rack is added");
-    h.press("instrument-1");
-    assert_eq!(parts(&p).len(), 2, "clicking a preset adds it");
+    h.ui.focus("instrument-1");
+    h.tick(Input {
+        keys: vec![KeyPress { key: Key::Enter, mods: Mods { shift: true, ..Mods::default() } }],
+        ..Default::default()
+    });
+    h.idle(3);
+    assert_eq!(parts(&p).len(), 2, "Shift+Enter on a preset adds it");
     h.press("instrument-0");
     h.press("preset-next-0");
     assert_eq!(parts(&p).len(), 2, "clicking a loaded preset shows it");
@@ -995,7 +1087,7 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 37] = [
+    let states: [(&str, bool, &[&str]); 41] = [
         ("empty", false, &[]),
         // Libraries with no artwork: generated covers; one chosen.
         ("covers", false, &["library-2"]),
@@ -1009,6 +1101,13 @@ fn screenshot() {
         ("info", true, &["tab-info"]),
         ("library", false, &["library-1"]),
         ("multis", false, &["picker-multis"]),
+        // A library's folders, one opened by the keys, a part loaded.
+        ("browser-tree", true, &["library-2"]),
+        // The search inside a library: flat, each with its folder under it.
+        ("browser-search", false, &["library-2"]),
+        // The library filter typed into, and the sort menu.
+        ("browser-filter", false, &[]),
+        ("browser-sort", false, &["library-sort"]),
         ("settings", true, &["app-menu", "menu-item-3"]),
         ("menu", true, &["app-menu"]),
         ("save", true, &["app-menu", "menu-item-6"]),
@@ -1118,6 +1217,25 @@ fn screenshot() {
             let mut h = Harness::new(&p, f64::from(width), f64::from(height));
             for id in presses {
                 h.press(id);
+            }
+            let typed = |h: &mut Harness, id: &str, text: &str| {
+                h.ui.focus(id);
+                h.tick(Input { text: text.into(), ..Default::default() });
+                h.idle(2);
+            };
+            let tap = |h: &mut Harness, key: Key| {
+                h.tick(Input { keys: vec![KeyPress { key, mods: Mods::default() }], ..Default::default() });
+                h.idle(2);
+            };
+            match state {
+                "browser-tree" => {
+                    for key in [Key::Down, Key::Right, Key::Right, Key::Down] {
+                        tap(&mut h, key);
+                    }
+                }
+                "browser-search" => typed(&mut h, "search", "a"),
+                "browser-filter" => typed(&mut h, "library-filter", "a"),
+                _ => {}
             }
             if state == "unselected" {
                 h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
