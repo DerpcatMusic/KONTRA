@@ -26,17 +26,17 @@ impl NIFile {
             NIFileType::NISContainer => NIFile::NISoundContainer(ItemContainer::read(reader)?),
             NIFileType::Monolith => NIFile::Monolith(NIFileContainer::read(reader)?),
             NIFileType::NICompressedWave => NIFile::NICompressedWave,
-            NIFileType::KoreSound => todo!(),
             NIFileType::NKSContainer(_) | NIFileType::KontaktMultiV1 => {
                 NIFile::NKSContainer(NKSContainer::read(reader)?)
             }
             NIFileType::KontaktResource => NIFile::KontaktResource,
-            NIFileType::KontaktCache => todo!(),
-            NIFileType::NKSArchive => todo!(),
             NIFileType::NICache => NIFile::NICache,
             NIFileType::FM8LE => NIFile::FM8Preset,
 
-            _ => todo!("Unsupported: {:?}", filetype),
+            // Unknown also covers damaged files (e.g. zero-filled reads).
+            other => {
+                return Err(Error::Generic(format!("Unsupported NI file type: {other:?}")))
+            }
         })
     }
 

@@ -1,12 +1,10 @@
 //! Real-time DSP state built from a [`ProgramFx`] description.
 
-use super::{Effect, Kind, Params, ProgramFx, convolution::Convolver, params, reverb::Reverb};
+use super::{Effect, Params, ProgramFx, convolution::Convolver, params, reverb::Reverb};
 use std::ops::Range;
 
 /// Input at or below this level (−120 dBFS) counts as silence for tail tracking.
 pub(super) const SILENCE: f32 = 1e-6;
-/// `$EFFECT_TYPE_SEND_LEVELS`.
-const SEND_LEVELS: f32 = 0x17 as f32;
 /// Kontakt's instrument buses.
 const BUSES: usize = 16;
 const NO_BUS: u8 = u8::MAX;
@@ -46,9 +44,10 @@ pub enum FxParam {
     /// Output channel the bus plays to (0..[`OUTS`]), -1 for the
     /// instrument output; the slot is ignored.
     Output,
-    /// The slot's effect as its `$EFFECT_TYPE_*` value. Setting the type
-    /// already loaded keeps the effect as it is; loading another is not
-    /// supported (it would allocate on the audio thread).
+    /// The slot's effect as its `$EFFECT_TYPE_*` value, 0 for an empty
+    /// slot. Setting the type already loaded keeps the effect as it is;
+    /// another loads only in `on init`, where the effects are built
+    /// ([`ProgramFx::processor_with`]): here it would allocate.
     Type,
     /// Reverb value `n` in `$ENGINE_PAR_RV2_*` order, 0..=1.
     Reverb(u8),
@@ -70,6 +69,8 @@ pub struct FxProcessor {
     buses: Vec<Bus>,
     /// Position in `buses` of each Kontakt bus, or [`NO_BUS`].
     bus_of: [u8; BUSES],
+    /// The `$EFFECT_TYPE_*` of every stored slot, those without DSP too.
+    types: Box<[(Rack, u8, f32)]>,
     max_block: usize,
     sleep: Sleep,
     /// Output channels, `max_block` each; empty for the default processor.
@@ -248,9 +249,19 @@ impl ProgramFx {
                 }
             })
             .collect();
+        let racks = [(Rack::Insert, &self.insert), (Rack::Send, &self.send), (Rack::Main, &self.main)];
+        let racks = racks.into_iter().chain(
+            (self.buses.iter())
+                .filter(|b| b.index < BUSES)
+                .map(|b| (Rack::Bus(b.index as u8), &b.chain)),
+        );
+        let types = racks
+            .flat_map(|(rack, chain)| chain.slots.iter().map(move |fx| (rack, fx.slot as u8, f32::from(fx.kind.ser_id()))))
+            .collect();
         FxProcessor {
             insert,
             returns,
+            types,
             main: self.main.slots.iter().filter_map(build).collect(),
             buses,
             bus_of,
@@ -441,12 +452,14 @@ impl FxProcessor {
             }
             return true;
         }
+        if param == FxParam::Type {
+            return self.param(rack, slot, param) == Some(value);
+        }
         let returns = &self.returns;
         if let Some(tap) = tap_mut(&mut self.insert, rack, slot) {
             match param {
                 FxParam::Bypass => tap.bypass = value != 0.0,
                 FxParam::Wet => tap.gain = gain,
-                FxParam::Type => return value == SEND_LEVELS,
                 FxParam::SendLevel(n) => {
                     let level = returns
                         .iter()
@@ -468,7 +481,6 @@ impl FxProcessor {
             (FxParam::Bypass, _) => s.bypass = value != 0.0,
             (FxParam::Wet, _) => s.wet = gain,
             (FxParam::Dry, _) => s.dry = gain,
-            (FxParam::Type, dsp) => return value == dsp.kind(),
             (FxParam::Reverb(n), Dsp::Reverb(rv, p)) => {
                 let Some(field) = p.field(n) else {
                     return false;
@@ -491,6 +503,12 @@ impl FxProcessor {
                 _ => bus.pan,
             });
         }
+        if param == FxParam::Type {
+            let stored = self.types.iter().find(|t| (t.0, t.1) == (rack, slot));
+            let rack_exists = !matches!(rack, Rack::Bus(_)) || self.bus(rack).is_some();
+            // `$EFFECT_TYPE_NONE` for an empty slot.
+            return stored.map(|t| t.2).or((rack_exists && slot < 8).then_some(0.0));
+        }
         let tap = self.insert.iter().find_map(|stage| match stage {
             Stage::Tap(tap) if rack == Rack::Insert && tap.index == slot => Some(tap),
             _ => None,
@@ -499,7 +517,6 @@ impl FxProcessor {
             return match param {
                 FxParam::Bypass => Some(f32::from(tap.bypass)),
                 FxParam::Wet => Some(tap.gain),
-                FxParam::Type => Some(SEND_LEVELS),
                 FxParam::SendLevel(n) => {
                     let j = self.returns.iter().position(|r| r.slot.index == n)?;
                     tap.levels.get(j).copied()
@@ -512,7 +529,6 @@ impl FxProcessor {
             (FxParam::Bypass, _) => Some(f32::from(s.bypass)),
             (FxParam::Wet, _) => Some(s.wet),
             (FxParam::Dry, _) => Some(s.dry),
-            (FxParam::Type, dsp) => Some(dsp.kind()),
             (FxParam::Reverb(n), Dsp::Reverb(_, p)) => { *p }.field(n).copied(),
             _ => None,
         }
@@ -676,17 +692,6 @@ impl Dsp {
             }
             _ => return None,
         })
-    }
-
-    /// The effect's `$EFFECT_TYPE_*` value.
-    fn kind(&self) -> f32 {
-        let kind = match self {
-            Dsp::Gain(_) => Kind::Gainer,
-            Dsp::Stereo { .. } => Kind::StereoModeller,
-            Dsp::Reverb(..) => Kind::Reverb,
-            Dsp::Convolution(_) => Kind::Convolution,
-        };
-        f32::from(kind.ser_id())
     }
 
     fn clear(&mut self) {

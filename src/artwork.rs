@@ -306,6 +306,12 @@ pub fn linked_script(instrument: &Path, name: &str) -> Result<Option<Vec<u8>>, S
     Pictures::of(instrument, "scripts").read(file)
 }
 
+/// A file in the library's `Resources/data`, loose or in its resource
+/// container (`load_array` mode 2).
+pub fn data_file(instrument: &Path, name: &str) -> Option<Vec<u8>> {
+    Pictures::of(instrument, "data").read(name).ok().flatten()
+}
+
 /// The impulse response `load_ir_sample` names: an absolute path, or a file
 /// in the library's `Resources/ir_samples`, loose or in its resource
 /// container. Names match without case; a name without an extension
@@ -497,7 +503,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
     let size = reader.output_buffer_size()?;
-    if size > 32 * 1024 * 1024 {
+    // ANALOG STRINGS' macro film strips decode to 37 MB (732 x 12780 RGBA).
+    if size > 64 * 1024 * 1024 {
         return None;
     }
     let mut data = vec![0; size];

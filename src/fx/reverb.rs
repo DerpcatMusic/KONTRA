@@ -72,6 +72,8 @@ pub struct Reverb {
     /// `lfo_phase.sin_cos()`.
     lfo: [f32; 2],
     input_coef: f32,
+    /// 0 while frozen: the input no longer reaches the network.
+    input_gain: f32,
     input_state: [f32; 2],
     shelf_coef: f32,
     shelf_gain: f32,
@@ -114,6 +116,7 @@ impl Reverb {
             lfo_step: TAU * 0.7 / sample_rate,
             lfo: [0.0, 1.0],
             input_coef: 0.0,
+            input_gain: 1.0,
             input_state: [0.0; 2],
             shelf_coef: one_pole(250.0, sample_rate),
             shelf_gain: 0.0,
@@ -147,13 +150,20 @@ impl Reverb {
         self.shelf_gain = 10f32.powf(-18.0 * n(p.low_shelf) / 20.0) - 1.0;
         self.width = n(p.stereo);
         self.rt60 = rt60 * sample_rate;
+        // Freeze: lossless, undamped feedback holds the tail; new input is muted.
+        let frozen = p.freeze >= 0.5;
+        self.input_gain = if frozen { 0.0 } else { 1.0 };
+        if frozen {
+            (self.feedback, self.damp_coef, self.rt60) = ([1.0; LINES], 1.0, f32::INFINITY);
+        }
     }
 
     /// Frames of output after input at most `peak` falls silent, until it
     /// is below −120 dBFS: 60 dB per reverb time.
     pub fn tail(&self, peak: f32) -> usize {
         let db = 20.0 * (peak / super::processor::SILENCE).max(1.0).log10();
-        self.predelay_len + (self.rt60 * db / 60.0) as usize
+        // A frozen tail rings for good; the cap keeps summed tails from overflowing.
+        self.predelay_len + ((self.rt60 * db / 60.0) as usize).min(usize::MAX / 64)
     }
 
     /// Silences the network.
@@ -217,7 +227,7 @@ impl Reverb {
         self.pos = pos.wrapping_add(1);
 
         // The input is summed to mono; the network decorrelates the outputs.
-        self.predelay.write(pos, 0.5 * (input[0] + input[1]));
+        self.predelay.write(pos, 0.5 * self.input_gain * (input[0] + input[1]));
         let dry = self.predelay.read(pos, self.predelay_len);
 
         let mut diffused = [0.0; 2];
@@ -366,6 +376,7 @@ mod tests {
             high_cut: 0.0,
             low_shelf: 0.0,
             stereo: 1.0,
+            freeze: 0.0,
         }
     }
 
@@ -390,6 +401,32 @@ mod tests {
         assert!(early > 1e-3, "reverb produced no tail: {early}");
         // rt60 ~1.1 s: the fourth second must be far below the first half-second.
         assert!(late < early * 1e-4, "early {early} late {late}");
+    }
+
+    #[test]
+    fn freeze_holds_the_tail_and_mutes_the_input() {
+        let mut p = params(0.2);
+        let mut rv = Reverb::new(&p, 48_000.0);
+        let run = |rv: &mut Reverb, input: f32, frames: usize| {
+            let (mut l, mut r) = (vec![input; frames], vec![input; frames]);
+            for (l, r) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+                rv.process(l, r);
+            }
+            energy(&l)
+        };
+        run(&mut rv, 0.1, 4_800);
+        p.freeze = 1.0;
+        rv.set(&p);
+        let held = run(&mut rv, 0.0, 48_000);
+        // A short room would fall by far more than 60 dB in these 3 s; loud
+        // input meanwhile must not reach the frozen tail.
+        let later = run(&mut rv, 1.0, 3 * 48_000) / 3.0;
+        assert!(held > 0.0 && later > 0.5 * held && later < 2.0 * held, "{held} {later}");
+        assert!(rv.tail(1.0) > 48_000 * 3600);
+        p.freeze = 0.0;
+        rv.set(&p);
+        run(&mut rv, 0.0, 3 * 48_000);
+        assert!(run(&mut rv, 0.0, 48_000) < held * 1e-6);
     }
 
     #[test]
