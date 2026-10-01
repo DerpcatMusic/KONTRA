@@ -773,6 +773,34 @@ mod tests {
         assert!(sfz.contains("seq_length=2 seq_position=2"));
         let report = std::fs::read_to_string(kontra.join("Reports/Drone.txt")).unwrap();
         assert!(report.contains("pitch") && report.contains("A2"), "{report}");
+
+        // Both presets play: each key sounds at its own pitch, from the
+        // nearest root transposed, in KONTRA's engine.
+        let heard = |preset: &Path, note: u8, velocity: u8| {
+            let instrument = crate::import::read(preset).unwrap();
+            let mut e = crate::engine::Engine::default();
+            e.blocking_streams = true;
+            e.reset(44100.0);
+            e.set_bank(Some(Box::new(crate::engine::Bank::load(&instrument).unwrap())));
+            e.note_on(0, note, velocity);
+            let (mut left, mut right) = (vec![0.0; 128], vec![0.0; 128]);
+            let mut mono = Vec::new();
+            for _ in 0..80 {
+                e.render(&mut left, &mut right);
+                mono.extend(left.iter().zip(&right).map(|(l, r)| 0.5 * (l + r)));
+            }
+            pitch::detect(&mono, 44100).map(|(midi, _)| midi)
+        };
+        let keys_nki = kontakt.join("Instruments/Keys.nki");
+        let keys_native = kontra.join(format!("Instruments/Keys.{NATIVE}"));
+        for (note, velocity) in [(60, 30), (62, 100), (67, 30), (70, 127)] {
+            for preset in [&keys_nki, &keys_native] {
+                let midi = heard(preset, note, velocity).unwrap_or_else(|| panic!("{} note {note} is silent", preset.display()));
+                assert!((midi - f32::from(note)).abs() < 0.15, "{} note {note} sounds as {midi}", preset.display());
+            }
+        }
+        let drone = heard(&kontakt.join("Instruments/Drone.nki"), 57, 100).unwrap();
+        assert!((drone - 57.0).abs() < 0.05, "the drone's root plays in tune: {drone}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
