@@ -85,6 +85,8 @@ impl From<&ModAssignment> for Mod {
             ModTarget::Attack => Some(Target::Attack),
             ModTarget::Release => Some(Target::Release),
             ModTarget::Module { .. } => Some(Target::Fx),
+            // ponytail: group pan and loop modulation is kept for scripts, not played.
+            ModTarget::Group(_) => None,
         };
         Self {
             route: Source::of(m.source).zip(target),
