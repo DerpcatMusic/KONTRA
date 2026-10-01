@@ -17,7 +17,7 @@ use std::{
     io::{self, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -778,13 +778,24 @@ pub struct Sources {
     /// By the path's bytes: hashing a `Path` walks its components, one
     /// hasher write each, and every sample looks its archive up.
     archives: HashMap<OsString, Indexed>,
+    /// Library keys by archive, once needed.
+    keys: HashMap<OsString, Result<Option<Arc<dyn LibraryKey>>, String>>,
 }
 
-/// An archive's directory, open file and (once needed) library key.
+/// An archive's directory and open file.
 struct Indexed {
     index: Archive,
     file: File,
-    key: OnceLock<Result<Option<Arc<dyn LibraryKey>>, String>>,
+}
+
+/// What opening a sample found: with its [`Source`], enough to map and
+/// stream it without opening it again (see `cache::headers`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Header {
+    pub rate: u32,
+    pub frames: u64,
+    /// Declared bits per sample.
+    pub bits: Option<u16>,
 }
 
 impl Sources {
@@ -832,28 +843,35 @@ impl Sources {
                     });
                 };
                 let (offset, size, encoded, key_index) = entry?.expect("archive members have entries");
-                let key = if encoded && key_index != 0xff {
-                    ensure!(key_index == 0x100, "Unsupported legacy NKX cipher");
-                    let key = self.archives[archive.as_os_str()].key.get_or_init(|| {
-                        crate::access::library_key(&archive).map_err(|e| format!("{e:#}"))
-                    });
-                    Some(
-                        key.clone()
-                            .map_err(anyhow::Error::msg)?
-                            .context("Encrypted archive member needs local library access data")?,
-                    )
-                } else {
-                    None
-                };
-                Ok(Source {
-                    path: path.into(),
-                    file: archive,
-                    offset,
-                    len: Some(size),
-                    key,
-                })
+                let keyed = encoded && key_index != 0xff;
+                ensure!(!keyed || key_index == 0x100, "Unsupported legacy NKX cipher");
+                self.rebuild(path, archive, offset, Some(size), keyed)
             })
             .collect()
+    }
+
+    /// The source of `path` from its [`Source::parts`], reading nothing but
+    /// a keyed archive's library key, once.
+    pub fn rebuild(&mut self, path: &Path, file: PathBuf, offset: u64, len: Option<u64>, keyed: bool) -> Result<Source> {
+        let key = if keyed {
+            let key = self.keys.entry(file.clone().into()).or_insert_with(|| {
+                crate::access::library_key(&file).map_err(|e| format!("{e:#}"))
+            });
+            Some(
+                key.clone()
+                    .map_err(anyhow::Error::msg)?
+                    .context("Encrypted archive member needs local library access data")?,
+            )
+        } else {
+            None
+        };
+        Ok(Source {
+            path: path.into(),
+            file,
+            offset,
+            len,
+            key,
+        })
     }
 
     /// Read `archive`'s directory, once.
@@ -862,8 +880,7 @@ impl Sources {
             let mut file = File::open(archive)?;
             let index = Archive::read_index(&mut file)
                 .with_context(|| format!("Archive {}", archive.display()))?;
-            let key = OnceLock::new();
-            self.archives.insert(archive.into(), Indexed { index, file, key });
+            self.archives.insert(archive.into(), Indexed { index, file });
         }
         Ok(())
     }
@@ -877,6 +894,12 @@ impl Source {
 
     pub fn open(&self) -> Result<SampleReader> {
         self.open_counted(false)
+    }
+
+    /// The file holding the sample, its byte range there and whether it
+    /// is encrypted: what [`Sources::rebuild`] takes back.
+    pub fn parts(&self) -> (&Path, u64, Option<u64>, bool) {
+        (&self.file, self.offset, self.len, self.key.is_some())
     }
 
     /// [`Source::open`] for the streamer: its reads count in [`DISK_READ`].
@@ -1047,6 +1070,14 @@ struct PcmCodec {
 const SKIP_AHEAD: u64 = 16384;
 
 impl SampleReader {
+    pub fn header(&self) -> Header {
+        Header {
+            rate: self.rate,
+            frames: self.frames,
+            bits: self.bits,
+        }
+    }
+
     fn open(source: &Source, counted: bool) -> Result<Self> {
         let bytes = source.bytes(counted)?;
         let ncw = source

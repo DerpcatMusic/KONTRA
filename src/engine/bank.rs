@@ -9,7 +9,7 @@ use super::{
     voice::{Ahdsr, Flex, FlexPoint},
 };
 use crate::{
-    audio::{self, Frame, Pcm, Sample, SampleReader, Source},
+    audio::{self, Frame, Header, Pcm, Sample, SampleReader, Source},
     import::{Group, Instrument, VoiceLimit, Zone},
 };
 use anyhow::{Result, bail};
@@ -17,7 +17,7 @@ use std::{
     collections::HashMap,
     num::NonZero,
     ops::Range,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -409,26 +409,8 @@ impl Bank {
         let trace = Trace::new();
         resident::sweep();
         // Resolve each distinct sample once, then open them all in parallel.
-        // By the path's bytes: a `Path` hashes one component at a time.
-        let mut ids: HashMap<&std::ffi::OsStr, usize> = HashMap::new();
-        let mut paths = Vec::new();
-        let zone_ids: Vec<_> = instrument
-            .zones
-            .iter()
-            .map(|zone| {
-                zone.available.then(|| {
-                    *ids.entry(zone.sample.as_os_str()).or_insert_with(|| {
-                        paths.push(&zone.sample);
-                        paths.len() - 1
-                    })
-                })
-            })
-            .collect();
-        // Built on this thread: sources outlive loading, and allocating
-        // them on workers fragments their heap arenas (18 MiB more RSS on
-        // Vista 5 Violins). Only member headers are read in parallel.
-        let paths_ref: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
-        let resolved = audio::Sources::default().sources(&paths_ref);
+        let (zone_ids, paths) = distinct(instrument);
+        let (resolved, cached) = resolve(&instrument.path, &paths);
         trace.mark("resolve");
         // Progress runs on from where the caller left it: opening every
         // sample takes the first tenth of the rest, reading them the others
@@ -461,19 +443,12 @@ impl Bank {
                 }
             })
             .collect();
-        trace.mark("open");
-        let mut zones = Vec::new();
-        let mut zone_samples = Vec::new();
-        for (zone, id) in instrument.zones.iter().zip(zone_ids) {
-            match id.map(|id| opened[id]) {
-                None => issues.skip(format_args!("unavailable {}", zone.sample.display())),
-                Some(None) => issues.skip(format_args!("unreadable {}", zone.sample.display())),
-                Some(Some(id)) => {
-                    zones.push(zone.clone());
-                    zone_samples.push(id);
-                }
-            }
+        if cached.is_none() && readers.len() == paths.len() {
+            let headers: Vec<_> = readers.iter().map(|(s, r, _)| (s, r.header())).collect();
+            store_headers(&instrument.path, &paths, &headers);
         }
+        trace.mark("open");
+        let (zones, zone_samples) = keep_zones(instrument, &zone_ids, &opened, &mut issues);
         let info = readers.iter().map(|(_, r, _)| (r.rate, r.frames)).collect();
         let mut builder =
             Builder::new(instrument.groups.clone(), zones, zone_samples, info, issues)?;
@@ -605,6 +580,70 @@ impl Bank {
             None
         };
         audio::trim_heap();
+        Ok(bank)
+    }
+
+    /// A bank that plays at once: nothing resident, every sample streams
+    /// from its first frame. With the header cache current (`cache::headers`)
+    /// it opens no sample at all; voices hold their start until the disk
+    /// delivers (see `voice::START_HOLD`). A full load then takes over
+    /// through [`super::Engine::upgrade_bank`], playing voices carrying on.
+    pub fn load_bare(instrument: &Instrument) -> Result<Self> {
+        let mut issues = Issues::default();
+        let trace = Trace::new();
+        resident::sweep();
+        let (zone_ids, paths) = distinct(instrument);
+        let (resolved, cached) = resolve(&instrument.path, &paths);
+        let headers: Vec<Result<(Source, Header)>> = match cached {
+            Some(headers) => (resolved.into_iter().zip(headers))
+                .map(|(source, header)| Ok((source?, header)))
+                .collect(),
+            None => {
+                let opened = parallel(resolved, |_: &mut (), source| {
+                    let source = source?;
+                    let header = source.open()?.header();
+                    anyhow::Ok((source, header))
+                });
+                let headers: Option<Vec<_>> = opened.iter().map(|r| r.as_ref().ok().map(|(s, h)| (s, *h))).collect();
+                if let Some(headers) = headers {
+                    store_headers(&instrument.path, &paths, &headers);
+                }
+                opened
+            }
+        };
+        trace.mark("headers");
+        let mut kept = Vec::new();
+        let opened: Vec<Option<u32>> = (headers.into_iter().zip(&paths))
+            .map(|(result, &path)| match result {
+                Ok((source, header)) => {
+                    kept.push((source, header, path));
+                    Some(kept.len() as u32 - 1)
+                }
+                Err(e) => {
+                    issues.note(format_args!("{e:#}"));
+                    None
+                }
+            })
+            .collect();
+        let (zones, zone_samples) = keep_zones(instrument, &zone_ids, &opened, &mut issues);
+        let info = kept.iter().map(|(_, h, _)| (h.rate, h.frames)).collect();
+        let mut builder = Builder::new(instrument.groups.clone(), zones, zone_samples, info, issues)?;
+        builder.limits(instrument);
+        let empty = Frames::new(Pcm::pack(&[], false));
+        let mut samples = Vec::with_capacity(kept.len());
+        let mut streamed = Vec::with_capacity(kept.len());
+        for (source, header, path) in kept {
+            samples.push(SampleData {
+                rate: header.rate,
+                spans: vec![Span { start: 0, data: empty.clone() }],
+                streamed: true,
+            });
+            streamed.push(Some(resident::source((source, path))));
+        }
+        let streamer = Streamer::spawn(streamed)?;
+        let mut bank = builder.finish(samples, Some(streamer), Streamer::BYTES)?;
+        (bank.preload, bank.cover) = (0, 0);
+        trace.mark("bare");
         Ok(bank)
     }
 
@@ -1152,6 +1191,68 @@ pub(super) fn spans(plays: &[(&ZonePlay, (u64, u64))], preload: u64, cover: u64)
         !r.is_empty()
     });
     (merged, true, looping)
+}
+
+/// The distinct samples of `instrument`'s available zones, and each zone's
+/// index into them.
+fn distinct(instrument: &Instrument) -> (Vec<Option<usize>>, Vec<&PathBuf>) {
+    // By the path's bytes: a `Path` hashes one component at a time.
+    let mut ids: HashMap<&std::ffi::OsStr, usize> = HashMap::new();
+    let mut paths = Vec::new();
+    let zone_ids = (instrument.zones.iter())
+        .map(|zone| {
+            zone.available.then(|| {
+                *ids.entry(zone.sample.as_os_str()).or_insert_with(|| {
+                    paths.push(&zone.sample);
+                    paths.len() - 1
+                })
+            })
+        })
+        .collect();
+    (zone_ids, paths)
+}
+
+/// Each of `paths`' source, and their headers when the header cache of
+/// `preset` holds them. Built on this thread: sources outlive loading, and
+/// allocating them on workers fragments their heap arenas (18 MiB more RSS
+/// on Vista 5 Violins); only archive member headers are read in parallel.
+fn resolve(preset: &Path, paths: &[&PathBuf]) -> (Vec<Result<Source>>, Option<Vec<Header>>) {
+    let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+    if let Some(cached) = crate::cache::dir().and_then(|dir| crate::cache::headers(&dir, preset, &paths)) {
+        let (sources, headers) = cached.into_iter().map(|(s, h)| (Ok(s), h)).unzip();
+        return (sources, Some(headers));
+    }
+    (audio::Sources::default().sources(&paths), None)
+}
+
+fn store_headers(preset: &Path, paths: &[&PathBuf], headers: &[(&Source, Header)]) {
+    if let Some(dir) = crate::cache::dir() {
+        let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        crate::cache::store_headers(&dir, preset, &paths, headers);
+    }
+}
+
+/// The zones whose sample opened (`opened[distinct id]`), with their index
+/// among the opened samples; the rest are skipped.
+fn keep_zones(
+    instrument: &Instrument,
+    zone_ids: &[Option<usize>],
+    opened: &[Option<u32>],
+    issues: &mut Issues,
+) -> (Vec<Zone>, Vec<u32>) {
+    let mut zones = Vec::new();
+    let mut zone_samples = Vec::new();
+    for (zone, id) in instrument.zones.iter().zip(zone_ids) {
+        match id.map(|id| opened[id]) {
+            None => issues.skip(format_args!("unavailable {}", zone.sample.display())),
+            Some(None) => issues.skip(format_args!("unreadable {}", zone.sample.display())),
+            Some(Some(id)) => {
+                zones.push(zone.clone());
+                zone_samples.push(id);
+            }
+        }
+    }
+    (zones, zone_samples)
 }
 
 /// Load phase timings on stderr when `KONTRA_LOAD_TRACE` is set.

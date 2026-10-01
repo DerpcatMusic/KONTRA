@@ -20,6 +20,12 @@ pub(crate) const WINDOW: usize = MAX_BLOCK * MAX_STEP as usize + 8;
 const FIXED_ONE: f64 = (1u64 << 32) as f64;
 /// Envelope level treated as silence (−80 dB); decays below it end the voice.
 const SILENT: f32 = 1e-4;
+/// Longest a voice starting with nothing resident waits for its first
+/// streamed frames before it plays on regardless (see [`Voice::waits`]).
+pub(crate) const START_HOLD: f32 = 0.05;
+/// Streamed frames a waiting voice wants published before it starts:
+/// more than a block reads at any pitch the streamer then keeps ahead of.
+const START_LEAD: u64 = 1024;
 /// Offline renders wait at most this long for one streamed window.
 const OFFLINE_WAIT: Duration = Duration::from_secs(5);
 /// Seconds a voice stays muted before its stream pauses.
@@ -967,6 +973,9 @@ pub(crate) struct Voice {
     pub gains: [f32; 2],
     /// Frames the voice has been muted for, to pause its stream.
     pub muted: u32,
+    /// Frames the voice may still wait, unmoved, for its first streamed
+    /// frames; 0 once it plays (see [`Voice::waits`]).
+    pub hold: u32,
     /// Group insert filter state (untouched when the group has none).
     pub filter: VoiceFilter,
     pub plan: Plan,
@@ -1040,6 +1049,29 @@ pub(crate) fn balance(gain: f32, pan: f32) -> [f32; 2] {
 }
 
 impl Voice {
+    /// Whether the voice sits out this block of `n` frames, silent and
+    /// unmoved, waiting for its first streamed frames: it started with
+    /// none resident (a bare bank, or a start offset past the resident
+    /// range). Rather than lose its attack to an underrun it starts that
+    /// much later, by at most [`START_HOLD`]. Offline renders wait in
+    /// [`Voice::copy_streamed`] instead.
+    pub fn waits(&mut self, cx: &Context, n: usize) -> bool {
+        if self.hold == 0 {
+            return false;
+        }
+        let need = (self.limit + START_LEAD).min(self.length);
+        let ready = cx.blocking
+            || self.stream.is_none_or(|s| {
+                cx.slots[s.slot as usize].published(s.tag).is_some_and(|end| end >= need)
+            });
+        if ready || self.hold <= n as u32 {
+            self.hold = 0;
+            return false;
+        }
+        self.hold -= n as u32;
+        true
+    }
+
     /// Peak gain the voice ended its last block at, sample aside.
     pub fn level(&self) -> f32 {
         let flex = self.flex.as_ref().map_or(1.0, Envelope::level);

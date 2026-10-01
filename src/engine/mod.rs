@@ -1142,6 +1142,11 @@ impl Player {
             pan: ev.pan,
             gains: [0.0; 2],
             muted: 0,
+            hold: if limit <= first && stream.is_some() {
+                (voice::START_HOLD * self.rate as f32) as u32
+            } else {
+                0
+            },
             filter: VoiceFilter::new(settings.filter.as_deref(), &settings.mods, &inputs, self.rate as f32),
             plan: Default::default(),
         };
@@ -1430,6 +1435,10 @@ impl Player {
         // sum into its window, the rest (and lanes of one) render alone.
         self.lanes.clear();
         for (i, voice) in self.voices.iter_mut().enumerate() {
+            if voice.waits(&cx, n) {
+                self.lanes.skip(i as u16);
+                continue;
+            }
             let bus = bank.settings[voice.group as usize].bus;
             let through = bus.filter(|_| steady).and_then(|b| fx.bus_gains(b));
             match voice.plan(&cx, n, bus, through).filter(|_| self.shared) {
@@ -1439,7 +1448,7 @@ impl Player {
         }
         self.dead.clear();
         for (i, voice) in self.voices.iter_mut().enumerate() {
-            if self.lanes.shared(i as u16) {
+            if self.lanes.shared(i as u16) || voice.hold > 0 {
                 continue;
             }
             let bus = bank.settings[voice.group as usize].bus;
