@@ -1365,12 +1365,13 @@ impl Runtime {
         self.cancel_sound(channel_mask, None);
     }
 
-    pub(crate) fn all_sound_off_from(&mut self, channel: u8, input_mask: u16) {
-        self.cancel_sound(1 << channel.min(15), Some(input_mask));
+    pub(crate) fn all_sound_off_from(&mut self, input_mask: u16) -> u16 {
+        self.cancel_sound(u16::MAX, Some(input_mask))
     }
 
-    fn cancel_sound(&mut self, channel_mask: u16, input_mask: Option<u16>) {
-        if channel_mask == 0 { return; }
+    fn cancel_sound(&mut self, channel_mask: u16, input_mask: Option<u16>) -> u16 {
+        if channel_mask == 0 { return 0; }
+        let mut affected = 0;
         let selected = |channel: u8, input_channel: Option<u8>| channel_mask & (1 << channel.min(15)) != 0
             && input_mask.is_none_or(|mask| input_channel.is_some_and(|c| mask & (1 << c.min(15)) != 0));
         // A physical input chain can contain events routed to different channels.
@@ -1400,6 +1401,7 @@ impl Runtime {
                 | Work::Rpn { channel, input_channel, .. } => !selected(channel, input_channel),
         });
         for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected(e.channel, e.input_channel)) {
+            affected |= 1 << e.channel.min(15);
             e.held = false;
             e.next_input = 0;
             e.voice = None;
@@ -1446,6 +1448,7 @@ impl Runtime {
         }
         for note in 0..12 { self.key_down_oct(note); }
         self.changes += 1;
+        affected
     }
 
     /// Synchronize a full Panic/reset's controller state without script callbacks.

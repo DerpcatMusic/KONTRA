@@ -1242,7 +1242,7 @@ end on"#;
         let path = std::path::PathBuf::from("tone");
         let zones = (0..4).map(|group| Zone { group, sample: path.clone(), low_key: 48, high_key: 80, low_velocity: 1, high_velocity: 127, ..Zone::default() }).collect();
         let bank = Bank::from_samples(groups, zones, vec![(path, Sample { rate: 48000, frames: vec![[0.5; 2]; 48000] })]).unwrap();
-        let (rt, errors) = Runtime::with_scripts(&[script, "on rpn\nwait(40000)\nplay_note(78,100,0,0)\nend on"], &mut LogEngine::new(Vec::new(), 48000.0), 8, Vec::new());
+        let (rt, errors) = Runtime::with_scripts(&[script, "on note\nif ($EVENT_NOTE = 61)\nset_event_par($EVENT_ID,$EVENT_PAR_MIDI_CHANNEL,5)\nend if\nend on\non rpn\nwait(40000)\nplay_note(78,100,0,0)\nend on"], &mut LogEngine::new(Vec::new(), 48000.0), 8, Vec::new());
         assert!(errors.iter().all(Option::is_none), "{errors:?}");
         let mut e = Engine::default();
         e.reset(48000.0);
@@ -1268,6 +1268,7 @@ end on"#;
         }
         advance(&mut e, 512); // Native note 64 releases are now pedal-deferred.
         assert_eq!(voices(&e, 61, false), [0, 1], "timed children sound before abort");
+        assert!(e.voice_census().iter().filter(|v| v.note == 61).all(|v| v.channel == 5), "script reroutes the timed child away from home");
         assert!(e.voice_census().iter().any(|v| v.note == 62 && v.group == 2 && v.release_trigger));
         // UI-created FadeIn commands still carry the target event's origin.
         // Otherwise a queued ramp can overwrite the selected voice's cut fade.

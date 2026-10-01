@@ -643,30 +643,44 @@ impl Engine {
             .cc(self.bank.as_deref(), channel, cc, value, defaults);
     }
 
-    /// Cut one physical performance context routed onto a shared script channel.
+    /// Cut a physical performance context, including notes a script rerouted.
     pub(crate) fn all_sound_off_from(&mut self, channel: u8, input_mask: u16) {
         if channel >= 16 || input_mask == 0 { return; }
-        let selected = |c: u8, input_channel: Option<u8>| c == channel
-            && input_channel.is_some_and(|input| input_mask & (1 << input.min(15)) != 0);
-        if let Some(rt) = self.script.as_deref_mut() { rt.all_sound_off_from(channel, input_mask); }
-        self.commands.retain(|c| !selected(c.channel, c.input_channel));
+        let selected = |input_channel: Option<u8>| input_channel.is_some_and(|input| input_mask & (1 << input.min(15)) != 0);
+        let mut affected = 1 << channel;
+        if let Some(rt) = self.script.as_deref_mut() { affected |= rt.all_sound_off_from(input_mask); }
+        self.commands.retain(|c| {
+            if !selected(c.input_channel) { return true; }
+            affected |= 1 << c.channel;
+            false
+        });
         let fade = self.player.fade_frames(STEAL_FADE);
-        for v in self.player.voices.iter_mut().filter(|v| selected(v.channel, v.input_channel)) {
+        for v in self.player.voices.iter_mut().filter(|v| selected(v.input_channel)) {
+            affected |= 1 << v.channel;
             v.fade.start(0.0, fade, true);
         }
-        self.player.pending_releases.retain(|r| !selected(r.channel, r.input_channel));
+        self.player.pending_releases.retain(|r| {
+            if !selected(r.input_channel) { return true; }
+            affected |= 1 << r.channel;
+            false
+        });
         for input in (0..16).filter(|input| input_mask & (1 << input) != 0) {
-            for key in self.player.input_keys[input].iter_mut().filter(|key| key.0 == channel) { *key = (0, 0); }
+            for key in self.player.input_keys[input].iter_mut().filter(|key| key.1 > 0) {
+                affected |= 1 << key.0;
+                *key = (0, 0);
+            }
         }
-        for note in 0..128 {
-            let held = if let Some(rt) = self.script.as_deref() {
-                (0..16).any(|input| rt.key_down_from(input, channel, note as u8))
-            } else {
-                self.player.input_keys.iter().any(|row| row[note].0 == channel && row[note].1 > 0)
-            };
-            if !held {
-                self.player.keys[channel as usize][note] = 0;
-                self.player.key_up[channel as usize][note] = self.player.now;
+        for channel in (0..16).filter(|channel| affected & (1 << channel) != 0) {
+            for note in 0..128 {
+                let held = if let Some(rt) = self.script.as_deref() {
+                    (0..16).any(|input| rt.key_down_from(input, channel as u8, note as u8))
+                } else {
+                    self.player.input_keys.iter().any(|row| row[note].0 == channel as u8 && row[note].1 > 0)
+                };
+                if !held {
+                    self.player.keys[channel][note] = 0;
+                    self.player.key_up[channel][note] = self.player.now;
+                }
             }
         }
     }
