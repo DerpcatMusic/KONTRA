@@ -891,6 +891,7 @@ mod tests {
         assert!(!worker.decoded.errors.values().any(|(source, _, _)| source.strong_count() == 0), "retired source identities are pruned before reuse");
         worker.decoded.clear();
         assert!(worker.decoded.errors.is_empty());
+        drop(sources);
         for path in paths { std::fs::remove_file(path).unwrap(); }
     }
 
