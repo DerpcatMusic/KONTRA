@@ -267,6 +267,29 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
 pub fn info(ui: &Ui, cx: &Cx) -> El {
     let v = cx.part_view();
     let mut rows = Vec::new();
+    if v.loading {
+        rows.push(body(v.status.clone()).lines(2));
+        if let Some(path) = crate::diagnostics::log_path() { rows.push(caption(format!("Log file: {}", path.display())).fill(Role::Dim).lines(4)); }
+    }
+    if let Some(report) = &v.load_report {
+        rows.push(section("Load diagnostics"));
+        rows.push(body(format!("{} · {:.0} ms", report["status"].as_str().unwrap_or("unknown"), report["elapsed_ms"].as_f64().unwrap_or(0.))).lines(2));
+        rows.push(caption(report["path"].as_str().unwrap_or_default()).fill(Role::Dim).lines(4));
+        if let Some(path) = report["log_path"].as_str() { rows.push(caption(format!("Log file: {path}")).fill(Role::Dim).lines(4)); }
+        if let Some(error) = report["logging_error"].as_str() { rows.push(body(format!("Could not write the log: {error}")).lines(4)); }
+        if let Some(stages) = report["stages_ms"].as_object() {
+            for (name, ms) in stages { rows.push(caption(format!("{name}: {:.0} ms", ms.as_f64().unwrap_or(0.))).fill(Role::Dim)); }
+        }
+        let issues: Vec<_> = ["issues", "script_restore", "ram_fill"].into_iter().flat_map(|key| {
+            if key == "issues" { report[key].as_array() } else { report[key]["issues"].as_array() }.into_iter().flatten()
+        }).collect();
+        {
+            for issue in issues.iter().take(64) {
+                rows.push(body(format!("{} [{}]: {}", issue["stage"].as_str().unwrap_or("load"), issue["code"].as_str().unwrap_or("warning"), issue["message"].as_str().unwrap_or_default())).text_size(TEXT).lines(6).shrink(0));
+            }
+            if issues.len() > 64 { rows.push(caption(format!("{} more issues are recorded in the log file.", issues.len() - 64)).fill(Role::Dim).lines(2)); }
+        }
+    }
     if let Some(i) = current(cx) {
         rows.push(section("Instrument"));
         rows.push(
@@ -286,7 +309,7 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
         if !v.status.is_empty() {
             rows.push(caption(v.status.clone()).fill(Role::Dim).lines(3));
         }
-        if !i.warnings.is_empty() {
+        if v.load_report.is_none() && !i.warnings.is_empty() {
             rows.push(section("Import notes").pad(edges(SPACE, 0., 0., 0.)));
             // A line apiece: text broken by a newline measures short.
             for w in i.warnings.iter().flat_map(|w| w.lines()).filter(|l| !l.is_empty()) {
@@ -302,12 +325,12 @@ pub fn info(ui: &Ui, cx: &Cx) -> El {
     }
     rows.push(section("Scripts").pad(edges(SPACE, 0., 0., 0.)));
     rows.push(
-        body("Scripts play the groups they choose; long samples stream from disk. Performance controls are rebuilt from the script's layout and drive it directly.")
+        body("Scripts drive the library controls and playback. Unsupported features and script errors are recorded in the diagnostics.")
             .fill(Role::Dim)
             .text_size(TEXT)
             .lines(4),
     );
-    for line in v.interface_status.lines().filter(|l| !l.is_empty()) {
+    for line in v.interface_status.lines().chain(v.runtime_status.lines()).filter(|l| !l.is_empty()) {
         rows.push(caption(line.to_owned()).fill(Role::Dim).lines(3).shrink(0));
     }
     if !v.wallpaper_status.is_empty() {

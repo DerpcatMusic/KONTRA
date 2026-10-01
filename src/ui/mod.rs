@@ -281,7 +281,11 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     (&view.status, &view.multi_status, view.scanned).hash(h);
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
-        (v.loading, v.bytes, &v.status, v.program, v.interface_status.len()).hash(h);
+        (v.loading, v.bytes, &v.status, v.program, &v.interface_status, &v.runtime_status, &v.wallpaper_status).hash(h);
+        at(&v.load_report).hash(h);
+        if let Some(report) = &v.load_report {
+            (report["status"].as_str(), report["issues"].as_array().map(Vec::len)).hash(h);
+        }
         (at(&v.instrument), at(&v.interface), at(&v.wallpaper)).hash(h);
         (Arc::as_ptr(&v.keys) as usize, Arc::as_ptr(&v.pictures) as usize).hash(h);
     }

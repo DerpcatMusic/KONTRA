@@ -233,6 +233,11 @@ impl Ui {
             c.set_int(b::CONTROL_PAR_MIN_VALUE, *min)?;
             c.set_int(b::CONTROL_PAR_MAX_VALUE, *max)?;
         }
+        if kind == "ui_table" {
+            let [_, _, range, ..] = params else { return Err("Table range missing"); };
+            c.set_int(b::CONTROL_PAR_MIN_VALUE, if *range < 0 { *range } else { 0 })?;
+            c.set_int(b::CONTROL_PAR_MAX_VALUE, range.saturating_abs().max(1))?;
+        }
         let id = (self.var_ids[v as usize] - FIRST_UI_ID) as usize;
         self.id_controls[id] = self.controls.len() as u32;
         self.controls.push(c);
@@ -365,6 +370,7 @@ impl Ui {
                 };
                 properties.insert("$CONTROL_PAR_VALUE".into(), value);
                 Control {
+                    id: self.var_ids[c.var as usize],
                     variable: var.name.to_string(),
                     kind: var.ui.as_deref().unwrap_or_default().to_owned(),
                     properties,

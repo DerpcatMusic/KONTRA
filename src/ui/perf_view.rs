@@ -163,12 +163,43 @@ pub fn scale(avail: f64, width: f64, setting: f32) -> f64 {
     if fit >= 1. { fit.floor() } else { fit }
 }
 
+/// Where control `n` sits on the view, and whether it is hidden: a control
+/// in a `ui_panel` (`$CONTROL_PAR_PARENT_PANEL`) is placed from its panel's
+/// corner, and hidden with it, all the way up.
+// ponytail: finds each parent by a scan; index the IDs if views with
+// thousands of nested controls show up.
+pub(super) fn placed(interface: &Interface, n: usize) -> (f64, f64, bool) {
+    let (mut x, mut y, mut at) = (0., 0., n);
+    // A valid parent chain cannot be longer than the control list.
+    for _ in 0..interface.controls.len() {
+        let c = &interface.controls[at];
+        if int(c, "$CONTROL_PAR_HIDE").unwrap_or(0) & HIDE_WHOLE != 0 {
+            return (x, y, true);
+        }
+        x += f64::from(int(c, "$CONTROL_PAR_POS_X").unwrap_or(0));
+        y += f64::from(int(c, "$CONTROL_PAR_POS_Y").unwrap_or(0));
+        let parent = int(c, "$CONTROL_PAR_PARENT_PANEL")
+            .and_then(|id| interface.controls.iter().position(|p| p.id == id && p.kind == "ui_panel"));
+        match parent {
+            Some(p) if p != at => at = p,
+            _ => return (x, y, false),
+        }
+    }
+    // Cyclic panels cannot be placed; keep their children out of the view.
+    (x, y, true)
+}
+
 /// The visible controls in drawing order: back layer first, then as
 /// declared. Kontakt sizes a control to a picture that does not stretch.
+/// A panel only places and hides what is in it.
 pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec<Shown> {
     let mut out: Vec<Shown> = (interface.controls.iter().enumerate())
-        .filter(|(_, c)| int(c, "$CONTROL_PAR_HIDE").unwrap_or(0) & HIDE_WHOLE == 0)
-        .map(|(n, c)| {
+        .filter(|(_, c)| c.kind != "ui_panel")
+        .filter_map(|(n, c)| {
+            let (x, y, hidden) = placed(interface, n);
+            if hidden {
+                return None;
+            }
             let picture = pictures.get(prop(c, "$CONTROL_PAR_PICTURE")).filter(|p| !p.frames.is_empty()).cloned();
             let size = |k: &str, or: i32| f64::from(int(c, k).unwrap_or(or));
             let kind = Kind::of(&c.kind);
@@ -178,16 +209,16 @@ pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -
                 None if kind == Kind::Knob => (size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 52).max(52.)),
                 _ => (size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 18)),
             };
-            Shown {
+            Some(Shown {
                 control: n,
                 kind,
-                x: size("$CONTROL_PAR_POS_X", 0),
-                y: size("$CONTROL_PAR_POS_Y", 0),
+                x,
+                y,
                 w,
                 h,
                 z: int(c, "$CONTROL_PAR_Z_LAYER").unwrap_or(0),
                 picture,
-            }
+            })
         })
         .filter(|s| s.w > 0. && s.h > 0. && s.x < f64::from(interface.width) && s.y < f64::from(interface.height))
         .filter(|s| s.x + s.w > 0. && s.y + s.h > 0.)
@@ -253,14 +284,27 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
         // An edit may change the interface in place.
         for c in &i.controls {
             for (k, v) in &c.properties {
-                if matches!(k.as_str(), "$CONTROL_PAR_VALUE" | "$CONTROL_PAR_LABEL" | "$CONTROL_PAR_HIDE") {
-                    match v {
-                        Value::Int(n) => n.hash(&mut h),
-                        Value::Real(n) => n.to_bits().hash(&mut h),
-                        Value::Text(t) => t.hash(&mut h),
-                        // Array controls do not render until their widgets are supported.
-                        _ => {}
+                // Scalar properties include layout, text, picture and colors.
+                // Hash directly: formatting them allocates on every redraw.
+                k.hash(&mut h);
+                match v {
+                    Value::Int(n) => n.hash(&mut h),
+                    Value::Real(n) => n.to_bits().hash(&mut h),
+                    Value::Text(t) => t.hash(&mut h),
+                    Value::IntArray(a) if c.kind == "ui_table" => a.hash(&mut h),
+                    Value::RealArray(a) if c.kind == "ui_table" => {
+                        for n in a { n.to_bits().hash(&mut h); }
                     }
+                    Value::Array(a) if c.kind == "ui_table" => {
+                        for v in a {
+                            match v {
+                                Value::Int(n) => n.hash(&mut h),
+                                Value::Real(n) => n.to_bits().hash(&mut h),
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -284,17 +328,34 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
         return;
     }
     let p = cx.p.clone();
+    let program = v.program;
+    let generation = p.shared.generation[slot].load(std::sync::atomic::Ordering::Acquire);
     let _ = std::thread::Builder::new().name("kontakto-pictures".into()).spawn(move || {
-        let found = crate::artwork::pictures(&path, names.iter().map(String::as_str));
-        if found.is_empty() {
-            return;
-        }
+        let mut trace = crate::diagnostics::LoadTrace::new(&path, program, Some(slot));
+        trace.detail("operation", "control_pictures");
+        trace.stage("artwork");
+        let (found, errors) = crate::artwork::pictures_report(&path, names.iter().map(String::as_str));
+        for e in &errors { trace.issue("artwork", crate::diagnostics::code(e), e); }
+        trace.detail("pictures_loaded", found.len());
+        let report = trace.finish("loaded");
         let mut view = p.shared.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let v = &mut view.parts[slot];
-        if v.instrument.as_ref().is_some_and(|i| i.path == path) {
-            let mut all = (*v.pictures).clone();
-            all.extend(found);
-            v.pictures = Arc::new(all);
+        if v.instrument.as_ref().is_some_and(|i| i.path == path) && v.program == program
+            && p.shared.generation[slot].load(std::sync::atomic::Ordering::Acquire) == generation
+        {
+            if !found.is_empty() {
+                let mut all = (*v.pictures).clone();
+                all.extend(found);
+                v.pictures = Arc::new(all);
+            }
+            if !errors.is_empty() && let Some(load) = &mut v.load_report {
+                let load = Arc::make_mut(load);
+                load["status"] = "partial".into();
+                for issue in report["issues"].as_array().into_iter().flatten() {
+                    let issues = load["issues"].as_array_mut().unwrap();
+                    if !issues.contains(issue) { issues.push(issue.clone()); }
+                }
+            }
         }
     });
 }
@@ -637,7 +698,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     }];
     // Text on our face is our ink; on a picture it reads what lies under it.
     let own_ink = match look {
-        Look::Original(under) if pictured || matches!(shown.kind, Kind::Label | Kind::Area) => Fill::from(ink(under)),
+        Look::Original(under) if pictured || matches!(shown.kind, Kind::Label | Kind::Area | Kind::Knob | Kind::Slider | Kind::Other) => Fill::from(ink(under)),
         _ => Fill::from(Role::Ink),
     };
     let (mut said, align, top) = caption_of(c, shown.kind, now);
@@ -704,6 +765,8 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
     let t = ((value - lo) / (hi - lo)).clamp(0., 1.);
     let on = value >= 1.;
     let bars: Vec<f64> = match (kind, c.properties.get("$CONTROL_PAR_VALUE")) {
+        (Kind::Table, Some(Value::IntArray(a))) => a.iter().map(|n| f64::from(*n)).collect(),
+        (Kind::Table, Some(Value::RealArray(a))) => a.clone(),
         (Kind::Table, Some(Value::Array(a))) => a
             .iter()
             .map(|v| match v {
@@ -789,11 +852,12 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
             Kind::Value | Kind::TextEdit => boxed(&mut d, Role::Field.alpha(1.)),
             Kind::Table => {
                 boxed(&mut d, Role::Field.alpha(1.));
-                let top = bars.iter().fold(1f64, |m, v| m.max(v.abs()));
+                let baseline = (hi / (hi - lo)).clamp(0., 1.) * (h - 2.) + 1.;
                 let bw = w / bars.len().max(1) as f64;
                 for (n, v) in bars.iter().enumerate() {
-                    let bh = (v.abs() / top).min(1.) * (h - 2.);
-                    d.push(Draw::fill(rect(n as f64 * bw + 1., h - 1. - bh, (bw - 1.).max(1.), bh), value_ink(0.)));
+                    if !v.is_finite() { continue; }
+                    let y = (hi - v.clamp(lo, hi)) / (hi - lo) * (h - 2.) + 1.;
+                    d.push(Draw::fill(rect(n as f64 * bw + 1., y.min(baseline), (bw - 1.).max(1.), (y - baseline).abs()), value_ink(0.)));
                 }
             }
             // A box Kontakt draws for a meter, a waveform, a pad: outlined
@@ -812,6 +876,7 @@ mod tests {
 
     fn control(kind: &str, props: &[(&str, Value)]) -> Control {
         Control {
+            id: 0,
             variable: "$c".into(),
             kind: kind.into(),
             properties: props.iter().map(|(k, v)| (format!("$CONTROL_PAR_{k}"), v.clone())).collect::<BTreeMap<_, _>>(),
@@ -889,6 +954,40 @@ mod tests {
         assert_eq!((shown[0].w, shown[0].h), (600., 300.), "a resizable picture stretches to the control");
         assert!(shown[2].picture.is_none(), "a missing picture falls back to a plain control");
         assert_eq!((shown[2].w, shown[2].h), (85., 18.));
+    }
+
+    #[test]
+    fn panels_place_and_hide_what_is_in_them() {
+        let with_id = |id: i32, kind: &str, props: &[(&str, Value)]| Control { id, ..control(kind, props) };
+        let at = |x: i32, y: i32, parent: i32| vec![("POS_X", Value::Int(x)), ("POS_Y", Value::Int(y)), ("PARENT_PANEL", Value::Int(parent))];
+        let mut interface = Interface {
+            performance: true,
+            width: 600,
+            height: 300,
+            controls: vec![
+                with_id(32768, "ui_panel", &[("POS_X", Value::Int(100)), ("POS_Y", Value::Int(50))]),
+                with_id(32769, "ui_panel", &at(10, 10, 32768)),
+                with_id(32770, "ui_knob", &at(5, 5, 32769)),
+                with_id(32771, "ui_button", &at(0, 0, 32768)),
+                // Not a panel: its parent ID is ignored.
+                with_id(32772, "ui_switch", &at(7, 8, 32771)),
+                // A panel in itself does not loop.
+                with_id(32773, "ui_panel", &at(1, 1, 32773)),
+            ],
+            ..Interface::default()
+        };
+        let pictures = HashMap::new();
+        let spots = |i: &Interface| layout(i, &pictures).iter().map(|s| (s.control, s.x, s.y)).collect::<Vec<_>>();
+        assert_eq!(spots(&interface), [(2, 115., 65.), (3, 100., 50.), (4, 7., 8.)], "children from their panels' corners; panels draw nothing");
+        // The inner panel hidden hides its knob; the outer hides both.
+        interface.controls[1].properties.insert("$CONTROL_PAR_HIDE".into(), Value::Int(HIDE_WHOLE));
+        assert_eq!(spots(&interface), [(3, 100., 50.), (4, 7., 8.)]);
+        interface.controls[1].properties.insert("$CONTROL_PAR_HIDE".into(), Value::Int(0));
+        interface.controls[0].properties.insert("$CONTROL_PAR_HIDE".into(), Value::Int(HIDE_WHOLE));
+        assert_eq!(spots(&interface), [(4, 7., 8.)]);
+        interface.controls[0].properties.insert("$CONTROL_PAR_HIDE".into(), Value::Int(0));
+        interface.controls[0].properties.insert("$CONTROL_PAR_PARENT_PANEL".into(), Value::Int(32769));
+        assert_eq!(spots(&interface), [(4, 7., 8.)], "cyclic panels do not hang or draw misplaced children");
     }
 
     #[test]

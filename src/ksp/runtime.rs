@@ -65,10 +65,23 @@ pub const INIT_FUEL: u64 = 1_000_000_000;
 /// Saved values of persistent variables, per script slot, keyed by variable name.
 pub type Persisted = BTreeMap<String, Value>;
 
-/// What the host shows of running scripts, refreshed in place by
-/// [`Runtime::refresh_live`].
+/// One bounded, allocation-free runtime fault snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct LiveFault {
+    pub slot: u8,
+    pub line: u32,
+    pub message: &'static str,
+    pub count: u32,
+}
+
+/// What the host shows of running scripts, refreshed in place.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Live {
+    /// Copied without formatting or allocating on the audio thread.
+    pub faults: Vec<LiveFault>,
+    pub notes: Vec<&'static str>,
+    pub refresh_interface: bool,
+    pub(crate) interface_current: bool,
     /// Script slot of `interface`: the last slot with a performance view.
     pub slot: usize,
     pub interface: Option<Interface>,
@@ -496,6 +509,8 @@ impl Env {
                 what,
                 count: 1,
             });
+        } else {
+            self.note("KSP diagnostics limit reached; additional fault locations are omitted");
         }
     }
 
@@ -1101,6 +1116,10 @@ impl Runtime {
             })
             .collect();
         let mut live = Live {
+            faults: Vec::with_capacity(FAULT_CAPACITY),
+            notes: Vec::with_capacity(NOTE_CAPACITY),
+            refresh_interface: true,
+            interface_current: true,
             slot: slot.unwrap_or(0),
             interface,
             keys,
@@ -1123,7 +1142,24 @@ impl Runtime {
 
     /// [`refresh_live`](Self::refresh_live) a piece at a time, about `budget`
     /// control properties from where `at` stands; true once done.
+    pub fn refresh_diagnostics(&self, live: &mut Live) {
+        live.faults.clear();
+        live.faults.extend(self.env.faults.iter().map(|f| LiveFault {
+            slot: f.slot + 1,
+            line: self.programs[f.slot as usize].line(f.pc.saturating_sub(1)),
+            message: f.what,
+            count: f.count,
+        }));
+        live.notes.clear();
+        live.notes.extend_from_slice(&self.env.notes);
+    }
+
     pub fn refresh_live_within(&self, live: &mut Live, at: &mut Refresh, budget: usize) -> bool {
+        self.refresh_diagnostics(live);
+        if !live.refresh_interface {
+            live.interface_current = false;
+            return true;
+        }
         if let Some(out) = &mut live.interface
             && let Some(state) = self.states.get(live.slot)
             && at.item < out.controls.len()
@@ -1154,6 +1190,7 @@ impl Runtime {
             key.pressed = pressed;
             at.changed |= changed;
         }
+        live.interface_current = true;
         true
     }
 
@@ -1166,6 +1203,8 @@ impl Runtime {
             .filter_map(|(i, s)| s.error.as_ref().map(|e| format!("Slot {}: {e}", i + 1)))
             .collect();
         for (i, p) in self.programs.iter().enumerate() {
+            out.extend(p.diagnostics.iter().map(|d| format!("Slot {}: {d}", i + 1)));
+            out.extend(self.states[i].ui.diagnostics.iter().map(|d| format!("Slot {}: {d}", i + 1)));
             out.extend(
                 p.errors
                     .iter()
@@ -1177,6 +1216,8 @@ impl Runtime {
             format!("Slot {} line {line}: {} ({}x)", f.slot + 1, f.what, f.count)
         }));
         out.extend(self.env.notes.iter().map(|n| n.to_string()));
+        out.sort();
+        out.dedup();
         out
     }
 

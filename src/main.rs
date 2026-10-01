@@ -1141,9 +1141,35 @@ fn libraries_table(rows: &[serde_json::Value]) -> String {
 
 /// `audit-libraries`' child: load and play one instrument, one JSON line.
 fn audit_patch(path: &Path) -> Result<()> {
+    let mut trace = kontakto::diagnostics::LoadTrace::new(path, 0, None);
+    let result = audit_patch_report(path, &mut trace);
+    let (mut row, status) = match &result {
+        Ok(row) => (row.clone(), if row["status"] == "FAIL" { "failed" } else { "loaded" }),
+        Err(e) => {
+            trace.fail(format!("{e:#}"));
+            (serde_json::json!({"status":"FAIL","reason":format!("{e:#}")}), "failed")
+        }
+    };
+    row["diagnostics"] = (*trace.finish(status)).clone();
+    println!("{row}");
+    result.map(|_| ())
+}
+
+fn audit_patch_report(path: &Path, trace: &mut kontakto::diagnostics::LoadTrace) -> Result<serde_json::Value> {
     let started = std::time::Instant::now();
-    let instrument = import::read(path)?;
-    let (bank, (script, errors)) = load(&instrument)?;
+    trace.stage("import");
+    let instrument = import::read(path).inspect_err(|e| trace.fail(format!("{e:#}")))?;
+    for w in &instrument.warnings { trace.issue("import", kontakto::diagnostics::code(w), w); }
+    for name in &instrument.missing_samples { trace.issue("samples", "missing", name); }
+    trace.stage("scripts");
+    let (script, errors) = load_scripts(&instrument, instrument.script_state.clone(), RATE);
+    for e in &errors { trace.issue("scripts", "initialization_failed", e); }
+    trace.stage("samples");
+    let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers[..]);
+    let bank = Bank::load_counting(&instrument, kontakto::engine::MEMORY_LIMIT, kontakto::engine::Streaming::Auto, controllers, &Default::default())
+        .inspect_err(|e| trace.fail(format!("{e:#}")))?;
+    if let Some(w) = &bank.warning { trace.issue("samples", "streaming_warning", w); }
+    for e in &bank.issues { trace.issue("samples", "zone_skipped", e); }
     let (zones_total, zones_available) = (
         instrument.zones.len(),
         instrument.zones.iter().filter(|z| z.available).count(),
@@ -1162,9 +1188,10 @@ fn audit_patch(path: &Path) -> Result<()> {
         "resident_mib": (bank.bytes as f64 / 1048576.0).round(),
         "preload": bank.preload,
     });
-    let mut warnings = instrument.warnings.len() + usize::from(bank.warning.is_some());
+    let mut warnings = instrument.warnings.len() + instrument.missing_samples.len() + bank.issues.len() + usize::from(bank.warning.is_some());
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(bank)));
+    trace.stage("effects");
     engine.set_fx(kontakto::engine::effects(&instrument, script.as_deref(), RATE as f32));
     engine.set_script(script);
     row["load_ms"] = (started.elapsed().as_millis() as u64).into();
@@ -1191,6 +1218,7 @@ fn audit_patch(path: &Path) -> Result<()> {
     let (mut square, mut nonfinite, mut next) = (0f64, 0usize, 0);
     let mut pace = kontakto::engine::Pace::start();
     let mut stalled = std::time::Duration::ZERO;
+    trace.stage("playback");
     for b in 0..blocks {
         let frame = (b * MAX_BLOCK) as u64;
         while let Some(event) = input.get(next).filter(|e| e.0 < frame + MAX_BLOCK as u64) {
@@ -1205,7 +1233,9 @@ fn audit_patch(path: &Path) -> Result<()> {
     }
     let rms = (square / (blocks * MAX_BLOCK * 2) as f64).sqrt();
     if let Some(rt) = engine.script() {
-        warnings += rt.diagnostics().len();
+        let diagnostics = rt.diagnostics();
+        warnings += diagnostics.len();
+        for d in diagnostics { trace.issue("scripts", kontakto::diagnostics::code(&d), d); }
     }
     row["rss_peak_mib"] = status("VmHWM:").into();
     row["rms_db"] = ((20.0 * rms.max(1e-12).log10() * 10.0).round() / 10.0).into();
@@ -1224,10 +1254,10 @@ fn audit_patch(path: &Path) -> Result<()> {
     } else {
         errors.first().map(|_| "script errors".to_string())
     };
-    row["status"] = failure.as_ref().map_or("ok", |_| "FAIL").into();
+    row["status"] = failure.as_ref().map_or(if warnings > 0 { "partial" } else { "ok" }, |_| "FAIL").into();
+    if let Some(reason) = &failure { trace.issue("playback", "failed", reason); }
     row["reason"] = failure.into();
-    println!("{row}");
-    Ok(())
+    Ok(row)
 }
 
 /// KSP coverage: compile and initialize every script of every instrument

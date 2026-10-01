@@ -61,6 +61,7 @@ pub(crate) struct Resources {
     files: HashMap<String, PathBuf>,
     /// Containers to try in order, opened on first use.
     containers: Vec<PathBuf>,
+    failed_archives: Vec<String>,
     open: Vec<(File, ni_file::nkr::Archive, PathBuf)>,
     key: Option<Option<std::sync::Arc<dyn ni_file::nis::LibraryKey>>>,
     instrument: PathBuf,
@@ -118,6 +119,7 @@ impl Resources {
             files,
             containers,
             open: Vec::new(),
+            failed_archives: Vec::new(),
             key: None,
             instrument: instrument.into(),
             folder: folder_name,
@@ -132,7 +134,9 @@ impl Resources {
         let member = format!("Resources/{}/{file}", self.folder);
         for n in 0.. {
             if !self.opened(n) {
-                return Ok(None);
+                return if self.failed_archives.is_empty() { Ok(None) } else {
+                    Err(format!("Resource {file:?} was not found; archives could not be read: {}", self.failed_archives.join("; ")))
+                };
             }
             let (f, archive, _) = &mut self.open[n];
             let Some(entry) = archive.find(&member) else {
@@ -163,9 +167,13 @@ impl Resources {
                 return false;
             }
             let path = self.containers.remove(0);
-            let Ok(mut f) = File::open(&path) else { continue };
-            if let Ok(archive) = ni_file::nkr::Archive::read(&mut f) {
-                self.open.push((f, archive, path));
+            let mut f = match File::open(&path) {
+                Ok(f) => f,
+                Err(e) => { self.failed_archives.push(format!("{}: {e}", path.display())); continue; }
+            };
+            match ni_file::nkr::Archive::read(&mut f) {
+                Ok(archive) => self.open.push((f, archive, path)),
+                Err(e) => self.failed_archives.push(format!("{}: {e}", path.display())),
             }
         }
         true

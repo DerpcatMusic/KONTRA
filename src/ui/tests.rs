@@ -1650,6 +1650,36 @@ fn the_original_view_edits_the_script_and_switches() {
 /// The vectorized view keeps every control of the original where it was, at
 /// its size: only the drawing changes.
 #[test]
+fn original_tables_render_dense_values_at_the_declared_range() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(180)\ndeclare ui_table %steps[4](2,1,-100)\nmove_control_px(%steps,10,10)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_WIDTH,120)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_HEIGHT,100)\nend on");
+    p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
+        frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 248, vec![40; 632 * 248 * 4]).unwrap())],
+        stretch: [false; 2],
+    }));
+    let mut h = Harness::new(&p, 1180., 760.);
+    let empty = pixels(&h.ui, 1180, 760);
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let i = Arc::make_mut(view.parts[0].interface.as_mut().unwrap());
+        assert_eq!(i.controls[0].properties["$CONTROL_PAR_MIN_VALUE"], crate::ksp::Value::Int(-100));
+        assert_eq!(i.controls[0].properties["$CONTROL_PAR_MAX_VALUE"], crate::ksp::Value::Int(100));
+        i.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::IntArray(vec![50, -50, 100, -100]));
+    }
+    h.idle(2);
+    let filled = pixels(&h.ui, 1180, 760);
+    let changed = empty.chunks_exact(4).zip(filled.chunks_exact(4)).filter(|(a,b)| a != b).count();
+    assert!(changed > 4000, "the numeric table paints bars, including its negative half: {changed}");
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).controls[0].properties.insert(
+            "$CONTROL_PAR_VALUE".into(), crate::ksp::Value::RealArray(vec![50., -50., 100., -100.])
+        );
+    }
+    h.idle(2);
+    assert!(filled == pixels(&h.ui, 1180, 760), "integer and real snapshots paint the same values");
+}
+
+#[test]
 fn the_vectorized_view_keeps_the_original_layout() {
     let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $vol(0, 100)\nmove_control_px($vol, 30, 40)\nset_control_par_str(get_ui_id($vol), $CONTROL_PAR_PICTURE, \"knob\")\ndeclare ui_switch $legato\nmove_control_px($legato, 120, 40)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nmove_control_px($mic, 200, 90)\ndeclare ui_label $title(1,1)\nset_text($title, \"Tone\")\nmove_control_px($title, 30, 100)\nend on");
     {

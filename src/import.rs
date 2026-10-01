@@ -723,6 +723,9 @@ pub const OLD_SAVED_MULTI: &str = "kontakto-multi";
 pub fn is_saved_multi(path:&Path)->bool {path.extension().is_some_and(|x|x.eq_ignore_ascii_case(SAVED_MULTI) || x.eq_ignore_ascii_case(OLD_SAVED_MULTI))}
 pub fn is_multi(path:&Path)->bool {is_saved_multi(path) || path.extension().is_some_and(|x|x.eq_ignore_ascii_case("nkm"))}
 pub fn presets(root: &Path) -> Result<Vec<PathBuf>> {
+    if root.is_file() && (root.extension().is_some_and(|x| x.eq_ignore_ascii_case("nki")) || is_multi(root)) {
+        return Ok(vec![root.to_owned()]);
+    }
     ensure!(root.is_dir(), "Library folder does not exist: {}", root.display());
     let mut files = Vec::new();
     for e in walkdir::WalkDir::new(root).follow_links(false) {
@@ -800,7 +803,7 @@ mod preset_tests {
     fn catalog_separates_presets_from_resources() {
         let root=std::env::temp_dir().join(format!("kontakto-presets-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&root).unwrap();
         for name in ["Piano.NKI","Ensemble.NKM","C4.wav","C5.ncw","Resource.nkr","Library.nicnt"]{std::fs::write(root.join(name),[]).unwrap();}
-        let all=super::presets(&root).unwrap();assert_eq!(all.len(),2);assert_eq!(all.iter().filter(|p|super::is_multi(p)).count(),1);assert_eq!(super::catalog(&root).unwrap().len(),1);std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(super::presets(&root.join("Piano.NKI")).unwrap(), [root.join("Piano.NKI")]);assert!(super::presets(&root.join("C4.wav")).is_err());let all=super::presets(&root).unwrap();assert_eq!(all.len(),2);assert_eq!(all.iter().filter(|p|super::is_multi(p)).count(),1);assert_eq!(super::catalog(&root).unwrap().len(),1);std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn zero_reads_on_kernel_ntfs_name_the_ntfs3_remount() {

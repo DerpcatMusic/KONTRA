@@ -63,12 +63,13 @@ fn inspect(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwor
     for s in shown {
         let c = &u.controls[s.control];
         let kind = kind_name(s.kind);
+        if let Some(reason) = crate::diagnostics::widget_limit(&c.kind) { found.add(format!("{}: {reason}", c.kind)); }
         *found.kinds.entry(kind.into()).or_default() += 1;
         let named = prop(c, "$CONTROL_PAR_PICTURE");
         if !named.is_empty() && !pictures.contains_key(named) {
             found.add("missing picture");
-        } else if s.picture.is_none() && !matches!(s.kind, Kind::Label | Kind::Area) {
-            found.add(format!("vector fallback: {kind}"));
+        } else if s.kind == Kind::Other && crate::diagnostics::widget_limit(&c.kind).is_none() {
+            found.add(format!("unsupported UI widget: {}", c.kind));
         }
         // The view clips as Kontakt's does; a control mostly outside is lost.
         let inside = (s.x + s.w).min(w) - s.x.max(0.);
@@ -112,6 +113,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     let (shots_at, json_at) = (opt("--shots"), opt("--json"));
     let shots = shots_at.and_then(|i| args.get(i + 1)).map(PathBuf::from);
     let json = json_at.and_then(|i| args.get(i + 1));
+    anyhow::ensure!(shots.is_none() || cfg!(feature = "shots"), "Screenshots require cargo build --release --features shots");
     let mut roots: Vec<PathBuf> = (args.iter().enumerate())
         .filter(|&(i, a)| !a.starts_with("--") && [shots_at, json_at].iter().all(|o| o.is_none_or(|o| i != o + 1)))
         .map(|(_, a)| a.into())
@@ -126,12 +128,18 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let mut ranked: BTreeMap<String, (BTreeSet<String>, usize)> = BTreeMap::new();
-    let (mut instruments, mut viewed, mut clean) = (0usize, 0usize, 0usize);
+    let (mut instruments, mut viewed, mut clean, mut failed) = (0usize, 0usize, 0usize, 0usize);
     let mut rows = Vec::new();
     for root in &roots {
-        let Ok(presets) = import::presets(root) else {
-            eprintln!("skipped {}: not a folder", root.display());
-            continue;
+        let presets = match import::presets(root) {
+            Ok(presets) => presets,
+            Err(e) => {
+                let mut trace = crate::diagnostics::LoadTrace::new(root, 0, None);
+                trace.stage("catalog"); trace.fail(format!("{e:#}"));
+                rows.push(serde_json::json!({"instrument":root,"performance_view":false,"diagnostics":*trace.finish("failed")}));
+                failed += 1;
+                continue;
+            }
         };
         for path in presets {
             let programs = if import::is_multi(&path) {
@@ -139,37 +147,66 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             } else {
                 Ok(vec![0])
             };
-            for program in programs.unwrap_or_default() {
+            let programs = match programs {
+                Ok(programs) => programs,
+                Err(e) => {
+                    let mut trace = crate::diagnostics::LoadTrace::new(&path, 0, None);
+                    trace.stage("import_multi"); trace.fail(format!("{e:#}"));
+                    let report = trace.finish("failed");
+                    failed += 1;
+                    rows.push(serde_json::json!({"instrument":path,"performance_view":false,"diagnostics":*report}));
+                    continue;
+                }
+            };
+            for program in programs {
                 let name = format!("{}#{program}", path.display());
+                let mut trace = crate::diagnostics::LoadTrace::new(&path, program, None);
+                trace.stage("import");
                 let i = match import::read_program(&path, program) {
                     Ok(i) => Arc::new(i),
                     Err(e) => {
                         eprintln!("{name}: {e:#}");
+                        trace.fail(format!("{e:#}"));
+                        let report = trace.finish("failed");
+                        failed += 1;
+                        rows.push(serde_json::json!({"instrument":name,"performance_view":false,"diagnostics":*report}));
                         continue;
                     }
                 };
                 instruments += 1;
                 let mut found = Found::default();
-                let shown = audit_one(&i, &mut found);
-                if shown.is_some() {
-                    viewed += 1;
-                    clean += usize::from(found.problems.is_empty());
-                }
+                trace.detail("groups", i.groups.len());
+                trace.detail("zones_total", i.zones.len());
+                trace.detail("missing_samples", i.missing_samples.len());
+                for w in &i.warnings { trace.issue("import", crate::diagnostics::code(w), w); }
+                for sample in &i.missing_samples { trace.issue("samples", "missing", sample); }
+                let shown = audit_one(&i, &mut found, &mut trace);
+                let has_view = shown.is_some();
+                trace.detail("performance_view", has_view);
+                let mut rendered = true;
                 if let (Some(dir), Some(part)) = (&shots, shown) {
+                    trace.stage("render");
                     let stem = format!("{}-{program}", i.name.replace(['/', '\\'], "_"));
                     for (code, mode) in [(1, "original"), (3, "vectorized")] {
                         if let Err(e) = shot(&part, code, &dir.join(format!("{stem}-{mode}.png"))) {
                             eprintln!("{name}: shot: {e:#}");
+                            rendered = false;
+                            trace.issue("render", "render_failed", format!("{mode}: {e:#}"));
                         }
                     }
                 }
+                if has_view { viewed += 1; clean += usize::from(found.problems.is_empty() && rendered); }
                 for (k, n) in &found.problems {
+                    trace.issue("ui", crate::diagnostics::code(k), format!("{k} ({n} occurrences)"));
                     let e = ranked.entry(k.clone()).or_default();
                     e.0.insert(name.clone());
                     e.1 += n;
                 }
+                let report = trace.finish(if rendered { "loaded" } else { "failed" });
                 rows.push(serde_json::json!({
                     "instrument": name,
+                    "performance_view": has_view,
+                    "diagnostics": *report,
                     "size": [found.size.0, found.size.1],
                     "controls": found.kinds,
                     "problems": found.problems,
@@ -180,7 +217,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     if let Some(out) = json {
         std::fs::write(out, serde_json::to_string_pretty(&rows)?)?;
     }
-    println!("UI audit: {instruments} instruments, {viewed} with a performance view, {clean} of those with no problem found");
+    println!("UI audit: {instruments} instruments, {viewed} with a performance view, {clean} of those with no UI problem found, {failed} failed imports");
     let mut ranked: Vec<_> = ranked.into_iter().collect();
     ranked.sort_by(|a, b| b.1.0.len().cmp(&a.1.0.len()).then(a.0.cmp(&b.0)));
     println!("{:>11} {:>11}  problem", "instruments", "occurrences");
@@ -192,18 +229,22 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 
 /// Run `i`'s scripts as the player does, lay out its view and note what
 /// is wrong; the part to draw, if it has a view.
-fn audit_one(i: &Arc<import::Instrument>, found: &mut Found) -> Option<PartView> {
+fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::diagnostics::LoadTrace) -> Option<PartView> {
+    trace.stage("scripts");
     let (rt, errors) = crate::engine::load_scripts(i, i.script_state.clone(), 48_000.);
     for e in &errors {
+        trace.issue("scripts", "initialization_failed", e);
         found.add(format!("script: {}", general(e.split_once(": ").map_or(e, |x| x.1))));
     }
     let mut rt = rt?;
     // A second of audio: listeners and waits run as they would once playing,
     // against the instrument's groups, modulators and effects.
+    trace.stage("script_callbacks");
     let mut engine = crate::engine::ScriptSetup::new(i, 48_000.0);
     (0..100).for_each(|_| rt.process(&mut engine, 480));
     let script = crate::plugin::script_interface(Some(&rt));
     for d in script.status.lines().filter(|d| !d.trim().is_empty()) {
+        trace.issue("scripts", crate::diagnostics::code(d), d);
         found.add(format!("script: {}", general(d)));
     }
     let Some(u) = script.interface.clone().filter(|u| u.performance && !u.controls.is_empty()) else {
@@ -212,10 +253,16 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found) -> Option<PartView>
     };
     found.size = (u.width.max(0) as u32, u.height.max(0) as u32);
     let names = u.controls.iter().map(|c| prop(c, "$CONTROL_PAR_PICTURE")).filter(|n| !n.is_empty());
-    let pictures = Arc::new(artwork::pictures(&i.path, names));
+    trace.stage("artwork");
+    trace.detail("controls", u.controls.len());
+    let (pictures, errors) = artwork::pictures_report(&i.path, names);
+    for e in errors { trace.issue("artwork", crate::diagnostics::code(&e), e); }
+    trace.detail("pictures_loaded", pictures.len());
+    let pictures = Arc::new(pictures);
     let wallpaper = match artwork::performance(i, Some(&u)) {
         Ok(w) => w,
-        Err(_) => {
+        Err(e) => {
+            trace.issue("artwork", crate::diagnostics::code(&e), e);
             found.add("missing wallpaper");
             None
         }

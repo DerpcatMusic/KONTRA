@@ -6,6 +6,7 @@ pub mod import;
 mod access;
 mod cache;
 mod resources;
+pub mod diagnostics;
 pub mod modulation;
 pub mod audio;
 pub mod engine;

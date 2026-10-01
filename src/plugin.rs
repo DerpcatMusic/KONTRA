@@ -335,7 +335,7 @@ pub struct Shared {
     residency: Mutex<[Option<(u64, Box<Residency>)>; RACK_SLOTS]>,
     /// Resized heads back from the audio thread: slot, generation, heads.
     heads: ArrayQueue<(usize, u64, Heads)>,
-    generation: [AtomicU64; RACK_SLOTS],
+    pub(crate) generation: [AtomicU64; RACK_SLOTS],
     /// Per slot, how far its load is, out of [`crate::engine::LOAD_DONE`]:
     /// parse, scripts, then samples by frames read; only rises within a load.
     pub(crate) load_progress: [AtomicU32; RACK_SLOTS],
@@ -396,6 +396,9 @@ pub(crate) struct PartView {
     pub(crate) program: u32,
     pub(crate) interface: Option<Arc<crate::ksp::Interface>>,
     pub(crate) interface_status: String,
+    pub(crate) load_report: Option<Arc<serde_json::Value>>,
+    pub(crate) runtime_status: String,
+    pub(crate) diagnostics_lent: Option<Instant>,
     pub(crate) wallpaper: Option<Arc<artwork::Picture>>,
     /// Control pictures the scripts name, by name.
     pub(crate) pictures: Arc<HashMap<String, Arc<artwork::Picture>>>,
@@ -1060,18 +1063,38 @@ impl BackgroundTask for Load {
                 })
             };
             if let Some(instrument) = restore {
-                let (script, snapshot, _) =
+                let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
+                trace.detail("operation", "script_restore");
+                trace.stage("scripts");
+                let (script, snapshot, errors) =
                     scripts(&instrument, &part.script_state, params.shared.rate());
+                for e in &errors { trace.issue("scripts", "initialization_failed", e); }
+                if let Some(rt) = script.as_deref() {
+                    for e in rt.diagnostics() { trace.issue("scripts", crate::diagnostics::code(&e), e); }
+                }
                 let live = script.as_deref().map(|rt| Box::new(rt.live()));
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
                 let fx_rate = {
                     let view = params.shared.view.lock().unwrap();
                     (irs != view.parts[slot].irs).then_some(view.parts[slot].fx_rate)
                 };
-                let fx = fx_rate.map(|rate| crate::engine::effects(&instrument, script.as_deref(), rate as f32));
+                let fx = fx_rate.map(|rate| {
+                    trace.stage("effects");
+                    crate::engine::effects(&instrument, script.as_deref(), rate as f32)
+                });
+                let report = trace.finish("loaded");
+                let interface_status = errors.join("\n");
                 let mut view = params.shared.view.lock().unwrap();
                 let epoch = next_epoch(&mut view, slot, snapshot, live);
                 view.parts[slot].script_state = part.script_state.clone();
+                view.parts[slot].interface_status = interface_status;
+                view.parts[slot].runtime_status.clear();
+                if let Some(load) = &mut view.parts[slot].load_report {
+                    let load = Arc::make_mut(load);
+                    load["runtime"] = serde_json::Value::Null;
+                    if report["status"] == "partial" { load["status"] = "partial".into(); }
+                    load["script_restore"] = (*report).clone();
+                } else { view.parts[slot].load_report = Some(report); }
                 if let Some(fx) = fx {
                     view.parts[slot].irs = irs;
                     let _ = params.shared.ready.force_push((
@@ -1099,7 +1122,9 @@ impl BackgroundTask for Load {
                 let mut view = params.shared.view.lock().unwrap();
                 let v = &mut view.parts[slot];
                 (v.attempted, v.streaming) = (Some(target.clone()), streaming);
-                v.status = "Loading samples…".into();
+                v.status = "Loading import…".into();
+                v.load_report = None;
+                v.runtime_status.clear();
                 params.shared.load_progress[slot].store(0, Ordering::Relaxed);
                 v.loading = true;
                 v.script_epoch = 0;
@@ -1133,16 +1158,36 @@ impl BackgroundTask for Load {
                 ));
                 continue;
             }
+            let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&part.path), part.program, Some(slot));
+            trace.detail("sample_rate", params.shared.rate());
+            trace.detail("streaming_requested", format!("{streaming:?}"));
+            let set_stage = |trace: &mut crate::diagnostics::LoadTrace, name: &'static str| {
+                trace.stage(name);
+                params.shared.view.lock().unwrap().parts[slot].status = format!("Loading {name}…");
+            };
             let result = (|| -> anyhow::Result<_> {
+                set_stage(&mut trace, "import");
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
                 let instrument = import::shared_program(Path::new(&part.path), part.program)?;
+                trace.detail("groups", instrument.groups.len());
+                trace.detail("zones_total", instrument.zones.len());
+                trace.detail("script_slots", instrument.scripts.len());
+                trace.detail("missing_samples", instrument.missing_samples.len());
+                for w in &instrument.warnings { trace.issue("import", crate::diagnostics::code(w), w); }
+                for name in &instrument.missing_samples { trace.issue("samples", "missing", name); }
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
                 // Progress by phase: parsed 5%, scripts 10%, the bank the rest.
                 let progress = &params.shared.load_progress[slot];
                 progress.fetch_max(crate::engine::LOAD_DONE / 20, Ordering::Relaxed);
-                let (script, snapshot, _) =
+                set_stage(&mut trace, "scripts");
+                let (script, snapshot, script_errors) =
                     scripts(&instrument, &part.script_state, params.shared.rate());
+                for e in script_errors { trace.issue("scripts", "initialization_failed", e); }
+                if let Some(rt) = script.as_deref() {
+                    for d in rt.diagnostics() { trace.issue("scripts", crate::diagnostics::code(&d), d); }
+                }
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
+                set_stage(&mut trace, "artwork");
                 progress.fetch_max(crate::engine::LOAD_DONE / 10, Ordering::Relaxed);
                 {
                     let needs_art = {
@@ -1168,7 +1213,18 @@ impl BackgroundTask for Load {
                                     Some(crate::ksp::Value::Text(name)) => Some(name.as_str()),
                                     _ => None,
                                 });
-                        (wallpaper, artwork::pictures(&instrument.path, names))
+                        let (pictures, errors) = artwork::pictures_report(&instrument.path, names);
+                        for e in errors { trace.issue("artwork", crate::diagnostics::code(&e), e); }
+                        if let Err(e) = &wallpaper { trace.issue("artwork", crate::diagnostics::code(e), e); }
+                        trace.detail("pictures_loaded", pictures.len());
+                        trace.detail("performance_view", interface.is_some_and(|u| u.performance));
+                        trace.detail("controls", interface.map_or(0, |u| u.controls.len()));
+                        for c in interface.into_iter().flat_map(|u| &u.controls) {
+                            if let Some(reason) = crate::diagnostics::widget_limit(&c.kind) {
+                                trace.issue("ui", "unsupported", format!("{} ({}): {reason}", c.kind, c.variable));
+                            }
+                        }
+                        (wallpaper, pictures)
                     });
                     let mut view = params.shared.view.lock().unwrap();
                     let v = &mut view.parts[slot];
@@ -1194,7 +1250,9 @@ impl BackgroundTask for Load {
                         }
                     }
                 }
+                set_stage(&mut trace, "samples");
                 if instrument.zones.is_empty() {
+                    trace.issue("samples", "unsupported", "Controller instrument has no sample bank; standalone controller playback is unavailable");
                     return Ok((instrument, None, script, snapshot, None));
                 }
                 // Every group plays; the stored group only selects what the mapping inspector shows.
@@ -1216,6 +1274,7 @@ impl BackgroundTask for Load {
                 // budget streams more instead of failing.
                 let budget = crate::engine::MEMORY_LIMIT
                     .min(crate::engine::memory_budget().saturating_sub(resident));
+                trace.detail("memory_budget_bytes", budget);
                 let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers);
                 // RAM only plays from a streaming bank while the RAM fills.
                 let bank = Box::new(Bank::load_cancelable(
@@ -1230,11 +1289,15 @@ impl BackgroundTask for Load {
                 Ok((instrument, Some(bank), script, snapshot, fill))
             })();
             if canceled() {
-                params.shared.view.lock().unwrap().parts[slot].loading = false;
+                let report = trace.finish("canceled");
+                let mut view = params.shared.view.lock().unwrap();
+                view.parts[slot].loading = false;
+                view.parts[slot].load_report = Some(report);
                 continue;
             }
             // Building UI snapshots and convolution/FX state can be large.
             // Keep both outside the editor's view lock, including controller patches.
+            if result.is_ok() { set_stage(&mut trace, "effects"); }
             let result = result.map(|(instrument, bank, script, snapshot, fill)| {
                 let live = script.as_deref().map(|rt| Box::new(rt.live()));
                 let rate = params.shared.rate();
@@ -1243,11 +1306,36 @@ impl BackgroundTask for Load {
                 (instrument, bank, script, snapshot, fill, live, fx, rate, irs)
             });
             if canceled() {
-                params.shared.view.lock().unwrap().parts[slot].loading = false;
+                let report = trace.finish("canceled");
+                let mut view = params.shared.view.lock().unwrap();
+                view.parts[slot].loading = false;
+                view.parts[slot].load_report = Some(report);
                 continue;
             }
+            let status = match &result {
+                Ok((_, bank, _, _, _, _, _, _, _)) => {
+                    if let Some(b) = bank.as_deref() {
+                        trace.detail("samples_loaded", b.sample_count());
+                        trace.detail("samples_streamed", b.streamed_samples());
+                        trace.detail("zones_playable", b.zones().len());
+                        trace.detail("zones_skipped", b.skipped_zones);
+                        trace.detail("resident_bytes", b.bytes);
+                        if let Some(w) = &b.warning { trace.issue("samples", "streaming_warning", w); }
+                        for e in &b.issues { trace.issue("samples", "zone_skipped", e); }
+                        if b.skipped_zones > b.issues.len() {
+                            trace.issue("samples", "diagnostics_truncated", format!("{} zones skipped; the bank retains only the first {} failure examples", b.skipped_zones, b.issues.len()));
+                        }
+                    }
+                    "loaded"
+                }
+                Err(e) => { trace.fail(format!("{e:#}")); "failed" }
+            };
+            let report = trace.finish(status);
             let mut view = params.shared.view.lock().unwrap();
             view.parts[slot].loading = false;
+            view.parts[slot].load_report = Some(report);
+            view.parts[slot].runtime_status.clear();
+            view.parts[slot].diagnostics_lent = None;
             match result {
                 Ok((instrument, bank, script, snapshot, fill, live, fx, rate, irs)) => {
                     let epoch = if script.is_some() {
@@ -1287,7 +1375,12 @@ impl BackgroundTask for Load {
                     // into the playing bank if that peak matters.
                     if let Some((budget, controllers)) = fill {
                         v.status += " · loading into RAM…";
+                        let parent_id = v.load_report.as_ref().map(|r| r["load_id"].clone());
                         drop(view);
+                        let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
+                        trace.detail("operation", "ram_fill");
+                        trace.detail("parent_load_id", parent_id);
+                        trace.stage("samples");
                         let bank = Bank::load_cancelable(
                             &instrument,
                             budget,
@@ -1298,10 +1391,28 @@ impl BackgroundTask for Load {
                         );
                         // Superseded while filling: the newer load has its own bank.
                         if canceled() {
+                            trace.finish("canceled");
                             continue;
                         }
+                        let status = match &bank {
+                            Ok(bank) => {
+                                trace.detail("resident_bytes", bank.bytes);
+                                trace.detail("samples_loaded", bank.sample_count());
+                                trace.detail("zones_skipped", bank.skipped_zones);
+                                if let Some(w) = &bank.warning { trace.issue("samples", "streaming_warning", w); }
+                                for e in &bank.issues { trace.issue("samples", "zone_skipped", e); }
+                                "loaded"
+                            }
+                            Err(e) => { trace.fail(format!("{e:#}")); "failed" }
+                        };
+                        let report = trace.finish(status);
                         let mut view = params.shared.view.lock().unwrap();
                         let v = &mut view.parts[slot];
+                        if let Some(load) = &mut v.load_report {
+                            let load = Arc::make_mut(load);
+                            if report["status"] != "loaded" { load["status"] = "partial".into(); }
+                            load["ram_fill"] = (*report).clone();
+                        }
                         match bank {
                             Ok(bank) => {
                                 // Loaded whole: nothing left to resize.
@@ -1390,14 +1501,41 @@ impl BackgroundTask for Load {
             if epoch == 0 || epoch != v.script_epoch {
                 continue;
             }
-            if v.interface.as_deref() != live.interface.as_ref() {
+            if live.refresh_interface && v.interface.as_deref() != live.interface.as_ref() {
                 v.interface = live.interface.clone().map(Arc::new);
             }
-            if *v.keys != live.keys {
+            if live.refresh_interface && *v.keys != live.keys {
                 v.keys = Arc::new(live.keys.clone());
             }
+            let runtime = serde_json::json!({"faults":live.faults,"notes":live.notes});
+            let mut new_issues = Vec::new();
+            if let Some(report) = &mut v.load_report {
+                if report["runtime"] != runtime {
+                    for fault in runtime["faults"].as_array().into_iter().flatten() {
+                        let known = report["runtime"]["faults"].as_array().into_iter().flatten().any(|old|
+                            old["slot"] == fault["slot"] && old["line"] == fault["line"] && old["message"] == fault["message"]
+                        );
+                        if !known { new_issues.push(fault.clone()); }
+                    }
+                    for note in runtime["notes"].as_array().into_iter().flatten() {
+                        if !report["runtime"]["notes"].as_array().is_some_and(|old| old.contains(note)) {
+                            new_issues.push(serde_json::json!({"message":note}));
+                        }
+                    }
+                    let report = Arc::make_mut(report);
+                    if !live.faults.is_empty() || !live.notes.is_empty() { report["status"] = "partial".into(); }
+                    report["runtime"] = runtime;
+                    v.runtime_status = live.faults.iter().map(|f| format!("Slot {} line {}: {} ({}x)", f.slot, f.line, f.message, f.count))
+                        .chain(live.notes.iter().map(|n| (*n).to_owned())).collect::<Vec<_>>().join("\n");
+                }
+            }
+            let path = v.instrument.as_ref().map(|i| i.path.clone());
+            let load_id = v.load_report.as_ref().and_then(|r| r["script_restore"]["load_id"].as_str().or_else(|| r["load_id"].as_str())).map(str::to_owned);
+            let program = v.program;
             v.script_slot = live.slot;
             v.live = Some(live);
+            drop(view);
+            if let Some(path) = path { crate::diagnostics::runtime(&path, program, slot, epoch, load_id.as_deref(), &new_issues); }
         }
         smart_memory(&params.shared);
         align(params);
@@ -1409,11 +1547,15 @@ impl BackgroundTask for Load {
             // Live views only while an editor shows them: refreshing script
             // interfaces no one sees was most of an idle rack's audio work.
             let shown = view.watched_at.is_some_and(|t| t.elapsed() < LIVE_WATCH);
-            if shown
-                && let Some(live) = view.parts[slot].live.take()
-                && let Err((_, live)) = params.shared.live_requests.push((slot, live))
+            let v = &mut view.parts[slot];
+            if (shown || v.diagnostics_lent.is_none_or(|t| t.elapsed().as_secs() >= 1))
+                && let Some(mut live) = v.live.take()
             {
-                view.parts[slot].live = Some(live);
+                live.refresh_interface = shown;
+                match params.shared.live_requests.push((slot, live)) {
+                    Ok(()) => v.diagnostics_lent = Some(Instant::now()),
+                    Err((_, live)) => v.live = Some(live),
+                }
             }
             // Once a second: saving is all it is for, and big script tables
             // cost the audio thread a while to copy.
@@ -1902,9 +2044,11 @@ impl PluginLogic for Sampler {
         }
         if let Some((slot, seen, live, at)) = &mut s.live {
             let done = seen.0 != s.script_epoch[*slot]
-                || *seen == s.live_seen[*slot]
-                || (s.rack.parts[*slot].script())
-                    .is_none_or(|rt| rt.refresh_live_within(live, at, LIVE_BUDGET));
+                || (s.rack.parts[*slot].script()).is_none_or(|rt| {
+                    rt.refresh_diagnostics(live);
+                    (*seen == s.live_seen[*slot] && live.refresh_interface && live.interface_current)
+                        || rt.refresh_live_within(live, at, LIVE_BUDGET)
+                });
             if done && let Some((slot, seen, live, _)) = s.live.take() {
                 s.live_seen[slot] = seen;
                 let _ = p.shared.lives.push((slot, seen.0, live));
@@ -2869,8 +3013,21 @@ mod tests {
         assert!(p.shared.view.lock().unwrap().multi_status.starts_with("Evening · 2 instruments"));
     }
     #[test]
+    fn failed_load_keeps_its_stage_and_reason_for_the_info_tab() {
+        let p = SamplerParams::new();
+        p.selection.write().unwrap().parts = vec![Part { path: "/missing-kontra-test/instrument.nki".into(), ..Default::default() }];
+        Load.run(&p);
+        let view = p.shared.view.lock().unwrap();
+        let report = view.parts[0].load_report.as_ref().expect("failed loads have reports too");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["issues"][0]["stage"], "import");
+        assert!(!report["issues"][0]["message"].as_str().unwrap().is_empty());
+        assert!(report["log_path"].as_str().is_some());
+    }
+
+    #[test]
     fn control_edits_run_the_script_and_report_back() {
-        let script = "on init\nmake_perfview\ndeclare ui_switch $legato\nmake_persistent($legato)\ndeclare ui_label $l(1,1)\nend on\non ui_control($legato)\nset_text($l, \"Legato\")\nset_key_color(36, $KEY_COLOR_BLUE)\nend on";
+        let script = "on init\nmake_perfview\ndeclare ui_switch $legato\nmake_persistent($legato)\ndeclare ui_label $l(1,1)\ndeclare %bad[1]\nend on\non ui_control($legato)\n%bad[3] := 1\nset_text($l, \"Legato\")\nset_key_color(36, $KEY_COLOR_BLUE)\nend on";
         let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
         let (rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
         assert!(errors.iter().all(Option::is_none), "{errors:?}");
@@ -2936,6 +3093,7 @@ mod tests {
         assert!(p.shared.snapshots.pop().is_some(), "the snapshot comes back");
         let (slot, epoch, live) = p.shared.lives.pop().expect("the live view comes back");
         assert_eq!((slot, epoch), (0, dsp.script_epoch[0]));
+        assert!(!live.faults.is_empty(), "runtime faults are copied into the lent buffer without allocating");
         let interface = live.interface.as_ref().unwrap();
         assert_eq!(
             interface.controls[1].properties["$CONTROL_PAR_TEXT"],

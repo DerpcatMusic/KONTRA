@@ -138,7 +138,7 @@ pub fn performance(
     let bytes = source
         .read(&filename)?
         .ok_or_else(|| format!("Instrument wallpaper {filename} was not found"))?;
-    let image = decode(&bytes).ok_or("Invalid instrument wallpaper PNG")?;
+    let image = decode_report(&bytes).map_err(|e| format!("Instrument wallpaper {filename}: {e}"))?;
     let text = source
         .read(&format!("{}.txt", &filename[..filename.len() - 4]))?
         .unwrap_or_default();
@@ -191,34 +191,38 @@ impl Picture {
 }
 
 /// The control pictures named in `names` that the preset's library has.
-pub fn pictures<'a>(
+pub fn pictures<'a>(path: &Path, names: impl IntoIterator<Item = &'a str>) -> HashMap<String, Arc<Picture>> {
+    pictures_report(path, names).0
+}
+
+/// Preserve why a named control picture failed instead of silently discarding it.
+pub fn pictures_report<'a>(
     path: &Path,
     names: impl IntoIterator<Item = &'a str>,
-) -> HashMap<String, Arc<Picture>> {
+) -> (HashMap<String, Arc<Picture>>, Vec<String>) {
     let mut source = Pictures::of(path, "pictures");
     let mut out = HashMap::new();
+    let mut errors = Vec::new();
+    let mut attempted = std::collections::HashSet::new();
     for name in names {
-        if out.contains_key(name) {
-            continue;
+        if name.is_empty() || !attempted.insert(name) { continue; }
+        let result = (|| -> Result<Picture, String> {
+            let file = png_name(name).ok_or_else(|| format!("Picture {name:?}: invalid resource name"))?;
+            let bytes = source.read(&file)?.ok_or_else(|| format!("Picture {file:?}: not found in the library resources or archives"))?;
+            let image = decode_report(&bytes).map_err(|e| format!("Picture {file:?}: {e}"))?;
+            let sidecar = format!("{}.txt", &file[..file.len() - 4]);
+            let text = source.read(&sidecar)?.unwrap_or_default();
+            let layout = Layout::parse(&String::from_utf8_lossy(&text));
+            let frames = layout.cut(&image);
+            if frames.is_empty() { return Err(format!("Picture {file:?}: invalid frame dimensions in {sidecar:?}")); }
+            Ok(Picture { frames, stretch: layout.stretch })
+        })();
+        match result {
+            Ok(picture) => { out.insert(name.to_owned(), Arc::new(picture)); }
+            Err(e) => errors.push(format!("{name}: {e}")),
         }
-        let Some(file) = png_name(name) else { continue };
-        let Some(image) = source.read(&file).ok().flatten().and_then(|b| decode(&b)) else {
-            continue;
-        };
-        let sidecar = format!("{}.txt", &file[..file.len() - 4]);
-        let text = source.read(&sidecar).ok().flatten().unwrap_or_default();
-        let layout = Layout::parse(&String::from_utf8_lossy(&text));
-        let frames = layout.cut(&image);
-        if frames.is_empty() {
-            continue;
-        }
-        let picture = Picture {
-            frames,
-            stretch: layout.stretch,
-        };
-        out.insert(name.to_owned(), Arc::new(picture));
     }
-    out
+    (out, errors)
 }
 
 /// A copy of the `w` by `h` pixels at `x`, `y`; `None` when empty.
@@ -308,15 +312,22 @@ fn wallpaper(scripts: &[String]) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
+    decode_report(bytes).ok()
+}
+fn decode_report(bytes: &[u8]) -> Result<Image, String> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().ok()?;
-    let size = reader.output_buffer_size()?;
+    let mut reader = decoder.read_info().map_err(|e| format!("PNG header: {e}"))?;
+    let info = reader.info();
+    if u64::from(info.width) * u64::from(info.height) > 32 * 1024 * 1024 / 4 {
+        return Err("Decoded PNG exceeds the 32 MiB RGBA limit".into());
+    }
+    let size = reader.output_buffer_size().ok_or("PNG dimensions overflow")?;
     if size > 32 * 1024 * 1024 {
-        return None;
+        return Err("Decoded PNG exceeds the 32 MiB limit".into());
     }
     let mut data = vec![0; size];
-    let info = reader.next_frame(&mut data).ok()?;
+    let info = reader.next_frame(&mut data).map_err(|e| format!("PNG pixels: {e}"))?;
     let data = &data[..info.buffer_size()];
     let rgba = match info.color_type {
         png::ColorType::Rgba => data.to_vec(),
@@ -329,9 +340,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
             .chunks_exact(2)
             .flat_map(|c| [c[0], c[0], c[0], c[1]])
             .collect(),
-        _ => return None,
+        _ => return Err(format!("Unsupported PNG colour type: {:?}", info.color_type)),
     };
-    Image::rgba(info.width, info.height, rgba)
+    Image::rgba(info.width, info.height, rgba).ok_or_else(|| "Invalid PNG dimensions or RGBA length".into())
 }
 /// `image` cropped to cover `w` × `h` from its middle and shrunk to it by
 /// area averaging, once, so a list of thumbnails scales nothing per frame.
@@ -555,6 +566,7 @@ mod tests {
         );
         assert!(super::decode(&bytes[..12]).is_none());
         assert!(super::decode(b"not an image").is_none());
+        assert!(super::decode_report(b"not an image").err().unwrap().starts_with("PNG header:"));
     }
 
     #[test]
