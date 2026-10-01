@@ -307,6 +307,10 @@ enum Tab {
 /// Editor-only state that outlives a frame but not the window.
 struct EditorState {
     search: String,
+    library_search: String,
+    browser_folder: Option<(String, bool, PathBuf)>,
+    browser_scroll: [f64; 2],
+    browser_list: String,
     /// What the browser's lower pane lists; `None` searches every library.
     source: Option<browser::Source>,
     /// The browser pane that last held the focus, and the upper pane's
@@ -786,6 +790,10 @@ fn build(
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
     let mut state = EditorState {
         search: String::new(),
+        library_search: String::new(),
+        browser_folder: None,
+        browser_scroll: [0.; 2],
+        browser_list: String::new(),
         source: None,
         pane: None,
         split: match read(&params.selection).browser_split {

@@ -82,7 +82,7 @@ debug = 2
 inherits = "dev"
 opt-level = 1
 
-# Keep release as the reference profile until LTO wins on representative DSP.
+# Explicit ThinLTO profile for comparisons with maxperf.
 [profile.thin]
 inherits = "release"
 lto = "thin"

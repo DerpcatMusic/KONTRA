@@ -537,6 +537,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))] // Wine-prefix translation uses Unix paths, including d: symlinks.
     fn paths_land_where_they_are_on_this_machine() {
         let prefix = Path::new("/home/me/.wine");
         assert_eq!(place(r"C:\Users\Public\Areia\", Some(prefix)), Some(prefix.join("drive_c/Users/Public/Areia")));

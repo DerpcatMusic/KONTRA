@@ -69,6 +69,8 @@ pub struct Live {
     pub interface: Option<Interface>,
     /// Every key; unset names and colors are empty.
     pub keys: BTreeMap<u8, KeyState>,
+    /// Preallocated rows recycled when script menus change visibility.
+    menu_spares: Vec<Vec<(String, i32)>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -77,7 +79,8 @@ pub struct Event {
     pub live: bool,
     pub note: i32,
     pub velocity: i32,
-    pub pars: [i32; 4],
+    pub channel: u8,
+    pub pars: [i32; 16],
     pub volume: i32,
     pub tune: i32,
     pub pan: i32,
@@ -114,7 +117,8 @@ impl Event {
         live: false,
         note: 0,
         velocity: 0,
-        pars: [0; 4],
+        channel: 0,
+        pars: [0; 16],
         volume: 0,
         tune: 0,
         pan: 0,
@@ -147,6 +151,7 @@ impl Event {
     fn spec(&self, id: i32) -> NoteSpec<'_> {
         NoteSpec {
             event: id,
+            channel: self.channel,
             note: self.note.clamp(0, 127) as u8,
             velocity: self.velocity.clamp(1, 127) as u8,
             sample_offset_us: self.sample_offset_us,
@@ -254,16 +259,19 @@ pub enum Work {
         slot: u8,
     },
     Controller {
+        channel: u8,
         cc: u8,
         value: i32,
         slot: u8,
     },
     PolyAt {
+        channel: u8,
         note: u8,
         value: i32,
         slot: u8,
     },
     Rpn {
+        channel: u8,
         nrpn: bool,
         address: i32,
         value: i32,
@@ -295,10 +303,11 @@ struct FaultRecord {
 
 /// Live MIDI state shared by all slots.
 pub struct Input {
+    pub channel: u8,
     pub cc: [i32; CC_SLOTS],
     pub pitch_bend: i32,
     /// MIDI events per key, newest last; zero marks an empty entry.
-    keys: [[i32; 4]; 128],
+    keys: [[[i32; 4]; 128]; 16],
 }
 
 /// Shared runtime state visible to builtins.
@@ -346,9 +355,10 @@ impl Env {
             host,
             events: Events::new(),
             input: Input {
+                channel: 0,
                 cc: [0; CC_SLOTS],
                 pitch_bend: 0,
-                keys: [[0; 4]; 128],
+                keys: [[[0; 4]; 128]; 16],
             },
             work: VecDeque::with_capacity(WORK_CAPACITY),
             timers: BinaryHeap::with_capacity(TIMER_CAPACITY),
@@ -482,6 +492,7 @@ impl Env {
         &mut self,
         slot: u8,
         parent: i32,
+        channel: u8,
         note: i32,
         velocity: i32,
         offset_us: i32,
@@ -498,6 +509,7 @@ impl Env {
         let e = self.events.get_mut(id).expect("fresh event");
         e.note = note;
         e.velocity = velocity;
+        e.channel = channel;
         e.sample_offset_us = i64::from(offset_us);
         e.source = i32::from(slot);
         e.origin = slot + 1;
@@ -880,9 +892,9 @@ impl Runtime {
 
     fn run_init(&mut self, engine: &mut dyn KspEngine, slot: u8) -> Result<()> {
         let prog = &self.programs[slot as usize];
-        let entry = prog
-            .callback(Callback::Init)
-            .expect("compiler requires on init");
+        let Some(entry) = prog.callback(Callback::Init) else {
+            return Ok(());
+        };
         let mut t = Thread {
             pc: entry,
             live: true,
@@ -1035,6 +1047,16 @@ impl Runtime {
             }
             c.menu.iter_mut().for_each(|(t, _)| room(t));
         }
+        let menu_spares = interface.as_mut().map_or_else(Vec::new, |ui| {
+            let state = &self.states[slot.unwrap()].ui;
+            state.controls.iter().zip(&mut ui.controls).map(|(c, out)| {
+                let total = c.menu.len() + c.spare_menu.len();
+                out.menu.reserve(total.saturating_sub(out.menu.len()));
+                let mut spare = Vec::with_capacity(total);
+                spare.resize_with(total.saturating_sub(out.menu.len()), || (String::with_capacity(SNAPSHOT_SLACK), 0));
+                spare
+            }).collect()
+        });
         let text = || String::with_capacity(SNAPSHOT_SLACK);
         let keys = (0..128)
             .map(|n| {
@@ -1052,6 +1074,7 @@ impl Runtime {
             slot: slot.unwrap_or(0),
             interface,
             keys,
+            menu_spares,
         };
         self.refresh_live(&mut live);
         live
@@ -1060,7 +1083,7 @@ impl Runtime {
     /// Copy control properties, values and keys into `live`, built by
     /// [`live`](Self::live), in place and without allocating, so the audio
     /// thread can refresh it for the host. Strings are cut to the room they
-    /// have; properties and menu items `live` lacks are skipped.
+    /// have; menu rows use preallocated capacity, and missing properties are skipped.
     /// Returns whether anything changed.
     pub fn refresh_live(&self, live: &mut Live) -> bool {
         let mut at = Refresh::default();
@@ -1076,7 +1099,7 @@ impl Runtime {
             && at.item < out.controls.len()
         {
             let prog = &self.programs[live.slot];
-            at.changed |= state.ui.refresh(prog, &state.mem, out, &mut at.item, budget);
+            at.changed |= state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut at.item, &mut at.at, budget);
             if at.item != usize::MAX {
                 return false;
             }
@@ -1133,6 +1156,11 @@ impl Runtime {
 
     // ---- Host input ------------------------------------------------------------------
 
+    /// Set by the MIDI ingress; queued work and suspended callbacks retain it.
+    pub fn set_midi_channel(&mut self, channel: u8) {
+        self.env.input.channel = channel.min(15);
+    }
+
     pub fn note_on(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8, velocity: u8) {
         if velocity == 0 {
             return self.note_off(engine, at, note);
@@ -1147,8 +1175,9 @@ impl Runtime {
         let e = self.env.events.get_mut(id).expect("fresh event");
         e.note = i32::from(note);
         e.velocity = i32::from(velocity);
+        e.channel = self.env.input.channel;
         e.held = true;
-        let keys = &mut self.env.input.keys[note as usize];
+        let keys = &mut self.env.input.keys[self.env.input.channel as usize][note as usize];
         if let Some(free) = keys.iter_mut().find(|k| **k == 0) {
             *free = id;
         } else {
@@ -1162,8 +1191,9 @@ impl Runtime {
     pub fn note_off(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8) {
         self.advance(engine, at);
         let note = note.min(127);
-        self.set_sys(SysArray::KeyDown, note as usize, 0);
-        let keys = std::mem::take(&mut self.env.input.keys[note as usize]);
+        let keys = std::mem::take(&mut self.env.input.keys[self.env.input.channel as usize][note as usize]);
+        let held = self.env.input.keys.iter().any(|channel| channel[note as usize].iter().any(|&id| id != 0));
+        self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
         for id in keys.into_iter().filter(|&id| id != 0) {
             if let Some(e) = self.env.events.get_mut(id) {
                 e.held = false;
@@ -1196,13 +1226,14 @@ impl Runtime {
     fn cc(&mut self, engine: &mut dyn KspEngine, at: u32, cc: u8, value: i32) {
         self.advance(engine, at);
         self.env.input.cc[cc as usize] = value;
-        self.env.queue(Work::Controller { cc, value, slot: 0 });
+        self.env.queue(Work::Controller { channel: self.env.input.channel, cc, value, slot: 0 });
         self.settle(engine);
     }
 
     pub fn poly_pressure(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8, value: u8) {
         self.advance(engine, at);
         self.env.queue(Work::PolyAt {
+            channel: self.env.input.channel,
             note: note.min(127),
             value: i32::from(value),
             slot: 0,
@@ -1220,6 +1251,7 @@ impl Runtime {
     ) {
         self.advance(engine, at);
         self.env.queue(Work::Rpn {
+            channel: self.env.input.channel,
             nrpn,
             address: i32::from(address),
             value: i32::from(value),
@@ -1249,8 +1281,14 @@ impl Runtime {
             state.mem.ints[var.slot as usize] = value;
             self.changes += 1;
         }
-        if let Some(entry) = prog.ui_callbacks[v as usize] {
-            let ctx = Ctx::new(slot as u8, Kind::UiControl);
+        let entry = prog.ui_callbacks[v as usize];
+        let ui_id = state.ui.var_id(v);
+        let mut ctx = Ctx::new(slot as u8, Kind::Cb(Callback::UiControls));
+        ctx.ui_id = ui_id;
+        self.spawn_cb(engine, slot as u8, Callback::UiControls, ctx);
+        if let Some(entry) = entry {
+            let mut ctx = Ctx::new(slot as u8, Kind::UiControl);
+            ctx.ui_id = ui_id;
             self.spawn(engine, entry, ctx);
         }
         self.spawn_cb(
@@ -1459,6 +1497,7 @@ impl Runtime {
                     Some(_) => {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Note));
                         ctx.event = event;
+                        ctx.channel = self.env.events.get(event).map_or(0, |e| e.channel);
                         ctx.poly_row = Event::index(event) as u32;
                         ctx.forward = Forward::Note;
                         self.spawn_cb(engine, slot, Callback::Note, ctx);
@@ -1502,6 +1541,7 @@ impl Runtime {
                     Some(_) => {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Release));
                         ctx.event = event;
+                        ctx.channel = self.env.events.get(event).map_or(0, |e| e.channel);
                         ctx.poly_row = Event::index(event) as u32;
                         ctx.forward = Forward::Release;
                         self.spawn_cb(engine, slot, Callback::Release, ctx);
@@ -1512,36 +1552,40 @@ impl Runtime {
                     }),
                 }
             }
-            Work::Controller { cc, value, slot } => {
+            Work::Controller { channel, cc, value, slot } => {
                 if slot >= slots {
-                    return engine.controller(self.env.offset, cc, value);
+                    return engine.controller_on_channel(self.env.offset, channel, cc, value);
                 }
                 self.write_sys(slot, SysArray::Cc, cc as usize, value);
                 self.write_sys(slot, SysArray::CcTouched, cc as usize, 1);
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Controller));
+                ctx.channel = channel;
                 ctx.cc = i32::from(cc);
                 ctx.value = value;
                 ctx.forward = Forward::Controller;
                 if !self.spawn_cb(engine, slot, Callback::Controller, ctx) {
                     self.write_sys(slot, SysArray::CcTouched, cc as usize, 0);
                     self.env.queue(Work::Controller {
+                        channel,
                         cc,
                         value,
                         slot: slot + 1,
                     });
                 }
             }
-            Work::PolyAt { note, value, slot } => {
+            Work::PolyAt { channel, note, value, slot } => {
                 if slot >= slots {
                     return;
                 }
                 self.write_sys(slot, SysArray::PolyAt, note as usize, value);
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::PolyAt));
+                ctx.channel = channel;
                 ctx.note = i32::from(note);
                 ctx.value = value;
                 ctx.forward = Forward::PolyAt;
                 if !self.spawn_cb(engine, slot, Callback::PolyAt, ctx) {
                     self.env.queue(Work::PolyAt {
+                        channel,
                         note,
                         value,
                         slot: slot + 1,
@@ -1549,6 +1593,7 @@ impl Runtime {
                 }
             }
             Work::Rpn {
+                channel,
                 nrpn,
                 address,
                 value,
@@ -1559,11 +1604,13 @@ impl Runtime {
                 }
                 let cb = if nrpn { Callback::Nrpn } else { Callback::Rpn };
                 let mut ctx = Ctx::new(slot, Kind::Cb(cb));
+                ctx.channel = channel;
                 ctx.cc = address;
                 ctx.value = value;
                 ctx.forward = Forward::Rpn { nrpn };
                 if !self.spawn_cb(engine, slot, cb, ctx) {
                     self.env.queue(Work::Rpn {
+                        channel,
                         nrpn,
                         address,
                         value,
@@ -1774,6 +1821,7 @@ impl Runtime {
                 self.write_sys(ctx.slot, SysArray::CcTouched, cc as usize, 0);
                 if !ctx.ignore_controller {
                     self.env.queue(Work::Controller {
+                        channel: ctx.channel,
                         cc,
                         value: ctx.value,
                         slot: next,
@@ -1783,6 +1831,7 @@ impl Runtime {
             Forward::PolyAt => {
                 if !ctx.ignore_controller {
                     self.env.queue(Work::PolyAt {
+                        channel: ctx.channel,
                         note: ctx.note as u8,
                         value: ctx.value,
                         slot: next,
@@ -1792,6 +1841,7 @@ impl Runtime {
             Forward::Rpn { nrpn } => {
                 if !ctx.ignore_controller {
                     self.env.queue(Work::Rpn {
+                        channel: ctx.channel,
                         nrpn,
                         address: ctx.cc,
                         value: ctx.value,
@@ -1852,7 +1902,7 @@ pub(super) fn refresh_value(mem: &vm::Memory, var: &compile::Var, value: &mut Va
 }
 
 /// [`refresh_value`] for the array elements in `range` (a scalar is element 0).
-fn refresh_range(
+pub(super) fn refresh_range(
     mem: &vm::Memory,
     var: &compile::Var,
     value: &mut Value,

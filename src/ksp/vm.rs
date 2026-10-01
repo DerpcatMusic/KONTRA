@@ -66,6 +66,9 @@ pub struct Ctx {
     pub cc: i32,
     pub value: i32,
     pub note: i32,
+    /// Channel belongs to this callback, including while suspended in wait().
+    pub channel: u8,
+    pub ui_id: i32,
     pub signal: i32,
     pub async_id: i32,
     pub async_status: i32,
@@ -84,6 +87,8 @@ impl Ctx {
             cc: 0,
             value: 0,
             note: 0,
+            channel: 0,
+            ui_id: 0,
             signal: 0,
             async_id: 0,
             async_status: 0,
@@ -712,7 +717,7 @@ fn sys(m: &Machine, v: SysVar) -> i32 {
         SysVar::PolyAtNum => ctx.note,
         SysVar::RpnAddress => ctx.cc,
         SysVar::RpnValue => ctx.value,
-        SysVar::MidiChannel => 0,
+        SysVar::MidiChannel => i32::from(ctx.channel),
         SysVar::EngineUptime => env.micros(env.clock()).wrapping_div(1000) as i32,
         SysVar::KspTimer => env.micros(env.clock().saturating_sub(env.timer_origin)) as i32,
         SysVar::CallbackType => match ctx.kind {
@@ -734,6 +739,7 @@ fn sys(m: &Machine, v: SysVar) -> i32 {
         SysVar::TransportRunning => bool_int(env.transport),
         SysVar::Tempo => env.tempo as i32,
         SysVar::CurrentScriptSlot => i32::from(m.slot.index),
+        SysVar::UiId => ctx.ui_id,
     }
 }
 

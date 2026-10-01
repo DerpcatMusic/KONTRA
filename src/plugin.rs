@@ -218,6 +218,8 @@ pub struct Selection {
     pub align_transport_only: bool,
     /// How parts are routed to buses and host ports ([`routing::Outputs`]).
     pub outputs: u8,
+    /// Use the imported KSP layout and artwork rather than native controls.
+    pub library_ui: bool,
 }
 impl Selection {
     /// Output bus `n`, default when never set.
@@ -387,7 +389,7 @@ pub(crate) struct PartView {
     pub(crate) program: u32,
     pub(crate) interface: Option<Arc<crate::ksp::Interface>>,
     pub(crate) interface_status: String,
-    pub(crate) wallpaper: Option<Arc<Image>>,
+    pub(crate) wallpaper: Option<Arc<artwork::Picture>>,
     /// Control pictures the scripts name, by name.
     pub(crate) pictures: Arc<HashMap<String, Arc<artwork::Picture>>>,
     pub(crate) wallpaper_status: String,
@@ -736,14 +738,14 @@ fn next_epoch(
     view: &mut View,
     slot: usize,
     snapshot: Option<Box<Vec<Persisted>>>,
-    script: Option<&Runtime>,
+    live: Option<Box<Live>>,
 ) -> u64 {
     view.script_epoch += 1;
     let v = &mut view.parts[slot];
     v.script_epoch = view.script_epoch;
     v.snapshot = snapshot;
     v.snapshot_lent = None;
-    v.live = script.map(|rt| Box::new(rt.live()));
+    v.live = live;
     view.script_epoch
 }
 impl Shared {
@@ -1049,8 +1051,9 @@ impl BackgroundTask for Load {
             if let Some(instrument) = restore {
                 let (script, snapshot, _) =
                     scripts(&instrument, &part.script_state, params.shared.rate());
+                let live = script.as_deref().map(|rt| Box::new(rt.live()));
                 let mut view = params.shared.view.lock().unwrap();
-                let epoch = next_epoch(&mut view, slot, snapshot, script.as_deref());
+                let epoch = next_epoch(&mut view, slot, snapshot, live);
                 view.parts[slot].script_state = part.script_state.clone();
                 let _ = params.shared.ready.force_push((
                     slot,
@@ -1130,7 +1133,7 @@ impl BackgroundTask for Load {
                         let interface = parsed.interface.as_deref();
                         let wallpaper = artwork::performance(
                             &instrument,
-                            interface.map(|u| u.wallpaper.as_str()),
+                            interface,
                         );
                         let names =
                             interface
@@ -1205,12 +1208,24 @@ impl BackgroundTask for Load {
                 params.shared.view.lock().unwrap().parts[slot].loading = false;
                 continue;
             }
+            // Building UI snapshots and convolution/FX state can be large.
+            // Keep both outside the editor's view lock, including controller patches.
+            let result = result.map(|(instrument, bank, script, snapshot, fill)| {
+                let live = script.as_deref().map(|rt| Box::new(rt.live()));
+                let rate = params.shared.rate();
+                let fx = instrument.fx.processor(rate as f32, MAX_BLOCK);
+                (instrument, bank, script, snapshot, fill, live, fx, rate)
+            });
+            if canceled() {
+                params.shared.view.lock().unwrap().parts[slot].loading = false;
+                continue;
+            }
             let mut view = params.shared.view.lock().unwrap();
             view.parts[slot].loading = false;
             match result {
-                Ok((instrument, bank, script, snapshot, fill)) => {
+                Ok((instrument, bank, script, snapshot, fill, live, fx, rate)) => {
                     let epoch = if script.is_some() {
-                        next_epoch(&mut view, slot, snapshot, script.as_deref())
+                        next_epoch(&mut view, slot, snapshot, live)
                     } else {
                         0
                     };
@@ -1226,9 +1241,7 @@ impl BackgroundTask for Load {
                     v.status = bank.as_deref().map(bank_status).unwrap_or_else(|| {
                         "Controller instrument · KSP playback unavailable".into()
                     });
-                    let rate = params.shared.rate();
                     v.fx_rate = rate;
-                    let fx = instrument.fx.processor(rate as f32, MAX_BLOCK);
                     let _ = params.shared.ready.force_push((
                         slot,
                         generation,
@@ -2647,6 +2660,7 @@ mod tests {
             streaming: Streaming::RamOnly,
             auto_align: true,
             align_transport_only: true,
+            library_ui: true,
             buses: vec![
                 Bus::default(),
                 Bus {
@@ -2740,7 +2754,12 @@ mod tests {
         let mut dsp = Dsp::default();
         {
             let mut view = p.shared.view.lock().unwrap();
-            let epoch = next_epoch(&mut view, 0, Some(Box::new(rt.persistence())), Some(&rt));
+            let epoch = next_epoch(
+                &mut view,
+                0,
+                Some(Box::new(rt.persistence())),
+                Some(Box::new(rt.live())),
+            );
             let parsed = script_interface(Some(&rt));
             view.parts[0].interface = parsed.interface;
             dsp.script_epoch[0] = epoch;

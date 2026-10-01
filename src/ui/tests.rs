@@ -697,6 +697,151 @@ fn search_groups_results_by_library() {
     );
 }
 
+/// Large libraries retain a bounded widget count and keyboard reachability.
+#[test]
+fn a_large_library_browser_keeps_scrolling_and_searching() {
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        v.files = Arc::new(
+            (0..1000)
+                .map(|n| PathBuf::from(format!("/virtual/Large/Patch {n:04}.nki")))
+                .collect(),
+        );
+        v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("library-0");
+    h.idle(2);
+    let mut times = Vec::new();
+    for _ in 0..20 {
+        let start = std::time::Instant::now();
+        h.idle(1);
+        times.push(start.elapsed().as_secs_f64() * 1e3);
+    }
+    times.sort_by(f64::total_cmp);
+    println!(
+        "1000-preset browser: median {:.3} ms, max {:.3} ms",
+        times[10], times[19]
+    );
+    let shown = (0..1000)
+        .filter(|n| {
+            h.ui.scene()
+                .unwrap()
+                .surface(&format!("instrument-{n}"))
+                .is_some()
+        })
+        .count();
+    println!("mounted preset rows: {shown}");
+    assert!(shown < 100, "the browser must not mount all 1000 rows");
+    let at = center(&h.ui, "browser-presets");
+    h.tick(Input {
+        wheel: Vec2::new(0., 40.),
+        ..pointer(at, false)
+    });
+    h.idle(30);
+    let content =
+        h.ui.scene()
+            .unwrap()
+            .surface("browser-presets-content")
+            .unwrap()
+            .frame;
+    let viewport =
+        h.ui.scene()
+            .unwrap()
+            .surface("browser-presets")
+            .unwrap()
+            .frame;
+    assert!(
+        viewport.y - content.y >= 110.,
+        "wheel travel is three times the input"
+    );
+    h.ui.focus("instrument-0");
+    h.tick(Input {
+        keys: vec![KeyPress {
+            key: Key::End,
+            mods: Mods::default(),
+        }],
+        ..Default::default()
+    });
+    h.idle(30);
+    assert_eq!(h.ui.focus_key(), Some("instrument-999"));
+    let last =
+        h.ui.scene()
+            .unwrap()
+            .surface("instrument-999")
+            .unwrap()
+            .frame;
+    assert!(
+        last.y >= viewport.y && last.y + last.size.height <= viewport.y + viewport.size.height + 1.,
+        "End reveals the last row"
+    );
+    h.ui.focus("search");
+    h.tick(Input {
+        text: "0999".into(),
+        ..Default::default()
+    });
+    h.idle(2);
+    h.press("instrument-0");
+    assert!(read(&p.selection).parts[0].path.ends_with("Patch 0999.nki"));
+}
+
+#[test]
+fn library_search_order_and_folder_navigation() {
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        v.files = Arc::new(vec![
+            "/virtual/Keys/Instruments/Piano/Grand.nki".into(),
+            "/virtual/Keys/Instruments/Piano/Bright.nki".into(),
+            "/virtual/Keys/Instruments/Organs/Church.nki".into(),
+            "/virtual/Toys/Toy.nki".into(),
+        ]);
+        v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
+        let mut settings = crate::library::Settings::default();
+        settings.order = vec!["/virtual/Toys".into()];
+        let order = browser::ordered_libraries(&v.shelf, &settings);
+        assert_eq!(order[0].name, "Toys");
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("library-0");
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("folder-0").is_some());
+    assert!(
+        h.ui.scene().unwrap().surface("instrument-0").is_none(),
+        "root contains folders, not all nested presets"
+    );
+    h.press("folder-1"); // Organs sorts before Piano.
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("instrument-1").is_some());
+    h.press("folder-up");
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("folder-1").is_some());
+    h.ui.focus("search");
+    h.tick(Input {
+        text: "church".into(),
+        ..Default::default()
+    });
+    h.idle(2);
+    h.press("instrument-0");
+    assert!(
+        read(&p.selection).parts[0].path.ends_with("Church.nki"),
+        "search reaches nested folders"
+    );
+    h.ui.focus("library-search");
+    h.tick(Input {
+        text: "toys".into(),
+        ..Default::default()
+    });
+    h.idle(2);
+    let scene = h.ui.scene().unwrap();
+    assert!(scene.surface("library-0").is_some() && scene.surface("library-1").is_none());
+    assert!(
+        scene.surface("search").is_some(),
+        "preset search remains separate"
+    );
+}
+
 /// The owner's library instruments named in `names` (comma-separated stems).
 fn library_instruments(files: &[PathBuf], names: &str) -> Vec<Arc<import::Instrument>> {
     names
@@ -768,7 +913,12 @@ fn cover_libraries() -> PathBuf {
 /// A plugin whose rack holds `instruments` (when `loaded`) as the loader
 /// leaves them: scripts run, pictures read. `state` stages the
 /// screenshots' special cases.
-fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bool, state: &str) -> Arc<SamplerParams> {
+fn racked(
+    files: &[PathBuf],
+    instruments: &[Arc<import::Instrument>],
+    loaded: bool,
+    state: &str,
+) -> Arc<SamplerParams> {
     let p = Arc::new(SamplerParams::new());
     {
         let mut view = p.shared.view.lock().unwrap();
@@ -799,7 +949,7 @@ fn racked(files: &[PathBuf], instruments: &[Arc<import::Instrument>], loaded: bo
             let pictures = Arc::new(artwork::pictures(&i.path, names));
             view.parts[slot] = PartView {
                 pictures,
-                wallpaper: artwork::performance(i, interface.as_ref().map(|u| u.wallpaper.as_str()))
+                wallpaper: artwork::performance(i, interface.as_deref())
                     .unwrap_or(None),
                 interface,
                 keys,
@@ -995,13 +1145,14 @@ fn screenshot() {
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
     let instruments = library_instruments(&files, &chosen);
     std::fs::create_dir_all(".impeccable/review").unwrap();
-    let states: [(&str, bool, &[&str]); 34] = [
+    let states: [(&str, bool, &[&str]); 35] = [
         ("empty", false, &[]),
         // Libraries with no artwork: generated covers; one chosen.
         ("covers", false, &["library-2"]),
         // No library folders yet: how to add them.
         ("no-libraries", false, &[]),
         ("perform", true, &[]),
+        ("library-ui", true, &[]),
         // Esc: no part selected, the keys show what each part plays.
         ("unselected", true, &[]),
         ("mapping", true, &["tab-mapping"]),
@@ -1058,6 +1209,7 @@ fn screenshot() {
     {
         for &(width, height) in &sizes {
             let p = racked(&files, &instruments, loaded, state);
+            p.selection.write().unwrap().library_ui = state == "library-ui";
             if state == "sound-edited" {
                 use crate::engine::overrides::{Override, Param};
                 let mut selection = p.selection.write().unwrap();
@@ -1286,6 +1438,60 @@ fn an_articulation_list_picks_one_and_turns_rows_on() {
 }
 
 #[test]
+fn imported_layout_keeps_coordinates_and_edits_bitmap_controls() {
+    let p = scripted_part(
+        "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $play\nset_text($play,\"Play\")\nmove_control_px($play,20,30)\nset_control_par_str(get_ui_id($play),$CONTROL_PAR_PICTURE,\"toggle\")\ndeclare ui_knob $amount(0,100,1)\nmove_control_px($amount,120,30)\nset_control_par_str(get_ui_id($amount),$CONTROL_PAR_PICTURE,\"dial\")\nend on",
+    );
+    p.selection.write().unwrap().library_ui = true;
+    {
+        use moose::mui::mui::scene::Image;
+        let frame = |rgba: [u8; 4]| Arc::new(Image::rgba(32, 32, rgba.repeat(32 * 32)).unwrap());
+        let picture = || {
+            Arc::new(crate::artwork::Picture {
+                frames: vec![frame([70, 70, 90, 255]), frame([170, 80, 160, 255])],
+                resizable: false,
+            })
+        };
+        let mut v = p.shared.view.lock().unwrap();
+        v.parts[0].pictures =
+            Arc::new([("toggle".into(), picture()), ("dial".into(), picture())].into());
+        let mut interface = v.parts[0].interface.as_ref().unwrap().as_ref().clone();
+        let key = "$CONTROL_PAR_ARRAY".to_owned();
+        interface.controls[0].properties.insert(key.clone(), crate::ksp::Value::IntArray(vec![0]));
+        let hash = panel::original_values(&interface);
+        interface.controls[0].properties.insert(key, crate::ksp::Value::IntArray(vec![1; 100_000]));
+        assert_eq!(panel::original_values(&interface), hash, "unsupported arrays do not invalidate scalar rendering");
+        interface.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::Int(1));
+        assert_ne!(panel::original_values(&interface), hash);
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let scene = h.ui.scene().unwrap();
+    let canvas = scene.surface("library-canvas-0").unwrap().frame;
+    let toggle = scene.surface("ksp-0-0").unwrap().frame;
+    assert!((toggle.x - canvas.x - 20.).abs() < 1. && (toggle.y - canvas.y - 30.).abs() < 1.);
+    h.press("ksp-0-0");
+    assert_eq!(control_value(&p, 0), crate::ksp::Value::Int(1));
+    let at = center(&h.ui, "ksp-0-1");
+    for dy in [0., -20., -60.] {
+        h.tick(pointer(Point::new(at.x, at.y + dy), true));
+    }
+    h.tick(pointer(Point::new(at.x, at.y - 60.), false));
+    h.idle(2);
+    assert!(matches!(control_value(&p,1),crate::ksp::Value::Int(n) if n > 10));
+    p.selection.write().unwrap().library_ui = false;
+    h.idle(3);
+    assert!(
+        h.ui.scene().unwrap().surface("library-canvas-0").is_none(),
+        "view switch rebuilds the stage"
+    );
+    assert_eq!(
+        control_value(&p, 0),
+        crate::ksp::Value::Int(1),
+        "switching preserves control state"
+    );
+}
+
+#[test]
 fn performance_controls_edit_the_script() {
     let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_knob $vibrato(0, 100, 1)\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
     let p = scripted_part(script);
@@ -1368,6 +1574,8 @@ fn a_preset_is_in_the_nearest_library_above_it() {
     assert_eq!(at("/libs/Solo/Extra/a.nki"), "Extra", "the nearer of two");
     assert_eq!(at("/libs/SoloX/a.nki"), "");
     assert_eq!(at("/other/a.nki"), "");
+    #[cfg(windows)]
+    assert_eq!(at(r"\libs\Solo/Instruments\a.nki"), "Solo", "mixed Windows separators");
 }
 
 /// The window as pixels, RGBA, painted from the last frame's scene.

@@ -124,21 +124,44 @@ pub fn decode_file(path: &Path) -> Option<Image> {
 /// Resolve the selected preset's named wallpaper, never an arbitrary PNG in its NKR.
 pub fn performance(
     instrument: &crate::import::Instrument,
-    computed: Option<&str>,
-) -> Result<Option<Arc<Image>>, String> {
+    computed: Option<&crate::ksp::Interface>,
+) -> Result<Option<Arc<Picture>>, String> {
     let Some(name) = computed
-        .map(str::to_owned)
+        .map(|i| i.wallpaper.clone()).filter(|s| !s.is_empty())
         .or_else(|| wallpaper(&instrument.scripts))
     else {
         return Ok(None);
     };
     let filename = png_name(&name).ok_or("Invalid instrument wallpaper name")?;
-    let bytes = Pictures::of(&instrument.path)
+    let mut source = Pictures::of(&instrument.path);
+    let bytes = source
         .read(&filename)?
         .ok_or_else(|| format!("Instrument wallpaper {filename} was not found"))?;
-    decode(&bytes)
-        .map(|i| Some(Arc::new(i)))
-        .ok_or_else(|| "Invalid instrument wallpaper PNG".into())
+    let image = decode(&bytes).ok_or("Invalid instrument wallpaper PNG")?;
+    let text = source
+        .read(&format!("{}.txt", &filename[..filename.len() - 4]))?
+        .unwrap_or_default();
+    let layout = Layout::parse(&String::from_utf8_lossy(&text));
+    let frames = layout
+        .cut(&image)
+        .into_iter()
+        .map(|frame| {
+            // Kontakt's legacy wallpaper includes the instrument header; trim it
+            // off-thread so the canvas receives pixels at the authored scale.
+            if computed.is_some_and(|i| frame.height as i32 == i.height + 68) {
+                crop(&frame, 0, 68, frame.width, frame.height - 68).unwrap_or(frame)
+            } else {
+                frame
+            }
+        })
+        .collect::<Vec<_>>();
+    if frames.is_empty() {
+        return Err("Invalid instrument wallpaper frames".into());
+    }
+    Ok(Some(Arc::new(Picture {
+        frames,
+        resizable: layout.resizable,
+    })))
 }
 
 /// `name` as a picture file name, unless it tries to leave the pictures folder.

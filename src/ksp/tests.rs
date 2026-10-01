@@ -17,6 +17,50 @@ fn label(source: &str) -> String {
     prop(&initialize(source, 0, 0).unwrap(), 0, "$CONTROL_PAR_TEXT")
 }
 
+#[test]
+fn unsupported_stretch_limits_do_not_abort_the_performance_ui() {
+    let ui = initialize("on init\ndeclare ui_label $l(1,1)\nset_text($l,get_voice_limit($NI_VL_TMPRO_STANDARD) & \":\" & get_voice_limit($NI_VL_TMPRO_HQ))\nset_voice_limit($NI_VL_TMPRO_STANDARD,8)\nend on", 0, 8).unwrap();
+    assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "0:0");
+    assert!(
+        ui.diagnostics
+            .iter()
+            .any(|d| d.contains("Time Machine Pro is unavailable"))
+    );
+}
+
+#[test]
+fn auxiliary_meter_setup_preserves_the_rest_of_init() {
+    let ui = initialize("on init\nmake_perfview\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter),-1,-1,0,-1)\ndeclare ui_switch $play\nset_text($play,\"Play\")\nend on", 0, 8).unwrap();
+    assert_eq!(ui.controls.len(), 2);
+    assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "Play");
+    assert!(
+        ui.diagnostics
+            .iter()
+            .any(|d| d.contains("meter attachments are unavailable"))
+    );
+    let wrong = initialize("on init\ndeclare ui_label $label(1,1)\nattach_level_meter(get_ui_id($label),-1,-1,0,-1)\nend on", 0, 8).unwrap_err();
+    assert!(wrong.to_string().contains("requires a ui_level_meter"));
+}
+
+#[test]
+fn callback_only_scripts_do_not_require_an_empty_init() {
+    let mut rig = Rig::new(&["on note\nignore_event($EVENT_ID)\nend on"]);
+    assert!(rig.on(0, 60).log().is_empty());
+    assert!(initialize("{ no readable callbacks }", 0, 8).is_err());
+}
+
+#[test]
+fn wallpaper_frames_follow_script_changes_in_the_live_view() {
+    let mut rig = Rig::new(&[
+        "on init\nmake_perfview\ndeclare ui_switch $tab\nend on\non ui_control($tab)\nset_control_par($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE_STATE,$tab)\nend on",
+    ]);
+    let mut live = rig.rt.live();
+    assert_eq!(live.interface.as_ref().unwrap().wallpaper_state, 0);
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    rig.rt.refresh_live(&mut live);
+    assert_eq!(live.interface.as_ref().unwrap().wallpaper_state, 1);
+}
+
 // ---- Initialization (ported from the init-only interpreter) ---------------------------
 
 #[test]
@@ -324,10 +368,15 @@ fn saved_persistence_decodes_every_kind() {
         Value::Array(["x", "y", ""].map(|s| Value::Text(s.into())).to_vec())
     );
     assert!(!saved.contains_key("$bad"));
-    let script = "on init\ndeclare %b[3]\nmake_persistent(%b)\nread_persistent_var(%b)\ndeclare ui_label $l(1,1)\nset_text($l, %b[2])\nend on";
-    let mut engine = LogEngine::new(Vec::new(), 48_000.0);
-    let (rt, _) = Runtime::with_scripts(&[script], &mut engine, 8, vec![saved]);
-    assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "3");
+    for reader in ["read_persistent_var", "_read_persistent_var"] {
+        let script = format!(
+            "on init\ndeclare %b[3]\nmake_persistent(%b)\n{reader}(%b)\ndeclare ui_label $l(1,1)\nset_text($l, %b[2])\nend on"
+        );
+        let mut engine = LogEngine::new(Vec::new(), 48_000.0);
+        let (rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, vec![saved.clone()]);
+        assert!(errors.iter().all(Option::is_none), "{reader}: {errors:?}");
+        assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "3");
+    }
 }
 
 // ---- Runtime --------------------------------------------------------------------------
@@ -400,6 +449,142 @@ impl Rig {
 }
 
 const PASS: &str = "on init\nend on";
+
+#[test]
+fn midi_channels_survive_waits_and_release_independently() {
+    let mut rig = Rig::new(&[
+        "on init\ndeclare ui_label $release(1,1)\ndeclare ui_label $cc(1,1)\nend on\non note\nwait(1000)\nplay_note($EVENT_NOTE+12,100,0,-1)\nend on\non release\nset_text($release,$MIDI_CHANNEL & \":\" & %KEY_DOWN[$EVENT_NOTE])\nend on\non controller\nwait(1000)\nset_text($cc,$MIDI_CHANNEL)\nend on",
+        PASS,
+    ]);
+    rig.rt.set_midi_channel(2);
+    rig.on(0, 60);
+    rig.rt.set_midi_channel(7);
+    rig.on(0, 60).block(49);
+    let channels: Vec<_> = rig.engine.calls.iter().filter_map(|call| match call {
+        EngineCall::PlayNote { channel, .. } => Some(*channel),
+        _ => None,
+    }).collect();
+    assert_eq!(channels, [2, 7, 2, 7], "delayed children retain each callback's channel");
+    let remaining: Vec<_> = rig.engine.calls.iter().filter_map(|call| match call {
+        EngineCall::PlayNote { channel: 7, voice, .. } => Some(*voice),
+        _ => None,
+    }).collect();
+    rig.engine.calls.clear();
+    rig.rt.set_midi_channel(2);
+    rig.off(0, 60);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "2:1");
+    assert_eq!(rig.engine.calls.iter().filter(|c| matches!(c, EngineCall::NoteOff { .. })).count(), 2);
+    assert!(!rig.engine.calls.iter().any(|c| matches!(c, EngineCall::NoteOff { voice, .. } if remaining.contains(voice))));
+    rig.rt.set_midi_channel(7);
+    rig.off(0, 60);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "7:0");
+    rig.rt.set_midi_channel(3);
+    rig.rt.controller(&mut rig.engine, 0, 1, 90);
+    rig.rt.set_midi_channel(9);
+    rig.block(49);
+    assert_eq!(prop(&rig.rt.interface(0), 1, "$CONTROL_PAR_TEXT"), "3");
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+    let mut rpn = Rig::new(&[
+        "on note\nwait(1000)\nset_rpn(16383,8192)\nset_nrpn(2026,127)\nend on",
+        "on init\ndeclare ui_label $r(1,1)\ndeclare ui_label $n(1,1)\nend on\non rpn\nset_text($r,$MIDI_CHANNEL & \":\" & $RPN_ADDRESS & \":\" & $RPN_VALUE)\nend on\non nrpn\nset_text($n,$MIDI_CHANNEL & \":\" & $RPN_ADDRESS & \":\" & $RPN_VALUE)\nend on",
+    ]);
+    rpn.rt.set_midi_channel(6);
+    rpn.on(0, 60);
+    rpn.rt.set_midi_channel(11);
+    rpn.block(49);
+    assert_eq!(prop(&rpn.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "6:16383:8192");
+    assert_eq!(prop(&rpn.rt.interface(1), 1, "$CONTROL_PAR_TEXT"), "6:2026:127");
+    assert!(rpn.rt.diagnostics().is_empty(), "{:?}", rpn.rt.diagnostics());
+}
+
+#[test]
+fn global_ui_callbacks_and_custom_event_data_reach_their_consumers() {
+    let mut rig = Rig::new(&[
+        "on init\ndeclare ui_slider $amount(0,100)\ndeclare ui_label $order(1,1)\nset_control_par(get_ui_id($amount),$CONTROL_PAR_CUSTOM_ID,42)\nend on\non ui_controls\nset_control_par($NI_UI_ID,$CONTROL_PAR_VALUE,73)\nset_text($order,get_control_par($NI_UI_ID,$CONTROL_PAR_CUSTOM_ID))\nend on\non ui_control($amount)\nset_text($order,get_control_par_str(get_ui_id($order),$CONTROL_PAR_TEXT) & \":\" & $amount)\nend on\non note\n%EVENT_PAR[15]:=931\nset_event_par($EVENT_ID,$EVENT_PAR_0,27)\nend on",
+        "on init\ndeclare ui_label $data(1,1)\nend on\non note\nset_text($data,get_event_par_arr($EVENT_ID,$EVENT_PAR_CUSTOM,15) & \":\" & %EVENT_PAR[0] & \":\" & get_event_par($EVENT_ID,$EVENT_PAR_VOLUME))\nend on",
+    ]);
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 10);
+    assert_eq!(prop(&rig.rt.interface(0), 1, "$CONTROL_PAR_TEXT"), "42:73", "global callback precedes the widget callback");
+    rig.on(0, 60);
+    assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "931:27:0", "custom indices do not collide with built-in voice parameters");
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+
+    let mut menu = Rig::new(&[r#"on init
+make_perfview
+declare $plain
+declare ui_menu $choices
+declare ui_switch $toggle
+declare ui_label $info(1,1)
+declare ui_table %steps[4](2,1,127)
+declare ui_xy ?pad[4]
+set_control_par_arr(get_ui_id(%steps),$CONTROL_PAR_VALUE,99,2)
+set_control_par_real_arr(get_ui_id(?pad),$CONTROL_PAR_VALUE,0.25,1)
+add_menu_item($choices,"First",0)
+add_menu_item($choices,"Second",5)
+add_menu_item($choices,"Third",10)
+set_control_par_str(get_ui_id($info),$CONTROL_PAR_HELP,(get_group_idx("missing")=$NI_NOT_FOUND) & ":" & (get_mod_idx(0,"missing")=$NI_NOT_FOUND) & ":" & (get_target_idx(0,0,"missing")=$NI_NOT_FOUND) & ":" & get_engine_par_disp_ext($ENGINE_PAR_VOLUME,1000000,-1,-1,-1) & ":" & (get_control_par_real_arr(get_ui_id(?pad),$CONTROL_PAR_VALUE,1)=0.25) & ":" & get_control_par_arr(get_ui_id(%steps),$CONTROL_PAR_VALUE,2))
+set_text($info,(get_control_par(get_ui_id($choices),$CONTROL_PAR_TYPE)=$NI_CONTROL_TYPE_MENU) & ":" & (get_control_par(get_ui_id($plain),$CONTROL_PAR_TYPE)=$NI_CONTROL_TYPE_NONE) & ":" & get_control_par_str(get_ui_id($choices),$CONTROL_PAR_IDENTIFIER))
+end on
+on ui_control($toggle)
+set_menu_item_visibility(get_ui_id($choices),1,$toggle)
+set_control_par_real_arr(get_ui_id(?pad),$CONTROL_PAR_VALUE,0.75,3)
+set_control_par_str(get_ui_id($info),$CONTROL_PAR_TEXTLINE,get_control_par(get_ui_id($choices),$CONTROL_PAR_NUM_ITEMS) & ":" & get_control_par(get_ui_id($choices),$CONTROL_PAR_SELECTED_ITEM_IDX))
+end on"#]);
+    assert_eq!(prop(&menu.rt.interface(0), 2, "$CONTROL_PAR_TEXT"), "1:1:choices");
+    assert_eq!(prop(&menu.rt.interface(0), 2, "$CONTROL_PAR_HELP"), "1:1:1:12.0:1:99");
+    let mut live = menu.rt.live();
+    menu.rt.ui_control(&mut menu.engine, 0, 0, 5);
+    menu.rt.ui_control(&mut menu.engine, 0, 1, 0);
+    menu.rt.refresh_live(&mut live);
+    assert_eq!(live.interface.as_ref().unwrap().controls[0].menu.len(), 3, "hidden selected item remains visible");
+    menu.rt.ui_control(&mut menu.engine, 0, 0, 10);
+    menu.rt.refresh_live(&mut live);
+    assert_eq!(live.interface.as_ref().unwrap().controls[0].menu, [("First".into(), 0), ("Third".into(), 10)]);
+    menu.rt.ui_control(&mut menu.engine, 0, 1, 1);
+    menu.rt.refresh_live(&mut live);
+    assert_eq!(live.interface.as_ref().unwrap().controls[0].menu.len(), 3, "revealing rows reuses snapshot capacity");
+    assert_eq!(prop(live.interface.as_ref().unwrap(), 2, "$CONTROL_PAR_TEXT"), "1:1:choices\n3:1\n3:2");
+    assert_eq!(live.interface.as_ref().unwrap().controls[3].properties["$CONTROL_PAR_VALUE"], Value::IntArray(vec![0,0,99,0]));
+    assert_eq!(live.interface.as_ref().unwrap().controls[4].properties["$CONTROL_PAR_VALUE"], Value::RealArray(vec![0.0,0.25,0.0,0.75]));
+    assert!(menu.rt.diagnostics().is_empty(), "{:?}", menu.rt.diagnostics());
+    assert!(initialize("on init\ndeclare ui_xy ?pad[2]\nset_control_par_real_arr(get_ui_id(?pad),$CONTROL_PAR_VALUE,0.5,2)\nend on", 0, 0).is_err());
+    assert_eq!(label(r#"on init
+declare $i
+declare $j
+declare $sum
+declare ui_label $result(1,1)
+while ($i < 4)
+inc($i)
+$j := 0
+while ($j < 3)
+inc($j)
+select ($j)
+case 1
+continue
+end select
+$sum := $sum + $j
+end while
+if ($i < 4)
+continue
+end if
+$sum := $sum + 100
+end while
+set_text($result,$sum)
+end on"#), "120");
+    assert!(initialize("on init\ncontinue\nend on", 0, 0).is_err());
+    let mut table = Rig::new(&["on init\nmake_perfview\ndeclare ui_table %steps[4096](2,1,127)\nend on\non note\n%steps[0]:=77\n%steps[4095]:=99\nend on"]);
+    let mut live = table.rt.live();
+    table.on(0, 60);
+    let mut at = Refresh::default();
+    assert!(!table.rt.refresh_live_within(&mut live, &mut at, 32), "large tables span update budgets");
+    let Value::IntArray(values) = &live.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"] else { panic!("table value") };
+    assert_eq!((values[0], values[4095]), (77, 0));
+    let mut passes = 1;
+    while !table.rt.refresh_live_within(&mut live, &mut at, 32) { passes += 1; assert!(passes < 200); }
+    assert!(passes > 100);
+    let Value::IntArray(values) = &live.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"] else { unreachable!() };
+    assert_eq!(values[4095], 99);
+}
 
 #[test]
 fn managed_audio_budget_is_shared_by_segments_and_rejects_large_sync_arrays() {

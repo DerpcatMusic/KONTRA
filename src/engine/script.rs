@@ -45,6 +45,7 @@ pub const MAX_COMMANDS: usize = 256;
 #[derive(Clone, Copy)]
 pub(super) struct Command {
     pub at: u32,
+    pub channel: u8,
     /// Target event; unused by controllers.
     pub id: EventId,
     pub kind: Kind,
@@ -82,6 +83,7 @@ pub(super) enum Kind {
 
 /// The engine as the runtime sees it during one call, borrowed from `Engine`.
 pub(super) struct Host<'a> {
+    pub channel: u8,
     pub bank: Option<&'a Bank>,
     pub fx: &'a FxProcessor,
     pub player: &'a mut Player,
@@ -100,13 +102,13 @@ impl Host<'_> {
     }
 
     /// Queue in frame order (stable for equal frames) within the preallocated capacity.
-    fn push(&mut self, at: u32, id: EventId, kind: Kind) -> bool {
+    fn push(&mut self, at: u32, channel: u8, id: EventId, kind: Kind) -> bool {
         if self.commands.len() == MAX_COMMANDS {
             self.player.dropped_commands += 1;
             return false;
         }
         let i = self.commands.partition_point(|c| c.at <= at);
-        self.commands.insert(i, Command { at, id, kind });
+        self.commands.insert(i, Command { at, channel, id, kind });
         true
     }
 }
@@ -125,7 +127,7 @@ impl KspEngine for Host<'_> {
             whole: n.length == NoteLength::Sample,
             groups: *n.groups,
         };
-        self.push(at, id, kind).then_some(id)
+        self.push(at, n.channel, id, kind).then_some(id)
     }
 
     fn note_off(&mut self, at: u32, voice: EventId, n: &NoteSpec<'_>) {
@@ -133,15 +135,19 @@ impl KspEngine for Host<'_> {
             trigger: (n.length != NoteLength::Sample).then_some((n.note, n.velocity)),
             groups: *n.groups,
         };
-        self.push(at, voice, kind);
+        self.push(at, n.channel, voice, kind);
     }
 
     fn fade(&mut self, at: u32, voice: EventId, fade: Fade) {
-        self.push(at, voice, Kind::Fade(fade));
+        self.push(at, self.channel, voice, Kind::Fade(fade));
     }
 
     fn reset_release_counter(&mut self, at: u32, note: u8) {
-        self.push(at, EventId::default(), Kind::ResetCounter(note));
+        self.reset_release_counter_on_channel(at, self.channel, note);
+    }
+
+    fn reset_release_counter_on_channel(&mut self, at: u32, channel: u8, note: u8) {
+        self.push(at, channel, EventId::default(), Kind::ResetCounter(note));
     }
 
     fn set_par(&mut self, at: u32, voice: EventId, par: VoicePar, value: i32) {
@@ -150,11 +156,15 @@ impl KspEngine for Host<'_> {
             VoicePar::TuneMc => EventChange::Tune(f64::from(value) / 100_000.0),
             VoicePar::Pan => EventChange::Pan(value.clamp(-1000, 1000) as f32 / 1000.0),
         };
-        self.push(at, voice, Kind::Change(change));
+        self.push(at, self.channel, voice, Kind::Change(change));
     }
 
     fn controller(&mut self, at: u32, cc: u8, value: i32) {
-        self.push(at, EventId::default(), Kind::Controller { cc, value });
+        self.controller_on_channel(at, self.channel, cc, value);
+    }
+
+    fn controller_on_channel(&mut self, at: u32, channel: u8, cc: u8, value: i32) {
+        self.push(at, channel, EventId::default(), Kind::Controller { cc, value });
     }
 
     fn group_count(&self) -> usize {
@@ -220,8 +230,9 @@ impl KspEngine for Host<'_> {
 
 impl Player {
     /// Apply one script command; its notes play on MIDI `channel`.
-    pub(super) fn apply(&mut self, bank: &Bank, c: &Command, channel: u8, defaults: Ahdsr) {
+    pub(super) fn apply(&mut self, bank: &Bank, c: &Command, defaults: Ahdsr) {
         let id = c.id;
+        let channel = c.channel;
         match &c.kind {
             &Kind::Start {
                 note,

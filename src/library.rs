@@ -55,6 +55,8 @@ pub struct Settings {
     pub roots: Vec<Root>,
     /// Covers the player chose, by library folder.
     pub covers: BTreeMap<String, Cover>,
+    /// Library folders in the player's custom order; unlisted folders follow A–Z.
+    pub order: Vec<String>,
     /// The libraries Kontakt knows about were looked for, on the first run.
     pub imported: bool,
 }
@@ -117,8 +119,8 @@ pub struct Library {
 #[derive(Default, Debug)]
 pub struct Shelf {
     pub libraries: Vec<Library>,
-    /// By folder, as text: looking a path up slices it, never parses it.
-    by_dir: HashMap<String, usize>,
+    /// Native path keys also equate Windows' slash and backslash separators.
+    by_dir: HashMap<PathBuf, usize>,
     by_name: HashMap<String, usize>,
     /// Libraries found in each root, in the order of the roots.
     pub per_root: Vec<usize>,
@@ -143,20 +145,16 @@ impl Shelf {
             library.name = name;
         }
         let by_dir = (libraries.iter().enumerate())
-            .map(|(n, l)| (l.dir.to_string_lossy().trim_end_matches(['/', '\\']).to_owned(), n))
+            .map(|(n, l)| (l.dir.clone(), n))
             .collect();
         let by_name = libraries.iter().enumerate().map(|(n, l)| (l.name.clone(), n)).collect();
         Self { libraries, by_dir, by_name, per_root: Vec::new() }
     }
 
     /// The library `path` is in: the nearest library folder above it.
-    /// String slicing, not `Path` parsing: the browser asks for every preset
-    /// on each rebuild.
     pub fn of(&self, path: &Path) -> Option<&Library> {
-        let mut at = path.to_str()?;
-        while let Some(cut) = at.rfind(['/', '\\']) {
-            at = &at[..cut];
-            if let Some(&n) = self.by_dir.get(at.trim_end_matches(['/', '\\'])) {
+        for at in path.parent()?.ancestors() {
+            if let Some(&n) = self.by_dir.get(at) {
                 return Some(&self.libraries[n]);
             }
         }
@@ -828,6 +826,7 @@ mod tests {
         s.roots.push(Root { path: "/libs".into(), single: false });
         s.roots.push(Root { path: "/one".into(), single: true });
         s.covers.insert("/libs/Areia".into(), Cover::Generated);
+        s.order = vec!["/one".into(), "/libs/Areia".into()];
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), Some(s));
         assert_eq!(Settings::load(&dir.join("missing.json")), None);

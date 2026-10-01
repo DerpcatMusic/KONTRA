@@ -335,6 +335,7 @@ fn read(
     c: &Control,
     interface: &Interface,
     pictures: &HashMap<String, Arc<Picture>>,
+    original: bool,
 ) -> Option<(Item, String)> {
     let prop = |name: &str| c.properties.get(&format!("$CONTROL_PAR_{name}"));
     let int = |name: &str| match prop(name) {
@@ -350,7 +351,7 @@ fn read(
     let hidden = int("HIDE").is_some_and(|h| h as i32 & 16 != 0);
     let picture_name = text("PICTURE");
     // A logo that opens a credits page is branding, not a control.
-    if [picture_name, c.variable.as_str()]
+    if !original && [picture_name, c.variable.as_str()]
         .iter()
         .any(|n| n.to_lowercase().contains("logo"))
     {
@@ -446,7 +447,7 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
         .controls
         .iter()
         .enumerate()
-        .filter_map(|(n, c)| read(n, c, interface, pictures))
+        .filter_map(|(n, c)| read(n, c, interface, pictures, false))
         // A label that shows a value ("0.0 dB", "63") is a readout; ours
         // show the value, and it names nothing.
         .filter(|(i, _)| {
@@ -985,6 +986,263 @@ fn hash_value(v: &Value, h: &mut DefaultHasher) {
         Value::RealArray(a) => a.iter().for_each(|r| r.to_bits().hash(h)),
         Value::Array(a) => a.iter().for_each(|v| hash_value(v, h)),
     }
+}
+
+/// The imported canvas keeps authored coordinates, labels and bitmap frames.
+/// Unsupported widget types are counted rather than replaced with fake controls.
+pub fn original(
+    ui: &mut Ui,
+    cx: &mut Cx,
+    part: usize,
+    interface: &Interface,
+    pictures: &HashMap<String, Arc<Picture>>,
+) -> El {
+    use moose::mui::mui::scene::Fit;
+    let width = f64::from(interface.width.clamp(1, 2000));
+    let height = f64::from(interface.height.clamp(1, 1000));
+    let mut layers = Vec::new();
+    if let Some(picture) = cx.view.parts[part].wallpaper.clone()
+        && let Some(wallpaper) = picture
+            .frames
+            .get(
+                (interface.wallpaper_state.max(0) as usize)
+                    .min(picture.frames.len().saturating_sub(1)),
+            )
+            .cloned()
+    {
+        layers.push(
+            block(width, height)
+                .fill(Fill::Image(wallpaper, Fit::Contain))
+                .at(0., 0.),
+        );
+    }
+    let mut missing = 0;
+    let mut unsupported = 0;
+    for (n, c) in interface.controls.iter().enumerate() {
+        if matches!(c.properties.get("$CONTROL_PAR_HIDE"), Some(Value::Int(h)) if h & 16 != 0) {
+            continue;
+        }
+        let Some((mut item, picture_name)) = read(n, c, interface, pictures, true) else {
+            if !matches!(
+                c.kind.as_str(),
+                "ui_knob"
+                    | "ui_slider"
+                    | "ui_switch"
+                    | "ui_button"
+                    | "ui_menu"
+                    | "ui_value_edit"
+                    | "ui_label"
+            ) {
+                unsupported += 1;
+            }
+            continue;
+        };
+        // Native naming heuristics intentionally do not apply to authored text.
+        item.name = match c.properties.get("$CONTROL_PAR_TEXT") {
+            Some(Value::Text(t)) => t.clone(),
+            _ => c.variable.trim_start_matches('$').to_owned(),
+        };
+        let picture = pictures.get(&picture_name).filter(|p| !p.frames.is_empty());
+        if !picture_name.is_empty() && picture.is_none() {
+            missing += 1;
+        }
+        let id = format!("ksp-{part}-{n}");
+        let mut value = item.raw;
+        let mut el = match item.face {
+            Face::Text => caption(item.name.clone()).lines(8).min_w(0),
+            Face::Toggle if picture.is_none() => {
+                let (hit, el) = latch(ui, &id, &item.name, &item.name, value >= 1.);
+                if hit {
+                    value = f64::from(u8::from(value < 1.));
+                }
+                el
+            }
+            Face::Toggle => {
+                if ui.get(id.as_str()).activated() {
+                    value = f64::from(u8::from(value < 1.));
+                }
+                block(item.at.w, item.at.h)
+                    .focusable()
+                    .a11y(A11y::Toggle { on: value >= 1. })
+                    .named(item.name.clone())
+                    .id(id.clone())
+            }
+            Face::Knob | Face::Fader | Face::VFader => {
+                let range = item.min..=item.max.max(item.min + 1.);
+                let vertical = item.face != Face::Fader;
+                if picture.is_some() {
+                    let key = (part, n);
+                    if let Some((p, c, v)) = cx.state.held
+                        && (p, c) == key
+                    {
+                        value = v;
+                    }
+                    let held = drive(ui, &id, &mut value, &range, TRAVEL, vertical, item.reset);
+                    if held {
+                        cx.state.held = Some((part, n, value));
+                    } else if cx.state.held.is_some_and(|(p, c, _)| (p, c) == key) {
+                        cx.state.held = None;
+                    }
+                    block(item.at.w, item.at.h)
+                        .focusable()
+                        .a11y(A11y::Slider {
+                            value,
+                            min: item.min,
+                            max: item.max,
+                        })
+                        .named(item.name.clone())
+                        .tip(readout(&item, value))
+                        .id(id.clone())
+                } else if item.face == Face::Knob {
+                    dial(
+                        ui,
+                        &id,
+                        &item.name,
+                        &mut value,
+                        range.clone(),
+                        Fader::over(&range, item.reset, widest(&item)),
+                    )
+                    .1
+                } else {
+                    let kind = Fader::over(&range, item.reset, widest(&item));
+                    fader(
+                        ui,
+                        &id,
+                        &item.name,
+                        &mut value,
+                        range,
+                        if vertical { kind.vertical() } else { kind },
+                        |v| readout(&item, v),
+                    )
+                    .1
+                }
+            }
+            Face::Menu => {
+                let current = c
+                    .menu
+                    .iter()
+                    .find(|(_, v)| f64::from(*v) == value)
+                    .map(|(t, _)| t.as_str())
+                    .unwrap_or("");
+                let (hit, el) = dropdown(ui, &id, current, &item.name);
+                if hit {
+                    menu::open_under(ui, cx, Target::Script { part, control: n }, &id);
+                }
+                el
+            }
+            Face::Value => number(
+                ui,
+                &id,
+                &item.name,
+                &mut value,
+                item.min..=item.max.max(item.min + 1.),
+                value_text(&item),
+            ),
+            Face::List => continue,
+        };
+        if value.round() != item.raw {
+            cx.p.shared.edit_control(part, n, value.round() as i32);
+        }
+        if let Some(picture) = picture {
+            let count = picture.frames.len();
+            let frame = match item.face {
+                Face::Toggle if count == 6 => {
+                    usize::from(value >= 1.) * 3
+                        + usize::from(ui.get(id.as_str()).held) * 2
+                        + usize::from(!ui.get(id.as_str()).held && ui.state(id.as_str()).hover > 0.)
+                }
+                Face::Toggle => usize::from(value >= 1.) * (count - 1),
+                Face::Text => match c.properties.get("$CONTROL_PAR_PICTURE_STATE") {
+                    Some(Value::Int(n)) => (*n).max(0) as usize,
+                    _ => 0,
+                },
+                _ => (((value - item.min) / (item.max - item.min).max(1.)).clamp(0., 1.)
+                    * (count - 1) as f64)
+                    .round() as usize,
+            }
+            .min(count - 1);
+            let image = block(item.at.w, item.at.h)
+                .fill(Fill::Image(picture.frames[frame].clone(), Fit::Contain));
+            // A picture label is the label itself; its script text stays hidden.
+            if item.face == Face::Text {
+                el = image;
+            } else {
+                let focused = ui.focused(id.as_str());
+                let outline = canvas(move |s| {
+                    if focused {
+                        vec![Draw::stroke(
+                            rect(1., 1., (s.width - 2.).max(0.), (s.height - 2.).max(0.)),
+                            accent(),
+                            1.,
+                        )]
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .w(item.at.w)
+                .h(item.at.h)
+                .disabled();
+                el = stack![image, el.opacity(0.), outline]
+                    .w(item.at.w)
+                    .h(item.at.h);
+            }
+        }
+        layers.push(
+            el.w(item.at.w)
+                .h(item.at.h)
+                .min_w(0)
+                .min_h(0)
+                .clip()
+                .at(item.at.x, item.at.y),
+        );
+    }
+    let canvas = stack(layers)
+        .w(width)
+        .h(height)
+        .shrink(0)
+        .clip()
+        .id(format!("library-canvas-{part}"));
+    let mut rows = vec![
+        col![canvas]
+            .align(Align::Start)
+            .w(Len::Pct(100.))
+            .scroll()
+            .id(format!("library-canvas-scroll-{part}")),
+    ];
+    if unsupported > 0 || missing > 0 {
+        rows.push(
+            caption(format!(
+                "Imported layout · {unsupported} unsupported widgets · {missing} missing pictures"
+            ))
+            .fill(Role::Dim)
+            .lines(2)
+            .pad(SPACE),
+        );
+    }
+    col(rows).gap(0).align(Align::Stretch).w(Len::Pct(100.))
+}
+
+pub fn original_values(interface: &Interface) -> u64 {
+    let mut h = DefaultHasher::new();
+    (
+        interface.width,
+        interface.height,
+        &interface.wallpaper,
+        interface.wallpaper_state,
+    )
+        .hash(&mut h);
+    for c in &interface.controls {
+        for (name, value) in &c.properties {
+            name.hash(&mut h);
+            // Imported scalar controls do not render table/waveform arrays.
+            // Avoid walking a potentially huge unsupported array every UI tick.
+            if matches!(value, Value::Int(_) | Value::Real(_) | Value::Text(_)) {
+                hash_value(value, &mut h);
+            }
+        }
+        c.menu.hash(&mut h);
+    }
+    h.finish()
 }
 
 /// Control `control`'s value in `part`'s interface as it is now.

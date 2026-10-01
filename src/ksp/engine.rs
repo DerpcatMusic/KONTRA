@@ -21,6 +21,7 @@ pub enum NoteLength {
 pub struct NoteSpec<'a> {
     /// KSP event ID, for logging and correlation only.
     pub event: i32,
+    pub channel: u8,
     pub note: u8,
     pub velocity: u8,
     /// Sample start offset in microseconds.
@@ -75,6 +76,9 @@ pub trait KspEngine {
     /// A controller that passed every slot: 0..127, 128 pitch bend (-8192..8191),
     /// 129 channel pressure.
     fn controller(&mut self, at: u32, cc: u8, value: i32);
+    fn controller_on_channel(&mut self, at: u32, _channel: u8, cc: u8, value: i32) {
+        self.controller(at, cc, value);
+    }
     fn group_count(&self) -> usize;
     fn group_name(&self, group: usize) -> &str;
     fn sample_rate(&self) -> f64;
@@ -92,6 +96,9 @@ pub trait KspEngine {
     }
     /// `reset_rls_trig_counter`: restart `note`'s release-trigger counter.
     fn reset_release_counter(&mut self, _at: u32, _note: u8) {}
+    fn reset_release_counter_on_channel(&mut self, at: u32, _channel: u8, note: u8) {
+        self.reset_release_counter(at, note);
+    }
     /// Whether a voice is still sounding; drives `event_status` for sample-length notes.
     fn voice_active(&self, _voice: EventId) -> bool {
         true
@@ -106,6 +113,7 @@ pub enum EngineCall {
         time: u64,
         voice: EventId,
         event: i32,
+        channel: u8,
         note: u8,
         velocity: u8,
         sample_offset_us: i64,
@@ -179,6 +187,7 @@ impl KspEngine for LogEngine {
             time: self.time(at),
             voice: self.next_voice,
             event: n.event,
+            channel: n.channel,
             note: n.note,
             velocity: n.velocity,
             sample_offset_us: n.sample_offset_us,

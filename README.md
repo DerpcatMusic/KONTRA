@@ -112,13 +112,16 @@ cargo run --release --bin kontakto           # lists every subcommand
 `cargo moose` builds x86_64 plug-ins for x86-64-v3 (AVX2) by default;
 pass `--target-cpu baseline` for older CPUs.
 
-### Tests
+### Development checks
 
 ```sh
-cargo test --release
+bacon                       # compilation while editing; no tests
+bacon parity                # explicitly run two focused KSP regressions
 ```
 
-Tests that need locally installed libraries are marked `#[ignore]`.
+Both jobs use an isolated `artifacts/check` cache. The parity job uses
+`cargo-nextest`; install bacon and cargo-nextest if they are missing.
+Tests that need locally installed libraries remain marked `#[ignore]`.
 
 ## Nightly builds
 
@@ -143,13 +146,13 @@ licensed to use, and within the terms of those licenses.
 
 ## Performance hardening branch, 2026-10-01
 
-`codex/performance-hardening` implements priorities 1–6 from the [replacement review](audits/REPLACEMENT_REVIEW.md): shared streaming workers, positional archive reads and bounded decoded-block reuse; compact script persistence; host-block script budgets; prepared first-use callback storage; bounded loader work and cancellation; and dependency-aware parsed/resident caches. It is based on `bb7dca9`; the separate `87a18dc` SIMD/PGO/library-browser revision has not been merged into this branch.
+`codex/performance-hardening` implements priorities 1–6 from the [replacement review](audits/REPLACEMENT_REVIEW.md): shared streaming workers, positional archive reads and bounded decoded-block reuse; compact script persistence; host-block script budgets; prepared first-use callback storage; bounded loader work and cancellation; and dependency-aware parsed/resident caches. The `87a18dc` SIMD/library-access work is merged into this branch (`cd22741`), with runtime dispatch retained for newer SIMD instructions.
 
 Four streaming workers serve all banks and instances of the same loaded plugin module. Readers and decoded blocks are bounded, and the last bank shuts workers down before plugin unload. Loading phases use at most four decode workers across instances. Cancellation is checked between import/script stages and during sample reads; it cannot interrupt arbitrary parser work or an in-progress filesystem read.
 
 Live script work shares a block allowance across MIDI/render segments and scales with frames, sample rate and scripted parts. Oversized synchronous array operations and exhausted prepared callback storage report diagnostics. Preparation caps extra text storage at 16 MiB per runtime and 4 MiB per slot's string variables; individual callback strings are limited to 64 KiB. These are explicit compatibility limits, not permission to silently allocate on the audio thread. Cache validation uses size/mtime metadata for presets, samples/archives, resources, impulses, library metadata and searched directories; edits that preserve both size and timestamp require explicit cache clearing.
 
-Build profiles preserve panic unwinding, which the importer and plugin boundary use. `dev` has line-table debug information with dependency debug information disabled; `debugging` restores full debug information, and `dsp-dev` uses LLVM optimization level 1. `release` remains the reference. `thin` and `maxperf` allow measured ThinLTO/fat-LTO comparisons; `minsize` uses optimization level `s` with unwinding retained. None forces the build machine's CPU instructions on customers.
+Build profiles preserve panic unwinding, which the importer and plugin boundary use. `dev` has line-table debug information with dependency debug information disabled; `debugging` restores full debug information, and `dsp-dev` uses LLVM optimization level 1. `release` uses ThinLTO and stripped symbols. `thin` and `maxperf` allow measured ThinLTO/fat-LTO comparisons; `minsize` uses optimization level `s` with unwinding retained. None forces the build machine's CPU instructions on customers.
 
 ```sh
 cargo build --profile dsp-dev
@@ -162,8 +165,30 @@ cargo run --release --bin kontakto -- bench-host 3 8 /path/to/patch.nki --frames
 # Repeat the patch path for a multi-part workload. Reports deadline misses,
 # stream/command dropouts, voice counts, CPU, RSS and script diagnostics.
 
-# Full-speed code checks; the screenshot generator remains separately runnable:
-RUST_MIN_STACK=16777216 cargo test --release --lib --test playback -- --skip ui::tests::screenshot
+# Keep normal iteration to compilation; select focused regressions explicitly:
+bacon
+bacon parity
 ```
 
-Pinned nightly Cranelift failed a `catch_unwind` smoke test on this machine; the same source passed with LLVM. It is therefore not enabled for plugin development. PGO needs a reproducible representative library/event corpus and holdout measurements before adopting a performance claim. BOLT, nightly dependency hints and size-first standard-library builds remain experiments, rather than default shipping settings. Compiler guidance: [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html), [build performance](https://doc.rust-lang.org/cargo/guide/build-performance.html), and [rustc PGO](https://doc.rust-lang.org/rustc/profile-guided-optimization.html).
+Pinned nightly Cranelift failed a `catch_unwind` smoke test on this machine; the same source passed with LLVM. It is therefore not enabled for plugin development. `tools/pgo.sh build` now trains from an explicit `KONTRA_PGO_PRESETS` file (one preset path per line), records results, fails on requested training-load errors, and rejects cross-target training. It defaults to portable CPU code and does not install plugins unless `install` is explicitly requested. PGO gains still require comparable playback and holdout measurements; the script does not guarantee a percentage. BOLT, nightly dependency hints and size-first standard-library builds remain experiments, rather than default shipping settings. Compiler guidance: [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html), [build performance](https://doc.rust-lang.org/cargo/guide/build-performance.html), and [rustc PGO](https://doc.rust-lang.org/rustc/profile-guided-optimization.html).
+
+
+The browser now has separate library and preset searches. With no preset search, a selected library shows its actual folders; entering a search reaches nested presets. Right-click a library to move it up/down; the order survives restarts. The `+` menu resets the order to A–Z. Preset rows mount around the viewport instead of building every widget in a large library, and both panes move three times the incoming wheel distance.
+
+The main menu's **Instrument controls** section switches between **Native vector UI** and **Library UI (imported layout)**; the choice is saved with plugin state. The imported mode uses KSP coordinates, original text, wallpaper frames and bitmap knobs/sliders/buttons where those resources and scripts can be read. Controls still run their script callbacks. Missing pictures and unsupported widgets are reported. This is partial legacy-KSP rendering: it does not provide universal Kontakt 1:1 UI compatibility, Komplete UI, table/waveform/file-selector rendering, original fonts or all layering behavior.
+
+`_read_persistent_var` uses the existing persistence implementation. Scripts with callbacks but no `on init` can compile. `get_voice_limit`/`set_voice_limit` now report the unavailable Time Machine Pro engine instead of aborting initialization, and `attach_level_meter` preserves valid initialization with an explicit unsupported-meter diagnostic. Those last two changes do not implement time stretching or connected meters. Large UI snapshots and FX construction run outside the editor's shared view lock. These fixes address reproduced causes; they do not certify Damage, NOVO, Metropolis Ark or the tester's Output libraries without playable copies.
+
+The core KSP port now preserves MIDI channels through waits, generated notes,
+releases and queued audio commands. It implements global `on ui_controls`
+callbacks with `$NI_UI_ID`, custom control IDs, 16 custom event parameters,
+indexed integer/string/real control values, widget type/identifier queries,
+menu count/selected-index queries, multiline labels, and nested-loop `continue`.
+Live menu rows can hide/reappear using prepared snapshot buffers; a hidden
+selected row stays visible until selection changes. Modern `get_group_idx`,
+`get_mod_idx` and `get_target_idx` return `$NI_NOT_FOUND`; deprecated `find_*`
+retain their zero fallback. `get_engine_par_disp_ext` uses the existing value
+laws without changing DSP, and `set_rpn`/`set_nrpn` reach subsequent script slots.
+Array value access does not imply an XY/table renderer or indexed artwork and
+automation metadata support. Broader KSP coverage remains active work; see the
+[remaining compatibility gaps](audits/REPLACEMENT_REVIEW.md).

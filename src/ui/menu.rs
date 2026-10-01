@@ -76,6 +76,9 @@ pub enum Command {
     ChangeArtwork(String),
     GeneratedCover(String),
     ResetCover(String),
+    MoveLibrary(String, i32),
+    ResetLibraryOrder,
+    LibraryUI(bool),
     SaveMulti,
     Browser,
     Keyboard,
@@ -193,7 +196,12 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             let dir = library.dir.to_string_lossy().into_owned();
             let chosen = cx.settings.covers.get(&dir);
             let own = cx.view.artwork.contains_key(name);
-            let mut items = vec![act("Change artwork…", "", Command::ChangeArtwork(dir.clone()))];
+            let mut items = vec![
+                act("Move library up", "", Command::MoveLibrary(dir.clone(), -1)),
+                act("Move library down", "", Command::MoveLibrary(dir.clone(), 1)),
+                Item::Rule,
+                act("Change artwork…", "", Command::ChangeArtwork(dir.clone())),
+            ];
             if own && chosen != Some(&crate::library::Cover::Generated) {
                 items.push(act("Use generated cover", "", Command::GeneratedCover(dir.clone())));
             }
@@ -210,6 +218,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Import from Kontakt", "", Command::ImportKontakt),
                 Item::Rule,
                 act("Library folders…", "", Command::Folders),
+                act("Reset library order to A–Z", "", Command::ResetLibraryOrder),
             ];
             if cx.p.shared.libraries.scanning().is_some() {
                 items.push(act("Stop scanning", "", Command::CancelScan));
@@ -469,7 +478,12 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             } else {
                 items.push(Item::Info("Experimental".into()));
             }
-            items.extend([Item::Rule, Item::Info("Appearance".into())]);
+            items.extend([
+                Item::Rule, Item::Info("Instrument controls".into()),
+                check("Native vector UI", !cx.selection.library_ui, Command::LibraryUI(false)),
+                check("Library UI (imported layout)", cx.selection.library_ui, Command::LibraryUI(true)),
+                Item::Rule, Item::Info("Appearance".into()),
+            ]);
             let now = super::Appearance::of(cx.selection.appearance);
             for (look, label) in [
                 (super::Appearance::Plain, "Plain"),
@@ -687,6 +701,18 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             shared.libraries.set_cover(Path::new(&library), Some(crate::library::Cover::Generated))
         }
         Command::ResetCover(library) => shared.libraries.set_cover(Path::new(&library), None),
+        Command::MoveLibrary(dir, by) => {
+            let mut order: Vec<String> = super::browser::ordered_libraries(&cx.view.shelf, &cx.settings)
+                .into_iter().map(|l| l.dir.to_string_lossy().into_owned()).collect();
+            if let Some(at) = order.iter().position(|p| *p == dir)
+                && let Some(to) = at.checked_add_signed(by as isize).filter(|&to| to < order.len())
+            {
+                order.swap(at, to);
+                shared.libraries.edit(|s| s.order = order);
+            }
+        }
+        Command::ResetLibraryOrder => shared.libraries.edit(|s| s.order.clear()),
+        Command::LibraryUI(original) => cx.selection.library_ui = original,
         Command::SaveMulti => {
             // A saved multi offers its own name back; anything else starts blank.
             let current = &cx.selection.multi;

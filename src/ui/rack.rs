@@ -162,30 +162,9 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     let mut row_items = vec![stack(layers).flex(1).min_w(0).min_h(0).h(Len::Pct(100.)).clip()];
     if content_h > view_h + 0.5 && view_h > 0. {
-        row_items.push(scrollbar(ui, y, view_h, content_h));
+        row_items.push(scrollbar(ui, "rack-bar", "Scroll the rack", y, view_h, content_h));
     }
     row(row_items).gap(0).align(Align::Stretch).flex(1).min_h(0)
-}
-
-/// The rack's scrollbar: a thin thumb that warms under the pointer and drags.
-fn scrollbar(ui: &mut Ui, y: f64, view_h: f64, content_h: f64) -> El {
-    let r = ui.get("rack-bar");
-    let lift = ui.state("rack-bar").hover.max(if r.held { 1. } else { 0. }) as f32;
-    canvas(move |s| {
-        let len = (s.height * view_h / content_h).max(CONTROL);
-        let at = (s.height - len) * (y / (content_h - view_h)).clamp(0., 1.);
-        let w = 3. + 2. * f64::from(lift);
-        vec![Draw::fill(
-            rect(s.width - w - 1., at + 2., w, len - 4.),
-            Role::Ink.alpha(0.18 + 0.3 * lift),
-        )]
-    })
-    .w(8)
-    .h(Len::Pct(100.))
-    .shrink(0)
-    .a11y(A11y::Slider { value: y, min: 0., max: content_h - view_h })
-    .named("Scroll the rack")
-    .id("rack-bar")
 }
 
 /// One part: its header, as much of its notices and controls as its height

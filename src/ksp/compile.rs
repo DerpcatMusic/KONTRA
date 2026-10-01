@@ -272,10 +272,11 @@ pub enum Callback {
     PgsChanged,
     PersistenceChanged,
     AsyncComplete,
+    UiControls,
 }
 
 impl Callback {
-    const COUNT: usize = 12;
+    const COUNT: usize = 13;
 
     fn from_name(name: &str) -> Option<Self> {
         Some(match name {
@@ -291,6 +292,7 @@ impl Callback {
             "pgs_changed" => Self::PgsChanged,
             "persistence_changed" => Self::PersistenceChanged,
             "async_complete" => Self::AsyncComplete,
+            "ui_controls" => Self::UiControls,
             _ => return None,
         })
     }
@@ -310,6 +312,7 @@ impl Callback {
             Self::PgsChanged => cb::PGS_CHANGED,
             Self::PersistenceChanged => cb::PERSISTENCE_CHANGED,
             Self::AsyncComplete => cb::ASYNC_COMPLETE,
+            Self::UiControls => cb::UI_CONTROLS,
         }
     }
 }
@@ -394,6 +397,7 @@ struct Compiler<'a> {
     /// Code before this index may be a jump target; peephole folding stops here.
     barrier: usize,
     calls: Vec<u32>,
+    loop_start: Option<u32>,
 }
 
 /// Kontakt matches variable names without regard to case: Una Corda declares
@@ -433,17 +437,21 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
         line: 0,
         barrier: 0,
         calls: Vec::new(),
+        loop_start: None,
     };
+    ensure!(
+        !blocks.is_empty(),
+        "No readable KSP callbacks; the embedded source may be unavailable or encoded"
+    );
     let init = blocks
         .iter()
-        .position(|b| !b.function && c.name(b.name) == "init")
-        .context("No KSP init callback")?;
+        .position(|b| !b.function && c.name(b.name) == "init");
     ensure!(
         blocks
             .iter()
             .filter(|b| !b.function && c.name(b.name) == "init")
             .count()
-            == 1,
+            <= 1,
         "Duplicate init callback"
     );
     for b in blocks.iter().filter(|b| b.function) {
@@ -456,11 +464,13 @@ pub fn compile(source: &str, setup: &Setup) -> Result<Program> {
     }
     c.p.functions = vec![u32::MAX; c.fn_ids.len()];
     // Declarations first, so every body sees every variable regardless of order.
-    let init_body = blocks[init]
-        .body
-        .as_ref()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    c.declare_all(init_body)?;
+    if let Some(init) = init {
+        let init_body = blocks[init]
+            .body
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        c.declare_all(init_body)?;
+    }
     for b in blocks.iter().filter(|b| b.function) {
         if let Ok(body) = &b.body {
             c.declare_all(body)?;
@@ -883,6 +893,12 @@ impl<'a> Compiler<'a> {
                 self.assign(*sym, index.as_deref(), |c| c.expr(value))
             }
             StmtKind::Command(name, args) => match self.name(*name) {
+                "continue" => {
+                    ensure!(args.is_empty(), "continue takes no arguments");
+                    let top = self.loop_start.context("continue requires a while loop")?;
+                    self.emit(Op::Jump(top));
+                    Ok(())
+                }
                 "inc" | "dec" => {
                     let delta = if self.name(*name) == "inc" { 1 } else { -1 };
                     let [Expr::Var(sym, index)] = args.as_slice() else {
@@ -918,7 +934,10 @@ impl<'a> Compiler<'a> {
                 self.expr_ty(cond, Ty::Int)?;
                 let exit = self.here();
                 self.emit(Op::JumpIfZero(0));
-                self.stmts(body)?;
+                let outer = self.loop_start.replace(top);
+                let result = self.stmts(body);
+                self.loop_start = outer;
+                result?;
                 self.emit(Op::Jump(top));
                 self.patch(exit);
                 Ok(())
@@ -1067,7 +1086,7 @@ impl<'a> Compiler<'a> {
             self.emit(Op::Sys(SysVar::EventId));
             self.expr_ty(index, Ty::Int)?;
             self.value_as(value, Ty::Int)?;
-            self.emit(Op::Builtin(Builtin::SetEventPar, 3));
+            self.emit(Op::Builtin(Builtin::SetEventParIndexed, 3));
             return Ok(());
         }
         let v = self
@@ -1206,8 +1225,9 @@ impl<'a> Compiler<'a> {
         }
         if let (EVENT_PAR, Some(index)) = (name, index) {
             self.emit(Op::Sys(SysVar::EventId));
+            self.emit(Op::PushI(builtins::event_par::CUSTOM));
             self.expr_ty(index, Ty::Int)?;
-            self.emit(Op::Builtin(Builtin::GetEventPar, 2));
+            self.emit(Op::Builtin(Builtin::GetEventParArr, 3));
             return Ok(Ty::Int);
         }
         ensure!(index.is_none(), "Undeclared array {name}");

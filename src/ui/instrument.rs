@@ -99,9 +99,16 @@ pub fn stage_deps(cx: &Cx, slot: usize) -> u64 {
     let at = |a: Option<*const ()>| a.map_or(0, |p| p as usize);
     let mut h = DefaultHasher::new();
     slot.hash(&mut h);
+    cx.selection.library_ui.hash(&mut h);
     at(v.interface.as_ref().map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
     at(instrument_of(cx, slot).map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
     (Arc::as_ptr(&v.pictures) as usize, &v.interface_status).hash(&mut h);
+    if cx.selection.library_ui {
+        if let Some(interface) = &v.interface {
+            panel::original_values(interface).hash(&mut h);
+        }
+        at(v.wallpaper.as_ref().map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
+    }
     if let (Some(cache), Some(interface)) = (cx.state.panels.get(&slot), &v.interface) {
         panel::values(cache, interface).hash(&mut h);
     }
@@ -114,6 +121,13 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let v = &cx.view.parts[slot];
     let loaded = instrument_of(cx, slot).is_some();
     let scripted = instrument_of(cx, slot).is_some_and(|i| !i.scripts.is_empty());
+    if cx.selection.library_ui
+        && loaded
+        && let Some(interface) = v.interface.clone()
+    {
+        let pictures = v.pictures.clone();
+        return panel::original(ui, cx, slot, &interface, &pictures).id(format!("stage-{slot}"));
+    }
     let sections = match &v.interface {
         Some(interface) if loaded => panel::cached(cx.state.panels.entry(slot).or_default(), interface, &v.pictures),
         _ => Arc::default(),

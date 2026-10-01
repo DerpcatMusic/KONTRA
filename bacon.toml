@@ -1,0 +1,13 @@
+default_job = "check"
+env.CARGO_TARGET_DIR = "artifacts/check"
+env.CARGO_BUILD_JOBS = "4"
+
+[jobs.check]
+command = ["cargo", "check", "--lib"]
+
+# Explicitly selected; normal editing never launches tests.
+[jobs.parity]
+command = ["cargo", "nextest", "run", "--lib", "--no-default-features", "--features", "library-access", "-E", "test(midi_channels_survive_waits_and_release_independently) | test(global_ui_callbacks_and_custom_event_data_reach_their_consumers)"]
+analyzer = "nextest"
+need_stdout = true
+env.RUST_MIN_STACK = "16777216"

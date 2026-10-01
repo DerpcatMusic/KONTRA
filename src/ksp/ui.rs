@@ -4,7 +4,7 @@
 
 use super::builtins::{self as b, FIRST_UI_ID};
 use super::compile::{Program, Ty, VarId};
-use super::runtime::{copy_text, refresh_value};
+use super::runtime::{copy_text, refresh_range};
 use super::vm::Memory;
 use super::{Control, Interface, Value};
 use std::borrow::Cow;
@@ -37,6 +37,18 @@ pub struct ControlState {
 }
 
 impl ControlState {
+    pub fn selected_menu(&self, prog: &Program, mem: &Memory) -> Option<usize> {
+        let var = &prog.vars[self.var as usize];
+        if var.ui.as_deref() != Some("ui_menu") { return None; }
+        self.menu.iter().position(|m| m.value == mem.ints[var.slot as usize])
+    }
+
+    pub fn visible_menu<'a>(&'a self, prog: &Program, mem: &Memory) -> impl Iterator<Item = &'a MenuItem> {
+        let selected = self.selected_menu(prog, mem);
+        // Kontakt keeps a hidden selected item until another item is selected.
+        self.menu.iter().enumerate().filter(move |(i, m)| m.visible || Some(*i) == selected).map(|(_, m)| m)
+    }
+
     pub fn get(&self, par: i32) -> Option<&Prop> {
         self.props.iter().find(|(p, _)| *p == par).map(|(_, v)| v)
     }
@@ -155,6 +167,7 @@ pub struct Ui {
     pub height: i32,
     pub title: String,
     pub wallpaper: String,
+    pub wallpaper_state: i32,
     pub listeners: BTreeMap<&'static str, i32>,
     pub diagnostics: BTreeSet<Cow<'static, str>>,
 }
@@ -170,6 +183,7 @@ impl Ui {
             height: 350,
             title: String::new(),
             wallpaper: String::new(),
+            wallpaper_state: 0,
             listeners: BTreeMap::new(),
             diagnostics: BTreeSet::new(),
         }
@@ -236,6 +250,11 @@ impl Ui {
             .map(|&c| c as usize)
     }
 
+    pub fn has_id(&self, id: i32) -> bool {
+        id.checked_sub(FIRST_UI_ID).and_then(|i| usize::try_from(i).ok())
+            .is_some_and(|i| i < self.id_controls.len())
+    }
+
     /// Control index for a UI variable.
     pub fn control_of(&self, v: VarId) -> Option<usize> {
         self.control(self.var_ids[v as usize])
@@ -250,36 +269,64 @@ impl Ui {
         prog: &Program,
         mem: &Memory,
         out: &mut Interface,
+        menu_spares: &mut [Vec<(String, i32)>],
         next: &mut usize,
+        value_at: &mut usize,
         budget: usize,
     ) -> bool {
-        let (mut changed, mut left) = (false, budget);
-        for (c, o) in self.controls.iter().zip(&mut out.controls).skip(*next) {
+        let (mut changed, mut left) = (
+            std::mem::replace(&mut out.wallpaper_state, self.wallpaper_state)
+                != self.wallpaper_state,
+            budget,
+        );
+        for (index, (c, o)) in self.controls.iter().zip(&mut out.controls).enumerate().skip(*next) {
             if left == 0 {
                 break;
             }
-            *next += 1;
-            left = left.saturating_sub(c.props.len() + c.menu.len() + 1);
-            for (par, v) in &c.props {
-                let Some(name) = prog.symbol_name(*par) else {
-                    continue;
-                };
-                changed |= match (v, o.properties.get_mut(name)) {
-                    (Prop::Int(n), Some(Value::Int(d))) => std::mem::replace(d, *n) != *n,
-                    (Prop::Str(s), Some(Value::Text(d))) => copy_text(d, s),
-                    _ => false,
+            if *value_at == 0 {
+                left = left.saturating_sub(c.props.len() + c.menu.len() + 1);
+                for (par, v) in &c.props {
+                    let Some(name) = prog.symbol_name(*par) else {
+                        continue;
+                    };
+                    changed |= match (v, o.properties.get_mut(name)) {
+                        (Prop::Int(n), Some(Value::Int(d))) => std::mem::replace(d, *n) != *n,
+                        (Prop::Str(s), Some(Value::Text(d))) => copy_text(d, s),
+                        _ => false,
+                    }
                 }
-            }
-            if let Some(v) = o.properties.get_mut("$CONTROL_PAR_VALUE") {
-                changed |= refresh_value(mem, &prog.vars[c.var as usize], v);
-            }
-            let visible = c.menu.iter().filter(|m| m.visible);
-            if visible.clone().count() == o.menu.len() {
-                for (m, (text, value)) in visible.zip(&mut o.menu) {
+                let count = c.visible_menu(prog, mem).count();
+                let spare = &mut menu_spares[index];
+                while o.menu.len() > count {
+                    let mut item = o.menu.pop().unwrap();
+                    item.0.clear();
+                    item.1 = 0;
+                    spare.push(item);
+                    changed = true;
+                }
+                while o.menu.len() < count && !spare.is_empty() {
+                    o.menu.push(spare.pop().unwrap());
+                    changed = true;
+                }
+                for (m, (text, value)) in c.visible_menu(prog, mem).zip(&mut o.menu) {
                     changed |= copy_text(text, &m.text);
                     changed |= std::mem::replace(value, m.value) != m.value;
                 }
             }
+            let var = &prog.vars[c.var as usize];
+            let len = var.len.map_or(1, |n| n as usize);
+            // Metadata can exceed this coarse budget; still make progress.
+            let end = len.min(value_at.saturating_add(left.max(1)));
+            if let Some(v) = o.properties.get_mut("$CONTROL_PAR_VALUE") {
+                changed |= refresh_range(mem, var, v, *value_at..end);
+            }
+            left = left.saturating_sub(end - *value_at);
+            if end < len {
+                *value_at = end;
+                break;
+            }
+            *value_at = 0;
+            *next += 1;
         }
         if *next >= self.controls.len().min(out.controls.len()) {
             *next = usize::MAX;
@@ -324,9 +371,7 @@ impl Ui {
                     kind: var.ui.as_deref().unwrap_or_default().to_owned(),
                     properties,
                     menu: c
-                        .menu
-                        .iter()
-                        .filter(|m| m.visible)
+                        .visible_menu(prog, mem)
                         .map(|m| (m.text.clone(), m.value))
                         .collect(),
                 }
@@ -346,6 +391,7 @@ impl Ui {
             height: self.height,
             title: self.title.clone(),
             wallpaper: self.wallpaper.clone(),
+            wallpaper_state: self.wallpaper_state,
             controls,
             diagnostics,
             listeners: self

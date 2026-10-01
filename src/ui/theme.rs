@@ -141,6 +141,31 @@ pub fn cluster(items: Vec<El>) -> El {
     row(items).gap(TIGHT).align(Align::Center).shrink(0)
 }
 
+/// A thin scroll thumb that warms under the pointer and drags.
+pub fn scrollbar(ui: &mut Ui, id: &str, name: &str, y: f64, view_h: f64, content_h: f64) -> El {
+    let r = ui.get(id);
+    let lift = ui.state(id).hover.max(if r.held { 1. } else { 0. }) as f32;
+    canvas(move |s| {
+        let len = (s.height * view_h / content_h).max(CONTROL);
+        let at = (s.height - len) * (y / (content_h - view_h)).clamp(0., 1.);
+        let w = 3. + 2. * f64::from(lift);
+        vec![Draw::fill(
+            rect(s.width - w - 1., at + 2., w, len - 4.),
+            Role::Ink.alpha(0.18 + 0.3 * lift),
+        )]
+    })
+    .w(8)
+    .h(Len::Pct(100.))
+    .shrink(0)
+    .a11y(A11y::Slider {
+        value: y,
+        min: 0.,
+        max: content_h - view_h,
+    })
+    .named(name)
+    .id(id.to_owned())
+}
+
 /// A horizontal hairline.
 pub fn rule() -> El {
     block(Len::Pct(100.), 1).fill(hairline()).shrink(0)

@@ -453,7 +453,9 @@ impl Engine {
     fn scripted(&mut self, channel: u8) -> Option<(&mut Runtime, Host<'_>)> {
         let rt = self.script.as_deref_mut()?;
         self.script_channel = channel;
+        rt.set_midi_channel(channel);
         let host = Host {
+            channel,
             bank: self.bank.as_deref(),
             fx: &self.fx,
             player: &mut self.player,
@@ -682,7 +684,7 @@ impl Engine {
                     .filter(|c| c.at as usize <= base + pos)
                 {
                     if let Some(bank) = self.bank.as_deref() {
-                        self.player.apply(bank, c, channel, defaults);
+                        self.player.apply(bank, c, defaults);
                     }
                     next += 1;
                 }
@@ -725,7 +727,7 @@ impl Engine {
         }
         if let Some(bank) = self.bank.as_deref() {
             for c in &self.commands[next..] {
-                self.player.apply(bank, c, channel, defaults);
+                self.player.apply(bank, c, defaults);
             }
         }
         self.commands.clear();

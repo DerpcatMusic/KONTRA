@@ -110,6 +110,8 @@ pub struct Interface {
     pub height: i32,
     pub title: String,
     pub wallpaper: String,
+    #[serde(default)]
+    pub wallpaper_state: i32,
     pub controls: Vec<Control>,
     pub diagnostics: BTreeSet<String>,
     pub listeners: BTreeMap<String, i32>,
@@ -123,6 +125,7 @@ impl Default for Interface {
             height: 350,
             title: String::new(),
             wallpaper: String::new(),
+            wallpaper_state: 0,
             controls: Vec::new(),
             diagnostics: BTreeSet::new(),
             listeners: BTreeMap::new(),

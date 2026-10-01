@@ -43,6 +43,9 @@ macro_rules! builtins {
         pub enum Builtin { $($id),* }
         impl Builtin {
             pub fn from_name(name: &str) -> Option<Self> {
+                // Shipped scripts also use this internal spelling of the
+                // persistence reader. Keep its variable-reference signature.
+                let name = if name == "_read_persistent_var" { "read_persistent_var" } else { name };
                 match name { $($name => Some(Self::$id),)* _ => None }
             }
             pub fn sig(self) -> Sig {
@@ -114,6 +117,8 @@ builtins! {
     SetEventPar "set_event_par" [I I I] 0 Void;
     GetEventPar "get_event_par" [I I] 0 Int;
     SetEventParArr "set_event_par_arr" [I I I I] 0 Void;
+    // Intrinsic keeps LHS index evaluation before the assignment value.
+    SetEventParIndexed "#set_event_par_indexed" [I I I] 0 Void;
     GetEventParArr "get_event_par_arr" [I I I] 0 Int;
     AllowGroup "allow_group" [I] 0 Void;
     DisallowGroup "disallow_group" [I] 0 Void;
@@ -125,6 +130,8 @@ builtins! {
     GetEventIds "get_event_ids" [A] 0 Void;
     IgnoreController "ignore_controller" [] 0 Void;
     SetController "set_controller" [I I] 0 Void;
+    SetRpn "set_rpn" [I I] 0 Void;
+    SetNrpn "set_nrpn" [I I] 0 Void;
     ResetRlsTrigCounter "reset_rls_trig_counter" [I] 0 Void;
     WillNeverTerminate "will_never_terminate" [I] 0 Void;
     RedirectOutput "redirect_output" [I I] 0 Void;
@@ -140,25 +147,36 @@ builtins! {
     ChangeListenerPar "change_listener_par" [I I] 0 Void;
     // Groups, modules and engine parameters.
     FindGroup "find_group" [S] 0 Int;
+    GetGroupIdx "get_group_idx" [S] 0 Int;
     GroupName "group_name" [I] 0 Str;
     PurgeGroup "purge_group" [I I] 0 Int;
     GetPurgeState "get_purge_state" [I] 0 Int;
     FindMod "find_mod" [I S] 0 Int;
     FindTarget "find_target" [I I S] 0 Int;
+    GetModIdx "get_mod_idx" [I S] 0 Int;
+    GetTargetIdx "get_target_idx" [I I S] 0 Int;
     GetEnginePar "get_engine_par" [I I I I] 0 Int;
     GetEngineParDisp "get_engine_par_disp" [I I I I] 0 Str;
+    GetEngineParDispExt "get_engine_par_disp_ext" [I I I I I] 0 Str;
     SetEnginePar "set_engine_par" [I I I I I] 0 Int;
+    GetVoiceLimit "get_voice_limit" [I] 0 Int;
+    SetVoiceLimit "set_voice_limit" [I I] 0 Int;
     OutputChannelName "output_channel_name" [I] 0 Str;
     LoadIrSample "load_ir_sample" [S I I] 0 Int;
     // User interface.
+    AttachLevelMeter "attach_level_meter" [I I I I I] 0 Void;
     SetControlPar "set_control_par" [I I I] 0 Void;
     SetControlParStr "set_control_par_str" [I I S] 0 Void;
+    SetControlParReal "set_control_par_real" [I I R] 0 Void;
     SetControlParArr "set_control_par_arr" [I I I I] 0 Void;
     SetControlParStrArr "set_control_par_str_arr" [I I S I] 0 Void;
+    SetControlParRealArr "set_control_par_real_arr" [I I R I] 0 Void;
     GetControlPar "get_control_par" [I I] 0 Int;
     GetControlParStr "get_control_par_str" [I I] 0 Str;
+    GetControlParReal "get_control_par_real" [I I] 0 Real;
     GetControlParArr "get_control_par_arr" [I I I] 0 Int;
     GetControlParStrArr "get_control_par_str_arr" [I I I] 0 Str;
+    GetControlParRealArr "get_control_par_real_arr" [I I I] 0 Real;
     SetText "set_text" [V S] 0 Void;
     AddTextLine "add_text_line" [V S] 0 Void;
     SetKnobLabel "set_knob_label" [V S] 0 Void;
@@ -255,6 +273,7 @@ pub enum SysVar {
     TransportRunning,
     Tempo,
     CurrentScriptSlot,
+    UiId,
 }
 
 pub fn sys_var(name: &str) -> Option<SysVar> {
@@ -288,6 +307,7 @@ pub fn sys_var(name: &str) -> Option<SysVar> {
         "$NI_TRANSPORT_RUNNING" => TransportRunning,
         "$NI_BPM" | "$NI_TEMPO" => Tempo,
         "$CURRENT_SCRIPT_SLOT" => CurrentScriptSlot,
+        "$NI_UI_ID" => UiId,
         _ => return None,
     })
 }
@@ -361,6 +381,7 @@ pub mod event_par {
     pub const MIDI_CHANNEL: i32 = 13;
     pub const MOD_VALUE_ID: i32 = 14;
     pub const REL_VELOCITY: i32 = 15;
+    pub const CUSTOM: i32 = 16;
 }
 
 pub mod cb {
@@ -377,6 +398,7 @@ pub mod cb {
     pub const PGS_CHANGED: i32 = 10;
     pub const PERSISTENCE_CHANGED: i32 = 11;
     pub const ASYNC_COMPLETE: i32 = 12;
+    pub const UI_CONTROLS: i32 = 13;
 }
 
 pub mod signal {
@@ -396,6 +418,9 @@ pub fn real_constant(name: &str) -> Option<f64> {
 
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
+    if let Some(name) = name.strip_prefix("$NI_CONTROL_TYPE_") {
+        return CONTROL_TYPES.iter().position(|(_, n)| *n == name).map(|i| i as i32);
+    }
     if let Some(n) = name
         .strip_prefix("$MARK_")
         .and_then(|n| n.parse::<u32>().ok())
@@ -409,6 +434,9 @@ pub fn constant(name: &str) -> Option<i32> {
         return (0..=3).contains(&n).then_some(n);
     }
     Some(match name {
+        "$NI_NOT_FOUND" => -1,
+        "$NI_VL_TMPRO_STANDARD" => 0,
+        "$NI_VL_TMPRO_HQ" => 1,
         "$EVENT_PAR_VOLUME" => event_par::VOLUME,
         "$EVENT_PAR_TUNE" => event_par::TUNE,
         "$EVENT_PAR_PAN" => event_par::PAN,
@@ -421,6 +449,7 @@ pub fn constant(name: &str) -> Option<i32> {
         "$EVENT_PAR_MIDI_CHANNEL" => event_par::MIDI_CHANNEL,
         "$EVENT_PAR_MOD_VALUE_ID" => event_par::MOD_VALUE_ID,
         "$EVENT_PAR_REL_VELOCITY" => event_par::REL_VELOCITY,
+        "$EVENT_PAR_CUSTOM" => event_par::CUSTOM,
         "$EVENT_STATUS_INACTIVE" => 0,
         "$EVENT_STATUS_NOTE_QUEUE" => 1,
         "$EVENT_STATUS_MIDI_QUEUE" => 2,
@@ -449,6 +478,7 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_CB_TYPE_RPN" => cb::RPN,
         "$NI_CB_TYPE_NRPN" => cb::NRPN,
         "$NI_CB_TYPE_UI_CONTROL" => cb::UI_CONTROL,
+        "$NI_CB_TYPE_UI_CONTROLS" => cb::UI_CONTROLS,
         "$NI_CB_TYPE_UI_UPDATE" => cb::UI_UPDATE,
         "$NI_CB_TYPE_LISTENER" => cb::LISTENER,
         "$NI_CB_TYPE_PGS" => cb::PGS_CHANGED,
@@ -533,6 +563,11 @@ pub const SYMBOLS: &[&str] = &[
     "$CONTROL_PAR_WAVE_ALPHA",
     "$CONTROL_PAR_SLICEMARKERS_COLOR",
     "$CONTROL_PAR_BG_ALPHA",
+    "$CONTROL_PAR_CUSTOM_ID",
+    "$CONTROL_PAR_TYPE",
+    "$CONTROL_PAR_IDENTIFIER",
+    "$CONTROL_PAR_NONE",
+    "$CONTROL_PAR_SHORT_NAME",
 ];
 
 pub const CONTROL_PAR_VALUE: i32 = SYMBOL_BASE;
@@ -549,6 +584,27 @@ pub const CONTROL_PAR_MIN_VALUE: i32 = SYMBOL_BASE + 10;
 pub const CONTROL_PAR_MAX_VALUE: i32 = SYMBOL_BASE + 11;
 pub const CONTROL_PAR_PICTURE: i32 = SYMBOL_BASE + 12;
 pub const CONTROL_PAR_DEFAULT_VALUE: i32 = SYMBOL_BASE + 13;
+pub const CONTROL_PAR_PICTURE_STATE: i32 = SYMBOL_BASE + 29;
+pub const CONTROL_PAR_SELECTED_ITEM_IDX: i32 = SYMBOL_BASE + 14;
+pub const CONTROL_PAR_NUM_ITEMS: i32 = SYMBOL_BASE + 15;
+pub const CONTROL_PAR_TEXTLINE: i32 = SYMBOL_BASE + 37;
+pub const CONTROL_PAR_TYPE: i32 = SYMBOL_BASE + 63;
+pub const CONTROL_PAR_IDENTIFIER: i32 = SYMBOL_BASE + 64;
+pub const CONTROL_PAR_NONE: i32 = SYMBOL_BASE + 65;
+
+const CONTROL_TYPES: &[(&str, &str)] = &[
+    ("", "NONE"), ("ui_button", "BUTTON"), ("ui_knob", "KNOB"),
+    ("ui_menu", "MENU"), ("ui_value_edit", "VALUE_EDIT"), ("ui_label", "LABEL"),
+    ("ui_table", "TABLE"), ("ui_waveform", "WAVEFORM"), ("ui_wavetable", "WAVETABLE"),
+    ("ui_slider", "SLIDER"), ("ui_text_edit", "TEXT_EDIT"),
+    ("ui_file_selector", "FILE_SELECTOR"), ("ui_switch", "SWITCH"),
+    ("ui_xy", "XY"), ("ui_level_meter", "LEVEL_METER"),
+    ("ui_mouse_area", "MOUSE_AREA"), ("ui_panel", "PANEL"),
+];
+
+pub fn control_type(kind: &str) -> i32 {
+    CONTROL_TYPES.iter().position(|(k, _)| *k == kind).unwrap_or(0) as i32
+}
 
 /// Engine parameters are published with stable IDs so an engine can map them once.
 pub const ENGINE_PAR_BASE: i32 = 0x0200_0000;

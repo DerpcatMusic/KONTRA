@@ -1,7 +1,20 @@
 use anyhow::{Context, Result, bail, ensure};
-use ni_file::{NIFile, kontakt::{KontaktChunks, StructuredObject, objects::{Program, FNTableImpl, FileNameListPreK51, GroupList, BParScript, LoopArray}}, nis::schema::{Repository, NISObject}};
+use ni_file::{
+    NIFile,
+    kontakt::{
+        KontaktChunks, StructuredObject,
+        objects::{BParScript, FNTableImpl, FileNameListPreK51, GroupList, LoopArray, Program},
+    },
+    nis::schema::{NISObject, Repository},
+};
 use serde::Serialize;
-use std::{collections::HashMap, ffi::OsString, fs::File, io::{Cursor, Read}, path::{Path, PathBuf}};
+use std::{
+    collections::HashMap,
+    ffi::OsString,
+    fs::File,
+    io::{Cursor, Read, Seek},
+    path::{Path, PathBuf},
+};
 
 /// The developer's library folder: the command-line tools' default, and a
 /// last place a first run looks. The app's libraries come from its settings.
@@ -133,7 +146,16 @@ pub fn read(path: &Path) -> Result<Instrument> {
 
 fn chunks(path: &Path) -> Result<KontaktChunks> {
     ensure!(path.metadata()?.len() <= 128 * 1024 * 1024, "Instrument container exceeds 128 MiB import limit");
-    let bytes = match NIFile::read(File::open(path)?).context("NIS/NKS container headers")? {
+    let mut file = File::open(path)?;
+    let mut header = [0; 16];
+    file.read_exact(&mut header)
+        .context("Truncated instrument header")?;
+    ensure!(
+        header.iter().any(|&b| b != 0),
+        "Instrument header contains only zero bytes; check for an incomplete/damaged copy or filesystem read failure"
+    );
+    file.rewind()?;
+    let bytes = match NIFile::read(file).context("NIS/NKS container headers")? {
         NIFile::NKSContainer(n) => n.decompressed_preset()?,
         NIFile::NISoundContainer(n) => nis_payload(n,path,0)?,
         _ => bail!("Unsupported instrument container; choose an NKI or NKM preset"),
@@ -734,6 +756,16 @@ pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod preset_tests {
+    #[test]
+    fn zero_filled_presets_fail_before_entering_the_container_parser() {
+        let path =
+            std::env::temp_dir().join(format!("kontra-zero-preset-{}.nki", std::process::id()));
+        std::fs::write(&path, [0; 32]).unwrap();
+        let err = super::chunks(&path).err().unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(err.to_string().contains("only zero bytes"), "{err:#}");
+    }
+
     #[test]
     fn catalog_separates_presets_from_resources() {
         let root=std::env::temp_dir().join(format!("kontakto-presets-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&root).unwrap();
