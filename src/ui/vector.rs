@@ -168,8 +168,11 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
         };
         faces.push(face);
     }
+    // Last drawn first, so each control's words know the words drawn over
+    // them: (x, y, w, h) in the view.
     let mut out: Vec<Plan> = Vec::with_capacity(drawn.len());
-    for (n, (s, _)) in drawn.iter().enumerate() {
+    let mut inked: Vec<(f64, f64, f64, f64)> = Vec::new();
+    for (n, (s, _)) in drawn.iter().enumerate().rev() {
         let c = &interface.controls[s.control];
         let face = faces[n];
         let mut words = Vec::new();
@@ -179,6 +182,7 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
             .filter_map(|((o, _), f)| hides(o, &interface.controls[o.control], *f))
             .filter(|o| o.w * o.h < s.w * s.h && inside(o, s) > 0.)
             .map(|o| (o.x - s.x, o.x - s.x + o.w))
+            .chain(inked.iter().filter(|i| i.1 < s.y + s.h && i.1 + i.3 > s.y).map(|i| (i.0 - s.x, i.0 - s.x + i.2)))
             .collect();
         // Where `text` goes: across the whole control, unless it would
         // run into what lies on it; then beside that.
@@ -214,9 +218,12 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
             (Kind::Switch | Kind::Button, _) => {
                 let name = if said.trim().is_empty() { names.get(&s.control).cloned().unwrap_or_default() } else { said };
                 // A small switch's name that will not fit whole is its
-                // initials, as a mixer strip's S and M.
-                let name = if s.w < 30. && advance(name.trim(), FONT) > s.w - 4. {
-                    name.split_whitespace().filter_map(|w| w.chars().next()).collect()
+                // initials, as a mixer strip's S and M; more than two say
+                // nothing, so its frame stands alone. A step (-12) shrinks.
+                let step = name.trim().starts_with(['+', '-']);
+                let name = if s.w < 30. && !step && advance(name.trim(), FONT) > s.w - 4. {
+                    let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).collect();
+                    if initials.chars().count() <= 2 { initials } else { String::new() }
                 } else {
                     name
                 };
@@ -253,11 +260,17 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
             let (x, wide) = w.ink();
             let (x, y, tall) = (s.x + x, s.y + w.y + (w.h - w.size * 1.2).max(0.) / 2., w.size * 1.2);
             let meets = |o: &Shown| (x + wide).min(o.x + o.w) - x.max(o.x) > 0.5 && (y + tall).min(o.y + o.h) - y.max(o.y) > 0.5;
-            let covered = (drawn.iter().zip(&faces).skip(n + 1)).filter_map(|((o, _), f)| hides(o, &interface.controls[o.control], *f)).any(|o| meets(&o));
+            let covered = (drawn.iter().zip(&faces).skip(n + 1)).filter_map(|((o, _), f)| hides(o, &interface.controls[o.control], *f)).any(|o| meets(&o))
+                || inked.iter().any(|&(x, y, w, h)| meets(&Shown { x, y, w, h, ..s.clone() }));
             !covered && x >= 0. && y >= 0. && x + wide <= vw + 0.5 && y + tall <= vh + 0.5
         });
+        inked.extend(words.iter().map(|w| {
+            let (x, wide) = w.ink();
+            (s.x + x, s.y + w.y + (w.h - w.size * 1.2).max(0.) / 2., wide, w.size * 1.2)
+        }));
         out.push(Plan { face, words });
     }
+    out.reverse();
     out
 }
 
