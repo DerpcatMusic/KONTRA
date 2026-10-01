@@ -24,7 +24,7 @@ pub struct NoteSpec<'a> {
     pub channel: u8,
     /// A released parent's expression, inherited by generated release samples.
     pub frozen_expression: Option<Expression>,
-    /// Physical channel and original engine input key; generated notes have none.
+    /// Physical channel and original input key, inherited by following notes.
     pub owner: Option<(u8, u8)>,
     pub note: u8,
     pub velocity: u8,

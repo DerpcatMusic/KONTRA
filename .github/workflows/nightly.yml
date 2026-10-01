@@ -1,77 +1,47 @@
 name: Nightly
 
-# Daily release builds (CLAP, VST3, standalone) for Linux, macOS and
-# Windows, published as the rolling `nightly` pre-release. Skipped when the
-# default branch has no commits since the last nightly. macOS bundles are
-# signed ad hoc; notarization is out of scope.
+# Every public main update builds all platforms for the rolling `nightly`
+# pre-release. Builds may be superseded; publishing must finish uninterrupted.
+# Standard GitHub-hosted runners are free for public repositories.
 
 on:
-  schedule:
-    - cron: '17 3 * * *'
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      force:
-        description: Build even without new commits
-        type: boolean
-        default: false
-      macos_x86_64:
-        description: Also build macOS x86_64 (another macOS job, 10x minutes)
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
-concurrency:
-  group: nightly
-  cancel-in-progress: false
-
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_TARGET_DIR: target
   # The MOOSE revision Cargo.toml pins; cargo-moose must match it.
   MOOSE_REV: bffa4677d0b82119d38566ce7e932dc5c463d497
-  # Extra Cargo features for every build (tools/export-public.sh empties it).
+  # Extra Cargo features for every build.
   FEATURES: library-access
 
 jobs:
-  plan:
-    runs-on: ubuntu-latest
-    outputs:
-      build: ${{ steps.plan.outputs.build }}
-      matrix: ${{ steps.plan.outputs.matrix }}
-    steps:
-      - id: plan
-        env:
-          FORCE: ${{ inputs.force || false }}
-          MAC_X86: ${{ inputs.macos_x86_64 || false }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # `gh release create --target` makes a lightweight tag: its object is the commit.
-          last=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
-          echo "HEAD $GITHUB_SHA, last nightly ${last:-none}"
-          build=true
-          if [ "$last" = "$GITHUB_SHA" ] && [ "$FORCE" != true ]; then build=false; fi
-          echo "build=$build" >> "$GITHUB_OUTPUT"
-          matrix='{"include":[
-            {"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","name":"linux-x86_64"},
-            {"os":"windows-latest","target":"x86_64-pc-windows-msvc","name":"windows-x86_64"},
-            {"os":"macos-latest","target":"aarch64-apple-darwin","name":"macos-arm64"}'
-          if [ "$MAC_X86" = true ]; then
-            matrix+=',{"os":"macos-latest","target":"x86_64-apple-darwin","name":"macos-x86_64"}'
-          fi
-          echo "matrix=$(echo "$matrix]}" | tr -d '\n ')" >> "$GITHUB_OUTPUT"
-
   build:
-    needs: plan
-    if: needs.plan.outputs.build == 'true'
+    if: github.ref == 'refs/heads/main' && !github.event.repository.private
+    concurrency:
+      group: nightly-build-${{ matrix.name }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      matrix:
+        include:
+          - {os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, name: linux-x86_64}
+          - {os: windows-2025, target: x86_64-pc-windows-msvc, name: windows-x86_64}
+          - {os: macos-15, target: aarch64-apple-darwin, name: macos-arm64}
+          - {os: macos-15-intel, target: x86_64-apple-darwin, name: macos-x86_64}
     runs-on: ${{ matrix.os }}
     name: build (${{ matrix.name }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
@@ -131,6 +101,9 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    concurrency:
+      group: nightly-publish
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -144,14 +117,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          ls -l dist
+          # Download-artifact defaults to this run: never mix commits or reruns.
+          for platform in linux-x86_64 windows-x86_64 macos-arm64 macos-x86_64; do
+            test -s "dist/KONTRA-nightly-$platform.zip"
+          done
+          if [ "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" != "$GITHUB_SHA" ]; then
+            echo "Superseded by a newer main commit; keeping the current nightly."
+            exit 0
+          fi
           short=${GITHUB_SHA::7}
-          notes="Automated build of ${short} ($(date -u +%Y-%m-%d)). Untested snapshot.
+          cat > notes.md <<EOF
+          Automated build of [$short](https://github.com/$GH_REPO/commit/$GITHUB_SHA) ($(date -u +%Y-%m-%d)). Untested snapshot.
 
           Contents per platform: KONTRA.clap, KONTRA.vst3 and kontakto-standalone.
           macOS builds are signed ad hoc and not notarized: after unzipping, run
           \`xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone\`.
-          x86_64 builds target x86-64-v3 (AVX2)."
-          gh release delete nightly --yes --cleanup-tag || true
-          gh release create nightly dist/*.zip --prerelease --target "$GITHUB_SHA" \
-            --title "Nightly ${short}" --notes "$notes"
+          x86_64 plug-ins require an x86-64-v3 CPU (AVX2, FMA and BMI2).
+          EOF
+          # Upload a complete replacement before touching the public release.
+          staging=nightly-staging
+          # A runner failure may leave a draft; keep staging history bounded.
+          leftover=$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | select(.tag_name == "nightly-staging") | .id')
+          if [ -n "$leftover" ]; then gh release delete "$staging" --yes; fi
+          trap 'gh release delete "$staging" --yes >/dev/null 2>&1 || true' EXIT
+          gh release create "$staging" dist/*.zip --draft --prerelease --target "$GITHUB_SHA" \
+            --title "Nightly ${short}" --notes-file notes.md
+          if [ "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" != "$GITHUB_SHA" ]; then
+            gh release delete "$staging" --yes
+            exit 0
+          fi
+          previous=$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | select(.tag_name == "nightly") | .id')
+          if [ -n "$previous" ]; then gh release delete nightly --yes --cleanup-tag; fi
+          gh release edit "$staging" --tag nightly --draft=false --target "$GITHUB_SHA" --latest=false
+          trap - EXIT
