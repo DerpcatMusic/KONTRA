@@ -621,6 +621,11 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_REVERB2_TYPE_ROOM" => 0,
         "$NI_REVERB2_TYPE_HALL" => 1,
         "$NUM_ZONES" => 0,
+        // `attach_zone` flags, or'd together.
+        "$UI_WAVEFORM_USE_SLICES" => 1,
+        "$UI_WAVEFORM_USE_TABLE" => 2,
+        "$UI_WAVEFORM_TABLE_IS_BIPOLAR" => 4,
+        "$UI_WAVEFORM_USE_MIDI_DRAG" => 8,
         "$NI_VL_TMPRO_STANDARD" => VL_TMPRO_STANDARD,
         "$NI_VL_TMPRO_HQ" | "$NI_VL_TMRPO_HQ" => VL_TMPRO_HQ,
         // A plugin with an editor, in 4/4 unless the host says otherwise.
@@ -716,6 +721,14 @@ pub const SYMBOLS: &[&str] = &[
     "$CONTROL_PAR_RECEIVE_DRAG_EVENTS",
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
+    // `ui_waveform` properties (`set_ui_wf_property`), kept on the control.
+    "$UI_WF_PROP_PLAY_CURSOR",
+    "$UI_WF_PROP_FLAGS",
+    "$UI_WF_PROP_TABLE_VAL",
+    "$UI_WF_PROP_TABLE_IDX_HIGHLIGHT",
+    "$UI_WF_PROP_MIDI_DRAG_START_NOTE",
+    // The zone `attach_zone` showed in a waveform: no name a script can write.
+    "attached zone",
 ];
 
 pub const CONTROL_PAR_VALUE: i32 = SYMBOL_BASE;
@@ -732,6 +745,8 @@ pub const CONTROL_PAR_MIN_VALUE: i32 = SYMBOL_BASE + 10;
 pub const CONTROL_PAR_MAX_VALUE: i32 = SYMBOL_BASE + 11;
 pub const CONTROL_PAR_PICTURE: i32 = SYMBOL_BASE + 12;
 pub const CONTROL_PAR_DEFAULT_VALUE: i32 = SYMBOL_BASE + 13;
+pub const UI_WF_PROP_FLAGS: i32 = SYMBOL_BASE + 82;
+pub const ATTACHED_ZONE: i32 = SYMBOL_BASE + 86;
 
 /// Engine parameters are published with stable IDs so an engine can map them once.
 pub const ENGINE_PAR_BASE: i32 = 0x0200_0000;
