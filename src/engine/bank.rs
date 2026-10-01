@@ -406,6 +406,7 @@ impl Bank {
         progress: &AtomicU32,
     ) -> Result<Self> {
         let mut issues = Issues::default();
+        let trace = Trace::new();
         resident::sweep();
         // Resolve each distinct sample once, then open them all in parallel.
         // By the path's bytes: a `Path` hashes one component at a time.
@@ -423,12 +424,12 @@ impl Bank {
                 })
             })
             .collect();
-        // Resolved on this thread: sources outlive loading, and allocating
+        // Built on this thread: sources outlive loading, and allocating
         // them on workers fragments their heap arenas (18 MiB more RSS on
-        // Vista 5 Violins). Import just read each member header, so these
-        // reads come from the page cache.
-        let mut sources = audio::Sources::default();
-        let resolved: Vec<_> = paths.iter().map(|path| sources.source(path)).collect();
+        // Vista 5 Violins). Only member headers are read in parallel.
+        let paths_ref: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
+        let resolved = audio::Sources::default().sources(&paths_ref);
+        trace.mark("resolve");
         // Progress runs on from where the caller left it: opening every
         // sample takes the first tenth of the rest, reading them the others
         // by frames read. Only ever rises.
@@ -460,6 +461,7 @@ impl Bank {
                 }
             })
             .collect();
+        trace.mark("open");
         let mut zones = Vec::new();
         let mut zone_samples = Vec::new();
         for (zone, id) in instrument.zones.iter().zip(zone_ids) {
@@ -485,6 +487,7 @@ impl Bank {
         // reads its own copy; growing the shared spans in place, and moving
         // the other banks onto them, would keep one.
         let mut layout = builder.plan(&frame_bytes, budget, controllers);
+        trace.mark("zones+plan");
         let ram_only = (streaming == Streaming::RamOnly).then(|| {
             // ponytail: /proc/meminfo only; other systems get MEMORY_LIMIT until they have a probe.
             let room = ram_free().map_or(MEMORY_LIMIT, |(free, total)| {
@@ -538,6 +541,7 @@ impl Bank {
             },
         );
         progress.store(LOAD_DONE, Ordering::Relaxed);
+        trace.mark("read");
         let mut samples = Vec::with_capacity(decoded.len());
         let mut streamed = Vec::with_capacity(decoded.len());
         let mut bytes = 0;
@@ -564,11 +568,13 @@ impl Bank {
             None
         };
         let mut bank = builder.finish(samples, streamer, bytes)?;
+        trace.mark("finish");
         (bank.preload, bank.planned, bank.cover) = (preload, planned, cover);
         bank.residency = tracked
             .and_then(|plays| Residency::new(&bank, plays, &frame_bytes, cover))
             .map(Box::new);
         let mib = budget >> 20;
+        trace.mark("residency");
         let still = bank.streamed_samples();
         bank.warning = if let Some(needed) = ram_only.filter(|_| still > 0) {
             Some(format!(
@@ -1146,6 +1152,23 @@ pub(super) fn spans(plays: &[(&ZonePlay, (u64, u64))], preload: u64, cover: u64)
         !r.is_empty()
     });
     (merged, true, looping)
+}
+
+/// Load phase timings on stderr when `KONTRA_LOAD_TRACE` is set.
+struct Trace(Option<std::cell::Cell<std::time::Instant>>);
+
+impl Trace {
+    fn new() -> Self {
+        Self(std::env::var_os("KONTRA_LOAD_TRACE").map(|_| std::time::Instant::now().into()))
+    }
+
+    fn mark(&self, phase: &str) {
+        if let Some(at) = &self.0 {
+            let now = std::time::Instant::now();
+            eprintln!("load {phase}: {:.0} ms", (now - at.get()).as_secs_f64() * 1e3);
+            at.set(now);
+        }
+    }
 }
 
 /// Free (available) and total RAM in bytes, from `/proc/meminfo`.

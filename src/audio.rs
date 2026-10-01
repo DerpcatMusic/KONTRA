@@ -790,55 +790,82 @@ struct Indexed {
 impl Sources {
     /// The source of `path`, reading its archive's directory once per archive.
     pub fn source(&mut self, path: &Path) -> Result<Source> {
-        // An archive already read is a file: no stat per member.
-        let archives = &self.archives;
-        let found = crate::import::archive_member_where(path, |p| archives.contains_key(p.as_os_str()) || p.is_file());
-        let Some((archive, member)) = found else {
-            return Ok(Source {
-                path: path.into(),
-                file: path.into(),
-                offset: 0,
-                len: None,
-                key: None,
+        self.sources(&[path]).pop().expect("one source per path")
+    }
+
+    /// [`Sources::source`] of each of `paths`, in order. Archive directories
+    /// are read once each, sequentially; member headers, one random read
+    /// each into a multi-gigabyte archive, are read on every core: serially
+    /// they took 8.8 of 11 s loading ANALOG STRINGS from a cold page cache.
+    pub fn sources(&mut self, paths: &[&Path]) -> Vec<Result<Source>> {
+        let mut found = Vec::with_capacity(paths.len());
+        for &path in paths {
+            let archives = &self.archives;
+            let member = crate::import::archive_member_where(path, |p| {
+                archives.contains_key(p.as_os_str()) || p.is_file()
             });
-        };
+            found.push(match member {
+                Some((archive, member)) => self.index(&archive).map(|()| Some((archive, member))),
+                None => Ok(None),
+            });
+        }
+        let archives = &self.archives;
+        let entries = crate::engine::parallel(found.iter().collect(), |_: &mut (), found| {
+            let Ok(Some((archive, member))) = found else { return Ok(None) };
+            let indexed = &archives[archive.as_os_str()];
+            let entry = indexed
+                .index
+                .member(FileAt { file: &indexed.file, pos: 0 }, member)?
+                .context("Archive member not found")?;
+            ensure!(entry.valid, "{}", entry.issue.unwrap_or("Invalid archive member"));
+            anyhow::Ok(Some((entry.offset, entry.size, entry.encoded, entry.key_index)))
+        });
+        (paths.iter().zip(found).zip(entries))
+            .map(|((&path, found), entry)| {
+                let Some((archive, _)) = found? else {
+                    return Ok(Source {
+                        path: path.into(),
+                        file: path.into(),
+                        offset: 0,
+                        len: None,
+                        key: None,
+                    });
+                };
+                let (offset, size, encoded, key_index) = entry?.expect("archive members have entries");
+                let key = if encoded && key_index != 0xff {
+                    ensure!(key_index == 0x100, "Unsupported legacy NKX cipher");
+                    let key = self.archives[archive.as_os_str()].key.get_or_init(|| {
+                        crate::access::library_key(&archive).map_err(|e| format!("{e:#}"))
+                    });
+                    Some(
+                        key.clone()
+                            .map_err(anyhow::Error::msg)?
+                            .context("Encrypted archive member needs local library access data")?,
+                    )
+                } else {
+                    None
+                };
+                Ok(Source {
+                    path: path.into(),
+                    file: archive,
+                    offset,
+                    len: Some(size),
+                    key,
+                })
+            })
+            .collect()
+    }
+
+    /// Read `archive`'s directory, once.
+    fn index(&mut self, archive: &Path) -> Result<()> {
         if !self.archives.contains_key(archive.as_os_str()) {
-            let mut file = File::open(&archive)?;
+            let mut file = File::open(archive)?;
             let index = Archive::read_index(&mut file)
                 .with_context(|| format!("Archive {}", archive.display()))?;
             let key = OnceLock::new();
-            self.archives.insert(archive.clone().into(), Indexed { index, file, key });
+            self.archives.insert(archive.into(), Indexed { index, file, key });
         }
-        let indexed = &self.archives[archive.as_os_str()];
-        let entry = indexed
-            .index
-            .member(FileAt { file: &indexed.file, pos: 0 }, &member)?
-            .context("Archive member not found")?;
-        ensure!(
-            entry.valid,
-            "{}",
-            entry.issue.unwrap_or("Invalid archive member")
-        );
-        let key = if entry.encoded && entry.key_index != 0xff {
-            ensure!(entry.key_index == 0x100, "Unsupported legacy NKX cipher");
-            let key = indexed.key.get_or_init(|| {
-                crate::access::library_key(&archive).map_err(|e| format!("{e:#}"))
-            });
-            Some(
-                key.clone()
-                    .map_err(anyhow::Error::msg)?
-                    .context("Encrypted archive member needs local library access data")?,
-            )
-        } else {
-            None
-        };
-        Ok(Source {
-            path: path.into(),
-            file: archive,
-            offset: entry.offset,
-            len: Some(entry.size),
-            key,
-        })
+        Ok(())
     }
 }
 
