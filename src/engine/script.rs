@@ -359,7 +359,7 @@ impl KspEngine for Host<'_> {
         self.bank.map_or(0, |b| b.groups().len())
     }
 
-    fn zone_count(&self) -> usize { self.bank.map_or(0, |b| b.zones().len()) }
+    fn zone_count(&self) -> usize { self.bank.map_or(0, Bank::zone_count) }
 
     fn group_name(&self, group: usize) -> &str {
         self.bank
@@ -414,6 +414,21 @@ impl KspEngine for Host<'_> {
 
     fn find_target(&self, group: usize, modulator: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
         params::find_target(self.bank?.groups(), group, modulator, is)
+    }
+
+    fn voice_zone(&self, voice: EventId) -> Option<i32> {
+        if let Some(id) = self.player.voices.iter().filter(|v| v.event == voice).map(|v| v.zone_id).max() {
+            return Some(id as i32);
+        }
+        // Scripts advance before command rendering. Query the same mapping and
+        // bounded selection as Player::start rather than inventing a group ID.
+        let command = self.commands.iter().find(|c| c.id == voice && matches!(c.kind, Kind::Start { .. }))?;
+        let Kind::Start { note, velocity, whole, groups, .. } = command.kind else { return None };
+        let bank = self.bank?;
+        let normal = bank.matching_zones(command.channel, note, velocity, false, &groups).take(super::MAX_VOICES);
+        let releases = bank.matching_zones(command.channel, note, velocity, true, &groups)
+            .take(if whole { super::MAX_VOICES } else { 0 });
+        Some(normal.chain(releases).map(|z| bank.plays[z as usize].zone_id as i32).max().unwrap_or(-1))
     }
 
     fn voice_active(&self, voice: EventId) -> bool {

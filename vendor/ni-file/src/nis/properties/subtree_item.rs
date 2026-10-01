@@ -134,8 +134,8 @@ impl SubtreeItem {
             return Err(Error::Static("Unsupported uncompressed encrypted subtree"));
         }
         // Validate that the body is one complete NIS item before writing any bytes.
-        let mut reader = Cursor::new(&self.inner_data);
-        ItemContainer::read(&mut reader)?;
+        let mut reader = Cursor::new(self.inner_data.as_slice());
+        ItemContainer::read_cursor(&mut reader)?;
         if reader.position() != self.inner_data.len() as u64 {
             return Err(Error::Static("Trailing data after subtree item"));
         }
@@ -182,7 +182,7 @@ impl SubtreeItem {
     }
 
     pub fn item(&self) -> Result<ItemContainer, Error> {
-        let container = ItemContainer::read(Cursor::new(&self.inner_data))?;
+        let container = ItemContainer::read_cursor(&mut Cursor::new(self.inner_data.as_slice()))?;
         Ok(container)
     }
 }

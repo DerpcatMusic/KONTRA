@@ -1,7 +1,8 @@
 [package]
 name = "kontakto"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.92"
 license = "Apache-2.0"
 description = "KONTRA: a Kontakt-compatible sampler (CLAP, VST3, standalone)"
 repository = "https://github.com/DerpcatMusic/KONTRA"
@@ -127,3 +128,8 @@ mui-baseview = { path = "vendor/mui-baseview" }
 members = [".", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3"]
 exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/mui-baseview"]
 resolver = "3"
+
+# Optimized CI keeps release semantics while avoiding cross-crate ThinLTO.
+[profile.ci]
+inherits = "release"
+lto = false
