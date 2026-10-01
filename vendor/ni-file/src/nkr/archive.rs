@@ -75,7 +75,7 @@ impl Archive {
         key: Option<&dyn crate::nis::LibraryKey>,
     ) -> Result<Vec<u8>, Error> {
         let e = self
-            .find(name)
+            .member(&mut reader, name)?
             .ok_or(Error::Static("Archive member not found"))?;
         if !e.valid {
             return Err(invalid(e.issue.unwrap_or("Invalid archive member")));
