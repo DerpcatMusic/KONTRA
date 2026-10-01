@@ -1,6 +1,6 @@
 //! Real-time DSP state built from a [`ProgramFx`] description.
 
-use super::{Effect, Params, ProgramFx, convolution::Convolver, params, reverb::Reverb};
+use super::{Effect, Kind, Params, ProgramFx, blocks::Block, convolution::Convolver, params, reverb::Reverb};
 use std::ops::Range;
 
 /// Input at or below this level (−120 dBFS) counts as silence for tail tracking.
@@ -51,6 +51,9 @@ pub enum FxParam {
     Type,
     /// Reverb value `n` in `$ENGINE_PAR_RV2_*` order, 0..=1.
     Reverb(u8),
+    /// Value `n` (layout order) of a `kind` effect, 0..=1 as scripts set
+    /// it (`fx::blocks` maps it onto the stored value).
+    Field(Kind, u8),
 }
 
 /// Owned DSP state for one program's insert, send and main racks and its
@@ -182,6 +185,8 @@ enum Dsp {
     /// The settings are kept for scripts that change one at a time.
     Reverb(Box<Reverb>, params::Reverb),
     Convolution(Box<[Convolver; 2]>),
+    /// Everything in `fx::blocks`.
+    Block(Box<Block>),
 }
 
 impl ProgramFx {
@@ -488,6 +493,7 @@ impl FxProcessor {
                 *field = value.clamp(0.0, 1.0);
                 rv.set(p);
             }
+            (FxParam::Field(kind, n), Dsp::Block(b)) => return b.set(kind, n, value),
             _ => return false,
         }
         true
@@ -530,6 +536,7 @@ impl FxProcessor {
             (FxParam::Wet, _) => Some(s.wet),
             (FxParam::Dry, _) => Some(s.dry),
             (FxParam::Reverb(n), Dsp::Reverb(_, p)) => { *p }.field(n).copied(),
+            (FxParam::Field(kind, n), Dsp::Block(b)) => b.get(kind, n),
             _ => None,
         }
     }
@@ -612,7 +619,8 @@ impl FxProcessor {
                 Stage::Tap(_) => {}
             }
         }
-        for ret in &mut self.returns {
+        // Bypassed send slots return nothing (audits/EFFECTS.md).
+        for ret in self.returns.iter_mut().filter(|r| !r.slot.bypass) {
             let [bl, br] = &mut ret.buffer;
             let (bl, br) = (&mut bl[..n], &mut br[..n]);
             ret.slot.process(bl, br);
@@ -639,13 +647,17 @@ fn balance(gain: f32, pan: f32) -> [f32; 2] {
 
 impl Slot {
     fn new(fx: &Effect, sample_rate: f32, max_block: usize) -> Option<Self> {
-        let dsp = Dsp::new(&fx.params, sample_rate, max_block)?;
+        let dsp = Dsp::new(&fx.params, sample_rate, max_block).or_else(|| Block::new(fx, sample_rate).map(Dsp::Block))?;
+        // A filter or EQ storing both levels at 0 would mute the rack;
+        // Kontakt plays ANALOG STRINGS' active insert EQ stored so, with no
+        // script setting them: read them as unset (unity).
+        let unset = matches!(fx.params, Params::Filter(_) | Params::Eq(_)) && fx.output_gain == 0.0 && fx.dry_level == 0.0;
         // Scripts may raise the dry level later, so the buffer always exists.
         Some(Self {
             index: fx.slot as u8,
             bypass: fx.bypass,
             dsp,
-            wet: fx.output_gain,
+            wet: if unset { 1.0 } else { fx.output_gain },
             dry: fx.dry_level,
             dry_buffer: [zeros(max_block), zeros(max_block)],
         })
@@ -699,6 +711,7 @@ impl Dsp {
             Dsp::Gain(_) | Dsp::Stereo { .. } => {}
             Dsp::Reverb(rv, _) => rv.clear(),
             Dsp::Convolution(conv) => conv.iter_mut().for_each(Convolver::clear),
+            Dsp::Block(b) => b.clear(),
         }
     }
 
@@ -708,6 +721,7 @@ impl Dsp {
             Dsp::Gain(_) | Dsp::Stereo { .. } => 0,
             Dsp::Reverb(rv, _) => rv.tail(peak),
             Dsp::Convolution(conv) => conv[0].tail(peak).max(conv[1].tail(peak)),
+            Dsp::Block(b) => b.tail(peak),
         }
     }
 
@@ -726,6 +740,7 @@ impl Dsp {
                 }
             }
             Dsp::Reverb(rv, _) => rv.process(left, right),
+            Dsp::Block(b) => b.process(left, right),
             Dsp::Convolution(conv) => {
                 conv[0].process(left);
                 conv[1].process(right);

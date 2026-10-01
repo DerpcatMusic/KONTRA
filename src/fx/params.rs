@@ -56,6 +56,10 @@ pub struct Filter {
     pub cutoff: f32,
     /// 0..=1, `$ENGINE_PAR_RESONANCE` / 1e6.
     pub resonance: f32,
+    /// Further knobs some types store after resonance (normalized; up to
+    /// three are kept): drive, formant talk/size... See `audits/EFFECTS.md`.
+    #[serde(default)]
+    pub extra: [f32; 3],
 }
 
 /// `BParFXFilter` with an EQ type (22/23/24 = 1/2/3 bands), stored in
@@ -234,7 +238,22 @@ pub(super) fn defaults(kind: Kind) -> Params {
             ir_error: None,
             ir: None,
         })),
-        _ => Params::Opaque { bytes: 0 },
+        _ => match (layout(kind), super::blocks::defaults(kind)) {
+            (Some(layout), Some(values)) => Params::Fields(
+                layout
+                    .iter()
+                    .zip(values)
+                    .map(|(&(name, ty), &v)| Field {
+                        name,
+                        value: match ty {
+                            Ty::F => Value::Number(v),
+                            Ty::B => Value::Flag(v >= 0.5),
+                        },
+                    })
+                    .collect(),
+            ),
+            _ => Params::Opaque { bytes: 0 },
+        },
     }
 }
 
@@ -297,7 +316,11 @@ fn filter(r: &mut Reader) -> Option<Params> {
         return Some(Params::Eq(Eq { bands }));
     }
     let [cutoff, resonance] = r.array()?;
-    Some(Params::Filter(Filter { filter_type, cutoff, resonance }))
+    let mut extra = [0.0; 3];
+    for x in extra.iter_mut().take(r.0.len() / 4) {
+        *x = r.f32()?;
+    }
+    Some(Params::Filter(Filter { filter_type, cutoff, resonance, extra }))
 }
 
 fn convolution(r: &mut Reader) -> Option<Params> {
@@ -415,7 +438,10 @@ fn layout(kind: Kind) -> Option<&'static [(&'static str, Ty)]> {
             ("release_ms", F),
             ("link", B),
         ],
+        // Saturation: `$ENGINE_PAR_SHAPE` (-1..=1 stored) is the first.
         Kind::SurroundPanner => &[("param_0", F), ("param_1", F)],
+        // Input gain (dB) and release (ms): ANALOG STRINGS stores 0.0005 and 10 (medium).
+        Kind::Limiter => &[("in_gain_db", F), ("release_ms", F)],
         Kind::Distortion => &[("param_0", F), ("drive", F), ("damping", F)],
         Kind::LoFi => &[
             ("bits", F),
@@ -485,6 +511,12 @@ fn layout(kind: Kind) -> Option<&'static [(&'static str, Ty)]> {
         ],
         _ => return None,
     })
+}
+
+/// Field names of `kind`'s layout.
+#[cfg(test)]
+pub(crate) fn layout_names(kind: Kind) -> Option<Vec<&'static str>> {
+    Some(layout(kind)?.iter().map(|(name, _)| *name).collect())
 }
 
 /// Little-endian cursor; `None` on truncation.
