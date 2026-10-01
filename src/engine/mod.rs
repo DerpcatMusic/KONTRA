@@ -417,6 +417,7 @@ impl Engine {
     /// bank, effects, scripts and group mask. Effects stay built for their own
     /// rate: replace them with [`set_fx`](Self::set_fx) when `rate` changes.
     pub fn reset(&mut self, rate: f64) {
+        self.cancel_notes(u16::MAX);
         self.player.clear_voices(self.bank.as_deref());
         self.commands.clear();
         self.writes.clear();
@@ -427,6 +428,27 @@ impl Engine {
             rt.set_sample_rate(rate);
         }
         self.apply_init_controllers();
+        if let Some(rt) = self.script.as_deref_mut() { rt.reset_controllers(Some(&self.player.cc[0])); }
+    }
+
+    fn cancel_notes(&mut self, channels: u16) {
+        if let Some(rt) = self.script.as_deref_mut() { rt.all_sound_off(channels); }
+        // Controller commands can carry UI edits; stopping notes must not lose them.
+        self.commands.retain(|command| channels & (1 << command.channel) == 0
+            || matches!(command.kind, script::Kind::Controller { .. }));
+    }
+
+    /// Stop every performance context in one pass, preserving script/UI setup.
+    pub fn panic(&mut self) {
+        self.cancel_notes(u16::MAX);
+        self.commands.retain(|command| !matches!(command.kind,
+            script::Kind::Controller { cc: 1 | 11 | 64 | 66 | 128 | 129, .. }));
+        let defaults = self.defaults();
+        for channel in 0..16 {
+            self.player.cc(self.bank.as_deref(), channel, 120, 0, defaults);
+            self.player.cc(self.bank.as_deref(), channel, 121, 0, defaults);
+        }
+        if let Some(rt) = self.script.as_deref_mut() { rt.reset_controllers(None); }
     }
 
     pub fn active_voices(&self) -> usize {
@@ -561,6 +583,11 @@ impl Engine {
     pub fn cc(&mut self, channel: u8, cc: u8, value: u8) {
         if channel >= 16 || cc >= 128 {
             return;
+        }
+        if cc == 120 {
+            let members = self.player.mpe_zone.filter(|(master, _)| *master == channel).map_or(0, |(_, members)| members);
+            let channels = (1 << channel) | members;
+            self.cancel_notes(channels);
         }
         if cc == 123 && let Some((master, members)) = self.player.mpe_zone && channel == master {
             for member in (0..16).filter(|m| members & (1 << m) != 0) {
@@ -1582,11 +1609,17 @@ impl Player {
                     v.fade.start(0.0, fade, true);
                 }
                 self.pending_releases.retain(|r| r.channel != channel);
+                self.keys[c].fill(0);
+                self.key_up[c].fill(self.now);
+                for row in self.input_keys.iter_mut() {
+                    for input in row.iter_mut().filter(|input| input.0 == channel) { *input = (0, 0); }
+                }
             }
             121 => {
                 self.cc(bank, channel, 64, 0, defaults);
                 self.cc(bank, channel, 66, 0, defaults);
                 self.bend[c] = 0.0;
+                self.pressure[c] = 0;
                 self.cc[c][1] = 0;
                 self.cc[c][11] = 127;
             }

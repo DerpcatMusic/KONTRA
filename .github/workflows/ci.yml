@@ -1,7 +1,7 @@
 name: CI
 
 # Linux runs the full gate; Windows only checks that everything compiles.
-# macOS (10x minutes in a private repository) is built by nightly.yml only.
+# macOS packages are built by nightly.yml.
 
 on:
   push:
@@ -21,6 +21,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_TARGET_DIR: target
 
 jobs:
   linux:
@@ -42,7 +43,8 @@ jobs:
             libasound2-dev libjack-jackd2-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
+          cache-on-failure: true
       # The tree predates rustfmt enforcement: report, don't fail. Make this
       # step required after a one-time `cargo fmt` with no branches open.
       - name: rustfmt
@@ -64,6 +66,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
+          cache-on-failure: true
       - name: check
         run: cargo check --release --all-targets --features library-access,standalone

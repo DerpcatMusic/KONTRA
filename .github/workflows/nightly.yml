@@ -96,7 +96,7 @@ jobs:
           name: ${{ env.STAGE }}
           path: ${{ env.STAGE }}.zip
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
   release:
     needs: build
@@ -106,6 +106,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -113,6 +114,7 @@ jobs:
           pattern: KONTRA-nightly-*
           merge-multiple: true
       - name: Publish the nightly pre-release
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -150,3 +152,17 @@ jobs:
           if [ -n "$previous" ]; then gh release delete nightly --yes --cleanup-tag; fi
           gh release edit "$staging" --tag nightly --draft=false --target "$GITHUB_SHA" --latest=false
           trap - EXIT
+          echo "published=true" >> "$GITHUB_OUTPUT"
+      - name: Remove released Actions artifacts
+        if: steps.publish.outputs.published == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Release ZIPs are independent; delete only this run's transient copies.
+          gh api --paginate "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("KONTRA-nightly-")) | .id' |
+            while read -r artifact; do
+              gh api --method DELETE "repos/$GH_REPO/actions/artifacts/$artifact"
+            done
