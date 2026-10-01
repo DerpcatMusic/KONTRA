@@ -68,6 +68,8 @@ pub struct Ctx {
     pub note: i32,
     /// Channel belongs to this callback, including while suspended in wait().
     pub channel: u8,
+    /// Physical MIDI input that owns this performance callback; services have none.
+    pub input_channel: Option<u8>,
     pub ui_id: i32,
     pub signal: i32,
     pub async_id: i32,
@@ -88,6 +90,7 @@ impl Ctx {
             value: 0,
             note: 0,
             channel: 0,
+            input_channel: None,
             ui_id: 0,
             signal: 0,
             async_id: 0,

@@ -928,6 +928,7 @@ pub(crate) struct Voice {
     pub counter_start: u64,
     pub counter_stop: Option<u64>,
     pub owner: Option<(u8, u8)>,
+    pub input_channel: Option<u8>,
     /// The key or event is still down.
     pub held: bool,
     /// This voice was held at the sostenuto pedal's down edge.

@@ -89,7 +89,7 @@ fn set_voice_par(m: &mut Machine, id: i32, which: VoicePar, value: i32, relative
         }
         let v = *field;
         if let Some(voice) = e.voice {
-            m.engine.set_par(m.env.offset, voice, which, v);
+            m.engine.set_par_from(m.env.offset, e.channel, e.input_channel, voice, which, v);
         }
     }
 }
@@ -507,7 +507,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             };
             let id = m
                 .env
-                .play_note(slot, parent, m.t.ctx.channel, note, velocity.clamp(1, 127), offset, duration);
+                .play_note(slot, parent, m.t.ctx.channel, m.t.ctx.input_channel, note, velocity.clamp(1, 127), offset, duration);
             push_int(m, id)
         }
         NoteOff => {
@@ -581,11 +581,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 };
                 match (f, e.voice) {
                     (FadeIn, Some(v)) => {
-                        m.engine.fade(m.env.offset, v, Fade::In { duration_us: us })
+                        m.engine.fade_from(m.env.offset, e.channel, e.input_channel, v, Fade::In { duration_us: us })
                     }
                     (FadeIn, None) => e.fade_in_us = us,
-                    (_, Some(v)) => m.engine.fade(
+                    (_, Some(v)) => m.engine.fade_from(
                         m.env.offset,
+                        e.channel,
+                        e.input_channel,
                         v,
                         Fade::Out {
                             duration_us: us,
@@ -754,6 +756,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             {
                 Some(cc) => m.env.queue(super::runtime::Work::Controller {
                     channel: m.t.ctx.channel,
+                    input_channel: m.t.ctx.input_channel,
                     cc,
                     value,
                     slot: slot + 1,
@@ -769,13 +772,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return Err(Fault("RPN address or value out of range"));
             }
             m.env.queue(super::runtime::Work::Rpn {
-                channel: m.t.ctx.channel, nrpn: f == SetNrpn, address, value, slot: slot + 1,
+                channel: m.t.ctx.channel, input_channel: m.t.ctx.input_channel, nrpn: f == SetNrpn, address, value, slot: slot + 1,
             });
             Ok(Step::Next)
         }
         ResetRlsTrigCounter => {
             if let Ok(note) = u8::try_from(m.stk.int()).map(|n| n.min(127)) {
-                m.engine.reset_release_counter_on_channel(m.env.offset, m.t.ctx.channel, note);
+                m.engine.reset_release_counter_from(m.env.offset, m.t.ctx.channel, m.t.ctx.input_channel, note);
             }
             Ok(Step::Next)
         }
