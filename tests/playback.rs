@@ -1497,6 +1497,7 @@ fn modulated_groups() -> Instrument {
             volume_env: false,
             flex: false,
             envelope: None,
+            kind: String::new(),
         }],
         ..Group::default()
     };
