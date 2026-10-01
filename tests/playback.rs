@@ -3153,3 +3153,75 @@ fn unavailable_effects_report_async_failure() {
     let ui = e.script().unwrap().interface(0);
     assert_eq!(ui.controls[0].properties["$CONTROL_PAR_TEXT"], Value::Text("0".into()));
 }
+
+#[test]
+fn instrument_rack_filter_eq_and_stereo_controls_change_playing_audio() {
+    use fx::{Chain, Effect, FxParam, Kind, Params, Rack as FxRack, params};
+    let effect = |slot, kind, params| Effect { slot, kind, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0, params };
+    let mut i = instrument(vec![Group::default()], vec![Zone::default()]);
+    i.fx.insert = Chain { slots: vec![
+        effect(0, Kind::Filter, Params::Filter(params::Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3] })),
+        effect(1, Kind::Filter, Params::Eq(params::Eq { bands: vec![params::EqBand { freq_hz: 3000.0, bandwidth_oct: 1.0, gain_db: 0.0 }] })),
+        effect(2, Kind::StereoModeller, Params::StereoModeller(params::StereoModeller { spread: 0.0, pan: 0.0, pseudo_stereo: false })),
+    ] };
+    i.scripts = vec!["on init
+        declare ui_knob $cut(0,1000000,1)
+        declare ui_knob $eq(0,1000000,1)
+        declare ui_knob $width(0,1000000,1)
+        declare ui_knob $pan(0,1000000,1)
+        declare ui_knob $type(2,3,1)
+        $cut := get_engine_par($ENGINE_PAR_CUTOFF,-1,0,$NI_INSERT_BUS)
+        $eq := get_engine_par($ENGINE_PAR_GAIN1,-1,1,$NI_INSERT_BUS)
+        $width := get_engine_par($ENGINE_PAR_STEREO,-1,2,$NI_INSERT_BUS)
+        $pan := get_engine_par($ENGINE_PAR_STEREO_PAN,-1,2,$NI_INSERT_BUS)
+        $type := get_engine_par($ENGINE_PAR_EFFECT_SUBTYPE,-1,0,$NI_INSERT_BUS)
+        end on
+        on ui_control($cut)
+        set_engine_par($ENGINE_PAR_CUTOFF,$cut,-1,0,$NI_INSERT_BUS)
+        end on
+        on ui_control($eq)
+        set_engine_par($ENGINE_PAR_GAIN1,$eq,-1,1,$NI_INSERT_BUS)
+        end on
+        on ui_control($width)
+        set_engine_par($ENGINE_PAR_STEREO,$width,-1,2,$NI_INSERT_BUS)
+        end on
+        on ui_control($pan)
+        set_engine_par($ENGINE_PAR_STEREO_PAN,$pan,-1,2,$NI_INSERT_BUS)
+        end on
+        on ui_control($type)
+        set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE,$type,-1,0,$NI_INSERT_BUS)
+        end on".into()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut sample = sine(16.0, 48000);
+    for [l, r] in &mut sample.frames { *l *= 0.1; *r *= 0.3; }
+    let bank = Bank::from_samples(i.groups.clone(), i.zones.clone(), vec![(PathBuf::new(), sample)]).unwrap();
+    let mut e = engine_with(bank);
+    e.set_fx(effects(&i, rt.as_deref(), 48000.0));
+    e.set_script(rt);
+    e.note_on(0, 60, 127);
+    let rms = |out: &[Frame], ch| (out[2048..].iter().map(|f| f[ch] * f[ch]).sum::<f32>() / (out.len() - 2048) as f32).sqrt();
+    let baseline = render(&mut e, 4096);
+    assert!(rms(&baseline, 0) > 0.01);
+    e.ui_control(0, 0, 150000);
+    let closed = render(&mut e, 4096);
+    assert!(rms(&closed, 0) < rms(&baseline, 0) * 0.01, "cutoff must filter the existing note");
+    e.ui_control(0, 0, 1000000);
+    render(&mut e, 4096);
+    e.ui_control(0, 1, 1000000);
+    let boosted = render(&mut e, 4096);
+    assert!(rms(&boosted, 0) > rms(&baseline, 0) * 6.0, "EQ gain must retune the existing band");
+    e.ui_control(0, 1, 500000);
+    e.ui_control(0, 2, 0);
+    let mono = render(&mut e, 4096);
+    assert!(mono[2048..].iter().all(|f| (f[0] - f[1]).abs() < 1e-6), "width zero must collapse stereo");
+    e.ui_control(0, 3, 1000000);
+    let right = render(&mut e, 4096);
+    assert!(rms(&right, 0) == 0.0 && rms(&right, 1) > 0.01, "stereo pan must not move the instrument bus pan");
+    e.ui_control(0, 0, 150000);
+    e.ui_control(0, 4, 3);
+    let highpass = render(&mut e, 4096);
+    assert!(rms(&highpass, 1) > rms(&baseline, 1) * 0.5, "subtype must replace the low-pass coefficients");
+    assert_eq!(e.fx().param(FxRack::Insert, 0, FxParam::Filter(fx::FilterParam::Type)), Some(3.0));
+    assert!(e.script().unwrap().diagnostics().is_empty(), "{:?}", e.script().unwrap().diagnostics());
+}
