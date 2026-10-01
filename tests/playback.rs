@@ -2113,6 +2113,23 @@ fn canceled_load_does_not_publish_a_partial_bank_or_completion() {
     );
     assert!(result.err().unwrap().to_string().contains("canceled"));
     assert!(progress.load(Ordering::Relaxed) < kontakto::engine::LOAD_DONE);
+
+    let progress = AtomicU32::new(0);
+    let result = Bank::load_cancelable(
+        &i,
+        usize::MAX,
+        Streaming::RamOnly,
+        &[],
+        &progress,
+        &|| progress.load(Ordering::Relaxed) >= kontakto::engine::LOAD_DONE - 1,
+    );
+    assert!(result.err().unwrap().to_string().contains("canceled"));
+    assert!(progress.load(Ordering::Relaxed) < kontakto::engine::LOAD_DONE);
+
+    let progress = AtomicU32::new(0);
+    let bank = Bank::load_counting(&i, usize::MAX, Streaming::RamOnly, &[], &progress).unwrap();
+    assert_eq!(progress.load(Ordering::Relaxed), kontakto::engine::LOAD_DONE);
+    drop(bank);
     std::fs::remove_file(path).unwrap();
 }
 
