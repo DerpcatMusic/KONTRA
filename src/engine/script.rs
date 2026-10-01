@@ -477,6 +477,10 @@ impl KspEngine for ScriptSetup<'_> {
         params::find_target(self.groups, group, modulator, is)
     }
 
+    fn instrument_path(&self) -> Option<&std::path::Path> {
+        Some(self.path)
+    }
+
     /// Decoded here, off the audio thread; the effects build with it.
     /// Only a convolution slot takes an impulse response.
     fn load_ir_sample(&mut self, file: &str, slot: i32, generic: i32) -> Option<bool> {

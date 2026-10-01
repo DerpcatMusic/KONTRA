@@ -378,6 +378,12 @@ pub const CC_SLOTS: usize = 130;
 pub const VCC_PITCH_BEND: i32 = 128;
 pub const VCC_MONO_AT: i32 = 129;
 
+/// `get_folder` arguments. Kontakt's values are not published; only
+/// `get_folder` reads them.
+pub const GET_FOLDER_LIBRARY_DIR: i32 = 0;
+pub const GET_FOLDER_INSTALL_DIR: i32 = 1;
+pub const GET_FOLDER_PATCH_DIR: i32 = 2;
+pub const GET_FOLDER_FACTORY_DIR: i32 = 3;
 /// `$NI_NOT_FOUND`, what the `get_*_idx` commands return for a miss.
 pub const NOT_FOUND: i32 = -1;
 pub const ALL_GROUPS: i32 = 0x3FFF_FFFF;
@@ -522,6 +528,10 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_MAIN_BUS" => 2,
         "$NI_BUS_OFFSET" => 1000,
         "$NI_NOT_FOUND" => NOT_FOUND,
+        "$GET_FOLDER_LIBRARY_DIR" => GET_FOLDER_LIBRARY_DIR,
+        "$GET_FOLDER_INSTALL_DIR" => GET_FOLDER_INSTALL_DIR,
+        "$GET_FOLDER_PATCH_DIR" => GET_FOLDER_PATCH_DIR,
+        "$GET_FOLDER_FACTORY_DIR" => GET_FOLDER_FACTORY_DIR,
         // `$ENGINE_PAR_RV2_TYPE` values: Reverb's room/hall switch.
         "$NI_REVERB2_TYPE_ROOM" => 0,
         "$NI_REVERB2_TYPE_HALL" => 1,

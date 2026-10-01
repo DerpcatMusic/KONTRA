@@ -1026,3 +1026,40 @@ fn a_later_ui_control_callback_replaces_the_earlier() {
     rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
     assert_eq!(prop(&rig.rt.interface(0), 1, "$CONTROL_PAR_TEXT"), "tab");
 }
+
+#[test]
+fn load_array_reads_library_files_in_init() {
+    let root = std::env::temp_dir().join(format!("kontakto-nka-{}", std::process::id()));
+    let meta = root.join("Library Data").join("Meta");
+    std::fs::create_dir_all(&meta).unwrap();
+    std::fs::create_dir_all(root.join("Instruments")).unwrap();
+    std::fs::create_dir_all(root.join("Data")).unwrap();
+    std::fs::write(root.join("Lib.nicnt"), []).unwrap();
+    std::fs::write(meta.join("ids.nka"), "%ids\n7\n-3\n").unwrap();
+    std::fs::write(meta.join("names.nka"), "!names\nWarm\n\n").unwrap();
+    std::fs::write(root.join("Data").join("table.nka"), "%table\n5\n").unwrap();
+    std::fs::write(meta.join("wrong.nka"), "%other\n1\n").unwrap();
+    let script = "on init
+declare ui_label $l(1,1)
+declare %ids[3]
+declare !names[2]
+declare %table[1]
+declare %other_name[1]
+declare $ok
+$ok := load_array_str(%ids, get_folder($GET_FOLDER_LIBRARY_DIR) & \"library data/meta/IDS.nka\")
+$ok := load_array_str(!names, get_folder($GET_FOLDER_LIBRARY_DIR) & \"Library Data/Meta/names.nka\")
+$ok := load_array(%table, 1)
+$ok := load_array_str(%other_name, get_folder($GET_FOLDER_LIBRARY_DIR) & \"Library Data/Meta/wrong.nka\")
+$ok := load_array(%other_name, 1)
+set_text($l, %ids[0] & %ids[1] & %ids[2] & !names[0] & %table[0] & %other_name[0] & get_folder($GET_FOLDER_PATCH_DIR))
+end on";
+    let mut engine = LogEngine::new(vec!["a".into()], 48_000.0);
+    engine.instrument = Some(root.join("Instruments").join("Lib.nki"));
+    let (rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    let patch = format!("{}/", root.join("Instruments").display());
+    // A missing file or another array's file loads nothing, as in Kontakt.
+    assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_TEXT"), format!("7-30Warm50{patch}"));
+    assert_eq!(rt.diagnostics(), Vec::<String>::new());
+    std::fs::remove_dir_all(root).unwrap();
+}

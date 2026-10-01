@@ -306,6 +306,12 @@ pub fn linked_script(instrument: &Path, name: &str) -> Result<Option<Vec<u8>>, S
     Pictures::of(instrument, "scripts").read(file)
 }
 
+/// A file in the library's `Resources/data`, loose or in its resource
+/// container (`load_array` mode 2).
+pub fn data_file(instrument: &Path, name: &str) -> Option<Vec<u8>> {
+    Pictures::of(instrument, "data").read(name).ok().flatten()
+}
+
 /// The impulse response `load_ir_sample` names: an absolute path, or a file
 /// in the library's `Resources/ir_samples`, loose or in its resource
 /// container. Names match without case; a name without an extension
