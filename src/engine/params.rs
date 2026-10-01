@@ -188,6 +188,15 @@ pub(crate) fn release_counter(t_ms: i32, held_ms: f32) -> f32 {
 }
 
 impl Inputs<'_> {
+    /// Negotiated MPE master pitch is added independently by the voice;
+    /// other bend destinations still read the combined controller normally.
+    fn read_mod(&self, source: Source, target: Target, bend_pitch: Option<f32>) -> f32 {
+        if source == Source::Bend && target == Target::Pitch {
+            if let Some(bend) = bend_pitch { return (bend + 1.) * 0.5; }
+        }
+        self.read(source)
+    }
+
     /// Unshaped source value, 0..=1.
     fn read(&self, source: Source) -> f32 {
         match source {
@@ -204,12 +213,12 @@ impl Inputs<'_> {
 
 impl ModTable {
     /// Initial per-voice values: every source at its current value, unlagged.
-    pub(crate) fn start(&self, input: &Inputs) -> [f32; VOICE_MODS] {
+    pub(crate) fn start(&self, input: &Inputs, bend_pitch: Option<f32>) -> [f32; VOICE_MODS] {
         let mut values = [0.0; VOICE_MODS];
         for (value, &i) in values.iter_mut().zip(&self.voiced) {
             let m = &self.mods[i as usize];
-            if let Some((source, _)) = m.route {
-                *value = m.shape(input.read(source));
+            if let Some((source, target)) = m.route {
+                *value = m.shape(input.read_mod(source, target, bend_pitch));
             }
         }
         values
@@ -231,6 +240,7 @@ impl ModTable {
         input: &Inputs,
         frames: usize,
         rate: f32,
+        bend_pitch: Option<f32>,
     ) -> (f32, f32, bool) {
         let (mut gain, mut semitones, mut settled) = (1.0, 0.0, true);
         for (value, &i) in values.iter_mut().zip(&self.voiced) {
@@ -239,7 +249,7 @@ impl ModTable {
                 continue;
             };
             if source.live() {
-                let x = m.shape(input.read(source));
+                let x = m.shape(input.read_mod(source, target, bend_pitch));
                 approach(value, x, m.lag, frames, rate);
                 settled &= *value == x;
             }
@@ -1191,15 +1201,15 @@ mod tests {
             velocity: 64,
             counter: 0.0,
         };
-        let mut values = table.start(&input);
-        let (gain, ..) = table.modulate(&mut values, &input, 128, 48000.0);
+        let mut values = table.start(&input, None);
+        let (gain, ..) = table.modulate(&mut values, &input, 128, 48000.0, None);
         let expected = (64.0f32 / 127.0).powi(2);
         assert!((gain - expected).abs() < 1e-5, "{gain} vs {expected}");
 
         // CC11 drops to 0: after one lag time constant 63% of the way down.
         let quiet = [0; 128];
         input.cc = &quiet;
-        let (gain, ..) = table.modulate(&mut values, &input, 4800, 48000.0);
+        let (gain, ..) = table.modulate(&mut values, &input, 4800, 48000.0, None);
         assert!((gain / expected - (-1.0f32).exp()).abs() < 1e-4, "{gain}");
     }
 

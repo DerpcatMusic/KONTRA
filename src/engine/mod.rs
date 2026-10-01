@@ -800,6 +800,13 @@ impl Engine {
         });
     }
 
+    pub(crate) fn set_mpe_master_bend_range(&mut self, range: Option<f32>) {
+        if self.player.mpe_master_bend_range != range {
+            self.player.mpe_master_bend_range = range;
+            self.player.touch();
+        }
+    }
+
     /// Applied state plus earlier same-frame script commands, before the
     /// release callback or reused member can replace these controller values.
     fn release_snapshot(&self, channel: u8, note: u8) -> Expression {
@@ -1029,6 +1036,7 @@ struct Player {
     sustain: [bool; 16],
     /// Pedals and stop messages on an MPE master affect its member channels.
     mpe_zone: Option<(u8, u16)>,
+    mpe_master_bend_range: Option<f32>,
     /// Release samples deferred by sustain or their own sostenuto capture.
     pending_releases: Vec<PendingRelease>,
     sostenuto_down: [bool; 16],
@@ -1085,6 +1093,7 @@ impl Player {
             rate,
             sustain: [false; 16],
             mpe_zone: None,
+            mpe_master_bend_range: None,
             pending_releases: Vec::with_capacity(crate::ksp::EVENT_CAPACITY),
             sostenuto_down: [false; 16],
             bend: [0.0; 16],
@@ -1307,7 +1316,8 @@ impl Player {
                 0.0
             },
         };
-        let mods = settings.mods.start(&inputs);
+        let bend_pitch = master.and(self.mpe_master_bend_range).map(|_| self.bend[c]);
+        let mods = settings.mods.start(&inputs, bend_pitch);
         let modulated = (settings.mods.start_offset(&inputs) * play.start_mod as f32) as u64;
         let offset = ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)
             .min(play.start_mod);
@@ -1413,7 +1423,7 @@ impl Player {
             plan: Default::default(),
         };
         // Start at the voice's first-block gains, so it does not ramp in.
-        let (modulation, ..) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0);
+        let (modulation, ..) = settings.mods.modulate(&mut voice.mods, &inputs, 0, 1.0, bend_pitch);
         let pan = (zone.pan + settings.pan + ev.pan + expression.pan).clamp(-1.0, 1.0);
         voice.gains = balance(base_level * settings.gain * modulation * voice.volume * expression.gain, pan);
         if offset > 0 {
@@ -1786,6 +1796,7 @@ impl Player {
             cc: &self.cc,
             bend: &self.bend,
             mpe_zone: self.mpe_zone,
+            mpe_master_bend_range: self.mpe_master_bend_range,
             pressure: &self.pressure,
             expression: &self.expression,
             tune: self.instrument.2 + tune,
