@@ -1353,6 +1353,22 @@ mod tests {
         assert!(e.script().unwrap().diagnostics().is_empty());
     }
 
+    #[test]
+    fn prepared_native_single_origin_keeps_physical_expression() {
+        let (mut e, mut r) = three_articulation_part();
+        e.prepare_channel_domains(1 << 1, 7);
+        no_audio_heap(|| { feed(&mut r, &mut e, In::NoteOn(1,60,100),7); render(&mut e); });
+        let baseline = e.voice_census();
+        assert_eq!(baseline.len(),1);
+        assert_eq!((baseline[0].channel,baseline[0].input_channel), (7,Some(1)));
+        no_audio_heap(|| { feed(&mut r, &mut e, In::NoteGain(1,60,0.5),7); render(&mut e); });
+        assert!((e.voice_census()[0].gain / baseline[0].gain - 0.5).abs()<1e-5);
+        no_audio_heap(|| { e.panic(); for _ in 0..5 { render(&mut e); } });
+        assert!(e.voice_census().is_empty());
+        assert_eq!(e.dropped_commands(),0);
+        assert!(e.script().unwrap().diagnostics().is_empty());
+    }
+
     /// A part whose scripts were replaced (an instrument or its saved
     /// values reloaded) starts at the library's own articulation: the next
     /// note switches again, even on the channel switched to last.

@@ -852,7 +852,7 @@ impl Runtime {
         self.domain_count = count;
     }
 
-    pub(crate) fn channel_domains_prepared(&self) -> bool { self.domain_count > 1 }
+    pub(crate) fn channel_domains_prepared(&self) -> bool { self.domain_mask.is_some() }
 
     /// Exact typed writable cells and total cells, for preparation/memory audits.
     pub fn channel_capacity(&self) -> Vec<([u32; 3], [u32; 3])> {
