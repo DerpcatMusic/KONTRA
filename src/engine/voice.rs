@@ -1026,7 +1026,7 @@ impl Context<'_> {
         let master = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0).map(|(master, _)| master as usize);
         Inputs {
             cc: &self.cc[c],
-            cc74: master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127)),
+            cc74: expression.note_cc74.or_else(|| master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127))),
             bend: self.bend[c] + master.map_or(0., |m| self.bend[m]),
             pressure: master.map_or(self.pressure[c], |m| expression.member_pressure.unwrap_or(self.pressure[c]).max(self.pressure[m])),
             note,
