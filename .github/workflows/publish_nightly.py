@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import subprocess
 import tomllib
@@ -155,11 +156,18 @@ def main():
             for name in (*binaries, "LICENSE", "NOTICE", "THIRD_PARTY.md"):
                 assert archive.getinfo(prefix + name).file_size > 0, (p.name, name)
             assert archive.read(prefix + "SOURCE_COMMIT.txt").decode().strip() == SHA, p.name
-            info = [json.loads(archive.read(prefix + name)) for name in ("plugin-build-info.json", "build-info.json")]
+            info = [json.loads(archive.read(prefix + name)) for name in ("clap-build-info.json", "vst3-build-info.json", "build-info.json")]
+            if platform.startswith("macos-"):
+                for bundle in ("KONTRA.clap", "KONTRA.vst3"):
+                    plist = plistlib.loads(archive.read(prefix + bundle + "/Contents/Info.plist"))
+                    assert plist["CFBundleShortVersionString"] == plist["CFBundleVersion"] == version.split("-", 1)[0]
+                    assert plist["KONTRAVersion"] == version
         target = {"linux-x86_64": "x86_64-unknown-linux-gnu", "windows-x86_64": "x86_64-pc-windows-msvc", "macos-arm64": "aarch64-apple-darwin", "macos-x86_64": "x86_64-apple-darwin"}[platform]
-        assert all(i["version"] == version and i["revision"] == SHA and i["target"] == target and i["profile"] == "release" and "library-access" in i["features"] for i in info), p.name
-        assert "standalone" not in info[0]["features"] and "standalone" in info[1]["features"], p.name
-        assets.append(dict(name=p.name, platform=platform, size=p.stat().st_size, sha256=digest, plugin_build=info[0], standalone_build=info[1]))
+        assert all(i["version"] == version and i["revision"] == SHA and i["target"] == target and i["profile"] == "release" and {"plugin", "library-access"} <= set(i["features"]) for i in info), p.name
+        for i, format in zip(info[:2], ("clap", "vst3")):
+            assert set(i["features"]) & {"clap", "vst3", "standalone"} == {format}, p.name
+        assert {"clap", "vst3", "standalone"} <= set(info[2]["features"]), p.name
+        assets.append(dict(name=p.name, platform=platform, size=p.stat().st_size, sha256=digest, clap_build=info[0], vst3_build=info[1], standalone_build=info[2]))
     manifest = dict(version=version, revision=SHA, workflow_run=os.environ["GITHUB_RUN_ID"], assets=assets)
     data = (json.dumps(manifest, indent=2) + "\n").encode()
     Path("dist/release-manifest.json").write_bytes(data)
@@ -167,7 +175,7 @@ def main():
 Source tag: [`v{version}`](https://github.com/{REPO}/tree/v{version}).
 <!-- kontra-source-tag: v{version} -->
 
-All four archives come from this source commit. `release-manifest.json` records their sizes and SHA256 checksums; each archive includes the standalone's `build-info.json`.
+All four archives come from this source commit. `release-manifest.json` records their sizes and SHA256 checksums; each archive includes separate `clap-build-info.json`, `vst3-build-info.json` and standalone `build-info.json` with their actual feature sets.
 Contents: CLAP plug-in, VST3 plug-in and standalone application. These builds have not been certified in Windows or macOS DAWs.
 macOS builds are signed ad hoc, not notarized: after unzipping, run `xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone`.
 x86_64 plug-ins require AVX2, FMA and BMI2. Linux requires Ubuntu 24.04-compatible system libraries.
