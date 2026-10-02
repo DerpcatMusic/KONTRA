@@ -1654,22 +1654,26 @@ mod tests {
             let mut filter = RackFilter::new(&fx, RATE).expect("native notch must not pass through");
             assert_eq!(filter.active, 2, "four poles require two SVF sections");
             assert_eq!(filter.knob(Knob::Type), Some(58.0));
-            let mut peak = 0.0f32;
+            let (mut input_power, mut output_power) = (0.0f64, 0.0f64);
             for start in (0..24_000).step_by(128) {
                 let (mut left, mut right) = ([0.0; 128], [0.0; 128]);
                 for (n, x) in left.iter_mut().enumerate() {
                     *x = (2.0 * std::f32::consts::PI * hz * (start + n) as f32 / RATE).sin();
                 }
+                if start > 12_000 {
+                    input_power += left.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+                }
                 filter.process(&mut left, &mut right);
                 assert!(left.iter().all(|x| x.is_finite()));
                 if start > 12_000 {
-                    peak = left.iter().fold(peak, |p, x| p.max(x.abs()));
+                    output_power += left.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
                 }
             }
+            let gain = (output_power / input_power).sqrt();
             if hz == 1000.0 {
-                assert!(peak < 0.001, "cutoff must be rejected: {peak}");
+                assert!(gain < 0.001, "cutoff must be rejected: {gain}");
             } else {
-                assert!((peak - 1.0).abs() < 0.01, "pass band at {hz} Hz: {peak}");
+                assert!((gain - 1.0).abs() < 0.01, "pass band at {hz} Hz: {gain}");
             }
         }
     }
