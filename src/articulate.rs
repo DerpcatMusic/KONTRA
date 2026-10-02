@@ -953,6 +953,11 @@ pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
         In::HostExpression(pattern, expression) => e.host_expression(pattern, expression),
         ev => r.input(ev, home, &mut |o| apply(e, o)),
     }
+    if let In::NoteOff(input,key)=ev
+        && let Some(route)=e.held_host_route(input,key) {
+        r.held[input as usize][key as usize]=route;
+        if input!=route.0 { r.held_from[input as usize] |= 1u128<<key; }
+    }
     e.set_mpe_master_bend_range(r.master_bend_range.map(|(semitones, cents)|
         (f32::from(semitones) + f32::from(cents) / 100.).min(96.)));
 }
@@ -1262,6 +1267,25 @@ mod tests {
                 assert!(e.script().unwrap().diagnostics().is_empty());
             }
         }
+    }
+
+    #[cfg(feature="plugin")]
+    #[test]
+    fn anonymous_key_up_keeps_exact_captured_route_across_mode_change() {
+        use crate::engine::{HostNote,HostPattern};
+        let (mut e,mut r)=three_articulation_part();
+        let note=HostNote { port:0,channel:2,key:60,id:10,clap:true };
+        let pattern=HostPattern { port:0,channel:2,key:60,id:10,clap:true };
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            feed(&mut r,&mut e,In::HostOn(note,100),7);
+            feed(&mut r,&mut e,In::NoteOn(2,60,100),7); render(&mut e);
+            r.set_route(Route::default());
+            feed(&mut r,&mut e,In::NoteOff(2,60),7); render(&mut e);
+            assert!(e.key_down(7,60)); assert_eq!(r.held[2][60],(7,60));
+            assert_ne!(r.held_from[2] & (1u128<<60),0);
+            feed(&mut r,&mut e,In::HostOff(pattern),7); render(&mut e);
+            assert!(!e.key_down(7,60)); assert_eq!(r.held[2][60],(NONE,NONE));
+        }),0);
     }
 
     #[test]

@@ -2758,7 +2758,7 @@ fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, offset: u32) {
             let accepted = !note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
                 kind:ExactNoteKind::End, address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id), velocity:0.,
             })).is_ok();
-            if !accepted { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); index += 1; continue; }
+            if !accepted { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
             for e in &mut s.rack.parts { e.retire_host_note(note); }
             s.align.retire_host_note(note);
         }
@@ -2771,7 +2771,7 @@ fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, offset: u32) {
         let accepted=!note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
             kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
         })).is_ok();
-        if accepted { s.align.retire_host_note(note); } else { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); index+=1; }
+        if accepted { s.align.retire_host_note(note); } else { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
     }
 }
 
@@ -6958,6 +6958,29 @@ end on"#;
         switched.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:switch,velocity:0.8 })).unwrap();
         assert_eq!(allocations(|| Sampler::process(&mut dsp,&params,&mut buffer,&switched,&mut cx)),0);
         assert!(cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address,.. } if *address==switch))),"aligned keyswitch retained the host identity");
+    }
+
+    #[test]
+    fn exact_note_end_backpressure_retains_owners_for_one_retry_without_heap() {
+        use crate::engine::{HostNote,HostPattern};
+        let params=SamplerParams::new(); let mut dsp=Dsp::default();
+        let first=HostNote { port:0,channel:4,key:60,id:10,clap:true };
+        let second=HostNote { id:11,..first };
+        let pattern=HostPattern { port:0,channel:4,key:60,id:-1,clap:true };
+        let transport=TransportInfo::default(); let mut output=EventList::with_capacity(1);
+        let mut cx=ProcessContext::new(&transport,48000.,128,&mut output);
+        assert_eq!(allocations(|| {
+            feed_host_input(&mut dsp,&params,In::HostOn(first,100),0,0,false,48000.);
+            feed_host_input(&mut dsp,&params,In::HostOn(second,100),0,0,false,48000.);
+            feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,0,false,48000.);
+            finish_host_notes(&mut dsp,&mut cx,127);
+            assert_eq!(dsp.host_note_end_rejections,1,"repeated failures scanned the full owner pool");
+            assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(first) && e.host_note_present(second)));
+            cx.output_events.clear();
+            finish_host_notes(&mut dsp,&mut cx,127);
+            assert_eq!(dsp.host_note_end_rejections,1);
+            assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(second)));
+        }),0);
     }
 
     #[test]
