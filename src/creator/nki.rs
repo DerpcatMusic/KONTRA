@@ -524,6 +524,21 @@ pub(crate) fn md5(data: &[u8]) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn wavetable_write_rejects_before_overwriting_an_existing_file() {
+        let path = std::env::temp_dir().join(format!("kontra-wt-writer-{}-{}.nki", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::write(&path, b"authored unchanged file").unwrap();
+        let group = crate::import::Group { wavetable: Some(Default::default()), ..Default::default() };
+        let result = super::write(&path, &super::Program {
+            name: "Authored", author: "Test", groups: &[group], zones: &[], samples: &[], script: None,
+        });
+        let after = std::fs::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(result.unwrap_err().to_string().contains("does not encode wavetable"));
+        assert_eq!(after, b"authored unchanged file");
+    }
+
+    #[test]
     fn native_start_conditions_survive_new_instrument_writing() {
         use ni_file::kontakt::objects::{GroupList, StartCriteriaList};
         use std::io::Cursor;
