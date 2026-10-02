@@ -3747,6 +3747,62 @@ mod tests {
     }
 
     #[test]
+    fn controller_resets_restore_authored_device_defaults_without_audio_allocations() {
+        use crate::{audio::Sample, import::{Group, Loop, ModAssignment, ModSource, ModTarget, Zone}};
+        let source = "on init\ndeclare ui_switch $setting\nset_controller(1,77)\nset_controller(11,12)\nset_controller(64,127)\nset_controller(100,5)\nset_controller(110,127)\nset_controller(111,127)\nset_controller(113,63)\nend on";
+        for reset in 0..3 {
+            let group = Group {
+                mods: [110, 111, 113].map(|cc| ModAssignment {
+                    name: format!("internal CC{cc}"), source: ModSource::MidiCc(cc),
+                    target: ModTarget::Volume, intensity: 1., invert: false,
+                    lag_ms: 0, shaper: None,
+                }).into(),
+                ..Default::default()
+            };
+            let zone = Zone {
+                loop_range: Some(Loop { start: 0, end: 128, until_release: false, crossfade: 0 }),
+                ..Default::default()
+            };
+            let bank = Bank::from_samples(vec![group], vec![zone], vec![(PathBuf::new(),
+                Sample { rate: 48000, frames: vec![[0.5, 0.25]; 128] })]).unwrap();
+            let (rt, errors) = Runtime::with_scripts(&[source], &mut crate::ksp::LogEngine::default(), 1, Vec::new());
+            assert!(errors.iter().all(Option::is_none), "{errors:?}");
+            let mut engine = Engine::default();
+            engine.set_bank(Some(Box::new(bank)));
+            engine.set_script(Some(Box::new(rt)));
+            engine.ui_control(0, 0, 1);
+            let mut left = [0f32; 64];
+            let mut right = [0f32; 64];
+            for cc in [1, 11, 64, 100, 110, 111, 113] { engine.cc(0, cc, 0); }
+            engine.render(&mut left, &mut right);
+            assert_eq!(allocations(|| {
+                match reset {
+                    0 => engine.cc(0, 121, 0),
+                    1 => engine.panic(),
+                    _ => engine.reset(44100.),
+                }
+                engine.render(&mut left, &mut right);
+                engine.note_on(0, 60, 100);
+                engine.render(&mut left, &mut right);
+            }), 0);
+            for (cc, expected) in [(110, 127), (111, 127), (113, 63)] {
+                assert_eq!(engine.cc_state()[0][cc], expected, "device CC{cc}, reset {reset}");
+                assert_eq!(engine.script().unwrap().env.input.cc[cc], i32::from(expected));
+            }
+            // Host reset replays init controllers; MIDI reset/Panic retain
+            // their mandated performance defaults even if init set another value.
+            let standard = if reset == 2 { [77, 12, 127, 5] } else { [0, 127, 0, 127] };
+            for (cc, expected) in [1, 11, 64, 100].into_iter().zip(standard) {
+                assert_eq!(engine.cc_state()[0][cc], expected, "standard CC{cc}, reset {reset}");
+                assert_eq!(engine.script().unwrap().env.input.cc[cc], i32::from(expected));
+            }
+            assert!(left.iter().any(|x| x.abs() > 0.001), "fresh notes must recover, reset {reset}");
+            assert!(engine.voice_census().iter().any(|v| v.gain > 0.), "fresh voices have real gain");
+            assert_eq!(engine.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(1));
+        }
+    }
+
+    #[test]
     fn panic_and_host_reset_release_script_buffers_without_audio_allocations() {
         let source = "on init\ndeclare $held\ndeclare $released\ndeclare ui_switch $setting\nmake_persistent($held)\nmake_persistent($released)\nend on\non note\ninc($held)\nend on\non release\nwait(1000000)\ndec($held)\ninc($released)\nplay_note(72,100,0,0)\nend on";
         let mut init = crate::ksp::LogEngine::default();
