@@ -104,7 +104,7 @@ fn parse_nka(bytes: &[u8], ty: Ty, name: &str) -> Result<Value, &'static str> {
     let mut lines = text.lines().map(|l| l.strip_suffix('\r').unwrap_or(l));
     let head = lines.next().ok_or("load_array_str: missing NKA array header")?.trim();
     let sigil = match ty { Ty::Int => '%', Ty::Real => '?', Ty::Str => '!' };
-    if head.strip_prefix(sigil) != Some(name) {
+    if head != name && head.strip_prefix(sigil) != Some(name) {
         return Err("load_array_str: NKA array header does not match destination name and type");
     }
     let values = lines.map(|line| match ty {
@@ -128,6 +128,7 @@ mod tests {
             Some(Value::Array(vec![Value::Real(0.25), Value::Real(-1.5)])));
         assert_eq!(nka("!names\nFirst name\n😀 second\n\n".as_bytes(), Ty::Str, "names"),
             Some(Value::Array(vec![Value::Text("First name".into()), Value::Text("😀 second".into()), Value::Text("".into())])));
+        assert_eq!(nka(b"values\n42\n", Ty::Int, "values"), Some(Value::Array(vec![Value::Int(42)])));
         assert_eq!(nka(b"%other\n42\n", Ty::Int, "values"), None);
         assert_eq!(nka(b"!values\n42\n", Ty::Int, "values"), None);
         assert!(parse_nka(b"%values\nnot-a-number\n", Ty::Int, "values").unwrap_err().contains("integer"));
