@@ -1,0 +1,8 @@
+local kontakt = require("kontakt")
+return {
+    parameter = kontakt.connect_parameter,
+    geometry = {
+        width = 640, height = 400, background = 0x285078,
+        control = {x = 30, y = 40},
+    },
+}
