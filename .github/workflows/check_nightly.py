@@ -11,14 +11,14 @@ import textwrap
 import zipfile
 
 workflow = Path(__file__).with_name("nightly.yml").read_text()
-publish_step, cleanup_step = workflow.split("      - name: Publish the nightly pre-release\n", 1)[1].split("      - name: Remove released Actions artifacts\n", 1)
+publish_step, cleanup_step = workflow.split("      - name: Publish the experimental nightly\n", 1)[1].split("      - name: Remove released Actions artifacts\n", 1)
 publish = "python3 " + str(Path(__file__).with_name("publish_nightly.py").resolve())
 cleanup = textwrap.dedent(cleanup_step.split("        run: |\n", 1)[1])
 platforms = ("linux-x86_64", "windows-x86_64", "macos-arm64", "macos-x86_64")
 readme = Path(__file__).resolve().parents[2].joinpath("README.md").read_text()
 for platform in platforms:
     assert f"name: {platform}" in workflow
-    assert f"releases/download/nightly/KONTRA-nightly-{platform}.zip" in readme
+    assert f"releases/latest/download/KONTRA-nightly-{platform}.zip" in readme
 assert "nightly-build-${{ matrix.name }}\n      cancel-in-progress: true" in workflow
 assert "nightly-publish\n      cancel-in-progress: false" in workflow
 assert "retention-days: 1" in workflow
@@ -68,6 +68,7 @@ def save(): p.write_text(json.dumps(s))
 if a[0]=="api":
     path=next(v for v in a if v.startswith("repos/example/KONTRA/")).split("repos/example/KONTRA/",1)[1]
     if path=="releases": out=json.dumps([s["releases"]])
+    elif path=="releases/latest": out=json.dumps(next(r for r in s["releases"] if r["id"]==s["latest"]))
     elif path=="git/ref/heads/main":
         s["heads"]+=1
         stale=s["case"]=="stale-before" or (s["case"]=="stale-after" and s["heads"]==2)
@@ -77,6 +78,7 @@ if a[0]=="api":
         out=json.dumps([{"ref":"refs/tags/"+t,"object":{"sha":v}} for t,v in s["refs"].items() if t.startswith(tag)])
     elif path=="git/refs":
         values={v.split("=",1)[0]:v.split("=",1)[1] for i,v in enumerate(a) if i and a[i-1]=="-f"}
+        assert values["sha"]==sha, "GITHUB_TOKEN cannot create historical workflow refs"
         s["refs"][values["ref"].removeprefix("refs/tags/")]=values["sha"]; out="{}"
     elif path.startswith("git/refs/tags/"):
         assert arg("--method")=="DELETE"
@@ -92,7 +94,7 @@ if a[0]=="api":
         s["deleted"].append(int(path.rsplit("/",1)[1])); status=int(s["case"]=="cleanup-fails"); out="{}"
     else: raise AssertionError(a)
 elif a[:2]==["release","create"]:
-    assert a[2]=="nightly-staging" and "--draft" in a and "--prerelease" in a
+    assert a[2]=="v"+os.environ["TEST_VERSION"] and "--draft" in a and "--prerelease" not in a
     assert len([r for r in s["releases"] if not r["draft"]]) in (0,2,3)
     s["published"]=False
     assets=[]
@@ -100,32 +102,33 @@ elif a[:2]==["release","create"]:
         if file.startswith("dist/"):
             data=Path(file).read_bytes(); assets.append(dict(name=Path(file).name,size=len(data),digest="sha256:"+hashlib.sha256(data).hexdigest(),state="uploaded"))
     release_id=max((r["id"] for r in s["releases"]),default=0)+1
-    s["releases"].append(dict(id=release_id,tag_name="nightly-staging",name=arg("--title"),target_commitish=arg("--target"),draft=True,assets=assets,body=Path("notes.md").read_text(),published_at="2026-10-02"))
+    s["releases"].append(dict(id=release_id,tag_name=a[2],name=arg("--title"),target_commitish=arg("--target"),draft=True,prerelease=False,assets=assets,body=Path("notes.md").read_text(),published_at="2026-10-02"))
     if s["case"]=="bad-digest": assets[0]["digest"]="sha256:invalid"
     s["manifests"][str(release_id)]=Path("dist/release-manifest.json").read_text(); status=int(s["case"]=="upload-fails")
 elif a[:2]==["release","download"]:
     r=next(r for r in s["releases"] if r["tag_name"]==a[2]); out=s["manifests"][str(r["id"])]
 elif a[:2]==["release","delete"]:
     r=next(r for r in s["releases"] if r["tag_name"]==a[2])
-    if not r["draft"]: assert s["published"], "rollback deleted before verified publication"
+    if not r["draft"]:
+        assert s["published"], "rollback deleted before verified publication"
+        if s["case"]=="rotation-fails" and not s.get("rotation_failed"):
+            s["rotation_failed"]=True;save();sys.exit(1)
     s["releases"].remove(r)
     if "--cleanup-tag" in a: s["refs"].pop(a[2],None)
 elif a[:2]==["release","edit"]:
     r=next(r for r in s["releases"] if r["tag_name"]==a[2])
+    assert r["target_commitish"]==sha, "GITHUB_TOKEN cannot edit historical workflow releases"
+    assert "--prerelease=false" in a and "--latest=true" in a
     if "--draft=false" in a:
         assert s["heads"]>=2
         r["draft"]=False; s["published"]=True
-    else:
+        s["refs"][r["tag_name"]]=r["target_commitish"]
+    if "--tag" in a:
+        assert a[2]=="nightly-staging" and s["published"]
         tag=arg("--tag")
-        assert s["published"]
         assert not any(other["tag_name"]==tag for other in s["releases"] if other is not r)
-        if tag=="nightly" and s["case"]=="rotation-fails" and not s.get("rotation_failed"):
-            status=1; s["rotation_failed"]=True
-        else:
-            r["tag_name"]=tag; s["refs"][tag]=arg("--target")
-            if "--title" in a: r["name"]=arg("--title")
-            if "--notes-file" in a: r["body"]=Path(arg("--notes-file")).read_text()
-            if tag=="nightly": s["promoted"]=True
+        r["tag_name"]=tag;s["refs"][tag]=arg("--target")
+    r["prerelease"]=False;s["latest"]=r["id"];s["promoted"]=True
 else: raise AssertionError(a)
 save(); print(out,end="" if a[:2]==["release","download"] else "\n"); sys.exit(status)
 '''
@@ -156,19 +159,22 @@ for case in cases:
             for i,tag in enumerate(("nightly","nightly-previous","v1.0.0"),1):
                 oldver=f"v0.1.0-nightly.2026090{i}.g{chr(97+i)*12}"
                 source=chr(97+i)*40
-                old.append(dict(id=i,tag_name=tag,target_commitish=source,draft=False,name="legacy",assets=[dict(name=f"KONTRA-nightly-{platform}.zip",state="uploaded",size=7,digest="sha256:"+hashlib.sha256(b"fixture").hexdigest()) for platform in platforms],body=f"<!-- kontra-source-tag: {oldver} -->" if i!=1 else "Legacy automated snapshot",published_at=f"2026-09-0{4-i}"))
+                old.append(dict(id=i,tag_name=tag,target_commitish=source,draft=False,prerelease=True,name="legacy",assets=[dict(name=f"KONTRA-nightly-{platform}.zip",state="uploaded",size=7,digest="sha256:"+hashlib.sha256(b"fixture").hexdigest()) for platform in platforms],body=f"<!-- kontra-source-tag: {oldver} -->" if i!=1 else "Legacy automated snapshot",published_at=f"2026-09-0{4-i}"))
                 refs[tag]=source
                 if i!=1: refs[oldver]=source
-        if case=="current": old.append(dict(id=5,tag_name="nightly-staging",draft=True))
+        if case=="current":
+            old.append(dict(id=5,tag_name="nightly-staging",draft=True))
+            orphan="v0.2.0-nightly.20261001.g777777777777"
+            old.append(dict(id=6,tag_name=orphan,draft=True));refs[orphan]="7"*40
         refs["nightly-staging-other"]="e"*40
-        initial=dict(case=case,releases=old,refs=refs,heads=0,published=False,promoted=False,calls=[],deleted=[],manifests={})
+        initial=dict(case=case,releases=old,refs=refs,heads=0,published=False,promoted=False,latest=None,calls=[],deleted=[],manifests={})
         root.joinpath("state.json").write_text(json.dumps(initial)); output=root/"outputs"; output.touch()
-        env=dict(os.environ,PATH=f"{root}:{os.environ['PATH']}",GITHUB_SHA="a"*40,GH_REPO="example/KONTRA",GITHUB_RUN_ID="7",GITHUB_OUTPUT=str(output))
+        env=dict(os.environ,PATH=f"{root}:{os.environ['PATH']}",GITHUB_SHA="a"*40,GH_REPO="example/KONTRA",GITHUB_RUN_ID="7",GITHUB_OUTPUT=str(output),TEST_VERSION=version)
         def run(command): return subprocess.run(["bash","--noprofile","--norc","-e","-o","pipefail","-c",command],cwd=root,env=env,capture_output=True,text=True)
         result=run(publish); state=json.loads(root.joinpath("state.json").read_text())
         assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum","wrong-format") else 0),(case,result.stderr)
         if case=="rotation-fails":
-            assert state["published"] and len(state["releases"])==2 and any(r["tag_name"]=="nightly-previous" for r in state["releases"])
+            assert state["published"] and len(state["releases"])==4 and state["latest"] is not None
             result=run(publish); assert result.returncode==0,result.stderr
             state=json.loads(root.joinpath("state.json").read_text())
         promoted=case in ("current","first","cleanup-fails","rotation-fails")
@@ -177,14 +183,27 @@ for case in cases:
         assert not any(r["draft"] for r in state["releases"]),(case,state)
         if promoted:
             assert len(state["releases"])==(1 if case=="first" else 2)
-            newest=next(r for r in state["releases"] if r["tag_name"]=="nightly")
+            newest=next(r for r in state["releases"] if r["tag_name"]=="v"+version)
             assert newest["target_commitish"]=="a"*40 and newest["name"]=="KONTRA "+version
-            assert state["refs"]["v"+version]=="a"*40 and state["refs"]["nightly"]=="a"*40
+            assert state["refs"]["v"+version]=="a"*40 and not newest["prerelease"] and state["latest"]==newest["id"]
             if case!="first":
-                assert state["refs"]["nightly-previous"]=="b"*40
+                assert state["refs"]["nightly"]=="b"*40
+                assert next(r for r in state["releases"] if r["id"]==1)==initial["releases"][0], "Previous release must remain unchanged"
                 assert state["refs"]["v1.0.0"]=="d"*40
                 assert not any(r["tag_name"]=="v1.0.0" for r in state["releases"])
-            assert len([tag for tag in state["refs"] if tag.startswith(("v","legacy-g")) and tag!="v1.0.0"])==(1 if case=="first" else 2)
+            assert len([tag for tag in state["refs"] if tag.startswith(("v","legacy-g")) and tag!="v1.0.0"])==1
+            if case=="current":
+                # Recover the real legacy staging failure, using its existing source tag.
+                newest["tag_name"]="nightly-staging";newest["prerelease"]=True
+                state["refs"]["nightly-staging"]="a"*40;state["promoted"]=False
+                state["latest"]=None;root.joinpath("state.json").write_text(json.dumps(state))
+                env["GITHUB_SHA"]="e"*40
+                result=run(publish);assert result.returncode==1,result.stderr
+                assert json.loads(root.joinpath("state.json").read_text())["releases"]==state["releases"], "Historical staging recovery must fail without changes"
+                env["GITHUB_SHA"]="a"*40
+                result=run(publish);assert result.returncode==0,result.stderr
+                state=json.loads(root.joinpath("state.json").read_text())
+                assert len(state["releases"])==2 and state["latest"]==newest["id"]
             # A rerun must leave the same rollback and published release identities.
             before=state["releases"]
             result=run(publish); assert result.returncode==0,result.stderr
@@ -193,6 +212,7 @@ for case in cases:
                 # The following snapshot must verify the previous versioned manifest.
                 env["GITHUB_SHA"]="f"*40
                 next_version="0.2.0-nightly.20261002.gffffffffffff"
+                env["TEST_VERSION"]=next_version
                 root.joinpath("Cargo.toml").write_text('[package]\nversion="'+next_version+'"\n')
                 for platform in platforms:
                     path=root/f"dist/KONTRA-nightly-{platform}.zip"
@@ -210,7 +230,9 @@ for case in cases:
                 result=run(publish);assert result.returncode==0,result.stderr
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert len(state["releases"])==2
-                assert state["refs"]["nightly"]=="f"*40 and state["refs"]["nightly-previous"]=="a"*40
+                assert state["refs"]["v"+next_version]=="f"*40 and state["refs"]["v"+version]=="a"*40
+                assert "nightly" not in state["refs"]
+                assert {r["tag_name"] for r in state["releases"]}=={"v"+version,"v"+next_version}
                 assert "legacy-g"+"b"*12 not in state["refs"]
                 assert state["refs"]["v1.0.0"]=="d"*40
                 before=state["releases"]
