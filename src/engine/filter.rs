@@ -2844,7 +2844,7 @@ mod tests {
                         state = (b * input + b * previous) + a * state + 1e-20;
                         previous = input;
                         let [x1, x2, y1, y2] = history;
-                        let filtered = ((y1 * a1 + y2 * a2) + x2 * b2) + (x1 * b1 + state * b0);
+                        let filtered = (((state * b0 + x1 * b1) + x2 * b2) + y1 * a1) + y2 * a2;
                         history = [state, x1, filtered, y1];
                         let reference = if split == 0 { filtered * 0.75 } else { (filtered * 0.75) * 0.2 };
                         assert!((actual - reference).abs() < 2e-6);
