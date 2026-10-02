@@ -441,6 +441,7 @@ pub struct Program {
     pub errors: Vec<String>,
     pub diagnostics: BTreeSet<String>,
     pub saved_arrays: Vec<VarId>,
+    pub array_reads: Vec<VarId>,
     pub pgs_int_keys: Vec<u32>,
     pub pgs_str_keys: Vec<u32>,
 }
@@ -1626,6 +1627,9 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::Ref(v));
                     if matches!(b, Builtin::SaveArray | Builtin::SaveArrayStr) && !self.p.saved_arrays.contains(&v) {
                         self.p.saved_arrays.push(v);
+                    }
+                    if b == Builtin::LoadArrayStr && !self.p.array_reads.contains(&v) {
+                        self.p.array_reads.push(v);
                     }
                 }
                 Arg::K => {

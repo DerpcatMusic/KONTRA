@@ -395,6 +395,9 @@ pub struct Shared {
     /// IR loads requested by scripts: part, instrument generation, script epoch.
     ir_requests: ArrayQueue<(usize, u64, u64, crate::engine::IrRequest)>,
     ir_ready: ArrayQueue<(usize, u64, IrHandoff)>,
+    array_requests: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayRead>)>,
+    array_ready: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayRead>)>,
+    array_retired: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayRead>)>,
     /// Host sample rate (`f64` bits) that effect processors are built for.
     pub(crate) rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
@@ -598,6 +601,9 @@ impl Default for Shared {
             edits: ArrayQueue::new(256),
             ir_requests: ArrayQueue::new(64),
             ir_ready: ArrayQueue::new(64),
+            array_requests: ArrayQueue::new(64),
+            array_ready: ArrayQueue::new(64),
+            array_retired: ArrayQueue::new(64),
             rate: AtomicU64::new(48000f64.to_bits()),
             key_owners: std::array::from_fn(|_| AtomicU64::new(128)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
@@ -872,6 +878,37 @@ struct Retired {
     ir: Option<crate::fx::PreparedIr>,
 }
 
+/// Array parsing and disposal share the existing serialized file-service worker.
+fn load_arrays(params: &SamplerParams) {
+    let current = |part: usize, generation: u64, epoch: u64| {
+        generation == params.shared.generation[part].load(Ordering::Acquire)
+            && params.shared.view.lock().unwrap().parts[part].script_epoch == epoch
+    };
+    while !params.shared.array_ready.is_full() {
+        let Some((part, generation, epoch, mut request)) = params.shared.array_retired.pop() else { break };
+        if !current(part, generation, epoch) { continue }
+        if request.error() == Some("load_array_str: prepared string capacity exceeded") {
+            let source = params.shared.view.lock().unwrap().parts[part].instrument.clone();
+            if let Some(source) = source {
+                crate::diagnostics::resource(&source.path, request.path(), request.error().unwrap());
+            }
+        }
+        request.recycle();
+        params.shared.array_ready.push((part, generation, epoch, request)).ok().unwrap();
+    }
+    while !params.shared.array_ready.is_full() {
+        let Some((part, generation, epoch, mut request)) = params.shared.array_requests.pop() else { break };
+        if !current(part, generation, epoch) { continue }
+        if !request.read() {
+            let source = params.shared.view.lock().unwrap().parts[part].instrument.clone();
+            if let Some(source) = source {
+                crate::diagnostics::resource(&source.path, request.path(), request.error().unwrap_or("NKA read failed"));
+            }
+        }
+        params.shared.array_ready.push((part, generation, epoch, request)).ok().unwrap();
+    }
+}
+
 /// Resolve and build requested convolution replacements off the audio thread.
 fn load_irs(params: &SamplerParams) {
     while !params.shared.ir_ready.is_full() {
@@ -1009,17 +1046,17 @@ impl Shared {
                 let restore = v.edited.iter().any(|&(n, value, at)| now.saturating_duration_since(at) > EDIT_SETTLE
                     && live.interface.as_ref().and_then(|i| i.controls.get(n)).is_some_and(|c|
                         c.properties.get("$CONTROL_PAR_VALUE") != Some(&crate::ksp::Value::Int(value))));
-                (v.interface.clone(), v.live_revisions, v.live_diagnostics.clone(), restore)
+                (v.live_revisions, v.live_diagnostics.clone(), restore)
             };
             // Prepare copies before taking the view lock: readers retain their
             // previous Arc snapshots, and the audio buffer is immediately reusable.
             let revisions = live.revisions();
             let mut interface = (live.refresh_interface
-                && (previous.3 || previous.1.is_none_or(|old| old.0 != revisions.0)))
+                && (previous.2 || previous.0.is_none_or(|old| old.0 != revisions.0)))
                 .then(|| live.interface.clone().map(Arc::new));
-            let keys = (live.refresh_interface && previous.1.is_none_or(|old| old.1 != revisions.1))
+            let keys = (live.refresh_interface && previous.0.is_none_or(|old| old.1 != revisions.1))
                 .then(|| Arc::new(live.keys.clone()));
-            let diagnostics = previous.2.filter(|old|
+            let diagnostics = previous.1.filter(|old|
                 old.epoch == epoch && old.faults == live.faults && old.notes == live.notes
             ).unwrap_or_else(|| Arc::new(LiveDiagnostics {
                 epoch, faults: live.faults.clone(), notes: live.notes.clone(),
@@ -1372,6 +1409,7 @@ impl BackgroundTask for Load {
     const SERIALIZED: bool = true;
     fn run(self, params: &SamplerParams) {
         drain_audio_diagnostics(params);
+        load_arrays(params);
         let mut freed = false;
         while params.shared.discard.pop().is_some() {
             freed = true;
@@ -1788,12 +1826,8 @@ impl BackgroundTask for Load {
                         trace.stage("artwork");
                         let interface = interface.as_deref();
                         let wallpaper = artwork::performance(&instrument, interface);
-                        let names = interface.into_iter().flat_map(|u| &u.controls)
-                            .filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
-                                Some(crate::ksp::Value::Text(name)) => Some(name.as_str()),
-                                _ => None,
-                            });
-                        let (pictures, errors) = artwork::pictures_report(&instrument.path, names);
+                        let names: Vec<_> = interface.into_iter().flat_map(artwork::picture_names).collect();
+                        let (pictures, errors) = artwork::pictures_report(&instrument.path, names.iter().map(|name| name.as_ref()));
                         for e in errors { trace.issue("artwork", crate::diagnostics::code(&e), e); }
                         if let Err(e) = &wallpaper { trace.issue("artwork", crate::diagnostics::code(e), e); }
                         trace.detail("pictures_loaded", pictures.len());
@@ -1944,6 +1978,7 @@ impl BackgroundTask for Load {
             }
         }
         load_irs(params);
+        load_arrays(params);
         // The host changed sample rate since these effects were built: rebuild them here, off the audio thread.
         let rate = params.shared.rate();
         for slot in 0..RACK_SLOTS {
@@ -2514,6 +2549,18 @@ impl PluginLogic for Sampler {
             };
             let _ = p.shared.discard.push(Retired { ir, ..Retired::default() });
         }
+        while !p.shared.array_retired.is_full() {
+            let Some((slot, generation, epoch, request)) = p.shared.array_ready.pop() else { break };
+            let current = generation == p.shared.generation[slot].load(Ordering::Acquire)
+                && epoch == s.script_epoch[slot];
+            let request = if current {
+                match s.rack.parts[slot].finish_array_read(request) {
+                    Ok(()) => continue,
+                    Err(request) => request,
+                }
+            } else { request };
+            p.shared.array_retired.push((slot, generation, epoch, request)).ok().unwrap();
+        }
         let scripted = s.rack.parts.iter().filter(|e| e.script().is_some()).count();
         for engine in &mut s.rack.parts {
             engine.begin_audio_block(frames, scripted, offline);
@@ -2770,13 +2817,26 @@ impl PluginLogic for Sampler {
             }
         }
         // Parameter writes have rendered: capture the block's latest settings.
+        let mut arrays_queued = false;
         for (part, engine) in s.rack.parts.iter_mut().enumerate() {
+            let generation = p.shared.generation[part].load(Ordering::Acquire);
+            while !p.shared.array_requests.is_full() {
+                let Some(request) = engine.pop_array_read() else { break };
+                p.shared.array_requests.push((part, generation, s.script_epoch[part], request)).ok().unwrap();
+                arrays_queued = true;
+            }
+            while !p.shared.array_retired.is_full() {
+                let Some(request) = engine.pop_retired_array_read() else { break };
+                p.shared.array_retired.push((part, generation, s.script_epoch[part], request)).ok().unwrap();
+                arrays_queued = true;
+            }
             while !p.shared.ir_requests.is_full() {
                 let Some(request) = engine.pop_ir_request() else { break };
                 let generation = p.shared.generation[part].load(Ordering::Acquire);
                 let _ = p.shared.ir_requests.push((part, generation, s.script_epoch[part], request));
             }
         }
+        if arrays_queued && let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
         p.shared.blocks.fetch_add(1, Ordering::Relaxed);
         s.align.clock += frames as u64;
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
@@ -3719,6 +3779,116 @@ mod tests {
     }
 
     #[test]
+    fn async_array_reads_use_real_paths_bound_installation_and_reject_stale_epochs_without_allocating() {
+        let dir = std::env::temp_dir().join(format!("kontra-async-array-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, value) in [("first.nka", 42), ("second.nka", 84)] {
+            std::fs::write(dir.join(name), format!("%data\n{}", format!("{value}\n").repeat(600))).unwrap();
+        }
+        let source = format!(r#"on init
+make_perfview
+declare ui_table %data[600](1,1,100)
+declare ui_switch $load
+declare ui_label $result(1,1)
+declare $id
+declare $completed
+make_persistent($completed)
+end on
+on ui_control($load)
+if ($load=0)
+$id := load_array_str(%data,"{}/first.nka")
+else
+$id := load_array_str(%data,"{}/second.nka")
+end if
+end on
+on async_complete
+inc($completed)
+set_text($result,$NI_ASYNC_EXIT_STATUS & ":" & %data[0] & ":" & %data[599])
+end on"#, dir.display(), dir.display());
+        let instrument = Instrument { scripts: vec![source], ..Default::default() };
+        let (rt, errors) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let p = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        dsp.script_epoch[0] = 1;
+        let rt = rt.unwrap();
+        let mut retained = rt.live();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.parts[0].script_epoch = 1;
+            view.parts[0].interface = Some(Arc::new(rt.interface(0)));
+        }
+        dsp.rack.parts[0].set_script(Some(rt));
+        let mut outputs = vec![vec![0.; 64]; 2];
+        let mut refs: Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 64);
+        let transport = TransportInfo::default();
+        let mut midi_out = EventList::with_capacity(0);
+        let mut cx = ProcessContext::new(&transport, 48000., 64, &mut midi_out);
+        let events = EventList::with_capacity(0);
+        let tick = |dsp: &mut Dsp, buffer: &mut AudioBuffer, cx: &mut ProcessContext| {
+            Sampler::process(dsp, &p, buffer, &events, cx);
+        };
+        p.shared.edit_control(0, 1, 1);
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
+        assert_eq!(p.shared.array_requests.len(), 1);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0));
+        load_arrays(&p);
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "600 cells do not copy in one block");
+        assert_eq!(allocations(|| {
+            tick(&mut dsp, &mut buffer, &mut cx);
+            tick(&mut dsp, &mut buffer, &mut cx);
+        }), 0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()));
+        assert_eq!(allocations(|| {
+            assert!(dsp.rack.parts[0].script().unwrap().refresh_live(&mut retained));
+        }), 0);
+        assert_eq!(retained.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"],
+            crate::ksp::Value::IntArray(vec![84;600]),
+            "retained Live table follows typed memory mutation revisions");
+        load_arrays(&p); // Free parse buffers on the worker and return the prepared job.
+        tick(&mut dsp, &mut buffer, &mut cx);
+        assert_eq!(allocations(|| {
+            for value in [0, 1, 0] { dsp.rack.parts[0].ui_control(0, 1, value); }
+            tick(&mut dsp, &mut buffer, &mut cx);
+        }), 0);
+        assert_eq!(p.shared.array_requests.len(), 2, "one destination has two prepared jobs");
+        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().iter().any(|s| s.contains("prepared request queue")));
+        load_arrays(&p);
+        assert_eq!(allocations(|| {
+            for _ in 0..3 { tick(&mut dsp, &mut buffer, &mut cx); }
+        }), 0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:42:42".into()));
+        assert_eq!(allocations(|| { dsp.rack.parts[0].script().unwrap().refresh_live(&mut retained); }), 0);
+        assert_eq!(retained.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"],
+            crate::ksp::Value::IntArray(vec![42;600]),
+            "a subsequent file invalidates the same retained table snapshot");
+        assert_eq!(allocations(|| {
+            for _ in 0..3 { tick(&mut dsp, &mut buffer, &mut cx); }
+        }), 0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(4), "each accepted or rejected job completes once");
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()), "different paths on the same variable read different files");
+        load_arrays(&p);
+        tick(&mut dsp, &mut buffer, &mut cx);
+        dsp.rack.parts[0].ui_control(0, 1, 0);
+        tick(&mut dsp, &mut buffer, &mut cx);
+        load_arrays(&p);
+        let (new_rt, _) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
+        let mut retired = None;
+        p.shared.view.lock().unwrap().parts[0].script_epoch = 2;
+        assert_eq!(allocations(|| {
+            retired = dsp.rack.parts[0].set_script(new_rt);
+            dsp.script_epoch[0] = 2;
+            tick(&mut dsp, &mut buffer, &mut cx);
+        }), 0);
+        load_arrays(&p);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "stale results never enter the replacement script");
+        drop(retired);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn sound_off_preserves_later_note_cleanup_without_audio_allocations() {
         let source = "on init\ndeclare $held\ndeclare $released\nmake_persistent($held)\nmake_persistent($released)\nend on\non note\ninc($held)\nend on\non release\nwait(1000000)\ndec($held)\ninc($released)\nplay_note(72,100,0,0)\nend on";
         let mut init = crate::ksp::LogEngine::default();
@@ -4431,6 +4601,39 @@ end on"#.into()],
         dsp.rack.parts[0].set_script(None);
         assert!(dsp.rack.parts[0].pop_ir_request().is_none(), "script replacement clears requests before they receive the new epoch");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn delayed_label_style_reaches_retained_live_without_audio_allocations() {
+        let script = r#"on init
+make_perfview
+declare ui_switch $page
+declare ui_label $caption(1,1)
+set_text($caption, "thresh.")
+end on
+on ui_control($page)
+set_control_par(get_ui_id($caption), $CONTROL_PAR_FONT_TYPE, 23)
+set_control_par(get_ui_id($caption), $CONTROL_PAR_TEXTPOS_Y, 0)
+set_control_par(get_ui_id($caption), $CONTROL_PAR_TEXT_ALIGNMENT, 1)
+set_control_par(get_ui_id($caption), $CONTROL_PAR_TEXT_COLOR, 8421504)
+end on"#;
+        let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.);
+        let (mut rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let mut live = rt.live();
+        let fields = ["$CONTROL_PAR_FONT_TYPE", "$CONTROL_PAR_TEXTPOS_Y", "$CONTROL_PAR_TEXT_ALIGNMENT", "$CONTROL_PAR_TEXT_COLOR"];
+        for field in fields {
+            assert!(!matches!(live.interface.as_ref().unwrap().controls[1].properties.get(field), Some(crate::ksp::Value::Int(_) | crate::ksp::Value::Real(_) | crate::ksp::Value::Text(_))), "unset metadata keeps the renderer's default: {field}");
+        }
+        assert_eq!(allocations(|| {
+            rt.ui_control(&mut engine, 0, 0, 1);
+            rt.refresh_live(&mut live);
+        }), 0, "first publication of delayed metadata must neither allocate nor free");
+        let caption = &live.interface.as_ref().unwrap().controls[1];
+        for (field, expected) in fields.into_iter().zip([23, 0, 1, 8421504]) {
+            assert_eq!(caption.properties.get(field), Some(&crate::ksp::Value::Int(expected)), "retained GUI snapshot must match the delayed callback: {field}");
+        }
+        assert_eq!(live, rt.live(), "retained and newly prepared views agree");
     }
 
     #[test]

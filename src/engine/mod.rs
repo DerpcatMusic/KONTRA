@@ -802,6 +802,25 @@ impl Engine {
         }
     }
 
+    pub fn pop_array_read(&mut self) -> Option<Box<crate::ksp::ArrayRead>> {
+        self.script.as_deref_mut()?.pop_array_read()
+    }
+
+    pub fn can_finish_array_read(&self) -> bool {
+        self.script.as_deref().is_some_and(Runtime::can_finish_array_read)
+    }
+
+    pub fn finish_array_read(&mut self, request: Box<crate::ksp::ArrayRead>) -> Result<(), Box<crate::ksp::ArrayRead>> {
+        match self.script.as_deref_mut() {
+            Some(rt) => rt.finish_array_read(request),
+            None => Err(request),
+        }
+    }
+
+    pub fn pop_retired_array_read(&mut self) -> Option<Box<crate::ksp::ArrayRead>> {
+        self.script.as_deref_mut()?.pop_retired_array_read()
+    }
+
     pub fn pop_ir_request(&mut self) -> Option<IrRequest> {
         if !self.ir_requests.is_empty() {
             let mut request = self.ir_requests.remove(0);
@@ -1644,14 +1663,14 @@ impl Player {
     }
 
     /// Release one event's voices; a held sustain pedal defers them like a key
-    /// release. Returns the first voice's channel, note, velocity and whether
-    /// it is itself a release trigger.
+    /// release. Native release samples run independently of further note-off
+    /// events. Returns the first ordinary voice's channel, note and velocity.
     fn release_voices(&mut self, bank: &Bank, id: EventId) -> Option<(u8, u8, u8, bool, bool, Option<u8>)> {
         let mut first = None;
         for v in self
             .voices
             .iter_mut()
-            .filter(|v| v.event == id && !v.released)
+            .filter(|v| v.event == id && !v.released && !v.release_trigger)
         {
             let event = first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger, false, v.input_channel));
             event.4 |= v.sostenuto;
