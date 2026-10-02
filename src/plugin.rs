@@ -4711,7 +4711,7 @@ pub(crate) mod tests {
         let rt=dsp.rack.parts[0].script().unwrap();
         assert_eq!(rt.interface(1).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(90));
         assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
-        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return function() return @ui.Image {path='picture.webp'} end").unwrap();
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return function() return @ui.Image {file='picture.webp' resizable=false} end").unwrap();
         let error=Scene::prepare(&i.path,rt).unwrap_err().to_string();
         assert!(error.contains("Unsupported native UI API")&&error.contains("Image"),"{error}");
         assert!(crate::native_ui::frontend_test_invalid_sources());
