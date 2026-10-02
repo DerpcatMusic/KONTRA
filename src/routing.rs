@@ -9,7 +9,9 @@
 //! ([`Part::output_manual`]) is never moved, and automatic routes keep off
 //! its bus and off buses used as sends.
 
-use crate::engine::{BUSES, RACK_SLOTS};
+use crate::engine::BUSES;
+#[cfg(test)]
+use crate::engine::RACK_SLOTS;
 use crate::fx::OUTS;
 use crate::plugin::{Part, Selection};
 use std::time::{Duration, Instant};

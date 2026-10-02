@@ -414,6 +414,7 @@ impl AudioDiagnostics {
 #[derive(Default)]
 pub(crate) struct PartShared {
     pub(crate) generation: AtomicU64,
+    /// Out of [`crate::engine::LOAD_DONE`], rising within each load.
     pub(crate) load_progress: AtomicU32,
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
@@ -490,9 +491,6 @@ pub struct Shared {
     growth: ArrayQueue<Box<PreparedGrowth>>,
     grown: AtomicU64,
     growth_prepared: AtomicU64,
-    /// Per slot, how far its load is, out of [`crate::engine::LOAD_DONE`]:
-    /// parse, scripts, then samples by frames read; only rises within a load.
-
     pub(crate) audition: AtomicBool,
     pub(crate) audition_note: AtomicU64,
     pub(crate) selected: AtomicU64,
