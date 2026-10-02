@@ -152,6 +152,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Universal installer orchestration checks
+        run: python3 .github/scripts/test_package_macos.py
       - name: Nightly shipping identity
         if: inputs.release_validation
         shell: bash
