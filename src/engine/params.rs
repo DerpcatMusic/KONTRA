@@ -2011,18 +2011,18 @@ mod tests {
             assert!(l.iter().chain(&r).all(|x| x.is_finite()));
             l
         };
-        let mut power = [0.; 2];
-        for (i, cutoff_raw) in [250_000, 750_000].into_iter().enumerate() {
+        let mut power = [0.; 4];
+        for (i, (pitch_raw, cutoff_raw)) in [(224_840, 250_000), (224_840, 750_000),
+            (775_160, 250_000), (775_160, 750_000)].into_iter().enumerate() {
             // Independently saved Conflux 2 st target; signed midpoint probes
             // also exercise an audible cutoff change rather than readback alone.
-            let pitch_raw = 775_160;
             let readback = "declare $p := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,0,0,1)\nmake_persistent($p)\ndeclare $c := get_engine_par($ENGINE_PAR_INTMOD_INTENSITY,0,0,2)\nmake_persistent($c)\nend on";
             let source = |name| format!("on init\nset_engine_par({name},{pitch_raw},0,0,1)\nset_engine_par({name},{cutoff_raw},0,0,2)\n{readback}\non note\nset_engine_par({name},{pitch_raw},0,0,1)\nset_engine_par({name},{cutoff_raw},0,0,2)\nend on");
             let legacy = render(group.clone(), &source("$ENGINE_PAR_INTMOD_INTENSITY"), pitch_raw, cutoff_raw);
             let modern = render(group.clone(), &source("$ENGINE_PAR_MOD_TARGET_MP_INTENSITY"), pitch_raw, cutoff_raw);
             let mut reference = group.clone();
-            reference.mods[1].intensity = 0.16666558385;
-            reference.mods[2].intensity = if i == 0 { -0.125 } else { 0.125 };
+            reference.mods[1].intensity = if pitch_raw < 500_000 { -0.16666558385 } else { 0.16666558385 };
+            reference.mods[2].intensity = if cutoff_raw < 500_000 { -0.125 } else { 0.125 };
             let reference = render(reference, &format!("on init\n{readback}"), pitch_raw, cutoff_raw);
             // Authored serialized target records exercise the import path too:
             // magnitudes are positive; the negative cutoff is target flag0x02,
@@ -2041,8 +2041,8 @@ mod tests {
             let mut private = 3u32.to_le_bytes().to_vec();
             for (param, label, slot, depth, flags) in [
                 ("volume", "Volume", None, 1.0f32, 0x10),
-                ("pitch", "Pitch", None, 0.16666558385, 0x10),
-                ("filterCutoff", "Cutoff", Some(0), 0.125, if i == 0 { 0x12 } else { 0x10 })] {
+                ("pitch", "Pitch", None, 0.16666558385, if pitch_raw < 500_000 { 0x12 } else { 0x10 }),
+                ("filterCutoff", "Cutoff", Some(0), 0.125, if cutoff_raw < 500_000 { 0x12 } else { 0x10 })] {
                 name(&mut private, param); private.extend(depth.to_le_bytes());
                 private.extend((-1i16).to_le_bytes()); private.push(flags); private.extend(0u16.to_le_bytes());
                 name(&mut private, label); private.extend(slot); private.push(0);
@@ -2063,7 +2063,8 @@ mod tests {
                 "signed setters must match independently supplied physical depths");
             power[i] = legacy.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>();
         }
-        assert!(power[1] > power[0] * 4., "cutoff depth changes the real filter response: {power:?}");
+        assert!(power[1] > power[0] * 4. && power[3] > power[2] * 4.,
+            "cutoff depth changes the real filter response at both pitch directions: {power:?}");
     }
 
     #[test]
