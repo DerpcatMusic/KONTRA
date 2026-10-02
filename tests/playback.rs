@@ -3979,7 +3979,7 @@ fn saved_sine_multi_pitch_uses_native_clock_and_audio_interpolation() {
     use kontakto::import::PitchLfo;
     let make = || {
         let group = Group { pitch_lfos: vec![PitchLfo { slot: 7, count: 1.,
-            note_value: 1. / 24., sine: 0.5, depth: 0.5, bypassed: false }], ..Group::default() };
+            note_value: 1. / 24., sine: 0.5, depth: 0.5, targets: vec![], bypassed: false }], ..Group::default() };
         let sample = Sample { rate: 48000,
             frames: (0..4096).map(|i| [i as f32 / 8192.; 2]).collect() };
         engine_with(Bank::from_samples(vec![group], vec![Zone::default()],

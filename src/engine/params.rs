@@ -616,6 +616,8 @@ pub(crate) enum Address {
         /// Verified pitch or cutoff cubic law, separate from other MP targets.
         cubic: Option<CubicDepth>,
     },
+    /// An admitted pitch LFO target; source and target use native slot indices.
+    PitchLfoIntensity { group: u16, slot: u8, target: u32, bipolar: bool },
     /// Explicit KSP bypass, separate from the undecoded preset flags.
     InternalBypass(u16, u8),
     Fx(Rack, u8, FxParam),
@@ -745,6 +747,16 @@ impl Address {
                         }
                     },
                     None => {
+                        if m.kind == "lfo" {
+                            // Prepared LFO playback currently exists only on
+                            // ordinary sampler groups, not wavetable sources.
+                            groups[g as usize].wavetable.is_none().then_some(())?;
+                            let slot = u8::try_from(par.slot).ok()?;
+                            let target = u32::try_from(target).ok()?;
+                            groups[g as usize].pitch_lfos.iter().find(|l| l.slot == slot)?
+                                .targets.iter().find(|t| t.0 == target)?;
+                            return Some(Self::PitchLfoIntensity { group: g, slot, target, bipolar });
+                        }
                         let envelope = m.envelope?;
                         let routed = &groups[g as usize]
                             .envelopes
@@ -849,6 +861,7 @@ impl Address {
                 | Self::Envelope(..)
                 | Self::ModEnvelope(..)
                 | Self::InternalIntensity { .. }
+                | Self::PitchLfoIntensity { .. }
                 | Self::InternalBypass(..)
                 | Self::Intensity { .. }
                 | Self::Filter(..)
@@ -893,7 +906,8 @@ impl Address {
             // Conflux's saved 2 st pitch target and raw507160 cutoff target
             // independently corroborate the cubic law. Cutoff stays normalized.
             Self::Intensity { cubic: Some(CubicDepth::Pitch), .. }
-            | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. } => (2.0 * value as f32 / UNIT - 1.0).powi(3),
+            | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. }
+            | Self::PitchLfoIntensity { bipolar: true, .. } => (2.0 * value as f32 / UNIT - 1.0).powi(3),
             Self::Intensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. }
             | Self::InternalIntensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. } => (2.0 * x - 1.0).powi(3),
             Self::Intensity { bipolar: true, .. }
@@ -908,7 +922,8 @@ impl Address {
             // Stored knobs are the KSP value / 1e6: Solo sets 1000000 and 0 where it stores 1 and 0.
             Self::Filter(..) | Self::Fx(_, _, FxParam::Filter(_)) => x,
             // Square law: Areia sets 704316 where its presets store 0.4961.
-            Self::Intensity { .. } | Self::InternalIntensity { .. } => x * x,
+            Self::Intensity { .. } | Self::InternalIntensity { .. }
+            | Self::PitchLfoIntensity { .. } => x * x,
             Self::Fx(_, _, FxParam::Bypass) => f32::from(value != 0),
             Self::Fx(_, _, FxParam::Pan) => 2.0 * x - 1.0,
             Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => effect_gain(x),
@@ -951,7 +966,8 @@ impl Address {
                 Stage::Decay | Stage::Release => time_value(v, LONG),
             },
             Self::Intensity { cubic: Some(CubicDepth::Pitch), .. }
-            | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. } => return ((v.cbrt() + 1.0) * 0.5 * UNIT).round() as i32,
+            | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. }
+            | Self::PitchLfoIntensity { bipolar: true, .. } => return ((v.cbrt() + 1.0) * 0.5 * UNIT).round() as i32,
             Self::Intensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. }
             | Self::InternalIntensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. } => (v.cbrt() + 1.0) * 0.5,
             Self::Intensity { bipolar: true, .. }
@@ -959,7 +975,8 @@ impl Address {
             | Self::Fx(_, _, FxParam::Pan)
             | Self::Filter(_, _, Knob::Spread | Knob::Pan)
             | Self::Fx(_, _, FxParam::Filter(Knob::Spread | Knob::Pan)) => (v + 1.0) * 0.5,
-            Self::Intensity { .. } | Self::InternalIntensity { .. } => v.abs().sqrt(),
+            Self::Intensity { .. } | Self::InternalIntensity { .. }
+            | Self::PitchLfoIntensity { .. } => v.abs().sqrt(),
             Self::Filter(_, _, Knob::Output) | Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => {
                 (v.max(0.0) / EFFECT_MAX_GAIN).cbrt()
             }
@@ -1162,6 +1179,17 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             }
             return applied;
         }
+        Address::PitchLfoIntensity { group, slot, target, .. } => {
+            if !value.is_finite() { return false; }
+            let Some(lfo) = settings.get_mut(group as usize)
+                .and_then(|g| g.pitch_lfos.iter_mut().find(|l| l.slot == slot)) else { return false; };
+            let Some(index) = lfo.targets.iter().position(|t| t.0 == target) else { return false; };
+            let depth: f32 = lfo.targets.iter().enumerate()
+                .map(|(i, t)| if i == index { value } else { t.1 }).sum();
+            if !depth.is_finite() { return false; }
+            lfo.targets[index].1 = value;
+            lfo.depth = depth;
+        }
         Address::InternalBypass(g, index) => {
             let Some(settings) = settings.get_mut(g as usize) else { return false; };
             let mut applied = false;
@@ -1257,6 +1285,8 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
                 .and_then(|e| e.targets.iter().find(|t| t.0 == target)).map(|t| t.2.intensity)
                 .or_else(|| settings.filter.as_ref()?.envelope_mod_at(envelope, target).map(|m| m.intensity))
         },
+        Address::PitchLfoIntensity { group, slot, target, .. } => settings.get(group as usize)?
+            .pitch_lfos.iter().find(|l| l.slot == slot)?.targets.iter().find(|t| t.0 == target).map(|t| t.1),
         Address::InternalBypass(g, index) => {
             let settings = settings.get(g as usize)?;
             settings.pitch_envelopes.iter().find(|e| e.index == index).map(|e| f32::from(e.bypass))
@@ -2129,7 +2159,7 @@ mod tests {
     fn saved_pitch_lfo_and_constant_loop_are_partition_invariant_in_ram_and_stream() {
         use crate::{audio::Sample, engine::{Bank, Engine}, import::{Instrument, Loop, PitchLfo, Zone}};
         let mut group = Group { pitch_lfos: vec![PitchLfo { slot: 7, count: 1.,
-            note_value: 1. / 24., sine: 0.5, depth: 0.5, bypassed: false }],
+            note_value: 1. / 24., sine: 0.5, depth: 0.5, targets: vec![], bypassed: false }],
             mods: ["loopStart", "loopLength"].into_iter().map(|param| ModAssignment {
                 name: "Constant".into(), source: ModSource::Constant,
                 target: ModTarget::Group(param.into()), intensity: 0., invert: false,
@@ -2227,6 +2257,107 @@ mod tests {
         }), 0);
         assert_eq!(stream.underruns(), 0);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn live_saved_pitch_lfo_targets_preserve_native_identity_phase_and_persistence_without_heap() {
+        use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
+            import::{Instrument, PitchLfo, Zone}, ksp::Value};
+        let mut group = Group { pitch_lfos: vec![
+            PitchLfo { slot: 7, count: 1., note_value: 1. / 24., sine: 0.5,
+                depth: 0.2, targets: vec![(1, 0.25), (3, -0.05)], bypassed: false },
+            PitchLfo { slot: 3, count: 2., note_value: 1. / 24., sine: 0.1,
+                depth: 0.1, targets: vec![(1, 0.1)], bypassed: false }], ..Group::default() };
+        group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
+            assignments: None, volume_env: false, bypassed: false, flex: false,
+            envelope: None, kind: "unsupported".into() });
+        for slot in [3, 7] { group.modulators[slot] = Modulator { name: format!("LFO{slot}"),
+            targets: vec!["Cutoff".into(), "PitchA".into(), "Volume".into(), "PitchB".into()],
+            assignments: None, volume_env: false, bypassed: false, flex: false,
+            envelope: None, kind: "lfo".into() }; }
+        let par = |id, slot, target| EnginePar { id, group: 0, slot, generic: target };
+        let address = |id, slot, target| Address::resolve(par(id, slot, target), std::slice::from_ref(&group)).unwrap();
+        for id in [id::INTMOD_INTENSITY, id::MOD_TARGET_MP_INTENSITY, id::MOD_TARGET_INTENSITY] {
+            assert!(Address::resolve(par(id, 7, 0), std::slice::from_ref(&group)).is_none(), "adjacent cutoff remains unsupported");
+            assert!(Address::resolve(par(id, 3, 3), std::slice::from_ref(&group)).is_none(), "target indices belong to their own source");
+        }
+        let source = "on init
+            declare $initial := get_engine_par($ENGINE_PAR_INTMOD_INTENSITY,0,7,1)
+            make_persistent($initial)
+            declare $after := 0
+            make_persistent($after)
+            end on
+            on controller
+            if (%CC[1] > 0)
+                set_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,250000,0,7,1)
+                set_engine_par($ENGINE_PAR_INTMOD_INTENSITY,750000,0,7,1)
+                set_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,775160,0,7,1)
+                set_engine_par($ENGINE_PAR_INTMOD_INTENSITY,250000,0,7,3)
+                set_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,250000,0,3,1)
+                $after := get_engine_par($ENGINE_PAR_INTMOD_INTENSITY,0,7,1)
+            end if
+            end on";
+        let instrument = Instrument { groups: vec![group.clone()], scripts: vec![source.into()], ..Default::default() };
+        let create = || {
+            let sample = Sample { rate: 48_000,
+                frames: (0..4096).map(|n| [(n as f32 * 0.031).sin() * 0.2; 2]).collect() };
+            let mut e = Engine::default(); e.attack = 0.; e.release = 0.001;
+            e.set_transport(false, 120., 0., (4, 4));
+            e.set_bank(Some(Box::new(Bank::from_samples(vec![group.clone()], vec![Zone::default()],
+                vec![(std::path::PathBuf::new(), sample)]).unwrap()))); e
+        };
+        let (runtime, errors) = load_scripts(&instrument, vec![], 48_000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (mut live, mut reference) = (create(), create()); live.set_script(runtime);
+        let mut snapshot = live.script().unwrap().native_state.snapshot();
+        let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
+        let equal = |a: &[f32], b: &[f32]| assert!(a.iter().zip(b)
+            .all(|(a, b)| (a - b).abs() < 1e-7), "live depth write must preserve elapsed source phase");
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            live.note_on(0, 60, 127); reference.note_on(0, 60, 127);
+            live.render(&mut a[..13], &mut ar[..13]); reference.render(&mut b[..13], &mut br[..13]);
+            equal(&a[..13], &b[..13]);
+            live.cc(0, 1, 127);
+            // Independent physical-depth reference, without setters or source reset.
+            let lfos = &mut reference.bank.as_mut().unwrap().settings[0].pitch_lfos;
+            lfos[0].targets[0].1 = 0.16666558385; lfos[0].targets[1].1 = -0.125;
+            lfos[0].depth = 0.16666558385 - 0.125;
+            lfos[1].targets[0].1 = 0.0625; lfos[1].depth = 0.0625;
+            for _ in 0..8 {
+                live.render(&mut a, &mut ar); reference.render(&mut b, &mut br);
+                equal(&a, &b); equal(&ar, &br);
+            }
+            let settings = &live.bank().unwrap().settings;
+            assert_eq!(read(settings, address(id::INTMOD_INTENSITY, 7, 3)), Some(-0.125));
+            assert_eq!(read(settings, address(id::MOD_TARGET_INTENSITY, 3, 1)), Some(0.0625));
+            assert!((settings[0].pitch_lfos[0].depth - (0.16666558385 - 0.125)).abs() < 1e-7);
+            assert!(!write(&mut live.bank.as_mut().unwrap().settings, address(id::INTMOD_INTENSITY, 7, 1), f32::NAN));
+            while !live.script().unwrap().native_state.refresh(&mut snapshot, 1) {}
+            live.note_off(0, 60); reference.note_off(0, 60);
+            for _ in 0..16 { live.render(&mut a, &mut ar); reference.render(&mut b, &mut br); }
+            assert_eq!(live.active_voices(), 0); assert_eq!(reference.active_voices(), 0);
+        }), 0);
+        let rt = live.script().unwrap();
+        for (id, slot, target) in [(id::MOD_TARGET_INTENSITY, 7, 1),
+            (id::INTMOD_INTENSITY, 7, 1), (id::MOD_TARGET_MP_INTENSITY, 7, 1),
+            (id::INTMOD_INTENSITY, 7, 3), (id::MOD_TARGET_INTENSITY, 3, 1)] {
+            assert!(rt.env.engine_par(par(id, slot, target)).is_none(),
+                "accepted aliases must not use the unsupported stored-value fallback");
+        }
+        let Value::Int(after) = rt.persistence()[0]["$after"] else { panic!("missing readback"); };
+        assert!((after - 775160).abs() <= 1);
+        let edits = snapshot.saved();
+        assert_eq!(edits.len(), 3, "aliases share a physical source/target record");
+        assert!(edits.iter().any(|e| e.par == par(id::MOD_TARGET_MP_INTENSITY, 7, 1) && e.value == 775160));
+        assert!(edits.iter().any(|e| e.par == par(id::INTMOD_INTENSITY, 7, 3) && e.value == 250000));
+        assert!(edits.iter().any(|e| e.par == par(id::MOD_TARGET_INTENSITY, 3, 1) && e.value == 250000));
+        let (restored, errors) = load_scripts_with_state(&instrument, vec![], 48_000., &[], &edits);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut replay = create(); replay.set_script(restored);
+        assert_eq!(replay.bank().unwrap().settings[0].pitch_lfos[0].targets, live.bank().unwrap().settings[0].pitch_lfos[0].targets);
+        assert_eq!(replay.bank().unwrap().settings[0].pitch_lfos[1].targets, live.bank().unwrap().settings[0].pitch_lfos[1].targets);
+        let Value::Int(initial) = replay.script().unwrap().persistence()[0]["$initial"] else { panic!("missing seeded readback"); };
+        assert!((initial - 775160).abs() <= 1, "restoration seeds init getters before callbacks");
     }
 
     #[test]
