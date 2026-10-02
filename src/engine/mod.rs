@@ -802,23 +802,23 @@ impl Engine {
         }
     }
 
-    pub fn pop_array_read(&mut self) -> Option<Box<crate::ksp::ArrayRead>> {
-        self.script.as_deref_mut()?.pop_array_read()
+    pub fn pop_array_job(&mut self) -> Option<Box<crate::ksp::ArrayJob>> {
+        self.script.as_deref_mut()?.pop_array_job()
     }
 
-    pub fn can_finish_array_read(&self) -> bool {
-        self.script.as_deref().is_some_and(Runtime::can_finish_array_read)
+    pub fn can_finish_array_job(&self) -> bool {
+        self.script.as_deref().is_some_and(Runtime::can_finish_array_job)
     }
 
-    pub fn finish_array_read(&mut self, request: Box<crate::ksp::ArrayRead>) -> Result<(), Box<crate::ksp::ArrayRead>> {
+    pub fn finish_array_job(&mut self, request: Box<crate::ksp::ArrayJob>) -> Result<(), Box<crate::ksp::ArrayJob>> {
         match self.script.as_deref_mut() {
-            Some(rt) => rt.finish_array_read(request),
+            Some(rt) => rt.finish_array_job(request),
             None => Err(request),
         }
     }
 
-    pub fn pop_retired_array_read(&mut self) -> Option<Box<crate::ksp::ArrayRead>> {
-        self.script.as_deref_mut()?.pop_retired_array_read()
+    pub fn pop_retired_array_job(&mut self) -> Option<Box<crate::ksp::ArrayJob>> {
+        self.script.as_deref_mut()?.pop_retired_array_job()
     }
 
     pub fn pop_ir_request(&mut self) -> Option<IrRequest> {

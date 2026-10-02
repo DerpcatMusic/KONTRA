@@ -337,10 +337,12 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let mut h = DefaultHasher::new();
     (room(ui, slot).round() as i64, room_height(ui, slot).round() as i64, cx.settings.view_scale.to_bits()).hash(&mut h);
     shows(cx, slot).hash(&mut h);
+    v.live_revisions.hash(&mut h);
+    for edit in v.edited_values() { edit.hash(&mut h); }
     (Arc::as_ptr(&v.pictures) as usize, v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
     if let Some(i) = &v.interface {
         (Arc::as_ptr(i) as usize, i.width, i.height, i.wallpaper_state, i.skin_offset).hash(&mut h);
-        // An edit may change the interface in place.
+        // Keep callback-derived metadata in the canvas memo dependencies.
         hash_properties(i, &mut h);
     }
     // A wave read since.
@@ -435,11 +437,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .into_iter()
         .map(|shown| {
             let c = &interface.controls[shown.control];
-            let image = picture_frame(&shown, c, value(c));
+            let image = picture_frame(&shown, c, cx.view.parts[slot].control_value(shown.control).unwrap_or_else(|| value(c)));
             (shown, image)
         })
         .collect();
-    let plans = if vector { super::vector::plan(&interface, &pictures, &drawn, &mut cx.state.vector_assets) } else { Vec::new() };
+    let part = &cx.view.parts[slot];
+    let plans = if vector { super::vector::plan(&interface, &pictures, &drawn, &mut cx.state.vector_assets, |n| part.control_value(n)) } else { Vec::new() };
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {
@@ -833,7 +836,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     let dev = ui.scale().unwrap_or(1.);
     let (w, h) = ((shown.w * s * dev).round() / dev, (shown.h * s * dev).round() / dev);
     let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
-    let raw = value(c);
+    let raw = cx.view.parts[slot].control_value(shown.control).unwrap_or_else(|| value(c));
     let (min, max) = range(shown.kind, c);
     let (lo, hi) = (min.min(max), min.max(max).max(min.min(max) + 1.));
     let reset = f64::from(int(c, "$CONTROL_PAR_DEFAULT_VALUE").unwrap_or(0)).clamp(lo, hi);
