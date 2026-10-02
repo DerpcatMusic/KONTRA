@@ -124,7 +124,25 @@ function native_component(target,props,children)
 end
 function native_modifier(node,name,props,args)
     local environment=name=="context" or name=="font_size" or name=="foreground_color"
-    assert(name=="frame" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
+    assert(name=="frame" or name=="padding" or name=="hidden" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
+    if name=="padding" then
+        assert(#args<=1 and (#args==0 or next(props)==nil),"Invalid padding arguments")
+        if #args==1 then props={left=args[1],right=args[1],top=args[1],bottom=args[1]} end
+        for key,value in pairs(props) do
+            assert(key=="left" or key=="right" or key=="top" or key=="bottom" or key=="horizontal" or key=="vertical","Unsupported padding property")
+            assert(type(value)=="number" and value>=0 and value<=4096,"Unsupported negative or oversized native UI padding")
+        end
+        assert(not ((props.horizontal~=nil or props.vertical~=nil) and (props.left~=nil or props.right~=nil or props.top~=nil or props.bottom~=nil)),"Mixed padding constructors")
+        props={left=props.left or props.horizontal or 0,right=props.right or props.horizontal or 0,top=props.top or props.vertical or 0,bottom=props.bottom or props.vertical or 0}
+        return {kind="ZStack",props={},children={node},modifiers={padding=props}}
+    end
+    if name=="hidden" then
+        assert(next(props)==nil and #args<=1,"Invalid hidden arguments")
+        local value=args[1]
+        if value==nil then value=true end
+        assert(type(value)=="boolean" or type(value)=="function","Hidden requires a boolean")
+        return {kind="ZStack",props={},children={node},modifiers={hidden={value=value}}}
+    end
     if name=="font_size" or name=="foreground_color" then
         assert(next(props)==nil and #args<=1,"Invalid text style modifier: "..name)
         local value=args[1]

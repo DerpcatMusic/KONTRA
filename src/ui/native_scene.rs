@@ -135,7 +135,7 @@ fn primitive(
     children: Vec<El>,
     assets: &crate::native_assets::Assets,
 ) -> El {
-    match &node.paint {
+    let el = match &node.paint {
         Paint::Text(value) => text(value.clone())
             .text_size(node.text_size)
             .lines(1)
@@ -149,7 +149,8 @@ fn primitive(
         }
         Paint::Stack => stack(children)
             .w(node.width.map_or(Len::Auto, Len::Px))
-            .h(node.height.map_or(Len::Auto, Len::Px)),
+            .h(node.height.map_or(Len::Auto, Len::Px))
+            .pad(node.padding),
         Paint::Asset(reference) => match assets.entries.get(&reference.resource) {
             Some(Ok(asset)) => match asset.as_ref() {
                 crate::native_assets::Asset::Vector(vector) => {
@@ -161,7 +162,8 @@ fn primitive(
             },
             _ => block(w, h), // Pending/failed assets never become fabricated artwork.
         },
-    }
+    };
+    if node.hidden { el.opacity(0.).disabled() } else { el }
 }
 #[cfg(test)]
 pub(crate) fn paint_snapshot(node: &Node, offered: (f64, f64)) -> El {

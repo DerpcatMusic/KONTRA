@@ -4872,7 +4872,7 @@ pub(crate) mod tests {
         let watch_before=crate::ui::native_watch_fingerprint(&p.shared.view.lock().unwrap());
         fn taps(node:&Node,out:&mut Vec<usize>) {if node.tap {out.push(node.id)} for child in &node.children {taps(child,out)}}
         let mut ids=Vec::new();taps(&initial,&mut ids);
-        for id in ids {
+        for &id in &ids {
             let edits=scene.lock().unwrap().tap(id).unwrap();
             for edit in edits {assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
         }
@@ -4924,7 +4924,14 @@ pub(crate) mod tests {
             if matches!(node.paint,Paint::Asset(_)) {Some(node.id)} else {node.children.iter().find_map(image_id)}
         }
         let frame=rendered.surface(&format!("native-snapshot-{}",image_id(&published).unwrap())).unwrap().frame;
-        assert_eq!((frame.x,frame.y,frame.size.width,frame.size.height),(370.,220.,40.,20.),"nested frames use real MUI alignment and retain intrinsic image size");
+        assert_eq!((frame.x,frame.y,frame.size.width,frame.size.height),(374.,228.,40.,20.),"padding and nested frames use real MUI geometry and retain intrinsic image size");
+        fn hidden_id(node:&Node) -> Option<usize> { if node.hidden {Some(node.id)} else {node.children.iter().find_map(hidden_id)} }
+        let hidden=rendered.surface(&format!("native-snapshot-{}",hidden_id(&published).unwrap())).unwrap();
+        assert_eq!((hidden.frame.size.width,hidden.frame.size.height),(180.,24.),"hidden content retains its measured space");
+        assert!(hidden.disabled,"hidden native content is excluded from MUI hit testing and Tab");
+        assert!(rendered.paint.iter().any(|p| matches!(p.layer,moose::mui::mui::scene::Layer::Blend {opacity:0.,..})),"hidden subtrees paint through a zero-opacity MUI layer");
+        assert!(scene.lock().unwrap().tap(ids[1]).is_err(),"reactive hiding removes the old gesture callback");
+        assert!(scene.lock().unwrap().take_edits().is_empty(),"hidden callback cannot enqueue KSP edits");
         assert_eq!(rendered.paint.iter().filter(|p| p.text.is_some()).count(),2,"both computed labels use the production MUI primitive adapter");
         assert!(rendered.paint.iter().any(|p| matches!(p.paint,moose::mui::mui::scene::Paint::Vector {..})),"authored SVG retains its vector/source identity through MUI paint");
         let source=rendered.paint.iter().find_map(|p|match &p.paint {
