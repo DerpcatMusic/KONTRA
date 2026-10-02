@@ -4015,9 +4015,19 @@ mod tests {
         }
         let before = p.selection.read().unwrap().parts[0].clone();
         let bank = dsp.rack.parts[0].bank().unwrap() as *const Bank;
+        let generation = p.shared.generation[0].load(Ordering::Acquire);
+        let epoch = dsp.script_epoch[0];
         assert!(p.shared.queue_snapshot(0, &before, foreign));
         Load.run(&p);
-        assert!(p.selection.read().unwrap().parts[0] == before, "foreign snapshot leaves all active saved state intact");
+        let after = p.selection.read().unwrap().parts[0].clone();
+        let old = serde_json::to_value(&before).unwrap();
+        let new = serde_json::to_value(&after).unwrap();
+        let changed: Vec<_> = old.as_object().unwrap().iter()
+            .filter_map(|(name, value)| (new.get(name) != Some(value)).then_some(name)).collect();
+        assert!(after == before, "foreign snapshot changed fields {changed:?}; script bytes {} -> {}, IR slots {} -> {}; source retained {}; generation {} -> {}, epoch {} -> {}, bank retained {}",
+            before.script_state.len(), after.script_state.len(), before.ir_settings.len(), after.ir_settings.len(),
+            before.source() == after.source(), generation, p.shared.generation[0].load(Ordering::Acquire), epoch, dsp.script_epoch[0],
+            dsp.rack.parts[0].bank().unwrap() as *const Bank == bank);
         assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot requires base instrument"));
         let report = p.shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
         assert_eq!(report["details"]["operation"], "snapshot_validation");
