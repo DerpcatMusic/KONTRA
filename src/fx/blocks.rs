@@ -47,6 +47,8 @@ enum Law {
     Cube(f32),
     /// Stored in units, `lo · (hi/lo)^x`.
     Log(f32, f32),
+    /// Legacy Delay's native shifted exponential, stored in milliseconds.
+    DelayTime,
     /// The script's raw value (`$NI_SYNC_UNIT_*`), not scaled by 1e6.
     Raw,
 }
@@ -59,6 +61,7 @@ impl Law {
             Law::Lin(lo, hi) => lo + (hi - lo) * x,
             Law::Cube(max) => max * x * x * x,
             Law::Log(lo, hi) => lo * (hi / lo).powf(x),
+            Law::DelayTime => (6.0272455 * x + 1.9459101).exp() - 2.0,
             Law::Raw => (x * 1e6).round(),
         }
     }
@@ -69,6 +72,7 @@ impl Law {
             Law::Lin(lo, hi) => (v - lo) / (hi - lo),
             Law::Cube(max) => (v / max).max(0.0).cbrt(),
             Law::Log(lo, hi) => (v.max(lo) / lo).ln() / (hi / lo).ln(),
+            Law::DelayTime => ((v.max(5.0) + 2.0).ln() - 1.9459101) * 0.16591327,
             Law::Raw => v.max(0.0) / 1e6,
         };
         x.clamp(0.0, 1.0)
@@ -80,10 +84,11 @@ const THRESHOLD: Law = Law::Lin(-60.0, 0.0);
 /// Compressor attack and release (ms).
 const ATTACK: Law = Law::Cube(1000.0);
 const RELEASE: Law = Law::Cube(5000.0);
-/// Delay time (ms).
-const DELAY_TIME: Law = Law::Cube(2000.0);
+/// Legacy Delay time: 5..=2900 ms. Saved fields already contain milliseconds;
+/// only script writes/readback use this conversion.
+const DELAY_TIME: Law = Law::DelayTime;
 /// Delay line length (seconds), past the longest time.
-const MAX_DELAY_S: f32 = 2.1;
+const MAX_DELAY_S: f32 = 2.91;
 
 /// `$ENGINE_PAR_*` effect parameters: effect, field (layout position), law.
 const PARS: &[(&str, Kind, u8, Law)] = &[
@@ -1107,6 +1112,46 @@ mod tests {
         let peak = |at: usize| l[at - 10..at + 10].iter().fold(0f32, |m, x| m.max(x.abs()));
         assert!(peak(4800) > 0.9 && peak(9600) > 0.4 && peak(9600) < 0.6, "{} {}", peak(4800), peak(9600));
         assert!(l[100..4700].iter().all(|x| x.abs() < 1e-3));
+    }
+
+    #[test]
+    fn legacy_delay_time_law_preserves_saved_units_and_authored_echo_clocks_without_heap() {
+        // Independent authored quarter-note writes at 60/120/240 BPM. These
+        // are absolute Time writes: no sync-unit conversion is involved.
+        for (raw, ms) in [(823_567, 1000.0), (708_896, 500.0), (594_553, 250.0), (1_000_000, 2900.0)] {
+            let x = raw as f32 / 1e6;
+            assert!((stored(Kind::Delay, 0, x) - ms).abs() < 0.01);
+            assert!((normalized(Kind::Delay, 0, ms) * 1e6 - raw as f32).abs() <= 1.0);
+            let at = (ms * RATE * 0.001).round() as usize;
+            let initial = effect(Kind::Delay, &[ms, 0.0, 0.0, 0.5, -1.0, 0.0, 1.0, 1.0]);
+            let (mut a, mut b) = (Block::new(&initial, RATE).unwrap(), Block::new(&initial, RATE).unwrap());
+            assert_eq!(a.fields[0], ms, "imported physical time is not normalized again");
+            assert!((a.get(Kind::Delay, 0).unwrap() * 1e6 - raw as f32).abs() <= 1.0);
+            let mut al = vec![0.0; 2 * at + 32];
+            al[0] = 1.0;
+            let (mut ar, mut bl, mut br) = (al.clone(), al.clone(), al.clone());
+            let mut exercise = || {
+                assert!(a.set(Kind::Delay, 0, x));
+                assert!(b.set(Kind::Delay, 0, x));
+                assert!((a.get(Kind::Delay, 0).unwrap() - x).abs() < 1e-6);
+                for (l, r) in al.chunks_mut(128).zip(ar.chunks_mut(128)) { a.process(l, r); }
+                for (l, r) in bl.chunks_mut(31).zip(br.chunks_mut(31)) { b.process(l, r); }
+            };
+            #[cfg(feature = "plugin")]
+            assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+            #[cfg(not(feature = "plugin"))]
+            exercise();
+            assert_eq!(al, bl, "host block partition preserves delay clock");
+            assert_eq!(ar, br);
+            assert!(al.iter().chain(&ar).all(|v| v.is_finite()));
+            assert!(al[..at - 2].iter().all(|v| v.abs() < 1e-6), "no premature echo for {ms} ms");
+            let first = al[at - 2..at + 3].iter().map(|v| v.abs()).fold(0.0, f32::max);
+            let echo = al[2 * at - 2..2 * at + 3].iter().map(|v| v.abs()).fold(0.0, f32::max);
+            assert!(first > 0.9 && (0.35..0.55).contains(&echo), "{ms} ms: first {first}, echo {echo}");
+        }
+        assert!((stored(Kind::Delay, 0, 0.0) - 5.0).abs() < 1e-5);
+        assert_eq!(normalized(Kind::Delay, 0, 5.0), 0.0);
+        assert!((normalized(Kind::Delay, 0, 2900.0) - 1.0).abs() < 1e-6);
     }
 
     #[test]
