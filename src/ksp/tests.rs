@@ -1573,7 +1573,7 @@ fn keyboard_note_faults_report_builtin_argument_value_and_original_line() {
     ] {
         let source = format!("on init\n\n{command}\nend on");
         let error = initialize(&source,0,0).unwrap_err().to_string();
-        let expected = format!("line 3: MIDI note must be 0..127 ({name} argument {argument} = {value})");
+        let expected = format!("line 3: MIDI note must be 0..127 ({name} argument {argument} = {value}; on init)");
         assert!(error.contains(&expected), "{command}: {error}");
     }
     let ui = initialize("on init\nset_key_name(0,\"Lowest\")\nset_key_name(127,\"Highest\")\nset_keyrange(0,127,\"All keys\")\nend on",0,0).unwrap();
