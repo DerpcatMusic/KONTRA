@@ -2180,7 +2180,13 @@ impl BackgroundTask for Load {
                 }
                 let zone_bank=if let Some(rt)=script.as_deref().filter(|rt|rt.init_zone_edits.iter().any(|e|e.id<0)) {
                     trace.stage("zone_init");
-                    match Bank::load(&instrument).and_then(|mut bank|{bank.apply_script_zone_init(rt)?;Ok(Box::new(bank))}) {
+                    let own=params.shared.view.lock().unwrap().parts[slot].bytes;
+                    let resident=crate::engine::resident_bytes().saturating_sub(own);
+                    let budget=crate::engine::MEMORY_LIMIT.min(crate::engine::memory_budget().saturating_sub(resident));
+                    let canceled=||atoms.generation.load(Ordering::Acquire)!=generation;
+                    trace.detail("memory_budget_bytes",budget);
+                    match Bank::load_cancelable(&instrument,budget,streaming,&rt.init_controllers,&AtomicU32::new(0),&canceled)
+                        .and_then(|mut bank|{bank.prepare_zone_init(rt.service_epoch,&rt.init_zone_edits,&canceled)?;Ok(Box::new(bank))}) {
                         Ok(bank)=>Some(bank),
                         Err(error)=>{
                             trace.fail(format!("{error:#}")); let report=trace.finish("failed");
@@ -2242,6 +2248,7 @@ impl BackgroundTask for Load {
                 view.parts[slot].engine_state = part.engine_state.clone().into();
                 view.parts[slot].interface_status = interface_status;
                 view.parts[slot].runtime_status.clear();
+                if let Some(bank)=zone_bank.as_deref() {view.parts[slot].bytes=bank.bytes;}
                 if let Some(fx) = fx {
                     view.parts[slot].irs = irs;
                     let _ = params.shared.publish_part((
@@ -6222,8 +6229,16 @@ end on"#,dir.display());
     fn delayed_script_restore_rejects_replaced_source_and_newer_saved_state() {
         use crate::ksp::Value;
         use std::sync::Barrier;
+        let path=std::env::temp_dir().join(format!("kontra-zone-restore-{}.wav",std::process::id()));
+        let mut wav=hound::WavWriter::create(&path,hound::WavSpec {channels:2,sample_rate:48000,
+            bits_per_sample:32,sample_format:hound::SampleFormat::Float}).unwrap();
+        for _ in 0..2048 {wav.write_sample(0.125f32).unwrap();wav.write_sample(0.125f32).unwrap();}wav.finalize().unwrap();
+        for with_zone_bank in [false,true] {
+        let init=if with_zone_bank {"set_snapshot_type(3)\nset_zone_par(0,$ZONE_PAR_GROUP,0)\nset_zone_par(0,$ZONE_PAR_LOW_KEY,60)\nset_zone_par(0,$ZONE_PAR_HIGH_KEY,60)\n"}else{""};
         let instrument = Arc::new(Instrument { path: "/virtual/restore-freshness.nki".into(),
-            scripts: vec!["on init\nmake_perfview\ndeclare ui_slider $saved(0,100)\nmake_persistent($saved)\n$saved := 1\nend on".into()],
+            groups:if with_zone_bank {vec![crate::import::Group::default()]}else{Vec::new()},
+            zones:if with_zone_bank {vec![crate::import::Zone {sample:path.clone(),..Default::default()}]}else{Vec::new()},
+            scripts: vec![format!("on init\n{init}make_perfview\ndeclare ui_slider $saved(0,100)\nmake_persistent($saved)\n$saved := 1\nend on")],
             ..Default::default() });
         let (rt, _, errors) = scripts(&instrument, "", &[], &[], 48000.);
         assert!(errors.is_empty(), "{errors:?}");
@@ -6266,7 +6281,7 @@ end on"#,dir.display());
             gate.wait(); worker.join().unwrap();
             let mut restored = None;
             while let Some((slot, handoff_generation, handoff)) = p.shared.ready.pop() {
-                if slot == 0 && let Handoff::Script { script, epoch, .. } = handoff { restored = Some((handoff_generation, script, epoch)); }
+                if slot == 0 && let Handoff::Script { script, bank, epoch } = handoff { restored = Some((handoff_generation, script, bank, epoch)); }
             }
             let view = p.shared.view.lock().unwrap();
             let v = &view.parts[0];
@@ -6275,13 +6290,22 @@ end on"#,dir.display());
                 assert_eq!(v.script_epoch, initial_epoch, "stale preparation cannot acquire a fresh epoch");
                 assert_eq!(v.script_state, initial, "stale preparation cannot replace published state");
             } else {
-                let (handoff_generation, script, epoch) = restored.expect("unrelated gain preserves the pending restore");
+                let (handoff_generation, script, bank, epoch) = restored.expect("unrelated gain preserves the pending restore");
                 assert_eq!(handoff_generation, generation); assert_ne!(epoch, initial_epoch);
                 assert_eq!(script.unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(7));
                 assert_eq!(v.script_state, restoring);
+                assert_eq!(bank.is_some(),with_zone_bank,"prepared bank and restored runtime publish together");
+                if let Some(bank)=bank {
+                    use crate::ksp::engine::ZonePar;
+                    assert_eq!(bank.zone_par(0,ZonePar::Group),Some(0));
+                    assert_eq!(bank.zone_par(0,ZonePar::LowKey),Some(60));
+                    assert_eq!(bank.zone_par(0,ZonePar::HighKey),Some(60));
+                }
             }
             if change == 1 { assert_eq!(p.selection.read().unwrap().parts[0].script_state, newer); }
         }
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
