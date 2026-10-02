@@ -29,13 +29,12 @@ use std::{
 /// streaming until the bank fits.
 pub const MEMORY_LIMIT: usize = 1 << 30;
 /// Frames of every sample kept in RAM past the furthest start offset
-/// (Kontakt's DFD preload). Voices start from this instantly while the
-/// streamer fetches the rest; 2048 frames is ≈43 ms at 48 kHz (12 KiB per
-/// 24-bit stereo sample, a fifth of Kontakt's 60 KB default). Measured on
-/// NVMe with a cold page cache (audits/PERFORMANCE.md): no underruns at
-/// 1000 streaming voices and 256 note starts per second; 1024 frames
-/// underruns. Shrinks toward [`MIN_PRELOAD`] to fit the budget.
-pub const PRELOAD_FRAMES: u64 = 2048;
+/// (Kontakt's DFD preload). The first render block must be resident even
+/// at the maximum admitted source consumption: a note cannot wait for a
+/// cold stream worker within that same callback. The cubic's last tap is
+/// inside this bound because MAX_STEP exceeds its three extra taps.
+/// Shrinks toward [`MIN_PRELOAD`] to fit the budget.
+pub const PRELOAD_FRAMES: u64 = (super::MAX_BLOCK as f64 * super::voice::MAX_STEP) as u64;
 /// Smallest preload the budget forces before start-offset ranges start to
 /// stream: ≈21 ms at 48 kHz.
 pub const MIN_PRELOAD: u64 = 1024;
