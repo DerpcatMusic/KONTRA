@@ -3664,6 +3664,29 @@ mod tests {
     }
 
     #[test]
+    fn repeated_debug_string_growth_preserves_notes_without_audio_allocations() {
+        let source = "on init\ndeclare @debug\ndeclare $notes\nmake_persistent($notes)\nend on\non note\n@debug := @debug & \"😀\"\nmessage(@debug)\ninc($notes)\nend on";
+        let mut init = crate::ksp::LogEngine::default();
+        let (rt, errors) = Runtime::with_scripts(&[source], &mut init, 0, Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        let mut engine = Engine::default();
+        engine.set_script(Some(Box::new(rt)));
+        let mut left = [0f32;64];
+        let mut right = [0f32;64];
+        assert_eq!(allocations(|| {
+            for _ in 0..800 {
+                engine.note_on(0,60,100);
+                engine.note_off(0,60);
+                engine.render(&mut left,&mut right);
+            }
+        }),0);
+        let rt = engine.script().unwrap();
+        assert_eq!(rt.persistence()[0]["$notes"],crate::ksp::Value::Int(800));
+        assert_eq!(rt.last_message(),"😀".repeat(320));
+        assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+    }
+
+    #[test]
     fn changed_live_views_wake_publication_without_allocating_or_busy_polling() {
         use moose::core::tasks::{TaskSpawner, TaskSpawnerBundle};
         let source = "on init\nmake_perfview\ndeclare ui_slider $s(0,100)\nend on";

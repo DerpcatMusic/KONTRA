@@ -6,7 +6,7 @@ use super::compile::{Callback, Ty, VarId};
 use super::engine::{EnginePar, Fade, GroupMask, VoicePar};
 use super::runtime::{read_value, refresh_value, write_value_rt};
 use super::ui::{MenuItem, Prop};
-use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text};
+use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text, put_variable_text};
 use super::{KeyState, Value};
 
 fn ints<const N: usize>(m: &mut Machine) -> [i32; N] {
@@ -1080,7 +1080,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];
             if p == b::CONTROL_PAR_VALUE && var.ty == Ty::Str && var.len.is_none() {
                 let dst = &mut m.slot.mem.strs[var.slot as usize];
-                put_text(dst, text, m.env.loading)?;
+                put_variable_text(dst, text, m.env.loading)?;
             } else if p == b::CONTROL_PAR_TEXTLINE {
                 let dst = m.slot.ui.controls[c].str_mut(b::CONTROL_PAR_TEXT).map_err(Fault)?;
                 if !dst.is_empty() { append_text(dst, "\n", m.env.loading)?; }
@@ -1105,7 +1105,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let slot = if p == b::CONTROL_PAR_VALUE { Some(control_value_slot(m, id, Some(index), Ty::Str)?) } else { None };
             let text = m.stk.strs.pop();
             if let Some(slot) = slot {
-                put_text(&mut m.slot.mem.strs[slot], text, m.env.loading)?;
+                put_variable_text(&mut m.slot.mem.strs[slot], text, m.env.loading)?;
             } else if p != b::CONTROL_PAR_NONE {
                 m.env.note("Indexed control metadata is unavailable");
             }

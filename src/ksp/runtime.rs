@@ -822,7 +822,9 @@ impl Runtime {
         // At most 16 MiB of added UI/host text headroom; large string arrays
         // have their separate 4 MiB-per-slot allowance below.
         let text_bytes = desired.min((16 << 20) / text_cells.max(1));
-        self.stacks.strs.prepare(text_bytes);
+        // A full Unicode variable plus a literal must fit an expression before
+        // the bounded assignment copies its 320-character prefix.
+        self.stacks.strs.prepare(text_bytes.max(vm::MAX_STRING_VAR_BYTES.saturating_add(desired)).min(65536));
         self.env.host.keyranges.truncate(16);
         self.env.host.keyranges.reserve(16usize.saturating_sub(self.env.host.keyranges.len()));
         self.env.spare_keyranges.reserve(16usize.saturating_sub(self.env.spare_keyranges.len()));
@@ -832,9 +834,15 @@ impl Runtime {
         }
         for (prog, state) in self.programs.iter().zip(&mut self.states) {
             // Bound added headroom even for million-element string arrays.
-            let per_string = ((4 << 20) / state.mem.strs.len().max(1)).min(text_bytes);
+            let per_string = ((4 << 20) / state.mem.strs.len().max(1)).min(text_bytes.max(vm::MAX_STRING_VAR_BYTES));
             for s in &mut state.mem.strs {
                 s.reserve(per_string.saturating_sub(s.len()));
+            }
+            for var in &prog.vars {
+                if var.ty == Ty::Str && var.len.is_none() && !var.poly {
+                    let text = &mut state.mem.strs[var.slot as usize];
+                    text.reserve(vm::MAX_STRING_VAR_BYTES.saturating_sub(text.len()));
+                }
             }
             let dynamic_menu = prog.code.iter().any(|op| {
                 matches!(
@@ -913,7 +921,7 @@ impl Runtime {
         }
         self.env
             .message
-            .reserve(text_bytes.saturating_sub(self.env.message.len()));
+            .reserve(text_bytes.max(vm::MAX_STRING_VAR_BYTES).saturating_sub(self.env.message.len()));
         for note in 0..128 {
             let key = self.env.host.keyboard.entry(note).or_default();
             key.name.reserve(text_bytes.saturating_sub(key.name.len()));
@@ -1148,12 +1156,32 @@ impl Runtime {
             c.menu.iter_mut().for_each(|(t, _)| room(t));
         }
         let menu_spares = interface.as_mut().map_or_else(Vec::new, |ui| {
-            let state = &self.states[slot.unwrap()].ui;
-            state.controls.iter().zip(&mut ui.controls).map(|(c, out)| {
+            let state = &self.states[slot.unwrap()];
+            let prog = &self.programs[slot.unwrap()];
+            state.ui.controls.iter().zip(&mut ui.controls).map(|(c, out)| {
+                // Revision caches must never accept a cut string as current.
+                // Mirror already-prepared source capacities while off-thread.
+                for (par, source) in c.props.iter().filter_map(|(p,v)| match v {
+                    super::ui::Prop::Str(s) => Some((*p,s)), _ => None,
+                }).chain(c.spare_text.iter().map(|(p,s)| (*p,s))) {
+                    if let Some(Value::Text(dst)) = prog.symbol_name(par).and_then(|name| out.properties.get_mut(name)) {
+                        dst.reserve(source.capacity().saturating_sub(dst.len()));
+                    }
+                }
+                let var = &prog.vars[c.var as usize];
+                if var.ty == Ty::Str && let Some(value) = out.properties.get_mut("$CONTROL_PAR_VALUE") {
+                    let mut i = var.slot as usize;
+                    each_text_in(value, &mut |dst| {
+                        dst.reserve(state.mem.strs[i].capacity().saturating_sub(dst.len()));
+                        i += 1;
+                    });
+                }
                 let total = c.menu.len() + c.spare_menu.len();
+                let bytes = c.menu.iter().chain(&c.spare_menu).map(|m| m.text.capacity()).max().unwrap_or(SNAPSHOT_SLACK);
+                for (dst,_) in &mut out.menu { dst.reserve(bytes.saturating_sub(dst.len())); }
                 out.menu.reserve(total.saturating_sub(out.menu.len()));
                 let mut spare = Vec::with_capacity(total);
-                spare.resize_with(total.saturating_sub(out.menu.len()), || (String::with_capacity(SNAPSHOT_SLACK), 0));
+                spare.resize_with(total.saturating_sub(out.menu.len()), || (String::with_capacity(bytes), 0));
                 spare
             }).collect()
         });
@@ -2364,7 +2392,7 @@ pub fn write_value(mem: &mut vm::Memory, var: &compile::Var, value: &Value) {
         (Ty::Real, Value::Real(n)) => mem.reals[i] = *n,
         (Ty::Str, Value::Text(t)) => {
             mem.strs[i].clear();
-            mem.strs[i].push_str(t);
+            mem.strs[i].push_str(vm::variable_text(t));
         }
         _ => {}
     };
@@ -2397,7 +2425,7 @@ pub(super) fn write_value_rt(
 ) -> vm::Exec<()> {
     if !loading && var.ty == Ty::Str && !var.poly {
         let fits = |i: usize, value: &Value| match value {
-            Value::Text(text) => text.len() <= mem.strs[i].capacity(),
+            Value::Text(text) => vm::variable_text(text).len() <= mem.strs[i].capacity(),
             _ => true,
         };
         let base = var.slot as usize;
