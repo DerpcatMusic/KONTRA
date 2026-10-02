@@ -1046,17 +1046,17 @@ impl Shared {
                 let restore = v.edited.iter().any(|&(n, value, at)| now.saturating_duration_since(at) > EDIT_SETTLE
                     && live.interface.as_ref().and_then(|i| i.controls.get(n)).is_some_and(|c|
                         c.properties.get("$CONTROL_PAR_VALUE") != Some(&crate::ksp::Value::Int(value))));
-                (v.interface.clone(), v.live_revisions, v.live_diagnostics.clone(), restore)
+                (v.live_revisions, v.live_diagnostics.clone(), restore)
             };
             // Prepare copies before taking the view lock: readers retain their
             // previous Arc snapshots, and the audio buffer is immediately reusable.
             let revisions = live.revisions();
             let mut interface = (live.refresh_interface
-                && (previous.3 || previous.1.is_none_or(|old| old.0 != revisions.0)))
+                && (previous.2 || previous.0.is_none_or(|old| old.0 != revisions.0)))
                 .then(|| live.interface.clone().map(Arc::new));
-            let keys = (live.refresh_interface && previous.1.is_none_or(|old| old.1 != revisions.1))
+            let keys = (live.refresh_interface && previous.0.is_none_or(|old| old.1 != revisions.1))
                 .then(|| Arc::new(live.keys.clone()));
-            let diagnostics = previous.2.filter(|old|
+            let diagnostics = previous.1.filter(|old|
                 old.epoch == epoch && old.faults == live.faults && old.notes == live.notes
             ).unwrap_or_else(|| Arc::new(LiveDiagnostics {
                 epoch, faults: live.faults.clone(), notes: live.notes.clone(),
