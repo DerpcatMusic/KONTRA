@@ -30,6 +30,7 @@ pub(crate) struct Node {
     pub alignment: (Align, Align),
     pub padding: Insets,
     pub hidden: bool,
+    pub opacity: f32,
     pub background: bool,
     pub tap: bool,
     pub children: Vec<Node>,
@@ -562,7 +563,7 @@ impl Scene {
         let node = self.node(
             root,
             self.lua.create_table()?,
-            (14., [1.; 4], false),
+            (14., [1.; 4], false, 1.),
             "0".into(),
             0,
             &mut seen,
@@ -575,7 +576,7 @@ impl Scene {
         &mut self,
         node: Table,
         context: Table,
-        style: (f64, [f32; 4], bool),
+        style: (f64, [f32; 4], bool, f32),
         path: String,
         depth: usize,
         seen: &mut BTreeSet<usize>,
@@ -602,7 +603,19 @@ impl Scene {
         let props: Table = node.get("props")?;
         let modifiers: Table = node.get("modifiers")?;
         let background = modifiers.get::<Option<Table>>("background")?.is_some();
-        let (mut text_size, mut text_color, mut hidden) = style;
+        let (mut text_size, mut text_color, mut hidden, mut opacity) = style;
+        if let Some(modifier) = modifiers.get::<Option<Table>>("opacity")? {
+            let value = match modifier.get::<Value>("value")? {
+                Value::Function(f) => f.call::<Value>(())?, value => value,
+            };
+            let value = match value {
+                Value::Integer(value) => value as f64,
+                Value::Number(value) => value,
+                _ => bail!("Native UI opacity requires a number"),
+            };
+            ensure!(value.is_finite() && (0. ..=1.).contains(&value), "Invalid native UI opacity");
+            opacity *= value as f32;
+        }
         if let Some(modifier) = modifiers.get::<Option<Table>>("hidden")? {
             let value = match modifier.get::<Value>("value")? {
                 Value::Function(f) => f.call::<Value>(())?, value => value,
@@ -761,7 +774,7 @@ impl Scene {
             nodes.push(self.node(
                 child?,
                 context.clone(),
-                (text_size, text_color, hidden),
+                (text_size, text_color, hidden, opacity),
                 format!("{path}/{index}"),
                 depth + 1,
                 seen,
@@ -779,6 +792,7 @@ impl Scene {
             alignment,
             padding,
             hidden,
+            opacity,
             background,
             tap: has_tap,
             children: nodes,
