@@ -2263,6 +2263,7 @@ impl Player {
             tune: self.instrument.2 + tune,
             rate: self.rate as f32,
             blocking,
+            native_control_tick: self.now & 31 == 0,
             inputs: self.inputs,
         };
         let n = left.len();
