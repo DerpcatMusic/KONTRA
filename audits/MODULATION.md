@@ -419,9 +419,17 @@ The explicit KSP `INTMOD_BYPASS` button now removes pitch modulation while its
 AHDSR clock continues. Preset mode/bypass flag bytes remain undecoded. The original
 NI-authored [Kontakt Script Language Manual](https://www.danielrdehaan.com/attachments/kontakt_script_language.pdf)
 (pp. 64-65 and 87) documents internal modulator/assignment addressing and the bypass
-button; that PDF is a verbatim historical manual hosted by a third party. Legacy
-`INTMOD_INTENSITY` scaling is still unverified against primary documentation and
-remains unsupported rather than reusing modern linear MP scaling.
+button; that PDF is a verbatim historical manual hosted by a third party.
+
+Legacy `INTMOD_INTENSITY` now routes internal AHDSR pitch targets using the inferred
+bipolar cubic depth `((2 * value / 1000000) - 1)^3`, with cube-root readback. This
+matches the [original developer's published pitch measurements](https://community.native-instruments.com/discussion/60/how-to-approaching-modulation-in-ksp):
+1129961 gives 24 semitones, 1221125 gives 36, 1293701 gives 48, and 2000000 gives
+324. Those points use the existing 12-semitone/unit pitch scale. The law is inferred
+from primary experimental data and has not been calibrated against Kontakt renders;
+legacy volume/filter target scaling remains unsupported. Modern
+`MOD_TARGET_MP_INTENSITY` retains its distinct linear bipolar law. Finite extended
+legacy depths survive writes and readback instead of being clamped to one octave.
 
 A content-free raw-modulator census of the configured 782 presets (788 programs)
 completed with zero failures: 226,278 groups, 223,743 AHDSRs, 6,884 flex envelopes,

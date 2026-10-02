@@ -468,6 +468,7 @@ pub mod id {
     pub const ATK_CURVE: i32 = B + 11;
     pub const MOD_TARGET_INTENSITY: i32 = B + 16;
     pub const MOD_TARGET_MP_INTENSITY: i32 = B + 17;
+    pub const INTMOD_INTENSITY: i32 = B + 18;
     pub const INTMOD_BYPASS: i32 = B + 19;
     pub const EFFECT_BYPASS: i32 = B + 22;
     pub const EFFECT_TYPE: i32 = B + 23;
@@ -551,6 +552,8 @@ pub(crate) enum Address {
         target: u16,
         bipolar: bool,
     },
+    /// Legacy cubic bipolar depth, inferred for pitch targets only.
+    LegacyPitchIntensity { group: u16, envelope: u8, target: u16 },
     /// Explicit KSP bypass, separate from the undecoded preset flags.
     InternalBypass(u16, u8),
     Fx(Rack, u8, FxParam),
@@ -644,13 +647,14 @@ impl Address {
                     .any(|t| t.target == ModTarget::Pitch).then_some(())?;
                 Self::InternalBypass(g, u8::try_from(e).ok()?)
             }
-            id::MOD_TARGET_INTENSITY | id::MOD_TARGET_MP_INTENSITY => {
+            id::MOD_TARGET_INTENSITY | id::MOD_TARGET_MP_INTENSITY | id::INTMOD_INTENSITY => {
                 let g = group()?;
                 let m = modulator(g)?;
                 let target = usize::try_from(par.generic).unwrap_or(0);
                 (target < m.targets.len()).then_some(())?;
                 let bipolar = par.id == id::MOD_TARGET_MP_INTENSITY;
                 match m.assignments {
+                    Some(_) if par.id == id::INTMOD_INTENSITY => return None,
                     Some(index) => Self::Intensity {
                         group: g,
                         index: u16::try_from(index + target).ok()?,
@@ -666,12 +670,11 @@ impl Address {
                             .target
                             == ModTarget::Pitch)
                             .then_some(())?;
-                        Self::InternalIntensity {
-                            group: g,
-                            envelope: u8::try_from(envelope).ok()?,
-                            target: u16::try_from(target).ok()?,
-                            bipolar,
-                        }
+                        let envelope = u8::try_from(envelope).ok()?;
+                        let target = u16::try_from(target).ok()?;
+                        if par.id == id::INTMOD_INTENSITY {
+                            Self::LegacyPitchIntensity { group: g, envelope, target }
+                        } else { Self::InternalIntensity { group: g, envelope, target, bipolar } }
                     }
                 }
             }
@@ -763,6 +766,7 @@ impl Address {
                 | Self::ModEnvelope(..)
                 | Self::InternalIntensity { .. }
                 | Self::InternalBypass(..)
+                | Self::LegacyPitchIntensity { .. }
                 | Self::Intensity { .. }
                 | Self::Filter(..)
         )
@@ -800,6 +804,9 @@ impl Address {
                 Stage::Attack | Stage::Hold => time(x, SHORT),
                 Stage::Decay | Stage::Release => time(x, LONG),
             },
+            // NI developer's pitch points: 1129961 -> 24 st, 1221125 -> 36 st.
+            // Inferred cubic, not Kontakt reference-render calibrated.
+            Self::LegacyPitchIntensity { .. } => (2. * value as f32 / UNIT - 1.).powi(3),
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. } => 2.0 * x - 1.0,
             Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) => f32::from(value != 0),
@@ -850,6 +857,7 @@ impl Address {
                 Stage::Attack | Stage::Hold => time_value(v, SHORT),
                 Stage::Decay | Stage::Release => time_value(v, LONG),
             },
+            Self::LegacyPitchIntensity { .. } => return ((v.cbrt() + 1.) * 0.5 * UNIT).round() as i32,
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. }
             | Self::Fx(_, _, FxParam::Pan)
@@ -1009,12 +1017,8 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             };
             m.intensity = value.clamp(-1.0, 1.0);
         }
-        Address::InternalIntensity {
-            group,
-            envelope,
-            target,
-            ..
-        } => {
+        Address::InternalIntensity { group, envelope, target, .. }
+        | Address::LegacyPitchIntensity { group, envelope, target } => {
             let Some(m) = settings
                 .get_mut(group as usize)
                 .and_then(|s| s.pitch_envelopes.iter_mut().find(|e| e.index == envelope))
@@ -1022,7 +1026,10 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             else {
                 return false;
             };
-            m.2.intensity = value.clamp(-1., 1.);
+            if !value.is_finite() { return false; }
+            m.2.intensity = if matches!(address, Address::LegacyPitchIntensity { .. }) {
+                value
+            } else { value.clamp(-1., 1.) };
         }
         Address::InternalBypass(g, index) => {
             let Some(envelope) = settings.get_mut(g as usize)
@@ -1098,12 +1105,8 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
             .mods
             .get(index as usize)
             .map(|m| m.intensity),
-        Address::InternalIntensity {
-            group,
-            envelope,
-            target,
-            ..
-        } => settings
+        Address::InternalIntensity { group, envelope, target, .. }
+        | Address::LegacyPitchIntensity { group, envelope, target } => settings
             .get(group as usize)?
             .pitch_envelopes
             .iter()
@@ -1247,6 +1250,8 @@ mod tests {
             (id::ATK_CURVE, "ATK_CURVE"),
             (id::MOD_TARGET_INTENSITY, "MOD_TARGET_INTENSITY"),
             (id::MOD_TARGET_MP_INTENSITY, "MOD_TARGET_MP_INTENSITY"),
+            (id::INTMOD_INTENSITY, "INTMOD_INTENSITY"),
+            (id::INTMOD_BYPASS, "INTMOD_BYPASS"),
             (id::EFFECT_BYPASS, "EFFECT_BYPASS"),
             (id::EFFECT_TYPE, "EFFECT_TYPE"),
             (id::EFFECT_SUBTYPE, "EFFECT_SUBTYPE"),
@@ -1519,6 +1524,18 @@ mod tests {
         assert!((p.pitch(&mut state, 480, 48_000.) + 3.).abs() < 1e-4);
 
         // A held +6 semitone pitch envelope must reach the actual resampler.
+        let legacy = Address::resolve(EnginePar { id: id::INTMOD_INTENSITY, group: 0, slot: 0, generic: 0 }, &groups).unwrap();
+        for (value, semitones) in [(0, -12.), (250_000, -1.5), (500_000, 0.), (750_000, 1.5),
+            (1_000_000, 12.), (1_129_961, 24.), (1_221_125, 36.), (1_293_701, 48.), (2_000_000, 324.)] {
+            let depth = legacy.decode(value);
+            assert!((12. * depth - semitones).abs() < 1e-3);
+            assert!((legacy.encode(depth) - value).abs() <= 1);
+            assert!(write(&mut settings, legacy, depth));
+            assert_eq!(read(&settings, legacy), Some(depth));
+        }
+        assert_eq!(address.decode(750_000), 0.5); // Modern MP is linear, legacy is cubic.
+        assert!(!write(&mut settings, legacy, f32::NAN));
+        assert!(write(&mut settings, legacy, -0.5));
         let bypass = Address::resolve(EnginePar { id: id::INTMOD_BYPASS, group: 0, slot: 0, generic: -1 }, &groups).unwrap();
         assert!(write(&mut settings, bypass, bypass.decode(1)));
         assert_eq!(bypass.encode(read(&settings, bypass).unwrap()), 1);
