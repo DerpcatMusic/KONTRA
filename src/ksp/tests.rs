@@ -171,6 +171,30 @@ fn wallpaper_frames_follow_script_changes_in_the_live_view() {
     assert_eq!(live.interface.as_ref().unwrap().wallpaper_state, 1);
 }
 
+#[test]
+fn skin_offsets_are_pixels_per_slot_and_refresh_without_changing_picture_state() {
+    let mut rig = Rig::new(&[
+        "on init\nmake_perfview\ndeclare ui_switch $page\nset_skin_offset(-17)\nend on\non ui_control($page)\nset_skin_offset($page * 91)\nend on",
+        "on init\nmake_perfview\ndeclare ui_switch $page\nset_skin_offset(223)\nset_control_par($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE_STATE,3)\nend on\non ui_control($page)\nset_skin_offset(223 + $page * 484)\nend on",
+    ]);
+    assert_eq!(rig.rt.interface(0).skin_offset, -17);
+    let mut live = rig.rt.live();
+    assert_eq!(live.slot, 1);
+    assert_eq!(live.interface.as_ref().unwrap().skin_offset, 223);
+    let changes = rig.rt.changes();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert!(rig.rt.changes() > changes);
+    assert_eq!(rig.rt.interface(0).skin_offset, 91);
+    rig.rt.refresh_live(&mut live);
+    assert_eq!(live.interface.as_ref().unwrap().skin_offset, 223);
+    rig.rt.ui_control(&mut rig.engine, 1, 0, 1);
+    assert!(rig.rt.refresh_live(&mut live));
+    let ui = live.interface.unwrap();
+    assert_eq!(ui.skin_offset, 707);
+    assert_eq!(ui.wallpaper_state, 3);
+    assert!(rig.rt.diagnostics().is_empty());
+}
+
 // ---- Initialization (ported from the init-only interpreter) ---------------------------
 
 #[test]
