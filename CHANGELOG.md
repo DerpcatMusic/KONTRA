@@ -8,6 +8,12 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Fixed after 0.3.64
+
+- Modern signed pitch intensity now follows the checked cubic conversion and retains 24/36-semitone values; non-pitch modulation laws are unchanged.
+- Convolution Reverse now reverses the source impulse response before rate conversion and predelay. Auto Gain and active IR Volume Envelope are explicitly reported as unsupported; no gain normalization is guessed.
+- Large load dependency lists now use bounded typed journal chunks that can be reassembled completely in support reports. Source excerpts and path redaction remain intact; oversized individual values still report truncation.
+
 ### Added
 
 - Headless `audit-patch` accepts explicit snapshot and program selection while

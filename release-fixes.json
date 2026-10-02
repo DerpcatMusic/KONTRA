@@ -592,6 +592,33 @@
       ],
       "validation": "Root reports native menu origin, host-state and zero-heap gate passed at 9bbce5e. Distinct from the ui_menu VALUE getter correction; Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
       "accepted": true
+    },
+    {
+      "id": "modern-signed-pitch-depth",
+      "summary": "Decode modern signed pitch intensity with the independently verified cubic law",
+      "source_commits": [
+        "a70e26e2257f50bae59d5283fccb8a7330f238fe"
+      ],
+      "validation": "Focused production gates passed for native writer/readback/aliases/24-36-semitone actual resampler PCM and zero heap. Non-pitch laws and opaque native flags are unchanged; Conflux v0x103 assignments remain unsupported.",
+      "accepted": true
+    },
+    {
+      "id": "convolution-source-reverse",
+      "summary": "Apply native convolution Reverse before resampling and predelay",
+      "source_commits": [
+        "03cdd86fda80c7c7025e272db9da428dc3072cef"
+      ],
+      "validation": "Asymmetric stereo impulse gate passed at both sample rates with predelay, preserved raw gain and zero processing heap. Native flag identities are corroborated; Auto Gain and Volume Envelope remain explicit unsupported processing, so full convolution parity is not claimed.",
+      "accepted": true
+    },
+    {
+      "id": "bounded-load-detail-inventories",
+      "summary": "Preserve large dependency inventories in bounded journal chunks",
+      "source_commits": [
+        "c1935458400b3a4251d16f827918987220bf91d1"
+      ],
+      "validation": "Production >64KiB inventory gate passed: ordered complete journal/support-export reassembly, correct source excerpts and path redaction, zero truncation/drop/write failures. Individual oversized values retain explicit existing truncation behavior; actual Morphology replay is pending.",
+      "accepted": true
     }
   ]
 }
