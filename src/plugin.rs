@@ -1319,10 +1319,25 @@ impl Shared {
                 v.live_diagnostics.clone().filter(|d| d.epoch != 0 && d.epoch == v.script_epoch)
                     .zip(v.load_report.clone())
                     .map(|(diagnostics, report)| (diagnostics, report,
-                        v.instrument.as_ref().map(|i| i.path.clone()), v.program))
+                        v.instrument.clone(), v.program))
             };
-            let Some((diagnostics, previous, path, program)) = pending else { continue };
-            let runtime = serde_json::json!({"faults":diagnostics.faults,"fault_occurrences_omitted":diagnostics.fault_occurrences_omitted,"notes":diagnostics.notes});
+            let Some((diagnostics, previous, instrument, program)) = pending else { continue };
+            let mut runtime = serde_json::json!({"faults":diagnostics.faults,"fault_occurrences_omitted":diagnostics.fault_occurrences_omitted,"notes":diagnostics.notes});
+            if let Some(instrument) = &instrument {
+                for fault in runtime["faults"].as_array_mut().into_iter().flatten() {
+                    if let Some(excerpt) = previous["runtime"]["faults"].as_array().into_iter().flatten()
+                        .find(|old| old["slot"] == fault["slot"] && old["line"] == fault["line"])
+                        .and_then(|old| old.get("source_excerpt"))
+                    {
+                        fault["source_excerpt"] = excerpt.clone();
+                        continue;
+                    }
+                    if let (Some(slot), Some(line)) = (fault["slot"].as_u64(), fault["line"].as_u64())
+                        && let Some(source) = slot.checked_sub(1).and_then(|slot| instrument.scripts.get(slot as usize))
+                        && let Some(excerpt) = crate::diagnostics::script_excerpt(source, slot as u32, line as u32, None)
+                    { fault["source_excerpt"] = excerpt; }
+                }
+            }
             if previous["runtime"] == runtime { continue; }
             let mut new_issues = Vec::new();
             for fault in runtime["faults"].as_array().into_iter().flatten() {
@@ -1363,7 +1378,7 @@ impl Shared {
             v.load_report = Some(report);
             v.runtime_status = status;
             drop(view);
-            if let Some(path) = path { crate::diagnostics::runtime(&path, program, slot, diagnostics.epoch, load_id.as_deref(), &new_issues); }
+            if let Some(instrument) = instrument { crate::diagnostics::runtime(&instrument.path, program, slot, diagnostics.epoch, load_id.as_deref(), &new_issues); }
         }
     }
 
@@ -1870,9 +1885,9 @@ impl BackgroundTask for Load {
                 trace.stage("scripts");
                 let (script, snapshot, errors) =
                     scripts(&instrument, &part.script_state, &part.ir_settings, &part.engine_state, params.shared.rate());
-                for e in &errors { trace.issue("scripts", "initialization_failed", e); }
+                for e in &errors { trace.script_issue("initialization_failed", e, &instrument.scripts); }
                 if let Some(rt) = script.as_deref() {
-                    for e in rt.diagnostics() { trace.issue("scripts", crate::diagnostics::code(&e), e); }
+                    for e in rt.diagnostics() { trace.script_issue(crate::diagnostics::code(&e), e, &instrument.scripts); }
                 }
                 let live = script.as_deref().map(|rt| Box::new(rt.live()));
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
@@ -2019,9 +2034,9 @@ impl BackgroundTask for Load {
                     let scripts = scripts.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
                     (scripts, bare)
                 });
-                for e in script_errors { trace.issue("scripts", "initialization_failed", e); }
+                for e in script_errors { trace.script_issue("initialization_failed", e, &instrument.scripts); }
                 if let Some(rt) = script.as_deref() {
-                    for d in rt.diagnostics() { trace.issue("scripts", crate::diagnostics::code(&d), d); }
+                    for d in rt.diagnostics() { trace.script_issue(crate::diagnostics::code(&d), d, &instrument.scripts); }
                 }
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
                 progress.fetch_max(crate::engine::LOAD_DONE / 10, Ordering::Relaxed);
@@ -4209,6 +4224,69 @@ pub(crate) mod tests {
         assert!(!p.shared.queue_snapshot(0, &multi, "preset.nksn".into()));
         let program = Part { program: 1, ..part };
         assert!(!p.shared.queue_snapshot(0, &program, "preset.nksn".into()));
+    }
+
+    #[test]
+    fn script_fault_excerpts_preserve_malformed_source_and_runtime_arguments_off_audio() {
+        let _diagnostics = crate::diagnostics::DiagnosticLease::acquire();
+        let instrument = Arc::new(Instrument {
+            path: "/private/excerpt-owner/Example.nki".into(),
+            scripts: vec![
+                "on init\nmessage(\"unterminated)\nend on".into(),
+                "on init\ndeclare ui_knob $bad(0,256,1)\nend on\non ui_control($bad)\nset_key_color($bad,$KEY_COLOR_RED)\nend on".into(),
+            ], ..Default::default()
+        });
+        let (mut rt, errors) = crate::engine::load_scripts(&instrument, Vec::new(), 48_000.);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("Unterminated KSP string at line 2"), "{errors:?}");
+        let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, 0, Some(0));
+        trace.script_issue("initialization_failed", &errors[0], &instrument.scripts);
+        let initial = trace.finish("partial");
+        let parse = &initial["issues"][0];
+        assert_eq!((parse["script_slot"].as_u64(), parse["line"].as_u64()), (Some(0), Some(2)));
+        assert!(crate::diagnostics::excerpt_text(parse).unwrap().contains(">      2 | message(\"unterminated)"));
+
+        let rt = rt.as_mut().unwrap();
+        let mut live = rt.live();
+        let mut engine = crate::ksp::LogEngine::default();
+        assert_eq!(allocations(|| {
+            rt.ui_control(&mut engine, 1, 0, 128);
+            rt.refresh_diagnostics(&mut live);
+        }), 0, "only the worker materializes source excerpts");
+        assert_eq!(live.faults.len(), 1);
+        let shared = Shared::default();
+        {
+            let mut view = shared.view.lock().unwrap();
+            let part = &mut view.parts[0];
+            part.instrument = Some(instrument);
+            part.script_epoch = 9;
+            part.diagnostics_dirty = true;
+            part.load_report = Some(initial.clone());
+            part.live_diagnostics = Some(Arc::new(LiveDiagnostics {
+                epoch: 9, faults: live.faults.clone(), fault_occurrences_omitted: 0, notes: Vec::new(),
+            }));
+        }
+        shared.drain_live_diagnostics();
+        let report = shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
+        let fault = &report["runtime"]["faults"][0];
+        assert_eq!(fault["context"]["MidiNote"]["value"], 128);
+        assert_eq!(fault["context"]["MidiNote"]["builtin"], "set_key_color");
+        assert_eq!(fault["source_excerpt"]["script_slot"], 2, "runtime slot 2 must select source index 1");
+        assert!(crate::diagnostics::excerpt_text(fault).unwrap().contains(">      5 | set_key_color($bad,$KEY_COLOR_RED)"));
+        assert!(crate::diagnostics::snapshot().events.iter().any(|event|
+            event.load_id.as_deref() == initial["load_id"].as_str() && event.event == "runtime_issue"
+                && event.script_slot == Some(1)
+                && event.details["context"]["MidiNote"]["value"] == 128
+                && crate::diagnostics::excerpt_text(&event.details).is_some()), "the journal event retains source and argument context");
+        let mut safe = serde_json::json!({"path":"/private/excerpt-owner/Example.nki", "report":report, "script_source":"full private payload", "access_key":"not-code"});
+        crate::diagnostics::clean(&mut safe, true);
+        assert!(!safe.to_string().contains("/private/excerpt-owner") && !safe.to_string().contains("full private payload") && !safe.to_string().contains("not-code"));
+        assert!(crate::diagnostics::excerpt_text(&safe["report"]["runtime"]["faults"][0]).is_some(), "authorized bounded excerpts survive copy/export sanitization");
+        let long = format!("{}bad()\nend on", "é".repeat(2000));
+        let excerpt = crate::diagnostics::script_excerpt(&long, 1, 1, Some(2001)).unwrap();
+        assert_eq!(excerpt["truncated"], true);
+        assert!(excerpt["text"].as_str().unwrap().contains("bad()") && excerpt["text"].as_str().unwrap().contains('^'));
+        assert!(serde_json::to_vec(&excerpt).unwrap().len() < 4096);
     }
 
     #[test]

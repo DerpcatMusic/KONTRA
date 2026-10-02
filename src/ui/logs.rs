@@ -302,14 +302,18 @@ fn time(ms: u64) -> String {
     )
 }
 fn details(event: &LogEvent) -> String {
-    serde_json::to_string_pretty(event).unwrap_or_else(|_| "Could not format this event.".into())
+    let record = serde_json::to_string_pretty(event).unwrap_or_else(|_| "Could not format this event.".into());
+    match diagnostics::excerpt_text(&event.details) {
+        Some(excerpt) => format!("{}\n\nScript source context (numbered lines; > marks the fault)\n{excerpt}\nColumns refer to the original source; path redaction may alter displayed text.\n\n{record}", event.reason.as_deref().unwrap_or("Script diagnostic")),
+        None => record,
+    }
 }
 
 /// Runs on the support worker; includes every retained row, never the UI filter.
 fn support_text(snapshot: DiagnosticSnapshot, context: serde_json::Value) -> Result<String, String> {
     use std::fmt::Write;
     let status = &snapshot.status;
-    let mut text = format!("KONTRA diagnostics — retained session report\n{}\n\nCoverage: current session retained view and available load summaries; all levels, independent of search.\nRetained {} / {} session events. Session levels: Debug {}, Info {}, Warning {}, Error {}.\nOlder events evicted from view: {}; recorder drops: {}; abbreviated events: {}; write errors: {}; retention errors: {}.\nRuntime/load-summary omission counts and cap notices are separate from recorder loss; a notice without a count has unknown omitted cardinality.\nPrevious sessions and rotated disk history are NOT included in this clipboard report. Export support report includes available retained journal history across sessions.\nPaths are redacted; filenames and diagnostic messages remain. No samples, script contents or credentials.\n\n",
+    let mut text = format!("KONTRA diagnostics — retained session report\n{}\n\nCoverage: current session retained view and available load summaries; all levels, independent of search.\nRetained {} / {} session events. Session levels: Debug {}, Info {}, Warning {}, Error {}.\nOlder events evicted from view: {}; recorder drops: {}; abbreviated events: {}; write errors: {}; retention errors: {}.\nRuntime/load-summary omission counts and cap notices are separate from recorder loss; a notice without a count has unknown omitted cardinality.\nPrevious sessions and rotated disk history are NOT included in this clipboard report. Export support report includes available retained journal history across sessions.\nPaths are redacted; filenames and diagnostic messages remain. Bounded script excerpts around faults are included. No full scripts, samples or credentials.\n\n",
         crate::build_info::SUMMARY, snapshot.events.len(), status.total_events,
         status.level_counts[0], status.level_counts[1], status.level_counts[2], status.level_counts[3],
         status.history_evicted, status.dropped_events, status.truncated_events, status.write_errors, status.retention_errors);
@@ -326,6 +330,10 @@ fn support_text(snapshot: DiagnosticSnapshot, context: serde_json::Value) -> Res
             event["code"].as_str().or_else(|| event["event"].as_str()).unwrap_or("event"),
             event["reason"].as_str().unwrap_or(""));
         text.push_str(&serde_json::to_string_pretty(event).map_err(|e| e.to_string())?);
+        if let Some(excerpt) = diagnostics::excerpt_text(&event["details"]) {
+            text.push_str("\nScript source context (numbered lines; > marks the fault)\n");
+            text.push_str(excerpt);
+        }
         text.push('\n');
     }
     Ok(text)
@@ -775,7 +783,10 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                 level_name(event.level),
                 event.reason.as_deref().unwrap_or(&event.event)
             ))
-            .tip(event.reason.as_deref().unwrap_or(&event.event).to_owned())
+            .tip(match diagnostics::excerpt_text(&event.details) {
+                Some(excerpt) => format!("{}\n\nScript source context\n{excerpt}", event.reason.as_deref().unwrap_or(&event.event)),
+                None => event.reason.as_deref().unwrap_or(&event.event).to_owned(),
+            })
             .id(id),
             selected,
         ));
@@ -860,7 +871,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                     .shrink(0)
             ]
             .pad(INSET)
-            .h(120.)
+            .h(if diagnostics::excerpt_text(&event.details).is_some() { 200. } else { 120. })
             .shrink(0)
             .scroll()
             .id("logs-details"),
@@ -1018,7 +1029,10 @@ mod tests {
                 script_slot: Some(0),
                 line: Some(42),
                 reason: Some(format!("Marker {n}: sample reference resolved.")),
-                details: json!({"reason":"synthetic test event","line":42}),
+                details: if n == 1001 {
+                    json!({"reason":"synthetic test event","line":42,"source_excerpt":diagnostics::script_excerpt(
+                        &format!("{}malformed(\"context)\nend on", "\n".repeat(41)),1,42,Some(11))})
+                } else { json!({"reason":"synthetic test event","line":42}) },
             })
             .collect();
         let snapshot = DiagnosticSnapshot {
@@ -1091,6 +1105,7 @@ mod tests {
         assert_eq!(state.selected, Some(1002));
         assert!(ui.scene().unwrap().surface("logs-copy").is_some());
         assert!(state.detail.as_ref().unwrap().1.contains("Marker 1001"));
+        assert!(state.detail.as_ref().unwrap().1.contains("\n>     42 | malformed(\"context)\n"), "selected details display actual numbered code, not only JSON escapes");
         let scene = ui.scene().unwrap();
         let row = scene.surface("log-event-1002").unwrap().frame;
         let title = scene.surface("log-event-1002-title").unwrap().frame;
@@ -1114,6 +1129,7 @@ mod tests {
         assert!(copied.contains("7952") && copied.contains("10000") && copied.contains("issues_omitted") && copied.contains("omitted locations unknown"), "recorder coverage and load/runtime omissions remain distinct");
         assert!(copied.contains("Diagnostic Test.nki") && !copied.contains("/virtual/private-user") && !copied.contains("private script payload"), "default redaction keeps filenames and removes private payloads");
         assert!(copied.contains("Previous sessions and rotated disk history are NOT included"));
+        assert!(copied.contains("\n>     42 | malformed(\"context)\n"), "Copy all includes readable source context alongside its structured record");
         let shot = Path::new("artifacts/diagnostics/log-panel-fixture.png");
         std::fs::create_dir_all(shot.parent().unwrap()).unwrap();
         moose::core::screenshot::save_png(
