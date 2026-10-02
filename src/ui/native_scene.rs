@@ -140,9 +140,9 @@ fn primitive(
 ) -> El {
     match &node.paint {
         Paint::Text(value) => text(value.clone())
-            .text_size(14.)
+            .text_size(node.text_size)
             .lines(1)
-            .fill(Color::srgb(1., 1., 1.))
+            .fill(Color::srgba(node.text_color[0], node.text_color[1], node.text_color[2], node.text_color[3]))
             .w(w)
             .h(h),
         Paint::Rectangle(color) => {
