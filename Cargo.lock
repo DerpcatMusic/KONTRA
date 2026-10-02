@@ -2083,7 +2083,7 @@ dependencies = [
 [[package]]
 name = "mui"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "color",
  "mui-geometry",
@@ -2101,7 +2101,7 @@ dependencies = [
 [[package]]
 name = "mui-access"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "accesskit",
  "mui-scene",
@@ -2126,7 +2126,7 @@ dependencies = [
 [[package]]
 name = "mui-geometry"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "i_overlay",
  "kurbo",
@@ -2136,7 +2136,7 @@ dependencies = [
 [[package]]
 name = "mui-input"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "mui-geometry",
  "mui-layout",
@@ -2146,7 +2146,7 @@ dependencies = [
 [[package]]
 name = "mui-layout"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "rustc-hash 2.1.3",
 ]
@@ -2154,7 +2154,7 @@ dependencies = [
 [[package]]
 name = "mui-material"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "mui-scene",
 ]
@@ -2162,12 +2162,12 @@ dependencies = [
 [[package]]
 name = "mui-motion"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 
 [[package]]
 name = "mui-scene"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "mui-geometry",
  "mui-layout",
@@ -2182,7 +2182,7 @@ dependencies = [
 [[package]]
 name = "mui-style"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "color",
  "kurbo",
@@ -2195,12 +2195,12 @@ dependencies = [
 [[package]]
 name = "mui-symbols"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 
 [[package]]
 name = "mui-text"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "harfrust 0.13.3",
  "mui-geometry",
@@ -2213,7 +2213,7 @@ dependencies = [
 [[package]]
 name = "mui-vello"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "glifo",
  "mui-geometry",
@@ -2230,7 +2230,7 @@ dependencies = [
 [[package]]
 name = "mui-weld"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#6389c7e0dce9735cfab155e98afca1498c633cec"
+source = "git+https://github.com/Matari-Audio/MUI#efc5e8ef4b6cbcb54c9e60e5e1f9a9d1e6159c0c"
 dependencies = [
  "color",
  "kurbo",
