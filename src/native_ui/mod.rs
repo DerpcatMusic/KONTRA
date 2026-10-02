@@ -405,7 +405,7 @@ impl Scene {
             target_version,
             resources,
         };
-        let root = scene.snapshot().context("Native UI scene validation")?;
+        let root = scene.snapshot_raw().context("Native UI scene validation")?;
         let names = root.asset_names();
         ensure!(names.len() <= 256, "Native UI asset count exceeds 256");
         scene.assets = Arc::new(crate::native_assets::Assets::prepare_bounded(
@@ -516,6 +516,11 @@ impl Scene {
         }
     }
     pub(crate) fn snapshot(&mut self) -> Result<Node> {
+        let node = self.snapshot_raw()?;
+        crate::ui::native_scene::validate_root(&node, &self.assets)?;
+        Ok(node)
+    }
+    fn snapshot_raw(&mut self) -> Result<Node> {
         self.instructions.store(0, Ordering::Relaxed);
         self.gestures.clear();
         let mut seen = BTreeSet::new();
