@@ -108,10 +108,17 @@ preset folder and usually point into the resource container, e.g.
 Una Corda's `EMT140` IR member has a damaged archive header (see `archive-health.json`),
 so it is reported as unavailable and passes through.
 
-IRs are used raw (no normalization). Evidence: the insert convolutions set wet to -30 dB
-with dry 0 dB; with raw hall IRs that yields a -20 dB reverb-to-direct ratio (measured on
-Afflatus "4 Horns Performance"), while unit-energy normalization would make them inaudible.
-Which of the five flags is Kontakt's auto-gain is unknown (they are identical in every preset).
+IRs currently use their decoded amplitudes without automatic gain compensation.
+Stored wet and dry levels still apply. This is a fallback, not a verified Kontakt
+gain law. The [NI effect reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/effect-reference)
+defines Auto Gain, which compensates level changes caused by processing settings,
+and an eight-segment Volume Envelope, which reshapes the impulse response. The
+reader retains five native flags and the envelope points, but their flag identities
+and the native gain-compensation law are unverified; these controls are not applied.
+Raw IR frequency gain, parallel returns and accumulated tails can therefore produce
+large output peaks even when the voice Amplifier and group selection are correct.
+Those peaks do not establish intended preset gain. Automatic normalization or a
+new limiter would conceal the missing native processing rather than prove its law.
 
 ## DSP
 
