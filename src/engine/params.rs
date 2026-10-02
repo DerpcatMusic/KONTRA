@@ -2017,7 +2017,7 @@ mod tests {
             // also exercise an audible cutoff change rather than readback alone.
             let pitch_raw = 775_160;
             let readback = "declare $p := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,0,0,1)\nmake_persistent($p)\ndeclare $c := get_engine_par($ENGINE_PAR_INTMOD_INTENSITY,0,0,2)\nmake_persistent($c)\nend on";
-            let source = |name| format!("on init\nset_engine_par({name},{pitch_raw},0,0,1)\nset_engine_par({name},{cutoff_raw},0,0,2)\n{readback}");
+            let source = |name| format!("on init\nset_engine_par({name},{pitch_raw},0,0,1)\nset_engine_par({name},{cutoff_raw},0,0,2)\n{readback}\non note\nset_engine_par({name},{pitch_raw},0,0,1)\nset_engine_par({name},{cutoff_raw},0,0,2)\nend on");
             let legacy = render(group.clone(), &source("$ENGINE_PAR_INTMOD_INTENSITY"), pitch_raw, cutoff_raw);
             let modern = render(group.clone(), &source("$ENGINE_PAR_MOD_TARGET_MP_INTENSITY"), pitch_raw, cutoff_raw);
             let mut reference = group.clone();
