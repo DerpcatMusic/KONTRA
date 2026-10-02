@@ -21,12 +21,13 @@ pub enum BPatchHeader {
 
 impl BPatchHeader {
     pub fn read_le<R: ReadBytesExt>(mut reader: R) -> Result<Self, NKSError> {
+        let at = reader.stream_position()?;
         let header_version = reader.read_u16_le()?;
-        Ok(match header_version {
-            0..=255 => Self::BPatchHeaderV1(BPatchHeaderV1::read_le(&mut reader)?),
-            256..=271 => Self::BPatchHeaderV2(BPatchHeaderV2::read_le(&mut reader)?),
-            _ => Self::BPatchHeaderV42(BPatchHeaderV42::read_le(&mut reader)?),
-        })
+        match header_version {
+            0..=255 => BPatchHeaderV1::read_le(&mut reader).map(Self::BPatchHeaderV1),
+            256..=271 => BPatchHeaderV2::read_le(&mut reader).map(Self::BPatchHeaderV2),
+            _ => BPatchHeaderV42::read_le(&mut reader).map(Self::BPatchHeaderV42),
+        }.map_err(|e| NKSError::context(format!("NKS patch header at offset {at}, format word 0x{header_version:04x}"), e))
     }
 }
 

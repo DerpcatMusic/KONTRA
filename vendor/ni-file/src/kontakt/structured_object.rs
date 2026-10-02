@@ -30,29 +30,17 @@ impl StructuredObject {
         let private_data_length = reader.read_u32_le()?;
         let private_data = reader
             .read_bytes(private_data_length as usize)
-            .map_err(|e| {
-                NIFileError::Generic(format!(
-                    "Failed to read StructuredObject private_data: length={private_data_length} error={e}",
-                ))
-            })?;
+            .map_err(|e| Error::context(format!("StructuredObject private data, declared length {private_data_length}/version 0x{version:04x}"), e))?;
 
         let public_data_length = reader.read_u32_le()?;
         let public_data = reader
             .read_bytes(public_data_length as usize)
-            .map_err(|e| {
-                NIFileError::Generic(format!(
-                    "Failed to read StructuredObject public_data: length={public_data_length} version={version} error={e}",
-                ))
-            })?;
+            .map_err(|e| Error::context(format!("StructuredObject public data, declared length {public_data_length}/version 0x{version:04x}"), e))?;
 
         let children_data_length = reader.read_u32_le()?;
         let children_data = reader
             .read_bytes(children_data_length as usize)
-            .map_err(|e| {
-                NIFileError::Generic(format!(
-                    "Failed to read StructuredObject private_data: length={children_data_length} error={e}",
-                ))
-            })?;
+            .map_err(|e| Error::context(format!("StructuredObject children data, declared length {children_data_length}/version 0x{version:04x}"), e))?;
         let mut children_reader = std::io::Cursor::new(children_data);
 
         let mut children = Vec::new();
@@ -89,7 +77,7 @@ impl std::convert::TryFrom<&Chunk> for StructuredObject {
 
     fn try_from(chunk: &Chunk) -> Result<Self, Self::Error> {
         let cursor = Cursor::new(&chunk.data);
-        Ok(StructuredObject::read(cursor)?)
+        StructuredObject::read(cursor).map_err(|e| NIFileError::context(format!("Kontakt structured chunk 0x{:04x}, body length {}", chunk.id, chunk.data.len()), e))
     }
 }
 
