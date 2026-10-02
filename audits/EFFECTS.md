@@ -364,7 +364,7 @@ state and their existing rack parameter laws when native Amplifier placement is
 known. Opaque parameter records and unknown placement stay unsupported. The added
 family routing has one authored group/rack PCM-reference regression covering both
 Amplifier sides, changed native control readback and allocation guards; validation
-of this follow-up is pending. No locally installed authentic group preset of these
+passed on the release build. No locally installed authentic group preset of these
 three families was available for a control/audio check.
 
 Group [Transient Master](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/effect-reference)
@@ -373,7 +373,7 @@ model and its decoded input/attack/sustain/smooth fields with known Amplifier
 placement. Its constructor and reset are shared with the rack. One authored
 regression compares burst attack/body/silence PCM and native attack/sustain edits
 on both Amplifier sides, guards allocations and reports the actual state sizes.
-This separate follow-up also awaits compiled validation; no authentic local group
+This separate follow-up passed on the release build; no authentic local group
 preset or Kontakt audio reference was available.
 
 The fixed filter/EQ capacity now covers all eight native insert slots and up to
@@ -382,11 +382,13 @@ The render loop visits compiled units and their actual sections; empty storage i
 not processed. The shared lane still accepts at most four active sections and
 larger chains use the per-voice path. One authored eight-EQ rack-reference check
 covers Amplifier splits 0/4/8, slot 7 native gain readback, changed finite PCM and
-allocation guards; compiled validation is pending. This addresses a capacity
+allocation guards, and passed on the release build. This addresses a capacity
 warning observed in external library reports; no installed authentic over-capacity
 group was available. Section state plus tuning keys add 1248 fixed bytes per voice
 (1.22 MiB for 1024 voices); the temporary control rows add 192 stack bytes. The
-compiled test reports the resulting VoiceFilter size.
+compiled test measured Section at 40 bytes and VoiceFilter at 3052 bytes. The
+Transient Master state is 36 bytes and fits the existing 72-byte VoiceEffect
+enum, adding no fixed voice storage.
 
 On the previously checked Rust 1.98.1 release build, both the old Drive and the new VoiceEffect
 enum are 72 bytes. The fixed voice state adds 128 bytes for per-slot gain/mixer
