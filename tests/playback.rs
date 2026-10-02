@@ -2024,8 +2024,8 @@ end on"#;
     assert_eq!(count, 0, "first callback allocated or freed");
     let rt = e.script().unwrap();
     assert_eq!(rt.diagnostics(),vec![
-        "save_array: external file dialogs and mode-based saves are unavailable".to_owned(),
         "load_array: no file dialog here; nothing saved in this session".to_owned(),
+        "save_array: external file dialogs and mode-based saves are unavailable".to_owned(),
     ],"unsupported dialogs must report failure rather than pretend to save");
     let ui = rt.interface(0);
     assert_eq!(ui.controls[1].menu.len(), 1);
