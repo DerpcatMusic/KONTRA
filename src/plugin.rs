@@ -1624,7 +1624,11 @@ pub(crate) struct SnapshotRequest {
 
 /// Validate on the loader before replacing any saved or playing state.
 fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, String), Arc<Instrument>)> {
-    let request = params.shared.snapshot_request.lock().unwrap().take()?;
+    let request = {
+        let mut pending = params.shared.snapshot_request.lock().unwrap();
+        if pending.as_ref()?.slot >= params.shared.grown.load(Ordering::Acquire) as usize { return None }
+        pending.take()?
+    };
     let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&request.source.0), request.source.1, Some(request.slot));
     trace.detail("instance_id", params.shared.instance_id);
     trace.detail("operation", "snapshot_validation");
@@ -1804,7 +1808,7 @@ impl BackgroundTask for Load {
                 .midi_thru
                 .store(current.midi_thru, Ordering::Release);
         }
-        for slot in 0..params.shared.with_parts(|p| p.len()) {
+        for slot in 0..params.shared.grown.load(Ordering::Acquire) as usize {
             let atoms = params.shared.part(slot).unwrap();
             let part = selection.parts.get(slot).cloned().unwrap_or_default();
             let target = part.source();
@@ -2289,7 +2293,7 @@ impl BackgroundTask for Load {
         }
         // The host changed sample rate since these effects were built: rebuild them here, off the audio thread.
         let rate = params.shared.rate();
-        for slot in 0..params.shared.with_parts(|p| p.len()) {
+        for slot in 0..params.shared.grown.load(Ordering::Acquire) as usize {
             let stale = {
                 let view = params.shared.view.lock().unwrap();
                 let v = &view.parts[slot];
@@ -2372,7 +2376,7 @@ impl BackgroundTask for Load {
         params.shared.drain_live_diagnostics();
         smart_memory(&params.shared);
         align(params);
-        for slot in 0..params.shared.with_parts(|p| p.len()) {
+        for slot in 0..params.shared.grown.load(Ordering::Acquire) as usize {
             let mut view = params.shared.view.lock().unwrap();
             // Once a second: saving is all it is for, and big script tables
             // cost the audio thread a while to copy.
@@ -2733,8 +2737,8 @@ fn align(params: &SamplerParams) {
     if settled {
         *sent = Some(plan.clone());
         *waiting = None;
-        let _ = shared.plan.force_push(plan);
         shared.reported.store(told(&plan).to_bits(), Ordering::Relaxed);
+        let _ = shared.plan.force_push(plan);
     }
 }
 fn timing_for(p: &Part) -> std::borrow::Cow<'_, Timing> {
@@ -2830,6 +2834,9 @@ impl PluginLogic for Sampler {
             if growth.rack.parts.len() > s.rack.parts.len() { growth.adopt(s); }
             p.shared.grown.store(s.rack.parts.len() as u64, Ordering::Release);
             p.shared.discard.push(Retired { growth: Some(growth), ..Default::default() }).ok().unwrap();
+            // Separate queues have no cross-queue ordering: only this
+            // acknowledgment permits the loader to publish new-slot work.
+            if let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
         }
         let rate = s.rack.parts[0].rate();
         let frames = b.num_samples();
@@ -6671,25 +6678,25 @@ end on"
         let events = EventList::with_capacity(0);
         let mut midi_out = EventList::with_capacity(0);
         let mut cx = ProcessContext::new(&transport, 48000., 128, &mut midi_out);
-        assert_eq!(allocations(|| Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx)), 0);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert_eq!(dsp.rack.parts.len(), 129);
         assert!(dsp.rack.parts[0].key_down(0, 59), "growth preserves held notes");
         assert_eq!(dsp.rack.parts[0].active_voices(), 1);
         dsp.rack.parts[128].set_bank(Some(late_bank(&[(0, 127, 0)])));
         dsp.installed_generation[128] = 73;
         p.shared.press_key(128, 60, 100);
-        assert_eq!(allocations(|| Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx)), 0);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert!(dsp.rack.parts[128].key_down(0, 60));
         p.shared.release_key(60);
-        assert_eq!(allocations(|| Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx)), 0);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert!(!dsp.rack.parts[128].key_down(0, 60), "part 128 is not the old key-owner sentinel");
         p.shared.press_key(EVERY_PART, 61, 100);
-        assert_eq!(allocations(|| Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx)), 0);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert!(dsp.rack.parts[0].key_down(0, 61) && dsp.rack.parts[128].key_down(0, 61));
         dsp.rack.controls[128].channel = 15;
         p.shared.release_key(61);
         dsp.until_diagnostics = 0;
-        assert_eq!(allocations(|| Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx)), 0);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert!(!dsp.rack.parts[128].key_down(0, 61), "release uses the saved targets despite route changes");
         drain_audio_diagnostics(&p);
         let audio = p.shared.diagnostic_latest.lock().unwrap().clone().unwrap();
@@ -6698,7 +6705,7 @@ end on"
         assert_eq!(audio.parts[128].held_keys.len(), 16, "MIDI channel count stays independent");
         assert_eq!(audio.output_buses.len(), BUSES, "host buses stay independent of parts");
         // A full publication queue may coexist with worker-recycled buffers.
-        p.shared.diagnostic_free.force_push(AudioDiagnostics::with_parts(129)).ok();
+        let _ = p.shared.diagnostic_free.force_push(AudioDiagnostics::with_parts(129));
         assert_eq!(allocations(|| {
             for _ in 0..4 {
                 dsp.until_diagnostics = 0;
