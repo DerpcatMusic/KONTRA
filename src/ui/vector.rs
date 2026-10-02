@@ -173,6 +173,9 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
     // Structural skin pairing: an otherwise empty animated label can draw
     // the face of a transparent control occupying the same rectangle. Hide
     // only a unique pair; ambiguous artwork keeps its authored appearance.
+    let controls: Vec<usize> = drawn.iter().enumerate()
+        .filter(|(n, (s, _))| matches!(s.kind, Kind::Knob | Kind::Slider) && clear[*n] && !over_wave(drawn, s))
+        .map(|(n, _)| n).collect();
     let mut pairs = Vec::new();
     let mut counts = vec![0usize; drawn.len()];
     for (n, (label, _)) in drawn.iter().enumerate() {
@@ -180,10 +183,9 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
         if label.kind != Kind::Label || !prop(c, "$CONTROL_PAR_TEXT").trim().is_empty()
             || !label.picture.as_ref().is_some_and(|p| p.frames.len() > 1)
         { continue; }
-        for (m, (control, _)) in drawn.iter().enumerate() {
-            if matches!(control.kind, Kind::Knob | Kind::Slider) && clear[m]
-                && !over_wave(drawn, control)
-                && inside(label, control) >= 0.9 * (label.w * label.h).max(control.w * control.h)
+        for &m in &controls {
+            let control = &drawn[m].0;
+            if inside(label, control) >= 0.9 * (label.w * label.h).max(control.w * control.h)
             {
                 pairs.push((n, m));
                 counts[n] += 1;
