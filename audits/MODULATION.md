@@ -437,12 +437,34 @@ survive omitted unsupported targets. Bypass removes every contribution, includin
 a nonzero shaper intercept, while the existing envelope clock continues; a mixed
 pitch/module envelope updates both prepared copies. Reenabling resumes its elapsed
 phase. Filter/EQ coefficients retain the existing 32-frame control ticks. These
-controls use the existing normalized module-offset law and modern intensity laws;
-legacy filter `INTMOD_INTENSITY` and undecoded preset bypass flags remain unmapped.
+controls use the existing normalized module-offset law and modern intensity laws.
+The [official KSP engine parameter reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters)
+defines modern bipolar depth with zero contribution at 500,000, positive maximum
+at 1,000,000 and inverted maximum at zero; it also identifies `INTMOD_BYPASS`
+as the internal modulator bypass control. Legacy filter `INTMOD_INTENSITY` and
+undecoded preset bypass flags remain unmapped.
 The authored `module_envelope_controls_preserve_targets_and_elapsed_clock_without_heap`
 regression checks PCM bypass/resumption, clock continuity, live depth/readback,
 mixed-target addressing, finite output and allocation counts. Kontakt reference
 render parity has not been established.
+
+A bounded check against production revision `e68d28c` merged the actual Analog
+Strings base instrument with INIT, Accordia and Analog Wave. Each retained all
+483 native groups and original script callbacks. Bypass writes/readback address
+480 distinct module-envelope sources; modern depth writes/readback address 959
+of 960 filter/formant targets, leaving one unsupported opaque filter target.
+The real Layer 2 filter-envelope button produced finite PCM differences in all
+three presets (delta RMS 0.0505270, 0.0235627 and 0.0505270 respectively), with the
+same voice gain, main envelope, pitch step and sample position in each pair.
+This checks callback-to-native-filter routing with a controlled authored stimulus:
+a generated sample, replacement one-zone-per-group mapping and appended helper
+script set modern target depth, envelope stages and filter cutoff. Group buses
+were flattened and program FX omitted. It does not validate the stock legacy
+filter-depth knob, original sample-map playback or Kontakt audio parity. Actual
+script execution was not allocation-instrumented; the zero-heap and continuous
+clock claims come from the separate authored DSP regression. The ignored
+`artifacts/combined-e68d28c/analog-filter-envelope/` evidence preserves the probe,
+executable, six PCM files, native/control logs and hashed manifest.
 
 A content-free raw-modulator census of the configured 782 presets (788 programs)
 completed with zero failures: 226,278 groups, 223,743 AHDSRs, 6,884 flex envelopes,
