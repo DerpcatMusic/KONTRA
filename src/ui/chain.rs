@@ -173,9 +173,8 @@ fn played(e: &Effect, in_group: bool, amp_split: Option<u8>) -> bool {
     match &e.params {
         Params::Filter(_) | Params::Eq(_) => e.is_implemented(),
         Params::StereoModeller(s) => !s.pseudo_stereo,
-        _ => (crate::fx::blocks::VoiceEffect::supports(e.kind)
-                && crate::fx::blocks::fields(&e.params).is_some()
-                && (e.kind != crate::fx::Kind::Compressor || amp_split.is_some()))
+        _ => (crate::fx::blocks::VoiceEffect::supports_at(e.kind, amp_split)
+                && crate::fx::blocks::fields(&e.params).is_some())
             || (e.kind == crate::fx::Kind::SolidGeq && crate::fx::blocks::fields(&e.params).is_some())
             || (e.kind == crate::fx::Kind::Inverter
                 && !matches!(&e.params, Params::Fields(f) if f.iter().any(|f| matches!(f.value, crate::fx::params::Value::Flag(true))))),
