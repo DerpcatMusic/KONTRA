@@ -2224,6 +2224,32 @@ impl Player {
         tune: f32,
         steady: bool,
     ) {
+        if !bank.has_native_controls() {
+            self.render_block(bank, (left, right), fx, offset, blocking, tune, steady);
+            return;
+        }
+        // Native loop-control buffers address audio_frame / 32. Split source
+        // planning only; the instrument's effects keep their original block.
+        let mut at = 0;
+        while at < left.len() {
+            let n = (32 - (self.now as usize & 31)).min(left.len() - at);
+            self.render_block(bank, (&mut left[at..at + n], &mut right[at..at + n]),
+                fx, offset + at, blocking, tune, steady);
+            at += n;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_block(
+        &mut self,
+        bank: &Bank,
+        (left, right): (&mut [f32], &mut [f32]),
+        fx: &mut FxProcessor,
+        offset: usize,
+        blocking: bool,
+        tune: f32,
+        steady: bool,
+    ) {
         let cx = Context {
             bank,
             slots: bank.slots(),

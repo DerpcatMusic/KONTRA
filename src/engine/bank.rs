@@ -398,6 +398,8 @@ pub struct Bank {
     pub(crate) playable: Vec<bool>,
     /// Prepared once: normal attacks need a tail scan only for Note Mono releases.
     pub(crate) note_mono_releases: bool,
+    /// Prepared native controls whose sample geometry updates every 32 frames.
+    native_controls: bool,
     /// Zones mapped to key `k` are `key_zones[key_start[k]..key_start[k + 1]]`.
     key_start: [u32; 129],
     key_zones: Arc<[u32]>,
@@ -433,6 +435,8 @@ pub struct Bank {
 pub const LOAD_DONE: u32 = 1000;
 
 impl Bank {
+    pub(crate) fn has_native_controls(&self) -> bool { self.native_controls }
+
     /// Load every group of `instrument` within [`MEMORY_LIMIT`], streaming
     /// long samples from disk.
     pub fn load(instrument: &Instrument) -> Result<Self> {
@@ -1263,6 +1267,7 @@ impl Builder {
             zones: intern(&ZONES, zones),
             source_zone_count: self.source_zone_count,
             base: self.settings.clone(),
+            native_controls: self.settings.iter().any(|s| s.mods.has_loop_controls()),
             settings: self.settings,
             plays: intern(&PLAYS, plays),
             playable,
