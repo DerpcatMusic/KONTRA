@@ -7,12 +7,13 @@ use crate::{
     read_bytes::ReadBytesExt,
 };
 
-/// Kontakt snapshot v1 or script-only v3: saved state for an existing instrument, without zones
+/// Kontakt snapshot v1/v3: saved state for an existing instrument, without zones
 /// or sample mappings. The compact group records remain opaque.
 #[derive(Debug)]
 pub struct Snapshot {
     /// Absent for v3 script-only state; the base native groups stay in use.
     pub groups: Option<Chunk>,
+    pub version: u16,
     pub group_count: u32,
     pub effect_children: Vec<Chunk>,
     /// All five Kontakt script slots, including empty/bypassed slots.
@@ -20,7 +21,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Opt-in compact-v2 decoding; IDs retain Kontakt's original array order.
+    /// Opt-in compact-v2/v4 decoding; IDs retain Kontakt's original array order.
     pub fn group_snapshots(&self) -> Result<Vec<(u32, super::GroupSnapshot)>, Error> {
         let Some(group_chunk) = &self.groups else {
             return Ok(Vec::new());
@@ -38,7 +39,11 @@ impl Snapshot {
             .try_reserve(count as usize)
             .map_err(|_| Error::Static("Group snapshot allocation failed"))?;
         for id in 0..count {
-            groups.push((id, super::GroupSnapshot::read(&mut reader)?));
+            let at = reader.position();
+            let group = super::GroupSnapshot::read(&mut reader).map_err(|error| {
+                Error::context(format!("Compact snapshot group {id} at offset {at}"), error)
+            })?;
+            groups.push((id, group));
         }
         if reader.position() as usize != group_chunk.data.len() {
             return Err(Error::Static("Trailing compact group snapshot data"));
@@ -63,17 +68,16 @@ impl TryFrom<&Chunk> for Snapshot {
             ));
         }
         let mut reader = Cursor::new(object.public_data.as_slice());
-        // v3 script-only snapshots carry flags 3, followed directly by the
-        // same five persistence lists. Other v3 native layouts remain strict:
-        // their compact group/source records have not been fully decoded.
+        // The verified v3 layouts use flags 0 for native+script state or 3
+        // for script-only state. Other flags remain unsupported.
         let script_only = if object.version == 3 {
             let flags = reader.read_u32_le()?;
-            if flags != 3 {
+            if !matches!(flags, 0 | 3) {
                 return Err(Error::Generic(format!(
                     "Unsupported Kontakt snapshot v3 native state flags {flags}; compact group/source layout is not decoded"
                 )));
             }
-            true
+            flags == 3
         } else {
             false
         };
@@ -102,12 +106,21 @@ impl TryFrom<&Chunk> for Snapshot {
             for _ in 0..16 {
                 let start = reader.position() as usize;
                 let bus = StructuredObject::read(&mut reader)?;
-                if bus.version != 0x11 {
+                if bus.version != if object.version == 3 { 0x12 } else { 0x11 } {
                     return Err(Error::Static("Unsupported snapshot bus version"));
                 }
                 let end = reader.position() as usize;
                 effect_children.push(Chunk {
                     id: 0x45,
+                    data: object.public_data[start..end].to_vec(),
+                });
+            }
+            if object.version == 3 {
+                let start = reader.position() as usize;
+                BParamArrayBParFX8::read(&mut reader, 8)?;
+                let end = reader.position() as usize;
+                effect_children.push(Chunk {
+                    id: 0x3a,
                     data: object.public_data[start..end].to_vec(),
                 });
             }
@@ -138,6 +151,7 @@ impl TryFrom<&Chunk> for Snapshot {
             return Err(Error::Static("Unsupported trailing Kontakt snapshot state"));
         }
         Ok(Self {
+            version: object.version,
             groups,
             group_count,
             effect_children,
