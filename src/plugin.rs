@@ -429,6 +429,7 @@ pub struct Shared {
     diagnostic_latest: Mutex<Option<AudioDiagnostics>>,
     diagnostic_dropped: AtomicU64,
     ready: ArrayQueue<(usize, u64, Handoff)>,
+    pending_ready: Mutex<std::collections::VecDeque<(usize, u64, Handoff)>>,
     discard: ArrayQueue<Retired>,
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
     snapshot_requests: ArrayQueue<(usize, u64, Box<PersistenceSnapshot>)>,
@@ -673,6 +674,7 @@ impl Default for Shared {
             diagnostic_latest: Mutex::new(None),
             diagnostic_dropped: AtomicU64::new(0),
             ready: ArrayQueue::new(64),
+            pending_ready: Mutex::default(),
             discard: ArrayQueue::new(64),
             snapshot_requests: ArrayQueue::new(2 * RACK_SLOTS),
             snapshots: ArrayQueue::new(2 * RACK_SLOTS),
@@ -1706,6 +1708,7 @@ impl BackgroundTask for Load {
     const SERIALIZED: bool = true;
     fn run(self, params: &SamplerParams) {
         drain_audio_diagnostics(params);
+        params.shared.flush_ready();
         load_arrays(params);
         let mut freed = false;
         while params.shared.discard.pop().is_some() {
@@ -1865,13 +1868,13 @@ impl BackgroundTask for Load {
                 } else { view.parts[slot].load_report = Some(report); }
                 if let Some(fx) = fx {
                     view.parts[slot].irs = irs;
-                    let _ = params.shared.ready.force_push((
+                    let _ = params.shared.publish_part((
                         slot,
                         atoms.generation.load(Ordering::Acquire),
                         Handoff::Fx(fx),
                     ));
                 }
-                let _ = params.shared.ready.force_push((
+                let _ = params.shared.publish_part((
                     slot,
                     atoms.generation.load(Ordering::Acquire),
                     Handoff::Script { script, epoch },
@@ -1919,7 +1922,7 @@ impl BackgroundTask for Load {
                     streaming,
                     ..Default::default()
                 };
-                let _ = params.shared.ready.force_push((
+                let _ = params.shared.publish_part((
                     slot,
                     generation,
                     Handoff::Part {
@@ -2112,7 +2115,7 @@ impl BackgroundTask for Load {
                     });
                     v.fx_rate = rate;
                     v.irs = irs;
-                    let _ = params.shared.ready.force_push((
+                    let _ = params.shared.publish_part((
                         slot,
                         generation,
                         Handoff::Part {
@@ -2207,7 +2210,7 @@ impl BackgroundTask for Load {
                             let residency = bank.take_residency();
                             (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
                             let bank = Handoff::Bank(Box::new(bank));
-                            let _ = params.shared.ready.force_push((slot, generation, bank));
+                            let _ = params.shared.publish_part((slot, generation, bank));
                             // After the bank in the queue: its heads resize the full bank.
                             params.shared.residency.lock().unwrap()[slot] =
                                 residency.map(|r| (generation, r));
@@ -2270,7 +2273,7 @@ impl BackgroundTask for Load {
                                 params.shared.residency.lock().unwrap()[slot] = None;
                                 (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
                                 let bank = Handoff::Bank(Box::new(bank));
-                                let _ = params.shared.ready.force_push((slot, generation, bank));
+                                let _ = params.shared.publish_part((slot, generation, bank));
                             }
                             Err(e) => {
                                 v.status = v.status.replace(" · loading into RAM…", "");
@@ -2306,7 +2309,7 @@ impl BackgroundTask for Load {
             let Some((instrument, irs)) = stale else { continue };
             let fx = instrument.fx.processor_with(rate as f32, MAX_BLOCK, &irs);
             params.shared.view.lock().unwrap().parts[slot].fx_rate = rate;
-            let _ = params.shared.ready.force_push((
+            let _ = params.shared.publish_part((
                 slot,
                 params.shared.part(slot).unwrap().generation.load(Ordering::Acquire),
                 Handoff::Fx(fx),
@@ -2599,6 +2602,29 @@ impl Shared {
         drop(sent);
         let mut residency = self.residency.lock().unwrap();
         while residency.len() < count { residency.push(None); }
+    }
+
+    /// Loader only. Keep different parts when the bounded callback queue is
+    /// full; replacing a source retires its stale pending payloads here.
+    fn publish_part(&self, item: (usize, u64, Handoff)) {
+        let mut pending = self.pending_ready.lock().unwrap();
+        let (slot, generation, next) = &item;
+        pending.retain(|(old_slot, old_generation, old)| old_slot != slot
+            || (old_generation == generation && !matches!(next, Handoff::Part { .. })
+                && std::mem::discriminant(old) != std::mem::discriminant(next)));
+        pending.push_back(item);
+        self.flush_ready_inner(&mut pending);
+    }
+
+    fn flush_ready(&self) {
+        self.flush_ready_inner(&mut self.pending_ready.lock().unwrap());
+    }
+
+    fn flush_ready_inner(&self, pending: &mut std::collections::VecDeque<(usize, u64, Handoff)>) {
+        while let Some(item) = pending.pop_front() {
+            if self.part(item.0).is_none_or(|p| p.generation.load(Ordering::Acquire) != item.1) { continue }
+            if let Err(item) = self.ready.push(item) { pending.push_front(item); break }
+        }
     }
 
     /// Loader only: all larger callback storage is prepared and retired here.
@@ -6671,13 +6697,47 @@ end on"
         assert!(told.elapsed() >= LATENCY_SETTLE - std::time::Duration::from_millis(200));
     }
     #[test]
+    fn paused_host_preserves_129_part_publications_and_replaces_stale_pending_generations() {
+        let p = SamplerParams::new();
+        p.selection.write().unwrap().parts = vec![Part::default(); 129];
+        Load.run(&p);
+        assert!(p.shared.view.lock().unwrap().parts[128].attempted.is_none(), "new-slot load waits for callback storage");
+        while let Some((slot, ..)) = p.shared.ready.pop() { assert!(slot < RACK_SLOTS); }
+        // Acknowledgment permits the worker to publish all rows even when
+        // a paused host cannot consume the 64-entry callback queue yet.
+        p.shared.grown.store(129, Ordering::Release);
+        Load.run(&p);
+        assert!(p.shared.view.lock().unwrap().parts[128].attempted.is_some());
+        assert_eq!(p.shared.ready.len(), 64);
+        assert_eq!(p.shared.pending_ready.lock().unwrap().len(), 49);
+        let mut seen = vec![false; 129];
+        loop {
+            while let Some((slot, generation, ..)) = p.shared.ready.pop() {
+                assert_eq!(generation, p.shared.part(slot).unwrap().generation.load(Ordering::Acquire));
+                seen[slot] = true;
+            }
+            if p.shared.pending_ready.lock().unwrap().is_empty() { break }
+            p.shared.flush_ready();
+        }
+        assert!(seen[16..].iter().all(|delivered| *delivered), "every new part survives backpressure");
+        for slot in 0..64 { p.shared.publish_part((slot, 1, Handoff::Fx(FxProcessor::default()))); }
+        p.shared.part(128).unwrap().generation.store(2, Ordering::Release);
+        p.shared.publish_part((128, 2, Handoff::Bank(late_bank(&[(0, 127, 0)]))));
+        p.shared.part(128).unwrap().generation.store(3, Ordering::Release);
+        p.shared.publish_part((128, 3, Handoff::Bank(late_bank(&[(0, 127, 0)]))));
+        let pending = p.shared.pending_ready.lock().unwrap();
+        assert_eq!(pending.len(), 1, "stale large banks retire on the worker instead of accumulating");
+        assert_eq!((pending[0].0, pending[0].1), (128, 3));
+    }
+
+    #[test]
     fn growing_to_129_parts_preserves_notes_and_releases_high_keyboard_targets_without_heap_work() {
         let p = SamplerParams::new();
         let mut dsp = Dsp::default();
         dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
         dsp.rack.parts[0].note_on(0, 59, 100);
         dsp.align.plan.on = true;
-        dsp.align.plan.parts[0] = Holds::of(&Timing { override_ms: Some(0.), ..Default::default() }, &[], 10.);
+        dsp.align.plan.parts.fill(Holds::of(&Timing { override_ms: Some(0.), ..Default::default() }, &[], 10.));
         dsp.align.arrive(&mut dsp.rack, &mut dsp.routers, 0, In::NoteOn(0, 62, 100), 0, 48000.);
         assert_eq!(dsp.align.next_due(), Some(480));
         let selection = Selection { parts: (0..129).map(|slot| Part {
@@ -6692,7 +6752,7 @@ end on"
         assert_eq!(restored.parts[0].path, selection.parts[128].path);
         p.shared.ensure_parts(129);
         let mut edited = selection.clone();
-        edited.parts[128].edits.0.push(Override { group: None, param: Param::Attack, offset: 1. });
+        edited.parts[128].edits.0.push(Override { group: None, param: crate::engine::overrides::Param::Attack, offset: 1. });
         p.shared.sync_overrides(&edited);
         assert!(p.shared.sent.lock().unwrap()[128].is_empty(), "new-slot edits wait for callback acknowledgment");
         p.shared.prepare_growth();
