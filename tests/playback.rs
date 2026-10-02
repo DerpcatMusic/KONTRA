@@ -1050,6 +1050,46 @@ fn wavetable_cycles_ignore_sample_rate_and_root_and_keep_common_note_lifetimes()
 }
 
 #[test]
+fn wavetable_clock_handles_large_pitch_and_retune_at_both_phase_endpoints() {
+    use kontakto::import::Wavetable;
+    for phase in [0., 1.] {
+        for tune in [1., 1e12, 1e280] {
+            let path = PathBuf::from("authored-large-pitch-table");
+            let frames = (0..2048).map(|i| [0.2 * (i as f32 * std::f32::consts::TAU / 2048.).sin();2]).collect();
+            let bank = Bank::from_samples(vec![Group { wavetable:Some(Wavetable { phase,
+                ..Default::default() }), ..Group::default() }], vec![Zone { sample:path.clone(),
+                tune, start_mod:Some(2047), ..Zone::default() }],
+                vec![(path,Sample { rate:44100,frames })]).unwrap();
+            let mut e = engine_with(bank);
+            let mut note = NoteEvent::new(0,127,100);
+            note.offset_us = u64::MAX;
+            let mut id = None;
+            assert_eq!(allocations(|| { id = e.start_event(&note); }),0);
+            let id = id.unwrap();
+            let (mut left,mut right)=([0.;128],[0.;128]);
+            for (pitch,n) in [(-324.,1),(324.,127),(0.,3),(324.,64),(-324.,128),(0.,17)] {
+                let before=e.voice_census()[0].pos;
+                assert!((0. ..2048.).contains(&before));
+                e.tune=pitch as f32;
+                assert_eq!(allocations(|| { e.change_event(id,EventChange::Tune(pitch));
+                    e.render(&mut left[..n],&mut right[..n]); }),0);
+                assert!(left[..n].iter().chain(&right[..n]).all(|x| x.is_finite()));
+                let voice=&e.voice_census()[0];
+                assert!(voice.step.is_finite());
+                let clock=(voice.step.rem_euclid(2048.) * (1u64<<32) as f64) as u64;
+                let expected=(before+(clock*n as u64) as f64/(1u64<<32) as f64).rem_euclid(2048.);
+                assert_eq!(voice.pos,expected,"phase {phase}, zone tune {tune}, retune {pitch}, block {n}");
+                assert!((0. ..2048.).contains(&voice.pos));
+                assert!(!voice.streams);
+            }
+            assert_eq!(e.underruns(),0);
+            assert_eq!(allocations(|| { e.panic(); for _ in 0..8 { e.render(&mut left,&mut right); } }),0);
+            assert_eq!(e.active_voices(),0);
+        }
+    }
+}
+
+#[test]
 fn unsupported_wavetable_forms_are_counted_without_substituting_sample_playback() {
     use kontakto::import::Wavetable;
     let path = PathBuf::from("authored-rejected-wave-form");
@@ -1077,13 +1117,16 @@ fn bare_wavetable_bank_and_its_upgrade_keep_complete_tables_and_voice_phase() {
     let path = dir.join("five-cycles.wav");
     write_wav_bits(&path, 5*2048, 16);
     let instrument = instrument(vec![Group { wavetable: Some(Wavetable { phase: 0.5, quality: 2, ..Default::default() }), ..Group::default() }],
-        vec![Zone { sample:path,root:0,..Zone::default() }]);
+        vec![Zone { sample:path.clone(),root:0,high_key:63,end:4*2048,..Zone::default() },
+            Zone { sample:path,root:0,low_key:64,start:3*2048,start_mod:Some(4095),..Zone::default() }]);
     let (bare,loaded)=(Bank::load_bare(&instrument).unwrap(),Bank::load(&instrument).unwrap());
     let mut a=engine_with(bare);
     let mut b=engine_with(loaded);
     let upgrade=Box::new(Bank::load(&instrument).unwrap());
     let(mut al,mut ar,mut bl,mut br)=([0.;128],[0.;128],[0.;128],[0.;128]);
-    assert_eq!(allocations(|| { a.note_on(0,96,100);b.note_on(0,96,100); }),0);
+    let mut note=NoteEvent::new(0,96,100);
+    note.offset_us=u64::MAX;
+    assert_eq!(allocations(|| { a.start_event(&note);b.start_event(&note); }),0);
     for _ in 0..10 {
         assert_eq!(allocations(|| {a.render(&mut al,&mut ar);b.render(&mut bl,&mut br);}),0);
         assert_eq!((al,ar),(bl,br));

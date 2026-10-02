@@ -1523,8 +1523,10 @@ impl Player {
             .map(|_| if manager == ev.channel { 0. } else { self.bend[c] }));
         let mods = settings.mods.start(&inputs, bend_pitch);
         let modulated = (settings.mods.start_offset(&inputs) * play.start_mod as f32) as u64;
-        let offset = ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)
-            .min(play.start_mod);
+        let offset = if play.wavetable.is_some() { 0 } else {
+            ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)
+                .min(play.start_mod)
+        };
         // A release-triggered voice starts with its key already up.
         let wraps = play
             .map
@@ -1532,11 +1534,12 @@ impl Player {
         // The resident span holding the voice's first window frame (one
         // before the start, for the cubic's left tap), if any does.
         let first = offset.saturating_sub(1);
-        let span_index = play
-            .map
-            .run(first, wraps)
-            .and_then(|run| sample.span_at(run.frame))
-            .unwrap_or(0);
+        let span_index = if let Some(table) = play.wavetable {
+            sample.span_at(table.first as u64).expect("prepared complete wavetable")
+        } else {
+            play.map.run(first, wraps)
+                .and_then(|run| sample.span_at(run.frame)).unwrap_or(0)
+        };
         let span = &sample.spans[span_index as usize];
         let limit = play.map.resident_limit(first, wraps, span.start, span.end());
         let stream = if sample.streamed && play.wavetable.is_none() {
@@ -1603,7 +1606,7 @@ impl Player {
             wraps,
             length: if play.wavetable.is_some() { FOREVER } else { play.map.len(wraps) },
             limit,
-            pos: if play.wavetable.is_some() { f64::from(settings.wavetable.unwrap().phase) * wavetable::CYCLE as f64 } else { offset as f64 },
+            pos: if play.wavetable.is_some() { f64::from(settings.wavetable.unwrap().phase).rem_euclid(1.) * wavetable::CYCLE as f64 } else { offset as f64 },
             step,
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),

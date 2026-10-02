@@ -17,7 +17,7 @@ pub(crate) const MAX_STEP: f64 = 32.0;
 /// Source frames one block can read: the pitched span plus interpolation taps.
 pub(crate) const WINDOW: usize = MAX_BLOCK * MAX_STEP as usize + 8;
 /// 1.0 in the kernel's 32.32 fixed-point positions.
-const FIXED_ONE: f64 = (1u64 << 32) as f64;
+pub(super) const FIXED_ONE: f64 = (1u64 << 32) as f64;
 /// Envelope level treated as silence (−80 dB); decays below it end the voice.
 const SILENT: f32 = 1e-4;
 /// Longest a voice starting with nothing resident waits for its first
@@ -1153,7 +1153,8 @@ impl Voice {
         let mut plan = Plan {
             n,
             // 32.32 fixed point: exact, cheap to index.
-            step: (step * FIXED_ONE) as u64,
+            step: if self.wavetable.is_some() { super::wavetable::clock(step) }
+                else { (step * FIXED_ONE) as u64 },
             target,
             muted,
             declick: declick.then_some(end),
