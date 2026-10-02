@@ -941,16 +941,18 @@ declare ui_menu $menu
 add_menu_item($menu,"seed",1)
 declare ui_table %table[2](1,1,127)
 declare $history := 0
+declare polyphonic $pending
 make_persistent($history)
 end on
 on ui_control($edit)
 inc($history)
+$pending := $NI_CALLBACK_ID
 add_text_line($info,"step" & $history)
 add_menu_item($menu,"step" & $history,$history+10)
 set_control_par(get_ui_id($edit),$CONTROL_PAR_VALUE,$edit+1)
 set_control_par_arr(get_ui_id(%table),$CONTROL_PAR_VALUE,$edit,0)
 wait(1000)
-add_text_line($info,"done")
+add_text_line($info,"done:" & $pending)
 end on
 on note
 change_vol($EVENT_ID,-1000*%table[0],0)
@@ -970,7 +972,7 @@ end on"#;
     #[cfg(not(feature = "plugin"))]
     edit();
     let interface = live.interface.as_ref().unwrap();
-    assert_eq!(prop(interface,1,"$CONTROL_PAR_TEXT"),"seed\nstep1\ndone",
+    assert_eq!(prop(interface,1,"$CONTROL_PAR_TEXT"),"seed\nstep1\ndone:1",
         "private replays cannot append history-dependent metadata, including after wait");
     assert_eq!(interface.controls[2].menu,vec![("seed".into(),1),("step1".into(),11)]);
     assert_eq!(interface.controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(4));

@@ -919,8 +919,9 @@ impl Runtime {
         assert!(self.domain_mask.is_some(), "only configured Channel mode needs canonical storage");
         assert!(self.configuration_domain.is_none(), "prepare canonical storage once");
         assert_eq!(self.env.events.live_count(), 0, "prepare before performance starts");
-        for state in &mut self.states {
+        for (prog, state) in self.programs.iter().zip(&mut self.states) {
             assert_eq!(state.mem.prepare_configuration(), self.domain_count);
+            state.mem.poly.resize(prog.poly as usize * (vm::CONFIGURATION_POLY_ROW as usize + 1), 0);
         }
         self.configuration_domain = Some(self.domain_count);
     }
@@ -2801,7 +2802,8 @@ impl Runtime {
         ctx.callback_id = self.env.next_callback_id;
         if let Some(e) = self.env.events.get_mut(ctx.event) { e.callbacks += 1; }
         if !matches!(ctx.kind, Kind::Cb(Callback::Note | Callback::Release)) {
-            ctx.poly_row = POLY_ROWS - 1 + u32::from(ctx.domain);
+            ctx.poly_row = if ctx.configuration { vm::CONFIGURATION_POLY_ROW }
+                else { POLY_ROWS - 1 + u32::from(ctx.domain) };
         }
         let t = &mut self.threads[i as usize];
         *t = Thread {

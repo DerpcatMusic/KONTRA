@@ -524,6 +524,9 @@ pub struct Listener {
 
 /// Polyphonic rows: one per event slot plus a scratch row for other callbacks.
 pub const POLY_ROWS: u32 = super::runtime::EVENT_CAPACITY as u32 + 1;
+/// Stable scratch row for canonical services. A retained legacy performance
+/// bank plus all 16 physical origins may occupy scratch rows 0..=16.
+pub(super) const CONFIGURATION_POLY_ROW: u32 = POLY_ROWS + 16;
 
 impl SlotState {
     pub(super) fn select(&mut self, domain: u8) {
