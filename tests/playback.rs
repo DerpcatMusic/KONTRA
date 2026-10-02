@@ -1753,7 +1753,7 @@ fn bypassed_native_release_script_plays_only_selected_groups_for_every_duration(
     use kontakto::engine::Phase;
     for duration in [-1, 0, 5000] {
         let mut selected = counted_release();
-        selected.volume_env = Some(Ahdsr { attack: 0.02, curve: 0., hold: 0., decay: 0., sustain: 1., release: 0.001 });
+        selected.volume_env = Some(kontakto::import::Ahdsr { attack_curve: 0., attack_ms: 20., hold_ms: 0., decay_ms: 0., sustain: 1., release_ms: 1., unknown_flag: 0, unknown_tail: Vec::new() });
         let mut e = engine_with(layered(vec![Group::default(), selected, counted_release()], &[0., 0.4, 0.8]));
         e.set_script(runtime(&format!(r#"on init
             SET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)
