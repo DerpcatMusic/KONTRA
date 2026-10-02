@@ -2416,7 +2416,7 @@ fn muted_streamed_voices_pause_and_resume_exactly() {
     a.blocking_streams = true;
     let note = NoteEvent::new(0, 60, 100);
     let (id_a, id_b) = (a.start_event(&note).unwrap(), b.start_event(&note).unwrap());
-    let mut compare = |a: &mut Engine, b: &mut Engine, blocks: usize| {
+    let compare = |a: &mut Engine, b: &mut Engine, blocks: usize| {
         for block in 0..blocks {
             assert!(render(a, 128) == render(b, 128), "diverges in block {block}");
         }

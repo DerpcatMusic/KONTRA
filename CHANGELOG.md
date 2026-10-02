@@ -58,6 +58,9 @@ are added when a release is actually published; commit history is not a changelo
 
 ### Fixed
 
+- Shared controls recover movement before the drag threshold, so closed physical
+  mouse paths return to their starting values at 100%, 150% and 200% display scale.
+
 - Host position, tempo, play/stop and time signature reach script callbacks before
   MIDI input. Song position advances within the block at callback sample offsets;
   bar duration follows the host meter. Start/stop listener subscriptions are independent.
