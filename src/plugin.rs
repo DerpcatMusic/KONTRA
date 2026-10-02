@@ -2869,7 +2869,7 @@ fn census(voices: &[crate::engine::VoiceInfo]) {
 }
 
 /// The real worker, edit queue and audio live-view budget under 60 Hz UI edits.
-fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, control: usize, low: i32, high: i32, edits: usize) -> anyhow::Result<serde_json::Value> {
+pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, control: usize, low: i32, high: i32, frames: usize, edits: usize, mut observer: Option<&mut dyn FnMut(&Arc<SamplerParams>) -> anyhow::Result<()>>) -> anyhow::Result<(serde_json::Value, Engine)> {
     use moose::core::bus_routing::{BusActivation, BusRouting};
     use std::time::Duration;
     let params = Arc::new(SamplerParams::new());
@@ -2896,23 +2896,27 @@ fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, control: usize, 
         v.live = Some(live);
         v.snapshot = Some(saved);
     }
-    let frames = 512;
     let mut dsp = Dsp::default();
     Sampler::reset(&mut dsp, &params, &AudioConfig::new(48000., frames));
     dsp.rack.parts[0] = engine;
     dsp.script_epoch[0] = 1;
-    let stop = Arc::new(AtomicBool::new(false));
     params.shared.watched.store(true, Ordering::Relaxed);
     Load.run(&params);
+    moose::core::tasks::warm_pool();
+    let load_times = Arc::new(Mutex::new(Vec::new()));
+    let publications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let worker = {
-        let (params, stop) = (params.clone(), stop.clone());
-        std::thread::spawn(move || {
-            while !stop.load(Ordering::Relaxed) {
-                Load.run(&params);
-                std::thread::sleep(Duration::from_millis(100));
-            }
+        let (params, times, publications) = (params.clone(), load_times.clone(), publications.clone());
+        moose::core::tasks::TaskSpawner::<Load>::new_serialized(move |task| {
+            let at = Instant::now();
+            task.run(&params);
+            times.lock().unwrap().push(at.elapsed().as_secs_f64() * 1e3);
+            publications.fetch_add(1, Ordering::Release);
         })
     };
+    let mut tasks = moose::core::tasks::TaskSpawnerBundle::new();
+    tasks.push(worker.clone());
+    let tasks = tasks.into_any().unwrap();
     let transport = TransportInfo::default();
     let mut data = vec![vec![0.0f32; frames]; 2 * BUSES];
     let mut outgoing = EventList::with_capacity(0);
@@ -2921,6 +2925,8 @@ fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, control: usize, 
     let (mut waits, mut edit_times, mut completions, mut gaps) = (Vec::new(), Vec::new(), 0, Vec::new());
     let (start, mut last_completion) = (Instant::now(), Instant::now());
     let mut seen = dsp.live_seen[0];
+    let mut published = 0;
+    let mut process_times = Vec::new();
     let blocks = ((edits as f64 / 60.0 + 1.0) * 48000.0 / frames as f64).ceil() as usize;
     for block in 0..blocks {
         params.shared.watched.store(true, Ordering::Relaxed);
@@ -2940,8 +2946,15 @@ fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, control: usize, 
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, frames);
         let mut routing = BusRouting::new();
         for _ in 0..BUSES { routing.push_output(2, BusActivation::Active); }
-        let mut context = ProcessContext::new(&transport, 48000., frames, &mut outgoing).with_bus_routing(routing);
+        let mut context = ProcessContext::new(&transport, 48000., frames, &mut outgoing).with_bus_routing(routing).with_tasks(&tasks);
+        let at = Instant::now();
         Sampler::process(&mut dsp, &params, &mut buffer, &none, &mut context);
+        process_times.push(at.elapsed().as_secs_f64() * 1e3);
+        let ready = publications.load(Ordering::Acquire);
+        if ready != published {
+            published = ready;
+            if let Some(observer) = observer.as_mut() { observer(&params)?; }
+        }
         if dsp.live_seen[0] != seen {
             seen = dsp.live_seen[0];
             completions += 1;
@@ -2951,15 +2964,18 @@ fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, control: usize, 
         let deadline = start + Duration::from_secs_f64((block + 1) as f64 * frames as f64 / 48000.0);
         if let Some(left) = deadline.checked_duration_since(Instant::now()) { std::thread::sleep(left); }
     }
-    stop.store(true, Ordering::Relaxed);
-    worker.join().map_err(|_| anyhow::anyhow!("Profile worker panicked"))?;
+    // Retiring the lane waits for its running handler before releasing Params.
+    drop(tasks);
+    drop(worker);
     let summary = |mut values: Vec<f64>| {
         values.sort_by(f64::total_cmp);
         if values.is_empty() { return serde_json::json!({}); }
         serde_json::json!({"mean":values.iter().sum::<f64>() / values.len() as f64,"p50":values[values.len()/2],"max":values[values.len()-1]})
     };
-    Ok(serde_json::json!({"host_frames":frames,"edits_delivered":edit,"live_refresh_completions":completions,
-        "live_completion_gap_ms":summary(gaps),"view_mutex_acquire_ms":summary(waits),"shared_edit_ms":summary(edit_times)}))
+    let load_times = load_times.lock().unwrap().clone();
+    Ok((serde_json::json!({"host_frames":frames,"edits_delivered":edit,"live_refresh_completions":completions,
+        "live_completion_gap_ms":summary(gaps),"view_mutex_acquire_ms":summary(waits),"shared_edit_ms":summary(edit_times),
+        "load_runs":load_times.len(),"load_wall_ms":summary(load_times),"audio_process_ms":summary(process_times)}), std::mem::take(&mut dsp.rack.parts[0])))
 }
 
 /// Profile real script control edits separately from view copying and saved-state
@@ -3051,13 +3067,21 @@ pub fn bench_ui_control(path: &Path, variable: &str, edits: usize) -> anyhow::Re
         let mean = values.iter().sum::<f64>() / values.len() as f64;
         (stage, serde_json::json!({"mean":mean,"p50":values[values.len()/2],"p99":values[(values.len()*99/100).min(values.len()-1)],"max":values[values.len()-1]}))
     }).collect();
+    let diagnostics = engine.script().unwrap().diagnostics();
+    let instrument = Arc::new(instrument);
+    let mut workers = Vec::new();
+    for frames in [64, 128, 512] {
+        let (report, returned) = bench_ui_worker(engine, instrument.clone(), control, low, high, frames, edits, None)?;
+        workers.push(report);
+        engine = returned;
+    }
     println!("{}", serde_json::to_string_pretty(&serde_json::json!({
         "instrument":instrument.name,"control":variable,"edits":edits,"controls":controls,
         "persistent_json_bytes":json_bytes,"changed_edits":changed_edits,
         "live_refresh_passes_per_edit":live_passes as f64/edits as f64,
         "persistence_refresh_passes_per_edit":saved_passes as f64/edits as f64,
-        "stages_ms":stages,"diagnostics":engine.script().unwrap().diagnostics(),
-        "concurrent_worker":bench_ui_worker(engine, Arc::new(instrument), control, low, high, edits)?
+        "stages_ms":stages,"diagnostics":diagnostics,
+        "concurrent_workers":workers
     }))?);
     Ok(())
 }
