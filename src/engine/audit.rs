@@ -95,11 +95,12 @@ fn general(w: &str, groups: &BTreeSet<&str>) -> String {
 fn tally_instrument(i: &Instrument, name: &str, tally: &mut Tally) {
     let mut add = |kind: &'static str, item: String, ok: bool| {
         let row = tally.entry((kind, item)).or_insert((ok, BTreeSet::new(), 0));
+        row.0 &= ok;
         row.1.insert(name.to_owned());
         row.2 += 1;
     };
     let state = |bypass: bool| if bypass { "bypassed" } else { "active" };
-    for g in &i.groups {
+    for (group_index, g) in i.groups.iter().enumerate() {
         for fx in &g.fx.slots {
             match &fx.params {
                 Params::Filter(f) => add(
@@ -134,7 +135,11 @@ fn tally_instrument(i: &Instrument, name: &str, tally: &mut Tally) {
             let source = format!("{:?}", m.source);
             let source = source.split('(').next().unwrap_or(&source).to_owned();
             add("ext source", source, true);
-            add("ext target", target_name(&m.target), target_applied(&m.target));
+            let applied = target_applied(&m.target) || (super::params::loop_control_supported(g, m)
+                && !g.reverse && i.zones.iter().filter(|z| z.group == group_index).all(|z|
+                    z.start == 0 && z.end == 0 && z.loop_range.as_ref().is_some_and(|l|
+                        !l.alternating && l.end.saturating_sub(l.start) >= 4)));
+            add("ext target", target_name(&m.target), applied);
         }
     }
     for (location, fx) in i.fx.effects() {
