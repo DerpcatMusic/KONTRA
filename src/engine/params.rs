@@ -1555,7 +1555,7 @@ mod tests {
             intensity: 1., invert: false, lag_ms: 0, shaper: None,
         }] }];
         let i = Instrument { groups: vec![volume, pitch], ..Default::default() };
-        assert_eq!(crate::ksp::engine_par_id("$ENGINE_PAR_ENV_AHD"), Some(id::ENV_AHD));
+        assert_eq!(crate::ksp::engine_par_name(id::ENV_AHD), Some("$ENGINE_PAR_ENV_AHD"));
         let mut setup = ScriptSetup::new(&i, 1000.);
         let source = "on init\nset_engine_par($ENGINE_PAR_ENV_AHD,1,0,0,-1)\nset_engine_par($ENGINE_PAR_ENV_AHD,1,1,0,-1)\ndeclare $saved := get_engine_par($ENGINE_PAR_ENV_AHD,0,0,-1)\nmake_persistent($saved)\nend on";
         let (rt, errors) = Runtime::with_scripts(&[source], &mut setup, 0, Vec::new());
