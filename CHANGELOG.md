@@ -10,11 +10,12 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
+- Convolution IR high/low-pass bypass follows the checked native frequency/rate boundaries. Digital-pole decay padding fixes the reproduced near-Nyquist response truncation; independent numeric and shared routing/lifetime checks pass. Finite padding does not establish native prepared-length identity.
 - VST3 editor attachment now opens the editor before processor activation or state restoration. The actual host-shim regression reproduces the old blank-view path and passes attach/resize/restore/reopen after the fix; the specific Void report remains unconfirmed.
 - Native v0x103 external modulation now decodes with exact opaque-footer preservation. Actual Conflux checks recover 3,731 assignments, including 364 pitch-bend sources; 21 records with unsupported shapers still fail explicitly. Footer semantics remain unknown.
 - Live convolution Reverse and Auto Gain now rebuild on the worker and survive saved-state restoration; stale completions retain the current kernel.
 - Enabled eight-knot IR volume envelopes use checked amplitude interpolation before Auto Gain, with predelay kept separate. Malformed active curves retain diagnostics.
-- Delayed script callbacks can update prepared short and automation control names without allocating on the audio thread; actual Conflux preset replay is next.
+- Delayed script callbacks can update prepared short and automation control names without allocating on the audio thread. Three actual Conflux preset probes each pass 750 listener blocks without the property fault and confirm their authored −12/+12 semitone tuning; authored arithmetic warnings remain visible.
 - Resident wavetable taps dispatch PCM once per block. Matched-output thread-CPU measurements show 1.55x/2.00x/1.73x speedups for F32/I16/I24 in this kernel; packed decoding and total-plugin performance are not included in that claim.
 - Nightly packages build alongside the unchanged shipping checks; publication still requires both to pass for the same source commit. Duplicate ordinary main-push CI is removed. Hosted timing improvement is not yet measured.
 - Uncaptured native GPU failures now reach persistent diagnostics after device rebuilds; original stderr and device-loss recovery remain intact. Void blank-editor repair is not yet confirmed.

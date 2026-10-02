@@ -608,7 +608,7 @@
       "source_commits": [
         "03cdd86fda80c7c7025e272db9da428dc3072cef"
       ],
-      "validation": "Asymmetric stereo impulse gate passed at both sample rates with predelay, preserved raw gain and zero processing heap. Native flag identities are corroborated; Auto Gain and Volume Envelope remain explicit unsupported processing, so full convolution parity is not claimed.",
+      "validation": "Asymmetric stereo impulse gate passed at both sample rates with predelay, preserved raw gain and zero processing heap. Native flag identities are corroborated; Auto Gain and Volume Envelope remain explicit unsupported processing, so full convolution parity is not claimed. Follow-up saved/live Auto Gain and eight-knot Volume Envelope are now independently checked; the original unsupported wording describes that earlier checkpoint only.",
       "accepted": true
     },
     {
@@ -684,7 +684,7 @@
         "9dfef7c7ca45946644517122174a734c2bc49757",
         "ba11ff291b8b4920e563e58a92c7b09f208f0c57"
       ],
-      "validation": "Authored persistence/UI callback, delayed effect remapping, repeated readback, fresh/live equivalence and zero audio heap gate passed at bd09edb. Actual Conflux callback replay is pending; tuning/pedal intent remains unresolved.",
+      "validation": "Authored persistence/UI callback, delayed effect remapping, repeated readback, fresh/live equivalence and zero audio heap gate passed at bd09edb. Actual Conflux callback replay is pending; tuning/pedal intent remains unresolved. Actual frozen64469ee Conflux three-preset metadata probes each ran750 listener blocks with zero unprepared-property faults; raw/final tune and accepted native TUNE writes confirm authored -12/+12 semitones. Authored divide-by-zero boolean warnings remain visible.",
       "accepted": true
     },
     {
@@ -699,7 +699,7 @@
         "3fe32935d574faa939723123b891e55309133c90",
         "76a4fe49c2a54dff22d2a21411b4b6ec46d8a9b9"
       ],
-      "validation": "Thirteen focused processing/import/write/lifetime/heap gates and nine actual Conflux captures across three patches passed. Octave ratios are exactly two and actual source census confirms five 2048-frame cycles, zero underruns. High/Best anti-aliasing, additional forms and active inharmonic/audio-rate modes remain unsupported; preset tuning and scripted pedal intent remain unresolved.",
+      "validation": "Thirteen focused processing/import/write/lifetime/heap gates and nine actual Conflux captures across three patches passed. Octave ratios are exactly two and actual source census confirms five 2048-frame cycles, zero underruns. High/Best anti-aliasing, additional forms and active inharmonic/audio-rate modes remain unsupported; preset tuning and scripted pedal intent remain unresolved. Actual64469ee metadata confirms saved -1200/+1200 cent WT tuning and accepted333334/666666 native TUNE writes. Native bandwidth-table preparation remains missing for ALL qualities; no quality is claimed exact.",
       "accepted": true
     },
     {
@@ -727,6 +727,16 @@
         "3353e67b6157636649a41b0203d658d2b6d05a13"
       ],
       "validation": "Focused vendor malformed/truncated/excess-footer and byte-exact roundtrip gate passed. Actual Conflux 3731 typed assignments preserve raw chunks byte-exact, including 364 PitchBend sources and four individually checked PB depth/name/footer records. Twenty-one unsupported shaper records remain strict errors; opaque footer semantics are not guessed. Full production Conflux replay is pending.",
+      "accepted": true
+    },
+    {
+      "id": "native-ir-filter-boundaries-and-decay",
+      "summary": "Apply native convolution filter bypass thresholds and retain digital-pole decay",
+      "source_commits": [
+        "2ecc8affce681ec9bf39e817492963d12e1c8c70",
+        "56e7243838bb1491ed1b2301082ce339ba731b48"
+      ],
+      "validation": "Independent direct-form Butterworth gate reproduces the old missing near-Nyquist frame and now passes exact/adjacent HP/LP thresholds, sample rates, cascades and zero processing heap. Reverse, Auto Gain, envelope, live IR, group send and playback tail gates all pass at56e7243. Padding remains finite exp(-16), not a claim of native prepared-length identity.",
       "accepted": true
     }
   ]
