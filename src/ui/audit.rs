@@ -294,6 +294,8 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
     trace.stage("script_callbacks");
     let mut engine = crate::engine::ScriptSetup::new(i, 48_000.0);
     (0..100).for_each(|_| rt.process(&mut engine, 480));
+    #[cfg(test)]
+    tests::select_benchmark_page(&mut rt, i, false);
     let script = crate::plugin::script_interface(Some(&rt));
     for d in script.status.lines().filter(|d| !d.trim().is_empty()) {
         trace.issue("scripts", crate::diagnostics::code(d), d);
@@ -398,6 +400,18 @@ mod tests {
     #[test]
     fn numbers_do_not_split_a_problem() {
         assert_eq!(super::general("Script 2: KSP line 41: no x1"), "Script N: KSP line N: no xN");
+    }
+
+    /// Fixture page changes use the authored callback, including its listeners.
+    pub(super) fn select_benchmark_page(runtime: &mut crate::ksp::Runtime, instrument: &import::Instrument, cold: bool) {
+        let Ok(variable) = std::env::var("KONTRA_UI_BENCH_PAGE") else { return };
+        let mut engine = crate::engine::ScriptSetup::new(instrument, 48000.);
+        if cold { (0..100).for_each(|_| runtime.process(&mut engine, 480)); }
+        let live = runtime.live();
+        let control = live.interface.as_ref().expect("page interface").controls.iter()
+            .position(|c| c.variable == variable).expect("authored page control exists");
+        runtime.ui_control(&mut engine, live.slot, control, 1);
+        (0..100).for_each(|_| runtime.process(&mut engine, 480));
     }
 
     /// Opt-in local measurement; prints timings/counts, never library payloads.
@@ -597,7 +611,8 @@ mod tests {
         if std::env::var_os("KONTRA_UI_BENCH_CALLBACKS").is_some() {
             let (runtime, errors) = crate::engine::load_scripts(&instrument, instrument.script_state.clone(), 48000.);
             assert!(errors.is_empty(), "authored callback initialization failed");
-            let runtime = runtime.expect("performance instrument runtime");
+            let mut runtime = runtime.expect("performance instrument runtime");
+            select_benchmark_page(&mut runtime, &instrument, true);
             let interface = runtime.live().interface.expect("performance interface");
             let control = std::env::var("KONTRA_UI_BENCH_CONTROL_VARIABLE").ok().map_or(changed_control, |name| {
                 interface.controls.iter().position(|c| c.variable == name).expect("requested callback control exists")
