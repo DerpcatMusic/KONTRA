@@ -385,7 +385,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decode_report(bytes).ok()
 }
 pub(crate) fn decode_report(bytes: &[u8]) -> Result<Image, String> {
-    if bytes.starts_with(b"\x89PNG") { return decode_png_report(bytes); }
+    decode_report_bounded(bytes, usize::MAX)
+}
+pub(crate) fn decode_report_bounded(bytes: &[u8], limit: usize) -> Result<Image, String> {
+    if bytes.starts_with(b"\x89PNG") { return decode_png_report(bytes, limit); }
     if bytes.starts_with(&[0xff, 0xd8]) {
         use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
         let options = DecoderOptions::default()
@@ -395,16 +398,25 @@ pub(crate) fn decode_report(bytes: &[u8]) -> Result<Image, String> {
         let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
         decoder.decode_headers().map_err(|e| format!("JPEG header: {e}"))?;
         let info = decoder.info().ok_or("JPEG dimensions are missing")?;
+        pixel_budget(u32::from(info.width), u32::from(info.height), limit)?;
         let rgba = decoder.decode().map_err(|e| format!("JPEG pixels: {e}"))?;
         return Image::rgba(u32::from(info.width), u32::from(info.height), rgba)
             .ok_or_else(|| "Invalid JPEG dimensions or RGBA length".into());
     }
     Err("Unsupported image format: expected PNG or JPEG".into())
 }
-fn decode_png_report(bytes: &[u8]) -> Result<Image, String> {
+fn pixel_budget(width: u32, height: u32, limit: usize) -> Result<(), String> {
+    let bytes = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4));
+    if bytes.is_none_or(|n| n == 0 || n > limit) {
+        return Err("Decoded image exceeds RGBA memory budget".into());
+    }
+    Ok(())
+}
+fn decode_png_report(bytes: &[u8], limit: usize) -> Result<Image, String> {
     let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: usize::MAX });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(|e| format!("PNG header: {e}"))?;
+    pixel_budget(reader.info().width, reader.info().height, limit)?;
     let size = reader.output_buffer_size().ok_or("PNG dimensions overflow")?;
     let mut data = Vec::new();
     data.try_reserve_exact(size).map_err(|e| format!("PNG pixel allocation ({size} bytes): {e}"))?;
