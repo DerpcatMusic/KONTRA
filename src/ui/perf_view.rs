@@ -177,6 +177,14 @@ pub fn scale(avail: f64, width: f64, setting: f32) -> f64 {
     if fit >= 1. { fit.floor() } else { fit }
 }
 
+/// Automatic zoom fits the whole authored view; explicit zoom stays scrollable.
+fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
+    let width = if room.height > 0. && authored.height > 0. {
+        room.width.min(room.height / authored.height * authored.width)
+    } else { room.width };
+    scale(width, authored.width, setting)
+}
+
 /// Where control `n` sits on the view, and whether it is hidden: a control
 /// in a `ui_panel` (`$CONTROL_PAR_PARENT_PANEL`) is placed from its panel's
 /// corner, and hidden with it, all the way up.
@@ -284,11 +292,20 @@ fn room(ui: &Ui, slot: usize) -> f64 {
         .map_or(0., |s| s.frame.size.width)
 }
 
+/// The rack's height minus the actual header/notices before this stage.
+/// Relative frames remain stable while the rack scrolls or its part animates.
+fn room_height(ui: &Ui, slot: usize) -> f64 {
+    let Some(scene) = ui.scene() else { return 0. };
+    let (Some(rack), Some(part), Some(stage)) = (scene.surface("rack-view"),
+        scene.surface(&format!("part-{slot}")), scene.surface(&format!("stage-{slot}"))) else { return 0. };
+    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.)).max(0.)
+}
+
 /// Everything [`view`] reads beyond the frame's input, hashed.
 pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let v = &cx.view.parts[slot];
     let mut h = DefaultHasher::new();
-    (room(ui, slot).round() as i64, cx.settings.view_scale.to_bits()).hash(&mut h);
+    (room(ui, slot).round() as i64, room_height(ui, slot).round() as i64, cx.settings.view_scale.to_bits()).hash(&mut h);
     shows(cx, slot).hash(&mut h);
     (Arc::as_ptr(&v.pictures) as usize, v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
     if let Some(i) = &v.interface {
@@ -389,7 +406,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let frame_width = v.wallpaper.as_ref().and_then(|p| p.atlas.map(|a| a[0]));
     fetch(cx, slot, &interface);
     let (w, h) = (f64::from(interface.width), f64::from(interface.height));
-    let s = scale(room(ui, slot), w, cx.settings.view_scale);
+    let s = scale_to_fit(Size::new(room(ui, slot), room_height(ui, slot)), Size::new(w,h), cx.settings.view_scale);
     // Control placement lands on whole device pixels. Wallpaper windows retain
     // source pixels and let the renderer apply the view scale.
     let dev = ui.scale().unwrap_or(1.);
