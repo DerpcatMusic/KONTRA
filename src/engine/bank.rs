@@ -888,7 +888,11 @@ impl Builder {
                     });
                     kept.push(zone);
                 }
-                Err(e) => issues.skip(format_args!("{e}: {}", zone.sample.display())),
+                Err(e) => issues.skip(format_args!(
+                    "{e}: {} (zone ID {zone_id}, group {}, keys {}..={}, sample frames {frames}, zone start {}, end offset {}, loop {:?})",
+                    zone.sample.display(), zone.group, zone.low_key, zone.high_key,
+                    zone.start, zone.end, zone.loop_range.as_ref().map(|l| (l.start, l.end)),
+                )),
             }
         }
         if kept.is_empty() && total > 0 {
