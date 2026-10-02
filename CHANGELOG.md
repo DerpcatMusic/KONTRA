@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
+- VST3 editor attachment now opens the editor before processor activation or state restoration. The actual host-shim regression reproduces the old blank-view path and passes attach/resize/restore/reopen after the fix; the specific Void report remains unconfirmed.
+- Native v0x103 external modulation now decodes with exact opaque-footer preservation. Actual Conflux checks recover 3,731 assignments, including 364 pitch-bend sources; 21 records with unsupported shapers still fail explicitly. Footer semantics remain unknown.
 - Live convolution Reverse and Auto Gain now rebuild on the worker and survive saved-state restoration; stale completions retain the current kernel.
 - Enabled eight-knot IR volume envelopes use checked amplitude interpolation before Auto Gain, with predelay kept separate. Malformed active curves retain diagnostics.
 - Delayed script callbacks can update prepared short and automation control names without allocating on the audio thread; actual Conflux preset replay is next.
@@ -19,7 +21,7 @@ below record reviewed source checkpoints; they are not claims about pending work
 - Registered per-note MIDI2 brightness now follows its retained note, including start-only modulation. Ambiguous host brightness is explicitly diagnosed instead of changing channel CC74 or a newer same-pitch note.
 - Saved convolution Auto Gain now uses the checked prepared stereo-energy rule, threshold and cap while preserving dry output. Unequal early/late shaping remains approximate.
 - Saved pitch and filter/EQ envelope bypass now uses the verified source flag, advances its clock and resumes without restarting. Amplitude/Flex bypass lifetime is still under investigation.
-- Wavetable source records are read and edited without losing opaque bytes. The engine prepares resident 2048-frame cycles with note-based pitch, live position, and verified Linear/ASYM2MP phase forms. Nine actual Conflux captures across three patches confirm octave pitch ratios and zero underruns. Preset tuning and scripted pedal behavior remain under investigation; High/Best anti-aliasing is not implemented. Unsupported states are counted instead of played as ordinary samples.
+- Wavetable source records are read and edited without losing opaque bytes. The engine prepares resident 2048-frame cycles with note-based pitch, live position, and verified Linear/ASYM2MP phase forms. Nine actual Conflux captures across three patches confirm octave pitch ratios and zero underruns. Preset tuning and scripted pedal behavior remain under investigation. Native bandwidth-table preparation is missing for all quality settings, including High/Best anti-aliasing. Unsupported states are counted instead of played as ordinary samples.
 
 ### Fixed after 0.3.64
 

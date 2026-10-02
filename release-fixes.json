@@ -710,6 +710,24 @@
       ],
       "validation": "All four PCM formats match reference output and phase exactly across morph/forms/cycle seams. Seven alternating thread-CPU rounds at bd09edb measured 1.55x F32, 2.00x I16 and 1.73x I24 kernel speedups; packed fallback is effectively unchanged. These are kernel measurements, not total plugin or UI speed claims.",
       "accepted": true
+    },
+    {
+      "id": "vst3-inactive-editor-attachment",
+      "summary": "Open VST3 editor on attachment before processor activation or state restoration",
+      "source_commits": [
+        "f2afdedbc724b9d1f697dadf24c9311f3b1a94bb"
+      ],
+      "validation": "Actual full VST3-shim driver-free probe reproduces baseline success-with-zero-editor-opens and passes inactive attachment, resize, later state restore/activation, remove and reopen after the fix; strict C++ compile passed. This proves the attachment defect, not that the unidentified Void DAW/format report is repaired.",
+      "accepted": true
+    },
+    {
+      "id": "native-external-modulation-v103",
+      "summary": "Decode native v103 external modulation while retaining its exact opaque footer",
+      "source_commits": [
+        "3353e67b6157636649a41b0203d658d2b6d05a13"
+      ],
+      "validation": "Focused vendor malformed/truncated/excess-footer and byte-exact roundtrip gate passed. Actual Conflux 3731 typed assignments preserve raw chunks byte-exact, including 364 PitchBend sources and four individually checked PB depth/name/footer records. Twenty-one unsupported shaper records remain strict errors; opaque footer semantics are not guessed. Full production Conflux replay is pending.",
+      "accepted": true
     }
   ]
 }
