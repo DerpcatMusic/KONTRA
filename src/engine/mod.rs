@@ -560,6 +560,7 @@ impl Engine {
                 gain: v.gains[0].abs().max(v.gains[1].abs()),
                 envelope: v.env.level() * v.flex.as_ref().map_or(1.0, |f| f.level()) * v.fade.value(),
                 sample: v.sample,
+                wavetable: v.wavetable.map(|table| (table.first, table.cycles)),
                 pos: v.pos,
                 step: v.step * v.tune * v.pitch.1,
                 filtered: self.bank.as_ref().is_some_and(|b| b.settings[v.group as usize].filter.is_some()),
@@ -1177,6 +1178,8 @@ pub struct VoiceInfo {
     /// Sample, virtual position and source frames per output frame before
     /// modulation: voices sharing a step and a position's fraction resample alike.
     pub sample: u32,
+    /// Resident wavetable source start and complete 2048-frame cycle count.
+    pub wavetable: Option<(usize, usize)>,
     pub pos: f64,
     pub step: f64,
     /// The group runs a per-voice filter or EQ.
