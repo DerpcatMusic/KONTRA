@@ -2041,6 +2041,24 @@ fn panic_cleanup_still_releases_the_first_slot_after_a_script_released_later_slo
 }
 
 #[test]
+fn panic_cleanup_continues_finished_ignored_releases_without_replaying_notifications() {
+    let first = "on init\ndeclare $count\ndeclare ui_label $info(1,1)\nend on\non release\ninc($count)\nset_text($info,$count)\nignore_event($EVENT_ID)\nend on";
+    let last = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nset_text($info,\"last cleaned\")\nend on";
+    for sources in [vec![first], vec![first, last]] {
+        let mut rig = Rig::new(&sources);
+        rig.on(0, 60).off(0, 60);
+        assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "1");
+        rig.rt.cleanup_notes(&mut rig.engine);
+        assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "1", "completed release must not run twice");
+        if sources.len() == 2 {
+            assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "last cleaned");
+        }
+        assert_eq!(rig.rt.env.events.live_count(), 0);
+        assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+    }
+}
+
+#[test]
 fn panic_cleanup_recycles_ignored_releases_and_notifies_remaining_slots() {
     let first = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nignore_event($EVENT_ID)\nwait(1000000)\nset_text($info,\"first cleaned\")\nend on";
     let last = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nset_text($info,\"last cleaned\")\nend on";

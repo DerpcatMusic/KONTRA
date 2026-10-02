@@ -1591,7 +1591,16 @@ impl Runtime {
                 debug_assert!(e.callbacks == 0 || e.cleanup);
                 let id = i32::from(e.generation) << EVENT_INDEX_BITS | i as i32;
                 if e.cleanup {
-                    if e.released & 1 == 0 { self.env.queue(Work::Release { event: id, slot: 0 }); }
+                    // A finished ignored release has no live callback to resume.
+                    // Continue at its next reached slot, or recycle at the end;
+                    // do not replay notifications or duplicate queued releases.
+                    if e.callbacks == 0 && !self.env.work.iter().any(|w|
+                        matches!(w, Work::Release { event, .. } if *event == id))
+                    {
+                        let slot = (0..e.reached).find(|slot| e.released & (1 << slot) == 0)
+                            .unwrap_or(e.reached);
+                        self.env.queue(Work::Release { event: id, slot });
+                    }
                 } else if e.source >= 0 || !e.held {
                     self.env.events.free(id);
                 }
