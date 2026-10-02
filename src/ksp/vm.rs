@@ -271,11 +271,91 @@ impl Stacks {
     }
 }
 
+/// Typed slots whose mutable borrows invalidate only their bound UI variable.
+/// No mutable slice dereference is exposed: indexed, bulk and host writes all
+/// pass through the same prepared owner map, including optimized VM loops.
+pub struct Values<T> {
+    values: Vec<T>,
+    owners: Vec<u32>,
+    revisions: Vec<u64>,
+}
+
+impl<T: Clone> Values<T> {
+    fn new(value: T, len: usize, prog: &Program, ty: Ty) -> Self {
+        let vars: Vec<_> = prog.vars.iter().filter(|v| v.ui.is_some() && v.ty == ty).collect();
+        let bound = vars.iter().map(|v| v.slot as usize + v.len.unwrap_or(1) as usize).max().unwrap_or(0);
+        let mut owners = vec![u32::MAX; bound];
+        for (i, var) in vars.iter().enumerate() {
+            owners[var.slot as usize..var.slot as usize + var.len.unwrap_or(1) as usize].fill(i as u32);
+        }
+        Self { values: vec![value; len], owners, revisions: vec![0; vars.len()] }
+    }
+}
+
+impl<T> Values<T> {
+    fn touch(&mut self, index: usize) {
+        if let Some(&owner) = self.owners.get(index).filter(|&&o| o != u32::MAX) {
+            self.revisions[owner as usize] = self.revisions[owner as usize].wrapping_add(1);
+        }
+    }
+    fn touch_range(&mut self, range: std::ops::Range<usize>) {
+        // A contiguous variable needs only one revision bump per bulk borrow.
+        let mut previous = u32::MAX;
+        for index in range.start..range.end.min(self.owners.len()) {
+            let owner = self.owners[index];
+            if owner != u32::MAX && owner != previous {
+                self.revisions[owner as usize] = self.revisions[owner as usize].wrapping_add(1);
+            }
+            previous = owner;
+        }
+    }
+    pub fn revision(&self, slot: usize) -> u64 {
+        self.owners.get(slot).filter(|&&o| o != u32::MAX).map_or(0, |&o| self.revisions[o as usize])
+    }
+}
+impl<T> std::ops::Deref for Values<T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] { &self.values }
+}
+impl<T, I: std::slice::SliceIndex<[T]>> std::ops::Index<I> for Values<T> {
+    type Output = I::Output;
+    fn index(&self, index: I) -> &Self::Output { &self.values[index] }
+}
+impl<T> std::ops::IndexMut<usize> for Values<T> {
+    fn index_mut(&mut self, index: usize) -> &mut T { self.touch(index); &mut self.values[index] }
+}
+impl<T> std::ops::IndexMut<std::ops::Range<usize>> for Values<T> {
+    fn index_mut(&mut self, range: std::ops::Range<usize>) -> &mut [T] {
+        self.touch_range(range.clone());
+        &mut self.values[range]
+    }
+}
+impl<T> std::ops::IndexMut<std::ops::RangeFull> for Values<T> {
+    fn index_mut(&mut self, _: std::ops::RangeFull) -> &mut [T] {
+        self.touch_range(0..self.values.len());
+        &mut self.values
+    }
+}
+impl<'a, T> IntoIterator for &'a mut Values<T> {
+    type Item = &'a mut T;
+    type IntoIter = std::slice::IterMut<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.touch_range(0..self.values.len());
+        self.values.iter_mut()
+    }
+}
+impl Values<i32> {
+    pub fn copy_within(&mut self, range: std::ops::Range<usize>, to: usize) {
+        self.touch_range(to..to + range.len());
+        self.values.copy_within(range, to);
+    }
+}
+
 /// Typed script memory: scalars and arrays share one vector per type.
 pub struct Memory {
-    pub ints: Vec<i32>,
-    pub reals: Vec<f64>,
-    pub strs: Vec<String>,
+    pub ints: Values<i32>,
+    pub reals: Values<f64>,
+    pub strs: Values<String>,
     pub poly: Vec<i32>,
 }
 
@@ -308,9 +388,9 @@ impl SlotState {
         Self {
             index,
             mem: Memory {
-                ints: vec![0; p.ints as usize],
-                reals: vec![0.0; p.real_slots as usize],
-                strs: vec![String::new(); p.strs as usize],
+                ints: Values::new(0, p.ints as usize, p, Ty::Int),
+                reals: Values::new(0.0, p.real_slots as usize, p, Ty::Real),
+                strs: Values::new(String::new(), p.strs as usize, p, Ty::Str),
                 poly: vec![0; (p.poly * POLY_ROWS) as usize],
             },
             ui: Ui::new(p.vars.len()),
@@ -868,7 +948,7 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
     let (code, elems) = (&prog.code[..], &prog.elems[..]);
     let slot = m.slot.index;
     let mem = &mut m.slot.mem;
-    let (ints, poly) = (&mut mem.ints[..], &mut mem.poly[..]);
+    let (ints, poly) = (&mut mem.ints, &mut mem.poly[..]);
     let env = &mut *m.env;
     let t = &mut *m.t;
     let row = t.ctx.poly_row * prog.poly;

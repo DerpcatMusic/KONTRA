@@ -246,6 +246,102 @@ fn scalar_edits_refresh_large_views_without_recopying_unchanged_metadata() {
     assert!(!rig.rt.refresh_live(&mut live));
 }
 
+#[test]
+fn ui_value_revisions_cover_indexed_bulk_host_and_mid_refresh_writes() {
+    let source = r#"on init
+make_perfview
+declare ui_slider $edit(0,10)
+declare ui_table %table[2048](1,1,127)
+declare %source[2048]
+declare $i
+declare ui_xy ?xy[2]
+declare ui_text_edit @text
+declare ui_menu $menu
+add_menu_item($menu,"first",0)
+add_menu_item($menu,"second",5)
+set_menu_item_visibility(get_ui_id($menu),1,0)
+$i := 0
+while ($i < 2048)
+%source[$i] := 2048 - $i
+inc($i)
+end while
+end on
+on ui_control($edit)
+if ($edit = 1)
+%table[1024] := 1
+set_control_par_arr(get_ui_id(%table),$CONTROL_PAR_VALUE,77,1536)
+set_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0.5,1)
+@text := "changed"
+$menu := 5
+else
+if ($edit = 2)
+$i := 0
+while ($i < 2048)
+%table[$i] := %source[$i]
+inc($i)
+end while
+else
+if ($edit = 3)
+sort_array(%table,0)
+else
+if ($edit = 4)
+get_event_ids(%table)
+else
+%table[0] := 99
+end if
+end if
+end if
+end if
+end on
+on controller
+%table[7] := %CC[$CC_NUM]
+@text := "cc"
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    let mut live = rig.rt.live();
+    let mut other = rig.rt.live();
+    let finish = |rt: &Runtime, live: &mut Live| {
+        let mut refresh = Refresh::default();
+        let mut passes = 1;
+        while !rt.refresh_live_within(live, &mut refresh, 512) { passes += 1; }
+        (passes, refresh.changed)
+    };
+    assert_eq!(finish(&rig.rt, &mut live), (1, false), "prepared arrays are already current");
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert!(finish(&rig.rt, &mut live).1);
+    let ui = live.interface.as_ref().unwrap();
+    let table = |live: &Live| match &live.interface.as_ref().unwrap().controls[1].properties["$CONTROL_PAR_VALUE"] {
+        Value::IntArray(v) => v.clone(), _ => panic!("expected table"),
+    };
+    assert_eq!((table(&live)[1024],table(&live)[1536]), (1,77));
+    assert_eq!(ui.controls[2].properties["$CONTROL_PAR_VALUE"], Value::RealArray(vec![0.0,0.5]));
+    assert_eq!(prop(ui,3,"$CONTROL_PAR_VALUE"), "changed");
+    assert_eq!(ui.controls[4].menu.len(),2, "selection can reveal a hidden menu row");
+    assert!(finish(&rig.rt, &mut other).1, "independent consumers retain independent revisions");
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 2);
+    finish(&rig.rt, &mut live);
+    assert_eq!(table(&live), (1..=2048).rev().collect::<Vec<_>>(), "optimized loop copy dirties its destination");
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 3);
+    finish(&rig.rt, &mut live);
+    assert_eq!(table(&live), (1..=2048).collect::<Vec<_>>(), "bulk sorting dirties its borrowed range");
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 4);
+    finish(&rig.rt, &mut live);
+    assert!(table(&live).iter().all(|&v| v == 0), "host event census bulk fill is visible");
+    rig.rt.controller(&mut rig.engine,0,1,81);
+    finish(&rig.rt, &mut live);
+    assert_eq!(table(&live)[7],81);
+    assert_eq!(prop(live.interface.as_ref().unwrap(),3,"$CONTROL_PAR_VALUE"),"cc");
+    rig.rt.ui_control(&mut rig.engine,0,0,1);
+    let mut refresh = Refresh::default();
+    assert!(!rig.rt.refresh_live_within(&mut live,&mut refresh,32));
+    rig.rt.ui_control(&mut rig.engine,0,0,5); // overwrite a cell already copied in the first chunk
+    while !rig.rt.refresh_live_within(&mut live,&mut refresh,512) {}
+    assert!(finish(&rig.rt,&mut live).1, "a write between chunks remains pending");
+    assert_eq!(table(&live)[0],99);
+    assert_eq!(finish(&rig.rt,&mut live),(1,false), "unchanged arrays are skipped only after complete delivery");
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}",rig.rt.diagnostics());
+}
+
 // ---- Initialization (ported from the init-only interpreter) ---------------------------
 
 #[test]

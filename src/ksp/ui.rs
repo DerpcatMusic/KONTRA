@@ -292,6 +292,8 @@ impl Ui {
         out: &mut Interface,
         menu_spares: &mut [Vec<(String, i32)>],
         revisions: &mut [u64],
+        value_revisions: &mut [u64],
+        value_revision: &mut u64,
         next: &mut usize,
         value_at: &mut usize,
         budget: usize,
@@ -306,7 +308,14 @@ impl Ui {
             if left == 0 {
                 break;
             }
+            let var = &prog.vars[c.var as usize];
+            let revision = match var.ty {
+                Ty::Int => mem.ints.revision(var.slot as usize),
+                Ty::Real => mem.reals.revision(var.slot as usize),
+                Ty::Str => mem.strs.revision(var.slot as usize),
+            };
             if *value_at == 0 {
+                *value_revision = revision;
                 left = left.saturating_sub(c.menu.len() + 1);
                 if revisions[index] != c.revision {
                     left = left.saturating_sub(c.props.len());
@@ -341,7 +350,10 @@ impl Ui {
                     changed |= std::mem::replace(value, m.value) != m.value;
                 }
             }
-            let var = &prog.vars[c.var as usize];
+            if *value_at == 0 && value_revisions[index] == revision {
+                *next += 1;
+                continue;
+            }
             let len = var.len.map_or(1, |n| n as usize);
             // Metadata can exceed this coarse budget; still make progress.
             let end = len.min(value_at.saturating_add(left.max(1)));
@@ -353,6 +365,9 @@ impl Ui {
                 *value_at = end;
                 break;
             }
+            // A write between chunks leaves its newer revision pending for
+            // the next refresh instead of claiming earlier cells are current.
+            value_revisions[index] = *value_revision;
             *value_at = 0;
             *next += 1;
         }

@@ -90,6 +90,7 @@ pub struct Live {
     /// Preallocated rows recycled when script menus change visibility.
     menu_spares: Vec<Vec<(String, i32)>>,
     control_revisions: Vec<u64>,
+    control_value_revisions: Vec<u64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1179,6 +1180,17 @@ impl Runtime {
             keys,
             menu_spares,
             control_revisions: slot.map_or_else(Vec::new, |s| self.states[s].ui.controls.iter().map(|c| c.revision).collect()),
+            control_value_revisions: slot.map_or_else(Vec::new, |s| {
+                let mem = &self.states[s].mem;
+                self.states[s].ui.controls.iter().map(|c| {
+                    let var = &self.programs[s].vars[c.var as usize];
+                    match var.ty {
+                        Ty::Int => mem.ints.revision(var.slot as usize),
+                        Ty::Real => mem.reals.revision(var.slot as usize),
+                        Ty::Str => mem.strs.revision(var.slot as usize),
+                    }
+                }).collect()
+            }),
         };
         self.refresh_live(&mut live);
         live
@@ -1220,7 +1232,7 @@ impl Runtime {
             && at.item != usize::MAX
         {
             let prog = &self.programs[live.slot];
-            at.changed |= state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut live.control_revisions, &mut at.item, &mut at.at, budget);
+            at.changed |= state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut live.control_revisions, &mut live.control_value_revisions, &mut at.value_revision, &mut at.item, &mut at.at, budget);
             if at.item != usize::MAX {
                 return false;
             }
@@ -2304,6 +2316,7 @@ pub(super) fn refresh_range(
 /// Where an incremental refresh stands; start from the default.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Refresh {
+    value_revision: u64,
     slot: usize,
     item: usize,
     at: usize,
