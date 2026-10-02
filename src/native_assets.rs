@@ -686,6 +686,33 @@ mod tests {
         assert!(decode("bad.svg", br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="16"><mask id="m"/></svg>"#).unwrap_err().contains("mask"));
     }
     #[test]
+    fn native_png_bounds_compressed_metadata_before_pixel_decode() {
+        let mut bytes = Vec::new();
+        let mut info = png::Info::with_size(1, 1);
+        info.color_type = png::ColorType::Rgba;
+        info.bit_depth = png::BitDepth::Eight;
+        info.icc_profile = Some(std::borrow::Cow::Owned(vec![0; 64 << 10]));
+        {
+            let mut writer = png::Encoder::with_info(&mut bytes, info)
+                .unwrap()
+                .write_header()
+                .unwrap();
+            writer.write_image_data(&[255, 0, 0, 255]).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(
+            bytes.len() < 4096,
+            "authored metadata must be highly compressed"
+        );
+        let unlimited = crate::artwork::decode_report(&bytes).unwrap();
+        assert_eq!((unlimited.width, unlimited.height), (1, 1));
+        let error = crate::artwork::decode_report_bounded(&bytes, 1024).unwrap_err();
+        assert!(
+            error.to_ascii_lowercase().contains("limit"),
+            "metadata must hit decoder bound before RGBA allocation: {error}"
+        );
+    }
+    #[test]
     fn native_svg_filter_glow_preserves_pixels_and_device_cache_identity() {
         use moose::mui::mui::{
             scene::{self, prelude::*},
@@ -779,8 +806,12 @@ mod tests {
         }
         assert!(Asset::Vector(vector).retained_bytes() >= FILTER_CACHE_LIMIT);
         assert!(
-            Assets::prepare_bounded(Path::new("/does-not-exist.nki"), ["assets/a.svg"], 0).entries
-                ["assets/a.svg"]
+            Assets::prepare_bounded(
+                std::path::Path::new("/does-not-exist.nki"),
+                ["assets/a.svg"],
+                0
+            )
+            .entries["assets/a.svg"]
                 .as_ref()
                 .unwrap_err()
                 .contains("budget")
