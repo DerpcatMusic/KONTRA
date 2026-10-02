@@ -32,20 +32,20 @@ pub struct SourceIdentity {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WavetableSource {
     pub common: [u8; 30],
-    pub inharmonic: f32,
+    pub position: f32,
+    pub form1: f32,
     pub phase: f32,
     pub phase_random: f32,
-    pub position: f32,
     pub form_type: u32,
     pub quality: u32,
     pub inharmonic_enabled: bool,
+    pub inharmonic: f32,
     pub form2: f32,
-    pub mod_amount: f32,
     pub form2_type: u32,
     pub mod_wave: u32,
     pub mod_type: u32,
+    pub mod_amount: f32,
     pub mod_tune: f32,
-    pub unknown_float: f32,
     pub unknown_tail: [u8; 16],
 }
 
@@ -55,23 +55,23 @@ impl WavetableSource {
         reader.read_exact(&mut common)?;
         let result = Self {
             common,
-            inharmonic: reader.read_f32_le()?,
+            position: reader.read_f32_le()?,
+            form1: reader.read_f32_le()?,
             phase: reader.read_f32_le()?,
             phase_random: reader.read_f32_le()?,
-            position: reader.read_f32_le()?,
             form_type: reader.read_u32_le()?,
             quality: reader.read_u32_le()?,
             inharmonic_enabled: match reader.read_u8()? {
                 0 => false, 1 => true,
                 _ => return Err(Error::Static("Invalid wavetable inharmonic flag")),
             },
+            inharmonic: reader.read_f32_le()?,
             form2: reader.read_f32_le()?,
-            mod_amount: reader.read_f32_le()?,
             form2_type: reader.read_u32_le()?,
             mod_wave: reader.read_u32_le()?,
             mod_type: reader.read_u32_le()?,
+            mod_amount: reader.read_f32_le()?,
             mod_tune: reader.read_f32_le()?,
-            unknown_float: reader.read_f32_le()?,
             unknown_tail: { let mut tail = [0; 16]; reader.read_exact(&mut tail)?; tail },
         };
         result.validate()?;
@@ -95,14 +95,14 @@ impl WavetableSource {
     pub fn write(&self, mut writer: impl Write) -> Result<(), Error> {
         self.validate()?;
         writer.write_all(&self.common)?;
-        for value in [self.inharmonic, self.phase, self.phase_random, self.position] {
+        for value in [self.position, self.form1, self.phase, self.phase_random] {
             writer.write_all(&value.to_le_bytes())?;
         }
         for value in [self.form_type, self.quality] { writer.write_all(&value.to_le_bytes())?; }
         writer.write_all(&[u8::from(self.inharmonic_enabled)])?;
-        for value in [self.form2, self.mod_amount] { writer.write_all(&value.to_le_bytes())?; }
+        for value in [self.inharmonic, self.form2] { writer.write_all(&value.to_le_bytes())?; }
         for value in [self.form2_type, self.mod_wave, self.mod_type] { writer.write_all(&value.to_le_bytes())?; }
-        for value in [self.mod_tune, self.unknown_float] { writer.write_all(&value.to_le_bytes())?; }
+        for value in [self.mod_amount, self.mod_tune] { writer.write_all(&value.to_le_bytes())?; }
         writer.write_all(&self.unknown_tail)?;
         Ok(())
     }
@@ -247,11 +247,11 @@ mod tests {
     fn wavetable_source_roundtrip_edits_preserve_opaque_state_and_bounds() {
         let mut common = [0xA5; 30];
         common[..7].copy_from_slice(&[0, 6, 1, 9, 0, 0, 0]);
-        let source = WavetableSource { common, inharmonic: 0.25, phase: 0.5,
-            phase_random: 0.125, position: 0.75, form_type: 17, quality: 3,
-            inharmonic_enabled: false, form2: 0.375, mod_amount: 0.625,
-            form2_type: 1, mod_wave: 6, mod_type: 0, mod_tune: -12.0,
-            unknown_float: f32::from_bits(0x7fc01234), unknown_tail: [0xDE; 16] };
+        let source = WavetableSource { common, position: 0.25, form1: 0.5,
+            phase: 0.125, phase_random: 0.75, form_type: 17, quality: 3,
+            inharmonic_enabled: false, inharmonic: 0.375, form2: 0.625,
+            form2_type: 1, mod_wave: 6, mod_type: 0, mod_amount: -12.0,
+            mod_tune: f32::from_bits(0x7fc01234), unknown_tail: [0xDE; 16] };
         let mut bytes = Vec::new();
         source.write(&mut bytes).unwrap();
         assert_eq!(bytes.len(), 99);
@@ -275,11 +275,11 @@ mod tests {
             public_data: Vec::new(), children: Vec::new() });
         let before = group.0.private_data.clone();
         let mut edited = group.wavetable_source().unwrap().unwrap();
-        edited.position = 0.25;
+        edited.position = 0.75;
         group.set_wavetable_source(&edited).unwrap();
-        assert_eq!(group.wavetable_source().unwrap().unwrap().position, 0.25);
-        assert_eq!(&group.0.private_data[..start + 42], &before[..start + 42]);
-        assert_eq!(&group.0.private_data[start + 46..], &before[start + 46..]);
+        assert_eq!(group.wavetable_source().unwrap().unwrap().position, 0.75);
+        assert_eq!(&group.0.private_data[..start + 30], &before[..start + 30]);
+        assert_eq!(&group.0.private_data[start + 34..], &before[start + 34..]);
         edited.quality = 5;
         let before = group.0.private_data.clone();
         assert!(group.set_wavetable_source(&edited).is_err());
