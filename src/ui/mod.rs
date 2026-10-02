@@ -717,6 +717,7 @@ fn replace_part(part: &mut Part, path: String) {
     part.script_state.clear();
     part.ir_settings.clear();
     part.engine_state.clear();
+    part.delay_state.clear();
 }
 
 /// A part for `path` on the input and output the settings give new parts.
