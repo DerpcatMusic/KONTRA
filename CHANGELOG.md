@@ -65,6 +65,11 @@ are added when a release is actually published; commit history is not a changelo
 
 ### Fixed
 
+- Group drive processing retains all eight native insert slots. A third drive
+  stage was previously discarded, leaving Analog Strings' Saturation control
+  editable without reaching its DSP.
+- Original views retain unchanged control subtrees across live publications,
+  while changed table rows, active gestures and replacement epochs rebuild.
 - Windows editors default to Direct3D 12 instead of implicitly initializing
   Vulkan. Explicit `WGPU_BACKEND` selections remain authoritative; renderer
   startup, adapter details and recoverable failures enter persistent diagnostics.
