@@ -446,6 +446,8 @@ pub struct Shared {
     load_gate: Mutex<Option<(usize, Arc<std::sync::Barrier>)>>,
     #[cfg(test)]
     publish_gate: Mutex<Option<Arc<std::sync::Barrier>>>,
+    #[cfg(test)]
+    snapshot_gate: Mutex<Option<Arc<std::sync::Barrier>>>,
     /// Edits of script controls from the performance view.
     edits: ArrayQueue<Edit>,
     file_selections: ArrayQueue<FileSelection>,
@@ -722,6 +724,8 @@ impl Default for Shared {
             load_gate: Mutex::new(None),
             #[cfg(test)]
             publish_gate: Mutex::new(None),
+            #[cfg(test)]
+            snapshot_gate: Mutex::new(None),
             edits: ArrayQueue::new(256),
             file_selections: ArrayQueue::new(16),
             ir_requests: ArrayQueue::new(64),
@@ -2474,6 +2478,7 @@ impl BackgroundTask for Load {
             let mut view = params.shared.view.lock().unwrap();
             let v = &mut view.parts[slot];
             if epoch == 0 || epoch != v.script_epoch {
+                drop(view);
                 continue;
             }
             // File paths stay on the worker. The audio snapshot only updates
@@ -2490,11 +2495,26 @@ impl BackgroundTask for Load {
             // saved yet. Serializing megabytes of script tables ten times a
             // second was most of the loader's time.
             if !changed && !v.script_state.is_empty() {
-                v.snapshot = Some(snapshot);
+                let retired = v.snapshot.replace(snapshot);
+                drop(view);
+                drop(retired);
                 continue;
             }
+            // Formatting and cloning large persistent arrays must not hold the
+            // same mutex every editor frame needs to read its live controls.
+            drop(view);
+            #[cfg(test)]
+            if let Some(gate) = params.shared.snapshot_gate.lock().unwrap().take() {
+                gate.wait();
+                gate.wait();
+            }
             if !crate::ksp::settle_persistence(&mut snapshot.script) {
-                v.snapshot = Some(snapshot);
+                let mut view = params.shared.view.lock().unwrap();
+                let retired = if view.parts[slot].script_epoch == epoch {
+                    view.parts[slot].snapshot.replace(snapshot)
+                } else { None };
+                drop(view);
+                drop(retired);
                 continue;
             }
             let json = serde_json::to_string(&snapshot.script).unwrap_or_default();
@@ -2505,8 +2525,21 @@ impl BackgroundTask for Load {
                     serde_json::json!({"part":slot,"script_epoch":epoch,"count":snapshot.native.misses,"parameter":snapshot.native.last_miss}));
                 snapshot.native.reported_misses = snapshot.native.misses;
             }
-            v.snapshot = Some(snapshot);
+            // Prepare the view's owned copies before entering its commit lock.
+            let view_json = json.clone();
+            let view_ir = ir_settings.clone();
+            let view_native = engine_state.clone().into();
+            let mut view = params.shared.view.lock().unwrap();
+            let v = &mut view.parts[slot];
+            // A replacement can publish while this worker formats the snapshot.
+            if epoch != v.script_epoch {
+                drop(view);
+                continue;
+            }
+            let retired_snapshot = v.snapshot.replace(snapshot);
             if json == v.script_state && ir_settings == v.ir_settings && engine_state.as_slice() == v.engine_state.as_ref() {
+                drop(view);
+                drop(retired_snapshot);
                 continue;
             }
             // The part as the rack names it: the instrument's own path is
@@ -2514,20 +2547,23 @@ impl BackgroundTask for Load {
             // it, so the saved values never reached the part and the next
             // round rebuilt its scripts from stale ones, ten times a second.
             let target = v.attempted.clone();
-            v.script_state = json.clone();
-            v.ir_settings = ir_settings.clone();
-            v.engine_state = engine_state.clone().into();
+            let retired = (
+                std::mem::replace(&mut v.script_state, view_json),
+                std::mem::replace(&mut v.ir_settings, view_ir),
+                std::mem::replace(&mut v.engine_state, view_native),
+            );
             drop(view);
+            drop((retired, retired_snapshot));
             let mut current = params.selection.write().unwrap();
-            if let Some(p) = current
-                .parts
-                .get_mut(slot)
+            let retired = current.parts.get_mut(slot)
                 .filter(|p| target.as_ref() == Some(&p.source()))
-            {
-                p.script_state = json;
-                p.ir_settings = ir_settings;
-                p.engine_state = engine_state;
-            }
+                .map(|p| (
+                    std::mem::replace(&mut p.script_state, json),
+                    std::mem::replace(&mut p.ir_settings, ir_settings),
+                    std::mem::replace(&mut p.engine_state, engine_state),
+                ));
+            drop(current);
+            drop(retired);
         }
         // Visible editors publish and recycle directly, even while this task loads another part.
         params.shared.publish_live(false);
@@ -4567,6 +4603,73 @@ pub(crate) mod tests {
         assert_eq!(p.shared.part(0).unwrap().generation.load(Ordering::Acquire), generation);
         assert_eq!(dsp.script_epoch[0], epoch);
         println!("foreign snapshot rejected without replacing active state, bank, generation or script epoch");
+    }
+
+    #[test]
+    fn persistence_formatting_releases_the_editor_lock_and_rejects_replaced_epochs() {
+        use std::sync::Barrier;
+        let source = "on init\ndeclare %table[16384]\n%table[16383] := 721\nmake_persistent(%table)\nend on";
+        let (rt, errors) = Runtime::with_scripts(&[source], &mut crate::ksp::LogEngine::default(), 0, Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        let expected = serde_json::to_string(&rt.persistence()).unwrap();
+        for replace in [false, true] {
+            let p = Arc::new(SamplerParams::new());
+            let part = Part { script_state: "before".into(), ..Default::default() };
+            p.selection.write().unwrap().parts = vec![part.clone()];
+            let streaming = {
+                let selection = p.selection.read().unwrap();
+                part.streaming(selection.streaming)
+            };
+            {
+                let mut view = p.shared.view.lock().unwrap();
+                for v in &mut view.parts {
+                    v.attempted = Some(part.source());
+                    v.streaming = streaming;
+                }
+                let v = &mut view.parts[0];
+                v.script_epoch = 1;
+                v.script_state = part.script_state;
+                v.snapshot_lent = Some(Instant::now());
+            }
+            let snapshot = Box::new(PersistenceSnapshot {
+                script: rt.persistence(), ir: Vec::new(), native: rt.native_state.snapshot(),
+            });
+            let address = (&*snapshot as *const PersistenceSnapshot) as usize;
+            p.shared.snapshots.push((0, 1, snapshot, true)).ok().unwrap();
+            let gate = Arc::new(Barrier::new(2));
+            *p.shared.snapshot_gate.lock().unwrap() = Some(gate.clone());
+            let worker = {
+                let p = p.clone();
+                std::thread::spawn(move || Load.run(&p))
+            };
+            gate.wait();
+            // The worker is paused at the persistence formatting boundary.
+            // A frame must read the view without waiting for its large arrays.
+            let unlocked = p.shared.view.try_lock().is_ok();
+            if unlocked && replace {
+                let mut view = p.shared.view.lock().unwrap();
+                view.parts[0].script_epoch = 2;
+                view.parts[0].script_state = "replacement".into();
+                drop(view);
+                p.selection.write().unwrap().parts[0].script_state = "replacement".into();
+            }
+            gate.wait();
+            worker.join().unwrap();
+            assert!(unlocked, "persistence formatting must not hold the editor view lock");
+            let view = p.shared.view.lock().unwrap();
+            let v = &view.parts[0];
+            if replace {
+                assert_eq!(v.script_epoch, 2);
+                assert_eq!(v.script_state, "replacement");
+                assert!(v.snapshot.is_none(), "an old epoch's buffer cannot enter its replacement");
+                assert_eq!(p.selection.read().unwrap().parts[0].script_state, "replacement");
+            } else {
+                assert_eq!(v.script_state, expected);
+                assert_eq!(p.selection.read().unwrap().parts[0].script_state, expected);
+                assert_eq!((&**v.snapshot.as_ref().unwrap() as *const PersistenceSnapshot) as usize, address,
+                    "the prepared audio snapshot buffer is recycled, preserving host JSON");
+            }
+        }
     }
 
     #[test]
