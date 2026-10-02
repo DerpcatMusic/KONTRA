@@ -430,6 +430,20 @@ legacy volume/filter target scaling remains unsupported. Modern
 `MOD_TARGET_MP_INTENSITY` retains its distinct linear bipolar law. Finite extended
 legacy depths survive writes and readback instead of being clamped to one octave.
 
+Explicit `INTMOD_BYPASS` and modern `MOD_TARGET_INTENSITY` /
+`MOD_TARGET_MP_INTENSITY` now also address decoded AHDSRs driving group filter,
+EQ and supported insert-stage parameters. Original envelope and target indices
+survive omitted unsupported targets. Bypass removes every contribution, including
+a nonzero shaper intercept, while the existing envelope clock continues; a mixed
+pitch/module envelope updates both prepared copies. Reenabling resumes its elapsed
+phase. Filter/EQ coefficients retain the existing 32-frame control ticks. These
+controls use the existing normalized module-offset law and modern intensity laws;
+legacy filter `INTMOD_INTENSITY` and undecoded preset bypass flags remain unmapped.
+The authored `module_envelope_controls_preserve_targets_and_elapsed_clock_without_heap`
+regression checks PCM bypass/resumption, clock continuity, live depth/readback,
+mixed-target addressing, finite output and allocation counts. Kontakt reference
+render parity has not been established.
+
 A content-free raw-modulator census of the configured 782 presets (788 programs)
 completed with zero failures: 226,278 groups, 223,743 AHDSRs, 6,884 flex envelopes,
 2,400 opaque LFO objects, and 483 AHDSR pitch targets. The maximum occupied internal

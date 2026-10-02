@@ -398,6 +398,8 @@ struct Route {
     knob: u8,
     /// Invert button, read as a negative direction.
     sign: f32,
+    /// Original internal target index (external routes do not use it).
+    target: u16,
 }
 
 /// `[ll, lr, rl, rr]`: `l' = ll·l + lr·r`, `r' = rl·l + rr·r`.
@@ -418,7 +420,7 @@ pub struct GroupFilter {
     matrix: Matrix,
     /// Module envelopes and what they drive (intensity and shaper in `Mod`),
     /// with their index in `Group::envelopes`.
-    envs: Box<[(Ahdsr, Box<[(Route, Mod)]>, u8)]>,
+    envs: Box<[(Ahdsr, Box<[(Route, Mod)]>, u8, bool)]>,
     /// External assignments: index into the group's `ModTable`.
     ext: Box<[(Route, u16)]>,
 }
@@ -551,23 +553,23 @@ impl GroupFilter {
             return None;
         }
         // Drive stages are routed as rows after the units'.
-        let route = |m: &ModAssignment| {
+        let route = |m: &ModAssignment, target| {
             let ModTarget::Module { param, slot } = &m.target else {
                 return None;
             };
             let sign = if m.invert { -1.0 } else { 1.0 };
             if let Some((kind, n)) = stage_knob(param) {
                 let i = stages.iter().position(|s| s.slot == *slot && s.kind == kind)?;
-                return Some(Route { unit: (units.len() + i) as u8, knob: n, sign });
+                return Some(Route { unit: (units.len() + i) as u8, knob: n, sign, target });
             }
             let knob = Knob::parse(param)?;
             let unit = units.iter().position(|u| u.slot == *slot && knob.fits(u.shape, u.sections))?;
-            Some(Route { unit: unit as u8, knob: knob.index()? as u8, sign })
+            Some(Route { unit: unit as u8, knob: knob.index()? as u8, sign, target })
         };
         let envs = (group.envelopes.iter().enumerate())
             .filter_map(|(i, e)| {
-                let routes: Box<[_]> = e.targets.iter().filter_map(|m| Some((route(m)?, Mod::from(m)))).collect();
-                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes, i as u8))
+                let routes: Box<[_]> = e.targets.iter().enumerate().filter_map(|(t, m)| Some((route(m, t as u16)?, Mod::from(m)))).collect();
+                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes, i as u8, false))
             })
             .take(MAX_ENVS)
             .collect();
@@ -575,7 +577,7 @@ impl GroupFilter {
             .mods
             .iter()
             .enumerate()
-            .filter_map(|(i, m)| Some((route(m)?, i as u16)))
+            .filter_map(|(i, m)| Some((route(m, 0)?, i as u16)))
             .take(MAX_EXT)
             .collect();
         let mut out = Box::new(Self {
@@ -668,6 +670,24 @@ impl GroupFilter {
 
     pub(crate) fn envelope_at(&self, i: u8) -> Option<&Ahdsr> {
         self.envs.iter().find(|e| e.2 == i).map(|e| &e.0)
+    }
+
+    pub(crate) fn envelope_bypass(&mut self, i: u8) -> Option<&mut bool> {
+        self.envs.iter_mut().find(|e| e.2 == i).map(|e| &mut e.3)
+    }
+
+    pub(crate) fn envelope_bypass_at(&self, i: u8) -> Option<bool> {
+        self.envs.iter().find(|e| e.2 == i).map(|e| e.3)
+    }
+
+    pub(crate) fn envelope_mod(&mut self, i: u8, target: u16) -> Option<&mut Mod> {
+        self.envs.iter_mut().find(|e| e.2 == i)?.1.iter_mut()
+            .find(|(r, _)| r.target == target).map(|(_, m)| m)
+    }
+
+    pub(crate) fn envelope_mod_at(&self, i: u8, target: u16) -> Option<&Mod> {
+        self.envs.iter().find(|e| e.2 == i)?.1.iter()
+            .find(|(r, _)| r.target == target).map(|(_, m)| m)
     }
 
     /// Switch a filter slot to another filter type. The voices' section
@@ -1171,7 +1191,10 @@ impl VoiceFilter {
             let mut rows: [[f32; KNOBS]; ROWS] = std::array::from_fn(|u| {
                 f.units.get(u).map_or([0.0; KNOBS], |unit| unit.knobs)
             });
-            for (e, (_, routes, _)) in f.envs.iter().enumerate() {
+            for (e, (_, routes, _, bypass)) in f.envs.iter().enumerate() {
+                // Bypass disconnects every target, including nonzero shaper
+                // intercepts. The envelope above still advances while bypassed.
+                if *bypass { continue; }
                 for (r, m) in routes.iter() {
                     rows[r.unit as usize][r.knob as usize] += r.sign * m.intensity * m.shape(levels[e][t]);
                 }
@@ -1557,6 +1580,79 @@ mod tests {
     use std::f32::consts::TAU;
 
     const RATE: f32 = 48_000.0;
+
+    #[test]
+    fn module_envelope_controls_preserve_targets_and_elapsed_clock_without_heap() {
+        use crate::{engine::{GroupSettings, params::{self, Address, id}}, import::{ModSource, Modulator},
+            modulation::{Ahdsr as ImportedAhdsr, ModEnvelope}, ksp::EnginePar};
+        let target = |target, shaper| ModAssignment { name: "Envelope".into(), source: ModSource::Unassigned,
+            target, intensity: 0.5, invert: false, lag_ms: 0, shaper };
+        let env = ImportedAhdsr { attack_curve: 0., attack_ms: 100., hold_ms: 0., decay_ms: 0.,
+            sustain: 1., release_ms: 100., unknown_flag: 0, unknown_tail: Vec::new() };
+        let group = Group {
+            envelopes: vec![ModEnvelope { env: env.clone(), targets: vec![] }, ModEnvelope { env, targets: vec![
+                target(ModTarget::Group("loopLength".into()), None),
+                target(ModTarget::Pitch, None),
+                target(ModTarget::Module { param: "filterCutoff".into(), slot: 0 },
+                    Some(crate::import::ShaperCurve::Table(vec![0.3, 1.]))),
+                target(ModTarget::Module { param: "filterQ".into(), slot: 0 }, None),
+            ] }],
+            modulators: vec![Modulator { name: "Envelope".into(), targets: vec![String::new(); 4],
+                assignments: None, volume_env: false, flex: false, envelope: Some(1), kind: "ahdsr".into() }],
+            fx: Chain { slots: vec![crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 0,
+                bypass: false, output_gain: 1., dry_level: 1., params: Params::Filter(crate::fx::params::Filter {
+                    filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3] }) }] },
+            ..Group::default()
+        };
+        let groups = [group];
+        let mut settings = [GroupSettings::from(&groups[0])];
+        let address = |id, generic| Address::resolve(EnginePar { id, group: 0, slot: 0, generic }, &groups);
+        let depth = address(id::MOD_TARGET_MP_INTENSITY, 2).unwrap();
+        let unipolar = address(id::MOD_TARGET_INTENSITY, 2).unwrap();
+        let bypass = address(id::INTMOD_BYPASS, -1).unwrap();
+        assert!(address(id::INTMOD_INTENSITY, 2).is_none(), "unknown legacy filter law stays explicit");
+        assert!(address(id::MOD_TARGET_MP_INTENSITY, 0).is_none(), "unsupported target does not alias a routed one");
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc: &cc, cc74: None, bend: 0., pressure: 0, note: 60, velocity: 100, counter: 0. };
+        let f = settings[0].filter.as_ref().unwrap();
+        let mut dry = f.clone();
+        dry.envs = [].into();
+        let mut voice = VoiceFilter::new(Some(f), &table, &input, RATE);
+        let mut reference = VoiceFilter::new(Some(&dry), &table, &input, RATE);
+        let mut clock = Envelope::new(&Ahdsr::from(&groups[0].envelopes[1].env), RATE);
+        let mut ctl = [0.; MAX_BLOCK];
+        let mut difference = 0f32;
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            assert!(params::write(&mut settings, unipolar, unipolar.decode(500_000)));
+            assert_eq!(params::read(&settings, unipolar), Some(0.25));
+            assert!(params::write(&mut settings, depth, depth.decode(750_000)));
+            assert_eq!(params::read(&settings, depth), Some(0.5));
+            assert_eq!(depth.encode(params::read(&settings, depth).unwrap()), 750_000);
+            assert!(params::write(&mut settings, bypass, bypass.decode(1)));
+            assert!(settings[0].pitch_envelopes[0].bypass, "all copies of a mixed envelope share bypass");
+            for block in 0..48 {
+                let source = std::array::from_fn::<_, 128, _>(|n| (TAU * 2000. * (block * 128 + n) as f32 / RATE).sin());
+                let (mut l, mut r) = (source, source);
+                let (mut dl, mut dr) = (source, source);
+                if block == 24 { assert!(params::write(&mut settings, bypass, 0.)); }
+                voice.process(settings[0].filter.as_ref().unwrap(), &table, &mut ctl, &mut l, &mut r, RATE);
+                reference.process(&dry, &table, &mut ctl, &mut dl, &mut dr, RATE);
+                clock.skip(128, None, RATE);
+                assert_eq!(voice.envs[0].level(), clock.level(), "bypass does not restart or freeze the clock");
+                assert!(l.iter().chain(&r).all(|x| x.is_finite()));
+                if block < 24 { assert_eq!(l, dl, "bypass removes even the shaper intercept"); }
+                else { difference += l.iter().zip(&dl).map(|(a,b)| (a-b).abs()).sum::<f32>(); }
+            }
+            voice.release();
+            clock.release(None);
+            let (mut l, mut r) = ([0.; 128], [0.; 128]);
+            voice.process(settings[0].filter.as_ref().unwrap(), &table, &mut ctl, &mut l, &mut r, RATE);
+            clock.skip(128, None, RATE);
+            assert_eq!(voice.envs[0].level(), clock.level());
+        }), 0);
+        assert!(difference > 1., "resuming the elapsed envelope changes actual PCM: {difference}");
+    }
 
     /// The rearranged SSE section matches Simper's textbook update.
     #[test]
