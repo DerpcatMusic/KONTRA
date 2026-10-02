@@ -26,9 +26,13 @@ pub fn name(cx: &Cx, slot: usize) -> String {
     if !part.name.is_empty() {
         return part.name.clone();
     }
-    let full = instrument::instrument_of(cx, slot)
-        .map(|i| i.name.clone())
-        .unwrap_or_else(|| super::header::stem(&part.path));
+    // Snapshot imports carry the snapshot's name. Keep the base title above
+    // it; the second row names the selected snapshot independently.
+    let full = if part.snapshot.is_empty() {
+        instrument::instrument_of(cx, slot).map(|i| i.name.clone())
+    } else {
+        cx.view.shelf.snapshots.get(Path::new(&part.path)).map(|s| s.instrument.clone())
+    }.unwrap_or_else(|| super::header::stem(&part.path));
     without_library(&full, &cx.library_of(Path::new(&part.path))).to_owned()
 }
 
@@ -246,7 +250,8 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     let room = height.map(|h| h - SLIM);
     if room.is_none_or(|r| r >= 0.5) {
         let body = if near {
-            let mut body: Vec<El> = instrument::notices(cx, slot).into_iter().collect();
+            let mut body: Vec<El> = snapshot_row(ui, cx, slot).into_iter().collect();
+            body.extend(instrument::notices(cx, slot));
             // Kept as drawn while nothing it shows moves: meters and keys
             // redraw around it, not through it.
             let deps = (instrument::stage_deps(ui, cx, slot), cx.selection.appearance);
@@ -421,6 +426,33 @@ pub(super) fn load_chip(done: f64, words: bool) -> El {
         .lines(1)
         .shrink(0)
         .named("Loading")
+}
+
+/// A snapshot changes the current base instrument's state; it does not step
+/// the browser's NKI/NKM list. All paths here were prepared by the scan worker.
+fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
+    let part = cx.selection.parts.get(slot)?;
+    if !part.snapshot_base() { return None; }
+    let paths = cx.view.shelf.snapshots.get(Path::new(&part.path)).map(|s| s.paths.as_slice()).unwrap_or(&[]);
+    if paths.is_empty() && part.snapshot.is_empty() { return None; }
+    let chosen = paths.iter().position(|p| p == Path::new(&part.snapshot));
+    let previous = chosen.and_then(|i| i.checked_sub(1)).and_then(|i| paths.get(i)).cloned();
+    let next = chosen.map_or_else(|| paths.first(), |i| paths.get(i + 1)).cloned();
+    let title = if part.snapshot.is_empty() { "Select snapshot…".into() } else { super::header::stem(&part.snapshot) };
+    let id = format!("snapshot-{slot}");
+    let (hit, selector) = dropdown(ui, id.as_str(), &title, "Snapshot");
+    if hit { menu::open_under(ui, cx, menu::Target::Snapshots(slot), &id); }
+    let selector = selector.flex(1);
+    let arrow = |ui: &mut Ui, id: String, picture: Icon, label: &str, enabled: bool| {
+        if enabled { icon_button(ui, id, picture, label, false) } else { (false, dead_icon(picture, label)) }
+    };
+    let (prev_hit, prev) = arrow(ui, format!("snapshot-prev-{slot}"), Icon::Left, "Previous snapshot", previous.is_some());
+    let (next_hit, next_el) = arrow(ui, format!("snapshot-next-{slot}"), Icon::Right, "Next snapshot", next.is_some());
+    if let Some(path) = previous.filter(|_| prev_hit).or(next.filter(|_| next_hit)) {
+        cx.snapshot(slot, path.to_string_lossy().into_owned());
+    }
+    Some(col![row![selector, prev, next_el].gap(TIGHT).align(Align::Center)
+        .pad((SPACE, TIGHT)).w(Len::Pct(100.)), rule()].gap(0).shrink(0))
 }
 
 /// [`header`]; a `stuck` one, clicked, also scrolls back to its part.

@@ -478,6 +478,36 @@ fn snapshot_drop_targets_an_explicit_header_without_changing_active_state() {
 }
 
 #[test]
+fn snapshot_header_steps_and_selects_without_replacing_the_base() {
+    let p = Arc::new(SamplerParams::new());
+    let base = "/virtual/Library/Piano.nki";
+    let paths: Vec<PathBuf> = ["Bright", "Warm", "Wide"].map(|n| format!("/virtual/Library/Snapshots/{n}.nksn").into()).into();
+    let original = Part { path: base.into(), snapshot: paths[1].to_string_lossy().into_owned(),
+        script_state: "retained".into(), channel: 3, gain: -4., ..Default::default() };
+    p.selection.write().unwrap().parts = vec![original.clone()];
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let mut shelf = crate::library::Shelf::default();
+        shelf.snapshots.insert(base.into(), crate::library::Snapshots { instrument: "Piano".into(), paths });
+        view.shelf = Arc::new(shelf);
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    for id in ["snapshot-prev-0", "snapshot-next-0"] {
+        h.press(id);
+        assert!(lock(&p.shared.snapshot_request).take().is_some(), "{id} queues transactional validation");
+        assert!(p.selection.read().unwrap().parts[0] == original, "until validated, the source, routing and saved state stay intact");
+    }
+    h.press("snapshot-0");
+    assert!(h.ui.scene().unwrap().surface("menu-item-0").is_some());
+    h.press("menu-item-2");
+    assert!(lock(&p.shared.snapshot_request).take().is_some(), "selector uses the snapshot loader");
+    assert!(p.selection.read().unwrap().parts[0] == original);
+    p.selection.write().unwrap().parts[0].program = 1;
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("snapshot-0").is_none(), "the row must not offer snapshots for unsupported bank programs");
+}
+
+#[test]
 fn rack_interactions() {
     let p = Arc::new(SamplerParams::new());
     {

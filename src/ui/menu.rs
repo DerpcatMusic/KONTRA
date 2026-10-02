@@ -22,6 +22,8 @@ pub enum Target {
     Part(usize),
     /// How a rack slot shows its library's performance view.
     View(usize),
+    /// Actual NKSN files for this base instrument.
+    Snapshots(usize),
     /// A key on the keyboard.
     Key(u8),
     /// The editor's own menu in the top bar.
@@ -72,6 +74,7 @@ pub enum Command {
     /// Show a part's envelope, filter and effects in the Sound tab.
     EditSound(usize),
     LoadSnapshot(usize),
+    SelectSnapshot { slot: usize, source: (String, u32, String), path: String },
     Mute(usize),
     Solo(usize),
     /// How a part shows its performance view ([`crate::plugin::Part::view`]).
@@ -289,6 +292,25 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Reveal in folder", "", Command::Reveal(path.clone())),
                 act("Copy path", "", Command::CopyPath(path.clone())),
             ]);
+            items
+        }
+        Target::Snapshots(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot).filter(|p| p.snapshot_base()) else { return Vec::new(); };
+            let mut items = Vec::new();
+            if let Some(catalog) = cx.view.shelf.snapshots.get(Path::new(&part.path)) {
+                for path in &catalog.paths {
+                    let label = super::header::stem(&path.to_string_lossy());
+                    let category = path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy();
+                    items.push(Item::Act {
+                        label,
+                        hint: category.into_owned(),
+                        on: path == Path::new(&part.snapshot),
+                        command: Command::SelectSnapshot { slot: *slot, source: part.source(), path: path.to_string_lossy().into_owned() },
+                    });
+                }
+            }
+            if !items.is_empty() { items.push(Item::Rule); }
+            items.push(act("Load snapshot…", "", Command::LoadSnapshot(*slot)));
             items
         }
         Target::View(slot) => {
@@ -690,7 +712,11 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
         run(ui, cx, command);
         return None;
     }
-    let x = menu.at.x.min(window.width - WIDTH - TIGHT).max(TIGHT);
+    // Snapshot categories sit beside authored names, which can be much longer
+    // than the built-in commands. Other popup sizes keep their existing law.
+    let width = (if matches!(menu.target, Target::Snapshots(_)) { WIDTH * 1.5 } else { WIDTH })
+        .min(window.width - 2. * TIGHT);
+    let x = menu.at.x.min(window.width - width - TIGHT).max(TIGHT);
     let y = if menu.at.y + height > window.height - TIGHT {
         (menu.at.y - height).max(TIGHT)
     } else {
@@ -704,8 +730,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
             .gap(0)
             .align(Align::Stretch)
             .pad(TIGHT)
-            .w(WIDTH)
-            .max_size(Size::new(WIDTH, window.height - 2. * TIGHT))
+            .w(width)
+            .max_size(Size::new(width, window.height - 2. * TIGHT))
             .scroll()
             .fill(Role::Level(3))
             .stroke(Role::Ink.alpha(0.14))
@@ -732,6 +758,13 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Rename(slot) => {
             cx.show(slot);
             cx.state.renaming = Some((slot, super::rack::name(cx, slot)));
+        }
+        Command::SelectSnapshot { slot, source, path } => {
+            if cx.selection.parts.get(slot).is_some_and(|part| part.source() == source) {
+                cx.snapshot(slot, path);
+            } else {
+                cx.state.notice = "Snapshot ignored: the base instrument changed while its menu was open.".into();
+            }
         }
         Command::LoadSnapshot(slot) => {
             if let Some(part) = cx.selection.parts.get(slot) {
