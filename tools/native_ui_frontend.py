@@ -47,7 +47,7 @@ def tokens(source):
 
 class Frontend:
     def __init__(self, source):
-        self.ts, self.at, self.nodes = tokens(source), 0, 0
+        self.ts, self.at, self.nodes, self.depth = tokens(source), 0, 0, 0
 
     def skip(self):
         while self.at < len(self.ts) and (
@@ -118,11 +118,24 @@ class Frontend:
                 raise ValueError(f"line {self.ts[start].line}: modifier requires named arguments")
 
     def component(self):
+        self.depth += 1
+        try:
+            if self.depth > 64:
+                raise ValueError("component nesting exceeds 64")
+            return self._component()
+        finally:
+            self.depth -= 1
+
+    def _component(self):
         self.require("@")
         self.skip()
+        if self.at == len(self.ts):
+            raise ValueError("expected component name")
         name = self.ts[self.at].text
         self.at += 1
         while self.at < len(self.ts) and self.ts[self.at].text == ".":
+            if self.at + 1 == len(self.ts):
+                raise ValueError("incomplete component name")
             name += "." + self.ts[self.at + 1].text
             self.at += 2
         if not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", name):
@@ -140,6 +153,8 @@ class Frontend:
                 self.at = checkpoint
                 return expression
             self.at += 1
+            if self.at == len(self.ts):
+                raise ValueError("expected modifier name")
             modifier = self.ts[self.at].text
             self.at += 1
             self.require("(")

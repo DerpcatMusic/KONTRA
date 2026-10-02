@@ -41,7 +41,7 @@ worktree's absolute path and an ignored output folder. Do not link an old rlib
 against dependencies overwritten by another build. The probe checks build identity
 and writes its registry/transcript. Parent coordinates the shared build/link slot.
 
-Module limits are1MiB each,256 modules/8MiB total,4096 component applications;
+Module limits are1MiB each,256 modules/8MiB total,4096 component applications and64 nested components;
 Lua has a100,000-instruction budget, module-only imports and no file/process APIs
 in the module environment. The POSIX developer launcher imposes256MiB address
 space,2CPU seconds and disables core dumps. Rust retains at most64KiB protocol
