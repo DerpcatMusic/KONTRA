@@ -62,13 +62,21 @@ pub enum VoicePar {
 
 /// `get/set_engine_par` address. `id` is from [`super::builtins::ENGINE_PARS`]
 /// (`ENGINE_PAR_BASE + index`) or a script-local symbol the engine cannot know.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub struct EnginePar {
     pub id: i32,
     pub group: i32,
     pub slot: i32,
     pub generic: i32,
 }
+
+/// One supported native parameter edit, saved independently of script variables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct NativeEdit {
+    pub par: EnginePar,
+    pub value: i32,
+}
+
 
 pub trait KspEngine {
     fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<EventId>;

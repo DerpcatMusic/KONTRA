@@ -313,7 +313,7 @@ impl<V: View> Handler<V> {
             self.unpainted = true;
         }
         if self.gpu.is_none() && target_size(size.0, size.1).is_some() && now >= self.gpu_retry_at {
-            match open_gpu(window, size) {
+            match open_gpu(window, size, |line| log(&self.shared, line)) {
                 Ok(gpu) => {
                     self.gpu = Some(gpu);
                     self.unpainted = true;
@@ -790,19 +790,39 @@ fn log<V: View>(shared: &Mutex<Shared<V>>, line: &str) {
     lock(shared).view.log(line);
 }
 
-/// A device and renderer for this window's surface. A driver panic becomes
-/// an error the editor can show, when the plugin unwinds; under
-/// `panic = "abort"` it is the host's crash.
-fn open_gpu(window: &WindowContext, size: (u32, u32)) -> Result<Host, String> {
+/// KONTAKTO patch: do not initialize Vulkan implicitly in Windows hosts.
+/// Explicit WGPU_BACKEND remains authoritative, including an empty/invalid
+/// request which must fail visibly rather than silently select another API.
+fn gpu_backends(windows: bool, requested: Option<wgpu::Backends>) -> wgpu::Backends {
+    requested.unwrap_or(if windows { wgpu::Backends::DX12 } else { wgpu::Backends::all() })
+}
+
+/// A device and renderer for this window's surface. Catch Rust unwinding;
+/// native access violations and panic=abort cannot be recovered here.
+fn open_gpu(window: &WindowContext, size: (u32, u32), mut report: impl FnMut(&str)) -> Result<Host, String> {
+    let requested = wgpu::Backends::from_env();
+    let backends = gpu_backends(cfg!(target_os = "windows"), requested);
+    let policy = if requested.is_some() { "explicit WGPU_BACKEND" }
+        else if cfg!(target_os = "windows") { "Windows Direct3D12 default; no automatic Vulkan fallback" }
+        else { "platform default" };
+    report(&format!("mui-baseview: GPU init requested={backends:?}; {policy}"));
+    if !backends.intersects(wgpu::Instance::enabled_backend_features()) {
+        return Err(format!("requested backend {backends:?} is not enabled on this platform; unset WGPU_BACKEND to use the platform default"));
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        descriptor.backends = backends;
+        let instance = wgpu::Instance::new(descriptor);
         // SAFETY: the surface comes from this window's live native handle,
         // and baseview drops the handler that owns it before the window.
         #[expect(unsafe_code, reason = "calls the unsafe surface constructor")]
         let surface = unsafe { surface::create(&instance, window) }
             .ok_or("native surface creation failed")?;
-        Host::new(instance, surface, size).map_err(|e| e.to_string())
+        let gpu = Host::new(instance, surface, size).map_err(|e| format!("{backends:?}: {e}; no automatic backend switch, WGPU_BACKEND must be selected before starting the host"))?;
+        let adapter = gpu.device().0.adapter_info();
+        report(&format!("mui-baseview: GPU ready backend={:?} adapter={:?} type={:?} vendor={:#06x} device={:#06x} driver={:?} driver_info={:?}",
+            adapter.backend, adapter.name, adapter.device_type, adapter.vendor, adapter.device, adapter.driver, adapter.driver_info));
+        Ok(gpu)
     }))
     .map_err(|_| "panic while creating GPU resources".to_owned())?
 }

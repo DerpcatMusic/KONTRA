@@ -30,6 +30,14 @@ pub fn load_scripts_with_ir(
     rate: f64,
     ir_settings: &[crate::fx::IrSlotSettings],
 ) -> (Option<Box<Runtime>>, Vec<String>) {
+    load_scripts_with_state(instrument, persisted, rate, ir_settings, &[])
+}
+
+/// Restore supported native edits before authored initialization reads them.
+pub fn load_scripts_with_state(
+    instrument: &Instrument, persisted: Vec<Persisted>, rate: f64,
+    ir_settings: &[crate::fx::IrSlotSettings], engine_state: &[crate::ksp::engine::NativeEdit],
+) -> (Option<Box<Runtime>>, Vec<String>) {
     if instrument.scripts.is_empty() {
         return (None, Vec::new());
     }
@@ -56,8 +64,31 @@ pub fn load_scripts_with_ir(
             setup.effects.push((Address::Fx(rack, slot, FxParam::Convolution(n as u8)), value));
         }
     }
+    setup.saved = engine_state.iter().copied().filter(|edit| {
+        Address::resolve(edit.par, setup.groups).is_some_and(|a|
+            !matches!(a, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)))
+    }).collect();
+    for &crate::ksp::engine::NativeEdit { par, value } in engine_state {
+        if Address::resolve(par, setup.groups).is_some_and(|a| !matches!(a, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)))
+            && setup.engine_par(par).is_some() {
+            setup.set_engine_par(0, par, value);
+        }
+    }
     let (mut rt, errors) =
         Runtime::with_scripts(&instrument.scripts, &mut setup, SCRIPT_OUTPUTS, persisted);
+    // Authored init may restore defaults. Apply saved edits last, as well as
+    // seeding the getter state before init. Only accepted addresses are replayed.
+    let mut restored = Vec::new();
+    for &crate::ksp::engine::NativeEdit { par, value } in engine_state {
+        if Address::resolve(par, setup.groups).is_some_and(|a| !matches!(a, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)))
+            && setup.engine_par(par).is_some()
+            && setup.set_engine_par(0, par, value) { restored.push((par, value)); }
+        else { restore_errors.push(format!("Saved engine parameter is unavailable: {par:?}")); }
+    }
+    rt.native_state = setup.prepare_native_state();
+    for &(par, value) in &restored {
+        if let Some(address) = setup.address(par) { rt.native_state.restored(address, par, value); }
+    }
     rt.init_engine_pars = setup.pars;
     rt.init_controllers = setup.controllers;
     rt.init_irs = setup.loads;
@@ -377,6 +408,7 @@ impl KspEngine for Host<'_> {
         let Some(address) = self.address(par) else {
             return self.bank.is_some_and(|b| Address::inert(par, b.groups()));
         };
+        let native = value;
         let value = address.decode(value);
         if let Address::GroupType(g, s) = address {
             return self.bank.and_then(|b| params::group_type(b.groups(), g, s)) == Some(value);
@@ -395,6 +427,8 @@ impl KspEngine for Host<'_> {
         }
         if let Some(&i) = self.write_index.1.get(&address) {
             self.writes[i].value = value;
+            self.writes[i].par = par;
+            self.writes[i].native = native;
             return true;
         }
         if self.writes.len() == MAX_WRITES {
@@ -404,7 +438,7 @@ impl KspEngine for Host<'_> {
         let i = self.writes.partition_point(|w| w.at <= at);
         // Insertion follows every existing write at this sample, so it cannot
         // move an index cached for the current batch, even with future writes.
-        self.writes.insert(i, Write { at, address, value });
+        self.writes.insert(i, Write { at, address, value, par, native });
         self.write_index.1.insert(address, i);
         true
     }
@@ -583,6 +617,7 @@ pub struct ScriptSetup<'a> {
     /// Effect values written so far, by address.
     effects: Vec<(Address, f32)>,
     pars: Vec<(EnginePar, i32)>,
+    saved: Vec<crate::ksp::engine::NativeEdit>,
     controllers: Vec<(u8, u8)>,
     /// Effects and impulse responses loaded, in order.
     loads: Vec<ScriptIr>,
@@ -600,9 +635,51 @@ impl<'a> ScriptSetup<'a> {
             instrument: (1.0, 0.0, 0.0),
             effects: Vec::new(),
             pars: Vec::new(),
+            saved: Vec::new(),
             controllers: Vec::new(),
             loads: Vec::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn audit_native_preparation(instrument: &Instrument, rt: &Runtime) -> (usize, std::time::Duration) {
+        let mut setup = ScriptSetup::new(instrument, 48000.);
+        for &(par, value) in &rt.init_engine_pars { setup.set_engine_par(0, par, value); }
+        let start = std::time::Instant::now();
+        let state = setup.prepare_native_state();
+        (state.capacity().0, start.elapsed())
+    }
+
+    fn prepare_native_state(&self) -> super::native_state::NativeState {
+        let mut state = super::native_state::NativeState::default();
+        let mut add = |par: EnginePar| {
+            let Some(address) = self.address(par) else { return };
+            if matches!(address, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)) { return }
+            if let Some(value) = self.engine_par(par) { state.prepare(address, par, value); }
+        };
+        let ids: Vec<_> = (params::id::VOLUME..).map_while(|id| crate::ksp::engine_par_name(id).map(|_| id)).collect();
+        for (g, group) in self.groups.iter().enumerate() {
+            // Group scalars, populated inserts and declared modulators only.
+            for slot in std::iter::once(-1).chain(group.fx.slots.iter().map(|e| e.slot as i32))
+                .chain((0..group.modulators.len()).map(|m| m as i32)) {
+                for &id in &ids { add(EnginePar { id, group: g as i32, slot, generic: -1 }); }
+            }
+            for (slot, m) in group.modulators.iter().enumerate() {
+                for target in 0..m.targets.len() {
+                    for id in [params::id::MOD_TARGET_INTENSITY, params::id::MOD_TARGET_MP_INTENSITY, params::id::INTMOD_INTENSITY] {
+                        add(EnginePar { id, group: g as i32, slot: slot as i32, generic: target as i32 });
+                    }
+                }
+            }
+        }
+        // Existing program racks: send, insert, post and sixteen output buses.
+        // Getter validation retains only actually populated, supported addresses.
+        for generic in [0, 1, 2].into_iter().chain(1000..1016) {
+            for slot in -1..8 {
+                for &id in &ids { add(EnginePar { id, group: -1, slot, generic }); }
+            }
+        }
+        state
     }
 
     fn address(&self, par: EnginePar) -> Option<Address> {
@@ -630,6 +707,13 @@ impl<'a> ScriptSetup<'a> {
         });
         self.loads.retain(|l| (l.rack, l.slot) != (rack, slot));
         self.loads.push(ScriptIr { rack, slot, load: Load::Kind(kind) });
+        // Some scripts create their rack in init. Seed its saved controls as
+        // soon as the type exists, before subsequent authored getter calls.
+        let saved: Vec<_> = self.saved.iter().copied().filter(|edit|
+            matches!(Address::resolve(edit.par, self.groups), Some(Address::Fx(r, s, _)) if (r, s) == (rack, slot))).collect();
+        for edit in saved {
+            if self.engine_par(edit.par).is_some() { self.set_engine_par(0, edit.par, edit.value); }
+        }
         true
     }
 }
@@ -707,7 +791,7 @@ impl KspEngine for ScriptSetup<'_> {
                 }
             }
             _ => {
-                params::write(&mut self.settings, address, v);
+                if !params::write(&mut self.settings, address, v) { return false }
             }
         }
         self.pars.push((par, value));

@@ -1141,6 +1141,8 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
 /// One engine parameter change, applied at frame `at` of the next render.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Write {
+    pub par: EnginePar,
+    pub native: i32,
     pub at: u32,
     pub address: Address,
     pub value: f32,

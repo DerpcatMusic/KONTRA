@@ -23,12 +23,17 @@ pub(crate) struct Session<P: Params> {
     changed: Option<Changed>,
     file_drop: Option<FileDrop>,
     cancel: Option<Box<dyn FnMut(&Ui) + Send>>,
+    /// Native window/renderer diagnostics, outside painting and audio.
+    log: Option<Box<dyn FnMut(&str) + Send>>,
     /// The size `build` was designed at, fitted to the window; `None` is
     /// [`MuiEditor::fixed_zoom`].
     design: Option<Size>,
 }
 
 impl<P: Params> View for Session<P> {
+    fn log(&mut self, line: &str) {
+        if let Some(log) = &mut self.log { log(line); } else { eprintln!("{line}"); }
+    }
     fn build(&mut self, ui: &mut Ui, _: &Input) -> El {
         let root = (self.build)(ui, &mut self.bridge);
         self.bridge.end_unbound();
@@ -142,6 +147,7 @@ impl<P: Params> MuiEditor<P> {
             changed: None,
             file_drop: None,
             cancel: None,
+            log: None,
             design: Some(size),
         };
         Self {
@@ -170,6 +176,13 @@ impl<P: Params> MuiEditor<P> {
     #[must_use]
     pub fn changed(self, f: impl FnMut() -> bool + Send + 'static) -> Self {
         lock(&self.shared).view.changed = Some(Box::new(f));
+        self
+    }
+
+    /// Receive native window and GPU startup/failure diagnostics.
+    #[must_use]
+    pub fn on_log(self, f: impl FnMut(&str) + Send + 'static) -> Self {
+        lock(&self.shared).view.log = Some(Box::new(f));
         self
     }
 

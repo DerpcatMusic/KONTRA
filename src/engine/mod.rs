@@ -21,6 +21,7 @@ mod params;
 mod rack;
 mod residency;
 mod script;
+pub(crate) mod native_state;
 mod stream;
 mod voice;
 
@@ -32,7 +33,7 @@ pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
-pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_ir};
+pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_ir, load_scripts_with_state};
 pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 
 use crate::fx::FxProcessor;
@@ -319,6 +320,7 @@ impl Engine {
     pub fn set_fx(&mut self, fx: FxProcessor) -> FxProcessor {
         let old = std::mem::replace(&mut self.fx, fx);
         self.replay(|a| matches!(a, Address::Fx(..)));
+        if let Some(rt) = self.script.as_deref() { rt.native_state.replay_fx(&mut self.fx); }
         old
     }
 
@@ -1038,7 +1040,9 @@ impl Engine {
                     .get(written)
                     .filter(|w| w.at as usize <= base + pos)
                 {
-                    self.write(w.address, w.value);
+                    if self.write(w.address, w.value) && let Some(rt) = self.script.as_deref_mut() {
+                        rt.native_state.capture(w.address, w.par, w.native, w.value);
+                    }
                     written += 1;
                 }
                 while let Some(c) = self
@@ -1086,7 +1090,9 @@ impl Engine {
         // Only an empty render leaves changes behind: apply them now.
         for i in written..self.writes.len() {
             let w = self.writes[i];
-            self.write(w.address, w.value);
+            if self.write(w.address, w.value) && let Some(rt) = self.script.as_deref_mut() {
+                rt.native_state.capture(w.address, w.par, w.native, w.value);
+            }
         }
         if let Some(bank) = self.bank.as_deref() {
             for c in &self.commands[next..] {

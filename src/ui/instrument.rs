@@ -49,6 +49,11 @@ pub fn welcome(cx: &Cx) -> El {
 pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
     let v = &cx.view.parts[slot];
     let mut out = Vec::new();
+    if v.status == "Loading snapshot…" {
+        out.push(banner(Role::Ink, v.status.clone()));
+    } else if let Some(reason) = v.status.strip_prefix("Snapshot was not loaded: ") {
+        out.push(banner(Role::Danger, format!("Snapshot was not loaded: {reason}")));
+    }
     if let Some(reason) = v.status.strip_prefix("Load failed: ") {
         let still = if v.active.is_empty() {
             String::new()
@@ -101,6 +106,7 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let at = |a: Option<*const ()>| a.map_or(0, |p| p as usize);
     let mut h = DefaultHasher::new();
     slot.hash(&mut h);
+    (v.loading, &v.status).hash(&mut h);
     v.live_revisions.hash(&mut h);
     for edit in v.edited_values() { edit.hash(&mut h); }
     at(v.interface.as_ref().map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
@@ -149,7 +155,13 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
                 })
         });
     let text = if !loaded {
-        "Loading instrument…".to_owned()
+        if v.loading {
+            "Loading instrument…"
+        } else if v.status.starts_with("Load failed: ") {
+            "Instrument could not be loaded. See the error above or Logs for details."
+        } else {
+            "No instrument is loaded."
+        }.to_owned()
     } else if let (true, Some(error)) = (scripted, failed) {
         format!("This instrument's script shows no controls. {}", sentence(error))
     } else if scripted {
@@ -157,8 +169,9 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     } else {
         "This instrument has no performance controls. Play it from the keyboard.".to_owned()
     };
-    row![caption(text).fill(secondary()).lines(3).min_w(0)]
+    row![caption(text.clone()).fill(secondary()).lines(3).min_w(0)]
         .align(Align::Center)
+        .named(text)
         .pad(INSET)
         .w(Len::Pct(100.))
         .id(format!("stage-{slot}"))

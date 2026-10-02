@@ -1497,9 +1497,9 @@ fn routing_bar(ui: &mut Ui, cx: &mut Cx, part: usize) -> El {
         // Text grounds on its own fill, not the seams' hairline.
         let el = if mode == now { el } else { el.fill(Role::Field) };
         modes.push(el.tip(match mode {
-            Mode::Keyswitch => "Keyswitches pick the articulation. The part hears its own MIDI channel",
-            Mode::Channel => "Each articulation plays on its own MIDI channel. The part hears every channel listed, whatever its own",
-            Mode::Velocity => "Each articulation plays in its own velocity range. The part hears its own MIDI channel",
+            Mode::Keyswitch => "Keyswitches select the articulation.\nThe part accepts its selected MIDI channel.",
+            Mode::Channel => "Each articulation uses its assigned MIDI channel.\nThe part accepts every assigned channel.",
+            Mode::Velocity => "Note velocity selects the articulation.\nThe part accepts its selected MIDI channel.",
         }));
     }
     let mut cells = vec![segmented(modes), spacer()];
