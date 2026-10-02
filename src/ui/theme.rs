@@ -534,9 +534,8 @@ pub fn number(
     let c = drag_value(ui, id.clone(), label, value, range.clone()).size(S);
     if ui.get(id.clone()).dragged {
         *value = before;
-        ui.drag(id.clone(), value, range, TRAVEL, true);
-        grip(id.as_str());
     }
+    drag(ui, id.as_str(), value, &range, TRAVEL, true);
     row![
         caption(label).fill(secondary()).lines(1).flex(1).min_w(0),
         c.el.value_text(display)
@@ -713,27 +712,61 @@ pub fn wheel_taken() -> bool {
 }
 
 thread_local! {
-    /// The control a drag last turned. Window threads may host several
-    /// editors; each asks its own `Ui` whether that ID is held there.
-    static GRIPPED: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    /// One pointer capture per window thread. The UI address distinguishes
+    /// editors whose controls have the same IDs; it is never dereferenced.
+    static GRIPPED: std::cell::RefCell<(usize, String)> = const { std::cell::RefCell::new((0, String::new())) };
 }
 
-/// `id` is being dragged: the pointer hides until it lets go.
-pub fn grip(id: &str) {
+/// `id` is being dragged: return whether this is its first drag frame.
+fn grip(ui: &Ui, id: &str) -> bool {
+    let owner = std::ptr::from_ref(ui) as usize;
     GRIPPED.with(|g| {
-        if *g.borrow() != id {
-            *g.borrow_mut() = id.to_owned();
+        let mut g = g.borrow_mut();
+        if g.0 != owner || g.1 != id {
+            g.0 = owner;
+            g.1.clear();
+            g.1.push_str(id);
+            true
+        } else {
+            false
         }
-    });
+    })
 }
 
 /// Whether the pointer hides now, as Kontakt's does: a knob, slider or
 /// number is being dragged. The window brings it back where it hid.
 pub fn pointer_hidden(ui: &Ui) -> bool {
     GRIPPED.with(|g| {
-        let id = g.borrow();
-        !id.is_empty() && ui.get(id.as_str()).held
+        let g = g.borrow();
+        g.0 == std::ptr::from_ref(ui) as usize && !g.1.is_empty() && ui.get(g.1.as_str()).held
     })
+}
+
+/// MUI starts a drag after its click threshold, but its first delta excludes
+/// earlier movement. Recover that movement once so returning to the press
+/// position also returns to the starting value.
+fn drag(ui: &Ui, id: &str, value: &mut f64, range: &RangeInclusive<f64>, travel: f64, vertical: bool) {
+    let r = ui.get(id);
+    if r.pressed {
+        GRIPPED.with(|g| {
+            let mut g = g.borrow_mut();
+            if g.0 == std::ptr::from_ref(ui) as usize {
+                g.1.clear();
+            }
+        });
+    }
+    if r.dragged && grip(ui, id) && travel.is_finite() && travel > 0.
+        && value.is_finite() && range.start().is_finite() && range.end().is_finite()
+    {
+        let missed = r.drag_total - r.drag_delta;
+        let d = if vertical { -missed.y } else { missed.x };
+        let fine = if r.mods.shift { FINE_DRAG } else { 1. };
+        if d.is_finite() {
+            *value = (*value + d * fine / travel * (range.end() - range.start()))
+                .clamp(range.start().min(*range.end()), range.start().max(*range.end()));
+        }
+    }
+    ui.drag(id, value, range.clone(), travel, vertical);
 }
 
 /// Pointer, wheel and keys on a continuous control `id`, as Kontakt's: drag
@@ -750,10 +783,7 @@ pub fn drive(
 ) -> bool {
     let (lo, hi) = (*range.start(), *range.end());
     let r = ui.get(id);
-    if r.dragged {
-        grip(id);
-    }
-    ui.drag(id, value, range.clone(), travel, vertical);
+    drag(ui, id, value, range, travel, vertical);
     if let Some(wheel) = ui.wheel(id) {
         WHEELED.with(|w| w.set(true));
         let step = (hi - lo) / if r.mods.shift { 500. } else { 50. };
