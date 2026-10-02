@@ -1493,7 +1493,7 @@ impl Runtime {
             e.held = false;
             e.next_input = 0;
             e.voice = None;
-            e.recycle_pending = !e.cleanup || e.released != 0;
+            e.recycle_pending = !e.cleanup || e.released & 1 != 0 && e.recycle_pending;
         }
         let events = &self.env.events;
         self.env.work.retain(|w| match *w {
@@ -1545,7 +1545,7 @@ impl Runtime {
                 debug_assert!(e.callbacks == 0 || cleanup && e.cleanup);
                 let id = i32::from(e.generation) << EVENT_INDEX_BITS | i as i32;
                 if cleanup && e.cleanup {
-                    if e.released == 0 { self.env.queue(Work::Release { event: id, slot: 0 }); }
+                    if e.released & 1 == 0 { self.env.queue(Work::Release { event: id, slot: 0 }); }
                 } else {
                     self.env.events.free(id);
                 }
