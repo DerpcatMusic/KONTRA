@@ -4369,7 +4369,7 @@ pub(crate) mod tests {
 
     #[test]
     fn script_fault_excerpts_preserve_malformed_source_and_runtime_arguments_off_audio() {
-        let _diagnostics = crate::diagnostics::DiagnosticLease::acquire();
+        let _diagnostics = crate::diagnostics::acquire();
         let instrument = Arc::new(Instrument {
             path: "/private/excerpt-owner/Example.nki".into(),
             scripts: vec![
@@ -4419,7 +4419,7 @@ pub(crate) mod tests {
                 && event.script_slot == Some(1)
                 && event.details["context"]["MidiNote"]["value"] == 128
                 && crate::diagnostics::excerpt_text(&event.details).is_some()), "the journal event retains source and argument context");
-        let mut safe = serde_json::json!({"path":"/private/excerpt-owner/Example.nki", "report":report, "script_source":"full private payload", "access_key":"not-code"});
+        let mut safe = serde_json::json!({"path":"/private/excerpt-owner/Example.nki", "report":report.as_ref(), "script_source":"full private payload", "access_key":"not-code"});
         crate::diagnostics::clean(&mut safe, true);
         assert!(!safe.to_string().contains("/private/excerpt-owner") && !safe.to_string().contains("full private payload") && !safe.to_string().contains("not-code"));
         assert!(crate::diagnostics::excerpt_text(&safe["report"]["runtime"]["faults"][0]).is_some(), "authorized bounded excerpts survive copy/export sanitization");
