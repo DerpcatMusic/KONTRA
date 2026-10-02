@@ -402,7 +402,7 @@ normalized x = value/1e6 through a law):
 | Chorus, Flanger | modulated delay lines, feedback (flanger) | normalized | low |
 | Phaser | 6 allpasses | normalized | low |
 | Transient Master, Lo-Fi, Skreamer, Tape Saturator | per-sample shapers (Pade tanh), Lo-Fi bit/rate reduction | normalized | low |
-| Distortion | native Tube and Transistor scalar cores and steady-state Damping; DC filtering and parameter smoothing remain diagnosed | direct normalized Drive; independent linear Output | scalar laws grounded; full effect approximate |
+| Distortion | native Tube and Transistor scalar cores, steady-state Damping and DC filtering; parameter smoothing remains diagnosed | direct normalized Drive; independent linear Output | scalar laws grounded; full effect approximate |
 | Saturation | native Classic piecewise quadratic/cubic transfer; Enhanced/Drums retain a warned proxy | Shape -1..1; linear Output | Classic law grounded; other modes unverified |
 | Filter, EQ, Solid G-EQ | the group filter sections (`RackFilter`) | as group filters; G-EQ +-15 dB, bands 30-450, 200-2500, 600-7000, 1500-16k Hz, shelves unless the bell switch is on | low |
 
@@ -419,16 +419,18 @@ both group and rack inserts. Drive 0 passes the core input unchanged; it does
 not introduce clipping or invented drive compensation. The sign-specific blend
 boundaries are Drive 0.25 and 0.75. The common linear Output follows processing.
 Damping now uses the native steady-state exponential/polynomial cutoff mapping
-and bilinear one-pole recurrence. Native DC filtering and Damping parameter
-smoothing remain unimplemented and diagnosed. Transistor now uses its native piecewise linear/power scalar law,
+and bilinear one-pole recurrence. The native following DC filter is implemented; Damping parameter smoothing
+remains unimplemented and diagnosed. Transistor now uses its native piecewise linear/power scalar law,
 with linked inverse thresholds, float negative power and double positive power.
 Drive 0 and input beyond the native quarter-amplitude range preserve input.
-Group/rack diagnostics name the remaining filtering gaps. This is a scalar core
-correction, not whole-effect native equivalence. Independent numeric boundary,
-allocation, readback and routing gates pass in the combined 510-test library suite
-and 89-test playback suite. The Transistor power branches
+Group/rack diagnostics name the remaining Damping parameter smoothing gap.
+Whole-effect native equivalence is not claimed. The scalar core correction passed
+independent numeric, allocation, readback and routing gates in the combined
+510-test library and 89-test playback suites. Validation of the following DC
+filter and its updated routing gates is pending. The Transistor power branches
 cost more than the old hard-clip proxy; no throughput/FPS improvement is claimed.
-Both kernels reuse existing coefficients and add no per-voice state.
+The scalar kernels reuse existing coefficients. The following DC filter uses
+fixed coefficients and histories, with sizes recorded below.
 
 Classic Saturation now uses the native parameter binding and scalar transfer law,
 shared by rack and group inserts. With Shape `s`, let `a = 4s`. For `s >= 0.25`,
@@ -558,6 +560,23 @@ steady-state coefficient law and a one-pole filter with equal feedforward
 coefficients. At 48 kHz, maximum Damping has a corner near 2.2 kHz. Rate-dependent
 coefficient, stereo impulse, partition, reset and zero-allocation gates are
 authored; combined validation is pending. This change reuses four existing
-state slots and adds no per-voice memory. Native DC filtering and live Damping
-parameter smoothing remain explicit gaps, so whole-effect equivalence is not
-claimed.
+state slots and adds no per-voice memory by itself. The later DC filter adds
+fixed state; live Damping parameter smoothing remains an explicit gap, so
+whole-effect equivalence is not claimed.
+
+Distortion now applies the native prepared DC high-pass after Damping and before
+linear Output. Preparation uses the order-two zero-resonance prototype, the
+native rate-dependent frequency transform and Nyquist gain normalization. It
+retains all five separately rounded float coefficients and the native float
+direct-form recurrence and addition order. It shares Damping output history
+with DC input history rather than changing to a different recurrence. Fixed
+coefficient storage also caches the sample rate, avoiding repeated DC preparation
+on ordinary control updates. Drive grows from 72 to 96 bytes; the authored gate
+prints final Drive, VoiceEffect and VoiceFilter sizes for combined validation.
+The fixed eight-stage array therefore adds at most 192 bytes per voice (192 KiB
+for 1024 voices), with no render allocation. The rack tail now follows the
+prepared digital poles down to the existing silence threshold, replacing the
+old 10 ms drive allowance for Distortion only. Independent coefficient, stereo
+DC rejection, transfer-function, signed impulse, partition, reset and allocation
+gates are authored; combined validation remains pending. Damping parameter
+smoothing and whole-effect audible equivalence remain unproved.

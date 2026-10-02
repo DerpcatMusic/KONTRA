@@ -526,7 +526,7 @@ pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
             out.push("Group Saturation: Enhanced/Drums modes use an unverified transfer-curve proxy".into());
         }
         if fx.kind == Kind::Distortion {
-            out.push("Group Distortion: native DC filtering and Damping parameter smoothing are not applied".into());
+            out.push("Group Distortion: Damping parameter smoothing is not applied".into());
         }
         match &fx.params {
             Params::Filter(f) if filter_type(f.filter_type).is_none() => {
@@ -2831,14 +2831,23 @@ mod tests {
                     assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r)).all(|(a,b)| (a-b).abs() < 2e-6));
                 }), 0);
                 if value == 0 {
-                    // Native Damping 0 at 48 kHz, independently evaluated.
-                    let a = -0.748475234218230;
+                    // Independent prepared float LP/HP coefficients and
+                    // native clock. Apply the known amplifier split explicitly.
+                    let a = -0.7484753727912903f32;
                     let b = 0.5 * (1.0 - a);
-                    let (mut previous, mut state) = (0.0, 0.0);
+                    let (mut previous, mut state) = (0.0f32, 0.0f32);
+                    let mut history = [0.0f32; 4];
+                    let [b0, b1, b2, a1, a2] = [0.9986164569854736f32, -1.9972329139709473,
+                        0.9986164569854736, 1.9972310066223145, -0.9972348213195801];
                     for (x, actual) in source.into_iter().zip(l) {
-                        state = b * (f64::from(x) + previous) + a * state;
-                        previous = f64::from(x);
-                        assert!((f64::from(actual) - state * 0.15).abs() < 2e-6);
+                        let input = if split == 0 { x * 0.2 } else { x };
+                        state = (b * input + b * previous) + a * state + 1e-20;
+                        previous = input;
+                        let [x1, x2, y1, y2] = history;
+                        let filtered = ((y1 * a1 + y2 * a2) + x2 * b2) + (x1 * b1 + state * b0);
+                        history = [state, x1, filtered, y1];
+                        let reference = if split == 0 { filtered * 0.75 } else { (filtered * 0.75) * 0.2 };
+                        assert!((actual - reference).abs() < 2e-6);
                     }
                 }
             }
