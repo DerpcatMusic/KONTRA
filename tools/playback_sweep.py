@@ -60,8 +60,10 @@ def main():
                 issues = []
                 observations = []
                 if result:
+                    if not result["samples"]:
+                        issues.append("selected program contains no playable samples (multi container)")
                     for case in result["cases"]:
-                        if case["peak"] <= 0.00001:
+                        if result["samples"] and case["peak"] <= 0.00001:
                             issues.append(f'{case["case"]}: rendered silence at the selected musical key')
                         if case["nonfinite_samples"]:
                             issues.append(f'{case["case"]}: nonfinite audio')
@@ -75,10 +77,15 @@ def main():
                             if stage["phase"] == "panic-after-declick" and (stage["voices"] or any(stage["held_keys_by_engine_channel"]) or any(stage["pending_commands_writes_releases"])):
                                 issues.append(f'{case["case"]}: pending voice/key/work after Panic')
                             if stage["phase"] in ("natural-release-observation", "post-panic-release"):
+                                held_voices = sum(v["held"] and not v["released"] and not v["release_trigger"]
+                                                  for v in stage["voice_notes"])
+                                if held_voices and not any(stage["held_keys_by_engine_channel"]):
+                                    issues.append(f'{case["case"]}/{stage["phase"]}: {held_voices} held attack voices remain after key-up; inspect script lifetime')
                                 observations.append({"case":case["case"], "phase":stage["phase"],
                                                      "voices":stage["voices"], "unreleased":stage["unreleased_attack_voices"],
                                                      "held":sum(stage["held_keys_by_engine_channel"]),
-                                                     "pending":stage["pending_commands_writes_releases"], "rms":stage["rms"]})
+                                                     "pending":stage["pending_commands_writes_releases"], "rms":stage["rms"],
+                                                     "last_block_rms":stage.get("last_block_rms")})
                 row = {"library":library["name"], "patch":patch["path"], "program":program["program"],
                        "snapshot":patch.get("snapshot"),
                        "name":program["name"], "exit_status":status, "wall_seconds":time.monotonic()-started,
