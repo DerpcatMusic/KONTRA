@@ -1981,9 +1981,11 @@ end on"#;
 }
 
 #[test]
-fn oversized_callback_text_faults_without_allocating() {
+fn oversized_callback_control_text_faults_without_allocating() {
+    // Stored string variables saturate at 320 characters. Control metadata
+    // keeps its separate prepared capacity and must still fault without growing.
     let mut e = scripted(
-        "on init\ndeclare @text\nend on\non note\n@text := \"x\"\nwhile (1)\n@text := @text & @text\nend while\nend on",
+        "on init\ndeclare ui_label $text(1,1)\nset_text($text, \"x\")\nend on\non note\nwhile (1)\nset_text($text, get_control_par_str(get_ui_id($text), $CONTROL_PAR_TEXT) & get_control_par_str(get_ui_id($text), $CONTROL_PAR_TEXT))\nend while\nend on",
     );
     let count = allocations(|| e.note_on(0, 60, 100));
     assert_eq!(count, 0);
