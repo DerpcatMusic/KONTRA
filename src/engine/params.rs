@@ -1987,7 +1987,7 @@ mod tests {
                     filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3] }) }] },
             ..Group::default()
         };
-        let render = |group: Group, source: &str, pitch_raw, cutoff_raw| {
+        let render = |group: Group, source: &str, pitch_raw: i32, cutoff_raw: i32| {
             let instrument = Instrument { groups: vec![group.clone()], ..Default::default() };
             let mut setup = ScriptSetup::new(&instrument, 48_000.);
             let (rt, errors) = Runtime::with_scripts(&[source], &mut setup, 0, Vec::new());
