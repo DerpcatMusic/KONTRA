@@ -631,7 +631,9 @@ impl GroupFilter {
         let envs = (group.envelopes.iter().enumerate())
             .filter_map(|(i, e)| {
                 let routes: Box<[_]> = e.targets.iter().enumerate().filter_map(|(t, m)| Some((route(m, t as u16)?, Mod::from(m)))).collect();
-                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes, i as u8, false))
+                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes, i as u8,
+                    group.modulators.iter().find(|m| m.envelope == Some(i))
+                        .is_some_and(|m| m.bypassed)))
             })
             .take(MAX_ENVS)
             .collect();
@@ -2223,7 +2225,7 @@ mod tests {
                 target(ModTarget::Module { param: "filterQ".into(), slot: 0 }, None),
             ] }],
             modulators: vec![Modulator { name: "Envelope".into(), targets: vec![String::new(); 4],
-                assignments: None, volume_env: false, flex: false, envelope: Some(1), kind: "ahdsr".into() }],
+                assignments: None, volume_env: false, bypassed: true, flex: false, envelope: Some(1), kind: "ahdsr".into() }],
             fx: Chain { slots: vec![crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 0,
                 bypass: false, output_gain: 1., dry_level: 1., params: Params::Filter(crate::fx::params::Filter {
                     filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3] }) }] },
@@ -2236,6 +2238,16 @@ mod tests {
         let unipolar = address(id::MOD_TARGET_INTENSITY, 2).unwrap();
         let bypass = address(id::INTMOD_BYPASS, -1).unwrap();
         let legacy = address(id::INTMOD_INTENSITY, 2).unwrap();
+        assert_eq!(params::read(&settings, bypass), Some(1.), "saved native source is bypassed");
+        assert_eq!(settings[0].filter.as_ref().unwrap().envelope_bypass_at(1), Some(true));
+        assert!(settings[0].pitch_envelopes[0].bypass, "mixed source copies share saved bypass");
+        assert_eq!(settings[0].pitch_envelopes[0].index, 1, "empty earlier envelope retains indices");
+        assert_eq!(settings[0].pitch_envelopes[0].targets[0].0, 1);
+        let mut active = groups[0].clone();
+        active.modulators[0].bypassed = false;
+        let active = [GroupSettings::from(&active)];
+        assert_eq!(params::read(&active, bypass), Some(0.), "saved active source is not muted");
+        assert_eq!(active[0].filter.as_ref().unwrap().envelope_bypass_at(1), Some(false));
         assert!(address(id::INTMOD_INTENSITY, 3).is_none(), "other legacy module laws are not inferred");
         assert!(address(id::INTMOD_INTENSITY, 0).is_none(), "unsupported target does not alias cutoff");
         assert!(address(id::MOD_TARGET_MP_INTENSITY, 0).is_none(), "unsupported target does not alias a routed one");
@@ -2248,6 +2260,7 @@ mod tests {
         let mut voice = VoiceFilter::new(Some(f), &table, &input, RATE);
         let mut reference = VoiceFilter::new(Some(&dry), &table, &input, RATE);
         let mut clock = Envelope::new(&Ahdsr::from(&groups[0].envelopes[1].env), RATE);
+        let mut pitch_clock = Envelope::new(&settings[0].pitch_envelopes[0].env, RATE);
         let mut ctl = [0.; MAX_BLOCK];
         let mut difference = 0f32;
         let mut legacy_energy = [0f64; 2];
@@ -2267,13 +2280,16 @@ mod tests {
             assert_eq!(depth.encode(params::read(&settings, depth).unwrap()), 750_000);
             assert!(params::write(&mut settings, legacy, legacy.decode(750_000)));
             assert_eq!(params::read(&settings, legacy), Some(0.125));
-            assert!(params::write(&mut settings, bypass, bypass.decode(1)));
-            assert!(settings[0].pitch_envelopes[0].bypass, "all copies of a mixed envelope share bypass");
+            assert_eq!(bypass.encode(params::read(&settings, bypass).unwrap()), 1);
+            assert!(settings[0].pitch_envelopes[0].bypass, "saved bypass is present without a script write");
             for block in 0..48 {
                 let source = std::array::from_fn::<_, 128, _>(|n| (TAU * 2000. * (block * 128 + n) as f32 / RATE).sin());
                 let (mut l, mut r) = (source, source);
                 let (mut dl, mut dr) = (source, source);
-                if block == 24 { assert!(params::write(&mut settings, bypass, 0.)); }
+                if block == 24 {
+                    assert!(params::write(&mut settings, bypass, 0.));
+                    assert_eq!(params::read(&settings, bypass), Some(0.));
+                }
                 if block == 32 {
                     assert!(params::write(&mut settings, legacy, legacy.decode(250_000)));
                     assert_eq!(params::read(&settings, legacy), Some(-0.125));
@@ -2282,6 +2298,10 @@ mod tests {
                 voice.process(settings[0].filter.as_ref().unwrap(), &table, &mut ctl, &mut l, &mut r, RATE);
                 reference.process(&dry, &table, &mut ctl, &mut dl, &mut dr, RATE);
                 clock.skip(128, None, RATE);
+                let semitones = settings[0].pitch_envelopes[0].pitch(&mut pitch_clock, 128, RATE);
+                assert_eq!(pitch_clock.level(), clock.level(), "saved pitch bypass preserves the same clock");
+                if block < 24 { assert_eq!(semitones, 0.); }
+                else { assert!((semitones - 6. * clock.level()).abs() < 1e-6); }
                 assert_eq!(voice.envs[0].level(), clock.level(), "bypass does not restart or freeze the clock");
                 assert!(l.iter().chain(&r).all(|x| x.is_finite()));
                 let power = l.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>();
