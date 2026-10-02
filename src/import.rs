@@ -757,7 +757,9 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             order.push(file_id);
         }
         zone_ids.push(file_id);
-        ensure!([lk,hk,lv,hv,root].iter().chain(&fades).all(|v| (0..=127).contains(v)) && lk <= hk && lv <= hv, "Invalid zone mapping");
+        if let Some(reason) = zone_mapping_error([lk,hk], [lv,hv], root, fades) {
+            bail!("Invalid zone mapping in {}: zone {} v{:x}, group {group}, sample ID {file_id}: {reason}; keys {lk}..={hk}, velocity {lv}..={hv}, root {root}, fades {fades:?}", path.display(), zones.len(), so.version);
+        }
         let [fade_low_velocity, fade_high_velocity, fade_low_key, fade_high_key] = fades.map(|v| v as u8);
         ensure!(start >= 0 && end <= 0 && gain.is_finite() && pan.is_finite() && tune.is_finite() && tune > 0.0, "Invalid zone {} v{:x}: start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}",zones.len(),so.version);
         let loops = so.find_first(0x39).map(LoopArray::try_from).transpose().with_context(|| format!("Zone {} loops",zones.len()))?;
@@ -849,6 +851,21 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         kontakt_preload: program.dfd_channel_preload_size,
         dependencies,
     })
+}
+
+// Diagnose the original serialized values before narrowing them to MIDI bytes.
+fn zone_mapping_error(keys: [i16;2], velocity: [i16;2], root: i16, fades: [i16;4]) -> Option<String> {
+    for (field, value) in [
+        ("low key",keys[0]), ("high key",keys[1]),
+        ("low velocity",velocity[0]), ("high velocity",velocity[1]), ("root key",root),
+        ("low velocity fade",fades[0]), ("high velocity fade",fades[1]),
+        ("low key fade",fades[2]), ("high key fade",fades[3]),
+    ] {
+        if !(0..=127).contains(&value) { return Some(format!("{field} {value} is outside 0..=127")); }
+    }
+    if keys[0] > keys[1] { return Some(format!("low key {} exceeds high key {}",keys[0],keys[1])); }
+    if velocity[0] > velocity[1] { return Some(format!("low velocity {} exceeds high velocity {}",velocity[0],velocity[1])); }
+    None
 }
 
 /// (mount point, fs type, source) of the deepest mount containing `path`, from mountinfo text.
@@ -1090,6 +1107,17 @@ pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod preset_tests {
+
+    #[test]
+    fn invalid_zone_mapping_names_rejected_values_without_narrowing() {
+        use super::zone_mapping_error;
+        assert_eq!(zone_mapping_error([0,127],[0,127],60,[0;4]), None);
+        assert_eq!(zone_mapping_error([-1,127],[0,127],60,[0;4]).unwrap(), "low key -1 is outside 0..=127");
+        assert_eq!(zone_mapping_error([0,127],[0,128],60,[0;4]).unwrap(), "high velocity 128 is outside 0..=127");
+        assert_eq!(zone_mapping_error([0,127],[0,127],60,[0,0,0,128]).unwrap(), "high key fade 128 is outside 0..=127");
+        assert_eq!(zone_mapping_error([61,60],[0,127],60,[0;4]).unwrap(), "low key 61 exceeds high key 60");
+        assert_eq!(zone_mapping_error([0,127],[100,99],60,[0;4]).unwrap(), "low velocity 100 exceeds high velocity 99");
+    }
 
     #[test]
     #[ignore = "requires the local Una Corda instruments; no proprietary fixtures"]
