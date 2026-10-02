@@ -87,7 +87,10 @@ find . -name '*.md' -type f -print0 |
 # Public exports must contain the access feature, complete code, and every
 # tracked license/notice. This also catches a future destructive filter.
 if [ $mode = public ]; then
-  required=(LICENSE NOTICE THIRD_PARTY.md assets/OFL.txt src/access.rs src/no_access.rs \
+  required=(LICENSE NOTICE THIRD_PARTY.md docs/LEGAL.md assets/OFL.txt \
+            licenses/MOOSE/LICENSE licenses/MOOSE/LICENSE-APACHE licenses/MOOSE/LICENSE-MIT \
+            licenses/MOOSE/NOTICE licenses/MUI/LICENSE about.toml tools/licenses.py \
+            src/access.rs src/no_access.rs \
             vendor/ni-file/Cargo.toml vendor/ni-file/README.md vendor/ni-file/src/lib.rs \
             tools/export-public.sh)
   for f in "${required[@]}"; do

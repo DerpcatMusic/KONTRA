@@ -143,8 +143,16 @@ def main():
                 binaries = ("KONTRA.clap", "KONTRA.vst3/Contents/x86_64-win/KONTRA.vst3", "kontakto-standalone.exe")
             else:
                 binaries = ("KONTRA.clap", "KONTRA.vst3/Contents/x86_64-linux/KONTRA.so", "kontakto-standalone")
-            for name in (*binaries, "LICENSE", "NOTICE", "THIRD_PARTY.md"):
+            for name in (*binaries, "LICENSE", "NOTICE", "THIRD_PARTY.md", "assets/OFL.txt",
+                         "docs/LEGAL.md", "licenses/THIRD_PARTY_NOTICES.txt", "licenses/MUI/LICENSE",
+                         "licenses/MOOSE/LICENSE", "licenses/MOOSE/LICENSE-MIT",
+                         "licenses/MOOSE/LICENSE-APACHE", "licenses/MOOSE/NOTICE"):
                 assert archive.getinfo(prefix + name).file_size > 0, (p.name, name)
+            notices = archive.read(prefix + "licenses/THIRD_PARTY_NOTICES.txt").decode()
+            sources = re.findall(r"^(\S+) (\S+): .*MPL-2\.0.*$", notices, re.MULTILINE)
+            assert sources, "Missing MPL inventory"
+            for name, source_version in sources:
+                assert archive.getinfo(prefix + f"licenses/sources/{name}-{source_version}.crate").file_size > 0, "Missing MPL source"
             assert archive.read(prefix + "SOURCE_COMMIT.txt").decode().strip() == SHA, p.name
             info = [json.loads(archive.read(prefix + name)) for name in ("clap-build-info.json", "vst3-build-info.json", "build-info.json")]
             if platform.startswith("macos-"):
@@ -168,6 +176,7 @@ Source tag: [`v{version}`](https://github.com/{REPO}/tree/v{version}).
 All four archives come from this source commit. `release-manifest.json` records their sizes and SHA256 checksums; each archive includes separate `clap-build-info.json`, `vst3-build-info.json` and standalone `build-info.json` with their actual feature sets.
 Experimental nightly snapshot, not a stable-quality release. GitHub marks it Latest solely to provide permanent download links.
 Contents: CLAP plug-in, VST3 plug-in and standalone application. These builds have not been certified in Windows or macOS DAWs.
+Licensing: project-authored code is Apache-2.0; third-party terms apply. Redistribution permission for the required ni-file parser remains unresolved. Library-access decryption is enabled and does not validate ownership or activation. No commercial Kontakt instrument library is supplied. Read the included THIRD_PARTY.md and docs/LEGAL.md before use or redistribution; the notice/source bundle is not legal clearance.
 macOS builds are signed ad hoc, not notarized: after unzipping, run `xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone`.
 x86_64 plug-ins require AVX2, FMA and BMI2. Linux requires Ubuntu 24.04-compatible system libraries.
 
