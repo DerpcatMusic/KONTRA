@@ -1,6 +1,6 @@
 // Groups allow you to apply settings like effects, volume, panning, etc. to multiple samples at once rather than having to adjust each one individually.
 
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use crate::{
     Error,
@@ -23,6 +23,89 @@ pub struct SourceIdentity {
     pub structured: bool,
     pub version: u16,
     pub mode: u32,
+}
+
+/// Native unstructured v0x106, mode-9 source record. The fixed common prefix
+/// and final nested state stay opaque. Enum fields retain their serialized
+/// IDs, rather than assuming they equal KSP constants or menu positions.
+/// Field order is verified against the native source reader and writer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WavetableSource {
+    pub common: [u8; 30],
+    pub inharmonic: f32,
+    pub phase: f32,
+    pub phase_random: f32,
+    pub position: f32,
+    pub form_type: u32,
+    pub quality: u32,
+    pub inharmonic_enabled: bool,
+    pub form2: f32,
+    pub mod_amount: f32,
+    pub form2_type: u32,
+    pub mod_wave: u32,
+    pub mod_type: u32,
+    pub mod_tune: f32,
+    pub unknown_float: f32,
+    pub unknown_tail: [u8; 16],
+}
+
+impl WavetableSource {
+    pub fn read(mut reader: impl ReadBytesExt) -> Result<Self, Error> {
+        let mut common = [0; 30];
+        reader.read_exact(&mut common)?;
+        let result = Self {
+            common,
+            inharmonic: reader.read_f32_le()?,
+            phase: reader.read_f32_le()?,
+            phase_random: reader.read_f32_le()?,
+            position: reader.read_f32_le()?,
+            form_type: reader.read_u32_le()?,
+            quality: reader.read_u32_le()?,
+            inharmonic_enabled: match reader.read_u8()? {
+                0 => false, 1 => true,
+                _ => return Err(Error::Static("Invalid wavetable inharmonic flag")),
+            },
+            form2: reader.read_f32_le()?,
+            mod_amount: reader.read_f32_le()?,
+            form2_type: reader.read_u32_le()?,
+            mod_wave: reader.read_u32_le()?,
+            mod_type: reader.read_u32_le()?,
+            mod_tune: reader.read_f32_le()?,
+            unknown_float: reader.read_f32_le()?,
+            unknown_tail: { let mut tail = [0; 16]; reader.read_exact(&mut tail)?; tail },
+        };
+        result.validate()?;
+        Ok(result)
+    }
+
+    fn validate(&self) -> Result<(), Error> {
+        if self.common[..7] != [0, 6, 1, 9, 0, 0, 0]
+            || !(1..=34).contains(&self.form_type)
+            || !(1..=34).contains(&self.form2_type)
+            || !(1..=4).contains(&self.quality)
+            || self.mod_wave > 9 || self.mod_type > 12
+        {
+            return Err(Error::Static("Unsupported or malformed v0x106 wavetable source record"));
+        }
+        Ok(())
+    }
+
+    /// Write the same bounded record, including all unmodeled common/nested
+    /// bytes. This edits source metadata; it does not implement native DSP.
+    pub fn write(&self, mut writer: impl Write) -> Result<(), Error> {
+        self.validate()?;
+        writer.write_all(&self.common)?;
+        for value in [self.inharmonic, self.phase, self.phase_random, self.position] {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        for value in [self.form_type, self.quality] { writer.write_all(&value.to_le_bytes())?; }
+        writer.write_all(&[u8::from(self.inharmonic_enabled)])?;
+        for value in [self.form2, self.mod_amount] { writer.write_all(&value.to_le_bytes())?; }
+        for value in [self.form2_type, self.mod_wave, self.mod_type] { writer.write_all(&value.to_le_bytes())?; }
+        for value in [self.mod_tune, self.unknown_float] { writer.write_all(&value.to_le_bytes())?; }
+        writer.write_all(&self.unknown_tail)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -111,6 +194,23 @@ impl Group {
         Ok(state)
     }
 
+    pub fn wavetable_source(&self) -> Result<Option<WavetableSource>, Error> {
+        if self.source_identity()?.mode != 9 { return Ok(None); }
+        WavetableSource::read(self.source_reader()?.0).map(Some)
+    }
+
+    /// Replace only the existing mode-9 record; retain the source flag,
+    /// private rack, and the group-private trailer after the source.
+    pub fn set_wavetable_source(&mut self, source: &WavetableSource) -> Result<(), Error> {
+        let (mut reader, _) = self.source_reader()?;
+        let start = self.0.private_data.len() - reader.get_ref().len() + reader.position() as usize;
+        WavetableSource::read(&mut reader)?;
+        let mut bytes = [0; 99];
+        source.write(Cursor::new(bytes.as_mut_slice()))?;
+        self.0.private_data[start..start + bytes.len()].copy_from_slice(&bytes);
+        Ok(())
+    }
+
     pub fn params(&self) -> Result<GroupParams, Error> {
         let mut reader = Cursor::new(&self.0.public_data);
 
@@ -142,6 +242,49 @@ impl Group {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wavetable_source_roundtrip_edits_preserve_opaque_state_and_bounds() {
+        let mut common = [0xA5; 30];
+        common[..7].copy_from_slice(&[0, 6, 1, 9, 0, 0, 0]);
+        let source = WavetableSource { common, inharmonic: 0.25, phase: 0.5,
+            phase_random: 0.125, position: 0.75, form_type: 17, quality: 3,
+            inharmonic_enabled: false, form2: 0.375, mod_amount: 0.625,
+            form2_type: 1, mod_wave: 6, mod_type: 0, mod_tune: -12.0,
+            unknown_float: f32::from_bits(0x7fc01234), unknown_tail: [0xDE; 16] };
+        let mut bytes = Vec::new();
+        source.write(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), 99);
+        let parsed = WavetableSource::read(Cursor::new(&bytes)).unwrap();
+        let mut roundtrip = Vec::new();
+        parsed.write(&mut roundtrip).unwrap();
+        assert_eq!(roundtrip, bytes);
+        for end in 0..99 { assert!(WavetableSource::read(Cursor::new(&bytes[..end])).is_err()); }
+        for (offset, value) in [(1, 5), (54, 2), (46, 0), (50, 5), (67, 10), (71, 13)] {
+            let mut invalid = bytes.clone(); invalid[offset] = value;
+            assert!(WavetableSource::read(Cursor::new(invalid)).is_err());
+        }
+        let mut private = Vec::new();
+        for _ in 0..136 { private.extend(8u32.to_le_bytes()); private.extend([0; 8]); }
+        private.extend([0; 24]);
+        private.extend([0, 0x13, 0]); private.extend(8u32.to_le_bytes()); private.extend([0; 8]);
+        private.push(1);
+        let start = private.len();
+        private.extend(&bytes); private.extend([0xFE; 22]);
+        let mut group = Group(StructuredObject { version: 1, private_data: private,
+            public_data: Vec::new(), children: Vec::new() });
+        let before = group.0.private_data.clone();
+        let mut edited = group.wavetable_source().unwrap().unwrap();
+        edited.position = 0.25;
+        group.set_wavetable_source(&edited).unwrap();
+        assert_eq!(group.wavetable_source().unwrap().unwrap().position, 0.25);
+        assert_eq!(&group.0.private_data[..start + 42], &before[..start + 42]);
+        assert_eq!(&group.0.private_data[start + 46..], &before[start + 46..]);
+        edited.quality = 5;
+        let before = group.0.private_data.clone();
+        assert!(group.set_wavetable_source(&edited).is_err());
+        assert_eq!(group.0.private_data, before);
+    }
 
     #[test]
     fn source_identity_reads_known_headers_without_interpreting_opaque_state() {
