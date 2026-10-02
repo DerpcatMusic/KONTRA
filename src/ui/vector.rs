@@ -64,17 +64,8 @@ pub enum Face {
     Cover,
     /// A flat panel, the picture behind other controls; `true` when it lies on another.
     Panel(bool),
-    /// A small picture-only switch: a mark that shows whether it is on.
-    Mark(Mark),
     /// A slider laid over a waveform: a line at its position.
     Marker,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Mark {
-    Dot,
-    Left,
-    Right,
 }
 
 /// Words drawn for a control, in authored points from its corner: they fit
@@ -291,7 +282,7 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
             }
         };
         match (s.kind, face) {
-            (_, Face::Clear | Face::Cover | Face::Mark(_) | Face::Marker) => {}
+            (_, Face::Clear | Face::Cover | Face::Marker) => {}
             (Kind::Label, _) => {
                 // Padding the script set to clear an icon of its picture goes with the picture.
                 let said = said.lines().map(str::trim).collect::<Vec<_>>().join("\n");

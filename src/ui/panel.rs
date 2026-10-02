@@ -456,11 +456,6 @@ pub(super) fn guess_name(c: &Control, picture: &str, prefixes: &[String], bipola
         .unwrap_or_default()
 }
 
-/// Each visible control's name, as KONTRA's view gives it, by control.
-pub fn names(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> HashMap<usize, String> {
-    items(interface, pictures).into_iter().map(|i| (i.control, i.name)).collect()
-}
-
 /// Visible controls, named, with the labels that named them taken out.
 fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec<Item> {
     let prefixes = prefixes(interface);
@@ -1975,8 +1970,8 @@ mod tests {
         assert_eq!(s.iter().map(|s| s.band).collect::<Vec<_>>(), [0, 1]);
         // Vista's output menu, named only by its obfuscated variable.
         interface.controls.push(control("ui_menu", "$x0nzp", &at(200, 200, 90, 18)));
-        let named = super::names(&interface, &HashMap::new());
-        assert!(named.values().all(|n| n != "x0nzp"), "{named:?}");
+        let named: Vec<_> = items(&interface, &HashMap::new()).into_iter().map(|i| i.name).collect();
+        assert!(named.iter().all(|n| n != "x0nzp"), "{named:?}");
     }
 
     #[test]

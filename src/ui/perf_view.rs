@@ -6,7 +6,7 @@
 //! `on ui_control` runs.
 
 use super::menu::{self, Target};
-use super::vector::{Face as VFace, Mark, Plan};
+use super::vector::{Face as VFace, Plan};
 use super::wave::Peaks;
 use super::{Cx, fitted, theme::*};
 use crate::artwork::Picture;
@@ -886,7 +886,6 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
             VFace::Clear => block(w, h),
             VFace::Cover => block(w, h).fill(Role::Background),
             VFace::Panel(on) => block(w, h).fill(if on { Role::Raised } else { Role::Surface }),
-            VFace::Mark(m) => mark(m, now >= 1., s, lift).w(w).h(h),
             VFace::Marker => marker(((now - lo) / (hi - lo)).clamp(0., 1.), s, lift).w(w).h(h),
         },
         (None, Look::Original(_)) => own(),
@@ -1146,33 +1145,6 @@ fn attached<'a>(instrument: Option<&'a crate::import::Instrument>, c: &Control) 
 /// The wave waveform `c` of `instrument` shows, read now: the audit's.
 pub(super) fn wave_now(instrument: &crate::import::Instrument, c: &Control) -> Option<Arc<Peaks>> {
     attached(Some(instrument), c).and_then(super::wave::now)
-}
-
-/// A small picture-only switch, vectorized: a ring, filled when on, or
-/// the arrow it stepped by.
-fn mark(m: Mark, on: bool, s: f64, lift: f32) -> El {
-    canvas(move |z| {
-        let (w, h) = (z.width, z.height);
-        let (cx, cy) = (w / 2., h / 2.);
-        let r = (w.min(h) / 2. - 1.).min(6. * s).max(2.);
-        let line = Role::Ink.alpha(0.55 + 0.45 * lift);
-        let weight = s.max(1.);
-        match m {
-            Mark::Dot => {
-                let mut d = vec![Draw::stroke(circle(cx, cy, r - weight / 2.), line, weight)];
-                if on {
-                    d.push(Draw::fill(circle(cx, cy, (r - 2.5 * weight).max(1.)), accent()));
-                }
-                d
-            }
-            Mark::Left | Mark::Right => {
-                let k = if m == Mark::Left { -1. } else { 1. };
-                let (dx, dy) = (r * 0.4, r * 0.8);
-                let points = [Point::new(cx - k * dx, cy - dy), Point::new(cx + k * dx, cy), Point::new(cx - k * dx, cy + dy)];
-                vec![Draw::stroke(DrawPath::polyline(points, false), line, weight * 1.5)]
-            }
-        }
-    })
 }
 
 /// A slider over a waveform, vectorized: a line at `t` across, with a
