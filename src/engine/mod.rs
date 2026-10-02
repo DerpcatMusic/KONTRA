@@ -802,6 +802,25 @@ impl Engine {
         }
     }
 
+    pub fn pop_array_read(&mut self) -> Option<Box<crate::ksp::ArrayRead>> {
+        self.script.as_deref_mut()?.pop_array_read()
+    }
+
+    pub fn can_finish_array_read(&self) -> bool {
+        self.script.as_deref().is_some_and(Runtime::can_finish_array_read)
+    }
+
+    pub fn finish_array_read(&mut self, request: Box<crate::ksp::ArrayRead>) -> Result<(), Box<crate::ksp::ArrayRead>> {
+        match self.script.as_deref_mut() {
+            Some(rt) => rt.finish_array_read(request),
+            None => Err(request),
+        }
+    }
+
+    pub fn pop_retired_array_read(&mut self) -> Option<Box<crate::ksp::ArrayRead>> {
+        self.script.as_deref_mut()?.pop_retired_array_read()
+    }
+
     pub fn pop_ir_request(&mut self) -> Option<IrRequest> {
         if !self.ir_requests.is_empty() {
             let mut request = self.ir_requests.remove(0);

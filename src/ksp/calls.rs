@@ -6,6 +6,7 @@ use super::compile::{Callback, Ty, VarId};
 use super::engine::{EnginePar, Fade, GroupMask, VoicePar};
 use super::runtime::{read_value, refresh_value, write_value_rt};
 use super::ui::{MenuItem, Prop};
+use super::arrays::{read_path, nka};
 use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text, put_variable_text};
 use super::{KeyState, Value};
 
@@ -151,40 +152,6 @@ fn library_dir(instrument: &std::path::Path) -> String {
     dir(found.unwrap_or_else(|| instrument.parent().unwrap_or(instrument)))
 }
 
-/// A file a script names, matching names without case when the exact
-/// path is not there (libraries are made on case-insensitive systems).
-fn read_path(path: &str) -> Option<Vec<u8>> {
-    let path = std::path::Path::new(path);
-    if let Ok(bytes) = crate::resources::read_file(path) {
-        return Some(bytes);
-    }
-    let mut at = std::path::PathBuf::from("/");
-    for part in path.components().skip(1) {
-        let want = part.as_os_str().to_string_lossy();
-        let next = std::fs::read_dir(&at).ok()?.flatten().map(|e| e.path()).find(|p| {
-            p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&want))
-        })?;
-        at = next;
-    }
-    crate::resources::read_file(&at).ok()
-}
-
-/// An `.nka` file's values for an array of type `ty` named `name`: the
-/// array's name, then one value per line. `None` when the name differs.
-fn nka(bytes: &[u8], ty: Ty, name: &str) -> Option<Value> {
-    let text = String::from_utf8_lossy(bytes);
-    let mut lines = text.lines().map(|l| l.strip_suffix('\r').unwrap_or(l));
-    let head = lines.next()?.trim();
-    if head.trim_start_matches(['%', '!', '?', '$', '@', '~']) != name {
-        return None;
-    }
-    let value = |l: &str| match ty {
-        Ty::Int => Value::Int(l.trim().parse().unwrap_or(0)),
-        Ty::Real => Value::Real(l.trim().parse().unwrap_or(0.0)),
-        Ty::Str => Value::Text(l.to_owned()),
-    };
-    Some(Value::Array(lines.map(value).collect()))
-}
 
 fn async_done(m: &mut Machine, status: i32) -> i32 {
     let id = m.env.next_async();
@@ -429,6 +396,28 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             push_int(m, equal as i32)
         }
         LoadArray | LoadArrayStr | SaveArray | SaveArrayStr => {
+            if f == LoadArrayStr && !m.env.loading {
+                let v = m.stk.var();
+                let path = m.stk.strs.pop();
+                let id = m.env.next_async();
+                let spare = m.env.array_spares.iter().position(|r| r.slot == slot && r.var == v);
+                if m.env.array_inflight < super::arrays::ARRAY_QUEUE
+                    && let Some(spare) = spare
+                    && path.len() <= m.env.array_spares[spare].path.capacity()
+                {
+                    let mut request = m.env.array_spares.swap_remove(spare);
+                    request.path.push_str(path);
+                    request.id = id;
+                    m.env.array_requests.push_back(request);
+                    m.env.array_inflight += 1;
+                } else {
+                    m.env.note("load_array_str: prepared request queue or path capacity exhausted");
+                    if m.env.async_done.len() < m.env.async_done.capacity() {
+                        m.env.async_done.push((slot, id, 0));
+                    }
+                }
+                return push_int(m, id);
+            }
             let (mode, path) = if matches!(f, LoadArray | SaveArray) {
                 (m.stk.int(), None)
             } else {
@@ -453,7 +442,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     *saved = true;
                 }
                 1
-            } else if let Some((value, true)) = m.env.saved_arrays.get(&(slot, v)) {
+            } else if f == LoadArray && let Some((value, true)) = m.env.saved_arrays.get(&(slot, v)) {
                 write_value_rt(&mut m.slot.mem, var, value, m.env.loading)?;
                 1
             } else if mode == 0 {

@@ -7,6 +7,8 @@
 
 mod builtins;
 mod calls;
+mod arrays;
+pub use arrays::ArrayRead;
 mod compile;
 pub mod engine;
 mod idiom;
