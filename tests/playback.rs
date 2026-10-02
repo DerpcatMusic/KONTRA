@@ -1146,6 +1146,9 @@ fn damaged_zones_are_skipped_not_fatal() {
     ];
     let bank = Bank::load(&instrument(vec![Group::default()], zones)).unwrap();
     assert_eq!((bank.zones().len(), bank.skipped_zones), (1, 4));
+    assert_eq!(bank.zone_skip_counts.unavailable_reference, 1);
+    assert_eq!(bank.zone_skip_counts.unreadable_sample, 3);
+    assert_eq!(bank.zone_skip_counts.invalid_loop, 0);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -1158,9 +1161,13 @@ fn rejected_loops_report_bounds_and_do_not_substitute_a_sample() {
         loop_range: Some(Loop { start: 4, end: 32, alternating: false, until_release: false, crossfade: 0 }),
         ..zone.clone()
     };
-    let bank = Bank::from_samples(vec![Group::default()], vec![zone, invalid],
+    let second = Zone { low_key: 62, high_key: 62, ..zone.clone() };
+    let bank = Bank::from_samples(vec![Group::default()], vec![zone, invalid, second],
         vec![(path, constant([0.25; 2], 32))]).unwrap();
-    assert_eq!((bank.zones().len(), bank.skipped_zones), (1, 1));
+    assert_eq!((bank.zones().len(), bank.skipped_zones), (2, 1));
+    assert_eq!(bank.zone_skip_counts, kontakto::engine::ZoneSkipCounts { invalid_loop: 1, ..Default::default() });
+    assert_eq!(bank.zone_skip_counts.summary(), "invalid loops: 1");
+    assert_eq!(bank.zones().iter().map(|z| z.low_key).collect::<Vec<_>>(), [60, 62]);
     let issue = bank.issues.iter().find(|s| s.starts_with("invalid loop:")).unwrap();
     for detail in ["zone ID 2", "group 0", "keys 61..=61", "sample frames 32", "zone start 0", "end offset -1", "loop Some((4, 32))"] {
         assert!(issue.contains(detail), "missing {detail}: {issue}");
@@ -1170,6 +1177,9 @@ fn rejected_loops_report_bounds_and_do_not_substitute_a_sample() {
     assert!(render(&mut e, 64).iter().all(|f| *f == [0.; 2]), "a rejected zone must stay silent");
     e.note_on(0, 60, 100);
     assert!(render(&mut e, 64).iter().any(|f| *f != [0.; 2]), "unaffected zones must still play");
+    e.cc(0, 120, 0);
+    e.note_on(0, 62, 100);
+    assert!(render(&mut e, 64).iter().any(|f| *f != [0.; 2]), "the second retained source zone must still play");
 }
 
 #[test]
