@@ -4510,7 +4510,7 @@ end on"#;
         p.shared.lives.push((slot, 2, live)).ok().unwrap();
         p.shared.publish_live(false);
         assert_eq!(p.shared.lives.len(), 1, "worker leaves visible publication to the editor");
-        *p.shared.live_publish.lock().unwrap() = Some(Instant::now() - LIVE_WATCH * 2);
+        p.shared.live_publish.lock().unwrap().0 = Some(Instant::now() - LIVE_WATCH * 2);
         {
             let mut view = p.shared.view.lock().unwrap();
             view.watched_at = Some(Instant::now() - LIVE_WATCH * 2);
