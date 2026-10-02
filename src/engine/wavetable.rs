@@ -152,13 +152,13 @@ mod tests {
         for step in [0., f64::MIN_POSITIVE, 13.75, 2048., 2048.125, 1e12, 1e280, f64::MAX] {
             let clock = clock(step);
             assert!(clock < (CYCLE as u64) << 32);
-            let reduced = clock as f64 / super::voice::FIXED_ONE;
-            assert!((step.rem_euclid(CYCLE as f64) - reduced).abs() <= 1. / super::voice::FIXED_ONE);
+            let reduced = clock as f64 / crate::engine::voice::FIXED_ONE;
+            assert!((step.rem_euclid(CYCLE as f64) - reduced).abs() <= 1. / crate::engine::voice::FIXED_ONE);
             for n in [1, 3, 127, 64, 128, 17] {
-                let advanced = (clock * n) as f64 / super::voice::FIXED_ONE;
+                let advanced = (clock * n) as f64 / crate::engine::voice::FIXED_ONE;
                 assert!(advanced.is_finite());
                 assert_eq!((advanced % CYCLE as f64),
-                    ((clock * n) % ((CYCLE as u64) << 32)) as f64 / super::voice::FIXED_ONE);
+                    ((clock * n) % ((CYCLE as u64) << 32)) as f64 / crate::engine::voice::FIXED_ONE);
             }
         }
         assert_eq!(clock(f64::INFINITY), 0);
