@@ -1,12 +1,19 @@
 # Changelog
 
-Human-reviewed changes belong here before release. Dates and stable release headings
-are added when a release is actually published; commit history is not a changelog.
+Human-reviewed changes belong in the unreleased section before publication. Nightly
+notes compare those entries with the previous published source, retain known limits,
+and include the complete shipped public commit messages and merged PR descriptions.
+Each published release manifest also retains its versioned changelog. Frozen entries
+below record reviewed source checkpoints; they are not claims about pending work.
 
-## 0.3.0 — unreleased
+## Unreleased
 
 ### Added
 
+- Every nightly records reviewed Added/Changed/Fixed/Known limits deltas, complete
+  shipped public commit messages and merged PR descriptions in its release body and
+  versioned manifest. The previous release source is the comparison baseline;
+  source checkpoints remain traceable even when exports squash private history.
 - Load supported snapshots from the instrument header picker or an explicit
   header drop. Parsing and base validation run on the loader before changing the
   active source; base and snapshot paths survive host state and KONTRA multis.
@@ -170,3 +177,116 @@ Analog Strings' live factory-preset and rhythm menus use bounded NKA reads; sele
 menu checks do not establish that every action or preset works. The installed
 header-favorite preset ID is absent from its registry, preventing that lookup from
 updating favorites; no supplied IDs were repaired or compared with Kontakt.
+
+
+## 0.3.0-nightly.20261002.g4399f700e590 — 2026-10-02
+
+Public release source: `4399f700e5904114ebfdf84ef50091716f5867c7`.
+Reviewed export checkpoint: `e53150559f37407197be3d6182aed9a1c3619e89`.
+Previous release source: `521e6954749840ab15c3d9365d7cd3e95a4867ea`.
+
+### Added
+
+- Load supported NKSN snapshots from the instrument header picker or a header
+  drop, after loading their base NKI. The loader validates the base and applies
+  supported snapshot state before changing the active source. Both source paths
+  survive DAW state and KONTRA multis; rejection preserves the existing source
+  generation, installed epoch and source services.
+- Persist successfully applied native script parameter edits alongside persistent
+  variables. Restore authored initialization getters, retain decoded values actually
+  applied by the engine, and replay current effect edits after processor rebuilds.
+- Process all eight native group drive insert slots. Previously a third drive was
+  discarded; actual Analog Strings Tube SHAPE/BYPASS edits now reach both groups'
+  DSP. Matched sample renders are finite and change with the edit, with zero render
+  heap operations over 2,250 calls per comparison side.
+
+### Changed
+
+- Save active native edits with prepared address storage and a reusable numeric-key
+  hasher; refresh edited parameter slots rather than every default parameter.
+- Share immutable compiled UI revision-owner maps between runtimes while keeping
+  revisions and mutable values local. This reduces duplicate retained metadata;
+  native-state persistence separately added about 0.08 ms in the measured Areia case.
+- Avoid unchanged menu-row copies and redundant bounded live-refresh passes. Equal
+  indexed integer writes leave table revisions current; script callbacks are retained.
+- Decode large filename tables once for samples, resources and impulses. All three
+  actual-library fingerprint comparisons match the prior implementation.
+- Retain unchanged Original control subtrees across live publications. Changed rows,
+  active gestures and replacement epochs still rebuild their affected controls.
+- Keep compact articulation-mode help readable and preserve broad pictured value
+  graphs with authored callbacks in vectorized views.
+
+### Fixed
+
+- Default Windows editors to Direct3D 12 rather than implicit Vulkan. Explicit
+  `WGPU_BACKEND` choices remain authoritative. Persist renderer initialization,
+  adapter details and recoverable startup failures in diagnostic journals.
+- Map native SV Notch 4 filter type 58 to the existing four-pole DSP path. An actual
+  Accordia resident-sample render changes its PCM without render heap operations.
+- Preserve failed and canceled load status when later active-script diagnostics or
+  pending artwork report warnings. A rejected snapshot retains its failure status.
+- Replace a cached loading placeholder with the completed failure or empty-source
+  state; include loading/status changes in the performance-view cache dependency.
+- Preserve NIS/NKS decoder family, cursor/offset, declared lengths, available bytes,
+  version and chunk context, including decompression and structured-object errors.
+  Recognized malformed NIS files retain the original decoder cause; invalid metadata
+  returns an error instead of panicking. Valid synthetic container roundtrips remain
+  byte-exact, with truncated-container coverage preserving the underlying EOF cause.
+- Make the Logs export regression wait for a newly started request and a re-enabled
+  UI scene, rather than accepting a previous completion. It still proves an existing
+  destination fails without overwriting the earlier report.
+- Extend native-edit, snapshot rejection and save/reload fixtures to use resident
+  banks, settle persistence, retain source generations and avoid dumping values.
+
+### Known limits
+
+- The Windows backend policy has not been tested against the reported FL Studio
+  crash on the affected machine. Hosted Windows/macOS builds do not certify DAW use.
+- Snapshots require their base NKI and cannot open independently or target programs
+  inside an NKM. Opaque source state and unknown saved scalars warn and remain unapplied.
+- Native drive/filter support and finite sample renders do not establish Kontakt
+  parameter-law or sonic equivalence. Compatibility remains partial.
+- Control reuse, owner-map sharing and bounded refresh proofs do not establish native
+  display FPS, GPU completion latency or a whole-runtime speedup.
+- Exact-source hosted CI passed 410 library and 78 playback tests. The downloaded
+  Linux package passed 38 CLAP checks (6 skips, no warnings/failures) and strict-level-5
+  VST3 validation at 48 kHz/128 samples with GUI checks skipped. These scoped checks
+  do not validate every library, host deadline or Windows/macOS runtime.
+
+### Reviewed source changes
+
+- Load factory snapshots through the plugin worker and persist their source
+- Keep old snapshot state regression independent of later appended fields
+- Map native SV Notch 4 filter id to existing DSP
+- Share immutable UI revision ownership across script runtimes
+- Journal snapshot validation and preserve active source services on rejection
+- Keep snapshot rejection commits in source request view lock order
+- Finish validation trace before locking the visible snapshot report
+- Correct snapshot trace value and worker proof return types
+- Measure notch pass bands by normalized signal power
+- Preserve applied native script edits across host-state restoration
+- Replay current native effect edits after processor rebuilds
+- Validate saved native addresses without scanning the edit list
+- Report exact snapshot rejection fixture state changes without dumping values
+- Use existing standard storage and share the native-state test instrument
+- Install a resident bank in the native edit callback fixture
+- Preserve failed load status when publishing the active script diagnostics
+- Settle active snapshot persistence before testing rejection and retain failed merge status
+- Keep rejected snapshot status when pending artwork reports warnings
+- Preserve broad pictured value displays in vectorized views
+- Keep articulation mode help readable in compact editors
+- Snapshot only active native edits and reuse the locked numeric-key hasher
+- Document snapshot loading and native control state restoration
+- Assert rejected snapshot retains source generation and installed epoch
+- Capture the decoded native value already applied by the engine
+- Skip unchanged KSP menu rows during bounded live refresh
+- Decode large sample file tables once per import
+- Leave KSP table revisions current when indexed integers are unchanged
+- Default Windows renderer to DX12 and persist GPU startup diagnostics
+- Document renderer policy and large-library refresh/import fixes
+- Retain unchanged Original controls across live row publications
+- Retain all eight native group drive insert slots
+- Record retained UI controls and complete group drive slots
+- Wait for fresh completed exports and an enabled UI scene
+- Replace cached loading placeholders after instrument failure
+- fix(import): preserve container decoder boundaries in load errors
