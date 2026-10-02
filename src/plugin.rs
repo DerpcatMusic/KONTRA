@@ -2434,9 +2434,14 @@ impl PluginLogic for Sampler {
                     (*seen == s.live_seen[*slot] && live.refresh_interface && live.interface_current)
                         || rt.refresh_live_within(live, at, LIVE_BUDGET)
                 });
-            if done && let Some((slot, seen, live, _)) = s.live.take() {
+            if done && let Some((slot, seen, live, refresh)) = s.live.take() {
                 s.live_seen[slot] = seen;
                 let _ = p.shared.lives.push((slot, seen.0, live));
+                // Publish changed views promptly; unchanged lent buffers still
+                // return to the worker on its ordinary diagnostics poll.
+                if refresh.changed && let Some(tasks) = cx.tasks::<Load>() {
+                    tasks.spawn_coalescing(Load);
+                }
             }
         }
         for (e, r) in s.rack.parts.iter_mut().zip(&s.routers) {
@@ -2869,7 +2874,7 @@ fn census(voices: &[crate::engine::VoiceInfo]) {
 }
 
 /// The real worker, edit queue and audio live-view budget under 60 Hz UI edits.
-pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, control: usize, low: i32, high: i32, frames: usize, edits: usize, mut observer: Option<&mut dyn FnMut(&Arc<SamplerParams>) -> anyhow::Result<()>>) -> anyhow::Result<(serde_json::Value, Engine)> {
+pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, program: u32, control: usize, low: i32, high: i32, frames: usize, edits: usize, mut observer: Option<&mut dyn FnMut(&Arc<SamplerParams>) -> anyhow::Result<()>>) -> anyhow::Result<(serde_json::Value, Engine)> {
     use moose::core::bus_routing::{BusActivation, BusRouting};
     use std::time::Duration;
     let params = Arc::new(SamplerParams::new());
@@ -2877,7 +2882,7 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, contr
     let live = Box::new(rt.live());
     let saved = Box::new(PersistenceSnapshot { script: rt.persistence(), ir: instrument.fx.ir_settings_with(&rt.init_irs) });
     let json = serde_json::to_string(&saved.script)?;
-    let part = Part { path: instrument.path.to_string_lossy().into_owned(), script_state: json.clone(), ir_settings: saved.ir.clone(), ..Part::default() };
+    let part = Part { path: instrument.path.to_string_lossy().into_owned(), program, script_state: json.clone(), ir_settings: saved.ir.clone(), ..Part::default() };
     let streaming = part.streaming(params.selection.read().unwrap().streaming);
     params.selection.write().unwrap().parts = vec![part.clone()];
     {
@@ -2927,6 +2932,8 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, contr
     let mut seen = dsp.live_seen[0];
     let mut published = 0;
     let mut process_times = Vec::new();
+    let mut pending_edit = None;
+    let mut publication_latencies = Vec::new();
     let blocks = ((edits as f64 / 60.0 + 1.0) * 48000.0 / frames as f64).ceil() as usize;
     for block in 0..blocks {
         params.shared.watched.store(true, Ordering::Relaxed);
@@ -2937,6 +2944,7 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, contr
             let value = (i64::from(low) + (i64::from(high) - i64::from(low)) * (edit % 101) as i64 / 100) as i32;
             let at = Instant::now();
             params.shared.edit_control(0, control, value);
+            pending_edit = Some(at);
             edit_times.push(at.elapsed().as_secs_f64() * 1e3);
             drop(retained);
             edit += 1;
@@ -2954,6 +2962,12 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, contr
         if ready != published {
             published = ready;
             if let Some(observer) = observer.as_mut() { observer(&params)?; }
+            // Only a callback-derived Live value can settle the optimistic edit.
+            // Coalesced drags measure delivery of the latest edit, including
+            // observer rendering when one is installed.
+            if pending_edit.is_some() && !params.shared.view.lock().unwrap().parts[0].edited.iter().any(|e| e.0 == control) {
+                publication_latencies.push(pending_edit.take().unwrap().elapsed().as_secs_f64() * 1e3);
+            }
         }
         if dsp.live_seen[0] != seen {
             seen = dsp.live_seen[0];
@@ -2975,7 +2989,8 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, contr
     let load_times = load_times.lock().unwrap().clone();
     Ok((serde_json::json!({"host_frames":frames,"edits_delivered":edit,"live_refresh_completions":completions,
         "live_completion_gap_ms":summary(gaps),"view_mutex_acquire_ms":summary(waits),"shared_edit_ms":summary(edit_times),
-        "load_runs":load_times.len(),"load_wall_ms":summary(load_times),"audio_process_ms":summary(process_times)}), std::mem::take(&mut dsp.rack.parts[0])))
+        "load_runs":load_times.len(),"load_wall_ms":summary(load_times),"audio_process_ms":summary(process_times),
+        "latest_edits_published":publication_latencies.len(),"latest_edit_to_publication_observer_ms":summary(publication_latencies)}), std::mem::take(&mut dsp.rack.parts[0])))
 }
 
 /// Profile real script control edits separately from view copying and saved-state
@@ -2996,6 +3011,12 @@ pub fn bench_ui_control(path: &Path, variable: &str, edits: usize) -> anyhow::Re
     let (low, high) = (range("$CONTROL_PAR_MIN_VALUE", 0), range("$CONTROL_PAR_MAX_VALUE", 1000000));
     let mut saved = runtime.persistence();
     let controls = interface.controls.len();
+    let array_cells: usize = interface.controls.iter().map(|c| match c.properties.get("$CONTROL_PAR_VALUE") {
+        Some(crate::ksp::Value::IntArray(v)) => v.len(),
+        Some(crate::ksp::Value::RealArray(v)) => v.len(),
+        Some(crate::ksp::Value::Array(v)) => v.len(),
+        _ => 0,
+    }).sum();
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(Bank::load_bare(&instrument)?)));
     engine.set_fx(crate::engine::effects(&instrument, Some(&runtime), 48000.0));
@@ -3071,13 +3092,13 @@ pub fn bench_ui_control(path: &Path, variable: &str, edits: usize) -> anyhow::Re
     let instrument = Arc::new(instrument);
     let mut workers = Vec::new();
     for frames in [64, 128, 512] {
-        let (report, returned) = bench_ui_worker(engine, instrument.clone(), control, low, high, frames, edits, None)?;
+        let (report, returned) = bench_ui_worker(engine, instrument.clone(), 0, control, low, high, frames, edits, None)?;
         workers.push(report);
         engine = returned;
     }
     println!("{}", serde_json::to_string_pretty(&serde_json::json!({
         "instrument":instrument.name,"control":variable,"edits":edits,"controls":controls,
-        "persistent_json_bytes":json_bytes,"changed_edits":changed_edits,
+        "persistent_json_bytes":json_bytes,"changed_edits":changed_edits,"array_cells":array_cells,
         "live_refresh_passes_per_edit":live_passes as f64/edits as f64,
         "persistence_refresh_passes_per_edit":saved_passes as f64/edits as f64,
         "stages_ms":stages,"diagnostics":diagnostics,
@@ -3430,6 +3451,48 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_live_views_wake_publication_without_allocating_or_busy_polling() {
+        use moose::core::tasks::{TaskSpawner, TaskSpawnerBundle};
+        let source = "on init\nmake_perfview\ndeclare ui_slider $s(0,100)\nend on";
+        let mut engine = crate::ksp::LogEngine::default();
+        let (rt, errors) = Runtime::with_scripts(&[source], &mut engine, 0, Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        let p = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        dsp.script_epoch[0] = 1;
+        dsp.until_poll = usize::MAX;
+        let live = Box::new(rt.live());
+        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+        dsp.rack.parts[0].ui_control(0, 0, 42);
+        p.shared.live_requests.push((0, live)).ok().unwrap();
+        moose::core::tasks::warm_pool();
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut tasks = TaskSpawnerBundle::new();
+        let counted = runs.clone();
+        tasks.push(TaskSpawner::<Load>::new_serialized(move |_| { counted.fetch_add(1, Ordering::Release); }));
+        let tasks = tasks.into_any().unwrap();
+        let transport = TransportInfo::default();
+        let mut midi = EventList::with_capacity(0);
+        let none = EventList::with_capacity(0);
+        let mut cx = ProcessContext::new(&transport, 48000., 64, &mut midi).with_tasks(&tasks);
+        let mut left = [0f32;64];
+        let mut right = [0f32;64];
+        let mut outputs = [&mut left[..], &mut right[..]];
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outputs, 64);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while runs.load(Ordering::Acquire) == 0 && Instant::now() < deadline { std::thread::yield_now(); }
+        assert_eq!(runs.load(Ordering::Acquire), 1, "changed view wakes the real task lane");
+        for _ in 0..8 {
+            let (slot, _, live) = p.shared.lives.pop().unwrap();
+            p.shared.live_requests.push((slot, live)).ok().unwrap();
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
+        }
+        drop(tasks);
+        assert_eq!(runs.load(Ordering::Acquire), 1, "unchanged returned buffers must not wake the worker again");
+    }
 
     /// A click's value holds over a live view begun before the scripts had
     /// it, so the control does not flick back for a frame.
