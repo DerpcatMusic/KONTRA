@@ -88,6 +88,9 @@ impl Part {
     pub(crate) fn source(&self) -> (String, u32, String) {
         (self.path.clone(), self.program, self.snapshot.clone())
     }
+    fn matches_source(&self, source: &(String, u32, String)) -> bool {
+        self.path == source.0 && self.program == source.1 && self.snapshot == source.2
+    }
     pub(crate) fn snapshot_base(&self) -> bool {
         self.program == 0 && Path::new(&self.path).extension().is_some_and(|e| e.eq_ignore_ascii_case("nki"))
     }
@@ -1332,10 +1335,8 @@ impl Shared {
         if slot >= RACK_SLOTS || !part.snapshot_base()
         { return false; }
         let mut request = self.snapshot_request.lock().unwrap();
-        let generation = self.generation[slot].fetch_add(1, Ordering::AcqRel) + 1;
+        let generation = self.generation[slot].load(Ordering::Acquire);
         *request = Some(SnapshotRequest { slot, source: part.source(), path, generation });
-        drop(request);
-        self.view.lock().unwrap().parts[slot].status = "Loading snapshot…".into();
         true
     }
 
@@ -1544,27 +1545,57 @@ pub(crate) struct SnapshotRequest {
 /// Validate on the loader before replacing any saved or playing state.
 fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, String), Arc<Instrument>)> {
     let request = params.shared.snapshot_request.lock().unwrap().take()?;
+    let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&request.source.0), request.source.1, Some(request.slot));
+    trace.detail("instance_id", params.shared.instance_id);
+    trace.detail("operation", "snapshot_validation");
+    trace.detail("snapshot", request.path.clone());
+    trace.detail("scope", "container parsing, explicit base matching and supported state import; audio not installed");
+    trace.stage("snapshot_parse_and_validation");
     let current = || {
         params.shared.generation[request.slot].load(Ordering::Acquire) == request.generation
             && params.selection.read().unwrap().parts.get(request.slot)
-                .is_some_and(|p| p.source() == request.source)
+                .is_some_and(|p| p.matches_source(&request.source))
+            && params.shared.snapshot_request.lock().unwrap().is_none()
     };
-    if !current() { return None; }
+    if !current() {
+        trace.detail("cancellation", "Source changed or a newer snapshot was requested");
+        trace.finish("canceled");
+        return None;
+    }
+    params.shared.view.lock().unwrap().parts[request.slot].status = "Loading snapshot…".into();
     let result = import::read_snapshot(Path::new(&request.source.0), Path::new(&request.path));
-    if !current() { return None; }
+    if !current() {
+        trace.detail("cancellation", "Source changed or a newer snapshot was requested during validation");
+        trace.finish("canceled");
+        return None;
+    }
     match result {
         Ok(instrument) => {
             let mut selection = params.selection.write().unwrap();
-            let part = selection.parts.get_mut(request.slot)?;
-            if part.source() != request.source
-                || params.shared.generation[request.slot].load(Ordering::Acquire) != request.generation
-            { return None; }
+            let pending = params.shared.snapshot_request.lock().unwrap();
+            let valid = pending.is_none()
+                && params.shared.generation[request.slot].load(Ordering::Acquire) == request.generation;
+            let Some(part) = selection.parts.get_mut(request.slot).filter(|p| valid && p.matches_source(&request.source)) else {
+                trace.detail("cancellation", "Source changed or a newer snapshot was requested before commit");
+                trace.finish("canceled");
+                return None;
+            };
             part.select_snapshot(request.path);
+            trace.finish("validated");
             Some((request.slot, part.source(), Arc::new(instrument)))
         }
         Err(error) => {
-            params.shared.view.lock().unwrap().parts[request.slot].status =
-                format!("Snapshot was not loaded: {error:#}");
+            let mut view = params.shared.view.lock().unwrap();
+            if !current() {
+                trace.detail("cancellation", "Source changed or a newer snapshot was requested before reporting failure");
+                trace.finish("canceled");
+                return None;
+            }
+            let message = format!("{error:#}");
+            trace.fail(&message);
+            let report = trace.finish("failed");
+            view.parts[request.slot].status = format!("Snapshot was not loaded: {message}");
+            view.parts[request.slot].load_report = Some(report);
             None
         }
     }
@@ -1780,7 +1811,7 @@ impl BackgroundTask for Load {
             let canceled = || {
                 let current = params.selection.read().unwrap();
                 current.parts.get(slot).is_none_or(|p| {
-                    p.source() != part.source()
+                    !p.matches_source(&target)
                         || p.streaming != part.streaming || p.streaming(current.streaming) != streaming
                 })
                     || params.shared.generation[slot].load(Ordering::Acquire) != generation
@@ -1891,7 +1922,7 @@ impl BackgroundTask for Load {
                     let group = instrument.first_playable_group().unwrap_or(0);
                     let mut current = params.selection.write().unwrap();
                     if let Some(c) = current.parts.get_mut(slot).filter(|c| {
-                        c.source() == part.source() && c.group == u32::MAX
+                        c.matches_source(&target) && c.group == u32::MAX
                     }) {
                         c.group = group as u32;
                     }
@@ -3857,15 +3888,29 @@ mod tests {
 
         let p = SamplerParams::new();
         p.selection.write().unwrap().parts = vec![part.clone()];
+        let generation = p.shared.generation[0].load(Ordering::Acquire);
         assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/missing.nksn".into()));
+        assert_eq!(p.shared.generation[0].load(Ordering::Acquire), generation, "an unvalidated request cannot invalidate the active bank's services");
         assert!(prepare_snapshot(&p).is_none());
         assert!(p.selection.read().unwrap().parts[0] == part);
+        let report = p.shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
+        assert_eq!(report["details"]["operation"], "snapshot_validation");
+        assert_eq!(report["status"], "failed");
+        assert!(report["failure"].is_string());
+        crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
+        assert!(crate::diagnostics::snapshot().events.iter().any(|event|
+            event.load_id.as_deref() == report["load_id"].as_str() && event.event == "load_finished"
+                && event.details["status"] == "failed"), "failed validation is retained in the diagnostic journal");
         assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot was not loaded"));
         assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/stale.nksn".into()));
         p.selection.write().unwrap().parts[0].snapshot = "replacement.nksn".into();
         p.shared.view.lock().unwrap().parts[0].status = "replacement".into();
         assert!(prepare_snapshot(&p).is_none());
         assert_eq!(p.shared.view.lock().unwrap().parts[0].status, "replacement");
+        crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
+        assert!(crate::diagnostics::snapshot().events.iter().any(|event|
+            event.event == "load_finished" && event.details["status"] == "canceled"
+                && event.details["details"]["snapshot"] == "/unavailable-kontakto/stale.nksn"));
         let multi = Part { path: "ensemble.nkm".into(), ..Default::default() };
         assert!(!p.shared.queue_snapshot(0, &multi, "preset.nksn".into()));
         let program = Part { program: 1, ..part };
@@ -3925,6 +3970,13 @@ mod tests {
         Load.run(&p);
         assert!(p.selection.read().unwrap().parts[0] == before, "foreign snapshot leaves all active saved state intact");
         assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot requires base instrument"));
+        let report = p.shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
+        assert_eq!(report["details"]["operation"], "snapshot_validation");
+        assert_eq!(report["status"], "failed");
+        crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
+        assert!(crate::diagnostics::snapshot().events.iter().any(|event|
+            event.load_id.as_deref() == report["load_id"].as_str() && event.event == "load_finished"
+                && event.details["status"] == "failed"));
         Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx);
         assert_eq!(dsp.rack.parts[0].bank().unwrap() as *const Bank, bank);
         println!("foreign snapshot rejected without replacing active state or bank");
