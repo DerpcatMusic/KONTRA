@@ -19,7 +19,8 @@ class Changes(unittest.TestCase):
         for path in ("src/access.rs", "tests/playback.rs", "Cargo.toml", "Cargo.lock",
                      "build.rs", ".cargo/config.toml", "vendor/new/file.rs", "assets/font.ttf",
                      ".github/workflows/ci.yml", "rust-toolchain.toml", "new-input.dat",
-                     "THIRD_PARTY.md", "LICENSE", "NOTICE"):
+                     "THIRD_PARTY.md", "LICENSE", "NOTICE", "docs/LEGAL.md",
+                     "licenses/MOOSE/NOTICE", "licenses/THIRD_PARTY_NOTICES.txt"):
             self.assertTrue(build_relevant(path), path)
 
     def test_git_diffs_fail_closed(self):

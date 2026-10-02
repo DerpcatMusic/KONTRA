@@ -27,7 +27,7 @@ mod voice;
 
 pub(crate) use bank::parallel;
 pub use audit::audit_dsp;
-pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, memory_budget, resident_bytes};
+pub use bank::{Bank, ZoneSkipCounts, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, memory_budget, resident_bytes};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
 pub use residency::{Heads, Residency};
 pub use rack::{
@@ -811,6 +811,11 @@ impl Engine {
 
     /// A host edit of script control `control` in script slot `slot`: sets its
     /// value and runs the script's `on ui_control`.
+    pub fn ui_file_selection(&mut self, slot: usize, control: usize, path: &str) -> bool {
+        let channel = self.script_channel;
+        self.scripted(channel).is_some_and(|(rt, mut host)| rt.ui_file_selection(&mut host, slot, control, path))
+    }
+
     pub fn ui_control(&mut self, slot: usize, control: usize, value: i32) {
         let channel = self.script_channel;
         if let Some((rt, mut host)) = self.scripted(channel) {
@@ -1023,7 +1028,9 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             rt.process(&mut host, n as u32);
         }
-        self.player.shed(self.load);
+        // Offline renders have no deadline: retain tails even if a live
+        // block's load estimate carried over or decoding takes longer.
+        if !self.blocking_streams { self.player.shed(self.load); }
         let defaults = self.defaults();
         let (mut next, mut written) = (0, 0);
         for (block, (l, r)) in left[..n]

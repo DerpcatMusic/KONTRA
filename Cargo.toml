@@ -1,6 +1,6 @@
 [package]
 name = "kontakto"
-version = "0.3.0"
+version = "0.3.23"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"
@@ -125,9 +125,12 @@ vello = { path = "vendor/vello" }
 # mui-baseview with a raw key hook (key ups for the computer keyboard); see its Cargo.toml.
 mui-baseview = { path = "vendor/mui-baseview" }
 
+[patch.crates-io]
+symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
+
 [workspace]
 members = [".", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3"]
-exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/mui-baseview"]
+exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/mui-baseview", "vendor/symphonia-format-riff"]
 resolver = "3"
 
 # Optimized CI keeps release semantics while avoiding cross-crate ThinLTO.

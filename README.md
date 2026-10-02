@@ -2,9 +2,11 @@
 
 KONTRA is a Rust sampler for instruments that use the Kontakt file format. It runs as a CLAP or VST3 plug-in and as a standalone application, using the MOOSE plug-in framework.
 
-KONTRA is being built as an independent alternative to Kontakt. It is not affiliated with or endorsed by the owner of Kontakt. Compatibility remains incomplete: loading a preset does not establish that its controls, scripts, routing, or sound match Kontakt.
+KONTRA is being built to give musicians an independent sampler, including native Linux playback of instruments they are entitled to use. The goal is interoperability and continued access to their musical work. It is not affiliated with, sponsored by, or endorsed by the owner of Kontakt. Compatibility remains incomplete: loading a preset does not establish that its controls, scripts, routing, or sound match Kontakt.
 
-KONTRA ships no instrument libraries or sample collections. Use libraries you are licensed to use, under their license terms.
+KONTRA supplies no commercial Kontakt instrument libraries. You supply your own instruments and samples; their licenses still apply. The source tree includes upstream NCW/WAV codec test fixtures and an openly licensed font, documented in [THIRD_PARTY.md](THIRD_PARTY.md).
+
+**Licensing status:** project-authored code is Apache-2.0. Redistribution permission for the required vendored `ni-file` parser remains unresolved, and Native Instruments previously requested removal of its upstream repository. See the [licensing and interoperability review](docs/LEGAL.md) for sources and remaining questions.
 
 ## Download the latest nightly
 
@@ -34,7 +36,7 @@ and retained support journals, including attempts recorded before GPU creation.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and validation guidance, and [CHANGELOG.md](CHANGELOG.md) for release changes. To report a problem, open the **Logs** tab, choose **Export support report…**, review the preview and new-folder destination, then choose **Export report**. The Logs tab works even when an instrument fails to import. Search or filter the retained events, then select an event for its stage, reason, source location and available load context.
 
-The new report folder contains `report.json` with build/system/audio settings and load issues, `events.jsonl` with recent session events, and `journal.jsonl` with the current journal and retained inactive sessions from previous runs. The editor retains up to 2,048 events / 2 MiB; each active session rotates at 16 MiB total, and inactive journals are retained for up to 7 days / 64 MiB. Active sessions in other processes are excluded. Counts identify omitted, truncated or unwritten events; a partial-journal warning means the available report was saved with coverage gaps. Export failures leave an explicitly incomplete bundle. Paths are redacted by default; the report excludes script contents, samples and credentials. Review it before sharing.
+The new report folder contains `report.json` with build/system/audio settings and load issues, `events.jsonl` with recent session events, and `journal.jsonl` with the current journal and retained inactive sessions from previous runs. The editor retains up to 2,048 events / 2 MiB; each active session rotates at 16 MiB total, and inactive journals are retained for up to 7 days / 64 MiB. Active sessions in other processes are excluded. Counts identify omitted, truncated or unwritten events; a partial-journal warning means the available report was saved with coverage gaps. Export failures leave an explicitly incomplete bundle. Paths are redacted by default; the report includes bounded, numbered script excerpts around reported faults and excludes full script payloads, samples and credentials. Review it before sharing.
 
 For a native UI stall, launch the host or standalone with `KONTRA_NATIVE_UI_TIMING=1` in its environment, then drag a control. One ten-second capture appears as `native_frame_timing` in Logs and support exports. It measures application callbacks and presentation submission, including lock waits; it does not measure GPU completion or display FPS. Capture is disabled by default.
 
@@ -43,6 +45,8 @@ To load a snapshot, first load its base NKI, then use the instrument header menu
 ## Compatibility and known gaps
 
 **Full** means verified end to end for the named behavior. **Partial** means only a subset is implemented or exercised. **Unsupported** means the feature is not implemented. **Untested** means there is not enough reference or host testing to make a claim. **Experimental** means limited validation and an evolving interface. No broad compatibility area below is marked full.
+
+The [compatibility implementation checklist](docs/COMPATIBILITY.md) groups the remaining format, script, UI, DSP and reporting gaps, links their code paths, and separates source changes awaiting validation from published build behavior.
 
 | Area | Status | Implemented | Known limits |
 |---|---|---|---|
@@ -137,8 +141,30 @@ Run the generated script in REAPER with the source project open and KONTRA VST3 
 
 ## License
 
-Project-authored code is offered under Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Vendored and other third-party components keep their own terms. [THIRD_PARTY.md](THIRD_PARTY.md) records dependency licenses and upstream parser metadata.
+Project-authored code is offered under Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Vendored and other third-party components keep their own terms. [THIRD_PARTY.md](THIRD_PARTY.md) records dependency licenses, upstream parser metadata and release-bundle instructions. Nightly archives include dependency notices and the covered source for their MPL dependencies.
+
+This license covers rights the contributors can grant in their own work. It does not license Kontakt, commercial sample libraries, third-party scripts or artwork, or library access credentials. Converting, caching or saving an instrument does not change the rights in its contents. Distribute your own instruments only with material you have permission to distribute.
+
+For contributions and bug reports, follow the [content and provenance rules](CONTRIBUTING.md#rights-and-provenance). Reproduce issues with authored or expressly redistributable fixtures; do not upload commercial instruments, extracted scripts/artwork, access metadata or caches containing library content.
+
+### Library access and lawful use
+
+The `library-access` feature is enabled in default builds and the current nightly workflow. It reads access data from local `.nicnt` metadata to decrypt supported preset, sample and resource content. It does not verify purchases, account ownership or Native Access activation. Possession of those files is not proof of permission to use them.
+
+Use content only where its license or applicable law permits the intended use. NI's [EULA](https://www.native-instruments.com/pages/end-user-license-agreement) restricts reverse engineering and sound-library reuse; statutory interoperability exceptions are conditional. Paying for a library does not by itself settle whether loading its protected content in another sampler is permitted. [docs/LEGAL.md](docs/LEGAL.md) explains the distinction.
+
+For a CLI build without the library-access implementation:
+
+```sh
+cargo build --locked --release --no-default-features --bin kontakto
+```
+
+This disables that implementation; it does not resolve the parser's licensing or provenance questions. This lawful-use guidance does not add restrictions to the Apache-2.0 grant for project-authored code.
 
 ## Disclaimer
 
-KONTRA is provided AS IS, without warranty of any kind. To the fullest extent permitted by law, the authors and contributors are not liable for damages arising from its use. See [LICENSE](LICENSE) for the full terms. Kontakt is a trademark of its owner; use of the name here describes file compatibility only. The owner does not sponsor or endorse KONTRA. Use only libraries you are licensed to use.
+Development includes education, file-format research and lawful interoperability. These describe the project's intent; they do not establish that every implementation, use or distribution is legally permitted.
+
+KONTRA is provided AS IS under the warranty disclaimer and limitation of liability in Sections 7 and 8 of [LICENSE](LICENSE), including their exceptions for applicable law and written agreements. Users are responsible for determining whether their use and redistribution are appropriate and authorized. These provisions do not waive third-party rights or guarantee protection from lawsuits, DMCA notices or hosting takedowns. See [the legal review](docs/LEGAL.md#liability-and-educational-purpose).
+
+Kontakt is a trademark of its owner; use of the name here describes file compatibility only. The owner does not sponsor or endorse KONTRA. Use only libraries you are entitled to use.

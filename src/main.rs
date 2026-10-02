@@ -1257,12 +1257,13 @@ fn audit_patch_report(path: &Path, trace: &mut kontakto::diagnostics::LoadTrace)
     for name in &instrument.missing_samples { trace.issue("samples", "missing", name); }
     trace.stage("scripts");
     let (script, errors) = load_scripts(&instrument, instrument.script_state.clone(), RATE);
-    for e in &errors { trace.issue("scripts", "initialization_failed", e); }
+    for e in &errors { trace.script_issue("initialization_failed", e, &instrument.scripts); }
     trace.stage("samples");
     let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers[..]);
     let bank = Bank::load_counting(&instrument, kontakto::engine::MEMORY_LIMIT, kontakto::engine::Streaming::Auto, controllers, &Default::default())
         .inspect_err(|e| trace.fail(format!("{e:#}")))?;
     if let Some(w) = &bank.warning { trace.issue("samples", "streaming_warning", w); }
+    trace.detail("zone_skip_counts", serde_json::json!(bank.zone_skip_counts));
     for e in &bank.issues { trace.issue("samples", "zone_skipped", e); }
     let (zones_total, zones_available) = (
         instrument.zones.len(),

@@ -1,0 +1,225 @@
+{
+  "baseline_version": "0.3.0",
+  "baseline_source": "e53150559f37407197be3d6182aed9a1c3619e89",
+  "policy": "Count each reviewed accepted logical defect once after this already-published baseline. Features and follow-up commits do not add counts. Pending fixes remain unaccepted until release review.",
+  "fixes": [
+    {
+      "id": "init-rpn-forwarding",
+      "summary": "Forward initialization RPN messages after receiving slots initialize",
+      "source_commits": [
+        "98f77553e8fa15f600d5e75be51c9e79e0b97792"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "global-window-size-persistence",
+      "summary": "Retain global editor window size across instances",
+      "source_commits": [
+        "ccb861a07aa53c16486f3e7df91632e1a5e9ea6f"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "flat-filename-table-decoding",
+      "summary": "Decode flat Kontakt 8 filename tables without losing source records",
+      "source_commits": [
+        "50f8b34b209e81b7bddc857d6c7c23a3e543336a"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "explicit-effect-slot-decoding",
+      "summary": "Retain explicit native effect slot identities",
+      "source_commits": [
+        "50f8b34b209e81b7bddc857d6c7c23a3e543336a"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "archive-read-error-context",
+      "summary": "Report archive directory signatures and read boundaries",
+      "source_commits": [
+        "83b7dbc59869716dba9d06f189fa960f92f75743"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "sample-rejection-provenance",
+      "summary": "Retain actual skipped zone and loop causes with typed counters",
+      "source_commits": [
+        "08403a57ddef103aeb3cac9488bce9fe7e04d70d",
+        "4ee0a3ae915df413696a27977a2727593c03575c",
+        "e0f81e20210b8a0874dfbc5853d6da344b990e1f"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-omitted-fault-accounting",
+      "summary": "Count script faults omitted by the retained location cap",
+      "source_commits": [
+        "10cb26531ca3b9e1d8040cc50db884b477c73566"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "legacy-pgs-callback",
+      "summary": "Dispatch the documented legacy PGS callback spelling",
+      "source_commits": [
+        "f4c81fa2ae779a64fb8827f4698c972f4294142f"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "rack-canvas-drop-and-geometry",
+      "summary": "Accept empty canvas drops and keep welcome/gutter geometry stable",
+      "source_commits": [
+        "298e0887754e223aef532640eaadda8959ddd9f8",
+        "0f677fbb79bba1ef02ef32790e8d2d2e39805782"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "declared-jpeg-resources",
+      "summary": "Decode declared JPEG resource names through shared image handling",
+      "source_commits": [
+        "f585d3718377a8588d659c1e09fe4342dd6f6dd2"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "module-envelope-bypass-and-depth",
+      "summary": "Route decoded module envelope bypass and modern target depths",
+      "source_commits": [
+        "8883c4ed4ce95383fae656d35502265ecb0a4bf8"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "wavetable-source-diagnostics",
+      "summary": "Diagnose unsupported wavetable playback with bounded source identities",
+      "source_commits": [
+        "6d1592542122a2b4777cdc2852a34851d6f67ce1"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "bounded-command-fault-context",
+      "summary": "Retain commands and arguments in note and listener faults",
+      "source_commits": [
+        "70dfb4bb68d4cac2ac3ce350e252b5e7bb7421cf",
+        "9bcbb147a1af23e0c59e12e5f806b34470889f0f"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "independent-listeners",
+      "summary": "Schedule millisecond and beat listeners independently",
+      "source_commits": [
+        "702fee1fa92231009036a68f3a72dc4e651efb83",
+        "eca46291cbbdcd71145b8d30358d9322bd032a15"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "offline-release-tail-preservation",
+      "summary": "Preserve release tails during offline overload rendering",
+      "source_commits": [
+        "3295d693f90985687c24a1979ca918af7a5edaf0"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "native-group-insert-order",
+      "summary": "Preserve pre/post amplifier order, partial indicators and independent interleaved filter state",
+      "source_commits": [
+        "7e0279963a1613fd93836effdf1fcc394923d324",
+        "4a6a8d93db84e3de260840bb93bea9d3cc5cd767",
+        "799b0843d0a491a5cf3b84ffb73400c75c36f488",
+        "a71c6b233e2649ca45491c4d6f342b697bc697f5",
+        "c689cab487884c94ef52153ce9e3976f81e5ccae"
+      ],
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "native-reveal-paths",
+      "summary": "Reveal actual library and log directories, including extended Windows drive and UNC paths",
+      "source_commits": [
+        "3b6467c2986575a78303eb355e015042407c764d",
+        "e68d28c624647501e37b465e49542b376ce6df8d"
+      ],
+      "validation": "e68d28c native path, worker lifecycle and rename UI checks passed; Windows Explorer launch remains unverified.",
+      "accepted": true
+    },
+    {
+      "id": "encrypted-access-metadata-lookup",
+      "summary": "Resolve relative preset paths and whitespace-delimited library access fields with actionable missing-data errors",
+      "source_commits": [
+        "78ef3e76eb78ee2bdc7251c8acbb00538ac8fd5b"
+      ],
+      "validation": "Five isolated access checks passed including right-key decryption and wrong-key rejection; combined e68d28c build passed. Emotional Piano payload unavailable locally.",
+      "accepted": true
+    },
+    {
+      "id": "extended-pcm-wave-descriptors",
+      "summary": "Decode complete extended PCM WAVE format descriptors",
+      "source_commits": [
+        "480aa9cd23bde033f5c697804c827b6eb122563a"
+      ],
+      "validation": "Actual two fmt20 samples decode completely; all15 private authored cases and combined57efa33 audio regression passed.",
+      "accepted": true
+    },
+    {
+      "id": "multiple-script-performance-pages",
+      "summary": "Show independent authored performance pages and keep callbacks on their owning slot",
+      "source_commits": [
+        "315e2c1f565f2977ecdc1bd635fef3d5b6ea2704"
+      ],
+      "validation": "Combined57efa33 real UI footer switch and zero-heap backend page/late-buffer/epoch regressions passed; CircleBells payload notlocal.",
+      "accepted": true
+    },
+    {
+      "id": "documented-level-meter-chain-symbols",
+      "summary": "Accept documented symbolic meter-chain selectors without guessing numeric identities",
+      "source_commits": [
+        "a968ae08205503741f2f486ca6d50fb70fa59b63"
+      ],
+      "validation": "Combined57efa33 namedMAIN/GROUP/INSERT initialization and strict invalidselector regression passed; real Conflux fullinitialization proof pending.",
+      "accepted": true
+    },
+    {
+      "id": "creator-tools-empty-menu-lists",
+      "summary": "Accept exported null entries for empty CreatorTools menus",
+      "source_commits": [
+        "e9fca603d5642976a9735048abdc1d7b9aa1339b"
+      ],
+      "validation": "Actual Conflux resource loads378controls11families and100 callbacks withoutheapoperations; unsupportedleveltap andLuaUI remainexplicit.",
+      "accepted": true
+    },
+    {
+      "id": "readable-script-source-diagnostics",
+      "summary": "Retain bounded numbered offending code in parse/runtime diagnostics, copy and exported journals",
+      "source_commits": [
+        "552377acd5d06d390983ba4c0e168b4262483437",
+        "fcdcd519c16a8ce179ae111a36c36643ccb5c4aa"
+      ],
+      "validation": "Combined57efa33 malformed-source/runtime-argument zero-audio-heap regression passed; fcdcd51 compiled journal/export and actual Logs Copy all numbered-code checks passed unchanged.",
+      "accepted": true
+    }
+  ]
+}

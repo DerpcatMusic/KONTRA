@@ -545,7 +545,7 @@ pub(crate) enum Address {
         index: u16,
         bipolar: bool,
     },
-    /// An internal pitch-envelope target depth, in original target order.
+    /// An internal pitch/filter/EQ-envelope depth, in original target order.
     InternalIntensity {
         group: u16,
         envelope: u8,
@@ -644,7 +644,11 @@ impl Address {
                 let g = group()?;
                 let e = modulator(g)?.envelope?;
                 groups[g as usize].envelopes.get(e)?.targets.iter()
-                    .any(|t| t.target == ModTarget::Pitch).then_some(())?;
+                    .any(|t| match &t.target {
+                        ModTarget::Pitch => true,
+                        ModTarget::Module { param, .. } => Knob::parse(param).is_some() || super::filter::stage_knob(param).is_some(),
+                        _ => false,
+                    }).then_some(())?;
                 Self::InternalBypass(g, u8::try_from(e).ok()?)
             }
             id::MOD_TARGET_INTENSITY | id::MOD_TARGET_MP_INTENSITY | id::INTMOD_INTENSITY => {
@@ -662,14 +666,17 @@ impl Address {
                     },
                     None => {
                         let envelope = m.envelope?;
-                        (groups[g as usize]
+                        let routed = &groups[g as usize]
                             .envelopes
                             .get(envelope)?
                             .targets
-                            .get(target)?
-                            .target
-                            == ModTarget::Pitch)
-                            .then_some(())?;
+                            .get(target)?.target;
+                        match routed {
+                            ModTarget::Pitch => {},
+                            ModTarget::Module { param, .. } if par.id != id::INTMOD_INTENSITY
+                                && (Knob::parse(param).is_some() || super::filter::stage_knob(param).is_some()) => {},
+                            _ => return None,
+                        }
                         let envelope = u8::try_from(envelope).ok()?;
                         let target = u16::try_from(target).ok()?;
                         if par.id == id::INTMOD_INTENSITY {
@@ -1033,22 +1040,36 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
         }
         Address::InternalIntensity { group, envelope, target, .. }
         | Address::LegacyPitchIntensity { group, envelope, target } => {
-            let Some(m) = settings
-                .get_mut(group as usize)
-                .and_then(|s| s.pitch_envelopes.iter_mut().find(|e| e.index == envelope))
-                .and_then(|e| e.targets.iter_mut().find(|t| t.0 == target))
-            else {
-                return false;
-            };
             if !value.is_finite() { return false; }
-            m.2.intensity = if matches!(address, Address::LegacyPitchIntensity { .. }) {
+            let value = if matches!(address, Address::LegacyPitchIntensity { .. }) {
                 value
             } else { value.clamp(-1., 1.) };
+            let Some(settings) = settings.get_mut(group as usize) else { return false; };
+            let mut applied = false;
+            if let Some(m) = settings.pitch_envelopes.iter_mut().find(|e| e.index == envelope)
+                .and_then(|e| e.targets.iter_mut().find(|t| t.0 == target)) {
+                m.2.intensity = value;
+                applied = true;
+            }
+            if matches!(address, Address::InternalIntensity { .. })
+                && let Some(m) = settings.filter.as_mut().and_then(|f| f.envelope_mod(envelope, target)) {
+                m.intensity = value;
+                applied = true;
+            }
+            return applied;
         }
         Address::InternalBypass(g, index) => {
-            let Some(envelope) = settings.get_mut(g as usize)
-                .and_then(|s| s.pitch_envelopes.iter_mut().find(|e| e.index == index)) else { return false; };
-            envelope.bypass = value != 0.;
+            let Some(settings) = settings.get_mut(g as usize) else { return false; };
+            let mut applied = false;
+            if let Some(envelope) = settings.pitch_envelopes.iter_mut().find(|e| e.index == index) {
+                envelope.bypass = value != 0.;
+                applied = true;
+            }
+            if let Some(bypass) = settings.filter.as_mut().and_then(|f| f.envelope_bypass(index)) {
+                *bypass = value != 0.;
+                applied = true;
+            }
+            return applied;
         }
         Address::Filter(g, slot, knob) => {
             let filter = settings.get_mut(g as usize).and_then(|s| s.filter.as_mut());
@@ -1120,17 +1141,17 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
             .get(index as usize)
             .map(|m| m.intensity),
         Address::InternalIntensity { group, envelope, target, .. }
-        | Address::LegacyPitchIntensity { group, envelope, target } => settings
-            .get(group as usize)?
-            .pitch_envelopes
-            .iter()
-            .find(|e| e.index == envelope)?
-            .targets
-            .iter()
-            .find(|t| t.0 == target)
-            .map(|t| t.2.intensity),
-        Address::InternalBypass(g, index) => settings.get(g as usize)?.pitch_envelopes.iter()
-            .find(|e| e.index == index).map(|e| f32::from(e.bypass)),
+        | Address::LegacyPitchIntensity { group, envelope, target } => {
+            let settings = settings.get(group as usize)?;
+            settings.pitch_envelopes.iter().find(|e| e.index == envelope)
+                .and_then(|e| e.targets.iter().find(|t| t.0 == target)).map(|t| t.2.intensity)
+                .or_else(|| settings.filter.as_ref()?.envelope_mod_at(envelope, target).map(|m| m.intensity))
+        },
+        Address::InternalBypass(g, index) => {
+            let settings = settings.get(g as usize)?;
+            settings.pitch_envelopes.iter().find(|e| e.index == index).map(|e| f32::from(e.bypass))
+                .or_else(|| settings.filter.as_ref()?.envelope_bypass_at(index).map(f32::from))
+        },
         Address::Filter(g, slot, knob) => {
             settings.get(g as usize)?.filter.as_ref()?.knob(slot, knob)
         }

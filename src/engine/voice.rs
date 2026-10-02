@@ -1264,14 +1264,22 @@ impl Voice {
                 }
                 None => (&mut left[..n], &mut right[..n]),
             };
-            mix(window, base, step, amp, self.gains, delta, l, r);
-            self.gains = target;
+            if own.is_some() {
+                // Inserts need the source before the native Amplifier. Reuse
+                // the control scratch for unity interpolation, then for the
+                // insert envelopes after interpolation has finished.
+                scratch.flex[..n].fill(1.0);
+                mix(window, base, step, &scratch.flex[..n], [1.0; 2], [0.0; 2], l, r);
+            } else {
+                mix(window, base, step, amp, self.gains, delta, l, r);
+            }
             if let Some(filter) = own {
                 let (l, r) = (&mut out_l[..n], &mut out_r[..n]);
-                self.filter.process(filter, &group.mods, &mut scratch.flex, l, r, cx.rate);
+                self.filter.process_amplified(filter, &group.mods, &mut scratch.flex, l, r, cx.rate, amp, self.gains, delta);
                 left[..n].iter_mut().zip(l.iter()).for_each(|(o, x)| *o += x);
                 right[..n].iter_mut().zip(r.iter()).for_each(|(o, x)| *o += x);
             }
+            self.gains = target;
         }
         (self.advance(cx), underrun)
     }

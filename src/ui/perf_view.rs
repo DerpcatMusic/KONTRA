@@ -42,6 +42,7 @@ pub enum Kind {
     Label,
     Table,
     TextEdit,
+    FileSelector,
     /// Takes the pointer in Kontakt, shows nothing: `ui_mouse_area`.
     Area,
     /// `ui_level_meter`: Kontakt draws it from its colours, never a picture.
@@ -65,6 +66,7 @@ impl Kind {
             "ui_label" => Self::Label,
             "ui_table" => Self::Table,
             "ui_text_edit" => Self::TextEdit,
+            "ui_file_selector" => Self::FileSelector,
             "ui_mouse_area" => Self::Area,
             "ui_level_meter" => Self::Meter,
             "ui_waveform" => Self::Waveform,
@@ -298,7 +300,8 @@ fn room_height(ui: &Ui, slot: usize) -> f64 {
     let Some(scene) = ui.scene() else { return 0. };
     let (Some(rack), Some(part), Some(stage)) = (scene.surface("rack-view"),
         scene.surface(&format!("part-{slot}")), scene.surface(&format!("stage-{slot}"))) else { return 0. };
-    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.)).max(0.)
+    let tabs = scene.surface(&format!("script-pages-{slot}")).map_or(0., |s| s.frame.size.height);
+    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs).max(0.)
 }
 
 /// Reference cost of the former scalar/table memo scan, measured by the opt-in UI probe.
@@ -371,7 +374,8 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
     }
     let p = cx.p.clone();
     let program = v.program;
-    let generation = p.shared.generation[slot].load(std::sync::atomic::Ordering::Acquire);
+    let Some(shared) = p.shared.part(slot) else { return };
+    let generation = shared.generation.load(std::sync::atomic::Ordering::Acquire);
     let _ = std::thread::Builder::new().name("kontakto-pictures".into()).spawn(move || {
         let mut trace = crate::diagnostics::LoadTrace::new(&path, program, Some(slot));
         trace.detail("operation", "control_pictures");
@@ -383,7 +387,7 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
         let mut view = p.shared.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let v = &mut view.parts[slot];
         if v.instrument.as_ref().is_some_and(|i| i.path == path) && v.program == program
-            && p.shared.generation[slot].load(std::sync::atomic::Ordering::Acquire) == generation
+            && shared.generation.load(std::sync::atomic::Ordering::Acquire) == generation
         {
             if !found.is_empty() {
                 let mut all = (*v.pictures).clone();
@@ -586,6 +590,10 @@ pub(super) fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, O
         Kind::Value if hide & HIDE_VALUE != 0 => String::new(),
         Kind::Value if hide & HIDE_TITLE != 0 || own.is_empty() => format!("{value}"),
         Kind::Value => format!("{own} {value}"),
+        Kind::FileSelector => {
+            let path = prop(c, "$CONTROL_PAR_FILEPATH");
+            if path.is_empty() { "Select file…".into() } else { path.rsplit('/').next().unwrap_or(path).into() }
+        }
         Kind::TextEdit => match c.properties.get("$CONTROL_PAR_VALUE") {
             Some(Value::Text(t)) => t.clone(),
             _ => own,
@@ -932,6 +940,19 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
                 cx.p.shared.edit_control(slot, shown.control, now as i32);
             }
         }
+        Kind::FileSelector => {
+            if ui.get(id.as_str()).activated() {
+                let base = prop(c, "$CONTROL_PAR_BASEPATH");
+                let v = &cx.view.parts[slot];
+                let ask = super::picker::Ask::ScriptFile {
+                    part: slot, epoch: v.script_epoch, slot: v.script_slot, control: shown.control,
+                    from: std::path::PathBuf::from(base.replace('\\', "/")),
+                    file_type: int(c, "$CONTROL_PAR_FILE_TYPE").unwrap_or(0),
+                };
+                if base.is_empty() { cx.state.notice = "File selector has no base directory.".into(); }
+                else if !cx.state.picker.ask(ask) { cx.state.notice = "The file picker is unavailable in this session.".into(); }
+            }
+        }
         Kind::Menu => {
             if ui.get(id.as_str()).activated() {
                 menu::open_under(ui, cx, Target::Script { part: slot, control: shown.control }, &id);
@@ -1034,7 +1055,9 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         })
         .named(name);
     let el = if help.is_empty() { el } else { el.tip(help.to_owned()) };
-    let el = if matches!(shown.kind, Kind::Knob | Kind::Slider | Kind::Value) {
+    let el = if shown.kind == Kind::FileSelector {
+        el.focusable().a11y(A11y::Button)
+    } else if matches!(shown.kind, Kind::Knob | Kind::Slider | Kind::Value) {
         el.focusable().a11y(A11y::Slider { value: now, min: lo, max: hi })
     } else {
         el
@@ -1159,7 +1182,7 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
                     ));
                 }
             }
-            Kind::Value | Kind::TextEdit => boxed(&mut d, Role::Field.alpha(1.)),
+            Kind::Value | Kind::TextEdit | Kind::FileSelector => boxed(&mut d, Role::Field.alpha(1.)),
             Kind::Table => {
                 boxed(&mut d, Role::Field.alpha(1.));
                 let baseline = (hi / (hi - lo)).clamp(0., 1.) * (h - 2.) + 1.;

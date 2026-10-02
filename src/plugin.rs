@@ -338,8 +338,9 @@ impl SamplerParams {
     pub(crate) fn diagnostic_report(&self) -> serde_json::Value {
         drain_audio_diagnostics(self);
         let selection = self.selection.read().unwrap().clone();
+        self.shared.ensure_parts(selection.parts.len());
         let view = self.shared.view.lock().unwrap();
-        let parts: Vec<_> = selection.parts.iter().take(RACK_SLOTS).enumerate().map(|(slot, part)| {
+        let parts: Vec<_> = selection.parts.iter().enumerate().map(|(slot, part)| {
             let v = &view.parts[slot];
             serde_json::json!({
                 "slot":slot, "path":part.path, "program":part.program, "name":part.name,
@@ -347,12 +348,12 @@ impl SamplerParams {
                 "aux":part.aux, "mic_buses":part.mic_buses, "mic_names":part.mic_names,
                 "gain":part.gain, "pan":part.pan, "tune":part.tune, "mute":part.mute, "solo":part.solo,
                 "articulation":part.articulate, "mpe":part.mpe, "timing":part.timing,
-                "streaming":part.streaming(selection.streaming), "generation":self.shared.generation[slot].load(Ordering::Relaxed),
+                "streaming":part.streaming(selection.streaming), "generation":self.shared.part(slot).unwrap().generation.load(Ordering::Relaxed),
                 "script_epoch":v.script_epoch, "status":v.status, "load":v.load_report.as_deref(),
                 "runtime_status":v.runtime_status,
             })
         }).collect();
-        let audio = *self.shared.diagnostic_latest.lock().unwrap();
+        let audio = self.shared.diagnostic_latest.lock().unwrap().clone();
         let context = serde_json::json!({
             "instance_id":self.shared.instance_id, "build":crate::build_info::BUILD,
             "host":{"sample_rate":self.shared.rate(), "audio":audio},
@@ -374,7 +375,7 @@ impl SamplerParams {
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
 /// Fixed-size playback state; the audio thread only copies it into a queue.
-#[derive(Clone, Copy, serde::Serialize)]
+#[derive(Clone, Copy, Default, serde::Serialize)]
 struct PartDiagnostics {
     generation: u64,
     script_epoch: u64,
@@ -390,7 +391,7 @@ struct PartDiagnostics {
     pending_releases: usize,
 }
 
-#[derive(Clone, Copy, serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 struct AudioDiagnostics {
     block: u64,
     sample_rate: f64,
@@ -398,15 +399,38 @@ struct AudioDiagnostics {
     output_channels: usize,
     offline: bool,
     output_buses: [(usize, usize); BUSES],
-    parts: [PartDiagnostics; RACK_SLOTS],
+    parts: Vec<PartDiagnostics>,
+}
+
+impl AudioDiagnostics {
+    fn with_parts(count: usize) -> Self {
+        Self { block: 0, sample_rate: 0.0, block_size: 0, output_channels: 0,
+            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count] }
+    }
+}
+
+/// Stable per-part atoms shared with the editor/loader. Audio keeps its own
+/// prepared Arc vector and never locks the growable registry.
+#[derive(Default)]
+pub(crate) struct PartShared {
+    pub(crate) generation: AtomicU64,
+    /// Out of [`crate::engine::LOAD_DONE`], rising within each load.
+    pub(crate) load_progress: AtomicU32,
+    pub(crate) meter: [AtomicU32; 2],
+    pub(crate) clip: AtomicBool,
+    underruns: AtomicU64,
+    mics: [AtomicU16; OUTS],
+    measuring: AtomicBool,
 }
 
 pub struct Shared {
     instance_id: u64,
     diagnostic_audio: ArrayQueue<AudioDiagnostics>,
+    diagnostic_free: ArrayQueue<AudioDiagnostics>,
     diagnostic_latest: Mutex<Option<AudioDiagnostics>>,
     diagnostic_dropped: AtomicU64,
     ready: ArrayQueue<(usize, u64, Handoff)>,
+    pending_ready: Mutex<std::collections::VecDeque<(usize, u64, Handoff)>>,
     discard: ArrayQueue<Retired>,
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
     snapshot_requests: ArrayQueue<(usize, u64, Box<PersistenceSnapshot>)>,
@@ -417,13 +441,14 @@ pub struct Shared {
     live_requests: ArrayQueue<(usize, u64, Box<Live>)>,
     lives: ArrayQueue<(usize, u64, Box<Live>)>,
     /// One non-audio publisher; the timestamp distinguishes editor frames from loader polling.
-    live_publish: Mutex<Option<Instant>>,
+    live_publish: Mutex<(Option<Instant>, usize)>,
     #[cfg(test)]
     load_gate: Mutex<Option<(usize, Arc<std::sync::Barrier>)>>,
     #[cfg(test)]
     publish_gate: Mutex<Option<Arc<std::sync::Barrier>>>,
     /// Edits of script controls from the performance view.
     edits: ArrayQueue<Edit>,
+    file_selections: ArrayQueue<FileSelection>,
     /// IR loads requested by scripts: part, instrument generation, script epoch.
     ir_requests: ArrayQueue<(usize, u64, u64, crate::engine::IrRequest)>,
     ir_ready: ArrayQueue<(usize, u64, IrHandoff)>,
@@ -445,7 +470,7 @@ pub struct Shared {
     pub(crate) modulation: AtomicU32,
     pub(crate) controls: ArrayQueue<Mix>,
     /// Each slot's articulation and MPE routing, sent with [`Shared::controls`].
-    routes: ArrayQueue<[Route; RACK_SLOTS]>,
+    routes: ArrayQueue<Vec<Route>>,
     /// Peak meters the audio thread keeps current; read them at paint time.
     pub meters: Meters,
     /// The part and group the sound editor shows, as the audio thread plays it.
@@ -457,15 +482,16 @@ pub struct Shared {
     /// Override changes for the audio thread, by rack slot.
     overrides: ArrayQueue<(usize, Override)>,
     /// Each slot's overrides as last sent (loader and editor threads only).
-    sent: Mutex<[Vec<Override>; RACK_SLOTS]>,
+    sent: Mutex<Vec<Vec<Override>>>,
     /// Each slot's smart memory and the generation it serves (loader only).
-    residency: Mutex<[Option<(u64, Box<Residency>)>; RACK_SLOTS]>,
+    residency: Mutex<Vec<Option<(u64, Box<Residency>)>>>,
     /// Resized heads back from the audio thread: slot, generation, heads.
     heads: ArrayQueue<(usize, u64, Heads)>,
-    pub(crate) generation: [AtomicU64; RACK_SLOTS],
-    /// Per slot, how far its load is, out of [`crate::engine::LOAD_DONE`]:
-    /// parse, scripts, then samples by frames read; only rises within a load.
-    pub(crate) load_progress: [AtomicU32; RACK_SLOTS],
+    parts: Mutex<Vec<Arc<PartShared>>>,
+    initial_parts: [Arc<PartShared>; RACK_SLOTS],
+    growth: ArrayQueue<Box<PreparedGrowth>>,
+    grown: AtomicU64,
+    growth_prepared: AtomicU64,
     pub(crate) audition: AtomicBool,
     pub(crate) audition_note: AtomicU64,
     pub(crate) selected: AtomicU64,
@@ -497,7 +523,7 @@ pub struct Shared {
     /// the parts' engines since each was created.
     pub(crate) dropouts: AtomicU64,
     /// Per slot, streamed frames that arrived late, for its smart memory.
-    underruns: [AtomicU64; RACK_SLOTS],
+
     /// The timing plan for the audio thread; the latest wins.
     plan: ArrayQueue<Plan>,
     /// Loader only: the plan last sent, and a new latency waiting to settle.
@@ -508,7 +534,7 @@ pub struct Shared {
     pub(crate) reported: AtomicU32,
     /// What each part's instrument plays past its own output ([`routing::Mics`]),
     /// published by the audio thread.
-    mics: [[AtomicU16; OUTS]; RACK_SLOTS],
+
     /// Host port names; the loader publishes, the host's main thread reads.
     port_names: Mutex<routing::PortNames>,
     /// Bumped with each publication: format wrappers poll it and tell the host.
@@ -531,7 +557,7 @@ fn settle_edits(edited: &mut Vec<(usize, i32, Instant)>, interface: Option<&crat
 /// Parts' timing measurements, each on a thread of its own.
 #[derive(Default)]
 struct Measure {
-    busy: [AtomicBool; RACK_SLOTS],
+
     /// Slot and what was measured, or why it could not be.
     done: Mutex<Vec<(usize, String, Result<Timing, String>)>>,
 }
@@ -539,7 +565,44 @@ struct Measure {
 pub(crate) struct LiveDiagnostics {
     epoch: u64,
     faults: Vec<LiveFault>,
+    fault_occurrences_omitted: u64,
     notes: Vec<&'static str>,
+}
+
+pub(crate) struct ScriptPage {
+    pub(crate) slot: usize,
+    pub(crate) title: String,
+    pub(crate) interface: Arc<Interface>,
+    last_view: Mutex<Option<Arc<Interface>>>,
+}
+
+/// Prepared on Load; frame snapshots share these unused page buffers instead
+/// of copying every page's controls. Audio only receives one existing Live.
+#[derive(Default)]
+pub(crate) struct ScriptPages {
+    pub(crate) views: Vec<ScriptPage>,
+    buffers: Mutex<Vec<Box<Live>>>,
+}
+
+pub(crate) fn script_pages(rt: Option<&Runtime>) -> Arc<ScriptPages> {
+    let mut pages = ScriptPages::default();
+    if let Some(rt) = rt.filter(|rt| rt.performance_slots().count() > 1) {
+        for (slot, title) in rt.performance_slots() {
+            let live = Box::new(rt.live_for_slot(Some(slot)));
+            pages.views.push(ScriptPage {
+                slot, title: if title.is_empty() { format!("Script {}", slot + 1) } else { title.into() },
+                interface: Arc::new(live.interface.as_ref().unwrap().clone()),
+                last_view: Mutex::new(None),
+            });
+            // The first page has a separate buffer in PartView::live.
+            if pages.views.len() > 1 { pages.buffers.get_mut().unwrap().push(live); }
+        }
+    }
+    Arc::new(pages)
+}
+
+fn first_script_live(rt: &Runtime) -> Box<Live> {
+    Box::new(rt.live_for_slot(rt.performance_slots().next().map(|(slot, _)| slot)))
 }
 
 #[derive(Default, Clone)]
@@ -589,6 +652,7 @@ pub(crate) struct PartView {
     pub(crate) publication_rows: Option<(usize, usize, bool)>,
     /// Script slot that `interface` belongs to.
     pub(crate) script_slot: usize,
+    pub(crate) script_pages: Arc<ScriptPages>,
     /// Samples are being read for this slot.
     pub(crate) loading: bool,
     /// Keyboard colors and names the scripts set, kept current while they run.
@@ -630,37 +694,43 @@ pub(crate) struct View {
     pub(crate) shelf: Arc<library::Shelf>,
     pub(crate) scanned: u64,
     pub(crate) files: Arc<Vec<PathBuf>>,
-    pub(crate) parts: [PartView; RACK_SLOTS],
+    pub(crate) parts: Vec<PartView>,
     pub(crate) status: String,
     /// When an editor last showed the rack (see [`Shared::watched`]).
     pub(crate) watched_at: Option<Instant>,
 }
 impl Default for Shared {
     fn default() -> Self {
+        let initial_parts: [Arc<PartShared>; RACK_SLOTS] = std::array::from_fn(|_| Arc::default());
+        let diagnostic_free = ArrayQueue::new(4);
+        for _ in 0..2 { diagnostic_free.push(AudioDiagnostics::with_parts(RACK_SLOTS)).ok().unwrap(); }
         Self {
             instance_id: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             diagnostic_audio: ArrayQueue::new(2),
+            diagnostic_free,
             diagnostic_latest: Mutex::new(None),
             diagnostic_dropped: AtomicU64::new(0),
             ready: ArrayQueue::new(64),
+            pending_ready: Mutex::default(),
             discard: ArrayQueue::new(64),
             snapshot_requests: ArrayQueue::new(2 * RACK_SLOTS),
             snapshots: ArrayQueue::new(2 * RACK_SLOTS),
             live_requests: ArrayQueue::new(2 * RACK_SLOTS),
             lives: ArrayQueue::new(2 * RACK_SLOTS),
-            live_publish: Mutex::new(None),
+            live_publish: Mutex::new((None, 0)),
             #[cfg(test)]
             load_gate: Mutex::new(None),
             #[cfg(test)]
             publish_gate: Mutex::new(None),
             edits: ArrayQueue::new(256),
+            file_selections: ArrayQueue::new(16),
             ir_requests: ArrayQueue::new(64),
             ir_ready: ArrayQueue::new(64),
             array_requests: ArrayQueue::new(64),
             array_ready: ArrayQueue::new(64),
             array_retired: ArrayQueue::new(64),
             rate: AtomicU64::new(48000f64.to_bits()),
-            key_owners: std::array::from_fn(|_| AtomicU64::new(128)),
+            key_owners: std::array::from_fn(|_| AtomicU64::new(0)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
             heard: std::array::from_fn(|_| AtomicU8::new(0)),
             keyboard: ArrayQueue::new(256),
@@ -673,16 +743,20 @@ impl Default for Shared {
             scope: Scope::default(),
             blocks: AtomicU64::new(0),
             overrides: ArrayQueue::new(1024),
-            residency: Mutex::default(),
+            residency: Mutex::new((0..RACK_SLOTS).map(|_| None).collect()),
             // One batch in flight per slot: never full.
             heads: ArrayQueue::new(RACK_SLOTS),
-            sent: Mutex::new(std::array::from_fn(|_| Vec::new())),
-            generation: std::array::from_fn(|_| AtomicU64::new(0)),
-            load_progress: std::array::from_fn(|_| AtomicU32::new(0)),
+            sent: Mutex::new((0..RACK_SLOTS).map(|_| Vec::new()).collect()),
+            parts: Mutex::new(initial_parts.to_vec()),
+            initial_parts,
+            growth: ArrayQueue::new(1),
+            grown: AtomicU64::new(RACK_SLOTS as u64),
+            growth_prepared: AtomicU64::new(RACK_SLOTS as u64),
+
             audition: AtomicBool::new(false),
             audition_note: AtomicU64::new(128),
             selected: AtomicU64::new(0),
-            focus_request: AtomicU64::new(128),
+            focus_request: AtomicU64::new(u64::MAX),
             panic: AtomicBool::new(false),
             midi_thru: AtomicBool::new(false),
             multi_request: Mutex::new(None),
@@ -695,12 +769,12 @@ impl Default for Shared {
             busy_ns: AtomicU64::new(0),
             span_ns: AtomicU64::new(0),
             dropouts: AtomicU64::new(0),
-            underruns: Default::default(),
+
             plan: ArrayQueue::new(1),
             published: Mutex::default(),
             measure: Arc::default(),
             reported: AtomicU32::new(0),
-            mics: Default::default(),
+
             port_names: Mutex::default(),
             port_names_revision: AtomicU64::new(0),
             _diagnostics: crate::diagnostics::acquire(),
@@ -711,7 +785,7 @@ impl Default for Shared {
                 shelf: Arc::default(),
                 scanned: 0,
                 files: Arc::default(),
-                parts: std::array::from_fn(|_| PartView::default()),
+                parts: (0..RACK_SLOTS).map(|_| PartView::default()).collect(),
                 status: "Choose a library and select a preset".into(),
                 watched_at: None,
             }),
@@ -721,7 +795,7 @@ impl Default for Shared {
 /// Samples [`Scope`] keeps: a spectrum's window and then some.
 pub(crate) const SCOPE: usize = 8192;
 /// [`Scope::source`] for everything sent to the host.
-pub(crate) const SCOPE_MASTER: usize = RACK_SLOTS + 1;
+pub(crate) const SCOPE_MASTER: usize = usize::MAX;
 
 /// One strip's post-fader signal, mono, for a spectrum drawn on the UI
 /// thread. The audio thread copies into the ring only while
@@ -773,7 +847,7 @@ impl Scope {
 #[derive(Default)]
 pub struct Meters {
     /// Rack slots, after the part's gain, pan, mute and solo.
-    pub parts: [[AtomicU32; 2]; RACK_SLOTS],
+
     /// Output buses, after their faders.
     pub buses: [[AtomicU32; 2]; BUSES],
     /// Everything sent to the host, after the Volume parameter.
@@ -784,7 +858,7 @@ pub struct Meters {
 /// A clip light per meter of [`Meters`].
 #[derive(Default)]
 pub struct Clips {
-    pub parts: [AtomicBool; RACK_SLOTS],
+
     pub buses: [AtomicBool; BUSES],
     pub master: AtomicBool,
 }
@@ -816,13 +890,13 @@ fn db_gain(db: f32) -> f32 {
     }
 }
 /// What each rack slot's MIDI goes through before its scripts.
-pub(crate) fn routes(selection: &Selection) -> [Route; RACK_SLOTS] {
-    std::array::from_fn(|n| {
+pub(crate) fn routes(selection: &Selection) -> Vec<Route> {
+    (0..selection.parts.len().max(RACK_SLOTS)).map(|n| {
         selection
             .parts
             .get(n)
             .map_or_else(Route::default, |p| Route::new(&p.path, &p.articulate, &p.mpe))
-    })
+    }).collect()
 }
 /// What the audio thread mixes by, from the persisted rack.
 pub(crate) fn mix(selection: &Selection) -> Mix {
@@ -840,8 +914,8 @@ pub(crate) fn mix(selection: &Selection) -> Mix {
         }),
     }
 }
-pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS] {
-    std::array::from_fn(|n| {
+pub(crate) fn rack_controls(selection: &Selection) -> Vec<PartControls> {
+    (0..selection.parts.len().max(RACK_SLOTS)).map(|n| {
         selection
             .parts
             .get(n)
@@ -870,11 +944,11 @@ pub(crate) fn rack_controls(selection: &Selection) -> [PartControls; RACK_SLOTS]
                 }),
             })
             .unwrap_or_default()
-    })
+    }).collect()
 }
 /// The slot the on-screen keyboard plays when no part is selected: every
 /// part MIDI channel 1 on port A reaches, as if the host had sent it.
-pub(crate) const EVERY_PART: usize = RACK_SLOTS;
+pub(crate) const EVERY_PART: usize = usize::MAX;
 
 /// What the on-screen keyboard and wheels send a part.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -887,6 +961,12 @@ pub(crate) enum Play {
     Mod(u8),
 }
 /// A script control edit for the runtime of `part` tagged `epoch`.
+// Inline paths keep selection delivery and stale-epoch rejection free of audio allocations/frees.
+struct FileSelection {
+    part: usize, epoch: u64, slot: usize, control: usize,
+    path: [u8; 1280], len: usize,
+}
+
 struct Edit {
     part: usize,
     epoch: u64,
@@ -932,12 +1012,17 @@ struct Retired {
     script: Option<Box<Runtime>>,
     heads: Option<Heads>,
     ir: Option<crate::fx::PreparedIr>,
+    growth: Option<Box<PreparedGrowth>>,
+    controls: Option<Mix>,
+    routes: Option<Vec<Route>>,
+    plan: Option<Plan>,
+    diagnostic: Option<AudioDiagnostics>,
 }
 
 /// Array reads, writes and disposal share the serialized file-service worker.
 fn load_arrays(params: &SamplerParams) {
     let current = |part: usize, generation: u64, epoch: u64| {
-        generation == params.shared.generation[part].load(Ordering::Acquire)
+        generation == params.shared.part(part).unwrap().generation.load(Ordering::Acquire)
             && params.shared.view.lock().unwrap().parts[part].script_epoch == epoch
     };
     while !params.shared.array_ready.is_full() {
@@ -988,7 +1073,7 @@ fn load_irs(params: &SamplerParams) {
         let source = {
             let view = params.shared.view.lock().unwrap();
             let v = &view.parts[part];
-            (v.script_epoch == epoch && generation == params.shared.generation[part].load(Ordering::Acquire))
+            (v.script_epoch == epoch && generation == params.shared.part(part).unwrap().generation.load(Ordering::Acquire))
                 .then(|| v.instrument.clone().map(|i| (i, v.irs.clone(), v.program))).flatten()
         };
         let Some((instrument, mut irs, program)) = source else { continue };
@@ -1033,7 +1118,7 @@ fn load_irs(params: &SamplerParams) {
         };
         let mut view = params.shared.view.lock().unwrap();
         let v = &mut view.parts[part];
-        if v.script_epoch != epoch || generation != params.shared.generation[part].load(Ordering::Acquire) {
+        if v.script_epoch != epoch || generation != params.shared.part(part).unwrap().generation.load(Ordering::Acquire) {
             continue;
         }
         let loaded = ir.is_some();
@@ -1134,24 +1219,28 @@ impl Shared {
         let Ok(mut owner) = self.live_publish.try_lock() else { return };
         let now = Instant::now();
         if editor {
-            *owner = Some(now);
+            owner.0 = Some(now);
             self.view.lock().unwrap().watched_at = Some(now);
         } else {
             if self.watched.swap(false, Ordering::Relaxed) {
                 self.view.lock().unwrap().watched_at = Some(now);
             }
-            if owner.is_some_and(|at| at.elapsed() < LIVE_WATCH) { return; }
+            if owner.0.is_some_and(|at| at.elapsed() < LIVE_WATCH) { return; }
         }
         // One completed interface per editor frame. Prepare changed rows off
         // the view lock; keep retained reader snapshots immutable. Unseen
         // diagnostics may drain the bounded rack queue in one worker pass.
-        for _ in 0..if editor { 1 } else { RACK_SLOTS } {
+        for _ in 0..if editor { 1 } else { self.view.lock().unwrap().parts.len() } {
             let Some((slot, epoch, live)) = self.lives.pop() else { break };
             let revisions = live.revisions();
             let (keys_changed, previous, previous_diagnostics) = {
                 let view = self.view.lock().unwrap();
                 let v = &view.parts[slot];
                 if epoch == 0 || epoch != v.script_epoch { continue; }
+                if !v.script_pages.views.is_empty() && v.script_slot != live.slot {
+                    v.script_pages.buffers.lock().unwrap().push(live);
+                    continue;
+                }
                 let changed = live.refresh_interface && v.live_revisions.is_none_or(|old| old.0 != revisions.0);
                 (live.refresh_interface && v.live_revisions.is_none_or(|old| old.1 != revisions.1),
                     changed.then(|| (v.interface.clone(), if v.live_revisions.is_some() && v.script_slot == live.slot { v.live_control_versions.clone() } else { Arc::default() })), v.live_diagnostics.clone())
@@ -1163,9 +1252,9 @@ impl Shared {
             });
             let keys = keys_changed.then(|| Arc::new(live.keys.clone()));
             let diagnostics = previous_diagnostics.filter(|old|
-                old.epoch == epoch && old.faults == live.faults && old.notes == live.notes
+                old.epoch == epoch && old.faults == live.faults && old.fault_occurrences_omitted == live.fault_occurrences_omitted && old.notes == live.notes
             ).unwrap_or_else(|| Arc::new(LiveDiagnostics {
-                epoch, faults: live.faults.clone(), notes: live.notes.clone(),
+                epoch, faults: live.faults.clone(), fault_occurrences_omitted: live.fault_occurrences_omitted, notes: live.notes.clone(),
             }));
             #[cfg(test)]
             if let Some(gate) = self.publish_gate.lock().unwrap().take() {
@@ -1181,6 +1270,10 @@ impl Shared {
             let mut publication_rows = None;
             let mut view = self.view.lock().unwrap();
             if epoch == 0 || epoch != view.parts[slot].script_epoch { continue; }
+            if !view.parts[slot].script_pages.views.is_empty() && view.parts[slot].script_slot != live.slot {
+                view.parts[slot].script_pages.buffers.lock().unwrap().push(live);
+                continue;
+            }
             if let Some(update) = &mut interface {
                 if let Some(rows) = update.rows.take() {
                     let previous = view.parts[slot].interface.take();
@@ -1204,6 +1297,10 @@ impl Shared {
                             update.interface = live.interface.clone();
                             view = self.view.lock().unwrap();
                             if epoch == 0 || epoch != view.parts[slot].script_epoch { continue; }
+                            if !view.parts[slot].script_pages.views.is_empty() && view.parts[slot].script_slot != live.slot {
+                                view.parts[slot].script_pages.buffers.lock().unwrap().push(live);
+                                continue;
+                            }
                         }
                     }
                 }
@@ -1237,23 +1334,62 @@ impl Shared {
         }
         let mut view = self.view.lock().unwrap();
         let shown = view.watched_at.is_some_and(|at| at.elapsed() < LIVE_WATCH);
-        for (slot, v) in view.parts.iter_mut().enumerate() {
+        let count = view.parts.len().min(self.grown.load(Ordering::Acquire) as usize);
+        if count == 0 { return }
+        let start = owner.1 % count;
+        for step in 0..count {
+            let slot = (start + step) % count;
+            owner.1 = (slot + 1) % count;
+            let v = &mut view.parts[slot];
+            if v.live.is_none() {
+                let mut buffers = v.script_pages.buffers.lock().unwrap();
+                if let Some(at) = buffers.iter().position(|live| live.slot == v.script_slot) {
+                    let mut live = buffers.swap_remove(at);
+                    live.interface_current = false;
+                    v.live = Some(live);
+                }
+            }
             if (shown || v.diagnostics_lent.is_none_or(|at| at.elapsed().as_secs() >= 1))
                 && let Some(mut live) = v.live.take()
             {
                 live.refresh_interface = shown;
                 match self.live_requests.push((slot, v.script_epoch, live)) {
                     Ok(()) => v.diagnostics_lent = Some(now),
-                    Err((_, _, live)) => v.live = Some(live),
+                    Err((_, _, live)) => {
+                        v.live = Some(live);
+                        owner.1 = slot;
+                        break;
+                    }
                 }
             }
         }
     }
 
+    pub(crate) fn select_script_page(&self, part: usize, epoch: u64, slot: usize) -> bool {
+        let mut view = self.view.lock().unwrap();
+        let Some(v) = view.parts.get_mut(part) else { return false };
+        if epoch == 0 || epoch != v.script_epoch { return false; }
+        let Some(page) = v.script_pages.views.iter().find(|p| p.slot == slot) else { return false };
+        if v.script_slot == slot { return false; }
+        let next = page.last_view.lock().unwrap().take().unwrap_or_else(|| page.interface.clone());
+        let retired = v.interface.replace(next);
+        let retired = if let Some(previous) = v.script_pages.views.iter().find(|p| p.slot == v.script_slot) {
+            std::mem::replace(&mut *previous.last_view.lock().unwrap(), retired)
+        } else { retired };
+        v.script_slot = slot;
+        v.live_revisions = None;
+        v.live_control_versions = Arc::default();
+        v.edited.clear();
+        if let Some(live) = v.live.take() { v.script_pages.buffers.lock().unwrap().push(live); }
+        drop(view);
+        drop(retired);
+        true
+    }
+
     /// Formatting and journal I/O stay on Load; a busy loader cannot retain
     /// the live view's reusable audio buffer while the editor is open.
     fn drain_live_diagnostics(&self) {
-        for slot in 0..RACK_SLOTS {
+        for slot in 0..self.with_parts(|p| p.len()) {
             let pending = {
                 let mut view = self.view.lock().unwrap();
                 let v = &mut view.parts[slot];
@@ -1261,15 +1397,30 @@ impl Shared {
                 v.live_diagnostics.clone().filter(|d| d.epoch != 0 && d.epoch == v.script_epoch)
                     .zip(v.load_report.clone())
                     .map(|(diagnostics, report)| (diagnostics, report,
-                        v.instrument.as_ref().map(|i| i.path.clone()), v.program))
+                        v.instrument.clone(), v.program))
             };
-            let Some((diagnostics, previous, path, program)) = pending else { continue };
-            let runtime = serde_json::json!({"faults":diagnostics.faults,"notes":diagnostics.notes});
+            let Some((diagnostics, previous, instrument, program)) = pending else { continue };
+            let mut runtime = serde_json::json!({"faults":diagnostics.faults,"fault_occurrences_omitted":diagnostics.fault_occurrences_omitted,"notes":diagnostics.notes});
+            if let Some(instrument) = &instrument {
+                for fault in runtime["faults"].as_array_mut().into_iter().flatten() {
+                    if let Some(excerpt) = previous["runtime"]["faults"].as_array().into_iter().flatten()
+                        .find(|old| old["slot"] == fault["slot"] && old["line"] == fault["line"])
+                        .and_then(|old| old.get("source_excerpt"))
+                    {
+                        fault["source_excerpt"] = excerpt.clone();
+                        continue;
+                    }
+                    if let (Some(slot), Some(line)) = (fault["slot"].as_u64(), fault["line"].as_u64())
+                        && let Some(source) = slot.checked_sub(1).and_then(|slot| instrument.scripts.get(slot as usize))
+                        && let Some(excerpt) = crate::diagnostics::script_excerpt(source, slot as u32, line as u32, None)
+                    { fault["source_excerpt"] = excerpt; }
+                }
+            }
             if previous["runtime"] == runtime { continue; }
             let mut new_issues = Vec::new();
             for fault in runtime["faults"].as_array().into_iter().flatten() {
                 let known = previous["runtime"]["faults"].as_array().into_iter().flatten().any(|old|
-                    old["slot"] == fault["slot"] && old["line"] == fault["line"] && old["message"] == fault["message"]
+                    old["slot"] == fault["slot"] && old["line"] == fault["line"] && old["message"] == fault["message"] && old["context"] == fault["context"]
                 );
                 if !known { new_issues.push(fault.clone()); }
             }
@@ -1278,11 +1429,17 @@ impl Shared {
                     new_issues.push(serde_json::json!({"message":note}));
                 }
             }
-            let status = diagnostics.faults.iter().map(|f| format!("Slot {} line {}: {} ({}x)", f.slot, f.line, f.message, f.count))
-                .chain(diagnostics.notes.iter().map(|n| (*n).to_owned())).collect::<Vec<_>>().join("\n");
+            let omitted = (diagnostics.fault_occurrences_omitted != 0).then(|| format!("KSP fault diagnostics omitted {} executions at additional locations", diagnostics.fault_occurrences_omitted));
+            if let Some(message) = &omitted
+                && previous["runtime"]["fault_occurrences_omitted"].as_u64().unwrap_or(0) != diagnostics.fault_occurrences_omitted
+            {
+                new_issues.push(serde_json::json!({"code":"fault_diagnostics_omitted","message":message,"fault_occurrences_omitted":diagnostics.fault_occurrences_omitted}));
+            }
+            let status = diagnostics.faults.iter().map(|f| f.to_string())
+                .chain(diagnostics.notes.iter().map(|n| (*n).to_owned())).chain(omitted).collect::<Vec<_>>().join("\n");
             let load_id = previous["script_restore"]["load_id"].as_str().or_else(|| previous["load_id"].as_str()).map(str::to_owned);
             let mut report = (*previous).clone();
-            if report["status"] == "loaded" && (!diagnostics.faults.is_empty() || !diagnostics.notes.is_empty()) {
+            if report["status"] == "loaded" && (!diagnostics.faults.is_empty() || diagnostics.fault_occurrences_omitted != 0 || !diagnostics.notes.is_empty()) {
                 report["status"] = "partial".into();
             }
             report["runtime"] = runtime;
@@ -1299,7 +1456,7 @@ impl Shared {
             v.load_report = Some(report);
             v.runtime_status = status;
             drop(view);
-            if let Some(path) = path { crate::diagnostics::runtime(&path, program, slot, diagnostics.epoch, load_id.as_deref(), &new_issues); }
+            if let Some(instrument) = instrument { crate::diagnostics::runtime(&instrument.path, program, slot, diagnostics.epoch, load_id.as_deref(), &new_issues); }
         }
     }
 
@@ -1309,9 +1466,21 @@ impl Shared {
 
     /// Set script control `control` of `part`'s performance view and run its
     /// `on ui_control`; the view shows the value until the scripts report back.
+    pub(crate) fn select_control_file(&self, part: usize, epoch: u64, slot: usize, control: usize, path: &str) -> bool {
+        if path.len() > 1280 || path.chars().count() > 320 { return false }
+        let view = self.view.lock().unwrap();
+        let Some(v) = view.parts.get(part) else { return false };
+        if epoch == 0 || v.script_epoch != epoch || v.script_slot != slot
+            || !v.interface.as_ref().and_then(|u| u.controls.get(control)).is_some_and(|c| c.kind == "ui_file_selector") { return false }
+        let mut selected = FileSelection { part, epoch, slot, control, path: [0; 1280], len: path.len() };
+        selected.path[..path.len()].copy_from_slice(path.as_bytes());
+        self.file_selections.push(selected).is_ok()
+    }
+
     pub(crate) fn edit_control(&self, part: usize, control: usize, value: i32) {
+        if part >= self.grown.load(Ordering::Acquire) as usize { return }
         let mut view = self.view.lock().unwrap();
-        let v = &mut view.parts[part];
+        let Some(v) = view.parts.get_mut(part) else { return };
         let edit = Edit {
             part,
             epoch: v.script_epoch,
@@ -1331,7 +1500,7 @@ impl Shared {
     /// setting an override is idempotent.
     pub(crate) fn sync_overrides(&self, selection: &Selection) {
         let mut sent = self.sent.lock().unwrap();
-        for (slot, had) in sent.iter_mut().enumerate() {
+        for (slot, had) in sent.iter_mut().enumerate().take(self.grown.load(Ordering::Acquire) as usize) {
             let want = selection.parts.get(slot).map_or(&[][..], |p| &p.edits.0[..]);
             if want == &had[..] {
                 continue;
@@ -1351,10 +1520,11 @@ impl Shared {
     /// Queue a snapshot against this exact source. Parsing and mutation stay
     /// on the existing worker; a later source request cancels its result.
     pub(crate) fn queue_snapshot(&self, slot: usize, part: &Part, path: String) -> bool {
-        if slot >= RACK_SLOTS || !part.snapshot_base()
+        if !part.snapshot_base()
         { return false; }
         let mut request = self.snapshot_request.lock().unwrap();
-        let generation = self.generation[slot].load(Ordering::Acquire);
+        let Some(atoms) = self.part(slot) else { return false };
+        let generation = atoms.generation.load(Ordering::Acquire);
         *request = Some(SnapshotRequest { slot, source: part.source(), path, generation });
         true
     }
@@ -1380,9 +1550,9 @@ impl Shared {
 
     /// Stop `note` on whichever slot the on-screen keyboard started it.
     pub(crate) fn release_key(&self, note: u8) {
-        let owner = self.key_owners[note as usize].swap(128, Ordering::AcqRel);
-        self.played[note as usize].store(0, Ordering::Relaxed);
-        if owner <= EVERY_PART as u64
+        let was_down = self.played[note as usize].swap(0, Ordering::AcqRel) != 0;
+        let owner = self.key_owners[note as usize].load(Ordering::Acquire);
+        if was_down
             && self.keyboard.push((owner as usize, Play::Note(note, 0))).is_err()
         {
             self.panic.store(true, Ordering::Release);
@@ -1391,7 +1561,7 @@ impl Shared {
 
     fn reset_midi(&self) {
         while self.keyboard.pop().is_some() {}
-        for owner in &self.key_owners { owner.store(128, Ordering::Release); }
+        for owner in &self.key_owners { owner.store(0, Ordering::Release); }
         for lit in self.played.iter().chain(&self.heard) { lit.store(0, Ordering::Relaxed); }
         self.bend.store(8192, Ordering::Relaxed);
         self.modulation.store(0, Ordering::Relaxed);
@@ -1493,7 +1663,7 @@ impl SavedMulti {
 fn trace_effects(trace: &mut crate::diagnostics::LoadTrace, instrument: &Instrument) {
     for warning in instrument.fx.warnings() { trace.issue("effects", "unsupported_effect", warning); }
     for (group, g) in instrument.groups.iter().enumerate() {
-        for warning in crate::engine::filter::unsupported(&g.fx) {
+        for warning in crate::engine::filter::unsupported_at(&g.fx, g.amp_split_slot) {
             trace.issue("effects", "unsupported_group_effect", format!("Group {group} ({}): {warning}", g.name));
         }
     }
@@ -1502,11 +1672,12 @@ fn trace_effects(trace: &mut crate::diagnostics::LoadTrace, instrument: &Instrum
 fn drain_audio_diagnostics(params: &SamplerParams) {
     while let Some(audio) = params.shared.diagnostic_audio.pop() {
         let mut latest = params.shared.diagnostic_latest.lock().unwrap();
-        if latest.is_some_and(|old| old.block >= audio.block) { continue }
-        let previous = *latest;
-        *latest = Some(audio);
+        if latest.as_ref().is_some_and(|old| old.block >= audio.block) {
+            let _ = params.shared.diagnostic_free.force_push(audio); continue
+        }
+        let previous = latest.replace(audio.clone());
         drop(latest);
-        if previous.is_none_or(|old| (old.sample_rate, old.block_size, old.output_channels, old.offline, old.output_buses)
+        if previous.as_ref().is_none_or(|old| (old.sample_rate, old.block_size, old.output_channels, old.offline, old.output_buses)
             != (audio.sample_rate, audio.block_size, audio.output_channels, audio.offline, audio.output_buses)) {
             crate::diagnostics::event(crate::diagnostics::LogLevel::Info, "audio", "host_audio_config", serde_json::json!({
                 "instance_id":params.shared.instance_id, "sample_rate":audio.sample_rate, "block_size":audio.block_size,
@@ -1514,7 +1685,7 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
             }));
         }
         for (part, current) in audio.parts.iter().enumerate() {
-            let before = previous.map(|old| old.parts[part]).filter(|old|
+            let before = previous.as_ref().and_then(|old| old.parts.get(part)).copied().filter(|old|
                 (old.generation, old.script_epoch) == (current.generation, current.script_epoch));
             let underruns = current.underruns.saturating_sub(before.map_or(0, |p| p.underruns));
             let dropped = current.dropped_commands.saturating_sub(before.map_or(0, |p| p.dropped_commands));
@@ -1526,32 +1697,52 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
                 "reason":"Streamed frames arrived late or bounded script command queues overflowed; see the separate delta counters",
             }));
         }
+        if let Some(previous) = previous { let _ = params.shared.diagnostic_free.force_push(previous); }
     }
 }
 
-/// Constant-size snapshots, at most once per second of audio; no logging here.
+/// Worker-prepared snapshots, at most once per second of audio; no logging here.
 fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, channels: usize, offline: bool, cx: &ProcessContext) {
     if s.until_diagnostics > frames { s.until_diagnostics -= frames; return }
     s.until_diagnostics = s.rack.parts[0].rate().max(1.0) as usize;
-    let audio = AudioDiagnostics {
-        block:p.shared.blocks.load(Ordering::Relaxed), sample_rate:s.rack.parts[0].rate(),
-        block_size:frames, output_channels:channels, offline,
-        output_buses:std::array::from_fn(|bus| cx.bus_routing.output(bus).map_or(if bus == 0 { (0, channels.min(2)) } else { (0, 0) }, |r| (r.channel_start(), r.channel_count()))),
-        parts:std::array::from_fn(|part| {
-            let e = &s.rack.parts[part];
-            let [pending_commands, pending_writes, pending_releases] = e.pending_work();
-            PartDiagnostics {
-                generation:s.installed_generation[part], script_epoch:s.script_epoch[part],
-                voices:e.active_voices(), audible:e.audible_voices(), underruns:e.underruns(), dropped_commands:e.dropped_commands(),
-                held_keys:std::array::from_fn(|channel| std::array::from_fn(|half| (0..64).fold(0, |keys, note|
-                    keys | (u64::from(e.key_down(channel as u8, (half * 64 + note) as u8)) << note)))),
-                sustain_cc:std::array::from_fn(|channel| e.cc_state()[channel][64]),
-                sostenuto_cc:std::array::from_fn(|channel| e.cc_state()[channel][66]),
-                pending_commands, pending_writes, pending_releases,
-            }
-        }),
+    if p.shared.discard.is_full() { return }
+    // The callback is the only producer. Make room before taking a free
+    // buffer, because the worker may have recycled buffers while this queue
+    // still contains two unread snapshots.
+    let spare = if p.shared.diagnostic_audio.is_full() {
+        let old = p.shared.diagnostic_audio.pop();
+        if old.is_some() { p.shared.diagnostic_dropped.fetch_add(1, Ordering::Relaxed); }
+        old.or_else(|| p.shared.diagnostic_free.pop())
+    } else {
+        p.shared.diagnostic_free.pop().or_else(|| {
+            let old = p.shared.diagnostic_audio.pop();
+            if old.is_some() { p.shared.diagnostic_dropped.fetch_add(1, Ordering::Relaxed); }
+            old
+        })
     };
-    if p.shared.diagnostic_audio.force_push(audio).is_some() { p.shared.diagnostic_dropped.fetch_add(1, Ordering::Relaxed); }
+    let Some(mut spare) = spare else { return };
+    if spare.parts.len() != s.rack.parts.len() {
+        if p.shared.discard.push(Retired { diagnostic: Some(spare), ..Default::default() }).is_err() {
+            unreachable!("diagnostic spare must have retirement space");
+        }
+        return;
+    }
+    let audio = &mut s.diagnostic;
+    audio.block = p.shared.blocks.load(Ordering::Relaxed); audio.sample_rate = s.rack.parts[0].rate();
+    audio.block_size = frames; audio.output_channels = channels; audio.offline = offline;
+    audio.output_buses = std::array::from_fn(|bus| cx.bus_routing.output(bus).map_or(if bus == 0 { (0, channels.min(2)) } else { (0, 0) }, |r| (r.channel_start(), r.channel_count())));
+    for (part, current) in audio.parts.iter_mut().enumerate() {
+        let e = &s.rack.parts[part]; let [pending_commands, pending_writes, pending_releases] = e.pending_work();
+        *current = PartDiagnostics { generation:s.installed_generation[part], script_epoch:s.script_epoch[part],
+            voices:e.active_voices(), audible:e.audible_voices(), underruns:e.underruns(), dropped_commands:e.dropped_commands(),
+            held_keys:std::array::from_fn(|channel| std::array::from_fn(|half| (0..64).fold(0, |keys, note|
+                keys | (u64::from(e.key_down(channel as u8, (half * 64 + note) as u8)) << note)))),
+            sustain_cc:std::array::from_fn(|channel| e.cc_state()[channel][64]),
+            sostenuto_cc:std::array::from_fn(|channel| e.cc_state()[channel][66]),
+            pending_commands, pending_writes, pending_releases };
+    }
+    std::mem::swap(&mut s.diagnostic, &mut spare);
+    p.shared.diagnostic_audio.push(spare).ok().unwrap();
 }
 
 pub(crate) struct SnapshotRequest {
@@ -1563,7 +1754,11 @@ pub(crate) struct SnapshotRequest {
 
 /// Validate on the loader before replacing any saved or playing state.
 fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, String), Arc<Instrument>)> {
-    let request = params.shared.snapshot_request.lock().unwrap().take()?;
+    let request = {
+        let mut pending = params.shared.snapshot_request.lock().unwrap();
+        if pending.as_ref()?.slot >= params.shared.grown.load(Ordering::Acquire) as usize { return None }
+        pending.take()?
+    };
     let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&request.source.0), request.source.1, Some(request.slot));
     trace.detail("instance_id", params.shared.instance_id);
     trace.detail("operation", "snapshot_validation");
@@ -1571,7 +1766,7 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
     trace.detail("scope", "container parsing, explicit base matching and supported state import; audio not installed");
     trace.stage("snapshot_parse_and_validation");
     let current = || {
-        params.shared.generation[request.slot].load(Ordering::Acquire) == request.generation
+        params.shared.part(request.slot).unwrap().generation.load(Ordering::Acquire) == request.generation
             && params.selection.read().unwrap().parts.get(request.slot)
                 .is_some_and(|p| p.matches_source(&request.source))
             && params.shared.snapshot_request.lock().unwrap().is_none()
@@ -1593,7 +1788,7 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
             let mut selection = params.selection.write().unwrap();
             let pending = params.shared.snapshot_request.lock().unwrap();
             let valid = pending.is_none()
-                && params.shared.generation[request.slot].load(Ordering::Acquire) == request.generation;
+                && params.shared.part(request.slot).unwrap().generation.load(Ordering::Acquire) == request.generation;
             let Some(part) = selection.parts.get_mut(request.slot).filter(|p| valid && p.matches_source(&request.source)) else {
                 drop(pending);
                 drop(selection);
@@ -1611,7 +1806,7 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
         Err(error) => {
             let selection = params.selection.read().unwrap();
             let pending = params.shared.snapshot_request.lock().unwrap();
-            let valid = params.shared.generation[request.slot].load(Ordering::Acquire) == request.generation
+            let valid = params.shared.part(request.slot).unwrap().generation.load(Ordering::Acquire) == request.generation
                 && selection.parts.get(request.slot).is_some_and(|p| p.matches_source(&request.source))
                 && pending.is_none();
             if !valid {
@@ -1640,6 +1835,7 @@ impl BackgroundTask for Load {
     const SERIALIZED: bool = true;
     fn run(self, params: &SamplerParams) {
         drain_audio_diagnostics(params);
+        params.shared.flush_ready();
         load_arrays(params);
         let mut freed = false;
         while params.shared.discard.pop().is_some() {
@@ -1676,13 +1872,7 @@ impl BackgroundTask for Load {
                     (parts, status)
                 })
             }
-            .and_then(|m| {
-                anyhow::ensure!(
-                    m.0.len() <= RACK_SLOTS,
-                    "Multi exceeds the 16-instrument rack limit"
-                );
-                Ok(m)
-            });
+            ;
             if params.shared.multi_request.lock().unwrap().is_some() {
                 return;
             }
@@ -1710,6 +1900,8 @@ impl BackgroundTask for Load {
         }
         let prepared_snapshot = prepare_snapshot(params);
         let selection = params.selection.read().unwrap().clone();
+        params.shared.ensure_parts(selection.parts.len());
+        params.shared.prepare_growth();
         params
             .shared
             .midi_thru
@@ -1747,7 +1939,8 @@ impl BackgroundTask for Load {
                 .midi_thru
                 .store(current.midi_thru, Ordering::Release);
         }
-        for slot in 0..RACK_SLOTS {
+        for slot in 0..params.shared.grown.load(Ordering::Acquire) as usize {
+            let atoms = params.shared.part(slot).unwrap();
             let part = selection.parts.get(slot).cloned().unwrap_or_default();
             let target = part.source();
             let streaming = part.streaming(selection.streaming);
@@ -1770,11 +1963,12 @@ impl BackgroundTask for Load {
                 trace.stage("scripts");
                 let (script, snapshot, errors) =
                     scripts(&instrument, &part.script_state, &part.ir_settings, &part.engine_state, params.shared.rate());
-                for e in &errors { trace.issue("scripts", "initialization_failed", e); }
+                for e in &errors { trace.script_issue("initialization_failed", e, &instrument.scripts); }
                 if let Some(rt) = script.as_deref() {
-                    for e in rt.diagnostics() { trace.issue("scripts", crate::diagnostics::code(&e), e); }
+                    for e in rt.diagnostics() { trace.script_issue(crate::diagnostics::code(&e), e, &instrument.scripts); }
                 }
-                let live = script.as_deref().map(|rt| Box::new(rt.live()));
+                let live = script.as_deref().map(first_script_live);
+                let pages = script_pages(script.as_deref());
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
                 let fx_rate = {
                     let view = params.shared.view.lock().unwrap();
@@ -1789,6 +1983,8 @@ impl BackgroundTask for Load {
                 let interface_status = errors.join("\n");
                 let mut view = params.shared.view.lock().unwrap();
                 let epoch = next_epoch(&mut view, slot, snapshot, live);
+                view.parts[slot].script_pages = pages;
+                if let Some(selected) = view.parts[slot].live.as_ref().map(|live| live.slot) { view.parts[slot].script_slot = selected; }
                 view.parts[slot].script_state = part.script_state.clone();
                 view.parts[slot].ir_settings = part.ir_settings.clone();
                 view.parts[slot].engine_state = part.engine_state.clone().into();
@@ -1802,15 +1998,15 @@ impl BackgroundTask for Load {
                 } else { view.parts[slot].load_report = Some(report); }
                 if let Some(fx) = fx {
                     view.parts[slot].irs = irs;
-                    let _ = params.shared.ready.force_push((
+                    let _ = params.shared.publish_part((
                         slot,
-                        params.shared.generation[slot].load(Ordering::Acquire),
+                        atoms.generation.load(Ordering::Acquire),
                         Handoff::Fx(fx),
                     ));
                 }
-                let _ = params.shared.ready.force_push((
+                let _ = params.shared.publish_part((
                     slot,
-                    params.shared.generation[slot].load(Ordering::Acquire),
+                    atoms.generation.load(Ordering::Acquire),
                     Handoff::Script { script, epoch },
                 ));
                 continue;
@@ -1830,9 +2026,10 @@ impl BackgroundTask for Load {
                 v.status = "Loading import…".into();
                 v.load_report = None;
                 v.runtime_status.clear();
-                params.shared.load_progress[slot].store(0, Ordering::Relaxed);
+                atoms.load_progress.store(0, Ordering::Relaxed);
                 v.loading = true;
                 v.script_epoch = 0;
+                v.script_pages = Arc::default();
                 v.edited.clear();
                 v.snapshot = None;
                 v.live = None;
@@ -1841,14 +2038,14 @@ impl BackgroundTask for Load {
                 v.live_diagnostics = None;
                 v.diagnostics_dirty = false;
             };
-            let generation = params.shared.generation[slot].fetch_add(1, Ordering::AcqRel) + 1;
+            let generation = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
             let canceled = || {
                 let current = params.selection.read().unwrap();
                 current.parts.get(slot).is_none_or(|p| {
                     !p.matches_source(&target)
                         || p.streaming != part.streaming || p.streaming(current.streaming) != streaming
                 })
-                    || params.shared.generation[slot].load(Ordering::Acquire) != generation
+                    || atoms.generation.load(Ordering::Acquire) != generation
             };
             if part.path.is_empty() {
                 params.shared.view.lock().unwrap().parts[slot] = PartView {
@@ -1856,7 +2053,7 @@ impl BackgroundTask for Load {
                     streaming,
                     ..Default::default()
                 };
-                let _ = params.shared.ready.force_push((
+                let _ = params.shared.publish_part((
                     slot,
                     generation,
                     Handoff::Part {
@@ -1907,7 +2104,7 @@ impl BackgroundTask for Load {
                 for name in &instrument.missing_samples { trace.issue("samples", "missing", name); }
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
                 // Progress by phase: parsed 5%, scripts 10%, the bank the rest.
-                let progress = &params.shared.load_progress[slot];
+                let progress = &atoms.load_progress;
                 progress.fetch_max(crate::engine::LOAD_DONE / 20, Ordering::Relaxed);
                 set_stage(&mut trace, "scripts_and_sample_headers");
                 let ((script, snapshot, script_errors), bare) = std::thread::scope(|scope| {
@@ -1919,9 +2116,9 @@ impl BackgroundTask for Load {
                     let scripts = scripts.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
                     (scripts, bare)
                 });
-                for e in script_errors { trace.issue("scripts", "initialization_failed", e); }
+                for e in script_errors { trace.script_issue("initialization_failed", e, &instrument.scripts); }
                 if let Some(rt) = script.as_deref() {
-                    for d in rt.diagnostics() { trace.issue("scripts", crate::diagnostics::code(&d), d); }
+                    for d in rt.diagnostics() { trace.script_issue(crate::diagnostics::code(&d), d, &instrument.scripts); }
                 }
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
                 progress.fetch_max(crate::engine::LOAD_DONE / 10, Ordering::Relaxed);
@@ -1988,12 +2185,13 @@ impl BackgroundTask for Load {
             // Keep both outside the editor's view lock, including controller patches.
             if result.is_ok() { set_stage(&mut trace, "effects"); }
             let result = result.map(|(instrument, bank, script, snapshot, preload, art)| {
-                let live = script.as_deref().map(|rt| Box::new(rt.live()));
+                let live = script.as_deref().map(first_script_live);
+                let pages = script_pages(script.as_deref());
                 let rate = params.shared.rate();
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
                 trace_effects(&mut trace, &instrument);
                 let fx = crate::engine::effects(&instrument, script.as_deref(), rate as f32);
-                (instrument, bank, script, snapshot, preload, art, live, fx, rate, irs)
+                (instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs)
             });
             if canceled() {
                 let report = trace.finish("canceled");
@@ -2003,12 +2201,13 @@ impl BackgroundTask for Load {
                 continue;
             }
             let status = match &result {
-                Ok((_, bank, _, _, _, _, _, _, _, _)) => {
+                Ok((_, bank, _, _, _, _, _, _, _, _, _)) => {
                     if let Some(b) = bank.as_deref() {
                         trace.detail("samples_loaded", b.sample_count());
                         trace.detail("samples_streamed", b.streamed_samples());
                         trace.detail("zones_playable", b.zones().len());
                         trace.detail("zones_skipped", b.skipped_zones);
+                        trace.detail("zone_skip_counts", serde_json::json!(b.zone_skip_counts));
                         trace.detail("resident_bytes", b.bytes);
                         if let Some(w) = &b.warning { trace.issue("samples", "streaming_warning", w); }
                         for e in &b.issues { trace.issue("samples", "zone_skipped", e); }
@@ -2027,12 +2226,14 @@ impl BackgroundTask for Load {
             view.parts[slot].runtime_status.clear();
             view.parts[slot].diagnostics_lent = None;
             match result {
-                Ok((instrument, bank, script, snapshot, preload, art, live, fx, rate, irs)) => {
+                Ok((instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs)) => {
                     let epoch = if script.is_some() {
                         next_epoch(&mut view, slot, snapshot, live)
                     } else {
                         0
                     };
+                    view.parts[slot].script_pages = pages;
+                    if let Some(selected) = view.parts[slot].live.as_ref().map(|live| live.slot) { view.parts[slot].script_slot = selected; }
                     let mut bank = bank;
                     let residency = bank.as_mut().and_then(|b| b.take_residency());
                     params.shared.residency.lock().unwrap()[slot] =
@@ -2049,7 +2250,7 @@ impl BackgroundTask for Load {
                     });
                     v.fx_rate = rate;
                     v.irs = irs;
-                    let _ = params.shared.ready.force_push((
+                    let _ = params.shared.publish_part((
                         slot,
                         generation,
                         Handoff::Part {
@@ -2072,14 +2273,15 @@ impl BackgroundTask for Load {
                         trace.stage("artwork");
                         let interface = interface.as_deref();
                         let wallpaper = artwork::performance(&instrument, interface);
-                        let names: Vec<_> = interface.into_iter().flat_map(artwork::picture_names).collect();
+                        let pages = params.shared.view.lock().unwrap().parts[slot].script_pages.clone();
+                        let names: Vec<_> = interface.into_iter().chain(pages.views.iter().map(|p| p.interface.as_ref())).flat_map(artwork::picture_names).collect();
                         let (pictures, errors) = artwork::pictures_report(&instrument.path, names.iter().map(|name| name.as_ref()));
                         for e in errors { trace.issue("artwork", crate::diagnostics::code(&e), e); }
                         if let Err(e) = &wallpaper { trace.issue("artwork", crate::diagnostics::code(e), e); }
                         trace.detail("pictures_loaded", pictures.len());
                         trace.detail("performance_view", interface.is_some_and(|u| u.performance));
                         trace.detail("controls", interface.map_or(0, |u| u.controls.len()));
-                        for warning in interface.into_iter().flat_map(crate::ui::font_fallbacks) {
+                        for warning in interface.into_iter().chain(pages.views.iter().map(|p| p.interface.as_ref())).flat_map(crate::ui::font_fallbacks) {
                             trace.issue("ui", "font_fallback", warning);
                         }
                         for c in interface.into_iter().flat_map(|u| &u.controls) {
@@ -2125,6 +2327,7 @@ impl BackgroundTask for Load {
                             trace.detail("resident_bytes", bank.bytes);
                             trace.detail("samples_loaded", bank.sample_count());
                             trace.detail("zones_skipped", bank.skipped_zones);
+                            trace.detail("zone_skip_counts", serde_json::json!(bank.zone_skip_counts));
                             if let Some(w) = &bank.warning { trace.issue("samples", "streaming_warning", w); }
                             for e in &bank.issues { trace.issue("samples", "zone_skipped", e); }
                             "loaded"
@@ -2144,7 +2347,7 @@ impl BackgroundTask for Load {
                             let residency = bank.take_residency();
                             (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
                             let bank = Handoff::Bank(Box::new(bank));
-                            let _ = params.shared.ready.force_push((slot, generation, bank));
+                            let _ = params.shared.publish_part((slot, generation, bank));
                             // After the bank in the queue: its heads resize the full bank.
                             params.shared.residency.lock().unwrap()[slot] =
                                 residency.map(|r| (generation, r));
@@ -2187,6 +2390,7 @@ impl BackgroundTask for Load {
                                 trace.detail("resident_bytes", bank.bytes);
                                 trace.detail("samples_loaded", bank.sample_count());
                                 trace.detail("zones_skipped", bank.skipped_zones);
+                                trace.detail("zone_skip_counts", serde_json::json!(bank.zone_skip_counts));
                                 if let Some(w) = &bank.warning { trace.issue("samples", "streaming_warning", w); }
                                 for e in &bank.issues { trace.issue("samples", "zone_skipped", e); }
                                 "loaded"
@@ -2207,7 +2411,7 @@ impl BackgroundTask for Load {
                                 params.shared.residency.lock().unwrap()[slot] = None;
                                 (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
                                 let bank = Handoff::Bank(Box::new(bank));
-                                let _ = params.shared.ready.force_push((slot, generation, bank));
+                                let _ = params.shared.publish_part((slot, generation, bank));
                             }
                             Err(e) => {
                                 v.status = v.status.replace(" · loading into RAM…", "");
@@ -2225,9 +2429,13 @@ impl BackgroundTask for Load {
         }
         load_irs(params);
         load_arrays(params);
+        if params.shared.diagnostic_free.is_empty() {
+            let count = params.shared.grown.load(Ordering::Acquire) as usize;
+            for _ in 0..2 { let _ = params.shared.diagnostic_free.force_push(AudioDiagnostics::with_parts(count)); }
+        }
         // The host changed sample rate since these effects were built: rebuild them here, off the audio thread.
         let rate = params.shared.rate();
-        for slot in 0..RACK_SLOTS {
+        for slot in 0..params.shared.grown.load(Ordering::Acquire) as usize {
             let stale = {
                 let view = params.shared.view.lock().unwrap();
                 let v = &view.parts[slot];
@@ -2239,9 +2447,9 @@ impl BackgroundTask for Load {
             let Some((instrument, irs)) = stale else { continue };
             let fx = instrument.fx.processor_with(rate as f32, MAX_BLOCK, &irs);
             params.shared.view.lock().unwrap().parts[slot].fx_rate = rate;
-            let _ = params.shared.ready.force_push((
+            let _ = params.shared.publish_part((
                 slot,
-                params.shared.generation[slot].load(Ordering::Acquire),
+                params.shared.part(slot).unwrap().generation.load(Ordering::Acquire),
                 Handoff::Fx(fx),
             ));
         }
@@ -2310,7 +2518,7 @@ impl BackgroundTask for Load {
         params.shared.drain_live_diagnostics();
         smart_memory(&params.shared);
         align(params);
-        for slot in 0..RACK_SLOTS {
+        for slot in 0..params.shared.grown.load(Ordering::Acquire) as usize {
             let mut view = params.shared.view.lock().unwrap();
             // Once a second: saving is all it is for, and big script tables
             // cost the audio thread a while to copy.
@@ -2327,24 +2535,23 @@ impl BackgroundTask for Load {
         }
     }
 }
-#[derive(Default)]
 pub struct Dsp {
     /// Boxed: the rack is ~300 KB, too big for a host thread's stack.
     rack: Box<Rack>,
     until_poll: usize,
-    audition_left: [usize; RACK_SLOTS],
+    audition_left: Vec<usize>,
     /// Epoch of each slot's installed runtime, returned with its persistence snapshots.
-    script_epoch: [u64; RACK_SLOTS],
-    installed_generation: [u64; RACK_SLOTS],
+    script_epoch: Vec<u64>,
+    installed_generation: Vec<u64>,
     /// The lent live view and persistence snapshot being refreshed, a budget
     /// a block: slot, epoch and [`Runtime::changes`] at the start, buffer, progress.
     live: Option<Lent<Box<Live>>>,
     snapshot: Option<Lent<Box<PersistenceSnapshot>>>,
     /// Per slot, epoch and changes the buffers last refreshed whole hold:
     /// while the scripts do not run they are current and need no refresh.
-    live_seen: [(u64, u64); RACK_SLOTS],
-    snapshot_seen: [(u64, u64); RACK_SLOTS],
-    routers: [Router; RACK_SLOTS],
+    live_seen: Vec<(u64, u64)>,
+    snapshot_seen: Vec<(u64, u64)>,
+    routers: Vec<Router>,
     /// The channel each on-screen key started on, so its note-off follows it
     /// even if the part's instrument changed while the key was held.
     key_channels: KeyChannels,
@@ -2356,13 +2563,67 @@ pub struct Dsp {
     /// Notes held back so every part's attacks land on the grid.
     align: Align,
     until_diagnostics: usize,
+    shared_parts: Vec<Arc<PartShared>>,
+    diagnostic: AudioDiagnostics,
     // Created off-thread with the rack, never acquired or replaced by reset/process.
     _diagnostics: crate::diagnostics::DiagnosticLease,
 }
-struct KeySlots([u32; 128]);
+impl Default for Dsp {
+    fn default() -> Self {
+        Self { rack: Box::default(), until_poll: 0, audition_left: vec![0; RACK_SLOTS],
+            script_epoch: vec![0; RACK_SLOTS], installed_generation: vec![0; RACK_SLOTS],
+            live: None, snapshot: None, live_seen: vec![(0, 0); RACK_SLOTS],
+            snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
+            key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
+            align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
+            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), _diagnostics: crate::diagnostics::acquire() }
+    }
+}
+
+/// Every allocation needed by a larger rack is made on the serialized loader.
+/// Adoption swaps existing voices, routers and held notes into these buffers;
+/// the emptied containers return to that worker for destruction.
+struct PreparedGrowth {
+    rack: Box<Rack>, align: Align, routers: Vec<Router>,
+    audition_left: Vec<usize>, script_epoch: Vec<u64>, installed_generation: Vec<u64>,
+    live_seen: Vec<(u64, u64)>, snapshot_seen: Vec<(u64, u64)>,
+    key_slots: KeySlots, shared_parts: Vec<Arc<PartShared>>, diagnostic: AudioDiagnostics,
+}
+impl PreparedGrowth {
+    fn new(parts: Vec<Arc<PartShared>>, rate: f64) -> Self {
+        let count = parts.len();
+        let mut rack = Box::new(Rack::with_slots(count)); rack.reset(rate);
+        Self { rack, align: Align::with_slots(count), routers: (0..count).map(|_| Router::default()).collect(),
+            audition_left: vec![0; count], script_epoch: vec![0; count], installed_generation: vec![0; count],
+            live_seen: vec![(0, 0); count], snapshot_seen: vec![(0, 0); count],
+            key_slots: KeySlots(std::array::from_fn(|_| vec![false; count])), shared_parts: parts,
+            diagnostic: AudioDiagnostics::with_parts(count) }
+    }
+    fn adopt(&mut self, dsp: &mut Dsp) {
+        let rate = dsp.rack.parts[0].rate();
+        for engine in &mut self.rack.parts[dsp.rack.parts.len()..] { engine.reset(rate); }
+        dsp.rack.adopt_parts(&mut self.rack); dsp.align.adopt_parts(&mut self.align);
+        macro_rules! preserve { ($($field:ident),*) => {$({
+            for (old, new) in dsp.$field.iter_mut().zip(&mut self.$field) { std::mem::swap(old, new); }
+            std::mem::swap(&mut dsp.$field, &mut self.$field);
+        })*}; }
+        preserve!(routers, audition_left, script_epoch, installed_generation, live_seen, snapshot_seen);
+        for (old, new) in dsp.key_slots.0.iter_mut().zip(&mut self.key_slots.0) {
+            new[..old.len()].copy_from_slice(old); std::mem::swap(old, new);
+        }
+        std::mem::swap(&mut dsp.shared_parts, &mut self.shared_parts);
+        std::mem::swap(&mut dsp.diagnostic, &mut self.diagnostic);
+    }
+}
+
+fn part_atoms<'a>(parts: &'a [Arc<PartShared>], shared: &'a Shared, slot: usize) -> Option<&'a PartShared> {
+    parts.get(slot).or_else(|| shared.initial_parts.get(slot)).map(Arc::as_ref)
+}
+
+struct KeySlots([Vec<bool>; 128]);
 impl Default for KeySlots {
     fn default() -> Self {
-        Self([0; 128])
+        Self(std::array::from_fn(|_| vec![false; RACK_SLOTS]))
     }
 }
 struct KeyChannels([u8; 128]);
@@ -2420,11 +2681,11 @@ fn smart_memory(shared: &Shared) {
     }
     for (slot, entry) in residency.iter_mut().enumerate() {
         let Some((generation, r)) = entry else { continue };
-        if shared.generation[slot].load(Ordering::Acquire) != *generation {
+        if shared.part(slot).unwrap().generation.load(Ordering::Acquire) != *generation {
             *entry = None;
             continue;
         }
-        if let Some(heads) = r.poll(shared.underruns[slot].load(Ordering::Relaxed))
+        if let Some(heads) = r.poll(shared.part(slot).unwrap().underruns.load(Ordering::Relaxed))
             && let Err((.., Handoff::Heads(heads))) = shared.ready.push((slot, *generation, Handoff::Heads(heads)))
         {
             r.returned(heads);
@@ -2457,10 +2718,70 @@ fn route(params: &SamplerParams) {
     }
 }
 impl Shared {
+    /// Editor/loader only. Audio reads its prepared registry without this lock.
+    pub(crate) fn with_parts<T>(&self, read: impl FnOnce(&[Arc<PartShared>]) -> T) -> T {
+        read(&self.parts.lock().unwrap())
+    }
+
+    pub(crate) fn part(&self, slot: usize) -> Option<Arc<PartShared>> {
+        self.parts.lock().unwrap().get(slot).cloned()
+    }
+
+    /// Prepare metadata for newly appended/restored rows off the audio thread.
+    pub(crate) fn ensure_parts(&self, count: usize) {
+        let mut parts = self.parts.lock().unwrap();
+        while parts.len() < count { parts.push(Arc::default()); }
+        drop(parts);
+        let mut view = self.view.lock().unwrap();
+        if view.parts.len() < count { view.parts.resize_with(count, PartView::default); }
+        drop(view);
+        let mut sent = self.sent.lock().unwrap();
+        while sent.len() < count { sent.push(Vec::new()); }
+        drop(sent);
+        let mut residency = self.residency.lock().unwrap();
+        while residency.len() < count { residency.push(None); }
+    }
+
+    /// Loader only. Keep different parts when the bounded callback queue is
+    /// full; replacing a source retires its stale pending payloads here.
+    fn publish_part(&self, item: (usize, u64, Handoff)) {
+        let mut pending = self.pending_ready.lock().unwrap();
+        let (slot, generation, next) = &item;
+        pending.retain(|(old_slot, old_generation, old)| old_slot != slot
+            || (old_generation == generation && !matches!(next, Handoff::Part { .. })
+                && std::mem::discriminant(old) != std::mem::discriminant(next)));
+        pending.push_back(item);
+        self.flush_ready_inner(&mut pending);
+    }
+
+    fn flush_ready(&self) {
+        self.flush_ready_inner(&mut self.pending_ready.lock().unwrap());
+    }
+
+    fn flush_ready_inner(&self, pending: &mut std::collections::VecDeque<(usize, u64, Handoff)>) {
+        while let Some(item) = pending.pop_front() {
+            if self.part(item.0).is_none_or(|p| p.generation.load(Ordering::Acquire) != item.1) { continue }
+            if let Err(item) = self.ready.push(item) { pending.push_front(item); break }
+        }
+    }
+
+    /// Loader only: all larger callback storage is prepared and retired here.
+    fn prepare_growth(&self) {
+        let count = self.with_parts(|parts| parts.len());
+        if count <= self.growth_prepared.load(Ordering::Acquire) as usize { return }
+        let parts = self.with_parts(|parts| parts.to_vec());
+        let count = parts.len();
+        let prepared = Box::new(PreparedGrowth::new(parts, self.rate()));
+        let _ = self.growth.force_push(prepared);
+        self.growth_prepared.store(count as u64, Ordering::Release);
+        while self.diagnostic_free.pop().is_some() {}
+        for _ in 0..2 { let _ = self.diagnostic_free.force_push(AudioDiagnostics::with_parts(count)); }
+    }
+
     /// [`routing::apply`] with what the audio thread last saw the parts'
     /// instruments route past their outputs, named from the instruments.
     pub(crate) fn reroute(&self, selection: &mut Selection) {
-        let mics: routing::Mics = self.mics.each_ref().map(|m| m.each_ref().map(|c| c.load(Ordering::Relaxed)));
+        let mics = self.with_parts(|parts| parts.iter().map(|p| p.mics.each_ref().map(|c| c.load(Ordering::Relaxed))).collect::<Vec<_>>());
         let view = self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         routing::apply(selection, &mics, |slot, code| {
             let instrument = view.parts.get(slot).and_then(|v| v.instrument.as_deref());
@@ -2526,7 +2847,7 @@ fn align(params: &SamplerParams) {
     }
     let selection = params.selection.read().unwrap().clone();
     if selection.auto_align {
-        for (slot, part) in selection.parts.iter().enumerate().take(RACK_SLOTS) {
+        for (slot, part) in selection.parts.iter().enumerate() {
             if part.path.is_empty() || part.timing.measured(&part.path, part.program) {
                 continue;
             }
@@ -2537,10 +2858,12 @@ fn align(params: &SamplerParams) {
                 v.instrument.clone().filter(|i| ready && i.path == Path::new(&part.path) && v.program == part.program)
             };
             let Some(instrument) = instrument else { continue };
-            if shared.measure.busy[slot].swap(true, Ordering::AcqRel) {
+            let atoms = shared.part(slot).unwrap();
+            if atoms.measuring.swap(true, Ordering::AcqRel) {
                 continue;
             }
             let measure = shared.measure.clone();
+            let measured_part = atoms.clone();
             let source = timing::source(&part.path, part.program);
             let spawned = std::thread::Builder::new().name("kontra-timing".into()).spawn(move || {
                 let result = (|| -> anyhow::Result<Timing> {
@@ -2553,17 +2876,17 @@ fn align(params: &SamplerParams) {
                     Ok(Timing { source: source.clone(), loaded, arts, declared, ..Timing::default() })
                 })();
                 measure.done.lock().unwrap().push((slot, source, result.map_err(|e| format!("{e:#}"))));
-                measure.busy[slot].store(false, Ordering::Release);
+                measured_part.measuring.store(false, Ordering::Release);
             });
             if spawned.is_err() {
-                shared.measure.busy[slot].store(false, Ordering::Release);
+                atoms.measuring.store(false, Ordering::Release);
             }
         }
     }
     let plan = plan(&selection);
     let mut published = shared.published.lock().unwrap();
     let (sent, waiting) = &mut *published;
-    if *sent == Some(plan) {
+    if sent.as_ref() == Some(&plan) {
         *waiting = None;
         return;
     }
@@ -2580,10 +2903,10 @@ fn align(params: &SamplerParams) {
         }
     };
     if settled {
-        *sent = Some(plan);
+        *sent = Some(plan.clone());
         *waiting = None;
-        let _ = shared.plan.force_push(plan);
         shared.reported.store(told(&plan).to_bits(), Ordering::Relaxed);
+        let _ = shared.plan.force_push(plan);
     }
 }
 fn timing_for(p: &Part) -> std::borrow::Cow<'_, Timing> {
@@ -2601,20 +2924,20 @@ fn timing_for(p: &Part) -> std::borrow::Cow<'_, Timing> {
 
 /// What the audio thread aligns by, from the persisted rack.
 pub(crate) fn plan(selection: &Selection) -> Plan {
-    let parts = || selection.parts.iter().take(RACK_SLOTS).filter(|p| !p.path.is_empty());
+    let parts = || selection.parts.iter().filter(|p| !p.path.is_empty());
     let latency_ms = timing::reported_ms(parts().map(|p| timing_for(p).latest()));
     Plan {
         on: selection.auto_align,
         transport_only: selection.align_transport_only,
         latency_ms,
-        parts: std::array::from_fn(|n| {
+        parts: (0..selection.parts.len().max(RACK_SLOTS)).map(|n| {
             selection.parts.get(n).filter(|p| !p.path.is_empty()).map_or_else(Holds::default, |p| {
                 let a = &p.articulate;
                 let names: Vec<&str> =
                     if a.source == p.path { a.articulations.iter().map(|a| a.name.as_str()).collect() } else { Vec::new() };
                 Holds::of(timing_for(p).as_ref(), &names, latency_ms)
             })
-        }),
+        }).collect(),
     }
 }
 fn bank_status(bank: &Bank) -> String {
@@ -2626,8 +2949,8 @@ fn bank_status(bank: &Bank) -> String {
     );
     if bank.skipped_zones > 0 {
         status += &format!(
-            " · {} zones skipped (missing or unreadable)",
-            bank.skipped_zones
+            " · {} zones skipped ({})",
+            bank.skipped_zones, bank.zone_skip_counts.summary()
         );
     }
     if let Some(warning) = &bank.warning {
@@ -2657,7 +2980,7 @@ impl PluginLogic for Sampler {
         s.until_poll = 0;
         s.until_diagnostics = 0;
         s.audition_left.fill(0);
-        s.key_slots.0.fill(0);
+        for row in &mut s.key_slots.0 { row.fill(false); }
         s.align.clear();
         for router in &mut s.routers { router.reset_midi(); }
         // The voices are gone, and the host's releases for them may be too.
@@ -2675,6 +2998,14 @@ impl PluginLogic for Sampler {
         cx: &mut ProcessContext,
     ) -> ProcessStatus {
         let started = Instant::now();
+        if !p.shared.discard.is_full() && let Some(mut growth) = p.shared.growth.pop() {
+            if growth.rack.parts.len() > s.rack.parts.len() { growth.adopt(s); }
+            p.shared.grown.store(s.rack.parts.len() as u64, Ordering::Release);
+            p.shared.discard.push(Retired { growth: Some(growth), ..Default::default() }).ok().unwrap();
+            // Separate queues have no cross-queue ordering: only this
+            // acknowledgment permits the loader to publish new-slot work.
+            if let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
+        }
         let rate = s.rack.parts[0].rate();
         let frames = b.num_samples();
         // Offline, a render waits for the disk and keeps every tail; live,
@@ -2687,8 +3018,9 @@ impl PluginLogic for Sampler {
             if let Some(tasks) = cx.tasks::<Load>() {
                 tasks.spawn_coalescing(Load);
             }
-            for (engine, mics) in s.rack.parts.iter().zip(&p.shared.mics) {
-                for (m, out) in mics.iter().zip(outs_of(engine)) {
+            for (slot, engine) in s.rack.parts.iter().enumerate() {
+                let atoms = part_atoms(&s.shared_parts, &p.shared, slot).unwrap();
+                for (m, out) in atoms.mics.iter().zip(outs_of(engine)) {
                     m.store(out, Ordering::Relaxed);
                 }
             }
@@ -2696,18 +3028,19 @@ impl PluginLogic for Sampler {
         } else {
             s.until_poll -= frames;
         }
-        if let Some(controls) = p.shared.controls.pop() {
-            s.rack.set_controls(controls);
+        if !p.shared.discard.is_full() && let Some(controls) = p.shared.controls.pop() {
+            s.rack.set_controls(&controls);
+            p.shared.discard.push(Retired { controls: Some(controls), ..Default::default() }).ok().unwrap();
         }
-        if let Some(plan) = p.shared.plan.pop() {
-            s.align.plan = plan;
+        if !p.shared.discard.is_full() && let Some(plan) = p.shared.plan.pop() {
+            let old = std::mem::replace(&mut s.align.plan, plan);
+            p.shared.discard.push(Retired { plan: Some(old), ..Default::default() }).ok().unwrap();
         }
         // Held back only while aligning; once not, what was held plays at once.
         let holding = s.align.holding(cx.transport.playing);
-        if let Some(routes) = p.shared.routes.pop() {
-            for (r, route) in s.routers.iter_mut().zip(routes) {
-                r.set_route(route);
-            }
+        if !p.shared.discard.is_full() && let Some(routes) = p.shared.routes.pop() {
+            for (r, route) in s.routers.iter_mut().zip(routes.iter().copied()) { r.set_route(route); }
+            p.shared.discard.push(Retired { routes: Some(routes), ..Default::default() }).ok().unwrap();
         }
         // Retired banks, effects and scripts go back to the loader thread to be
         // freed; stop while it cannot take more.
@@ -2716,7 +3049,7 @@ impl PluginLogic for Sampler {
                 break;
             };
             let engine = &mut s.rack.parts[slot];
-            let current = generation == p.shared.generation[slot].load(Ordering::Acquire);
+            let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire);
             let retired = match handoff {
                 Handoff::Part {
                     bank,
@@ -2733,6 +3066,7 @@ impl PluginLogic for Sampler {
                         fx: Some(engine.set_fx(fx)),
                         heads: None,
                         ir: None,
+                        ..Retired::default()
                     }
                 }
                 Handoff::Fx(fx) if current => Retired {
@@ -2769,6 +3103,7 @@ impl PluginLogic for Sampler {
                     script,
                     heads: None,
                     ir: None,
+                    ..Retired::default()
                 },
                 Handoff::Heads(heads) => Retired {
                     heads: Some(heads),
@@ -2792,7 +3127,7 @@ impl PluginLogic for Sampler {
         while !p.shared.discard.is_full() {
             let Some((slot, generation, IrHandoff { ir, epoch, rate: ir_rate, request })) = p.shared.ir_ready.pop() else { break };
             let engine = &mut s.rack.parts[slot];
-            let current = generation == p.shared.generation[slot].load(Ordering::Acquire) && epoch == s.script_epoch[slot];
+            let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire) && epoch == s.script_epoch[slot];
             let settings_current = engine.fx().ir_settings(request.rack, request.slot).is_none_or(|s| s == request.settings);
             let ir = if !current { ir } else if ir_rate == engine.rate() && settings_current {
                 engine.finish_ir(request.script_slot, request.id, ir)
@@ -2806,7 +3141,7 @@ impl PluginLogic for Sampler {
         }
         while !p.shared.array_retired.is_full() {
             let Some((slot, generation, epoch, request)) = p.shared.array_ready.pop() else { break };
-            let current = generation == p.shared.generation[slot].load(Ordering::Acquire)
+            let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire)
                 && epoch == s.script_epoch[slot];
             let request = if current {
                 match s.rack.parts[slot].finish_array_job(request) {
@@ -2830,8 +3165,16 @@ impl PluginLogic for Sampler {
                 engine.set_override(o);
             }
         }
+        while let Some(e) = p.shared.file_selections.pop() {
+            if e.epoch != 0 && s.script_epoch.get(e.part) == Some(&e.epoch)
+                && let Some(engine) = s.rack.parts.get_mut(e.part)
+                && let Ok(path) = std::str::from_utf8(&e.path[..e.len])
+            {
+                engine.ui_file_selection(e.slot, e.control, path);
+            }
+        }
         while let Some(e) = p.shared.edits.pop() {
-            if e.epoch != 0 && e.epoch == s.script_epoch[e.part] {
+            if e.epoch != 0 && s.script_epoch.get(e.part) == Some(&e.epoch) {
                 s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
                 s.routers[e.part].forget();
                 let picked = s.routers[e.part].articulation_of_control(e.slot, e.control);
@@ -2872,7 +3215,7 @@ impl PluginLogic for Sampler {
         }
         if p.shared.panic.swap(false, Ordering::AcqRel) {
             p.shared.reset_midi();
-            s.key_slots.0.fill(0);
+            for row in &mut s.key_slots.0 { row.fill(false); }
             s.align.clear();
             for router in &mut s.routers { router.reset_midi(); }
             s.rack.panic();
@@ -2884,18 +3227,19 @@ impl PluginLogic for Sampler {
                 let (rack, routers) = (&mut s.rack, &mut s.routers);
                 match play {
                     Play::Note(note, 0) => {
-                        let slots = std::mem::take(&mut s.key_slots.0[note as usize & 127]);
-                        articulate::dispatch_to(rack, routers, slots, In::NoteOff(0, note));
+                        let targets = &mut s.key_slots.0[note as usize & 127];
+                        articulate::dispatch_to(rack, routers, targets.iter_mut().enumerate().filter_map(|(slot, reached)| std::mem::take(reached).then_some(slot)), In::NoteOff(0, note));
                     }
                     Play::Note(note, velocity) => {
-                        s.key_slots.0[note as usize & 127] = articulate::dispatch(rack, routers, 0, In::NoteOn(0, note, velocity));
+                        articulate::dispatch_record(rack, routers, 0, In::NoteOn(0, note, velocity), &mut s.key_slots.0[note as usize & 127]);
                     }
                     Play::Bend(value) => drop(articulate::dispatch(rack, routers, 0, In::Bend(0, value))),
                     Play::Mod(value) => drop(articulate::dispatch(rack, routers, 0, In::Cc(0, 1, value))),
                 }
                 continue;
             }
-            let channel = preview_channel(&s.rack.parts[slot.min(RACK_SLOTS - 1)]);
+            let Some(engine) = s.rack.parts.get(slot) else { continue };
+            let channel = preview_channel(engine);
             let ev = match play {
                 Play::Note(note, 0) => In::NoteOff(s.key_channels.0[note as usize & 127], note),
                 Play::Note(note, velocity) => {
@@ -2909,7 +3253,7 @@ impl PluginLogic for Sampler {
         }
         // With no part selected there is none to audition.
         let selected = p.shared.selected.load(Ordering::Relaxed) as usize;
-        if p.shared.audition.swap(false, Ordering::AcqRel) && selected < RACK_SLOTS {
+        if p.shared.audition.swap(false, Ordering::AcqRel) && selected < s.rack.parts.len() {
             let slot = selected;
             let e = &mut s.rack.parts[slot];
             for channel in 0..16 {
@@ -3008,7 +3352,7 @@ impl PluginLogic for Sampler {
                 *gain = db_to_linear(p.volume.read());
             }
             let ports = s.rack.bus_controls.map(|c| usize::from(c.port));
-            s.rack.tap = scope.checked_sub(1).filter(|&slot| slot < RACK_SLOTS);
+            s.rack.tap = scope.checked_sub(1).filter(|&slot| slot < s.rack.parts.len());
             let (buses, live) = s.rack.render_live(len);
             if scope == SCOPE_MASTER {
                 let mut mono = [0f32; MAX_BLOCK];
@@ -3077,7 +3421,7 @@ impl PluginLogic for Sampler {
         // Parameter writes have rendered: capture the block's latest settings.
         let mut arrays_queued = false;
         for (part, engine) in s.rack.parts.iter_mut().enumerate() {
-            let generation = p.shared.generation[part].load(Ordering::Acquire);
+            let generation = part_atoms(&s.shared_parts, &p.shared, part).unwrap().generation.load(Ordering::Acquire);
             while !p.shared.array_requests.is_full() {
                 let Some(request) = engine.pop_array_job() else { break };
                 p.shared.array_requests.push((part, generation, s.script_epoch[part], request)).ok().unwrap();
@@ -3090,7 +3434,7 @@ impl PluginLogic for Sampler {
             }
             while !p.shared.ir_requests.is_full() {
                 let Some(request) = engine.pop_ir_request() else { break };
-                let generation = p.shared.generation[part].load(Ordering::Acquire);
+                let generation = part_atoms(&s.shared_parts, &p.shared, part).unwrap().generation.load(Ordering::Acquire);
                 let _ = p.shared.ir_requests.push((part, generation, s.script_epoch[part], request));
             }
         }
@@ -3101,17 +3445,19 @@ impl PluginLogic for Sampler {
         if frames > 0 && rate > 0. {
             let fall = 0.1f32.powf(frames as f32 / rate as f32);
             let m = &p.shared.meters;
-            let peaks = std::mem::take(&mut s.rack.peaks);
-            for ((meter, peak), clip) in m.parts.iter().zip(peaks.parts).zip(&m.clips.parts) {
-                Meters::publish(meter, peak, fall, clip);
+            let peaks = &mut s.rack.peaks;
+            for (slot, peak) in peaks.parts.iter().copied().enumerate() {
+                let atoms = part_atoms(&s.shared_parts, &p.shared, slot).unwrap();
+                Meters::publish(&atoms.meter, peak, fall, &atoms.clip);
             }
             for ((meter, peak), clip) in m.buses.iter().zip(peaks.buses).zip(&m.clips.buses) {
                 Meters::publish(meter, peak, fall, clip);
             }
             Meters::publish(&m.master, peak, fall, &m.clips.master);
+            peaks.parts.fill([0.0; 2]); peaks.buses.fill([0.0; 2]);
         }
         let watch = p.shared.probe.watch.load(Ordering::Relaxed);
-        if let Some((slot, group)) = Probe::watched(watch).filter(|(slot, _)| *slot < RACK_SLOTS) {
+        if let Some((slot, group)) = Probe::watched(watch).filter(|(slot, _)| *slot < s.rack.parts.len()) {
             let published = if s.rack.parts[slot].publish(group, &p.shared.probe) { watch } else { 0 };
             p.shared.probe.published.store(published, Ordering::Relaxed);
         }
@@ -3123,8 +3469,8 @@ impl PluginLogic for Sampler {
             .map(|e| e.underruns() + e.dropped_commands())
             .sum();
         p.shared.dropouts.store(dropouts, Ordering::Relaxed);
-        for (e, late) in s.rack.parts.iter().zip(&p.shared.underruns) {
-            late.store(e.underruns(), Ordering::Relaxed);
+        for (slot, e) in s.rack.parts.iter().enumerate() {
+            part_atoms(&s.shared_parts, &p.shared, slot).unwrap().underruns.store(e.underruns(), Ordering::Relaxed);
         }
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
@@ -3157,7 +3503,7 @@ pub(crate) fn script_interface(rt: Option<&Runtime>) -> ScriptView {
     let Some(rt) = rt else {
         return ScriptView::default();
     };
-    let live = rt.live();
+    let live = first_script_live(rt);
     ScriptView {
         interface: live.interface.map(Arc::new),
         slot: live.slot,
@@ -3591,7 +3937,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     let p = Arc::new(SamplerParams::new());
     let ram_only = paths.iter().any(|p| p == "--ram-only");
     // Quantized chords, as a DAW plays a grid: every 250 ms each part (on its
-    // own MIDI channel) releases its last chord and starts 3 or 4 notes at once.
+    // own available MIDI route) releases its last chord and starts 3 or 4 notes at once.
+    // Parts beyond the host's 64 MIDI routes share valid port-D channels.
     let chords = paths.iter().any(|p| p == "--chords");
     let fifo = paths.iter().any(|p| p == "--fifo");
     #[cfg(not(target_os = "linux"))]
@@ -3599,8 +3946,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     let paths: Vec<_> = paths.iter().filter(|p| !p.starts_with("--")).cloned().collect();
     let paths = &paths[..];
     anyhow::ensure!(
-        (1..=RACK_SLOTS).contains(&paths.len()),
-        "Benchmark requires 1..16 instruments"
+        !paths.is_empty(),
+        "Benchmark requires at least one instrument"
     );
     let mut selection = p.selection.write().unwrap();
     if ram_only {
@@ -3611,7 +3958,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         .enumerate()
         .map(|(i, path)| Part {
             path: path.clone(),
-            channel: if chords { i as i16 } else { -1 },
+            channel: if chords { (i % 16) as i16 } else { -1 },
+            port: if chords { (i / 16).min(3) as u8 } else { 0 },
             ..Default::default()
         })
         .collect();
@@ -3719,13 +4067,14 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             while playing && chords && started * beat < frame + frames {
                 let at = (started * beat).saturating_sub(frame) as u32;
                 for (part, keys) in part_keys.iter().enumerate() {
-                    let channel = part as u8;
+                    let channel = (part % 16) as u8;
+                    let port = (part / 16).min(3) as u8;
                     for key in chord_held[part].drain(..) {
-                        events.push(Event::new(at, EventBody::NoteOff { group: 0, channel, note: key, velocity: 0 }));
+                        events.push(Event::on_port(at, port, EventBody::NoteOff { group: 0, channel, note: key, velocity: 0 }));
                     }
                     for n in 0..3 + (started + part) % 2 {
                         let key = keys[(started * 5 + n * 4) % keys.len()];
-                        events.push(Event::new(at, EventBody::NoteOn { group: 0, channel, note: key, velocity: 90 }));
+                        events.push(Event::on_port(at, port, EventBody::NoteOn { group: 0, channel, note: key, velocity: 90 }));
                         chord_held[part].push(key);
                     }
                 }
@@ -3902,6 +4251,61 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
+    fn performance_pages_keep_slot_callbacks_and_late_buffers_separate() {
+        let first = "on init\nmake_perfview\nset_script_title(\"Performance\")\nset_ui_height_px(200)\nset_skin_offset(0)\ndeclare ui_knob $amount(0,100,1)\ndeclare ui_label $caption(1,1)\nset_text($caption,\"Layer one\")\nend on\non ui_control($amount)\nset_text($caption,\"Performance edited\")\nend on";
+        let second = "on init\nmake_perfview\nset_script_title(\"FX Rack\")\nset_ui_height_px(160)\nset_skin_offset(268)\ndeclare ui_knob $amount(0,100,1)\ndeclare ui_label $caption(1,1)\nset_text($caption,\"Effect\")\nend on\non ui_control($amount)\nset_text($caption,\"FX edited\")\nend on";
+        let mut engine = crate::ksp::LogEngine::new(Vec::new(),48000.);
+        let (mut rt, errors) = Runtime::with_scripts(&[first,second], &mut engine,8,Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let parsed = script_interface(Some(&rt));
+        assert_eq!(parsed.slot,0,"host opens the first authored page");
+        let p = SamplerParams::new();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            let v = &mut view.parts[0];
+            v.interface = parsed.interface;
+            v.script_pages = script_pages(Some(&rt));
+            v.script_epoch = 1;
+            v.script_slot = 0;
+            v.live = Some(first_script_live(&rt));
+            assert_eq!(v.script_pages.views.iter().map(|p| p.title.as_str()).collect::<Vec<_>>(),["Performance","FX Rack"]);
+        }
+        p.shared.publish_live(true);
+        let (_, epoch, mut old) = p.shared.live_requests.pop().unwrap();
+        assert_eq!(old.slot,0);
+        assert!(p.shared.select_script_page(0,epoch,1));
+        p.shared.edit_control(0,0,67);
+        let edit = p.shared.edits.pop().unwrap();
+        assert_eq!(edit.slot,1,"the same control index belongs to the selected script slot");
+        assert_eq!(allocations(|| {
+            rt.ui_control(&mut engine,edit.slot,edit.control,edit.value);
+            rt.refresh_live(&mut old);
+        }),0,"callbacks and prepared page refresh remain allocation-free");
+        p.shared.lives.push((0,epoch,old)).ok().unwrap();
+        p.shared.publish_live(true);
+        let (_, _, mut selected) = p.shared.live_requests.pop().unwrap();
+        assert_eq!(selected.slot,1,"late old-page completions cannot replace the chosen page");
+        assert!(!selected.interface_current,"a selected cached page must read current callback state");
+        assert_eq!(allocations(|| { rt.refresh_live(&mut selected); }),0);
+        p.shared.lives.push((0,epoch,selected)).ok().unwrap();
+        p.shared.publish_live(true);
+        {
+            let view = p.shared.view.lock().unwrap();
+            let v = &view.parts[0];
+            let interface = v.interface.as_ref().unwrap();
+            assert_eq!(v.script_slot,1);
+            assert_eq!((interface.height,interface.skin_offset),(160,268));
+            assert_eq!(interface.controls[1].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("FX edited".into()));
+            assert_eq!(v.control_value(0),Some(67.));
+        }
+        assert!(p.shared.select_script_page(0,epoch,0));
+        assert_eq!(rt.interface(0).controls[0].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(0));
+        p.shared.view.lock().unwrap().parts[0].script_epoch = 2;
+        assert!(!p.shared.select_script_page(0,epoch,1),"buttons retained from a replaced instrument cannot select its successor's pages");
+    }
+
+
+    #[test]
     fn snapshot_requests_validate_before_mutating_and_preserve_older_host_state() {
         use moose::core::custom_state::State;
         let part = Part { path: "/unavailable-kontakto/base.nki".into(), program: 0,
@@ -3934,9 +4338,9 @@ pub(crate) mod tests {
 
         let p = SamplerParams::new();
         p.selection.write().unwrap().parts = vec![part.clone()];
-        let generation = p.shared.generation[0].load(Ordering::Acquire);
+        let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
         assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/missing.nksn".into()));
-        assert_eq!(p.shared.generation[0].load(Ordering::Acquire), generation, "an unvalidated request cannot invalidate the active bank's services");
+        assert_eq!(p.shared.part(0).unwrap().generation.load(Ordering::Acquire), generation, "an unvalidated request cannot invalidate the active bank's services");
         assert!(prepare_snapshot(&p).is_none());
         assert!(p.selection.read().unwrap().parts[0] == part);
         let report = p.shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
@@ -3964,6 +4368,69 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn script_fault_excerpts_preserve_malformed_source_and_runtime_arguments_off_audio() {
+        let _diagnostics = crate::diagnostics::acquire();
+        let instrument = Arc::new(Instrument {
+            path: "/private/excerpt-owner/Example.nki".into(),
+            scripts: vec![
+                "on init\nmessage(\"unterminated)\nend on".into(),
+                "on init\ndeclare ui_knob $bad(0,256,1)\nend on\non ui_control($bad)\nset_key_color($bad,$KEY_COLOR_RED)\nend on".into(),
+            ], ..Default::default()
+        });
+        let (mut rt, errors) = crate::engine::load_scripts(&instrument, Vec::new(), 48_000.);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("Unterminated KSP string at line 2"), "{errors:?}");
+        let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, 0, Some(0));
+        trace.script_issue("initialization_failed", &errors[0], &instrument.scripts);
+        let initial = trace.finish("partial");
+        let parse = &initial["issues"][0];
+        assert_eq!((parse["script_slot"].as_u64(), parse["line"].as_u64()), (Some(0), Some(2)));
+        assert!(crate::diagnostics::excerpt_text(parse).unwrap().contains(">      2 | message(\"unterminated)"));
+
+        let rt = rt.as_mut().unwrap();
+        let mut live = rt.live();
+        let mut engine = crate::ksp::LogEngine::default();
+        assert_eq!(allocations(|| {
+            rt.ui_control(&mut engine, 1, 0, 128);
+            rt.refresh_diagnostics(&mut live);
+        }), 0, "only the worker materializes source excerpts");
+        assert_eq!(live.faults.len(), 1);
+        let shared = Shared::default();
+        {
+            let mut view = shared.view.lock().unwrap();
+            let part = &mut view.parts[0];
+            part.instrument = Some(instrument);
+            part.script_epoch = 9;
+            part.diagnostics_dirty = true;
+            part.load_report = Some(initial.clone());
+            part.live_diagnostics = Some(Arc::new(LiveDiagnostics {
+                epoch: 9, faults: live.faults.clone(), fault_occurrences_omitted: 0, notes: Vec::new(),
+            }));
+        }
+        shared.drain_live_diagnostics();
+        let report = shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
+        let fault = &report["runtime"]["faults"][0];
+        assert_eq!(fault["context"]["MidiNote"]["value"], 128);
+        assert_eq!(fault["context"]["MidiNote"]["builtin"], "set_key_color");
+        assert_eq!(fault["source_excerpt"]["script_slot"], 2, "runtime slot 2 must select source index 1");
+        assert!(crate::diagnostics::excerpt_text(fault).unwrap().contains(">      5 | set_key_color($bad,$KEY_COLOR_RED)"));
+        assert!(crate::diagnostics::snapshot().events.iter().any(|event|
+            event.load_id.as_deref() == initial["load_id"].as_str() && event.event == "runtime_issue"
+                && event.script_slot == Some(1)
+                && event.details["context"]["MidiNote"]["value"] == 128
+                && crate::diagnostics::excerpt_text(&event.details).is_some()), "the journal event retains source and argument context");
+        let mut safe = serde_json::json!({"path":"/private/excerpt-owner/Example.nki", "report":report.as_ref(), "script_source":"full private payload", "access_key":"not-code"});
+        crate::diagnostics::clean(&mut safe, true);
+        assert!(!safe.to_string().contains("/private/excerpt-owner") && !safe.to_string().contains("full private payload") && !safe.to_string().contains("not-code"));
+        assert!(crate::diagnostics::excerpt_text(&safe["report"]["runtime"]["faults"][0]).is_some(), "authorized bounded excerpts survive copy/export sanitization");
+        let long = format!("{}bad()\nend on", "é".repeat(2000));
+        let excerpt = crate::diagnostics::script_excerpt(&long, 1, 1, Some(2001)).unwrap();
+        assert_eq!(excerpt["truncated"], true);
+        assert!(excerpt["text"].as_str().unwrap().contains("bad()") && excerpt["text"].as_str().unwrap().contains('^'));
+        assert!(serde_json::to_vec(&excerpt).unwrap().len() < 4096);
+    }
+
+    #[test]
     fn live_diagnostics_preserve_failed_load_status_and_failure_cause() {
         let shared = Shared::default();
         for initial in ["failed", "canceled", "loaded", "partial"] {
@@ -3973,7 +4440,7 @@ pub(crate) mod tests {
                 part.script_epoch = 1;
                 part.diagnostics_dirty = true;
                 part.live_diagnostics = Some(Arc::new(LiveDiagnostics {
-                    epoch: 1, faults: Vec::new(), notes: vec!["Existing runtime feature remains unsupported"],
+                    epoch: 1, faults: Vec::new(), fault_occurrences_omitted: 17, notes: vec!["Existing runtime feature remains unsupported"],
                 }));
                 part.load_report = Some(Arc::new(serde_json::json!({"status": initial, "failure": "Foreign base rejected"})));
             }
@@ -3983,6 +4450,8 @@ pub(crate) mod tests {
             assert_eq!(report["status"], if initial == "loaded" { "partial" } else { initial });
             assert_eq!(report["failure"], "Foreign base rejected");
             assert_eq!(report["runtime"]["notes"][0], "Existing runtime feature remains unsupported");
+            assert_eq!(report["runtime"]["fault_occurrences_omitted"], 17);
+            assert!(view.parts[0].runtime_status.contains("omitted 17 executions"));
         }
     }
 
@@ -4056,7 +4525,7 @@ pub(crate) mod tests {
         assert!(settled, "active snapshot persistence did not settle within 512 blocks");
         let before = p.selection.read().unwrap().parts[0].clone();
         let bank = dsp.rack.parts[0].bank().unwrap() as *const Bank;
-        let generation = p.shared.generation[0].load(Ordering::Acquire);
+        let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
         let epoch = dsp.script_epoch[0];
         assert!(p.shared.queue_snapshot(0, &before, foreign));
         Load.run(&p);
@@ -4067,7 +4536,7 @@ pub(crate) mod tests {
             .filter_map(|(name, value)| (new.get(name) != Some(value)).then_some(name)).collect();
         assert!(after == before, "foreign snapshot changed fields {changed:?}; script bytes {} -> {}, IR slots {} -> {}; source retained {}; generation {} -> {}, epoch {} -> {}, bank retained {}",
             before.script_state.len(), after.script_state.len(), before.ir_settings.len(), after.ir_settings.len(),
-            before.source() == after.source(), generation, p.shared.generation[0].load(Ordering::Acquire), epoch, dsp.script_epoch[0],
+            before.source() == after.source(), generation, p.shared.part(0).unwrap().generation.load(Ordering::Acquire), epoch, dsp.script_epoch[0],
             dsp.rack.parts[0].bank().unwrap() as *const Bank == bank);
         assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot requires base instrument"));
         let report = p.shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
@@ -4079,7 +4548,7 @@ pub(crate) mod tests {
                 && event.details["status"] == "failed"));
         Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx);
         assert_eq!(dsp.rack.parts[0].bank().unwrap() as *const Bank, bank);
-        assert_eq!(p.shared.generation[0].load(Ordering::Acquire), generation);
+        assert_eq!(p.shared.part(0).unwrap().generation.load(Ordering::Acquire), generation);
         assert_eq!(dsp.script_epoch[0], epoch);
         println!("foreign snapshot rejected without replacing active state, bank, generation or script epoch");
     }
@@ -4231,7 +4700,7 @@ end on"#;
                 assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
                 let (slot, epoch, mut live) = p.shared.lives.pop().expect("audio completes a live view");
                 assert_eq!((&*live as *const Live) as usize, address, "the same prepared buffer is recycled");
-                live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", count: value as u32 });
+                live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", context: None, count: value as u32 });
                 p.shared.lives.push((slot, epoch, live)).ok().unwrap();
             }), "completed script changes wake an otherwise idle editor before build");
             assert_eq!(label(&p), Value::Text(format!("value {value}")), "callback-derived labels publish without Load");
@@ -4245,7 +4714,7 @@ end on"#;
         let retained = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
         let (slot, epoch, mut live) = p.shared.lives.pop().unwrap();
-        live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", count: 84 });
+        live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", context: None, count: 84 });
         p.shared.lives.push((slot, epoch, live)).ok().unwrap();
         p.shared.publish_live(true);
         assert!(Arc::ptr_eq(&retained, p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap()),
@@ -4299,7 +4768,7 @@ end on"#;
         p.shared.lives.push((slot, 2, live)).ok().unwrap();
         p.shared.publish_live(false);
         assert_eq!(p.shared.lives.len(), 1, "worker leaves visible publication to the editor");
-        *p.shared.live_publish.lock().unwrap() = Some(Instant::now() - LIVE_WATCH * 2);
+        p.shared.live_publish.lock().unwrap().0 = Some(Instant::now() - LIVE_WATCH * 2);
         {
             let mut view = p.shared.view.lock().unwrap();
             view.watched_at = Some(Instant::now() - LIVE_WATCH * 2);
@@ -4308,6 +4777,84 @@ end on"#;
         p.shared.publish_live(false);
         assert_eq!(label(&p), Value::Text("hidden update".into()), "closed editors retain worker fallback");
         assert!(!p.shared.live_requests.pop().unwrap().2.refresh_interface, "hidden views only refresh diagnostics");
+    }
+
+    #[test]
+    fn file_selector_callbacks_load_real_presets_and_reject_stale_selections_without_allocating() {
+        let dir = std::env::temp_dir().join(format!("kontra-selector-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, value) in [("Quiet.nka", 250000), ("Loud.nka", 1000000)] {
+            std::fs::write(dir.join(name), format!("%preset\n{value}\n")).unwrap();
+        }
+        let source = format!(r#"on init
+make_perfview
+declare ui_file_selector $files
+declare ui_label $result(1,1)
+declare %preset[1]
+declare $id
+set_control_par_str(get_ui_id($files),$CONTROL_PAR_BASEPATH,"{}")
+set_control_par(get_ui_id($files),$CONTROL_PAR_FILE_TYPE,$NI_FILE_TYPE_ARRAY)
+end on
+on ui_control($files)
+set_text($result,fs_get_filename(get_ui_id($files),0) & ":" & fs_get_filename(get_ui_id($files),1))
+$id := load_array_str(%preset,fs_get_filename(get_ui_id($files),2))
+end on
+on async_complete
+if ($NI_ASYNC_ID=$id and $NI_ASYNC_EXIT_STATUS=1)
+set_engine_par($ENGINE_PAR_VOLUME,%preset[0],-1,-1,-1)
+end if
+end on"#,dir.display());
+        let instrument = Instrument { scripts: vec![source], ..Default::default() };
+        let (rt, errors) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let rt = rt.unwrap();
+        let p = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        dsp.script_epoch[0] = 1;
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.parts[0].script_epoch = 1;
+            view.parts[0].interface = Some(Arc::new(rt.interface(0)));
+        }
+        let bank = crate::engine::Bank::from_samples(vec![crate::import::Group::default()],
+            vec![crate::import::Zone::default()], vec![(std::path::PathBuf::new(), crate::audio::Sample {
+                rate:48000, frames:vec![[0.25;2];48000],
+            })]).unwrap();
+        dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+        dsp.rack.parts[0].set_script(Some(rt));
+        dsp.rack.parts[0].note_on(0,60,100);
+        let mut outputs = vec![vec![0.;64];2];
+        let mut refs:Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[],&mut refs,64);
+        let transport = TransportInfo::default();
+        let mut midi_out = EventList::with_capacity(0);
+        let mut cx = ProcessContext::new(&transport,48000.,64,&mut midi_out);
+        let events = EventList::with_capacity(0);
+        let mut peaks = Vec::new();
+        for name in ["Quiet.nka","Loud.nka"] {
+            let path = dir.join(name).to_string_lossy().into_owned();
+            assert!(p.shared.select_control_file(0,1,0,0,&path));
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); }),0);
+            let u = dsp.rack.parts[0].script().unwrap().interface(0);
+            assert_eq!(u.controls[1].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text(format!("{}:{name}",name.trim_end_matches(".nka"))));
+            assert_eq!(u.controls[0].properties["$CONTROL_PAR_FILEPATH"],crate::ksp::Value::Text(path));
+            assert_eq!(p.shared.array_requests.len(),1);
+            load_arrays(&p);
+            assert_eq!(allocations(|| { for _ in 0..10 { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); } }),0);
+            assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_FILE_TYPE"],crate::ksp::Value::Int(2));
+            peaks.push(buffer.output(0).iter().copied().map(f32::abs).fold(0.,f32::max));
+            load_arrays(&p);
+        }
+        assert!(peaks[1]>peaks[0]*4.,"selected presets must change audio, not just filenames: {peaks:?}");
+        assert!(!p.shared.select_control_file(0,2,0,0,"/stale.nka"));
+        assert!(!p.shared.select_control_file(0,1,0,1,"/not-selector.nka"));
+        assert!(!p.shared.select_control_file(0,1,0,0,&"x".repeat(321)));
+        assert!(p.shared.select_control_file(0,1,0,0,"/stale.nka"));
+        dsp.script_epoch[0]=2;
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); }),0);
+        assert!(p.shared.array_requests.is_empty(),"queued old selections must not execute on a replacement script");
+        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -5490,7 +6037,7 @@ end on"#.into()],
         dsp.script_epoch[0] = 1;
         dsp.rack.parts[0].ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
-        p.shared.generation[0].store(1, Ordering::Release);
+        p.shared.part(0).unwrap().generation.store(1, Ordering::Release);
         load_irs(&p);
         assert!(p.shared.ir_ready.is_empty(), "replaced instruments discard queued loads");
         dsp.rack.parts[0].ui_control(0, 0, 1);
@@ -6494,6 +7041,156 @@ end on"
         assert!(told.elapsed() >= LATENCY_SETTLE - std::time::Duration::from_millis(200));
     }
     #[test]
+    fn paused_host_preserves_129_part_publications_and_replaces_stale_pending_generations() {
+        let p = SamplerParams::new();
+        p.selection.write().unwrap().parts = vec![Part::default(); 129];
+        Load.run(&p);
+        assert!(p.shared.view.lock().unwrap().parts[128].attempted.is_none(), "new-slot load waits for callback storage");
+        while let Some((slot, ..)) = p.shared.ready.pop() { assert!(slot < RACK_SLOTS); }
+        // Acknowledgment permits the worker to publish all rows even when
+        // a paused host cannot consume the 64-entry callback queue yet.
+        p.shared.grown.store(129, Ordering::Release);
+        Load.run(&p);
+        assert!(p.shared.view.lock().unwrap().parts[128].attempted.is_some());
+        assert_eq!(p.shared.ready.len(), 64);
+        assert_eq!(p.shared.pending_ready.lock().unwrap().len(), 49);
+        let mut seen = vec![false; 129];
+        loop {
+            while let Some((slot, generation, ..)) = p.shared.ready.pop() {
+                assert_eq!(generation, p.shared.part(slot).unwrap().generation.load(Ordering::Acquire));
+                seen[slot] = true;
+            }
+            if p.shared.pending_ready.lock().unwrap().is_empty() { break }
+            p.shared.flush_ready();
+        }
+        assert!(seen[16..].iter().all(|delivered| *delivered), "every new part survives backpressure");
+        for slot in 0..64 { p.shared.publish_part((slot, 1, Handoff::Fx(FxProcessor::default()))); }
+        p.shared.part(128).unwrap().generation.store(2, Ordering::Release);
+        p.shared.publish_part((128, 2, Handoff::Bank(late_bank(&[(0, 127, 0)]))));
+        p.shared.part(128).unwrap().generation.store(3, Ordering::Release);
+        p.shared.publish_part((128, 3, Handoff::Bank(late_bank(&[(0, 127, 0)]))));
+        let pending = p.shared.pending_ready.lock().unwrap();
+        assert_eq!(pending.len(), 1, "stale large banks retire on the worker instead of accumulating");
+        assert_eq!((pending[0].0, pending[0].1), (128, 3));
+    }
+
+    #[test]
+    fn bounded_live_queue_refreshes_every_large_rack_part_under_continuous_recycling() {
+        let p = SamplerParams::new();
+        p.shared.ensure_parts(129);
+        p.shared.grown.store(129, Ordering::Release);
+        let (rt, errors) = Runtime::with_scripts(&["on init\nmake_perfview\nend on"], &mut crate::ksp::LogEngine::default(), 0, Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        for v in &mut p.shared.view.lock().unwrap().parts {
+            v.script_epoch = 1;
+            v.live = Some(Box::new(rt.live()));
+        }
+        p.shared.publish_live(true);
+        let mut seen = vec![false; 129];
+        for _ in 0..129 {
+            let (slot, _, live) = p.shared.live_requests.pop().unwrap();
+            seen[slot] = true;
+            // A low-numbered part may finish every frame. It must not take
+            // every newly free queue position ahead of higher-numbered parts.
+            p.shared.view.lock().unwrap().parts[slot].live = Some(live);
+            p.shared.publish_live(true);
+        }
+        assert!(seen.iter().all(|visited| *visited));
+    }
+
+    #[test]
+    fn growing_to_129_parts_preserves_notes_and_releases_high_keyboard_targets_without_heap_work() {
+        let p = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
+        dsp.rack.parts[0].note_on(0, 59, 100);
+        dsp.align.plan.on = true;
+        dsp.align.plan.parts.fill(Holds::of(&Timing { override_ms: Some(0.), ..Default::default() }, &[], 10.));
+        dsp.align.arrive(&mut dsp.rack, &mut dsp.routers, 0, In::NoteOn(0, 62, 100), 0, 48000.);
+        assert_eq!(dsp.align.next_due(), Some(480));
+        let selection = Selection { parts: (0..129).map(|slot| Part {
+            path: format!("/virtual/dynamic-{slot}.nki"), channel: (slot % 16) as i16,
+            ..Default::default()
+        }).collect(), order: (0..129).rev().collect(), ..Default::default() };
+        use moose::core::custom_state::State;
+        assert!(Selection::deserialize(&selection.serialize()).unwrap() == selection);
+        let multi = SavedMulti::of("dynamic", &selection);
+        let restored: SavedMulti = serde_json::from_str(&serde_json::to_string(&multi).unwrap()).unwrap();
+        assert_eq!(restored.parts.len(), 129);
+        assert_eq!(restored.parts[0].path, selection.parts[128].path);
+        p.shared.ensure_parts(129);
+        let mut edited = selection.clone();
+        edited.parts[128].edits.0.push(Override { group: None, param: crate::engine::overrides::Param::Attack, offset: 1. });
+        p.shared.sync_overrides(&edited);
+        assert!(p.shared.sent.lock().unwrap()[128].is_empty(), "new-slot edits wait for callback acknowledgment");
+        p.shared.prepare_growth();
+        let mut outputs = vec![vec![0f32; 128]; 2 * BUSES];
+        let mut refs: Vec<_> = outputs.iter_mut().map(|o| o.as_mut_slice()).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 128);
+        let transport = TransportInfo::default();
+        let events = EventList::with_capacity(0);
+        let mut midi_out = EventList::with_capacity(0);
+        use moose::core::bus_routing::{BusActivation, BusRouting};
+        let mut routing = BusRouting::new();
+        for _ in 0..BUSES { routing.push_output(2, BusActivation::Active); }
+        let mut cx = ProcessContext::new(&transport, 48000., 128, &mut midi_out).with_bus_routing(routing);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+        assert_eq!(dsp.rack.parts.len(), 129);
+        assert!(dsp.rack.parts[0].key_down(0, 59), "growth preserves held notes");
+        assert_eq!(dsp.rack.parts[0].active_voices(), 1);
+        assert_eq!(dsp.align.next_due(), Some(480), "growth preserves queued notes");
+        p.shared.sync_overrides(&edited);
+        assert_eq!(p.shared.sent.lock().unwrap()[128], edited.parts[128].edits.0);
+        p.shared.part(128).unwrap().generation.store(73, Ordering::Release);
+        p.shared.ready.push((128, 73, Handoff::Part { bank: Some(late_bank(&[(0, 127, 0)])),
+            fx: FxProcessor::default(), script: None, epoch: 9 })).ok().unwrap();
+        p.shared.scope.source.store(129, Ordering::Relaxed);
+        p.shared.press_key(128, 60, 100);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+        assert!(dsp.rack.parts[128].key_down(0, 60));
+        assert_eq!(dsp.rack.tap, Some(128), "high part scope is distinct from the master sentinel");
+        assert!(p.shared.part(128).unwrap().meter.iter().any(|m| f32::from_bits(m.load(Ordering::Relaxed)) > 0.));
+        p.shared.release_key(60);
+        p.shared.scope.source.store(SCOPE_MASTER, Ordering::Relaxed);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+        assert!(!dsp.rack.parts[128].key_down(0, 60), "part 128 is not the old key-owner sentinel");
+        assert_eq!(dsp.rack.tap, None, "master scope remains independent of part count");
+        p.shared.press_key(EVERY_PART, 61, 100);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+        assert!(dsp.rack.parts[0].key_down(0, 61) && dsp.rack.parts[128].key_down(0, 61));
+        dsp.rack.controls[128].channel = 15;
+        p.shared.release_key(61);
+        dsp.until_diagnostics = 0;
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+        assert!(!dsp.rack.parts[128].key_down(0, 61), "release uses the saved targets despite route changes");
+        drain_audio_diagnostics(&p);
+        let audio = p.shared.diagnostic_latest.lock().unwrap().clone().unwrap();
+        assert_eq!(audio.parts.len(), 129);
+        assert_eq!(audio.parts[128].generation, 73);
+        assert_eq!(audio.parts[128].held_keys.len(), 16, "MIDI channel count stays independent");
+        assert_eq!(audio.output_buses.len(), BUSES, "host buses stay independent of parts");
+        assert_eq!(audio.output_channels, 32);
+        assert_eq!(audio.output_buses[BUSES - 1], (30, 2));
+        // A full publication queue may coexist with worker-recycled buffers.
+        let _ = p.shared.diagnostic_free.force_push(AudioDiagnostics::with_parts(129));
+        assert_eq!(allocations(|| {
+            for _ in 0..4 {
+                dsp.until_diagnostics = 0;
+                Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
+            }
+        }), 0);
+        assert_eq!(p.shared.diagnostic_audio.len(), 2);
+        p.shared.panic.store(true, Ordering::Release);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+        assert!(dsp.rack.parts.iter().all(|e| (0..16).all(|ch| !e.key_down(ch, 59) && !e.key_down(ch, 61))));
+        assert_eq!(allocations(|| {
+            for _ in 0..128 { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }
+        }), 0);
+        assert!(dsp.rack.parts.iter().all(|e| e.active_voices() == 0));
+        assert!(dsp.key_slots.0.iter().all(|row| row.iter().all(|held| !held)));
+    }
+
+    #[test]
     fn diagnostics_audio_handoff_is_bounded_and_reports_held_channel_state() {
         let p = SamplerParams::new();
         let mut dsp = Dsp::default();
@@ -6502,7 +7199,7 @@ end on"
         dsp.rack.parts[0].cc(2, 64, 127);
         dsp.rack.parts[0].cc(2, 66, 127);
         dsp.installed_generation[0] = 41;
-        p.shared.generation[0].store(42, Ordering::Relaxed);
+        p.shared.part(0).unwrap().generation.store(42, Ordering::Relaxed);
         let mut outputs = vec![vec![0f32; 128]; 2];
         let mut refs: Vec<_> = outputs.iter_mut().map(|o| o.as_mut_slice()).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 128);
@@ -6519,7 +7216,7 @@ end on"
         assert_eq!(p.shared.diagnostic_audio.len(), 2);
         assert_eq!(p.shared.diagnostic_dropped.load(Ordering::Relaxed), 1);
         drain_audio_diagnostics(&p);
-        let audio = p.shared.diagnostic_latest.lock().unwrap().unwrap();
+        let audio = p.shared.diagnostic_latest.lock().unwrap().clone().unwrap();
         assert_eq!((audio.block, audio.sample_rate, audio.block_size, audio.output_channels), (3, 48000., 128, 2));
         assert_eq!(audio.parts[0].generation, 41, "reports the playing generation, not a queued load");
         assert!(audio.parts[0].voices > 0 && audio.parts[0].held_keys[2][0] & (1 << 60) != 0);

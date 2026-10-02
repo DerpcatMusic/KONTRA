@@ -51,6 +51,7 @@ fn kind_name(k: Kind) -> &'static str {
         Kind::Label => "label",
         Kind::Table => "table",
         Kind::TextEdit => "text edit",
+        Kind::FileSelector => "file selector",
         Kind::Area => "mouse area",
         Kind::Meter => "level meter",
         Kind::Waveform => "waveform",
@@ -285,7 +286,7 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
     trace.stage("scripts");
     let (rt, errors) = crate::engine::load_scripts(i, i.script_state.clone(), 48_000.);
     for e in &errors {
-        trace.issue("scripts", "initialization_failed", e);
+        trace.script_issue("initialization_failed", e, &i.scripts);
         found.add(format!("script: {}", general(e.split_once(": ").map_or(e, |x| x.1))));
     }
     let mut rt = rt?;
@@ -298,7 +299,7 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
     tests::select_benchmark_page(&mut rt, i, false);
     let script = crate::plugin::script_interface(Some(&rt));
     for d in script.status.lines().filter(|d| !d.trim().is_empty()) {
-        trace.issue("scripts", crate::diagnostics::code(d), d);
+        trace.script_issue(crate::diagnostics::code(d), d, &i.scripts);
         found.add(format!("script: {}", general(d)));
     }
     let Some(u) = script.interface.clone().filter(|u| u.performance && !u.controls.is_empty()) else {

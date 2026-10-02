@@ -115,22 +115,10 @@ pub fn own_hue(dir: &Path) -> Option<f32> {
 
 /// A PNG or JPEG picture the player chose, at most 32 MiB.
 pub fn decode_file(path: &Path) -> Option<Image> {
-    let bytes = read_file(path).ok()?;
-    if bytes.starts_with(b"\x89PNG") {
-        return decode(&bytes);
-    }
-    use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
-    let options = DecoderOptions::default()
-        .jpeg_set_out_colorspace(ColorSpace::RGBA)
-        .set_max_width(usize::MAX)
-        .set_max_height(usize::MAX);
-    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(&bytes[..]), options);
-    let rgba = decoder.decode().ok()?;
-    let info = decoder.info()?;
-    Image::rgba(u32::from(info.width), u32::from(info.height), rgba)
+    decode_report(&read_file(path).ok()?).ok()
 }
 
-/// Resolve the selected preset's named wallpaper, never an arbitrary PNG in its NKR.
+/// Resolve the selected preset's named wallpaper, never an arbitrary picture in its NKR.
 pub fn performance(
     instrument: &crate::import::Instrument,
     computed: Option<&crate::ksp::Interface>,
@@ -141,14 +129,14 @@ pub fn performance(
     else {
         return Ok(None);
     };
-    let filename = png_name(&name).ok_or("Invalid instrument wallpaper name")?;
+    let filename = picture_name(&name).ok_or("Invalid instrument wallpaper name")?;
     let mut source = Pictures::of(&instrument.path, "pictures");
     let bytes = source
         .read(&filename)?
         .ok_or_else(|| format!("Instrument wallpaper {filename} was not found"))?;
     let image = decode_report(&bytes).map_err(|e| format!("Instrument wallpaper {filename}: {e}"))?;
     let text = source
-        .read(&format!("{}.txt", &filename[..filename.len() - 4]))?
+        .read(&format!("{}.txt", filename.rsplit_once('.').unwrap().0))?
         .unwrap_or_default();
     let layout = Layout::parse(&String::from_utf8_lossy(&text));
     let (fw, fh) = layout.frame_size(&image);
@@ -164,11 +152,12 @@ pub fn performance(
 }
 
 /// `name` as a picture file name, unless it tries to leave the pictures folder.
-fn png_name(name: &str) -> Option<String> {
+fn picture_name(name: &str) -> Option<String> {
     if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
         return None;
     }
-    Some(if name.to_lowercase().ends_with(".png") {
+    let lower = name.to_ascii_lowercase();
+    Some(if [".png", ".jpg", ".jpeg"].iter().any(|suffix| lower.ends_with(suffix)) {
         name.to_owned()
     } else {
         format!("{name}.png")
@@ -279,10 +268,10 @@ pub fn pictures_report<'a>(
         if name.is_empty() || !attempted.insert(name) { continue; }
         let result = (|| -> Result<Picture, String> {
             let font = name.strip_prefix("@font/");
-            let file = png_name(font.unwrap_or(name)).ok_or_else(|| format!("Picture {name:?}: invalid resource name"))?;
+            let file = picture_name(font.unwrap_or(name)).ok_or_else(|| format!("Picture {name:?}: invalid resource name"))?;
             let bytes = source.read(&file)?.ok_or_else(|| format!("Picture {file:?}: not found in the library resources or archives"))?;
             let image = decode_report(&bytes).map_err(|e| format!("Picture {file:?}: {e}"))?;
-            let sidecar = format!("{}.txt", &file[..file.len() - 4]);
+            let sidecar = format!("{}.txt", file.rsplit_once('.').unwrap().0);
             let text = source.read(&sidecar)?;
             if font.is_some() && text.is_none() { return Err(format!("Bitmap font {file:?}: required {sidecar:?} is missing")); }
             let layout = Layout::parse(&String::from_utf8_lossy(&text.unwrap_or_default()));
@@ -396,6 +385,23 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decode_report(bytes).ok()
 }
 fn decode_report(bytes: &[u8]) -> Result<Image, String> {
+    if bytes.starts_with(b"\x89PNG") { return decode_png_report(bytes); }
+    if bytes.starts_with(&[0xff, 0xd8]) {
+        use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
+        let options = DecoderOptions::default()
+            .jpeg_set_out_colorspace(ColorSpace::RGBA)
+            .set_max_width(usize::MAX)
+            .set_max_height(usize::MAX);
+        let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
+        decoder.decode_headers().map_err(|e| format!("JPEG header: {e}"))?;
+        let info = decoder.info().ok_or("JPEG dimensions are missing")?;
+        let rgba = decoder.decode().map_err(|e| format!("JPEG pixels: {e}"))?;
+        return Image::rgba(u32::from(info.width), u32::from(info.height), rgba)
+            .ok_or_else(|| "Invalid JPEG dimensions or RGBA length".into());
+    }
+    Err("Unsupported image format: expected PNG or JPEG".into())
+}
+fn decode_png_report(bytes: &[u8]) -> Result<Image, String> {
     let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: usize::MAX });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(|e| format!("PNG header: {e}"))?;
@@ -479,8 +485,8 @@ fn resample(image: &Image, w: u32, h: u32, x0: f64, y0: f64, cw: f64, ch: f64) -
 pub fn banner(image: &Image, w: u32, h: u32, blurred: bool) -> Option<Image> {
     // The level every banner sits at, how much of its contrast and color
     // stays, and the brightest it gets (of 255).
-    const LEVEL: f32 = 52.;
-    const CONTRAST: f32 = 0.45;
+    const LEVEL: f32 = 64.;
+    const CONTRAST: f32 = 0.55;
     const COLOR: f32 = 0.55;
     const PEAK: f32 = 96.;
     let crop = thumbnail(image, w, h)?;
@@ -663,7 +669,55 @@ mod tests {
         );
         assert!(super::decode(&bytes[..12]).is_none());
         assert!(super::decode(b"not an image").is_none());
-        assert!(super::decode_report(b"not an image").err().unwrap().starts_with("PNG header:"));
+        assert!(super::decode_report(b"not an image").err().unwrap().starts_with("Unsupported image format:"));
+    }
+
+    #[test]
+    fn declared_png_and_jpeg_resources_keep_names_metadata_and_failure_reasons() {
+        let root = std::env::temp_dir().join(format!("kontra-artwork-formats-{}", std::process::id()));
+        let folder = root.join("Resources/pictures");
+        std::fs::create_dir_all(&folder).unwrap();
+        let instrument = crate::import::Instrument { path: root.join("Patch.nki"), ..Default::default() };
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.write_header().unwrap().write_image_data(&[24, 96, 176, 78].repeat(4)).unwrap();
+        }
+        // Authored 2x2 solid-color JPEG, with no library asset contents.
+        let jpeg = include_bytes!("../tests/fixtures/wallpaper-solid.jpg");
+        for (name, bytes, alpha) in [("wall.PNG", png.as_slice(), 78), ("wall.jpg", jpeg.as_slice(), 255), ("wall.jpeg", jpeg.as_slice(), 255)] {
+            std::fs::write(folder.join(name), bytes).unwrap();
+            std::fs::write(folder.join("wall.txt"), "Number of Animations: 2\nHorizontal Animation: yes\nHorizontal Resizable: yes\n").unwrap();
+            let mut ui = crate::ksp::Interface::default();
+            ui.wallpaper = name.into();
+            let wall = super::performance(&instrument, Some(&ui)).unwrap().unwrap();
+            assert_eq!(wall.atlas, Some([1, 2]), "{name}: the stem's sidecar is read even for .jpeg");
+            assert_eq!(wall.stretch, [true, false]);
+            assert!(wall.frames[0].rgba.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == alpha));
+            let (pictures, errors) = super::pictures_report(&instrument.path, [name]);
+            assert!(errors.is_empty(), "{name}: {errors:?}");
+            assert_eq!(pictures[name].frames.len(), 2);
+        }
+        let mut ui = crate::ksp::Interface::default();
+        for name in ["../wall.jpg", r"..\wall.jpg", "/wall.jpg"] {
+            ui.wallpaper = name.into();
+            assert!(super::performance(&instrument, Some(&ui)).err().unwrap().contains("Invalid instrument wallpaper name"));
+        }
+        ui.wallpaper = "absent.jpg".into();
+        assert!(super::performance(&instrument, Some(&ui)).err().unwrap().contains("absent.jpg was not found"));
+        std::fs::write(folder.join("bad.jpg"), &jpeg[..20]).unwrap();
+        std::fs::write(folder.join("bad.png"), &png[..12]).unwrap();
+        for (name, kind) in [("bad.jpg", "JPEG header:"), ("bad.png", "PNG header:")] {
+            ui.wallpaper = name.into();
+            let reason = super::performance(&instrument, Some(&ui)).err().unwrap();
+            assert!(reason.contains(name) && reason.contains(kind), "{reason}");
+            let (pictures, errors) = super::pictures_report(&instrument.path, [name]);
+            assert!(pictures.is_empty());
+            assert_eq!(errors.len(), 1);
+            assert!(errors[0].contains(kind), "{}", errors[0]);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -726,8 +780,8 @@ mod tests {
         assert_eq!(frames.len(), 3);
         assert_eq!(frames[1].rgba.as_ref(), &[0, 255, 0, 255]);
         assert_eq!(super::Layout::parse("").frames, 1);
-        assert_eq!(super::png_name("../x"), None);
-        assert_eq!(super::png_name("knob").as_deref(), Some("knob.png"));
+        assert_eq!(super::picture_name("../x"), None);
+        assert_eq!(super::picture_name("knob").as_deref(), Some("knob.png"));
     }
 
     #[test]

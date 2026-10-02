@@ -1,9 +1,10 @@
-//! Sixteen independently routed engines mixed onto sixteen stereo output
+//! Independently routed engines mixed onto sixteen stereo output
 //! buses (Kontakt's st.1…st.16), each with its own fader and host port.
 
 use super::{Engine, MAX_BLOCK, voice::balance};
 use crate::fx::OUTS;
 
+/// Initial rack storage for existing sessions; this is not a part-count limit.
 pub const RACK_SLOTS: usize = 16;
 pub const BUSES: usize = 16;
 /// [`PartControls::aux`] when the part sends nowhere.
@@ -60,16 +61,16 @@ impl BusControls {
 }
 
 /// Everything the mixer sets, handed to the audio thread in one piece.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Mix {
-    pub parts: [PartControls; RACK_SLOTS],
+    pub parts: Vec<PartControls>,
     pub buses: [BusControls; BUSES],
 }
 
 impl Default for Mix {
     fn default() -> Self {
         Self {
-            parts: [PartControls::default(); RACK_SLOTS],
+            parts: vec![PartControls::default(); RACK_SLOTS],
             buses: std::array::from_fn(|n| BusControls::on(n as u8)),
         }
     }
@@ -77,10 +78,16 @@ impl Default for Mix {
 
 /// Absolute sample peaks `[left, right]` since last taken: parts post-fader,
 /// buses post-fader.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Peaks {
-    pub parts: [[f32; 2]; RACK_SLOTS],
+    pub parts: Vec<[f32; 2]>,
     pub buses: [[f32; 2]; BUSES],
+}
+
+impl Default for Peaks {
+    fn default() -> Self {
+        Self { parts: vec![[0.0; 2]; RACK_SLOTS], buses: [[0.0; 2]; BUSES] }
+    }
 }
 
 fn peak(x: &[f32]) -> f32 {
@@ -114,10 +121,10 @@ impl PartControls {
     }
 }
 
-/// Fixed engines keep voice allocation and ownership changes outside rendering.
+/// Rack storage is prepared outside rendering and adopted without allocating.
 pub struct Rack {
-    pub parts: [Engine; RACK_SLOTS],
-    pub controls: [PartControls; RACK_SLOTS],
+    pub parts: Vec<Engine>,
+    pub controls: Vec<PartControls>,
     pub bus_controls: [BusControls; BUSES],
     /// Accumulated by [`render`](Self::render); take them to publish.
     pub peaks: Peaks,
@@ -133,11 +140,18 @@ pub struct Rack {
 
 impl Default for Rack {
     fn default() -> Self {
+        Self::with_slots(RACK_SLOTS)
+    }
+}
+
+impl Rack {
+    /// Allocate on the worker before handing this storage to audio.
+    pub fn with_slots(slots: usize) -> Self {
         Self {
-            parts: std::array::from_fn(|_| Engine::default()),
-            controls: [PartControls::default(); RACK_SLOTS],
-            bus_controls: Mix::default().buses,
-            peaks: Peaks::default(),
+            parts: (0..slots).map(|_| Engine::default()).collect(),
+            controls: vec![PartControls::default(); slots],
+            bus_controls: std::array::from_fn(|n| BusControls::on(n as u8)),
+            peaks: Peaks { parts: vec![[0.0; 2]; slots], buses: [[0.0; 2]; BUSES] },
             tap: None,
             tapped: [0.0; MAX_BLOCK],
             part: [[0.0; MAX_BLOCK]; 2],
@@ -148,25 +162,36 @@ impl Default for Rack {
 }
 
 impl Rack {
+    /// Adopt larger worker-prepared storage, keeping every current engine and
+    /// its voices. Return the old containers in `prepared` for worker disposal.
+    pub fn adopt_parts(&mut self, prepared: &mut Self) {
+        assert!(prepared.parts.len() >= self.parts.len());
+        for (current, next) in self.parts.iter_mut().zip(&mut prepared.parts) {
+            std::mem::swap(current, next);
+        }
+        prepared.controls[..self.controls.len()].copy_from_slice(&self.controls);
+        prepared.peaks.parts[..self.peaks.parts.len()].copy_from_slice(&self.peaks.parts);
+        std::mem::swap(&mut self.parts, &mut prepared.parts);
+        std::mem::swap(&mut self.controls, &mut prepared.controls);
+        std::mem::swap(&mut self.peaks.parts, &mut prepared.peaks.parts);
+    }
+
     pub fn reset(&mut self, rate: f64) {
         for e in &mut self.parts {
             e.reset(rate);
         }
     }
 
-    pub fn set_controls(&mut self, mix: Mix) {
-        let Mix {
-            parts: controls,
-            buses,
-        } = mix;
-        self.bus_controls = buses;
-        for ((engine, old), new) in self.parts.iter_mut().zip(&self.controls).zip(&controls) {
+    pub fn set_controls(&mut self, mix: &Mix) {
+        self.bus_controls = mix.buses;
+        for (slot, (engine, old)) in self.parts.iter_mut().zip(&mut self.controls).enumerate() {
+            let new = mix.parts.get(slot).copied().unwrap_or_default();
             if (old.port, old.channel) != (new.port, new.channel) {
                 let rate = engine.rate();
                 engine.reset(rate);
             }
+            *old = new;
         }
-        self.controls = controls;
     }
 
     /// One host timing snapshot reaches every instrument before its MIDI input.

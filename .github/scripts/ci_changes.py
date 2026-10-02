@@ -6,8 +6,8 @@ import subprocess
 
 
 def build_relevant(path):
-    # This file is copied into downloadable packages, so it must refresh them.
-    if path == "THIRD_PARTY.md":
+    # Shipped legal material must refresh downloadable packages.
+    if path in ("THIRD_PARTY.md", "docs/LEGAL.md") or path.startswith("licenses/"):
         return True
     # Unknown/new paths are code by default. Do not maintain a fragile source
     # allowlist that would miss a newly introduced build input.

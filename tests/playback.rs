@@ -1146,7 +1146,40 @@ fn damaged_zones_are_skipped_not_fatal() {
     ];
     let bank = Bank::load(&instrument(vec![Group::default()], zones)).unwrap();
     assert_eq!((bank.zones().len(), bank.skipped_zones), (1, 4));
+    assert_eq!(bank.zone_skip_counts.unavailable_reference, 1);
+    assert_eq!(bank.zone_skip_counts.unreadable_sample, 3);
+    assert_eq!(bank.zone_skip_counts.invalid_loop, 0);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn rejected_loops_report_bounds_and_do_not_substitute_a_sample() {
+    let path = PathBuf::from("authored-loop.wav");
+    let zone = Zone { sample: path.clone(), low_key: 60, high_key: 60, ..Zone::default() };
+    let invalid = Zone {
+        low_key: 61, high_key: 61, end: -1,
+        loop_range: Some(Loop { start: 4, end: 32, alternating: false, until_release: false, crossfade: 0 }),
+        ..zone.clone()
+    };
+    let second = Zone { low_key: 62, high_key: 62, ..zone.clone() };
+    let bank = Bank::from_samples(vec![Group::default()], vec![zone, invalid, second],
+        vec![(path, constant([0.25; 2], 32))]).unwrap();
+    assert_eq!((bank.zones().len(), bank.skipped_zones), (2, 1));
+    assert_eq!(bank.zone_skip_counts, kontakto::engine::ZoneSkipCounts { invalid_loop: 1, ..Default::default() });
+    assert_eq!(bank.zone_skip_counts.summary(), "invalid loops: 1");
+    assert_eq!(bank.zones().iter().map(|z| z.low_key).collect::<Vec<_>>(), [60, 62]);
+    let issue = bank.issues.iter().find(|s| s.starts_with("invalid loop:")).unwrap();
+    for detail in ["zone ID 2", "group 0", "keys 61..=61", "sample frames 32", "zone start 0", "end offset -1", "loop Some((4, 32))"] {
+        assert!(issue.contains(detail), "missing {detail}: {issue}");
+    }
+    let mut e = engine_with(bank);
+    e.note_on(0, 61, 100);
+    assert!(render(&mut e, 64).iter().all(|f| *f == [0.; 2]), "a rejected zone must stay silent");
+    e.note_on(0, 60, 100);
+    assert!(render(&mut e, 64).iter().any(|f| *f != [0.; 2]), "unaffected zones must still play");
+    e.cc(0, 120, 0);
+    e.note_on(0, 62, 100);
+    assert!(render(&mut e, 64).iter().any(|f| *f != [0.; 2]), "the second retained source zone must still play");
 }
 
 #[test]
@@ -1300,9 +1333,9 @@ fn rack_midi_ports_audio_buses_and_route_changes_are_isolated() {
     rack.note_off_port(0, 0, 60);
     let out = rack.render(100);
     assert_eq!([out[3][0][99], out[3][1][99]], [0.5, 0.25]);
-    let mut controls = rack.controls;
+    let mut controls = rack.controls.clone();
     controls[1].port = 2;
-    rack.set_controls(Mix {
+    rack.set_controls(&Mix {
         parts: controls,
         buses: rack.bus_controls,
     });
@@ -1870,7 +1903,7 @@ fn following_child_freezes_preserve_start_and_release_budgets_without_allocating
     let mut routers: [Router; RACK_SLOTS] = std::array::from_fn(|_|Router::default());
     routers[0].set_route(Route::new("",&Articulate::default(),&Mpe { zone: Zone::Lower,..Mpe::default() }));
     for _ in 0..4 {
-        for _ in 0..100 { dispatch_to(&mut rack,&mut routers,1,In::NoteOn(1,60,100)); }
+        for _ in 0..100 { dispatch_to(&mut rack,&mut routers,[0],In::NoteOn(1,60,100)); }
         let (mut l,mut r)=([0.;128],[0.;128]); rack.parts[0].render(&mut l,&mut r);
     }
     assert_eq!(rack.parts[0].active_voices(),400);
@@ -1878,8 +1911,8 @@ fn following_child_freezes_preserve_start_and_release_budgets_without_allocating
     assert_eq!(allocations(|| {
         // Four hundred child freezes exceed the ordinary quota. A new Start
         // still fits, and the remaining ordinary quota fills with controllers.
-        dispatch_to(&mut rack,&mut routers,1,In::NoteOff(1,60));
-        dispatch_to(&mut rack,&mut routers,1,In::NoteOn(1,61,100));
+        dispatch_to(&mut rack,&mut routers,[0],In::NoteOff(1,60));
+        dispatch_to(&mut rack,&mut routers,[0],In::NoteOn(1,61,100));
         for _ in 1..kontakto::engine::MAX_COMMANDS { rack.parts[0].cc(1,1,100); }
         let (mut l,mut r)=([0.;128],[0.;128]);
         // The old children's delayed Releases arrive into the full ordinary
@@ -2300,6 +2333,48 @@ fn set_controller_in_init_reaches_the_engine() {
     let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(rt.unwrap().init_controllers, vec![(1, 90)]);
+}
+
+#[test]
+fn init_rpn_reaches_initialized_later_slots_and_replays_authored_native_settings() {
+    use kontakto::ksp::Value;
+    let sender = "on init\nset_rpn(7,4242)\nset_nrpn(9,111)\nmake_perfview\ndeclare ui_button $send\nset_text($send,\"UI initialized\")\nend on\non ui_control($send)\nset_rpn(7,4242)\nend on";
+    let receiver = "on init\nmake_perfview\ndeclare ui_slider $rpn(0,16383)\ndeclare ui_slider $nrpn(0,16383)\nend on\non rpn\nif ($RPN_ADDRESS = 7)\n$rpn := $RPN_VALUE\nset_engine_par($ENGINE_PAR_VOLUME,250000,0,-1,-1)\nset_controller(11,127)\nend if\nend on\non nrpn\nif ($RPN_ADDRESS = 9)\n$nrpn := $RPN_VALUE\nset_controller(74,63)\nend if\nend on";
+    let mut i = instrument(vec![Group::default()], Vec::new());
+    i.scripts = vec![sender.into(), receiver.into()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let rt = rt.unwrap();
+    assert_eq!(rt.interface(0).controls[0].properties["$CONTROL_PAR_TEXT"], Value::Text("UI initialized".into()));
+    assert_eq!(rt.interface(1).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(4242));
+    assert_eq!(rt.interface(1).controls[1].properties["$CONTROL_PAR_VALUE"], Value::Int(111));
+    assert_eq!(rt.init_controllers, vec![(11,127),(74,63)]);
+    let mut e = engine_with(layered(i.groups.clone(), &[0.5]));
+    e.set_script(Some(rt));
+    assert!(e.cc_state().iter().all(|cc| cc[11] == 127 && cc[74] == 63));
+    i.scripts = vec!["on init\nset_engine_par($ENGINE_PAR_VOLUME,250000,0,-1,-1)\nend on".into()];
+    let (reference_rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut reference = engine_with(layered(i.groups.clone(), &[0.5]));
+    reference.set_script(reference_rt);
+    reference.note_on(0,60,127);
+    let expected = render(&mut reference,512);
+    let (mut left,mut right) = ([0.;512],[0.;512]);
+    assert_eq!(allocations(|| {
+        e.begin_audio_block(512,1,true);
+        e.ui_control(0,0,1);
+        e.note_on(0,60,127);
+        e.render(&mut left,&mut right);
+    }),0);
+    assert!(left.iter().zip(&right).zip(&expected).all(|((&l,&r),&want)| close([l,r],want)), "receiver's staged volume must apply to the playing bank");
+    assert!(e.script().unwrap().diagnostics().is_empty());
+    i.scripts = vec![sender.into()];
+    let (last, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let last = last.unwrap();
+    assert_eq!(last.interface(0).controls.len(),1, "a last-slot message is valid without a receiver");
+    assert!(last.init_controllers.is_empty(), "internal RPN must not synthesize native CC messages");
+    assert!(last.diagnostics().is_empty());
 }
 
 #[test]
@@ -3148,6 +3223,27 @@ fn decaying_tails_flush_denormals_to_zero() {
 }
 
 #[test]
+fn offline_overload_preserves_release_tails_and_live_shedding_still_works() {
+    let setup = || engine_with(layered(vec![Group::default()], &[0.5]));
+    let (mut reference, mut overloaded) = (setup(), setup());
+    for (e, load) in [(&mut reference, 0.0), (&mut overloaded, 1.0)] {
+        e.release = 10.0;
+        e.blocking_streams = true;
+        e.load = load;
+        e.note_on(0, 60, 100);
+        render(e, 480);
+        e.note_off(0, 60);
+    }
+    assert_eq!(render(&mut overloaded, 4800), render(&mut reference, 4800),
+        "an offline release must not depend on wall-clock or carried-over live load");
+    assert_eq!(overloaded.active_voices(), 1);
+    overloaded.blocking_streams = false;
+    render(&mut overloaded, 480);
+    assert_eq!(overloaded.active_voices(), 0, "live overload protection still fades the released voice");
+    assert_eq!(reference.active_voices(), 1);
+}
+
+#[test]
 fn overload_fades_released_voices_quietest_first() {
     // Every key plays a loud group and one at −70 dB; releases ring on.
     let quiet = Group {
@@ -3604,4 +3700,86 @@ fn instrument_rack_filter_eq_and_stereo_controls_change_playing_audio() {
     assert!(rms(&highpass, 1) > rms(&baseline, 1) * 0.5, "subtype must replace the low-pass coefficients");
     assert_eq!(e.fx().param(FxRack::Insert, 0, FxParam::Filter(fx::FilterParam::Type)), Some(3.0));
     assert!(e.script().unwrap().diagnostics().is_empty(), "{:?}", e.script().unwrap().diagnostics());
+}
+
+#[test]
+fn independent_listener_disable_and_delivery_do_not_allocate_on_audio() {
+    let mut e = scripted("on init\ndeclare ui_slider $ms(0,10000)\ndeclare ui_slider $beat(0,10000)\ndeclare ui_switch $disable\nset_listener($NI_SIGNAL_TIMER_MS,1000)\nset_listener($NI_SIGNAL_TIMER_BEAT,4)\nend on\non listener\nif($NI_SIGNAL_TYPE=$NI_SIGNAL_TIMER_MS)\ninc($ms)\nelse\ninc($beat)\nend if\nend on\non ui_control($disable)\nchange_listener_par($NI_SIGNAL_TIMER_MS,0)\nend on");
+    let (mut left,mut right)=([0.;512],[0.;512]);
+    assert_eq!(allocations(|| {
+        for _ in 0..20 {
+            e.begin_audio_block(512,1,true);
+            e.render(&mut left,&mut right);
+        }
+    }),0);
+    let ui=e.script().unwrap().interface(0);
+    assert_eq!(ui.controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(213));
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(1));
+    assert_eq!(allocations(|| {
+        e.ui_control(0,2,1);
+        for _ in 0..20 {
+            e.begin_audio_block(512,1,true);
+            e.render(&mut left,&mut right);
+        }
+    }),0);
+    let rt=e.script().unwrap();
+    let ui=rt.interface(0);
+    assert_eq!(ui.controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(213));
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(3));
+    assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+}
+
+#[test]
+fn growing_the_rack_keeps_voices_held_notes_and_recorded_targets_without_audio_heap_operations() {
+    use kontakto::articulate::{self, In, Router};
+    use kontakto::timing::{Align, Holds, Timing};
+
+    let mut rack = Box::new(Rack::default());
+    rack.parts[0] = engine();
+    rack.note_on(0, 60, 127);
+    rack.render(32);
+    assert_eq!(rack.parts[0].active_voices(), 1);
+    let mut routers: Vec<_> = (0..rack.parts.len()).map(|_| Router::default()).collect();
+    let mut align = Align::default();
+    align.plan.on = true;
+    align.plan.parts.fill(Holds::of(&Timing { override_ms: Some(0.0), ..Timing::default() }, &[], 5.0));
+    align.arrive(&mut rack, &mut routers, 0, In::NoteOn(0, 61, 127), 0, 48_000.);
+    assert_eq!(align.next_due(), Some(240));
+
+    // Prepared on the worker; slot 32 also crosses the former u32 target mask.
+    let mut prepared = Box::new(Rack::with_slots(33));
+    prepared.parts[32] = engine();
+    prepared.controls[32].port = 1;
+    let mut schedulers = Align::with_slots(33);
+    let mut new_routers: Vec<_> = (0..33).map(|_| Router::default()).collect();
+    let mut targets = vec![false; 33];
+    let shortened = Mix { parts: rack.controls[..1].to_vec(), buses: rack.bus_controls };
+    assert_eq!(allocations(|| {
+        rack.adopt_parts(&mut prepared);
+        align.adopt_parts(&mut schedulers);
+        for (old, new) in routers.iter_mut().zip(&mut new_routers) {
+            std::mem::swap(old, new);
+        }
+        std::mem::swap(&mut routers, &mut new_routers);
+        assert_eq!(rack.parts[0].active_voices(), 1, "the playing engine survives growth");
+        assert_eq!(align.next_due(), Some(240), "its held note survives growth");
+        articulate::dispatch_record(&mut rack, &mut routers, 1, In::NoteOn(0, 62, 127), &mut targets);
+        rack.render(32);
+        assert!(targets[32], "the appended part receives input beyond bit 31");
+        assert_eq!(rack.parts[32].active_voices(), 1);
+        align.release(240, &mut rack, &mut routers);
+        rack.render(32);
+        assert_eq!(rack.parts[0].active_voices(), 2, "the preserved held note plays");
+        rack.controls[32].port = 2;
+        articulate::dispatch_to(&mut rack, &mut routers,
+            targets.iter_mut().enumerate().filter_map(|(slot, target)| std::mem::take(target).then_some(slot)),
+            In::NoteOff(0, 62));
+        articulate::dispatch_to(&mut rack, &mut routers, [0], In::NoteOff(0, 60));
+        articulate::dispatch_to(&mut rack, &mut routers, [0], In::NoteOff(0, 61));
+        for _ in 0..8 { rack.render(128); }
+        assert_eq!(rack.parts[0].active_voices(), 0);
+        assert_eq!(rack.parts[32].active_voices(), 0, "key-up reaches its saved target after routing changes");
+        rack.set_controls(&shortened);
+        assert_eq!(rack.controls[32], Default::default(), "removed slots lose their old routing");
+    }), 0, "growth, routing, alignment and playback must neither allocate nor free on audio");
 }
