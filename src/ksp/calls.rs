@@ -809,7 +809,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .filter(|&c| usize::from(c) < b::CC_SLOTS)
             {
                 Some(cc) => m.env.queue(super::runtime::Work::Controller {
-                    emit: true,
+                    emit: m.t.ctx.controller_output,
                     channel: m.t.ctx.channel,
                     domain: m.t.ctx.domain,
                     input_channel: m.t.ctx.input_channel,

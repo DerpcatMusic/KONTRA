@@ -932,6 +932,42 @@ impl Rig {
 const PASS: &str = "on init\nend on";
 
 #[test]
+fn prepared_controller_replays_keep_authored_output_policy_through_waits() {
+    let source = "on init\ndeclare ui_switch $ping\ndeclare $seen\nend on\non controller\nif ($CC_NUM=20)\nwait(1000)\n$seen := %CC[20]+1\nset_controller(21,$seen)\nend if\nend on\non ui_control($ping)\nset_controller(22,$seen)\nend on";
+    let mut rig = Rig::new(&[source]);
+    rig.rt.prepare_channel_domains((1<<1)|(1<<3)|(1<<5),7);
+    rig.engine.calls.reserve(32);
+    let mut input = || {
+        // Queue the existing nonemitting work contract for the two replay
+        // banks, then deliver the one ordinary native controller input.
+        for (domain,owner) in [(1,3),(2,5)] {
+            rig.rt.env.queue(super::runtime::Work::Controller { emit: false,
+                channel:7, domain, input_channel:Some(owner), cc:20, value:77, slot:0 });
+        }
+        rig.rt.set_midi_channel(7);
+        rig.rt.set_input_channel(1);
+        rig.rt.controller(&mut rig.engine,0,20,77);
+        rig.block(96);
+        // Explicit UI output remains enabled in each prepared native bank;
+        // a nonemitting input replay must not turn it off for later services.
+        rig.rt.ui_control(&mut rig.engine,0,0,1);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(||input()),0);
+    #[cfg(not(feature = "plugin"))]
+    input();
+    let controllers:Vec<_> = rig.engine.calls.iter().filter_map(|c|match c {
+        EngineCall::Controller { cc,value,.. }=>Some((*cc,*value)), _=>None,
+    }).collect();
+    assert_eq!(controllers.iter().filter(|(cc,_)|*cc==20).copied().collect::<Vec<_>>(),vec![(20,77)]);
+    assert_eq!(controllers.iter().filter(|(cc,_)|*cc==21).copied().collect::<Vec<_>>(),vec![(21,78)],
+        "set_controller must inherit the original callback's nonemitting replay policy");
+    assert_eq!(controllers.iter().filter(|(cc,_)|*cc==22).copied().collect::<Vec<_>>(),vec![(22,78);3],
+        "each origin still receives the authored private native value");
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
 fn prepared_common_ui_replays_keep_one_menu_and_text_while_assigning_private_table_values() {
     let source = r#"on init
 make_perfview
