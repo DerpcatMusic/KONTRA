@@ -1361,7 +1361,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let c = control(m, id)?;
             push_int(m, m.slot.ui.controls[c].menu.len() as i32)
         }
-        SetSkinOffset | SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
+        SetSkinOffset => {
+            let [pixels] = ints(m);
+            m.slot.ui.skin_offset = pixels;
+            Ok(Step::Next)
+        }
+        SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
             if f == FsNavigate {
                 m.stk.int();
             }
