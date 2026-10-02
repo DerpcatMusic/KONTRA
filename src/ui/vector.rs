@@ -188,13 +188,7 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
         { continue; }
         for &m in &controls {
             let control = &drawn[m].0;
-            let target = &interface.controls[control.control];
-            let at = frame(value(target), f64::from(int(target, "$CONTROL_PAR_MIN_VALUE").unwrap_or(0)),
-                f64::from(int(target, "$CONTROL_PAR_MAX_VALUE").unwrap_or(1_000_000)), label.picture.as_ref().unwrap().frames.len());
-            let phase = int(c, "$CONTROL_PAR_PICTURE_STATE").and_then(|v| usize::try_from(v).ok());
-            // Integer KSP arithmetic may truncate where native sprites round.
-            if phase.is_some_and(|p| p == at || p.checked_add(1) == Some(at))
-                && inside(label, control) >= 0.9 * (label.w * label.h).max(control.w * control.h)
+            if inside(label, control) >= 0.9 * (label.w * label.h).max(control.w * control.h)
             {
                 pairs.push((n, m));
                 counts[n] += 1;
@@ -206,7 +200,13 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
     for &(label, control) in &pairs {
         let face = &drawn[label].0;
         let c = &interface.controls[face.control];
-        paired[label] = counts[label] == 1 && pairs.iter().filter(|(_, target)| *target == control).all(|&(other, _)| {
+        let target = &interface.controls[drawn[control].0.control];
+        let at = frame(value(target), f64::from(int(target, "$CONTROL_PAR_MIN_VALUE").unwrap_or(0)),
+            f64::from(int(target, "$CONTROL_PAR_MAX_VALUE").unwrap_or(1_000_000)), face.picture.as_ref().unwrap().frames.len());
+        let phase = int(c, "$CONTROL_PAR_PICTURE_STATE").and_then(|v| usize::try_from(v).ok());
+        // Integer KSP arithmetic may truncate where native sprites round.
+        paired[label] = phase.is_some_and(|p| p == at || p.checked_add(1) == Some(at))
+            && counts[label] == 1 && pairs.iter().filter(|(_, target)| *target == control).all(|&(other, _)| {
             let sibling = &drawn[other].0;
             counts[other] == 1
                 && inside(face, sibling) >= 0.9 * (face.w * face.h).max(sibling.w * sibling.h)
