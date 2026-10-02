@@ -192,7 +192,7 @@ fn encode(i: &Instrument, out: &mut Vec<u8>) -> serde_json::Result<()> {
         match &z.loop_range {
             None => w.0.push(0),
             Some(l) => {
-                w.0.push(1 + l.until_release as u8);
+                w.0.push(1 + l.until_release as u8 + 2 * l.alternating as u8);
                 w.u64(l.start as u64);
                 w.u64(l.end as u64);
                 w.u64(l.crossfade as u64);
@@ -269,12 +269,14 @@ fn decode(bytes: &[u8], path: &Path) -> Option<Instrument> {
                 tune: f64::from_bits(r.u64()?),
                 loop_range: match r.array::<1>()?[0] {
                     0 => None,
-                    kind => Some(Loop {
-                        until_release: kind == 2,
+                    kind @ 1..=4 => Some(Loop {
+                        alternating: kind >= 3,
+                        until_release: kind == 2 || kind == 4,
                         start: r.u64()? as usize,
                         end: r.u64()? as usize,
                         crossfade: r.u64()? as usize,
                     }),
+                    _ => return None,
                 },
             })
         })
@@ -521,9 +523,11 @@ mod tests {
                 Zone { sample: "/x/1.wav".into(), start_mod: Some(7), end: -3, tune: 1.5, ..Default::default() },
                 Zone {
                     sample: "/x/1.wav".into(),
-                    loop_range: Some(Loop { start: 1, end: 9, until_release: true, crossfade: 2 }),
+                    loop_range: Some(Loop { start: 1, end: 9, alternating: false, until_release: true, crossfade: 2 }),
                     ..Default::default()
                 },
+                Zone { loop_range: Some(Loop { start: 3, end: 7, alternating: true, until_release: false, crossfade: 0 }), ..Default::default() },
+                Zone { loop_range: Some(Loop { start: 3, end: 7, alternating: true, until_release: true, crossfade: 0 }), ..Default::default() },
             ],
             scripts: vec!["on init\nend on".into()],
             script_state: vec![Persisted::from([("$x".into(), crate::ksp::Value::Int(3))])],

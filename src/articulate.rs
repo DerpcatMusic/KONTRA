@@ -1660,7 +1660,7 @@ end on"#;
                 let groups = vec![group.clone(), Group { release_trigger: true, ..group }];
                 let path = std::path::PathBuf::from("release-tone");
                 let zones = (0..2).map(|group| SampleZone { group, sample: path.clone(),
-                    loop_range: Some(Loop { start: 0, end: 1024, until_release: false, crossfade: 0 }),
+                    loop_range: Some(Loop { start: 0, end: 1024, alternating: false, until_release: false, crossfade: 0 }),
                     ..SampleZone::default() }).collect();
                 let tone = Sample { rate: 48000, frames: (0..1024).map(|i| [(i as f32 * 0.07).sin() * 0.2; 2]).collect() };
                 let bank = Bank::from_samples(groups, zones, vec![(path, tone)]).unwrap();
@@ -2442,7 +2442,7 @@ end on"#;
             let groups = vec![group.clone(), Group { release_trigger: true, ..group }];
             let path = std::path::PathBuf::from("child-tone");
             let zones = (0..2).map(|group| SampleZone { group, sample: path.clone(),
-                loop_range: Some(Loop { start: 0, end: 1024, until_release: false, crossfade: 0 }),
+                loop_range: Some(Loop { start: 0, end: 1024, alternating: false, until_release: false, crossfade: 0 }),
                 ..SampleZone::default() }).collect();
             let bank = Bank::from_samples(groups, zones, vec![(path, Sample { rate: 48000,
                 frames: (0..1024).map(|i| [(i as f32 * 0.07).sin() * 0.2; 2]).collect() })]).unwrap();
@@ -2501,7 +2501,7 @@ end on"#;
                         target: ModTarget::Volume, intensity: 1., invert: false, lag_ms: 0, shaper: None }], ..Group::default() }];
             let path = std::path::PathBuf::from("tone");
             let zones = (0..2).map(|group| SampleZone { group, sample: path.clone(),
-                loop_range: Some(Loop { start: 0, end: 1024, until_release: false, crossfade: 0 }),
+                loop_range: Some(Loop { start: 0, end: 1024, alternating: false, until_release: false, crossfade: 0 }),
                 ..SampleZone::default() }).collect();
             let bank = Bank::from_samples(groups, zones, vec![(path, Sample { rate: 48000,
                 frames: (0..1024).map(|i| [(i as f32 * 0.07).sin() * 0.2; 2]).collect() })]).unwrap();
