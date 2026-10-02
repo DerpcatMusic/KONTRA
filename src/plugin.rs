@@ -461,6 +461,8 @@ pub struct Shared {
     pub(crate) panic: AtomicBool,
     pub(crate) midi_thru: AtomicBool,
     pub(crate) multi_request: Mutex<Option<String>>,
+    /// Latest rack-wide snapshot selection; a newer request supersedes
+    /// validation in any slot. Separate from audio persistence snapshots.
     pub(crate) snapshot_request: Mutex<Option<SnapshotRequest>>,
     /// The app's library folders and the scan of them.
     pub(crate) libraries: library::Scanner,
@@ -1581,17 +1583,29 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
                 return None;
             };
             part.select_snapshot(request.path);
+            let source = part.source();
+            drop(pending);
+            drop(selection);
             trace.finish("validated");
-            Some((request.slot, part.source(), Arc::new(instrument)))
+            Some((request.slot, source, Arc::new(instrument)))
         }
         Err(error) => {
-            let mut view = params.shared.view.lock().unwrap();
-            if !current() {
+            let selection = params.selection.read().unwrap();
+            let pending = params.shared.snapshot_request.lock().unwrap();
+            let valid = params.shared.generation[request.slot].load(Ordering::Acquire) == request.generation
+                && selection.parts.get(request.slot).is_some_and(|p| p.matches_source(&request.source))
+                && pending.is_none();
+            if !valid {
+                drop(pending);
+                drop(selection);
                 trace.detail("cancellation", "Source changed or a newer snapshot was requested before reporting failure");
                 trace.finish("canceled");
                 return None;
             }
             let message = format!("{error:#}");
+            let mut view = params.shared.view.lock().unwrap();
+            // Linearize rejection against source changes and newer requests.
+            // LoadTrace only enqueues its journal record; it does no file IO.
             trace.fail(&message);
             let report = trace.finish("failed");
             view.parts[request.slot].status = format!("Snapshot was not loaded: {message}");
@@ -3927,7 +3941,11 @@ mod tests {
         assert_eq!(snapshots.len(), 3);
         let foreign = std::env::var("KONTRA_FOREIGN_SNAPSHOT").expect("KONTRA_FOREIGN_SNAPSHOT");
         let p = SamplerParams::new();
-        p.selection.write().unwrap().parts = vec![Part { path: base.clone(), gain: -2., channel: 0, ..Default::default() }];
+        {
+            let mut selection = p.selection.write().unwrap();
+            selection.parts = vec![Part { path: base.clone(), gain: -2., channel: 0, ..Default::default() }];
+            selection.order = vec![0];
+        }
         let mut dsp = Dsp::default();
         let transport = TransportInfo::default();
         let mut midi_out = EventList::with_capacity(4);
@@ -3947,7 +3965,8 @@ mod tests {
             let part = p.selection.read().unwrap().parts[0].clone();
             assert_eq!((&part.path, &part.snapshot, part.channel, part.gain), (&base, &path, 0, -2.));
             assert_eq!(p.shared.view.lock().unwrap().parts[0].attempted, Some(part.source()));
-            Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx);
+            assert_eq!(allocations(|| Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx)), 0,
+                "installing the prepared snapshot allocated or freed on audio");
             assert!(dsp.script_epoch[0] > epoch); epoch = dsp.script_epoch[0];
             assert!(dsp.rack.parts[0].bank().is_some());
             let instrument = p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
