@@ -138,6 +138,7 @@ for case in ("accepted", "rejected", "bad-ticket"):
         if case=="accepted":
             receipt=json.loads(stage.joinpath("notarization.json").read_text())
             assert receipt["status"]=="Accepted" and receipt["stapled"] and receipt["signatures_verified"]
+            assert stage.joinpath("notarization.json").stat().st_mode & 0o777 == 0o600
             assert all(hashlib.sha256(stage.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in receipt["sha256"].items())
             assert calls.index("xcrun notarytool submit") < calls.index("xcrun stapler validate") < calls.index("spctl --assess")
 

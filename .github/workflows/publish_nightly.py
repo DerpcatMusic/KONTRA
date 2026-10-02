@@ -197,7 +197,7 @@ Experimental nightly snapshot, not a stable-quality release. GitHub marks it Lat
 Contents: CLAP plug-in, VST3 plug-in and standalone application. These builds have not been certified in Windows or macOS DAWs.
 Licensing: project-authored code is Apache-2.0; third-party terms apply. Redistribution permission for the required ni-file parser remains unresolved. Library-access decryption is enabled and does not validate ownership or activation. No commercial Kontakt instrument library is supplied. Read the included THIRD_PARTY.md and docs/LEGAL.md before use or redistribution; the notice/source bundle is not legal clearance.
 macOS products are Developer ID signed with hardened runtime and timestamped. Each Mac ZIP includes `KONTRA.dmg`, accepted by Apple and carrying a validated stapled ticket for offline delivery. Open the DMG in Finder before copying its products; ZIPs and bare executables cannot themselves carry stapled tickets. Direct ZIP extraction does not supply the DMG offline ticket. `notarization.json` records the submission ID and hashes, also retained in the release manifest. Publication requires both Mac architectures to pass signing, notarization and package validation.
-x86_64 plug-ins require AVX2, FMA and BMI2. Linux requires Ubuntu 24.04-compatible system libraries.
+x86_64 plug-ins require AVX2, FMA and BMI2. Linux requires compatible X11/XCB, XKB, OpenGL/Vulkan and ALSA/JACK system libraries.
 
 The project retains this snapshot and one previous complete release for rollback. Older release records/downloads and managed nightly source tags are removed only after a complete replacement is published. Stable `vX.Y.Z` source tags are preserved.
 """)
