@@ -39,3 +39,6 @@ pub use ui::audit::run as audit_ui;
 pub fn library_roots() -> Vec<std::path::PathBuf> {
     library::Settings::path().and_then(|p| library::Settings::load(&p)).map(|s| s.roots.into_iter().map(|r| r.path.into()).collect()).unwrap_or_default()
 }
+
+#[cfg(feature = "plugin")]
+mod native_ui;

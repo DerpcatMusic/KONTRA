@@ -215,6 +215,8 @@ builtins! {
     GetNumMenuItems "get_num_menu_items" [I] 0 Int;
     SetTableStepsShown "set_table_steps_shown" [V I] 0 Void;
     AttachZone "attach_zone" [V I I] 0 Void;
+    LoadNativeUi "load_native_ui" [S] 0 Void;
+    ExposeControls "expose_controls" [] 0 Void;
     SetSkinOffset "set_skin_offset" [I] 0 Void;
     SetUiColor "set_ui_color" [I] 0 Void;
     SetUiHeight "set_ui_height" [I] 0 Void;

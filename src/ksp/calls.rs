@@ -1443,6 +1443,18 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let c = control(m, id)?;
             push_int(m, m.slot.ui.controls[c].menu.len() as i32)
         }
+        LoadNativeUi => {
+            let name = m.stk.strs.pop();
+            if !m.env.loading { return Err(Fault("load_native_ui is only available during initialization")); }
+            if !m.slot.ui.native_ui.is_empty() { return Err(Fault("Only one native UI can be loaded per script slot")); }
+            put_text(&mut m.slot.ui.native_ui, name, true)?;
+            Ok(Step::Next)
+        }
+        ExposeControls => {
+            if !m.env.loading { return Err(Fault("expose_controls is only available during initialization")); }
+            m.slot.ui.exposed = true;
+            Ok(Step::Next)
+        }
         SetSkinOffset => {
             let [pixels] = ints(m);
             m.slot.ui.skin_offset = pixels;

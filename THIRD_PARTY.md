@@ -179,3 +179,33 @@ fixtures, not a supplied Kontakt instrument library. The crate advertises
 MIT/Apache-2.0 licensing; this review has not independently established
 the authorship and redistribution rights of each audio recording.
 Preserve their upstream provenance and verify it for source redistribution.
+
+## Embedded native UI Lua runtime
+
+The optional plug-in scene adapter uses `mlua` 0.12.1 (MIT) and the vendored
+Lua 5.4.9 interpreter supplied by `lua-src` 551.0.2 (MIT). Both are linked
+into the plug-in; no system Lua installation is required. Cargo.lock records
+the Rust wrappers and build dependencies. These additions are later than the
+inventory snapshot above; regenerate the package inventory for a release.
+
+Copyright (c) 2019-2021 A. Orlenko
+Copyright (c) 2017 rlua
+Copyright (C) 1994-2026 Lua.org, PUC-Rio.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

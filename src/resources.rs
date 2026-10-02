@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// without case: libraries made on Windows or macOS spell them freely.
@@ -63,6 +64,7 @@ pub fn ir_sample(instrument: &Path, name: &str) -> Option<PathBuf> {
 pub(crate) struct Resources {
     /// Loose files by lowercase name, nearest first.
     files: HashMap<String, PathBuf>,
+    loose_dirs: Vec<PathBuf>,
     /// Containers to try in order, opened on first use.
     containers: Vec<PathBuf>,
     failed_archives: Vec<String>,
@@ -76,6 +78,7 @@ pub(crate) struct Resources {
 impl Resources {
     pub(crate) fn of(instrument: &Path, folder_name: &'static str) -> Self {
         let mut files = HashMap::new();
+        let mut loose_dirs = Vec::new();
         let mut containers = Vec::new();
         let nkrs = |dir: &Path| {
             let mut found: Vec<_> = std::fs::read_dir(dir)
@@ -95,6 +98,7 @@ impl Resources {
                 break;
             }
             for dir in resource_dirs(folder, folder_name) {
+                loose_dirs.push(dir.clone());
                 for e in std::fs::read_dir(dir)
                     .into_iter()
                     .flatten()
@@ -121,6 +125,7 @@ impl Resources {
         containers.dedup();
         Self {
             files,
+            loose_dirs,
             containers,
             open: Vec::new(),
             failed_archives: Vec::new(),
@@ -132,8 +137,38 @@ impl Resources {
 
     /// The bytes of `<folder>/<file>`, if the library has it.
     pub(crate) fn read(&mut self, file: &str) -> Result<Option<Vec<u8>>, String> {
-        if let Some(path) = self.files.get(&file.to_lowercase()) {
-            return read_file(path).map(Some);
+        self.read_limited(file, usize::MAX)
+    }
+
+    /// Bound payload allocation before opening Lua modules or other untrusted resources.
+    /// Requested nested loose paths are resolved component by component, without scanning
+    /// the whole resource tree or accepting parent/absolute paths.
+    pub(crate) fn read_limited(&mut self, file: &str, limit: usize) -> Result<Option<Vec<u8>>, String> {
+        let bounded = |path: &Path| -> Result<Option<Vec<u8>>, String> {
+            let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            if file.metadata().map_err(|e| e.to_string())?.len() > limit as u64 {
+                return Err(format!("Resource {} exceeds {limit} bytes", path.display()));
+            }
+            let mut bytes = Vec::new();
+            file.take((limit as u64).saturating_add(1)).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            if bytes.len() > limit { return Err(format!("Resource {} exceeds {limit} bytes", path.display())); }
+            Ok(Some(bytes))
+        };
+        if let Some(path) = self.files.get(&file.to_lowercase()).filter(|p| p.is_file()) {
+            return bounded(path);
+        }
+        let components: Vec<_> = Path::new(file).components().collect();
+        if components.len() <= 64 && components.iter().all(|p| matches!(p, std::path::Component::Normal(_))) {
+            for root in &self.loose_dirs {
+                let mut path = root.clone();
+                let found = components.iter().all(|part| {
+                    let std::path::Component::Normal(part) = part else { return false };
+                    let next = std::fs::read_dir(&path).into_iter().flatten().flatten().find(|entry|
+                        entry.file_name().to_string_lossy().eq_ignore_ascii_case(&part.to_string_lossy()));
+                    if let Some(next) = next { path = next.path(); true } else { false }
+                });
+                if found && path.is_file() { return bounded(&path); }
+            }
         }
         let member = format!("Resources/{}/{file}", self.folder);
         for n in 0.. {
@@ -146,6 +181,9 @@ impl Resources {
             let Some(entry) = archive.member(&mut *f, &member).map_err(|e| e.to_string())? else {
                 continue;
             };
+            if entry.size > limit as u64 {
+                return Err(format!("Resource {file:?} exceeds {limit} bytes"));
+            }
             let needs_key = entry.encoded && entry.key_index != 0xff;
             archive.entries.insert(entry.name.to_lowercase(), entry);
             let key = match &self.key {

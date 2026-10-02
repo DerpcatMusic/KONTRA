@@ -34,6 +34,7 @@ mod menu;
 mod mixer;
 mod panel;
 mod perf_view;
+pub(crate) mod native_scene;
 pub(crate) use perf_view::font_fallbacks;
 mod picker;
 mod rack;
@@ -338,9 +339,16 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
         }
         (at(&v.instrument), at(&v.interface), at(&v.wallpaper)).hash(h);
         v.live_revisions.hash(h);
+        (at(&v.native_scene), &v.native_status).hash(h);
+        if let Some(scene) = &v.native_scene { scene.lock().unwrap().revision().hash(h); }
         for edit in v.edited_values() { edit.hash(h); }
         (Arc::as_ptr(&v.keys) as usize, Arc::as_ptr(&v.pictures) as usize).hash(h);
     }
+}
+
+#[cfg(test)]
+pub(crate) fn native_watch_fingerprint(view: &View) -> u64 {
+    let mut h = DefaultHasher::new(); fingerprint(view, &mut h); h.finish()
 }
 
 /// What plays behind a part's controls, from [`Selection::appearance`].

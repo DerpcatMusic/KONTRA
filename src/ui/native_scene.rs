@@ -1,0 +1,134 @@
+//! Render the supported native scene primitives; assets never use classic-picture guesses.
+use super::Cx;
+use crate::native_ui::{Node, Paint};
+use moose::mui::mui::prelude::*;
+
+pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
+    let scene = cx.view.parts[part].native_scene.clone()?;
+    let epoch = cx.view.parts[part].script_epoch;
+    let snapshot = { scene.lock().unwrap().snapshot() };
+    let root = match snapshot {
+        Ok(root) => root,
+        Err(error) => {
+            let message = format!("Native UI scene unavailable: {error:#}");
+            let mut view = cx.p.shared.view.lock().unwrap();
+            if let Some(v) = view.parts.get_mut(part).filter(|v| v.script_epoch == epoch) {
+                v.native_status = message.clone();
+                v.native_scene = None;
+            }
+            drop(view);
+            if let Some(i) = super::instrument::instrument_of(cx, part) {
+                crate::diagnostics::resource(&i.path, "native_ui", &message);
+            }
+            return None;
+        }
+    };
+    fn draw(
+        ui: &mut Ui,
+        cx: &mut Cx,
+        part: usize,
+        epoch: u64,
+        scene: &std::sync::Arc<std::sync::Mutex<crate::native_ui::Scene>>,
+        node: &Node,
+        offered: (f64, f64),
+    ) -> El {
+        let (w, h) = (
+            node.width.unwrap_or(offered.0),
+            node.height.unwrap_or(offered.1),
+        );
+        let children = node
+            .children
+            .iter()
+            .map(|child| {
+                let cw = child.width.unwrap_or(w);
+                let ch = child.height.unwrap_or(h);
+                draw(ui, cx, part, epoch, scene, child, (w, h)).at((w - cw) / 2., (h - ch) / 2.)
+            })
+            .collect();
+        let el = primitive(node, w, h, children);
+        let id = format!("native-ui-{part}-{}", node.id);
+        if node.tap {
+            let response = ui.get(id.as_str());
+            if response.clicked || response.key_activated {
+                let (edits, error) = {
+                    let mut scene = scene.lock().unwrap();
+                    match scene.tap(node.id) {
+                        Ok(edits) => (edits, None),
+                        Err(error) => (
+                            scene.take_edits(),
+                            Some(format!("Native UI gesture failed: {error:#}")),
+                        ),
+                    }
+                };
+                let mut failure = error;
+                for edit in edits {
+                    if !cx.p.shared.edit_control_slot(
+                        part,
+                        epoch,
+                        edit.slot,
+                        edit.control,
+                        edit.value,
+                    ) {
+                        failure = Some(
+                            "Native UI control edit rejected: stale source or full queue".into(),
+                        );
+                    }
+                }
+                if let Some(message) = failure {
+                    let mut view = cx.p.shared.view.lock().unwrap();
+                    if let Some(v) = view.parts.get_mut(part).filter(|v| v.script_epoch == epoch) {
+                        v.native_status = message.clone();
+                    }
+                    drop(view);
+                    if let Some(i) = super::instrument::instrument_of(cx, part) {
+                        crate::diagnostics::resource(&i.path, "native_ui/gesture", &message);
+                    }
+                }
+            }
+            el.cursor(Cursor::Hand)
+                .focusable()
+                .a11y(A11y::Button)
+                .named("Native UI tap target")
+                .id(id)
+        } else {
+            el.id(id)
+        }
+    }
+    let size = (root.width?, root.height?);
+    Some(
+        draw(ui, cx, part, epoch, &scene, &root, size)
+            .clip()
+            .shrink(0)
+            .named("Native UI subset scene"),
+    )
+}
+
+// Both native editor rendering and the authored headless gate use this mapping.
+fn primitive(node: &Node, w: f64, h: f64, children: Vec<El>) -> El {
+    match &node.paint {
+        Paint::Text(value) => text(value.clone())
+            .text_size(14.)
+            .lines(1)
+            .fill(Color::srgb(1., 1., 1.))
+            .w(w)
+            .h(h),
+        Paint::Rectangle(color) => block(w, h).fill(Color::srgb(color[0], color[1], color[2])),
+        Paint::Stack => stack(children).w(w).h(h),
+    }
+}
+#[cfg(test)]
+pub(crate) fn paint_snapshot(node: &Node, offered: (f64, f64)) -> El {
+    let (w, h) = (
+        node.width.unwrap_or(offered.0),
+        node.height.unwrap_or(offered.1),
+    );
+    let children = node
+        .children
+        .iter()
+        .map(|child| {
+            let (cw, ch) = (child.width.unwrap_or(w), child.height.unwrap_or(h));
+            paint_snapshot(child, (w, h)).at((w - cw) / 2., (h - ch) / 2.)
+        })
+        .collect();
+    primitive(node, w, h, children)
+}
