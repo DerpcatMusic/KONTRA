@@ -449,6 +449,8 @@ pub struct Router {
     domains: bool,
     /// Per input channel and key: the channel and key the engine got.
     held: [[(u8, u8); 128]; 16],
+    /// Whether the original note carried a physical owner through Channel mode.
+    held_from: [u128; 16],
     /// MPE: member channels' pitch bend and the live bend range.
     bend: [u16; 16],
     /// Remember pressure even while a member has no active key.
@@ -480,6 +482,7 @@ impl Default for Router {
             domain_current: [None; 16],
             domains: false,
             held: [[(NONE, NONE); 128]; 16],
+            held_from: [0; 16],
             bend: [8192; 16],
             member_pressure: [None; 16],
             rpn: [Rpn { msb: 127, lsb: 127, cents: None }; 16],
@@ -534,6 +537,7 @@ impl Router {
     pub(crate) fn reset_midi(&mut self) {
         self.forget();
         self.held.fill([(NONE, NONE); 128]);
+        self.held_from.fill(0);
         self.bend.fill(8192);
         self.member_pressure.fill(None);
         self.rpn.fill(Rpn { msb: 127, lsb: 127, cents: None });
@@ -710,6 +714,9 @@ impl Router {
                 self.brightness[key as usize] = NONE;
                 self.set_expression(expression_channel, key, |x| *x = Expression { tune, ..Expression::default() }, out);
                 self.held[channel as usize][note as usize & 127] = (to, key);
+                let bit = 1u128 << (note & 127);
+                if r.by_channel() { self.held_from[channel as usize] |= bit; }
+                else { self.held_from[channel as usize] &= !bit; }
                 if r.by_channel() {
                     out(Out::NoteOnFrom(to, channel, key, velocity));
                 } else {
@@ -722,6 +729,9 @@ impl Router {
                 }
             }
             In::NoteOff(_, note) => {
+                let bit = 1u128 << (note & 127);
+                let from = self.held_from[channel as usize] & bit != 0;
+                self.held_from[channel as usize] &= !bit;
                 let (to, key) = match std::mem::replace(&mut self.held[channel as usize][note as usize & 127], (NONE, NONE)) {
                     (_, NONE) => (to, r.keys[note as usize & 127]),
                     held => held,
@@ -729,7 +739,7 @@ impl Router {
                 if key == NONE {
                     return;
                 }
-                if r.by_channel() {
+                if from || r.by_channel() {
                     out(Out::NoteOffFrom(to, channel, key));
                     return;
                 }
@@ -786,10 +796,11 @@ impl Router {
                 // made meanwhile must not change where its release goes.
                 for owner in (0..16).filter(|owner| cc == 123 && channels & (1 << owner) != 0) {
                     let row = std::mem::replace(&mut self.held[owner], [(NONE, NONE); 128]);
-                    if r.by_channel() {
-                        // Shared scripts still release only this physical input.
-                        for (to, key) in row {
-                            if key != NONE { out(Out::NoteOffFrom(to, owner as u8, key)); }
+                    let from = std::mem::take(&mut self.held_from[owner]);
+                    // A mode change does not change who owns existing notes.
+                    for (note, (to, key)) in row.into_iter().enumerate() {
+                        if key != NONE && (r.by_channel() || from & (1u128 << note) != 0) {
+                            out(Out::NoteOffFrom(to, owner as u8, key));
                         }
                     }
                 }
@@ -1175,6 +1186,35 @@ mod tests {
         assert_eq!(crate::plugin::tests::allocations(f), 0, "prepared domain audio work must not allocate or free");
         #[cfg(not(feature = "plugin"))]
         f();
+    }
+
+    #[test]
+    fn channel_noteoffs_keep_physical_owners_after_switching_to_keys() {
+        for prepared in [false,true] {
+            for controller in [false,true] {
+                let (mut e,mut r) = three_articulation_part();
+                if prepared { e.prepare_channel_domains(r.route.channel_origins(),7); }
+                no_audio_heap(|| {
+                    for channel in [1,2] { feed(&mut r,&mut e,In::NoteOn(channel,60,100),7); }
+                    render(&mut e);
+                });
+                assert_eq!(e.voice_census().iter().filter(|v|!v.released).count(),2);
+                // Changing mode keeps the previous note's route, including
+                // ownership needed by the script's physical input chains.
+                r.set_route(Route::default());
+                for (i,channel) in [1,2].into_iter().enumerate() {
+                    no_audio_heap(|| {
+                        feed(&mut r,&mut e,if controller { In::Cc(channel,123,0) } else { In::NoteOff(channel,60) },7);
+                        render(&mut e);
+                    });
+                    assert!(!e.script().unwrap().key_down_from(channel,7,60),"prepared={prepared}, controller={controller}, channel={channel}");
+                    assert!(e.voice_census().iter().filter(|v|v.input_channel==Some(channel)).all(|v|v.released));
+                    if i==0 { assert!(e.script().unwrap().key_down_from(2,7,60)); }
+                }
+                assert_eq!(e.dropped_commands(),0);
+                assert!(e.script().unwrap().diagnostics().is_empty());
+            }
+        }
     }
 
     #[test]
