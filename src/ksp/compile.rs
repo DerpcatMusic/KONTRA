@@ -492,7 +492,10 @@ impl Program {
                 Op::Sys(SysVar::EventId | SysVar::EventNote | SysVar::EventVelocity | SysVar::NoteHeld
                     | SysVar::CallbackId | SysVar::AsyncId | SysVar::MidiChannel)
                 | Op::Builtin(Builtin::PlayNote | Builtin::GetEventIds | Builtin::GetEventPar
-                    | Builtin::GetEventParArr | Builtin::EventStatus | Builtin::ByMarks, _));
+                    | Builtin::GetEventParArr | Builtin::GetEventMark | Builtin::EventStatus
+                    | Builtin::ByMarks | Builtin::GetKeyTriggerstate | Builtin::GetEnginePar
+                    | Builtin::GetEngineParDisp | Builtin::GetEngineParDispExt
+                    | Builtin::PgsGetKeyVal | Builtin::PgsGetStrKeyVal, _));
             match op {
                 Op::StI(s) | Op::StR(s) | Op::StS(s) => {
                     let t = match op { Op::StR(_) => 1, Op::StS(_) => 2, _ => 0 };
