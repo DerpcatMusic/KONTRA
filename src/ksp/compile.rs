@@ -456,6 +456,7 @@ pub struct Program {
     /// runtimes. A route may designate an ordinary UI callback as articulation.
     domain_performance_writes: Vec<bool>,
     domain_ui_writes: Vec<Vec<VarId>>,
+    domain_ui_reads: Vec<Vec<VarId>>,
     pub revision_owners: [Arc<[u32]>; 3],
     pub revision_counts: [usize; 3],
     pub sys_arrays: [Option<VarId>; 6],
@@ -474,9 +475,10 @@ pub struct Program {
 pub const AUTO_SYMBOL_BASE: i32 = 0x0400_0000;
 
 impl Program {
-    fn callback_writes(&self, entries: impl Iterator<Item = u32>) -> (Vec<bool>, bool) {
+    fn callback_writes(&self, entries: impl Iterator<Item = u32>) -> (Vec<bool>, Vec<bool>, bool) {
         let mut pending: Vec<u32> = entries.collect();
         let mut writes = vec![false; self.vars.len()];
+        let mut reads = vec![false; self.vars.len()];
         let mut event_state = false;
         let mut visited = vec![false; self.code.len()];
         let slots: [HashMap<u32, usize>; 3] = std::array::from_fn(|t| self.vars.iter().enumerate()
@@ -503,6 +505,16 @@ impl Program {
                 _ => {}
             }
             match op {
+                Op::LdI(s) | Op::LdR(s) | Op::LdS(s) => {
+                    let t = match op { Op::LdR(_) => 1, Op::LdS(_) => 2, _ => 0 };
+                    if let Some(&v) = slots[t].get(&s) { reads[v] = true; }
+                }
+                Op::LdIA(v) | Op::LdRA(v) | Op::LdSA(v) | Op::Ref(v) => {
+                    if let Some(r) = reads.get_mut(v as usize) { *r = true; }
+                }
+                _ => {}
+            }
+            match op {
                 Op::Jump(t) => pending.push(t),
                 Op::JumpIfZero(t) | Op::JumpIfNonZero(t) => { pending.push(t); pending.push(pc + 1); }
                 Op::Case(a) => { pending.push(self.cases[a as usize].miss); pending.push(pc + 1); }
@@ -511,7 +523,7 @@ impl Program {
                 _ => pending.push(pc + 1),
             }
         }
-        (writes, event_state)
+        (writes, reads, event_state)
     }
 
     /// Only configuration written by common UI inputs can seed a newly prepared
@@ -524,6 +536,17 @@ impl Program {
                 for &v in writes { performance[v as usize] = true; }
             }
             if let Some(v) = performance.get_mut(id as usize) { *v = true; }
+        }
+        // A UI-derived value can also contain performance state indirectly.
+        // Propagate that dependency across UI callbacks before choosing ranges.
+        loop {
+            let mut changed = false;
+            for (reads, writes) in self.domain_ui_reads.iter().zip(&self.domain_ui_writes) {
+                if reads.iter().any(|&v| performance[v as usize]) {
+                    for &v in writes { changed |= !std::mem::replace(&mut performance[v as usize], true); }
+                }
+            }
+            if !changed { break; }
         }
         let mut common: Vec<bool> = self.vars.iter().map(|v| v.ui.is_some()).collect();
         for writes in &self.domain_ui_writes {
@@ -551,16 +574,18 @@ impl Program {
     fn prepare_domains(&mut self) {
         let mut mutable: Vec<bool> = self.vars.iter().map(|v| v.ui.is_some()).collect();
         for &v in self.sys_arrays.iter().flatten().chain(&self.array_jobs) { mutable[v as usize] = true; }
-        let (writes, _) = self.callback_writes(self.callbacks.iter().skip(1).chain(&self.ui_callbacks).flatten().copied());
+        let (writes, _, _) = self.callback_writes(self.callbacks.iter().skip(1).chain(&self.ui_callbacks).flatten().copied());
         for (m, w) in mutable.iter_mut().zip(writes) { *m |= w; }
-        let (mut performance, _) = self.callback_writes(self.callbacks.iter().skip(1).flatten().copied());
+        let (mut performance, _, _) = self.callback_writes(self.callbacks.iter().skip(1).flatten().copied());
         for &v in self.sys_arrays.iter().flatten().chain(&self.array_jobs) { performance[v as usize] = true; }
-        self.domain_ui_writes = self.ui_callbacks.iter().map(|entry| {
-            let Some(entry) = entry else { return Vec::new(); };
-            let (writes, event_state) = self.callback_writes(std::iter::once(*entry));
+        let ui_access: Vec<_> = self.ui_callbacks.iter().map(|entry| {
+            let Some(entry) = entry else { return (Vec::new(), Vec::new()); };
+            let (writes, reads, event_state) = self.callback_writes(std::iter::once(*entry));
             if event_state { for (p, w) in performance.iter_mut().zip(&writes) { *p |= *w; } }
-            writes.into_iter().enumerate().filter_map(|(i, w)| w.then_some(i as VarId)).collect()
+            let ids = |access: Vec<bool>| access.into_iter().enumerate().filter_map(|(i, yes)| yes.then_some(i as VarId)).collect();
+            (ids(writes), ids(reads))
         }).collect();
+        (self.domain_ui_writes, self.domain_ui_reads) = ui_access.into_iter().unzip();
         self.domain_performance_writes = performance;
         let mut remap: [HashMap<u32, u32>; 3] = std::array::from_fn(|_| HashMap::new());
         for (t, ty) in [Ty::Int, Ty::Real, Ty::Str].into_iter().enumerate() {
@@ -1899,6 +1924,10 @@ mod domain_tests {
 declare ui_knob $gain(0,100,1)
 declare ui_switch $art
 declare ui_button $preview
+declare ui_button $inspect
+declare ui_button $copy
+declare $derived := 0
+declare $derived_copy := 0
 declare $history := 0
 declare $current_art := 0
 declare $preview_id := 0
@@ -1922,6 +1951,12 @@ end on
 on ui_control($preview)
 call make_preview
 end on
+on ui_control($inspect)
+$derived := %held[60]
+end on
+on ui_control($copy)
+$derived_copy := $derived
+end on
 on note
 %held[$EVENT_NOTE] := $EVENT_ID
 change_vol($EVENT_ID,$gain,0)
@@ -1941,7 +1976,7 @@ end on"#, &Setup { groups:3,zones:0,outputs:8 }).unwrap();
         };
         assert!(eligible("$gain"), "a shared control remains common when notes only read it");
         assert!(eligible("$history"), "history must seed from its actual common value, not callback replay");
-        for name in ["$art", "$current_art", "%held", "$preview_id"] {
+        for name in ["$art", "$current_art", "%held", "$preview_id", "$derived", "$derived_copy"] {
             assert!(!eligible(name), "{name} cannot seed a new origin with performance state");
         }
         assert!(p.domain_configuration_ranges(&[])[0].iter().any(|r|
