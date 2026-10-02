@@ -155,10 +155,10 @@ ksp='^[[:space:]]*"?(declare (const |ui_|polyphonic |global |read |pers |[%$!@~?
 while IFS=: read -r f n; do
   case $f in
     *.rs) case $f in
-      ./src/ksp/tests.rs) limit=182 ;;
+      ./src/ksp/tests.rs) limit=187 ;; # Authored selector path-mode fixture.
       ./src/articulate.rs) limit=31 ;;
       ./tests/playback.rs) limit=79 ;;
-      ./src/plugin.rs) limit=81 ;; # Authored native-send save/reload fixture.
+      ./src/plugin.rs) limit=91 ;; # Authored native-send, source-context and script-page fixtures.
       ./src/ui/vector.rs) limit=15 ;; # Authored graph/fader projection fixture.
       ./src/ksp/vm.rs) limit=7 ;; # Authored shared revision-owner fixture.
       ./tests/*|*/tests.rs) limit=40 ;;

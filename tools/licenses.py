@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,6 +35,19 @@ def render(data):
     return "\n".join(lines) + "\n"
 
 
+def bundle_source(package, sources):
+    manifest = Path(package["manifest_path"]).resolve()
+    filename = f'{package["name"]}-{package["version"]}.crate'
+    if manifest == ROOT / "vendor/symphonia-format-riff/Cargo.toml":
+        # Ship the patched source compiled into the binary, not an upstream copy.
+        with tarfile.open(sources / filename, "w:gz") as archive:
+            archive.add(manifest.parent, arcname=filename.removesuffix(".crate"))
+    else:
+        registry = manifest.parents[3]
+        archive = registry / "cache" / manifest.parents[1].name / filename
+        shutil.copyfile(archive, sources / filename)
+
+
 def generate(output):
     with tempfile.TemporaryDirectory(prefix="kontra-notices-") as directory:
         raw = Path(directory) / "licenses.json"
@@ -51,10 +65,7 @@ def generate(output):
         p = crate["package"]
         if "MPL-2.0" not in crate["license"]:
             continue
-        manifest = Path(p["manifest_path"])
-        registry = manifest.parents[3]
-        archive = registry / "cache" / manifest.parents[1].name / f'{p["name"]}-{p["version"]}.crate'
-        shutil.copyfile(archive, sources / archive.name)
+        bundle_source(p, sources)
     (output / "THIRD_PARTY_NOTICES.txt").write_text(notices, encoding="utf-8")
     print(f'Bundled {len(data["crates"])} package entries; ni-file permission remains unresolved.')
 
@@ -81,6 +92,26 @@ def self_test():
         pass
     else:
         raise AssertionError("Only the documented unresolved parser is exempt")
+    with tempfile.TemporaryDirectory(prefix="kontra-source-check-") as directory:
+        root = Path(directory)
+        output = root / "sources"
+        output.mkdir()
+        vendored = ROOT / "vendor/symphonia-format-riff"
+        package = dict(name="symphonia-format-riff", version="0.5.5", manifest_path=str(vendored / "Cargo.toml"))
+        bundle_source(package, output)
+        with tarfile.open(output / "symphonia-format-riff-0.5.5.crate") as archive:
+            for path in vendored.rglob("*"):
+                if path.is_file():
+                    member = "symphonia-format-riff-0.5.5/" + path.relative_to(vendored).as_posix()
+                    assert archive.extractfile(member).read() == path.read_bytes()
+        # Registry packages keep their exact upstream archive bytes.
+        manifest = root / "registry/src/example-index/example-1.0/Cargo.toml"
+        manifest.parent.mkdir(parents=True)
+        source = root / "registry/cache/example-index/example-1.0.crate"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"authored registry archive")
+        bundle_source(dict(name="example", version="1.0", manifest_path=str(manifest)), output)
+        assert (output / source.name).read_bytes() == source.read_bytes()
     print("License bundle checks passed")
 
 

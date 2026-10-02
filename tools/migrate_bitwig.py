@@ -111,7 +111,11 @@ def migrate(source, output, mappings, exporter, plugin):
             candidates = [(a, b) for a, b in reader.plugins if needle in data[a:b]]
             if not candidates:
                 raise ValueError(f"no VST3 device references {entry}")
-            start, end = min(candidates, key=lambda span: span[1] - span[0])
+            if len(candidates) != 1:
+                raise ValueError(f"{entry} is referenced by {len(candidates)} VST3 devices; "
+                                 "shared plugin-state migration is unsupported. Save a project copy "
+                                 "with distinct state entries before retrying.")
+            start, end = candidates[0]
             if any(not (end <= a or start >= b) for a, b, _ in edits):
                 raise ValueError("overlapping/nested mapped devices are unsupported")
             node = data[start:end]

@@ -50,8 +50,12 @@ pub struct Group {
     pub modulators: Vec<Modulator>,
     /// Internal AHDSRs driving module parameters (filter cutoff, EQ gain).
     pub envelopes: Vec<ModEnvelope>,
-    /// Group insert effects (only filters and EQs play).
+    /// Group insert effects.
     pub fx: crate::fx::Chain,
+    /// First insert slot after the Amplifier (0: all after, 8: all before).
+    /// Absent in older caches or when the native split is not valid.
+    #[serde(default)]
+    pub amp_split_slot: Option<u8>,
     /// Kontakt voice group (choke/voice-limit group) index, if assigned.
     pub voice_group: Option<u32>,
     /// Raw interpolation quality setting; 0 in every local preset.
@@ -61,7 +65,7 @@ pub struct Group {
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), voice_group: None, interp_quality: 0 }
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0 }
     }
 }
 
@@ -180,7 +184,7 @@ fn nis_payload(n:ni_file::nis::ItemContainer,path:&Path,depth:usize)->Result<Vec
     }
     Ok(match Repository::from(n).infer_schema() {
             NISObject::BNISoundPreset(p) => {
-                let key = if p.is_encrypted()? { crate::access::library_key(path)? } else { None };
+                let key = if p.is_encrypted()? { Some(crate::access::require_library_key(path).context("NIS preset access lookup")?) } else { None };
                 let enc = p.encryption_item_with_key(key.as_deref()).context("NIS preset subtree")?;
                 ni_file::nis::schema::PresetChunkItem::from(enc.subtree.item()?).properties()?.0
             },
@@ -220,6 +224,29 @@ pub fn read_program(path:&Path,program:u32)->Result<Instrument> {
 pub fn read_snapshot(base: &Path, snapshot: &Path) -> Result<Instrument> {
     std::panic::catch_unwind(|| read_snapshot_inner(base, snapshot))
         .map_err(|_| anyhow::anyhow!("Malformed Kontakt snapshot or base instrument"))?
+}
+
+/// Container identity only, for the off-thread snapshot catalog. Snapshot
+/// metadata names its base instrument, not the snapshot itself; the latter's
+/// authored name is its file stem (as in `read_snapshot`).
+pub(crate) fn snapshot_instrument(path: &Path) -> Result<String> {
+    std::panic::catch_unwind(|| {
+        let c = chunks(path)?;
+        c.find_first(0x4f).context("Snapshot state missing")?;
+        Ok(ni_file::kontakt::objects::snapshot_instrument_name(
+            c.find_first(0x51).context("Snapshot metadata missing")?,
+        )?)
+    }).map_err(|_| anyhow::anyhow!("Malformed snapshot metadata"))?
+}
+
+/// The same exact base identity used by snapshot validation, without loading
+/// zones, samples, scripts or artwork.
+pub(crate) fn snapshot_base_name(path: &Path) -> Result<String> {
+    std::panic::catch_unwind(|| {
+        let c = chunks(path)?;
+        let program = Program::try_from(c.find_first(0x28).context("Base program missing")?)?;
+        Ok(program.params()?.name)
+    }).map_err(|_| anyhow::anyhow!("Malformed base instrument metadata"))?
 }
 
 fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
@@ -298,7 +325,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         let fx = crate::fx::Chain::from_array(&saved.fx)
             .with_context(|| format!("Snapshot group {id} effect parameters"))?;
         warnings.extend(modulation.warnings);
-        warnings.extend(crate::engine::filter::unsupported(&fx));
+        warnings.extend(crate::engine::filter::unsupported_at(&fx, instrument.groups[id].amp_split_slot));
         let group = &mut instrument.groups[id];
         group.volume_env = modulation.volume_env;
         group.flex_env = modulation.flex_env;
@@ -623,6 +650,12 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     for g in &gl.groups {
         let v = g.params().with_context(|| format!("Group {} version {:x}", groups.len(),g.0.version))?;
         ensure!(v.volume.is_finite() && v.pan.is_finite() && v.tune.is_finite() && v.tune > 0.0, "Invalid group gain/tuning");
+        match g.source_identity() {
+            Ok(source) if source.version == 0x106 && source.mode == 9 => warnings.push(format!(
+                "{}: Kontakt 8 wavetable source playback is not implemented (source version 0x106, mode 9, flag {}); mapped zones use ordinary sample playback, without wavetable position, forms or audio-rate modulation", v.name, source.flag)),
+            Ok(_) => {},
+            Err(error) => warnings.push(format!("{}: source identity is not decoded: {error}; source-specific playback parameters are not applied", v.name)),
+        }
         if !v.start_criteria.items.is_empty() { warnings.push(format!("{}: native group start conditions are not implemented", v.name)); }
         if v.release_trigger_note_monophonic {warnings.push("Release-trigger note monophony is not imported".into());}
         let modulation = match crate::modulation::read_group(g) {
@@ -640,7 +673,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
                 Default::default()
             }
         };
-        warnings.extend(crate::engine::filter::unsupported(&fx));
+        warnings.extend(crate::engine::filter::unsupported_at(&fx, u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8)));
         // Gain and tuning are linear ratios (see audits/MODULATION.md).
         groups.push(Group {
             name: v.name,
@@ -660,6 +693,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             modulators: modulation.modulators,
             envelopes: modulation.envelopes,
             fx,
+            amp_split_slot: u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8),
             voice_group: u32::try_from(v.voice_group_index).ok(),
             interp_quality: v.interp_quality,
         });

@@ -395,8 +395,8 @@ pub struct Listener {
     pub beats: i32,
     /// Independent start/stop subscription bits.
     pub transport: u8,
-    /// Bumped when the timer changes so stale timer entries are dropped.
-    pub generation: u32,
+    /// Independent MS/beat generations: changing one timer preserves the other.
+    pub generations: [u32; 2],
 }
 
 /// Polyphonic rows: one per event slot plus a scratch row for other callbacks.

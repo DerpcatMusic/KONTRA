@@ -1372,8 +1372,7 @@ pub fn without_library<'a>(name: &'a str, library: &str) -> &'a str {
 
 /// A library folder name without the vendor noise.
 pub fn library_label(name: &str) -> String {
-    name.replace("Performance Samples ", "")
-        .replace(" Library", "")
+    crate::library::label(name)
 }
 
 pub fn megabytes(bytes: usize) -> String {

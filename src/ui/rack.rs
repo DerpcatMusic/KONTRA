@@ -8,7 +8,7 @@
 //! With sticky headers on, parts scrolled out of view keep their headers
 //! stacked at the rack's edges. Presets dropped on a header replace that
 //! part; parts dragged by their name reorder; anything dropped on the
-//! rack's foot is added.
+//! rack's foot or the empty canvas beyond it is added.
 
 use super::{Cx, RackDrag, instrument, menu, move_part, theme::*};
 use crate::import;
@@ -26,9 +26,13 @@ pub fn name(cx: &Cx, slot: usize) -> String {
     if !part.name.is_empty() {
         return part.name.clone();
     }
-    let full = instrument::instrument_of(cx, slot)
-        .map(|i| i.name.clone())
-        .unwrap_or_else(|| super::header::stem(&part.path));
+    // Snapshot imports carry the snapshot's name. Keep the base title above
+    // it; the second row names the selected snapshot independently.
+    let full = if part.snapshot.is_empty() {
+        instrument::instrument_of(cx, slot).map(|i| i.name.clone())
+    } else {
+        cx.view.shelf.snapshots.get(Path::new(&part.path)).map(|s| s.instrument.clone())
+    }.unwrap_or_else(|| super::header::stem(&part.path));
     without_library(&full, &cx.library_of(Path::new(&part.path))).to_owned()
 }
 
@@ -40,7 +44,7 @@ pub const SLIM: f64 = CONTROL + 6.;
 /// Parts built in a frame before the rack knows where they are.
 const UNPLACED: usize = 4;
 
-/// Every part in rack order, then the foot that adds more.
+/// Every part in rack order, then the foot and empty canvas that add more.
 ///
 /// The rack scrolls itself rather than as a scroll node, so it can scroll
 /// to a part and knows where each part is: with sticky headers on, a part
@@ -51,30 +55,35 @@ const UNPLACED: usize = 4;
 /// room but are not built.
 pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let order: Vec<usize> = cx.selection.order.iter().map(|&n| n as usize).collect();
-    if order.is_empty() {
-        cx.state.rack_y = 0.;
-        return col![instrument::welcome(cx), foot(ui, cx)]
-            .gap(0)
-            .align(Align::Stretch)
-            .flex(1)
-            .min_h(0);
-    }
     // A click on the rack itself, off every part, lets go of the selection.
     if ui.get("rack-view").clicked {
         cx.state.selected_none();
     }
-    let (view_h, content_h, frames) = {
+    let (view_h, content_h) = {
         let frame = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
-        let content = frame("rack-content");
-        let frames: Vec<Option<(f64, f64)>> = (order.iter())
-            .map(|slot| {
-                let f = frame(&format!("part-{slot}"))?;
-                Some((f.y - content?.y, f.size.height))
-            })
-            .collect();
-        let view_h = frame("rack-view").map_or(0., |f| f.size.height);
-        (view_h, content.map_or(0., |f| f.size.height), frames)
+        (frame("rack-view").map_or(0., |f| f.size.height), frame("rack-content").map_or(0., |f| f.size.height))
     };
+    // Offscreen rows have no widget subtree or surface. Reconstruct their
+    // positions from the same known body/fixed heights used by part(), rather
+    // than asking the layout to keep every header alive just to locate it.
+    let mut top = 0.;
+    let mut measured = Vec::with_capacity(order.len());
+    let frames: Vec<Option<(f64, f64)>> = order.iter().map(|&slot| {
+        let frame = |id: String| ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame.size.height);
+        if let Some(body) = frame(format!("body-{slot}")) { cx.state.bodies.insert(slot, body); }
+        let part = &cx.selection.parts[slot];
+        let natural = cx.state.bodies.get(&slot).map(|b| SLIM + b);
+        let set = (!part.collapsed && part.height > 0.).then_some(f64::from(part.height));
+        let target = target_height(part.collapsed, set, natural);
+        let prior = frame(format!("part-{slot}"));
+        measured.push(part.collapsed || natural.is_some() || prior.is_some());
+        let height = cx.state.resizing.filter(|(s, _)| *s == slot).map(|(_, h)| h)
+            .or_else(|| target.map(|h| ui.tween_with(format!("part-h-{slot}"), h, quick()).round()))
+            .or(prior).unwrap_or(SLIM).max(SLIM);
+        let result = Some((top, height));
+        top += height;
+        result
+    }).collect();
     let sticky = !cx.selection.sticky_off;
     let n = order.len();
     // Where part `i`'s header shows with the rack scrolled to `y`: in place,
@@ -83,6 +92,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         let at = top - y;
         if !sticky {
             return at;
+        }
+        // Keep the stacked rack headers while they fit. A larger rack uses
+        // its current body's sticky header, pushed away by that body's end;
+        // reserving n header pitches would otherwise cover the whole view.
+        if n as f64 * SLIM > view_h {
+            return at.max(0.).min(at + frames[i].map_or(SLIM, |f| f.1) - SLIM);
         }
         let (above, below) = (i as f64 * SLIM, view_h - (n - i) as f64 * SLIM);
         if at < above { above } else { at.min(below).max(above) }
@@ -99,7 +114,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         match *f {
             Some((top, h)) if view_h > 0. => {
                 stuck[i] = sticky && (place(i, top, drawn) - (top - drawn)).abs() > 0.5;
-                near[i] = top - drawn + h > -view_h && top - drawn < 2. * view_h;
+                near[i] = top - drawn + h > -SLIM && top - drawn < view_h + SLIM;
             }
             _ => {
                 near[i] = unplaced < UNPLACED;
@@ -107,20 +122,54 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
             }
         }
     }
+    // Keep active pointer/text edits mounted, and measure a requested new
+    // row before deciding where to reveal it. Other offscreen rows stay unbuilt.
+    for (i, &slot) in order.iter().enumerate() {
+        near[i] |= cx.state.resizing.is_some_and(|(s, _)| s == slot)
+            || cx.state.held.is_some_and(|(s, _, _)| s == slot)
+            || cx.state.typing.as_ref().is_some_and(|(s, _, _)| *s == slot)
+            || cx.state.renaming.as_ref().is_some_and(|(s, _)| *s == slot)
+            || (cx.state.reveal == Some(slot) && !measured[i]);
+    }
     wheel_taken();
-    let mut items = Vec::with_capacity(n + 1);
+    let mut items = Vec::with_capacity(n + 3);
     let mut shape = {
         use std::hash::{DefaultHasher, Hash};
         let mut h = DefaultHasher::new();
         (&stuck, &near, cx.state.resizing.map(|(s, h)| (s, h.to_bits()))).hash(&mut h);
         h
     };
+    let mut omitted = 0.;
     for (i, &slot) in order.iter().enumerate() {
-        items.push(part(ui, cx, slot, stuck[i], near[i], &mut shape));
+        if !near[i] {
+            omitted += frames[i].map_or(SLIM, |f| f.1);
+            continue;
+        }
+        if omitted > 0. {
+            items.push(block(Len::Pct(100.), omitted).shrink(0));
+            omitted = 0.;
+        }
+        items.push(part(ui, cx, slot, stuck[i], true, &mut shape));
+    }
+    if omitted > 0. { items.push(block(Len::Pct(100.), omitted).shrink(0)); }
+    if order.is_empty() {
+        add_drop(ui, cx, "rack-welcome");
+        // The welcome itself uses flex-basis zero to fill its parent. Give
+        // that parent a measured height so it remains a real drop surface.
+        items.push(col![instrument::welcome(cx)]
+            .h((view_h - CONTROL - 2. * SPACE).max(240.))
+            .shrink(0)
+            .id("rack-welcome"));
     }
     items.push(foot(ui, cx));
+    // Keep a viewport of quiet canvas after Add. It belongs to this rack's
+    // existing scroll content, so the footer can scroll completely above it.
+    items.push(empty(ui, cx, view_h.max(240.)));
     let headers: Vec<(usize, El)> = (0..n)
-        .filter(|&i| stuck[i] && frames[i].is_some())
+        .filter(|&i| stuck[i] && frames[i].is_some_and(|(top, _)| {
+            let at = place(i, top, drawn);
+            at + SLIM > 0. && at < view_h
+        }))
         .map(|i| (i, col![header_at(ui, cx, order[i], true), rule()].gap(0).w(Len::Pct(100.))))
         .collect();
     // A knob under the pointer turns; the rack scrolls otherwise.
@@ -132,10 +181,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     if let Some(w) = wheel {
         state.rack_y += w.y;
     }
-    let pitch = |i: usize| if sticky { i as f64 * SLIM } else { 0. };
+    let pitch = |i: usize| if sticky && n as f64 * SLIM <= view_h { i as f64 * SLIM } else { 0. };
     if let Some(at) = (state.reveal)
         .and_then(|slot| order.iter().position(|s| *s == slot))
-        .and_then(|i| Some(frames[i]?.0 - pitch(i)))
+        .and_then(|i| measured[i].then(|| frames[i].unwrap().0 - pitch(i)))
     {
         state.rack_y = at;
         state.reveal = None;
@@ -172,8 +221,20 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut row_items = vec![stack(layers).flex(1).min_w(0).min_h(0).h(Len::Pct(100.)).clip()];
     if content_h > view_h + 0.5 && view_h > 0. {
         row_items.push(scrollbar(ui, "rack-bar", "Scroll the rack", y, view_h, content_h));
+    } else {
+        // Reserve the bar's width before the first measured layout. The
+        // scroll tail always overflows; appearing later must not move controls.
+        row_items.push(block(8, Len::Pct(100.)).shrink(0));
     }
     row(row_items).gap(0).align(Align::Stretch).flex(1).min_h(0)
+}
+
+fn target_height(collapsed: bool, set: Option<f64>, natural: Option<f64>) -> Option<f64> {
+    match (collapsed, set, natural) {
+        (true, ..) => Some(SLIM),
+        (false, Some(h), n) => Some(n.map_or(h, |n| h.min(n))),
+        (false, None, n) => n,
+    }
 }
 
 /// One part: its header, as much of its notices and controls as its height
@@ -225,11 +286,7 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     }
     let dragging = state.resizing.filter(|(s, _)| *s == slot).map(|(_, h)| h);
     let set = (!p.collapsed && p.height > 0.).then_some(f64::from(p.height));
-    let target = match (p.collapsed, set, natural) {
-        (true, ..) => Some(SLIM),
-        (false, Some(h), n) => Some(n.map_or(h, |n| h.min(n))),
-        (false, None, n) => n,
-    };
+    let target = target_height(p.collapsed, set, natural);
     // Not yet laid out whole: all of it, unsprung, so the next frame knows how much that is.
     let height = dragging.or(target).map(|to| {
         // On whole points: the rack below stays sharp while it springs.
@@ -246,7 +303,8 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     let room = height.map(|h| h - SLIM);
     if room.is_none_or(|r| r >= 0.5) {
         let body = if near {
-            let mut body: Vec<El> = instrument::notices(cx, slot).into_iter().collect();
+            let mut body: Vec<El> = snapshot_row(ui, cx, slot).into_iter().collect();
+            body.extend(instrument::notices(cx, slot));
             // Kept as drawn while nothing it shows moves: meters and keys
             // redraw around it, not through it.
             let deps = (instrument::stage_deps(ui, cx, slot), cx.selection.appearance);
@@ -306,11 +364,10 @@ fn behind(cx: &mut Cx, slot: usize, stage: El) -> El {
     }
 }
 
-/// Where presets are dropped to be added, and a button that finds one.
-fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
-    let dragging = ui.dragging::<RackDrag>().is_some();
-    let over = ui.get("rack-drop").drop_target;
-    if let Some(RackDrag::Instrument(path)) = ui.dropped_on::<RackDrag>("rack-drop") {
+/// Footer and empty canvas share the browser's append operation. Explicit
+/// header targets still own replacement and part reordering.
+fn add_drop(ui: &mut Ui, cx: &mut Cx, id: &str) {
+    if let Some(RackDrag::Instrument(path)) = ui.dropped_on::<RackDrag>(id) {
         cx.state.notice.clear();
         if import::is_multi(Path::new(&path)) {
             cx.p.shared.queue_multi(path);
@@ -318,6 +375,27 @@ fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
             cx.add(path);
         }
     }
+}
+
+fn empty(ui: &mut Ui, cx: &mut Cx, height: f64) -> El {
+    add_drop(ui, cx, "rack-empty");
+    if ui.get("rack-empty").clicked {
+        cx.state.selected_none();
+    }
+    let over = ui.get("rack-empty").drop_target
+        && matches!(ui.dragging::<RackDrag>(), Some(RackDrag::Instrument(_)));
+    block(Len::Pct(100.), height)
+        .when(over, |el| el.stroke(accent()).stroke_width(1))
+        .named("Drop an instrument to append to the rack")
+        .shrink(0)
+        .id("rack-empty")
+}
+
+/// Where presets are dropped to be added, and a button that finds one.
+fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
+    let dragging = ui.dragging::<RackDrag>().is_some();
+    let over = ui.get("rack-drop").drop_target;
+    add_drop(ui, cx, "rack-drop");
     if ui.get("rack-drop").activated() {
         cx.state.browser = true;
         ui.focus("search");
@@ -326,7 +404,7 @@ fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
     let text = if dragging {
         "Drop to add to the rack".to_owned()
     } else {
-        format!("Add an instrument · {loaded} of 16")
+        format!("Add an instrument · {loaded} loaded")
     };
     let el = row![
         glyph(Icon::Plus, TEXT, if dragging { Fill::from(Role::Ink) } else { secondary() }),
@@ -402,7 +480,7 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 /// How far `slot`'s samples have loaded, 0..1, while they load.
 pub(super) fn loading(cx: &Cx, slot: usize) -> Option<f64> {
     cx.view.parts[slot].loading.then(|| {
-        let done = cx.p.shared.load_progress[slot].load(Ordering::Relaxed);
+        let done = cx.p.shared.part(slot).map_or(0, |part| part.load_progress.load(Ordering::Relaxed));
         (f64::from(done) / f64::from(crate::engine::LOAD_DONE)).clamp(0., 1.)
     })
 }
@@ -421,6 +499,33 @@ pub(super) fn load_chip(done: f64, words: bool) -> El {
         .lines(1)
         .shrink(0)
         .named("Loading")
+}
+
+/// A snapshot changes the current base instrument's state; it does not step
+/// the browser's NKI/NKM list. All paths here were prepared by the scan worker.
+fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
+    let part = cx.selection.parts.get(slot)?;
+    if !part.snapshot_base() { return None; }
+    let paths = cx.view.shelf.snapshots.get(Path::new(&part.path)).map(|s| s.paths.as_slice()).unwrap_or(&[]);
+    if paths.is_empty() && part.snapshot.is_empty() { return None; }
+    let chosen = paths.iter().position(|p| p == Path::new(&part.snapshot));
+    let previous = chosen.and_then(|i| i.checked_sub(1)).and_then(|i| paths.get(i)).cloned();
+    let next = chosen.map_or_else(|| paths.first(), |i| paths.get(i + 1)).cloned();
+    let title = if part.snapshot.is_empty() { "Select snapshot…".into() } else { super::header::stem(&part.snapshot) };
+    let id = format!("snapshot-{slot}");
+    let (hit, selector) = dropdown(ui, id.as_str(), &title, "Snapshot");
+    if hit { menu::open_under(ui, cx, menu::Target::Snapshots(slot), &id); }
+    let selector = selector.flex(1);
+    let arrow = |ui: &mut Ui, id: String, picture: Icon, label: &str, enabled: bool| {
+        if enabled { icon_button(ui, id, picture, label, false) } else { (false, dead_icon(picture, label)) }
+    };
+    let (prev_hit, prev) = arrow(ui, format!("snapshot-prev-{slot}"), Icon::Left, "Previous snapshot", previous.is_some());
+    let (next_hit, next_el) = arrow(ui, format!("snapshot-next-{slot}"), Icon::Right, "Next snapshot", next.is_some());
+    if let Some(path) = previous.filter(|_| prev_hit).or(next.filter(|_| next_hit)) {
+        cx.snapshot(slot, path.to_string_lossy().into_owned());
+    }
+    Some(col![row![selector, prev, next_el].gap(TIGHT).align(Align::Center)
+        .pad((SPACE, TIGHT)).w(Len::Pct(100.)), rule()].gap(0).shrink(0))
 }
 
 /// [`header`]; a `stuck` one, clicked, also scrolls back to its part.
@@ -535,10 +640,10 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let (mut solo, mut mute) = (part.solo, part.mute);
     let switches = solo_mute(ui, &slot.to_string(), &mut solo, &mut mute);
     (part.solo, part.mute) = (solo, mute);
-    let p = cx.p.clone();
-    let level = move || crate::plugin::Meters::read(&p.shared.meters.parts[slot]);
-    let p = cx.p.clone();
-    let dot = activity_dot(move || crate::plugin::Meters::read(&p.shared.meters.parts[slot]) != [0.; 2]);
+    let shared = cx.p.shared.part(slot);
+    let meter = shared.clone();
+    let level = move || meter.as_ref().map_or([0.; 2], |part| crate::plugin::Meters::read(&part.meter));
+    let dot = activity_dot(move || shared.as_ref().is_some_and(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2]));
     if remove {
         cx.remove(slot);
     }

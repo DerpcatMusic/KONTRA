@@ -21,7 +21,7 @@ existing work as clean-room work without supporting development records.
 Keep lawful-acquisition and permission records privately; never publish
 receipts, account information or library access values as proof.
 
-Do not submit NI/Kontakt executable code, leaked SDKs, patches to remove
+Do not submit Kontakt executable code, leaked SDKs, patches to remove
 activation checks, account credentials, serial numbers, library-key lists,
 commercial instruments/samples, extracted scripts, impulse responses,
 artwork or manuals without appropriate rights. Use synthetic fixtures or
@@ -77,20 +77,23 @@ Update the compatibility notes when supported behavior or a known limit changes.
 
 The root `[package].version` in `Cargo.toml` is authoritative. The root package in
 `Cargo.lock`, plugin descriptors and bundle metadata must agree. Do not add a
-separate version literal or a `moose.toml` override. The next planned release is
-`0.2.0`; its changelog is explicitly unreleased until publication.
+separate version literal or a `moose.toml` override. Published snapshots keep their
+original identity; the reviewed fix ledger starts after the shipped `0.3.0` baseline.
 
 Follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). During `0.y.z`
 development, use a deliberate minor bump for incompatible behavior or substantial
 new capabilities and a patch bump for compatible fixes. After `1.0.0`, incompatible
 public API/behavior changes require a major bump, compatible additions a minor bump,
 and compatible fixes a patch bump. A commit does not automatically increment the
-package version. The release maintainer chooses the next version after reviewing
-the accumulated changes, updates the changelog, and includes both in the release
-preparation commit:
+package version. `release-fixes.json` records stable logical defect IDs, source
+checkpoints, validation and explicit maintainer acceptance. Each accepted ID advances
+the baseline patch once: ten accepted fixes after `0.3.0` produce `0.3.10`.
+Features, repeated commits, test follow-ups and pending fixes do not increase that
+count. Review and accept the shipped fix IDs, update the changelog, then prepare
+the authoritative Cargo and lockfile version:
 
 ```sh
-python3 tools/version.py set 0.2.0 --write
+python3 tools/version.py fixes --write
 python3 tools/version.py check
 ```
 
@@ -104,7 +107,7 @@ commit or imply complete Kontakt compatibility.
 
 ## Nightly builds and source identity
 
-Nightlies are prereleases such as `0.2.0-nightly.20261002.g012345abcdef`. The date
+Nightlies are prereleases such as `0.3.10-nightly.20261002.g012345abcdef`. The date
 comes from the source epoch in UTC and the `g` prefix keeps a hexadecimal revision
 from becoming an invalid numeric SemVer identifier. An identical revision and epoch
 produce the same version. CI prepares it in its disposable checkout:
@@ -118,7 +121,12 @@ python3 tools/version.py check --tag "v$(python3 tools/version.py check)"
 The helper rewrites only the root package version and matching lockfile entry. This
 makes the build's tracked source state `modified`, which the identity reports
 truthfully. Ignore/untracked build artifacts do not mark the source modified. A
-nightly is not a new stable release and does not require a fabricated daily changelog.
+nightly includes reviewed Added, Changed, Fixed and Known limits deltas from the
+previous published source, the complete shipped public commit messages and merged
+PR descriptions, and a comparison link. The versioned changelog is also retained
+inside `release-manifest.json`. Keep every accepted fix described in CHANGELOG.md;
+never describe a pending candidate as shipped. An unchanged-source rerun preserves
+the published notes and assets.
 Nightly packaging retains its documented bounded snapshot history; stable tags and
 assets follow the stable release policy.
 

@@ -2,7 +2,7 @@
 
 KONTRA is a Rust sampler for instruments that use the Kontakt file format. It runs as a CLAP or VST3 plug-in and as a standalone application, using the MOOSE plug-in framework.
 
-KONTRA is being built to give musicians an independent sampler, including native Linux playback of instruments they are entitled to use. The goal is interoperability and continued access to their musical work. It is not affiliated with, sponsored by, or endorsed by Native Instruments. Compatibility remains incomplete: loading a preset does not establish that its controls, scripts, routing, or sound match Kontakt.
+KONTRA is being built to give musicians an independent sampler, including native Linux playback of instruments they are entitled to use. The goal is interoperability and continued access to their musical work. It is not affiliated with, sponsored by, or endorsed by the owner of Kontakt. Compatibility remains incomplete: loading a preset does not establish that its controls, scripts, routing, or sound match Kontakt.
 
 KONTRA supplies no commercial Kontakt instrument libraries. You supply your own instruments and samples; their licenses still apply. The source tree includes upstream NCW/WAV codec test fixtures and an openly licensed font, documented in [THIRD_PARTY.md](THIRD_PARTY.md).
 
@@ -36,7 +36,7 @@ and retained support journals, including attempts recorded before GPU creation.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and validation guidance, and [CHANGELOG.md](CHANGELOG.md) for release changes. To report a problem, open the **Logs** tab, choose **Export support report…**, review the preview and new-folder destination, then choose **Export report**. The Logs tab works even when an instrument fails to import. Search or filter the retained events, then select an event for its stage, reason, source location and available load context.
 
-The new report folder contains `report.json` with build/system/audio settings and load issues, `events.jsonl` with recent session events, and `journal.jsonl` with the current journal and retained inactive sessions from previous runs. The editor retains up to 2,048 events / 2 MiB; each active session rotates at 16 MiB total, and inactive journals are retained for up to 7 days / 64 MiB. Active sessions in other processes are excluded. Counts identify omitted, truncated or unwritten events; a partial-journal warning means the available report was saved with coverage gaps. Export failures leave an explicitly incomplete bundle. Paths are redacted by default; the report excludes script contents, samples and credentials. Review it before sharing.
+The new report folder contains `report.json` with build/system/audio settings and load issues, `events.jsonl` with recent session events, and `journal.jsonl` with the current journal and retained inactive sessions from previous runs. The editor retains up to 2,048 events / 2 MiB; each active session rotates at 16 MiB total, and inactive journals are retained for up to 7 days / 64 MiB. Active sessions in other processes are excluded. Counts identify omitted, truncated or unwritten events; a partial-journal warning means the available report was saved with coverage gaps. Export failures leave an explicitly incomplete bundle. Paths are redacted by default; the report includes bounded, numbered script excerpts around reported faults and excludes full script payloads, samples and credentials. Review it before sharing.
 
 For a native UI stall, launch the host or standalone with `KONTRA_NATIVE_UI_TIMING=1` in its environment, then drag a control. One ten-second capture appears as `native_frame_timing` in Logs and support exports. It measures application callbacks and presentation submission, including lock waits; it does not measure GPU completion or display FPS. Capture is disabled by default.
 
@@ -45,6 +45,8 @@ To load a snapshot, first load its base NKI, then use the instrument header menu
 ## Compatibility and known gaps
 
 **Full** means verified end to end for the named behavior. **Partial** means only a subset is implemented or exercised. **Unsupported** means the feature is not implemented. **Untested** means there is not enough reference or host testing to make a claim. **Experimental** means limited validation and an evolving interface. No broad compatibility area below is marked full.
+
+The [compatibility implementation checklist](docs/COMPATIBILITY.md) groups the remaining format, script, UI, DSP and reporting gaps, links their code paths, and separates source changes awaiting validation from published build behavior.
 
 | Area | Status | Implemented | Known limits |
 |---|---|---|---|

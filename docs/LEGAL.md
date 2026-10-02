@@ -29,7 +29,7 @@ rights. [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 | Content supplied | No commercial Kontakt instrument library is supplied; the tree does contain vendored NCW/WAV codec fixtures and an OFL font. | Avoid blanket claims that the repository contains no third-party samples or assets. Fixture recording provenance still needs verification. |
 | Local copies and exports | `src/cache.rs` stores instrument scripts and decoded impulse responses. Creator/state exports can contain library-derived data. | A cache, conversion or saved state does not acquire a new content license. Do not share those files merely because KONTRA produced them. |
 | Format references | THIRD_PARTY.md records algorithm/constant overlaps with GPL-3.0 references. | Protectable copied expression and applicable license obligations need a provenance review; matching format facts alone do not decide this. |
-| Release notices | Nightlies stage LICENSE, NOTICE, THIRD_PARTY.md, this review, OFL, generated dependency texts, unchanged MOOSE/MUI licenses and exact MPL source archives. | Notices address distribution obligations; they do not establish missing permission or lawful decryption. |
+| Release notices | Nightlies stage LICENSE, NOTICE, THIRD_PARTY.md, this review, OFL, generated dependency texts, unchanged MOOSE/MUI licenses and MPL source archives, including the modified vendored PCM parser. | Notices address distribution obligations; they do not establish missing permission or lawful decryption. |
 
 The `license_info.rs` file in the parser contains comments about format
 properties; it is not an ownership verification implementation.

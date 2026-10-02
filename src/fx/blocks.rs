@@ -410,7 +410,8 @@ impl Drive {
 }
 
 /// Feed-forward (or feedback) compressor with a level detector in dB.
-struct Comp {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Comp {
     threshold: f32,
     /// `1 - 1/ratio`.
     slope: f32,
@@ -424,6 +425,41 @@ struct Comp {
     /// Detector level (dB) per channel, and the last gains (feedback).
     env: [f32; 2],
     last: [f32; 2],
+}
+
+/// Group insert DSP with fixed per-voice state; no delay lines or heap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum VoiceEffect {
+    Drive(Drive),
+    Comp(Comp),
+}
+
+impl Default for VoiceEffect {
+    fn default() -> Self { Self::Drive(Drive::default()) }
+}
+
+impl VoiceEffect {
+    pub(crate) fn supports(kind: Kind) -> bool {
+        Drive::supports(kind) || kind == Kind::Compressor
+    }
+
+    pub(crate) fn tune(&mut self, kind: Kind, fields: &Fields, rate: f32) {
+        if kind == Kind::Compressor {
+            if !matches!(self, Self::Comp(_)) { *self = Self::Comp(Comp::new()); }
+            if let Self::Comp(comp) = self { comp.tune(kind, fields, rate); }
+        } else {
+            if !matches!(self, Self::Drive(_)) { *self = Self::Drive(Drive::default()); }
+            if let Self::Drive(drive) = self { drive.tune(kind, fields, rate); }
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        match self { Self::Drive(d) => d.clear(), Self::Comp(c) => c.clear() }
+    }
+
+    pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        match self { Self::Drive(d) => d.process(left, right), Self::Comp(c) => c.process(left, right) }
+    }
 }
 
 /// Detector floor (dB).

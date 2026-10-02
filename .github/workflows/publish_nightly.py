@@ -7,8 +7,10 @@ from pathlib import Path
 import plistlib
 import re
 import subprocess
+import sys
 import tomllib
 import zipfile
+from release_notes import generate as release_notes
 
 REPO = os.environ["GH_REPO"]
 SHA = os.environ["GITHUB_SHA"]
@@ -16,7 +18,7 @@ PLATFORMS = ("linux-x86_64", "windows-x86_64", "macos-arm64", "macos-x86_64")
 
 
 def gh(*args):
-    return subprocess.check_output(["gh", *args])
+    return subprocess.check_output(["gh", *args], stderr=subprocess.PIPE)
 
 
 def api(path, *args):
@@ -166,12 +168,16 @@ def main():
             assert set(i["features"]) & {"clap", "vst3", "standalone"} == {format}, p.name
         assert {"clap", "vst3", "standalone"} <= set(info[2]["features"]), p.name
         assets.append(dict(name=p.name, platform=platform, size=p.stat().st_size, sha256=digest, clap_build=info[0], vst3_build=info[1], standalone_build=info[2]))
-    manifest = dict(version=version, revision=SHA, workflow_run=os.environ["GITHUB_RUN_ID"], assets=assets)
+    previous = max((r for r in current if not r["draft"]), key=lambda r: r["published_at"], default=None)
+    changelog = release_notes(api, REPO, SHA, version, previous)
+    manifest = dict(version=version, revision=SHA, workflow_run=os.environ["GITHUB_RUN_ID"], assets=assets, changelog=changelog)
     data = (json.dumps(manifest, indent=2) + "\n").encode()
     Path("dist/release-manifest.json").write_bytes(data)
     Path("notes.md").write_text(f"""Automated **{version}** snapshot of [{SHA[:12]}](https://github.com/{REPO}/commit/{SHA}).
 Source tag: [`v{version}`](https://github.com/{REPO}/tree/v{version}).
 <!-- kontra-source-tag: v{version} -->
+
+{changelog}
 
 All four archives come from this source commit. `release-manifest.json` records their sizes and SHA256 checksums; each archive includes separate `clap-build-info.json`, `vst3-build-info.json` and standalone `build-info.json` with their actual feature sets.
 Experimental nightly snapshot, not a stable-quality release. GitHub marks it Latest solely to provide permanent download links.
@@ -202,4 +208,9 @@ The project retains this snapshot and one previous complete release for rollback
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except subprocess.CalledProcessError as error:
+        if error.stderr:
+            print(error.stderr.decode(), file=sys.stderr, end="")
+        raise

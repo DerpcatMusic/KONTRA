@@ -72,13 +72,33 @@ def check():
         with zipfile.ZipFile(destination) as archive:
             assert vst_component(archive.read("plugin-states/example.vstpreset")) == state
             assert archive.read("plugin-states/unrelated") == b"keep exactly"
+        # Two devices can alias the same ZIP state. Rewriting only one would
+        # leave the other Kontakt instance loading KONTRA's component bytes.
+        shared = Path(work, "shared.bwproject")
+        shared_tree = struct.pack(">I", 46) + field(1, b"\x09" + device) + field(2, b"\x09" + device) + bytes(4)
+        shared.write_bytes(project_bytes(shared_tree))
+        with zipfile.ZipFile(shared, "a") as archive:
+            archive.writestr("plugin-states/example.vstpreset", preset)
+        shared_before = shared.read_bytes()
+        ambiguous = Path(work, "ambiguous.bwproject")
+        with patch("migrate_bitwig.export_state") as exporter:
+            try:
+                migrate(shared, ambiguous, {"example.vstpreset": Path(work, "multi")}, Path(work, "exporter"), plugin)
+            except ValueError as error:
+                assert "example.vstpreset" in str(error) and "2 VST3 devices" in str(error)
+                assert "distinct state entries" in str(error)
+            else:
+                raise AssertionError("shared state changed only one of its devices")
+            exporter.assert_not_called()
+        assert shared.read_bytes() == shared_before
+        assert not ambiguous.exists() and not ambiguous.with_suffix(".migration.json").exists()
         try:
             migrate(path, destination, {}, Path(work, "exporter"), plugin)
         except ValueError:
             pass
         else:
             raise AssertionError("existing output overwritten")
-    print("Bitwig structure, malformed input, VST3 extraction and source preservation: OK")
+    print("Bitwig structure, VST3 extraction/migration, source preservation and shared-state rejection: OK")
 
 
 if __name__ == "__main__":

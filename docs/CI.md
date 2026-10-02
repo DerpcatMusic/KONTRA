@@ -63,6 +63,13 @@ The graph is:
    Apple's [bundle build version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion)
    and [release version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring) formats.
 6. Publish under an immutable `v<nightly SemVer>` tag with GitHub's Latest flag.
+   Generate reviewed Added/Changed/Fixed/Known limits deltas against the previous
+   release's source CHANGELOG.md, with full shipped public commit messages and
+   merged PR descriptions. The same versioned notes appear in the release body and
+   `release-manifest.json`; no local Git history or README bot commit is required.
+   A missing previous changelog is an explicit bootstrap, not an empty release.
+   The base patch is checked against explicitly accepted logical IDs in
+   `release-fixes.json`, and all binaries derive it from Cargo before packaging.
    These are experimental nightlies, not stable-quality releases. GitHub's
    prerelease flag is false because prereleases cannot serve its permanent
    `/releases/latest/download/<asset>` URLs. The SemVer itself remains a nightly.

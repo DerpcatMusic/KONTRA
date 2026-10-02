@@ -4,7 +4,7 @@ Project-authored code is offered under Apache-2.0 (see LICENSE and NOTICE).
 Vendored and other third-party components retain their own terms. The
 crate inventory was checked on 2026-10-02 with
 `cargo deny --all-features list --format json` (cargo-deny 0.20.2) against
-Cargo.lock: 470 licensed package/version entries (including KONTRA) and
+Cargo.lock at source snapshot `e531505`: 470 licensed package/version entries (including KONTRA) and
 one unlicensed entry, `ni-file`. This includes development dependencies
 and multiple platforms; it is not a per-binary bill of materials or
 confirmation that every distribution obligation has been satisfied.
@@ -128,13 +128,15 @@ obligations, not additional alternatives:
 | unicode-ident 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 
 Use the generated package inventory and texts, not this grouped table,
-for distribution. The separate cargo-about scan includes 482 package
+for distribution. The separate cargo-about scan at that snapshot includes 482 package
 entries across all features/platforms, including build/development crates;
 its graph differs from cargo-deny's grouped inventory above.
 
-MPL-2.0 is file-level copyleft: the symphonia sources are used
-unmodified from crates.io; if they are ever modified, those files must
-stay MPL-2.0 and be made available when distributed. Binary distribution
+MPL-2.0 is file-level copyleft. `vendor/symphonia-format-riff` contains
+Symphonia 0.5.5 sources with a PCM WAVE format-boundary patch; modified
+files retain MPL-2.0 notices and are published with this repository.
+Provenance and patch scope: `vendor/symphonia-format-riff/PATCHES.md`.
+Other Symphonia crates are used unmodified from crates.io. Binary distribution
 also requires informing recipients how to obtain the covered source;
 using unmodified crates does not remove that obligation.
 [MPL-2.0, sections 3.1 and 3.2](https://www.mozilla.org/en-US/MPL/2.0/).
@@ -148,11 +150,13 @@ and license texts with redistributed material. Nightlies include
 `assets/OFL.txt`, `docs/LEGAL.md`, and a generated `licenses/` bundle.
 That bundle contains selected dependency license texts and copyright
 notices, the unchanged MOOSE rider and upstream NOTICE, MUI's license,
-and the exact crates.io source archives for the six MPL dependencies.
+and source archives for the MPL dependencies. The patched
+`symphonia-format-riff` archive contains the current vendored source;
+other MPL archives are copied unchanged from the Cargo registry.
 The `.crate` files are gzip-compressed tar archives containing the
 preferred source; extract them with a tar-compatible archive tool.
-MPL sources are currently unmodified. If modified, distribute the
-modified covered source instead of only an upstream archive.
+Distribute the modified covered source for local MPL patches instead
+of only an upstream archive.
 
 Generate the same bundle for a manual release:
 
