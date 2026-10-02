@@ -165,6 +165,7 @@ jobs:
           python3 tools/licenses.py --self-test
           python3 .github/scripts/test_package_macos.py
           xcrun swiftc -typecheck .github/scripts/check_macos_bundles.swift
+          xcrun swift .github/scripts/macos_package_preflight.swift
       - name: Nightly shipping identity
         if: inputs.release_validation
         shell: bash
