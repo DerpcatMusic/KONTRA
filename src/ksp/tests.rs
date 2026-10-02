@@ -2024,3 +2024,16 @@ end on"#;
     assert_eq!(rig.rt.env.events.live_count(),0);
     assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
 }
+
+#[test]
+fn panic_cleanup_still_releases_the_first_slot_after_a_script_released_later_slots() {
+    let first = "on init\ndeclare ui_label $info(1,1)\nend on\non note\nwait(1)\nnote_off($EVENT_ID)\nend on\non release\nset_text($info,\"first cleared\")\nend on";
+    let last = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nset_text($info,\"last released\")\nend on";
+    let mut rig = Rig::new(&[first,last]);
+    rig.on(0,60).block(64);
+    assert_eq!(prop(&rig.rt.interface(1),0,"$CONTROL_PAR_TEXT"),"last released");
+    rig.rt.cleanup_notes(&mut rig.engine);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"first cleared");
+    assert_eq!(rig.rt.env.events.live_count(),0);
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
