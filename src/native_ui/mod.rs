@@ -4,7 +4,7 @@ mod frontend;
 use crate::ksp::{Live, Runtime};
 use anyhow::{Context, Result, bail, ensure};
 use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
-use moose::mui::mui::prelude::{Align, Insets};
+use moose::mui::mui::{layout::Insets, prelude::Align};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{

@@ -127,7 +127,7 @@ fn primitive(
         Paint::Rectangle(color, radius) => block(0, 0)
             .w(node.width.map_or(Len::Pct(100.), Len::Px))
             .h(node.height.map_or(Len::Pct(100.), Len::Px))
-            .round(*radius)
+            .radius(*radius)
             .fill(Color::srgba(color[0], color[1], color[2], color[3])),
         Paint::Stack => stack(children)
             .w(node.width.map_or(Len::Auto, Len::Px))
