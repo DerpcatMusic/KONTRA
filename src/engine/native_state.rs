@@ -19,6 +19,7 @@ fn key(address: Address) -> Address {
             group,
             index,
             bipolar: false,
+            cubic: false,
         },
         Address::InternalIntensity {
             group,
@@ -35,6 +36,7 @@ fn key(address: Address) -> Address {
             envelope,
             target,
             bipolar: false,
+            cubic: false,
         },
         _ => address,
     }
