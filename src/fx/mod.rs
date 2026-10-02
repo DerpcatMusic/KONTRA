@@ -485,7 +485,7 @@ impl ProgramFx {
                     if c.auto_gain() && ((c.envelope_active() && !c.envelope_supported())
                         || c.early.low_cut_hz != c.late.low_cut_hz
                         || c.early.high_cut_hz != c.late.high_cut_hz
-                        || c.early.length_ratio != c.late.length_ratio) {
+                        || c.early.length_ratio != 1.0 || c.late.length_ratio != 1.0) {
                         out.push(format!("{at}: Auto Gain uses the approximated IR; unsupported native shaping changes its energy"));
                     }
                     if c.envelope_active() && !c.envelope_supported() {
@@ -499,6 +499,9 @@ impl ProgramFx {
                     }
                     if c.early.length_ratio != c.late.length_ratio {
                         out.push(format!("{at}: independent early/late IR sizing is not applied; late size stretches the whole IR"));
+                    }
+                    if c.early.length_ratio != 1.0 || c.late.length_ratio != 1.0 {
+                        out.push(format!("{at}: IR Size uses a resampling approximation; native pitch-preserving time stretching is not applied"));
                     }
                 }
                 Params::SendLevels(s) => {

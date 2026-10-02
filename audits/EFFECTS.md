@@ -148,6 +148,10 @@ than an analog cutoff estimate, which truncated tails near Nyquist. The padding
 is a finite-tail approximation; the native prepared IR length is not established.
 Unequal early/late preparation and its automatic boundary
 remain unimplemented and explicitly reported.
+Non-unit IR Size remains a resampling approximation and now warns even when the
+early and late values agree. The native regional preparation uses a time-stretcher
+with separate length and pitch/rate inputs; plain resampling is not equivalent.
+Auto Gain remains based on this approximated kernel and reports that limitation.
 
 Large accumulated peaks alone do not establish preset correctness or justify a limiter.
 

@@ -182,6 +182,7 @@ fn convolution_auto_gain_uses_prepared_stereo_energy_and_preserves_dry_without_h
             }
         }
     }
+    // The current Size proxy resamples instead of native time stretching.
     // At half the source rate, 1.5x size has a 4/3 source-frame stride.
     // Gain must follow this prepared response, before its independent wet mix.
     let source = [[1.0, 0.0], [0.0, 0.0], [0.0, 2.0], [0.0, 0.0]];
@@ -194,6 +195,8 @@ fn convolution_auto_gain_uses_prepared_stereo_energy_and_preserves_dry_without_h
     c.predelay_ms = 0.1; // 2.4 frames, truncated to two.
     c.ir = Some(Impulse(Arc::new(Sample { rate: SR as u32, frames: source.to_vec() })));
     let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+    assert!(fx.warnings().iter().any(|w| w.contains("IR Size uses a resampling approximation")));
+    assert!(fx.warnings().iter().any(|w| w.contains("Auto Gain uses the approximated IR")));
     let mut p = fx.processor(SR / 2.0, 8);
     let (mut left, mut right) = ([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
@@ -232,7 +235,13 @@ fn convolution_envelope_interpolates_amplitudes_before_auto_gain_and_predelay_wi
                 c.curve_x = order.map(|i| times[i]).to_vec();
                 c.curve_db = order.map(|i| 20.0 * gains[i].log10()).to_vec();
                 let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
-                assert!(fx.warnings().is_empty());
+                if size == 1.0 {
+                    assert!(fx.warnings().is_empty());
+                } else {
+                    let warnings = fx.warnings();
+                    assert!(warnings.iter().any(|w| w.contains("IR Size uses a resampling approximation")));
+                    assert_eq!(warnings.iter().any(|w| w.contains("Auto Gain uses the approximated IR")), automatic);
+                }
                 let mut p = fx.processor(rate, 16);
                 let (mut left, mut right) = ([0.0;16], [0.0;16]);
                 left[0] = 1.0; right[0] = 1.0;
@@ -317,7 +326,7 @@ fn convolution_uniform_filters_shape_audio_and_keep_unknown_splits_explicit() {
     let Params::Convolution(c) = &mut sized.insert.slots[0].params else { unreachable!() };
     c.early.length_ratio = 1.5;
     c.late.length_ratio = 1.5;
-    assert!(sized.warnings().is_empty(), "uniform sizing already plays");
+    assert!(sized.warnings().iter().any(|w| w.contains("IR Size uses a resampling approximation")));
     let Params::Convolution(c) = &mut sized.insert.slots[0].params else { unreachable!() };
     c.early.length_ratio = 1.0;
     assert!(sized.warnings().iter().any(|w| w.contains("independent early/late IR sizing")));
