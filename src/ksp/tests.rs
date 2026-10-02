@@ -1551,6 +1551,39 @@ fn keyboard_note_faults_report_builtin_argument_value_and_original_line() {
 }
 
 #[test]
+fn listener_faults_preserve_command_signal_parameter_and_distinct_runtime_values() {
+    use super::runtime::FaultContext;
+    for (command, context) in [
+        ("set_listener($NI_SIGNAL_TIMER_MS,999)", "set_listener signal $NI_SIGNAL_TIMER_MS (1), parameter 999"),
+        ("set_listener($NI_SIGNAL_TIMER_BEAT,25)", "set_listener signal $NI_SIGNAL_TIMER_BEAT (2), parameter 25"),
+        ("change_listener_par($NI_SIGNAL_TRANSP_START,1)", "change_listener_par signal $NI_SIGNAL_TRANSP_START (3), parameter 1"),
+        ("set_listener(999,1)", "set_listener signal unknown signal (999), parameter 1"),
+    ] {
+        let error = initialize(&format!("on init\n{command}\nend on"),0,0).unwrap_err().to_string();
+        assert!(error.contains("line 2: Invalid listener signal/parameter"), "{error}");
+        assert!(error.contains(context), "{error}");
+    }
+    let source = "on init\ndeclare ui_value_edit $period(0,999,1)\nend on\non ui_control($period)\nchange_listener_par($NI_SIGNAL_TIMER_MS,$period)\nend on";
+    let mut rig = Rig::new(&[source]);
+    let mut live = rig.rt.live();
+    let mut exercise = || {
+        for parameter in [998,999,998] { rig.rt.ui_control(&mut rig.engine,0,0,parameter); }
+        rig.rt.refresh_diagnostics(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(|| exercise()),0);
+    #[cfg(not(feature = "plugin"))]
+    exercise();
+    assert_eq!(live.faults.len(),2);
+    assert_eq!(live.faults[0].count,2);
+    assert_eq!(live.faults[0].context,Some(FaultContext::Listener { change:true, signal:1, parameter:998 }));
+    assert_eq!(live.faults[1].context,Some(FaultContext::Listener { change:true, signal:1, parameter:999 }));
+    assert!(live.faults[0].to_string().contains("change_listener_par signal $NI_SIGNAL_TIMER_MS (1), parameter 998"));
+    let encoded = serde_json::to_value(live.faults[0]).unwrap();
+    assert_eq!(encoded["context"]["Listener"]["parameter"],998);
+}
+
+#[test]
 fn note_fault_context_is_bounded_distinct_and_does_not_leak_to_another_callback() {
     use super::runtime::FaultContext;
     let script = "on init\ndeclare ui_knob $bad(0,256,1)\ndeclare ui_button $other\nend on\non ui_control($bad)\nset_key_color($bad,$KEY_COLOR_RED)\nend on\non ui_control($other)\n$other := 1 / $other\nend on";
