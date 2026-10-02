@@ -134,6 +134,7 @@ def main():
     delete_ref("nightly-staging")
     assets = []
     for p, platform in zip(files, PLATFORMS):
+        notarization = None
         digest = hashlib.sha256(p.read_bytes()).hexdigest()
         assert p.with_suffix(".zip.sha256").read_text().strip() == digest + "  " + p.name, "Archive checksum mismatch: " + p.name
         with zipfile.ZipFile(p) as archive:
@@ -162,12 +163,24 @@ def main():
                     plist = plistlib.loads(archive.read(prefix + bundle + "/Contents/Info.plist"))
                     assert plist["CFBundleShortVersionString"] == plist["CFBundleVersion"] == version.split("-", 1)[0]
                     assert plist["KONTRAVersion"] == version
+                notarization = json.loads(archive.read(prefix + "notarization.json"))
+                assert notarization["status"] == "Accepted" and notarization["stapled"] is True and notarization["signatures_verified"] is True, "Untrusted Mac delivery"
+                assert re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", notarization["id"]), "Missing Apple submission ID"
+                assert set(notarization["sha256"]) == {"KONTRA.dmg", *binaries}
+                for name, product_digest in notarization["sha256"].items():
+                    assert hashlib.sha256(archive.read(prefix + name)).hexdigest() == product_digest, "Notarized product changed: " + name
+                dmg = archive.read(prefix + "KONTRA.dmg")
+                assert len(dmg) > 512 and dmg[-512:-508] == b"koly", "Missing notarized DMG"
         target = {"linux-x86_64": "x86_64-unknown-linux-gnu", "windows-x86_64": "x86_64-pc-windows-msvc", "macos-arm64": "aarch64-apple-darwin", "macos-x86_64": "x86_64-apple-darwin"}[platform]
         assert all(i["version"] == version and i["revision"] == SHA and i["target"] == target and i["profile"] == "release" and {"plugin", "library-access"} <= set(i["features"]) for i in info), p.name
         for i, format in zip(info[:2], ("clap", "vst3")):
             assert set(i["features"]) & {"clap", "vst3", "standalone"} == {format}, p.name
         assert {"clap", "vst3", "standalone"} <= set(info[2]["features"]), p.name
-        assets.append(dict(name=p.name, platform=platform, size=p.stat().st_size, sha256=digest, clap_build=info[0], vst3_build=info[1], standalone_build=info[2]))
+        asset = dict(name=p.name, platform=platform, size=p.stat().st_size, sha256=digest, clap_build=info[0], vst3_build=info[1], standalone_build=info[2])
+        if notarization is not None:
+            assert (notarization["version"], notarization["revision"], notarization["target"]) == (version, SHA, target), "Wrong notarized build identity"
+            asset["notarization"] = notarization
+        assets.append(asset)
     previous = max((r for r in current if not r["draft"]), key=lambda r: r["published_at"], default=None)
     changelog = release_notes(api, REPO, SHA, version, previous)
     manifest = dict(version=version, revision=SHA, workflow_run=os.environ["GITHUB_RUN_ID"], assets=assets, changelog=changelog)
@@ -183,7 +196,7 @@ All four archives come from this source commit. `release-manifest.json` records 
 Experimental nightly snapshot, not a stable-quality release. GitHub marks it Latest solely to provide permanent download links.
 Contents: CLAP plug-in, VST3 plug-in and standalone application. These builds have not been certified in Windows or macOS DAWs.
 Licensing: project-authored code is Apache-2.0; third-party terms apply. Redistribution permission for the required ni-file parser remains unresolved. Library-access decryption is enabled and does not validate ownership or activation. No commercial Kontakt instrument library is supplied. Read the included THIRD_PARTY.md and docs/LEGAL.md before use or redistribution; the notice/source bundle is not legal clearance.
-macOS builds are signed ad hoc, not notarized: after unzipping, run `xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone`.
+macOS products are Developer ID signed with hardened runtime and timestamped. Each Mac ZIP includes `KONTRA.dmg`, accepted by Apple and carrying a validated stapled ticket for offline delivery. Open the DMG in Finder before copying its products; ZIPs and bare executables cannot themselves carry stapled tickets. Direct ZIP extraction does not supply the DMG offline ticket. `notarization.json` records the submission ID and hashes, also retained in the release manifest. Publication requires both Mac architectures to pass signing, notarization and package validation.
 x86_64 plug-ins require AVX2, FMA and BMI2. Linux requires Ubuntu 24.04-compatible system libraries.
 
 The project retains this snapshot and one previous complete release for rollback. Older release records/downloads and managed nightly source tags are removed only after a complete replacement is published. Stable `vX.Y.Z` source tags are preserved.
