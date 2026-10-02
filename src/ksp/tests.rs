@@ -18,6 +18,16 @@ fn label(source: &str) -> String {
 }
 
 #[test]
+fn legacy_pgs_callback_dispatches_through_the_same_shared_storage() {
+    let sender = "on init\n_pgs_create_key(shared_value,1)\ndeclare ui_button $send\nend on\non ui_control($send)\n_pgs_set_key_val(shared_value,0,42)\nend on";
+    let receiver = "on init\ndeclare ui_slider $received(0,100)\nend on\non _pgs_changed\n$received := _pgs_get_key_val(shared_value,0)\nend on";
+    let mut rig = Rig::new(&[sender,receiver]);
+    rig.rt.ui_control(&mut rig.engine,0,0,1);
+    assert_eq!(rig.rt.interface(1).controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(42));
+    assert!(rig.rt.diagnostics().is_empty());
+}
+
+#[test]
 fn script_conditions_inherit_successful_slots_and_partition_the_compiled_cache() {
     let set = "on init\nSET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(KEEP)\nend on";
     let read = "on init\ndeclare ui_label $info(1,1)\nUSE_CODE_IF(NO_SYS_SCRIPT_PEDAL)\nset_text($info,\"disabled\")\nEND_USE_CODE\nUSE_CODE_IF_NOT(NO_SYS_SCRIPT_PEDAL)\nset_text($info,\"default\")\nEND_USE_CODE\nend on";

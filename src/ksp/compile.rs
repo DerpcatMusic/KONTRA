@@ -382,7 +382,7 @@ impl Callback {
             "nrpn" => Self::Nrpn,
             "listener" => Self::Listener,
             "ui_update" => Self::UiUpdate,
-            "pgs_changed" => Self::PgsChanged,
+            "pgs_changed" | "_pgs_changed" => Self::PgsChanged,
             "persistence_changed" => Self::PersistenceChanged,
             "async_complete" => Self::AsyncComplete,
             "ui_controls" => Self::UiControls,
