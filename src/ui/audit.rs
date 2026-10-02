@@ -621,6 +621,7 @@ mod tests {
                 Some(crate::ksp::Value::Int(n)) => *n, _ => default,
             };
             let (low, high) = (bound("$CONTROL_PAR_MIN_VALUE", 0), bound("$CONTROL_PAR_MAX_VALUE", 127));
+            println!("UI_BENCH callback_control={control} callback_variable={} callback_min={low} callback_max={high}", interface.controls[control].variable);
             let mut engine = crate::engine::Engine::default();
             engine.set_bank(Some(Box::new(crate::engine::Bank::load_bare(&instrument).unwrap())));
             engine.set_fx(crate::engine::effects(&instrument, Some(&runtime), 48000.));
