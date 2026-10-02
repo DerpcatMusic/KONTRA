@@ -477,8 +477,9 @@ impl Drive {
                             transistor_curve(*x, drive, power, c4, c5, inverse_power)
                         } else { tube_curve(*x, drive, c4, c5) };
                         let damped = b * y + b * previous + a * lp + ANTI_DENORMAL;
-                        // Native f32 direct form I and addition order.
-                        let output = ((hp * a1 + hp2 * a2) + lp2 * b2) + (lp * b1 + damped * b0);
+                        // Native SIMD feedforward-first order avoids the biased
+                        // steady DC tail of its scalar feedback-first sum.
+                        let output = (((damped * b0 + lp * b1) + lp2 * b2) + hp * a1) + hp2 * a2;
                         (previous, lp2, lp, hp2, hp) = (y, lp, damped, hp, output);
                         *x = output;
                     }
@@ -1357,7 +1358,8 @@ mod tests {
     fn dc_reference_step(x: f32, history: &mut [f32; 4], c: [f32; 5]) -> f32 {
         let [b0, b1, b2, a1, a2] = c;
         let [x1, x2, y1, y2] = *history;
-        let y = ((y1 * a1 + y2 * a2) + x2 * b2) + (x1 * b1 + x * b0);
+        // Native SIMD sum order, independent prepared coefficients above.
+        let y = (((x * b0 + x1 * b1) + x2 * b2) + y1 * a1) + y2 * a2;
         *history = [x, x1, y, y1];
         y
     }
@@ -1503,6 +1505,7 @@ mod tests {
             let mut fields = [0.0; FIELDS];
             fields[2] = 1.0;
             let mut drive = Drive::default();
+            let mut dc_residual = [0.0; 2];
             assert_eq!(crate::plugin::tests::allocations(|| {
                 drive.tune(Kind::Distortion, &fields, rate);
                 assert_eq!(&drive.c[6..11], &dc_reference(rate));
@@ -1516,7 +1519,8 @@ mod tests {
                 }
                 let (mut l, mut r) = ([1.0; 64], [-0.25; 64]);
                 drive.process(&mut l, &mut r);
-                assert!(l.iter().chain(&r).all(|x| x.abs() < 1e-4));
+                dc_residual = [l.iter().fold(0.0f32, |peak, x| peak.max(x.abs())),
+                    r.iter().fold(0.0f32, |peak, x| peak.max(x.abs()))];
                 let c = dc_reference(rate).map(f64::from);
                 assert_eq!(c[0] + c[1] + c[2], 0.0, "zero at DC");
                 assert!(((c[0] - c[1] + c[2]) / (1.0 + c[3] - c[4]) - 1.0).abs() < 1e-7,
@@ -1558,6 +1562,8 @@ mod tests {
                 drive.clear();
                 assert_eq!(drive.s, [0.0; 10]);
             }), 0);
+            eprintln!("Distortion DC residual rate{rate}: left={} right={}", dc_residual[0], dc_residual[1]);
+            assert!(dc_residual.into_iter().all(|x| x < 1e-4));
             let block = Block::new(&effect(Kind::Distortion, &[0.0, 0.0, 1.0]), rate).unwrap();
             assert_eq!(crate::plugin::tests::allocations(|| {
                 assert_eq!(block.tail(0.0), 0);

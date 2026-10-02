@@ -567,12 +567,17 @@ whole-effect equivalence is not claimed.
 Distortion now applies the native prepared DC high-pass after Damping and before
 linear Output. Preparation uses the order-two zero-resonance prototype, the
 native rate-dependent frequency transform and Nyquist gain normalization. It
-retains all five separately rounded float coefficients and the native float
-direct-form recurrence and addition order. It shares Damping output history
+retains all five separately rounded float coefficients and float histories,
+using the native SIMD feedforward-first summation order. The native scalar
+feedback-first float sum leaves a steady DC bias (about 0.0153 for a unit
+constant input at 48 kHz). The SIMD order rejects that numerical bias without
+changing the prepared transfer function or using additional precision/state.
+It shares Damping output history
 with DC input history rather than changing to a different recurrence. Fixed
 coefficient storage also caches the sample rate, avoiding repeated DC preparation
 on ordinary control updates. Drive grows from 72 to 96 bytes; the authored gate
-prints final Drive, VoiceEffect and VoiceFilter sizes for combined validation.
+prints final sizes: Drive 96, VoiceEffect 96 and VoiceFilter 3244 bytes in the
+combined root build.
 The fixed eight-stage array therefore adds at most 192 bytes per voice (192 KiB
 for 1024 voices), with no render allocation. The rack tail now follows the
 prepared digital poles down to the existing silence threshold, replacing the
