@@ -1870,6 +1870,9 @@ end on"#, &Setup { groups:3,zones:0,outputs:8 }).unwrap();
             let v = p.vars.iter().find(|v| &*v.name == name).unwrap();
             assert!(v.slot >= p.domain_slots[0], "{name} is initialized once and remains shared");
         }
+        let scratch = p.vars.iter().find(|v| &*v.name == "$scratch").unwrap();
+        assert!(p.code.iter().any(|op| matches!(op, Op::StI(slot) if *slot == scratch.slot)),
+            "the empty array must not alias the callback's scalar store");
         assert!(p.domain_slots[0] < p.ints);
     }
 }
