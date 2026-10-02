@@ -17,6 +17,7 @@ pub(crate) struct LoopMap {
     /// Crossfade width; the bank guarantees `xfade <= start` and `xfade <= end - start`.
     pub xfade: u64,
     pub until_release: bool,
+    pub alternating: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,18 +71,39 @@ impl Blend {
 impl PlayMap {
     /// Loop geometry `(loop, first crossing, loop length)` when the path reaches the loop.
     fn cycle(&self) -> Option<(LoopMap, u64, u64)> {
-        let l = self
-            .looped
-            .filter(|l| !self.reverse && self.start < l.end)?;
-        Some((l, l.end - self.start, l.end - l.start))
+        let l = self.looped.filter(|l| {
+            if self.reverse {
+                l.alternating && self.end > l.start
+            } else {
+                self.start < l.end
+            }
+        })?;
+        let first = if self.reverse {
+            self.end - l.start
+        } else {
+            l.end - self.start
+        };
+        let len = l.end - l.start;
+        Some((
+            l,
+            first,
+            if l.alternating {
+                (2 * (len - 1)).max(1)
+            } else {
+                len
+            },
+        ))
     }
 
     /// Loop wraps taken when the key is released at virtual frame `release`
     /// (`FOREVER` while held). A wrap whose crossfade has begun is completed.
+    /// Alternating until-release paths instead store the virtual release frame:
+    /// playback continues in the normal direction from its current sample frame.
     pub fn wraps(&self, release: u64) -> u64 {
         match self.cycle() {
             None => 0,
             Some((l, _, _)) if !l.until_release || release == FOREVER => FOREVER,
+            Some((l, _, _)) if l.alternating => release,
             Some((l, first, len)) => (release + l.xfade).saturating_sub(first).div_ceil(len),
         }
     }
@@ -90,6 +112,15 @@ impl PlayMap {
     pub fn len(&self, wraps: u64) -> u64 {
         match self.cycle() {
             Some(_) if wraps == FOREVER => FOREVER,
+            Some((l, _, _)) if l.alternating => {
+                let frame = self.alternating(wraps, FOREVER).frame;
+                wraps
+                    + if self.reverse {
+                        (frame + 1).saturating_sub(self.start)
+                    } else {
+                        self.end - frame
+                    }
+            }
             Some((l, first, len)) if wraps > 0 => first + (wraps - 1) * len + (self.end - l.start),
             _ => self.end - self.start,
         }
@@ -99,6 +130,7 @@ impl PlayMap {
     /// wraps) is released with `wraps` wraps.
     pub fn divergence(&self, wraps: u64) -> u64 {
         match self.cycle() {
+            Some((l, _, _)) if l.alternating && wraps != FOREVER => wraps,
             Some((l, first, len)) if wraps != FOREVER => first + wraps * len - l.xfade,
             _ => FOREVER,
         }
@@ -109,6 +141,9 @@ impl PlayMap {
         let total = self.len(wraps);
         if v >= total {
             return None;
+        }
+        if self.cycle().is_some_and(|(l, _, _)| l.alternating) {
+            return Some(self.alternating(v, wraps));
         }
         if self.reverse {
             return Some(Run {
@@ -160,6 +195,52 @@ impl PlayMap {
         })
     }
 
+    /// Reflect at the loop's sample endpoints without duplicating them. The
+    /// virtual path stays monotone, so the existing fractional resampler and
+    /// streaming ring use the same interpolation stencil across both turns.
+    fn alternating(&self, v: u64, release: u64) -> Run {
+        let l = self.looped.unwrap();
+        let (start, end, lo, hi) = if self.reverse {
+            (
+                0,
+                self.end - self.start,
+                self.end - l.end,
+                self.end - l.start,
+            )
+        } else {
+            (self.start, self.end, l.start, l.end)
+        };
+        let frame = |v: u64| {
+            let first = hi - start;
+            if v < first {
+                return (start + v, first - v, false);
+            }
+            let leg = hi - lo - 1;
+            if leg == 0 {
+                return (lo, 1, false);
+            }
+            let phase = (v - first) % (2 * leg);
+            if phase < leg {
+                (hi - 2 - phase, leg - phase, true)
+            } else {
+                (lo + 1 + phase - leg, 2 * leg - phase, false)
+            }
+        };
+        let (at, len, reverse) = if release != FOREVER && v >= release {
+            let at = frame(release).0 + (v - release);
+            (at, end - at, false)
+        } else {
+            let (at, len, reverse) = frame(v);
+            (at, len.min(release.saturating_sub(v)), reverse)
+        };
+        Run {
+            frame: if self.reverse { self.end - 1 - at } else { at },
+            len,
+            reverse: reverse ^ self.reverse,
+            blend: None,
+        }
+    }
+
     /// First virtual frame from `from` on whose data (or crossfade partner)
     /// lies outside the resident span `[a, b)`; `FOREVER` if the rest of the
     /// path is resident.
@@ -173,7 +254,7 @@ impl PlayMap {
             v += run.len;
             // Every wrapped cycle maps identically: after checking a whole
             // one, skip to the tail.
-            if let Some((_, first, len)) = self.cycle()
+            if let Some((l, first, len)) = self.cycle()
                 && !skipped
                 && wraps > 0
                 && v >= first.max(from) + len
@@ -182,7 +263,11 @@ impl PlayMap {
                     return FOREVER;
                 }
                 skipped = true;
-                v = v.max(first + (wraps - 1) * len);
+                v = v.max(if l.alternating {
+                    wraps
+                } else {
+                    first + (wraps - 1) * len
+                });
             }
         }
         FOREVER
@@ -220,6 +305,45 @@ mod tests {
     /// Reference: step one frame at a time like a naive sampler would.
     fn naive(map: &PlayMap, release: u64, count: u64) -> Vec<(u64, Option<(u64, f32)>)> {
         let mut out = Vec::new();
+        if let Some(l) = map.looped.filter(|l| l.alternating)
+            && (if map.reverse {
+                map.end > l.start
+            } else {
+                map.start < l.end
+            })
+        {
+            let mut s = if map.reverse {
+                map.end as i64 - 1
+            } else {
+                map.start as i64
+            };
+            let normal = if map.reverse { -1 } else { 1 };
+            let mut direction = normal;
+            for v in 0..count {
+                if s < 0
+                    || (!map.reverse && s >= map.end as i64)
+                    || (map.reverse && s < map.start as i64)
+                {
+                    break;
+                }
+                if l.until_release && v >= release {
+                    direction = normal;
+                }
+                out.push((s as u64, None));
+                let held = !l.until_release || v < release;
+                if !held {
+                    direction = normal;
+                } else if l.end - l.start == 1 && s == l.start as i64 {
+                    continue;
+                } else if direction > 0 && s == l.end as i64 - 1 {
+                    direction = -1;
+                } else if direction < 0 && s == l.start as i64 {
+                    direction = 1;
+                }
+                s += direction;
+            }
+            return out;
+        }
         if map.reverse {
             return (map.start..map.end)
                 .rev()
@@ -286,9 +410,10 @@ mod tests {
                 end,
                 xfade,
                 until_release,
+                alternating: false,
             })
         };
-        vec![
+        let mut out = vec![
             PlayMap {
                 start: 3,
                 end: 40,
@@ -331,7 +456,26 @@ mod tests {
                 reverse: false,
                 looped: lp(8, 20, 5, true),
             },
-        ]
+        ];
+        for reverse in [false, true] {
+            for until_release in [false, true] {
+                for (start, end) in [(10, 20), (10, 11), (10, 12)] {
+                    out.push(PlayMap {
+                        start: 3,
+                        end: 40,
+                        reverse,
+                        looped: Some(LoopMap {
+                            start,
+                            end,
+                            xfade: 0,
+                            until_release,
+                            alternating: true,
+                        }),
+                    });
+                }
+            }
+        }
+        out
     }
 
     #[test]

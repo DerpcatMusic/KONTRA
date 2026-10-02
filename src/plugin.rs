@@ -4258,7 +4258,7 @@ end on"#,dir.display());
                 ..Default::default()
             };
             let zone = Zone {
-                loop_range: Some(Loop { start: 0, end: 128, until_release: false, crossfade: 0 }),
+                loop_range: Some(Loop { start: 0, end: 128, alternating: false, until_release: false, crossfade: 0 }),
                 ..Default::default()
             };
             let instrument = Instrument { groups: vec![group], scripts: vec![source.into()], ..Default::default() };
@@ -5326,7 +5326,7 @@ end on"#;
         let p = SamplerParams::new();
         for (slot, channel) in [(0, -1), (1, -1), (2, 0), (3, 5)] {
             let zone = Zone {
-                loop_range: Some(Loop { start: 0, end: 100, until_release: false, crossfade: 0 }),
+                loop_range: Some(Loop { start: 0, end: 100, alternating: false, until_release: false, crossfade: 0 }),
                 ..Zone::default()
             };
             let sample = Sample { rate: 48000, frames: vec![[0.5, 0.25]; 100] };
@@ -5385,6 +5385,7 @@ end on"#;
             loop_range: Some(Loop {
                 start: 0,
                 end: 100,
+                alternating: false,
                 until_release: false,
                 crossfade: 0,
             }),
@@ -5746,7 +5747,7 @@ end on"#;
         use crate::{audio::Sample, import::{Group, Instrument, Loop, Zone}};
         use moose::core::bus_routing::{BusActivation, BusRouting};
         let groups: Vec<Group> = ["Close", "Tree", "Main"].map(|n| Group { name: n.into(), ..Group::default() }).into();
-        let looped = Some(Loop { start: 0, end: 100, until_release: false, crossfade: 0 });
+        let looped = Some(Loop { start: 0, end: 100, alternating: false, until_release: false, crossfade: 0 });
         let zones = (0..3)
             .map(|g| Zone { group: g, sample: PathBuf::from(g.to_string()), loop_range: looped.clone(), ..Zone::default() })
             .collect();

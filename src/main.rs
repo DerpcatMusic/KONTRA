@@ -555,7 +555,7 @@ fn bench(args: &[String]) -> Result<()> {
             group: l,
             sample: format!("layer {l}").into(),
             low_velocity: 1,
-            loop_range: Some(Loop { start: 20000, end: 90000, until_release: false, crossfade: 2000 }),
+            loop_range: Some(Loop { start: 20000, end: 90000, alternating: false, until_release: false, crossfade: 2000 }),
             ..Zone::default()
         })
         .collect();
