@@ -449,7 +449,7 @@ A second metadata-only census of the same 782 files and 788 programs completed
 with zero failures. All 2,400 opaque sources were direct `0x08` BParLFO children
 with structured-object version `0x71`, 67 public bytes, no private bytes, and no
 child chunks. The Analog instrument had 271 distinct source payloads. Its source
-records use shape word 5; this observation alone does not establish a waveform
+records use layout id 5; this observation alone does not establish a waveform
 enumeration or justify treating a stored frequency as Hz.
 
 Stored nonzero target intensities show that this gap affects initial playback:
@@ -485,6 +485,44 @@ oscillator would not establish compatibility with these records. Packed sync
 fields, source flags, target scaling and smoothing, and the older waveform law
 remain unresolved; no guessed source fields or audible LFO implementation were
 added from this census.
+
+The typed native LFO parser/writer now retains both structured and unstructured
+serialization, packed records, and unknown float bits under neutral field names.
+Metadata checks of the base instrument and three snapshots reencoded all 9,600
+complete LFO chunks byte for byte. The snapshot payloads differed from the base
+in 14, 200 and 623 chunks respectively, so this checks edited records as well as
+unchanged ones. These checks establish serialization fidelity, not audio behavior.
+
+### Frequency and clock boundaries
+
+The actual script's tempo lookup has 8,382 entries: 22 rhythmic divisions at
+381 integer BPM values from 20 through 400. Rhythmic duration and BPM determine
+an expected cycle rate independently of the normalized engine value. The entries
+reduce to 3,965 unique rate anchors; repeated expected rates always have the same
+engine value. Observed values span 840 through 970180 and expected rates span
+0.0104167 through 160 Hz, with strict monotonic ordering. This is evidence about
+the library's intended rates, not a measurement of Kontakt oscillator output.
+
+The anchors 599338 at 4 Hz and 669111 at 8 Hz determine an exponential candidate.
+It misses the other anchors by up to 0.5315% (RMS 0.3775%). Exact interpolation
+would reproduce supplied anchors, but does not determine behavior between them,
+outside the observed range, or when stored sync settings apply. The proprietary
+lookup was not copied into production code, and no fitted rate law was applied.
+
+The [official KSP engine parameter reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters)
+lists separate frequency and fade-in unit parameters, as well as LFO phase and
+normalization. The packed native records have not been correlated to these units.
+In particular, stored words such as 12, 24, 48 and 96 cannot yet be treated as Hz
+or note divisions. NI documents retrigger as restarting the waveform and freewheel
+as running without reacting to notes, but the native phase origin, start phase
+units, bypass clock, and waveform values at that origin are not established.
+
+A further 782-file metadata census found lag zero on all 483 AHDSR pitch targets
+and 480 LFO pitch targets. All 1,920 LFO assignments per other observed target
+have nonzero lag. Future source playback therefore also needs independent target
+smoothing. The external group-target census found no pan assignments and found
+160 nonzero Constant assignments each for `loopStart` and `loopLength`, all with
+lag zero. Their loop offset/range semantics remain unsupported.
 
 ## Not verified
 
