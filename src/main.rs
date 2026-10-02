@@ -1,6 +1,8 @@
 use anyhow::{Context,Result,ensure};
 use std::path::Path;
 use kontakto::{audio::Sample,engine::{Bank,Engine,MAX_BLOCK,MAX_VOICES,NoteEvent,load_scripts},import::{self,Group,Loop,Zone}};
+#[cfg(feature = "plugin")]
+mod playback_audit;
 fn main() -> Result<()> {
  let args:Vec<_>=std::env::args().collect();
  let _diagnostics = (!matches!(args.get(1).map(String::as_str), None | Some("--version" | "-V" | "--build-info" | "--help" | "-h"))).then(kontakto::diagnostics::acquire);
@@ -69,6 +71,12 @@ fn main() -> Result<()> {
     println!("{}",serde_json::to_string_pretty(&report)?);
   },
   Some("render") => render(&args[2..])?,
+  #[cfg(feature = "plugin")]
+  Some("playback-audit") => println!("{}",serde_json::to_string_pretty(&playback_audit::run(
+    Path::new(args.get(2).context("playback-audit requires an NKI/NKM path")?),
+    args.get(3).filter(|s| !s.starts_with("--")).map(|s|s.parse()).transpose()?.unwrap_or(0),
+    args.iter().any(|s|s == "--realtime"),
+  )?)?),
   Some("voices") => voices(Path::new(args.get(2).context("voices requires an NKI path")?), args.get(3).map_or("60@0-3000,64@0-3000,67@0-3000", String::as_str))?,
   Some("ksp-run") => ksp_run(Path::new(args.get(2).context("ksp-run requires an NKI path")?),&args[3..])?,
   Some("bench") => bench(&args[2..])?,
@@ -90,7 +98,7 @@ fn main() -> Result<()> {
   Some("audit-ui") => kontakto::audit_ui(&args[2..])?,
   Some("create-library") => create_library(&args[2..])?,
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  _=> println!("kontakto --version\nkontakto --build-info\nkontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-ksp [root...] [--json out.json]\nkontakto audit-dsp [root...]\nkontakto audit-ui [root...] [--shots DIR] [--json out.json]\nkontakto audit-archives [folder]\nkontakto export-multi-state <mapping.kontra-multi> <output.state>\nkontakto compare-plugin-state <expected.state> <readback.state>\nkontakto render [--dry] [--no-script] [--realtime] [--bare] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto bench-ui-control <instrument.nki> <control-variable> [edits=60]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]\nkontakto create-library <samples folder> [--name NAME] [--vendor NAME] [--out DIR] [--kontra-only|--kontakt-only]"),
+  _=> println!("kontakto --version\nkontakto --build-info\nkontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-ksp [root...] [--json out.json]\nkontakto audit-dsp [root...]\nkontakto audit-ui [root...] [--shots DIR] [--json out.json]\nkontakto audit-archives [folder]\nkontakto export-multi-state <mapping.kontra-multi> <output.state>\nkontakto compare-plugin-state <expected.state> <readback.state>\nkontakto playback-audit <instrument.nki|multi.nkm> [program=0] [--realtime]\nkontakto render [--dry] [--no-script] [--realtime] [--bare] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto bench-ui-control <instrument.nki> <control-variable> [edits=60]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]\nkontakto create-library <samples folder> [--name NAME] [--vendor NAME] [--out DIR] [--kontra-only|--kontakt-only]"),
  }
  Ok(())
 }

@@ -874,8 +874,7 @@ impl Engine {
     }
 
     /// Bounded pending work for worker-side support reports: commands, writes, releases.
-    #[cfg(feature = "plugin")]
-    pub(crate) fn pending_work(&self) -> [usize; 3] {
+    pub fn pending_work(&self) -> [usize; 3] {
         [self.commands.len(), self.writes.len(), self.player.pending_releases.len()]
     }
 
