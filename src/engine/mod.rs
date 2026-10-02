@@ -577,6 +577,9 @@ impl Engine {
                 sample: v.sample,
                 wavetable: v.wavetable.map(|table| (table.first, table.cycles)),
                 pos: v.pos,
+                physical_pos: v.wavetable.is_none().then(|| v.map.run(v.pos as u64, v.wraps)).flatten()
+                    .map(|r| r.frame as f64 + if r.reverse { -v.pos.fract() } else { v.pos.fract() }),
+                loop_control_window: v.base_loop.and(v.map.looped).map(|l| (l.start, l.end, l.xfade)),
                 step: v.step * v.tune * v.pitch.1,
                 loop_control_deferred: v.loop_deferred.is_some(),
                 loop_deferred_edits: v.loop_deferred_edits,
@@ -1372,6 +1375,12 @@ pub struct VoiceInfo {
     /// Resident wavetable source start and complete 2048-frame cycle count.
     pub wavetable: Option<(usize, usize)>,
     pub pos: f64,
+    /// Main sample tap in physical frames, including the fractional cursor;
+    /// crossfades also read a partner tap. None for wavetable or an ended path.
+    pub physical_pos: Option<f64>,
+    /// Actual (start, exclusive end, crossfade frames) for the eligible Constant
+    /// loop-control path. None means this path does not process loop controls.
+    pub loop_control_window: Option<(u64, u64, u64)>,
     pub step: f64,
     /// The group runs a per-voice filter or EQ.
     pub filtered: bool,
