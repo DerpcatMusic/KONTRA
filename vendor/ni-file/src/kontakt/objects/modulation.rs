@@ -138,7 +138,7 @@ pub enum ModSource {
 ///
 /// Type:           Chunk<StructuredObject>, fields in private data
 /// SerType:        0x0C
-/// Versions:       0x100, 0x101, 0x102
+/// Versions:       0x100, 0x101, 0x102, 0x104
 /// Kontakt 7:      BParExternalMod
 #[derive(Debug)]
 pub struct ExternalMod(pub StructuredObject);
@@ -158,11 +158,14 @@ pub struct ExternalModParams {
     /// for some CCs), two when unassigned.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_source_data: Vec<u8>,
+    /// Two additional private footer bytes in v0x104; semantics unknown.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub unknown_tail: Vec<u8>,
 }
 
 impl ExternalMod {
     pub fn params(&self) -> Result<ExternalModParams, Error> {
-        if !(0x100..=0x102).contains(&self.0.version) {
+        if !matches!(self.0.version, 0x100..=0x102 | 0x104) {
             return Err(Error::Generic(format!(
                 "Unsupported BParExternalMod version 0x{:X}",
                 self.0.version
@@ -183,6 +186,7 @@ impl ExternalMod {
         };
         let unknown_source_data = reader.read_bytes(unknown_len)?;
         let unknown_id = reader.read_u32_le()?;
+        let unknown_tail = if self.0.version == 0x104 { reader.read_bytes(2)? } else { Vec::new() };
         ensure_consumed(&reader)?;
 
         Ok(ExternalModParams {
@@ -191,6 +195,7 @@ impl ExternalMod {
             targets,
             unknown_id,
             unknown_source_data,
+            unknown_tail,
         })
     }
 }
@@ -372,4 +377,52 @@ pub(crate) fn ensure_consumed(reader: &Cursor<&[u8]>) -> Result<(), Error> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modern_external_modulation_retains_opaque_footer_and_strict_bounds() {
+        let mut private = Vec::new();
+        private.extend(1u32.to_le_bytes());
+        private.extend(6u32.to_le_bytes()); private.extend(b"volume");
+        private.extend(0.75f32.to_le_bytes()); private.extend((-1i16).to_le_bytes());
+        private.push(0x10); private.extend(0u16.to_le_bytes());
+        private.extend(0u32.to_le_bytes()); private.extend([0, 0]); // Name, invert, shaper.
+        private.extend(10u32.to_le_bytes()); private.extend(b"VEL_VOLUME");
+        private.extend(1u32.to_le_bytes()); private.extend(6u32.to_le_bytes()); // Velocity.
+        private.extend([0x7f, 0, 0, 0]); private.extend(5u32.to_le_bytes());
+        private.extend([0x80, 0xff]); // Unknown bytes need not be booleans.
+        let mut modulator = ExternalMod(StructuredObject { version: 0x104,
+            private_data: private.clone(), public_data: Vec::new(), children: Vec::new() });
+        let parsed = modulator.params().unwrap();
+        assert_eq!(parsed.source, ModSource::Velocity);
+        assert_eq!(parsed.name, "VEL_VOLUME");
+        assert_eq!(parsed.targets[0].intensity, 0.75);
+        assert_eq!(parsed.unknown_tail, [0x80, 0xff]);
+        assert_eq!(modulator.0.private_data, private);
+        // Retain the exact native version, framing and opaque private bytes.
+        let mut body = vec![1, 4, 1];
+        body.extend((private.len() as u32).to_le_bytes()); body.extend(&private);
+        body.extend([0; 8]); // Empty public and child data.
+        let chunk = Chunk { id: 0x0c, data: body };
+        let mut original = Vec::new(); chunk.write(&mut original).unwrap();
+        let raw = Chunk::read(Cursor::new(&original)).unwrap();
+        assert_eq!(ExternalMod::try_from(&raw).unwrap().params().unwrap(), parsed);
+        let mut rewritten = Vec::new(); raw.write(&mut rewritten).unwrap();
+        assert_eq!(rewritten, original);
+        for end in 0..private.len() {
+            modulator.0.private_data = private[..end].to_vec();
+            assert!(modulator.params().is_err(), "truncation {end}");
+        }
+        modulator.0.private_data = private.clone(); modulator.0.private_data.push(0);
+        assert!(modulator.params().is_err());
+        modulator.0.private_data = private[..private.len() - 2].to_vec();
+        modulator.0.version = 0x102;
+        assert!(modulator.params().unwrap().unknown_tail.is_empty());
+        modulator.0.version = 0x103;
+        assert!(modulator.params().is_err());
+    }
 }
