@@ -258,12 +258,21 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
     let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| e.to_string())?;
     if filtered {
         let size = tree.size();
+        let retained = std::mem::size_of::<usvg::Tree>()
+            .saturating_add(normalized_tree_bytes(tree.root(), bytes.len()))
+            .saturating_add(bytes.len())
+            .saturating_add(FILTER_CACHE_LIMIT);
+        if retained > PIXEL_LIMIT {
+            return Err("Filtered SVG normalized tree exceeds retained memory budget".into());
+        }
         return Vector::filtered(
             size.width() as f64,
             size.height() as f64,
             Arc::new(FilteredSvg {
                 tree,
                 source: bytes.into(),
+                retained,
+                revision: std::sync::atomic::AtomicU64::new(0),
                 state: Mutex::new(RasterState {
                     images: Vec::with_capacity(2),
                     pending: Vec::with_capacity(2),
@@ -279,6 +288,85 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
     let size = tree.size();
     Vector::new(size.width() as f64, size.height() as f64, sink.0)
         .ok_or_else(|| "Invalid native SVG geometry or layer stack".into())
+}
+/// Count normalized nodes, not source length: <use> may expand a compact
+/// document into many retained boxes. Repeated shared paint/path buffers are
+/// charged conservatively, including spare Vec capacity and reference storage.
+fn normalized_tree_bytes(group: &usvg::Group, source_bytes: usize) -> usize {
+    use std::mem::size_of;
+    fn paint(p: &usvg::Paint) -> usize {
+        fn gradient(g: &usvg::BaseGradient) -> usize {
+            g.id()
+                .len()
+                .saturating_mul(2)
+                .saturating_add(g.stops().len().saturating_mul(2 * size_of::<usvg::Stop>()))
+        }
+        match p {
+            usvg::Paint::Color(_) => 0,
+            usvg::Paint::LinearGradient(g) => {
+                size_of::<usvg::LinearGradient>().saturating_add(gradient(g))
+            }
+            usvg::Paint::RadialGradient(g) => {
+                size_of::<usvg::RadialGradient>().saturating_add(gradient(g))
+            }
+            usvg::Paint::Pattern(_) => usize::MAX,
+        }
+    }
+    let mut bytes = size_of::<usvg::Group>()
+        .saturating_add(group.id().len().saturating_mul(2))
+        .saturating_add(
+            group
+                .children()
+                .len()
+                .saturating_mul(2 * size_of::<usvg::Node>()),
+        )
+        .saturating_add(
+            group
+                .filters()
+                .len()
+                .saturating_mul(2 * size_of::<Arc<usvg::filter::Filter>>()),
+        );
+    for filter in group.filters() {
+        // Primitive structs plus conservative source-backed tables/input/result
+        // strings. These remain shared references; charging every use is safe.
+        bytes = bytes
+            .saturating_add(size_of::<usvg::filter::Filter>())
+            .saturating_add(
+                filter
+                    .primitives()
+                    .len()
+                    .saturating_mul(2 * size_of::<usvg::filter::Primitive>()),
+            )
+            .saturating_add(source_bytes.saturating_mul(16));
+    }
+    for node in group.children() {
+        let owned = match node {
+            usvg::Node::Group(g) => normalized_tree_bytes(g, source_bytes),
+            usvg::Node::Path(p) => {
+                let mut n = size_of::<usvg::Path>() + p.id().len() * 2;
+                n = n
+                    .saturating_add(std::mem::size_of_val(p.data().points()).saturating_mul(2))
+                    .saturating_add(std::mem::size_of_val(p.data().verbs()).saturating_mul(2));
+                if let Some(fill) = p.fill() {
+                    n = n.saturating_add(paint(fill.paint()));
+                }
+                if let Some(stroke) = p.stroke() {
+                    n = n.saturating_add(paint(stroke.paint())).saturating_add(
+                        stroke
+                            .dasharray()
+                            .map_or(0, |d| d.len().saturating_mul(2 * size_of::<f32>())),
+                    );
+                }
+                n
+            }
+            usvg::Node::Image(_) | usvg::Node::Text(_) => usize::MAX,
+        };
+        bytes = bytes.saturating_add(owned);
+        node.subroots(|root| {
+            bytes = bytes.saturating_add(normalized_tree_bytes(root, source_bytes));
+        });
+    }
+    bytes
 }
 // Effects require compositing. Preserve the normalized vector tree and source;
 // only the exact requested device-sized intermediate is rasterized. The source
@@ -305,6 +393,8 @@ impl std::fmt::Debug for RasterState {
 struct FilteredSvg {
     tree: usvg::Tree,
     source: Arc<[u8]>,
+    retained: usize,
+    revision: std::sync::atomic::AtomicU64,
     state: Mutex<RasterState>,
 }
 impl FilteredSvg {
@@ -387,10 +477,10 @@ impl FilteredSvg {
 }
 impl moose::mui::mui::scene::RasterSource for FilteredSvg {
     fn retained_bytes(&self) -> usize {
-        self.source
-            .len()
-            .saturating_mul(65)
-            .saturating_add(FILTER_CACHE_LIMIT)
+        self.retained.max(self.source.len())
+    }
+    fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Acquire)
     }
     fn prepared_image(&self, width: u32, height: u32) -> Result<Option<Image>, String> {
         Self::charge(width, height)?;
@@ -482,6 +572,8 @@ impl moose::mui::mui::scene::RasterSource for FilteredSvg {
                     failure = Some(error);
                 }
             }
+            self.revision
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
             changed = true;
         }
         if let Some(error) = failure {
@@ -684,6 +776,29 @@ mod tests {
                 .any(|c| matches!(c, VectorCommand::PushLayer { alpha, .. } if *alpha == 0.7))
         );
         assert!(decode("bad.svg", br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="16"><mask id="m"/></svg>"#).unwrap_err().contains("mask"));
+    }
+    #[test]
+    fn native_svg_charges_normalized_use_expansion() {
+        let mut svg = String::from(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><defs><filter id="f"><feGaussianBlur stdDeviation=".5"/></filter><g id="p0"><rect width="2" height="2"/></g>"##,
+        );
+        for depth in 1..=12 {
+            svg.push_str(&format!(
+                r##"<g id="p{depth}"><use href="#p{}"/><use href="#p{}"/></g>"##,
+                depth - 1,
+                depth - 1
+            ));
+        }
+        svg.push_str(r##"</defs><use href="#p12" filter="url(#f)"/></svg>"##);
+        let tree = usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default()).unwrap();
+        let normalized = normalized_tree_bytes(tree.root(), svg.len());
+        assert!(
+            normalized > svg.len() * 65,
+            "compact use expansion must be charged by actual nodes: {normalized} vs {}",
+            svg.len() * 65
+        );
+        let asset = Asset::Vector(Arc::new(decode_svg(svg.as_bytes()).unwrap()));
+        assert!(asset.retained_bytes() >= normalized + FILTER_CACHE_LIMIT);
     }
     #[test]
     fn native_png_bounds_compressed_metadata_before_pixel_decode() {
