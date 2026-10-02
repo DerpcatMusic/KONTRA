@@ -278,7 +278,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
     );
     let mut instrument = read(base)?;
     ensure!(
-        saved.group_count as usize == instrument.groups.len(),
+        saved.groups.is_none() || saved.group_count as usize == instrument.groups.len(),
         "Snapshot/base group counts differ"
     );
     let native_groups = GroupList::try_from(
@@ -362,54 +362,59 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         instrument.script_state.len() == states.len(),
         "Base script persistence slots differ"
     );
-    // Reuse the regular effect importer after the entire snapshot has parsed.
-    let effects = Program(StructuredObject {
-        version: program.0.version,
-        public_data: Vec::new(),
-        private_data: Vec::new(),
-        children: saved.effect_children,
-    });
-    let mut fx = crate::fx::ProgramFx::read(&effects).context("Snapshot effects")?;
+    let mut dependencies = vec![snapshot.to_path_buf()];
     let files = other_files(&snapshot_chunks)?;
     // Reject an invalid rooted path before applying any saved state/effects.
     for name in files.values() { snapshot_rooted_path(name)?; }
-    fx.name_impulses(&files);
-    let parent = base.parent().context("Base instrument has no parent")?;
-    let root = base
-        .ancestors()
-        .find(|p| p.join("Samples").is_dir())
-        .unwrap_or(parent);
-    let mut resolver = Resolver::new(root);
-    let container = resource_container(&base_chunks)?;
-    let mut dependencies = vec![snapshot.to_path_buf()];
-    fx.load_impulses(|name, max_frames| {
-        // Snapshot filename segment 0x0b anchors the saved path at the base
-        // library. The generic filename table retains it as a leading slash.
-        let rooted = snapshot_rooted_path(name)?;
-        let (at, relative) = rooted.as_deref().map_or((parent, Path::new(name)), |n| (root, n));
-        let ir = match (
-            resolver.resolve(at, &relative.to_string_lossy())?,
-            &container,
-            name.find("Resources/"),
-        ) {
-            (Some(ir), ..) => Some(ir),
-            (None, Some(nkr), Some(at)) => {
-                resolver.resolve(parent, &format!("{nkr}/{}", &name[at..]))?
+    // Script-only snapshots retain every native group/rack from the base.
+    if !saved.effect_children.is_empty() {
+        // Reuse the regular effect importer after the entire snapshot has parsed.
+        let effects = Program(StructuredObject {
+            version: program.0.version,
+            public_data: Vec::new(),
+            private_data: Vec::new(),
+            children: saved.effect_children,
+        });
+        let mut fx = crate::fx::ProgramFx::read(&effects).context("Snapshot effects")?;
+        fx.name_impulses(&files);
+        let parent = base.parent().context("Base instrument has no parent")?;
+        let root = base
+            .ancestors()
+            .find(|p| p.join("Samples").is_dir())
+            .unwrap_or(parent);
+        let mut resolver = Resolver::new(root);
+        let container = resource_container(&base_chunks)?;
+        fx.load_impulses(|name, max_frames| {
+            // Snapshot filename segment 0x0b anchors the saved path at the base
+            // library. The generic filename table retains it as a leading slash.
+            let rooted = snapshot_rooted_path(name)?;
+            let (at, relative) = rooted.as_deref().map_or((parent, Path::new(name)), |n| (root, n));
+            let ir = match (
+                resolver.resolve(at, &relative.to_string_lossy())?,
+                &container,
+                name.find("Resources/"),
+            ) {
+                (Some(ir), ..) => Some(ir),
+                (None, Some(nkr), Some(at)) => {
+                    resolver.resolve(parent, &format!("{nkr}/{}", &name[at..]))?
+                }
+                _ => None,
             }
-            _ => None,
-        }
-        .context("file missing or its archive member is unreadable")?;
-        dependencies.push(ir.clone());
-        crate::audio::decode(&ir, max_frames)
-    });
-    warnings.extend(fx.warnings());
-    warnings.push("Snapshot: unknown group public/source fields and trailing selection flags are retained but not applied; base scalar/source settings remain in use".into());
-    warnings.push("Snapshot: group IDs require the supplied base NKI's original group arrangement; a reordered foreign base with the same name/count cannot be detected".into());
+            .context("file missing or its archive member is unreadable")?;
+            dependencies.push(ir.clone());
+            crate::audio::decode(&ir, max_frames)
+        });
+        warnings.extend(fx.warnings());
+        fx.main = std::mem::take(&mut instrument.fx.main);
+        instrument.fx = fx;
+    }
+    if saved.groups.is_some() {
+        warnings.push("Snapshot: unknown group public/source fields and trailing selection flags are retained but not applied; base scalar/source settings remain in use".into());
+        warnings.push("Snapshot: group IDs require the supplied base NKI's original group arrangement; a reordered foreign base with the same name/count cannot be detected".into());
+    }
     for (base, saved) in instrument.script_state.iter_mut().zip(states) {
         base.extend(saved);
     }
-    fx.main = std::mem::take(&mut instrument.fx.main);
-    instrument.fx = fx;
     instrument.warnings.extend(warnings);
     instrument.warnings.sort();
     instrument.warnings.dedup();
