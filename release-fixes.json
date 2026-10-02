@@ -869,7 +869,7 @@
         "fcd60e49025bf732dd3144b05fd65cf5bc890426",
         "e10908348bc74802fcaf31891ec3e1a3cb7d9ecc"
       ],
-      "validation": "Authored native-clock, RAM/stream partition, interpolation, release and zero-heap gates pass on frozen b83ed44; all 89 playback tests pass. Actual six-preset replay on 27adc43 exposed an effect/LFO namespace collision, fixed separately. New focused gates pass on b5d0a47, but corrected actual replay remains pending. Other waveforms, source phases, delayed/free-running ownership and live frequency parameters remain unsupported; standard sine/exp math is a numerical approximation.",
+      "validation": "Authored native-clock, RAM/stream partition, interpolation, release and zero-heap gates pass on frozen b83ed44; all 89 playback tests pass. Actual six-preset replay on 27adc43 exposed an effect/LFO namespace collision, fixed separately. New focused gates pass on b5d0a47, and three matched actual captures on clean abeafde prove fractional pitch-source travel in Rad Prelude and Beta Decay while Catastrophic stays byte-identical. All 361 journal rows are retained with zero faults or delivery loss; no sonic-parity claim. Other waveforms, source phases, delayed/free-running ownership and live frequency parameters remain unsupported; standard sine/exp math is a numerical approximation.",
       "accepted": true
     },
     {
@@ -887,7 +887,7 @@
       "source_commits": [
         "9c76376f28a8ad1c10a2e7e88cd29e52c58b0727"
       ],
-      "validation": "Actual 27adc43 Rad Prelude/Beta Decay captures exposed zero-depth shaper effect slot7 rejecting internal LFO7. Six focused gates pass on frozen b5d0a47, including actual-shaped raw records, retained effect assignments and conservative unknown-source rejection. Corrected real-preset replay remains pending.",
+      "validation": "Actual 27adc43 Rad Prelude/Beta Decay captures exposed zero-depth shaper effect slot7 rejecting internal LFO7. Six focused gates pass on frozen b5d0a47, including actual-shaped raw records, retained effect assignments and conservative unknown-source rejection. Three matched actual captures on clean abeafde prove fractional pitch-source travel in Rad Prelude group234 and Beta Decay groups28/51, with unchanged controls/Constant windows and byte-identical Catastrophic negative control. All 361 journal rows are retained with zero faults or delivery loss; no sonic-parity claim.",
       "accepted": true
     },
     {
@@ -897,6 +897,15 @@
         "7b93fa535663369ee331f3239a74caa037379e76"
       ],
       "validation": "Six focused gates pass on frozen b5d0a47. End-to-end actual script callbacks compare PCM with independent physical depths after fragmented rendering, verify unchanged phase, exact source/target indices, alias coalescing, seeded restore getters, release retirement and zero audio heap. Unsupported target/source kinds, wavetable paths and live frequency remain rejected.",
+      "accepted": true
+    },
+    {
+      "id": "classic-saturation-native-transfer",
+      "summary": "Replace the incorrect Classic Saturation proxy with the native piecewise polynomial Shape law and unchanged linear Output",
+      "source_commits": [
+        "d3d7373f354787761d7d54939728469d012e8a81"
+      ],
+      "validation": "Four exact gates pass on frozen 6bf086e: independent scalar branch-boundary values, linear Output, ordered group processing, live address identity and zero audio heap. Existing LoFi max-rate law remains unchanged. Actual Contradiction selected group37 is active Classic Mode0 Shape1; corrected matched capture is pending. Enhanced/Drums remain explicitly diagnosed approximations.",
       "accepted": true
     }
   ]
