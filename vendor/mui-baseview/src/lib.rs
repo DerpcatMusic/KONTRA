@@ -540,7 +540,13 @@ impl<V: View> Handler<V> {
                     };
                     d.wheel(wheel, mods(modifiers));
                 }
-                MouseEvent::CursorLeft | MouseEvent::DragLeft => d.pointer_left(),
+                MouseEvent::CursorLeft | MouseEvent::DragLeft => {
+                    // KONTAKTO patch: a release may still be waiting for a
+                    // frame. Do not restore an already-outside pointer.
+                    self.pointer_at = None;
+                    self.hidden_at = None;
+                    d.pointer_left();
+                }
                 MouseEvent::DragEntered {
                     position,
                     modifiers,
@@ -573,6 +579,11 @@ impl<V: View> Handler<V> {
             },
             Event::Window(e @ (WindowEvent::Focused | WindowEvent::Unfocused)) => {
                 let focused = matches!(e, WindowEvent::Focused);
+                if !focused {
+                    // KONTAKTO patch: never warp back into an inactive editor.
+                    self.pointer_at = None;
+                    self.hidden_at = None;
+                }
                 d.focus(focused);
                 if let Some(a11y) = self.a11y.as_mut() {
                     a11y.focus(focused);
