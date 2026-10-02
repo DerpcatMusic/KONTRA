@@ -440,8 +440,8 @@ pub struct Program {
     /// Blocks that failed to compile, disabled at runtime.
     pub errors: Vec<String>,
     pub diagnostics: BTreeSet<String>,
-    pub saved_arrays: Vec<VarId>,
-    pub array_reads: Vec<VarId>,
+    pub array_writes: Vec<VarId>,
+    pub array_jobs: Vec<VarId>,
     pub pgs_int_keys: Vec<u32>,
     pub pgs_str_keys: Vec<u32>,
 }
@@ -1625,11 +1625,11 @@ impl<'a> Compiler<'a> {
                         "{fname} requires an array"
                     );
                     self.emit(Op::Ref(v));
-                    if matches!(b, Builtin::SaveArray | Builtin::SaveArrayStr) && !self.p.saved_arrays.contains(&v) {
-                        self.p.saved_arrays.push(v);
+                    if b == Builtin::SaveArrayStr && !self.p.array_writes.contains(&v) {
+                        self.p.array_writes.push(v);
                     }
-                    if b == Builtin::LoadArrayStr && !self.p.array_reads.contains(&v) {
-                        self.p.array_reads.push(v);
+                    if matches!(b, Builtin::LoadArrayStr | Builtin::SaveArrayStr) && !self.p.array_jobs.contains(&v) {
+                        self.p.array_jobs.push(v);
                     }
                 }
                 Arg::K => {

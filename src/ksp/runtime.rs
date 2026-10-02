@@ -431,12 +431,11 @@ pub struct Env {
     engine_pars: Vec<(EnginePar, i32)>,
     /// Set while `on init` runs off the audio thread: storage may grow.
     pub(super) loading: bool,
-    pub saved_arrays: BTreeMap<(u8, VarId), (Value, bool)>,
-    pub(super) array_spares: Vec<Box<super::ArrayRead>>,
-    pub(super) array_requests: VecDeque<Box<super::ArrayRead>>,
+    pub(super) array_spares: Vec<Box<super::ArrayJob>>,
+    pub(super) array_requests: VecDeque<Box<super::ArrayJob>>,
     pub(super) array_inflight: usize,
-    array_results: VecDeque<Box<super::ArrayRead>>,
-    array_retired: VecDeque<Box<super::ArrayRead>>,
+    array_results: VecDeque<Box<super::ArrayJob>>,
+    array_retired: VecDeque<Box<super::ArrayJob>>,
     pub spare_pgs_ints: Vec<(String, Vec<i32>)>,
     pub spare_pgs_strs: Vec<(String, String)>,
     pub spare_keyranges: Vec<String>,
@@ -482,7 +481,6 @@ impl Env {
             message: String::with_capacity(256),
             engine_pars: Vec::with_capacity(ENGINE_PAR_HEADROOM),
             loading: false,
-            saved_arrays: BTreeMap::new(),
             array_spares: Vec::new(),
             array_requests: VecDeque::with_capacity(super::arrays::ARRAY_QUEUE),
             array_inflight: 0,
@@ -922,26 +920,25 @@ impl Runtime {
                 state.ui.listeners.entry(name).or_insert(0);
             }
             state.persistent.reserve(prog.vars.len());
-            for &v in &prog.array_reads {
+            for &v in &prog.array_jobs {
                 if !self.env.array_spares.iter().any(|r| r.slot == state.index && r.var == v) {
                     // Two jobs per destination allow a second authored request
                     // before the first result returns. Further requests fail explicitly.
                     for _ in 0..2 {
-                        self.env.array_spares.push(Box::new(super::ArrayRead::prepared(state.index, v, &prog.vars[v as usize])));
+                        let var = &prog.vars[v as usize];
+                        let mut job = super::ArrayJob::prepared(state.index, v, var);
+                        if prog.array_writes.contains(&v) {
+                            let mut snapshot = read_value(&state.mem, var);
+                            let mut i = var.slot as usize;
+                            each_text_in(&mut snapshot, &mut |s| {
+                                s.reserve(state.mem.strs[i].capacity().saturating_sub(s.len()));
+                                i += 1;
+                            });
+                            job.snapshot = Some(snapshot);
+                        }
+                        self.env.array_spares.push(Box::new(job));
                     }
                 }
-            }
-            for &v in &prog.saved_arrays {
-                let entry = self
-                    .env
-                    .saved_arrays
-                    .entry((state.index, v))
-                    .or_insert_with(|| (read_value(&state.mem, &prog.vars[v as usize]), false));
-                let mut i = prog.vars[v as usize].slot as usize;
-                each_text_in(&mut entry.0, &mut |s| {
-                    s.reserve(state.mem.strs[i].capacity().saturating_sub(s.len()));
-                    i += 1;
-                });
             }
             for &key in &prog.pgs_int_keys {
                 let name = &*prog.strings[key as usize];
@@ -1841,17 +1838,17 @@ impl Runtime {
     }
 
     /// Hand these jobs to a non-audio worker. A result retains its owned parse
-    /// buffers until the worker receives it again via `pop_retired_array_read`.
-    pub fn pop_array_read(&mut self) -> Option<Box<super::ArrayRead>> {
+    /// buffers until the worker receives it again via `pop_retired_array_job`.
+    pub fn pop_array_job(&mut self) -> Option<Box<super::ArrayJob>> {
         self.env.array_requests.pop_front()
     }
 
-    pub fn can_finish_array_read(&self) -> bool {
+    pub fn can_finish_array_job(&self) -> bool {
         self.env.array_results.len() < super::arrays::ARRAY_QUEUE
     }
 
-    pub fn finish_array_read(&mut self, request: Box<super::ArrayRead>) -> Result<(), Box<super::ArrayRead>> {
-        if !self.programs.get(request.slot as usize).is_some_and(|p| p.array_reads.contains(&request.var)) {
+    pub fn finish_array_job(&mut self, request: Box<super::ArrayJob>) -> Result<(), Box<super::ArrayJob>> {
+        if !self.programs.get(request.slot as usize).is_some_and(|p| p.array_jobs.contains(&request.var)) {
             return Err(request);
         }
         if request.id < 0 {
@@ -1859,17 +1856,17 @@ impl Runtime {
             self.env.array_inflight = self.env.array_inflight.saturating_sub(1);
             self.env.array_spares.push(request);
         } else {
-            if !self.can_finish_array_read() { return Err(request) }
+            if !self.can_finish_array_job() { return Err(request) }
             self.env.array_results.push_back(request);
         }
         Ok(())
     }
 
-    pub fn pop_retired_array_read(&mut self) -> Option<Box<super::ArrayRead>> {
+    pub fn pop_retired_array_job(&mut self) -> Option<Box<super::ArrayJob>> {
         self.env.array_retired.pop_front()
     }
 
-    fn install_array_reads(&mut self, mut budget: usize) {
+    fn install_array_jobs(&mut self, mut budget: usize) {
         while budget > 0 && self.env.array_retired.len() < super::arrays::ARRAY_QUEUE
             && self.env.async_done.len() < self.env.async_done.capacity()
         {
@@ -1924,7 +1921,7 @@ impl Runtime {
 
     /// Finish the current block: resume every callback due before its end.
     pub fn process(&mut self, engine: &mut dyn KspEngine, frames: u32) {
-        self.install_array_reads(256);
+        self.install_array_jobs(256);
         let end = self.env.now + u64::from(frames);
         // What the last settle left for later (see `settle`).
         if self.env.cleaning || self.env.pgs_changed || !self.env.async_done.is_empty() {

@@ -395,9 +395,9 @@ pub struct Shared {
     /// IR loads requested by scripts: part, instrument generation, script epoch.
     ir_requests: ArrayQueue<(usize, u64, u64, crate::engine::IrRequest)>,
     ir_ready: ArrayQueue<(usize, u64, IrHandoff)>,
-    array_requests: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayRead>)>,
-    array_ready: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayRead>)>,
-    array_retired: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayRead>)>,
+    array_requests: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
+    array_ready: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
+    array_retired: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
     /// Host sample rate (`f64` bits) that effect processors are built for.
     pub(crate) rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
@@ -878,7 +878,7 @@ struct Retired {
     ir: Option<crate::fx::PreparedIr>,
 }
 
-/// Array parsing and disposal share the existing serialized file-service worker.
+/// Array reads, writes and disposal share the serialized file-service worker.
 fn load_arrays(params: &SamplerParams) {
     let current = |part: usize, generation: u64, epoch: u64| {
         generation == params.shared.generation[part].load(Ordering::Acquire)
@@ -898,13 +898,29 @@ fn load_arrays(params: &SamplerParams) {
     }
     while !params.shared.array_ready.is_full() {
         let Some((part, generation, epoch, mut request)) = params.shared.array_requests.pop() else { break };
-        if !current(part, generation, epoch) { continue }
-        if !request.read() {
-            let source = params.shared.view.lock().unwrap().parts[part].instrument.clone();
-            if let Some(source) = source {
-                crate::diagnostics::resource(&source.path, request.path(), request.error().unwrap_or("NKA read failed"));
+        if !current(part, generation, epoch) {
+            if request.is_write() {
+                crate::diagnostics::event(crate::diagnostics::LogLevel::Info,"ksp","array-save-canceled",
+                    serde_json::json!({"path":request.path(),"part":part,"generation":generation,"script_epoch":epoch}));
+            }
+            continue
+        }
+        let source = params.shared.view.lock().unwrap().parts[part].instrument.clone();
+        let success = request.perform();
+        if !success {
+            if let Some(source) = &source {
+                crate::diagnostics::resource(&source.path, request.path(), request.error().unwrap_or("NKA file operation failed"));
             }
         }
+        // A save already committed remains a real file write if its runtime is
+        // replaced during I/O. Record that outcome; never deliver it to a new slot.
+        let still_current = current(part,generation,epoch);
+        if request.is_write() && success {
+            crate::diagnostics::event(crate::diagnostics::LogLevel::Info,"ksp","array-file-saved",
+                serde_json::json!({"path":request.path(),"part":part,"generation":generation,
+                    "script_epoch":epoch,"completion_stale":!still_current}));
+        }
+        if !still_current { continue }
         params.shared.array_ready.push((part, generation, epoch, request)).ok().unwrap();
     }
 }
@@ -2554,7 +2570,7 @@ impl PluginLogic for Sampler {
             let current = generation == p.shared.generation[slot].load(Ordering::Acquire)
                 && epoch == s.script_epoch[slot];
             let request = if current {
-                match s.rack.parts[slot].finish_array_read(request) {
+                match s.rack.parts[slot].finish_array_job(request) {
                     Ok(()) => continue,
                     Err(request) => request,
                 }
@@ -2821,12 +2837,12 @@ impl PluginLogic for Sampler {
         for (part, engine) in s.rack.parts.iter_mut().enumerate() {
             let generation = p.shared.generation[part].load(Ordering::Acquire);
             while !p.shared.array_requests.is_full() {
-                let Some(request) = engine.pop_array_read() else { break };
+                let Some(request) = engine.pop_array_job() else { break };
                 p.shared.array_requests.push((part, generation, s.script_epoch[part], request)).ok().unwrap();
                 arrays_queued = true;
             }
             while !p.shared.array_retired.is_full() {
-                let Some(request) = engine.pop_retired_array_read() else { break };
+                let Some(request) = engine.pop_retired_array_job() else { break };
                 p.shared.array_retired.push((part, generation, s.script_epoch[part], request)).ok().unwrap();
                 arrays_queued = true;
             }
@@ -3884,6 +3900,139 @@ end on"#, dir.display(), dir.display());
         }), 0);
         load_arrays(&p);
         assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "stale results never enter the replacement script");
+        drop(retired);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn async_array_writes_capture_call_time_values_fail_honestly_and_cancel_stale_jobs_without_allocating() {
+        let dir = std::env::temp_dir().join(format!("kontra-async-save-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = format!(r#"on init
+make_perfview
+declare ui_menu $save
+add_menu_item($save,"Write",1)
+add_menu_item($save,"Fail",2)
+add_menu_item($save,"Queue",3)
+add_menu_item($save,"Stale",4)
+add_menu_item($save,"Committed",5)
+declare %integers[3] := (42,-3,7)
+declare ?reals[2] := (0.25,-1.5)
+declare !names[2]
+!names[0] := "Ω"
+!names[1] := "😀"
+declare $done
+declare $success
+make_persistent($done)
+make_persistent($success)
+end on
+on ui_control($save)
+select ($save)
+case 1
+save_array_str(%integers,"{0}/integers.nka")
+save_array_str(?reals,"{0}/reals.nka")
+save_array_str(!names,"{0}/names.nka")
+%integers[0] := 999
+?reals[0] := 99.0
+!names[0] := "later"
+case 2
+save_array_str(%integers,"{0}/missing/failed.nka")
+case 3
+%integers[0] := 50
+save_array_str(%integers,"{0}/queued.nka")
+%integers[0] := 51
+save_array_str(%integers,"{0}/queued.nka")
+%integers[0] := 52
+save_array_str(%integers,"{0}/queued.nka")
+case 4
+save_array_str(%integers,"{0}/stale.nka")
+case 5
+save_array_str(%integers,"{0}/committed.nka")
+end select
+end on
+on async_complete
+inc($done)
+$success := $success+$NI_ASYNC_EXIT_STATUS
+end on"#,dir.display());
+        let instrument = Instrument {scripts:vec![source],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);
+        assert!(errors.is_empty(),"{errors:?}");
+        let p=SamplerParams::new();
+        let mut dsp=Dsp::default();
+        dsp.script_epoch[0]=1;
+        {
+            let mut view=p.shared.view.lock().unwrap();
+            view.parts[0].script_epoch=1;
+            view.parts[0].interface=Some(Arc::new(rt.as_deref().unwrap().interface(0)));
+        }
+        dsp.rack.parts[0].set_script(rt);
+        let mut outputs=vec![vec![0.;64];2];
+        let mut refs:Vec<_>=outputs.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer=AudioBuffer::from_slices_checked(&[],&mut refs,64);
+        let transport=TransportInfo::default();
+        let mut midi_out=EventList::with_capacity(0);
+        let mut cx=ProcessContext::new(&transport,48000.,64,&mut midi_out);
+        let events=EventList::with_capacity(0);
+        let tick=|dsp:&mut Dsp,buffer:&mut AudioBuffer,cx:&mut ProcessContext|{
+            Sampler::process(dsp,&p,buffer,&events,cx);
+        };
+        p.shared.edit_control(0,0,1);
+        assert_eq!(allocations(||tick(&mut dsp,&mut buffer,&mut cx)),0);
+        assert!(!dir.join("integers.nka").exists(),"audio only snapshots and queues");
+        load_arrays(&p);
+        assert_eq!(std::fs::read(dir.join("integers.nka")).unwrap(),b"%integers\n42\n-3\n7\n");
+        assert_eq!(std::fs::read(dir.join("reals.nka")).unwrap(),b"?reals\n0.25\n-1.5\n");
+        assert_eq!(std::fs::read(dir.join("names.nka")).unwrap(),"!names\nΩ\n😀\n".as_bytes());
+        assert_eq!(allocations(||for _ in 0..3 {tick(&mut dsp,&mut buffer,&mut cx);}),0);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$success"],crate::ksp::Value::Int(3));
+        load_arrays(&p);tick(&mut dsp,&mut buffer,&mut cx);
+        assert_eq!(allocations(||{
+            dsp.rack.parts[0].ui_control(0,0,2);tick(&mut dsp,&mut buffer,&mut cx);
+        }),0);
+        load_arrays(&p);
+        assert!(!dir.join("missing").exists());
+        assert_eq!(allocations(||tick(&mut dsp,&mut buffer,&mut cx)),0);
+        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().iter().any(|s|s.starts_with("save_array_str: file could not be written")));
+        load_arrays(&p);tick(&mut dsp,&mut buffer,&mut cx);
+        assert_eq!(allocations(||{
+            dsp.rack.parts[0].ui_control(0,0,3);tick(&mut dsp,&mut buffer,&mut cx);
+        }),0);
+        assert_eq!(p.shared.array_requests.len(),2);
+        load_arrays(&p);
+        assert_eq!(std::fs::read(dir.join("queued.nka")).unwrap(),b"%integers\n51\n-3\n7\n");
+        assert_eq!(allocations(||for _ in 0..2 {tick(&mut dsp,&mut buffer,&mut cx);}),0);
+        let saved=dsp.rack.parts[0].script().unwrap().persistence();
+        assert_eq!(saved[0]["$done"],crate::ksp::Value::Int(7));
+        assert_eq!(saved[0]["$success"],crate::ksp::Value::Int(5));
+        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().iter().any(|s|s.starts_with("save_array_str: prepared request queue")));
+        load_arrays(&p);tick(&mut dsp,&mut buffer,&mut cx);
+        assert_eq!(allocations(||{
+            dsp.rack.parts[0].ui_control(0,0,4);tick(&mut dsp,&mut buffer,&mut cx);
+        }),0);
+        let (rt,_)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);
+        let mut retired=None;
+        p.shared.view.lock().unwrap().parts[0].script_epoch=2;
+        assert_eq!(allocations(||{
+            retired=dsp.rack.parts[0].set_script(rt);dsp.script_epoch[0]=2;
+        }),0);
+        load_arrays(&p);
+        assert!(!dir.join("stale.nka").exists(),"stale queued write never begins");
+        drop(retired);
+        assert_eq!(allocations(||{
+            dsp.rack.parts[0].ui_control(0,0,5);tick(&mut dsp,&mut buffer,&mut cx);
+        }),0);
+        load_arrays(&p);
+        let committed=std::fs::read(dir.join("committed.nka")).unwrap();
+        let (rt,_)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);
+        let mut retired=None;
+        p.shared.view.lock().unwrap().parts[0].script_epoch=3;
+        assert_eq!(allocations(||{
+            retired=dsp.rack.parts[0].set_script(rt);dsp.script_epoch[0]=3;
+            tick(&mut dsp,&mut buffer,&mut cx);
+        }),0);
+        load_arrays(&p);
+        assert_eq!(std::fs::read(dir.join("committed.nka")).unwrap(),committed,"committed save is not rolled back when completion becomes stale");
+        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$done"],crate::ksp::Value::Int(0));
         drop(retired);
         std::fs::remove_dir_all(dir).unwrap();
     }

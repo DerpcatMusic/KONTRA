@@ -1780,6 +1780,29 @@ end on";
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn save_array_str_writes_actual_typed_nka_files_during_init() {
+    let root = std::env::temp_dir().join(format!("kontakto-init-save-{}",std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let script = format!(r#"on init
+declare %integers[2] := (-4,42)
+declare ?reals[2] := (0.25,-1.5)
+declare !names[2]
+!names[0] := "Ω"
+!names[1] := "😀"
+save_array_str(%integers,"{}/integers.nka")
+save_array_str(?reals,"{}/reals.nka")
+save_array_str(!names,"{}/names.nka")
+end on"#,root.display(),root.display(),root.display());
+    let mut rig = Rig::new(&[&script]);
+    assert_eq!(std::fs::read(root.join("integers.nka")).unwrap(),b"%integers\n-4\n42\n");
+    assert_eq!(std::fs::read(root.join("reals.nka")).unwrap(),b"?reals\n0.25\n-1.5\n");
+    assert_eq!(std::fs::read(root.join("names.nka")).unwrap(),"!names\nΩ\n😀\n".as_bytes());
+    rig.block(1);
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// `vm::hot`, the integer loop with its chained ops, runs note callbacks
 /// exactly like the op-at-a-time reference: same calls, same reports, and
 /// preempted by the block budget at the same points.
