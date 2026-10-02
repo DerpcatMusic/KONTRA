@@ -232,6 +232,42 @@ fn truncated_chunk_is_an_error_not_partial_success() {
         .is_empty());
 }
 #[test]
+fn nkx_directory_errors_distinguish_signature_offset_and_truncation() {
+    let mut header = 0x5e70ac54u32.to_le_bytes().to_vec();
+    header.extend(0x110u16.to_le_bytes());
+    header.extend([0; 16]);
+    assert!(Archive::read_index(Cursor::new(&header)).unwrap().entries.is_empty());
+    header[4..6].copy_from_slice(&0x111u16.to_le_bytes());
+    assert!(Archive::read_index(Cursor::new(&header)).unwrap().entries.is_empty());
+
+    for magic in [0u32, 0x12345678] {
+        let mut wrong = header.clone();
+        wrong[..4].copy_from_slice(&magic.to_le_bytes());
+        let error = Archive::read_index(Cursor::new(wrong)).unwrap_err().to_string();
+        assert!(error.contains("at 0x0 ()"), "{error}");
+        assert!(error.contains(&format!("got {magic:#010x}")), "{error}");
+        assert!(error.contains("expected 0x5e70ac54, file length 22"), "{error}");
+    }
+    for length in [0, 4, 21] {
+        let error = Archive::read_index(Cursor::new(&header[..length])).unwrap_err().to_string();
+        assert!(error.contains("Truncated NKX directory header"), "{error}");
+        assert!(error.contains(&format!("available {length}, file length {length}")), "{error}");
+    }
+    header[4..6].copy_from_slice(&0x999u16.to_le_bytes());
+    assert!(Archive::read_index(Cursor::new(&header)).unwrap_err().to_string().contains("version 0x999 at 0x0"));
+    header[4..6].copy_from_slice(&0x110u16.to_le_bytes());
+    header[14..18].copy_from_slice(&1u32.to_le_bytes());
+    let error = Archive::read_index(Cursor::new(&header)).unwrap_err().to_string();
+    assert!(error.contains("entry 0/1 at 0x16"), "{error}");
+    assert!(error.contains("need 8 bytes, available 0"), "{error}");
+    header.extend(12u16.to_le_bytes());
+    header.extend([0; 6]);
+    let error = Archive::read_index(Cursor::new(&header)).unwrap_err().to_string();
+    assert!(error.contains("entry 0/1 length 12 at 0x16"), "{error}");
+    assert!(error.contains("available 8, file length 30"), "{error}");
+}
+
+#[test]
 fn clear_nkx_member_and_bad_sibling_are_independent() {
     let mut b = Vec::new();
     b.extend(0x5e70ac54u32.to_le_bytes());
