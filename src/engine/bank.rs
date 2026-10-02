@@ -338,6 +338,41 @@ impl From<&VoiceLimit> for VoiceGroup {
     }
 }
 
+/// Counts of rejected source zones, classified at the failing load boundary.
+/// Counts remain complete even when the bank retains only a few issue examples.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct ZoneSkipCounts {
+    pub unavailable_reference: usize,
+    pub unreadable_sample: usize,
+    pub invalid_group: usize,
+    pub invalid_sample_bounds: usize,
+    pub invalid_loop: usize,
+}
+
+impl ZoneSkipCounts {
+    /// A loader/UI summary; formatting never runs on the audio thread.
+    pub fn summary(&self) -> String {
+        use std::fmt::Write;
+        let mut result = String::new();
+        for (count, label) in [
+            (self.unavailable_reference, "unavailable sample references"),
+            (self.unreadable_sample, "unreadable samples"),
+            (self.invalid_group, "invalid groups"),
+            (self.invalid_sample_bounds, "invalid sample bounds"),
+            (self.invalid_loop, "invalid loops"),
+        ] {
+            if count > 0 {
+                if !result.is_empty() { result.push_str(", "); }
+                let _ = write!(result, "{label}: {count}");
+            }
+        }
+        result
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ZoneSkipCause { UnavailableReference, UnreadableSample, InvalidGroup, InvalidSampleBounds, InvalidLoop }
+
 /// Everything a part needs to play, immutable once handed to an engine.
 pub struct Bank {
     groups: Vec<Group>,
@@ -375,6 +410,7 @@ pub struct Bank {
     pub warning: Option<String>,
     /// Zones dropped because their sample is missing, unreadable or out of bounds.
     pub skipped_zones: usize,
+    pub zone_skip_counts: ZoneSkipCounts,
     /// First few reasons for skipped zones.
     pub issues: Vec<String>,
     /// Note starts per sample, counted by the audio thread for [`Residency`].
@@ -797,15 +833,28 @@ impl Bank {
 #[derive(Default)]
 struct Issues {
     skipped: usize,
+    counts: ZoneSkipCounts,
     notes: Vec<String>,
 }
 
 impl Issues {
     const KEPT: usize = 8;
 
-    fn skip(&mut self, reason: std::fmt::Arguments) {
+    fn skip(&mut self, cause: ZoneSkipCause, reason: std::fmt::Arguments) {
         self.skipped += 1;
+        self.count(cause, 1);
         self.note(reason);
+    }
+
+    fn count(&mut self, cause: ZoneSkipCause, count: usize) {
+        let target = match cause {
+            ZoneSkipCause::UnavailableReference => &mut self.counts.unavailable_reference,
+            ZoneSkipCause::UnreadableSample => &mut self.counts.unreadable_sample,
+            ZoneSkipCause::InvalidGroup => &mut self.counts.invalid_group,
+            ZoneSkipCause::InvalidSampleBounds => &mut self.counts.invalid_sample_bounds,
+            ZoneSkipCause::InvalidLoop => &mut self.counts.invalid_loop,
+        };
+        *target += count;
     }
 
     fn note(&mut self, reason: std::fmt::Arguments) {
@@ -865,7 +914,7 @@ impl Builder {
         for ((zone, sample), zone_id) in zones.into_iter().zip(samples).zip(source_ids) {
             let (_, frames) = info[sample as usize];
             let Some(group) = groups.get(zone.group) else {
-                issues.skip(format_args!("zone refers to missing group {}", zone.group));
+                issues.skip(ZoneSkipCause::InvalidGroup, format_args!("zone refers to missing group {}", zone.group));
                 continue;
             };
             match play_map(&zone, group, frames) {
@@ -888,7 +937,7 @@ impl Builder {
                     });
                     kept.push(zone);
                 }
-                Err(e) => issues.skip(format_args!(
+                Err((cause, e)) => issues.skip(cause, format_args!(
                     "{e}: {} (zone ID {zone_id}, group {}, keys {}..={}, sample frames {frames}, zone start {}, end offset {}, loop {:?})",
                     zone.sample.display(), zone.group, zone.low_key, zone.high_key,
                     zone.start, zone.end, zone.loop_range.as_ref().map(|l| (l.start, l.end)),
@@ -1112,7 +1161,9 @@ impl Builder {
         let before = self.zones.len();
         self.zones.retain(|_| kept.next().unwrap_or(true));
         self.plays.retain(|p| p.sample as usize != id);
-        self.issues.skipped += before - self.zones.len();
+        let skipped = before - self.zones.len();
+        self.issues.skipped += skipped;
+        self.issues.count(ZoneSkipCause::UnreadableSample, skipped);
         self.issues.note(format_args!("{error:#}"));
     }
 
@@ -1172,6 +1223,7 @@ impl Builder {
             streamer,
             bytes,
             skipped_zones: self.issues.skipped,
+            zone_skip_counts: self.issues.counts,
             issues: self.issues.notes,
             usage: samples_usage,
             residency: None,
@@ -1181,13 +1233,13 @@ impl Builder {
 
 /// Validate a zone against its sample and build its playback path. The flag
 /// reports a loop crossfade shortened to fit before the loop start.
-fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), &'static str> {
+fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), (ZoneSkipCause, &'static str)> {
     let start = zone.start as u64;
     let end = frames
         .checked_add_signed(i64::from(zone.end))
-        .ok_or("zone end precedes sample start")?;
+        .ok_or((ZoneSkipCause::InvalidSampleBounds, "zone end precedes sample start"))?;
     if start >= end || end > frames {
-        return Err("invalid sample bounds");
+        return Err((ZoneSkipCause::InvalidSampleBounds, "invalid sample bounds"));
     }
     let mut clamped = false;
     let looped = match &zone.loop_range {
@@ -1196,7 +1248,7 @@ fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), 
             // Zones may start inside or past their loop (Vista's sustains
             // do): the path enters the loop mid-cycle or plays straight through.
             if ls >= le || le > end {
-                return Err("invalid loop");
+                return Err((ZoneSkipCause::InvalidLoop, "invalid loop"));
             }
             // The crossfade blends toward the frames before the loop start, which must exist.
             let xfade = (l.crossfade as u64).min(ls).min(le - ls);
@@ -1340,8 +1392,8 @@ fn keep_zones(
     let mut source_ids = Vec::new();
     for (index, (zone, id)) in instrument.zones.iter().zip(zone_ids).enumerate() {
         match id.map(|id| opened[id]) {
-            None => issues.skip(format_args!("unavailable {}", zone.sample.display())),
-            Some(None) => issues.skip(format_args!("unreadable {}", zone.sample.display())),
+            None => issues.skip(ZoneSkipCause::UnavailableReference, format_args!("unavailable {}", zone.sample.display())),
+            Some(None) => issues.skip(ZoneSkipCause::UnreadableSample, format_args!("unreadable {}", zone.sample.display())),
             Some(Some(id)) => {
                 zones.push(zone.clone());
                 zone_samples.push(id);

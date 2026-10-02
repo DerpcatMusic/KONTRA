@@ -168,6 +168,7 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
     let load_ms = started.elapsed().as_secs_f64() * 1000.;
     let load_issues = bank.issues.clone();
     let skipped_zones = bank.skipped_zones;
+    let zone_skip_counts = bank.zone_skip_counts;
     let (sample_count, streamed_samples) = (bank.sample_count(), bank.streamed_samples());
     let mut rack = Rack::default();
     let e = &mut rack.parts[0];
@@ -507,7 +508,7 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
     Ok(json!({
         "build":serde_json::from_str::<Value>(kontakto::build_info::MANIFEST_JSON)?,
         "path":path,"program":program,"snapshot":snapshot,"name":instrument.name,"note":note,"load_ms":load_ms,
-        "samples":sample_count,"streamed_samples":streamed_samples,"skipped_zones":skipped_zones,"load_issues":load_issues,
+        "samples":sample_count,"streamed_samples":streamed_samples,"skipped_zones":skipped_zones,"zone_skip_counts":zone_skip_counts,"load_issues":load_issues,
         "script_errors":script_errors,"warnings":instrument.warnings,"realtime":realtime,
         "tail_observation_seconds":tail_seconds,"maximum_imported_release_seconds":maximum_release,
         "timing_scope":if realtime {"paced nonblocking rack render, including instrument FX, direct output and part mixing; host/GPU overhead excluded"} else {"offline blocking rack render, including instrument FX, direct output and part mixing; disk waits may exceed a realtime deadline"},
