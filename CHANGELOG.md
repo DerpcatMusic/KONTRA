@@ -373,7 +373,7 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 
 ### Candidates — not shipped
 
-The following eight logical units are staged for release review, not accepted or
+The following ten logical units are staged for release review, not accepted or
 published. Authored gates below do not replace the forthcoming six-preset and
 four-Conflux actual replay checks. The accepted fix count remains 47.
 
@@ -397,12 +397,20 @@ four-Conflux actual replay checks. The accepted fix count remains 47.
   zero-heap checks passed at 44.1/48/96 kHz; the frequency law is not calibrated
   against Kontakt and sound parity remains unverified.
 - The first maximum-consumption stream block remains resident (`f084a94`, fixture
-  follow-up `451af4c`). The 4,096-frame stream gate is pending; this is not a claim
-  that realtime underruns are eliminated.
+  follow-up `451af4c`). The 4,096-frame RAM-coverage and zero-heap gate passed;
+  exact candidate actual replays remain pending. This does not claim that realtime
+  underruns are eliminated.
+- CC120 stop fades clear held physical ownership so a later key-up cannot start
+  a post-stop release tail (`4c16489`). The focused runtime gate passed; exact
+  candidate actual replays and acceptance remain pending.
+- Documented `ui_menu` `$CONTROL_PAR_VALUE` queries return the selected entry index
+  (`1f62da4`). The focused runtime gate passed; this does not certify every menu
+  path or Lua UI.
 - The passing Note Mono boolean check is a follow-up to the already counted
   release-trigger Note Mono correction, not an additional fix-count unit.
-- The CLI recorder JSON helper still awaits its gate. Audit metrics and delivery
-  instrumentation are observability features, not additional logical defects.
+- The CLI recorder JSON helper gate passed in the twelve-check runtime set. Audit
+  metrics and delivery instrumentation remain observability features, not additional
+  logical defects or a claim that actual candidate replays are complete.
 
 ### Reviewed source changes
 
