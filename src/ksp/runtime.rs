@@ -731,6 +731,7 @@ pub struct Runtime {
     /// before any sound engine existed (in call order); the playing engine
     /// applies them when the runtime is installed.
     pub init_engine_pars: Vec<(EnginePar, i32)>,
+    pub(crate) native_state: crate::engine::native_state::NativeState,
     /// Controllers the scripts set while loading (`set_controller` in
     /// `on init` or `on persistence_changed`), in call order.
     /// The playing engine applies them on install and after a reset.
@@ -749,6 +750,12 @@ impl Runtime {
     /// Grows whenever script memory may have changed: a callback ran or the
     /// host wrote a variable. Equal counts mean equal memory, so refreshes
     /// can be skipped.
+    /// Saved native script edits; call off the audio thread.
+    pub fn engine_state(&self) -> Vec<super::engine::NativeEdit> { self.native_state.snapshot().saved() }
+
+    /// Prepared native edit slots and approximate bytes, excluding allocator metadata.
+    pub fn engine_state_capacity(&self) -> (usize, usize) { self.native_state.capacity() }
+
     pub fn changes(&self) -> u64 {
         self.changes
     }
@@ -767,6 +774,7 @@ impl Runtime {
             audio_time: None,
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
+            native_state: Default::default(),
             init_controllers: Vec::new(),
             init_irs: Vec::new(),
         }

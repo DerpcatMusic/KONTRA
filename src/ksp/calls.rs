@@ -1349,6 +1349,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 let item = control.spare_menu.pop().unwrap();
                 control.menu.push(item);
             }
+            control.revision = control.revision.wrapping_add(1);
             snap_menu(m, c);
             Ok(Step::Next)
         }
@@ -1356,26 +1357,33 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let [id, index] = ints(m);
             let text = m.stk.strs.pop();
             let c = m.slot.ui.control(id).ok_or(NO_CONTROL)?;
+            let control = &mut m.slot.ui.controls[c];
             if let Some(item) = usize::try_from(index)
                 .ok()
-                .and_then(|i| m.slot.ui.controls[c].menu.get_mut(i))
+                .and_then(|i| control.menu.get_mut(i))
+                && item.text != text
             {
                 put_text(&mut item.text, text, m.env.loading)?;
+                control.revision = control.revision.wrapping_add(1);
             }
             Ok(Step::Next)
         }
         SetMenuItemVisibility | SetMenuItemValue => {
             let [id, index, value] = ints(m);
             let c = control(m, id)?;
+            let control = &mut m.slot.ui.controls[c];
             if let Some(item) = usize::try_from(index)
                 .ok()
-                .and_then(|i| m.slot.ui.controls[c].menu.get_mut(i))
+                .and_then(|i| control.menu.get_mut(i))
             {
                 if f == SetMenuItemValue {
+                    if item.value == value { return Ok(Step::Next); }
                     item.value = value;
                 } else {
+                    if item.visible == (value != 0) { return Ok(Step::Next); }
                     item.visible = value != 0;
                 }
+                control.revision = control.revision.wrapping_add(1);
             }
             Ok(Step::Next)
         }

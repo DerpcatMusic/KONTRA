@@ -409,9 +409,11 @@ fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths()
         let p = Arc::new(SamplerParams::new());
         let original = Part {
             path: "/virtual/Library/Piano.nki".into(),
+            snapshot: "/virtual/Library/Old.nksn".into(),
             name: "Old name".into(),
             group: 7,
             script_state: serde_json::to_string(&old_state).unwrap(),
+            engine_state: vec![crate::ksp::engine::NativeEdit { par:crate::ksp::EnginePar { id:crate::engine::engine_par::VOLUME,group:-1,slot:-1,generic:-1 },value:250000 }],
             ir_settings: vec![crate::fx::IrSlotSettings {
                 rack: crate::fx::Rack::Insert, slot: 0,
                 settings: crate::fx::params::IrSettings::DEFAULT, file: None,
@@ -446,13 +448,33 @@ fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths()
         expected.path = "/virtual/Library/Strings.nki".into();
         expected.group = u32::MAX;
         expected.name.clear();
+        expected.snapshot.clear();
         expected.script_state.clear();
         expected.ir_settings.clear();
+        expected.engine_state.clear();
         assert!(part == expected, "replacement dropped={dropped}: actual {}, expected {}",
             serde_json::to_string(&part).unwrap(), serde_json::to_string(&expected).unwrap());
         let restored = serde_json::from_str(&part.script_state).unwrap_or_else(|_| new.script_state.clone());
         assert_eq!(caption(restored), Value::Text("CHORUS".into()), "replacement uses its own authored defaults");
     }
+}
+
+#[test]
+fn snapshot_drop_targets_an_explicit_header_without_changing_active_state() {
+    let p = Arc::new(SamplerParams::new());
+    let original = Part { path: "/virtual/Library/Piano.nki".into(), snapshot: "/virtual/Library/Old.nksn".into(),
+        script_state: "retained".into(), ..Default::default() };
+    p.selection.write().unwrap().parts = vec![original.clone()];
+    let h = Harness::new(&p, 1180., 760.);
+    let at = center(&h.ui, "header-0");
+    let snapshot = [PathBuf::from("/virtual/Library/Warm.nksn")];
+    assert!(native_files(&p, &Default::default(), &h.ui, at, &snapshot, false));
+    assert!(lock(&p.shared.snapshot_request).is_none(), "hovering does not enqueue a load");
+    assert!(native_files(&p, &Default::default(), &h.ui, at, &snapshot, true));
+    assert!(lock(&p.shared.snapshot_request).is_some());
+    assert!(p.selection.read().unwrap().parts[0] == original);
+    p.selection.write().unwrap().parts[0].path = "Ensemble.nkm".into();
+    assert!(!native_files(&p, &Default::default(), &h.ui, at, &snapshot, true));
 }
 
 #[test]
@@ -1902,24 +1924,29 @@ fn original_wallpaper_pixel_offsets_render_across_frames() {
     assert_eq!(h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame, control, "artwork scrolling never moves controls");
 }
 
-/// The vectorized view keeps every control of the original where it was, at
-/// its size: only the drawing changes.
+/// A dependent table changes without rebuilding an unrelated Original knob.
 #[test]
 fn original_tables_render_dense_values_at_the_declared_range() {
-    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(180)\ndeclare ui_table %steps[4](2,1,-100)\nmove_control_px(%steps,10,10)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_WIDTH,120)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_HEIGHT,100)\nend on");
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(180)\ndeclare ui_table %steps[4](2,1,-100)\nmove_control_px(%steps,10,10)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_WIDTH,120)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_HEIGHT,100)\ndeclare ui_knob $steady(0,100,1)\nmove_control_px($steady,180,10)\nend on");
     p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
         frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 248, vec![40; 632 * 248 * 4]).unwrap())],
         stretch: [false; 2],
         atlas: None,
     }));
+    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::from([(0, 0), (0, 0)]);
     let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(3);
     let empty = pixels(&h.ui, 1180, 760);
     publish_interface(&p, |i| {
         assert_eq!(i.controls[0].properties["$CONTROL_PAR_MIN_VALUE"], crate::ksp::Value::Int(-100));
         assert_eq!(i.controls[0].properties["$CONTROL_PAR_MAX_VALUE"], crate::ksp::Value::Int(100));
         i.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::IntArray(vec![50, -50, 100, -100]));
     });
-    h.idle(2);
+    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::from([(0, 1), (0, 0)]);
+    h.idle(1);
+    let memos: Vec<_> = h.ui.scene().unwrap().memos_at("kpv-0-1").collect();
+    assert!(memos.len() >= 2 && memos.last().unwrap().1 && memos[..memos.len()-1].iter().any(|(_, reused)| !reused),
+        "the table publication rebuilds its stage while retaining the unchanged knob: {memos:?}");
     let filled = pixels(&h.ui, 1180, 760);
     let changed = empty.chunks_exact(4).zip(filled.chunks_exact(4)).filter(|(a,b)| a != b).count();
     assert!(changed > 4000, "the numeric table paints bars, including its negative half: {changed}");
@@ -1928,8 +1955,19 @@ fn original_tables_render_dense_values_at_the_declared_range() {
             "$CONTROL_PAR_VALUE".into(), crate::ksp::Value::RealArray(vec![50., -50., 100., -100.])
         );
     });
+    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::from([(0, 2), (0, 0)]);
     h.idle(2);
     assert!(filled == pixels(&h.ui, 1180, 760), "integer and real snapshots paint the same values");
+    p.shared.view.lock().unwrap().parts[0].script_epoch += 1;
+    // Production replacement also changes the interface identity, even if the
+    // new script happens to publish the same initial row stamps.
+    publish_interface(&p, |_| {});
+    h.idle(1);
+    assert!(!h.ui.scene().unwrap().memos_at("kpv-0-1").last().unwrap().1, "replacement epoch rebuilds the retained knob");
+    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::default();
+    publish_interface(&p, |i| { i.controls[1].properties.insert("$CONTROL_PAR_FONT_TYPE".into(), crate::ksp::Value::Int(23)); });
+    h.idle(1);
+    assert!(!h.ui.scene().unwrap().memos_at("kpv-0-1").last().unwrap().1, "a fixture without row stamps uses immutable interface identity for changed styling");
 }
 
 #[test]
@@ -1937,6 +1975,14 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
     use moose::prelude::BackgroundTask;
     let p = Arc::new(SamplerParams::new());
     p.selection.write().unwrap().parts.push(Part { path: "/missing-kontra-test/instrument.nki".into(), ..Default::default() });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].loading = true;
+        view.parts[0].status = "Loading import…".into();
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let stage_label = |ui: &Ui| ui.scene().unwrap().surface("stage-0").unwrap().semantics.as_ref().unwrap().label.as_ref().unwrap().to_string();
+    assert_eq!(stage_label(&h.ui), "Loading instrument…", "an active import uses the loading placeholder");
     crate::plugin::Load.run(&p);
     {
         let mut view = p.shared.view.lock().unwrap();
@@ -1945,7 +1991,8 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
         report["issues"] = serde_json::json!([]);
         report["issues_omitted"] = serde_json::json!(7);
     }
-    let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(2);
+    assert!(stage_label(&h.ui).starts_with("Instrument could not be loaded."), "terminal failure replaces the cached loading placeholder");
     h.press("tab-info");
     let failure = h.ui.scene().unwrap().surface("load-diagnostic-failure").expect("failure cause stays visible even when issue examples were omitted").frame;
     assert!(failure.y >= 0. && failure.y + failure.size.height < 760., "failure is visible: {failure:?}");

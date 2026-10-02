@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 /// What the editor asks for.
 pub enum Ask {
+    Snapshot { slot: usize, source: (String, u32, String), from: PathBuf },
     /// A library folder (`single`), or a folder of libraries, from `from`.
     Folder { from: PathBuf, single: bool },
     /// Where to save a multi, starting in `from` with `name` filled in.
@@ -22,6 +23,7 @@ pub enum Ask {
 
 /// What came back.
 pub enum Picked {
+    Snapshot { slot: usize, source: (String, u32, String), path: PathBuf },
     Folder(PathBuf, bool),
     Multi(PathBuf),
     Artwork { library: PathBuf, picture: PathBuf },
@@ -94,6 +96,12 @@ impl Picker {
 
 fn show(ask: Ask) -> Option<Picked> {
     match ask {
+        Ask::Snapshot { slot, source, from } => rfd::FileDialog::new()
+            .set_title("Load a snapshot for this instrument")
+            .set_directory(from)
+            .add_filter("Kontakt snapshot", &["nksn"])
+            .pick_file()
+            .map(|path| Picked::Snapshot { slot, source, path }),
         Ask::Folder { from, single } => rfd::FileDialog::new()
             .set_title(if single { "A Kontakt library folder" } else { "A folder of Kontakt libraries" })
             .set_directory(from)

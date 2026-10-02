@@ -51,14 +51,15 @@ impl ItemData {
     }
 
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
-        let header = ItemDataHeader::read(&mut reader)?;
+        let at = reader.stream_position()?;
+        let header = ItemDataHeader::read(&mut reader).map_err(|e| Error::context(format!("NIS data header at offset {at}, expected 20 bytes/version 1"), e))?;
         let length = header
             .length
             .checked_sub(20)
             .and_then(|n| usize::try_from(n).ok())
             .ok_or(Error::Static("Invalid NIS item data length"))?;
 
-        let body = reader.read_bytes(length)?;
+        let body = reader.read_bytes(length).map_err(|e| Error::context(format!("NIS {:?} data body at offset {}, declared length {length}/version {}", header.item_type(), at + 20, header.version), e))?;
         if header.item_type() == ItemType::Item {
             return Ok(Self {
                 header,
@@ -66,18 +67,23 @@ impl ItemData {
                 data: body,
             });
         }
-        Self::read_body(header, &body)
+        let (domain, item) = (header.domain_id, header.item_id);
+        let version = header.version;
+        Self::read_body(header, &body).map_err(|e| Error::context(format!("NIS domain {} item 0x{item:08x} data body at offset {}, declared length {length}/version {version}", String::from_utf8_lossy(&domain), at + 20), e))
     }
 
     pub(crate) fn read_cursor(reader: &mut Cursor<&[u8]>) -> Result<Self, Error> {
-        let header = ItemDataHeader::read(&mut *reader)?;
+        let at = reader.position();
+        let header = ItemDataHeader::read(&mut *reader).map_err(|e| Error::context(format!("NIS data header at body-relative offset {at}, expected 20 bytes/version 1"), e))?;
         let length = header
             .length
             .checked_sub(20)
             .and_then(|n| usize::try_from(n).ok())
             .ok_or(Error::Static("Invalid NIS item data length"))?;
-        let body = super::read_slice(reader, length)?;
-        Self::read_body(header, body)
+        let (domain, item) = (header.domain_id, header.item_id);
+        let version = header.version;
+        let body = super::read_slice(reader, length).map_err(|e| Error::context(format!("NIS domain {} item 0x{item:08x} data body at body-relative offset {}, declared length {length}/version {version}", String::from_utf8_lossy(&domain), at + 20), e))?;
+        Self::read_body(header, body).map_err(|e| Error::context(format!("NIS domain {} item 0x{item:08x} data body at body-relative offset {}, declared length {length}/version {version}", String::from_utf8_lossy(&domain), at + 20), e))
     }
 
     fn read_body(header: ItemDataHeader, body: &[u8]) -> Result<Self, Error> {
