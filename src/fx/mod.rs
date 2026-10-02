@@ -482,6 +482,12 @@ impl ProgramFx {
             }
             match &fx.params {
                 Params::Convolution(c) => {
+                    if c.auto_gain() {
+                        out.push(format!("{at}: native Auto Gain is not applied; raw IR amplitudes are preserved"));
+                    }
+                    if c.envelope_active() {
+                        out.push(format!("{at}: native IR Volume Envelope is not applied"));
+                    }
                     if let Some(e) = &c.ir_error {
                         out.push(format!("{at}: impulse response unavailable ({e})"));
                     }

@@ -26,7 +26,8 @@ fn convolution(ir: &[f32]) -> Effect {
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
-        b.extend([0, 1, 1, 1, 0]);
+        // Raw-gain fixtures deliberately disable unsupported native Auto Gain.
+        b.extend([0, 0, 1, 1, 0]);
         b.extend([0u8; 8]);
         b.extend(0i32.to_le_bytes());
         b
@@ -40,6 +41,51 @@ fn convolution(ir: &[f32]) -> Effect {
         frames: ir.iter().map(|&v| [v, v]).collect(),
     })));
     fx
+}
+
+#[test]
+fn convolution_reverse_preserves_asymmetric_ir_gain_predelay_and_rate_without_heap() {
+    let source = [[0.125, 2.0], [-0.5, 0.0], [0.0, -0.25], [1.5, 0.0],
+                  [0.25, 1.0], [0.0, 0.0], [0.75, -0.125], [-0.125, 0.5]];
+    for reverse in [false, true] {
+        for rate in [SR, SR / 2.0] {
+            let mut fx = convolution(&[1.0]);
+            let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+            c.flags[0] = reverse;
+            c.predelay_ms = 3.0 / SR * 1000.0;
+            c.ir = Some(Impulse(Arc::new(Sample { rate: SR as u32, frames: source.to_vec() })));
+            assert_eq!(c.reversed(), reverse);
+            assert!(!c.auto_gain() && c.preserve_length_ir() && c.bypass_latency_compensation() && !c.envelope_active());
+            let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+            assert!(fx.warnings().is_empty());
+            let mut p = fx.processor(rate, 4);
+            let mut output = [[0.0; 2]; 24];
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                for block in 0..6 {
+                    let (mut left, mut right) = ([0.0; 4], [0.0; 4]);
+                    if block == 0 { left[0] = 1.0; right[0] = 1.0; }
+                    p.process(&mut left, &mut right);
+                    for n in 0..4 { output[block * 4 + n] = [left[n], right[n]]; }
+                }
+            }), 0);
+            let stride = (SR / rate) as usize;
+            let pre = (3.0 * rate / SR) as usize;
+            for (n, actual) in output.iter().enumerate() {
+                let index = n.checked_sub(pre).map(|i| i * stride).filter(|&i| i < source.len());
+                let expected = index.map_or([0.0; 2], |i| source[if reverse { source.len() - 1 - i } else { i }]);
+                for ch in 0..2 {
+                    assert!((actual[ch] - expected[ch]).abs() < 1e-6, "reverse={reverse} rate={rate} frame={n} channel={ch}");
+                }
+            }
+        }
+    }
+    let mut fx = convolution(&[1.0]);
+    let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+    c.flags[1] = true;
+    c.flags[4] = true;
+    let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+    assert!(fx.warnings().iter().any(|w| w.contains("Auto Gain is not applied")));
+    assert!(fx.warnings().iter().any(|w| w.contains("Volume Envelope is not applied")));
 }
 
 #[test]
