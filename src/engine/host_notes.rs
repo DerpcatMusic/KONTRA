@@ -257,6 +257,45 @@ mod tests {
     }
 
     #[test]
+    fn budget_paused_scoped_cleanup_keeps_live_key_visibility_without_heap() {
+        let script="on init\ndeclare $i\ndeclare $b := -1\ndeclare $c := -1\nmake_persistent($i)\nmake_persistent($b)\nmake_persistent($c)\nend on\non release\nif ($EVENT_NOTE=48)\nwhile ($i<2000)\ninc($i)\nend while\n$b := %KEY_DOWN[50]\n$c := %KEY_DOWN[52]\nend if\nend on";
+        for full_sound_off in [false,true] {
+            let (rt,errors)=crate::ksp::Runtime::with_scripts(&[script],&mut crate::ksp::LogEngine::default(),0,Vec::new());
+            assert!(errors.iter().all(Option::is_none));
+            let mut e=engine(false); e.set_script(Some(Box::new(rt)));
+            let b=HostNote { key:62,..note(11) }; let bp=HostPattern { key:62,..pattern(11) };
+            let c=HostNote { key:64,..note(12) };
+            assert!(e.host_note_on(note(10),7,48,100)); assert!(e.host_note_on(b,7,50,100)); render(&mut e,1);
+            let spent=e.script().unwrap().env.spent;
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                // Offline mode removes wall-clock variability; the fixed fuel
+                // forces A's release to yield inside its loop, before reads.
+                e.begin_audio_block(128,1,true);
+                e.script.as_deref_mut().unwrap().env.block_fuel=64;
+                if full_sound_off {
+                    e.host_note_off(pattern(10)); e.cc(7,120,0);
+                } else { e.host_note_choke(pattern(10)); }
+                assert_eq!(e.script().unwrap().env.block_fuel,0);
+                assert!(e.script().unwrap().env.spent>spent);
+                e.host_note_off(bp);
+                assert!(e.host_note_on(c,7,52,100));
+                e.mark_host_notes(); assert!(e.host_note_pending(note(10)));
+            }),0);
+            let paused=e.script().unwrap().persistence();
+            assert!(matches!(paused[0]["$i"],crate::ksp::Value::Int(i) if i>0 && i<2000));
+            assert_eq!(paused[0]["$b"],crate::ksp::Value::Int(-1));
+            assert_eq!(paused[0]["$c"],crate::ksp::Value::Int(-1));
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                e.begin_audio_block(128,1,true); render(&mut e,4);
+                assert!(e.key_down(7,52));
+            }),0);
+            let saved=e.script().unwrap().persistence();
+            assert_eq!(saved[0]["$b"],crate::ksp::Value::Int(0));
+            assert_eq!(saved[0]["$c"],crate::ksp::Value::Int(i32::from(!full_sound_off)),"scoped input visibility leaked across budget pause, or full sound-off lost suppression");
+        }
+    }
+
+    #[test]
     fn scoped_choke_exposes_unselected_keys_and_bank_only_replacement_closes_waits() {
         let script="on release\nif ($EVENT_NOTE=48)\nmessage(%KEY_DOWN[50])\nend if\nend on";
         let (rt,errors)=crate::ksp::Runtime::with_scripts(&[script],&mut crate::ksp::LogEngine::default(),0,Vec::new());
