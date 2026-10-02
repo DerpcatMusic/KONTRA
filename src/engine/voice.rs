@@ -1017,6 +1017,8 @@ pub(crate) struct Context<'a> {
     pub tune: f32,
     pub rate: f32,
     pub blocking: bool,
+    /// Native sample-geometry controls update only at the 32-frame edge.
+    pub native_control_tick: bool,
     /// Changes whenever anything modulation reads may have: controllers,
     /// bend, pressure or group parameters.
     pub inputs: u32,
