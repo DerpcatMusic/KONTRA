@@ -257,6 +257,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         .pad(edges(0., SPACE, 0., INSET))
         .shrink(0),
     );
+    body.push(interface_settings(ui, cx));
     body.push(view_settings(ui, cx));
     body.push(new_part_settings(ui, cx));
     col![col(body).gap(TIGHT).align(Align::Stretch), rule()]
@@ -267,6 +268,22 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
 
 /// Which performance view parts show unless they choose, and the scale of
 /// a library's own.
+fn interface_settings(ui: &mut Ui, cx: &mut Cx) -> El {
+    let scale = cx.settings.editor_scale();
+    let mut choices = Vec::new();
+    for (to, label) in [(1.0, "100%"), (1.25, "125%"), (1.5, "150%"), (2.0, "200%")] {
+        let (hit, el) = action(ui, format!("ui-scale-{label}"), label, scale == to);
+        if hit { cx.p.shared.libraries.edit(|s| s.ui_scale = to); }
+        choices.push(el);
+    }
+    let (reset, reset_el) = action(ui, "ui-scale-reset", "Reset", false);
+    if reset { cx.p.shared.libraries.edit(|s| s.ui_scale = 1.0); }
+    row![caption("Interface scale").fill(secondary()).lines(1).shrink(0),
+        segmented(choices), reset_el,
+        caption("Window size is remembered").fill(secondary()).lines(1).flex(1).min_w(0)]
+        .gap(SPACE).align(Align::Center).pad(edges(TIGHT, SPACE, SPACE, INSET)).shrink(0)
+}
+
 fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     let libraries = &cx.p.shared.libraries;
     let (mode, scale) = (cx.settings.view_mode, cx.settings.view_scale);
