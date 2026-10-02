@@ -69,14 +69,13 @@ impl NativeState {
     }
 
     // No insertion, growth, formatting or allocation on the audio thread.
-    pub(super) fn capture(&mut self, address: Address, par: EnginePar, value: i32) {
+    pub(super) fn capture(&mut self, address: Address, par: EnginePar, value: i32, current: f32) {
         if matches!(
             address,
             Address::GroupType(..) | Address::Fx(_, _, crate::fx::FxParam::Type)
         ) {
             return;
         }
-        let current = address.decode(value);
         if let Some(&i) = self.index.get(&key(address)) {
             let record = &mut self.records[i];
             if record.current == current
@@ -219,15 +218,23 @@ mod tests {
         }
         let mut saved = state.snapshot();
         assert!(saved.saved().is_empty());
+        let volume = Address::Group(0, GroupPar::Volume);
+        let decoded = [125000, 250000, 500000].map(|value| volume.decode(value));
         assert_eq!(
             crate::plugin::tests::allocations(|| {
-                state.capture(Address::Group(0, GroupPar::Volume), par(0), 125000);
-                state.capture(Address::Group(29999, GroupPar::Volume), par(29999), 250000);
+                state.capture(volume, par(0), 125000, decoded[0]);
+                state.capture(
+                    Address::Group(29999, GroupPar::Volume),
+                    par(29999),
+                    250000,
+                    decoded[1],
+                );
                 // Alias writes and restored edits share the same physical slot.
                 state.capture(
                     Address::Group(0, GroupPar::Volume),
                     EnginePar { slot: 7, ..par(0) },
                     500000,
+                    decoded[2],
                 );
                 state.restored(Address::Group(0, GroupPar::Volume), par(0), 500000);
                 assert_eq!(state.active.len(), 2);

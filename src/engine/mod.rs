@@ -1079,7 +1079,7 @@ impl Engine {
                     .filter(|w| w.at as usize <= base + pos)
                 {
                     if self.write_domain(w.domain, w.address, w.value) && !w.local && let Some(rt) = self.script.as_deref_mut() {
-                        rt.native_state.capture(w.address, w.par, w.native);
+                        rt.native_state.capture(w.address, w.par, w.native, w.value);
                     }
                     written += 1;
                 }
@@ -1129,7 +1129,7 @@ impl Engine {
         for i in written..self.writes.len() {
             let w = self.writes[i];
             if self.write_domain(w.domain, w.address, w.value) && !w.local && let Some(rt) = self.script.as_deref_mut() {
-                rt.native_state.capture(w.address, w.par, w.native);
+                rt.native_state.capture(w.address, w.par, w.native, w.value);
             }
         }
         if let Some(bank) = self.bank.as_deref() {
