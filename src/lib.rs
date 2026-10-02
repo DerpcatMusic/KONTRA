@@ -8,6 +8,7 @@ mod access;
 mod cache;
 mod resources;
 pub mod diagnostics;
+pub mod support;
 pub mod modulation;
 pub mod audio;
 pub mod engine;

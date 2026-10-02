@@ -1398,6 +1398,101 @@ fn fades_and_durations() {
 }
 
 #[test]
+fn optional_note_off_replaces_duration_and_retains_exact_timed_event_without_heap_work() {
+    // NI specifies microseconds, including zero, and replacement of the
+    // positive play_note duration. Release still enters downstream scripts.
+    let source = r#"on init
+declare $a
+declare $b
+declare $sample
+make_persistent($sample)
+end on
+on note
+ignore_event($EVENT_ID)
+if ($EVENT_NOTE = 60)
+    $a := play_note(60,100,0,1000)
+    note_off($a,3000)
+end if
+if ($EVENT_NOTE = 62)
+    $b := play_note(62,100,0,1000)
+    note_off($b,3000)
+end if
+if ($EVENT_NOTE = 64)
+    $sample := play_note(64,100,0,0)
+    note_off($sample,5000)
+end if
+end on
+on controller
+ignore_controller
+if ($CC_NUM = 1)
+    note_off($a,6000)
+end if
+if ($CC_NUM = 2)
+    note_off($b,0)
+end if
+end on"#;
+    let downstream = "on init\ndeclare $channel\ndeclare $released\nmake_persistent($channel)\nmake_persistent($released)\nend on\non release\n$channel := $MIDI_CHANNEL\ninc($released)\nend on";
+    let mut rig = Rig::new(&[source, downstream]);
+    rig.rt.set_midi_channel(7);
+    rig.on(0,60);
+    rig.rt.set_midi_channel(4);
+    rig.on(0,62);
+    assert_eq!(rig.log(), ["play 60@0 v1 [0, 1, 2]", "play 62@0 v2 [0, 1, 2]"]);
+    rig.engine.calls.reserve(64);
+    assert_eq!(crate::plugin::tests::allocations(|| {
+        rig.block(120);
+        assert!(rig.engine.calls.is_empty(), "the original 1000 us duration was replaced");
+        rig.rt.set_midi_channel(9);
+        rig.rt.controller(&mut rig.engine,0,1,127);
+        rig.block(24);
+        assert!(rig.engine.calls.is_empty());
+        rig.block(1);
+        assert_eq!(rig.engine.calls.len(),1, "only the other event releases at frame144");
+        rig.block(263);
+        assert_eq!(rig.engine.calls.len(),1, "replacement is relative to the call at frame120");
+        rig.block(1);
+    }),0);
+    assert_eq!(rig.log(), ["off v2@144", "off v1@408"]);
+    let state = rig.rt.persistence();
+    assert_eq!(state[1]["$released"], Value::Int(2));
+    assert_eq!(state[1]["$channel"], Value::Int(7), "the calling controller's channel must not retarget the release");
+
+    rig.rt.set_midi_channel(4);
+    rig.on(0,62);
+    rig.engine.calls.clear();
+    assert_eq!(crate::plugin::tests::allocations(|| {
+        rig.rt.controller(&mut rig.engine,0,2,127);
+        rig.block(300);
+    }),0);
+    assert_eq!(rig.log(), ["off v3@409"], "zero is immediate and cancels the duration timer");
+    assert!(rig.rt.diagnostics().is_empty());
+
+    // Whole-sample notes normally permit row recycling under pool pressure.
+    // Their explicitly scheduled release must retain its original generation.
+    let mut rig = Rig::new(&[source, downstream]);
+    rig.rt.set_midi_channel(7);
+    rig.on(0,64);
+    let saved = rig.rt.persistence();
+    let id = match &saved[0]["$sample"] { Value::Int(id) => *id, _ => unreachable!() };
+    rig.engine.calls.clear();
+    rig.engine.calls.reserve(64);
+    assert_eq!(crate::plugin::tests::allocations(|| {
+        for _ in 0..super::runtime::EVENT_CAPACITY {
+            let other = rig.rt.env.play_note(0,0,2,None,65,100,0,0);
+            assert_ne!(other,0);
+            rig.rt.env.events.get_mut(other).unwrap().at_engine = true;
+            rig.rt.env.work.clear();
+        }
+        assert!(rig.rt.env.events.get(id).is_some_and(|e| e.live && e.channel == 7 && e.input_channel == Some(7)));
+        rig.block(241);
+    }),0);
+    assert_eq!(rig.log(), ["off v1@240"]);
+    assert_eq!(rig.rt.persistence()[1]["$channel"], Value::Int(7));
+    assert!(rig.rt.diagnostics().is_empty());
+    assert!(initialize("on init\nnote_off(1,-1)\nend on",0,0).unwrap_err().to_string().contains("note_off time offset must be nonnegative"));
+}
+
+#[test]
 fn group_masks_and_voice_parameters() {
     let script = "on init\nend on\non note\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nchange_vol($EVENT_ID, -6000, 0)\nwait(1)\nchange_tune($EVENT_ID, 100, 1)\nend on";
     let mut rig = Rig::new(&[script]);

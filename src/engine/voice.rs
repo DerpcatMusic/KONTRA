@@ -1906,7 +1906,9 @@ fn taps(
         }
         return;
     }
-    let frames = frames.iter().step_by(stride as usize);
+    // A rate rounded to zero holds the current source frame. Indexed reads
+    // also keep this bounded by the output length instead of step_by(0).
+    let frames = (0..n).map_while(|i| frames.get(i * stride as usize));
     for (i, (((l, r), a), x)) in left.iter_mut().zip(right.iter_mut()).zip(amp).zip(frames).enumerate() {
         let fi = i as f32;
         *l += x[0] * a * (gains[0] + delta[0] * fi);
@@ -2091,6 +2093,20 @@ fn mix_positions(window: &[Frame], base: u64, positions: &[u64], amp: &[f32],
 mod tests {
     use super::*;
 
+    #[test]
+    fn zero_stride_taps_hold_source_and_keep_envelope_and_gain_ramps() {
+        let window = [[10., 20.], [0.25, -0.5], [30., 40.]];
+        let amp = [0.2, 0.4, 0.6, 0.8];
+        let (mut left, mut right) = ([0.1; 4], [-0.1; 4]);
+        taps(&window, 1, 0, &amp, [0.7, 0.3], [0.1, -0.05], &mut left, &mut right);
+        for (actual, expected) in left.into_iter().zip([0.135, 0.18, 0.235, 0.3]) {
+            assert!((actual - expected).abs() < 1e-7);
+        }
+        for (actual, expected) in right.into_iter().zip([-0.13, -0.15, -0.16, -0.16]) {
+            assert!((actual - expected).abs() < 1e-7);
+        }
+    }
+
     /// The AVX2 and centre-tap kernels match the scalar one bit for bit, at
     /// any step, length and window slack (short windows fall back to scalar).
     #[test]
@@ -2108,6 +2124,8 @@ mod tests {
             (1.0, 128, 130, 1.3),
             (1.0, 7, 12, 1.3),
             (1.0, 128, 700, 1.0),
+            (0.0, 128, 700, 1.0),
+            (0.0, 128, 4, 1.0),
             (2.0, 128, 700, 1.0),
             (3.0, 77, 700, 1.0),
             (1.0, 128, 132, 1.0),

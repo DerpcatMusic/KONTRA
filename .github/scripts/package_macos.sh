@@ -36,6 +36,13 @@ for bundle in Library/Audio/Plug-Ins/CLAP/KONTRA.clap Library/Audio/Plug-Ins/VST
   chmod -R a+rX "$stage/payload/$bundle"
   codesign --verify --deep --strict --all-architectures "$stage/payload/$bundle"
 done
+for bundle in Library/Audio/Plug-Ins/CLAP/KONTRA.clap Library/Audio/Plug-Ins/VST3/KONTRA.vst3; do
+  xcrun SetFile -a B "$stage/payload/$bundle"
+  codesign --verify --deep --strict --all-architectures "$stage/payload/$bundle"
+done
+xcrun swift "$(dirname "$0")/check_macos_bundles.swift" \
+  "$stage/payload/Library/Audio/Plug-Ins/CLAP/KONTRA.clap" \
+  "$stage/payload/Library/Audio/Plug-Ins/VST3/KONTRA.vst3"
 # Disable relocation: an old bundle elsewhere must not redirect installation
 # away from the explicit /Library plugin folders and /Applications.
 pkgbuild --analyze --root "$stage/payload" "$work/components.plist"
@@ -53,6 +60,7 @@ with open(path, 'wb') as output:
     plistlib.dump(components, output)
 PY
 pkgbuild --root "$stage/payload" --component-plist "$work/components.plist" \
+  --scripts "$(dirname "$0")/macos_installer" \
   --identifier audio.matari.kontra.installer --version "$version" --install-location / \
   --ownership recommended "$work/unsigned.pkg"
 productsign --sign "$APPLE_DEVELOPER_ID_INSTALLER" --keychain "$APPLE_SIGNING_KEYCHAIN" \

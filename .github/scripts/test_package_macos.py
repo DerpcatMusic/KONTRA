@@ -48,6 +48,7 @@ def fixtures(root):
             if fmt != 'standalone':
                 (stage / f'KONTRA.{fmt}/Contents/Info.plist').write_bytes(plistlib.dumps(dict(
                     CFBundleExecutable='KONTRA', CFBundleIdentifier=f'audio.matari.kontra.{fmt}',
+                    CFBundlePackageType='BNDL',
                     CFBundleVersion='0.3.87', CFBundleShortVersionString='0.3.87', KONTRAVersion=VERSION)))
                 resource = stage / f'KONTRA.{fmt}/Contents/Resources/native-resource.txt'
                 resource.parent.mkdir()
@@ -135,7 +136,7 @@ import json, os, pathlib, plistlib, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ['MOCK_LOG'], 'a') as log: log.write(json.dumps([name, args]) + '\\n')
-if name == os.environ.get('FAIL_TOOL') or (name == 'xcrun' and args[:2] == ['stapler', os.environ.get('FAIL_TOOL')]): sys.exit(1)
+if name == os.environ.get('FAIL_TOOL') or (name == 'xcrun' and (args[:2] == ['stapler', os.environ.get('FAIL_TOOL')] or args[:1] == [os.environ.get('FAIL_TOOL')])): sys.exit(1)
 if name == 'codesign' and '--force' in args and pathlib.Path(args[-1]).is_dir():
     signature = pathlib.Path(args[-1]) / 'Contents/_CodeSignature'
     signature.mkdir(exist_ok=True)
@@ -143,10 +144,15 @@ if name == 'codesign' and '--force' in args and pathlib.Path(args[-1]).is_dir():
     resource = signature / 'CodeResources'
     resource.write_text('synthetic signature resource')
     resource.chmod(0o600)
+    (pathlib.Path(args[-1]) / '.synthetic-finder-bit').unlink(missing_ok=True)
+if name == 'xcrun' and args[:3] == ['SetFile', '-a', 'B']:
+    (pathlib.Path(args[-1]) / '.synthetic-finder-bit').touch()
 if name == 'pkgbuild':
     payload = pathlib.Path(args[args.index('--root')+1])
     signatures = list(payload.rglob('_CodeSignature'))
     assert len(signatures) == 3
+    for bundle in ('Library/Audio/Plug-Ins/CLAP/KONTRA.clap', 'Library/Audio/Plug-Ins/VST3/KONTRA.vst3'):
+        assert (payload / bundle / '.synthetic-finder-bit').exists()
     for signature in signatures:
         assert signature.stat().st_mode & 0o777 == 0o755
         assert (signature / 'CodeResources').stat().st_mode & 0o777 == 0o644
@@ -158,6 +164,9 @@ if name == 'pkgbuild':
         assert components[0]['BundleIsVersionChecked'] is False
         assert components[0]['BundleOverwriteAction'] == 'upgrade'
         assert args[args.index('--install-location')+1] == '/'
+        scripts = pathlib.Path(args[args.index('--scripts')+1])
+        assert (scripts / 'postinstall').stat().st_mode & 0o111
+        assert 'com.apple.FinderInfo' in (scripts / 'postinstall').read_text()
         pathlib.Path(args[-1]).write_bytes(b'synthetic installer payload')
 if name == 'productsign': pathlib.Path(args[-1]).write_bytes(pathlib.Path(args[-2]).read_bytes())
 if name == 'xcrun' and args[:2] == ['notarytool', 'submit']:
@@ -174,6 +183,7 @@ if name == 'xcrun' and args[:2] == ['notarytool', 'submit']:
                    APPLE_ID='synthetic@example.invalid', APPLE_APP_SPECIFIC_PASSWORD='synthetic',
                    MOCK_LOG=str(self.root / 'calls.jsonl'))
         cases = [('valid', '', 'Accepted'), ('codesign', 'codesign', 'Accepted'),
+                 ('bundle-bit', 'SetFile', 'Accepted'),
                  ('productsign', 'productsign', 'Accepted'), ('pkgutil', 'pkgutil', 'Accepted'),
                  ('rejected', '', 'Invalid'), ('staple', 'staple', 'Accepted'), ('validate', 'validate', 'Accepted'), ('assessment', 'spctl', 'Accepted')]
         for case, tool, status in cases:
