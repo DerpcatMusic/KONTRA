@@ -628,6 +628,7 @@ mod tests {
             let mut observer_draw = None;
             let mut rendered = Vec::new();
             let mut rendered_changes = 0;
+            let mut publication_ms = Vec::new();
             let mut observer = |published: &Arc<SamplerParams>| -> anyhow::Result<()> {
                 if observer_draw.is_none() {
                     published.selection.write().unwrap().parts[0].view = mode as u8;
@@ -644,6 +645,10 @@ mod tests {
                 }
                 fitted::ready();
                 let start = Instant::now();
+                // Native MuiEditor publishes before its changed fingerprint;
+                // this headless pump has no Watch, so perform the same stage.
+                published.shared.publish_live(true);
+                publication_ms.push(start.elapsed().as_secs_f64()*1000.);
                 let (bridge, draw) = observer_draw.as_mut().unwrap();
                 let tree = draw(&mut ui, bridge);
                 ui.frame(tree, Some(Size::new(1180.,900.)), Input::default(),1./60.).unwrap();
@@ -668,7 +673,9 @@ mod tests {
             assert_eq!(report["editor_frames"].as_u64().unwrap(), rendered.len() as u64, "every scheduled editor frame reaches the native UI renderer");
             assert!(report["latest_edits_published"].as_u64().unwrap_or(0) > 0, "actual callback state must settle at least one queued edit: {report}");
             rendered.sort_by(f64::total_cmp);
+            publication_ms.sort_by(f64::total_cmp);
             println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
+                "live_publication_ms":{"mean":publication_ms.iter().sum::<f64>()/publication_ms.len() as f64,"p99":publication_ms[((publication_ms.len()-1) as f64*0.99).ceil() as usize]},
                 "callback_published_render_ms":{"mean":rendered.iter().sum::<f64>()/rendered.len() as f64,"p99":rendered[((rendered.len()-1) as f64*0.99).ceil() as usize]}}));
         }
         if let Some(to) = std::env::var_os("KONTRA_UI_BENCH_SHOT") {
