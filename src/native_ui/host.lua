@@ -97,15 +97,25 @@ kontakt_host = strict("kontakt", {
         error("Unsupported native UI API: kontakt.create_tmp_midi_file",2)
     end,
     connect_parameter=function(name)
-        local slot,control = native_connect(name)
+        assert(type(name)=="string" and #name>0,"Native UI parameter identifier requires a nonempty string")
+        -- Retain the identity without reading KSP state. Unused handles and
+        -- computed closures stay lazy; an actual access must resolve a real
+        -- exposed control in this scene's source epoch.
+        local slot,control
+        local function resolve()
+            if slot==nil then slot,control=native_connect(name) end
+            return slot,control
+        end
         return strict("parameter", {
             value=function(_,index)
                 assert(index==nil or index==0,"Native UI array connections are unavailable")
+                local slot,control=resolve()
                 return native_value(slot,control)
             end,
             set_value=function(_,value,index)
                 assert(index==nil or index==0,"Native UI array connections are unavailable")
                 assert(type(value)=="number" and value%1==0,"Integer parameter required")
+                local slot,control=resolve()
                 native_set(slot,control,value)
             end,
         })

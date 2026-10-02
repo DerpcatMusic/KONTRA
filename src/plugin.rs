@@ -4882,6 +4882,49 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_parameter_handles_resolve_only_on_access_and_preserve_exact_epoch_callbacks() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-lazy-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local kontakt=require('kontakt')
+            local unused=kontakt.connect_parameter('__Unowned')
+            local computed=ui.create_computed(function() return unused:value() end)
+            -- Ordinary caught errors remain errors; no value/control is fabricated.
+            assert(not pcall(function() return kontakt.connect_parameter('__UnknownRead'):value() end))
+            assert(not pcall(function() kontakt.connect_parameter('__UnknownWrite'):set_value(7) end))
+            local known=kontakt.connect_parameter('Known')
+            return @ui.Text {text=ui.create_computed(function() return tostring(known:value()) end)}
+                .on_tap_gesture(start=function() known:set_value(known:value()+1) end)
+                .frame(width=40,height=20)
+        "#).unwrap();
+        let script="on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Known(0,100)\n$Known := 7\nend on\non ui_control($Known)\n$Known := $Known*2\nend on";
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![script.into(),"on init\nmake_perfview\ndeclare ui_slider $Known(0,100)\n$Known := 90\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let scene=Arc::new(Mutex::new(Scene::prepare(&instrument.path,&rt).unwrap().unwrap()));let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        fn label(node:&Node)->Option<&str>{if let Paint::Text(text)=&node.paint{Some(text)}else{node.children.iter().find_map(label)}}
+        fn tap_id(node:&Node)->Option<usize>{if node.tap{Some(node.id)}else{node.children.iter().find_map(tap_id)}}
+        let initial=scene.lock().unwrap().snapshot().unwrap();assert_eq!(label(&initial),Some("7"));
+        let p=Arc::new(SamplerParams::new());let epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(live));view.parts[0].native_scene=Some(scene.clone());epoch};
+        let mut dsp=Dsp::default();dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
+        let edits=scene.lock().unwrap().tap(tap_id(&initial).unwrap()).unwrap();assert_eq!((edits[0].slot,edits[0].control,edits[0].value),(0,0,8));
+        for edit in edits{assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
+        let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
+        let (mut left,mut right)=([0.;64],[0.;64]);let mut slices=[left.as_mut_slice(),right.as_mut_slice()];let mut buffer=AudioBuffer::from_slices_checked(&[],&mut slices,64);
+        let transport=TransportInfo::default();let mut output=EventList::with_capacity(4);let events=EventList::with_capacity(1);let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
+        assert_eq!(allocations(||{for _ in 0..8{Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);p.shared.publish_live(true);
+        assert_eq!(label(&scene.lock().unwrap().snapshot().unwrap()),Some("16"),"lazy lookup resolves first owning slot and real callback publication");
+        let (replacement,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let replacement=replacement.unwrap();
+        let new_scene=Arc::new(Mutex::new(Scene::prepare(&instrument.path,&replacement).unwrap().unwrap()));let mut live=first_script_live(&replacement);replacement.prepare_native_controls(&mut live);
+        let newer_epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(live));view.parts[0].native_scene=Some(new_scene.clone());epoch};
+        dsp.script_epoch[0]=newer_epoch;dsp.rack.parts[0].set_script(Some(replacement));
+        assert_eq!(label(&new_scene.lock().unwrap().snapshot().unwrap()),Some("7"),"replacement handles read freshly initialized state");
+        let stale=scene.lock().unwrap().tap(tap_id(&initial).unwrap()).unwrap();assert_eq!(stale[0].value,17);
+        assert!(!p.shared.edit_control_slot(0,epoch,stale[0].slot,stale[0].control,stale[0].value),"cached handles cannot edit a replacement source epoch");assert_ne!(epoch,newer_epoch);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_stacks_use_intrinsic_geometry_cross_alignment_and_bounded_computed_spacing() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-stacks-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
