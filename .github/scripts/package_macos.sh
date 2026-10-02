@@ -31,6 +31,9 @@ for bundle in Library/Audio/Plug-Ins/CLAP/KONTRA.clap Library/Audio/Plug-Ins/VST
     --options runtime --timestamp "$binary"
   codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$APPLE_SIGNING_KEYCHAIN" \
     --options runtime --timestamp "$stage/payload/$bundle"
+  # codesign inherits the credential helper's private umask. Its new
+  # signature resources must be readable by ordinary installed users.
+  chmod -R a+rX "$stage/payload/$bundle"
   codesign --verify --deep --strict --all-architectures "$stage/payload/$bundle"
 done
 # Disable relocation: an old bundle elsewhere must not redirect installation
