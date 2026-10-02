@@ -71,6 +71,16 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let watch_params = params.clone();
     let mut watch = Watch::default();
     MuiEditor::new(params, theme::ui(), (1180, 760), build)
+        .on_log(|line| {
+            let failed = line.contains("unavailable") || line.contains("failed") || line.contains("panic");
+            crate::diagnostics::event(if failed { crate::diagnostics::LogLevel::Warning } else { crate::diagnostics::LogLevel::Info },
+                "renderer", "native_window", serde_json::json!({"stage":"renderer", "reason":line}));
+            // Persist the attempt before entering native graphics code: an
+            // access violation does not unwind or wait for queued log writes.
+            if line.starts_with("mui-baseview: GPU init ") {
+                let _ = crate::diagnostics::flush(std::time::Duration::from_millis(100));
+            }
+        })
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, ui, at, paths, dropped))
         .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
