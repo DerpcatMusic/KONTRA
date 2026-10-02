@@ -522,6 +522,9 @@ pub fn unsupported(chain: &Chain) -> Vec<String> { unsupported_at(chain, None) }
 pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
     let mut out = Vec::new();
     for fx in chain.slots.iter().filter(|fx| !fx.bypass) {
+        if fx.kind == Kind::SurroundPanner && blocks::fields(&fx.params).is_some_and(|f| f[1] != 0.0) {
+            out.push("Group Saturation: Enhanced/Drums modes use an unverified transfer-curve proxy".into());
+        }
         match &fx.params {
             Params::Filter(f) if filter_type(f.filter_type).is_none() => {
                 out.push(format!("Group filter type {} is not implemented; audio passes through", f.filter_type));
@@ -2753,19 +2756,21 @@ mod tests {
         let mut peak = |voice: &mut VoiceFilter, f: &GroupFilter| {
             let mut out = 0f32;
             for i in 0..20 {
-                let mut l: [f32; 128] = std::array::from_fn(|j| (TAU * 100.0 * (i * 128 + j) as f32 / RATE).sin());
+                let mut l: [f32; 128] = std::array::from_fn(|j| 0.1 * (TAU * 100.0 * (i * 128 + j) as f32 / RATE).sin());
                 let mut r = l;
-                voice.process(f, &table, &mut ctl, &mut l, &mut r, RATE);
+                assert_eq!(crate::plugin::tests::allocations(|| voice.process(f, &table, &mut ctl, &mut l, &mut r, RATE)), 0);
                 out = out.max(l.iter().fold(0f32, |m, x| m.max(x.abs())));
             }
             out
         };
         let bent = peak(&mut voice, &f);
-        assert!(bent < 0.6, "{bent}");
+        // Classic Shape 1 maps quiet peaks 0.1 to 2*0.4-0.4² = 0.64.
+        // The preceding near-open low pass only changes phase/level slightly.
+        assert!((bent - 0.64).abs() < 0.02, "{bent}");
         // Scripts set the shape (normalized: 0.5 is 0) and bypass.
         assert!(f.set_knob(2, Knob::Field(Kind::SurroundPanner, 0), 0.5));
         assert_eq!(f.knob(2, Knob::Field(Kind::SurroundPanner, 0)), Some(0.5));
-        assert!((peak(&mut voice, &f) - 1.0).abs() < 0.05);
+        assert!((peak(&mut voice, &f) - 0.1).abs() < 0.005);
         assert!(f.set_knob(2, Knob::Field(Kind::SurroundPanner, 0), 1.0));
         assert!(f.set_knob(2, Knob::Bypass, 1.0));
         assert!(voice.hold(&f, &table, RATE).is_some());
@@ -2810,7 +2815,11 @@ mod tests {
         let dry: [f32; 128] = std::array::from_fn(|i| (TAU * 1000.0 * i as f32 / RATE).sin());
         let (mut left, mut right) = (dry, dry);
         voice.process(&filter, &table, &mut [0.0; MAX_BLOCK], &mut left, &mut right, RATE);
-        assert!(left.iter().chain(&right).all(|x| x.is_finite() && x.abs() < 0.6));
+        assert!(left.iter().chain(&right).all(|x| x.is_finite() && x.abs() <= 1.0));
+        for (x, y) in dry.iter().zip(&left) {
+            let u = (4.0 * x).abs().min(1.0);
+            assert!((*y - (2.0 * u - u * u).copysign(*x)).abs() < 1e-6);
+        }
         assert!(left.iter().zip(dry).any(|(a, b)| (a - b).abs() > 0.4));
         assert!(filter.set_knob(7, Knob::Bypass, 1.0));
         let (mut left, mut right) = (dry, dry);
