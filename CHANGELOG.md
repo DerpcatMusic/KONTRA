@@ -22,7 +22,8 @@ are added when a release is actually published; commit history is not a changelo
   Three Analog Strings snapshots have production state checks and two decoded IRs each.
 - Typed native LFO parsing and writing for known fields, with 9,600 actual-library
   chunks round-tripping byte-for-byte. Import preserves this metadata; LFO clocks,
-  waveform generation and routing remain unsupported, and some tables remain raw.
+  waveform generation and routing remain unsupported, some tables remain raw,
+  and typed rate/phase metadata does not establish DSP behavior.
 
 ### Fixed
 
@@ -30,6 +31,10 @@ are added when a release is actually published; commit history is not a changelo
   selective sound-off across articulation channels sharing one engine channel.
 - Sustain release bookkeeping, generated-note lifecycle and MPE expression/tuning
   routing in the covered playback paths.
+- Script-selected native release groups now start for all note durations when
+  automatic release triggering is bypassed. Vista Harp and two Pacific Solo Harp
+  presets restore exactly four damper voices on ordinary and pedal releases;
+  their envelope/swell behavior still lacks Kontakt reference validation.
 - Bounded physical-input CC120 cleanup and Panic termination for previously lingering
   Areia, Dolce and CHORUS script lifetimes. Reset restores recorded library device
   defaults alongside standard controllers in native playback and scripts, fixing
@@ -48,6 +53,10 @@ are added when a release is actually published; commit history is not a changelo
   unsupported.
 - Editor publication of live script views through the existing bounded buffers,
   without formatting diagnostic reports or writing journals in editor frames.
+- Delayed script callbacks now publish font, caption alignment and text-offset
+  changes, including Analog Strings' centered Original-mode volume/FX captions.
+  Native Original captures cover 27 playable cases across nine libraries at
+  device scale 1.5; selected callbacks are checked, not every control action.
 - Internal pitch AHDSR routing to voice modulation, selected filter coefficients
   and worker-built convolution cutoff processing. These changes do not establish
   Kontakt parameter-law or sonic equivalence.
@@ -61,3 +70,6 @@ changes do not announce complete format, script or sound equivalence.
 
 The focused offline results do not certify live-host deadlines or every library.
 Opaque snapshot source state and unknown saved scalars are warned and remain unapplied.
+
+Analog Strings' live factory-preset and rhythm menus currently depend on unsupported
+array-read services. Offline native snapshots do not establish those menus work.
