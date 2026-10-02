@@ -43,11 +43,16 @@ pub(super) fn try_auto_report_pending_incident() {
     let Some(incident) = pending_incident() else {
         return;
     };
-    let incident = crash::refresh_pending_incident(&incident.id).unwrap_or(incident);
-    if !incident.auto_reportable() || AUTOMATIC_CRASH_REPORT_STARTED.swap(true, Ordering::AcqRel) {
+    if AUTOMATIC_CRASH_REPORT_STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
     let started = crash::spawn_detached("kontra-support-report", move || {
+        // Delayed native artifacts are searched only on this worker, never during host initialization.
+        let incident = crash::refresh_pending_incident(&incident.id).unwrap_or(incident);
+        if !incident.auto_reportable() {
+            AUTOMATIC_CRASH_REPORT_STARTED.store(false, Ordering::Release);
+            return;
+        }
         let identity = HOST_IDENTITY.lock_unpoisoned().clone();
         let platform = platform::snapshot();
         let diagnostics = redact_log(&crash::complete_diagnostics(&incident.id));
