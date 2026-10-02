@@ -83,6 +83,8 @@ pub struct Part {
     /// Snapshot applied to `path`, which remains its explicit base NKI.
     /// Appended so pre-keyed host states keep their positional field order.
     pub snapshot: String,
+    /// Supported engine edits applied by authored callbacks, in last-write order.
+    pub engine_state: Vec<crate::ksp::engine::NativeEdit>,
 }
 impl Part {
     pub(crate) fn source(&self) -> (String, u32, String) {
@@ -98,6 +100,7 @@ impl Part {
         self.snapshot = path;
         self.script_state.clear();
         self.ir_settings.clear();
+        self.engine_state.clear();
         self.edits = Edits::default();
     }
     /// Where the part's samples play from, given the rack's setting.
@@ -130,6 +133,14 @@ impl StateField for Timing {
     }
     fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
         Some(serde_json::from_str(&String::read_field(cursor)?).unwrap_or_default())
+    }
+}
+impl StateField for crate::ksp::engine::NativeEdit {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        serde_json::to_string(self).unwrap_or_default().write_field(buf);
+    }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        serde_json::from_str(&String::read_field(cursor)?).ok()
     }
 }
 impl StateField for crate::fx::IrSlotSettings {
@@ -171,6 +182,7 @@ impl Default for Part {
             mic_names: Vec::new(),
             view: 0,
             snapshot: String::new(),
+            engine_state: Vec::new(),
         }
     }
 }
@@ -561,6 +573,7 @@ pub(crate) struct PartView {
     /// `Part::script_state` the audio thread's runtime matches (loaded from or last saved).
     pub(crate) script_state: String,
     pub(crate) ir_settings: Vec<crate::fx::IrSlotSettings>,
+    pub(crate) engine_state: Arc<[crate::ksp::engine::NativeEdit]>,
     /// Epoch of the runtime last handed to the audio thread.
     pub(crate) script_epoch: u64,
     /// Snapshot buffer for this slot's runtime while the loader holds it.
@@ -1039,24 +1052,26 @@ pub(crate) struct PersistenceSnapshot {
     /// Worker-prepared slot list: audio updates values in place, including
     /// edits whose new kernel has not finished building yet.
     ir: Vec<crate::fx::IrSlotSettings>,
+    native: crate::engine::native_state::NativeSnapshot,
 }
 /// Initialize `i`'s scripts off the audio thread, with a snapshot buffer shaped for them.
 fn scripts(
     i: &Instrument,
     saved: &str,
     ir_settings: &[crate::fx::IrSlotSettings],
+    engine_state: &[crate::ksp::engine::NativeEdit],
     rate: f64,
 ) -> (
     Option<Box<Runtime>>,
     Option<Box<PersistenceSnapshot>>,
     Vec<String>,
 ) {
-    let (script, errors) = crate::engine::load_scripts_with_ir(i, persisted(saved, i), rate, ir_settings);
+    let (script, errors) = crate::engine::load_scripts_with_state(i, persisted(saved, i), rate, ir_settings, engine_state);
     // Nothing persistent: no snapshots to trade with the audio thread.
     let snapshot = script
         .as_ref()
-        .map(|rt| PersistenceSnapshot { script: rt.persistence(), ir: i.fx.ir_settings_with(&rt.init_irs) })
-        .filter(|s| !s.ir.is_empty() || s.script.iter().any(|p| !p.is_empty()))
+        .map(|rt| PersistenceSnapshot { script: rt.persistence(), ir: i.fx.ir_settings_with(&rt.init_irs), native: rt.native_state.snapshot() })
+        .filter(|s| !s.native.is_empty() || !s.ir.is_empty() || s.script.iter().any(|p| !p.is_empty()))
         .map(Box::new);
     (script, snapshot, errors)
 }
@@ -1743,7 +1758,7 @@ impl BackgroundTask for Load {
                     !selected_snapshot && v.attempted.as_ref() == Some(&target)
                         && v.fx_rate != 0.
                         && !i.scripts.is_empty()
-                        && (part.script_state != v.script_state || part.ir_settings != v.ir_settings)
+                        && (part.script_state != v.script_state || part.ir_settings != v.ir_settings || part.engine_state.as_slice() != v.engine_state.as_ref())
                 })
             };
             if let Some(instrument) = restore {
@@ -1752,7 +1767,7 @@ impl BackgroundTask for Load {
                 trace.detail("operation", "script_restore");
                 trace.stage("scripts");
                 let (script, snapshot, errors) =
-                    scripts(&instrument, &part.script_state, &part.ir_settings, params.shared.rate());
+                    scripts(&instrument, &part.script_state, &part.ir_settings, &part.engine_state, params.shared.rate());
                 for e in &errors { trace.issue("scripts", "initialization_failed", e); }
                 if let Some(rt) = script.as_deref() {
                     for e in rt.diagnostics() { trace.issue("scripts", crate::diagnostics::code(&e), e); }
@@ -1774,6 +1789,7 @@ impl BackgroundTask for Load {
                 let epoch = next_epoch(&mut view, slot, snapshot, live);
                 view.parts[slot].script_state = part.script_state.clone();
                 view.parts[slot].ir_settings = part.ir_settings.clone();
+                view.parts[slot].engine_state = part.engine_state.clone().into();
                 view.parts[slot].interface_status = interface_status;
                 view.parts[slot].runtime_status.clear();
                 if let Some(load) = &mut view.parts[slot].load_report {
@@ -1895,7 +1911,8 @@ impl BackgroundTask for Load {
                 let ((script, snapshot, script_errors), bare) = std::thread::scope(|scope| {
                     let (rate, instrument, state) = (params.shared.rate(), &instrument, &part.script_state);
                     let ir_settings = &part.ir_settings;
-                    let scripts = scope.spawn(move || scripts(instrument, state, ir_settings, rate));
+                    let engine_state = &part.engine_state;
+                    let scripts = scope.spawn(move || scripts(instrument, state, ir_settings, engine_state, rate));
                     let bare = (!instrument.zones.is_empty()).then(|| Bank::load_bare_cancelable(instrument, &canceled));
                     let scripts = scripts.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
                     (scripts, bare)
@@ -2020,7 +2037,8 @@ impl BackgroundTask for Load {
                         residency.map(|r| (generation, r));
                     let v = &mut view.parts[slot];
                     v.script_state = part.script_state.clone();
-                v.ir_settings = part.ir_settings.clone();
+                    v.ir_settings = part.ir_settings.clone();
+                    v.engine_state = part.engine_state.clone().into();
                     v.active = instrument.name.clone();
                     v.bytes = bank.as_ref().map(|b| b.bytes).unwrap_or(0);
                     v.freed = 0;
@@ -2255,8 +2273,14 @@ impl BackgroundTask for Load {
             }
             let json = serde_json::to_string(&snapshot.script).unwrap_or_default();
             let ir_settings = snapshot.ir.clone();
+            let engine_state = snapshot.native.saved();
+            if snapshot.native.misses != snapshot.native.reported_misses {
+                crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "engine", "native_state_unprepared",
+                    serde_json::json!({"part":slot,"script_epoch":epoch,"count":snapshot.native.misses,"parameter":snapshot.native.last_miss}));
+                snapshot.native.reported_misses = snapshot.native.misses;
+            }
             v.snapshot = Some(snapshot);
-            if json == v.script_state && ir_settings == v.ir_settings {
+            if json == v.script_state && ir_settings == v.ir_settings && engine_state.as_slice() == v.engine_state.as_ref() {
                 continue;
             }
             // The part as the rack names it: the instrument's own path is
@@ -2266,6 +2290,7 @@ impl BackgroundTask for Load {
             let target = v.attempted.clone();
             v.script_state = json.clone();
             v.ir_settings = ir_settings.clone();
+            v.engine_state = engine_state.clone().into();
             drop(view);
             let mut current = params.selection.write().unwrap();
             if let Some(p) = current
@@ -2275,6 +2300,7 @@ impl BackgroundTask for Load {
             {
                 p.script_state = json;
                 p.ir_settings = ir_settings;
+                p.engine_state = engine_state;
             }
         }
         // Visible editors publish and recycle directly, even while this task loads another part.
@@ -2288,8 +2314,9 @@ impl BackgroundTask for Load {
             // cost the audio thread a while to copy.
             let v = &mut view.parts[slot];
             if v.snapshot_lent.is_none_or(|t| t.elapsed() >= SNAPSHOT_EVERY)
-                && let Some(snapshot) = v.snapshot.take()
+                && let Some(mut snapshot) = v.snapshot.take()
             {
+                snapshot.native.rewind();
                 match params.shared.snapshot_requests.push((slot, v.script_epoch, snapshot)) {
                     Ok(()) => v.snapshot_lent = Some(Instant::now()),
                     Err((_, _, snapshot)) => v.snapshot = Some(snapshot),
@@ -3030,10 +3057,11 @@ impl PluginLogic for Sampler {
             let done = seen.0 != s.script_epoch[*slot]
                 || *seen == s.snapshot_seen[*slot]
                 || (s.rack.parts[*slot].script())
-                    .is_none_or(|rt| rt.refresh_persistence_within(&mut saved.script, at, REFRESH_BUDGET));
+                    .is_none_or(|rt| rt.refresh_persistence_within(&mut saved.script, at, REFRESH_BUDGET)
+                        && rt.native_state.refresh(&mut saved.native, 256));
             if done && let Some((slot, seen, saved, at)) = s.snapshot.take() {
                 let mut saved = saved;
-                let mut changed = at.changed;
+                let mut changed = at.changed || saved.native.changed;
                 for value in saved.ir.iter_mut().filter(|_| seen.0 == s.script_epoch[slot]) {
                     if let Some(settings) = s.rack.parts[slot].fx().ir_settings(value.rack, value.slot) {
                         changed |= value.settings != settings;
@@ -3285,7 +3313,7 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
     let params = Arc::new(SamplerParams::new());
     let rt = engine.script().unwrap();
     let live = Box::new(rt.live());
-    let saved = Box::new(PersistenceSnapshot { script: rt.persistence(), ir: instrument.fx.ir_settings_with(&rt.init_irs) });
+    let saved = Box::new(PersistenceSnapshot { script: rt.persistence(), ir: instrument.fx.ir_settings_with(&rt.init_irs), native: rt.native_state.snapshot() });
     let json = serde_json::to_string(&saved.script)?;
     let part = Part { path: instrument.path.to_string_lossy().into_owned(), program, script_state: json.clone(), ir_settings: saved.ir.clone(), ..Part::default() };
     let streaming = part.streaming(params.selection.read().unwrap().streaming);
@@ -3973,7 +4001,7 @@ mod tests {
             assert!(dsp.rack.parts[0].bank().is_some());
             let instrument = p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
             assert_eq!(instrument.name, snapshot.file_stem().unwrap().to_string_lossy());
-            let (expected, _, errors) = scripts(&instrument, "", &[], 48000.);
+            let (expected, _, errors) = scripts(&instrument, "", &[], &[], 48000.);
             assert!(errors.is_empty(), "{errors:?}");
             assert!(dsp.rack.parts[0].script().unwrap().persistence() == expected.unwrap().persistence(), "snapshot persistence is the worker-installed state");
             assert_eq!(allocations(|| {
@@ -4627,11 +4655,11 @@ end on"#,dir.display());
         let new = runtime(572, "new", 22);
         let old_live = Box::new(old.live());
         let old_address = (&*old_live as *const Live) as usize;
-        let old_saved = Box::new(PersistenceSnapshot { script: old.persistence(), ir: Vec::new() });
+        let old_saved = Box::new(PersistenceSnapshot { script: old.persistence(), ir: Vec::new(), native: old.native_state.snapshot() });
         let saved_address = (&*old_saved as *const PersistenceSnapshot) as usize;
         let new_live = Box::new(new.live());
         let new_interface = Arc::new(new_live.interface.clone().unwrap());
-        let new_saved = Box::new(PersistenceSnapshot { script: new.persistence(), ir: Vec::new() });
+        let new_saved = Box::new(PersistenceSnapshot { script: new.persistence(), ir: Vec::new(), native: new.native_state.snapshot() });
         let p = SamplerParams::new();
         {
             let mut view = p.shared.view.lock().unwrap();
@@ -4975,6 +5003,141 @@ end on"#,dir.display());
     }
 
     #[test]
+    fn native_engine_edits_restore_authored_readback_without_audio_allocations() {
+        use crate::fx::{Chain, Effect, Kind, Params, FxParam, Rack};
+        use crate::ksp::{EnginePar, Value};
+        let effect = |slot, kind, params, bypass| Effect { slot, kind, params, bypass,
+            version: 0, output_gain: 1., dry_level: 0. };
+        let mut i = Instrument { path: "/virtual/native-engine-state.nki".into(), scripts: vec![r#"on init
+make_perfview
+declare ui_slider $amount(0,500000)
+declare ui_switch $on
+make_persistent($on)
+$amount := get_engine_par($ENGINE_PAR_SENDLEVEL_0,-1,7,0)
+end on
+on persistence_changed
+$amount := get_engine_par($ENGINE_PAR_SENDLEVEL_0,-1,7,0)
+end on
+on ui_control($amount)
+set_engine_par($ENGINE_PAR_SENDLEVEL_0,$amount,-1,7,0)
+end on
+on ui_control($on)
+set_engine_par($ENGINE_PAR_SEND_EFFECT_BYPASS,1-$on,-1,7,$NI_INSERT_BUS)
+{ A send tap has no DSP dry-level setter: it must not be persisted. }
+set_engine_par($ENGINE_PAR_SEND_EFFECT_DRY_LEVEL,1000000,-1,7,$NI_INSERT_BUS)
+end on"#.into()], ..Default::default() };
+        i.fx.insert = Chain { slots: vec![effect(7, Kind::SendLevels,
+            Params::SendLevels(crate::fx::params::SendLevels { sends: vec![0.0625;8], outputs: Vec::new() }), true)] };
+        i.fx.send = Chain { slots: vec![effect(0, Kind::Reverb, Params::Reverb(crate::fx::params::Reverb::DEFAULT), false)] };
+        let (rt, snapshot, errors) = scripts(&i, "", &[], &[], 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let rt = rt.unwrap();
+        assert!(rt.engine_state().is_empty(), "prepared defaults are not saved edits");
+        let mut snapshot = snapshot.unwrap();
+        let mut engine = Engine::default();
+        engine.set_fx(crate::engine::effects(&i, Some(&rt), 48000.));
+        engine.set_script(Some(rt));
+        let mut left = [0.;64]; let mut right = [0.;64];
+        assert_eq!(allocations(|| {
+            engine.ui_control(0,1,1);
+            engine.ui_control(0,0,125000);
+            engine.render(&mut left,&mut right);
+            let rt = engine.script().unwrap();
+            let mut at = Refresh::default();
+            while !rt.refresh_persistence_within(&mut snapshot.script,&mut at,1) {}
+            while !rt.native_state.refresh(&mut snapshot.native,1) {}
+        }),0);
+        assert!(snapshot.native.changed);
+        let expected_send = engine.fx().param(Rack::Insert,7,FxParam::SendLevel(0)).unwrap();
+        assert_eq!(engine.fx().param(Rack::Insert,7,FxParam::Bypass),Some(0.));
+        let p = SamplerParams::new();
+        {
+            let mut view = p.shared.view.lock().unwrap(); let v = &mut view.parts[0];
+            v.instrument = Some(Arc::new(i.clone())); v.fx_rate = 48000.; v.script_epoch = 1;
+            v.attempted = Some((i.path.to_string_lossy().into_owned(),0,String::new()));
+        }
+        p.selection.write().unwrap().parts = vec![Part { path:i.path.to_string_lossy().into_owned(), ..Default::default() }];
+        p.shared.snapshots.push((0,1,snapshot,true)).ok().unwrap();
+        Load.run(&p);
+        let saved = p.selection.read().unwrap().parts[0].clone();
+        assert_eq!(saved.engine_state.len(),2,"only the successful changed send/bypass writes persist");
+        use moose::core::custom_state::State;
+        assert!(Part::deserialize(&State::serialize(&saved)) == Some(saved.clone()),"host binary state preserves native edits");
+        let mut new_snapshot = saved.clone(); new_snapshot.select_snapshot("next.nksn".into());
+        assert!(new_snapshot.engine_state.is_empty(),"explicit snapshot selection uses its own engine state");
+        assert!(serde_json::from_str::<Part>("{}").unwrap().engine_state.is_empty(),"old states use authored defaults");
+        let saved: Part = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        let (rt,_,errors) = scripts(&i,&saved.script_state,&saved.ir_settings,&saved.engine_state,48000.);
+        assert!(errors.is_empty(),"{errors:?}"); let rt = rt.unwrap();
+        assert_eq!(rt.interface(0).controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(125000));
+        assert_eq!(rt.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(1));
+        let mut restored = Engine::default(); restored.set_fx(crate::engine::effects(&i,Some(&rt),48000.)); restored.set_script(Some(rt));
+        assert_eq!(restored.fx().param(Rack::Insert,7,FxParam::SendLevel(0)),Some(expected_send));
+        assert_eq!(restored.fx().param(Rack::Insert,7,FxParam::Bypass),Some(0.));
+        // Unsupported foreign shape is reported and cannot seed another target.
+        let bad = EnginePar { id:crate::engine::engine_par::SENDLEVEL_0, group:-1,slot:99,generic:0 };
+        let (rt,errors) = crate::engine::load_scripts_with_state(&i,Vec::new(),48000.,&[],&[crate::ksp::engine::NativeEdit { par:bad,value:1000000 }]);
+        assert_eq!(errors.len(),1); assert!(rt.unwrap().engine_state().is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires the owner's local Una Corda and Analog Strings libraries"]
+    fn una_corda_space_native_state_round_trips_all_three_authored_patches() {
+        use crate::fx::{Rack, FxParam};
+        use crate::ksp::Value;
+        for name in ["Pure", "Felt", "Cotton"] {
+            let path = Path::new(import::LIBRARY_ROOT).join(format!("Una Corda Library/Instruments/Una Corda {name}.nki"));
+            let i = import::read(&path).unwrap();
+            let (rt, errors) = crate::engine::load_scripts(&i, i.script_state.clone(), 48000.);
+            assert!(errors.is_empty(),"{name}: {errors:?}"); let rt = rt.unwrap();
+            eprintln!("Una Corda {name} native edit capacity {:?}",rt.engine_state_capacity());
+            let ui = rt.interface(0);
+            let amount = ui.controls.iter().position(|c| c.variable == "$Mas_sliSpace").unwrap();
+            let amount_fx = ui.controls.iter().position(|c| c.variable == "$T3_sliAmount").unwrap();
+            let on = ui.controls.iter().position(|c| c.variable == "$Mas_swiSpace").unwrap();
+            let mut engine = Engine::default();
+            engine.set_bank(Some(Box::new(Bank::from_samples(i.groups.clone(),Vec::new(),Vec::new()).unwrap())));
+            engine.set_fx(crate::engine::effects(&i,Some(&rt),48000.)); engine.set_script(Some(rt));
+            assert_eq!(allocations(|| {
+                engine.ui_control(0,on,1); engine.ui_control(0,amount,125000);
+                engine.render(&mut [0.;128],&mut [0.;128]);
+            }),0);
+            let native = engine.script().unwrap().engine_state();
+            assert_eq!(native.len(),2,"{name}: only Space send and bypass changed");
+            let script = engine.script().unwrap().persistence();
+            assert!(script.iter().all(|p| !p.contains_key("$Mas_sliSpace") && !p.contains_key("$T3_sliAmount")),"Space depends on native state, not persistent amount variables");
+            let ir = i.fx.ir_settings_with(&engine.script().unwrap().init_irs);
+            let saved = Part { engine_state:native, script_state:serde_json::to_string(&script).unwrap(), ir_settings:ir, ..Default::default() };
+            let saved: Part = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+            let (rt,_,errors) = scripts(&i,&saved.script_state,&saved.ir_settings,&saved.engine_state,48000.);
+            assert!(errors.is_empty(),"{name}: {errors:?}"); let rt = rt.unwrap();
+            for uid in [amount,amount_fx] { assert_eq!(rt.interface(0).controls[uid].properties["$CONTROL_PAR_VALUE"],Value::Int(125000),"{name}: authored getter readback"); }
+            assert_eq!(rt.interface(0).controls[on].properties["$CONTROL_PAR_VALUE"],Value::Int(1));
+            let mut restored = Engine::default(); restored.set_fx(crate::engine::effects(&i,Some(&rt),48000.)); restored.set_script(Some(rt));
+            for (rack,slot,par) in [(Rack::Insert,7,FxParam::SendLevel(0)),(Rack::Insert,7,FxParam::Bypass),(Rack::Send,0,FxParam::Wet),(Rack::Send,0,FxParam::Dry)] {
+                assert_eq!(restored.fx().param(rack,slot,par),engine.fx().param(rack,slot,par),"{name}: DSP state");
+            }
+            let mut before = engine.set_fx(crate::fx::ProgramFx::default().processor(48000.,128));
+            let mut after = restored.set_fx(crate::fx::ProgramFx::default().processor(48000.,128));
+            before.clear(); after.clear(); let mut tail = 0f64;
+            for block in 0..256 {
+                let mut l = [0.;128]; let mut r = [0.;128];
+                if block == 0 { l[0] = 0.01; r[0] = 0.01; }
+                let mut l2 = l; let mut r2 = r;
+                before.process(&mut l,&mut r); after.process(&mut l2,&mut r2);
+                assert_eq!(l,l2,"{name}: restored impulse left block {block}"); assert_eq!(r,r2,"{name}: restored impulse right block {block}");
+                if block != 0 { tail += l.iter().map(|x| (*x as f64).powi(2)).sum::<f64>(); }
+            }
+            assert!(tail > 0.,"{name}: restored Space remains audible");
+        }
+        let path = Path::new(import::LIBRARY_ROOT).join("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki");
+        let i = import::read(&path).unwrap();
+        let (rt,errors) = crate::engine::load_scripts(&i,i.script_state.clone(),48000.);
+        assert!(errors.is_empty(),"{errors:?}");
+        eprintln!("Analog Strings native edit capacity {:?}",rt.unwrap().engine_state_capacity());
+    }
+
+    #[test]
     #[ignore = "requires the owner's local Una Corda library"]
     fn una_corda_menus_load_real_ir_files_after_init() {
         let path = Path::new(import::LIBRARY_ROOT).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
@@ -5060,6 +5223,7 @@ end on"#,dir.display());
         p.shared.snapshots.push((0, 1, Box::new(PersistenceSnapshot {
             script: engine.script().unwrap().persistence(),
             ir: vec![crate::fx::IrSlotSettings { rack: crate::fx::Rack::Send, slot: 0, settings: engine.fx().ir_settings(crate::fx::Rack::Send, 0).unwrap(), file: None }],
+            native: engine.script().unwrap().native_state.snapshot(),
         }), true)).ok().unwrap();
         Load.run(&p);
         let part = p.selection.read().unwrap().parts[0].clone();
@@ -5072,7 +5236,7 @@ end on"#,dir.display());
         assert!(saved == part);
         let saved: Part = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
         assert!(serde_json::from_str::<Part>("{}").unwrap().ir_settings.is_empty());
-        let (restored, _, errors) = scripts(&i, &saved.script_state, &saved.ir_settings, 44100.);
+        let (restored, _, errors) = scripts(&i, &saved.script_state, &saved.ir_settings, &saved.engine_state, 44100.);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(restored.as_ref().unwrap().init_irs.iter().any(|l| matches!(&l.load, crate::fx::Load::Ir { file, .. } if file.file_name().unwrap().to_string_lossy().eq_ignore_ascii_case("GI_UC_IR_Room_Intimate Chamber.ncw"))), "reload retains the selected room's actual impulse response");
         let fx = crate::engine::effects(&i, restored.as_deref(), 44100.);
@@ -5200,6 +5364,7 @@ end on"#.into()],
         let snapshot = PersistenceSnapshot {
             script: dsp.rack.parts[0].script().unwrap().persistence(),
             ir: vec![crate::fx::IrSlotSettings { rack: crate::fx::Rack::Insert, slot: 0, settings: crate::fx::params::IrSettings::DEFAULT, file: None }],
+            native: dsp.rack.parts[0].script().unwrap().native_state.snapshot(),
         };
         p.shared.snapshot_requests.push((0, dsp.script_epoch[0], Box::new(snapshot))).ok().unwrap();
         assert_eq!(allocations(|| {
@@ -5456,7 +5621,7 @@ end on"#;
             let epoch = next_epoch(
                 &mut view,
                 0,
-                Some(Box::new(PersistenceSnapshot { script: rt.persistence(), ir: Vec::new() })),
+                Some(Box::new(PersistenceSnapshot { script: rt.persistence(), ir: Vec::new(), native: rt.native_state.snapshot() })),
                 Some(Box::new(rt.live())),
             );
             let parsed = script_interface(Some(&rt));
@@ -5500,7 +5665,7 @@ end on"#;
         Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
         let (slot, _, live) = p.shared.lives.pop().unwrap();
         p.shared.live_requests.push((slot, dsp.script_epoch[slot], live)).ok().unwrap();
-        let saved = Box::new(PersistenceSnapshot { script: dsp.rack.parts[0].script().unwrap().persistence(), ir: Vec::new() });
+        let saved = Box::new(PersistenceSnapshot { script: dsp.rack.parts[0].script().unwrap().persistence(), ir: Vec::new(), native: dsp.rack.parts[0].script().unwrap().native_state.snapshot() });
         p.shared.snapshot_requests.push((0, dsp.script_epoch[0], saved)).ok().unwrap();
         // As if the scripts changed since: both refresh in full.
         (dsp.live_seen[0], dsp.snapshot_seen[0]) = ((u64::MAX, 0), (u64::MAX, 0));

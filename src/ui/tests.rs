@@ -413,6 +413,7 @@ fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths()
             name: "Old name".into(),
             group: 7,
             script_state: serde_json::to_string(&old_state).unwrap(),
+            engine_state: vec![crate::ksp::engine::NativeEdit { par:crate::ksp::EnginePar { id:crate::engine::engine_par::VOLUME,group:-1,slot:-1,generic:-1 },value:250000 }],
             ir_settings: vec![crate::fx::IrSlotSettings {
                 rack: crate::fx::Rack::Insert, slot: 0,
                 settings: crate::fx::params::IrSettings::DEFAULT, file: None,
@@ -450,6 +451,7 @@ fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths()
         expected.snapshot.clear();
         expected.script_state.clear();
         expected.ir_settings.clear();
+        expected.engine_state.clear();
         assert!(part == expected, "replacement dropped={dropped}: actual {}, expected {}",
             serde_json::to_string(&part).unwrap(), serde_json::to_string(&expected).unwrap());
         let restored = serde_json::from_str(&part.script_state).unwrap_or_else(|_| new.script_state.clone());
