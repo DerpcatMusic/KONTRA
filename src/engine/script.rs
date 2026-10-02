@@ -383,6 +383,13 @@ impl KspEngine for Host<'_> {
         if !loaded(address, value, |r, s| self.fx.param(r, s, FxParam::Type)) {
             return false;
         }
+        // Render applies every parameter before notes at the same sample. Keep
+        // its last value, including what later callbacks read, without queuing
+        // a full group-envelope restore again for each articulation switch.
+        if let Some(write) = self.writes.iter_mut().rev().find(|w| w.at == at && w.address == address) {
+            write.value = value;
+            return true;
+        }
         if self.writes.len() == MAX_WRITES {
             self.player.dropped_commands += 1;
             return true;
