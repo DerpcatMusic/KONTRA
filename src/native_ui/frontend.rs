@@ -96,30 +96,82 @@ impl Parser<'_> {
         self.at += 1;
         Ok(())
     }
+    fn newline_continues(&self, last: &str) -> bool {
+        let operator = |t: &str| {
+            matches!(
+                t,
+                "and"
+                    | "or"
+                    | "not"
+                    | "."
+                    | "+"
+                    | "-"
+                    | "*"
+                    | "/"
+                    | "%"
+                    | "^"
+                    | "<"
+                    | ">"
+                    | "="
+                    | "~"
+                    | "#"
+                    | "|"
+                    | "&"
+            )
+        };
+        let next = self.tokens[self.at + 1..]
+            .iter()
+            .find(|t| !t.text.trim().is_empty() && !t.text.starts_with("--"));
+        last.is_empty() || operator(last) || next.is_some_and(|t| operator(t.text))
+    }
     fn expression(&mut self, closing: &str) -> Result<String> {
         let (mut out, mut delimiters, mut blocks) = (String::new(), Vec::new(), 0i32);
+        let mut last = String::new();
         while self.at < self.tokens.len() {
             let t = self.token().to_owned();
             if delimiters.is_empty()
                 && blocks == 0
-                && (t == closing || matches!(t.as_str(), "," | ";" | "\n"))
+                && (t == closing
+                    || matches!(t.as_str(), "," | ";")
+                    || (t == "\n" && !self.newline_continues(&last)))
             {
                 break;
             }
+            // Legacy component properties may be adjacent on one line:
+            // file = image_path() resizable = false. A single assignment is
+            // a property separator here, while Lua == comparisons remain expressions.
+            if delimiters.is_empty() && blocks == 0 && !out.trim().is_empty() && ident(&t) {
+                let mut next = self.at + 1;
+                while self
+                    .tokens
+                    .get(next)
+                    .is_some_and(|t| t.text.trim().is_empty())
+                {
+                    next += 1;
+                }
+                if self.tokens.get(next).is_some_and(|t| t.text == "=")
+                    && !self.tokens.get(next + 1).is_some_and(|t| t.text == "=")
+                {
+                    break;
+                }
+            }
             if t == "@" {
                 out.push_str(&self.component()?);
+                last = "component".into();
                 continue;
             }
             if t.starts_with("--") {
                 out.push_str(&t);
                 self.at += 1;
-                // A short comment must end before generated closing syntax.
+                // A short comment must end before generated closing syntax,
+                // but it may sit inside an and/or continuation.
                 if self.token() == "\n" {
+                    let continues = self.newline_continues(&last);
                     out.push('\n');
                     self.at += 1;
-                }
-                if delimiters.is_empty() && blocks == 0 {
-                    break;
+                    if delimiters.is_empty() && blocks == 0 && !continues {
+                        break;
+                    }
                 }
                 continue;
             }
@@ -139,10 +191,13 @@ impl Parser<'_> {
                 _ => (),
             }
             out.push_str(&t);
+            if !t.trim().is_empty() {
+                last = t;
+            }
             self.at += 1;
         }
         ensure!(
-            delimiters.is_empty() && blocks == 0 && !out.trim().is_empty(),
+            delimiters.is_empty() && blocks == 0 && !last.is_empty(),
             "Incomplete native UI component expression"
         );
         Ok(out)

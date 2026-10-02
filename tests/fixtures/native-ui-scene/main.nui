@@ -2,8 +2,11 @@ local ui = require("native_ui")
 local Card = require("components")
 return function()
     return @ui.ZStack {
-        @ui.Rectangle {color=ui.Color(10,20,30)}
+        @ui.Rectangle {color=
+            ui.Color(10,20,30)}
+        true and -- an authored conditional may continue after its comment
         @Card {parameter_id="Amount"}
+        or @ui.ZStack {}
         @Card {parameter_id="Remote"}
-    }.frame(width=640,height=400)
+    }.frame(width=640 height=400)
 end
