@@ -104,6 +104,110 @@ fn convolution_ir_filter_boundaries_follow_native_rate_and_biquad_law_without_he
 }
 
 #[test]
+fn convolution_native_size_pairs_survive_callbacks_restore_and_independent_edits_without_heap() {
+    use crate::import::{Group, Instrument};
+    let mut impulse = [0.0; 16];
+    impulse[4] = 0.5;
+    let mut effect = convolution(&impulse);
+    effect.output_gain = 0.5;
+    effect.dry_level = 0.25;
+    let Params::Convolution(c) = &mut effect.params else { unreachable!() };
+    c.early.length_ratio = 0.75;
+    c.late.length_ratio = 1.25;
+    c.unknown_9 = 0.5;
+    let instrument = Instrument {
+        groups: vec![Group::default()],
+        fx: ProgramFx { insert: Chain { slots: vec![effect] }, ..Default::default() },
+        scripts: vec![r#"on init
+set_engine_par($ENGINE_PAR_IRC_REVERSE,1,-1,0,$NI_INSERT_BUS)
+set_engine_par($ENGINE_PAR_IRC_AUTO_GAIN,1,-1,0,$NI_INSERT_BUS)
+set_engine_par($ENGINE_PAR_IRC_PREDELAY,81055,-1,0,$NI_INSERT_BUS)
+declare $early := get_engine_par($ENGINE_PAR_IRC_LENGTH_RATIO_ER,-1,0,$NI_INSERT_BUS)
+declare $late := get_engine_par($ENGINE_PAR_IRC_LENGTH_RATIO_LR,-1,0,$NI_INSERT_BUS)
+make_persistent($early)
+make_persistent($late)
+end on"#.into()],
+        ..Default::default()
+    };
+    let (rt, errors) = crate::engine::load_scripts(&instrument, Vec::new(), f64::from(SR));
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(rt.as_ref().unwrap().persistence()[0]["$early"], crate::ksp::Value::Int(250000));
+    assert_eq!(rt.as_ref().unwrap().persistence()[0]["$late"], crate::ksp::Value::Int(750000));
+    let loads = &rt.as_ref().unwrap().init_irs;
+    let settings = loads.iter().find_map(|l| match l.load {
+        Load::Convolution(s) => Some(s), _ => None,
+    }).unwrap();
+    assert_eq!(settings.length_ratios, Some([0.75,1.25]));
+    assert_eq!(settings.values[1..], [0.25,0.75]);
+    assert_eq!((settings.reverse, settings.auto_gain), (Some(true),Some(true)));
+    let serialized = serde_json::to_string(&settings).unwrap();
+    let restored: params::IrSettings = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(restored, settings);
+    let loads = [ScriptIr { rack: Rack::Insert, slot: 0, load: Load::Convolution(restored) }];
+    let applied = instrument.fx.with_loads(&loads);
+    let Params::Convolution(c) = &applied.insert.slots[0].params else { unreachable!() };
+    assert_eq!([c.early.length_ratio,c.late.length_ratio], [0.75,1.25]);
+    assert!(c.reversed() && c.auto_gain());
+    assert!(c.predelay_ms > 0.99 && c.predelay_ms < 1.01);
+    let mut processor = instrument.fx.processor_with(SR, 64, &loads);
+    let mut changed = None;
+    assert_eq!(crate::plugin::tests::allocations(|| {
+        assert!(processor.set_param(Rack::Insert, 0, FxParam::Convolution(3), 0.0));
+        assert!(processor.set_param(Rack::Insert, 0, FxParam::Convolution(4), 0.0));
+        assert!(processor.set_param(Rack::Insert, 0, FxParam::Convolution(0), 0.0));
+        changed = processor.take_ir_change();
+    }), 0);
+    let (rack, slot, changed) = changed.unwrap();
+    assert_eq!(changed.length_ratios, Some([0.75,1.25]));
+    let loads = [ScriptIr { rack, slot, load: Load::Convolution(changed) }];
+    let prepared = instrument.fx.prepare_ir(rack, slot, SR, 64, &loads).unwrap();
+    let mut retired = None;
+    assert_eq!(crate::plugin::tests::allocations(|| {
+        retired = Some(processor.replace_ir(prepared).ok().expect("convolution slot"));
+    }), 0);
+    drop(retired);
+    // Current non-unit DSP is explicitly the late-size proxy: peak4 becomes5
+    // at ratio1.25. Independent Size writes must still preserve the other band.
+    for (field, value, pair, peak) in [(None,0.0,[0.75,1.25],5),
+        (Some(1),0.5,[1.0,1.25],5), (Some(2),0.5,[1.0,1.0],4)] {
+        if let Some(field) = field {
+            let mut change = None;
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                assert!(processor.set_param(rack, slot, FxParam::Convolution(field), value));
+                change = processor.take_ir_change();
+            }), 0);
+            let (_, _, settings) = change.unwrap();
+            assert_eq!(settings.length_ratios, Some(pair));
+            assert_eq!(settings.values[1..], [pair[0]-0.5,pair[1]-0.5]);
+            let settings: params::IrSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            let loads = [ScriptIr { rack, slot, load: Load::Convolution(settings) }];
+            let fx = instrument.fx.with_loads(&loads);
+            let Params::Convolution(c) = &fx.insert.slots[0].params else { unreachable!() };
+            assert_eq!([c.early.length_ratio,c.late.length_ratio], pair);
+            if pair[0] != pair[1] { assert!(fx.warnings().iter().any(|w| w.contains("independent early/late IR sizing"))); }
+            let prepared = instrument.fx.prepare_ir(rack, slot, SR, 64, &loads).unwrap();
+            let _retired = processor.replace_ir(prepared).ok().expect("convolution slot");
+        }
+        let (mut left, mut right) = ([0.0;64], [0.0;64]);
+        assert_eq!(processor.param(rack, slot, FxParam::Convolution(1)), Some(pair[0]-0.5));
+        assert_eq!(processor.param(rack, slot, FxParam::Convolution(2)), Some(pair[1]-0.5));
+        left[0] = 1.0; right[0] = 1.0;
+        assert_eq!(crate::plugin::tests::allocations(|| processor.process(&mut left, &mut right)), 0);
+        assert!((left[0]-0.25).abs() < 1e-6 && (right[0]-0.25).abs() < 1e-6, "dry gain");
+        assert!((left[peak]-0.25).abs() < 1e-6 && (right[peak]-0.25).abs() < 1e-6, "late ratio controls the existing proxy");
+    }
+    let mut legacy: params::IrSettings = serde_json::from_str(r#"{"values":[0,0.25,0.75],"size":0.5}"#).unwrap();
+    assert!(legacy.length_ratios.is_none());
+    let loads = [ScriptIr { rack, slot, load: Load::Convolution(legacy) }];
+    let fx = instrument.fx.with_loads(&loads);
+    let Params::Convolution(c) = &fx.insert.slots[0].params else { unreachable!() };
+    assert_eq!([c.early.length_ratio,c.late.length_ratio], [1.0,1.0], "old uniform audio preserved");
+    assert!(legacy.set(1, 0.75));
+    assert_eq!(legacy.length_ratios, Some([1.25,1.0]), "first new edit promotes the audible legacy pair");
+    assert_eq!(legacy.values[1..], [0.75,0.5], "untouched legacy LR now reads its actual uniform ratio");
+}
+
+#[test]
 fn convolution_explicit_crossover_matches_scalar_filters_overlap_and_dry_without_heap() {
     // Direct-form f64 filters are independent of the production SVF. Two
     // differently filtered responses overlap for 50 ms, rather than splicing
