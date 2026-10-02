@@ -597,14 +597,13 @@ fn computed_ui_and_execution_limits() {
     // Integer division by zero is 0, reported, and init goes on.
     let div = initialize("on init\ndeclare $z\ndeclare $a := 1/$z\nend on", 0, 0).unwrap();
     assert!(div.diagnostics.iter().any(|d| d.contains("division by zero")));
-    assert!(
-        initialize(
-            "on init\ndeclare @s := \"x\"\nwhile (1)\n@s := @s & @s\nend while\nend on",
-            0,
-            0
-        )
-        .is_err()
-    );
+    // Stored strings saturate at the documented bound; growth itself is
+    // valid. The separate runaway above verifies the instruction guard.
+    let bounded = initialize(
+        "on init\ndeclare ui_text_edit @s\n@s := \"x\"\ndeclare $i\nwhile ($i < 64)\n@s := @s & @s\ninc($i)\nend while\nend on", 0, 0,
+    ).unwrap();
+    assert_eq!(prop(&bounded,0,"$CONTROL_PAR_VALUE"),"x".repeat(320));
+    assert!(bounded.diagnostics.is_empty(),"{:?}",bounded.diagnostics);
     assert!(
         initialize(
             "on init\ndeclare ui_button $a\nmove_control($a,2147483647,-2147483647-1)\nend on",
