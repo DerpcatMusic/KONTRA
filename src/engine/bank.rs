@@ -79,7 +79,7 @@ pub struct GroupSettings {
     pub bus: Option<u8>,
     /// External modulation (velocity, controllers, pitch bend...).
     pub mods: ModTable,
-    /// Internal AHDSRs driving pitch; at most four.
+    /// Internal AHDSRs driving pitch; every native internal-modulator slot.
     pub pitch_envelopes: Box<[super::params::PitchEnvelope]>,
     /// Insert filters and EQs; `None` costs voices nothing.
     pub filter: Option<Box<GroupFilter>>,
@@ -898,6 +898,8 @@ impl Builder {
                 issues.notes.join("; ")
             );
         }
+        anyhow::ensure!(groups.iter().all(|g| g.envelopes.len() <= super::params::PITCH_ENVS),
+            "Internal AHDSR envelope count exceeds Kontakt's sixteen modulator slots");
         let mut settings: Vec<_> = groups.iter().map(GroupSettings::from).collect();
         super::params::share_curves(settings.iter_mut().map(|s| &mut s.mods));
         Ok(Self {

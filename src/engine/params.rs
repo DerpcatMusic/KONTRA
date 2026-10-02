@@ -21,6 +21,7 @@ pub(crate) use crate::modulation::PITCH_ENVS;
 #[derive(Clone, Debug, PartialEq)]
 pub struct PitchEnvelope {
     pub env: Ahdsr,
+    pub bypass: bool,
     /// Original Group::envelopes index, preserving script addresses.
     pub index: u8,
     /// Original target index, direction and prepared shaper/depth.
@@ -43,18 +44,18 @@ impl PitchEnvelope {
                     .collect();
                 (!targets.is_empty()).then(|| Self {
                     env: Ahdsr::from(&e.env),
+                    bypass: false,
                     index: index as u8,
                     targets,
                 })
             })
-            // ponytail: fixed voice workspace holds four; import warns if exceeded.
-            .take(PITCH_ENVS)
             .collect()
     }
 
     /// Existing voice control rate, with the same AHDSR as amplitude/filter modulation.
     pub(crate) fn pitch(&self, state: &mut Envelope, frames: usize, rate: f32) -> f32 {
         state.skip(frames, None, rate);
+        if self.bypass { return 0.; }
         self.targets
             .iter()
             .map(|(_, sign, m)| 12. * sign * m.intensity * m.shape(state.level()))
@@ -467,6 +468,7 @@ pub mod id {
     pub const ATK_CURVE: i32 = B + 11;
     pub const MOD_TARGET_INTENSITY: i32 = B + 16;
     pub const MOD_TARGET_MP_INTENSITY: i32 = B + 17;
+    pub const INTMOD_BYPASS: i32 = B + 19;
     pub const EFFECT_BYPASS: i32 = B + 22;
     pub const EFFECT_TYPE: i32 = B + 23;
     pub const EFFECT_SUBTYPE: i32 = B + 24;
@@ -549,6 +551,8 @@ pub(crate) enum Address {
         target: u16,
         bipolar: bool,
     },
+    /// Explicit KSP bypass, separate from the undecoded preset flags.
+    InternalBypass(u16, u8),
     Fx(Rack, u8, FxParam),
     /// A group insert slot's filter/EQ knob (normalized), bypass, output
     /// gain or Stereo Modeller setting.
@@ -632,6 +636,13 @@ impl Address {
                     (_, Some(e)) => Self::ModEnvelope(g, u8::try_from(e).ok()?, stage),
                     _ => return None,
                 }
+            }
+            id::INTMOD_BYPASS => {
+                let g = group()?;
+                let e = modulator(g)?.envelope?;
+                groups[g as usize].envelopes.get(e)?.targets.iter()
+                    .any(|t| t.target == ModTarget::Pitch).then_some(())?;
+                Self::InternalBypass(g, u8::try_from(e).ok()?)
             }
             id::MOD_TARGET_INTENSITY | id::MOD_TARGET_MP_INTENSITY => {
                 let g = group()?;
@@ -751,6 +762,7 @@ impl Address {
                 | Self::Envelope(..)
                 | Self::ModEnvelope(..)
                 | Self::InternalIntensity { .. }
+                | Self::InternalBypass(..)
                 | Self::Intensity { .. }
                 | Self::Filter(..)
         )
@@ -790,7 +802,7 @@ impl Address {
             },
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. } => 2.0 * x - 1.0,
-            Self::Filter(_, _, Knob::Bypass) => f32::from(value != 0),
+            Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) => f32::from(value != 0),
             Self::Filter(_, _, Knob::Type) => value as f32,
             Self::Filter(_, _, Knob::Output) => effect_gain(x),
             // Afflatus sets 434210 where it stores spread -0.1316, Solo 500000 for 0.
@@ -824,7 +836,7 @@ impl Address {
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => return i32::from(v >= 0.5),
             Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => v,
             Self::Filter(_, _, Knob::Type) => return v as i32,
-            Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) => {
+            Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) => {
                 return i32::from(v != 0.0);
             }
             Self::Group(_, p) | Self::Instrument(p) => match p {
@@ -1012,6 +1024,11 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             };
             m.2.intensity = value.clamp(-1., 1.);
         }
+        Address::InternalBypass(g, index) => {
+            let Some(envelope) = settings.get_mut(g as usize)
+                .and_then(|s| s.pitch_envelopes.iter_mut().find(|e| e.index == index)) else { return false; };
+            envelope.bypass = value != 0.;
+        }
         Address::Filter(g, slot, knob) => {
             let filter = settings.get_mut(g as usize).and_then(|s| s.filter.as_mut());
             return filter.is_some_and(|f| f.set_knob(slot, knob, value));
@@ -1095,6 +1112,8 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
             .iter()
             .find(|t| t.0 == target)
             .map(|t| t.2.intensity),
+        Address::InternalBypass(g, index) => settings.get(g as usize)?.pitch_envelopes.iter()
+            .find(|e| e.index == index).map(|e| f32::from(e.bypass)),
         Address::Filter(g, slot, knob) => {
             settings.get(g as usize)?.filter.as_ref()?.knob(slot, knob)
         }
@@ -1500,6 +1519,21 @@ mod tests {
         assert!((p.pitch(&mut state, 480, 48_000.) + 3.).abs() < 1e-4);
 
         // A held +6 semitone pitch envelope must reach the actual resampler.
+        let bypass = Address::resolve(EnginePar { id: id::INTMOD_BYPASS, group: 0, slot: 0, generic: -1 }, &groups).unwrap();
+        assert!(write(&mut settings, bypass, bypass.decode(1)));
+        assert_eq!(bypass.encode(read(&settings, bypass).unwrap()), 1);
+        let p = &settings[0].pitch_envelopes[0];
+        let mut bypassed = Envelope::new(&p.env, 48_000.);
+        assert_eq!(p.pitch(&mut bypassed, 480, 48_000.), 0.);
+        assert!((bypassed.level() - 0.5).abs() < 1e-4);
+        assert!(write(&mut settings, bypass, bypass.decode(0)));
+        assert!((settings[0].pitch_envelopes[0].pitch(&mut bypassed, 0, 48_000.) + 3.).abs() < 1e-4);
+        let mut full = groups[0].clone();
+        full.envelopes = vec![full.envelopes[0].clone(); PITCH_ENVS];
+        let prepared = PitchEnvelope::from_group(&full);
+        assert_eq!(prepared.len(), 16);
+        assert_eq!(prepared.last().unwrap().index, 15);
+
         let mut pitched = groups[0].clone();
         let env = &mut pitched.envelopes[0];
         (env.env.attack_ms, env.env.sustain) = (0., 1.);
@@ -1516,9 +1550,17 @@ mod tests {
             engine.render(&mut l, &mut r);
             l
         };
+        for e in &mut full.envelopes {
+            (e.env.attack_ms, e.env.sustain) = (0., 1.);
+            e.targets[0].intensity = 0.5 / PITCH_ENVS as f32;
+        }
+        let all_slots = render(full.clone());
         let (pitched, reference) = (render(pitched), render(reference));
         assert!(reference.iter().any(|x| x.abs() > 0.01));
         assert!(pitched.iter().zip(reference).all(|(a, b)| (a - b).abs() < 1e-6));
+        assert!(all_slots.iter().zip(reference).all(|(a, b)| (a - b).abs() < 1e-6));
+        full.envelopes.push(full.envelopes[0].clone());
+        assert!(super::super::Bank::from_samples(vec![full], Vec::new(), Vec::new()).is_err());
     }
 
     #[test]
