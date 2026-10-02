@@ -92,6 +92,7 @@ local ui = {
 for _,kind in ipairs({"ZStack","Text","Rectangle","Image"}) do ui[kind]={kind=kind} end
 native_ui_host = strict("native_ui",ui)
 kontakt_host = strict("kontakt", {
+    connect_level_meter=function(name) return strict("level_meter",native_connect_level_meter(name)) end,
     create_tmp_midi_file=function()
         error("Unsupported native UI API: kontakt.create_tmp_midi_file",2)
     end,

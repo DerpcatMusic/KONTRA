@@ -1100,9 +1100,21 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 || !((-4..16).contains(&generic) || named_chain) {
                 return Err(Fault("Invalid level meter attachment"));
             }
-            // ponytail: no per-group/FX taps yet; preserve initialization and
-            // report the missing connection instead of showing fabricated levels.
-            m.env.note("KSP level meter attachments are unavailable");
+            let generic = match m.prog.symbol_name(generic) {
+                Some("$NI_LEVEL_METER_MAIN") => -2,
+                Some("$NI_LEVEL_METER_GROUP") => -3,
+                Some("$NI_LEVEL_METER_INSERT") => -4,
+                _ => generic,
+            };
+            let attachment = crate::fx::MeterAttachment { group, slot, channel: channel as u8, generic: generic as i8 };
+            let control = &mut m.slot.ui.controls[c];
+            if control.meter != Some(attachment) {
+                control.meter = Some(attachment);
+                control.revision = control.revision.wrapping_add(1);
+            }
+            if attachment.output().is_none() {
+                m.env.note("KSP group/effect or multichannel level meter attachments are unavailable");
+            }
             Ok(Step::Next)
         }
         SetControlPar => {

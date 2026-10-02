@@ -9,11 +9,13 @@
 pub(crate) mod blocks;
 mod convolution;
 mod kind;
+mod meters;
 pub mod params;
 mod processor;
 mod reverb;
 
 pub use kind::{Kind, ksp_effect_type};
+pub(crate) use meters::{MeterAttachment, MeterReader, OutputMeters, METER_OUTPUTS};
 pub use crate::engine::filter::Knob as FilterParam;
 pub use params::Params;
 pub(crate) use processor::SendInputs;

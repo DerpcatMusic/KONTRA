@@ -4779,6 +4779,74 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
+    fn native_level_meters_follow_instrument_buses_before_rack_gain_and_release_subscriptions() {
+        use crate::{audio::Sample, import::{Group, Loop, Zone}, fx::{Bus, ProgramFx}};
+        let directory=std::env::temp_dir().join(format!("kontra-native-meter-{}",std::process::id()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') local k=require('kontakt') local a=k.connect_level_meter('busL') local b=k.connect_level_meter('busR') local c=k.connect_level_meter('otherL') local d=k.connect_level_meter('mainR') return @ui.Text{text=function()return string.format('%.5f %.5f %.5f %.5f',a:level_value(),b:level_value(),c:level_value(),d:level_value())end}.frame(width=640,height=400)").unwrap();
+        let source=r#"on init
+make_perfview
+load_native_ui("main")
+expose_controls
+declare ui_level_meter $busL
+declare ui_level_meter $busR
+declare ui_level_meter $otherL
+declare ui_level_meter $mainR
+declare ui_slider $route(0,1)
+attach_level_meter(get_ui_id($busL),-1,-1,0,0)
+attach_level_meter(get_ui_id($busR),-1,-1,1,0)
+attach_level_meter(get_ui_id($otherL),-1,-1,0,1)
+attach_level_meter(get_ui_id($mainR),-1,-1,1,-1)
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL,$NI_BUS_OFFSET,0,-1,-1)
+set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL,$NI_BUS_OFFSET+1,1,-1,-1)
+end on
+on ui_control($route)
+attach_level_meter(get_ui_id($busL),-1,-1,0,$route)
+end on"#;
+        let instrument=Instrument {path:directory.join("fixture.nki"),groups:vec![Group::default();2],scripts:vec![source.into()],fx:ProgramFx {buses:vec![Bus{index:0,name:"first".into(),volume:1.,pan:0.,output:-1,chain:Default::default()},Bus{index:1,name:"second".into(),volume:0.5,pan:0.,output:-1,chain:Default::default()}],..Default::default()},..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let meters=rt.output_meters.clone();
+        let mut live=rt.live();rt.prepare_native_controls(&mut live);
+        let mut scene=crate::native_ui::Scene::prepare(&instrument.path,&rt).unwrap().unwrap();
+        fn readings(n:&crate::native_ui::Node)->Option<Vec<f32>> {if let crate::native_ui::Paint::Text(s)=&n.paint {Some(s.split_whitespace().map(|s|s.parse().unwrap()).collect())}else{n.children.iter().find_map(readings)}}
+        assert_eq!(readings(&scene.snapshot().unwrap()).unwrap(),vec![0.;4],"unrendered taps have genuine zero signal");
+        let zones=(0..2).map(|group|Zone{group,sample:PathBuf::from(group.to_string()),loop_range:Some(Loop{start:0,end:128,alternating:false,until_release:false,crossfade:0}),..Default::default()}).collect();
+        let samples=[(0.1,0.2),(0.3,0.4)].into_iter().enumerate().map(|(g,(l,r))| {
+            let frames=(0..128).map(|n|{let x=(std::f32::consts::TAU*n as f32/64.).sin();[x*l,x*r]}).collect();
+            (PathBuf::from(g.to_string()),Sample{rate:48000,frames})
+        }).collect();
+        let bank=Bank::from_samples(instrument.groups.clone(),zones,samples).unwrap();
+        let mut rack=crate::engine::Rack::with_slots(1);rack.parts[0].set_bank(Some(Box::new(bank)));rack.parts[0].set_script(Some(rt));rack.parts[0].set_fx(instrument.fx.processor(48000.,MAX_BLOCK));
+        rack.note_on(0,60,127);
+        assert_eq!(allocations(||{for _ in 0..24{rack.render(128);}}),0);
+        let before=readings(&scene.snapshot().unwrap()).unwrap();
+        for (actual,expected) in before.iter().zip([0.1,0.2,0.15,0.4]) {assert!((actual-expected).abs()<1e-4,"known stereo sample/bus level: {before:?}");}
+        let output=rack.render(128)[0][1][16].abs();
+        rack.controls[0].gain=0.25;
+        assert_eq!(allocations(||{rack.render(128);}),0);
+        assert_eq!(readings(&scene.snapshot().unwrap()).unwrap(),before,"host fader cannot alter Kontakt instrument taps");
+        assert!((rack.render(128)[0][1][16].abs()-output*0.25).abs()<1e-5);
+        let revision=scene.revision();
+        rack.parts[0].ui_control(0,4,1);
+        assert_eq!(allocations(||{rack.render(128);rack.parts[0].script().unwrap().refresh_live(&mut live);}),0);
+        scene.observe(&live);
+        let after=readings(&scene.snapshot().unwrap()).unwrap();assert!((after[0]-0.15).abs()<1e-4,"reattachment follows exact bus1: {after:?}");assert!(scene.revision()!=revision);
+        assert!(meters.watched(0)&&meters.watched(1)&&meters.watched(16));
+        drop(scene);assert!(!(0..17).any(|n|meters.watched(n)),"destroying the epoch releases all subscriptions");
+        let (replacement,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty());let replacement=replacement.unwrap();
+        assert!(!Arc::ptr_eq(&meters,&replacement.output_meters));
+        let new_scene=crate::native_ui::Scene::prepare(&instrument.path,&replacement).unwrap().unwrap();
+        let new_meters=replacement.output_meters.clone();let old_revision=meters.revision();rack.parts[0].set_script(Some(replacement));rack.render(128);
+        assert_eq!(meters.revision(),old_revision,"stale epoch is no longer published by the playing engine");
+        drop(new_scene);assert!(!(0..17).any(|n|new_meters.watched(n)));
+        std::fs::write(resources.join("main.nui"),"local k=require('kontakt') local subscribed=k.connect_level_meter('busL') return k.connect_level_meter('route')").unwrap();
+        let error=format!("{:#}",crate::native_ui::Scene::prepare(&instrument.path,rack.parts[0].script().unwrap()).unwrap_err());
+        assert!(error.contains("requires ui_level_meter"),"{error}");
+        assert!(!(0..17).any(|n|new_meters.watched(n)),"failed constructor releases subscriptions too");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_scene_uses_exact_slot_plugin_edits_and_published_callbacks_without_audio_heap() {
         use crate::native_ui::{Scene, Node, Paint};
         let directory = std::env::temp_dir().join(format!("kontra-native-scene-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

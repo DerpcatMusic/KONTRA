@@ -213,11 +213,7 @@ fn auxiliary_meter_setup_preserves_the_rest_of_init() {
     let ui = initialize("on init\nmake_perfview\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter),-1,-1,0,-1)\ndeclare ui_switch $play\nset_text($play,\"Play\")\nend on", 0, 8).unwrap();
     assert_eq!(ui.controls.len(), 2);
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "Play");
-    assert!(
-        ui.diagnostics
-            .iter()
-            .any(|d| d.contains("meter attachments are unavailable"))
-    );
+    assert!(ui.diagnostics.is_empty(), "{ui:?}");
     let wrong = initialize("on init\ndeclare ui_label $label(1,1)\nattach_level_meter(get_ui_id($label),-1,-1,0,-1)\nend on", 0, 8).unwrap_err();
     assert!(wrong.to_string().contains("requires a ui_level_meter"));
     // Documented named chains are symbolic identities, not bus indices.
