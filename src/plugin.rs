@@ -2465,7 +2465,7 @@ impl BackgroundTask for Load {
                     .map(|i| (i, v.irs.clone()))
             };
             let Some((instrument, irs)) = stale else { continue };
-            let fx = instrument.fx.processor_with(rate as f32, MAX_BLOCK, &irs);
+            let fx = instrument.fx.processor_for_groups(rate as f32, MAX_BLOCK, &irs, &instrument.groups);
             params.shared.view.lock().unwrap().parts[slot].fx_rate = rate;
             let _ = params.shared.publish_part((
                 slot,

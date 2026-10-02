@@ -1033,12 +1033,14 @@ impl Engine {
         if !self.blocking_streams { self.player.shed(self.load); }
         let defaults = self.defaults();
         let (mut next, mut written) = (0, 0);
+        let block_size = MAX_BLOCK.min(self.fx.block_size());
         for (block, (l, r)) in left[..n]
-            .chunks_mut(MAX_BLOCK)
-            .zip(right[..n].chunks_mut(MAX_BLOCK))
+            .chunks_mut(block_size)
+            .zip(right[..n].chunks_mut(block_size))
             .enumerate()
         {
-            let (base, len) = (block * MAX_BLOCK, l.len());
+            let (base, len) = (block * block_size, l.len());
+            self.fx.begin_group_sends(len);
             let mut pos = 0;
             loop {
                 // Parameters first: they configure notes started at the same frame.
@@ -2011,10 +2013,9 @@ impl Player {
                 continue;
             }
             let bus = bank.settings[voice.group as usize].bus;
-            let (alive, underrun) = match bus.and_then(|b| fx.bus_input(b, offset..offset + n)) {
-                Some((l, r)) => voice.render(&cx, &mut self.scratch, l, r, false),
-                None => voice.render(&cx, &mut self.scratch, left, right, false),
-            };
+            let (input, mut sends) = fx.voice_inputs(bus, offset..offset + n);
+            let (l, r) = input.unwrap_or((left, right));
+            let (alive, underrun) = voice.render(&cx, &mut self.scratch, l, r, false, Some(&mut sends));
             self.underruns += u64::from(underrun);
             if !alive {
                 self.dead.push(i as u16);
@@ -2067,7 +2068,7 @@ impl Player {
                     sl.fill(0.0);
                     sr.fill(0.0);
                     let (alive, underrun) = match lane.is_solo() {
-                        true => voice.render(&cx, &mut self.scratch, sl, sr, true),
+                        true => voice.render(&cx, &mut self.scratch, sl, sr, true, None),
                         false => {
                             let Scratch { window, acc, amp, .. } = &mut self.scratch;
                             let acc = &mut acc[..lane.count(n)];

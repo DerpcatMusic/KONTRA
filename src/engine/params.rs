@@ -724,19 +724,14 @@ impl Address {
             id::SEND_EFFECT_DRY_LEVEL => fx(FxParam::Dry)?,
             id::SEND_EFFECT_OUTPUT_GAIN => fx(FxParam::Wet)?,
             id::SENDLEVEL_0..=id::SENDLEVEL_7 => {
-                // Una Corda addresses its insert Send Levels with generic 0.
-                // These are the send inputs, not parameters of the return rack.
-                let rack = if par.generic == 0 {
-                    Rack::Insert
+                let n = (par.id - id::SENDLEVEL_0) as u8;
+                if par.group >= 0 {
+                    Self::Filter(group()?, u8::try_from(par.slot).ok()?, Knob::SendLevel(n))
                 } else {
-                    rack()?
-                };
-                (par.group == -1).then_some(())?;
-                Self::Fx(
-                    rack,
-                    u8::try_from(par.slot).ok()?,
-                    FxParam::SendLevel((par.id - id::SENDLEVEL_0) as u8),
-                )
+                    let rack = if par.generic == 0 { Rack::Insert } else { rack()? };
+                    (par.group == -1).then_some(())?;
+                    Self::Fx(rack, u8::try_from(par.slot).ok()?, FxParam::SendLevel(n))
+                }
             }
             _ => match crate::ksp::engine_par_name(par.id)? {
                 "$ENGINE_PAR_IRC_PREDELAY" => fx(FxParam::Convolution(0))?,
@@ -824,6 +819,7 @@ impl Address {
             Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) => f32::from(value != 0),
             Self::Filter(_, _, Knob::Type) => value as f32,
             Self::Filter(_, _, Knob::Output) => effect_gain(x),
+            Self::Filter(_, _, Knob::SendLevel(_)) => volume(x),
             // Afflatus sets 434210 where it stores spread -0.1316, Solo 500000 for 0.
             Self::Filter(_, _, Knob::Spread | Knob::Pan)
             | Self::Fx(_, _, FxParam::Filter(Knob::Spread | Knob::Pan)) => 2.0 * x - 1.0,
@@ -880,6 +876,7 @@ impl Address {
             Self::Filter(_, _, Knob::Output) | Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => {
                 (v.max(0.0) / EFFECT_MAX_GAIN).cbrt()
             }
+            Self::Filter(_, _, Knob::SendLevel(_)) => volume_value(v),
             Self::Filter(..) | Self::Fx(_, _, FxParam::Filter(_)) => v,
             Self::Fx(..) => volume_value(v),
         };

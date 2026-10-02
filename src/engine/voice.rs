@@ -1143,7 +1143,8 @@ impl Voice {
         // Same-frame host expression may arrive after an unscripted note was
         // spawned. Start at the final initial value; later edits still ramp.
         if initial { self.gains = target; }
-        let muted = target == [0.0; 2] && self.gains == [0.0; 2];
+        let muted = target == [0.0; 2] && self.gains == [0.0; 2]
+            && !group.filter.as_ref().is_some_and(|f| f.pre_sends);
         // A sample ending mid-waveform ramps out over its last millisecond.
         let end = ((self.length as f64 - self.pos) / step) as f32;
         let declick = end < n as f32 + DECLICK * cx.rate;
@@ -1209,6 +1210,7 @@ impl Voice {
         left: &mut [f32],
         right: &mut [f32],
         bare: bool,
+        sends: Option<&mut crate::fx::SendInputs<'_>>,
     ) -> (bool, bool) {
         let Plan { n, step, target, muted, declick, .. } = self.plan;
         let group = &cx.bank.settings[self.group as usize];
@@ -1282,7 +1284,7 @@ impl Voice {
             }
             if let Some(filter) = own {
                 let (l, r) = (&mut out_l[..n], &mut out_r[..n]);
-                self.filter.process_amplified(filter, &group.mods, &mut scratch.flex, l, r, cx.rate, amp, self.gains, delta);
+                self.filter.process_amplified(filter, &group.mods, &mut scratch.flex, l, r, cx.rate, amp, self.gains, delta, sends);
                 left[..n].iter_mut().zip(l.iter()).for_each(|(o, x)| *o += x);
                 right[..n].iter_mut().zip(r.iter()).for_each(|(o, x)| *o += x);
             }
