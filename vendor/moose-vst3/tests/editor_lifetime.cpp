@@ -3,7 +3,7 @@
 // /tmp/kontra-editor-lifetime
 #include "../shim/vst3_shim.cpp"
 
-static bool context_alive;
+static bool context_alive, editor_open;
 static int destroys, opens, closes;
 static void require_impl(bool ok, const char* condition, int line) {
     if (!ok) { std::fprintf(stderr, "FAIL line %d: %s\n", line, condition); std::abort(); }
@@ -49,8 +49,8 @@ int main() {
     callbacks.create = []() -> void* { require(!context_alive); context_alive = true; return &context_alive; };
     callbacks.destroy = [](void*) { require(context_alive); context_alive = false; ++destroys; };
     callbacks.gui_has_editor = [](void*) -> int32_t { require(context_alive); return 1; };
-    callbacks.gui_open = [](void*, void*) { require(context_alive); ++opens; };
-    callbacks.gui_close = [](void*) { require(context_alive); ++closes; };
+    callbacks.gui_open = [](void*, void*) { require(context_alive); editor_open = true; ++opens; };
+    callbacks.gui_close = [](void*) { require(context_alive && editor_open); editor_open = false; ++closes; };
     callbacks.gui_get_size = [](void*, uint32_t* w, uint32_t* h) { require(context_alive); *w = 1180; *h = 760; };
     g_cb = &callbacks;
     int parent_token;
@@ -121,5 +121,24 @@ int main() {
     require(view->vtbl->release(view) == 0 && current_loop.registrations == 0 && current_loop.refs == 1);
     require(old_frame.refs == 1 && current_frame.refs == 1);
     require(com->vtbl_component->release(com) == 0 && !context_alive && destroys == 103);
-    std::puts("PASS: component/view/frame ownership; old view clear/release preserves current run-loop registration");
+    const int opens_before = opens, closes_before = closes;
+    com = create_component();
+    old = static_cast<MoosePlugView*>(com->vtbl_controller->createView(&com->vtbl_controller, "editor"));
+    require(old->vtbl->attached(old, &parent_token, kPlatformTypeX11) == kResultOk && editor_open);
+    view = static_cast<MoosePlugView*>(com->vtbl_controller->createView(&com->vtbl_controller, "editor"));
+    // Merely creating a replacement must not disown the still-attached view.
+    require(old->vtbl->removed(old) == kResultOk && !editor_open && closes == closes_before + 1);
+    require(old->vtbl->attached(old, &parent_token, kPlatformTypeX11) == kResultOk && editor_open);
+    require(view->vtbl->attached(view, &parent_token, kPlatformTypeX11) == kResultOk && editor_open);
+    // New attachment supersedes old ownership. Old removal/release must not
+    // close the new native editor sharing this Rust context.
+    require(old->vtbl->removed(old) == kResultOk && editor_open && closes == closes_before + 1);
+    require(old->vtbl->release(old) == 0 && editor_open && closes == closes_before + 1);
+    require(view->vtbl->removed(view) == kResultOk && !editor_open && closes == closes_before + 2);
+    require(view->vtbl->removed(view) == kResultOk && closes == closes_before + 2);
+    require(view->vtbl->attached(view, &parent_token, kPlatformTypeX11) == kResultOk && editor_open);
+    require(com->vtbl_component->release(com) == 1 && context_alive);
+    require(view->vtbl->release(view) == 0 && !editor_open && !context_alive && destroys == 104);
+    require(opens == opens_before + 4 && closes == closes_before + 3);
+    std::puts("PASS: component/view/frame/run-loop ownership; attachment-owned GUI survives old-view removal/release");
 }
