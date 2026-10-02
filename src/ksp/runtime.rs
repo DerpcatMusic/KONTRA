@@ -1893,9 +1893,9 @@ impl Runtime {
                     }
                 } else if request.success {
                     match (var.ty, value) {
-                        (Ty::Int, Value::Int(n)) => state.mem.ints[i] = *n,
-                        (Ty::Real, Value::Real(n)) => state.mem.reals[i] = *n,
-                        (Ty::Str, Value::Text(text)) => {
+                        (Ty::Int, Value::Int(n)) if state.mem.ints[i] != *n => state.mem.ints[i] = *n,
+                        (Ty::Real, Value::Real(n)) if state.mem.reals[i] != *n => state.mem.reals[i] = *n,
+                        (Ty::Str, Value::Text(text)) if state.mem.strs[i] != vm::variable_text(text) => {
                             state.mem.strs[i].clear();
                             state.mem.strs[i].push_str(vm::variable_text(text));
                         }
