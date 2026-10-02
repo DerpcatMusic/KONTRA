@@ -16,6 +16,8 @@ mod audit;
 mod bank;
 pub(crate) mod filter;
 mod map;
+mod host_notes;
+pub use host_notes::{HostNote, HostPattern, HostExpression, HostRef};
 pub mod overrides;
 mod params;
 mod rack;
@@ -125,6 +127,8 @@ pub struct NoteEvent<'a> {
     pub owner: Option<(u8, u8)>,
     /// Physical input provenance, independent of key-follow lifetime.
     pub input_channel: Option<u8>,
+    /// Exact host ownership survives generated children and finite attacks.
+    pub host_note: Option<HostRef>,
     /// Physical key-up may precede application of a queued attack.
     pub counter_stop: Option<u64>,
     /// A release sample's frozen originating event duration in milliseconds.
@@ -151,6 +155,7 @@ impl NoteEvent<'_> {
             velocity,
             owner: None,
             input_channel: None,
+            host_note: None,
             counter_stop: None,
             release_held_ms: None,
             groups: None,
@@ -257,7 +262,9 @@ impl Engine {
     /// Install `bank`, stopping every voice; returns the previous bank for
     /// disposal off the audio thread.
     pub fn set_bank(&mut self, bank: Option<Box<Bank>>) -> Option<Box<Bank>> {
+        self.player.host_notes.stop(None, None, self.player.now);
         self.player.clear_voices(self.bank.as_deref());
+        self.player.pending_releases.clear();
         self.player.touch();
         self.commands.clear();
         self.writes.clear();
@@ -332,6 +339,11 @@ impl Engine {
     /// Engine parameters the scripts set in `on init` apply now, and again to
     /// banks and effects installed later.
     pub fn set_script(&mut self, mut script: Option<Box<Runtime>>) -> Option<Box<Runtime>> {
+        // An old callback/root cannot migrate into the replacement runtime.
+        // Close only exact owners; anonymous MIDI behavior stays unchanged.
+        if !self.player.host_notes.active.is_empty() {
+            for clap in [true,false] { self.host_note_choke(HostPattern { port:-1, channel:-1, key:-1, id:-1, clap }); }
+        }
         self.commands.clear();
         self.writes.clear();
         self.write_index.1.clear();
@@ -458,6 +470,7 @@ impl Engine {
     /// bank, effects, scripts and group mask. Effects stay built for their own
     /// rate: replace them with [`set_fx`](Self::set_fx) when `rate` changes.
     pub fn reset(&mut self, rate: f64) {
+        self.player.host_notes.stop(None, None, self.player.now);
         self.release_script_pedals();
         self.cleanup_script_notes();
         self.player.clear_voices(self.bank.as_deref());
@@ -466,6 +479,7 @@ impl Engine {
         self.write_index.1.clear();
         self.fx.clear();
         self.player.reset_midi();
+        self.player.host_notes.reset();
         self.player.rate = rate;
         if let Some(rt) = self.script.as_deref_mut() {
             rt.set_sample_rate(rate);
@@ -516,6 +530,7 @@ impl Engine {
 
     /// Stop every performance context in one pass, preserving script/UI setup.
     pub fn panic(&mut self) {
+        self.player.host_notes.stop(None, None, self.player.now);
         self.release_script_pedals();
         // Pedal-up callbacks may release, create or wait on notes; cancel their
         // remaining performance work too, so Panic cannot resurrect a voice.
@@ -603,6 +618,144 @@ impl Engine {
     }
 
     /// Note input takes effect at the start of the next [`render`](Self::render).
+    pub(crate) fn admit_host_note(&mut self, note:HostNote) -> bool {
+        if self.player.host_notes.admits(note) { return true; }
+        self.player.host_notes.dropped=self.player.host_notes.dropped.saturating_add(1); false
+    }
+
+    /// Exact host ingress. The route is captured once, before KSP can transpose.
+    pub(crate) fn host_note_on(&mut self, note: HostNote, channel: u8, key: u8, velocity: u8) -> bool {
+        if note.channel >= 16 || note.key >= 128 || channel >= 16 || key >= 128 || velocity > 127 { return false; }
+        let event = self.player.next_id();
+        let Some(host_note) = self.player.host_notes.allocate(note, channel, key, velocity, event, self.player.now) else { return false };
+        self.player.keys[channel as usize][key as usize] = velocity.max(1);
+        self.player.key_on[channel as usize][key as usize] = self.player.now;
+        if let Some((rt, mut host)) = self.scripted_from(channel, note.channel) {
+            rt.note_on_host(&mut host, 0, note.channel, key, velocity, Some(host_note));
+        } else if let Some(bank) = self.bank.as_deref() {
+            let defaults = self.defaults();
+            let ev = NoteEvent { host_note: Some(host_note), owner: Some((note.channel, key)),
+                input_channel: Some(note.channel), ..NoteEvent::new(channel, key, velocity) };
+            self.player.start(bank, &ev, event, false, defaults);
+        }
+        true
+    }
+
+    fn release_host_note(&mut self, id: HostRef) {
+        let Some(owner) = self.player.host_notes.get(id).copied().filter(|o| o.held) else { return };
+        let o = self.player.host_notes.get_mut(id).unwrap();
+        o.held = false; o.stop = Some(self.player.now);
+        for v in self.player.voices.iter_mut().filter(|v| v.host_note == Some(id) && v.held && !v.release_trigger) {
+            v.counter_stop.get_or_insert(self.player.now);
+        }
+        for c in &mut self.commands {
+            if let script::Kind::Start { host_note, counter_stop, .. } = &mut c.kind
+                && *host_note == Some(id) { counter_stop.get_or_insert(self.player.now); }
+        }
+        if self.player.mpe_zone.is_some_and(|(_, members)| members & (1 << owner.channel) != 0) {
+            let expression = self.release_snapshot(owner.channel, owner.key);
+            for v in self.player.voices.iter_mut().filter(|v| v.host_note == Some(id) && !v.release_trigger) { v.frozen_expression.get_or_insert(expression); }
+            for c in &mut self.commands {
+                if let script::Kind::Start { host_note, expression:x, .. } = &mut c.kind
+                    && *host_note == Some(id) { x.get_or_insert(expression); }
+            }
+        }
+        // A newer same-key root owns the shared key indicator, not this release.
+        let remaining = self.player.host_notes.active.iter().filter_map(|r| self.player.host_notes.get(*r))
+            .filter(|o| o.held && o.channel == owner.channel && o.key == owner.key).map(|o| o.velocity.max(1)).max().unwrap_or(0);
+        self.player.keys[owner.channel as usize][owner.key as usize] = remaining;
+        if remaining == 0 { self.player.key_up[owner.channel as usize][owner.key as usize] = self.player.now; }
+        if let Some((rt, mut host)) = self.scripted_from(owner.channel, owner.note.channel) {
+            rt.note_off_host(&mut host, id, owner.note.channel, owner.key);
+        } else if !owner.silenced && let Some(bank) = self.bank.as_deref() {
+            let defaults = self.defaults();
+            let captured = self.player.release_voices(bank, owner.event).is_some_and(|v| v.4) || owner.sostenuto;
+            let expression = self.player.release_expression(owner.event, owner.channel, owner.key);
+            let allowed = self.player.allowed;
+            self.player.trigger_release(bank, owner.event, (owner.channel, owner.key, owner.velocity),
+                &allowed, captured, expression, Some(owner.note.channel), Some(id), defaults);
+        }
+        let anonymous = self.player.input_keys.iter().filter(|r| r[owner.key as usize].0 == owner.channel)
+            .map(|r| r[owner.key as usize].1).max().unwrap_or(0);
+        let scripted = self.script.as_deref().is_some_and(|rt| (0..16).any(|input| rt.key_down_from(input,owner.channel,owner.key)));
+        self.player.keys[owner.channel as usize][owner.key as usize] = remaining.max(anonymous).max(u8::from(scripted));
+    }
+
+    pub(crate) fn host_note_off(&mut self, pattern: HostPattern) {
+        for i in 0..self.player.host_notes.active.len() {
+            let id = self.player.host_notes.active[i];
+            if self.player.host_notes.get(id).is_some_and(|o| pattern.matches(o.note)) { self.release_host_note(id); }
+        }
+    }
+
+    pub(crate) fn host_note_choke(&mut self, pattern: HostPattern) {
+        for i in 0..self.player.host_notes.active.len() {
+            let id = self.player.host_notes.active[i];
+            let Some(owner) = self.player.host_notes.get(id).copied().filter(|o| pattern.matches(o.note)) else { continue };
+            let o = self.player.host_notes.get_mut(id).unwrap();
+            o.held = false; o.silenced = true; o.stop.get_or_insert(self.player.now);
+            if let Some((rt, mut host)) = self.scripted_from(owner.channel, owner.note.channel) { rt.choke_host_note(&mut host, id); }
+            self.commands.retain(|c| !matches!(c.kind, script::Kind::Start { host_note, .. } | script::Kind::Release { host_note, .. } if host_note == Some(id)));
+            self.player.pending_releases.retain(|r| r.host_note != Some(id));
+            let fade = self.player.fade_frames(STEAL_FADE);
+            for v in self.player.voices.iter_mut().filter(|v| v.host_note == Some(id)) { v.fade.start(0., fade, true); v.held = false; }
+            let held = self.player.host_notes.active.iter().filter_map(|r| self.player.host_notes.get(*r))
+                .any(|o| o.held && o.channel == owner.channel && o.key == owner.key);
+            if !held { self.player.keys[owner.channel as usize][owner.key as usize] = 0; }
+        }
+    }
+
+    pub(crate) fn host_expression(&mut self, pattern: HostPattern, expression: HostExpression) {
+        let mut changed = false;
+        for i in 0..self.player.host_notes.active.len() {
+            let id = self.player.host_notes.active[i];
+            if self.player.host_notes.get(id).is_some_and(|o| pattern.matches(o.note)) {
+                changed |= self.player.host_notes.change(id, expression);
+            }
+        }
+        if changed { self.player.touch(); }
+    }
+
+    /// Census once per host block, only for instruments with exact owners.
+    /// Held, callback, queued, pedal and sounding references all delay NOTE_END.
+    pub(crate) fn mark_host_notes(&mut self) {
+        if self.player.host_notes.active.is_empty() { return; }
+        for i in 0..self.player.host_notes.active.len() {
+            let id = self.player.host_notes.active[i];
+            if let Some(o) = self.player.host_notes.get_mut(id) { o.pinned = o.held; }
+        }
+        for v in &self.player.voices { self.player.host_notes.pin(v.host_note); }
+        for r in &self.player.pending_releases { self.player.host_notes.pin(r.host_note); }
+        for c in &self.commands {
+            if let script::Kind::Start { host_note, .. } | script::Kind::Release { host_note, .. } = c.kind {
+                self.player.host_notes.pin(host_note);
+            }
+        }
+        if let Some(rt) = self.script.as_deref() { rt.visit_host_notes(|r| self.player.host_notes.pin(Some(r))); }
+    }
+
+    pub(crate) fn host_note_at(&self, index: usize) -> Option<(HostNote, bool)> {
+        self.player.host_notes.active.get(index).and_then(|r| self.player.host_notes.get(*r)).map(|o| (o.note, o.pinned))
+    }
+    pub(crate) fn host_note_present(&self, note:HostNote) -> bool {
+        self.player.host_notes.active.iter().any(|r| self.player.host_notes.get(*r).is_some_and(|o| o.note==note))
+    }
+    pub(crate) fn host_note_pending(&self, note: HostNote) -> bool {
+        self.player.host_notes.active.iter().any(|r| self.player.host_notes.get(*r).is_some_and(|o| o.note == note && o.pinned))
+    }
+    pub(crate) fn retire_host_note(&mut self, note: HostNote) {
+        let mut i = 0;
+        while i < self.player.host_notes.active.len() {
+            let id = self.player.host_notes.active[i];
+            if self.player.host_notes.get(id).is_some_and(|o| o.note == note && !o.pinned) { self.player.host_notes.retire(id); }
+            else { i += 1; }
+        }
+    }
+    pub(crate) fn host_key_held(&self, channel: u8, key: u8) -> bool {
+        self.player.host_notes.active.iter().any(|r| self.player.host_notes.get(*r).is_some_and(|o| o.held && o.note.channel == channel && o.note.key == key))
+    }
+    pub(crate) fn host_note_drops(&self) -> u64 { self.player.host_notes.dropped }
+
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
         self.note_on_from(channel, channel, note, velocity);
     }
@@ -671,10 +824,23 @@ impl Engine {
     /// Controllers pass through the scripts; channel mode messages (120 and up)
     /// act on the engine directly so a script can never swallow a panic.
     pub fn cc(&mut self, channel: u8, cc: u8, value: u8) {
+        if cc == 123 {
+            let channels = self.player.mpe_zone.filter(|(master, _)| *master == channel).map_or(1 << channel.min(15), |(_, members)| members | (1 << channel.min(15)));
+            for i in 0..self.player.host_notes.active.len() {
+                let id = self.player.host_notes.active[i];
+                if self.player.host_notes.get(id).is_some_and(|o| channels & (1 << o.channel) != 0) { self.release_host_note(id); }
+            }
+        }
         self.cc_from(channel, channel, cc, value);
     }
 
     pub(crate) fn cc_from(&mut self, channel: u8, input_channel: u8, cc: u8, value: u8) {
+        if cc == 123 {
+            for i in 0..self.player.host_notes.active.len() {
+                let id = self.player.host_notes.active[i];
+                if self.player.host_notes.get(id).is_some_and(|o| o.note.channel == input_channel) { self.release_host_note(id); }
+            }
+        }
         if channel >= 16 || cc >= 128 {
             return;
         }
@@ -744,6 +910,7 @@ impl Engine {
 
     /// Cut a physical performance context, including notes a script rerouted.
     pub(crate) fn all_sound_off_from(&mut self, channel: u8, input_mask: u16) {
+        self.player.host_notes.silence(None, Some(input_mask), self.player.now);
         if channel >= 16 || input_mask == 0 { return; }
         let selected = |input_channel: Option<u8>| input_channel.is_some_and(|input| input_mask & (1 << input.min(15)) != 0);
         let mut affected = 1 << channel;
@@ -916,7 +1083,7 @@ impl Engine {
             let allowed = self.player.allowed;
             let key = (channel, note, velocity);
             let expression = self.player.release_expression(id, channel, note);
-            self.player.trigger_release(bank, id, key, &allowed, latched, expression, input_channel, defaults);
+            self.player.trigger_release(bank, id, key, &allowed, latched, expression, input_channel, None, defaults);
         }
     }
 
@@ -1191,6 +1358,7 @@ pub struct VoiceInfo {
 /// its pedals let go. Prepared storage also covers events with no attack zones.
 #[derive(Clone, Copy)]
 struct PendingRelease {
+    host_note: Option<HostRef>,
     source: EventId,
     input_channel: Option<u8>,
     channel: u8,
@@ -1204,6 +1372,7 @@ struct PendingRelease {
 
 /// Engine state apart from the bank, so voices can mutate while the bank is borrowed.
 struct Player {
+    host_notes: host_notes::Owners,
     voices: Vec<Voice>,
     /// Free stream slots of the current bank.
     free: Vec<u16>,
@@ -1276,6 +1445,7 @@ struct Player {
 impl Player {
     fn new(rate: f64) -> Self {
         let mut player = Self {
+            host_notes: host_notes::Owners::new(),
             voices: Vec::with_capacity(MAX_VOICES),
             free: Vec::with_capacity(stream::SLOTS),
             in_use: Vec::with_capacity(MAX_VOICES),
@@ -1438,7 +1608,7 @@ impl Player {
         release_trigger: bool,
         defaults: Ahdsr,
     ) -> Option<EventId> {
-        if ev.channel >= 16 || ev.note >= 128 || !(1..=127).contains(&ev.velocity) {
+        if ev.channel >= 16 || ev.note >= 128 || ev.velocity > 127 || (ev.velocity == 0 && ev.host_note.is_none()) {
             return None;
         }
         if !release_trigger && bank.note_mono_releases {
@@ -1508,6 +1678,7 @@ impl Player {
         let master = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0).map(|(master, _)| master as usize);
         let expression_key = ev.owner.map_or(ev.note, |(_, key)| key);
         let expression = ev.frozen_expression.unwrap_or(self.expression[c][expression_key as usize & 127]);
+        let expression = self.host_notes.overlay(ev.host_note, expression);
         let inputs = params::Inputs {
             cc: &self.cc[c],
             cc74: expression.note_cc74.or_else(|| master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127))),
@@ -1586,6 +1757,7 @@ impl Player {
         settings.mods.scale_envelope(&mut envelope, &inputs);
         let mut voice = Voice {
             event,
+            host_note: ev.host_note,
             zone_id: play.zone_id,
             group: zone.group as u32,
             voice_group: settings.voice_group,
@@ -1735,14 +1907,14 @@ impl Player {
             if let Some((channel, note, velocity, false, captured, input_channel)) = self.release_voices(bank, source) {
                 found = true;
                 let expression = self.release_expression(source, channel, note);
-                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, expression, input_channel, defaults);
+                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, expression, input_channel, None, defaults);
             }
         }
         // Release-only instruments can have a key but no attack voice.
         if !found && velocity > 0 {
             let source = self.next_id();
             let expression = self.release_expression(source, channel, note);
-            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, expression, owner, defaults);
+            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, expression, owner, None, defaults);
         }
     }
 
@@ -1819,10 +1991,16 @@ impl Player {
         latched: bool,
         expression: Option<Expression>,
         input_channel: Option<u8>,
+        root: Option<HostRef>,
         defaults: Ahdsr,
     ) {
         if !self.native_release_triggers { return; }
-        let held_ms = self.event_held_ms(source, channel, note);
+        let host_note = root.or_else(|| self.voices.iter().find(|v| v.event == source).and_then(|v| v.host_note))
+            .or_else(|| self.host_notes.active.iter().copied().find(|r| self.host_notes.get(*r).is_some_and(|o| o.event == source)));
+        let held_ms = host_note.and_then(|r| self.host_notes.get(r)).map_or_else(
+            || self.event_held_ms(source, channel, note),
+            |o| o.stop.unwrap_or(self.now).saturating_sub(o.start) as f32 * 1000. / self.rate as f32,
+        );
         if channel < 16 && note < 128 && (latched || self.sustain[channel as usize]) {
             if self.pending_releases.iter().any(|r| r.source == source) { return; }
             if self.pending_releases.len() == crate::ksp::EVENT_CAPACITY {
@@ -1832,12 +2010,13 @@ impl Player {
                 return;
             }
             self.pending_releases.push(PendingRelease {
-                source, input_channel, channel, note, velocity, groups: *groups, captured: latched, expression, held_ms,
+                host_note, source, input_channel, channel, note, velocity, groups: *groups, captured: latched, expression, held_ms,
             });
             return;
         }
         let id = self.next_id();
         let event = NoteEvent {
+            host_note,
             groups: Some(groups),
             frozen_expression: expression,
             release_held_ms: Some(held_ms),
@@ -1848,6 +2027,7 @@ impl Player {
     }
 
     fn cc(&mut self, bank: Option<&Bank>, channel: u8, cc: u8, value: u8, defaults: Ahdsr) {
+        if cc == 120 { self.host_notes.silence(Some(channel), None, self.now); }
         if channel >= 16 || cc >= 128 {
             return;
         }
@@ -1875,6 +2055,12 @@ impl Player {
                 let on = value >= 64;
                 if std::mem::replace(&mut self.sostenuto_down[c], on) == on {
                     return;
+                }
+                for i in 0..self.host_notes.active.len() {
+                    let id = self.host_notes.active[i];
+                    if let Some(o) = self.host_notes.get_mut(id).filter(|o| o.channel == channel) {
+                        if !on { o.sostenuto = false; } else if o.held { o.sostenuto = true; }
+                    }
                 }
                 if on {
                     // Scripts may queue these commands while input keys already
@@ -1961,7 +2147,7 @@ impl Player {
             let r = self.pending_releases[i];
             if r.channel == channel && !r.captured {
                 let id = self.next_id();
-                let event = NoteEvent { input_channel: r.input_channel, groups: Some(&r.groups), frozen_expression: r.expression, release_held_ms: Some(r.held_ms), ..NoteEvent::new(r.channel, r.note, r.velocity) };
+                let event = NoteEvent { host_note: r.host_note, input_channel: r.input_channel, groups: Some(&r.groups), frozen_expression: r.expression, release_held_ms: Some(r.held_ms), ..NoteEvent::new(r.channel, r.note, r.velocity) };
                 self.start(bank, &event, id, true, defaults);
             } else {
                 self.pending_releases[keep] = r;
@@ -2025,6 +2211,7 @@ impl Player {
             mpe_master_bend_range: self.mpe_master_bend_range,
             pressure: &self.pressure,
             expression: &self.expression,
+            host_notes: &self.host_notes,
             tune: self.instrument.2 + tune,
             rate: self.rate as f32,
             blocking,

@@ -267,6 +267,7 @@ pub struct Event {
     pub channel: u8,
     pub owner: Option<(u8, u8)>,
     pub input_channel: Option<u8>,
+    pub host_note: Option<crate::engine::HostRef>,
     pub frozen_expression: Option<crate::engine::Expression>,
     pub pars: [i32; 16],
     pub volume: i32,
@@ -318,6 +319,7 @@ impl Event {
         channel: 0,
         owner: None,
         input_channel: None,
+        host_note: None,
         frozen_expression: None,
         pars: [0; 16],
         volume: 0,
@@ -360,9 +362,10 @@ impl Event {
             channel: self.channel,
             owner: self.owner,
             input_channel: self.input_channel,
+            host_note: self.host_note,
             frozen_expression: self.frozen_expression,
             note: self.note.clamp(0, 127) as u8,
-            velocity: self.velocity.clamp(1, 127) as u8,
+            velocity: self.velocity.clamp(i32::from(self.host_note.is_none()), 127) as u8,
             sample_offset_us: self.sample_offset_us,
             length: self.length,
             volume_mdb: self.volume,
@@ -798,7 +801,7 @@ impl Env {
         let parent_state = self
             .events
             .get(parent)
-            .map(|p| (p.groups, p.released & (1 << slot) != 0, p.frozen_expression, p.owner, p.input_channel));
+            .map(|p| (p.groups, p.released & (1 << slot) != 0, p.frozen_expression, p.owner, p.input_channel, p.host_note));
         let e = self.events.get_mut(id).expect("fresh event");
         e.note = note;
         e.velocity = velocity;
@@ -815,8 +818,9 @@ impl Env {
             NoteLength::UntilNoteOff
         };
         e.follows_parent = duration_us < 0 && parent_state.is_some();
-        if let Some((groups, _, expression, owner, input_channel)) = parent_state {
+        if let Some((groups, _, expression, owner, input_channel, host_note)) = parent_state {
             e.input_channel = input_channel;
+            e.host_note = host_note;
             e.groups = groups;
             e.frozen_expression = expression;
             // Following notes keep the input key even when a script transposes
@@ -828,7 +832,7 @@ impl Env {
             slot: slot + 1,
         });
         match parent_state {
-            Some((_, true, _, _, _)) if duration_us < 0 => self.queue(Work::Release {
+            Some((_, true, _, _, _, _)) if duration_us < 0 => self.queue(Work::Release {
                 event: id,
                 slot: slot + 1,
             }),
@@ -1656,9 +1660,11 @@ impl Runtime {
 
     /// Physical input ownership can differ from the channel the script sees.
     pub(crate) fn note_on_from(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: u8) {
-        if velocity == 0 {
-            return self.note_off_from(engine, at, owner, note);
-        }
+        if velocity == 0 { return self.note_off_from(engine, at, owner, note); }
+        self.note_on_host(engine, at, owner, note, velocity, None);
+    }
+
+    pub(crate) fn note_on_host(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: u8, host_note: Option<crate::engine::HostRef>) {
         self.advance(engine, at);
         let note = note.min(127);
         if !self.env.cleaning { self.set_sys(SysArray::KeyDown, note as usize, 1); }
@@ -1672,6 +1678,7 @@ impl Runtime {
         e.channel = self.env.input.channel;
         e.owner = Some((owner.min(15), note));
         e.input_channel = Some(owner.min(15));
+        e.host_note = host_note;
         e.held = true;
         let keys = &mut self.env.input.keys[owner.min(15) as usize][note as usize];
         if keys.1 == 0 {
@@ -1683,6 +1690,48 @@ impl Runtime {
         if !self.env.cleaning { self.key_down_oct(note); }
         self.env.queue(Work::Note { event: id, slot: 0 });
         self.settle(engine);
+    }
+
+    pub(crate) fn note_off_host(&mut self, engine: &mut dyn KspEngine, host_note: crate::engine::HostRef, owner: u8, note: u8) {
+        self.advance(engine, 0);
+        let (mut id, mut previous) = (self.env.input.keys[owner as usize][note as usize].0, 0);
+        while id != 0 {
+            let Some(e) = self.env.events.get(id) else { break };
+            let next = e.next_input;
+            if e.host_note == Some(host_note) {
+                if previous == 0 { self.env.input.keys[owner as usize][note as usize].0 = next; }
+                else if let Some(p) = self.env.events.get_mut(previous) { p.next_input = next; }
+                if self.env.input.keys[owner as usize][note as usize].1 == id { self.env.input.keys[owner as usize][note as usize].1 = previous; }
+                let e = self.env.events.get_mut(id).unwrap();
+                e.next_input = 0; e.held = false;
+                if e.frozen_expression.is_none() { e.frozen_expression = engine.release_expression(0, e.voice, e.channel, note); }
+                self.env.queue(Work::Release { event: id, slot: 0 });
+                break;
+            }
+            previous = id; id = next;
+        }
+        if !self.env.cleaning {
+            let held = self.env.input.keys.iter().any(|row| row[note as usize].0 != 0);
+            self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
+            self.key_down_oct(note);
+        }
+        self.settle(engine);
+    }
+
+    pub(crate) fn visit_host_notes(&self, mut visit: impl FnMut(crate::engine::HostRef)) {
+        for work in &self.env.work {
+            if let Work::Note { event, .. } | Work::Release { event, .. } = *work
+                && let Some(r) = self.env.events.get(event).filter(|e| e.live).and_then(|e| e.host_note) { visit(r); }
+        }
+        for Reverse(timer) in &self.env.timers {
+            if let TimerKind::Release { event, .. } = timer.kind
+                && let Some(r) = self.env.events.get(event).filter(|e| e.live).and_then(|e| e.host_note) { visit(r); }
+        }
+        for e in &self.env.events.slots {
+            if e.live && (e.held || e.callbacks > 0 || (!e.at_engine && !e.ignored && !e.silenced)) {
+                if let Some(r) = e.host_note { visit(r); }
+            }
+        }
     }
 
     pub fn note_off(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8) {
@@ -1745,10 +1794,20 @@ impl Runtime {
     }
 
     fn cancel_sound(&mut self, channel_mask: u16, input_mask: Option<u16>, cleanup: bool) -> u16 {
+        self.cancel_sound_host(channel_mask, input_mask, cleanup, None)
+    }
+
+    pub(crate) fn choke_host_note(&mut self, engine: &mut dyn KspEngine, host_note: crate::engine::HostRef) {
+        self.cancel_sound_host(u16::MAX, None, true, Some(host_note));
+        self.settle(engine);
+    }
+
+    fn cancel_sound_host(&mut self, channel_mask: u16, input_mask: Option<u16>, cleanup: bool, host_note: Option<crate::engine::HostRef>) -> u16 {
         if channel_mask == 0 { return 0; }
         let mut affected = 0;
         let selected = |channel: u8, input_channel: Option<u8>| channel_mask & (1 << channel.min(15)) != 0
             && input_mask.is_none_or(|mask| input_channel.is_some_and(|c| mask & (1 << c.min(15)) != 0));
+        let selected_event = |e: &Event| selected(e.channel, e.input_channel) && host_note.is_none_or(|id| e.host_note == Some(id));
         // A physical input chain can contain events routed to different channels.
         // Detach selected roots before their rows are recycled.
         for owner in 0..16 {
@@ -1756,7 +1815,7 @@ impl Runtime {
                 let mut id = self.env.input.keys[owner][note].0;
                 let (mut first, mut last) = (0, 0);
                 while let Some(e) = self.env.events.get(id) {
-                    let (next, remove) = (e.next_input, selected(e.channel, e.input_channel)
+                    let (next, remove) = (e.next_input, selected_event(e)
                         && (cleanup || e.source >= 0 || !e.held));
                     if !remove {
                         if first == 0 { first = id; }
@@ -1769,7 +1828,7 @@ impl Runtime {
                 self.env.input.keys[owner][note] = (first, last);
             }
         }
-        for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected(e.channel, e.input_channel)) {
+        for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected_event(e)) {
             affected |= 1 << e.channel.min(15);
             // Already running cleanup survives a repeated Panic. Only notes
             // that reached a slot need a release; queued fresh attacks do not.
@@ -1787,10 +1846,10 @@ impl Runtime {
         }
         let events = &self.env.events;
         self.env.work.retain(|w| match *w {
-            Work::Note { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel)),
-            Work::Release { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel) || e.cleanup),
+            Work::Note { event, .. } => events.get(event).is_some_and(|e| !selected_event(e)),
+            Work::Release { event, .. } => events.get(event).is_some_and(|e| !selected_event(e) || e.cleanup),
             Work::Controller { channel, input_channel, .. } | Work::PolyAt { channel, input_channel, .. }
-                | Work::Rpn { channel, input_channel, .. } | Work::NoteController { channel, input_channel, .. } => !selected(channel, input_channel),
+                | Work::Rpn { channel, input_channel, .. } | Work::NoteController { channel, input_channel, .. } => host_note.is_some() || !selected(channel, input_channel),
         });
         for i in 0..self.threads.len() {
             let t = &self.threads[i];
@@ -1820,8 +1879,8 @@ impl Runtime {
                 }
                 continue;
             }
-            if !(self.env.events.get(t.ctx.event).is_some_and(|e| selected(e.channel, e.input_channel))
-                || input && selected(t.ctx.channel, t.ctx.input_channel)) { continue; }
+            if !(self.env.events.get(t.ctx.event).is_some_and(|e| selected_event(e))
+                || host_note.is_none() && input && selected(t.ctx.channel, t.ctx.input_channel)) { continue; }
             let ctx = t.ctx;
             if matches!(ctx.kind, Kind::Cb(Callback::Controller)) {
                 // A budget-paused controller may not have forwarded yet. Keep
@@ -1836,7 +1895,7 @@ impl Runtime {
         }
         for i in 0..self.env.events.slots.len() {
             let e = &self.env.events.slots[i];
-            if e.live && selected(e.channel, e.input_channel) {
+            if e.live && selected_event(e) {
                 debug_assert!(e.callbacks == 0 || e.cleanup);
                 let id = i32::from(e.generation) << EVENT_INDEX_BITS | i as i32;
                 if e.cleanup {
