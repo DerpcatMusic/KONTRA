@@ -5,6 +5,18 @@ use keyboard_types::Code;
 use mui::Ui;
 use mui::prelude::{El, Input, knob};
 
+#[test]
+fn windows_gpu_defaults_to_dx12_and_explicit_backend_choices_stay_authoritative() {
+    use wgpu::Backends as B;
+    assert_eq!(gpu_backends(true, None), B::DX12);
+    assert!(!gpu_backends(true, None).contains(B::VULKAN));
+    for requested in [B::DX12, B::VULKAN, B::GL, B::DX12 | B::VULKAN, B::empty()] {
+        assert_eq!(gpu_backends(true, Some(requested)), requested);
+        assert_eq!(gpu_backends(false, Some(requested)), requested);
+    }
+    assert_eq!(gpu_backends(false, None), B::all());
+}
+
 /// A knob that claims Escape.
 struct Knob {
     value: f64,
