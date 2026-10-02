@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Added
 
+- Headless `audit-patch` accepts explicit snapshot and program selection while
+  using the existing import, script, bank, effect and paced note/chord path.
+  It retains structured load stages and diagnostics without opening an editor.
+
 - Experimental Bitwig VST3 project inspection and explicit SavedMulti-to-KONTRA
   migration create a new project copy and report; source bytes are rechecked and
   retained. Shared plug-in-state entries and overlapping device mappings are
@@ -108,6 +112,11 @@ below record reviewed source checkpoints; they are not claims about pending work
   effect indicators disclose partial processing instead of implying every FX runs.
 
 ### Fixed
+
+- Ordinary import preserves readable modulation slots when one bounded sibling
+  record is undecodable. Unknown slots keep their positions and precise warnings;
+  valid envelopes and later target identities survive. Snapshot decoding remains
+  strict, and malformed container boundaries still fail.
 
 - Process all eight native filter/EQ inserts and up to 32 sections instead of
   truncating supported chains. Eight four-band GEQs match the existing rack

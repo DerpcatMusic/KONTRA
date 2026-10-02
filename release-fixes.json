@@ -329,6 +329,15 @@
       ],
       "validation": "Actual license generation self-test passed with non-ASCII UTF-8 output and emulated CP1252 default; prior default decoding reproduces the Windows packaging failure.",
       "accepted": true
+    },
+    {
+      "id": "bounded-modulation-slot-recovery",
+      "summary": "Retain readable modulation siblings when one bounded ordinary-import slot is undecodable",
+      "source_commits": [
+        "d4dae04181cecc07f17ba8328169959093424f69"
+      ],
+      "validation": "Production ordinary-import regression passed at d4dae04: unknown category/shaper/boolean slots remain explicit placeholders, valid envelope and target identities survive; strict snapshot decoding still rejects malformed records. Actual library benefit awaits headless loads.",
+      "accepted": true
     }
   ]
 }
