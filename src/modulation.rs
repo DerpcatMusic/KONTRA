@@ -84,6 +84,9 @@ pub struct Modulator {
     /// This is the internal envelope imported as `Group::volume_env` (AHDSR
     /// only, the target of `$ENGINE_PAR_ATTACK` and friends).
     pub volume_env: bool,
+    /// Saved internal source bypass, independent of its target assignments.
+    #[serde(default)]
+    pub bypassed: bool,
     /// A flex envelope: it has no AHDSR stages, so Kontakt ignores
     /// `$ENGINE_PAR_ATTACK` and friends addressed to it.
     #[serde(default)]
@@ -145,9 +148,6 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                     continue;
                 }
             };
-            if params.unknown_flags[0] != 0 {
-                out.warnings.push(format!("Internal modulator {} has an undecoded mode/bypass flag; preset bypass is not applied", params.name));
-            }
             match &params.modulator {
                 RawModulator::Ahdsr(env) if env.unknown_flag != 0 => out.warnings.push(
                     "AHDSR mode switches are not decoded; AHD-only/retrigger behavior may differ".into()),
@@ -216,6 +216,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                 targets: params.targets.into_iter().map(|t| t.name).collect(),
                 assignments: None,
                 volume_env,
+                bypassed: params.unknown_flags[1] != 0,
                 flex,
                 envelope,
                 kind,
@@ -248,7 +249,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                 name: params.name.clone(),
                 targets: params.targets.iter().map(|t| t.name.clone()).collect(),
                 assignments: Some(out.mods.len()),
-                volume_env: false,
+                volume_env: false, bypassed: false,
                 flex: false,
                 envelope: None,
                 kind: "external".into(),
@@ -294,7 +295,7 @@ impl GroupModulation {
         // invented name/source to a record whose parameters could not be read.
         self.modulators.push(Modulator {
             name: String::new(), targets: Vec::new(), assignments: None,
-            volume_env: false, flex: false, envelope: None, kind: "undecoded".into(),
+            volume_env: false, bypassed: false, flex: false, envelope: None, kind: "undecoded".into(),
         });
         self.warnings.push(format!("Group {index} {name:?}: {source} modulation slot {slot}, version 0x{version:x}, not imported: {error}; independent readable slots are retained"));
     }
@@ -456,9 +457,9 @@ mod tests {
             release_ms: 100., sustain: 0.5, unknown_flag: 0, unknown_tail: vec![0;52] };
         let mut concrete = Vec::new(); envelope.write(&mut concrete).unwrap();
         let mut wrapped = Vec::new(); object(7, 0x90, &[], &0u32.to_le_bytes(), &concrete).write(&mut wrapped).unwrap();
-        let internal = |category: u32, label: &str| {
+        let internal = |category: u32, label: &str, flags: [u8; 4]| {
             let mut private = targets(&[("volume", None)], 0, 0);
-            private.extend([0;4]); private.extend(0u32.to_le_bytes()); name(&mut private, label);
+            private.extend(flags); private.extend(0u32.to_le_bytes()); name(&mut private, label);
             private.extend(category.to_le_bytes()); object(0x0d, 0x80, &private, &[], &wrapped)
         };
         let external = |invert, shaper, label: &str| {
@@ -469,12 +470,20 @@ mod tests {
             object(0x0c, 0x102, &private, &[], &[])
         };
         let mut group = RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![], children: vec![
-            slots(INTERNAL_MODS_ID, 16, &[internal(3, "UnknownEnv"), internal(2, "GoodEnv")]),
+            slots(INTERNAL_MODS_ID, 16, &[internal(3, "UnknownEnv", [0; 4]), internal(2, "GoodEnv", [0; 4])]),
             slots(EXTERNAL_MODS_ID, 32, &[external(0, 8, "UnknownShaper"), external(2, 0, "UnknownFlag"), external(0, 0, "GoodVelocity")]),
         ] });
         assert!(read_group(&group).unwrap_err().to_string().contains("category 3"), "snapshot reader stays strict");
         let parsed = read_group_partial(&group, 7, "Authored").unwrap();
         assert_eq!(parsed.volume_env, Some(envelope));
+        // Native XML/typed-reader proof: router-open is byte 0, bypass byte 1.
+        for flags in [[1, 0, 1, 0], [0, 1, 1, 0]] {
+            let raw = RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![],
+                children: vec![slots(INTERNAL_MODS_ID, 16, &[internal(2, "Env", flags)])] });
+            let decoded = read_group(&raw).unwrap();
+            assert_eq!(decoded.modulators[0].bypassed, flags[1] != 0);
+            assert!(decoded.warnings.is_empty(), "router-open is UI state, not an unsupported audio mode");
+        }
         assert_eq!(parsed.mods.len(), 3, "all targets of readable siblings survive");
         assert_eq!(parsed.mods[2].target, ModTarget::Attack, "native volume-envelope slot remains 1");
         assert_eq!(parsed.modulators.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["", "GoodEnv", "", "", "GoodVelocity"]);
