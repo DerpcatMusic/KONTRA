@@ -1434,6 +1434,8 @@ impl Player {
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),
             mods,
+            pitch_envs: std::array::from_fn(|i| Envelope::new(
+                &settings.pitch_envelopes.get(i).map_or(Ahdsr::UNITY, |p| p.env), self.rate as f32)),
             modulated: (1.0, 0.0),
             settled: None,
             stream,
