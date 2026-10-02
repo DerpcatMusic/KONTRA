@@ -22,6 +22,29 @@ pub const LIBRARY_ROOT: &str = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
 
 pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, ModSource, ModTarget, Modulator, ShaperCurve};
 
+/// Wavetable oscillator settings. Position and phase values are normalized.
+/// A zero form type is linear; other forms require an implemented phase map.
+/// Native source decoding must establish its enum mapping before populating
+/// this playback state. The vendor source record preserves the raw fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, serde::Deserialize)]
+pub struct Wavetable {
+    pub position: f32,
+    pub phase: f32,
+    pub phase_random: f32,
+    pub quality: i32,
+    pub form1: f32,
+    pub form2: f32,
+    pub form1_type: i32,
+    pub form2_type: i32,
+    pub inharmonic: f32,
+    pub inharmonic_mode: i32,
+    pub mod_tune: f32,
+    pub mod_amount: f32,
+    pub mod_tune_unit: i32,
+    pub mod_type: i32,
+    pub mod_wave: i32,
+}
+
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Group {
     pub name: String,
@@ -67,12 +90,14 @@ pub struct Group {
     /// Source module Note Mono: repeating a key cuts its prior release tails.
     #[serde(default)]
     pub release_trigger_note_monophonic: bool,
+    #[serde(default)]
+    pub wavetable: Option<Wavetable>,
 }
 
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false }
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None }
     }
 }
 
@@ -733,6 +758,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             amp_split_slot: u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8),
             voice_group: u32::try_from(v.voice_group_index).ok(),
             interp_quality: v.interp_quality,
+            wavetable: None,
         });
     }
     let mut scripts = Vec::new();
