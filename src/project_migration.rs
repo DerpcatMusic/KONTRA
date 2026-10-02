@@ -43,6 +43,8 @@ const PART_FIELDS: &[&str] = &[
     "mic_names",
     "view",
     "ir_settings",
+    "snapshot",
+    "engine_state",
 ];
 const REQUIRED_ROUTE_FIELDS: &[&str] = &[
     "channel",
@@ -197,7 +199,7 @@ fn selection_differences(expected: &Selection, readback: &Selection) -> Vec<Stri
             path, group, port, output, channel, gain, pan, tune, mute, solo, program,
             script_state, ir_settings, name, collapsed, height, aux, aux_gain,
             articulate, mpe, streaming, edits, timing, output_manual, mic_buses,
-            mic_names, view, snapshot,
+            mic_names, view, snapshot, engine_state,
         );
         for field in &mut differences[start..] {
             *field = format!("parts[{index}].{field}");
