@@ -74,6 +74,10 @@ def main():
                         if case["underruns"]:
                             issues.append(f'{case["case"]}: {case["underruns"]} stream underruns')
                         for stage in case["stages"]:
+                            if stage["phase"] == "post-panic-fresh-note" and stage["unreleased_attack_voices"]:
+                                fresh = [v for v in stage["voice_notes"] if not v["released"] and not v["release_trigger"]]
+                                if not any(v["level"] > 0 for v in fresh):
+                                    issues.append(f'{case["case"]}: fresh native voice levels are zero; inspect dynamics/envelopes independently of FX tails')
                             if stage["phase"] == "panic-after-declick" and (stage["voices"] or any(stage["held_keys_by_engine_channel"]) or any(stage["pending_commands_writes_releases"])):
                                 issues.append(f'{case["case"]}: pending voice/key/work after Panic')
                             if stage["phase"] in ("natural-release-observation", "post-panic-release"):
