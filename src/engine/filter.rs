@@ -1734,7 +1734,9 @@ mod tests {
         for (case, split) in [0, 6, 8].into_iter().enumerate() {
             let groups = [Group { fx: chain.clone(), amp_split_slot: Some(split), ..Group::default() }];
             let mut settings = [GroupSettings::from(&groups[0])];
-            let threshold = Address::resolve(EnginePar { id: crate::engine::engine_par("$ENGINE_PAR_THRESHOLD").unwrap(),
+            let threshold_id = (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 512)
+                .find(|&id| crate::ksp::engine_par_name(id) == Some("$ENGINE_PAR_THRESHOLD")).unwrap();
+            let threshold = Address::resolve(EnginePar { id: threshold_id,
                 group: 0, slot: 2, generic: -1 }, &groups).unwrap();
             assert_eq!(crate::plugin::tests::allocations(|| {
                 assert!(params::write(&mut settings, threshold, threshold.decode(500_000)));
