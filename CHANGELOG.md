@@ -10,8 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
-- Native Constant loop start/length assignments now control eligible forward full-sample sampler loops on 32-frame ticks, preserve fractional cursor/crossfade/streaming, and retain the final release seam. Unsupported geometry and behind-cursor edits remain diagnosed and deferred. Voice diagnostics expose applied bounds separately from virtual position.
-- Saved retriggered, zero-delay sine-only Multi pitch assignments now run through a note-owned clock and audio-rate interpolation. Planner fragmentation no longer changes that clock. Four focused semantic/PCM/zero-heap gates and all 89 playback regressions pass; wider waveforms, free-running ownership and live LFO parameters remain unsupported. Actual reported-preset replay is pending.
+- Recognized group-effect targets no longer disable an unrelated internal pitch LFO at the same numeric slot. Unknown source-parameter assignments remain guarded; legitimate effect assignments are retained.
+- Signed and unsigned intensity writes now reach admitted internal pitch LFO targets using original source/target indices. Callback readback, physical-depth PCM, unchanged phase, alias persistence, seeded restore and zero audio heap pass focused gates.
+- Native Constant loop start/length assignments now control eligible forward full-sample sampler loops on 32-frame ticks, preserve fractional cursor/crossfade/streaming, and retain the final release seam. Unsupported geometry and behind-cursor edits remain diagnosed and deferred. Voice diagnostics expose applied bounds separately from virtual position. Six matched real-preset captures confirm applied windows and held wraps; Prelude changes substantially, while Contradiction remains quiet. These observations do not certify sonic parity.
+- Saved retriggered, zero-delay sine-only Multi pitch assignments now run through a note-owned clock and audio-rate interpolation. Planner fragmentation no longer changes that clock. Focused semantic/PCM/zero-heap gates and all 89 playback regressions pass; wider waveforms, delayed/free-running ownership and live frequency remain unsupported. Six actual reported-preset captures exposed a separately corrected slot collision; corrected pitch replay remains pending.
 
 - Legacy and modern signed modulation aliases now share the verified pitch/cutoff laws and exact target identity. Other unsupported legacy target laws remain guarded.
 - Saved negative pitch and cutoff modulation now applies the native target sign bit independently of invert, with raw records preserved and both directions checked against physical-depth PCM references. Loop modulation remains incomplete.
@@ -44,6 +46,7 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Fixed after 0.3.64
 
+- Structured nightly notes now retain reviewed processing and version-specific fix headings instead of falsely reporting no reviewed changes.
 - Modern signed pitch intensity now follows the checked cubic conversion and retains 24/36-semitone values; non-pitch modulation laws are unchanged.
 - Convolution Reverse now reverses the source impulse response before rate conversion and predelay. Auto Gain uses the verified prepared-energy law, and live switches and eight-knot IR Volume Envelope passed focused processing checks. Unequal early/late shaping remains approximate.
 - Large load dependency lists now use bounded typed journal chunks that can be reassembled completely in support reports. Source excerpts and path redaction remain intact; oversized individual values still report truncation.
