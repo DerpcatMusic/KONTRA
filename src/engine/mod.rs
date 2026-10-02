@@ -399,8 +399,12 @@ impl Engine {
 
     /// Prepare configured Channel-mode origins on the loading thread.
     pub fn prepare_channel_domains(&mut self, channels: u16) {
-        if let Some(rt) = self.script.as_deref_mut() { rt.prepare_channel_domains(channels); }
-        if let Some(bank) = self.bank.as_deref_mut() { bank.prepare_channel_domains(channels.count_ones().max(1) as usize); }
+        if let Some(rt) = self.script.as_deref_mut() {
+            rt.prepare_channel_domains(channels);
+            if let Some(bank) = self.bank.as_deref_mut() {
+                bank.prepare_channel_domains(channels.count_ones().max(1) as usize);
+            }
+        }
     }
 
     fn write_domain(&mut self, domain: u8, address: Address, value: f32) -> bool {

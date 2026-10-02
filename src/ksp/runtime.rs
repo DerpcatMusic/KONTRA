@@ -947,6 +947,7 @@ impl Runtime {
     /// Compile a script into the next slot and run `on init`, off the audio
     /// thread. Shared host state is committed only if initialization succeeds.
     pub fn load(&mut self, engine: &mut dyn KspEngine, source: &str) -> Result<()> {
+        anyhow::ensure!(self.domain_mask.is_none(), "Load all script slots before preparing channel domains");
         self.env.loading = true;
         self.stacks.strs.frozen = false;
         for state in &mut self.states {
