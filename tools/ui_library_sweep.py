@@ -59,7 +59,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--library", action="append", default=[])
     parser.add_argument("--mode", choices=MODES, action="append")
-    parser.add_argument("--device-scale", type=int, choices=[1, 2], action="append")
+    parser.add_argument("--device-scale", type=float, choices=[1, 1.5, 2], action="append")
     parser.add_argument("--view-scale", type=float, choices=[0, .5, 1, 2], action="append", help="0 fits the panel")
     parser.add_argument("--appearance", type=int, choices=[0, 1, 2], action="append", help="Plain=0, Color=1, Artwork=2")
     parser.add_argument("--frames", type=int, default=24)

@@ -411,6 +411,7 @@ struct EditorState {
     ranges: HashMap<usize, (std::sync::Weak<import::Instrument>, [bool; 128])>,
     /// Each part's performance view as last read.
     panels: HashMap<usize, panel::Cache>,
+    vector_assets: vector::Assets,
     /// Pictures the original views asked for, by instrument, read or not.
     perf_asked: std::collections::HashSet<(PathBuf, String)>,
     started: Instant,
@@ -885,6 +886,7 @@ fn build(
         neighbors: Default::default(),
         ranges: HashMap::new(),
         panels: HashMap::new(),
+        vector_assets: vector::Assets::default(),
         perf_asked: Default::default(),
         started: Instant::now(),
         computer,

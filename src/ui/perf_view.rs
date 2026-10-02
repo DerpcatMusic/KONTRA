@@ -418,7 +418,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             (shown, image)
         })
         .collect();
-    let plans = if vector { super::vector::plan(&interface, &pictures, &drawn) } else { Vec::new() };
+    let plans = if vector { super::vector::plan(&interface, &pictures, &drawn, &mut cx.state.vector_assets) } else { Vec::new() };
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {

@@ -123,7 +123,7 @@ fn inspect(i: &import::Instrument, u: &Interface, shown: &[Shown], pictures: &Ha
 fn vectorized(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwork::Picture>>, found: &mut Found) {
     use super::vector::plan;
     let drawn: Vec<_> = shown.iter().map(|s| (s.clone(), perf_view::frame_of(s, &u.controls[s.control]))).collect();
-    let plans = plan(u, pictures, &drawn);
+    let plans = plan(u, pictures, &drawn, &mut super::vector::Assets::default());
     let (vw, vh) = (f64::from(u.width), f64::from(u.height));
     // Each word's ink, absolute: (owner, x, y, w, h).
     let mut inks = Vec::new();
@@ -428,8 +428,8 @@ mod tests {
         assert!(appearance <= 2, "appearance must be Plain=0, Color=1, Artwork=2");
         let view_scale = std::env::var("KONTRA_UI_BENCH_VIEW_SCALE").ok().map(|v| v.parse::<f32>().expect("view scale")).unwrap_or(0.);
         assert!([0.,0.5,1.,2.].contains(&view_scale), "view scale must be fit=0, .5, 1 or 2");
-        let device_scale = option("KONTRA_UI_BENCH_DEVICE_SCALE", 1);
-        assert!((1..=2).contains(&device_scale), "device scale must be 1 or 2");
+        let device_scale = std::env::var("KONTRA_UI_BENCH_DEVICE_SCALE").ok().map(|v| v.parse::<f64>().expect("device scale")).unwrap_or(1.);
+        assert!([1.,1.5,2.].contains(&device_scale), "device scale must be 1, 1.5 or 2");
         let started = Instant::now();
         let instrument = Arc::new(import::read_program(Path::new(&patch), program).unwrap());
         let import_ms = started.elapsed().as_secs_f64() * 1000.;
@@ -477,12 +477,12 @@ mod tests {
         });
         params.shared.view.lock().unwrap().parts[0] = part.clone();
         let mut ui = theme::ui();
-        ui.set_scale(Some(f64::from(device_scale)));
+        ui.set_scale(Some(device_scale));
         let art = Arc::<art::Art>::default();
         let mut draw = build(&params, Arc::default(), Arc::default(), Arc::default(), art.clone());
         let mut bridge = Bridge::new(params.clone());
-        let (width, height) = ((1180 * device_scale) as u16, (900 * device_scale) as u16);
-        let transform = vello::kurbo::Affine::scale(f64::from(device_scale));
+        let (width, height) = ((1180. * device_scale).round() as u16, (900. * device_scale).round() as u16);
+        let transform = vello::kurbo::Affine::scale(device_scale);
         let mut ctx = RenderContext::new(width, height);
         let mut resources = Resources::default();
         let mut cache = vello::Cache::default();
