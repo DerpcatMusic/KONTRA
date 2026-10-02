@@ -7123,6 +7123,50 @@ end on"#;
     }
 
     #[test]
+    fn vst3_extreme_finite_onset_tuning_keeps_processing_bounded_without_heap() {
+        use crate::{audio::Sample, import::{Group,Zone,Wavetable}};
+        for wavetable in [false,true] { for cents in [f32::MAX,-f32::MAX] {
+            let params=SamplerParams::new(); let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+            dsp.rack.parts[0].reset(48000.);
+            let group=Group { wavetable:wavetable.then_some(Wavetable { quality:2,form1_type:16,
+                form1:0.5,inharmonic:0.5,..Default::default() }),..Default::default() };
+            let bank=Bank::from_samples(vec![group],vec![Zone::default()],vec![(PathBuf::new(),
+                Sample { rate:48000,frames:vec![[0.2;2];49152] })]).unwrap();
+            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+            let address=ExactNoteAddress::from_vst3_signed(0,4,60,42);
+            let mut on=EventList::with_capacity(1);
+            on.try_push_exact(ExactEvent::new(16,ExactEventBody::DetailedNote {
+                kind:ExactNoteKind::On,address,velocity:0.8,tuning:cents,length:Some(i32::MIN) })).unwrap();
+            let mut off=EventList::with_capacity(1);
+            off.try_push_exact(ExactEvent::new(32,ExactEventBody::DetailedNote {
+                kind:ExactNoteKind::Off,address,velocity:0.,tuning:0.,length:None })).unwrap();
+            let none=EventList::with_capacity(0); let mut outgoing=EventList::with_capacity(16);
+            let transport=TransportInfo::default();
+            let mut render=|dsp:&mut Dsp,events:&EventList| {
+                let (mut left,mut right)=([0.;128],[0.;128]);
+                let mut channels=[&mut left[..],&mut right[..]];
+                let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
+                let mut cx=ProcessContext::new(&transport,48000.,128,&mut outgoing);
+                Sampler::process(dsp,&params,&mut buffer,events,&mut cx);
+                assert!(left.iter().chain(&right).all(|x| x.is_finite()),"extreme finite tuning poisoned PCM");
+            };
+            for block in 0..8 {
+                assert_eq!(allocations(|| render(&mut dsp,if block==0 { &on } else { &none })),0);
+                let voices=dsp.rack.parts[0].voice_census();
+                assert_eq!(voices.len(),1,"finite onset tuning was rejected");
+                // The existing sample traversal cap and overflow-safe wavetable
+                // clock bound actual motion, independently of the cached ratio.
+                assert!(voices[0].pos.is_finite());
+                assert!((0. ..=if wavetable { 2048. } else { 128.*8.*32. }).contains(&voices[0].pos));
+            }
+            assert!(dsp.rack.parts[0].host_key_held(4,60));
+            assert_eq!(dsp.unsupported_host_expression,0);
+            assert_eq!(allocations(|| render(&mut dsp,&off)),0);
+            assert!(!dsp.rack.parts[0].host_key_held(4,60),"explicit Off lost the extreme-tuned owner");
+        } }
+    }
+
+    #[test]
     fn exact_host_ids_keep_old_expression_and_emit_end_after_every_part_without_heap() {
         use crate::{audio::Sample, import::{Group,Zone}};
         let params=SamplerParams::new();
