@@ -210,6 +210,16 @@
       ],
       "validation": "Actual Conflux resource loads378controls11families and100 callbacks withoutheapoperations; unsupportedleveltap andLuaUI remainexplicit.",
       "accepted": true
+    },
+    {
+      "id": "readable-script-source-diagnostics",
+      "summary": "Retain bounded numbered offending code in parse/runtime diagnostics, copy and exported journals",
+      "source_commits": [
+        "552377acd5d06d390983ba4c0e168b4262483437",
+        "fcdcd519c16a8ce179ae111a36c36643ccb5c4aa"
+      ],
+      "validation": "Combined57efa33 malformed-source/runtime-argument zero-audio-heap regression passed; fcdcd51 compiled journal/export and actual Logs Copy all numbered-code checks passed unchanged.",
+      "accepted": true
     }
   ]
 }
