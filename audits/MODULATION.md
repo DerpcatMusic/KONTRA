@@ -774,7 +774,7 @@ audio-thread heap operations. Actual-library PCM validation remains separate.
 ## Saved sine-only Multi pitch playback (2026-10-02)
 
 A first audible subset now prepares saved version0x71 Multi sources only:
-retrigger enabled, zero delay and phase, synchronized positive note value
+retrigger enabled, zero phase, synchronized positive note value
 and count>=1, sine weight magnitude<=1, and the other four weights zero.
 Only ordinary sampler pitch targets with finite signed depth, zero lag,
 no inversion and no enabled shaper are applied. External assignments to
@@ -813,8 +813,8 @@ unchanged-loop eligibility against no control assignment, 128 versus 17/111
 PCM, RAM versus bare-stream playback, and a command at frame141 split as
 13/115 versus 13/19/96 with native-tick application and bounded release.
 It does not establish full reference Kontakt sonic parity.
-Free-running/shared ownership, other waveforms and Multi mixes, positive
-fade/delay, external phase/frequency modulation, lag and live legacy
+Free-running/shared ownership, other waveforms and Multi mixes, synchronized
+fade-in, external phase/frequency modulation, lag and live legacy
 frequency dispatch remain unsupported.
 
 Recognized group-insert modulation targets use a separate slot namespace from
@@ -832,3 +832,33 @@ copy the proprietary exponential approximation. A private optimized stdlib probe
 measured about 6.1 ms per 1,048,576 planned frames for this subset on this host;
 that is not a whole-engine performance or real-library timing claim. Cached
 exponential recurrences have not been introduced.
+
+### Saved legacy pitch LFO fade-in (2026-10-03)
+
+Saved version0x71 sources additionally retain unsynchronized fade-in durations
+in milliseconds, within the documented0..5000 ms range. The typed reader,
+object copy, source initializer, reset and final waveform consumer independently
+connect the saved delay to the source fade state. Duration becomes
+`N = trunc(fade_ms * (sampleRate / 32) * .001)` control points. Reset starts
+at `0.3f32`; the factor is `pow(1 + 1 / double(0.3f32), 1 / N)`, rounded to
+f32. For exactly N points the source output is multiplied by `state - 0.3f32`,
+then the f32 state is multiplied by the factor and clamped to0..1. Later
+points pass through. The legacy reader explicitly seeds the mode false;
+version0x73's final boolean enables a different clamp and remains unsupported.
+This preserves the older curve instead of replacing it with a linear fade.
+The oscillator continues throughout the fade; note retrigger restarts both
+phase and fade, and bypass pauses their source-clock progression.
+
+The selected saved Prelude192 value0.21523452 ms produces zero fade points
+at48 kHz, Keytar123's2.3047996 ms produces three, and Keytar142's1.9533157 ms
+produces two. These are raw snapshot properties, not post-callback readbacks.
+Their onset timing does not establish a cause for longer quiet/thin reports.
+The existing authored physical-cursor/PCM gate covers these values plus40 ms,
+an independent closed-form fade reference, planner fragmentation, retrigger,
+release retirement and zero heap activity. A separate stdlib-only Clock check
+passes18 rate/duration cases with maximum analytic cursor error0.000019351
+source frames; it is a standalone math check, not an engine PCM result.
+
+Primary control semantics: [Kontakt modulation reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation).
+The mathematical legacy distinction comes from independent native dataflow,
+not from interpreting the manual's general description as an exact curve.
