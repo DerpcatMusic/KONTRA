@@ -824,7 +824,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         {
             state.detail = Some((event.sequence, details(event).into()));
         }
-        let full = &state.detail.as_ref().unwrap().1;
+        let full = state.detail.as_ref().unwrap().1.clone();
         if copy {
             ui.set_clipboard(full.to_string());
         }
@@ -846,7 +846,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             .map_or(550., |s| s.frame.size.width - 2. * INSET);
         content.push(
             col![
-                body(full.clone())
+                body(full)
                     .text_size(TEXT)
                     .w(width.max(100.))
                     .shrink(0)
