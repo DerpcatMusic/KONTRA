@@ -593,6 +593,9 @@ pub struct Env {
     next_callback_id: i32,
     next_async_id: i32,
     pub async_done: Vec<(u8, i32, i32)>,
+    /// Worker-backed IDs remain pending through validated installation.
+    pub(super) pending_async: Vec<(u8, i32)>,
+    async_ready: bool,
     pub stop_waits: Vec<(i32, i32)>,
     pub listeners_changed: u16,
     pub pgs_changed: bool,
@@ -648,6 +651,8 @@ impl Env {
             next_callback_id: 0,
             next_async_id: 0,
             async_done: Vec::with_capacity(64),
+            pending_async: Vec::with_capacity(64),
+            async_ready: false,
             stop_waits: Vec::with_capacity(64),
             listeners_changed: 0,
             pgs_changed: false,
@@ -715,6 +720,12 @@ impl Env {
     pub fn next_async(&mut self) -> i32 {
         self.next_async_id = self.next_async_id % i32::MAX + 1;
         self.next_async_id
+    }
+    fn finish_async(&mut self, slot: u8, id: i32) {
+        if let Some(at) = self.pending_async.iter().position(|&pending| pending == (slot, id)) {
+            self.pending_async.swap_remove(at);
+            self.async_ready = true;
+        }
     }
 
     pub fn queue(&mut self, w: Work) {
@@ -1796,6 +1807,7 @@ impl Runtime {
                 }
                 if t.waiting {
                     t.waiting = false;
+                    t.async_wait = None;
                     t.generation = t.generation.wrapping_add(1);
                     let generation = t.generation;
                     if self.env.timers.len() >= TIMER_CAPACITY {
@@ -1980,11 +1992,14 @@ impl Runtime {
     /// A worker finished an asynchronous load for this script slot.
     pub fn async_complete(&mut self, engine: &mut dyn KspEngine, slot: u8, id: i32, loaded: bool) {
         if slot as usize >= self.states.len() { return; }
+        self.env.finish_async(slot, id);
         if !loaded {
             self.env.note("load_ir_sample: file not found, or that slot holds no convolution effect");
         }
         if self.env.async_done.len() < self.env.async_done.capacity() {
             self.env.async_done.push((slot, id, i32::from(loaded)));
+        } else {
+            self.env.note("KSP async completion callback queue exhausted");
         }
         self.settle(engine);
     }
@@ -2155,6 +2170,7 @@ impl Runtime {
             }
             let request = self.env.array_results.pop_front().unwrap();
             if let Some(failure) = request.failure { self.env.note(failure); }
+            self.env.finish_async(request.slot, request.id);
             self.env.async_done.push((request.slot, request.id, i32::from(request.success)));
             self.env.array_retired.push_back(request);
             self.changes += 1;
@@ -2169,7 +2185,7 @@ impl Runtime {
         self.install_array_jobs(256);
         let end = self.env.now + u64::from(frames);
         // What the last settle left for later (see `settle`).
-        if self.env.cleaning || self.env.pgs_changed || !self.env.async_done.is_empty() {
+        if self.env.cleaning || self.env.pgs_changed || !self.env.async_done.is_empty() || self.env.async_ready {
             self.settle(engine);
         }
         self.run_timers(engine, end);
@@ -2315,6 +2331,22 @@ impl Runtime {
                 self.spawn_cb(engine, slot, Callback::AsyncComplete, ctx);
                 continue;
             }
+            if std::mem::take(&mut self.env.async_ready) {
+                // Completion callbacks are delivered first when queue capacity
+                // permits. NI specifies completed installation before resuming,
+                // without promising relative callback order. Keep the original
+                // thread/event/channel/input scope, including note ownership.
+                for i in 0..self.threads.len() {
+                    let t = &mut self.threads[i];
+                    if t.live && t.waiting && t.async_wait.is_some_and(|id|
+                        !self.env.pending_async.contains(&(t.ctx.slot, id))) {
+                        t.async_wait = None;
+                        t.waiting = false;
+                        self.resume(engine, i as u16);
+                    }
+                }
+                continue;
+            }
             if !pgs_delivered && std::mem::take(&mut self.env.pgs_changed) {
                 pgs_delivered = true;
                 for slot in 0..self.states.len() as u8 {
@@ -2347,6 +2379,7 @@ impl Runtime {
             let t = &mut self.threads[i];
             t.generation = t.generation.wrapping_add(1);
             t.waiting = false;
+            t.async_wait = None;
             t.ctx.ignore_wait |= mode != 0;
             self.resume(engine, i as u16);
         }
@@ -2683,13 +2716,15 @@ impl Runtime {
                 t.waiting = true;
                 t.spent = 0;
                 let generation = t.generation;
-                self.env.timer(
-                    at,
-                    TimerKind::Resume {
-                        thread: i,
-                        generation,
-                    },
-                );
+                if t.async_wait.is_none() {
+                    self.env.timer(
+                        at,
+                        TimerKind::Resume {
+                            thread: i,
+                            generation,
+                        },
+                    );
+                }
                 self.yielded(i);
             }
             Ok(Yield::OutOfFuel) if self.threads[i as usize].spent >= self.fuel_cap => {
@@ -2741,6 +2776,7 @@ impl Runtime {
         let t = &mut self.threads[i as usize];
         let event = t.ctx.event;
         t.live = false;
+        t.async_wait = None;
         t.generation = t.generation.wrapping_add(1);
         self.free_threads.push(i);
         if let Some(e) = self.env.events.get_mut(event) {
