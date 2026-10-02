@@ -155,7 +155,9 @@ while IFS=: read -r f n; do
       ./src/ksp/tests.rs) limit=182 ;;
       ./src/articulate.rs) limit=31 ;;
       ./tests/playback.rs) limit=79 ;;
-      ./src/plugin.rs) limit=72 ;;
+      ./src/plugin.rs) limit=81 ;; # Authored native-send save/reload fixture.
+      ./src/ui/vector.rs) limit=15 ;; # Authored graph/fader projection fixture.
+      ./src/ksp/vm.rs) limit=7 ;; # Authored shared revision-owner fixture.
       ./tests/*|*/tests.rs) limit=40 ;;
       *) limit=3 ;;
     esac ;;
