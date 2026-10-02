@@ -131,7 +131,7 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let selected = cx.view.parts[slot].script_slot;
     let mut tabs = Vec::with_capacity(pages.views.len());
     for p in &pages.views {
-        let (clicked, tab) = theme::tab(ui, format!("script-page-{slot}-{}", p.slot), &p.title, p.slot == selected);
+        let (clicked, tab) = tab(ui, format!("script-page-{slot}-{}", p.slot), &p.title, p.slot == selected);
         if clicked && cx.p.shared.select_script_page(slot, cx.view.parts[slot].script_epoch, p.slot) {
             cx.state.held = None;
             cx.state.typing = None;
