@@ -999,6 +999,7 @@ enum Handoff {
     /// Scripts rebuilt from restored host state; the bank stays.
     Script {
         script: Option<Box<Runtime>>,
+        groups: Option<crate::engine::PreparedGroups>,
         epoch: u64,
     },
     /// The part's samples loaded whole (RAM only): replaces its streaming
@@ -1014,6 +1015,7 @@ struct Retired {
     bank: Option<Box<Bank>>,
     fx: Option<FxProcessor>,
     script: Option<Box<Runtime>>,
+    groups: Option<crate::engine::PreparedGroups>,
     heads: Option<Heads>,
     ir: Option<crate::fx::PreparedIr>,
     growth: Option<Box<PreparedGrowth>>,
@@ -1150,19 +1152,28 @@ fn scripts(
     ir_settings: &[crate::fx::IrSlotSettings],
     engine_state: &[crate::ksp::engine::NativeEdit],
     rate: f64,
+    // Production admission stays disabled until route changes can exchange
+    // prepared storage without changing existing event/domain identities.
+    domains: Option<(u16, u8)>,
 ) -> (
     Option<Box<Runtime>>,
     Option<Box<PersistenceSnapshot>>,
     Vec<String>,
+    Option<crate::engine::PreparedGroups>,
 ) {
-    let (script, errors) = crate::engine::load_scripts_with_state(i, persisted(saved, i), rate, ir_settings, engine_state);
+    let (mut script, errors) = crate::engine::load_scripts_with_state(i, persisted(saved, i), rate, ir_settings, engine_state);
+    let groups = script.as_deref_mut().and_then(|rt| {
+        let (origins, home) = domains.filter(|&(origins, _)| origins != 0)?;
+        rt.prepare_channel_domains(origins, home);
+        Some(crate::engine::PreparedGroups::new(i, rt))
+    });
     // Nothing persistent: no snapshots to trade with the audio thread.
     let snapshot = script
         .as_ref()
         .map(|rt| PersistenceSnapshot { script: rt.persistence(), ir: i.fx.ir_settings_with(&rt.init_irs), native: rt.native_state.snapshot() })
         .filter(|s| !s.native.is_empty() || !s.ir.is_empty() || s.script.iter().any(|p| !p.is_empty()))
         .map(Box::new);
-    (script, snapshot, errors)
+    (script, snapshot, errors, groups)
 }
 /// Epoch for `script`, about to be handed off from `slot`; forgets the old runtime's buffers.
 fn next_epoch(
@@ -1981,8 +1992,8 @@ impl BackgroundTask for Load {
                 trace.detail("instance_id", params.shared.instance_id);
                 trace.detail("operation", "script_restore");
                 trace.stage("scripts");
-                let (script, snapshot, errors) =
-                    scripts(&instrument, &part.script_state, &part.ir_settings, &part.engine_state, params.shared.rate());
+                let (script, snapshot, errors, groups) =
+                    scripts(&instrument, &part.script_state, &part.ir_settings, &part.engine_state, params.shared.rate(), None);
                 for e in &errors { trace.script_issue("initialization_failed", e, &instrument.scripts); }
                 if let Some(rt) = script.as_deref() {
                     for e in rt.diagnostics() { trace.script_issue(crate::diagnostics::code(&e), e, &instrument.scripts); }
@@ -2027,7 +2038,7 @@ impl BackgroundTask for Load {
                 let _ = params.shared.publish_part((
                     slot,
                     atoms.generation.load(Ordering::Acquire),
-                    Handoff::Script { script, epoch },
+                    Handoff::Script { script, groups, epoch },
                 ));
                 continue;
             }
@@ -2127,11 +2138,11 @@ impl BackgroundTask for Load {
                 let progress = &atoms.load_progress;
                 progress.fetch_max(crate::engine::LOAD_DONE / 20, Ordering::Relaxed);
                 set_stage(&mut trace, "scripts_and_sample_headers");
-                let ((script, snapshot, script_errors), bare) = std::thread::scope(|scope| {
+                let ((script, snapshot, script_errors, groups), bare) = std::thread::scope(|scope| {
                     let (rate, instrument, state) = (params.shared.rate(), &instrument, &part.script_state);
                     let ir_settings = &part.ir_settings;
                     let engine_state = &part.engine_state;
-                    let scripts = scope.spawn(move || scripts(instrument, state, ir_settings, engine_state, rate));
+                    let scripts = scope.spawn(move || scripts(instrument, state, ir_settings, engine_state, rate, None));
                     let bare = (!instrument.zones.is_empty()).then(|| Bank::load_bare_cancelable(instrument, &canceled));
                     let scripts = scripts.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
                     (scripts, bare)
@@ -2190,7 +2201,10 @@ impl BackgroundTask for Load {
                     .min(crate::engine::memory_budget().saturating_sub(resident));
                 trace.detail("memory_budget_bytes", budget);
                 let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers);
-                let bank = bare.transpose()?.map(Box::new);
+                let mut bank = bare.transpose()?.map(Box::new);
+                // Both allocations were prepared off thread. Initial banks
+                // install their group state before reaching the audio queue.
+                if let (Some(mut groups), Some(bank)) = (groups, bank.as_deref_mut()) { groups.install(bank); }
                 let preload = Some((budget, controllers.to_vec()));
                 Ok((instrument, bank, script, snapshot, preload, art))
             })();
@@ -3131,11 +3145,13 @@ impl PluginLogic for Sampler {
                     bank: engine.upgrade_bank(bank),
                     ..Retired::default()
                 },
-                Handoff::Script { script, epoch } if current => {
+                Handoff::Script { script, mut groups, epoch } if current => {
                     engine.reset(rate);
                     s.script_epoch[slot] = epoch;
+                    if let Some(groups) = &mut groups { engine.install_prepared_groups(groups); }
                     Retired {
                         script: engine.set_script(script),
+                        groups,
                         ..Retired::default()
                     }
                 }
@@ -3171,8 +3187,9 @@ impl PluginLogic for Sampler {
                     bank: Some(bank),
                     ..Retired::default()
                 },
-                Handoff::Script { script, .. } => Retired {
+                Handoff::Script { script, groups, .. } => Retired {
                     script,
+                    groups,
                     ..Retired::default()
                 },
             };
@@ -4549,7 +4566,7 @@ pub(crate) mod tests {
             assert!(dsp.rack.parts[0].bank().is_some());
             let instrument = p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
             assert_eq!(instrument.name, snapshot.file_stem().unwrap().to_string_lossy());
-            let (expected, _, errors) = scripts(&instrument, "", &[], &[], 48000.);
+            let (expected, _, errors, _) = scripts(&instrument, "", &[], &[], 48000., None);
             assert!(errors.is_empty(), "{errors:?}");
             assert!(dsp.rack.parts[0].script().unwrap().persistence() == expected.unwrap().persistence(), "snapshot persistence is the worker-installed state");
             assert_eq!(allocations(|| {
@@ -5361,6 +5378,94 @@ end on"#,dir.display());
     }
 
     #[test]
+    fn prepared_channel_worker_handoff_reloads_groups_and_home_without_audio_heap() {
+        use crate::{articulate::{Articulate, Articulation, Mode}, import::Group, ksp::Value};
+        let instrument = Instrument {
+            path: "/virtual/prepared-channel.nki".into(),
+            groups: vec![Group { name: "late".into(), ..Group::default() }],
+            scripts: vec!["on init\nmake_perfview\ndeclare ui_slider $gain(0,1000000)\n$gain := 500000\nmake_persistent($gain)\nread_persistent_var($gain)\nset_engine_par($ENGINE_PAR_VOLUME,$gain,0,-1,-1)\nend on\non note\nwait(1000)\nset_engine_par($ENGINE_PAR_VOLUME,$EVENT_VELOCITY*5000,0,-1,-1)\nend on".into()],
+            ..Default::default()
+        };
+        let p = SamplerParams::new();
+        let part = Part {
+            path: instrument.path.to_string_lossy().into_owned(), channel: 7,
+            articulate: Articulate {
+                source: instrument.path.to_string_lossy().into_owned(), mode: Mode::Channel,
+                articulations: [1,3,5].map(|channel| Articulation { name: format!("channel-{channel}"), channel, ..Default::default() }).to_vec(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        p.selection.write().unwrap().parts[0] = part;
+        let route = routes(&p.selection.read().unwrap())[0];
+        let origins = route.channel_origins();
+        assert_eq!(origins, (1 << 1) | (1 << 3) | (1 << 5));
+        let (script, _, errors, groups) = scripts(&instrument,"",&[],&[],48000.,Some((origins,7)));
+        assert!(errors.is_empty(),"{errors:?}");
+        let mut bank = late_bank(&[(1,127,0)]);
+        let mut groups = groups.unwrap();
+        groups.install(&mut bank); // Initial worker path, before enqueue.
+        drop(groups); // The replaced defaults are disposed on this worker.
+        p.shared.routes.push(vec![route;RACK_SLOTS]).ok().unwrap();
+        p.shared.controls.push(mix(&p.selection.read().unwrap())).ok().unwrap();
+        p.shared.ready.push((0,0,Handoff::Part { bank:Some(bank), script, fx:Default::default(), epoch:1 })).ok().unwrap();
+        let mut dsp = Dsp::default();
+        dsp.until_poll = usize::MAX;
+        let transport = TransportInfo::default();
+        let mut outgoing = EventList::with_capacity(0);
+        let mut cx = ProcessContext::new(&transport,48000.,128,&mut outgoing);
+        let mut left = [0f32;128]; let mut right = [0f32;128];
+        let mut outputs = [&mut left[..],&mut right[..]];
+        let mut buffer = AudioBuffer::from_slices_checked(&[],&mut outputs,128);
+        let none = EventList::with_capacity(0);
+        let mut notes = EventList::with_capacity(3);
+        for (channel,velocity) in [(1,40),(3,80),(5,120)] {
+            notes.push(Event::new(0,EventBody::NoteOn { group:0,channel,note:60,velocity }));
+        }
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&notes,&mut cx); }),0);
+        let engine = &dsp.rack.parts[0];
+        let before = engine.voice_census();
+        assert_eq!(before.len(),3);
+        assert!(before.iter().all(|v|v.channel==7 && !v.released));
+        let gains:Vec<_> = [1,3,5].map(|c|before.iter().find(|v|v.input_channel==Some(c)).unwrap().gain).to_vec();
+        assert!(gains[0]>0. && gains[0]<gains[1] && gains[1]<gains[2]);
+        let samples = engine.bank().unwrap().samples.as_ptr();
+        let zones = engine.bank().unwrap().zones().as_ptr();
+        let mut saved = engine.script().unwrap().persistence();
+        saved[0].insert("$gain".into(),Value::Int(250000));
+        let saved = serde_json::to_string(&saved).unwrap();
+        let (script, _, errors, groups) = scripts(&instrument,&saved,&[],&[],48000.,Some((origins,7)));
+        assert!(errors.is_empty(),"{errors:?}");
+        p.shared.ready.push((0,0,Handoff::Script { script,groups,epoch:2 })).ok().unwrap();
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&none,&mut cx); }),0);
+        let engine = &dsp.rack.parts[0];
+        assert_eq!(engine.bank().unwrap().samples.as_ptr(),samples);
+        assert_eq!(engine.bank().unwrap().zones().as_ptr(),zones);
+        assert_eq!(engine.script().unwrap().channel_domain_home(),Some(7));
+        assert_eq!(engine.script().unwrap().channel_domain_mask(),Some(origins));
+        assert_eq!(engine.script().unwrap().persistence()[0]["$gain"],Value::Int(250000));
+        for domain in 0..3 {
+            assert_eq!(engine.bank().unwrap().settings_for(domain),engine.bank().unwrap().settings_for(0),"restore cannot seed a bank from another channel's performance write");
+        }
+        // Installation itself must restore native ownership, without the
+        // test-only Engine::prepare_channel_domains call.
+        let mut pair = EventList::with_capacity(2);
+        for channel in [1,3] { pair.push(Event::new(0,EventBody::NoteOn { group:0,channel,note:62,velocity:100 })); }
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&pair,&mut cx); }),0);
+        let mut pedals = EventList::with_capacity(3);
+        pedals.push(Event::new(0,EventBody::ControlChange { group:0,channel:1,cc:64,value:127 }));
+        for channel in [1,3] { pedals.push(Event::new(0,EventBody::NoteOff { group:0,channel,note:62,velocity:0 })); }
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&pedals,&mut cx); }),0);
+        let voices = dsp.rack.parts[0].voice_census();
+        assert!(voices.iter().any(|v|v.note==62 && v.input_channel==Some(1) && !v.released));
+        assert!(voices.iter().filter(|v|v.note==62 && v.input_channel==Some(3)).all(|v|v.released));
+        assert_eq!(dsp.rack.parts[0].dropped_commands(),0);
+        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
+        assert_eq!(dsp.script_epoch[0],2);
+        assert!(std::iter::from_fn(||p.shared.discard.pop()).any(|retired|retired.groups.is_some()),"old group storage is retired to the worker");
+    }
+
+    #[test]
     fn replacement_runtimes_reject_queued_old_views_and_snapshots_without_audio_allocations() {
         use crate::ksp::Value;
         let runtime = |count, name: &str, saved| {
@@ -5399,7 +5504,7 @@ end on"#,dir.display());
         dsp.until_poll = usize::MAX;
         dsp.script_epoch[0] = 1;
         dsp.rack.parts[0].set_script(Some(Box::new(old)));
-        p.shared.ready.push((0, 0, Handoff::Script { script: Some(Box::new(new)), epoch: 2 })).ok().unwrap();
+        p.shared.ready.push((0, 0, Handoff::Script { script: Some(Box::new(new)), groups: None, epoch: 2 })).ok().unwrap();
         let transport = TransportInfo::default();
         let mut outgoing = EventList::with_capacity(0);
         let none = EventList::with_capacity(0);
@@ -5751,7 +5856,7 @@ end on"#.into()], ..Default::default() };
             Params::SendLevels(crate::fx::params::SendLevels { sends: vec![0.0625;8], outputs: Vec::new() }), true)] };
         i.fx.send = Chain { slots: vec![effect(0, Kind::Reverb, Params::Reverb(crate::fx::params::Reverb::DEFAULT), false)] };
         let i = Arc::new(i);
-        let (rt, snapshot, errors) = scripts(&i, "", &[], &[], 48000.);
+        let (rt, snapshot, errors, _) = scripts(&i, "", &[], &[], 48000., None);
         assert!(errors.is_empty(), "{errors:?}");
         let rt = rt.unwrap();
         assert!(rt.engine_state().is_empty(), "prepared defaults are not saved edits");
@@ -5796,7 +5901,7 @@ end on"#.into()], ..Default::default() };
         assert!(new_snapshot.engine_state.is_empty(),"explicit snapshot selection uses its own engine state");
         assert!(serde_json::from_str::<Part>("{}").unwrap().engine_state.is_empty(),"old states use authored defaults");
         let saved: Part = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
-        let (rt,_,errors) = scripts(&i,&saved.script_state,&saved.ir_settings,&saved.engine_state,48000.);
+        let (rt,_,errors,_) = scripts(&i,&saved.script_state,&saved.ir_settings,&saved.engine_state,48000., None);
         assert!(errors.is_empty(),"{errors:?}"); let rt = rt.unwrap();
         assert_eq!(rt.interface(0).controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(125000));
         assert_eq!(rt.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(1));
@@ -5838,7 +5943,7 @@ end on"#.into()], ..Default::default() };
             let ir = i.fx.ir_settings_with(&engine.script().unwrap().init_irs);
             let saved = Part { engine_state:native, script_state:serde_json::to_string(&script).unwrap(), ir_settings:ir, ..Default::default() };
             let saved: Part = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
-            let (rt,_,errors) = scripts(&i,&saved.script_state,&saved.ir_settings,&saved.engine_state,48000.);
+            let (rt,_,errors,_) = scripts(&i,&saved.script_state,&saved.ir_settings,&saved.engine_state,48000., None);
             assert!(errors.is_empty(),"{name}: {errors:?}"); let rt = rt.unwrap();
             for uid in [amount,amount_fx] { assert_eq!(rt.interface(0).controls[uid].properties["$CONTROL_PAR_VALUE"],Value::Int(125000),"{name}: authored getter readback"); }
             assert_eq!(rt.interface(0).controls[on].properties["$CONTROL_PAR_VALUE"],Value::Int(1));
@@ -5968,7 +6073,7 @@ end on"#.into()], ..Default::default() };
         assert!(saved == part);
         let saved: Part = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
         assert!(serde_json::from_str::<Part>("{}").unwrap().ir_settings.is_empty());
-        let (restored, _, errors) = scripts(&i, &saved.script_state, &saved.ir_settings, &saved.engine_state, 44100.);
+        let (restored, _, errors, _) = scripts(&i, &saved.script_state, &saved.ir_settings, &saved.engine_state, 44100., None);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(restored.as_ref().unwrap().init_irs.iter().any(|l| matches!(&l.load, crate::fx::Load::Ir { file, .. } if file.file_name().unwrap().to_string_lossy().eq_ignore_ascii_case("GI_UC_IR_Room_Intimate Chamber.ncw"))), "reload retains the selected room's actual impulse response");
         let fx = crate::engine::effects(&i, restored.as_deref(), 44100.);

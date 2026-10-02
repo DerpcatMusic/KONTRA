@@ -1918,6 +1918,8 @@ impl Runtime {
 
     pub(crate) fn channel_domain_home(&self) -> Option<u8> { self.domain_mask.map(|_| self.domain_home) }
 
+    pub(crate) fn channel_domain_origins(&self) -> Option<[u8; 16]> { self.domain_mask.map(|_| self.domain_origins) }
+
     fn reset_domain_controllers(&mut self, domain: u8, controllers: Option<&[u8; 128]>) {
         let input = &mut self.env.input;
         let row = if input.performance.is_empty() { &mut input.cc } else { &mut input.performance[domain as usize] };

@@ -424,6 +424,42 @@ pub struct Bank {
     residency: Option<Box<Residency>>,
 }
 
+/// Worker-built playback parameters for one initialized script runtime.
+/// Owns no zones, samples, stream slots or program effects. Swapping these
+/// vectors returns all previous group storage for worker disposal.
+pub(crate) struct PreparedGroups {
+    base: Vec<GroupSettings>,
+    settings: Vec<GroupSettings>,
+    domain_base: Vec<Vec<GroupSettings>>,
+    domain_settings: Vec<Vec<GroupSettings>>,
+}
+
+impl PreparedGroups {
+    pub(crate) fn new(instrument: &Instrument, runtime: &crate::ksp::Runtime) -> Self {
+        let mut base: Vec<_> = instrument.groups.iter().map(GroupSettings::from).collect();
+        for &(par, value) in &runtime.init_engine_pars {
+            if let Some(address) = super::params::Address::resolve(par, &instrument.groups).filter(|a| a.is_group()) {
+                super::params::write(&mut base, address, address.decode(value));
+            }
+        }
+        let count = runtime.channel_domain_mask().map_or(1, |mask| mask.count_ones() as usize);
+        Self {
+            settings: base.clone(),
+            domain_base: (1..count).map(|_| base.clone()).collect(),
+            domain_settings: (1..count).map(|_| base.clone()).collect(),
+            base,
+        }
+    }
+
+    pub(crate) fn install(&mut self, bank: &mut Bank) {
+        assert_eq!(self.base.len(), bank.groups().len(), "prepared groups must belong to the installed instrument");
+        std::mem::swap(&mut self.base, &mut bank.base);
+        std::mem::swap(&mut self.settings, &mut bank.settings);
+        std::mem::swap(&mut self.domain_base, &mut bank.domain_base);
+        std::mem::swap(&mut self.domain_settings, &mut bank.domain_settings);
+    }
+}
+
 /// [`Bank::load_counting`]'s progress once every sample is read.
 pub const LOAD_DONE: u32 = 1000;
 

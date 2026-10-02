@@ -25,7 +25,7 @@ pub(crate) mod native_state;
 mod stream;
 mod voice;
 
-pub(crate) use bank::parallel;
+pub(crate) use bank::{parallel, PreparedGroups};
 pub use audit::audit_dsp;
 pub use bank::{Bank, ZoneSkipCounts, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, memory_budget, resident_bytes};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
@@ -333,7 +333,7 @@ impl Engine {
     /// Engine parameters the scripts set in `on init` apply now, and again to
     /// banks and effects installed later.
     pub fn set_script(&mut self, mut script: Option<Box<Runtime>>) -> Option<Box<Runtime>> {
-        self.player.domain_origins = None;
+        self.player.domain_origins = script.as_deref().and_then(Runtime::channel_domain_origins);
         self.commands.clear();
         self.writes.clear();
         self.write_index.1.clear();
@@ -364,6 +364,16 @@ impl Engine {
         self.replay(|_| true);
         self.apply_init_controllers();
         old
+    }
+
+    /// Swap worker-prepared group state beside its replacement runtime. The
+    /// returned storage is retained by the handoff until worker disposal.
+    pub(crate) fn install_prepared_groups(&mut self, groups: &mut PreparedGroups) {
+        if let Some(bank) = self.bank.as_deref_mut() {
+            groups.install(bank);
+            self.player.touch();
+            self.refresh_overrides();
+        }
     }
 
     /// Set the controllers the scripts set while loading, on every channel.
@@ -404,11 +414,7 @@ impl Engine {
         if channels == 0 { return; }
         if let Some(rt) = self.script.as_deref_mut() {
             rt.prepare_channel_domains(channels, home);
-            let mut origins = [0; 16];
-            for (domain, origin) in (0..16u8).filter(|c| channels & (1 << c) != 0).enumerate() {
-                origins[domain] = origin;
-            }
-            self.player.domain_origins = (channels != 0).then_some(origins);
+            self.player.domain_origins = rt.channel_domain_origins();
             if let Some(bank) = self.bank.as_deref_mut() {
                 bank.prepare_channel_domains(channels.count_ones().max(1) as usize);
             }
