@@ -5039,6 +5039,7 @@ end on"#.into()], ..Default::default() };
         i.fx.insert = Chain { slots: vec![effect(7, Kind::SendLevels,
             Params::SendLevels(crate::fx::params::SendLevels { sends: vec![0.0625;8], outputs: Vec::new() }), true)] };
         i.fx.send = Chain { slots: vec![effect(0, Kind::Reverb, Params::Reverb(crate::fx::params::Reverb::DEFAULT), false)] };
+        let i = Arc::new(i);
         let (rt, snapshot, errors) = scripts(&i, "", &[], &[], 48000.);
         assert!(errors.is_empty(), "{errors:?}");
         let rt = rt.unwrap();
@@ -5069,7 +5070,7 @@ end on"#.into()], ..Default::default() };
         let p = SamplerParams::new();
         {
             let mut view = p.shared.view.lock().unwrap(); let v = &mut view.parts[0];
-            v.instrument = Some(Arc::new(i.clone())); v.fx_rate = 48000.; v.script_epoch = 1;
+            v.instrument = Some(i.clone()); v.fx_rate = 48000.; v.script_epoch = 1;
             v.attempted = Some((i.path.to_string_lossy().into_owned(),0,String::new()));
         }
         p.selection.write().unwrap().parts = vec![Part { path:i.path.to_string_lossy().into_owned(), ..Default::default() }];
