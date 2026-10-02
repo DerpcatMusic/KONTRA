@@ -73,7 +73,8 @@ pub(crate) fn filter_type(id: i32) -> Option<(Shape, u8)> {
         5 => return Some(svf(Low, 2)),
         6 => return Some(svf(High, 2)),
         7 => return Some(svf(Band, 2)),
-        8 | SV_NOTCH4 => return Some(svf(Notch, 2)),
+        // 1000 was KONTRA's original scripted SV Notch id; keep old states playable.
+        8 | SV_NOTCH4 | 1000 => return Some(svf(Notch, 2)),
         9 => return Some(svf(Low, 3)),
         52 => return Some(svf(Low, 1)),
         53 => return Some(svf(Band, 1)),
@@ -98,15 +99,15 @@ pub(crate) fn filter_type(id: i32) -> Option<(Shape, u8)> {
     Some((Shape::Model(model), model.sections()))
 }
 
-/// KONTRA's id for `$FILTER_TYPE_SV_NOTCH4`, which no local preset stores.
-const SV_NOTCH4: i32 = 1000;
+/// Native id: factory snapshots pair selected SV Notch 4 groups with type 58.
+const SV_NOTCH4: i32 = 58;
 
 /// KSP `$FILTER_TYPE_*` constants: the type ids presets store, so scripts
 /// read back what they set. 2..9 follow the reference's order; AR_LP2 is
 /// 100 (ANALOG STRINGS sets it on exactly the groups storing 100), the
 /// other AR and Daft ids continue that run in reference order and the
 /// phaser and formant ids are the remaining ones its presets store (low
-/// confidence). Types no local preset stores get ids from 1000.
+/// confidence). SV Notch 4 is 58 in native saved group state.
 const KSP_FILTER_TYPES: &[(&str, i32)] = &[
     ("$FILTER_TYPE_LP2POLE", 2),
     ("$FILTER_TYPE_HP2POLE", 3),
@@ -1632,6 +1633,43 @@ mod tests {
                 let (mut left, mut right) = ([0.01; 64], [-0.01; 64]);
                 s.process(&mut left, &mut right);
                 assert!(left.iter().chain(&right).all(|v| v.is_finite() && v.abs() < 10.0));
+            }
+        }
+    }
+
+    #[test]
+    fn native_sv_notch_id_runs_four_pole_notch_and_matches_script_constant() {
+        assert_eq!(ksp_filter_type("$FILTER_TYPE_SV_NOTCH4"), Some(58));
+        let fx = crate::fx::Effect {
+            slot: 0, kind: Kind::Filter, version: 146, bypass: false,
+            output_gain: 1.0, dry_level: 1.0,
+            params: Params::Filter(crate::fx::params::Filter {
+                filter_type: 58,
+                cutoff: (1000.0 / CUTOFF_MIN_HZ).log2() / CUTOFF_OCTAVES,
+                resonance: 0.0, extra: [0.0; 3],
+            }),
+        };
+        assert!(unsupported(&Chain { slots: vec![fx.clone()] }).is_empty());
+        for hz in [10.0, 1000.0, 20_000.0] {
+            let mut filter = RackFilter::new(&fx, RATE).expect("native notch must not pass through");
+            assert_eq!(filter.active, 2, "four poles require two SVF sections");
+            assert_eq!(filter.knob(Knob::Type), Some(58.0));
+            let mut peak = 0.0f32;
+            for start in (0..24_000).step_by(128) {
+                let (mut left, mut right) = ([0.0; 128], [0.0; 128]);
+                for (n, x) in left.iter_mut().enumerate() {
+                    *x = (2.0 * std::f32::consts::PI * hz * (start + n) as f32 / RATE).sin();
+                }
+                filter.process(&mut left, &mut right);
+                assert!(left.iter().all(|x| x.is_finite()));
+                if start > 12_000 {
+                    peak = left.iter().fold(peak, |p, x| p.max(x.abs()));
+                }
+            }
+            if hz == 1000.0 {
+                assert!(peak < 0.001, "cutoff must be rejected: {peak}");
+            } else {
+                assert!((peak - 1.0).abs() < 0.01, "pass band at {hz} Hz: {peak}");
             }
         }
     }
