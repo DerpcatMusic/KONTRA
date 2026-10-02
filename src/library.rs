@@ -28,7 +28,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 /// A folder the player added.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -68,6 +68,10 @@ pub struct Settings {
     pub vector_backdrop: bool,
     /// The original performance view's scale; 0 fits the part's width.
     pub view_scale: f32,
+    /// Overall interface zoom, independent of physical display DPI; 0 means 100%.
+    pub ui_scale: f64,
+    /// Last native window dimensions in host logical points, independent of zoom.
+    pub window_size: Option<(u32, u32)>,
     /// How the browser lists the libraries.
     pub sort: Sort,
     /// The player's own order of the libraries, by folder: set by dragging one.
@@ -208,6 +212,16 @@ pub fn natural(text: &str) -> Vec<(u64, String)> {
 }
 
 impl Settings {
+    /// Overall UI zoom; legacy/invalid values keep the default.
+    pub fn editor_scale(&self) -> f64 {
+        if self.ui_scale.is_finite() && self.ui_scale > 0.0 { self.ui_scale.clamp(0.5, 3.0) } else { 1.0 }
+    }
+
+    pub fn editor_size(&self) -> (u32, u32) {
+        let (w, h) = self.window_size.unwrap_or((1180, 760));
+        (w.max(900), h.max(600))
+    }
+
     /// `settings.json` in the app's config folder; none under test.
     pub fn path() -> Option<PathBuf> {
         Some(config_dir()?.join("settings.json"))
@@ -679,10 +693,82 @@ pub struct Scanned {
     pub imported: Option<Vec<Root>>,
 }
 
-/// The app's libraries: the settings naming them, the scan finding them,
-/// and each library's size on disk, measured when first asked.
+/// Coalesced preference work, with an explicit flush when a window closes.
+enum SaveSettings { Changed, Flush(std::sync::mpsc::Sender<()>) }
+
+struct Preferences {
+    state: Arc<RwLock<(Arc<Settings>, u64)>>,
+    save: Option<std::sync::mpsc::Sender<SaveSettings>>,
+    queued: Arc<AtomicBool>,
+    roots_changed: AtomicU64,
+}
+
+impl Preferences {
+    fn new(path: Option<PathBuf>) -> Arc<Self> {
+        let settings = path.as_ref().and_then(|p| Settings::load(p)).unwrap_or_default();
+        let state = Arc::new(RwLock::new((Arc::new(settings), 0)));
+        let queued = Arc::new(AtomicBool::new(false));
+        let save = path.map(|path| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (state, queued) = (state.clone(), queued.clone());
+            std::thread::spawn(move || {
+                let mut saved = 0;
+                let mut persist = || {
+                    let (settings, revision) = { let s = state.read().unwrap_or_else(PoisonError::into_inner); (s.0.clone(), s.1) };
+                    if revision != saved && settings.save(&path).is_ok() { saved = revision; }
+                };
+                while let Ok(mut message) = rx.recv() {
+                    loop {
+                        match message {
+                            SaveSettings::Changed => queued.store(false, Ordering::Release),
+                            SaveSettings::Flush(reply) => { persist(); let _ = reply.send(()); break; }
+                        }
+                        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                            Ok(next) => message = next,
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => { persist(); break; }
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => { persist(); return; }
+                        }
+                    }
+                }
+            });
+            tx
+        });
+        Arc::new(Self { state, save, queued, roots_changed: AtomicU64::new(0) })
+    }
+
+    fn shared() -> Arc<Self> {
+        if cfg!(test) { return Self::new(None); }
+        static GLOBAL: OnceLock<Arc<Preferences>> = OnceLock::new();
+        GLOBAL.get_or_init(|| Self::new(Settings::path())).clone()
+    }
+
+    fn settings(&self) -> Arc<Settings> { self.state.read().unwrap_or_else(PoisonError::into_inner).0.clone() }
+
+    fn edit(&self, change: impl FnOnce(&mut Settings)) {
+        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let mut next = (*state.0).clone();
+        change(&mut next);
+        if next == *state.0 { return; }
+        if next.roots != state.0.roots { self.roots_changed.fetch_add(1, Ordering::Release); }
+        state.0 = Arc::new(next);
+        state.1 = state.1.wrapping_add(1);
+        drop(state);
+        if let Some(save) = &self.save && !self.queued.swap(true, Ordering::AcqRel) {
+            let _ = save.send(SaveSettings::Changed);
+        }
+    }
+
+    fn flush(&self) {
+        if let Some(save) = &self.save {
+            let (tx, rx) = std::sync::mpsc::channel();
+            if save.send(SaveSettings::Flush(tx)).is_ok() { let _ = rx.recv_timeout(std::time::Duration::from_millis(100)); }
+        }
+    }
+}
+
+/// The app's libraries and scan; preference state is shared across instances.
 pub struct Scanner {
-    settings: RwLock<Option<Arc<Settings>>>,
+    preferences: Arc<Preferences>,
     /// The scan asked for, and the one last started.
     wanted: AtomicU64,
     started: AtomicU64,
@@ -699,7 +785,7 @@ pub struct Scanner {
 impl Default for Scanner {
     fn default() -> Self {
         Self {
-            settings: RwLock::default(),
+            preferences: Preferences::shared(),
             wanted: AtomicU64::new(1),
             started: AtomicU64::new(0),
             progress: Mutex::default(),
@@ -716,27 +802,19 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Scanner {
-    /// The settings, read from disk on first use.
-    pub fn settings(&self) -> Arc<Settings> {
-        if let Some(s) = self.settings.read().unwrap_or_else(PoisonError::into_inner).as_ref() {
-            return s.clone();
-        }
-        let mut slot = self.settings.write().unwrap_or_else(PoisonError::into_inner);
-        slot.get_or_insert_with(|| {
-            Arc::new(Settings::path().and_then(|p| Settings::load(&p)).unwrap_or_default())
-        })
-        .clone()
-    }
+    /// Global settings shared by plugin instances, loaded once per process.
+    pub fn settings(&self) -> Arc<Settings> { self.preferences.settings() }
 
-    /// Change the settings and save them.
-    pub fn edit(&self, change: impl FnOnce(&mut Settings)) {
-        let mut next = (*self.settings()).clone();
-        change(&mut next);
-        if let Some(path) = Settings::path() {
-            let _ = next.save(&path);
-        }
-        *self.settings.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(next));
-        self.stamp.fetch_add(1, Ordering::Relaxed);
+    /// Publish immediately; save a coalesced snapshot off the UI thread.
+    pub fn edit(&self, change: impl FnOnce(&mut Settings)) { self.preferences.edit(change); }
+
+    /// Complete pending preference writes when an editor closes.
+    pub fn flush_settings(&self) { self.preferences.flush(); }
+
+    /// Called with native host logical dimensions; unchanged frames do no work.
+    pub fn remember_window(&self, size: (u32, u32)) {
+        if size.0 < 900 || size.1 < 600 || self.settings().window_size == Some(size) { return; }
+        self.edit(|s| s.window_size = Some(size));
     }
 
     /// Add a root, unless it is there already, and scan again.
@@ -815,7 +893,7 @@ impl Scanner {
 
     /// The scan the editor should show.
     pub fn wanted(&self) -> u64 {
-        self.wanted.load(Ordering::Acquire)
+        self.wanted.load(Ordering::Acquire).wrapping_add(self.preferences.roots_changed.load(Ordering::Acquire))
     }
 
     /// Folders looked at and libraries found, while a scan runs.
@@ -828,7 +906,8 @@ impl Scanner {
     pub fn stamp(&self) -> u64 {
         let p = lock(&self.progress).clone();
         let folders = p.folders.load(Ordering::Relaxed) as u64;
-        self.stamp.load(Ordering::Relaxed).wrapping_mul(31).wrapping_add(folders / 50)
+        let preferences = self.preferences.state.read().unwrap_or_else(PoisonError::into_inner).1;
+        self.stamp.load(Ordering::Relaxed).wrapping_add(preferences).wrapping_mul(31).wrapping_add(folders / 50)
     }
 
     /// For the loader: the scan finished since `installed`, once. Starts the
@@ -1036,6 +1115,37 @@ mod tests {
         s.save(&path).unwrap();
         assert!(!std::fs::read_to_string(&path).unwrap().contains("vector_view"), "the old switch is not written");
         assert_eq!(Settings::load(&path), Some(s));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn editor_preferences_are_shared_coalesced_and_survive_restart() {
+        let dir = tree("editor-preferences", &[]);
+        let path = dir.join("settings.json");
+        let preferences = Preferences::new(Some(path.clone()));
+        let first = Scanner { preferences: preferences.clone(), ..Scanner::default() };
+        let second = Scanner { preferences, ..Scanner::default() };
+        let generation = second.wanted();
+        first.edit(|s| s.ui_scale = 1.5);
+        for width in 1200..1300 { first.remember_window((width, 900)); }
+        assert_eq!(second.settings().editor_scale(), 1.5);
+        assert_eq!(second.settings().editor_size(), (1299, 900));
+        assert_eq!(second.wanted(), generation, "geometry does not rescan libraries");
+        first.edit(|s| s.roots.push(Root { path: "/new-library".into(), single: true }));
+        assert!(second.wanted() > generation, "shared folder edits wake other instances' scans");
+        first.flush_settings();
+        let loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded.editor_scale(), 1.5);
+        assert_eq!(loaded.editor_size(), (1299, 900));
+        assert_eq!(loaded, *second.settings());
+        let defaults: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.editor_scale(), 1.0);
+        assert_eq!(defaults.editor_size(), (1180, 760));
+        for (scale, expected) in [(f64::NAN, 1.0), (-1.0, 1.0), (0.25, 0.5), (100.0, 3.0)] {
+            assert_eq!(Settings { ui_scale: scale, ..Settings::default() }.editor_scale(), expected);
+        }
+        assert_eq!(Settings { window_size: Some((0, 0)), ..Settings::default() }.editor_size(), (900, 600));
+        drop(first); drop(second);
         let _ = std::fs::remove_dir_all(dir);
     }
 

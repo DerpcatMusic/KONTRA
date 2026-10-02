@@ -70,7 +70,11 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let (key_params, key_computer) = (params.clone(), computer.clone());
     let watch_params = params.clone();
     let mut watch = Watch::default();
-    MuiEditor::new(params, theme::ui(), (1180, 760), build)
+    let size = params.shared.libraries.settings().editor_size();
+    let zoom_params = params.clone();
+    let close_params = params.clone();
+    let last_size = AtomicU64::new(0);
+    MuiEditor::new(params, theme::ui(), size, build)
         .on_log(|line| {
             let failed = line.contains("unavailable") || line.contains("failed") || line.contains("panic");
             crate::diagnostics::event(if failed { crate::diagnostics::LogLevel::Warning } else { crate::diagnostics::LogLevel::Info },
@@ -88,6 +92,15 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
         .native_timing(crate::diagnostics::native_timing_hook())
         .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready() || fitted::ready())
         .fixed_zoom()
+        .user_zoom(move |window| {
+            let size = (window.width.round() as u32, window.height.round() as u32);
+            let packed = u64::from(size.0) << 32 | u64::from(size.1);
+            if last_size.swap(packed, Ordering::Relaxed) != packed {
+                zoom_params.shared.libraries.remember_window(size);
+            }
+            zoom_params.shared.libraries.settings().editor_scale()
+        })
+        .on_close(move || close_params.shared.libraries.flush_settings())
         .resizable((900, 600))
         .into_editor()
 }
@@ -1003,6 +1016,7 @@ fn build(
         let ghost = ghost(ui, &cx);
         cx.state.meters.logs_visible.store(cx.state.tab == Tab::Logs, Ordering::Relaxed);
 
+        let ui_zoom = cx.settings.editor_scale();
         let Cx { mut selection, .. } = cx;
         if selection != before {
             // Parts added, removed or rerouted are routed at once.
@@ -1028,7 +1042,7 @@ fn build(
         shell.push(row(middle).gap(0).flex(1).min_h(0));
         shell.push(rule());
         shell.push(keys);
-        let mut layers = vec![col(shell).gap(0).full(), resize_corner(ui, &mut state.corner, window, bridge)];
+        let mut layers = vec![col(shell).gap(0).full(), resize_corner(ui, &mut state.corner, window, ui_zoom, bridge)];
         layers.extend(menu);
         layers.extend(ghost);
         stack(layers)
@@ -1129,15 +1143,15 @@ fn splitter(ui: &mut Ui, cx: &mut Cx, width: f64) -> El {
 
 /// The window's resize corner, bottom right: drag it to size the window
 /// (the host decides), with the diagonal cursor and a grip that warms.
-fn resize_corner(ui: &mut Ui, from: &mut Option<Size>, window: Size, bridge: &mut Bridge<SamplerParams>) -> El {
+fn resize_corner(ui: &mut Ui, from: &mut Option<Size>, window: Size, zoom: f64, bridge: &mut Bridge<SamplerParams>) -> El {
     let id = "window-corner";
     let r = ui.get(id);
     if r.pressed {
         *from = Some(window);
     }
     if let (true, Some(from)) = (r.dragged, *from) {
-        let (w, h) = ((from.width + r.drag_total.x).max(900.), (from.height + r.drag_total.y).max(600.));
-        if (w.round(), h.round()) != (window.width.round(), window.height.round())
+        let (w, h) = (((from.width + r.drag_total.x) * zoom).max(900.), ((from.height + r.drag_total.y) * zoom).max(600.));
+        if (w.round(), h.round()) != ((window.width * zoom).round(), (window.height * zoom).round())
             && let Some(c) = bridge.context()
         {
             // A host that sizes only from its own frame says no; nothing to undo.
