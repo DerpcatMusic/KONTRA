@@ -1893,3 +1893,32 @@ end on"#;
         assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), label);
     }
 }
+
+#[test]
+fn stop_wait_resumes_cleanup_and_optionally_ignores_later_waits() {
+    for mode in [0, 1] {
+        let source = format!(r#"on init
+ declare $callback
+ declare ui_label $info(1,1)
+end on
+on note
+ $callback := $NI_CALLBACK_ID
+ set_text($info,"waiting")
+ wait(100000)
+ set_text($info,"resumed")
+ wait_ticks(960)
+ set_text($info,"cleaned")
+end on
+on controller
+ stop_wait($callback,{mode})
+end on"#);
+        let mut rig = Rig::new(&[&source]);
+        rig.on(0,60);
+        assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"waiting");
+        rig.rt.controller(&mut rig.engine,0,1,127);
+        assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),if mode == 1 { "cleaned" } else { "resumed" });
+        rig.block(48000);
+        assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"cleaned");
+        assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+    }
+}
