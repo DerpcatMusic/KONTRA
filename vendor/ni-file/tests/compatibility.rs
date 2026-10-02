@@ -623,6 +623,98 @@ fn nis_and_raw_chunks_roundtrip_without_losing_opaque_metadata() {
 }
 
 #[test]
+fn envelope_records_preserve_metadata_and_validate_edits() {
+    use ni_file::kontakt::{
+        Chunk,
+        objects::{EnvelopeAhdsr, EnvelopeFlex},
+    };
+    let mut bytes = vec![0, 0x11, 0];
+    for value in [-0.0f32, 10.0, 500.0, 0.0, 300.0, 0.5] {
+        bytes.extend(value.to_le_bytes());
+    }
+    bytes.push(0x93); // Opaque mode bits are not interpreted by the writer.
+    bytes.extend(0..52);
+    let original = Chunk {
+        id: 0x3f,
+        data: bytes,
+    };
+    let mut envelope = EnvelopeAhdsr::try_from(&original).unwrap();
+    let mut framed = Vec::new();
+    original.write(&mut framed).unwrap();
+    let mut rewritten = Vec::new();
+    envelope.write(&mut rewritten).unwrap();
+    assert_eq!(rewritten, framed);
+    for end in 0..original.data.len() {
+        assert!(
+            EnvelopeAhdsr::try_from(&Chunk {
+                id: 0x3f,
+                data: original.data[..end].to_vec()
+            })
+            .is_err()
+        );
+    }
+    envelope.attack_ms = 1234.5;
+    envelope.sustain = 0.25;
+    envelope.unknown_tail.extend([0xde, 0xad, 0xbe]);
+    assert_eq!(
+        EnvelopeAhdsr::try_from(&envelope.to_chunk().unwrap()).unwrap(),
+        envelope
+    );
+    envelope.attack_ms = f32::INFINITY;
+    assert!(envelope.to_chunk().is_err());
+    envelope.attack_ms = 0.0;
+    envelope.unknown_tail.clear();
+    let mut output = Vec::new();
+    assert!(envelope.write(&mut output).is_err());
+    assert!(output.is_empty());
+
+    for (version, tail) in [(0x11u16, 13), (0x12, 15)] {
+        let mut data = vec![0];
+        data.extend(version.to_le_bytes());
+        data.extend(1u32.to_le_bytes()); // Last point index.
+        data.extend(0u32.to_le_bytes()); // Opaque index.
+        data.extend(1u32.to_le_bytes()); // Sustain point.
+        for value in [-0.0f32, 0.25, 0.5, 800.0, 1.0, 0.75] {
+            data.extend(value.to_le_bytes());
+        }
+        data.extend((0..tail).map(|i| 0xf0 | i as u8));
+        let original = Chunk { id: 0x40, data };
+        let mut envelope = EnvelopeFlex::try_from(&original).unwrap();
+        let mut expected = Vec::new();
+        original.write(&mut expected).unwrap();
+        let mut rewritten = Vec::new();
+        envelope.write(&mut rewritten).unwrap();
+        assert_eq!(rewritten, expected);
+        for end in 0..original.data.len() {
+            assert!(
+                EnvelopeFlex::try_from(&Chunk {
+                    id: 0x40,
+                    data: original.data[..end].to_vec()
+                })
+                .is_err()
+            );
+        }
+        envelope.points[1].time_ms = 90.5;
+        envelope.points[1].level = 0.6;
+        envelope.sustain = 0;
+        assert_eq!(
+            EnvelopeFlex::try_from(&envelope.to_chunk().unwrap()).unwrap(),
+            envelope
+        );
+        envelope.sustain = 2;
+        assert!(envelope.to_chunk().is_err());
+        envelope.sustain = 0;
+        envelope.points[0].curve = f32::NAN;
+        assert!(envelope.to_chunk().is_err());
+        envelope.points[0].curve = 0.5;
+        envelope.unknown_tail.clear();
+        let mut output = Vec::new();
+        assert!(envelope.write(&mut output).is_err());
+        assert!(output.is_empty());
+    }
+}
+
+#[test]
 fn nested_nis_lengths_cannot_consume_bytes_outside_their_declared_body() {
     use ni_file::nis::{ItemContainer, SubtreeItem};
     fn header(length: u64) -> Vec<u8> {
