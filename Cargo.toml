@@ -1,6 +1,6 @@
 [package]
 name = "kontakto"
-version = "0.3.36"
+version = "0.3.47"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"
