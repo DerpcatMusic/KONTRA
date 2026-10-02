@@ -961,6 +961,10 @@ pub fn display(id: i32, value: i32) -> Option<Disp> {
         // in milliseconds, so scripted labels match the effective DSP.
         id::RV2_TIME => Disp::Num(crate::fx::params::Reverb::time_seconds(x) * 1000., 1),
         _ => match crate::ksp::engine_par_name(id)? {
+            "$ENGINE_PAR_SEQ_LF_GAIN" | "$ENGINE_PAR_SEQ_LMF_GAIN"
+                | "$ENGINE_PAR_SEQ_HMF_GAIN" | "$ENGINE_PAR_SEQ_HF_GAIN" => {
+                Disp::Num(super::filter::geq_gain_db(x), 1)
+            }
             name @ ("$ENGINE_PAR_COMP_ATTACK" | "$ENGINE_PAR_COMP_DECAY"
                 | "$ENGINE_PAR_LIM_RELEASE" | "$ENGINE_PAR_DL_TIME") => {
                 // These fields are stored in milliseconds. Reuse the DSP's
@@ -1175,6 +1179,27 @@ pub(crate) fn find_target(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn solid_geq_callback_captions_show_signed_dsp_gain() {
+        use crate::ksp::{KspEngine, LogEngine, Runtime, Value};
+        for name in ["$ENGINE_PAR_SEQ_LF_GAIN", "$ENGINE_PAR_SEQ_LMF_GAIN",
+            "$ENGINE_PAR_SEQ_HMF_GAIN", "$ENGINE_PAR_SEQ_HF_GAIN"] {
+            let source = format!("on init\nmake_perfview\ndeclare ui_slider $gain(0,1000000)\ndeclare ui_label $caption(1,1)\nend on\non ui_control($gain)\nset_engine_par({name},$gain,-1,2,$NI_BUS_OFFSET)\nset_control_par_str(get_ui_id($gain),$CONTROL_PAR_LABEL,get_engine_par_disp({name},-1,2,$NI_BUS_OFFSET) & \" dB\")\nset_text($caption,get_engine_par_disp_ext({name},$gain,-1,2,$NI_BUS_OFFSET) & \" dB\")\nend on");
+            let mut host = LogEngine::new(Vec::new(), 48000.);
+            let (mut rt, errors) = Runtime::with_scripts(&[&source], &mut host, 8, Vec::new());
+            assert!(errors.iter().all(Option::is_none), "{errors:?}");
+            let id = (ENGINE_PAR_BASE..ENGINE_PAR_BASE + 512).find(|&id| crate::ksp::engine_par_name(id) == Some(name)).unwrap();
+            for (value, caption) in [(0, "-15.0 dB"), (500000, "0.0 dB"),
+                (750000, "7.5 dB"), (1000000, "15.0 dB")] {
+                rt.ui_control(&mut host, 0, 0, value);
+                let ui = rt.interface(0);
+                assert_eq!(ui.controls[0].properties["$CONTROL_PAR_LABEL"], Value::Text(caption.into()), "{name}");
+                assert_eq!(ui.controls[1].properties["$CONTROL_PAR_TEXT"], Value::Text(caption.into()), "{name}");
+                assert_eq!(host.engine_par(EnginePar { id, group: -1, slot: 2, generic: 1000 }), Some(value));
+            }
+        }
+    }
+
     #[test]
     fn reverb_time_callback_displays_the_effective_decay_in_milliseconds() {
         let ui = crate::ksp::initialize("on init\nmake_perfview\ndeclare ui_slider $time(0,127)\ndeclare ui_label $caption(1,1)\nset_engine_par($ENGINE_PAR_RV2_TIME,370078,-1,0,0)\nset_control_par_str(get_ui_id($time),$CONTROL_PAR_LABEL,get_engine_par_disp($ENGINE_PAR_RV2_TIME,-1,0,0) & \" ms\")\nset_text($caption,get_engine_par_disp($ENGINE_PAR_RV2_TIME,-1,0,0) & \" ms\")\nend on", 0, 8).unwrap();

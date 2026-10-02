@@ -692,7 +692,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
     } else {
         menu.at.y
     };
-    Some(
+    Some(stack![
+        // A popup owns pointer hits outside its panel too. This retires the
+        // underlying hover tooltip and consumes its dismissal click.
+        block(window.width, window.height).id("context-menu-backdrop"),
         col(rows)
             .gap(0)
             .align(Align::Stretch)
@@ -708,7 +711,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
             .a11y(A11y::Group)
             .named("Context menu")
             .id(ID),
-    )
+    ].full())
 }
 
 /// Carry out a menu pick or a shortcut.
