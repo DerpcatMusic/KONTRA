@@ -40,7 +40,7 @@ fn performance_view_loads_hierarchy_defaults_callbacks_and_resource_cache_identi
     let mut engine = LogEngine::new(Vec::new(),48000.0);
     engine.instrument = Some(instrument);
     let (mut first, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
-    assert!(errors.is_empty(), "{errors:?}");
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
     let ui = first.interface(0);
     assert_eq!(ui.controls.len(),5);
     assert_eq!(ui.controls[1].variable,"$Section__Amount");
@@ -56,22 +56,22 @@ fn performance_view_loads_hierarchy_defaults_callbacks_and_resource_cache_identi
     assert_eq!(first.interface(0).controls[3].properties["$CONTROL_PAR_VALUE"],Value::IntArray(vec![0,42,17,0]));
     std::fs::write(&path, serde_json::to_vec(&view(31)).unwrap()).unwrap();
     let (second, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
-    assert!(errors.is_empty(), "{errors:?}");
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
     assert_eq!(second.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(31));
     assert_eq!(first.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(42));
     // Inserted resource statements keep the original source's diagnostic lines.
     let invalid = "on init\nload_performance_view(\"fixture\")\n$Section__Amount := $missing\nend on";
     let (_, errors) = Runtime::with_scripts(&[invalid], &mut engine, 8, Vec::new());
-    assert!(errors.iter().any(|d| d.contains("line 3")), "{errors:?}");
+    assert!(errors.iter().flatten().any(|d| d.contains("line 3")), "{errors:?}");
     let incompatible = "on init\nmake_perfview\nload_performance_view(\"fixture\")\nend on";
     let (_, errors) = Runtime::with_scripts(&[incompatible], &mut engine, 8, Vec::new());
-    assert!(errors.iter().any(|d| d.contains("cannot be combined")), "{errors:?}");
+    assert!(errors.iter().flatten().any(|d| d.contains("cannot be combined")), "{errors:?}");
     std::fs::write(&path,b"{}").unwrap();
     let (_, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
-    assert!(errors.iter().any(|d| d.contains("Performance view") && d.contains("line 3")), "{errors:?}");
+    assert!(errors.iter().flatten().any(|d| d.contains("Performance view") && d.contains("line 3")), "{errors:?}");
     let excluded = "on init\nUSE_CODE_IF(ABSENT)\nload_performance_view(\"missing\")\nEND_USE_CODE\ndeclare ui_button $valid\nend on";
     let (_, errors) = Runtime::with_scripts(&[excluded], &mut engine, 8, Vec::new());
-    assert!(errors.is_empty(), "{errors:?}");
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
     std::fs::remove_dir_all(directory).unwrap();
 }
 
