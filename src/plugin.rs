@@ -1276,7 +1276,7 @@ impl Shared {
         }
         let mut view = self.view.lock().unwrap();
         let shown = view.watched_at.is_some_and(|at| at.elapsed() < LIVE_WATCH);
-        for (slot, v) in view.parts.iter_mut().enumerate() {
+        for (slot, v) in view.parts.iter_mut().enumerate().take(self.grown.load(Ordering::Acquire) as usize) {
             if (shown || v.diagnostics_lent.is_none_or(|at| at.elapsed().as_secs() >= 1))
                 && let Some(mut live) = v.live.take()
             {
@@ -1349,8 +1349,9 @@ impl Shared {
     /// Set script control `control` of `part`'s performance view and run its
     /// `on ui_control`; the view shows the value until the scripts report back.
     pub(crate) fn edit_control(&self, part: usize, control: usize, value: i32) {
+        if part >= self.grown.load(Ordering::Acquire) as usize { return }
         let mut view = self.view.lock().unwrap();
-        let v = &mut view.parts[part];
+        let Some(v) = view.parts.get_mut(part) else { return };
         let edit = Edit {
             part,
             epoch: v.script_epoch,
@@ -1370,7 +1371,7 @@ impl Shared {
     /// setting an override is idempotent.
     pub(crate) fn sync_overrides(&self, selection: &Selection) {
         let mut sent = self.sent.lock().unwrap();
-        for (slot, had) in sent.iter_mut().enumerate() {
+        for (slot, had) in sent.iter_mut().enumerate().take(self.grown.load(Ordering::Acquire) as usize) {
             let want = selection.parts.get(slot).map_or(&[][..], |p| &p.edits.0[..]);
             if want == &had[..] {
                 continue;
@@ -2998,7 +2999,7 @@ impl PluginLogic for Sampler {
             }
         }
         while let Some(e) = p.shared.edits.pop() {
-            if e.epoch != 0 && e.epoch == s.script_epoch[e.part] {
+            if e.epoch != 0 && s.script_epoch.get(e.part) == Some(&e.epoch) {
                 s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
                 s.routers[e.part].forget();
                 let picked = s.routers[e.part].articulation_of_control(e.slot, e.control);
@@ -3761,7 +3762,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     let p = Arc::new(SamplerParams::new());
     let ram_only = paths.iter().any(|p| p == "--ram-only");
     // Quantized chords, as a DAW plays a grid: every 250 ms each part (on its
-    // own MIDI channel) releases its last chord and starts 3 or 4 notes at once.
+    // own available MIDI route) releases its last chord and starts 3 or 4 notes at once.
+    // Parts beyond the host's 64 MIDI routes share valid port-D channels.
     let chords = paths.iter().any(|p| p == "--chords");
     let fifo = paths.iter().any(|p| p == "--fifo");
     #[cfg(not(target_os = "linux"))]
@@ -3781,7 +3783,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         .enumerate()
         .map(|(i, path)| Part {
             path: path.clone(),
-            channel: if chords { i as i16 } else { -1 },
+            channel: if chords { (i % 16) as i16 } else { -1 },
+            port: if chords { (i / 16).min(3) as u8 } else { 0 },
             ..Default::default()
         })
         .collect();
@@ -3889,13 +3892,14 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             while playing && chords && started * beat < frame + frames {
                 let at = (started * beat).saturating_sub(frame) as u32;
                 for (part, keys) in part_keys.iter().enumerate() {
-                    let channel = part as u8;
+                    let channel = (part % 16) as u8;
+                    let port = (part / 16).min(3) as u8;
                     for key in chord_held[part].drain(..) {
-                        events.push(Event::new(at, EventBody::NoteOff { group: 0, channel, note: key, velocity: 0 }));
+                        events.push(Event::on_port(at, port, EventBody::NoteOff { group: 0, channel, note: key, velocity: 0 }));
                     }
                     for n in 0..3 + (started + part) % 2 {
                         let key = keys[(started * 5 + n * 4) % keys.len()];
-                        events.push(Event::new(at, EventBody::NoteOn { group: 0, channel, note: key, velocity: 90 }));
+                        events.push(Event::on_port(at, port, EventBody::NoteOn { group: 0, channel, note: key, velocity: 90 }));
                         chord_held[part].push(key);
                     }
                 }
@@ -6669,6 +6673,16 @@ end on"
         let mut dsp = Dsp::default();
         dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
         dsp.rack.parts[0].note_on(0, 59, 100);
+        let selection = Selection { parts: (0..129).map(|slot| Part {
+            path: format!("/virtual/dynamic-{slot}.nki"), channel: (slot % 16) as i16,
+            ..Default::default()
+        }).collect(), order: (0..129).rev().collect(), ..Default::default() };
+        use moose::core::custom_state::State;
+        assert!(Selection::deserialize(&selection.serialize()).unwrap() == selection);
+        let multi = SavedMulti::of("dynamic", &selection);
+        let restored: SavedMulti = serde_json::from_str(&serde_json::to_string(&multi).unwrap()).unwrap();
+        assert_eq!(restored.parts.len(), 129);
+        assert_eq!(restored.parts[0].path, selection.parts[128].path);
         p.shared.ensure_parts(129);
         p.shared.prepare_growth();
         let mut outputs = vec![vec![0f32; 128]; 2];
@@ -6713,6 +6727,10 @@ end on"
             }
         }), 0);
         assert_eq!(p.shared.diagnostic_audio.len(), 2);
+        p.shared.panic.store(true, Ordering::Release);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+        assert!(dsp.rack.parts.iter().all(|e| e.active_voices() == 0));
+        assert!(dsp.key_slots.0.iter().all(|row| row.iter().all(|held| !held)));
     }
 
     #[test]
