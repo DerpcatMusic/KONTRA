@@ -835,10 +835,14 @@ impl Router {
                 }
             }
             In::NoteBrightness(_, note, value) => {
-                let key = self.key_of(channel, note);
+                // Retain the note-on route, including its logical channel, even
+                // when articulation mapping changes while the key is held.
+                let (to, key) = match self.held[channel as usize][note as usize & 127] {
+                    (_, NONE) => (to, r.keys[note as usize & 127]),
+                    held => held,
+                };
                 if key != NONE {
-                    self.brightness[key as usize] = value;
-                    out(Out::Cc(to, 74, value));
+                    self.set_expression(to, key, |x| x.note_cc74 = Some(value.min(127)), out);
                 }
             }
         }
@@ -1879,6 +1883,67 @@ end on"#;
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn registered_note_brightness_modulates_only_its_retained_transposed_owner_without_heap() {
+        use crate::{audio::Sample, engine::Bank, import::{Group, Zone as SampleZone},
+            modulation::{ModAssignment, ModSource, ModTarget}};
+        for mpe in [false, true] {
+            let group = Group { mods: vec![ModAssignment { name: "CC74_VOLUME".into(),
+                source: ModSource::MidiCc(74), target: ModTarget::Volume, intensity: 1.,
+                invert: false, lag_ms: 0, shaper: None }], ..Default::default() };
+            let zones = [(60, -1.), (61, 1.)].map(|(key, pan)| SampleZone {
+                root:key, low_key:key, high_key:key, pan, ..Default::default() });
+            let bank = Bank::from_samples(vec![group], zones.to_vec(),
+                vec![(std::path::PathBuf::new(), Sample { rate:48000, frames:vec![[0.25;2];24000] })]).unwrap();
+            let mut e = Engine::default();
+            e.reset(48000.);
+            e.attack = 0.0001;
+            e.set_bank(Some(Box::new(bank)));
+            e.set_script(Some(Box::new(runtime("on init\nend on\non note\nchange_note($EVENT_ID,$EVENT_NOTE+12)\nend on"))));
+            let mut r = router(&Articulate::default(), &Mpe { zone:if mpe { Zone::Lower } else { Zone::Off }, ..Default::default() });
+            r.route.mode = if mpe { Mode::Keyswitch } else { Mode::Channel };
+            r.route.keys[60] = 48;
+            r.route.keys[61] = 49;
+            let (first, second, controller) = if mpe { (1,2,0) } else { (4,4,4) };
+            let (mut left, mut right) = ([0.;512], [0.;512]);
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                feed(&mut r,&mut e,In::Cc(controller,74,32),7);
+                feed(&mut r,&mut e,In::NoteOn(first,60,100),7);
+                feed(&mut r,&mut e,In::NoteOn(second,61,100),7);
+                e.render(&mut left,&mut right);
+                let low = [left[511],right[511]];
+                assert!(low.iter().all(|v| *v > 0.001));
+                feed(&mut r,&mut e,In::Cc(controller,74,64),7);
+                e.render(&mut left,&mut right);
+                let common = [left[511],right[511]];
+                for i in 0..2 { assert!((common[i]/low[i]-2.).abs()<0.01,"mpe={mpe}: channel CC74 must reach both held notes"); }
+                // Current routing differs from the retained attack owner.
+                if !mpe { r.route.mode = Mode::Keyswitch; }
+                feed(&mut r,&mut e,In::NoteBrightness(first,60,127),7);
+                e.render(&mut left,&mut right);
+                assert!((left[511]/common[0]-127./64.).abs()<0.01,"mpe={mpe}: settled native modulation did not see its note override");
+                assert!((right[511]-common[1]).abs()<1e-6,"mpe={mpe}: per-note brightness changed the other voice");
+                assert_eq!(r.brightness[48],NONE,"per-note brightness must not enter the part-wide fallback filter cache");
+                // Repeating an absolute value neither adds to it nor emits another edit.
+                r.input(In::NoteBrightness(first,60,127),7,&mut |_| panic!("equal note expression emitted twice"));
+                // Channel controls still reach the note without an override.
+                if !mpe { r.route.mode = Mode::Channel; }
+                feed(&mut r,&mut e,In::Cc(controller,74,16),7);
+                e.render(&mut left,&mut right);
+                assert!((left[511]/common[0]-127./64.).abs()<0.01,"mpe={mpe}: channel CC must not be added to an absolute note override");
+                assert!((right[511]/common[1]-0.25).abs()<0.01,"mpe={mpe}: channel fallback stopped working");
+                feed(&mut r,&mut e,In::NoteBrightness(first,60,8),7);
+                e.render(&mut left,&mut right);
+                assert!((left[511]/common[0]-8./64.).abs()<0.01);
+                assert!((right[511]/common[1]-0.25).abs()<0.01);
+                r.scripted = false;
+                assert_eq!(r.cutoff_scale(),1.,"a low note override must not darken the whole part");
+            }),0);
+            assert_eq!(e.cc_state()[if mpe { 1 } else { 7 }][74],if mpe { 0 } else { 16 },"note expression must never become channel CC74");
+            assert_eq!(e.active_voices(),2);
         }
     }
 
