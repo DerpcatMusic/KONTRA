@@ -1,7 +1,7 @@
 //! Worker-prepared storage for successfully applied native script edits.
 use super::params::Address;
 use crate::ksp::EnginePar;
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq)]
 struct Record {
@@ -42,7 +42,7 @@ fn key(address: Address) -> Address {
 
 #[derive(Default)]
 pub(crate) struct NativeState {
-    index: FxHashMap<Address, usize>,
+    index: HashMap<Address, usize>,
     records: Vec<Record>,
     order: u64,
     misses: u64,
@@ -155,7 +155,7 @@ impl NativeState {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct NativeSnapshot {
     records: Vec<Record>,
     at: usize,
