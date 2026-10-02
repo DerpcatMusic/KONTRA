@@ -818,6 +818,9 @@ pub struct Runtime {
     domain_home: u8,
     domain_count: u8,
     domain_mask: Option<u16>,
+    /// A storage index, not an event/voice domain. Waiting callbacks retain the
+    /// configuration flag while origin IDs stay unchanged across later admission.
+    configuration_domain: Option<u8>,
     pub env: Env,
     stacks: Stacks,
     threads: Vec<Thread>,
@@ -910,6 +913,18 @@ impl Runtime {
         self.domain_count = count;
     }
 
+    /// Fresh worker runtimes only; live admission supplies initialized storage
+    /// separately rather than cloning a channel that has already played notes.
+    pub(crate) fn prepare_channel_configuration(&mut self) {
+        assert!(self.domain_mask.is_some(), "only configured Channel mode needs canonical storage");
+        assert!(self.configuration_domain.is_none(), "prepare canonical storage once");
+        assert_eq!(self.env.events.live_count(), 0, "prepare before performance starts");
+        for state in &mut self.states {
+            assert_eq!(state.mem.prepare_configuration(), self.domain_count);
+        }
+        self.configuration_domain = Some(self.domain_count);
+    }
+
     pub(crate) fn channel_domains_prepared(&self) -> bool { self.domain_mask.is_some() }
 
     /// Exact typed writable cells and total cells, for preparation/memory audits.
@@ -930,6 +945,7 @@ impl Runtime {
             domain_home: 0,
             domain_count: 1,
             domain_mask: None,
+            configuration_domain: None,
             env: Env::new(host, persisted),
             stacks: Stacks::with_capacity(1024),
             threads: vec![Thread::default(); THREAD_CAPACITY],
@@ -1350,7 +1366,7 @@ impl Runtime {
                     .iter()
                     .map(|&v| {
                         let var = &prog.vars[v as usize];
-                        (var.name.to_string(), read_value(&state.mem, var))
+                        (var.name.to_string(), read_value_view(state.mem.view(self.configuration_domain), var))
                     })
                     .collect()
             })
@@ -1393,7 +1409,7 @@ impl Runtime {
                 let len = if var.poly { 0 } else { var.len.map_or(1, |n| n as usize) };
                 let end = len.min(at.at.saturating_add(left));
                 if let Some(value) = saved[at.slot].get_mut(&*var.name) {
-                    at.changed |= refresh_range(&state.mem, var, value, at.at..end);
+                    at.changed |= refresh_range_view(state.mem.view(self.configuration_domain), var, value, at.at..end);
                 }
                 left = left.saturating_sub(end - at.at + 1);
                 if end < len {
@@ -1408,7 +1424,7 @@ impl Runtime {
     }
 
     pub fn interface(&self, slot: usize) -> Interface {
-        let mut interface = self.states[slot].ui.interface(&self.programs[slot], self.states[slot].mem.view(None));
+        let mut interface = self.states[slot].ui.interface(&self.programs[slot], self.states[slot].mem.view(self.configuration_domain));
         // Wallpaper is instrument-wide: the last slot assigning it wins.
         // Pixel offsets remain per slot so one atlas can supply each view.
         if let Some(state) = self.states.iter().rev().find(|s| !s.ui.wallpaper.is_empty()) {
@@ -1577,7 +1593,7 @@ impl Runtime {
             && at.item != usize::MAX
         {
             let prog = &self.programs[live.slot];
-            let changed = state.ui.refresh(prog, state.mem.view(None), out, &mut live.menu_spares, &mut live.control_revisions, &mut live.control_value_revisions, &mut at.value_revision, &mut at.item, &mut at.at, budget);
+            let changed = state.ui.refresh(prog, state.mem.view(self.configuration_domain), out, &mut live.menu_spares, &mut live.control_revisions, &mut live.control_value_revisions, &mut at.value_revision, &mut at.item, &mut at.at, budget);
             if changed { live.interface_revision = live.interface_revision.wrapping_add(1); }
             at.changed |= changed;
             if at.item != usize::MAX {
@@ -2061,12 +2077,19 @@ impl Runtime {
 
     /// Common UI inputs replay the authored callback in each prepared bank.
     pub fn ui_control(&mut self, engine: &mut dyn KspEngine, slot: usize, control: usize, value: i32) {
-        for domain in 0..self.domain_count { self.ui_control_domain(engine, slot, control, value, domain, true); }
+        for domain in 0..self.domain_count { self.ui_control_domain(engine, slot, control, value, domain, true, false); }
+    }
+
+    /// Staged canonical pass; production routing remains disabled until common
+    /// metadata replay and service-generated child ownership are admitted too.
+    pub(crate) fn ui_control_configuration(&mut self, engine: &mut dyn KspEngine, slot: usize, control: usize, value: i32) {
+        assert!(self.configuration_domain.is_some(), "canonical storage must be prepared by the worker");
+        self.ui_control_domain(engine, slot, control, value, 0, true, true);
     }
 
     /// An articulation control belongs only to its physical input's domain.
     pub(crate) fn ui_control_from(&mut self, engine: &mut dyn KspEngine, input: u8, slot: usize, control: usize, value: i32) {
-        self.ui_control_domain(engine, slot, control, value, self.domain_map[input.min(15) as usize], false);
+        self.ui_control_domain(engine, slot, control, value, self.domain_map[input.min(15) as usize], false, false);
     }
 
     /// A path validated by the editor's file worker; no filesystem work on audio.
@@ -2092,8 +2115,13 @@ impl Runtime {
         value: i32,
         domain: u8,
         common: bool,
+        configuration: bool,
     ) {
         self.select_domain(domain);
+        if configuration {
+            let bank = self.configuration_domain.expect("prepared canonical storage");
+            self.states.iter_mut().for_each(|state| state.mem.select(bank));
+        }
         let Some(state) = self.states.get_mut(slot) else {
             return;
         };
@@ -2122,17 +2150,20 @@ impl Runtime {
         ctx.ui_id = ui_id;
         ctx.domain = domain;
         ctx.common = common;
+        ctx.configuration = configuration;
         self.spawn_cb(engine, slot as u8, Callback::UiControls, ctx);
         if let Some(entry) = entry {
             let mut ctx = Ctx::new(slot as u8, Kind::UiControl);
             ctx.ui_id = ui_id;
         ctx.domain = domain;
         ctx.common = common;
+        ctx.configuration = configuration;
             self.spawn(engine, entry, ctx);
         }
         let mut ctx = Ctx::new(slot as u8, Kind::Cb(Callback::UiUpdate));
         ctx.domain = domain;
         ctx.common = common;
+        ctx.configuration = configuration;
         self.spawn_cb(engine, slot as u8, Callback::UiUpdate, ctx);
         self.settle(engine);
     }
@@ -2776,6 +2807,10 @@ impl Runtime {
         self.changes += 1;
         let domain = self.threads[i as usize].ctx.domain;
         self.select_domain(domain);
+        if self.threads[i as usize].ctx.configuration {
+            let bank = self.configuration_domain.expect("waiting configuration callback retains its prepared storage");
+            self.states.iter_mut().for_each(|state| state.mem.select(bank));
+        }
         engine.set_domain(domain, self.threads[i as usize].ctx.common);
         let t = &mut self.threads[i as usize];
         let slot = t.ctx.slot as usize;

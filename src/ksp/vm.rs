@@ -62,6 +62,8 @@ pub struct Ctx {
     pub domain: u8,
     /// A common UI input, replayed rather than a performance-local mutation.
     pub common: bool,
+    /// Shared configuration callback storage, independent of performance ownership.
+    pub configuration: bool,
     pub kind: Kind,
     pub event: i32,
     pub callback_id: i32,
@@ -95,6 +97,7 @@ impl Ctx {
             slot,
             domain: 0,
             common: false,
+            configuration: false,
             kind,
             event: 0,
             callback_id: 0,
@@ -326,6 +329,11 @@ impl<T> Values<T> {
         self.mutable = mutable;
         self.domains = (1..count).map(|_| self.values[..mutable].iter().map(&clone).collect()).collect();
     }
+    fn append_initialized(&mut self, clone: impl Fn(&T) -> T) -> u8 {
+        let domain = u8::try_from(self.domains.len() + 1).expect("prepared bank index fits u8");
+        self.domains.push(self.values[..self.mutable].iter().map(clone).collect());
+        domain
+    }
     fn select(&mut self, domain: u8) { self.active = domain; }
     fn slice(&self, range: std::ops::Range<usize>) -> &[T] { self.slice_in(range, self.active) }
     fn slice_in(&self, range: std::ops::Range<usize>, domain: u8) -> &[T] {
@@ -460,6 +468,18 @@ impl Memory {
             reals: ValuesView { values: &self.reals, domain: domain.unwrap_or(self.reals.active) },
             strs: ValuesView { values: &self.strs, domain: domain.unwrap_or(self.strs.active) },
         }
+    }
+    /// Allocate one canonical writable prefix on the loading thread. Constants,
+    /// bytecode, revision owners and UI metadata remain shared.
+    pub(super) fn prepare_configuration(&mut self) -> u8 {
+        let domain = self.ints.append_initialized(|v| *v);
+        assert_eq!(self.reals.append_initialized(|v| *v), domain);
+        assert_eq!(self.strs.append_initialized(|v| {
+            let mut copy = String::with_capacity(v.capacity());
+            copy.push_str(v);
+            copy
+        }), domain);
+        domain
     }
     pub(super) fn prepare_domains(&mut self, count: usize, slots: [u32; 3]) {
         self.ints.prepare_domains(count, slots[0] as usize, |v| *v);

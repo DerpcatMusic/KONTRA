@@ -932,6 +932,91 @@ impl Rig {
 const PASS: &str = "on init\nend on";
 
 #[test]
+fn prepared_configuration_waits_keep_ui_history_and_performance_event_ids_separate() {
+    let source = r#"on init
+declare ui_slider $edit(0,10)
+declare ui_label $info(1,1)
+set_text($info,"seed")
+declare $history := 0
+make_persistent($history)
+declare $art := 7
+declare %held[128]
+end on
+on ui_control($edit)
+inc($history)
+%held[60] := 0
+$art := 7
+wait(4000)
+set_text($info,$history & ":" & $art)
+end on
+on note
+$art := $EVENT_VELOCITY
+%held[$EVENT_NOTE] := $EVENT_ID
+disallow_group($ALL_GROUPS)
+allow_group(($art-1) mod 3)
+wait(1000)
+set_text($info,"note:" & $art)
+end on
+on release
+if (%held[$EVENT_NOTE] = $EVENT_ID)
+change_vol($EVENT_ID,-1000*$art,0)
+else
+change_vol($EVENT_ID,-12000,0)
+end if
+%held[$EVENT_NOTE] := 0
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    rig.rt.prepare_channel_domains((1<<1)|(1<<3)|(1<<5),7);
+    rig.rt.prepare_channel_configuration();
+    let mut live = rig.rt.live();
+    rig.engine.calls.reserve(64);
+    for (owner, velocity) in [(1,1),(3,2),(5,3)] {
+        rig.rt.note_on_from(&mut rig.engine,0,owner,60,velocity);
+    }
+    // Start the common callback while every same-pitch note callback is waiting.
+    let mut begin = || rig.rt.ui_control_configuration(&mut rig.engine,0,0,5);
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(|| begin()),0);
+    #[cfg(not(feature = "plugin"))]
+    begin();
+    rig.block(96); // Private callbacks have resumed; the common one is still waiting.
+    let mut complete = || {
+        rig.block(160);
+        rig.rt.refresh_live(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(|| complete()),0);
+    #[cfg(not(feature = "plugin"))]
+    complete();
+    assert_eq!(prop(live.interface.as_ref().unwrap(),1,"$CONTROL_PAR_TEXT"),"1:7",
+        "wait resume must select canonical history/art rather than the last origin");
+    assert_eq!(live.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(5));
+    assert_eq!(rig.rt.persistence()[0]["$history"],Value::Int(1),
+        "persistent configuration is read from the canonical bank");
+    let played: Vec<_> = rig.engine.calls.iter().filter_map(|c| match c {
+        EngineCall::PlayNote { voice, groups, .. } => Some((*voice, groups.clone())), _ => None,
+    }).collect();
+    assert_eq!(played.len(),3);
+    for (i, (_, groups)) in played.iter().enumerate() { assert_eq!(groups,&vec![i]); }
+    let mut release = || {
+        for owner in [3,1,5] {
+            rig.rt.note_off_from(&mut rig.engine,0,owner,60);
+            assert!(!rig.rt.key_down_from(owner,7,60));
+        }
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(|| release()),0);
+    #[cfg(not(feature = "plugin"))]
+    release();
+    let released: Vec<_> = rig.engine.calls.iter().filter_map(|c| match c {
+        EngineCall::SetPar { voice, par: super::engine::VoicePar::VolumeMdb, value, .. } => Some((*voice,*value)), _ => None,
+    }).collect();
+    assert_eq!(released,vec![(played[1].0,-2000),(played[0].0,-1000),(played[2].0,-3000)],
+        "canonical UI work cannot erase physical same-pitch IDs or articulation state");
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
 fn midi_channels_survive_waits_and_release_independently() {
     let mut rig = Rig::new(&[
         "on init\ndeclare ui_label $release(1,1)\ndeclare ui_label $cc(1,1)\nend on\non note\nwait(1000)\nplay_note($EVENT_NOTE+12,100,0,-1)\nend on\non release\nset_text($release,$MIDI_CHANNEL & \":\" & %KEY_DOWN[$EVENT_NOTE])\nend on\non controller\nwait(1000)\nset_text($cc,$MIDI_CHANNEL)\nend on",
