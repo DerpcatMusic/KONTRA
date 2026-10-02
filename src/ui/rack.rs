@@ -402,7 +402,7 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 /// How far `slot`'s samples have loaded, 0..1, while they load.
 pub(super) fn loading(cx: &Cx, slot: usize) -> Option<f64> {
     cx.view.parts[slot].loading.then(|| {
-        let done = cx.p.shared.load_progress[slot].load(Ordering::Relaxed);
+        let done = cx.p.shared.part(slot).map_or(0, |part| part.load_progress.load(Ordering::Relaxed));
         (f64::from(done) / f64::from(crate::engine::LOAD_DONE)).clamp(0., 1.)
     })
 }
@@ -535,10 +535,10 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let (mut solo, mut mute) = (part.solo, part.mute);
     let switches = solo_mute(ui, &slot.to_string(), &mut solo, &mut mute);
     (part.solo, part.mute) = (solo, mute);
-    let p = cx.p.clone();
-    let level = move || crate::plugin::Meters::read(&p.shared.meters.parts[slot]);
-    let p = cx.p.clone();
-    let dot = activity_dot(move || crate::plugin::Meters::read(&p.shared.meters.parts[slot]) != [0.; 2]);
+    let shared = cx.p.shared.part(slot);
+    let meter = shared.clone();
+    let level = move || meter.as_ref().map_or([0.; 2], |part| crate::plugin::Meters::read(&part.meter));
+    let dot = activity_dot(move || shared.as_ref().is_some_and(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2]));
     if remove {
         cx.remove(slot);
     }
