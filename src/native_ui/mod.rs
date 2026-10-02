@@ -15,6 +15,8 @@ use std::sync::{
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Paint {
     Stack,
+    HStack(f64),
+    VStack(f64),
     Text(String),
     Rectangle([f32; 4], f64),
     Asset(crate::native_assets::AssetRef),
@@ -649,6 +651,18 @@ impl Scene {
         }
         let paint = match node.get::<String>("kind")?.as_str() {
             "ZStack" => Paint::Stack,
+            kind @ ("HStack" | "VStack") => {
+                let spacing = match props.get::<Value>("spacing")? {
+                    Value::Function(f) => f.call::<Value>(())?, value => value,
+                };
+                let spacing = match spacing {
+                    Value::Nil => 0., Value::Integer(value) => value as f64,
+                    Value::Number(value) => value,
+                    _ => bail!("Native UI stack spacing requires a number"),
+                };
+                ensure!(spacing.is_finite() && (0. ..=4096.).contains(&spacing), "Invalid or unsupported negative native UI stack spacing");
+                if kind == "HStack" { Paint::HStack(spacing) } else { Paint::VStack(spacing) }
+            }
             "Text" => {
                 let value = props.get::<Value>("text")?;
                 let value = match value {
@@ -728,6 +742,8 @@ impl Scene {
                     _ => bail!("Unsupported native UI frame alignment: {name}"),
                 }
             }
+            ensure!(!matches!(paint, Paint::HStack(_)) || x.is_none(), "Native UI HStack requires vertical alignment");
+            ensure!(!matches!(paint, Paint::VStack(_)) || y.is_none(), "Native UI VStack requires horizontal alignment");
             alignment = (x.unwrap_or(Align::Center), y.unwrap_or(Align::Center));
         }
         let width = frame
