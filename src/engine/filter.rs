@@ -73,7 +73,8 @@ pub(crate) fn filter_type(id: i32) -> Option<(Shape, u8)> {
         5 => return Some(svf(Low, 2)),
         6 => return Some(svf(High, 2)),
         7 => return Some(svf(Band, 2)),
-        8 | SV_NOTCH4 => return Some(svf(Notch, 2)),
+        // 1000 was KONTRA's original scripted SV Notch id; keep old states playable.
+        8 | SV_NOTCH4 | 1000 => return Some(svf(Notch, 2)),
         9 => return Some(svf(Low, 3)),
         52 => return Some(svf(Low, 1)),
         53 => return Some(svf(Band, 1)),
@@ -98,15 +99,15 @@ pub(crate) fn filter_type(id: i32) -> Option<(Shape, u8)> {
     Some((Shape::Model(model), model.sections()))
 }
 
-/// KONTRA's id for `$FILTER_TYPE_SV_NOTCH4`, which no local preset stores.
-const SV_NOTCH4: i32 = 1000;
+/// Native id: factory snapshots pair selected SV Notch 4 groups with type 58.
+const SV_NOTCH4: i32 = 58;
 
 /// KSP `$FILTER_TYPE_*` constants: the type ids presets store, so scripts
 /// read back what they set. 2..9 follow the reference's order; AR_LP2 is
 /// 100 (ANALOG STRINGS sets it on exactly the groups storing 100), the
 /// other AR and Daft ids continue that run in reference order and the
 /// phaser and formant ids are the remaining ones its presets store (low
-/// confidence). Types no local preset stores get ids from 1000.
+/// confidence). SV Notch 4 is 58 in native saved group state.
 const KSP_FILTER_TYPES: &[(&str, i32)] = &[
     ("$FILTER_TYPE_LP2POLE", 2),
     ("$FILTER_TYPE_HP2POLE", 3),
@@ -373,7 +374,9 @@ struct Stage {
 }
 
 /// Drive stages a voice runs; later ones pass through.
-const MAX_STAGES: usize = 2;
+// Kontakt group insert chains have eight slots, including bypassed modules
+// that scripts may enable after import.
+const MAX_STAGES: usize = 8;
 /// Knob rows modulation reaches: the units', then the drive stages'.
 const ROWS: usize = MAX_UNITS + MAX_STAGES;
 
@@ -1637,6 +1640,47 @@ mod tests {
     }
 
     #[test]
+    fn native_sv_notch_id_runs_four_pole_notch_and_matches_script_constant() {
+        assert_eq!(ksp_filter_type("$FILTER_TYPE_SV_NOTCH4"), Some(58));
+        let fx = crate::fx::Effect {
+            slot: 0, kind: Kind::Filter, version: 146, bypass: false,
+            output_gain: 1.0, dry_level: 1.0,
+            params: Params::Filter(crate::fx::params::Filter {
+                filter_type: 58,
+                cutoff: (1000.0 / CUTOFF_MIN_HZ).log2() / CUTOFF_OCTAVES,
+                resonance: 0.0, extra: [0.0; 3],
+            }),
+        };
+        assert!(unsupported(&Chain { slots: vec![fx.clone()] }).is_empty());
+        for hz in [10.0, 1000.0, 20_000.0] {
+            let mut filter = RackFilter::new(&fx, RATE).expect("native notch must not pass through");
+            assert_eq!(filter.active, 2, "four poles require two SVF sections");
+            assert_eq!(filter.knob(Knob::Type), Some(58.0));
+            let (mut input_power, mut output_power) = (0.0f64, 0.0f64);
+            for start in (0..24_000).step_by(128) {
+                let (mut left, mut right) = ([0.0; 128], [0.0; 128]);
+                for (n, x) in left.iter_mut().enumerate() {
+                    *x = (2.0 * std::f32::consts::PI * hz * (start + n) as f32 / RATE).sin();
+                }
+                if start > 12_000 {
+                    input_power += left.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+                }
+                filter.process(&mut left, &mut right);
+                assert!(left.iter().all(|x| x.is_finite()));
+                if start > 12_000 {
+                    output_power += left.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+                }
+            }
+            let gain = (output_power / input_power).sqrt();
+            if hz == 1000.0 {
+                assert!(gain < 0.001, "cutoff must be rejected: {gain}");
+            } else {
+                assert!((gain - 1.0).abs() < 0.01, "pass band at {hz} Hz: {gain}");
+            }
+        }
+    }
+
+    #[test]
     fn lowpass_highpass_and_resonance_match_analytic_responses() {
         let mut s = Section::default();
         s.set(Response::Low, 1000.0, Q_MIN, RATE);
@@ -1862,6 +1906,42 @@ mod tests {
         let dry = l;
         voice.drive(&f, 0, &m, &mut l, &mut r, RATE);
         assert!(l.iter().zip(&dry).all(|(a, b)| (a - b).abs() < 0.05));
+    }
+
+    #[test]
+    fn third_drive_insert_remains_addressable_and_processes_audio() {
+        use crate::fx::{Effect, params::{Field, Value}};
+        let mut group = Group::default();
+        // Analog Strings uses these three native slots. Bypassed earlier
+        // modules must not consume the capacity needed by Saturation at 7.
+        for (slot, kind) in [(5, Kind::LoFi), (6, Kind::Distortion), (7, Kind::SurroundPanner)] {
+            let params = Params::Fields(crate::fx::params::layout_names(kind).unwrap().iter()
+                .zip(blocks::defaults(kind).unwrap())
+                .map(|(&name, &value)| Field { name, value: Value::Number(value) })
+                .collect());
+            group.fx.slots.push(Effect { slot, kind, version: 0, bypass: true,
+                output_gain: 1.0, dry_level: 0.0, params });
+        }
+        let mut filter = GroupFilter::new(&group).unwrap();
+        assert_eq!(filter.stages.iter().map(|s| s.slot).collect::<Vec<_>>(), [5, 6, 7]);
+        assert!(filter.set_knob(7, Knob::Field(Kind::SurroundPanner, 0), 1.0));
+        assert!(filter.set_knob(7, Knob::Bypass, 0.0));
+        assert_eq!(filter.knob(7, Knob::Field(Kind::SurroundPanner, 0)), Some(1.0));
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0,
+            note: 60, velocity: 100, counter: 0.0 };
+        let mut voice = VoiceFilter::new(Some(&filter), &table, &input, RATE);
+        let dry: [f32; 128] = std::array::from_fn(|i| (TAU * 1000.0 * i as f32 / RATE).sin());
+        let (mut left, mut right) = (dry, dry);
+        voice.process(&filter, &table, &mut [0.0; MAX_BLOCK], &mut left, &mut right, RATE);
+        assert!(left.iter().chain(&right).all(|x| x.is_finite() && x.abs() < 0.6));
+        assert!(left.iter().zip(dry).any(|(a, b)| (a - b).abs() > 0.4));
+        assert!(filter.set_knob(7, Knob::Bypass, 1.0));
+        let (mut left, mut right) = (dry, dry);
+        voice.process(&filter, &table, &mut [0.0; MAX_BLOCK], &mut left, &mut right, RATE);
+        assert_eq!(left, dry);
+        assert_eq!(right, dry);
     }
 
     #[test]

@@ -216,6 +216,69 @@ fn wallpaper_uses_last_assigning_slot_and_offsets_refresh_without_controls() {
 }
 
 #[test]
+fn repeated_equal_table_cell_assignments_do_not_consume_live_array_copy_budget() {
+    let mut source = String::from("on init\nmake_perfview\ndeclare ui_slider $edit(0,2)\ndeclare $i\n");
+    for n in 0..3 { source.push_str(&format!("declare ui_table %table{n}[2048](1,1,127)\n")); }
+    source.push_str("end on\non ui_control($edit)\n$i := 0\nwhile ($i < 2048)\n");
+    for n in 0..3 { source.push_str(&format!("%table{n}[$i] := %table{n}[$i]\n")); }
+    source.push_str("inc($i)\nend while\nif ($edit = 2)\n%table0[2047] := 42\nend if\nend on");
+    for reference in [false, true] {
+        super::vm::REFERENCE.set(reference);
+        let mut rig = Rig::new(&[&source]);
+        let mut live = rig.rt.live();
+        let finish = |rt: &Runtime, live: &mut Live| {
+            let mut refresh = Refresh::default();
+            let mut passes = 1;
+            while !rt.refresh_live_within(live, &mut refresh, 512) { passes += 1; }
+            passes
+        };
+        let mut passes = 0;
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+            passes = finish(&rig.rt, &mut live);
+        }), 0);
+        assert_eq!(passes, 1, "identical writes to 6144 table cells leave retained arrays current");
+        rig.rt.ui_control(&mut rig.engine, 0, 0, 2);
+        assert_eq!(finish(&rig.rt, &mut live), 5, "only the genuinely modified 2048-cell table needs copying");
+        assert_eq!(live.interface.as_ref().unwrap().controls[1].properties["$CONTROL_PAR_VALUE"], Value::IntArray((0..2048).map(|n| if n == 2047 { 42 } else { 0 }).collect()));
+        rig.rt.ui_control(&mut rig.engine, 0, 0, 2);
+        assert_eq!(finish(&rig.rt, &mut live), 1);
+        assert!(rig.rt.diagnostics().is_empty());
+    }
+    super::vm::REFERENCE.set(false);
+}
+
+#[test]
+fn unrelated_scalar_edits_do_not_recopy_large_menus_but_menu_mutations_remain_visible() {
+    let mut source = String::from("on init\nmake_perfview\ndeclare ui_slider $edit(0,10)\n");
+    for n in 0..100 {
+        source.push_str(&format!("declare ui_menu $menu{n}\n"));
+        for i in 0..64 { source.push_str(&format!("add_menu_item($menu{n},\"row{i}\",{i})\n")); }
+    }
+    source.push_str("end on\non ui_control($edit)\nif ($edit = 2)\nset_menu_item_str(get_ui_id($menu0),0,\"renamed\")\nset_menu_item_value(get_ui_id($menu0),0,99)\nset_menu_item_visibility(get_ui_id($menu0),1,0)\n$menu0 := 1\nadd_menu_item($menu1,\"added\",100)\nend if\nif ($edit = 3)\n$menu0 := 2\nend if\nend on");
+    let mut rig = Rig::new(&[&source]);
+    let mut live = rig.rt.live();
+    let finish = |rt: &Runtime, live: &mut Live| {
+        let mut refresh = Refresh::default();
+        let mut passes = 1;
+        while !rt.refresh_live_within(live, &mut refresh, 512) { passes += 1; }
+        passes
+    };
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert_eq!(finish(&rig.rt, &mut live), 1, "6,400 unchanged menu rows must not delay a scalar edit");
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 2);
+    assert_eq!(finish(&rig.rt, &mut live), 1);
+    let controls = &live.interface.as_ref().unwrap().controls;
+    assert_eq!(controls[1].menu[0], ("renamed".into(),99));
+    assert_eq!(controls[1].menu[1], ("row1".into(),1), "a hidden selected row remains visible");
+    assert_eq!(controls[2].menu.last(), Some(&("added".into(),100)));
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 3);
+    assert_eq!(finish(&rig.rt, &mut live), 1);
+    assert!(!live.interface.as_ref().unwrap().controls[1].menu.iter().any(|(_,v)| *v == 1), "ordinary selection assignments hide the previously selected hidden row");
+    assert!(rig.rt.diagnostics().is_empty());
+}
+
+#[test]
 fn scalar_edits_refresh_large_views_without_recopying_unchanged_metadata() {
     let mut source = String::from("on init\nmake_perfview\n");
     for n in 0..1000 { source.push_str(&format!("declare ui_slider $s{n}(0,100)\nset_text($s{n},\"same\")\n")); }
