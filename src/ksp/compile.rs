@@ -6,6 +6,7 @@ use super::lexer::{Interner, Sym, lex};
 use super::parser::{BinOp, Block, Declare, Expr, Stmt, StmtKind, UnOp, parse, preprocess};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 /// Per-array element ceiling (Kontakt's own limit) and per-script total.
 pub const MAX_ARRAY_LEN: u32 = 1_000_000;
@@ -410,6 +411,18 @@ impl Callback {
     }
 }
 
+/// Cell-to-UI-revision ownership never changes after compilation. Keep one
+/// dense map per type: runtimes share it without changing the hot lookup.
+fn revision_owners(vars: &[Var], ty: Ty) -> (Arc<[u32]>, usize) {
+    let vars: Vec<_> = vars.iter().filter(|v| v.ui.is_some() && v.ty == ty).collect();
+    let bound = vars.iter().map(|v| v.slot as usize + v.len.unwrap_or(1) as usize).max().unwrap_or(0);
+    let mut owners = vec![u32::MAX; bound];
+    for (i, var) in vars.iter().enumerate() {
+        owners[var.slot as usize..var.slot as usize + var.len.unwrap_or(1) as usize].fill(i as u32);
+    }
+    (owners.into(), vars.len())
+}
+
 /// Immutable compiled script.
 #[derive(Debug, Default)]
 pub struct Program {
@@ -437,6 +450,8 @@ pub struct Program {
     pub real_slots: u32,
     pub strs: u32,
     pub poly: u32,
+    pub revision_owners: [Arc<[u32]>; 3],
+    pub revision_counts: [usize; 3],
     pub sys_arrays: [Option<VarId>; 6],
     /// Script-local names for undeclared uppercase constants.
     pub auto_symbols: Vec<Box<str>>,
@@ -650,6 +665,9 @@ pub fn compile_with_conditions(
     fuse(&mut c.p.code);
     chain(&mut c.p.code);
     c.p.elems = c.p.vars.iter().map(|v| (v.slot, v.len.unwrap_or(1))).collect();
+    for (i, ty) in [Ty::Int, Ty::Real, Ty::Str].into_iter().enumerate() {
+        (c.p.revision_owners[i], c.p.revision_counts[i]) = revision_owners(&c.p.vars, ty);
+    }
     Ok(c.p)
 }
 
