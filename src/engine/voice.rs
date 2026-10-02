@@ -17,7 +17,7 @@ pub(crate) const MAX_STEP: f64 = 32.0;
 /// Source frames one block can read: the pitched span plus interpolation taps.
 pub(crate) const WINDOW: usize = MAX_BLOCK * MAX_STEP as usize + 8;
 /// 1.0 in the kernel's 32.32 fixed-point positions.
-const FIXED_ONE: f64 = (1u64 << 32) as f64;
+pub(super) const FIXED_ONE: f64 = (1u64 << 32) as f64;
 /// Envelope level treated as silence (−80 dB); decays below it end the voice.
 const SILENT: f32 = 1e-4;
 /// Longest a voice starting with nothing resident waits for its first
@@ -949,6 +949,7 @@ pub(crate) struct Voice {
     pub frozen_expression: Option<super::Expression>,
     pub age: u64,
     pub sample: u32,
+    pub wavetable: Option<super::wavetable::Table>,
     pub span: u32,
     pub map: PlayMap,
     pub wraps: u64,
@@ -1026,7 +1027,7 @@ impl Context<'_> {
         let master = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0).map(|(master, _)| master as usize);
         Inputs {
             cc: &self.cc[c],
-            cc74: master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127)),
+            cc74: expression.note_cc74.or_else(|| master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127))),
             bend: self.bend[c] + master.map_or(0., |m| self.bend[m]),
             pressure: master.map_or(self.pressure[c], |m| expression.member_pressure.unwrap_or(self.pressure[c]).max(self.pressure[m])),
             note,
@@ -1134,7 +1135,8 @@ impl Voice {
         if semitones != self.pitch.0 {
             self.pitch = (semitones, 2f64.powf(f64::from(semitones) / 12.0));
         }
-        let step = (self.step * self.tune * self.pitch.1).min(MAX_STEP);
+        let step = self.step * self.tune * self.pitch.1;
+        let step = if self.wavetable.is_some() { step } else { step.min(MAX_STEP) };
         let level = self.base_level * group.gain * modulation * self.volume * x.gain;
         let target = balance(
             level,
@@ -1147,11 +1149,12 @@ impl Voice {
             && !group.filter.as_ref().is_some_and(|f| f.pre_sends);
         // A sample ending mid-waveform ramps out over its last millisecond.
         let end = ((self.length as f64 - self.pos) / step) as f32;
-        let declick = end < n as f32 + DECLICK * cx.rate;
+        let declick = self.wavetable.is_none() && end < n as f32 + DECLICK * cx.rate;
         let mut plan = Plan {
             n,
             // 32.32 fixed point: exact, cheap to index.
-            step: (step * FIXED_ONE) as u64,
+            step: if self.wavetable.is_some() { super::wavetable::clock(step) }
+                else { (step * FIXED_ONE) as u64 },
             target,
             muted,
             declick: declick.then_some(end),
@@ -1171,7 +1174,7 @@ impl Voice {
         let mut lane = None;
         // One gain all block, before any filter: the voice's frames can be
         // summed, weighted, with others resampled alike.
-        if let Some(class) = class.filter(|_| !muted && !declick && self.gains == target && self.fade.steady()) {
+        if let Some(class) = class.filter(|_| self.wavetable.is_none() && !muted && !declick && self.gains == target && self.fade.steady()) {
             let flex = match &self.flex {
                 Some(env) => env.shape(n),
                 None => Some(Shape::Flat(1.0)),
@@ -1278,9 +1281,9 @@ impl Voice {
                 // the control scratch for unity interpolation, then for the
                 // insert envelopes after interpolation has finished.
                 scratch.flex[..n].fill(1.0);
-                mix(window, base, step, &scratch.flex[..n], [1.0; 2], [0.0; 2], l, r);
+                mix(window, base, if self.wavetable.is_some() { 1 << 32 } else { step }, &scratch.flex[..n], [1.0; 2], [0.0; 2], l, r);
             } else {
-                mix(window, base, step, amp, self.gains, delta, l, r);
+                mix(window, base, if self.wavetable.is_some() { 1 << 32 } else { step }, amp, self.gains, delta, l, r);
             }
             if let Some(filter) = own {
                 let (l, r) = (&mut out_l[..n], &mut out_r[..n]);
@@ -1383,6 +1386,15 @@ impl Voice {
     /// the position's offset into them.
     fn window<'b>(&mut self, cx: &Context<'b>, buf: &'b mut [Frame], underrun: &mut bool) -> (&'b [Frame], u64) {
         self.muted = 0;
+        if let Some(mut table) = self.wavetable {
+            let span = self.span(cx.bank);
+            table.first -= span.start as usize;
+            let buf = &mut buf[..self.plan.n + 3];
+            buf.fill([0.; 2]);
+            table.render(&span.data, &cx.bank.settings[self.group as usize].wavetable.unwrap(),
+                self.pos, self.plan.step as f64 / FIXED_ONE, &mut buf[1..self.plan.n + 1]);
+            return (buf, 1 << 32);
+        }
         self.resume(cx);
         let (first, base, count) = self.reach();
         let buf = &mut buf[..count];
@@ -1397,6 +1409,7 @@ impl Voice {
     /// Move past the planned block; whether the voice plays on.
     fn advance(&mut self, cx: &Context) -> bool {
         self.pos += (self.plan.step * self.plan.n as u64) as f64 / FIXED_ONE;
+        if self.wavetable.is_some() { self.pos = self.pos.rem_euclid(super::wavetable::CYCLE as f64); }
         if let Some(stream) = self.stream.filter(|s| !s.paused) {
             cx.slots[stream.slot as usize].release_below((self.pos as u64).saturating_sub(1));
         }
@@ -1518,6 +1531,7 @@ impl Voice {
         if let Some(env) = &mut self.flex {
             env.release(bank.settings[self.group as usize].flex.as_ref());
         }
+        if self.wavetable.is_some() { return; }
         let wraps = self.map.wraps(self.pos as u64 + 3);
         if wraps == self.wraps {
             return;
@@ -1598,7 +1612,7 @@ fn copy_run(span: &Span, run: &Run, out: &mut [Frame]) {
 
 /// 4-point, 3rd-order Hermite (Catmull-Rom) interpolation between `q[1]` and `q[2]`.
 #[inline(always)]
-fn hermite(q: &[Frame; 4], t: f32) -> Frame {
+pub(super) fn hermite(q: &[Frame; 4], t: f32) -> Frame {
     std::array::from_fn(|c| {
         let (xm1, x0, x1, x2) = (q[0][c], q[1][c], q[2][c], q[3][c]);
         let c1 = 0.5 * (x1 - xm1);

@@ -344,18 +344,23 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
 
 /// The whole window with `part` racked alone, its view in mode `code`
 /// ([`Part::view`]), drawn by the CPU renderer to a PNG at `to`.
-#[cfg(not(feature = "shots"))]
+#[cfg(not(any(feature = "shots", test)))]
 fn shot(_: &PartView, _: u8, _: &Path) -> anyhow::Result<()> {
     anyhow::bail!("built without the CPU renderer: cargo build --release --features shots")
 }
 
-#[cfg(feature = "shots")]
+#[cfg(any(feature = "shots", test))]
 fn shot(part: &PartView, code: u8, to: &Path) -> anyhow::Result<()> {
+    shot_scaled(part, code, to, 1.)
+}
+
+#[cfg(any(feature = "shots", test))]
+fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyhow::Result<()> {
     use moose::mui::mui::vello::{
         self,
         vello_cpu::{Pixmap, RenderContext, Resources},
     };
-    let (width, height) = (1180u16, 900u16);
+    let (width, height) = ((1180. * device_scale).round() as u16, (900. * device_scale).round() as u16);
     let p = Arc::new(SamplerParams::new());
     let i = part.instrument.as_ref().expect("a viewed part has its instrument");
     p.selection.write().unwrap().parts.push(Part {
@@ -370,11 +375,12 @@ fn shot(part: &PartView, code: u8, to: &Path) -> anyhow::Result<()> {
         view.parts[0] = part.clone();
     }
     let mut ui = theme::ui();
+    ui.set_scale(Some(device_scale));
     let mut build = build(&p, Arc::default(), Arc::default(), Arc::default(), Arc::default());
     let mut bridge = Bridge::new(p.clone());
     for _ in 0..8 {
         let root = build(&mut ui, &mut bridge);
-        ui.frame(root, Some(Size::new(f64::from(width), f64::from(height))), Input::default(), 1. / 60.)
+        ui.frame(root, Some(Size::new(1180., 900.)), Input::default(), 1. / 60.)
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     }
     let scene = ui.scene().ok_or_else(|| anyhow::anyhow!("nothing drawn"))?;
@@ -383,7 +389,7 @@ fn shot(part: &PartView, code: u8, to: &Path) -> anyhow::Result<()> {
     vello::paint(
         &mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut vello::Cache::default() },
         scene,
-        vello::kurbo::Affine::IDENTITY,
+        vello::kurbo::Affine::scale(device_scale),
     )
     .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     ctx.flush();
@@ -480,11 +486,15 @@ mod tests {
         let Ok(variable) = std::env::var("KONTRA_UI_BENCH_PAGE") else { return };
         let mut engine = crate::engine::ScriptSetup::new(instrument, 48000.);
         if cold { (0..100).for_each(|_| runtime.process(&mut engine, 480)); }
-        let live = runtime.live();
-        let control = live.interface.as_ref().expect("page interface").controls.iter()
-            .position(|c| c.variable == variable).expect("authored page control exists");
-        runtime.ui_control(&mut engine, live.slot, control, 1);
-        (0..100).for_each(|_| runtime.process(&mut engine, 480));
+        // Some authored pages have a top-level and an inner tab. Execute each
+        // callback in order; changing visibility directly would bypass scripts.
+        for variable in variable.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+            let live = runtime.live();
+            let control = live.interface.as_ref().expect("page interface").controls.iter()
+                .position(|c| c.variable == variable).expect("authored page control exists");
+            runtime.ui_control(&mut engine, live.slot, control, 1);
+            (0..100).for_each(|_| runtime.process(&mut engine, 480));
+        }
     }
 
     /// Opt-in local measurement; prints timings/counts, never library payloads.
@@ -528,6 +538,16 @@ mod tests {
                 assert_eq!(font.frames.len(), 256);
                 println!("UI_BENCH_FONT id={} glyphs={} height={} A_advance={} i_advance={}", n+26, font.frames.len(), font.frames[0].height, font.frames[65].width, font.frames[105].width);
             }
+        }
+        if std::env::var_os("KONTRA_UI_BENCH_CAPTURE_ONLY").is_some() {
+            let to = std::env::var_os("KONTRA_UI_BENCH_SHOT").expect("capture output PNG");
+            shot_scaled(&part, mode as u8, Path::new(&to), device_scale).unwrap();
+            println!("UI_CAPTURE {}", serde_json::json!({"build":crate::build_info::LABEL,"mode":mode,
+                "device_scale":device_scale,"snapshot_restored":snapshot.is_some(),
+                "page_callbacks":std::env::var("KONTRA_UI_BENCH_PAGE").ok(),
+                "controls":part.interface.as_ref().unwrap().controls.len(),"pictures":part.pictures.len(),
+                "wallpaper_loaded":part.wallpaper.is_some()}));
+            return;
         }
         let shown = perf_view::layout(part.interface.as_ref().unwrap(), &part.pictures);
         let pictured = shown.iter()
@@ -703,19 +723,33 @@ mod tests {
             let control = std::env::var("KONTRA_UI_BENCH_CONTROL_VARIABLE").ok().map_or(changed_control, |name| {
                 interface.controls.iter().position(|c| c.variable == name).expect("requested callback control exists")
             });
+            assert!(perf_view::layout(&interface, &part.pictures).iter().any(|shown| shown.control == control),
+                "callback benchmark control must be visible after authored page selection");
             let bound = |name, default| match interface.controls[control].properties.get(name) {
                 Some(crate::ksp::Value::Int(n)) => *n, _ => default,
             };
             let (low, high) = (bound("$CONTROL_PAR_MIN_VALUE", 0), bound("$CONTROL_PAR_MAX_VALUE", 127));
             println!("UI_BENCH callback_control={control} callback_variable={} callback_min={low} callback_max={high}", interface.controls[control].variable);
             let mut engine = crate::engine::Engine::default();
-            engine.set_bank(Some(Box::new(crate::engine::Bank::load_bare(&instrument).unwrap())));
+            let bank_started = Instant::now();
+            let full_bank = std::env::var_os("KONTRA_UI_BENCH_FULL_BANK").is_some();
+            let bank = if full_bank {
+                crate::engine::Bank::load_counting(&instrument, 512 << 20, crate::engine::Streaming::Auto,
+                    &runtime.init_controllers, &std::sync::atomic::AtomicU32::new(0)).unwrap()
+            } else { crate::engine::Bank::load_bare(&instrument).unwrap() };
+            println!("UI_BENCH_BANK full={full_bank} load_ms={:.3} resident_bytes={} zones={} skipped={}",
+                bank_started.elapsed().as_secs_f64()*1000., bank.bytes, bank.zones().len(), bank.skipped_zones);
+            engine.set_bank(Some(Box::new(bank)));
             engine.set_fx(crate::engine::effects(&instrument, Some(&runtime), 48000.));
             engine.set_script(Some(runtime));
             let mut observer_draw = None;
             let mut rendered = Vec::new();
             let mut rendered_changes = 0;
             let mut publication_ms = Vec::new();
+            let mut frame_stages = [Vec::new(), Vec::new(), Vec::new()];
+            let mut frame_work = Vec::new();
+            let initial_fitted = fitted::audit_counts(0);
+            let mut previous_fitted = initial_fitted;
             let partition = std::env::var_os("KONTRA_UI_BENCH_PARTITION").is_some();
             let mut last_published = None;
             let mut published_arc_owners = Vec::new();
@@ -760,10 +794,27 @@ mod tests {
                     }
                 }
                 let (bridge, draw) = observer_draw.as_mut().unwrap();
+                let builds = perf_view::control_builds();
+                let stage = Instant::now();
                 let tree = draw(&mut ui, bridge);
+                frame_stages[0].push(stage.elapsed().as_secs_f64()*1000.);
+                let stage = Instant::now();
                 ui.frame(tree, Some(Size::new(1180.,900.)), Input::default(),1./60.).unwrap();
+                frame_stages[1].push(stage.elapsed().as_secs_f64()*1000.);
+                let counts = fitted::audit_counts(0);
+                frame_work.push(serde_json::json!({
+                    "control_builds":perf_view::control_builds()-builds,
+                    "fitted_queued":counts.0-previous_fitted.0,
+                    "fitted_completed":counts.1-previous_fitted.1,
+                    "fitted_generation":fitted::generation(0),
+                }));
+                previous_fitted = counts;
+                let stage = Instant::now();
                 let scene = ui.scene().unwrap();
-                if let Some((device, renderer, target)) = &mut gpu {
+                if std::env::var_os("KONTRA_UI_BENCH_BUILD_ONLY").is_some() {
+                    // The concurrent host probe isolates callback delivery and
+                    // UI build/layout from software reference rasterization.
+                } else if let Some((device, renderer, target)) = &mut gpu {
                     let stats = renderer.render(scene, transform, target).unwrap();
                     rendered_changes += usize::from(stats.renders > 0);
                     device.poll(vello::vello::wgpu::PollType::wait_indefinitely()).unwrap();
@@ -773,6 +824,7 @@ mod tests {
                     ctx.flush();
                     ctx.render(&mut pixmap, &mut resources);
                 }
+                frame_stages[2].push(stage.elapsed().as_secs_f64()*1000.);
                 rendered.push(start.elapsed().as_secs_f64()*1000.);
                 Ok(())
             };
@@ -784,7 +836,16 @@ mod tests {
             assert!(report["latest_edits_published"].as_u64().unwrap_or(0) > 0, "actual callback state must settle at least one queued edit: {report}");
             rendered.sort_by(f64::total_cmp);
             publication_ms.sort_by(f64::total_cmp);
-            println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
+            let summarize = |mut samples: Vec<f64>| {
+                samples.sort_by(f64::total_cmp);
+                serde_json::json!({"n":samples.len(),"mean":samples.iter().sum::<f64>()/samples.len() as f64,
+                    "p99":samples[((samples.len()-1) as f64*0.99).ceil() as usize]})
+            };
+            let stages: serde_json::Map<String, serde_json::Value> = ["build", "layout", "render"]
+                .into_iter().zip(frame_stages).map(|(name,samples)| (name.into(),summarize(samples))).collect();
+            println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,
+                "stage_ms":stages,"frame_work":frame_work,
+                "fitted_jobs":{"queued":previous_fitted.0-initial_fitted.0,"completed":previous_fitted.1-initial_fitted.1},"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
                 "live_publication_ms":{"mean":publication_ms.iter().sum::<f64>()/publication_ms.len() as f64,"p99":publication_ms[((publication_ms.len()-1) as f64*0.99).ceil() as usize]},
                 "callback_published_render_ms":{"mean":rendered.iter().sum::<f64>()/rendered.len() as f64,"p99":rendered[((rendered.len()-1) as f64*0.99).ceil() as usize]}}));
             if let Some(published) = last_published {

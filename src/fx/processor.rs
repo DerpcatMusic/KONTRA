@@ -612,7 +612,7 @@ impl FxProcessor {
 
     pub(super) fn init_ir_settings(&mut self, rack: Rack, slot: u8, settings: params::IrSettings) {
         if let Some(s) = self.slot_mut(rack, slot).filter(|s| s.ir_settings.is_some()) {
-            s.ir_settings = Some(settings);
+            s.ir_settings = Some(settings.inherit_flags(s.ir_settings.unwrap()));
             s.ir_dirty = false;
         }
     }
@@ -682,7 +682,7 @@ impl FxProcessor {
             (FxParam::Bypass, _) => Some(f32::from(s.bypass)),
             (FxParam::Wet, _) => Some(s.wet),
             (FxParam::Dry, _) => Some(s.dry),
-            (FxParam::Convolution(n), _) => s.ir_settings?.values.get(n as usize).copied(),
+            (FxParam::Convolution(n), _) => s.ir_settings?.value(n),
             (FxParam::Reverb(n), Dsp::Reverb(_, p)) => { *p }.field(n).copied(),
             (FxParam::Filter(knob), Dsp::Block(b)) => b.filter_param(knob),
             (FxParam::Filter(super::FilterParam::Spread), Dsp::Stereo { width, .. }) => Some(*width - 1.0),
@@ -926,6 +926,7 @@ fn mix(out: &mut [f32], input: &[f32], level: f32) {
 /// Resamples (linear), stretches and predelays the IR for `sample_rate`.
 fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]> {
     let ir = &p.ir.as_ref()?.0;
+    let reverse = p.reversed();
     // Size stretches time, including reflections; it does not trim the tail.
     // Until the saved early/late boundary is identified, use uniform late size.
     let ratio = ir.rate as f32 / sample_rate / p.late.length_ratio.clamp(0.5, 1.5);
@@ -938,8 +939,12 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
         out.extend((0..len.max(1)).map(|i| {
             let x = i as f32 * ratio;
             let (j, frac) = (x as usize, x.fract());
-            let a = ir.frames.get(j).map_or(0.0, |f| f[ch]);
-            let b = ir.frames.get(j + 1).map_or(0.0, |f| f[ch]);
+            let sample = |j: usize| {
+                let index = if reverse { ir.frames.len().checked_sub(j + 1) } else { Some(j) };
+                index.and_then(|j| ir.frames.get(j)).map_or(0.0, |f| f[ch])
+            };
+            let a = sample(j);
+            let b = sample(j + 1);
             a + (b - a) * frac
         }));
         out
@@ -948,6 +953,32 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
     // boundary; unequal settings remain unprocessed and reported on import.
     if p.early.low_cut_hz == p.late.low_cut_hz && p.early.high_cut_hz == p.late.high_cut_hz {
         crate::engine::filter::filter_ir(&mut shaped, p.late.low_cut_hz, p.late.high_cut_hz, sample_rate);
+    }
+    if p.envelope_active() && p.envelope_supported() {
+        // Native knots are sorted in time, rounded over the shaped IR's
+        // duration, and interpolated in amplitude after converting from dB.
+        // Predelay is independent: the envelope acts on the response only.
+        let mut knots: [(f32, f32); 8] = std::array::from_fn(|n|
+            (p.curve_x[n], (p.curve_db[n] * 0.05 * std::f32::consts::LN_10).exp()));
+        knots.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let frames = shaped[0].len() - pre;
+        for pair in knots.windows(2) {
+            let start = (frames as f32 * pair[0].0.clamp(0.0, 1.0) + 0.5) as usize;
+            let end = (frames as f32 * pair[1].0.clamp(0.0, 1.0) + 0.5) as usize;
+            // Collapsed knots write no frames; outside the knots is unchanged.
+            for n in start..end {
+                let gain = pair[0].1 + (pair[1].1 - pair[0].1) * (n - start) as f32 / (end - start) as f32;
+                shaped.iter_mut().for_each(|ch| ch[pre + n] *= gain);
+            }
+        }
+    }
+    if p.auto_gain() {
+        // Native Auto Gain uses the loudest prepared IR channel's energy,
+        // not RMS or peak normalization. Baking the wet gain into this
+        // linear kernel leaves the slot's dry signal unchanged.
+        let energy = shaped.iter().map(|ch| ch.iter().map(|x| x * x).sum::<f32>()).fold(0.0f32, f32::max);
+        let gain = if energy >= 0.001 { (0.5 / energy).sqrt().min(2.0) } else { 1.0 };
+        shaped.iter_mut().flatten().for_each(|x| *x *= gain);
     }
     Some(shaped)
 }

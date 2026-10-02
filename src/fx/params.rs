@@ -154,20 +154,45 @@ pub struct IrBand {
 pub struct IrSettings {
     pub values: [f32; 3],
     pub size: f32,
+    // Omitted in older host states: retain the native saved flags in that case.
+    #[serde(default)]
+    pub reverse: Option<bool>,
+    #[serde(default)]
+    pub auto_gain: Option<bool>,
 }
 
 impl IrSettings {
-    pub const DEFAULT: Self = Self { values: [0., 0.5, 0.5], size: 0.5 };
+    pub const DEFAULT: Self = Self { values: [0., 0.5, 0.5], size: 0.5, reverse: None, auto_gain: None };
     pub fn from_convolution(p: &Convolution) -> Self {
         let values = [
             ((p.predelay_ms.max(0.) / 2. + 1.).ln() / 151f32.ln()).clamp(0., 1.),
             (p.early.length_ratio - 0.5).clamp(0., 1.),
             (p.late.length_ratio - 0.5).clamp(0., 1.),
         ];
-        Self { values, size: values[2] }
+        Self { values, size: values[2], reverse: Some(p.reversed()), auto_gain: Some(p.auto_gain()) }
+    }
+
+    /// Continuous fields 0..2, then native Reverse and Auto Gain switches.
+    pub fn value(&self, field: u8) -> Option<f32> {
+        match field {
+            3 => self.reverse.map(f32::from),
+            4 => self.auto_gain.map(f32::from),
+            n => self.values.get(n as usize).copied(),
+        }
+    }
+
+    pub(super) fn inherit_flags(mut self, native: Self) -> Self {
+        self.reverse = self.reverse.or(native.reverse);
+        self.auto_gain = self.auto_gain.or(native.auto_gain);
+        self
     }
 
     pub fn set(&mut self, field: u8, value: f32) -> bool {
+        match field {
+            3 => { self.reverse = Some(value != 0.0); return true },
+            4 => { self.auto_gain = Some(value != 0.0); return true },
+            _ => {}
+        }
         let Some(v) = self.values.get_mut(field as usize) else { return false };
         let next = value.clamp(0., 1.);
         // Replaying unchanged script values after a rate rebuild must retain
@@ -187,6 +212,8 @@ impl IrSettings {
         p.predelay_ms = Self::predelay_ms(self.values[0]);
         p.early.length_ratio = 0.5 + self.size;
         p.late.length_ratio = p.early.length_ratio;
+        if let Some(reverse) = self.reverse { p.flags[0] = reverse; }
+        if let Some(auto_gain) = self.auto_gain { p.flags[1] = auto_gain; }
     }
 }
 
@@ -194,14 +221,18 @@ impl IrSettings {
 /// "other files" table, not an inline path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Convolution {
+    /// Native sampleRateDecFactor, then the bit pattern of the i32 block size.
+    /// The array is retained for existing serialized instrument metadata.
     pub unknown: [f32; 2],
     pub predelay_ms: f32,
     pub early: IrBand,
     pub late: IrBand,
+    /// Native er_lr_XPoint; units and automatic sentinel behavior remain unverified.
     pub unknown_9: f32,
-    /// Always `[false, true, true, true, false]` locally; meaning unknown.
+    /// Reverse, Auto Gain, Preserve Length, Bypass Latency Compensation,
+    /// Volume Envelope. Names/order verified against native serialization bindings.
     pub flags: [bool; 5],
-    /// An 8-point curve (x 0..1, y 0..-79 dB), identical in every local preset.
+    /// Volume-envelope times (0..1) and levels (dB), normally eight points.
     pub curve_x: Vec<f32>,
     pub curve_db: Vec<f32>,
     pub ir_index: i32,
@@ -209,6 +240,26 @@ pub struct Convolution {
     pub ir_error: Option<String>,
     #[serde(skip)]
     pub ir: Option<Impulse>,
+}
+
+impl Convolution {
+    /// Reverse the source impulse response before processing it.
+    pub fn reversed(&self) -> bool { self.flags[0] }
+    pub fn auto_gain(&self) -> bool { self.flags[1] }
+    pub fn preserve_length_ir(&self) -> bool { self.flags[2] }
+    pub fn bypass_latency_compensation(&self) -> bool { self.flags[3] }
+    pub fn envelope_active(&self) -> bool { self.flags[4] }
+    pub fn envelope_supported(&self) -> bool {
+        self.curve_x.len() == 8 && self.curve_db.len() == 8
+            && self.curve_x.iter().all(|v| v.is_finite())
+            && self.curve_db.iter().all(|v| v.is_finite()
+                && (v * 0.05 * std::f32::consts::LN_10).exp().is_finite())
+    }
+    /// Stored native crossover value; its units are not inferred.
+    pub fn early_late_xpoint(&self) -> f32 { self.unknown_9 }
+    pub fn sample_rate_decimation_factor(&self) -> f32 { self.unknown[0] }
+    /// The native second word is an integer, not a floating-point parameter.
+    pub fn convolution_block_size(&self) -> i32 { self.unknown[1].to_bits() as i32 }
 }
 
 /// Decoded impulse response, shared between slots using the same file.

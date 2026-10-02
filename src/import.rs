@@ -22,6 +22,51 @@ pub const LIBRARY_ROOT: &str = "/path/to/Kontakt-Libraries";
 
 pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, ModSource, ModTarget, Modulator, ShaperCurve};
 
+/// Wavetable oscillator settings. Position and phase values are normalized.
+/// A zero form type is linear; other forms require an implemented phase map.
+/// Native source decoding must establish its enum mapping before populating
+/// this playback state. The vendor source record preserves the raw fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, serde::Deserialize)]
+pub struct Wavetable {
+    pub position: f32,
+    pub phase: f32,
+    pub phase_random: f32,
+    pub quality: i32,
+    pub form1: f32,
+    pub form2: f32,
+    pub form1_type: i32,
+    pub form2_type: i32,
+    pub inharmonic: f32,
+    pub inharmonic_mode: i32,
+    pub mod_tune: f32,
+    pub mod_amount: f32,
+    pub mod_tune_unit: i32,
+    pub mod_type: i32,
+    pub mod_wave: i32,
+}
+
+fn wavetable_params(source: &ni_file::kontakt::objects::WavetableSource) -> Result<Wavetable> {
+    ensure!([source.position, source.form1, source.form2, source.phase,
+        source.phase_random, source.inharmonic].into_iter().all(|x| x.is_finite() && (0.0..=1.0).contains(&x))
+        && source.mod_amount.is_finite() && source.mod_tune.is_finite(), "Invalid wavetable source scalar");
+    let form = |raw: u32| -> Result<i32> {
+        ensure!((1..=34).contains(&raw), "Invalid serialized wavetable form ID");
+        Ok(match raw { 18 => 18, 19 => 17, _ => raw as i32 - 1 })
+    };
+    ensure!((1..=4).contains(&source.quality) && source.mod_type <= 12 && source.mod_wave <= 9,
+        "Invalid serialized wavetable quality/modulation ID");
+    Ok(Wavetable { position: source.position, phase: source.phase,
+        phase_random: source.phase_random, quality: source.quality as i32 - 1,
+        form1: source.form1, form2: source.form2,
+        form1_type: form(source.form_type)?, form2_type: form(source.form2_type)?,
+        inharmonic: source.inharmonic, inharmonic_mode: i32::from(source.inharmonic_enabled),
+        mod_amount: source.mod_amount, mod_tune: source.mod_tune,
+        mod_type: source.mod_type as i32, mod_wave: source.mod_wave as i32,
+        // The nested unit state remains opaque, and active modulation remains
+        // unsupported. Zero here is not a decoded native tuning-unit claim.
+        mod_tune_unit: 0 })
+}
+
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Group {
     pub name: String,
@@ -67,12 +112,14 @@ pub struct Group {
     /// Source module Note Mono: repeating a key cuts its prior release tails.
     #[serde(default)]
     pub release_trigger_note_monophonic: bool,
+    #[serde(default)]
+    pub wavetable: Option<Wavetable>,
 }
 
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false }
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None }
     }
 }
 
@@ -682,12 +729,20 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     for g in &gl.groups {
         let v = g.params().with_context(|| format!("Group {} version {:x}", groups.len(),g.0.version))?;
         ensure!(v.volume.is_finite() && v.pan.is_finite() && v.tune.is_finite() && v.tune > 0.0, "Invalid group gain/tuning");
-        match g.source_identity() {
-            Ok(source) if source.version == 0x106 && source.mode == 9 => warnings.push(format!(
-                "{}: Kontakt 8 wavetable source playback is not implemented (source version 0x106, mode 9, flag {}); mapped zones use ordinary sample playback, without wavetable position, forms or audio-rate modulation", v.name, source.flag)),
-            Ok(_) => {},
-            Err(error) => warnings.push(format!("{}: source identity is not decoded: {error}; source-specific playback parameters are not applied", v.name)),
-        }
+        let wavetable = match g.source_identity() {
+            Ok(source) if source.version == 0x106 && source.mode == 9 => {
+                let state = g.wavetable_source().map_err(anyhow::Error::from)
+                    .and_then(|state| wavetable_params(&state.context("Missing wavetable source record")?))
+                    .with_context(|| format!("Group {} {:?}: native wavetable source v0x106, mode 9", groups.len(), v.name))?;
+                warnings.push(format!("{}: native wavetable position, forms, phase and modulation settings are decoded; opaque common/nested state and modulation tuning units remain unapplied. Playback supports tracked 2048-frame cycles, linear and ASYM2MP forms; randomized phase, active inharmonic/audio-rate modulation and other forms are rejected. Native quality {} is retained; playback uses cubic cycle interpolation for all qualities. Native pitch-dependent table preparation and quality-specific interpolation/anti-aliasing algorithms are not implemented or verified", v.name, state.quality));
+                Some(state)
+            }
+            Ok(_) => None,
+            Err(error) => {
+                warnings.push(format!("{}: source identity is not decoded: {error}; source-specific playback parameters are not applied", v.name));
+                None
+            }
+        };
         if !v.start_criteria.items.is_empty() || !v.start_criteria.unknown_tail.is_empty() {
             let records: Vec<_> = v.start_criteria.items.iter()
                 .map(|c| (c.mode, c.next_criteria, c.cycle_class)).collect();
@@ -733,6 +788,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             amp_split_slot: u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8),
             voice_group: u32::try_from(v.voice_group_index).ok(),
             interp_quality: v.interp_quality,
+            wavetable,
         });
     }
     let mut scripts = Vec::new();
@@ -1157,6 +1213,51 @@ pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod preset_tests {
+
+    #[test]
+    fn native_wavetable_scalars_match_control_constants_without_losing_inactive_values() {
+        use ni_file::kontakt::objects::WavetableSource;
+        let mut bytes = [0; 99];
+        bytes[..7].copy_from_slice(&[0, 6, 1, 9, 0, 0, 0]);
+        for (offset, value) in [(30, 0.25f32), (34, 0.5), (38, 0.125), (55, 0.5), (59, 0.75)] {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        for (offset, value) in [(46, 17u32), (50, 3), (63, 1), (67, 6)] {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[83..].fill(0xDE);
+        let mut raw = WavetableSource::read(std::io::Cursor::new(bytes)).unwrap();
+        let state = super::wavetable_params(&raw).unwrap();
+        assert_eq!((state.position, state.form1, state.phase, state.phase_random), (0.25, 0.5, 0.125, 0.0));
+        assert_eq!((state.inharmonic, state.inharmonic_mode, state.form2), (0.5, 0, 0.75));
+        let interface = crate::ksp::initialize(
+            "on init\n\
+             declare ui_slider $form1(0,1000000)\n\
+             declare ui_slider $form2(0,1000000)\n\
+             declare ui_slider $quality(0,1000000)\n\
+             $form1 := $NI_WT_FORM_ASYM2MP\n\
+             $form2 := $NI_WT_FORM_LINEAR\n\
+             $quality := $NI_WT_QUALITY_HIGH\n\
+             end on",
+            0,
+            8,
+        ).unwrap();
+        assert_eq!(interface.controls.len(), 3);
+        for (control, expected) in interface.controls.iter().zip([state.form1_type, state.form2_type, state.quality]) {
+            assert_eq!(control.properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(expected));
+        }
+        for (raw_id, expected) in [(18, 18), (19, 17)] {
+            raw.form_type = raw_id;
+            assert_eq!(super::wavetable_params(&raw).unwrap().form1_type, expected);
+        }
+        raw.phase = f32::NAN;
+        assert!(super::wavetable_params(&raw).is_err());
+        raw.phase = 1.25;
+        assert!(super::wavetable_params(&raw).is_err());
+        let mut roundtrip = Vec::new();
+        WavetableSource::read(std::io::Cursor::new(bytes)).unwrap().write(&mut roundtrip).unwrap();
+        assert_eq!(roundtrip, bytes);
+    }
 
     #[test]
     fn relative_archives_resolve_within_the_library_and_validate_members() {

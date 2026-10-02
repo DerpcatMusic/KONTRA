@@ -1001,8 +1001,6 @@ public:
     UINT_PTR restartTimerId = 0;
 #endif
     bool inPerformEdit;       // feedback guard: skip setParamNormalized during performEdit
-    bool stateLoaded;         // true after setState() has run (or on first process if no state chunk)
-    void* deferredParent;     // stashed parent view if editor attached before state loaded
     // Live plug view created by `createView()`. Set there, nulled in
     // `pv_release` when refcount -> 0. `moose_vst3_request_resize`
     // dereferences via this slot rather than holding a `MoosePlugView*`
@@ -1013,7 +1011,6 @@ public:
 
     MooseComponent() : ctx(nullptr), sampleRate(44100), maxFrames(1024),
                        componentHandler(nullptr), inPerformEdit(false),
-                       stateLoaded(false), deferredParent(nullptr),
                        plugView(nullptr) {
         if (g_desc) {
             inputBusActive.store(
@@ -1259,15 +1256,6 @@ public:
 
     tresult setActive(TBool state) {
         if (state && g_cb && ctx) {
-            // If we're being activated and no state chunk was received,
-            // this is a fresh instance - allow the editor to open.
-            if (!stateLoaded) {
-                stateLoaded = true;
-                if (deferredParent) {
-                    g_cb->gui_open(ctx, deferredParent);
-                    deferredParent = nullptr;
-                }
-            }
             g_cb->reset(ctx, sampleRate, maxFrames, procMode);
         }
         // Tell Rust the activation state for both directions so a state
@@ -1287,12 +1275,6 @@ public:
             if (g_cb->state_load(ctx, data, (uint32_t)total))
                 result = kResultOk;
             free(data);
-        }
-        stateLoaded = true;
-        // If the editor was attached before state was loaded, open it now
-        if (deferredParent) {
-            g_cb->gui_open(ctx, deferredParent);
-            deferredParent = nullptr;
         }
         return result;
     }
@@ -2145,7 +2127,7 @@ struct MoosePlugView {
     IPlugViewContentScaleSupportVtbl* vtbl_scale;
     int32_t refCount;
     void* ctx;              // Rust plugin context
-    MooseComponent* comp;   // owning component (for state-loaded check)
+    MooseComponent* comp;   // owning component (resize and run-loop lifetime)
     // Stored by `pv_setFrame` (host hands the plug-view its
     // `IPlugFrame*`). Used by `moose_vst3_request_resize` to drive
     // the plugin -> host resize request. Nulled when the view is
@@ -2180,7 +2162,6 @@ static uint32 pv_release(void* s) {
     auto* pv = (MoosePlugView*)s;
     if (--pv->refCount <= 0) {
         if (pv->comp) {
-            pv->comp->deferredParent = nullptr;
 #if defined(__linux__)
             // The frame goes away with the view: drop the run-loop
             // registration so the host doesn't hold a handler tied to a
@@ -2235,17 +2216,14 @@ static tresult pv_isPlatformTypeSupported(void*, FIDString type) {
 static tresult pv_attached(void* s, void* parent, FIDString /*type*/) {
     auto* pv = (MoosePlugView*)s;
     if (!g_cb || !pv->ctx) return kResultOk;
-    if (pv->comp && !pv->comp->stateLoaded) {
-        // Editor attached before state was restored - defer gui_open
-        pv->comp->deferredParent = parent;
-    } else {
-        g_cb->gui_open(pv->ctx, parent);
-    }
+    // KONTAKTO patch: IPlugView attachment creates the view independently
+    // of processor activation or state restoration. An inactive fresh
+    // instance may receive neither; deferring here leaves only a host frame.
+    g_cb->gui_open(pv->ctx, parent);
     return kResultOk;
 }
 static tresult pv_removed(void* s) {
     auto* pv = (MoosePlugView*)s;
-    if (pv->comp) pv->comp->deferredParent = nullptr;
     if (g_cb && pv->ctx) g_cb->gui_close(pv->ctx);
     return kResultOk;
 }

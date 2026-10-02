@@ -400,12 +400,13 @@ struct AudioDiagnostics {
     offline: bool,
     output_buses: [(usize, usize); BUSES],
     parts: Vec<PartDiagnostics>,
+    unsupported_note_brightness: u64,
 }
 
 impl AudioDiagnostics {
     fn with_parts(count: usize) -> Self {
         Self { block: 0, sample_rate: 0.0, block_size: 0, output_channels: 0,
-            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count] }
+            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count], unsupported_note_brightness: 0 }
     }
 }
 
@@ -1691,6 +1692,13 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
                 "output_channels":audio.output_channels, "output_buses":audio.output_buses, "offline":audio.offline,
             }));
         }
+        let brightness = audio.unsupported_note_brightness.saturating_sub(previous.as_ref().map_or(0, |old| old.unsupported_note_brightness));
+        if brightness != 0 {
+            crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "midi", "unsupported_note_brightness", serde_json::json!({
+                "instance_id":params.shared.instance_id, "delta":brightness, "total":audio.unsupported_note_brightness,
+                "reason":"Host note-expression brightness has no verified CC74 value law; an unlinked brightness event after event-buffer overflow also has unknown provenance. It was not applied to another note or to channel CC74.",
+            }));
+        }
         for (part, current) in audio.parts.iter().enumerate() {
             // Rack slots retain their Engine across instrument/script reloads;
             // these counters have Engine lifetime, not generation lifetime.
@@ -1706,6 +1714,22 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
             }));
         }
         if let Some(previous) = previous { let _ = params.shared.diagnostic_free.force_push(previous); }
+    }
+}
+
+/// The simplified CC74 companion cannot supply a host expression's value law
+/// or note ID. Keep it unsupported, rather than applying it as absolute MIDI2
+/// CC74 to a newer same-pitch note. Direct registered MIDI2 CC74 stays admitted.
+fn unsupported_host_brightness(events: &EventList, index: usize) -> bool {
+    if !events.get(index).is_some_and(|event| matches!(event.body,
+        EventBody::PerNoteCC { cc:74, registered:true, .. })) { return false }
+    match events.exact_for_event(index).map(|event| event.body()) {
+        Some(moose::core::ExactEventBody::NoteExpression { expression_id:5, .. }
+            | moose::core::ExactEventBody::NormalizedNoteExpression { expression_id:5, .. }) => true,
+        // A full exact lane makes the adapter emit an unlinked semantic
+        // fallback. Capacity exhaustion must not erase the safety boundary.
+        None => events.overflow().is_some(),
+        _ => false,
     }
 }
 
@@ -1738,6 +1762,7 @@ fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, chan
     let audio = &mut s.diagnostic;
     audio.block = p.shared.blocks.load(Ordering::Relaxed); audio.sample_rate = s.rack.parts[0].rate();
     audio.block_size = frames; audio.output_channels = channels; audio.offline = offline;
+    audio.unsupported_note_brightness = s.unsupported_note_brightness;
     audio.output_buses = std::array::from_fn(|bus| cx.bus_routing.output(bus).map_or(if bus == 0 { (0, channels.min(2)) } else { (0, 0) }, |r| (r.channel_start(), r.channel_count())));
     for (part, current) in audio.parts.iter_mut().enumerate() {
         let e = &s.rack.parts[part]; let [pending_commands, pending_writes, pending_releases] = e.pending_work();
@@ -2620,6 +2645,7 @@ pub struct Dsp {
     until_diagnostics: usize,
     shared_parts: Vec<Arc<PartShared>>,
     diagnostic: AudioDiagnostics,
+    unsupported_note_brightness: u64,
     // Created off-thread with the rack, never acquired or replaced by reset/process.
     _diagnostics: crate::diagnostics::DiagnosticLease,
 }
@@ -2631,7 +2657,7 @@ impl Default for Dsp {
             snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
             align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
-            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), _diagnostics: crate::diagnostics::acquire() }
+            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, _diagnostics: crate::diagnostics::acquire() }
     }
 }
 
@@ -3352,7 +3378,9 @@ impl PluginLogic for Sampler {
                     out.port = 0;
                     cx.output_events.push(out);
                 }
-                if let Some(ev) = In::from_event(&e.body) {
+                if unsupported_host_brightness(events, next) {
+                    s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1);
+                } else if let Some(ev) = In::from_event(&e.body) {
                     // The on-screen keys and wheels follow what the host plays.
                     let lit = |note: u8, velocity| {
                         if let Some(lit) = p.shared.heard.get(note as usize) {
@@ -3758,6 +3786,13 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
     let mut tasks = moose::core::tasks::TaskSpawnerBundle::new();
     tasks.push(worker.clone());
     let tasks = tasks.into_any().unwrap();
+    #[cfg(test)]
+    if std::env::var_os("KONTRA_UI_BENCH_CONCURRENT_AUDIO").is_some() {
+        let result = bench_ui_concurrent_audio(dsp, &params, &tasks, control, low, high, frames, edits, observer.take(), &load_times);
+        drop(tasks);
+        drop(worker);
+        return result;
+    }
     let transport = TransportInfo::default();
     let mut data = vec![vec![0.0f32; frames]; 2 * BUSES];
     let mut outgoing = EventList::with_capacity(0);
@@ -3841,6 +3876,134 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
         "load_runs":load_times.len(),"load_wall_ms":summary(load_times),"audio_process_ms":summary(process_times),
         "editor_frames":observer_gaps.len(),"editor_frame_gap_ms":summary(observer_gaps),"editor_requested_hz":if observer.is_some() {60} else {0},
         "latest_edits_published":publication_latencies.len(),"latest_edit_to_publication_observer_ms":summary(publication_latencies)}), std::mem::take(&mut dsp.rack.parts[0])))
+}
+
+/// Opt-in actual host pacing: audio and the editor run independently, while
+/// retaining the same serialized Load lane and immutable publication path.
+#[cfg(test)]
+fn bench_ui_concurrent_audio(mut dsp: Dsp, params: &Arc<SamplerParams>, tasks: &moose::core::tasks::AnyTaskSpawner,
+    control: usize, low: i32, high: i32, frames: usize, edits: usize,
+    mut observer: Option<&mut dyn FnMut(&Arc<SamplerParams>) -> anyhow::Result<()>>, load_times: &Arc<Mutex<Vec<f64>>>)
+    -> anyhow::Result<(serde_json::Value, Engine)> {
+    use moose::core::bus_routing::{BusActivation, BusRouting};
+    use std::time::Duration;
+    let chord = std::env::var("KONTRA_UI_BENCH_CHORD").ok().map(|notes| notes.split(',')
+        .map(|note| note.trim().parse::<u8>()).collect::<Result<Vec<_>, _>>()).transpose()?.unwrap_or_default();
+    anyhow::ensure!(chord.iter().all(|note| *note < 128), "benchmark chord notes must be 0..127");
+    let summary = |mut samples: Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        if samples.is_empty() { return serde_json::json!({}); }
+        serde_json::json!({"n":samples.len(),"mean":samples.iter().sum::<f64>()/samples.len() as f64,
+            "p50":samples[samples.len()/2],"p99":samples[((samples.len()-1) as f64*0.99).ceil() as usize],"max":samples[samples.len()-1]})
+    };
+    let stop = AtomicBool::new(false);
+    // Drop precedes Scope's join on both observer errors and panics.
+    struct Stop<'a>(&'a AtomicBool);
+    impl Drop for Stop<'_> { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
+    let start = Instant::now();
+    let warmup = Duration::from_millis(250);
+    let duration = warmup + Duration::from_secs_f64(edits as f64/60. + 1.);
+    std::thread::scope(|scope| {
+        let audio = scope.spawn(|| {
+            let mut data = vec![vec![0.0f32; frames]; 2*BUSES];
+            let mut outgoing = EventList::with_capacity(0);
+            let mut incoming = EventList::with_capacity(chord.len());
+            let transport = TransportInfo::default();
+            let mut process_times = Vec::new();
+            let (mut block, mut peak_voices, mut late_starts, mut missed) = (0, 0, 0, 0);
+            let mut peak = 0.0f32;
+            let (mut edit_peak_voices, mut audible_blocks, mut nonfinite_samples) = (0, 0, 0);
+            let (mut gaps, mut last_completion, mut seen) = (Vec::new(), start, dsp.live_seen[0]);
+            while !stop.load(Ordering::Acquire) {
+                let scheduled = start + Duration::from_secs_f64(block as f64*frames as f64/48000.);
+                if let Some(left) = scheduled.checked_duration_since(Instant::now()) { std::thread::sleep(left); }
+                if stop.load(Ordering::Acquire) { break; }
+                if Instant::now().saturating_duration_since(scheduled).as_secs_f64()*1000. > frames as f64/48. { late_starts += 1; }
+                incoming.clear();
+                if block == 0 {
+                    for &note in &chord { incoming.push(Event::new(0, EventBody::NoteOn {group:0,channel:0,note,velocity:100})); }
+                }
+                let mut channels: Vec<_> = data.iter_mut().map(|channel| channel.as_mut_slice()).collect();
+                let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, frames);
+                let mut routing = BusRouting::new();
+                for _ in 0..BUSES { routing.push_output(2, BusActivation::Active); }
+                let mut context = ProcessContext::new(&transport, 48000., frames, &mut outgoing).with_bus_routing(routing).with_tasks(tasks);
+                let at = Instant::now();
+                Sampler::process(&mut dsp, params, &mut buffer, &incoming, &mut context);
+                let elapsed = at.elapsed().as_secs_f64()*1000.;
+                missed += usize::from(elapsed > frames as f64/48.);
+                process_times.push(elapsed);
+                peak_voices = peak_voices.max(dsp.rack.parts[0].active_voices());
+                if start.elapsed() >= warmup && start.elapsed() < warmup + Duration::from_secs_f64(edits as f64/60.) {
+                    edit_peak_voices = edit_peak_voices.max(dsp.rack.parts[0].active_voices());
+                }
+                let mut audible = false;
+                for sample in data.iter().flatten() {
+                    nonfinite_samples += usize::from(!sample.is_finite());
+                    peak = peak.max(sample.abs());
+                    audible |= sample.abs()>1e-8;
+                }
+                audible_blocks += usize::from(audible);
+                if dsp.live_seen[0] != seen {
+                    seen = dsp.live_seen[0];
+                    gaps.push(last_completion.elapsed().as_secs_f64()*1000.);
+                    last_completion = Instant::now();
+                }
+                block += 1;
+            }
+            let report = serde_json::json!({"blocks":block,"deadline_ms":frames as f64/48.,"process_deadline_misses":missed,
+                "late_starts_over_one_block":late_starts,"peak_voices":peak_voices,"peak_voices_during_edits":edit_peak_voices,
+                "audible_blocks":audible_blocks,"nonfinite_samples":nonfinite_samples,"output_peak":peak,
+                "underruns":dsp.rack.parts[0].underruns(),"dropped_commands":dsp.rack.parts[0].dropped_commands()});
+            (dsp, process_times, gaps, report)
+        });
+        let _stop_on_exit = Stop(&stop);
+        let (mut edit, mut next_edit, mut next_observe) = (0, warmup, Duration::ZERO);
+        let (mut waits, mut edit_times, mut acknowledgements, mut observer_times) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut pending = None;
+        while start.elapsed() < duration {
+            params.shared.watched.store(true, Ordering::Relaxed);
+            if edit < edits && start.elapsed() >= next_edit {
+                let at = Instant::now();
+                let retained = params.shared.view.lock().unwrap().parts[0].interface.clone();
+                waits.push(at.elapsed().as_secs_f64()*1000.);
+                let value = (i64::from(low)+(i64::from(high)-i64::from(low))*(edit%101) as i64/100) as i32;
+                let at = Instant::now();
+                params.shared.edit_control(0, control, value);
+                edit_times.push(at.elapsed().as_secs_f64()*1000.);
+                pending = Some(at);
+                drop(retained);
+                edit += 1;
+                next_edit = warmup + Duration::from_secs_f64(edit as f64/60.);
+            }
+            if start.elapsed() >= next_observe {
+                let at = Instant::now();
+                if let Some(observer) = observer.as_mut() { observer(params)?; } else { params.shared.publish_live(true); }
+                observer_times.push(at.elapsed().as_secs_f64()*1000.);
+                if pending.is_some() && !params.shared.view.lock().unwrap().parts[0].edited.iter().any(|edit| edit.0 == control) {
+                    acknowledgements.push(pending.take().unwrap().elapsed().as_secs_f64()*1000.);
+                }
+                next_observe = Duration::from_secs_f64(((start.elapsed().as_secs_f64()*60.).floor()+1.)/60.);
+            }
+            let due = if edit < edits { next_observe.min(next_edit) } else { next_observe };
+            if let Some(left) = due.checked_sub(start.elapsed()) { std::thread::sleep(left.min(Duration::from_millis(2))); }
+        }
+        stop.store(true, Ordering::Release);
+        let (mut dsp, process_times, completion_gaps, audio_report) = audio.join().map_err(|_| anyhow::anyhow!("benchmark audio thread panicked"))?;
+        let load_times = load_times.lock().unwrap().clone();
+        let mut report = serde_json::json!({"concurrent_audio":true,"held_chord":chord,"host_frames":frames,"edits_delivered":edit,
+            "audio_process_ms":summary(process_times),"audio":audio_report,"load_runs":load_times.len(),"load_wall_ms":summary(load_times),
+            "live_completion_gap_ms":summary(completion_gaps),"view_mutex_acquire_ms":summary(waits),"shared_edit_ms":summary(edit_times),
+            "editor_frames":observer_times.len(),"observer_wall_ms":summary(observer_times),"editor_requested_hz":60,
+            "latest_edits_published":acknowledgements.len(),"latest_edit_to_publication_observer_ms":summary(acknowledgements)});
+        report["warmup_ms"] = serde_json::json!(warmup.as_secs_f64()*1000.);
+        if !chord.is_empty() {
+            anyhow::ensure!(audio_report["peak_voices_during_edits"].as_u64().unwrap_or(0)>0 && audio_report["output_peak"].as_f64().unwrap_or(0.)>0.,
+                "held-chord benchmark must play actual nonzero sample output: {audio_report}");
+        }
+        dsp.rack.parts[0].panic();
+        Ok((report, std::mem::take(&mut dsp.rack.parts[0])))
+    })
 }
 
 /// Profile real script control edits separately from view copying and saved-state
@@ -5990,14 +6153,14 @@ end on"#.into()], ..Default::default() };
         let resources = dir.join("Resources/ir_samples");
         std::fs::create_dir_all(&resources).unwrap();
         let mut wav = Vec::new();
-        wav.extend(b"RIFF"); wav.extend(40u32.to_le_bytes()); wav.extend(b"WAVEfmt ");
+        wav.extend(b"RIFF"); wav.extend(44u32.to_le_bytes()); wav.extend(b"WAVEfmt ");
         wav.extend(16u32.to_le_bytes()); wav.extend(3u16.to_le_bytes()); wav.extend(1u16.to_le_bytes());
         wav.extend(48000u32.to_le_bytes()); wav.extend(192000u32.to_le_bytes());
         wav.extend(4u16.to_le_bytes()); wav.extend(32u16.to_le_bytes()); wav.extend(b"data");
-        wav.extend(4u32.to_le_bytes()); wav.extend(0.5f32.to_le_bytes());
+        wav.extend(8u32.to_le_bytes()); wav.extend(0.5f32.to_le_bytes()); wav.extend(0.25f32.to_le_bytes());
         std::fs::write(resources.join("Room.wav"), wav).unwrap();
         std::fs::write(resources.join("Broken.wav"), b"invalid audio").unwrap();
-        let band = IrBand { length_ratio: 1., low_cut_hz: 20., high_cut_hz: 20000. };
+        let band = IrBand { length_ratio: 1., low_cut_hz: 20., high_cut_hz: 24000. };
         let i = Instrument {
             path: dir.join("Instrument.nki"), groups: vec![Group::default()],
             fx: crate::fx::ProgramFx { insert: Chain { slots: vec![Effect {
@@ -6014,6 +6177,16 @@ make_perfview
 declare ui_slider $room(0, 2)
 declare ui_slider $size(0, 1000000)
 declare ui_slider $distance(0, 1000000)
+declare ui_button $reverse
+declare ui_button $automatic
+declare $read_reverse
+declare $read_automatic
+make_persistent($read_reverse)
+make_persistent($read_automatic)
+$reverse := get_engine_par($ENGINE_PAR_IRC_REVERSE,-1,0,$NI_INSERT_BUS)
+$automatic := get_engine_par($ENGINE_PAR_IRC_AUTO_GAIN,-1,0,$NI_INSERT_BUS)
+$read_reverse := $reverse
+$read_automatic := $automatic
 declare $id
 end on
 on ui_control($room)
@@ -6032,6 +6205,14 @@ set_engine_par($ENGINE_PAR_IRC_LENGTH_RATIO_LR, $size, -1, 0, $NI_INSERT_BUS)
 end on
 on ui_control($distance)
 set_engine_par($ENGINE_PAR_IRC_PREDELAY, $distance, -1, 0, $NI_INSERT_BUS)
+end on
+on ui_control($reverse)
+set_engine_par($ENGINE_PAR_IRC_REVERSE,$reverse,-1,0,$NI_INSERT_BUS)
+$read_reverse := get_engine_par($ENGINE_PAR_IRC_REVERSE,-1,0,$NI_INSERT_BUS)
+end on
+on ui_control($automatic)
+set_engine_par($ENGINE_PAR_IRC_AUTO_GAIN,$automatic,-1,0,$NI_INSERT_BUS)
+$read_automatic := get_engine_par($ENGINE_PAR_IRC_AUTO_GAIN,-1,0,$NI_INSERT_BUS)
 end on
 on async_complete
 message($NI_ASYNC_ID & ":" & $NI_ASYNC_EXIT_STATUS)
@@ -6084,6 +6265,52 @@ end on"#.into()],
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "1:1");
         assert_eq!(p.shared.discard.len(), 1, "the worker receives the old kernel");
         while p.shared.discard.pop().is_some() {}
+        // Native switches use 0/1, coalesce through the same worker path,
+        // and read back before/after installation without RT allocation.
+        assert_eq!(allocations(|| {
+            dsp.rack.parts[0].ui_control(0, 3, 1);
+            dsp.rack.parts[0].ui_control(0, 4, 1);
+            tick(&mut dsp, &mut buffer, &mut cx);
+        }), 0);
+        for name in ["$read_reverse", "$read_automatic"] {
+            assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0][name], crate::ksp::Value::Int(1));
+        }
+        assert_eq!(p.shared.ir_requests.len(), 1, "two switches need one IR rebuild");
+        load_irs(&p);
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
+        let installed = dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
+        assert_eq!((installed.reverse, installed.auto_gain), (Some(true), Some(true)));
+        let (instrument, loads) = {
+            let view = p.shared.view.lock().unwrap();
+            (view.parts[0].instrument.as_ref().unwrap().clone(), view.parts[0].irs.clone())
+        };
+        let saved = instrument.fx.ir_settings_with(&loads);
+        let json = serde_json::to_string(&saved).unwrap();
+        let saved: Vec<crate::fx::IrSlotSettings> = serde_json::from_str(&json).unwrap();
+        let (restored, errors) = crate::engine::load_scripts_with_state(&instrument, Vec::new(), 48000., &saved, &[]);
+        assert!(errors.is_empty(), "{errors:?}");
+        for name in ["$read_reverse", "$read_automatic"] {
+            assert_eq!(restored.as_ref().unwrap().persistence()[0][name], crate::ksp::Value::Int(1), "restored switch");
+        }
+        let mut rebuilt = crate::engine::effects(&instrument, restored.as_deref(), 48000.);
+        let (mut l, mut r) = ([1.,0.,0.,0.], [1.,0.,0.,0.]);
+        assert_eq!(allocations(|| rebuilt.process(&mut l, &mut r)), 0);
+        let gain = (0.5f32 / (0.5f32.powi(2) + 0.25f32.powi(2))).sqrt();
+        for out in [l, r] {
+            assert!((out[0] - 0.25 * gain).abs() < 1e-6);
+            assert!((out[1] - 0.5 * gain).abs() < 1e-6, "restored Reverse + Auto Gain change the impulse");
+        }
+        let legacy: crate::fx::params::IrSettings = serde_json::from_str(r#"{"values":[0,0.5,0.5],"size":0.5}"#).unwrap();
+        assert_eq!((legacy.reverse, legacy.auto_gain), (None, None));
+        let mut native = instrument.fx.clone();
+        let FxParams::Convolution(c) = &mut native.insert.slots[0].params else { unreachable!() };
+        c.flags[0] = true;
+        c.flags[1] = true;
+        let legacy_load = crate::fx::ScriptIr { rack: crate::fx::Rack::Insert, slot: 0, load: FxLoad::Convolution(legacy) };
+        let legacy_processor = native.processor_with(48000., 64, &[legacy_load]);
+        let legacy_settings = legacy_processor.ir_settings(crate::fx::Rack::Insert, 0).unwrap();
+        assert_eq!((legacy_settings.reverse, legacy_settings.auto_gain), (Some(true), Some(true)), "old host states retain native switches");
+        while p.shared.discard.pop().is_some() {}
         let before = p.shared.view.lock().unwrap().parts[0].irs.clone();
         assert!(matches!(before[0].load, FxLoad::Ir { .. }));
         dsp.rack.parts[0].ui_control(0, 0, 0);
@@ -6118,6 +6345,7 @@ end on"#.into()],
         // callback before the handoff so the obsolete kernel is rejected.
         assert_eq!(allocations(|| {
             dsp.rack.parts[0].ui_control(0, 1, 0);
+            dsp.rack.parts[0].ui_control(0, 3, 0);
             dsp.rack.parts[0].render(&mut [0.; 64], &mut [0.; 64]);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
@@ -6125,6 +6353,8 @@ end on"#.into()],
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
         assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().values, [0.25, 0.5, 0.]);
+        assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().reverse, Some(false), "newer switch wins over the stale prepared kernel");
+        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$read_reverse"], crate::ksp::Value::Int(0));
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0");
         dsp.rack.parts[0].ui_control(0, 0, 2);
         tick(&mut dsp, &mut buffer, &mut cx);
@@ -6150,6 +6380,8 @@ end on"#.into()],
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "4:1", "the original request ID completes after rebuilding at the new rate");
+        let flags = dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
+        assert_eq!((flags.reverse, flags.auto_gain), (Some(false), Some(true)), "rate rebuild retains latest switches");
         dsp.rack.parts[0].ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
@@ -6437,6 +6669,87 @@ end on"#;
         assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$legato"], crate::ksp::Value::Int(1),
             "Panic must preserve edited instrument controls");
     }
+    #[test]
+    fn exact_host_brightness_does_not_alias_a_new_note_or_escape_through_overflow_without_heap() {
+        use moose::core::{ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
+        use crate::modulation::{ModAssignment, ModSource, ModTarget};
+        let p = SamplerParams::new();
+        let setup = || {
+            let group = import::Group { mods:vec![ModAssignment { name:"CC74_VOLUME".into(),
+                source:ModSource::MidiCc(74), target:ModTarget::Volume, intensity:1., invert:false,
+                lag_ms:0, shaper:None }], ..Default::default() };
+            let bank = Bank::from_samples(vec![group],vec![import::Zone::default()],vec![(PathBuf::new(),
+                crate::audio::Sample { rate:48000, frames:vec![[0.25;2];4096] })]).unwrap();
+            let mut dsp = Dsp::default();
+            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+            dsp.rack.parts[0].cc(0,74,32);
+            dsp
+        };
+        let brightness = Event::on_port(64,0,EventBody::PerNoteCC {
+            group:0, channel:0, note:60, cc:74, value:u32::MAX, registered:true });
+        let address = |id| ExactNoteAddress::from_raw_signed(0,0,60,id);
+        let make_events = |expression:bool| {
+            let mut events = EventList::with_capacity(8);
+            for (at,id,kind,body) in [
+                (0,10,ExactNoteKind::On,EventBody::NoteOn { group:0, channel:0, note:60, velocity:100 }),
+                (16,10,ExactNoteKind::Off,EventBody::NoteOff { group:0, channel:0, note:60, velocity:0 }),
+                (16,11,ExactNoteKind::On,EventBody::NoteOn { group:0, channel:0, note:60, velocity:100 }),
+            ] {
+                let token = events.try_push_exact_token(ExactEvent::new(at,ExactEventBody::Note {
+                    kind,address:address(id),velocity:100./127. })).unwrap();
+                events.try_push_exact_companion(token,Event::on_port(at,0,body)).unwrap();
+            }
+            if expression {
+                // The old released host note is still a legitimate expression
+                // target; its simplified companion must not affect note11.
+                let token = events.try_push_exact_token(ExactEvent::new(64,ExactEventBody::NoteExpression {
+                    expression_id:5,address:address(10),value:1. })).unwrap();
+                events.try_push_exact_companion(token,brightness).unwrap();
+                assert!(unsupported_host_brightness(&events,3));
+            }
+            events
+        };
+        let render = |dsp:&mut Dsp,params:&SamplerParams,events:&EventList| {
+            let (mut left,mut right) = ([0.;128],[0.;128]);
+            let mut output = [&mut left[..],&mut right[..]];
+            let mut buffer = AudioBuffer::from_slices_checked(&[],&mut output,128);
+            let transport = TransportInfo::default();
+            let mut midi_out = EventList::with_capacity(0);
+            let mut cx = ProcessContext::new(&transport,48000.,128,&mut midi_out);
+            assert_eq!(allocations(|| { Sampler::process(dsp,params,&mut buffer,events,&mut cx); }),0);
+            (left,right)
+        };
+        let (mut actual,mut expected) = (setup(),setup());
+        let with_expression = make_events(true);
+        let plain = make_events(false);
+        let reference = SamplerParams::new();
+        assert_eq!(render(&mut actual,&p,&with_expression),render(&mut expected,&reference,&plain));
+        assert_eq!(actual.unsupported_note_brightness,1);
+        assert_eq!(actual.rack.parts[0].cc_state()[0][74],32);
+        drain_audio_diagnostics(&p);
+        actual.until_diagnostics = 0;
+        render(&mut actual,&p,&EventList::with_capacity(0));
+        drain_audio_diagnostics(&p);
+        assert_eq!(p.shared.diagnostic_latest.lock().unwrap().as_ref().unwrap().unsupported_note_brightness,1);
+
+        let mut raw = EventList::with_capacity(1);
+        raw.push(brightness);
+        assert!(!unsupported_host_brightness(&raw,0),"direct registered MIDI2 brightness remains supported");
+        let mut normalized = EventList::with_capacity(1);
+        let token = normalized.try_push_exact_token(ExactEvent::new(64,ExactEventBody::NormalizedNoteExpression {
+            expression_id:5,address:address(11),value:1. })).unwrap();
+        normalized.try_push_exact_companion(token,brightness).unwrap();
+        assert!(unsupported_host_brightness(&normalized,0));
+        let mut overflow = EventList::with_capacity(1);
+        let exact = ExactEvent::new(64,ExactEventBody::NoteExpression { expression_id:5,address:address(10),value:1. });
+        overflow.try_push_exact_token(exact).unwrap();
+        assert!(overflow.try_push_exact_token(exact).is_err());
+        // Adapter fallback after the exact lane fills has no origin metadata.
+        overflow.push(brightness);
+        assert!(overflow.exact_for_event(0).is_none());
+        assert!(unsupported_host_brightness(&overflow,0));
+    }
+
     /// The keys lit by the host's notes go out with its all-notes-off and
     /// all-sound-off (what a host sends on stop), and when it resets the
     /// plugin, with or without parts to play them.

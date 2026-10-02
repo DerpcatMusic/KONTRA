@@ -99,6 +99,49 @@ for case in ("valid", "missing", "duplicate"):
                 assert info["CFBundleShortVersionString"] == info["CFBundleVersion"] == "0.2.0"
                 assert info["KONTRAVersion"] == version and info["CFBundleIdentifier"] == "preserved"
 
+signing = Path(__file__).resolve().parents[1].joinpath("scripts/notarize_macos.sh")
+assert "Developer ID sign and notarize macOS" in workflow and "--sign -" not in workflow
+for check in ("--options runtime --timestamp", "notarytool submit", "--wait --timeout", "stapler validate", "spctl --assess"):
+    assert check in signing.read_text(), check
+clean_env = {k:v for k,v in os.environ.items() if not k.startswith("APPLE_")}
+result = subprocess.run(["bash", str(signing)], env=clean_env, capture_output=True, text=True)
+assert result.returncode == 1 and "Missing required signing secret:" in result.stderr
+
+# Execute the signing script with fake native tools: rejection/staple failure
+# must prevent a receipt and must still delete the temporary keychain.
+native_mock = r'''#!/usr/bin/env python3
+import json, os, pathlib, sys
+name=pathlib.Path(sys.argv[0]).name; args=sys.argv[1:]
+with open(os.environ["NATIVE_CALLS"],"a") as calls: calls.write(name+" "+" ".join(args[:2])+"\n")
+if name=="uuidgen": print("12345678-1234-1234-1234-123456789abc")
+elif name=="hdiutil" and args[0]=="create": pathlib.Path(args[-1]).write_bytes(b"fixture"+b"koly"+b"\0"*508)
+elif name=="xcrun" and args[:2]==["notarytool","submit"]:
+    print(json.dumps(dict(status="Invalid" if os.environ["SIGNING_CASE"]=="rejected" else "Accepted",id="12345678-1234-1234-1234-123456789abc")))
+elif name=="xcrun" and args[:2]==["stapler","validate"] and os.environ["SIGNING_CASE"]=="bad-ticket": sys.exit(1)
+'''
+for case in ("accepted", "rejected", "bad-ticket"):
+    with tempfile.TemporaryDirectory(prefix="kontra-signing-check-") as directory:
+        root=Path(directory); tools=root/"tools"; tools.mkdir(); script=tools/"mock";script.write_text(native_mock);script.chmod(0o755)
+        for name in ("uuidgen","security","lipo","codesign","hdiutil","xcrun","spctl"): tools.joinpath(name).symlink_to("mock")
+        stage=root/"stage";stage.mkdir()
+        for product in ("KONTRA.clap/Contents/MacOS/KONTRA","KONTRA.vst3/Contents/MacOS/KONTRA","kontakto-standalone"):
+            path=stage/product;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b"fixture")
+        stage.joinpath("build-info.json").write_text(json.dumps(dict(version="0.3.78-nightly.test",revision="a"*40,target="aarch64-apple-darwin")))
+        env=dict(clean_env,PATH=str(tools)+":"+os.environ["PATH"],STAGE=str(stage),KONTRA_TARGET="aarch64-apple-darwin",GITHUB_SHA="a"*40,NATIVE_CALLS=str(root/"calls"),SIGNING_CASE=case)
+        for secret in ("APPLE_CERTIFICATE_PASSWORD","APPLE_DEVELOPER_ID_APPLICATION","APPLE_ID","APPLE_APP_SPECIFIC_PASSWORD","APPLE_TEAM_ID"): env[secret]="synthetic-fixture"
+        env["APPLE_APPLICATION_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-fixture").decode()+"\n"
+        result=subprocess.run(["bash",str(signing)],env=env,capture_output=True,text=True)
+        assert result.returncode==(0 if case=="accepted" else 1),(case,result.stderr)
+        assert (stage/"notarization.json").exists()==(case=="accepted")
+        calls=root.joinpath("calls").read_text()
+        assert "security delete-keychain" in calls
+        if case=="accepted":
+            receipt=json.loads(stage.joinpath("notarization.json").read_text())
+            assert receipt["status"]=="Accepted" and receipt["stapled"] and receipt["signatures_verified"]
+            assert stage.joinpath("notarization.json").stat().st_mode & 0o777 == 0o600
+            assert all(hashlib.sha256(stage.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in receipt["sha256"].items())
+            assert calls.index("xcrun notarytool submit") < calls.index("xcrun stapler validate") < calls.index("spctl --assess")
+
 mock_gh = r'''#!/usr/bin/env python3
 import base64,hashlib,json,os,sys
 from pathlib import Path
@@ -179,7 +222,7 @@ else: raise AssertionError(a)
 save(); print(out,end="" if a[:2]==["release","download"] else "\n"); sys.exit(status)
 '''
 
-cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","rotation-fails","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source")
+cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","rotation-fails","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product")
 for case in cases:
     with tempfile.TemporaryDirectory(prefix="kontra-nightly-check-") as directory:
         root=Path(directory); root.joinpath("gh").write_text(mock_gh); root.joinpath("gh").chmod(0o755); root.joinpath("dist").mkdir()
@@ -208,6 +251,13 @@ for case in cases:
                                      ("missing-patched-mpl-source","licenses/sources/symphonia-format-riff-0.5.5.crate")): continue
                     content = b"symphonia 0.5.5: MPL-2.0\noption-ext 0.2.0: MPL-2.0\nsymphonia-format-riff 0.5.5: MPL-2.0\n" if name == "licenses/THIRD_PARTY_NOTICES.txt" else b"fixture"
                     z.writestr(f"KONTRA-nightly-{platform}/{name}",content)
+                if platform.startswith("macos-"):
+                    dmg = b"fixture" + b"koly" + b"\0" * 508
+                    z.writestr(f"KONTRA-nightly-{platform}/KONTRA.dmg", dmg)
+                    receipt = dict(version=version, revision="a"*40, target=target, id="12345678-1234-1234-1234-123456789abc", status="Rejected" if case=="rejected-notarization" else "Accepted", stapled=True, signatures_verified=True,
+                        sha256={name:hashlib.sha256(dmg if name=="KONTRA.dmg" else b"fixture").hexdigest() for name in ("KONTRA.dmg", *binaries)})
+                    if case=="changed-notarized-product": receipt["sha256"]["kontakto-standalone"]="0"*64
+                    if case!="missing-notarization": z.writestr(f"KONTRA-nightly-{platform}/notarization.json", json.dumps(receipt))
             archive=root/f"dist/KONTRA-nightly-{platform}.zip"
             digest=hashlib.sha256(archive.read_bytes()).hexdigest()
             archive.with_suffix(".zip.sha256").write_text(("0"*64 if case=="bad-checksum" else digest)+"  "+archive.name+"\n")
@@ -229,7 +279,7 @@ for case in cases:
         env=dict(os.environ,PATH=f"{root}:{os.environ['PATH']}",GITHUB_SHA="a"*40,GH_REPO="example/KONTRA",GITHUB_RUN_ID="7",GITHUB_OUTPUT=str(output),TEST_VERSION=version)
         def run(command): return subprocess.run(["bash","--noprofile","--norc","-e","-o","pipefail","-c",command],cwd=root,env=env,capture_output=True,text=True)
         result=run(publish); state=json.loads(root.joinpath("state.json").read_text())
-        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum","wrong-format","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source") else 0),(case,result.stderr)
+        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum","wrong-format","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product") else 0),(case,result.stderr)
         if case=="rotation-fails":
             assert state["published"] and len(state["releases"])==4 and state["latest"] is not None
             result=run(publish); assert result.returncode==0,result.stderr
@@ -278,6 +328,8 @@ for case in cases:
                         for name,data in entries.items():
                             if name.endswith("build-info.json"):
                                 info=json.loads(data);info.update(version=next_version,revision="f"*40);data=json.dumps(info).encode()
+                            elif name.endswith("notarization.json"):
+                                receipt=json.loads(data);receipt.update(version=next_version,revision="f"*40);data=json.dumps(receipt).encode()
                             elif name.endswith("Info.plist"):
                                 plist=plistlib.loads(data);plist["KONTRAVersion"]=next_version;data=plistlib.dumps(plist)
                             elif name.endswith("SOURCE_COMMIT.txt"):
@@ -306,4 +358,4 @@ for case in cases:
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
-print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 16 retention/rerun/upload/checksum/cleanup/legal-bundle scenarios and four stable README links.")
+print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 19 retention/rerun/upload/checksum/cleanup/legal-bundle/notarization scenarios and four stable README links.")

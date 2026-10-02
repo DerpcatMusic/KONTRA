@@ -631,7 +631,9 @@ impl GroupFilter {
         let envs = (group.envelopes.iter().enumerate())
             .filter_map(|(i, e)| {
                 let routes: Box<[_]> = e.targets.iter().enumerate().filter_map(|(t, m)| Some((route(m, t as u16)?, Mod::from(m)))).collect();
-                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes, i as u8, false))
+                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes, i as u8,
+                    group.modulators.iter().find(|m| m.envelope == Some(i))
+                        .is_some_and(|m| m.bypassed)))
             })
             .take(MAX_ENVS)
             .collect();
@@ -1052,15 +1054,23 @@ pub(crate) fn effect_knob(fx: &crate::fx::Effect, knob: Knob) -> Option<f32> {
 /// Offline convolution IR shaping with the same non-resonant SVF as the racks.
 /// Pad the decay before filtering so a short IR does not truncate the poles.
 pub(crate) fn filter_ir(ir: &mut [Vec<f32>; 2], low: f32, high: f32, rate: f32) {
-    let highpass = low > 20.5;
-    let lowpass = high < 19_990.0;
+    // Native IR filters bypass by normalized frequency, not by the UI's
+    // 20 Hz / 20 kHz endpoints. At 48 kHz, 20 kHz is an active low-pass.
+    let highpass = low / rate >= 0.01;
+    let lowpass = high / rate <= 0.45;
     if !highpass && !lowpass { return }
-    let cutoff = match (highpass, lowpass) { (true, true) => low.min(high), (true, false) => low, _ => high }.clamp(20.0, rate * 0.49);
-    // A Butterworth pole's envelope falls as exp(-2*pi*cutoff*t/sqrt(2)).
-    let tail = (rate * 16.0 / (2.0 * std::f32::consts::PI * cutoff * Q_MIN)).ceil() as usize;
+    // The bilinear Butterworth poles approach the unit circle at both DC and
+    // Nyquist. An analog cutoff estimate truncates the high-frequency decay.
+    // Sum each active section's exp(-16) decay length for the cascade.
+    let tail: usize = [(low, highpass), (high, lowpass)].into_iter().filter(|&(_, enabled)| enabled).map(|(hz, _)| {
+        let g = (std::f64::consts::PI * f64::from(hz.clamp(20.0, rate * 0.49)) / f64::from(rate)).tan();
+        let radius = ((1.0 - std::f64::consts::SQRT_2 * g + g * g)
+            / (1.0 + std::f64::consts::SQRT_2 * g + g * g)).sqrt();
+        (-16.0 / radius.ln()).ceil() as usize
+    }).sum();
     for channel in ir.iter_mut() { channel.resize(channel.len() + tail, 0.0); }
     let [left, right] = ir;
-    for (response, hz, enabled) in [(Response::High, low, highpass), (Response::Low, high, lowpass)] {
+    for (response, hz, enabled) in [(Response::Low, high, lowpass), (Response::High, low, highpass)] {
         if enabled {
             let mut section = Section::default();
             section.coefficients(Proto::filter(response, hz.clamp(20.0, rate * 0.49), Q_MIN, rate));
@@ -1790,7 +1800,7 @@ mod tests {
             Group { amp_split_slot: Some(6), fx: Chain { slots: vec![tap(7, 0.8, 0.25, 0.5)] }, ..Default::default() },
         ];
         let convolution = |slot, delay, level| {
-            let band = IrBand { length_ratio: 1.0, low_cut_hz: 20.0, high_cut_hz: 20_000.0 };
+            let band = IrBand { length_ratio: 1.0, low_cut_hz: 20.0, high_cut_hz: 24_000.0 };
             let mut frames = vec![[0.0; 2]; delay + 1];
             frames[delay] = [level; 2];
             effect(slot, Kind::Convolution, 1.0, Params::Convolution(Box::new(Convolution {
@@ -2215,6 +2225,10 @@ mod tests {
         let env = ImportedAhdsr { attack_curve: 0., attack_ms: 100., hold_ms: 0., decay_ms: 0.,
             sustain: 1., release_ms: 100., unknown_flag: 0, unknown_tail: Vec::new() };
         let group = Group {
+            mods: vec![
+                target(ModTarget::Module { param: "filterCutoff".into(), slot: 0 }, None),
+                target(ModTarget::Module { param: "filterQ".into(), slot: 0 }, None),
+            ],
             envelopes: vec![ModEnvelope { env: env.clone(), targets: vec![] }, ModEnvelope { env, targets: vec![
                 target(ModTarget::Group("loopLength".into()), None),
                 target(ModTarget::Pitch, None),
@@ -2223,7 +2237,9 @@ mod tests {
                 target(ModTarget::Module { param: "filterQ".into(), slot: 0 }, None),
             ] }],
             modulators: vec![Modulator { name: "Envelope".into(), targets: vec![String::new(); 4],
-                assignments: None, volume_env: false, flex: false, envelope: Some(1), kind: "ahdsr".into() }],
+                assignments: None, volume_env: false, bypassed: true, flex: false, envelope: Some(1), kind: "ahdsr".into() },
+                Modulator { name: "External".into(), targets: vec![String::new(); 2],
+                    assignments: Some(0), volume_env: false, bypassed: false, flex: false, envelope: None, kind: "external".into() }],
             fx: Chain { slots: vec![crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 0,
                 bypass: false, output_gain: 1., dry_level: 1., params: Params::Filter(crate::fx::params::Filter {
                     filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3] }) }] },
@@ -2236,18 +2252,35 @@ mod tests {
         let unipolar = address(id::MOD_TARGET_INTENSITY, 2).unwrap();
         let bypass = address(id::INTMOD_BYPASS, -1).unwrap();
         let legacy = address(id::INTMOD_INTENSITY, 2).unwrap();
+        let resonance = address(id::MOD_TARGET_MP_INTENSITY, 3).unwrap();
+        let external = |generic| Address::resolve(EnginePar { id: id::MOD_TARGET_MP_INTENSITY,
+            group: 0, slot: 1, generic }, &groups).unwrap();
+        let external_cutoff = external(0);
+        let external_resonance = external(1);
+        assert_eq!(params::read(&settings, bypass), Some(1.), "saved native source is bypassed");
+        assert_eq!(settings[0].filter.as_ref().unwrap().envelope_bypass_at(1), Some(true));
+        assert!(settings[0].pitch_envelopes[0].bypass, "mixed source copies share saved bypass");
+        assert_eq!(settings[0].pitch_envelopes[0].index, 1, "empty earlier envelope retains indices");
+        assert_eq!(settings[0].pitch_envelopes[0].targets[0].0, 1);
+        let mut active = groups[0].clone();
+        active.modulators[0].bypassed = false;
+        let active = [GroupSettings::from(&active)];
+        assert_eq!(params::read(&active, bypass), Some(0.), "saved active source is not muted");
+        assert_eq!(active[0].filter.as_ref().unwrap().envelope_bypass_at(1), Some(false));
         assert!(address(id::INTMOD_INTENSITY, 3).is_none(), "other legacy module laws are not inferred");
         assert!(address(id::INTMOD_INTENSITY, 0).is_none(), "unsupported target does not alias cutoff");
         assert!(address(id::MOD_TARGET_MP_INTENSITY, 0).is_none(), "unsupported target does not alias a routed one");
-        let table = ModTable::default();
         let cc = [0; 128];
         let input = Inputs { cc: &cc, cc74: None, bend: 0., pressure: 0, note: 60, velocity: 100, counter: 0. };
         let f = settings[0].filter.as_ref().unwrap();
         let mut dry = f.clone();
         dry.envs = [].into();
-        let mut voice = VoiceFilter::new(Some(f), &table, &input, RATE);
-        let mut reference = VoiceFilter::new(Some(&dry), &table, &input, RATE);
+        // Filter external rows index this group's prepared assignments, as in
+        // production voice start; depth writes below update that same table.
+        let mut voice = VoiceFilter::new(Some(f), &settings[0].mods, &input, RATE);
+        let mut reference = VoiceFilter::new(Some(&dry), &settings[0].mods, &input, RATE);
         let mut clock = Envelope::new(&Ahdsr::from(&groups[0].envelopes[1].env), RATE);
+        let mut pitch_clock = Envelope::new(&settings[0].pitch_envelopes[0].env, RATE);
         let mut ctl = [0.; MAX_BLOCK];
         let mut difference = 0f32;
         let mut legacy_energy = [0f64; 2];
@@ -2260,28 +2293,57 @@ mod tests {
             }
             // Independent saved Analog magnitude, not generated from this decoder.
             assert!((legacy.decode(482_450).abs() - 0.00004324349).abs() < 1e-9);
+            // Actual Conflux group2/MOD ENV target1: UI raw507160 saved this
+            // cutoff magnitude; the authored callback passes that UI raw directly.
+            let native_depth = 0.000002936503_f32;
+            assert!((depth.decode(507_160) - native_depth).abs() < 1e-10);
+            assert_eq!(depth.encode(native_depth), 507_160);
+            assert_eq!(external_cutoff.encode(native_depth), 507_160);
+            assert!((external_cutoff.decode(507_160) - native_depth).abs() < 1e-10);
+            assert_eq!(resonance.decode(750_000), 0.5, "unverified resonance law stays linear");
+            assert_eq!(external_resonance.decode(750_000), 0.5);
+            for cutoff in [depth, external_cutoff] {
+                for (raw, expected) in [(250_000, -0.125), (750_000, 0.125), (-1, -1.), (1_000_001, 1.)] {
+                    assert_eq!(cutoff.decode(raw), expected);
+                    assert!(params::write(&mut settings, cutoff, cutoff.decode(raw)));
+                    assert_eq!(params::read(&settings, cutoff), Some(expected));
+                    assert_eq!(cutoff.encode(expected), raw.clamp(0, 1_000_000));
+                }
+                assert!(!params::write(&mut settings, cutoff, f32::NAN));
+                assert!(!params::write(&mut settings, cutoff, f32::INFINITY));
+                assert!(params::write(&mut settings, cutoff, 2.));
+                assert_eq!(params::read(&settings, cutoff), Some(1.), "cutoff remains bounded");
+            }
+            assert_eq!(settings[0].mods.mods[1].intensity, 0.5, "adjacent resonance target is unchanged");
             assert!(params::write(&mut settings, unipolar, unipolar.decode(500_000)));
             assert_eq!(params::read(&settings, unipolar), Some(0.25));
             assert!(params::write(&mut settings, depth, depth.decode(750_000)));
-            assert_eq!(params::read(&settings, depth), Some(0.5));
+            assert_eq!(params::read(&settings, depth), Some(0.125));
             assert_eq!(depth.encode(params::read(&settings, depth).unwrap()), 750_000);
             assert!(params::write(&mut settings, legacy, legacy.decode(750_000)));
             assert_eq!(params::read(&settings, legacy), Some(0.125));
-            assert!(params::write(&mut settings, bypass, bypass.decode(1)));
-            assert!(settings[0].pitch_envelopes[0].bypass, "all copies of a mixed envelope share bypass");
+            assert_eq!(bypass.encode(params::read(&settings, bypass).unwrap()), 1);
+            assert!(settings[0].pitch_envelopes[0].bypass, "saved bypass is present without a script write");
             for block in 0..48 {
                 let source = std::array::from_fn::<_, 128, _>(|n| (TAU * 2000. * (block * 128 + n) as f32 / RATE).sin());
                 let (mut l, mut r) = (source, source);
                 let (mut dl, mut dr) = (source, source);
-                if block == 24 { assert!(params::write(&mut settings, bypass, 0.)); }
+                if block == 24 {
+                    assert!(params::write(&mut settings, bypass, 0.));
+                    assert_eq!(params::read(&settings, bypass), Some(0.));
+                }
                 if block == 32 {
-                    assert!(params::write(&mut settings, legacy, legacy.decode(250_000)));
+                    assert!(params::write(&mut settings, depth, depth.decode(250_000)));
                     assert_eq!(params::read(&settings, legacy), Some(-0.125));
                     assert_eq!(legacy.encode(params::read(&settings, legacy).unwrap()), 250_000);
                 }
-                voice.process(settings[0].filter.as_ref().unwrap(), &table, &mut ctl, &mut l, &mut r, RATE);
-                reference.process(&dry, &table, &mut ctl, &mut dl, &mut dr, RATE);
+                voice.process(settings[0].filter.as_ref().unwrap(), &settings[0].mods, &mut ctl, &mut l, &mut r, RATE);
+                reference.process(&dry, &settings[0].mods, &mut ctl, &mut dl, &mut dr, RATE);
                 clock.skip(128, None, RATE);
+                let semitones = settings[0].pitch_envelopes[0].pitch(&mut pitch_clock, 128, RATE);
+                assert_eq!(pitch_clock.level(), clock.level(), "saved pitch bypass preserves the same clock");
+                if block < 24 { assert_eq!(semitones, 0.); }
+                else { assert!((semitones - 6. * clock.level()).abs() < 1e-6); }
                 assert_eq!(voice.envs[0].level(), clock.level(), "bypass does not restart or freeze the clock");
                 assert!(l.iter().chain(&r).all(|x| x.is_finite()));
                 let power = l.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>();
@@ -2293,13 +2355,13 @@ mod tests {
             voice.release();
             clock.release(None);
             let (mut l, mut r) = ([0.; 128], [0.; 128]);
-            voice.process(settings[0].filter.as_ref().unwrap(), &table, &mut ctl, &mut l, &mut r, RATE);
+            voice.process(settings[0].filter.as_ref().unwrap(), &settings[0].mods, &mut ctl, &mut l, &mut r, RATE);
             clock.skip(128, None, RATE);
             assert_eq!(voice.envs[0].level(), clock.level());
         }), 0);
         assert!(difference > 1., "resuming the elapsed envelope changes actual PCM: {difference}");
         assert!(legacy_energy[0] > legacy_energy[1] * 4.,
-            "negative legacy cutoff depth must lower the low-pass response: {legacy_energy:?}");
+            "negative modern cutoff depth must lower the low-pass response: {legacy_energy:?}");
     }
 
     /// The rearranged SSE section matches Simper's textbook update.
