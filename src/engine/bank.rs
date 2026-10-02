@@ -352,6 +352,7 @@ pub struct ZoneSkipCounts {
     pub invalid_group: usize,
     pub invalid_sample_bounds: usize,
     pub invalid_loop: usize,
+    pub unsupported_source: usize,
 }
 
 impl ZoneSkipCounts {
@@ -365,6 +366,7 @@ impl ZoneSkipCounts {
             (self.invalid_group, "invalid groups"),
             (self.invalid_sample_bounds, "invalid sample bounds"),
             (self.invalid_loop, "invalid loops"),
+            (self.unsupported_source, "unsupported sources"),
         ] {
             if count > 0 {
                 if !result.is_empty() { result.push_str(", "); }
@@ -376,7 +378,7 @@ impl ZoneSkipCounts {
 }
 
 #[derive(Clone, Copy)]
-enum ZoneSkipCause { UnavailableReference, UnreadableSample, InvalidGroup, InvalidSampleBounds, InvalidLoop }
+enum ZoneSkipCause { UnavailableReference, UnreadableSample, InvalidGroup, InvalidSampleBounds, InvalidLoop, UnsupportedSource }
 
 /// Everything a part needs to play, immutable once handed to an engine.
 pub struct Bank {
@@ -888,6 +890,7 @@ impl Issues {
             ZoneSkipCause::InvalidGroup => &mut self.counts.invalid_group,
             ZoneSkipCause::InvalidSampleBounds => &mut self.counts.invalid_sample_bounds,
             ZoneSkipCause::InvalidLoop => &mut self.counts.invalid_loop,
+            ZoneSkipCause::UnsupportedSource => &mut self.counts.unsupported_source,
         };
         *target += count;
     }
@@ -952,6 +955,14 @@ impl Builder {
                 issues.skip(ZoneSkipCause::InvalidGroup, format_args!("zone refers to missing group {}", zone.group));
                 continue;
             };
+            if let Some(source) = group.wavetable.as_ref()
+                && !super::wavetable::supported(source, group.key_tracking) {
+                issues.skip(ZoneSkipCause::UnsupportedSource, format_args!(
+                    "unsupported wavetable state: {} (zone ID {zone_id}, group {}, forms {}/{}, tracking {}, random {}, inharmonic mode {}, modulation type {}); zone excluded",
+                    zone.sample.display(), zone.group, source.form1_type, source.form2_type,
+                    group.key_tracking, source.phase_random, source.inharmonic_mode, source.mod_type));
+                continue;
+            }
             match play_map(&zone, group, frames) {
                 Ok((map, clamped)) => {
                     let wavetable = if group.wavetable.as_ref().is_some_and(|source| super::wavetable::supported(source, group.key_tracking)) {

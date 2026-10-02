@@ -1050,6 +1050,26 @@ fn wavetable_cycles_ignore_sample_rate_and_root_and_keep_common_note_lifetimes()
 }
 
 #[test]
+fn unsupported_wavetable_forms_are_counted_without_substituting_sample_playback() {
+    use kontakto::import::Wavetable;
+    let path = PathBuf::from("authored-rejected-wave-form");
+    let groups = vec![Group { wavetable: Some(Wavetable { form1_type: 16, form1: 0.5,
+        ..Default::default() }), ..Group::default() },
+        Group { wavetable: Some(Wavetable { form1_type: 17,
+            ..Default::default() }), ..Group::default() }];
+    let bank = Bank::from_samples(groups, vec![Zone { sample:path.clone(), ..Zone::default() },
+        Zone { sample:path.clone(), group:1, ..Zone::default() }],
+        vec![(path, Sample { rate:44100, frames:vec![[0.2;2];2048] })]).unwrap();
+    assert_eq!(bank.skipped_zones,1);
+    assert_eq!(bank.zone_skip_counts.unsupported_source,1);
+    assert_eq!(bank.zone_skip_counts.invalid_sample_bounds,0);
+    assert!(bank.issues.iter().any(|issue| issue.contains("group 1, forms 17/0") && issue.contains("zone excluded")));
+    let mut e = engine_with(bank);
+    e.note_on(0,69,100);
+    assert_eq!(e.active_voices(),1,"rejected form must not become an ordinary sample voice");
+}
+
+#[test]
 fn bare_wavetable_bank_and_its_upgrade_keep_complete_tables_and_voice_phase() {
     use kontakto::import::Wavetable;
     let dir = std::env::temp_dir().join(format!("kontra-wavetable-fill-{}",std::process::id()));
