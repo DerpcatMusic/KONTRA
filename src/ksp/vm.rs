@@ -51,6 +51,7 @@ pub enum Forward {
     Note,
     Release,
     Controller,
+    NoteController,
     PolyAt,
     Rpn { nrpn: bool },
 }
@@ -1262,7 +1263,9 @@ fn sys_of(ctx: &Ctx, env: &Env, slot: u8, v: SysVar) -> i32 {
         SysVar::NoteHeld => bool_int(env.events.held(ctx.event)),
         SysVar::CcNum => ctx.cc,
         SysVar::PitchBend => env.input.pitch_bend,
-        SysVar::PolyAtNum => ctx.note,
+        SysVar::PolyAtNum | SysVar::NcNote => ctx.note,
+        SysVar::NcNum => ctx.cc,
+        SysVar::NcValue => ctx.value,
         SysVar::RpnAddress => ctx.cc,
         SysVar::RpnValue => ctx.value,
         SysVar::MidiChannel => i32::from(ctx.channel),
