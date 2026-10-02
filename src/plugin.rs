@@ -3905,13 +3905,13 @@ fn bench_ui_concurrent_audio(mut dsp: Dsp, params: &Arc<SamplerParams>, tasks: &
     let duration = warmup + Duration::from_secs_f64(edits as f64/60. + 1.);
     std::thread::scope(|scope| {
         let audio = scope.spawn(|| {
-            let mut data = vec![vec![0.f32; frames]; 2*BUSES];
+            let mut data = vec![vec![0.0f32; frames]; 2*BUSES];
             let mut outgoing = EventList::with_capacity(0);
             let mut incoming = EventList::with_capacity(chord.len());
             let transport = TransportInfo::default();
             let mut process_times = Vec::new();
             let (mut block, mut peak_voices, mut late_starts, mut missed) = (0, 0, 0, 0);
-            let mut peak = 0.f32;
+            let mut peak = 0.0f32;
             let (mut edit_peak_voices, mut audible_blocks, mut nonfinite_samples) = (0, 0, 0);
             let (mut gaps, mut last_completion, mut seen) = (Vec::new(), start, dsp.live_seen[0]);
             while !stop.load(Ordering::Acquire) {
