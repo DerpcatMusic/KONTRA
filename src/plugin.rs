@@ -4907,10 +4907,12 @@ end on"#;
             .clone()
             .unwrap();
         assert_eq!(
-            shown.controls[0].properties["$CONTROL_PAR_VALUE"],
-            crate::ksp::Value::Int(1),
+            p.shared.view.lock().unwrap().parts[0].control_value(0),
+            Some(1.),
             "the view shows an edit at once"
         );
+        assert_eq!(shown.controls[0].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(0),
+            "the pending edit preserves callback metadata");
         let live = p.shared.view.lock().unwrap().parts[0].live.take().unwrap();
         p.shared.live_requests.push((0, dsp.script_epoch[0], live)).ok().unwrap();
 
