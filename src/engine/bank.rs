@@ -118,6 +118,8 @@ impl From<&crate::import::Ahdsr> for Ahdsr {
             decay: env.decay_ms / 1000.0,
             sustain: env.sustain.clamp(0.0, 1.0),
             release: env.release_ms / 1000.0,
+            // Native mode/flag bytes have no verified AHD mapping.
+            ahd_only: false,
         }
     }
 }

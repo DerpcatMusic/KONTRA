@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn envelope_lays_out_left_to_right_and_places_playheads() {
-        let env = Ahdsr { attack: 0.01, curve: 0., hold: 0., decay: 1., sustain: 0.5, release: 3. };
+        let env = Ahdsr { attack: 0.01, curve: 0., hold: 0., decay: 1., sustain: 0.5, release: 3., ahd_only: false };
         let shape = envelope(&env);
         assert!(shape.line.windows(2).all(|w| w[1][0] >= w[0][0]), "x only grows");
         assert_eq!(shape.line.last().unwrap()[0], 1.);
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn ghost_and_edit_share_a_time_axis() {
-        let short = Ahdsr { attack: 0.01, curve: 0., hold: 0., decay: 1., sustain: 0.5, release: 0.3 };
+        let short = Ahdsr { attack: 0.01, curve: 0., hold: 0., decay: 1., sustain: 0.5, release: 0.3, ahd_only: false };
         let long = Ahdsr { release: 6., ..short };
         let total = envelope_width(&long);
         let (a, b) = (envelope_over(&short, total), envelope_over(&long, total));
