@@ -2140,6 +2140,20 @@ mod tests {
                 kind: "external".into() }], ..Group::default() };
         let length = Address::resolve(EnginePar { id: id::INTMOD_INTENSITY,
             group: 0, slot: 0, generic: 1 }, std::slice::from_ref(&group)).unwrap();
+        // The saved oscillator is audible, but live LFO target writes remain
+        // unsupported. Do not accept a write into metadata while leaving its
+        // prepared depth unchanged; both Host and ScriptSetup use this gate.
+        group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
+            assignments: None, volume_env: false, bypassed: false, flex: false,
+            envelope: None, kind: "unsupported".into() });
+        group.modulators[7] = Modulator { name: "LFO_Pitch_Retrigger".into(),
+            targets: vec!["Pitch".into()], assignments: None, volume_env: false,
+            bypassed: false, flex: false, envelope: None, kind: "lfo".into() };
+        for id in [id::INTMOD_INTENSITY, id::MOD_TARGET_MP_INTENSITY, id::MOD_TARGET_INTENSITY] {
+            let par = EnginePar { id, group: 0, slot: 7, generic: 0 };
+            assert!(Address::resolve(par, std::slice::from_ref(&group)).is_none());
+            assert!(!Address::inert(par, std::slice::from_ref(&group)));
+        }
         let frames: Vec<_> = (0..4096).map(|n| [(n as f32 * 0.031).sin() * 0.2; 2]).collect();
         let path = std::env::temp_dir().join(format!("kontakto-loop-lfo-{}.wav", std::process::id()));
         let mut wav = b"RIFF".to_vec(); wav.extend((36u32 + 4096 * 8).to_le_bytes());
