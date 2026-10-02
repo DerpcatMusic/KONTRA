@@ -1282,7 +1282,9 @@ impl Shared {
                 .chain(diagnostics.notes.iter().map(|n| (*n).to_owned())).collect::<Vec<_>>().join("\n");
             let load_id = previous["script_restore"]["load_id"].as_str().or_else(|| previous["load_id"].as_str()).map(str::to_owned);
             let mut report = (*previous).clone();
-            if !diagnostics.faults.is_empty() || !diagnostics.notes.is_empty() { report["status"] = "partial".into(); }
+            if report["status"] == "loaded" && (!diagnostics.faults.is_empty() || !diagnostics.notes.is_empty()) {
+                report["status"] = "partial".into();
+            }
             report["runtime"] = runtime;
             let report = Arc::new(report);
             let mut view = self.view.lock().unwrap();
@@ -3959,6 +3961,29 @@ mod tests {
         assert!(!p.shared.queue_snapshot(0, &multi, "preset.nksn".into()));
         let program = Part { program: 1, ..part };
         assert!(!p.shared.queue_snapshot(0, &program, "preset.nksn".into()));
+    }
+
+    #[test]
+    fn live_diagnostics_preserve_failed_load_status_and_failure_cause() {
+        let shared = Shared::default();
+        for initial in ["failed", "canceled", "loaded", "partial"] {
+            {
+                let mut view = shared.view.lock().unwrap();
+                let part = &mut view.parts[0];
+                part.script_epoch = 1;
+                part.diagnostics_dirty = true;
+                part.live_diagnostics = Some(Arc::new(LiveDiagnostics {
+                    epoch: 1, faults: Vec::new(), notes: vec!["Existing runtime feature remains unsupported"],
+                }));
+                part.load_report = Some(Arc::new(serde_json::json!({"status": initial, "failure": "Foreign base rejected"})));
+            }
+            shared.drain_live_diagnostics();
+            let view = shared.view.lock().unwrap();
+            let report = view.parts[0].load_report.as_ref().unwrap();
+            assert_eq!(report["status"], if initial == "loaded" { "partial" } else { initial });
+            assert_eq!(report["failure"], "Foreign base rejected");
+            assert_eq!(report["runtime"]["notes"][0], "Existing runtime feature remains unsupported");
+        }
     }
 
     /// Opt-in real worker proof; only paths are supplied by the local owner.
