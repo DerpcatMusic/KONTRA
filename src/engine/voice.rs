@@ -5,7 +5,7 @@ use super::{
     bank::{Bank, Span},
     filter::{FilterKey, LaneFilter, VoiceFilter},
     map::{FOREVER, PlayMap, Run},
-    params::{Inputs, VOICE_MODS},
+    params::{Inputs, VOICE_MODS, PITCH_ENVS},
     stream::Slot,
 };
 use crate::audio::Frame;
@@ -960,6 +960,7 @@ pub(crate) struct Voice {
     pub pitch: (f32, f64),
     /// Current value of each of the group's voiced modulation assignments.
     pub mods: [f32; VOICE_MODS],
+    pub pitch_envs: [Envelope; PITCH_ENVS],
     /// The last modulation result `(gain, semitones)`, and the input stamp
     /// ([`Context::inputs`]) it holds for while the modulation is settled.
     pub modulated: (f32, f32),
@@ -1117,7 +1118,10 @@ impl Voice {
             self.modulated = (gain, semitones);
             self.settled = settled.then_some(cx.inputs);
         }
-        let (modulation, semitones) = self.modulated;
+        let (modulation, mut semitones) = self.modulated;
+        for (params, state) in group.pitch_envelopes.iter().zip(&mut self.pitch_envs) {
+            semitones += params.pitch(state, n, cx.rate);
+        }
         let initial = self.pitch.0.is_nan();
         let semitones = semitones + group.tune + cx.tune + x.tune + master.map_or(0., |(_, bend, range)| bend * range);
         if semitones != self.pitch.0 {
@@ -1493,6 +1497,7 @@ impl Voice {
         self.held = false;
         self.env.release(None);
         self.filter.release();
+        for env in &mut self.pitch_envs { env.release(None); }
         if let Some(env) = &mut self.flex {
             env.release(bank.settings[self.group as usize].flex.as_ref());
         }

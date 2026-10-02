@@ -151,16 +151,15 @@ pub fn performance(
         .read(&format!("{}.txt", &filename[..filename.len() - 4]))?
         .unwrap_or_default();
     let layout = Layout::parse(&String::from_utf8_lossy(&text));
-    let frames = layout
-        .cut(&image)
-        .into_iter()
-        .collect::<Vec<_>>();
-    if frames.is_empty() {
+    let (fw, fh) = layout.frame_size(&image);
+    if fw == 0 || fh == 0 {
         return Err("Invalid instrument wallpaper frames".into());
     }
+    // Retain the original atlas once. Pixel offsets can start between animation frames.
     Ok(Some(Arc::new(Picture {
-        frames,
+        frames: vec![Arc::new(image)],
         stretch: layout.stretch,
+        atlas: Some([fw, fh]),
     })))
 }
 
@@ -184,16 +183,38 @@ pub struct Picture {
     /// "Horizontal" and "Vertical Resizable"); otherwise it keeps its own
     /// size that way.
     pub stretch: [bool; 2],
+    /// Wallpaper frame dimensions in the full image retained in `frames[0]`.
+    /// Control pictures use separate frames and leave this unset.
+    pub atlas: Option<[u32; 2]>,
 }
 
 impl Picture {
+    /// Select a wallpaper frame and an additional authored vertical pixel offset.
+    /// The returned origin is sampled/drawn from the same image, without copying pixels.
+    pub fn wallpaper(&self, state: i32, offset: i32) -> Option<(Arc<Image>, [u32; 2])> {
+        if let Some([fw, fh]) = self.atlas {
+            let image = self.frames.first()?.clone();
+            if fw == 0 || fh == 0 { return None; }
+            let across = (image.width / fw).max(1);
+            let down = (image.height / fh).max(1);
+            let state = (state.max(0) as u32).min(across.saturating_mul(down).saturating_sub(1));
+            let origin = [state % across * fw, (state / across * fh).saturating_add(offset.max(0) as u32).min(image.height)];
+            Some((image, origin))
+        } else {
+            let frame = self.frames.get((state.max(0) as usize).min(self.frames.len().saturating_sub(1)))?.clone();
+            let y = (offset.max(0) as u32).min(frame.height);
+            Some((frame, [0, y]))
+        }
+    }
+
     /// The size it draws at on a control `w` by `h`: its own, but along a
     /// way it stretches.
     pub fn size(&self, w: f64, h: f64) -> (f64, f64) {
         let f = &self.frames[0];
+        let [fw, fh] = self.atlas.unwrap_or([f.width, f.height]);
         (
-            if self.stretch[0] { w } else { f64::from(f.width) },
-            if self.stretch[1] { h } else { f64::from(f.height) },
+            if self.stretch[0] { w } else { f64::from(fw) },
+            if self.stretch[1] { h } else { f64::from(fh) },
         )
     }
 }
@@ -201,6 +222,48 @@ impl Picture {
 /// The control pictures named in `names` that the preset's library has.
 pub fn pictures<'a>(path: &Path, names: impl IntoIterator<Item = &'a str>) -> HashMap<String, Arc<Picture>> {
     pictures_report(path, names).0
+}
+
+/// Font resources share the existing off-thread picture loading/cache path.
+/// The internal prefix cannot collide with a valid plain picture filename.
+pub fn font_key(name: &str) -> String { format!("@font/{name}") }
+
+pub fn picture_names(interface: &crate::ksp::Interface) -> impl Iterator<Item = std::borrow::Cow<'_, str>> {
+    interface.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+        Some(crate::ksp::Value::Text(name)) if !name.is_empty() => Some(std::borrow::Cow::Borrowed(name.as_str())),
+        _ => None,
+    }).chain(interface.fonts.iter().map(|name| std::borrow::Cow::Owned(font_key(name))))
+}
+
+/// Kontakt bitmap fonts place 256 Windows-1252 glyphs side by side. A
+/// fully red pixel starts each glyph on the metadata row, which is not drawn.
+/// https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands
+pub(crate) fn font_frames(image: &Image) -> Result<Vec<Arc<Image>>, String> {
+    if image.height < 2 { return Err("bitmap font has no glyph rows".into()); }
+    let starts: Vec<u32> = (0..image.width).filter(|&x| {
+        let at = x as usize * 4;
+        image.rgba[at..at + 3] == [255, 0, 0]
+    }).collect();
+    if starts.len() != 256 || starts[0] != 0 {
+        return Err(format!("bitmap font needs 256 red glyph markers starting at x=0; found {}", starts.len()));
+    }
+    starts.iter().enumerate().map(|(n, &x)| {
+        crop(image, x, 1, starts.get(n + 1).copied().unwrap_or(image.width) - x, image.height - 1)
+            .ok_or_else(|| "invalid bitmap glyph dimensions".into())
+    }).collect()
+}
+
+/// Unicode text is indexed by the font's documented Windows-1252 byte order.
+/// Characters outside that alphabet use its authored question-mark glyph.
+pub(crate) fn font_glyph(c: char) -> usize {
+    const EXTENDED: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+        '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+    ];
+    match c as u32 {
+        0..=127 | 160..=255 => c as usize,
+        _ => EXTENDED.iter().position(|&glyph| glyph == c).map_or(b'?' as usize, |n| n + 128),
+    }
 }
 
 /// Preserve why a named control picture failed instead of silently discarding it.
@@ -215,19 +278,26 @@ pub fn pictures_report<'a>(
     for name in names {
         if name.is_empty() || !attempted.insert(name) { continue; }
         let result = (|| -> Result<Picture, String> {
-            let file = png_name(name).ok_or_else(|| format!("Picture {name:?}: invalid resource name"))?;
+            let font = name.strip_prefix("@font/");
+            let file = png_name(font.unwrap_or(name)).ok_or_else(|| format!("Picture {name:?}: invalid resource name"))?;
             let bytes = source.read(&file)?.ok_or_else(|| format!("Picture {file:?}: not found in the library resources or archives"))?;
             let image = decode_report(&bytes).map_err(|e| format!("Picture {file:?}: {e}"))?;
             let sidecar = format!("{}.txt", &file[..file.len() - 4]);
-            let text = source.read(&sidecar)?.unwrap_or_default();
-            let layout = Layout::parse(&String::from_utf8_lossy(&text));
-            let frames = layout.cut(&image);
+            let text = source.read(&sidecar)?;
+            if font.is_some() && text.is_none() { return Err(format!("Bitmap font {file:?}: required {sidecar:?} is missing")); }
+            let layout = Layout::parse(&String::from_utf8_lossy(&text.unwrap_or_default()));
+            let frames = if font.is_some() {
+                if layout.frames != 1 { return Err(format!("Bitmap font {file:?}: animated font strips are unsupported")); }
+                font_frames(&image).map_err(|e| format!("Bitmap font {file:?}: {e}"))?
+            } else { layout.cut(&image) };
             if frames.is_empty() { return Err(format!("Picture {file:?}: invalid frame dimensions in {sidecar:?}")); }
-            Ok(Picture { frames, stretch: layout.stretch })
+            Ok(Picture { frames, stretch: layout.stretch, atlas: None })
         })();
         match result {
             Ok(picture) => { out.insert(name.to_owned(), Arc::new(picture)); }
-            Err(e) => errors.push(format!("{name}: {e}")),
+            Err(e) => errors.push(if name.starts_with("@font/") {
+                format!("{name}: {e}; using bundled Noto Sans")
+            } else { format!("{name}: {e}") }),
         }
     }
     (out, errors)
@@ -282,13 +352,14 @@ impl Layout {
         layout
     }
 
+    fn frame_size(&self, image: &Image) -> (u32, u32) {
+        if self.horizontal { (image.width / self.frames, image.height) }
+        else { (image.width, image.height / self.frames) }
+    }
+
     fn cut(&self, image: &Image) -> Vec<Arc<Image>> {
         let n = self.frames;
-        let (fw, fh) = if self.horizontal {
-            (image.width / n, image.height)
-        } else {
-            (image.width, image.height / n)
-        };
+        let (fw, fh) = self.frame_size(image);
         (0..n)
             .map_while(|f| {
                 let (x, y) = if self.horizontal {
@@ -612,6 +683,21 @@ mod tests {
         let frame = super::Layout::parse("").cut(&image).pop().unwrap();
         assert!(std::sync::Arc::ptr_eq(&frame.rgba, &image.rgba), "a full frame shares its pixels");
         assert!(super::crop(&image, u32::MAX, 0, 2, 1).is_none());
+    }
+
+    #[test]
+    fn wallpaper_atlases_keep_exact_offsets_without_frame_copies() {
+        use std::sync::Arc;
+        let image = Arc::new(super::Image::rgba(2, 6, [10, 20, 30, 255].repeat(12)).unwrap());
+        let vertical = super::Picture { frames: vec![image.clone()], stretch: [false; 2], atlas: Some([2, 3]) };
+        let (same, origin) = vertical.wallpaper(0, 2).unwrap();
+        assert!(Arc::ptr_eq(&same, &image));
+        assert_eq!(origin, [0, 2], "offset need not be a frame boundary");
+        assert_eq!(vertical.wallpaper(1, 1).unwrap().1, [0, 4]);
+        assert_eq!(vertical.wallpaper(-1, -20).unwrap().1, [0, 0]);
+        assert_eq!(vertical.wallpaper(i32::MAX, i32::MAX).unwrap().1, [0, 6]);
+        let across = super::Picture { frames: vec![image], stretch: [false; 2], atlas: Some([1, 6]) };
+        assert_eq!(across.wallpaper(1, 2).unwrap().1, [1, 2], "horizontal animation state remains independent of vertical pixel offset");
     }
 
     #[test]

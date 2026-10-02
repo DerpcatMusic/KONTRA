@@ -171,6 +171,211 @@ fn wallpaper_frames_follow_script_changes_in_the_live_view() {
     assert_eq!(live.interface.as_ref().unwrap().wallpaper_state, 1);
 }
 
+#[test]
+fn skin_offsets_are_pixels_per_slot_and_refresh_without_changing_picture_state() {
+    let mut rig = Rig::new(&[
+        "on init\nmake_perfview\ndeclare ui_switch $page\nset_skin_offset(-17)\nend on\non ui_control($page)\nset_skin_offset($page * 91)\nend on",
+        "on init\nmake_perfview\ndeclare ui_switch $page\nset_skin_offset(223)\nset_control_par($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE_STATE,3)\nend on\non ui_control($page)\nset_skin_offset(223 + $page * 484)\nend on",
+    ]);
+    assert_eq!(rig.rt.interface(0).skin_offset, -17);
+    let mut live = rig.rt.live();
+    assert_eq!(live.slot, 1);
+    assert_eq!(live.interface.as_ref().unwrap().skin_offset, 223);
+    let changes = rig.rt.changes();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert!(rig.rt.changes() > changes);
+    assert_eq!(rig.rt.interface(0).skin_offset, 91);
+    rig.rt.refresh_live(&mut live);
+    assert_eq!(live.interface.as_ref().unwrap().skin_offset, 223);
+    rig.rt.ui_control(&mut rig.engine, 1, 0, 1);
+    assert!(rig.rt.refresh_live(&mut live));
+    let ui = live.interface.unwrap();
+    assert_eq!(ui.skin_offset, 707);
+    assert_eq!(ui.wallpaper_state, 3);
+    assert!(rig.rt.diagnostics().is_empty());
+}
+
+#[test]
+fn wallpaper_uses_last_assigning_slot_and_offsets_refresh_without_controls() {
+    let mut rig = Rig::new(&[
+        "on init\nmake_perfview\nset_control_par_str($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE,\"first\")\nset_skin_offset(19)\nend on",
+        "on init\nmake_perfview\nset_skin_offset(37)\nend on\non controller\nset_skin_offset(%CC[$CC_NUM] * 13)\nend on",
+        "on init\nset_control_par_str($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE,\"last\")\nset_skin_offset(900)\nend on",
+    ]);
+    assert_eq!(rig.rt.interface(0).wallpaper, "last");
+    assert_eq!(rig.rt.interface(0).skin_offset, 19);
+    let mut live = rig.rt.live();
+    assert_eq!(live.slot, 1);
+    assert_eq!(live.interface.as_ref().unwrap().wallpaper, "last");
+    assert_eq!(live.interface.as_ref().unwrap().skin_offset, 37);
+    rig.rt.controller(&mut rig.engine, 0, 1, 17);
+    assert!(rig.rt.refresh_live(&mut live));
+    assert_eq!(live.interface.as_ref().unwrap().skin_offset, 221);
+    assert_eq!(live.interface.as_ref().unwrap().wallpaper, "last");
+    assert!(!rig.rt.refresh_live(&mut live));
+}
+
+#[test]
+fn scalar_edits_refresh_large_views_without_recopying_unchanged_metadata() {
+    let mut source = String::from("on init\nmake_perfview\n");
+    for n in 0..1000 { source.push_str(&format!("declare ui_slider $s{n}(0,100)\nset_text($s{n},\"same\")\n")); }
+    source.push_str("declare ui_menu $menu\nadd_menu_item($menu,\"first\",1)\nadd_menu_item($menu,\"second\",2)\nset_menu_item_visibility(get_ui_id($menu),1,0)\n$menu := 1\ndeclare ui_table %table[96](1,1,127)\nend on\non ui_control($s0)\n");
+    for n in 0..1000 { source.push_str(&format!("set_text($s{n},\"same\")\n")); }
+    source.push_str("set_control_par_str(get_ui_id($s998),$CONTROL_PAR_TEXT,\"changed\")\n$s999 := $s0 + 1\n%table[73] := $s0\nset_menu_item_str(get_ui_id($menu),0,\"renamed\")\n$menu := 2\nend on");
+    let mut rig = Rig::new(&[&source]);
+    let mut live = rig.rt.live();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 65);
+    let mut refresh = Refresh::default();
+    let mut passes = 1;
+    while !rig.rt.refresh_live_within(&mut live, &mut refresh, 512) { passes += 1; }
+    assert!(passes <= 5, "a scalar edit took {passes} audio blocks");
+    assert!(refresh.changed);
+    let ui = live.interface.as_ref().unwrap();
+    assert_eq!(prop(ui, 0, "$CONTROL_PAR_VALUE"), "65");
+    assert_eq!(prop(ui, 998, "$CONTROL_PAR_TEXT"), "changed");
+    assert_eq!(prop(ui, 999, "$CONTROL_PAR_VALUE"), "66");
+    assert_eq!(ui.controls[1000].menu, [("renamed".into(),1), ("second".into(),2)]);
+    assert_eq!(ui.controls[1001].properties["$CONTROL_PAR_VALUE"], Value::IntArray((0..96).map(|n| if n == 73 { 65 } else { 0 }).collect()));
+    // A second prepared consumer has its own metadata history.
+    let mut other = rig.rt.live();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 70);
+    assert!(rig.rt.refresh_live(&mut other));
+    assert_eq!(prop(other.interface.as_ref().unwrap(), 999, "$CONTROL_PAR_VALUE"), "71");
+    assert!(rig.rt.refresh_live(&mut live));
+    assert_eq!(prop(live.interface.as_ref().unwrap(), 999, "$CONTROL_PAR_VALUE"), "71");
+    assert!(!rig.rt.refresh_live(&mut live));
+}
+
+#[test]
+fn ui_value_revisions_cover_indexed_bulk_host_and_mid_refresh_writes() {
+    let source = r#"on init
+make_perfview
+declare ui_slider $edit(0,10)
+declare ui_table %table[2048](1,1,127)
+declare %source[2048]
+declare $i
+declare ui_xy ?xy[2]
+declare ui_text_edit @text
+declare ui_menu $menu
+add_menu_item($menu,"first",0)
+add_menu_item($menu,"second",5)
+set_menu_item_visibility(get_ui_id($menu),1,0)
+$i := 0
+while ($i < 2048)
+%source[$i] := 2048 - $i
+inc($i)
+end while
+end on
+on ui_control($edit)
+if ($edit = 1)
+%table[1024] := 1
+set_control_par_arr(get_ui_id(%table),$CONTROL_PAR_VALUE,77,1536)
+set_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0.5,1)
+@text := "changed"
+$menu := 5
+else
+if ($edit = 2)
+$i := 0
+while ($i < 2048)
+%table[$i] := %source[$i]
+inc($i)
+end while
+else
+if ($edit = 3)
+sort(%table,0)
+else
+if ($edit = 4)
+get_event_ids(%table)
+else
+%table[0] := 99
+end if
+end if
+end if
+end if
+end on
+on controller
+%table[7] := %CC[$CC_NUM]
+@text := "cc"
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    let mut live = rig.rt.live();
+    let mut other = rig.rt.live();
+    let finish = |rt: &Runtime, live: &mut Live| {
+        let mut refresh = Refresh::default();
+        let mut passes = 1;
+        while !rt.refresh_live_within(live, &mut refresh, 512) { passes += 1; }
+        (passes, refresh.changed)
+    };
+    assert_eq!(finish(&rig.rt, &mut live), (1, false), "prepared arrays are already current");
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert!(finish(&rig.rt, &mut live).1);
+    let ui = live.interface.as_ref().unwrap();
+    let table = |live: &Live| match &live.interface.as_ref().unwrap().controls[1].properties["$CONTROL_PAR_VALUE"] {
+        Value::IntArray(v) => v.clone(), _ => panic!("expected table"),
+    };
+    assert_eq!((table(&live)[1024],table(&live)[1536]), (1,77));
+    assert_eq!(ui.controls[2].properties["$CONTROL_PAR_VALUE"], Value::RealArray(vec![0.0,0.5]));
+    assert_eq!(prop(ui,3,"$CONTROL_PAR_VALUE"), "changed");
+    assert_eq!(ui.controls[4].menu.len(),2, "selection can reveal a hidden menu row");
+    assert!(finish(&rig.rt, &mut other).1, "independent consumers retain independent revisions");
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 2);
+    finish(&rig.rt, &mut live);
+    assert_eq!(table(&live), (1..=2048).rev().collect::<Vec<_>>(), "optimized loop copy dirties its destination");
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 3);
+    finish(&rig.rt, &mut live);
+    assert_eq!(table(&live), (1..=2048).collect::<Vec<_>>(), "bulk sorting dirties its borrowed range");
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 4);
+    finish(&rig.rt, &mut live);
+    assert!(table(&live).iter().all(|&v| v == 0), "host event census bulk fill is visible");
+    rig.rt.controller(&mut rig.engine,0,1,81);
+    finish(&rig.rt, &mut live);
+    assert_eq!(table(&live)[7],81);
+    assert_eq!(prop(live.interface.as_ref().unwrap(),3,"$CONTROL_PAR_VALUE"),"cc");
+    rig.rt.ui_control(&mut rig.engine,0,0,1);
+    let mut refresh = Refresh::default();
+    assert!(!rig.rt.refresh_live_within(&mut live,&mut refresh,32));
+    rig.rt.ui_control(&mut rig.engine,0,0,5); // overwrite a cell already copied in the first chunk
+    while !rig.rt.refresh_live_within(&mut live,&mut refresh,512) {}
+    assert!(finish(&rig.rt,&mut live).1, "a write between chunks remains pending");
+    assert_eq!(table(&live)[0],99);
+    assert_eq!(finish(&rig.rt,&mut live),(1,false), "unchanged arrays are skipped only after complete delivery");
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn stored_strings_bound_unicode_and_continue_repeated_notes() {
+    let mut rig = Rig::new(&[r#"on init
+make_perfview
+declare ui_text_edit @text
+declare @ascii
+declare !rows[1]
+declare $notes
+make_persistent(@text)
+make_persistent(@ascii)
+make_persistent(!rows)
+make_persistent($notes)
+end on
+on note
+@ascii := @ascii & "abcde"
+@text := @text & "😀"
+!rows[0] := @text
+message(@text)
+inc($notes)
+end on"#]);
+    let mut live = rig.rt.live();
+    for _ in 0..800 { rig.on(0,60).off(0,60).block(64); }
+    let saved = rig.rt.persistence();
+    assert_eq!(saved[0]["@ascii"],Value::Text("abcde".repeat(64)));
+    assert_eq!(saved[0]["@text"],Value::Text("😀".repeat(320)));
+    assert_eq!(saved[0]["!rows"],Value::Array(vec![Value::Text("😀".repeat(320))]));
+    assert_eq!(saved[0]["$notes"],Value::Int(800),"debug text cannot abort musical callbacks");
+    assert_eq!(rig.rt.last_message(),"😀".repeat(320));
+    assert!(rig.rt.refresh_live(&mut live));
+    assert_eq!(prop(live.interface.as_ref().unwrap(),0,"$CONTROL_PAR_VALUE"),"😀".repeat(320),"prepared live text holds the entire stored value");
+    assert!(!rig.rt.refresh_live(&mut live));
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
 // ---- Initialization (ported from the init-only interpreter) ---------------------------
 
 #[test]
@@ -392,14 +597,13 @@ fn computed_ui_and_execution_limits() {
     // Integer division by zero is 0, reported, and init goes on.
     let div = initialize("on init\ndeclare $z\ndeclare $a := 1/$z\nend on", 0, 0).unwrap();
     assert!(div.diagnostics.iter().any(|d| d.contains("division by zero")));
-    assert!(
-        initialize(
-            "on init\ndeclare @s := \"x\"\nwhile (1)\n@s := @s & @s\nend while\nend on",
-            0,
-            0
-        )
-        .is_err()
-    );
+    // Stored strings saturate at the documented bound; growth itself is
+    // valid. The separate runaway above verifies the instruction guard.
+    let bounded = initialize(
+        "on init\ndeclare ui_text_edit @s\n@s := \"x\"\ndeclare $i\nwhile ($i < 64)\n@s := @s & @s\ninc($i)\nend while\nend on", 0, 0,
+    ).unwrap();
+    assert_eq!(prop(&bounded,0,"$CONTROL_PAR_VALUE"),"x".repeat(320));
+    assert!(bounded.diagnostics.is_empty(),"{:?}",bounded.diagnostics);
     assert!(
         initialize(
             "on init\ndeclare ui_button $a\nmove_control($a,2147483647,-2147483647-1)\nend on",
@@ -906,7 +1110,7 @@ end on"#]);
     rig.rt.controller(&mut rig.engine, 0, 1, 90);
     rig.engine.calls.clear();
     rig.rt.all_sound_off(1 << 2);
-    assert!(!rig.rt.key_down_from(5, 2, 60));
+    assert!(rig.rt.key_down_from(5, 2, 60), "sound-off retains held physical roots");
     assert!(rig.rt.key_down_from(5, 7, 60));
     assert!(rig.engine.calls.is_empty(), "cancellation must not forward or release events");
     rig.block(1024);
@@ -927,7 +1131,7 @@ end on"#]);
     rig.engine.calls.clear();
     rig.rt.all_sound_off(u16::MAX);
     rig.rt.reset_controllers(None);
-    assert_eq!(rig.rt.env.events.live_count(), 0, "canceled callback rows must be reusable");
+    assert_eq!(rig.rt.env.events.live_count(), 3, "physical rows survive sound-off until actual key-up");
     assert_eq!(rig.rt.env.input.cc[64], 0);
     assert_eq!(rig.rt.env.input.cc[11], 127);
     assert_eq!(rig.rt.env.input.cc[7], 63, "Panic must preserve channel volume");
@@ -945,6 +1149,8 @@ end on"#]);
     rig.on(0, 60).block(1024);
     assert!(rig.engine.calls.iter().any(|c| matches!(c, EngineCall::PlayNote { channel: 2, note: 72, .. })));
     rig.rt.all_sound_off(u16::MAX);
+    assert_eq!(rig.rt.env.events.live_count(), 4);
+    rig.rt.cleanup_notes(&mut rig.engine);
     assert_eq!(rig.rt.env.events.live_count(), 0);
     assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
 }
@@ -1688,4 +1894,252 @@ end on"#;
         assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "First");
         assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), label);
     }
+}
+
+#[test]
+fn stop_wait_resumes_cleanup_and_optionally_ignores_later_waits() {
+    for mode in [0, 1] {
+        let source = format!(r#"on init
+ declare $callback
+ declare ui_label $info(1,1)
+end on
+on note
+ $callback := $NI_CALLBACK_ID
+ set_text($info,"waiting")
+ wait(100000)
+ set_text($info,"resumed")
+ wait_ticks(960)
+ set_text($info,"cleaned")
+end on
+on controller
+ stop_wait($callback,{mode})
+end on"#);
+        let mut rig = Rig::new(&[&source]);
+        rig.on(0,60);
+        assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"waiting");
+        rig.rt.controller(&mut rig.engine,0,1,127);
+        assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),if mode == 1 { "cleaned" } else { "resumed" });
+        rig.block(48000);
+        assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"cleaned");
+        assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+    }
+}
+
+#[test]
+fn live_revisions_distinguish_interface_keys_and_unchanged_callbacks() {
+    let source = r#"on init
+make_perfview
+declare ui_label $label(1,1)
+declare ui_table %table[2048](1,1,127)
+set_text($label, "start")
+end on
+on controller
+if ($CC_NUM = 1)
+set_text($label, "changed")
+set_skin_offset(23)
+else
+if ($CC_NUM = 2)
+set_key_name(60,"key")
+else
+%table[2000] := 1
+end if
+end if
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    let mut live = rig.rt.live();
+    let initial = live.revisions();
+    rig.rt.controller(&mut rig.engine, 0, 1, 1);
+    rig.rt.refresh_live(&mut live);
+    let interface = live.revisions();
+    assert!(interface.0 > initial.0);
+    assert_eq!(interface.1, initial.1, "metadata/skin changes leave key revisions alone");
+    rig.rt.controller(&mut rig.engine, 0, 1, 1);
+    assert!(!rig.rt.refresh_live(&mut live));
+    assert_eq!(live.revisions(), interface, "identical setters/callbacks do not invalidate publication");
+    rig.rt.controller(&mut rig.engine, 0, 2, 1);
+    rig.rt.refresh_live(&mut live);
+    let keys = live.revisions();
+    assert_eq!(keys.0, interface.0, "keyboard changes do not invalidate the interface");
+    assert!(keys.1 > interface.1);
+    rig.rt.controller(&mut rig.engine, 0, 3, 1);
+    let mut refresh = Refresh::default();
+    while !rig.rt.refresh_live_within(&mut live, &mut refresh, 16) {}
+    let table = live.revisions();
+    assert!(table.0 > keys.0, "a changed array cell invalidates the completed snapshot");
+    assert_eq!(table.1, keys.1);
+    rig.rt.refresh_live_within(&mut live, &mut refresh, 16);
+    assert_eq!(live.revisions(), table, "sticky Refresh.changed never repeats revision bumps");
+    rig.rt.env.note("synthetic service note");
+    rig.rt.refresh_diagnostics(&mut live);
+    assert_eq!(live.revisions(), table, "diagnostics do not invalidate visual snapshots");
+    assert_eq!(live, rig.rt.live(), "copy history is excluded from semantic equality");
+}
+
+#[test]
+fn panic_cleanup_preserves_ui_and_fences_fresh_notes_until_legato_state_is_clear() {
+    let source = r#"on init
+ declare %buffer[2] := (-1,-1)
+ declare $count
+ declare ui_switch $go
+ declare ui_label $info(1,1)
+end on
+on note
+ ignore_event($EVENT_ID)
+ %buffer[1] := %buffer[0]
+ %buffer[0] := $EVENT_NOTE
+ set_text($info,"note:" & %buffer[1])
+end on
+on release
+ wait(1000000)
+ $count := 0
+ while ($count<10000)
+  inc($count)
+ end while
+ if (%buffer[1] # -1)
+  play_note(%buffer[1],100,0,0)
+ end if
+ %buffer[0] := %buffer[1]
+ %buffer[1] := -1
+ set_text($info,"cleared")
+end on
+on ui_control($go)
+ wait(10000)
+ $go := 7
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    rig.on(0,60).on(0,60);
+    rig.rt.ui_control(&mut rig.engine,0,0,1);
+    rig.rt.env.block_fuel = 32;
+    rig.rt.cleanup_notes(&mut rig.engine);
+    // The release skips authored waits, but remains subject to the block budget.
+    assert_eq!(prop(&rig.rt.interface(0),1,"$CONTROL_PAR_TEXT"),"note:60");
+    rig.on(0,60);
+    assert_eq!(prop(&rig.rt.interface(0),1,"$CONTROL_PAR_TEXT"),"note:60","fresh note must wait for cleanup");
+    rig.engine.calls.clear();
+    for _ in 0..8 { rig.rt.begin_audio_block(1024,1,true); rig.block(1024); }
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_VALUE"),"7","UI callback survives cleanup");
+    assert_eq!(prop(&rig.rt.interface(0),1,"$CONTROL_PAR_TEXT"),"note:-1","fresh note sees cleared legato buffer");
+    assert!(rig.engine.calls.is_empty(),"cleanup must not generate replacement voices: {:?}",rig.log());
+    rig.off(0,60).block(96000);
+    assert_eq!(prop(&rig.rt.interface(0),1,"$CONTROL_PAR_TEXT"),"cleared");
+    assert!(!rig.engine.calls.iter().any(|c| matches!(c,EngineCall::PlayNote{..})),"normal release has no phantom buffered note");
+    assert_eq!(rig.rt.env.events.live_count(),0);
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn panic_cleanup_still_releases_the_first_slot_after_a_script_released_later_slots() {
+    let first = "on init\ndeclare ui_label $info(1,1)\nend on\non note\nwait(1)\nnote_off($EVENT_ID)\nend on\non release\nset_text($info,\"first cleared\")\nend on";
+    let last = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nset_text($info,\"last released\")\nend on";
+    let mut rig = Rig::new(&[first,last]);
+    rig.on(0,60).block(64);
+    assert_eq!(prop(&rig.rt.interface(1),0,"$CONTROL_PAR_TEXT"),"last released");
+    rig.rt.cleanup_notes(&mut rig.engine);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"first cleared");
+    assert_eq!(rig.rt.env.events.live_count(),0);
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn panic_cleanup_continues_finished_ignored_releases_without_replaying_notifications() {
+    let first = "on init\ndeclare $count\ndeclare ui_label $info(1,1)\nend on\non release\ninc($count)\nset_text($info,$count)\nignore_event($EVENT_ID)\nend on";
+    let last = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nset_text($info,\"last cleaned\")\nend on";
+    for sources in [vec![first], vec![first, last]] {
+        let mut rig = Rig::new(&sources);
+        rig.on(0, 60).off(0, 60);
+        assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "1");
+        rig.rt.cleanup_notes(&mut rig.engine);
+        assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "1", "completed release must not run twice");
+        if sources.len() == 2 {
+            assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "last cleaned");
+        }
+        assert_eq!(rig.rt.env.events.live_count(), 0);
+        assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+    }
+    // An authored note_off can reach and ignore a middle release slot before
+    // the first slot's physical release. Cleanup must skip that completed slot.
+    let first = "on init\ndeclare ui_label $info(1,1)\nend on\non note\nwait(1)\nnote_off($EVENT_ID)\nend on\non release\nset_text($info,\"first cleaned\")\nend on";
+    let middle = "on init\ndeclare $count\ndeclare ui_label $info(1,1)\nend on\non release\ninc($count)\nset_text($info,$count)\nignore_event($EVENT_ID)\nend on";
+    let mut rig = Rig::new(&[first, middle, last]);
+    rig.on(0, 60).block(64);
+    assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "1");
+    rig.rt.cleanup_notes(&mut rig.engine);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "first cleaned");
+    assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "1");
+    assert_eq!(prop(&rig.rt.interface(2), 0, "$CONTROL_PAR_TEXT"), "last cleaned");
+    assert_eq!(rig.rt.env.events.live_count(), 0);
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+}
+
+#[test]
+fn panic_cleanup_recycles_ignored_releases_and_notifies_remaining_slots() {
+    let first = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nignore_event($EVENT_ID)\nwait(1000000)\nset_text($info,\"first cleaned\")\nend on";
+    let last = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nset_text($info,\"last cleaned\")\nend on";
+    let mut rig = Rig::new(&[first,last]);
+    rig.on(0,60);
+    rig.rt.cleanup_notes(&mut rig.engine);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"first cleaned");
+    assert_eq!(prop(&rig.rt.interface(1),0,"$CONTROL_PAR_TEXT"),"last cleaned");
+    assert_eq!(rig.rt.env.events.live_count(),0);
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn sound_off_keeps_physical_rows_and_suppresses_cleanup_retriggering() {
+    let source = r#"on init
+ declare %held[16]
+ declare %ids[16]
+ make_persistent(%held)
+ declare ui_label $info(1,1)
+end on
+on note
+ %ids[$MIDI_CHANNEL] := $EVENT_ID
+ inc(%held[$MIDI_CHANNEL])
+end on
+on release
+ wait(1000000)
+ dec(%held[$MIDI_CHANNEL])
+ play_note(72,100,0,0)
+ set_text($info,"released:" & $MIDI_CHANNEL & ":" & %KEY_DOWN[60])
+end on
+on controller
+ message(event_status(%ids[$MIDI_CHANNEL]) & ":" & %KEY_DOWN[60])
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    rig.rt.set_midi_channel(2);
+    rig.on(0,60);
+    rig.rt.set_midi_channel(7);
+    rig.on(0,60);
+    rig.engine.calls.clear();
+    rig.rt.all_sound_off(1<<2);
+    assert_eq!(rig.rt.env.events.live_count(),2,"held physical rows remain addressable");
+    assert!(rig.rt.key_down_from(2,2,60));
+    assert!(rig.rt.key_down_from(7,7,60));
+    rig.rt.set_midi_channel(2);
+    rig.rt.controller(&mut rig.engine,0,20,1);
+    assert_eq!(rig.rt.last_message(),"0:1","silenced event is inactive while its physical key is down");
+    rig.off(0,60);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"released:2:1");
+    assert!(!rig.rt.key_down_from(2,2,60));
+    assert!(rig.rt.key_down_from(7,7,60));
+    assert!(!rig.engine.calls.iter().any(|c|matches!(c,EngineCall::PlayNote{..})),"stopped release only updates script state");
+    rig.rt.set_midi_channel(7);
+    rig.off(0,60).block(96000);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"released:7:0");
+    assert!(rig.engine.calls.iter().any(|c|matches!(c,EngineCall::PlayNote{channel:7,note:72,..})),"unrelated releases retain musical timing and generated notes");
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn a_waiting_ignored_release_finishes_state_cleanup_after_sound_off() {
+    let first = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nignore_event($EVENT_ID)\nwait(1000000)\nset_text($info,\"first cleaned\")\nend on";
+    let last = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nset_text($info,\"last cleaned\")\nend on";
+    let mut rig = Rig::new(&[first,last]);
+    rig.on(0,60).off(0,60);
+    rig.rt.all_sound_off(u16::MAX);
+    rig.block(64);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"first cleaned");
+    assert_eq!(prop(&rig.rt.interface(1),0,"$CONTROL_PAR_TEXT"),"last cleaned");
+    assert_eq!(rig.rt.env.events.live_count(),0);
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
 }

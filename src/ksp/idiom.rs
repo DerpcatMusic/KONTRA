@@ -150,7 +150,7 @@ impl Loop {
         &self,
         at: usize,
         vars: &[Var],
-        ints: &mut [i32],
+        ints: &mut super::vm::Values<i32>,
         fuel: &mut u64,
         value: i32,
     ) -> usize {
@@ -197,7 +197,7 @@ impl Loop {
         }
     }
 
-    fn advance(&self, ints: &mut [i32], n: usize, fuel: &mut u64) {
+    fn advance(&self, ints: &mut super::vm::Values<i32>, n: usize, fuel: &mut u64) {
         let counter = &mut ints[self.counter as usize];
         *counter = counter.wrapping_add(n as i32);
         *fuel -= n as u64 * self.cost;

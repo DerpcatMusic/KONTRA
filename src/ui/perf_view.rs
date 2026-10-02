@@ -6,7 +6,7 @@
 //! `on ui_control` runs.
 
 use super::menu::{self, Target};
-use super::vector::{Face as VFace, Mark, Plan};
+use super::vector::{Face as VFace, Plan};
 use super::wave::Peaks;
 use super::{Cx, fitted, theme::*};
 use crate::artwork::Picture;
@@ -28,7 +28,7 @@ const HIDE_VALUE: i32 = 2;
 const HIDE_TITLE: i32 = 4;
 const HIDE_WHOLE: i32 = 16;
 
-/// Kontakt's default text, near enough: its own fonts are not drawn.
+/// The bundled face's default approximation; factory glyphs are not bundled.
 pub(super) const FONT: f64 = 11.;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -131,10 +131,15 @@ pub fn drags_vertically(kind: Kind, w: f64, h: f64, picture: &str, behaviour: i3
     }
 }
 
-/// How far a drag runs the whole range, in authored pixels: the size of
-/// `$CONTROL_PAR_MOUSE_BEHAVIOUR` is its speed, a value edit a few pixels
-/// a step.
-pub fn travel(kind: Kind, behaviour: i32, span: f64) -> f64 {
+/// How far a drag runs the whole range, in authored pixels. A real slider
+/// follows its drawn track; mouse behaviour selects its axis. Knobs (also
+/// sliders drawn as knobs) retain the scripted speed, and value edits run
+/// a few pixels a step.
+pub fn travel(kind: Kind, behaviour: i32, span: f64, size: (f64, f64), picture: &str) -> f64 {
+    let (w, h) = size;
+    if kind == Kind::Slider && !knob_like(picture, w, h) {
+        return if drags_vertically(kind, w, h, picture, behaviour) { h } else { w };
+    }
     match (kind, behaviour) {
         (Kind::Value, _) => (span * 3.).clamp(60., 600.),
         (_, 0) => 200.,
@@ -170,6 +175,14 @@ pub fn scale(avail: f64, width: f64, setting: f32) -> f64 {
     }
     let fit = avail / width;
     if fit >= 1. { fit.floor() } else { fit }
+}
+
+/// Automatic zoom fits the whole authored view; explicit zoom stays scrollable.
+fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
+    let width = if room.height > 0. && authored.height > 0. {
+        room.width.min(room.height / authored.height * authored.width)
+    } else { room.width };
+    scale(width, authored.width, setting)
 }
 
 /// Where control `n` sits on the view, and whether it is hidden: a control
@@ -279,42 +292,56 @@ fn room(ui: &Ui, slot: usize) -> f64 {
         .map_or(0., |s| s.frame.size.width)
 }
 
+/// The rack's height minus the actual header/notices before this stage.
+/// Relative frames remain stable while the rack scrolls or its part animates.
+fn room_height(ui: &Ui, slot: usize) -> f64 {
+    let Some(scene) = ui.scene() else { return 0. };
+    let (Some(rack), Some(part), Some(stage)) = (scene.surface("rack-view"),
+        scene.surface(&format!("part-{slot}")), scene.surface(&format!("stage-{slot}"))) else { return 0. };
+    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.)).max(0.)
+}
+
+/// The scalar/table part of the memo key, also measured by the opt-in UI probe.
+pub(super) fn hash_properties(i: &Interface, h: &mut DefaultHasher) {
+    for c in &i.controls {
+        for (k, v) in &c.properties {
+            // Scalar properties include layout, text, picture and colors.
+            // Hash directly: formatting them allocates on every redraw.
+            k.hash(h);
+            match v {
+                Value::Int(n) => n.hash(h),
+                Value::Real(n) => n.to_bits().hash(h),
+                Value::Text(t) => t.hash(h),
+                Value::IntArray(a) if c.kind == "ui_table" => a.hash(h),
+                Value::RealArray(a) if c.kind == "ui_table" => {
+                    for n in a { n.to_bits().hash(h); }
+                }
+                Value::Array(a) if c.kind == "ui_table" => {
+                    for v in a {
+                        match v {
+                            Value::Int(n) => n.hash(h),
+                            Value::Real(n) => n.to_bits().hash(h),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Everything [`view`] reads beyond the frame's input, hashed.
 pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let v = &cx.view.parts[slot];
     let mut h = DefaultHasher::new();
-    (room(ui, slot).round() as i64, cx.settings.view_scale.to_bits()).hash(&mut h);
+    (room(ui, slot).round() as i64, room_height(ui, slot).round() as i64, cx.settings.view_scale.to_bits()).hash(&mut h);
     shows(cx, slot).hash(&mut h);
     (Arc::as_ptr(&v.pictures) as usize, v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
     if let Some(i) = &v.interface {
-        (Arc::as_ptr(i) as usize, i.width, i.height, i.wallpaper_state).hash(&mut h);
+        (Arc::as_ptr(i) as usize, i.width, i.height, i.wallpaper_state, i.skin_offset).hash(&mut h);
         // An edit may change the interface in place.
-        for c in &i.controls {
-            for (k, v) in &c.properties {
-                // Scalar properties include layout, text, picture and colors.
-                // Hash directly: formatting them allocates on every redraw.
-                k.hash(&mut h);
-                match v {
-                    Value::Int(n) => n.hash(&mut h),
-                    Value::Real(n) => n.to_bits().hash(&mut h),
-                    Value::Text(t) => t.hash(&mut h),
-                    Value::IntArray(a) if c.kind == "ui_table" => a.hash(&mut h),
-                    Value::RealArray(a) if c.kind == "ui_table" => {
-                        for n in a { n.to_bits().hash(&mut h); }
-                    }
-                    Value::Array(a) if c.kind == "ui_table" => {
-                        for v in a {
-                            match v {
-                                Value::Int(n) => n.hash(&mut h),
-                                Value::Real(n) => n.to_bits().hash(&mut h),
-                                _ => {}
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+        hash_properties(i, &mut h);
     }
     // A wave read since.
     if let (Some(i), Some(u)) = (&v.instrument, &v.interface) {
@@ -331,11 +358,10 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
 fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
     let v = &cx.view.parts[slot];
     let Some(path) = v.instrument.as_ref().map(|i| i.path.clone()) else { return };
-    let names: Vec<String> = (interface.controls.iter())
-        .map(|c| prop(c, "$CONTROL_PAR_PICTURE"))
-        .filter(|n| !n.is_empty() && !v.pictures.contains_key(*n))
-        .filter(|n| cx.state.perf_asked.insert((path.clone(), (*n).to_owned())))
-        .map(str::to_owned)
+    let names: Vec<String> = crate::artwork::picture_names(interface)
+        .filter(|name| !v.pictures.contains_key(name.as_ref()))
+        .filter(|name| cx.state.perf_asked.insert((path.clone(), name.to_string())))
+        .map(std::borrow::Cow::into_owned)
         .collect();
     if names.is_empty() {
         return;
@@ -378,21 +404,30 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
 pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let vector = shows(cx, slot) == ViewMode::Vectorized;
     let v = &cx.view.parts[slot];
-    let (Some(interface), pictures, wallpaper) = (v.interface.clone(), v.pictures.clone(), v.wallpaper.as_ref().and_then(|p| p.frames.get((i32::max(0, v.interface.as_ref().map_or(0, |i| i.wallpaper_state)) as usize).min(p.frames.len().saturating_sub(1))).cloned())) else {
+    let (Some(interface), pictures, wallpaper) = (v.interface.clone(), v.pictures.clone(), v.wallpaper.as_ref().and_then(|p| { let i = v.interface.as_ref()?; p.wallpaper(i.wallpaper_state, i.skin_offset) })) else {
         return block(0, 0);
     };
+    let frame_width = v.wallpaper.as_ref().and_then(|p| p.atlas.map(|a| a[0]));
     fetch(cx, slot, &interface);
     let (w, h) = (f64::from(interface.width), f64::from(interface.height));
-    let s = scale(room(ui, slot), w, cx.settings.view_scale);
-    // Everything lands on whole device pixels, and pictures are drawn at
-    // their pixel size: nothing straddles a pixel and blurs.
+    let s = scale_to_fit(Size::new(room(ui, slot), room_height(ui, slot)), Size::new(w,h), cx.settings.view_scale);
+    // Control placement lands on whole device pixels. Wallpaper windows retain
+    // source pixels and let the renderer apply the view scale.
     let dev = ui.scale().unwrap_or(1.);
     let px = |v: f64| (v * dev).round() / dev;
     let mut layers = Vec::new();
-    if let Some(image) = wallpaper.clone() {
-        let (iw, ih) = (px(f64::from(image.width) * s), px(f64::from(image.height) * s));
-        let image = fitted::fitted(&image, (iw * dev).round() as u32, (ih * dev).round() as u32, slot);
-        layers.push(block(iw, ih).fill(Fill::Image(image, Fit::Fill)).at(0., px(-HEADER * s)));
+    if let Some((image, origin)) = &wallpaper {
+        let x = origin[0];
+        let y = origin[1].saturating_add(HEADER as u32);
+        let width = frame_width.unwrap_or(image.width);
+        let (cw, ch) = ((interface.width.max(0) as u32).min(width).min(image.width.saturating_sub(x)),
+            (interface.height.max(0) as u32).min(image.height.saturating_sub(y)));
+        // Only the visible window reaches the GPU. Large valid PNG strips can exceed
+        // its image-atlas limit; retaining the full strip there is not sufficient.
+        if let Some(window) = fitted::window(image, x, y, cw, ch) {
+            layers.push(block(px(f64::from(cw) * s), px(f64::from(ch) * s))
+                .fill(Fill::Image(window, Fit::Fill)).at(0., 0.));
+        }
     }
     // In the original's order either way: what covered a control there
     // covers it here.
@@ -404,17 +439,18 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             (shown, image)
         })
         .collect();
-    let plans = if vector { super::vector::plan(&interface, &pictures, &drawn) } else { Vec::new() };
+    let plans = if vector { super::vector::plan(&interface, &pictures, &drawn, &mut cx.state.vector_assets) } else { Vec::new() };
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {
-            Some(plan) if !matches!(shown.kind, Kind::Label | Kind::Area | Kind::Other) => Look::Vector(plan),
+            Some(plan) if matches!(shown.kind, Kind::Knob | Kind::Slider)
+                || shown.kind == Kind::Label && plan.face == VFace::Clear => Look::Vector(plan),
             _ => {
                 // What its text sits on: its own picture, else what is under it.
                 let (cx_, cy) = (shown.x + shown.w / 2., shown.y + shown.h / 2.);
                 let under = [-0.25, 0., 0.25]
                     .iter()
-                    .filter_map(|dx| luma_under(&drawn[..=n], wallpaper.as_deref(), cx_ + dx * shown.w, cy))
+                    .filter_map(|dx| luma_under(&drawn[..=n], wallpaper.as_ref().map(|(image, origin)| (image.as_ref(), *origin)), cx_ + dx * shown.w, cy))
                     .fold(None, |m: Option<(f32, u32)>, l| Some(m.map_or((l, 1), |(t, k)| (t + l, k + 1))))
                     .map(|(t, k)| t / k as f32);
                 Look::Original(under)
@@ -523,10 +559,92 @@ pub(super) fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, O
 /// One line of a label's text, in authored points.
 pub(super) const LINE: f64 = FONT * 1.25;
 
+/// Responsive controls inherit their base font when a state font is unset.
+/// Menu "on" means its popup is open, rather than a nonzero selected value.
+fn font_id(c: &Control, on: bool, pressed: bool, hovered: bool) -> Option<i32> {
+    let base = int(c, "$CONTROL_PAR_FONT_TYPE");
+    if !matches!(c.kind.as_str(), "ui_button" | "ui_switch" | "ui_menu") { return base; }
+    let state = match (on, pressed, hovered) {
+        (false, true, _) => "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED",
+        (true, true, _) => "$CONTROL_PAR_FONT_TYPE_ON_PRESSED",
+        (false, false, true) => "$CONTROL_PAR_FONT_TYPE_OFF_HOVER",
+        (true, false, true) => "$CONTROL_PAR_FONT_TYPE_ON_HOVER",
+        (true, false, false) => "$CONTROL_PAR_FONT_TYPE_ON",
+        _ => return base,
+    };
+    int(c, state).filter(|&id| id >= 0).or(base)
+}
+
+#[derive(Clone, Copy)]
+struct TextFont { size: f64, weight: f32, color: Option<Color> }
+impl TextFont {
+    fn advance(self, text: &str, size: f64) -> f64 {
+        static FONT: std::sync::OnceLock<Vec<Font>> = std::sync::OnceLock::new();
+        let fonts = FONT.get_or_init(|| Font::new(NOTO_SANS).into_iter().collect());
+        mui_text::shape_run(fonts, text, size, &[("wght", self.weight)]).map_or(0., |run| run.advance)
+    }
+    fn fit(self, text: &str, room: f64, size: f64) -> f64 {
+        let width = self.advance(text, size);
+        if width <= room || width <= 0. { size } else { (size * room / width).max(size * 0.75) }
+    }
+}
+
+/// Approximate the factory chart using the existing variable Noto face. The
+/// colors are sampled from NI's published factory font chart, not guessed from
+/// the wallpaper. Exact bitmap glyph metrics still require original resources.
+/// https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters
+fn text_font(c: &Control, on: bool, pressed: bool, hovered: bool) -> TextFont {
+    const COLORS: [[u8; 3]; 26] = [
+        [254,254,254], [254,254,254], [55,55,51], [204,204,204], [227,194,105],
+        [228,209,130], [125,48,18], [133,53,25], [72,68,60], [0,0,0],
+        [217,217,217], [137,140,141], [27,27,26], [210,220,225], [185,185,185],
+        [95,95,95], [0,0,0], [254,254,254], [254,254,254], [0,0,0],
+        [127,127,127], [127,127,127], [0,0,0], [127,127,127], [255,255,255], [12,36,49],
+    ];
+    let id = font_id(c, on, pressed, hovered).filter(|id| (0..26).contains(id));
+    let rgb = |[r, g, b]: [u8; 3]| Color::srgb(f32::from(r) / 255., f32::from(g) / 255., f32::from(b) / 255.);
+    let explicit = int(c, "$CONTROL_PAR_TEXT_COLOR").map(|color| {
+        let color = color as u32;
+        rgb([(color >> 16) as u8, (color >> 8) as u8, color as u8])
+    });
+    TextFont {
+        size: if matches!(id, Some(1 | 5 | 7 | 16 | 17 | 20)) { 13. } else { FONT },
+        weight: if matches!(id, Some(16..=25)) { 700. } else { 400. },
+        color: explicit.or_else(|| id.map(|id| rgb(COLORS[id as usize]))),
+    }
+}
+
+/// Loader/audit diagnostics, once per interface; never emitted while drawing.
+/// Custom IDs whose bitmap names were not resolved retain a readable fallback.
+pub(crate) fn font_fallbacks(interface: &Interface) -> Vec<String> {
+    let ids: std::collections::BTreeSet<i32> = interface.controls.iter().flat_map(|c|
+        ["$CONTROL_PAR_FONT_TYPE", "$CONTROL_PAR_FONT_TYPE_ON", "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED",
+         "$CONTROL_PAR_FONT_TYPE_ON_PRESSED", "$CONTROL_PAR_FONT_TYPE_OFF_HOVER", "$CONTROL_PAR_FONT_TYPE_ON_HOVER"]
+        .into_iter().filter_map(|name| int(c, name)).filter(|&id| id >= 0)
+    ).collect();
+    let mut warnings = Vec::new();
+    let factory: Vec<_> = ids.iter().filter(|&&id| id < 26).copied().collect();
+    if !factory.is_empty() {
+        warnings.push(format!("Factory font IDs {factory:?} use the bundled Noto Sans approximation; original factory bitmap glyphs and exact metrics are not loaded"));
+    }
+    for id in ids.into_iter().filter(|&id| id >= 26 && interface.fonts.get((id - 26) as usize).is_none()) {
+        warnings.push(format!("Custom font ID {id}: bitmap font resource is unavailable; using bundled Noto Sans"));
+    }
+    warnings
+}
+
 /// `text` as the lines a label `room` points wide shows at `size`: one per
 /// newline and, when `wrap`, a new one before a word that would run past
 /// the edge. A word wider than the room keeps a line of its own.
 pub fn break_lines(text: &str, room: f64, size: f64, wrap: bool) -> Vec<String> {
+    break_font_lines(text, room, size, wrap, TextFont { size, weight: 400., color: None })
+}
+
+fn break_font_lines(text: &str, room: f64, size: f64, wrap: bool, font: TextFont) -> Vec<String> {
+    break_measured_lines(text, room, wrap, |text| font.advance(text, size))
+}
+
+fn break_measured_lines(text: &str, room: f64, wrap: bool, advance: impl Fn(&str) -> f64) -> Vec<String> {
     let mut out = Vec::new();
     for paragraph in text.split('\n') {
         let mut line: Option<String> = None;
@@ -534,7 +652,7 @@ pub fn break_lines(text: &str, room: f64, size: f64, wrap: bool) -> Vec<String> 
         for word in paragraph.split(' ') {
             line = Some(match line {
                 None => word.to_owned(),
-                Some(l) if wrap && !l.trim().is_empty() && super::cover::advance(&format!("{l} {word}"), size) > room => {
+                Some(l) if wrap && !l.trim().is_empty() && advance(&format!("{l} {word}")) > room => {
                     out.push(l);
                     word.to_owned()
                 }
@@ -550,18 +668,18 @@ pub fn break_lines(text: &str, room: f64, size: f64, wrap: bool) -> Vec<String> 
 /// label's on as many lines as its newlines and its height make, from
 /// `top` or centred.
 #[allow(clippy::too_many_arguments)]
-fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, ink: impl Into<Fill>, label: bool) -> El {
+fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, ink: impl Into<Fill>, label: bool, font: TextFont) -> El {
     let ink: Fill = ink.into();
     let justify = match align {
         1 => Justify::Center,
         2 => Justify::End,
         _ => Justify::Start,
     };
-    let lh = LINE * s;
-    let lines = if label { break_lines(&words, w - 4. * s, FONT * s, h >= 2. * lh) } else { vec![words] };
+    let lh = font.size * 1.25 * s;
+    let lines = if label { break_font_lines(&words, w - 4. * s, font.size * s, h >= 2. * lh, font) } else { vec![words] };
     let one = |t: String| {
-        let size = fit(&t, w - 4. * s, FONT * s);
-        row![text(t).text_size(size).fill(ink.clone()).lines(1).min_w(0)].justify(justify).align(Align::Center).w(w).pad((2. * s, 0.))
+        let size = font.fit(&t, w - 4. * s, font.size * s);
+        row![text(t).text_size(size).text_axis("wght", font.weight).fill(ink.clone()).lines(1).min_w(0)].justify(justify).align(Align::Center).w(w).pad((2. * s, 0.))
     };
     if lines.len() > 1 {
         let tall = lh * lines.len() as f64;
@@ -570,16 +688,33 @@ fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, in
     }
     let line = one(lines.into_iter().next().unwrap_or_default());
     match top {
-        Some(y) => line.h(FONT * s * 1.4).at(0., y * s),
+        Some(y) => line.h(font.size * s * 1.4).at(0., y * s),
         None => line.h(h).at(0., 0.),
     }
 }
 
-/// The size `text` is set at to fit `room` points: `size`, or smaller down
-/// to three quarters of it. Kontakt's own fonts are narrower than ours.
-pub fn fit(text: &str, room: f64, size: f64) -> f64 {
-    let wide = super::cover::advance(text, size);
-    if wide <= room || wide <= 0. { size } else { (size * room / wide).max(size * 0.75) }
+/// Authored bitmap glyphs keep their own advance, pixels and alpha. They
+/// are scaled with the whole UI, never refitted through an outline font.
+#[allow(clippy::too_many_arguments)]
+fn bitmap_words(words: &str, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, label: bool, font: &Picture) -> El {
+    let glyph = |c| &font.frames[crate::artwork::font_glyph(c)];
+    let advance = |text: &str| text.chars().map(|c| f64::from(glyph(c).width) * s).sum::<f64>();
+    let lh = f64::from(font.frames[0].height) * s;
+    let lines = break_measured_lines(words, w - 4. * s, label && h >= 2. * lh, advance);
+    let tall = lh * lines.len() as f64;
+    let y = top.map_or((h - tall) / 2., |y| y * s);
+    let mut layers = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        let width = advance(line);
+        let mut x = match align { 1 => (w - width) / 2., 2 => w - 2. * s - width, _ => 2. * s };
+        for c in line.chars() {
+            let image = glyph(c);
+            let width = f64::from(image.width) * s;
+            layers.push(block(width, lh).radius(0).fill(Fill::Image(image.clone(), Fit::Fill)).at(x, y + n as f64 * lh));
+            x += width;
+        }
+    }
+    stack(layers).w(w).h(h).clip()
 }
 
 /// A control's range as declared: a switch's is 0 to 1.
@@ -645,8 +780,7 @@ fn sliced(image: &Arc<Image>, stretch: [bool; 2], w: f64, h: f64, s: f64, dev: f
     stack(parts).w(w).h(h)
 }
 
-/// Light text, or dark over something light: Kontakt's own fonts carry
-/// their colors, which are not known here.
+/// Contrast fallback for text without a recognized explicit font/color.
 fn ink(under: Option<f32>) -> Color {
     match under {
         Some(l) if l > 0.6 => Color::srgb(0.1, 0.1, 0.1),
@@ -656,7 +790,7 @@ fn ink(under: Option<f32>) -> Color {
 
 /// How light (0 to 1) what lies under authored point `(x, y)` is: the
 /// topmost opaque picture of `below` there, else the wallpaper.
-fn luma_under(below: &[(Shown, Option<Arc<Image>>)], wallpaper: Option<&Image>, x: f64, y: f64) -> Option<f32> {
+pub(super) fn luma_under(below: &[(Shown, Option<Arc<Image>>)], wallpaper: Option<(&Image, [u32; 2])>, x: f64, y: f64) -> Option<f32> {
     let at = |image: &Image, u: f64, v: f64| {
         let (px, py) = (u.floor(), v.floor());
         if px < 0. || py < 0. || px >= f64::from(image.width) || py >= f64::from(image.height) {
@@ -676,7 +810,8 @@ fn luma_under(below: &[(Shown, Option<Arc<Image>>)], wallpaper: Option<&Image>, 
             }
         }
     }
-    at(wallpaper?, x, y + HEADER)
+    let (wallpaper, origin) = wallpaper?;
+    at(wallpaper, x + f64::from(origin[0]), y + HEADER + f64::from(origin[1]))
 }
 
 /// How a control is drawn.
@@ -715,7 +850,18 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
             // A marker on a wave moves along it.
             let vertical = drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour) && !marker_on_wave;
             let before = now;
-            let held = drive(ui, &id, &mut now, &(lo..=hi), travel(shown.kind, behaviour, hi - lo) * s, vertical, reset);
+            let distance = if marker_on_wave { w } else if matches!(look, Look::Vector(p) if p.face == VFace::Normal)
+                && shown.kind == Kind::Slider && !knob_like(prop(c, "$CONTROL_PAR_PICTURE"), shown.w, shown.h)
+            {
+                // The native thumb's center moves within the track's end
+                // caps. Use that exact span, also at fractional view scales.
+                (if vertical { h } else { w }) - FADER_THUMB
+            } else {
+                travel(shown.kind, behaviour, hi - lo, (shown.w, shown.h), prop(c, "$CONTROL_PAR_PICTURE")) * s
+            };
+            // drive applies each pointer delta to the grabbed value, so a
+            // press keeps the grab offset instead of snapping the thumb.
+            let held = drive(ui, &id, &mut now, &(lo..=hi), distance, vertical, reset);
             if shown.kind == Kind::Value && ui.get(id.as_str()).double_clicked {
                 // A value edit types on a double-click, as Kontakt's does.
                 now = before;
@@ -762,11 +908,11 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     let drawn = match (picture, look) {
         (Some(image), _) => sliced(&image, shown.picture.as_ref().map_or([false; 2], |p| p.stretch), w, h, s, dev, slot),
         (None, Look::Vector(plan)) => match plan.face {
+            VFace::Normal if plan.skin => own().fill(Role::Surface),
             VFace::Normal => own(),
             VFace::Clear => block(w, h),
             VFace::Cover => block(w, h).fill(Role::Background),
             VFace::Panel(on) => block(w, h).fill(if on { Role::Raised } else { Role::Surface }),
-            VFace::Mark(m) => mark(m, now >= 1., s, lift).w(w).h(h),
             VFace::Marker => marker(((now - lo) / (hi - lo)).clamp(0., 1.), s, lift).w(w).h(h),
         },
         (None, Look::Original(_)) => own(),
@@ -786,25 +932,38 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         stack(layers).w(w).h(h)
     } else {
         // Text on our face is our ink; on a picture it reads what lies under it.
-        let own_ink = match look {
+        let interaction = ui.get(id.as_str());
+        let on = if shown.kind == Kind::Menu {
+            cx.state.menu.as_ref().is_some_and(|menu| matches!(&menu.target, Target::Script { part, control } if *part == slot && *control == shown.control))
+        } else { now >= 1. };
+        let font = text_font(c, on, interaction.held, interaction.hovered);
+        let bitmap = font_id(c, on, interaction.held, interaction.hovered).filter(|&id| id >= 26)
+            .and_then(|id| cx.view.parts[slot].interface.as_ref()?.fonts.get((id - 26) as usize))
+            .and_then(|name| cx.view.parts[slot].pictures.get(&crate::artwork::font_key(name)))
+            .filter(|font| font.frames.len() == 256);
+        let own_ink = font.color.map(Fill::from).unwrap_or_else(|| match look {
             Look::Original(under) if pictured || matches!(shown.kind, Kind::Label | Kind::Area | Kind::Knob | Kind::Slider | Kind::Other) => Fill::from(ink(under)),
             _ => Fill::from(Role::Ink),
+        });
+        let caption = |said: String, align, top, label| match bitmap {
+            Some(bitmap) => bitmap_words(&said, align, top, w, h, s, label, bitmap),
+            None => words(said, align, top, w, h, s, own_ink.clone(), label, font),
         };
         let (said, align, top) = caption_of(c, shown.kind, now);
         if !said.is_empty() {
-            layers.push(words(said, align, top, w, h, s, own_ink.clone(), shown.kind == Kind::Label));
+            layers.push(caption(said, align, top, shown.kind == Kind::Label));
         }
         if shown.kind == Kind::Knob && !pictured {
             // Kontakt's own knob: its name over it, its value under it.
             let name = prop(c, "$CONTROL_PAR_TEXT");
             let name = if name.is_empty() { c.variable.trim_start_matches(['$', '~']) } else { name };
             if hide & HIDE_TITLE == 0 {
-                layers.push(words(keep_spaces(name), 1, Some(0.), w, h, s, own_ink.clone(), false));
+                layers.push(caption(keep_spaces(name), 1, Some(0.), false));
             }
             if hide & HIDE_VALUE == 0 {
                 let label = prop(c, "$CONTROL_PAR_LABEL");
                 let shown_value = if label.is_empty() { format!("{}", now.round()) } else { keep_spaces(label) };
-                layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s, own_ink, false));
+                layers.push(caption(shown_value, 1, Some(shown.h - bitmap.map_or(font.size * 1.4, |p| f64::from(p.frames[0].height))), false));
             }
         }
         stack(layers).w(w).h(h).clip()
@@ -1023,33 +1182,6 @@ pub(super) fn wave_now(instrument: &crate::import::Instrument, c: &Control) -> O
     attached(Some(instrument), c).and_then(super::wave::now)
 }
 
-/// A small picture-only switch, vectorized: a ring, filled when on, or
-/// the arrow it stepped by.
-fn mark(m: Mark, on: bool, s: f64, lift: f32) -> El {
-    canvas(move |z| {
-        let (w, h) = (z.width, z.height);
-        let (cx, cy) = (w / 2., h / 2.);
-        let r = (w.min(h) / 2. - 1.).min(6. * s).max(2.);
-        let line = Role::Ink.alpha(0.55 + 0.45 * lift);
-        let weight = s.max(1.);
-        match m {
-            Mark::Dot => {
-                let mut d = vec![Draw::stroke(circle(cx, cy, r - weight / 2.), line, weight)];
-                if on {
-                    d.push(Draw::fill(circle(cx, cy, (r - 2.5 * weight).max(1.)), accent()));
-                }
-                d
-            }
-            Mark::Left | Mark::Right => {
-                let k = if m == Mark::Left { -1. } else { 1. };
-                let (dx, dy) = (r * 0.4, r * 0.8);
-                let points = [Point::new(cx - k * dx, cy - dy), Point::new(cx + k * dx, cy), Point::new(cx - k * dx, cy + dy)];
-                vec![Draw::stroke(DrawPath::polyline(points, false), line, weight * 1.5)]
-            }
-        }
-    })
-}
-
 /// A slider over a waveform, vectorized: a line at `t` across, with a
 /// handle at its head.
 fn marker(t: f64, s: f64, lift: f32) -> El {
@@ -1094,7 +1226,7 @@ mod tests {
 
     fn picture(w: u32, h: u32, frames: usize, resizable: bool) -> Arc<Picture> {
         let frame = Arc::new(Image::rgba(w, h, vec![0u8; (w * h * 4) as usize]).unwrap());
-        Arc::new(Picture { frames: vec![frame; frames], stretch: [resizable; 2] })
+        Arc::new(Picture { frames: vec![frame; frames], stretch: [resizable; 2], atlas: None })
     }
 
     #[test]
@@ -1122,10 +1254,90 @@ mod tests {
         assert!(drags_vertically(Kind::Slider, 120., 20., "fader", -500), "negative behaviour is vertical");
         assert!(!drags_vertically(Kind::Slider, 20., 120., "fader", 500), "positive is horizontal");
         assert!(drags_vertically(Kind::Value, 80., 18., "", 0), "a value edit drags up and down");
-        assert_eq!(travel(Kind::Slider, 0, 127.), 200.);
-        assert_eq!(travel(Kind::Slider, -1000, 127.), 100.);
-        assert_eq!(travel(Kind::Slider, 5000, 127.), 60., "the fastest still has room");
-        assert_eq!(travel(Kind::Value, 0, 10.), 60.);
+        assert_eq!(travel(Kind::Slider, 0, 127., (120., 20.), "fader"), 120.);
+        assert_eq!(travel(Kind::Slider, -1000, 127., (20., 120.), "fader"), 120.);
+        assert_eq!(travel(Kind::Slider, 2500, 1_000_000., (734., 73.), "macro_slider_transparent"), 734.);
+        assert_eq!(travel(Kind::Slider, 2500, 1_000_000., (111., 11.), "mini_macro1_slider"), 111.);
+        assert_eq!(travel(Kind::Knob, 0, 127., (48., 50.), ""), 200.);
+        assert_eq!(travel(Kind::Slider, -1000, 127., (48., 50.), "knob"), 100.);
+        assert_eq!(travel(Kind::Slider, 5000, 127., (48., 50.), "knob"), 60., "the fastest knob still has room");
+        assert_eq!(travel(Kind::Value, 0, 10., (80., 18.), ""), 60.);
+    }
+
+    #[test]
+    fn sliders_use_drawn_length_for_pointer_drag_at_any_scale() {
+        // Real Analog Strings macro dimensions/behaviour, plus a vertical
+        // fader. Exercise the same Ui drag path as control(), not just the
+        // distance formula. Pointer coordinates are logical host points.
+        for (w, h, behaviour, picture) in [
+            (734., 73., 2500, "macro_slider_transparent"),
+            (111., 11., 2500, "mini_macro1_slider"),
+            (13., 102., -1755, "fader"),
+        ] {
+            for view_scale in [0.5, 1., 2.] {
+                for device_scale in [1., 2.] {
+                    let mut ui = crate::ui::theme::ui();
+                    ui.set_scale(Some(device_scale));
+                    let size = Size::new(w * view_scale, h * view_scale);
+                    let root = || canvas(|_| Vec::new()).w(size.width).h(size.height).id("slider");
+                    ui.frame(root(), Some(size), Input::default(), 0.).unwrap();
+                    let vertical = drags_vertically(Kind::Slider, w, h, picture, behaviour);
+                    let distance = travel(Kind::Slider, behaviour, 1_000_000., (w, h), picture) * view_scale;
+                    let physical_delta = 10.;
+                    let delta = physical_delta / device_scale;
+                    let grab = Point::new(size.width * 0.55, size.height * 0.55);
+                    let mut value = 400_000.;
+                    for (tick, (step, fine)) in [(0., false), (1., false), (1., false), (2., true)].into_iter().enumerate() {
+                        let at = if vertical { Point::new(grab.x, grab.y - step * delta) } else { Point::new(grab.x + step * delta, grab.y) };
+                        let input = Input { pointer: PointerInput {
+                            pos: Some(at), buttons: Buttons::PRIMARY,
+                            mods: Mods { shift: fine, ..Default::default() },
+                            ..Default::default()
+                        }, ..Default::default() };
+                        ui.frame(root(), Some(size), input, (tick + 1) as f64 / 60.).unwrap();
+                        drive(&mut ui, "slider", &mut value, &(0. ..=1_000_000.), distance, vertical, 0.);
+                        let travelled = match step { 0. => 0., 1. => delta, _ => delta * 1.1 };
+                        let expected = 400_000. + travelled / distance * 1_000_000.;
+                        assert!((value - expected).abs() < 1e-6, "{w}x{h}, view {view_scale}, device {device_scale}, step {step}: {value} != {expected}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_fader_visible_thumb_follows_pointer_delta() {
+        // Read the painted thumb, independently of the drag equation.
+        // This face is shared by Vectorized and the native rack controls.
+        for width in [111., 734.] {
+            for scale in [0.5, 1., 2.] {
+                let mut ui = crate::ui::theme::ui();
+                let size = Size::new(width * scale, 30.);
+                let root = |value| fader_face(value, 0., None, false, 0., false).w(size.width).h(size.height).id("slider");
+                let mut value = 0.4;
+                ui.frame(root(value), Some(size), Input::default(), 0.).unwrap();
+                let thumb = |ui: &Ui| {
+                    let pixels = crate::ui::tests::pixels(ui, size.width.ceil() as u16, 30);
+                    let stride = size.width.ceil() as usize;
+                    // Four rows above the center: the track has no ink here.
+                    let lit: Vec<_> = (0..stride).filter(|&x| pixels[(11 * stride + x) * 4 + 3] > 127).collect();
+                    assert!(!lit.is_empty(), "the native thumb paints");
+                    (lit[0] + lit[lit.len() - 1]) as f64 / 2.
+                };
+                let before = thumb(&ui);
+                let grab = Point::new(size.width * 0.55, 15.);
+                for (tick, delta) in [0., 10.].into_iter().enumerate() {
+                    let input = Input { pointer: PointerInput {
+                        pos: Some(Point::new(grab.x + delta, grab.y)), buttons: Buttons::PRIMARY,
+                        ..Default::default()
+                    }, ..Default::default() };
+                    ui.frame(root(value), Some(size), input, (tick + 1) as f64 / 60.).unwrap();
+                    drive(&mut ui, "slider", &mut value, &(0. ..=1.), size.width - FADER_THUMB, false, 0.);
+                }
+                ui.frame(root(value), Some(size), Input::default(), 3. / 60.).unwrap();
+                assert!((thumb(&ui) - before - 10.).abs() <= 1., "width {width}, scale {scale}: the visible thumb follows ten pointer points");
+            }
+        }
     }
 
     #[test]
@@ -1239,6 +1451,79 @@ mod tests {
     }
 
     #[test]
+    fn original_text_respects_factory_state_fonts_and_authored_label_geometry() {
+        let label = control("ui_label", &[("TEXT", Value::Text("VOLUME 1".into())), ("FONT_TYPE", Value::Int(23)),
+            ("POS_X", Value::Int(38)), ("POS_Y", Value::Int(493)), ("WIDTH", Value::Int(70)), ("HEIGHT", Value::Int(18)),
+            ("TEXT_ALIGNMENT", Value::Int(1))]);
+        let interface = Interface { performance: true, width: 732, height: 540, controls: vec![label.clone()], ..Default::default() };
+        let shown = layout(&interface, &HashMap::new()).remove(0);
+        assert_eq!((shown.x, shown.y, shown.w, shown.h), (38., 493., 70., 18.));
+        let font = text_font(&label, false, false, false);
+        assert_eq!(font.color, Some(Color::srgb(127. / 255., 127. / 255., 127. / 255.)));
+        assert_eq!(caption_of(&label, Kind::Label, 0.), ("VOLUME 1".into(), 1, None));
+        let root = words("VOLUME 1".into(), 1, None, 70., 18., 1., font.color.unwrap(), true, font);
+        let spec = moose::mui::mui::scene::SceneSpec::new(root).offered(Size::new(70., 18.)).font(Font::new(NOTO_SANS).unwrap());
+        let scene = moose::mui::mui::scene::resolve(&spec).unwrap();
+        let run = scene.paint.iter().find_map(|paint| paint.text.as_ref()).expect("authored caption is drawn through MUI");
+        assert_eq!(run.axes.get("wght"), Some(font.weight));
+        assert!(f64::from(run.size) <= font.size);
+
+        let mut switch = control("ui_switch", &[("FONT_TYPE", Value::Int(15)), ("FONT_TYPE_ON", Value::Int(24)),
+            ("FONT_TYPE_OFF_HOVER", Value::Int(13)), ("FONT_TYPE_ON_PRESSED", Value::Int(23))]);
+        assert_eq!(font_id(&switch, false, false, false), Some(15));
+        assert_eq!(font_id(&switch, true, false, false), Some(24));
+        assert_eq!(font_id(&switch, false, false, true), Some(13));
+        assert_eq!(font_id(&switch, true, true, true), Some(23), "pressed overrides hover");
+        assert_eq!(font_id(&switch, true, false, true), Some(15), "unset state inherits base, not the on-state font");
+        switch.properties.insert("$CONTROL_PAR_TEXT_COLOR".into(), Value::Int(0x102030));
+        assert_eq!(text_font(&switch, true, false, false).color, Some(Color::srgb(16. / 255., 32. / 255., 48. / 255.)));
+        let custom = control("ui_label", &[("FONT_TYPE", Value::Int(1024))]);
+        let custom_interface = Interface { controls: vec![custom.clone(), custom], ..Default::default() };
+        assert_eq!(font_fallbacks(&custom_interface).len(), 1, "missing custom fonts are deduplicated and explicit");
+        assert!(font_fallbacks(&interface)[0].contains("approximation"));
+    }
+
+    #[test]
+    fn authored_bitmap_fonts_keep_variable_advances_alpha_and_newlines() {
+        let interface = crate::ksp::initialize("on init\nmake_perfview\ndeclare ui_label $caption(1,1)\nset_text($caption,\"Ai\")\nset_control_par(get_ui_id($caption),$CONTROL_PAR_FONT_TYPE,get_font_id(\"custom\"))\ndeclare $same := get_font_id(\"custom\")\nend on", 0, 8).unwrap();
+        assert_eq!(interface.fonts, ["custom"]);
+        assert_eq!(font_id(&interface.controls[0], false, false, false), Some(26));
+        assert!(!font_fallbacks(&interface).iter().any(|warning| warning.contains("unavailable")));
+        assert_eq!(crate::artwork::picture_names(&interface).next().as_deref(), Some("@font/custom"));
+        let widths: Vec<u32> = (0..256).map(|n| match n { 65 => 7, 105 => 3, _ => 1 }).collect();
+        let width = widths.iter().sum::<u32>();
+        let mut rgba = vec![0; width as usize * 3 * 4];
+        let mut x = 0;
+        for &w in &widths {
+            rgba[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&[255,0,0,255]);
+            for y in 1..3 { for col in x..x+w {
+                let at = (y * width + col) as usize * 4;
+                rgba[at..at+4].copy_from_slice(&[246,176,92,128]);
+            }}
+            x += w;
+        }
+        let image = Image::rgba(width, 3, rgba).unwrap();
+        let font = Picture { frames: crate::artwork::font_frames(&image).unwrap(), stretch: [false;2], atlas: None };
+        assert_eq!(font.frames[65].rgba.as_ref(), &[246,176,92,128].repeat(14));
+        assert_eq!(crate::artwork::font_glyph('€'), 128);
+        assert_eq!(crate::artwork::font_glyph('é'), 233);
+        assert_eq!(crate::artwork::font_glyph('漢'), b'?' as usize);
+        for scale in [1.,1.5,2.] {
+            let root = bitmap_words("Ai\nA", 1, Some(1.), 20.*scale, 8.*scale, scale, true, &font);
+            let scene = moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(root).offered(Size::new(20.*scale,8.*scale))).unwrap();
+            assert_eq!(scene.paint.iter().filter(|paint| paint.text.is_some()).count(), 0, "authored glyphs bypass the outline font");
+            let glyphs: Vec<_> = scene.paint.iter().filter(|paint| matches!(paint.paint, moose::mui::mui::scene::Paint::Image { .. })).collect();
+            assert_eq!(glyphs.len(), 3);
+            assert_eq!(glyphs[0].offset, Point::new(5.*scale, scale));
+            assert_eq!(glyphs[1].offset, Point::new(12.*scale, scale), "second glyph follows the authored seven-pixel advance");
+            assert_eq!(glyphs[2].offset, Point::new(6.5*scale, 3.*scale), "newlines follow authored glyph height and alignment");
+            assert_eq!(glyphs[0].rect.as_ref().unwrap().radius(), 0., "the theme must not round away glyph pixels");
+        }
+        let invalid = Image::rgba(1, 2, vec![0;8]).unwrap();
+        assert!(crate::artwork::font_frames(&invalid).unwrap_err().contains("256"));
+    }
+
+    #[test]
     fn labels_break_at_newlines_and_wrap_when_tall() {
         let label = control("ui_label", &[("TEXT", Value::Text("Mic\r\nPosition\\nClose".into()))]);
         assert_eq!(caption_of(&label, Kind::Label, 0.).0, "Mic\nPosition\nClose", "add_text_line, CRLF and a script's \\n");
@@ -1259,8 +1544,8 @@ mod tests {
         let at = |x, y, w, h| Shown { control: 0, kind: Kind::Label, x, y, w, h, z: 0, picture: None };
         let wallpaper = Image::rgba(1, 100, [0u8, 0, 0, 255].repeat(100)).unwrap();
         let below = vec![(at(0., 0., 10., 10.), Some(white.clone())), (at(0., 0., 5., 5.), Some(clear))];
-        assert_eq!(luma_under(&below, Some(&wallpaper), 2., 2.), Some(1.), "a clear picture shows the one under it");
-        assert_eq!(luma_under(&below, Some(&wallpaper), 0., 20.), Some(0.), "else the wallpaper, below its header rows");
+        assert_eq!(luma_under(&below, Some((&wallpaper, [0; 2])), 2., 2.), Some(1.), "a clear picture shows the one under it");
+        assert_eq!(luma_under(&below, Some((&wallpaper, [0; 2])), 0., 20.), Some(0.), "else the wallpaper, below its header rows");
         assert_eq!(luma_under(&below, None, 50., 50.), None);
         assert_eq!(ink(Some(1.)), Color::srgb(0.1, 0.1, 0.1));
         assert_eq!(ink(None), ink(Some(0.)));

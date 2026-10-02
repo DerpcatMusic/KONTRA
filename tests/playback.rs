@@ -1613,6 +1613,89 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
 }
 
 #[test]
+fn panic_and_rate_reset_clear_script_cached_pedals_without_allocating() {
+    for reset in [false, true] {
+        let mut e = scripted(r#"on init
+        SET_CONDITION(NO_SYS_SCRIPT_PEDAL)
+        declare %pedal[16]
+        declare ui_knob $user_setting (0, 100, 1)
+        $user_setting := 37
+    end on
+    on controller
+        if ($CC_NUM = 64 or $CC_NUM = 66)
+            %pedal[$MIDI_CHANNEL] := %CC[$CC_NUM]
+            if (%CC[$CC_NUM] = 0)
+                play_note(70, 100, 0, -1)
+                wait(100000)
+                play_note(71, 100, 0, 0)
+            end if
+        end if
+    end on
+    on release
+        if (%pedal[$MIDI_CHANNEL] >= 64)
+            ignore_event($EVENT_ID)
+        end if
+    end on"#);
+        for pedal in [64, 66] {
+            for channel in 0..16 {
+                e.cc(channel, pedal, 127);
+                e.note_on(channel, 60, 100);
+                e.note_off(channel, 60);
+            }
+            render(&mut e, 128);
+            assert!(e.active_voices() > 0, "the authored pedal holds key-up voices");
+            let (mut left, mut right) = ([0.; MAX_BLOCK], [0.; MAX_BLOCK]);
+            assert_eq!(allocations(|| {
+                if reset { e.reset(44100.); } else { e.panic(); }
+                for _ in 0..64 { e.render(&mut left, &mut right); }
+            }), 0);
+            assert_eq!(e.active_voices(), 0, "pedal-up work must not resurrect notes");
+            assert_eq!(e.pending_work(), [0, 0, 0]);
+            for channel in 0..16 {
+                e.note_on(channel, 60, 100);
+                render(&mut e, 128);
+                assert!(e.active_voices() > 0);
+                e.note_off(channel, 60);
+                render(&mut e, 1000);
+                assert_eq!(e.active_voices(), 0, "fresh note on channel {channel} releases after CC{pedal} stop");
+            }
+            assert_eq!(e.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(37));
+            assert!(e.script().unwrap().diagnostics().is_empty(), "{:?}", e.script().unwrap().diagnostics());
+        }
+    }
+
+    // Reset restores init controllers, including a deliberately held pedal.
+    // A fresh release must see that same state in the authored script cache.
+    let mut e = scripted(r#"on init
+        SET_CONDITION(NO_SYS_SCRIPT_PEDAL)
+        declare $pedal
+        set_controller(64, 127)
+    end on
+    on controller
+        if ($CC_NUM = 64)
+            $pedal := %CC[64]
+        end if
+    end on
+    on release
+        if ($pedal >= 64)
+            ignore_event($EVENT_ID)
+        end if
+    end on"#);
+    e.cc(0, 64, 127);
+    e.reset(44100.);
+    assert_eq!(e.cc_state()[0][64], 127);
+    e.note_on(0, 60, 100);
+    e.note_off(0, 60);
+    render(&mut e, 1000);
+    assert!(e.active_voices() > 0, "restored default pedal-down must reach the script cache");
+    e.panic();
+    e.note_on(0, 60, 100);
+    e.note_off(0, 60);
+    render(&mut e, 1000);
+    assert_eq!(e.active_voices(), 0);
+}
+
+#[test]
 fn ksp_system_conditions_control_native_sustain_and_release_without_blocking_manual_samples() {
     let flags = "SET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)";
     let disabled = format!("on init\n{flags}\nend on");
@@ -1620,7 +1703,7 @@ fn ksp_system_conditions_control_native_sustain_and_release_without_blocking_man
     for (directives, enabled) in [(String::new(), true), (flags.to_owned(), false),
         (format!("{flags}\nRESET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nRESET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)"), true)] {
         let mut e = engine_with(layered(groups(), &[0.1, 0.2]));
-        e.set_script(runtime(&format!("on init\n{directives}\nend on")));
+        e.set_script(runtime(&format!("on init\n{directives}\nend on\non note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nend on")));
         for _ in 0..2 {
             e.cc(0, 64, 127);
             e.note_on(0, 60, 100);
@@ -1663,6 +1746,62 @@ fn ksp_system_conditions_control_native_sustain_and_release_without_blocking_man
     render(&mut e, 32);
     assert_eq!(e.voice_census().iter().filter(|v| v.release_trigger).count(), 1,
         "script-generated whole-sample notes can still play the release layer");
+}
+
+#[test]
+fn bypassed_native_release_script_plays_only_selected_groups_for_every_duration() {
+    use kontakto::engine::Phase;
+    for duration in [-1, 0, 5000] {
+        let mut selected = counted_release();
+        selected.volume_env = Some(kontakto::import::Ahdsr { attack_curve: 0., attack_ms: 20., hold_ms: 0., decay_ms: 0., sustain: 1., release_ms: 1., unknown_flag: 0, unknown_tail: Vec::new() });
+        let mut e = engine_with(layered(vec![Group::default(), selected, counted_release()], &[0., 0.4, 0.8]));
+        e.set_script(runtime(&format!(r#"on init
+            SET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)
+            declare $tail
+        end on
+        on note
+            disallow_group($ALL_GROUPS)
+            allow_group(0)
+        end on
+        on release
+            disallow_group($ALL_GROUPS)
+            allow_group(1)
+            $tail := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, {duration})
+            wait(1)
+            message(get_event_par($tail, $EVENT_PAR_ZONE_ID))
+        end on"#)));
+        // Repeating the same key must preserve each release counter and avoid
+        // replaying either automatic releases or an unselected release layer.
+        for pedal in [false, true] {
+            e.panic();
+            e.cc(3, 64, if pedal { 127 } else { 0 });
+            e.note_on(3, 60, 100);
+            render(&mut e, 12000);
+            assert!(!e.voice_census().iter().any(|v| v.release_trigger));
+            e.note_off(3, 60);
+            render(&mut e, 32);
+            // Generated Note work must first assign its engine voice. A child
+            // following this already released parent also receives End work,
+            // so its KSP event is gone even though its native sample continues.
+            assert_eq!(e.script().unwrap().last_message(), if duration < 0 { "0" } else { "2" },
+                "the selected zone has source ID2; a completed KSP event reports zero");
+            let voices = e.voice_census();
+            let tails: Vec<_> = voices.iter().filter(|v| v.release_trigger).collect();
+            assert_eq!(tails.len(), 1, "duration={duration}, pedal={pedal}: exactly one selected manual release");
+            assert_eq!((tails[0].group, tails[0].channel, tails[0].input_channel), (1, 3, Some(3)));
+            assert_eq!(tails[0].sample, 1, "the continuing release uses the selected group's sample");
+            assert_eq!(tails[0].owner, if duration < 0 { Some((3, 60)) } else { None });
+            assert_eq!(tails[0].phase, Phase::Attack, "the following-parent key-up must not prematurely release the tail");
+            if pedal { render(&mut e, 2400); e.cc(3, 64, 0); }
+            let out = last(&mut e, 2000);
+            assert!(close(out, [0.3; 2]), "duration={duration}, pedal={pedal}: the key-up counter remains 750/1000, got {out:?}");
+            let voices = e.voice_census();
+            assert_eq!(voices.len(), 1);
+            assert_eq!(voices[0].group, 1, "pedal-up and fixed-duration note-off must not duplicate or cut native release samples");
+            assert_eq!(e.dropped_commands(), 0);
+            assert!(e.script().unwrap().diagnostics().is_empty());
+        }
+    }
 }
 
 #[test]
@@ -1898,9 +2037,11 @@ end on"#;
 }
 
 #[test]
-fn oversized_callback_text_faults_without_allocating() {
+fn oversized_callback_control_text_faults_without_allocating() {
+    // Stored string variables saturate at 320 characters. Control metadata
+    // keeps its separate prepared capacity and must still fault without growing.
     let mut e = scripted(
-        "on init\ndeclare @text\nend on\non note\n@text := \"x\"\nwhile (1)\n@text := @text & @text\nend while\nend on",
+        "on init\ndeclare ui_label $text(1,1)\nset_text($text, \"x\")\nend on\non note\nwhile (1)\nset_text($text, get_control_par_str(get_ui_id($text), $CONTROL_PAR_TEXT) & get_control_par_str(get_ui_id($text), $CONTROL_PAR_TEXT))\nend while\nend on",
     );
     let count = allocations(|| e.note_on(0, 60, 100));
     assert_eq!(count, 0);

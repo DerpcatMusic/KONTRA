@@ -36,6 +36,20 @@ fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>) -> Result
     Ok(program)
 }
 
+/// MIDI RP-015 mandatory defaults; None preserves a controller and parameter values.
+/// Extra controllers restore their authored on-init device default, or zero if
+/// unspecified. Scripts use these extra CCs for internal dynamics and expression.
+/// https://midi.org/response-to-reset-all-controllers
+pub(crate) fn reset_controller_value(cc: u8, initial: Option<u8>) -> Option<u8> {
+    match cc {
+        0 | 7 | 10 | 32 | 70..=79 | 91..=95 | 120..=127 => None,
+        11 | 98..=101 => Some(127),
+        1 | 64..=67 | 128 | 129 => Some(0),
+        2..=119 => Some(initial.unwrap_or(0)),
+        _ => None,
+    }
+}
+
 pub const MAX_SLOTS: usize = 5;
 pub const EVENT_CAPACITY: usize = 4096;
 const EVENT_INDEX_BITS: u32 = 12;
@@ -75,7 +89,7 @@ pub struct LiveFault {
 }
 
 /// What the host shows of running scripts, refreshed in place.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Live {
     /// Copied without formatting or allocating on the audio thread.
     pub faults: Vec<LiveFault>,
@@ -89,6 +103,30 @@ pub struct Live {
     pub keys: BTreeMap<u8, KeyState>,
     /// Preallocated rows recycled when script menus change visibility.
     menu_spares: Vec<Vec<(String, i32)>>,
+    control_revisions: Vec<u64>,
+    control_value_revisions: Vec<u64>,
+    interface_revision: u64,
+    keys_revision: u64,
+}
+
+impl Live {
+    /// Actual interface and keyboard changes in this reusable snapshot.
+    /// These counters are local to the buffer; compare them within one runtime epoch.
+    pub fn revisions(&self) -> (u64, u64) {
+        (self.interface_revision, self.keys_revision)
+    }
+}
+
+// Copying history is not part of a snapshot's semantic equality.
+impl PartialEq for Live {
+    fn eq(&self, other: &Self) -> bool {
+        self.faults == other.faults && self.notes == other.notes
+            && self.refresh_interface == other.refresh_interface
+            && self.interface_current == other.interface_current && self.slot == other.slot
+            && self.interface == other.interface && self.keys == other.keys
+            && self.menu_spares == other.menu_spares && self.control_revisions == other.control_revisions
+            && self.control_value_revisions == other.control_value_revisions
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -131,6 +169,10 @@ pub struct Event {
     /// Live callbacks retain their event and polyphonic memory through waits.
     callbacks: u16,
     recycle_pending: bool,
+    /// Physical release callback retained for host Panic/reset state cleanup.
+    cleanup: bool,
+    /// CC120 cut sound; retain its physical row until actual key-up/reset.
+    pub silenced: bool,
     /// MIDI key still down.
     pub held: bool,
     /// Next MIDI event on the same input channel/key, oldest first.
@@ -171,6 +213,8 @@ impl Event {
         voice: None,
         callbacks: 0,
         recycle_pending: false,
+        cleanup: false,
+        silenced: false,
         held: false,
         next_input: 0,
         fade_in_us: 0,
@@ -366,6 +410,8 @@ pub struct Env {
     pub events: Events,
     pub input: Input,
     pub work: VecDeque<Work>,
+    /// Fresh note work waits for the retained cleanup releases to finish.
+    cleaning: bool,
     timers: BinaryHeap<Reverse<Timer>>,
     timer_seq: u64,
     /// Sample time at the start of the current block, and the offset within it.
@@ -386,6 +432,11 @@ pub struct Env {
     /// Set while `on init` runs off the audio thread: storage may grow.
     pub(super) loading: bool,
     pub saved_arrays: BTreeMap<(u8, VarId), (Value, bool)>,
+    pub(super) array_spares: Vec<Box<super::ArrayRead>>,
+    pub(super) array_requests: VecDeque<Box<super::ArrayRead>>,
+    pub(super) array_inflight: usize,
+    array_results: VecDeque<Box<super::ArrayRead>>,
+    array_retired: VecDeque<Box<super::ArrayRead>>,
     pub spare_pgs_ints: Vec<(String, Vec<i32>)>,
     pub spare_pgs_strs: Vec<(String, String)>,
     pub spare_keyranges: Vec<String>,
@@ -415,6 +466,7 @@ impl Env {
                 keys: [[(0, 0); 128]; 16],
             },
             work: VecDeque::with_capacity(WORK_CAPACITY),
+            cleaning: false,
             timers: BinaryHeap::with_capacity(TIMER_CAPACITY),
             timer_seq: 0,
             now: 0,
@@ -431,6 +483,11 @@ impl Env {
             engine_pars: Vec::with_capacity(ENGINE_PAR_HEADROOM),
             loading: false,
             saved_arrays: BTreeMap::new(),
+            array_spares: Vec::new(),
+            array_requests: VecDeque::with_capacity(super::arrays::ARRAY_QUEUE),
+            array_inflight: 0,
+            array_results: VecDeque::with_capacity(super::arrays::ARRAY_QUEUE),
+            array_retired: VecDeque::with_capacity(super::arrays::ARRAY_QUEUE),
             spare_pgs_ints: Vec::new(),
             spare_pgs_strs: Vec::new(),
             spare_keyranges: Vec::new(),
@@ -820,7 +877,9 @@ impl Runtime {
         // At most 16 MiB of added UI/host text headroom; large string arrays
         // have their separate 4 MiB-per-slot allowance below.
         let text_bytes = desired.min((16 << 20) / text_cells.max(1));
-        self.stacks.strs.prepare(text_bytes);
+        // A full Unicode variable plus a literal must fit an expression before
+        // the bounded assignment copies its 320-character prefix.
+        self.stacks.strs.prepare(text_bytes.max(vm::MAX_STRING_VAR_BYTES.saturating_add(desired)).min(65536));
         self.env.host.keyranges.truncate(16);
         self.env.host.keyranges.reserve(16usize.saturating_sub(self.env.host.keyranges.len()));
         self.env.spare_keyranges.reserve(16usize.saturating_sub(self.env.spare_keyranges.len()));
@@ -830,9 +889,15 @@ impl Runtime {
         }
         for (prog, state) in self.programs.iter().zip(&mut self.states) {
             // Bound added headroom even for million-element string arrays.
-            let per_string = ((4 << 20) / state.mem.strs.len().max(1)).min(text_bytes);
+            let per_string = ((4 << 20) / state.mem.strs.len().max(1)).min(text_bytes.max(vm::MAX_STRING_VAR_BYTES));
             for s in &mut state.mem.strs {
                 s.reserve(per_string.saturating_sub(s.len()));
+            }
+            for var in &prog.vars {
+                if var.ty == Ty::Str && var.len.is_none() && !var.poly {
+                    let text = &mut state.mem.strs[var.slot as usize];
+                    text.reserve(vm::MAX_STRING_VAR_BYTES.saturating_sub(text.len()));
+                }
             }
             let dynamic_menu = prog.code.iter().any(|op| {
                 matches!(
@@ -857,6 +922,15 @@ impl Runtime {
                 state.ui.listeners.entry(name).or_insert(0);
             }
             state.persistent.reserve(prog.vars.len());
+            for &v in &prog.array_reads {
+                if !self.env.array_spares.iter().any(|r| r.slot == state.index && r.var == v) {
+                    // Two jobs per destination allow a second authored request
+                    // before the first result returns. Further requests fail explicitly.
+                    for _ in 0..2 {
+                        self.env.array_spares.push(Box::new(super::ArrayRead::prepared(state.index, v, &prog.vars[v as usize])));
+                    }
+                }
+            }
             for &v in &prog.saved_arrays {
                 let entry = self
                     .env
@@ -911,7 +985,7 @@ impl Runtime {
         }
         self.env
             .message
-            .reserve(text_bytes.saturating_sub(self.env.message.len()));
+            .reserve(text_bytes.max(vm::MAX_STRING_VAR_BYTES).saturating_sub(self.env.message.len()));
         for note in 0..128 {
             let key = self.env.host.keyboard.entry(note).or_default();
             key.name.reserve(text_bytes.saturating_sub(key.name.len()));
@@ -1113,9 +1187,13 @@ impl Runtime {
     }
 
     pub fn interface(&self, slot: usize) -> Interface {
-        self.states[slot]
-            .ui
-            .interface(&self.programs[slot], &self.states[slot].mem)
+        let mut interface = self.states[slot].ui.interface(&self.programs[slot], &self.states[slot].mem);
+        // Wallpaper is instrument-wide: the last slot assigning it wins.
+        // Pixel offsets remain per slot so one atlas can supply each view.
+        if let Some(state) = self.states.iter().rev().find(|s| !s.ui.wallpaper.is_empty()) {
+            interface.wallpaper.clone_from(&state.ui.wallpaper);
+        }
+        interface
     }
 
     /// What the host shows while the scripts run, shaped for
@@ -1140,14 +1218,52 @@ impl Runtime {
                 each_text_in(v, &mut room);
             }
             c.menu.iter_mut().for_each(|(t, _)| room(t));
+            // Delayed callbacks can first assign these scalar style fields.
+            // Reserve their map nodes off-thread without inventing defaults:
+            // numeric/text readers ignore an empty array until Ui::refresh
+            // replaces it with the authored integer. Its Vec has no storage
+            // to allocate or free when that happens on the audio thread.
+            for name in [
+                "$CONTROL_PAR_FONT_TYPE",
+                "$CONTROL_PAR_FONT_TYPE_ON",
+                "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED",
+                "$CONTROL_PAR_FONT_TYPE_ON_PRESSED",
+                "$CONTROL_PAR_FONT_TYPE_OFF_HOVER",
+                "$CONTROL_PAR_FONT_TYPE_ON_HOVER",
+                "$CONTROL_PAR_TEXTPOS_Y",
+                "$CONTROL_PAR_TEXT_ALIGNMENT",
+                "$CONTROL_PAR_TEXT_COLOR",
+            ] {
+                c.properties.entry(name.into()).or_insert_with(|| Value::IntArray(Vec::new()));
+            }
         }
         let menu_spares = interface.as_mut().map_or_else(Vec::new, |ui| {
-            let state = &self.states[slot.unwrap()].ui;
-            state.controls.iter().zip(&mut ui.controls).map(|(c, out)| {
+            let state = &self.states[slot.unwrap()];
+            let prog = &self.programs[slot.unwrap()];
+            state.ui.controls.iter().zip(&mut ui.controls).map(|(c, out)| {
+                // Revision caches must never accept a cut string as current.
+                // Mirror already-prepared source capacities while off-thread.
+                for (par, source) in c.props.iter().filter_map(|(p,v)| match v {
+                    super::ui::Prop::Str(s) => Some((*p,s)), _ => None,
+                }).chain(c.spare_text.iter().map(|(p,s)| (*p,s))) {
+                    if let Some(Value::Text(dst)) = prog.symbol_name(par).and_then(|name| out.properties.get_mut(name)) {
+                        dst.reserve(source.capacity().saturating_sub(dst.len()));
+                    }
+                }
+                let var = &prog.vars[c.var as usize];
+                if var.ty == Ty::Str && let Some(value) = out.properties.get_mut("$CONTROL_PAR_VALUE") {
+                    let mut i = var.slot as usize;
+                    each_text_in(value, &mut |dst| {
+                        dst.reserve(state.mem.strs[i].capacity().saturating_sub(dst.len()));
+                        i += 1;
+                    });
+                }
                 let total = c.menu.len() + c.spare_menu.len();
+                let bytes = c.menu.iter().chain(&c.spare_menu).map(|m| m.text.capacity()).max().unwrap_or(SNAPSHOT_SLACK);
+                for (dst,_) in &mut out.menu { dst.reserve(bytes.saturating_sub(dst.len())); }
                 out.menu.reserve(total.saturating_sub(out.menu.len()));
                 let mut spare = Vec::with_capacity(total);
-                spare.resize_with(total.saturating_sub(out.menu.len()), || (String::with_capacity(SNAPSHOT_SLACK), 0));
+                spare.resize_with(total.saturating_sub(out.menu.len()), || (String::with_capacity(bytes), 0));
                 spare
             }).collect()
         });
@@ -1167,12 +1283,26 @@ impl Runtime {
         let mut live = Live {
             faults: Vec::with_capacity(FAULT_CAPACITY),
             notes: Vec::with_capacity(NOTE_CAPACITY),
+            interface_revision: 0,
+            keys_revision: 0,
             refresh_interface: true,
             interface_current: true,
             slot: slot.unwrap_or(0),
             interface,
             keys,
             menu_spares,
+            control_revisions: slot.map_or_else(Vec::new, |s| self.states[s].ui.controls.iter().map(|c| c.revision).collect()),
+            control_value_revisions: slot.map_or_else(Vec::new, |s| {
+                let mem = &self.states[s].mem;
+                self.states[s].ui.controls.iter().map(|c| {
+                    let var = &self.programs[s].vars[c.var as usize];
+                    match var.ty {
+                        Ty::Int => mem.ints.revision(var.slot as usize),
+                        Ty::Real => mem.reals.revision(var.slot as usize),
+                        Ty::Str => mem.strs.revision(var.slot as usize),
+                    }
+                }).collect()
+            }),
         };
         self.refresh_live(&mut live);
         live
@@ -1211,14 +1341,17 @@ impl Runtime {
         }
         if let Some(out) = &mut live.interface
             && let Some(state) = self.states.get(live.slot)
-            && at.item < out.controls.len()
+            && at.item != usize::MAX
         {
             let prog = &self.programs[live.slot];
-            at.changed |= state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut at.item, &mut at.at, budget);
+            let changed = state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut live.control_revisions, &mut live.control_value_revisions, &mut at.value_revision, &mut at.item, &mut at.at, budget);
+            if changed { live.interface_revision = live.interface_revision.wrapping_add(1); }
+            at.changed |= changed;
             if at.item != usize::MAX {
                 return false;
             }
         }
+        let mut keys_changed = false;
         for (note, key) in &mut live.keys {
             let host = self.env.host.keyboard.get(note);
             let mut changed = copy_text(&mut key.name, host.map_or("", |k| &k.name));
@@ -1237,8 +1370,10 @@ impl Runtime {
             let pressed = host.is_some_and(|k| k.pressed);
             changed |= key.pressed != pressed;
             key.pressed = pressed;
-            at.changed |= changed;
+            keys_changed |= changed;
         }
+        if keys_changed { live.keys_revision = live.keys_revision.wrapping_add(1); }
+        at.changed |= keys_changed;
         live.interface_current = true;
         true
     }
@@ -1297,7 +1432,7 @@ impl Runtime {
         }
         self.advance(engine, at);
         let note = note.min(127);
-        self.set_sys(SysArray::KeyDown, note as usize, 1);
+        if !self.env.cleaning { self.set_sys(SysArray::KeyDown, note as usize, 1); }
         let Some(id) = self.env.events.alloc() else {
             self.env.note("KSP event pool exhausted; note dropped");
             return;
@@ -1316,7 +1451,7 @@ impl Runtime {
             self.env.events.get_mut(keys.1).expect("held MIDI event").next_input = id;
         }
         keys.1 = id;
-        self.key_down_oct(note);
+        if !self.env.cleaning { self.key_down_oct(note); }
         self.env.queue(Work::Note { event: id, slot: 0 });
         self.settle(engine);
     }
@@ -1330,8 +1465,10 @@ impl Runtime {
         let note = note.min(127);
         let (mut id, _) = std::mem::take(&mut self.env.input.keys[owner.min(15) as usize][note as usize]);
         let held = self.env.input.keys.iter().any(|channel| channel[note as usize].0 != 0);
-        self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
-        self.key_down_oct(note);
+        if !self.env.cleaning {
+            self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
+            self.key_down_oct(note);
+        }
         while id != 0 {
             let Some(e) = self.env.events.get_mut(id) else { break };
             e.held = false;
@@ -1359,17 +1496,26 @@ impl Runtime {
         false
     }
 
-    /// Cancel existing note/input callbacks without invoking release callbacks.
+    /// Cut existing note/input work, retaining physically held event rows.
+    /// CC120 stops sound; actual key-up still clears authored note state.
     /// UI, listener and service callbacks retain their prepared state and timers.
     pub fn all_sound_off(&mut self, channel_mask: u16) {
-        self.cancel_sound(channel_mask, None);
+        self.cancel_sound(channel_mask, None, false);
     }
 
     pub(crate) fn all_sound_off_from(&mut self, input_mask: u16) -> u16 {
-        self.cancel_sound(u16::MAX, Some(input_mask))
+        self.cancel_sound(u16::MAX, Some(input_mask), false)
     }
 
-    fn cancel_sound(&mut self, channel_mask: u16, input_mask: Option<u16>) -> u16 {
+    /// Host Panic/reset releases physical notes to clear authored legato buffers.
+    /// Sound is cut independently by the host. Cleanup retains the ordinary
+    /// callback budget, ignores waits and cannot generate replacement notes.
+    pub(crate) fn cleanup_notes(&mut self, engine: &mut dyn KspEngine) {
+        self.cancel_sound(u16::MAX, None, true);
+        self.settle(engine);
+    }
+
+    fn cancel_sound(&mut self, channel_mask: u16, input_mask: Option<u16>, cleanup: bool) -> u16 {
         if channel_mask == 0 { return 0; }
         let mut affected = 0;
         let selected = |channel: u8, input_channel: Option<u8>| channel_mask & (1 << channel.min(15)) != 0
@@ -1381,7 +1527,8 @@ impl Runtime {
                 let mut id = self.env.input.keys[owner][note].0;
                 let (mut first, mut last) = (0, 0);
                 while let Some(e) = self.env.events.get(id) {
-                    let (next, remove) = (e.next_input, selected(e.channel, e.input_channel));
+                    let (next, remove) = (e.next_input, selected(e.channel, e.input_channel)
+                        && (cleanup || e.source >= 0 || !e.held));
                     if !remove {
                         if first == 0 { first = id; }
                         if let Some(e) = self.env.events.get_mut(last) { e.next_input = id; }
@@ -1393,24 +1540,57 @@ impl Runtime {
                 self.env.input.keys[owner][note] = (first, last);
             }
         }
+        for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected(e.channel, e.input_channel)) {
+            affected |= 1 << e.channel.min(15);
+            // Already running cleanup survives a repeated Panic. Only notes
+            // that reached a slot need a release; queued fresh attacks do not.
+            e.cleanup |= e.source < 0 && e.reached > 0
+                && (cleanup && e.held || e.released != 0 && !e.held);
+            self.env.cleaning |= e.cleanup;
+            let keep_key = !cleanup && e.source < 0 && e.held;
+            if !keep_key {
+                e.held = false;
+                e.next_input = 0;
+            }
+            e.voice = None;
+            e.silenced = true;
+            e.recycle_pending = !keep_key && (!e.cleanup || e.released & 1 != 0 && e.recycle_pending);
+        }
         let events = &self.env.events;
         self.env.work.retain(|w| match *w {
-            Work::Note { event, .. } | Work::Release { event, .. } =>
-                events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel)),
+            Work::Note { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel)),
+            Work::Release { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel) || e.cleanup),
             Work::Controller { channel, input_channel, .. } | Work::PolyAt { channel, input_channel, .. }
                 | Work::Rpn { channel, input_channel, .. } => !selected(channel, input_channel),
         });
-        for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected(e.channel, e.input_channel)) {
-            affected |= 1 << e.channel.min(15);
-            e.held = false;
-            e.next_input = 0;
-            e.voice = None;
-            e.recycle_pending = true;
-        }
         for i in 0..self.threads.len() {
             let t = &self.threads[i];
             let input = matches!(t.ctx.kind, Kind::Cb(Callback::Controller | Callback::PolyAt | Callback::Rpn | Callback::Nrpn));
-            if !t.live || !(self.env.events.get(t.ctx.event).is_some_and(|e| selected(e.channel, e.input_channel))
+            if !t.live { continue; }
+            if t.ctx.kind == Kind::Cb(Callback::Release)
+                && self.env.events.get(t.ctx.event).is_some_and(|e| e.cleanup) {
+                let t = &mut self.threads[i];
+                t.ctx.cleanup = true;
+                t.ctx.ignore_wait = true;
+                if std::mem::take(&mut t.ctx.release_blocked) {
+                    t.ctx.forward = Forward::Release;
+                    if let Some(e) = self.env.events.get_mut(t.ctx.event) { e.recycle_pending = false; }
+                }
+                if t.waiting {
+                    t.waiting = false;
+                    t.generation = t.generation.wrapping_add(1);
+                    let generation = t.generation;
+                    if self.env.timers.len() >= TIMER_CAPACITY {
+                        self.env.note("KSP Panic cleanup resume queue full; state notification canceled");
+                        self.threads[i].ctx.forward = Forward::None;
+                        self.finish(i as u16);
+                    } else {
+                        self.env.timer(self.env.clock(), TimerKind::Resume { thread: i as u16, generation });
+                    }
+                }
+                continue;
+            }
+            if !(self.env.events.get(t.ctx.event).is_some_and(|e| selected(e.channel, e.input_channel))
                 || input && selected(t.ctx.channel, t.ctx.input_channel)) { continue; }
             let ctx = t.ctx;
             if matches!(ctx.kind, Kind::Cb(Callback::Controller)) {
@@ -1427,9 +1607,22 @@ impl Runtime {
         for i in 0..self.env.events.slots.len() {
             let e = &self.env.events.slots[i];
             if e.live && selected(e.channel, e.input_channel) {
-                debug_assert_eq!(e.callbacks, 0);
+                debug_assert!(e.callbacks == 0 || e.cleanup);
                 let id = i32::from(e.generation) << EVENT_INDEX_BITS | i as i32;
-                self.env.events.free(id);
+                if e.cleanup {
+                    // A finished ignored release has no live callback to resume.
+                    // Continue at its next reached slot, or recycle at the end;
+                    // do not replay notifications or duplicate queued releases.
+                    if e.callbacks == 0 && !self.env.work.iter().any(|w|
+                        matches!(w, Work::Release { event, .. } if *event == id))
+                    {
+                        let slot = (0..e.reached).find(|slot| e.released & (1 << slot) == 0)
+                            .unwrap_or(e.reached);
+                        self.env.queue(Work::Release { event: id, slot });
+                    }
+                } else if e.source >= 0 || !e.held {
+                    self.env.events.free(id);
+                }
             }
         }
         let (events, threads) = (&self.env.events, &self.threads);
@@ -1443,24 +1636,30 @@ impl Runtime {
         });
         self.env.stop_waits.retain(|(id, _)| threads.iter().any(|t| t.live && t.ctx.callback_id == *id));
         for note in 0..128 {
-            let held = self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
+            let held = !self.env.cleaning && self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
             self.set_sys(SysArray::KeyDown, note, i32::from(held));
         }
         for note in 0..12 { self.key_down_oct(note); }
+        if !cleanup && !self.env.events.slots.iter().any(|e| e.live && e.cleanup) { self.env.cleaning = false; }
         self.changes += 1;
         affected
     }
 
     /// Synchronize a full Panic/reset's controller state without script callbacks.
-    /// With no replacement state, reset performance controls while retaining
-    /// volume, pan and other controls, as the engine's CC121 does.
+    /// With no replacement state, use the MIDI RP-015 CC121 defaults.
     pub fn reset_controllers(&mut self, controllers: Option<&[u8; 128]>) {
         if let Some(controllers) = controllers {
             for (cc, &value) in controllers.iter().enumerate() {
                 self.env.input.cc[cc] = i32::from(value);
             }
         } else {
-            for (cc, value) in [(1, 0), (11, 127), (64, 0), (66, 0)] { self.env.input.cc[cc] = value; }
+            for cc in 0..128 {
+                let initial = self.init_controllers.iter().rev()
+                    .find(|&&(controller, _)| controller as usize == cc).map(|&(_, value)| value);
+                if let Some(value) = reset_controller_value(cc as u8, initial) {
+                    self.env.input.cc[cc] = i32::from(value);
+                }
+            }
         }
         self.env.input.cc[b::VCC_PITCH_BEND as usize] = 0;
         self.env.input.cc[b::VCC_MONO_AT as usize] = 0;
@@ -1469,7 +1668,36 @@ impl Runtime {
             self.set_sys(SysArray::Cc, cc, self.env.input.cc[cc]);
             self.set_sys(SysArray::CcTouched, cc, 0);
         }
+        for note in 0..128 { self.set_sys(SysArray::PolyAt, note, 0); }
         self.changes += 1;
+    }
+
+    /// Fence older performance-controller callbacks without canceling keys,
+    /// note/release callbacks, UI edits or unrelated MIDI channels.
+    pub(crate) fn cancel_performance_controllers(&mut self, channels: u16) {
+        let selected = |channel: u8, cc: u8| channels & (1 << channel.min(15)) != 0
+            && reset_controller_value(cc, None).is_some();
+        self.env.work.retain(|w| match *w {
+            Work::Controller { channel, cc, .. } => !selected(channel, cc),
+            Work::PolyAt { channel, .. } => !selected(channel, 129),
+            _ => true,
+        });
+        for i in 0..self.threads.len() {
+            let t = &self.threads[i];
+            if !t.live || !(t.ctx.kind == Kind::Cb(Callback::Controller) && selected(t.ctx.channel, t.ctx.cc as u8)
+                || t.ctx.kind == Kind::Cb(Callback::PolyAt) && selected(t.ctx.channel, 129)) { continue; }
+            self.threads[i].ctx.forward = Forward::None;
+            self.finish(i as u16);
+        }
+        let threads = &self.threads;
+        self.env.timers.retain(|Reverse(t)| match t.kind {
+            TimerKind::Resume { thread, generation } => {
+                let t = &threads[thread as usize];
+                t.live && t.generation == generation
+            }
+            _ => true,
+        });
+        self.env.stop_waits.retain(|(id, _)| threads.iter().any(|t| t.live && t.ctx.callback_id == *id));
     }
 
     /// Controller 0..127; use `pitch_bend`/`channel_pressure` for the virtual ones.
@@ -1612,11 +1840,94 @@ impl Runtime {
         self.settle(engine);
     }
 
+    /// Hand these jobs to a non-audio worker. A result retains its owned parse
+    /// buffers until the worker receives it again via `pop_retired_array_read`.
+    pub fn pop_array_read(&mut self) -> Option<Box<super::ArrayRead>> {
+        self.env.array_requests.pop_front()
+    }
+
+    pub fn can_finish_array_read(&self) -> bool {
+        self.env.array_results.len() < super::arrays::ARRAY_QUEUE
+    }
+
+    pub fn finish_array_read(&mut self, request: Box<super::ArrayRead>) -> Result<(), Box<super::ArrayRead>> {
+        if !self.programs.get(request.slot as usize).is_some_and(|p| p.array_reads.contains(&request.var)) {
+            return Err(request);
+        }
+        if request.id < 0 {
+            if self.env.array_spares.len() == self.env.array_spares.capacity() { return Err(request) }
+            self.env.array_inflight = self.env.array_inflight.saturating_sub(1);
+            self.env.array_spares.push(request);
+        } else {
+            if !self.can_finish_array_read() { return Err(request) }
+            self.env.array_results.push_back(request);
+        }
+        Ok(())
+    }
+
+    pub fn pop_retired_array_read(&mut self) -> Option<Box<super::ArrayRead>> {
+        self.env.array_retired.pop_front()
+    }
+
+    fn install_array_reads(&mut self, mut budget: usize) {
+        while budget > 0 && self.env.array_retired.len() < super::arrays::ARRAY_QUEUE
+            && self.env.async_done.len() < self.env.async_done.capacity()
+        {
+            let Some(request) = self.env.array_results.front_mut() else { break };
+            let Some((prog, state)) = self.programs.get(request.slot as usize)
+                .zip(self.states.get_mut(request.slot as usize)) else { break };
+            let var = &prog.vars[request.var as usize];
+            let values = match &request.values { Some(Value::Array(values)) => &values[..], _ => &[] };
+            let len = values.len().min(var.len.unwrap_or(0) as usize);
+            let end = (request.progress + budget).min(len);
+            // Validate all strings before changing any array cell. Validation
+            // and copying each advance at most 256 cells per audio block.
+            for (offset, value) in values.iter().enumerate().take(end).skip(request.progress) {
+                let i = var.slot as usize + offset;
+                if !request.validated {
+                    if let Value::Text(text) = value
+                        && vm::variable_text(text).len() > state.mem.strs[i].capacity()
+                    {
+                        request.success = false;
+                        request.failure = Some("load_array_str: prepared string capacity exceeded");
+                    }
+                } else if request.success {
+                    match (var.ty, value) {
+                        (Ty::Int, Value::Int(n)) if state.mem.ints[i] != *n => state.mem.ints[i] = *n,
+                        (Ty::Real, Value::Real(n)) if state.mem.reals[i] != *n => state.mem.reals[i] = *n,
+                        (Ty::Str, Value::Text(text)) if state.mem.strs[i] != vm::variable_text(text) => {
+                            state.mem.strs[i].clear();
+                            state.mem.strs[i].push_str(vm::variable_text(text));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            budget -= end - request.progress;
+            request.progress = end;
+            if end != len { break }
+            if !request.validated && request.success {
+                request.validated = true;
+                request.progress = 0;
+                continue;
+            }
+            let request = self.env.array_results.pop_front().unwrap();
+            if let Some(failure) = request.failure { self.env.note(failure); }
+            self.env.async_done.push((request.slot, request.id, i32::from(request.success)));
+            self.env.array_retired.push_back(request);
+            self.changes += 1;
+            // Deliver completion before starting another load into the same
+            // destination; its callback must not observe a partial next file.
+            break;
+        }
+    }
+
     /// Finish the current block: resume every callback due before its end.
     pub fn process(&mut self, engine: &mut dyn KspEngine, frames: u32) {
+        self.install_array_reads(256);
         let end = self.env.now + u64::from(frames);
         // What the last settle left for later (see `settle`).
-        if self.env.pgs_changed || !self.env.async_done.is_empty() {
+        if self.env.cleaning || self.env.pgs_changed || !self.env.async_done.is_empty() {
             self.settle(engine);
         }
         self.run_timers(engine, end);
@@ -1701,8 +2012,44 @@ impl Runtime {
         // asynchronous call (a retry that can never succeed here).
         let mut completions = 0;
         loop {
+            let mut deferred = 0;
             while let Some(w) = self.env.work.pop_front() {
+                let event = match w {
+                    Work::Note { event, .. } | Work::Release { event, .. } => Some(event),
+                    _ => None,
+                };
+                if self.env.cleaning && event.is_some_and(|id| self.env.events.get(id).is_some_and(|e| !e.cleanup)) {
+                    // Rotate fresh note work in the existing bounded queue;
+                    // cleanup releases behind it still get their turn.
+                    self.env.work.push_back(w);
+                    deferred += 1;
+                    if deferred >= self.env.work.len() { break; }
+                    continue;
+                }
+                deferred = 0;
                 self.handle(engine, w);
+            }
+            if self.env.cleaning {
+                for index in 0..self.env.events.slots.len() {
+                    let e = &self.env.events.slots[index];
+                    if !e.live || !e.cleanup { continue; }
+                    let id = i32::from(e.generation) << EVENT_INDEX_BITS | index as i32;
+                    // All cleanup release work was drained above. Only a
+                    // retained callback may still own its row at this point.
+                    if e.callbacks == 0 {
+                        self.env.note("KSP Panic cleanup could not finish state notification; note canceled");
+                        self.env.events.free(id);
+                    }
+                }
+            }
+            if self.env.cleaning && !self.env.events.slots.iter().any(|e| e.live && e.cleanup) {
+                self.env.cleaning = false;
+                for note in 0..128 {
+                    let held = self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
+                    self.set_sys(SysArray::KeyDown, note, i32::from(held));
+                }
+                for note in 0..12 { self.key_down_oct(note); }
+                continue;
             }
             if !self.env.stop_waits.is_empty() {
                 self.stop_waits(engine);
@@ -1758,11 +2105,8 @@ impl Runtime {
             let t = &mut self.threads[i];
             t.generation = t.generation.wrapping_add(1);
             t.waiting = false;
-            if mode == 0 {
-                self.resume(engine, i as u16);
-            } else {
-                self.finish(i as u16);
-            }
+            t.ctx.ignore_wait |= mode != 0;
+            self.resume(engine, i as u16);
         }
     }
 
@@ -1820,6 +2164,10 @@ impl Runtime {
                 let Some(e) = self.env.events.get_mut(event) else {
                     return;
                 };
+                if e.live && e.silenced && e.source < 0 && !e.held {
+                    e.cleanup = true;
+                    self.env.cleaning = true;
+                }
                 if e.frozen_expression.is_none() {
                     e.frozen_expression = engine.release_expression(self.env.offset, e.voice, e.channel, e.note.clamp(0, 127) as u8);
                 }
@@ -1832,7 +2180,13 @@ impl Runtime {
                     }
                     return self.env.events.free(event);
                 }
-                if slot >= e.reached || e.released & (1 << slot) != 0 {
+                if slot >= e.reached {
+                    return self.env.events.free(event);
+                }
+                if e.released & (1 << slot) != 0 {
+                    if e.cleanup {
+                        return self.env.queue(Work::Release { event, slot: slot + 1 });
+                    }
                     return self.env.events.free(event);
                 }
                 e.released |= 1 << slot;
@@ -1857,6 +2211,8 @@ impl Runtime {
                         ctx.input_channel = self.env.events.get(event).and_then(|e| e.input_channel);
                         ctx.poly_row = Event::index(event) as u32;
                         ctx.forward = Forward::Release;
+                        ctx.cleanup = self.env.events.get(event).is_some_and(|e| e.cleanup || e.silenced);
+                        ctx.ignore_wait = ctx.cleanup;
                         self.spawn_cb(engine, slot, Callback::Release, ctx);
                     }
                     None => self.env.queue(Work::Release {
@@ -2002,6 +2358,7 @@ impl Runtime {
         let Some(i) = self.free_threads.pop() else {
             self.env
                 .note("KSP callback pool exhausted; callback dropped");
+            if ctx.cleanup { self.env.note("KSP Panic cleanup callback pool full; state notification incomplete"); }
             self.forward(ctx);
             return;
         };
@@ -2080,9 +2437,17 @@ impl Runtime {
                     pc,
                     "KSP callback exceeded its instruction budget",
                 );
+                if self.threads[i as usize].ctx.cleanup {
+                    self.env.note("KSP Panic cleanup instruction limit; state notification incomplete");
+                }
                 self.finish(i);
             }
             Ok(Yield::OutOfFuel | Yield::OutOfTime) => {
+                if self.threads[i as usize].ctx.cleanup && self.env.timers.len() >= TIMER_CAPACITY {
+                    self.env.note("KSP Panic cleanup resume queue full; state notification canceled");
+                    self.finish(i);
+                    return;
+                }
                 // Block budget spent: continue at the start of the next block.
                 let generation = self.threads[i as usize].generation;
                 let at = self.env.clock();
@@ -2095,6 +2460,9 @@ impl Runtime {
                 );
             }
             Err(f) => {
+                if self.threads[i as usize].ctx.cleanup {
+                    self.env.note("KSP Panic cleanup fault; state notification incomplete");
+                }
                 let pc = self.threads[i as usize].pc;
                 self.env.fault(slot as u8, pc, f.0);
                 self.finish(i);
@@ -2118,6 +2486,10 @@ impl Runtime {
     /// First yield of a callback: pass its event on unless the script ignored it.
     fn yielded(&mut self, i: u16) {
         let ctx = self.threads[i as usize].ctx;
+        if ctx.forward == Forward::Release && !ctx.cleanup
+            && self.env.events.get(ctx.event).is_some_and(|e| e.release_ignored) {
+            self.threads[i as usize].ctx.release_blocked = true;
+        }
         self.threads[i as usize].ctx.forward = Forward::None;
         self.forward(ctx);
     }
@@ -2145,7 +2517,9 @@ impl Runtime {
                 let Some(e) = self.env.events.get_mut(ctx.event) else {
                     return;
                 };
-                if !std::mem::take(&mut e.release_ignored) {
+                // A host stop already cut the sound. Ignoring its release
+                // must not suppress the remaining slots' state cleanup.
+                if !std::mem::take(&mut e.release_ignored) || ctx.cleanup {
                     self.env.queue(Work::Release {
                         event: ctx.event,
                         slot: next,
@@ -2298,6 +2672,7 @@ pub(super) fn refresh_range(
 /// Where an incremental refresh stands; start from the default.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Refresh {
+    value_revision: u64,
     slot: usize,
     item: usize,
     at: usize,
@@ -2345,7 +2720,7 @@ pub fn write_value(mem: &mut vm::Memory, var: &compile::Var, value: &Value) {
         (Ty::Real, Value::Real(n)) => mem.reals[i] = *n,
         (Ty::Str, Value::Text(t)) => {
             mem.strs[i].clear();
-            mem.strs[i].push_str(t);
+            mem.strs[i].push_str(vm::variable_text(t));
         }
         _ => {}
     };
@@ -2378,7 +2753,7 @@ pub(super) fn write_value_rt(
 ) -> vm::Exec<()> {
     if !loading && var.ty == Ty::Str && !var.poly {
         let fits = |i: usize, value: &Value| match value {
-            Value::Text(text) => text.len() <= mem.strs[i].capacity(),
+            Value::Text(text) => vm::variable_text(text).len() <= mem.strs[i].capacity(),
             _ => true,
         };
         let base = var.slot as usize;
