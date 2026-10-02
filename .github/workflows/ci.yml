@@ -2,9 +2,9 @@ name: CI
 
 # Keep the workflow present for every PR. Only known documentation-only changes
 # skip expensive jobs; `CI required` still reports success/failure.
+# Public main pushes run this exact workflow through Nightly in release mode.
+# PR/merge-group checks remain independent; avoid a second ordinary CI push run.
 on:
-  push:
-    branches: [main]
   pull_request:
   merge_group:
   workflow_dispatch:
