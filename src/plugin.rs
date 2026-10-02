@@ -431,6 +431,7 @@ pub(crate) struct PartShared {
 
 pub struct Shared {
     native_asset_requests: Arc<ArrayQueue<NativeAssetJob>>,
+    native_asset_loader: Arc<Mutex<std::sync::Weak<moose::core::tasks::TaskSpawner<Load>>>>,
     instance_id: u64,
     diagnostic_audio: ArrayQueue<AudioDiagnostics>,
     diagnostic_free: ArrayQueue<AudioDiagnostics>,
@@ -718,6 +719,7 @@ impl Default for Shared {
         Self {
             instance_id: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             native_asset_requests: Arc::new(ArrayQueue::new(16)),
+            native_asset_loader: Arc::default(),
             diagnostic_audio: ArrayQueue::new(2),
             diagnostic_free,
             diagnostic_latest: Mutex::new(None),
@@ -1224,6 +1226,9 @@ fn load_native_assets(params: &SamplerParams) {
             Some(NativeAssetJob{part,epoch:v.script_epoch,path:v.instrument.as_ref()?.path.clone(),scene:scene.clone(),names:Vec::new()})
         }).take(16).collect()};
     for job in retry {let _=params.shared.native_asset_requests.push(job);}
+    if !params.shared.native_asset_requests.is_empty() {
+        params.shared.wake_native_assets();
+    }
 }
 /// Prepare the supported legacy scene off-thread without changing classic controls.
 fn native_scene(i: &Instrument, rt: Option<&Runtime>, live: &mut Option<Box<Live>>, pages: &ScriptPages, trace: &mut crate::diagnostics::LoadTrace) -> (Option<Arc<Mutex<crate::native_ui::Scene>>>, String) {
@@ -1325,6 +1330,16 @@ fn prepare_interface(live: &Live, previous: Option<&Interface>, versions: &[(u64
 }
 
 impl Shared {
+    /// The editor owns the task handle; retaining only a weak reference avoids
+    /// a Params -> task handler -> Params cycle and retires with the editor.
+    pub(crate) fn native_asset_loader(&self, tasks: &Arc<moose::core::tasks::TaskSpawner<Load>>) {
+        *self.native_asset_loader.lock().unwrap() = Arc::downgrade(tasks);
+        if !self.native_asset_requests.is_empty() { self.wake_native_assets(); }
+    }
+    fn wake_native_assets(&self) {
+        let task = self.native_asset_loader.lock().unwrap().upgrade();
+        if let Some(task) = task { task.spawn_coalescing(Load); }
+    }
     pub(crate) fn request_native_assets(&self, part: usize, epoch: u64, names: std::collections::BTreeSet<String>) -> Result<(),String> {
         let view=self.view.lock().unwrap();
         let v=view.parts.get(part).filter(|v| v.script_epoch==epoch)
@@ -1332,18 +1347,24 @@ impl Shared {
         let scene=v.native_scene.as_ref().ok_or("Native UI scene is unavailable")?.clone();
         let path=v.instrument.as_ref().ok_or("Native UI source is unavailable")?.path.clone();
         let weak_scene=Arc::downgrade(&scene);let queue=Arc::downgrade(&self.native_asset_requests);
-        let origin=path.clone();
+        let origin=path.clone();let loader=self.native_asset_loader.clone();
         scene.lock().unwrap().set_raster_waker(Arc::new(move || {
             if let (Some(queue),Some(scene))=(queue.upgrade(),weak_scene.upgrade()) {
                 let _=queue.push(NativeAssetJob{part,epoch,path:origin.clone(),scene,names:Vec::new()});
+                let task=loader.lock().unwrap().upgrade();
+                if let Some(task)=task {task.spawn_coalescing(Load);}
             }
         }));
         let missing=scene.lock().unwrap().reserve_assets(names).map_err(|e| e.to_string())?;
         if missing.is_empty() { return Ok(()) }
         if let Err(job)=self.native_asset_requests.push(NativeAssetJob {part,epoch,path,scene:scene.clone(),names:missing}) {
             scene.lock().unwrap().cancel_assets(&job.names);
+            drop(view);
+            self.wake_native_assets();
             return Err("Native UI asset queue is full".into());
         }
+        drop(view);
+        self.wake_native_assets();
         Ok(())
     }
     /// Publish visible script state on the editor thread, with a worker fallback
@@ -4797,7 +4818,7 @@ pub(crate) mod tests {
         let p=SamplerParams::new();let mut dsp=Dsp::default();
         let epoch={let mut view=p.shared.view.lock().unwrap();
             let epoch=next_epoch(&mut view,0,None,live);
-            let v=&mut view.parts[0];v.native_scene=Some(scene.clone());v.script_pages=pages;v.instrument=Some(Arc::new(Instrument {path:i.path.clone(),..Default::default()}));v.interface=Some(Arc::new(rt.interface(0)));epoch};
+            let v=&mut view.parts[0];v.native_scene=Some(scene.clone());v.script_pages=pages;v.instrument=Some(Arc::new(Instrument {path:i.path.clone(),..Default::default()}));v.interface=Some(Arc::new(rt.interface(0)));v.attempted=Some(Part::default().source());epoch};
         dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
         fn texts(node:&Node, out:&mut Vec<String>) {if let Paint::Text(text)=&node.paint {out.push(text.clone())}for c in &node.children {texts(c,out)}}
         let initial=scene.lock().unwrap().snapshot().unwrap();let mut labels=Vec::new();texts(&initial,&mut labels);
@@ -4823,7 +4844,23 @@ pub(crate) mod tests {
         let published=scene.lock().unwrap().snapshot().unwrap();
         p.shared.request_native_assets(0,epoch,published.asset_names()).unwrap();
         assert!(!scene.lock().unwrap().assets.entries.contains_key("assets/pics/changed.svg"),"editor evaluation only queues image work");
-        load_native_assets(&p);
+        // Register the same loader handle the editor installs, then leave the
+        // host idle: no more process calls, frames, or 100ms loader polls.
+        moose::core::tasks::warm_pool();
+        let (completed, completion) = std::sync::mpsc::channel();
+        let paused = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let worker_pause = paused.clone();
+        let weak_params = Arc::downgrade(&p);
+        let tasks = Arc::new(moose::core::tasks::TaskSpawner::<Load>::new_serialized(move |task| {
+            let (gate, ready) = &*worker_pause;
+            let mut stopped = gate.lock().unwrap();
+            while *stopped { stopped = ready.wait(stopped).unwrap(); }
+            drop(stopped);
+            if let Some(params) = weak_params.upgrade() { task.run(&params); }
+            let _ = completed.send(());
+        }));
+        p.shared.native_asset_loader(&tasks); // Already queued work must wake too.
+        completion.recv_timeout(Duration::from_secs(5)).expect("idle editor request wakes the real Load lane");
         let assets=scene.lock().unwrap().assets.clone();
         assert!(assets.entries["assets/pics/changed.svg"].is_ok());
         assert!(!first_assets.entries.contains_key("assets/pics/changed.svg"),"retained asset snapshots stay immutable");
@@ -4838,23 +4875,28 @@ pub(crate) mod tests {
             moose::mui::mui::scene::Paint::Vector{vector,..}=>vector.raster_source().cloned(),_=>None,
         }).unwrap();
         assert!(source.prepared_image(40,20).unwrap().is_none(),"cold filter paint only requests worker preparation");
-        load_native_assets(&p);
+        completion.recv_timeout(Duration::from_secs(5)).expect("cold paint schedules Load without another frame or audio block");
         assert!(source.prepared_image(40,20).unwrap().is_some(),"same loader prepares the requested device size");
+        *paused.0.lock().unwrap() = true;
         for _ in 0..16 {p.shared.native_asset_requests.push(NativeAssetJob{part:0,epoch:epoch-1,path:i.path.clone(),scene:scene.clone(),names:Vec::new()}).ok().unwrap();}
         assert!(source.prepared_image(80,40).unwrap().is_none());
-        load_native_assets(&p); // Full queue drained; retained pending scene queues a retry.
-        load_native_assets(&p);
+        *paused.0.lock().unwrap() = false; paused.1.notify_one();
+        completion.recv_timeout(Duration::from_secs(5)).expect("full artwork queue wakes its existing loader");
+        completion.recv_timeout(Duration::from_secs(5)).expect("loader retry tail schedules itself without UI polling");
         assert!(source.prepared_image(80,40).unwrap().is_some(),"queue-full misses recover without editor raster work or another thread");
         assert_eq!(labels,["Amount:44:1","Remote:24:1"],"same scene observes callback results and retains local state");
         let rt=dsp.rack.parts[0].script().unwrap();
         assert_eq!(rt.interface(1).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(90));
         assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+        *paused.0.lock().unwrap() = true;
         p.shared.request_native_assets(0,epoch,["assets/pics/stale.svg".to_string()].into_iter().collect()).unwrap();
         assert!(source.prepared_image(120,60).unwrap().is_none());
         {let mut view=p.shared.view.lock().unwrap();view.parts[0].script_epoch=epoch+1;view.parts[0].native_scene=None;}
-        load_native_assets(&p);
+        *paused.0.lock().unwrap() = false; paused.1.notify_one();
+        completion.recv_timeout(Duration::from_secs(5)).expect("stale jobs still leave the worker runnable");
         assert!(!scene.lock().unwrap().assets.entries.contains_key("assets/pics/stale.svg"),"stale image jobs are discarded before reading or publication");
         assert!(source.prepared_image(120,60).unwrap().is_none(),"a replaced scene's raster job does not prepare or publish after its source changes");
+        drop(tasks);
         std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return function() return @ui.Ring {} end").unwrap();
         let error=Scene::prepare(&i.path,rt).unwrap_err().to_string();
         assert!(error.contains("Unsupported native UI API")&&error.contains("Ring"),"{error}");

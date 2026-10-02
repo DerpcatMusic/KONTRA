@@ -889,6 +889,7 @@ fn build(
     picker: Arc<picker::Picker>,
     art: Arc<art::Art>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static + use<> {
+    let mut native_loader = None;
     let mut state = EditorState {
         search: String::new(),
         source: None,
@@ -952,6 +953,13 @@ fn build(
         corner: None,
     };
     move |ui, bridge| {
+        if native_loader.is_none() {
+            if let Some(tasks) = bridge.context().and_then(|c| c.tasks::<Load>()) {
+                let tasks = Arc::new(tasks);
+                bridge.params().shared.native_asset_loader(&tasks);
+                native_loader = Some(tasks);
+            }
+        }
         // The loader also runs from the audio thread; poll here so a stopped host still loads.
         if state.last_poll.elapsed() > Duration::from_millis(100) {
             if let Some(tasks) = bridge.context().and_then(|c| c.tasks::<Load>()) {
