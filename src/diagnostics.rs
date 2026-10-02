@@ -353,7 +353,10 @@ fn emit_to(session: &Session, value: Value) -> Option<String> {
         ) {
             LogLevel::Warning
         } else if event_name == "issue" {
-            if data["code"] == "failed" {
+            if matches!(
+                data["code"].as_str(),
+                Some("failed" | "initialization_failed")
+            ) {
                 LogLevel::Error
             } else {
                 LogLevel::Warning
@@ -397,6 +400,13 @@ fn emit_to(session: &Session, value: Value) -> Option<String> {
         reason: named("reason").or_else(|| named("message")),
         details: data,
     };
+    if row.module == "ksp"
+        && let Some(message) = row.reason.as_deref()
+    {
+        let (slot, line) = script_location(message);
+        row.script_slot = row.script_slot.or(slot);
+        row.line = row.line.or(line);
+    }
     let mut truncated = false;
     for field in [&mut row.module, &mut row.event] {
         truncated |= field.len() > 128;
@@ -481,6 +491,29 @@ fn emit_to(session: &Session, value: Value) -> Option<String> {
             Some("Diagnostics worker is unavailable".into())
         }
     }
+}
+
+/// Bridge the existing off-thread KSP formatters to typed log fields. Human
+/// slot numbers are one-based; raw runtime fault slots are already zero-based.
+/// Keep the original message, and prefer explicit JSON fields when supplied.
+fn script_location(message: &str) -> (Option<u32>, Option<u32>) {
+    fn leading_number(text: &str) -> Option<u32> {
+        let end = text
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len());
+        text[..end].parse().ok()
+    }
+    let Some(rest) = message
+        .strip_prefix("Script ")
+        .or_else(|| message.strip_prefix("Slot "))
+    else {
+        return (None, None);
+    };
+    let slot = leading_number(rest).and_then(|n| n.checked_sub(1));
+    let line = rest
+        .split_once("line ")
+        .and_then(|(_, rest)| leading_number(rest));
+    (slot, line)
 }
 
 /// Called after a diagnostic snapshot returns from the audio thread.
@@ -1301,12 +1334,13 @@ impl LoadTrace {
         let module = match stage {
             "scripts" => "ksp",
             "samples" | "preload" => "samples",
-            "artwork" | "widgets" => "ui",
+            "artwork" | "widgets" | "ui" => "ui",
+            "effects" => "effects",
             "import" => "import",
             _ => "loader",
         };
         if let Some(error) = emit(
-            json!({"event":event,"module":module,"load_id":self.report["load_id"],"path":self.report["path"],"program":self.report["program"],"part":self.report["part"],"instance_id":self.report["details"]["instance_id"],"stage":stage,"data":data}),
+            json!({"event":event,"module":module,"load_id":self.report["load_id"],"path":self.report["path"],"program":self.report["program"],"part":self.report["part"],"instance_id":self.report["details"]["instance_id"],"library":self.report["details"]["library"],"stage":stage,"data":data}),
         ) {
             self.report["logging_error"] = json!(error);
         }
@@ -1325,6 +1359,12 @@ impl LoadTrace {
         self.record("stage_started", json!({}));
     }
     pub fn fail(&mut self, message: impl Into<String>) {
+        let mut message = message.into();
+        truncate(&mut message, 4096);
+        if self.report["failure"].as_str() == Some(message.as_str()) {
+            return;
+        }
+        self.report["failure"] = json!(message);
         self.issue(self.stage, "failed", message);
     }
     pub fn detail(&mut self, key: &str, value: impl Into<Value>) {
@@ -1333,17 +1373,28 @@ impl LoadTrace {
     pub fn issue(&mut self, stage: &'static str, code: &'static str, message: impl Into<String>) {
         let mut message = message.into();
         truncate(&mut message, 4096);
+        let key = (stage, code, message.clone());
+        if self.seen.contains(&key) {
+            return;
+        }
         if self.seen.len() >= 1024 {
+            let issue = json!({"stage":stage,"code":code,"message":message});
+            let error = matches!(code, "failed" | "initialization_failed");
+            if error && self.report["last_error"] == issue {
+                return;
+            }
             let omitted = self.report["issues_omitted"].as_u64().unwrap_or(0) + 1;
             self.report["issues_omitted"] = json!(omitted);
             if omitted == 1 {
-                self.record("issue", json!({"stage":stage,"code":"diagnostics_truncated","message":"Load report retains the first 1024 distinct issue examples; additional examples are counted in issues_omitted"}));
+                self.record("issue", json!({"stage":stage,"code":"diagnostics_truncated","message":"Load report issues retain the first 1024 distinct examples; additional occurrences are counted in issues_omitted. Errors still produce log events; the latest is retained as last_error"}));
+            }
+            if error {
+                self.report["last_error"] = issue.clone();
+                self.record("issue", issue);
             }
             return;
         }
-        if !self.seen.insert((stage, code, message.clone())) {
-            return;
-        }
+        self.seen.insert(key);
         let issue = json!({"stage":stage,"code":code,"message":message});
         self.report["issues"]
             .as_array_mut()
@@ -1362,7 +1413,18 @@ impl LoadTrace {
             status
         });
         self.finished = true;
-        self.record("load_finished", self.report.clone());
+        // Each issue already has a journal event. Repeating the full report can
+        // exceed EVENT_BYTES and discard the useful timings/details summary.
+        self.record(
+            "load_finished",
+            json!({
+                "status":self.report["status"], "elapsed_ms":self.report["elapsed_ms"], "reason":self.report["failure"],
+                "stages_ms":self.report["stages_ms"], "details":self.report["details"],
+                "issues_retained":self.report["issues"].as_array().unwrap().len(),
+                "issues_omitted":self.report["issues_omitted"].as_u64().unwrap_or(0),
+                "last_error":self.report["last_error"],
+            }),
+        );
         Arc::new(self.report.clone())
     }
 }
@@ -1690,6 +1752,109 @@ mod tests {
                     && row.stage.as_deref() == Some("artwork")
                     && row.code.as_deref() == Some("missing"))
         );
+        // Initialization's two existing text formatters retain their original
+        // reasons while promoting the same zero-based slot and source line.
+        let mut trace = LoadTrace::new(Path::new("Partial Harp.nki"), 0, Some(1));
+        trace.stage("scripts");
+        trace.detail("zones_total", 95_624);
+        trace.detail("library", "Example Library");
+        trace.issue(
+            "scripts",
+            "initialization_failed",
+            "Script 2: KSP line 37: wait() is not allowed in on init",
+        );
+        trace.issue(
+            "scripts",
+            "unsupported",
+            "Slot 3 line 42: unsupported effect (4x)",
+        );
+        for n in 0..12 {
+            trace.issue(
+                "samples",
+                "zone_skipped",
+                format!("Zone {n}: {}", "x".repeat(4096)),
+            );
+        }
+        for n in 14..1024 {
+            trace.issue("samples", "zone_skipped", format!("Additional zone {n}"));
+        }
+        trace.issue("samples", "zone_skipped", "Additional zone 14");
+        trace.issue("samples", "zone_skipped", "Extra omitted zone");
+        trace.issue(
+            "scripts",
+            "initialization_failed",
+            "Script 4: KSP line 91: initialization stopped",
+        );
+        trace.issue(
+            "scripts",
+            "initialization_failed",
+            "Script 4: KSP line 91: initialization stopped",
+        );
+        trace.fail("Cannot finish sample headers");
+        let report = trace.finish("failed");
+        assert_eq!(
+            report["issues_omitted"], 3,
+            "known duplicates are not counted as lost examples"
+        );
+        assert_eq!(report["failure"], "Cannot finish sample headers");
+        assert!(serde_json::to_vec(report.as_ref()).unwrap().len() > EVENT_BYTES);
+        let recent = snapshot();
+        let events: Vec<_> = recent
+            .events
+            .iter()
+            .filter(|row| row.load_id.as_deref() == report["load_id"].as_str())
+            .collect();
+        let init = events
+            .iter()
+            .find(|row| row.code.as_deref() == Some("initialization_failed"))
+            .unwrap();
+        assert_eq!(
+            (init.script_slot, init.line, init.level),
+            (Some(1), Some(37), LogLevel::Error)
+        );
+        assert_eq!(
+            init.reason.as_deref(),
+            Some("Script 2: KSP line 37: wait() is not allowed in on init")
+        );
+        let fault = events
+            .iter()
+            .find(|row| row.code.as_deref() == Some("unsupported"))
+            .unwrap();
+        assert_eq!((fault.script_slot, fault.line), (Some(2), Some(42)));
+        let summary = events
+            .iter()
+            .find(|row| row.event == "load_finished")
+            .unwrap();
+        assert_eq!(summary.details["details"]["zones_total"], 95_624);
+        assert_eq!(summary.details["issues_retained"], 1024);
+        assert_eq!(summary.details["issues_omitted"], 3);
+        assert_eq!(
+            summary.details["last_error"]["message"],
+            "Cannot finish sample headers"
+        );
+        assert!(
+            events.iter().any(|row| row.script_slot == Some(3)
+                && row.line == Some(91)
+                && row.level == LogLevel::Error),
+            "partial initialization errors are journaled even after the example budget fills"
+        );
+        assert_eq!(
+            summary.reason.as_deref(),
+            Some("Cannot finish sample headers")
+        );
+        assert_eq!(summary.level, LogLevel::Error);
+        assert!(
+            events
+                .iter()
+                .any(|row| row.code.as_deref() == Some("failed")
+                    && row.reason.as_deref() == Some("Cannot finish sample headers")),
+            "terminal causes remain immediately visible when warning examples fill the report"
+        );
+        assert!(summary.details["stages_ms"]["scripts"].is_number());
+        assert!(summary.details.get("issues").is_none());
+        assert!(summary.details.get("diagnostic_truncated").is_none());
+        assert_eq!(summary.library.as_deref(), Some("Example Library"));
+
         for status in ["canceled", "stale"] {
             let trace = LoadTrace::new(Path::new("Harp.nki"), 0, None);
             assert_eq!(trace.finish(status)["status"], status);

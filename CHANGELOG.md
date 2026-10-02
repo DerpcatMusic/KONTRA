@@ -12,7 +12,9 @@ are added when a release is actually published; commit history is not a changelo
   revision, optional export source revision, UTC timestamp, target, profile and features.
 - Deliberate SemVer release preparation and reproducible nightly prereleases, with
   focused local checks and documented contributor workflow.
-- Structured support diagnostics and an application log view/export path.
+- Searchable structured Logs with failed-load context, source locations, bounded
+  recent history, and private support reports that include retained crash journals.
+  Reports identify omitted events, write errors and partial journal coverage.
 - Script condition inheritance between successfully initialized slots, native
   pedal/release conditions, and additional supported script syntax and zone queries.
 
@@ -25,6 +27,15 @@ are added when a release is actually published; commit history is not a changelo
 - Zone ID mapping after import filtering and source-parser allocations in validated
   preset/container paths.
 - Browser scaling/layout and selected DSP effect processing paths.
+- Original interface wallpaper page offsets and viewport rendering, authored fader
+  travel, factory font color/state inheritance and explicit caption text colors.
+  Factory glyphs use the bundled font approximation; custom bitmap fonts remain
+  unsupported.
+- Editor publication of live script views through the existing bounded buffers,
+  without formatting diagnostic reports or writing journals in editor frames.
+- Internal pitch AHDSR routing to voice modulation, selected filter coefficients
+  and worker-built convolution cutoff processing. These changes do not establish
+  Kontakt parameter-law or sonic equivalence.
 
 ### Compatibility
 
