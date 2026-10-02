@@ -1010,9 +1010,10 @@ enum Handoff {
     },
     /// Effects rebuilt for a new host sample rate; the bank stays.
     Fx(FxProcessor),
-    /// Scripts rebuilt from restored host state; the bank stays.
+    /// Restored scripts; synchronous zone init may also prepare new geometry.
     Script {
         script: Option<Box<Runtime>>,
+        bank: Option<Box<Bank>>,
         epoch: u64,
     },
     /// The part's samples loaded whole (RAM only): replaces its streaming
@@ -2167,6 +2168,15 @@ impl BackgroundTask for Load {
                 if let Some(rt) = script.as_deref() {
                     trace.script_runtime(rt, &instrument.scripts);
                 }
+                let zone_bank=if let Some(rt)=script.as_deref().filter(|rt|rt.init_zone_edits.iter().any(|e|e.id<0)) {
+                    trace.stage("zone_init");
+                    match Bank::load(&instrument).and_then(|mut bank|{bank.apply_script_zone_init(rt)?;Ok(Box::new(bank))}) {
+                        Ok(bank)=>Some(bank),
+                        Err(error)=>{trace.fail(format!("{error:#}"));let report=trace.finish("failed");
+                            let mut view=params.shared.view.lock().unwrap();view.parts[slot].interface_status=format!("Zone init restore failed: {error:#}");
+                            view.parts[slot].load_report=Some(report);continue;}
+                    }
+                } else {None};
                 let live = script.as_deref().map(first_script_live);
                 let pages = script_pages(script.as_deref());
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
@@ -2207,7 +2217,7 @@ impl BackgroundTask for Load {
                 let _ = params.shared.publish_part((
                     slot,
                     atoms.generation.load(Ordering::Acquire),
-                    Handoff::Script { script, epoch },
+                    Handoff::Script { script, bank:zone_bank, epoch },
                 ));
                 continue;
             }
@@ -2370,8 +2380,11 @@ impl BackgroundTask for Load {
                     .min(crate::engine::memory_budget().saturating_sub(resident));
                 trace.detail("memory_budget_bytes", budget);
                 let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers);
-                let bank = bare.transpose()?.map(Box::new);
-                let preload = Some((budget, controllers.to_vec()));
+                let mut bank = bare.transpose()?.map(Box::new);
+                let zone_epoch=script.as_deref().map_or(0,|rt|rt.service_epoch);
+                let zone_init=script.as_deref().map_or(Vec::new(),|rt|rt.init_zone_edits.clone());
+                if let Some(bank)=bank.as_deref_mut() {bank.prepare_zone_init(zone_epoch,&zone_init,&canceled)?;}
+                let preload = Some((budget, controllers.to_vec(),zone_epoch,zone_init));
                 Ok((instrument, bank, script, snapshot, preload, art))
             })();
             if canceled() {
@@ -2506,7 +2519,7 @@ impl BackgroundTask for Load {
                     }
                     // The preload: the full bank takes over from the bare one,
                     // playing voices carrying on (`Engine::upgrade_bank`).
-                    let Some((budget, controllers)) = preload else { continue };
+                    let Some((budget, controllers,zone_epoch,zone_init)) = preload else { continue };
                     let parent_id = params.shared.view.lock().unwrap().parts[slot].load_report.as_ref().map(|r| r["load_id"].clone());
                     let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
                     trace.detail("instance_id", params.shared.instance_id);
@@ -2520,7 +2533,7 @@ impl BackgroundTask for Load {
                         &controllers,
                         &AtomicU32::new(0),
                         &canceled,
-                    );
+                    ).and_then(|mut bank| {bank.prepare_zone_init(zone_epoch,&zone_init,&canceled)?;Ok(bank)});
                     if canceled() { trace.finish("canceled"); continue; }
                     let status = match &bank {
                         Ok(bank) => {
@@ -2579,7 +2592,7 @@ impl BackgroundTask for Load {
                             &controllers,
                             &AtomicU32::new(0),
                             &canceled,
-                        );
+                        ).and_then(|mut bank| {bank.prepare_zone_init(zone_epoch,&zone_init,&canceled)?;Ok(bank)});
                         // Superseded while filling: the newer load has its own bank.
                         if canceled() {
                             trace.finish("canceled");
@@ -3442,13 +3455,12 @@ impl PluginLogic for Sampler {
                         Retired { zone_preload:Some((slot,generation,s.script_epoch[slot],bank)),..Retired::default() }
                     }
                 },
-                Handoff::Script { script, epoch } if current => {
+                Handoff::Script { script, bank, epoch } if current => {
                     engine.reset(rate);
                     s.script_epoch[slot] = epoch;
-                    Retired {
-                        script: engine.set_script(script),
-                        ..Retired::default()
-                    }
+                    let mut retired=Retired {script:engine.set_script(script),..Retired::default()};
+                    if let Some(bank)=bank {retired.bank=engine.set_bank(Some(bank));}
+                    retired
                 }
                 Handoff::Heads(mut heads) if current => {
                     engine.swap_heads(&mut heads);
@@ -3482,8 +3494,8 @@ impl PluginLogic for Sampler {
                     bank: Some(bank),
                     ..Retired::default()
                 },
-                Handoff::Script { script, .. } => Retired {
-                    script,
+                Handoff::Script { script, bank, .. } => Retired {
+                    script,bank,
                     ..Retired::default()
                 },
             };
@@ -5835,7 +5847,7 @@ end on"#,dir.display());
         dsp.until_poll = usize::MAX;
         dsp.script_epoch[0] = 1;
         dsp.rack.parts[0].set_script(Some(Box::new(old)));
-        p.shared.ready.push((0, 0, Handoff::Script { script: Some(Box::new(new)), epoch: 2 })).ok().unwrap();
+        p.shared.ready.push((0, 0, Handoff::Script { script: Some(Box::new(new)), bank:None, epoch: 2 })).ok().unwrap();
         let transport = TransportInfo::default();
         let mut outgoing = EventList::with_capacity(0);
         let none = EventList::with_capacity(0);
@@ -6592,11 +6604,13 @@ end on"#;
         assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
         assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
         // Offline hosts and the Part script-before-bank install order use
-        // the same preparation boundary; init resumes only after installation.
+        // the same preparation boundary; init is synchronous and returns -1.
         let init_source=Instrument {groups:groups.clone(),zones:zones.clone(),scripts:vec![r#"on init
 set_snapshot_type(3)
 declare ui_label $status(1,1)
 declare %jobs[3]
+declare $done
+make_persistent($done)
 %jobs[0] := set_zone_par(1,$ZONE_PAR_GROUP,0)
 %jobs[1] := set_zone_par(1,$ZONE_PAR_LOW_KEY,60)
 %jobs[2] := set_zone_par(1,$ZONE_PAR_HIGH_KEY,60)
@@ -6604,15 +6618,21 @@ set_text($status,"pending")
 wait_async(%jobs[0])
 wait_async(%jobs[1])
 wait_async(%jobs[2])
-set_text($status,get_zone_par(1,$ZONE_PAR_GROUP) & ":" & get_zone_par(1,$ZONE_PAR_LOW_KEY) & ":" & get_zone_par(1,$ZONE_PAR_HIGH_KEY))
+set_text($status,get_zone_par(1,$ZONE_PAR_GROUP) & ":" & get_zone_par(1,$ZONE_PAR_LOW_KEY) & ":" & get_zone_par(1,$ZONE_PAR_HIGH_KEY) & ":" & %jobs[0] & ":" & %jobs[1] & ":" & %jobs[2])
+end on
+on async_complete
+inc($done)
 end on"#.into()],..Instrument::default()};
         let (rt,errors)=crate::engine::load_scripts(&init_source,Vec::new(),48000.);
         assert!(errors.is_empty(),"{errors:?}");
+        let mut initial=Bank::load(&init_source).unwrap();initial.apply_script_zone_init(rt.as_deref().unwrap()).unwrap();
+        assert_eq!(initial.zone_par(1,ZonePar::Group),Some(0));
         let mut offline=Engine::default();offline.set_script(rt);
-        offline.set_bank(Some(Box::new(Bank::load(&init_source).unwrap())));
-        assert_eq!(offline.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("pending".into()));
-        while offline.service_zone_edits().unwrap() {}
-        assert_eq!(offline.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("0:60:60".into()));
+        let initial=Box::new(initial);
+        assert_eq!(allocations(|| {offline.set_bank(Some(initial));}),0);
+        assert!(!offline.service_zone_edits().unwrap(),"synchronous init did not enqueue live async work");
+        assert_eq!(offline.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("0:60:60:-1:-1:-1".into()));
+        assert_eq!(scalar(&offline,"$done"),crate::ksp::Value::Int(0),"init has no async_complete callbacks");
         assert!(offline.script().unwrap().diagnostics().is_empty(),"{:?}",offline.script().unwrap().diagnostics());
         std::fs::remove_file(path).unwrap();
     }
