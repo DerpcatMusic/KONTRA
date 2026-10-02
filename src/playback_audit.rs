@@ -152,9 +152,12 @@ fn phase(
     snapshot(&rack.parts[0], name, meter, start_samples, start_square)
 }
 
-pub fn run(path: &Path, program: u32, realtime: bool) -> Result<Value> {
+pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -> Result<Value> {
     let started = Instant::now();
-    let instrument = import::read_program(path, program)?;
+    let instrument = match snapshot {
+        Some(snapshot) => import::read_snapshot(path, snapshot)?,
+        None => import::read_program(path, program)?,
+    };
     let (bank, scripts) = super::load(&instrument)?;
     let load_ms = started.elapsed().as_secs_f64() * 1000.;
     let load_issues = bank.issues.clone();
@@ -482,7 +485,7 @@ pub fn run(path: &Path, program: u32, realtime: bool) -> Result<Value> {
     }
     Ok(json!({
         "build":serde_json::from_str::<Value>(kontakto::build_info::MANIFEST_JSON)?,
-        "path":path,"program":program,"name":instrument.name,"note":note,"load_ms":load_ms,
+        "path":path,"program":program,"snapshot":snapshot,"name":instrument.name,"note":note,"load_ms":load_ms,
         "samples":sample_count,"streamed_samples":streamed_samples,"skipped_zones":skipped_zones,"load_issues":load_issues,
         "script_errors":script_errors,"warnings":instrument.warnings,"realtime":realtime,
         "tail_observation_seconds":tail_seconds,"maximum_imported_release_seconds":maximum_release,

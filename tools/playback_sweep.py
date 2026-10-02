@@ -26,8 +26,9 @@ def main():
         for patch in library["patches"]:
             if args.initial and Path(patch["path"]).name not in selected:
                 continue
-            for program in patch["initial_read_audit"]["programs"]:
-                identity = f'{patch["path"]}:{program["program"]}:{args.realtime}'
+            programs = patch.get("initial_read_audit", {}).get("programs") or [{"program":0,"name":Path(patch.get("snapshot") or patch["path"]).stem}]
+            for program in programs:
+                identity = f'{patch["path"]}:{patch.get("snapshot")}:{program["program"]}:{args.realtime}'
                 stem = hashlib.sha256(identity.encode()).hexdigest()[:12]
                 report_path = args.output / f"{stem}.json"
                 stderr_path = args.output / f"{stem}.stderr"
@@ -43,6 +44,8 @@ def main():
                 status = 0
                 if result is None:
                     command = ["nice", "-n", "10", str(binary), "playback-audit", patch["path"], str(program["program"])]
+                    if patch.get("snapshot"):
+                        command.extend(["--snapshot", patch["snapshot"]])
                     if args.realtime:
                         command.append("--realtime")
                     with report_path.open("w") as stdout, stderr_path.open("w") as stderr:
@@ -77,6 +80,7 @@ def main():
                                                      "held":sum(stage["held_keys_by_engine_channel"]),
                                                      "pending":stage["pending_commands_writes_releases"], "rms":stage["rms"]})
                 row = {"library":library["name"], "patch":patch["path"], "program":program["program"],
+                       "snapshot":patch.get("snapshot"),
                        "name":program["name"], "exit_status":status, "wall_seconds":time.monotonic()-started,
                        "report":str(report_path), "stderr":str(stderr_path), "issues":issues,
                        "tail_observations":observations}
