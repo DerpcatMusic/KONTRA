@@ -960,8 +960,8 @@
         "a357e1eaa1ef3c909d73e49d99b5babf191c95a0",
         "401d59e835d9ce5eae8435fd4632a033dce80649"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
     },
     {
       "id": "legacy-delay-time-conversion",
@@ -970,8 +970,8 @@
         "f191cc20318091fae1efddd4715037fdf236217a",
         "aaf2959fe340562a1222d50a2a8daec1a6c672c6"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
     },
     {
       "id": "delay-ring-write-clock",
@@ -979,8 +979,8 @@
       "source_commits": [
         "4ec295836e026ac23022e0b1c6f53b706855991b"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
     },
     {
       "id": "distortion-native-damping-law",
@@ -988,8 +988,8 @@
       "source_commits": [
         "b3e453e144b9ab01b8a251d87583c6a7cf435938"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
     },
     {
       "id": "distortion-native-dc-filter-order",
@@ -998,8 +998,8 @@
         "74e3c0eb43e8b0a879784777ab7d78675fe18c6e",
         "cd940e2490afa2a54ba1c8965e5699083eb742fe"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
     },
     {
       "id": "macos-plugin-finder-bundle-recognition",
@@ -1007,8 +1007,8 @@
       "source_commits": [
         "60011265897a045e915c5b74b28834f11541008f"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published. Real hosted macOS Swift/Finder/factory, signing and notarization gates remain pending; no Bitwig host-scan or playback claim.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Driver-free packaging gates retain Finder-flag operations and installed-bundle checks. Native macOS Swift/Finder/factory, signing, Installer and Apple acceptance remain required hosted checks; no Bitwig discovery or playback claim.",
+      "accepted": true
     },
     {
       "id": "vst3-component-editor-view-lifetime",
@@ -1016,8 +1016,8 @@
       "source_commits": [
         "3e76d6013fd7fbb85f250ec4290badb3ab1fb21b"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Strict actual C++ editor_attach/editor_lifetime gates passed at 72d3b9b; those shim sources are unchanged through the frozen source. This does not validate every host embedding path.",
+      "accepted": true
     },
     {
       "id": "vst3-editor-resize-frame-lifetime",
@@ -1025,8 +1025,8 @@
       "source_commits": [
         "3784c6720bd6f8807391014f270dd9d2f1ff37e0"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Strict actual C++ editor_attach/editor_lifetime gates passed at 72d3b9b; those shim sources are unchanged through the frozen source. This does not validate every host embedding path.",
+      "accepted": true
     },
     {
       "id": "vst3-view-run-loop-registration",
@@ -1034,8 +1034,8 @@
       "source_commits": [
         "e3822b263005bd54039766cc9d21969b01b9b694"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Strict actual C++ editor_attach/editor_lifetime gates passed at 72d3b9b; those shim sources are unchanged through the frozen source. This does not validate every host embedding path.",
+      "accepted": true
     },
     {
       "id": "vst3-attached-gui-view-owner",
@@ -1043,8 +1043,8 @@
       "source_commits": [
         "be80724d39ffa3a1f843333d33879e0da684fe24"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Strict actual C++ editor_attach/editor_lifetime gates passed at 72d3b9b; those shim sources are unchanged through the frozen source. This does not validate every host embedding path.",
+      "accepted": true
     },
     {
       "id": "native-editor-pre-entry-diagnostics",
@@ -1052,8 +1052,8 @@
       "source_commits": [
         "c3763d1985b43189bda60b79110f8a7e26ca55fe"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Vendored pre-native-entry Linux headless gate passes at 2d5822e; actual macOS window startup and host crash recovery remain unverified.",
+      "accepted": true
     },
     {
       "id": "confirmed-crash-recovery-report-delivery",
@@ -1063,8 +1063,8 @@
         "72d3b9b6a8e815bc8ecae0090d1e438a3124c075",
         "0c7b622a1bad87c8aa26debec7b209922dbc8484"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published. Driver-free recovery/delivery fixtures do not establish a real-world host-crash-to-server end-to-end result or KONTRA fault attribution. Native OS evidence and support-service public/private policy remain separate requirements.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Support recovery/delivery fixtures pass without sending production reports. No real-world host-crash-to-server end-to-end result or KONTRA fault attribution is established; native OS evidence and service public/private policy remain separate requirements.",
+      "accepted": true
     },
     {
       "id": "vst3-initial-cents-atomic-onset",
@@ -1073,8 +1073,8 @@
         "53ab06fd060ef5584899b74a8e9fcbb21ce84053",
         "2d5822e18ac85666e936e6d2416fdf07637c4048"
       ],
-      "validation": "Root reports focused optimized gates pass on source d7b9e11ad096283aab06c79c15732d9bd5a48a03, frozen executable prefix eebeb2eb1efd: unchanged extreme-onset coverage, direct zero-stride PCM and scalar/SIMD exactness. Full combined suite and actual factory checks remain pending; acceptance remains false.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
     },
     {
       "id": "zero-rate-integer-sample-tap-panic",
@@ -1082,8 +1082,8 @@
       "source_commits": [
         "4529cbf592b0b4809129db180fbdaeb523f62de4"
       ],
-      "validation": "Root reports focused optimized gates pass on source d7b9e11ad096283aab06c79c15732d9bd5a48a03, frozen executable prefix eebeb2eb1efd: unchanged extreme-onset coverage, direct zero-stride PCM and scalar/SIMD exactness. Full combined suite and actual factory checks remain pending; acceptance remains false.",
-      "accepted": false
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Shared zero-rate renderer correction is a distinct defect from atomic initial cents; negative length hints and safety fixture follow-ups add no counts.",
+      "accepted": true
     }
   ]
 }
