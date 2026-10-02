@@ -289,6 +289,18 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
             );
             go("all-notes-off", 0.25, &[In::Cc(0, 123, 0)]);
             go("all-notes-pedal-up", 0.25, &[In::Cc(0, 64, 0)]);
+            go(
+                "reset-controllers-pedal-and-held-key",
+                0.25,
+                &[
+                    In::Cc(0, 64, 127),
+                    In::NoteOn(0, note, 100),
+                    In::NoteOff(0, note),
+                    In::NoteOn(0, note + 2, 95),
+                ],
+            );
+            go("reset-all-controllers", 0.25, &[In::Cc(0, 121, 0)]);
+            go("reset-controllers-held-key-release", 0.25, &[In::NoteOff(0, note + 2)]);
             go("all-sound-note", 0.25, &[In::NoteOn(0, note, 100)]);
             go("all-sound-off", 0.1, &[In::Cc(0, 120, 0)]);
         } else if case == "channel-articulations" {
