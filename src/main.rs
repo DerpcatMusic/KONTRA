@@ -1357,7 +1357,7 @@ fn audit_patch_report(path: &Path, program: u32, snapshot: Option<&Path>, trace:
                 // never format/log from plugin audio or retain a per-block log.
                 let voices: Vec<_> = engine.voice_census().into_iter().filter(|v| v.streams).map(|v|
                     serde_json::json!({"group":v.group, "note":v.note, "sample":v.sample,
-                        "virtual_source_position":v.pos, "source_frames_per_output_frame":v.step,
+                        "virtual_source_position":v.pos, "source_frames_per_output_frame_before_limit":v.step,
                         "held":v.held, "release_trigger":v.release_trigger,
                         "gain":v.gain, "envelope":v.envelope})).collect();
                 first_underrun = Some(serde_json::json!({"frame":frame,
