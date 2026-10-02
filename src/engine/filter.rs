@@ -1816,7 +1816,7 @@ mod tests {
             assert_eq!(mapped, kind);
             let unknown = Group { amp_split_slot: None, ..groups[0].clone() };
             assert!(GroupFilter::new(&unknown).is_none());
-            assert!(unsupported(&unknown.fx).iter().any(|w| w.contains(kind.name())));
+            assert!(unsupported(&unknown.fx).iter().any(|w| w.contains(&kind.name())));
             for split in [0, 8] {
                 let mut outputs = [[0.0f32; 8192]; 2];
                 for (phase, output) in outputs.iter_mut().enumerate() {
