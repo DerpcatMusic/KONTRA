@@ -44,7 +44,8 @@ impl PitchEnvelope {
                     .collect();
                 (!targets.is_empty()).then(|| Self {
                     env: Ahdsr::from(&e.env),
-                    bypass: false,
+                    bypass: group.modulators.iter().find(|m| m.envelope == Some(index))
+                        .is_some_and(|m| m.bypassed),
                     index: index as u8,
                     targets,
                 })
@@ -1502,6 +1503,7 @@ mod tests {
                     targets: vec!["ENV_AHDSR_VOLUME".into()],
                     assignments: None,
                     volume_env: true,
+                    bypassed: false,
                     flex: false,
                     envelope: None,
                     kind: String::new(),
@@ -1511,6 +1513,7 @@ mod tests {
                     targets: vec![String::new()],
                     assignments: Some(0),
                     volume_env: false,
+                    bypassed: false,
                     flex: false,
                     envelope: None,
                     kind: String::new(),
@@ -1520,6 +1523,7 @@ mod tests {
                     targets: vec![String::new()],
                     assignments: Some(1),
                     volume_env: false,
+                    bypassed: false,
                     flex: false,
                     envelope: None,
                     kind: String::new(),
@@ -1696,6 +1700,7 @@ mod tests {
                 targets: vec!["Depth".into()],
                 assignments: None,
                 volume_env: false,
+                bypassed: false,
                 flex: false,
                 envelope: Some(0),
                 kind: "ahdsr".into(),
@@ -1981,6 +1986,7 @@ mod tests {
                 targets: Vec::new(),
                 assignments: None,
                 volume_env: false,
+                bypassed: false,
                 flex: true,
                 envelope: None,
                 kind: "flex".into(),
