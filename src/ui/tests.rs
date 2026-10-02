@@ -1924,24 +1924,29 @@ fn original_wallpaper_pixel_offsets_render_across_frames() {
     assert_eq!(h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame, control, "artwork scrolling never moves controls");
 }
 
-/// The vectorized view keeps every control of the original where it was, at
-/// its size: only the drawing changes.
+/// A dependent table changes without rebuilding an unrelated Original knob.
 #[test]
 fn original_tables_render_dense_values_at_the_declared_range() {
-    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(180)\ndeclare ui_table %steps[4](2,1,-100)\nmove_control_px(%steps,10,10)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_WIDTH,120)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_HEIGHT,100)\nend on");
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(180)\ndeclare ui_table %steps[4](2,1,-100)\nmove_control_px(%steps,10,10)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_WIDTH,120)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_HEIGHT,100)\ndeclare ui_knob $steady(0,100,1)\nmove_control_px($steady,180,10)\nend on");
     p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
         frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 248, vec![40; 632 * 248 * 4]).unwrap())],
         stretch: [false; 2],
         atlas: None,
     }));
+    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::from([(0, 0), (0, 0)]);
     let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(3);
     let empty = pixels(&h.ui, 1180, 760);
     publish_interface(&p, |i| {
         assert_eq!(i.controls[0].properties["$CONTROL_PAR_MIN_VALUE"], crate::ksp::Value::Int(-100));
         assert_eq!(i.controls[0].properties["$CONTROL_PAR_MAX_VALUE"], crate::ksp::Value::Int(100));
         i.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::IntArray(vec![50, -50, 100, -100]));
     });
-    h.idle(2);
+    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::from([(0, 1), (0, 0)]);
+    h.idle(1);
+    let memos: Vec<_> = h.ui.scene().unwrap().memos_at("kpv-0-1").collect();
+    assert!(memos.len() >= 2 && memos.last().unwrap().1 && memos[..memos.len()-1].iter().any(|(_, reused)| !reused),
+        "the table publication rebuilds its stage while retaining the unchanged knob: {memos:?}");
     let filled = pixels(&h.ui, 1180, 760);
     let changed = empty.chunks_exact(4).zip(filled.chunks_exact(4)).filter(|(a,b)| a != b).count();
     assert!(changed > 4000, "the numeric table paints bars, including its negative half: {changed}");
@@ -1950,8 +1955,19 @@ fn original_tables_render_dense_values_at_the_declared_range() {
             "$CONTROL_PAR_VALUE".into(), crate::ksp::Value::RealArray(vec![50., -50., 100., -100.])
         );
     });
+    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::from([(0, 2), (0, 0)]);
     h.idle(2);
     assert!(filled == pixels(&h.ui, 1180, 760), "integer and real snapshots paint the same values");
+    p.shared.view.lock().unwrap().parts[0].script_epoch += 1;
+    // Production replacement also changes the interface identity, even if the
+    // new script happens to publish the same initial row stamps.
+    publish_interface(&p, |_| {});
+    h.idle(1);
+    assert!(!h.ui.scene().unwrap().memos_at("kpv-0-1").last().unwrap().1, "replacement epoch rebuilds the retained knob");
+    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::default();
+    publish_interface(&p, |i| { i.controls[1].properties.insert("$CONTROL_PAR_FONT_TYPE".into(), crate::ksp::Value::Int(23)); });
+    h.idle(1);
+    assert!(!h.ui.scene().unwrap().memos_at("kpv-0-1").last().unwrap().1, "a fixture without row stamps uses immutable interface identity for changed styling");
 }
 
 #[test]
