@@ -617,7 +617,46 @@
       "source_commits": [
         "c1935458400b3a4251d16f827918987220bf91d1"
       ],
-      "validation": "Production >64KiB inventory gate passed: ordered complete journal/support-export reassembly, correct source excerpts and path redaction, zero truncation/drop/write failures. Individual oversized values retain explicit existing truncation behavior; actual Morphology replay is pending.",
+      "validation": "Production >64KiB inventory gate passed: ordered complete journal/support-export reassembly, correct source excerpts and path redaction, zero truncation/drop/write failures. Individual oversized values retain explicit existing truncation behavior; actual Morphology replay is pending. Actual Morphology Default replay at6b1c08f retained all465dependencies in12chunks and all71events, zero drops/write errors/truncation; source identity and reported audio metrics unchanged.",
+      "accepted": true
+    },
+    {
+      "id": "runtime-gpu-error-forwarding",
+      "summary": "Retain uncaptured GPU errors after native device rebuilds",
+      "source_commits": [
+        "db49fcf48f3181b911d36ae712d2c8846e62e41c"
+      ],
+      "validation": "Three full mui-baseview driver-free release gates passed: independent model lock, busy/poisoned/reentrant sinks and caught-window-panic usability. Full plugin library compiled the hook. Initialization errors can still precede attachment; Void blank-editor repair remains unverified.",
+      "accepted": true
+    },
+    {
+      "id": "registered-per-note-brightness-ownership",
+      "summary": "Keep registered MIDI2 brightness on its retained note instead of channel CC74",
+      "source_commits": [
+        "fb4afdf9f8c84b69945b0533648255c396ce1477",
+        "29dced060a34e4ff1c7159c31def78af283157be",
+        "4ca45ebdb5adec4155b9cb220fd0e8a1d54ccf96"
+      ],
+      "validation": "Production PCM and zero-heap gates passed for retained/transposed ownership, MPE, channel fallback, start-only sample offset and exact old-ID/new-note ingress. CLAP/normalized host brightness has an unverified value law and is explicitly diagnosed as unsupported; full host-ID expression support remains pending.",
+      "accepted": true
+    },
+    {
+      "id": "convolution-prepared-energy-auto-gain",
+      "summary": "Apply saved native Auto Gain from the prepared stereo IR energy",
+      "source_commits": [
+        "5bb15078ccf0e107d6a04bc1db4aff0b911c742a"
+      ],
+      "validation": "Production asymmetric stereo impulse, mono/empty/threshold/cap, dry preservation, rate/size/predelay and zero-heap gate passed. Native shared setter and actual effect runtime corroborate the law. Unequal ER/LR shaping remains approximate; live flag controls are pending.",
+      "accepted": true
+    },
+    {
+      "id": "saved-pitch-filter-envelope-bypass",
+      "summary": "Initialize native pitch and filter/EQ envelope bypass from its verified saved flag",
+      "source_commits": [
+        "7dc07308a251c8427177048d2f93a44e67d69c26",
+        "ec3d5cb076d67883e29d7fcb701bbf5cc731c1c0"
+      ],
+      "validation": "Production raw flag fixture and elapsed-clock/live-resume mixed pitch/filter PCM/readback/zero-heap gates passed. Flag0 is UI router state, flag1 bypass. All twelve selected actual Analog amplitude envelopes are active; amplitude/Flex bypass lifetime remains unverified and no amplitude lifetime change was accepted.",
       "accepted": true
     }
   ]

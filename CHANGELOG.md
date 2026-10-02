@@ -8,6 +8,14 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Verified processing and diagnostics follow-ups
+
+- Uncaptured native GPU failures now reach persistent diagnostics after device rebuilds; original stderr and device-loss recovery remain intact. Void blank-editor repair is not yet confirmed.
+- Registered per-note MIDI2 brightness now follows its retained note, including start-only modulation. Ambiguous host brightness is explicitly diagnosed instead of changing channel CC74 or a newer same-pitch note.
+- Saved convolution Auto Gain now uses the checked prepared stereo-energy rule, threshold and cap while preserving dry output. Unequal early/late shaping remains approximate.
+- Saved pitch and filter/EQ envelope bypass now uses the verified source flag, advances its clock and resumes without restarting. Amplitude/Flex bypass lifetime is still under investigation.
+- Wavetable source records are read and edited without losing opaque bytes. The candidate engine prepares resident 2048-frame cycles with note-based pitch, live position, and verified Linear/ASYM2MP phase forms. Unsupported states are counted instead of played as ordinary samples. High/Best anti-aliasing is not implemented; actual-library validation is pending.
+
 ### Fixed after 0.3.64
 
 - Modern signed pitch intensity now follows the checked cubic conversion and retains 24/36-semitone values; non-pitch modulation laws are unchanged.
