@@ -3761,7 +3761,7 @@ declare ui_text_edit @fixed
 @fixed := "fixed"
 end on
 on ui_control($page)
-set_text($caption, "page " & $page)
+set_text($caption, "page")
 set_control_par(get_ui_id($caption), $CONTROL_PAR_FONT_TYPE, 23)
 set_skin_offset($page * 10)
 set_menu_item_visibility(get_ui_id($choices), 1, $page)
