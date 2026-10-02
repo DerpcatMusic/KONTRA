@@ -2708,11 +2708,11 @@ fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
     };
     Some(match *exact.body() {
         ExactEventBody::Note { kind, address, velocity } => on(kind,address,velocity,true),
-        // The old adapter admitted only zero tuning/length. Add identity
-        // without silently discarding unsupported attack metadata. Note-off
-        // still closes its owner independently of those attack-only fields.
+        // VST3 length is an optional sample-frame hint, not a scheduled
+        // release: the SDK still requires a matching NoteOff. Admit the
+        // hint without shortening host ownership. Tuning remains unsupported.
         ExactEventBody::DetailedNote { kind, address, velocity, tuning, length } => {
-            if matches!(kind,ExactNoteKind::On) && (tuning != 0. || length.is_some_and(|n| n != 0)) { ExactInput::Unsupported }
+            if matches!(kind,ExactNoteKind::On) && (tuning != 0. || length.is_some_and(|n| n < 0)) { ExactInput::Unsupported }
             else { on(kind,address,f64::from(velocity),false) }
         },
         ExactEventBody::NoteExpression { expression_id:5, .. }
@@ -6988,6 +6988,58 @@ end on"#;
         overflow.push(brightness);
         assert!(overflow.exact_for_event(0).is_none());
         assert!(unsupported_host_brightness(&overflow,0));
+    }
+
+    #[test]
+    fn vst3_length_hint_keeps_exact_note_until_explicit_off_without_heap() {
+        use crate::{audio::Sample, import::{Group,Zone}};
+        let address=ExactNoteAddress::from_vst3_signed(0,4,60,42);
+        let mut reference=None;
+        for length in [0,16,12000] {
+            let params=SamplerParams::new();
+            let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+            dsp.rack.parts[0].reset(48000.);
+            let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),
+                Sample { rate:48000,frames:vec![[0.2;2];4096] })]).unwrap();
+            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+            let mut on=EventList::with_capacity(4);
+            on.try_push_exact(ExactEvent::new(64,ExactEventBody::DetailedNote {
+                kind:ExactNoteKind::On,address,velocity:0.8,tuning:0.,length:Some(length) })).unwrap();
+            assert!(on.get(0).is_none(),"this host note must exercise exact-only ingress");
+            let mut off=EventList::with_capacity(2);
+            off.try_push_exact(ExactEvent::new(32,ExactEventBody::DetailedNote {
+                kind:ExactNoteKind::Off,address,velocity:0.,tuning:0.,length:None })).unwrap();
+            let none=EventList::with_capacity(0);
+            let mut outgoing=EventList::with_capacity(16);
+            let transport=TransportInfo::default();
+            let mut render=|dsp:&mut Dsp,events:&EventList| {
+                let (mut left,mut right)=([0.;128],[0.;128]);
+                let mut channels=[&mut left[..],&mut right[..]];
+                let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
+                let mut cx=ProcessContext::new(&transport,48000.,128,&mut outgoing);
+                Sampler::process(dsp,&params,&mut buffer,events,&mut cx);
+                (left,right)
+            };
+            let mut pcm=([0.;128],[0.;128]);
+            assert_eq!(allocations(|| { pcm=render(&mut dsp,&on); }),0);
+            assert!(pcm.0[..64].iter().all(|x| *x==0.),"host sample offset was lost");
+            assert!(pcm.0[64..].iter().any(|x| x.abs()>1e-6),"exact VST3 note produced no audio");
+            if let Some(expected)=reference { assert_eq!(pcm,expected,"optional length changed onset audio"); }
+            else { reference=Some(pcm); }
+            assert_eq!(allocations(|| { render(&mut dsp,&none); }),0);
+            assert!(dsp.rack.parts[0].host_key_held(4,60),"length hint released the exact host owner");
+            assert!(dsp.rack.parts[0].voice_census().iter().any(|v| !v.released));
+            assert_eq!(allocations(|| { render(&mut dsp,&off); }),0);
+            assert!(!dsp.rack.parts[0].host_key_held(4,60),"explicit NoteOff failed to close the owner");
+            assert_eq!(dsp.unsupported_host_expression,0);
+        }
+        for (length,velocity,tuning) in [(Some(-1),0.8,0.),(Some(16),f32::NAN,0.),(Some(16),0.8,f32::NAN)] {
+            let mut invalid=EventList::with_capacity(1);
+            invalid.try_push_exact(ExactEvent::new(0,ExactEventBody::DetailedNote {
+                kind:ExactNoteKind::On,address,velocity,tuning,length })).unwrap();
+            let LosslessEventRef::Exact(event)=invalid.lossless_iter().next().unwrap() else { panic!("missing exact event") };
+            assert!(matches!(exact_host_input(event),Some(ExactInput::Unsupported)),"invalid attack became playable");
+        }
     }
 
     #[test]
