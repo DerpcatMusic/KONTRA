@@ -2459,6 +2459,8 @@ impl PreparedGrowth {
             diagnostic: AudioDiagnostics::with_parts(count) }
     }
     fn adopt(&mut self, dsp: &mut Dsp) {
+        let rate = dsp.rack.parts[0].rate();
+        for engine in &mut self.rack.parts[dsp.rack.parts.len()..] { engine.reset(rate); }
         dsp.rack.adopt_parts(&mut self.rack); dsp.align.adopt_parts(&mut self.align);
         macro_rules! preserve { ($($field:ident),*) => {$({
             for (old, new) in dsp.$field.iter_mut().zip(&mut self.$field) { std::mem::swap(old, new); }
@@ -2604,6 +2606,7 @@ impl Shared {
         let count = self.with_parts(|parts| parts.len());
         if count <= self.growth_prepared.load(Ordering::Acquire) as usize { return }
         let parts = self.with_parts(|parts| parts.to_vec());
+        let count = parts.len();
         let prepared = Box::new(PreparedGrowth::new(parts, self.rate()));
         let _ = self.growth.force_push(prepared);
         self.growth_prepared.store(count as u64, Ordering::Release);
@@ -6673,6 +6676,10 @@ end on"
         let mut dsp = Dsp::default();
         dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
         dsp.rack.parts[0].note_on(0, 59, 100);
+        dsp.align.plan.on = true;
+        dsp.align.plan.parts[0] = Holds::of(&Timing { override_ms: Some(0.), ..Default::default() }, &[], 10.);
+        dsp.align.arrive(&mut dsp.rack, &mut dsp.routers, 0, In::NoteOn(0, 62, 100), 0, 48000.);
+        assert_eq!(dsp.align.next_due(), Some(480));
         let selection = Selection { parts: (0..129).map(|slot| Part {
             path: format!("/virtual/dynamic-{slot}.nki"), channel: (slot % 16) as i16,
             ..Default::default()
@@ -6684,6 +6691,10 @@ end on"
         assert_eq!(restored.parts.len(), 129);
         assert_eq!(restored.parts[0].path, selection.parts[128].path);
         p.shared.ensure_parts(129);
+        let mut edited = selection.clone();
+        edited.parts[128].edits.0.push(Override { group: None, param: Param::Attack, offset: 1. });
+        p.shared.sync_overrides(&edited);
+        assert!(p.shared.sent.lock().unwrap()[128].is_empty(), "new-slot edits wait for callback acknowledgment");
         p.shared.prepare_growth();
         let mut outputs = vec![vec![0f32; 128]; 2];
         let mut refs: Vec<_> = outputs.iter_mut().map(|o| o.as_mut_slice()).collect();
@@ -6696,8 +6707,12 @@ end on"
         assert_eq!(dsp.rack.parts.len(), 129);
         assert!(dsp.rack.parts[0].key_down(0, 59), "growth preserves held notes");
         assert_eq!(dsp.rack.parts[0].active_voices(), 1);
-        dsp.rack.parts[128].set_bank(Some(late_bank(&[(0, 127, 0)])));
-        dsp.installed_generation[128] = 73;
+        assert_eq!(dsp.align.next_due(), Some(480), "growth preserves queued notes");
+        p.shared.sync_overrides(&edited);
+        assert_eq!(p.shared.sent.lock().unwrap()[128], edited.parts[128].edits.0);
+        p.shared.part(128).unwrap().generation.store(73, Ordering::Release);
+        p.shared.ready.push((128, 73, Handoff::Part { bank: Some(late_bank(&[(0, 127, 0)])),
+            fx: FxProcessor::default(), script: None, epoch: 9 })).ok().unwrap();
         p.shared.press_key(128, 60, 100);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert!(dsp.rack.parts[128].key_down(0, 60));
@@ -6729,6 +6744,10 @@ end on"
         assert_eq!(p.shared.diagnostic_audio.len(), 2);
         p.shared.panic.store(true, Ordering::Release);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+        assert!(dsp.rack.parts.iter().all(|e| (0..16).all(|ch| !e.key_down(ch, 59) && !e.key_down(ch, 61))));
+        assert_eq!(allocations(|| {
+            for _ in 0..128 { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }
+        }), 0);
         assert!(dsp.rack.parts.iter().all(|e| e.active_voices() == 0));
         assert!(dsp.key_slots.0.iter().all(|row| row.iter().all(|held| !held)));
     }
