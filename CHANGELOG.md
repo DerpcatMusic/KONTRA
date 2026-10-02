@@ -7,6 +7,13 @@ are added when a release is actually published; commit history is not a changelo
 
 ### Added
 
+- Load supported snapshots from the instrument header picker or an explicit
+  header drop. Parsing and base validation run on the loader before changing the
+  active source; base and snapshot paths survive host state and KONTRA multis.
+- Save successfully applied native script parameter edits alongside persistent
+  script variables, and seed authored initialization getters during restoration.
+  Prepared storage avoids audio-thread growth; refresh visits edited slots rather
+  than every default parameter in a large library.
 - One package version and build identity across CLI, standalone, plugin metadata,
   About, diagnostics and package manifests. Identity includes the actual full Git
   revision, optional export source revision, UTC timestamp, target, profile and features.
@@ -58,6 +65,16 @@ are added when a release is actually published; commit history is not a changelo
 
 ### Fixed
 
+- Failed or canceled load reports retain their status and cause when diagnostics
+  or artwork from the active instrument arrive later.
+- Native SV Notch 4 filter type 58 uses the existing four-pole processing path;
+  an actual Accordia resident-sample render now changes its PCM with zero render
+  heap operations. This does not establish Kontakt sonic equivalence.
+- Vectorized views retain broad pictured value graphs and their authored
+  callbacks while continuing to replace ordinary knobs and faders.
+- Compiled script programs share immutable UI revision-owner maps between
+  runtimes. Revisions and mutable values remain local; matched Areia callback
+  measurements show unchanged cost, without a runtime-speedup claim.
 - Leaving or unfocusing an editor cancels delayed pointer restoration, including
   release events queued before the next frame. Popup menus capture hover and outside
   dismissal clicks so tooltips and underlying controls cannot cover or activate them.

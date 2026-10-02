@@ -33,6 +33,8 @@ The new report folder contains `report.json` with build/system/audio settings an
 
 For a native UI stall, launch the host or standalone with `KONTRA_NATIVE_UI_TIMING=1` in its environment, then drag a control. One ten-second capture appears as `native_frame_timing` in Logs and support exports. It measures application callbacks and presentation submission, including lock waits; it does not measure GPU completion or display FPS. Capture is disabled by default.
 
+To load a snapshot, first load its base NKI, then use the instrument header menu → **Load snapshot…** or drop a `.nksn` onto that header. DAW state and KONTRA multis retain both source paths. Snapshots cannot open independently or target programs inside an NKM; the existing unsupported-state warnings still apply.
+
 ## Compatibility and known gaps
 
 **Full** means verified end to end for the named behavior. **Partial** means only a subset is implemented or exercised. **Unsupported** means the feature is not implemented. **Untested** means there is not enough reference or host testing to make a claim. **Experimental** means limited validation and an evolving interface. No broad compatibility area below is marked full.

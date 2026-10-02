@@ -69,7 +69,8 @@ pub fn load_scripts_with_state(
             !matches!(a, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)))
     }).collect();
     for &crate::ksp::engine::NativeEdit { par, value } in engine_state {
-        if setup.saved.iter().any(|e| e.par == par) && setup.engine_par(par).is_some() {
+        if Address::resolve(par, setup.groups).is_some_and(|a| !matches!(a, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)))
+            && setup.engine_par(par).is_some() {
             setup.set_engine_par(0, par, value);
         }
     }
@@ -79,7 +80,8 @@ pub fn load_scripts_with_state(
     // seeding the getter state before init. Only accepted addresses are replayed.
     let mut restored = Vec::new();
     for &crate::ksp::engine::NativeEdit { par, value } in engine_state {
-        if setup.saved.iter().any(|e| e.par == par) && setup.engine_par(par).is_some()
+        if Address::resolve(par, setup.groups).is_some_and(|a| !matches!(a, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)))
+            && setup.engine_par(par).is_some()
             && setup.set_engine_par(0, par, value) { restored.push((par, value)); }
         else { restore_errors.push(format!("Saved engine parameter is unavailable: {par:?}")); }
     }
@@ -648,6 +650,15 @@ impl<'a> ScriptSetup<'a> {
             controllers: Vec::new(),
             loads: Vec::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn audit_native_preparation(instrument: &Instrument, rt: &Runtime) -> (usize, std::time::Duration) {
+        let mut setup = ScriptSetup::new(instrument, 48000.);
+        for &(par, value) in &rt.init_engine_pars { setup.set_engine_par(0, par, value); }
+        let start = std::time::Instant::now();
+        let state = setup.prepare_native_state();
+        (state.capacity().0, start.elapsed())
     }
 
     fn prepare_native_state(&self) -> super::native_state::NativeState {

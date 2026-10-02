@@ -392,7 +392,7 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
             }
             if !errors.is_empty() && let Some(load) = &mut v.load_report {
                 let load = Arc::make_mut(load);
-                load["status"] = "partial".into();
+                if load["status"] == "loaded" { load["status"] = "partial".into(); }
                 for issue in report["issues"].as_array().into_iter().flatten() {
                     let issues = load["issues"].as_array_mut().unwrap();
                     if !issues.contains(issue) { issues.push(issue.clone()); }
@@ -447,7 +447,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {
-            Some(plan) if matches!(shown.kind, Kind::Knob | Kind::Slider)
+            Some(plan) if super::vector::native_control(shown, c)
                 || shown.kind == Kind::Label && plan.face == VFace::Clear => Look::Vector(plan),
             _ => {
                 // What its text sits on: its own picture, else what is under it.

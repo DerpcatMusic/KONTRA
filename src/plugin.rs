@@ -1282,7 +1282,9 @@ impl Shared {
                 .chain(diagnostics.notes.iter().map(|n| (*n).to_owned())).collect::<Vec<_>>().join("\n");
             let load_id = previous["script_restore"]["load_id"].as_str().or_else(|| previous["load_id"].as_str()).map(str::to_owned);
             let mut report = (*previous).clone();
-            if !diagnostics.faults.is_empty() || !diagnostics.notes.is_empty() { report["status"] = "partial".into(); }
+            if report["status"] == "loaded" && (!diagnostics.faults.is_empty() || !diagnostics.notes.is_empty()) {
+                report["status"] = "partial".into();
+            }
             report["runtime"] = runtime;
             let report = Arc::new(report);
             let mut view = self.view.lock().unwrap();
@@ -1795,7 +1797,7 @@ impl BackgroundTask for Load {
                 if let Some(load) = &mut view.parts[slot].load_report {
                     let load = Arc::make_mut(load);
                     load["runtime"] = serde_json::Value::Null;
-                    if report["status"] == "partial" { load["status"] = "partial".into(); }
+                    if report["status"] == "partial" && load["status"] == "loaded" { load["status"] = "partial".into(); }
                     load["script_restore"] = (*report).clone();
                 } else { view.parts[slot].load_report = Some(report); }
                 if let Some(fx) = fx {
@@ -2091,7 +2093,7 @@ impl BackgroundTask for Load {
                         let v = &mut view.parts[slot];
                         if let Some(load) = &mut v.load_report {
                             let load = Arc::make_mut(load);
-                            if report["status"] != "loaded" { load["status"] = "partial".into(); }
+                            if report["status"] != "loaded" && load["status"] == "loaded" { load["status"] = "partial".into(); }
                             load["artwork"] = (*report).clone();
                         }
                         v.pictures = Arc::new(pictures);
@@ -2134,7 +2136,7 @@ impl BackgroundTask for Load {
                     let v = &mut view.parts[slot];
                     if let Some(load) = &mut v.load_report {
                         let load = Arc::make_mut(load);
-                        if report["status"] != "loaded" { load["status"] = "partial".into(); }
+                        if report["status"] != "loaded" && load["status"] == "loaded" { load["status"] = "partial".into(); }
                         load["preload"] = (*report).clone();
                     }
                     match bank {
@@ -2196,7 +2198,7 @@ impl BackgroundTask for Load {
                         let v = &mut view.parts[slot];
                         if let Some(load) = &mut v.load_report {
                             let load = Arc::make_mut(load);
-                            if report["status"] != "loaded" { load["status"] = "partial".into(); }
+                            if report["status"] != "loaded" && load["status"] == "loaded" { load["status"] = "partial".into(); }
                             load["ram_fill"] = (*report).clone();
                         }
                         match bank {
@@ -3961,6 +3963,29 @@ pub(crate) mod tests {
         assert!(!p.shared.queue_snapshot(0, &program, "preset.nksn".into()));
     }
 
+    #[test]
+    fn live_diagnostics_preserve_failed_load_status_and_failure_cause() {
+        let shared = Shared::default();
+        for initial in ["failed", "canceled", "loaded", "partial"] {
+            {
+                let mut view = shared.view.lock().unwrap();
+                let part = &mut view.parts[0];
+                part.script_epoch = 1;
+                part.diagnostics_dirty = true;
+                part.live_diagnostics = Some(Arc::new(LiveDiagnostics {
+                    epoch: 1, faults: Vec::new(), notes: vec!["Existing runtime feature remains unsupported"],
+                }));
+                part.load_report = Some(Arc::new(serde_json::json!({"status": initial, "failure": "Foreign base rejected"})));
+            }
+            shared.drain_live_diagnostics();
+            let view = shared.view.lock().unwrap();
+            let report = view.parts[0].load_report.as_ref().unwrap();
+            assert_eq!(report["status"], if initial == "loaded" { "partial" } else { initial });
+            assert_eq!(report["failure"], "Foreign base rejected");
+            assert_eq!(report["runtime"]["notes"][0], "Existing runtime feature remains unsupported");
+        }
+    }
+
     /// Opt-in real worker proof; only paths are supplied by the local owner.
     #[test]
     #[ignore = "requires a local NKI, three matching snapshots and one foreign snapshot"]
@@ -4013,11 +4038,37 @@ pub(crate) mod tests {
             println!("worker snapshot {}: epoch {}, controls {}, groups {}, audio heap 0", instrument.name, epoch,
                 p.shared.view.lock().unwrap().parts[0].interface.as_ref().map_or(0, |i| i.controls.len()), instrument.groups.len());
         }
+        // Commit the active runtime's ordinary persistence before testing a
+        // rejected selection. Load also services normal audio handoffs, whose
+        // legitimate publication must not be confused with preset replacement.
+        let mut settled = false;
+        for _ in 0..32 {
+            assert_eq!(allocations(|| {
+                for _ in 0..16 { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }
+            }), 0);
+            Load.run(&p);
+            let expected = serde_json::to_string(&dsp.rack.parts[0].script().unwrap().persistence()).unwrap();
+            if p.selection.read().unwrap().parts[0].script_state == expected {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "active snapshot persistence did not settle within 512 blocks");
         let before = p.selection.read().unwrap().parts[0].clone();
         let bank = dsp.rack.parts[0].bank().unwrap() as *const Bank;
+        let generation = p.shared.generation[0].load(Ordering::Acquire);
+        let epoch = dsp.script_epoch[0];
         assert!(p.shared.queue_snapshot(0, &before, foreign));
         Load.run(&p);
-        assert!(p.selection.read().unwrap().parts[0] == before, "foreign snapshot leaves all active saved state intact");
+        let after = p.selection.read().unwrap().parts[0].clone();
+        let old = serde_json::to_value(&before).unwrap();
+        let new = serde_json::to_value(&after).unwrap();
+        let changed: Vec<_> = old.as_object().unwrap().iter()
+            .filter_map(|(name, value)| (new.get(name) != Some(value)).then_some(name)).collect();
+        assert!(after == before, "foreign snapshot changed fields {changed:?}; script bytes {} -> {}, IR slots {} -> {}; source retained {}; generation {} -> {}, epoch {} -> {}, bank retained {}",
+            before.script_state.len(), after.script_state.len(), before.ir_settings.len(), after.ir_settings.len(),
+            before.source() == after.source(), generation, p.shared.generation[0].load(Ordering::Acquire), epoch, dsp.script_epoch[0],
+            dsp.rack.parts[0].bank().unwrap() as *const Bank == bank);
         assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot requires base instrument"));
         let report = p.shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
         assert_eq!(report["details"]["operation"], "snapshot_validation");
@@ -5029,12 +5080,14 @@ end on"#.into()], ..Default::default() };
         i.fx.insert = Chain { slots: vec![effect(7, Kind::SendLevels,
             Params::SendLevels(crate::fx::params::SendLevels { sends: vec![0.0625;8], outputs: Vec::new() }), true)] };
         i.fx.send = Chain { slots: vec![effect(0, Kind::Reverb, Params::Reverb(crate::fx::params::Reverb::DEFAULT), false)] };
+        let i = Arc::new(i);
         let (rt, snapshot, errors) = scripts(&i, "", &[], &[], 48000.);
         assert!(errors.is_empty(), "{errors:?}");
         let rt = rt.unwrap();
         assert!(rt.engine_state().is_empty(), "prepared defaults are not saved edits");
         let mut snapshot = snapshot.unwrap();
         let mut engine = Engine::default();
+        engine.set_bank(Some(Box::new(Bank::from_samples(Vec::new(),Vec::new(),Vec::new()).unwrap())));
         engine.set_fx(crate::engine::effects(&i, Some(&rt), 48000.));
         engine.set_script(Some(rt));
         let mut left = [0.;64]; let mut right = [0.;64];
@@ -5059,7 +5112,7 @@ end on"#.into()], ..Default::default() };
         let p = SamplerParams::new();
         {
             let mut view = p.shared.view.lock().unwrap(); let v = &mut view.parts[0];
-            v.instrument = Some(Arc::new(i.clone())); v.fx_rate = 48000.; v.script_epoch = 1;
+            v.instrument = Some(i.clone()); v.fx_rate = 48000.; v.script_epoch = 1;
             v.attempted = Some((i.path.to_string_lossy().into_owned(),0,String::new()));
         }
         p.selection.write().unwrap().parts = vec![Part { path:i.path.to_string_lossy().into_owned(), ..Default::default() }];
@@ -5077,7 +5130,7 @@ end on"#.into()], ..Default::default() };
         assert!(errors.is_empty(),"{errors:?}"); let rt = rt.unwrap();
         assert_eq!(rt.interface(0).controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(125000));
         assert_eq!(rt.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(1));
-        let mut restored = Engine::default(); restored.set_fx(crate::engine::effects(&i,Some(&rt),48000.)); restored.set_script(Some(rt));
+        let mut restored = Engine::default(); restored.set_bank(Some(Box::new(Bank::from_samples(Vec::new(),Vec::new(),Vec::new()).unwrap()))); restored.set_fx(crate::engine::effects(&i,Some(&rt),48000.)); restored.set_script(Some(rt));
         assert_eq!(restored.fx().param(Rack::Insert,7,FxParam::SendLevel(0)),Some(expected_send));
         assert_eq!(restored.fx().param(Rack::Insert,7,FxParam::Bypass),Some(0.));
         // Unsupported foreign shape is reported and cannot seed another target.
@@ -5140,7 +5193,10 @@ end on"#.into()], ..Default::default() };
         let i = import::read(&path).unwrap();
         let (rt,errors) = crate::engine::load_scripts(&i,i.script_state.clone(),48000.);
         assert!(errors.is_empty(),"{errors:?}");
-        eprintln!("Analog Strings native edit capacity {:?}",rt.unwrap().engine_state_capacity());
+        let rt = rt.unwrap();
+        let (count, preparation) = crate::engine::ScriptSetup::audit_native_preparation(&i,&rt);
+        assert_eq!(count,rt.engine_state_capacity().0);
+        eprintln!("Analog Strings native edit capacity {:?}, preparation {:?}",rt.engine_state_capacity(),preparation);
     }
 
     #[test]
