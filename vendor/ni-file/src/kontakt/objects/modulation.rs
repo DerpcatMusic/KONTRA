@@ -323,7 +323,7 @@ pub fn read_param_slots(
     object: &StructuredObject,
     slots: usize,
 ) -> Result<Vec<(usize, Chunk)>, Error> {
-    if !matches!(object.version, 0x10 | 0x12) {
+    if !matches!(object.version, 0x10 | 0x12 | 0x13) {
         return Err(Error::Generic(format!(
             "Unsupported parameter array version 0x{:X}",
             object.version
@@ -331,12 +331,16 @@ pub fn read_param_slots(
     }
 
     let mut reader = Cursor::new(object.public_data.as_slice());
+    if object.version == 0x13 && reader.read_u32_le()? as usize != slots {
+        return Err(Error::Static("Parameter array serialized slot count differs"));
+    }
     let mut items = Vec::new();
     for slot in 0..slots {
         if read_flag(&mut reader)? {
             items.push((slot, Chunk::read(&mut reader)?));
         }
     }
+    if object.version == 0x13 { ensure_consumed(&reader)?; }
     Ok(items)
 }
 
