@@ -4,7 +4,7 @@ mod frontend;
 use crate::ksp::{Live, Runtime};
 use anyhow::{Context, Result, bail, ensure};
 use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
-use moose::mui::mui::prelude::Align;
+use moose::mui::mui::prelude::{Align, Insets};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{
@@ -28,6 +28,8 @@ pub(crate) struct Node {
     pub text_size: f64,
     pub text_color: [f32; 4],
     pub alignment: (Align, Align),
+    pub padding: Insets,
+    pub hidden: bool,
     pub tap: bool,
     pub children: Vec<Node>,
 }
@@ -520,7 +522,7 @@ impl Scene {
         self.node(
             root,
             self.lua.create_table()?,
-            (14., [1.; 4]),
+            (14., [1.; 4], false),
             "0".into(),
             0,
             &mut seen,
@@ -531,7 +533,7 @@ impl Scene {
         &mut self,
         node: Table,
         context: Table,
-        style: (f64, [f32; 4]),
+        style: (f64, [f32; 4], bool),
         path: String,
         depth: usize,
         seen: &mut BTreeSet<usize>,
@@ -557,7 +559,18 @@ impl Scene {
         let (node, context): (Table, Table) = expand.call((node, path.clone(), context))?;
         let props: Table = node.get("props")?;
         let modifiers: Table = node.get("modifiers")?;
-        let (mut text_size, mut text_color) = style;
+        let (mut text_size, mut text_color, mut hidden) = style;
+        if let Some(modifier) = modifiers.get::<Option<Table>>("hidden")? {
+            let value = match modifier.get::<Value>("value")? {
+                Value::Function(f) => f.call::<Value>(())?, value => value,
+            };
+            let Value::Boolean(value) = value else { bail!("Native UI hidden requires a boolean"); };
+            hidden |= value;
+        }
+        let padding = if let Some(p) = modifiers.get::<Option<Table>>("padding")? {
+            Insets { left: p.get("left")?, right: p.get("right")?, top: p.get("top")?, bottom: p.get("bottom")? }
+        } else { Insets::ZERO };
+        ensure!([padding.left,padding.right,padding.top,padding.bottom].iter().all(|v|v.is_finite() && (0. ..=4096.).contains(v)),"Invalid native UI padding");
         for name in ["font_size", "foreground_color"] {
             if let Some(modifier) = modifiers.get::<Option<Table>>(name)? {
                 let value = modifier.get::<Value>("value")?;
@@ -693,8 +706,8 @@ impl Scene {
         if self.gestures.len() <= id {
             self.gestures.resize_with(id + 1, || None);
         }
-        let has_tap = gesture.is_some();
-        if let Some(g) = gesture {
+        let has_tap = gesture.is_some() && !hidden;
+        if let Some(g) = gesture.filter(|_| !hidden) {
             self.gestures[id] = Some(g);
         }
         let children: Table = node.get("children")?;
@@ -703,7 +716,7 @@ impl Scene {
             nodes.push(self.node(
                 child?,
                 context.clone(),
-                (text_size, text_color),
+                (text_size, text_color, hidden),
                 format!("{path}/{index}"),
                 depth + 1,
                 seen,
@@ -718,6 +731,8 @@ impl Scene {
             text_size,
             text_color,
             alignment,
+            padding,
+            hidden,
             tap: has_tap,
             children: nodes,
         })
