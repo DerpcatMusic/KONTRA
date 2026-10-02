@@ -35,6 +35,146 @@ pub fn linked_script(instrument: &Path, name: &str) -> Result<Option<Vec<u8>>, S
     Resources::of(instrument, "scripts").read(file)
 }
 
+/// The two native UI source languages use separate resource roots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UiDialect {
+    LegacyLua,
+    KompleteScript,
+}
+
+#[derive(Debug)]
+pub(crate) struct UiEntry {
+    pub(crate) dialect: UiDialect,
+    /// Exact relative file under the dialect's resource folder.
+    pub(crate) file: String,
+    /// Documented feature-set selector; absent is not an inferred version.
+    pub(crate) target_version: Option<String>,
+    pub(crate) source: Vec<u8>,
+}
+
+/// Resolve a caller-observed entry, never infer a selected module from a default
+/// filename or feed modern typed `.kscript` modules to the legacy Lua frontend.
+/// `max_bytes` is the caller's resource budget, checked before payload allocation.
+pub(crate) fn resolve_ui_entry(
+    instrument: &Path,
+    requested: &str,
+    max_bytes: usize,
+) -> Result<Option<UiEntry>, String> {
+    let normalized = requested.replace('\\', "/");
+    let mut name = normalized.as_str();
+    let mut root = None;
+    let resources_prefix = name
+        .get(..10)
+        .is_some_and(|p| p.eq_ignore_ascii_case("Resources/"));
+    if let Some(rest) = name
+        .get(..10)
+        .filter(|p| p.eq_ignore_ascii_case("Resources/"))
+    {
+        name = &name[rest.len()..];
+    }
+    for (folder, dialect) in [
+        ("native_ui/", UiDialect::LegacyLua),
+        ("komplete_scripts/", UiDialect::KompleteScript),
+    ] {
+        if name
+            .get(..folder.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(folder))
+        {
+            name = &name[folder.len()..];
+            root = Some(dialect);
+            break;
+        }
+    }
+    if resources_prefix && root.is_none() {
+        return Err(
+            "Native UI entries must be under Resources/native_ui or Resources/komplete_scripts"
+                .into(),
+        );
+    }
+    let extension = if name
+        .get(name.len().saturating_sub(4)..)
+        .is_some_and(|s| s.eq_ignore_ascii_case(".nui"))
+    {
+        name = &name[..name.len() - 4];
+        Some(UiDialect::LegacyLua)
+    } else if name
+        .get(name.len().saturating_sub(8)..)
+        .is_some_and(|s| s.eq_ignore_ascii_case(".kscript"))
+    {
+        name = &name[..name.len() - 8];
+        Some(UiDialect::KompleteScript)
+    } else {
+        None
+    };
+    if root.zip(extension).is_some_and(|(a, b)| a != b) {
+        return Err("Native UI entry extension contradicts its resource folder".into());
+    }
+    let selected = extension.or(root);
+    if name.is_empty()
+        || !name.split(['/', '.']).all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        })
+    {
+        return Err(format!("Invalid native UI entry path {requested:?}"));
+    }
+    let path = name.replace('.', "/");
+    let mut found = None;
+    for dialect in [UiDialect::LegacyLua, UiDialect::KompleteScript] {
+        if selected.is_some_and(|s| s != dialect) {
+            continue;
+        }
+        if dialect == UiDialect::KompleteScript
+            && !path.split('/').all(|p| {
+                p.as_bytes()[0].is_ascii_lowercase()
+                    && p.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            })
+        {
+            if selected.is_some() {
+                return Err(format!("Invalid Komplete UI module name {requested:?}"));
+            }
+            continue;
+        }
+        let (folder, ext) = match dialect {
+            UiDialect::LegacyLua => ("native_ui", "nui"),
+            UiDialect::KompleteScript => ("komplete_scripts", "kscript"),
+        };
+        let file = format!("{path}.{ext}");
+        let mut resources = Resources::of(instrument, folder);
+        if let Some(source) = resources.read_limited(&file, max_bytes)? {
+            if found.is_some() {
+                return Err(format!(
+                    "Ambiguous native UI entry {requested:?}: specify .nui or .kscript"
+                ));
+            }
+            found = Some(UiEntry {
+                dialect,
+                file,
+                target_version: None,
+                source,
+            });
+        }
+    }
+    if let Some(entry) = &mut found {
+        if let Some(bytes) =
+            Resources::of(instrument, "info").read_limited("library.json", max_bytes)?
+        {
+            let metadata: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("Resources/info/library.json: {e}"))?;
+            if let Some(version) = metadata
+                .get("general")
+                .and_then(|g| g.get("kontaktTargetVersion"))
+            {
+                entry.target_version = Some(version.as_str().ok_or("Resources/info/library.json general.kontaktTargetVersion must be a string")?.to_owned());
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// Array data from the library's loose or archived Resources/data folder.
 pub fn data_file(instrument: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
     Resources::of(instrument, "data").read(name)
@@ -251,6 +391,89 @@ pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_ui_entries_keep_dialects_versions_and_resource_bounds_distinct() {
+        let dir = std::env::temp_dir().join(format!("kontra-ui-entry-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Resources/native_ui/components")).unwrap();
+        std::fs::create_dir_all(dir.join("Resources/komplete_scripts")).unwrap();
+        std::fs::create_dir_all(dir.join("Resources/info")).unwrap();
+        let instrument = dir.join("authored.nki");
+        let legacy = b"return {text='authored Lua'}";
+        let modern = b"import { Text } from ui\nexport var main = Text(\"authored\")";
+        std::fs::write(dir.join("Resources/native_ui/main.nui"), legacy).unwrap();
+        std::fs::write(dir.join("Resources/native_ui/components/card.nui"), legacy).unwrap();
+        let first = resolve_ui_entry(&instrument, "main", 1024)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.dialect, UiDialect::LegacyLua);
+        assert_eq!(first.source, legacy);
+        assert_eq!(first.target_version, None);
+        assert_eq!(
+            resolve_ui_entry(&instrument, "components.card.NUI", 1024)
+                .unwrap()
+                .unwrap()
+                .file,
+            "components/card.nui"
+        );
+        std::fs::write(dir.join("Resources/komplete_scripts/main.kscript"), modern).unwrap();
+        std::fs::write(
+            dir.join("Resources/info/library.json"),
+            br#"{"general":{"kontaktTargetVersion":"8.4.0","other":"retained externally"}}"#,
+        )
+        .unwrap();
+        assert!(
+            resolve_ui_entry(&instrument, "main", 1024)
+                .unwrap_err()
+                .contains("Ambiguous")
+        );
+        let entry = resolve_ui_entry(
+            &instrument,
+            "Resources\\komplete_scripts\\main.KSCRIPT",
+            1024,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(entry.dialect, UiDialect::KompleteScript);
+        assert_eq!(entry.file, "main.kscript");
+        assert_eq!(entry.source, modern);
+        assert_eq!(entry.target_version.as_deref(), Some("8.4.0"));
+        assert_eq!(
+            resolve_ui_entry(&instrument, "main.nui", 1024)
+                .unwrap()
+                .unwrap()
+                .dialect,
+            UiDialect::LegacyLua
+        );
+        for invalid in [
+            "../main",
+            "/main.nui",
+            "C:\\main.nui",
+            "Resources/pictures/main.nui",
+            "native_ui/main.kscript",
+            "Main.kscript",
+            "controls..main",
+            "main\0.nui",
+        ] {
+            assert!(
+                resolve_ui_entry(&instrument, invalid, 1024).is_err(),
+                "{invalid:?}"
+            );
+        }
+        assert!(resolve_ui_entry(&instrument, "main.kscript", modern.len() - 1).is_err());
+        assert!(
+            resolve_ui_entry(&instrument, "absent.kscript", 1024)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::write(
+            dir.join("Resources/info/library.json"),
+            br#"{"general":{"kontaktTargetVersion":8}}"#,
+        )
+        .unwrap();
+        assert!(resolve_ui_entry(&instrument, "main.kscript", 1024).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn lazy_resources_validate_only_requested_headers_and_keep_keyed_reads() {
