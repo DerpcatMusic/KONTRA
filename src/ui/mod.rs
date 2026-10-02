@@ -80,7 +80,8 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
                 "renderer", "native_window", serde_json::json!({"stage":"renderer", "reason":line}));
             // Persist the attempt before entering native graphics code: an
             // access violation does not unwind or wait for queued log writes.
-            if line.starts_with("mui-baseview: GPU init ") {
+            if line.starts_with("mui-baseview: GPU init ")
+                || line.starts_with("mui-baseview: native window init entering native code ") {
                 let _ = crate::diagnostics::flush(std::time::Duration::from_millis(100));
             }
         })

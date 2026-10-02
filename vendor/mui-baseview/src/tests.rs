@@ -5,6 +5,44 @@ use keyboard_types::Code;
 use mui::Ui;
 use mui::prelude::{El, Input, knob};
 
+#[cfg(target_os = "linux")]
+#[test]
+fn native_window_attempt_is_logged_before_parent_conversion_panics() {
+    use raw_window_handle::{HandleError, WindowHandle, XcbWindowHandle};
+    struct Parent(Cell<bool>);
+    impl HasWindowHandle for Parent {
+        #[expect(unsafe_code, reason = "synthetic numeric handle is never passed to native code")]
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            if self.0.replace(true) { panic!("parent conversion probe"); }
+            let raw = XcbWindowHandle::new(std::num::NonZeroU32::new(1).unwrap());
+            // SAFETY: only the handle kind is inspected; the next extraction
+            // panics before baseview or graphics can use the numeric handle.
+            Ok(unsafe { WindowHandle::borrow_raw(raw.into()) })
+        }
+    }
+    struct Logged(Arc<Mutex<Vec<String>>>);
+    impl View for Logged {
+        fn log(&mut self, line: &str) { self.0.lock().unwrap().push(line.into()); }
+        fn build(&mut self, ui: &mut Ui, input: &Input) -> El { Knob { value: 0.5 }.build(ui, input) }
+        fn changed(&mut self) -> bool { false }
+        fn request_resize(&mut self, _: u32, _: u32) -> bool { false }
+    }
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let shared = Arc::new(Mutex::new(Shared { ui: Ui::default(), view: Logged(Arc::clone(&lines)) }));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        open(&Parent(Cell::new(false)), "probe", (400, 300), None, shared, Arc::default())
+    }));
+    assert!(result.is_err());
+    let lines = lines.lock().unwrap();
+    let first = &lines[0];
+    assert!(first.starts_with("mui-baseview: native window init entering native code "));
+    for field in ["os=linux", "api=X11/Xcb", "thread=ThreadId(", "main_thread=None", "backend=", "logical_size=(400, 300)"] {
+        assert!(first.contains(field), "missing {field}: {first}");
+    }
+    assert!(!first.contains("0x"));
+    assert!(lines.iter().all(|line| !line.starts_with("mui-baseview: GPU init ")));
+}
+
 #[test]
 fn uncaptured_gpu_diagnostics_reach_the_sink_without_the_model_lock() {
     let h = handler((400, 300), 1.0);
