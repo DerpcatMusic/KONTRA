@@ -1,5 +1,5 @@
 local ui = require("native_ui")
-local Card = require("components.card")
+local Card = require("components")
 return function()
     return @ui.ZStack {
         @ui.Rectangle {color=ui.Color(10,20,30)}
