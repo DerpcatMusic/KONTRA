@@ -28,7 +28,7 @@ const HIDE_VALUE: i32 = 2;
 const HIDE_TITLE: i32 = 4;
 const HIDE_WHOLE: i32 = 16;
 
-/// Kontakt's default text, near enough: its own fonts are not drawn.
+/// The bundled face's default approximation; factory glyphs are not bundled.
 pub(super) const FONT: f64 = 11.;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -537,10 +537,88 @@ pub(super) fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, O
 /// One line of a label's text, in authored points.
 pub(super) const LINE: f64 = FONT * 1.25;
 
+/// Responsive controls inherit their base font when a state font is unset.
+/// Menu "on" means its popup is open, rather than a nonzero selected value.
+fn font_id(c: &Control, on: bool, pressed: bool, hovered: bool) -> Option<i32> {
+    let base = int(c, "$CONTROL_PAR_FONT_TYPE");
+    if !matches!(c.kind.as_str(), "ui_button" | "ui_switch" | "ui_menu") { return base; }
+    let state = match (on, pressed, hovered) {
+        (false, true, _) => "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED",
+        (true, true, _) => "$CONTROL_PAR_FONT_TYPE_ON_PRESSED",
+        (false, false, true) => "$CONTROL_PAR_FONT_TYPE_OFF_HOVER",
+        (true, false, true) => "$CONTROL_PAR_FONT_TYPE_ON_HOVER",
+        (true, false, false) => "$CONTROL_PAR_FONT_TYPE_ON",
+        _ => return base,
+    };
+    int(c, state).filter(|&id| id >= 0).or(base)
+}
+
+#[derive(Clone, Copy)]
+struct TextFont { size: f64, weight: f32, color: Option<Color> }
+impl TextFont {
+    fn advance(self, text: &str, size: f64) -> f64 {
+        static FONT: std::sync::OnceLock<Vec<Font>> = std::sync::OnceLock::new();
+        let fonts = FONT.get_or_init(|| Font::new(NOTO_SANS).into_iter().collect());
+        mui_text::shape_run(fonts, text, size, &[("wght", self.weight)]).map_or(0., |run| run.advance)
+    }
+    fn fit(self, text: &str, room: f64, size: f64) -> f64 {
+        let width = self.advance(text, size);
+        if width <= room || width <= 0. { size } else { (size * room / width).max(size * 0.75) }
+    }
+}
+
+/// Approximate the factory chart using the existing variable Noto face. The
+/// colors are sampled from NI's published factory font chart, not guessed from
+/// the wallpaper. Exact bitmap glyph metrics still require original resources.
+/// https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters
+fn text_font(c: &Control, on: bool, pressed: bool, hovered: bool) -> TextFont {
+    const COLORS: [[u8; 3]; 26] = [
+        [254,254,254], [254,254,254], [55,55,51], [204,204,204], [227,194,105],
+        [228,209,130], [125,48,18], [133,53,25], [72,68,60], [0,0,0],
+        [217,217,217], [137,140,141], [27,27,26], [210,220,225], [185,185,185],
+        [95,95,95], [0,0,0], [254,254,254], [254,254,254], [0,0,0],
+        [127,127,127], [127,127,127], [0,0,0], [127,127,127], [255,255,255], [12,36,49],
+    ];
+    let id = font_id(c, on, pressed, hovered).filter(|id| (0..26).contains(id));
+    let rgb = |[r, g, b]: [u8; 3]| Color::srgb(f32::from(r) / 255., f32::from(g) / 255., f32::from(b) / 255.);
+    let explicit = int(c, "$CONTROL_PAR_TEXT_COLOR").map(|color| {
+        let color = color as u32;
+        rgb([(color >> 16) as u8, (color >> 8) as u8, color as u8])
+    });
+    TextFont {
+        size: if matches!(id, Some(1 | 5 | 7 | 16 | 17 | 20)) { 13. } else { FONT },
+        weight: if matches!(id, Some(16..=25)) { 700. } else { 400. },
+        color: explicit.or_else(|| id.map(|id| rgb(COLORS[id as usize]))),
+    }
+}
+
+/// Loader/audit diagnostics, once per interface; never emitted while drawing.
+/// Custom IDs whose bitmap names were not resolved retain a readable fallback.
+pub(crate) fn font_fallbacks(interface: &Interface) -> Vec<String> {
+    let ids: std::collections::BTreeSet<i32> = interface.controls.iter().flat_map(|c|
+        ["$CONTROL_PAR_FONT_TYPE", "$CONTROL_PAR_FONT_TYPE_ON", "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED",
+         "$CONTROL_PAR_FONT_TYPE_ON_PRESSED", "$CONTROL_PAR_FONT_TYPE_OFF_HOVER", "$CONTROL_PAR_FONT_TYPE_ON_HOVER"]
+        .into_iter().filter_map(|name| int(c, name)).filter(|&id| id >= 0)
+    ).collect();
+    let mut warnings = Vec::new();
+    let factory: Vec<_> = ids.iter().filter(|&&id| id < 26).copied().collect();
+    if !factory.is_empty() {
+        warnings.push(format!("Factory font IDs {factory:?} use the bundled Noto Sans approximation; original factory bitmap glyphs and exact metrics are not loaded"));
+    }
+    for id in ids.into_iter().filter(|&id| id >= 26) {
+        warnings.push(format!("Custom font ID {id}: bitmap font resource is unavailable; using bundled Noto Sans"));
+    }
+    warnings
+}
+
 /// `text` as the lines a label `room` points wide shows at `size`: one per
 /// newline and, when `wrap`, a new one before a word that would run past
 /// the edge. A word wider than the room keeps a line of its own.
 pub fn break_lines(text: &str, room: f64, size: f64, wrap: bool) -> Vec<String> {
+    break_font_lines(text, room, size, wrap, TextFont { size, weight: 400., color: None })
+}
+
+fn break_font_lines(text: &str, room: f64, size: f64, wrap: bool, font: TextFont) -> Vec<String> {
     let mut out = Vec::new();
     for paragraph in text.split('\n') {
         let mut line: Option<String> = None;
@@ -548,7 +626,7 @@ pub fn break_lines(text: &str, room: f64, size: f64, wrap: bool) -> Vec<String> 
         for word in paragraph.split(' ') {
             line = Some(match line {
                 None => word.to_owned(),
-                Some(l) if wrap && !l.trim().is_empty() && super::cover::advance(&format!("{l} {word}"), size) > room => {
+                Some(l) if wrap && !l.trim().is_empty() && font.advance(&format!("{l} {word}"), size) > room => {
                     out.push(l);
                     word.to_owned()
                 }
@@ -564,18 +642,18 @@ pub fn break_lines(text: &str, room: f64, size: f64, wrap: bool) -> Vec<String> 
 /// label's on as many lines as its newlines and its height make, from
 /// `top` or centred.
 #[allow(clippy::too_many_arguments)]
-fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, ink: impl Into<Fill>, label: bool) -> El {
+fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, ink: impl Into<Fill>, label: bool, font: TextFont) -> El {
     let ink: Fill = ink.into();
     let justify = match align {
         1 => Justify::Center,
         2 => Justify::End,
         _ => Justify::Start,
     };
-    let lh = LINE * s;
-    let lines = if label { break_lines(&words, w - 4. * s, FONT * s, h >= 2. * lh) } else { vec![words] };
+    let lh = font.size * 1.25 * s;
+    let lines = if label { break_font_lines(&words, w - 4. * s, font.size * s, h >= 2. * lh, font) } else { vec![words] };
     let one = |t: String| {
-        let size = fit(&t, w - 4. * s, FONT * s);
-        row![text(t).text_size(size).fill(ink.clone()).lines(1).min_w(0)].justify(justify).align(Align::Center).w(w).pad((2. * s, 0.))
+        let size = font.fit(&t, w - 4. * s, font.size * s);
+        row![text(t).text_size(size).text_axis("wght", font.weight).fill(ink.clone()).lines(1).min_w(0)].justify(justify).align(Align::Center).w(w).pad((2. * s, 0.))
     };
     if lines.len() > 1 {
         let tall = lh * lines.len() as f64;
@@ -584,7 +662,7 @@ fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, in
     }
     let line = one(lines.into_iter().next().unwrap_or_default());
     match top {
-        Some(y) => line.h(FONT * s * 1.4).at(0., y * s),
+        Some(y) => line.h(font.size * s * 1.4).at(0., y * s),
         None => line.h(h).at(0., 0.),
     }
 }
@@ -659,8 +737,7 @@ fn sliced(image: &Arc<Image>, stretch: [bool; 2], w: f64, h: f64, s: f64, dev: f
     stack(parts).w(w).h(h)
 }
 
-/// Light text, or dark over something light: Kontakt's own fonts carry
-/// their colors, which are not known here.
+/// Contrast fallback for text without a recognized explicit font/color.
 fn ink(under: Option<f32>) -> Color {
     match under {
         Some(l) if l > 0.6 => Color::srgb(0.1, 0.1, 0.1),
@@ -806,25 +883,30 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         stack(layers).w(w).h(h)
     } else {
         // Text on our face is our ink; on a picture it reads what lies under it.
-        let own_ink = match look {
+        let interaction = ui.get(id.as_str());
+        let on = if shown.kind == Kind::Menu {
+            cx.state.menu.as_ref().is_some_and(|menu| matches!(&menu.target, Target::Script { part, control } if *part == slot && *control == shown.control))
+        } else { now >= 1. };
+        let font = text_font(c, on, interaction.held, interaction.hovered);
+        let own_ink = font.color.map(Fill::from).unwrap_or_else(|| match look {
             Look::Original(under) if pictured || matches!(shown.kind, Kind::Label | Kind::Area | Kind::Knob | Kind::Slider | Kind::Other) => Fill::from(ink(under)),
             _ => Fill::from(Role::Ink),
-        };
+        });
         let (said, align, top) = caption_of(c, shown.kind, now);
         if !said.is_empty() {
-            layers.push(words(said, align, top, w, h, s, own_ink.clone(), shown.kind == Kind::Label));
+            layers.push(words(said, align, top, w, h, s, own_ink.clone(), shown.kind == Kind::Label, font));
         }
         if shown.kind == Kind::Knob && !pictured {
             // Kontakt's own knob: its name over it, its value under it.
             let name = prop(c, "$CONTROL_PAR_TEXT");
             let name = if name.is_empty() { c.variable.trim_start_matches(['$', '~']) } else { name };
             if hide & HIDE_TITLE == 0 {
-                layers.push(words(keep_spaces(name), 1, Some(0.), w, h, s, own_ink.clone(), false));
+                layers.push(words(keep_spaces(name), 1, Some(0.), w, h, s, own_ink.clone(), false, font));
             }
             if hide & HIDE_VALUE == 0 {
                 let label = prop(c, "$CONTROL_PAR_LABEL");
                 let shown_value = if label.is_empty() { format!("{}", now.round()) } else { keep_spaces(label) };
-                layers.push(words(shown_value, 1, Some(shown.h - FONT * 1.4), w, h, s, own_ink, false));
+                layers.push(words(shown_value, 1, Some(shown.h - font.size * 1.4), w, h, s, own_ink, false, font));
             }
         }
         stack(layers).w(w).h(h).clip()
@@ -1301,6 +1383,39 @@ mod tests {
         assert_eq!(caption_of(&label, Kind::Label, 0.), ("Reverb".into(), 0, Some(3.)));
         let edit = control("ui_value_edit", &[("TEXT", Value::Text("Voices".into())), ("TEXT_ALIGNMENT", Value::Int(2))]);
         assert_eq!(caption_of(&edit, Kind::Value, 4.), ("Voices 4".into(), 2, None));
+    }
+
+    #[test]
+    fn original_text_respects_factory_state_fonts_and_authored_label_geometry() {
+        let label = control("ui_label", &[("TEXT", Value::Text("VOLUME 1".into())), ("FONT_TYPE", Value::Int(23)),
+            ("POS_X", Value::Int(38)), ("POS_Y", Value::Int(493)), ("WIDTH", Value::Int(70)), ("HEIGHT", Value::Int(18)),
+            ("TEXT_ALIGNMENT", Value::Int(1))]);
+        let interface = Interface { performance: true, width: 732, height: 540, controls: vec![label.clone()], ..Default::default() };
+        let shown = layout(&interface, &HashMap::new()).remove(0);
+        assert_eq!((shown.x, shown.y, shown.w, shown.h), (38., 493., 70., 18.));
+        let font = text_font(&label, false, false, false);
+        assert_eq!(font.color, Some(Color::srgb(127. / 255., 127. / 255., 127. / 255.)));
+        assert_eq!(caption_of(&label, Kind::Label, 0.), ("VOLUME 1".into(), 1, None));
+        let root = words("VOLUME 1".into(), 1, None, 70., 18., 1., font.color.unwrap(), true, font);
+        let spec = moose::mui::mui::scene::SceneSpec::new(root).offered(Size::new(70., 18.)).font(Font::new(NOTO_SANS).unwrap());
+        let scene = moose::mui::mui::scene::resolve(&spec).unwrap();
+        let run = scene.paint.iter().find_map(|paint| paint.text.as_ref()).expect("authored caption is drawn through MUI");
+        assert_eq!(run.axes.get("wght"), Some(font.weight));
+        assert!(f64::from(run.size) <= font.size);
+
+        let mut switch = control("ui_switch", &[("FONT_TYPE", Value::Int(15)), ("FONT_TYPE_ON", Value::Int(24)),
+            ("FONT_TYPE_OFF_HOVER", Value::Int(13)), ("FONT_TYPE_ON_PRESSED", Value::Int(23))]);
+        assert_eq!(font_id(&switch, false, false, false), Some(15));
+        assert_eq!(font_id(&switch, true, false, false), Some(24));
+        assert_eq!(font_id(&switch, false, false, true), Some(13));
+        assert_eq!(font_id(&switch, true, true, true), Some(23), "pressed overrides hover");
+        assert_eq!(font_id(&switch, true, false, true), Some(15), "unset state inherits base, not the on-state font");
+        switch.properties.insert("$CONTROL_PAR_TEXT_COLOR".into(), Value::Int(0x102030));
+        assert_eq!(text_font(&switch, true, false, false).color, Some(Color::srgb(16. / 255., 32. / 255., 48. / 255.)));
+        let custom = control("ui_label", &[("FONT_TYPE", Value::Int(1024))]);
+        let custom_interface = Interface { controls: vec![custom.clone(), custom], ..Default::default() };
+        assert_eq!(font_fallbacks(&custom_interface).len(), 1, "missing custom fonts are deduplicated and explicit");
+        assert!(font_fallbacks(&interface)[0].contains("approximation"));
     }
 
     #[test]
