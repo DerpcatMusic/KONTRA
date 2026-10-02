@@ -2,9 +2,9 @@ use std::io::Cursor;
 
 use super::BParamArrayBParFX8;
 use crate::{
+    Error,
     kontakt::{Chunk, StructuredObject},
     read_bytes::ReadBytesExt,
-    Error,
 };
 
 /// Kontakt snapshot v1: saved state for an existing instrument, without zones
@@ -16,6 +16,31 @@ pub struct Snapshot {
     pub effect_children: Vec<Chunk>,
     /// All five Kontakt script slots, including empty/bypassed slots.
     pub persistent: Vec<Vec<String>>,
+}
+
+impl Snapshot {
+    /// Opt-in compact-v2 decoding; IDs retain Kontakt's original array order.
+    pub fn group_snapshots(&self) -> Result<Vec<(u32, super::GroupSnapshot)>, Error> {
+        let mut reader = Cursor::new(self.groups.data.as_slice());
+        let count = reader.read_u32_le()?;
+        // Even empty v2 records have 125 bytes of headers, state and slot flags.
+        if count != self.group_count
+            || count as usize > self.groups.data.len().saturating_sub(4) / 125
+        {
+            return Err(Error::Static("Invalid compact group snapshot count"));
+        }
+        let mut groups = Vec::new();
+        groups
+            .try_reserve(count as usize)
+            .map_err(|_| Error::Static("Group snapshot allocation failed"))?;
+        for id in 0..count {
+            groups.push((id, super::GroupSnapshot::read(&mut reader)?));
+        }
+        if reader.position() as usize != self.groups.data.len() {
+            return Err(Error::Static("Trailing compact group snapshot data"));
+        }
+        Ok(groups)
+    }
 }
 
 impl TryFrom<&Chunk> for Snapshot {

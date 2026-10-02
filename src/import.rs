@@ -241,8 +241,63 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         saved.group_count as usize == instrument.groups.len(),
         "Snapshot/base group counts differ"
     );
+    let native_groups = GroupList::try_from(
+        program
+            .0
+            .find_first(0x33)
+            .context("Base group list missing")?,
+    )?;
+    ensure!(
+        native_groups.groups.len() == instrument.groups.len(),
+        "Base group mapping differs"
+    );
+    let snapshot_groups = saved.group_snapshots().context("Compact snapshot groups")?;
     let mut states = Vec::new();
     let mut warnings = Vec::new();
+    for ((id, saved), mut native) in snapshot_groups.into_iter().zip(native_groups.groups) {
+        let id = id as usize;
+        ensure!(
+            native.source_state()?[..7] == saved.source_data[..7],
+            "Snapshot group {id}: source mode differs from base"
+        );
+        let native_fx = native.insert_fx()?;
+        snapshot_slot_shape(&native_fx, &saved.fx)
+            .with_context(|| format!("Snapshot group {id} effects"))?;
+        for (chunk_id, count, slots) in [(0x3b, 16, &saved.internal), (0x3c, 32, &saved.external)] {
+            let original = native
+                .0
+                .find_first(chunk_id)
+                .context("Base modulation array missing")?;
+            let original = ni_file::kontakt::objects::BParamArrayBParFX8::read(
+                Cursor::new(&original.data),
+                count,
+            )?;
+            snapshot_slot_shape(&original, slots)
+                .with_context(|| format!("Snapshot group {id} modulation"))?;
+        }
+        for chunk in saved.modulation_chunks()? {
+            let original = native
+                .0
+                .children
+                .iter_mut()
+                .find(|c| c.id == chunk.id)
+                .context("Base modulation array missing")?;
+            *original = chunk;
+        }
+        let modulation = crate::modulation::read_group(&native)
+            .with_context(|| format!("Snapshot group {id} modulation parameters"))?;
+        let fx = crate::fx::Chain::from_array(&saved.fx)
+            .with_context(|| format!("Snapshot group {id} effect parameters"))?;
+        warnings.extend(modulation.warnings);
+        warnings.extend(crate::engine::filter::unsupported(&fx));
+        let group = &mut instrument.groups[id];
+        group.volume_env = modulation.volume_env;
+        group.flex_env = modulation.flex_env;
+        group.mods = modulation.mods;
+        group.modulators = modulation.modulators;
+        group.envelopes = modulation.envelopes;
+        group.fx = fx;
+    }
     let mut slots = 0;
     for (slot, chunk) in program.0.children.iter().filter(|c| c.id == 6).enumerate() {
         slots += 1;
@@ -308,13 +363,16 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         crate::audio::decode(&ir, max_frames)
     });
     warnings.extend(fx.warnings());
-    warnings.push("Snapshot: compact saved group/source/modulation state is not imported; base group settings remain in use".into());
+    warnings.push("Snapshot: unknown group public/source fields and trailing selection flags are retained but not applied; base scalar/source settings remain in use".into());
+    warnings.push("Snapshot: group IDs require the supplied base NKI's original group arrangement; a reordered foreign base with the same name/count cannot be detected".into());
     for (base, saved) in instrument.script_state.iter_mut().zip(states) {
         base.extend(saved);
     }
     fx.main = std::mem::take(&mut instrument.fx.main);
     instrument.fx = fx;
     instrument.warnings.extend(warnings);
+    instrument.warnings.sort();
+    instrument.warnings.dedup();
     instrument.name = snapshot
         .file_stem()
         .context("Snapshot has no name")?
@@ -324,6 +382,47 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         .dependencies
         .extend(crate::cache::dependencies(dependencies));
     Ok(instrument)
+}
+
+fn snapshot_slot_shape(
+    base: &ni_file::kontakt::objects::BParamArrayBParFX8,
+    saved: &ni_file::kontakt::objects::BParamArrayBParFX8,
+) -> Result<()> {
+    use ni_file::kontakt::objects::{ExternalMod, InternalMod};
+    let identity = |chunk: &ni_file::kontakt::Chunk| -> Result<_> {
+        let (name, targets) = match chunk.id {
+            0x0d => {
+                let p = InternalMod::try_from(chunk)?.params()?;
+                (p.name, p.targets)
+            }
+            0x0c => {
+                let p = ExternalMod::try_from(chunk)?.params()?;
+                (p.name, p.targets)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some((
+            name,
+            targets
+                .into_iter()
+                .map(|t| (t.param, t.slot, t.name))
+                .collect::<Vec<_>>(),
+        )))
+    };
+    ensure!(base.items.len() == saved.items.len(), "Slot counts differ");
+    for (base, saved) in base.items.iter().zip(&saved.items) {
+        ensure!(
+            base.as_ref().map(|c| c.id) == saved.as_ref().map(|c| c.id),
+            "Slot occupancy/types differ"
+        );
+        if let (Some(base), Some(saved)) = (base, saved) {
+            ensure!(
+                identity(base)? == identity(saved)?,
+                "Modulator/target identities differ"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn snapshot_rooted_path(name: &str) -> Result<Option<PathBuf>> {
