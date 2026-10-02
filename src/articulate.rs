@@ -1893,9 +1893,11 @@ end on"#;
         for mpe in [false, true] {
             let group = Group { mods: vec![ModAssignment { name: "CC74_VOLUME".into(),
                 source: ModSource::MidiCc(74), target: ModTarget::Volume, intensity: 1.,
-                invert: false, lag_ms: 0, shaper: None }], ..Default::default() };
+                invert: false, lag_ms: 0, shaper: None }, ModAssignment { name:"CC74_START".into(),
+                source:ModSource::MidiCc(74), target:ModTarget::SampleStart, intensity:1.,
+                invert:false, lag_ms:0, shaper:None }], ..Default::default() };
             let zones = [(60, -1.), (61, 1.)].map(|(key, pan)| SampleZone {
-                root:key, low_key:key, high_key:key, pan, ..Default::default() });
+                root:key, low_key:key, high_key:key, pan, start_mod:Some(1000), ..Default::default() });
             let bank = Bank::from_samples(vec![group], zones.to_vec(),
                 vec![(std::path::PathBuf::new(), Sample { rate:48000, frames:vec![[0.25;2];24000] })]).unwrap();
             let mut e = Engine::default();
@@ -1913,6 +1915,12 @@ end on"#;
                 feed(&mut r,&mut e,In::Cc(controller,74,32),7);
                 feed(&mut r,&mut e,In::NoteOn(first,60,100),7);
                 feed(&mut r,&mut e,In::NoteOn(second,61,100),7);
+                // Start-only sample-offset modulation must see the same-sample
+                // override before queued voices have ever been rendered.
+                feed(&mut r,&mut e,In::NoteBrightness(first,60,127),7);
+                e.render(&mut left,&mut right);
+                assert!((left[511]/right[511]-127./32.).abs()<0.01);
+                r.set_expression(if mpe { first } else { 7 },48,|x| x.note_cc74=None,&mut |o| apply(&mut e,o));
                 e.render(&mut left,&mut right);
                 let low = [left[511],right[511]];
                 assert!(low.iter().all(|v| *v > 0.001));
@@ -1944,6 +1952,9 @@ end on"#;
             }),0);
             assert_eq!(e.cc_state()[if mpe { 1 } else { 7 }][74],if mpe { 0 } else { 16 },"note expression must never become channel CC74");
             assert_eq!(e.active_voices(),2);
+            let voices = e.voice_census();
+            let position = |note| voices.iter().find(|v| v.note==note).unwrap().pos;
+            assert!(position(60)-position(61)>500.,"mpe={mpe}: start-only modulation missed the initial note override");
         }
     }
 

@@ -1507,7 +1507,7 @@ impl Player {
         let expression = ev.frozen_expression.unwrap_or(self.expression[c][expression_key as usize & 127]);
         let inputs = params::Inputs {
             cc: &self.cc[c],
-            cc74: master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127)),
+            cc74: expression.note_cc74.or_else(|| master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127))),
             bend: self.bend[c] + master.map_or(0., |m| self.bend[m]),
             pressure: master.map_or(self.pressure[c], |m| expression.member_pressure.unwrap_or(self.pressure[c]).max(self.pressure[m])),
             note: ev.note,
