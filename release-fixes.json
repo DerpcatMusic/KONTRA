@@ -345,8 +345,8 @@
       "source_commits": [
         "e12f8a0b79b9f58c4792b28a836d025b2aad3644"
       ],
-      "validation": "Root reports the focused gate passed and an actual Areia load delivered all 1125 warnings. Awaiting release acceptance.",
-      "accepted": false
+      "validation": "Root focused production gate passed at 00b879d; actual Areia load delivered all 1125 warnings beyond the bounded report examples.",
+      "accepted": true
     },
     {
       "id": "scripted-ahd-only-envelope",
@@ -354,8 +354,8 @@
       "source_commits": [
         "de730e157c6807b3a51ae84a8fa486d12625d24d"
       ],
-      "validation": "Root reports the explicit AHD Only gate passed. This does not validate every imported envelope or establish Kontakt sound parity. Awaiting release acceptance.",
-      "accepted": false
+      "validation": "Root explicit AHD Only gate passed; uses the shared envelope kernel. This does not establish every imported envelope or Kontakt sound parity.",
+      "accepted": true
     },
     {
       "id": "script-only-v3-snapshot",
@@ -363,8 +363,8 @@
       "source_commits": [
         "76d1e097cdd97466bcb0a48d55c32d8f596516ef"
       ],
-      "validation": "Root reports vendor checks and actual Conflux snapshot application/audio outputs passed; realtime underruns remain. Awaiting release acceptance.",
-      "accepted": false
+      "validation": "Vendor reads_script_only_v3_without_inventing_native_state passed at c286fe4; root independently applied three actual Conflux presets and checked audio outputs. Realtime underruns remain.",
+      "accepted": true
     },
     {
       "id": "library-root-archive-sample-paths",
@@ -372,8 +372,8 @@
       "source_commits": [
         "b29eef1b054e5de0f9c7ee8302a517a28f1881cd"
       ],
-      "validation": "Root reports authored resolution checks, actual archive members and loading 1985 Conflux zones passed. Full-library playback remains unverified. Awaiting release acceptance.",
-      "accepted": false
+      "validation": "Root authored resolution and actual archive-member checks passed; actual Conflux load retained 1985 playable zones. Full-library playback and sound parity remain unverified.",
+      "accepted": true
     },
     {
       "id": "counted-modulation-array-slots",
@@ -381,8 +381,8 @@
       "source_commits": [
         "9bf24017fcbe9f7d29e9f6220cbc8356297146b0"
       ],
-      "validation": "Root reports vendor checks and actual byte-preservation checks passed. Record preservation does not establish modulation processing parity. Awaiting release acceptance.",
-      "accepted": false
+      "validation": "Vendor counted_external_slots_keep_high_identity_and_unknown_bytes passed at c286fe4; actual byte-preservation checks passed. Parsing and preservation do not certify processing every modulation route.",
+      "accepted": true
     },
     {
       "id": "modern-bounded-source-identities",
@@ -390,8 +390,8 @@
       "source_commits": [
         "e92be6571f900ba65e00b7b1683699c68eeb3baa"
       ],
-      "validation": "Pending combined gate and actual-source review; no passed validation or release acceptance claimed.",
-      "accepted": false
+      "validation": "Vendor source_identity_reads_known_headers_without_interpreting_opaque_state passed at c286fe4 for known v0x103/v0x104 headers; opaque state remains uninterpreted. Morphology application is still blocked.",
+      "accepted": true
     },
     {
       "id": "off-thread-load-journal-delivery",
@@ -399,8 +399,8 @@
       "source_commits": [
         "3a36b64721769d5c9398bc7d396c91072ae3e0a2"
       ],
-      "validation": "Pending journal burst/delivery gate; separate from retaining warnings beyond the report-example cap.",
-      "accepted": false
+      "validation": "Root production journal burst/export gate passed at 00b879d, retaining 4098 warning records and delivery status off-thread. Distinct from expanding capture beyond bounded report examples; no audio-throughput claim.",
+      "accepted": true
     },
     {
       "id": "release-trigger-note-mono",
@@ -408,8 +408,8 @@
       "source_commits": [
         "7c09b821feb5ed4ba43e509c63aab18ff07fccab"
       ],
-      "validation": "Pending format, playback and release-trigger gate; no actual-library or sound-parity claim.",
-      "accepted": false
+      "validation": "Production note_mono_cuts_only_matching_sounding_release_tails and native_start_conditions_survive_new_instrument_writing passed at 00b879d. Covers matching release tails and record writing, not every imported start condition.",
+      "accepted": true
     },
     {
       "id": "compact-modern-snapshot-records",
@@ -417,8 +417,8 @@
       "source_commits": [
         "3801b2e4f44f9ba15865b7fa3062034019d24663"
       ],
-      "validation": "Pending bounded-record and roundtrip gates; separate from applying script-only v3 snapshots.",
-      "accepted": false
+      "validation": "Vendor compact_v4_preserves_mode_dependent_sources_and_counted_slots passed at c286fe4 with bounded modern v3/v4 parsing and record roundtrip. Morphology application remains blocked; parsing is not full snapshot processing.",
+      "accepted": true
     },
     {
       "id": "native-group-send-level-routing",
@@ -426,8 +426,17 @@
       "source_commits": [
         "b77b748d36771bf9a786f1059554cb3610e351a0"
       ],
-      "validation": "Pending group-send processing gate; unsupported processing and Kontakt sound equivalence remain unverified.",
-      "accepted": false
+      "validation": "Production group_send_taps_keep_native_order_dry_gain_and_return_tails_without_heap passed at 00b879d; analytical ordering, dry gain, tails and zero-heap checks passed. Kontakt bus/sound equivalence remains unverified.",
+      "accepted": true
+    },
+    {
+      "id": "fractional-image-resampling",
+      "summary": "Preserve fractional image coverage and transparent edge colors without repeated enlargement",
+      "source_commits": [
+        "bd911af1bc64a479f616278e4b01d27840f0d9a8"
+      ],
+      "validation": "Production fractional_resizing_preserves_coverage_and_transparent_edge_color and pictures_are_made_to_the_pixel_once passed at 00b879d. Covers fractional/alpha behavior and retained enlargement, not universal resource or GPU performance parity.",
+      "accepted": true
     }
   ]
 }

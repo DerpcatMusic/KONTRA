@@ -113,6 +113,35 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Fixed
 
+- Persistent load journals retain warnings beyond the bounded report examples;
+  an actual Areia load delivered all 1,125 warnings. Off-thread burst capture and
+  export also retain 4,098 warning records with explicit delivery status. These
+  are two distinct corrections: capture coverage and delivery under bursts.
+- Explicit scripted AHD Only uses the shared envelope kernel; its focused gate
+  passed. This does not establish every imported envelope or Kontakt's sound.
+- Script-only Kontakt v3 snapshots apply saved script state without replacing
+  native instrument state. Vendor checks and independent application of three
+  actual Conflux presets with audio outputs passed; realtime underruns remain.
+- Library-root archive samples resolve from nested instrument directories.
+  Authored checks, actual archive members and 1,985 playable Conflux zones passed;
+  loading does not establish full-library playback or sound parity.
+- Counted native modulation arrays preserve 64 external slots, high slot identities
+  and unknown bytes. Vendor and actual byte-preservation checks passed; preserving
+  records does not demonstrate processing every modulation source or target.
+- Bounded Kontakt v0x103/v0x104 source headers retain known identities without
+  interpreting opaque source state. Modern v3/v4 compact snapshot records preserve
+  mode-dependent source fields and counted slots through checked roundtrips.
+  These are parsing/preservation fixes; Morphology application is still blocked.
+- Release-trigger Note Mono cuts only matching sounding release tails and remains
+  preserved when writing native start-condition records. Both production checks
+  passed; arbitrary imported start conditions remain outside this validation.
+- Native group Send Levels taps feed the existing instrument returns in decoded
+  order. Analytical dry gain, return tails and zero-heap checks passed; this does
+  not establish Kontakt bus assignment or sound equivalence.
+- Fractional image resizing preserves coverage and transparent edge colors while
+  retaining already enlarged pictures instead of resizing them repeatedly. Both
+  focused image/UI checks passed; no GPU throughput or universal resource claim.
+
 - Ordinary import preserves readable modulation slots when one bounded sibling
   record is undecodable. Unknown slots keep their positions and precise warnings;
   valid envelopes and later target identities survive. Snapshot decoding remains
@@ -301,6 +330,13 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 
 ### Known limits
 
+- The accepted parsing/preservation gates cover bounded known source headers,
+  modern compact snapshots and counted modulation slots. Morphology application
+  remains blocked; successful record decoding does not implement unsupported DSP.
+- Three actual Conflux snapshots apply independently, and library-root resolution
+  loads 1,985 playable zones. Realtime underruns remain; these checks do not certify
+  uninterrupted performance, complete-library playback or Kontakt sound parity.
+
 - Root's shipping-profile focused checks through `e68d28c` passed 20 library checks
   and all 83 playback checks (4 ignored). NI's 13 focused checks passed. These results
   do not certify every actual library or a Windows/macOS DAW.
@@ -337,34 +373,35 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 
 ### Candidates — not shipped
 
-These entries describe the next reviewed source batch. None is an accepted fix-count
-increment or a published release claim yet. Features and audit measurements do not
-advance the patch count. The existing accepted count remains 36.
-
-- Persistent load journals retain warnings beyond the bounded report examples
-  (`e12f8a0`). The focused gate passed and an actual Areia load delivered all 1,125
-  warnings; release acceptance is pending.
-- Explicit scripted AHD Only uses the shared envelope kernel (`de730e1`); the
-  focused gate passed. This does not certify every imported envelope or Kontakt's
-  sound.
-- Script-only Kontakt v3 snapshots apply saved script state while retaining native
-  instrument state (`76d1e09`). Vendor checks and actual Conflux application/audio
-  outputs passed; realtime underruns remain and full-library playback is unverified.
-- Library-root archive samples resolve from nested instrument directories
-  (`b29eef1`). Authored checks, actual archive members and 1,985 loaded Conflux zones
-  passed; successful loading does not establish complete playback or sound parity.
-- Counted native modulation arrays retain 64 external slots (`9bf2401`). Vendor
-  checks and actual byte-preservation checks passed. Preserving records does not
-  demonstrate processing every source or target.
-- Bounded Kontakt v0x103/v0x104 source identities (`e92be65`), off-thread journal
-  burst delivery (`3a36b64`), release-trigger Note Mono (`7c09b82`), modern v3/v4
-  compact snapshot records (`3801b2e`) and native group Send Levels routing
-  (`b77b748`) await their combined gates and release review.
-- Image resampling remains a pending candidate without a reviewed source checkpoint
-  or fix-count classification. Onset/source-identity metrics and audit delivery
-  instrumentation are observability features, not additional logical fix counts.
+- The CLI recorder JSON helper and authored performance-view background colors
+  await their gates; neither is counted as an accepted fix or included in shipped
+  notes. Native filter mapping and Daft field work are not yet committed/reviewed.
+- Audit onset/source-identity metrics and delivery instrumentation are observability
+  features, not additional logical fix-count units.
 
 ### Reviewed source changes
+
+> Journal load warnings beyond bounded report examples
+
+> Implement explicit scripted AHD Only with the shared envelope kernel
+
+> Support script-only Kontakt v3 snapshots without replacing native state
+
+> Resolve library-root archive samples from nested instrument folders
+
+> Decode counted native modulation arrays with 64 external slots
+
+> Read bounded native source identities in Kontakt v0x103 and v0x104
+
+> Preserve load diagnostic bursts and report audit delivery status
+
+> Preserve and apply release-trigger Note Mono
+
+> Decode and preserve modern v3 snapshot and v4 compact source records
+
+> Route native group Send Levels taps into existing instrument returns
+
+> Preserve fractional image coverage and transparent sprite edges
 
 > Forward init RPN messages after receiving script slots initialize
 
