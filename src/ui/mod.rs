@@ -34,6 +34,7 @@ mod menu;
 mod mixer;
 mod panel;
 mod perf_view;
+pub(crate) use perf_view::font_fallbacks;
 mod picker;
 mod rack;
 mod spectrum;
@@ -905,6 +906,7 @@ fn build(
             state.last_poll = Instant::now();
         }
         let p = bridge.params().clone();
+        p.shared.publish_live(true);
         let view = shown(&p.shared.view);
         let mut selection = read(&p.selection).clone();
         let before = selection.clone();
