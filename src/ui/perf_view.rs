@@ -292,7 +292,7 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     shows(cx, slot).hash(&mut h);
     (Arc::as_ptr(&v.pictures) as usize, v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
     if let Some(i) = &v.interface {
-        (Arc::as_ptr(i) as usize, i.width, i.height, i.wallpaper_state).hash(&mut h);
+        (Arc::as_ptr(i) as usize, i.width, i.height, i.wallpaper_state, i.skin_offset).hash(&mut h);
         // An edit may change the interface in place.
         for c in &i.controls {
             for (k, v) in &c.properties {
@@ -383,21 +383,30 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
 pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let vector = shows(cx, slot) == ViewMode::Vectorized;
     let v = &cx.view.parts[slot];
-    let (Some(interface), pictures, wallpaper) = (v.interface.clone(), v.pictures.clone(), v.wallpaper.as_ref().and_then(|p| p.frames.get((i32::max(0, v.interface.as_ref().map_or(0, |i| i.wallpaper_state)) as usize).min(p.frames.len().saturating_sub(1))).cloned())) else {
+    let (Some(interface), pictures, wallpaper) = (v.interface.clone(), v.pictures.clone(), v.wallpaper.as_ref().and_then(|p| { let i = v.interface.as_ref()?; p.wallpaper(i.wallpaper_state, i.skin_offset) })) else {
         return block(0, 0);
     };
+    let frame_width = v.wallpaper.as_ref().and_then(|p| p.atlas.map(|a| a[0]));
     fetch(cx, slot, &interface);
     let (w, h) = (f64::from(interface.width), f64::from(interface.height));
     let s = scale(room(ui, slot), w, cx.settings.view_scale);
-    // Everything lands on whole device pixels, and pictures are drawn at
-    // their pixel size: nothing straddles a pixel and blurs.
+    // Control placement lands on whole device pixels. Wallpaper windows retain
+    // source pixels and let the renderer apply the view scale.
     let dev = ui.scale().unwrap_or(1.);
     let px = |v: f64| (v * dev).round() / dev;
     let mut layers = Vec::new();
-    if let Some(image) = wallpaper.clone() {
-        let (iw, ih) = (px(f64::from(image.width) * s), px(f64::from(image.height) * s));
-        let image = fitted::fitted(&image, (iw * dev).round() as u32, (ih * dev).round() as u32, slot);
-        layers.push(block(iw, ih).fill(Fill::Image(image, Fit::Fill)).at(0., px(-HEADER * s)));
+    if let Some((image, origin)) = &wallpaper {
+        let x = origin[0];
+        let y = origin[1].saturating_add(HEADER as u32);
+        let width = frame_width.unwrap_or(image.width);
+        let (cw, ch) = (interface.width.min(width).min(image.width.saturating_sub(x)),
+            interface.height.min(image.height.saturating_sub(y)));
+        // Only the visible window reaches the GPU. Large valid PNG strips can exceed
+        // its image-atlas limit; retaining the full strip there is not sufficient.
+        if let Some(window) = fitted::window(image, x, y, cw, ch) {
+            layers.push(block(px(f64::from(cw) * s), px(f64::from(ch) * s))
+                .fill(Fill::Image(window, Fit::Fill)).at(0., 0.));
+        }
     }
     // In the original's order either way: what covered a control there
     // covers it here.
@@ -419,7 +428,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
                 let (cx_, cy) = (shown.x + shown.w / 2., shown.y + shown.h / 2.);
                 let under = [-0.25, 0., 0.25]
                     .iter()
-                    .filter_map(|dx| luma_under(&drawn[..=n], wallpaper.as_deref(), cx_ + dx * shown.w, cy))
+                    .filter_map(|dx| luma_under(&drawn[..=n], wallpaper.as_ref().map(|(image, origin)| (image.as_ref(), *origin)), cx_ + dx * shown.w, cy))
                     .fold(None, |m: Option<(f32, u32)>, l| Some(m.map_or((l, 1), |(t, k)| (t + l, k + 1))))
                     .map(|(t, k)| t / k as f32);
                 Look::Original(under)
@@ -661,7 +670,7 @@ fn ink(under: Option<f32>) -> Color {
 
 /// How light (0 to 1) what lies under authored point `(x, y)` is: the
 /// topmost opaque picture of `below` there, else the wallpaper.
-fn luma_under(below: &[(Shown, Option<Arc<Image>>)], wallpaper: Option<&Image>, x: f64, y: f64) -> Option<f32> {
+fn luma_under(below: &[(Shown, Option<Arc<Image>>)], wallpaper: Option<(&Image, [u32; 2])>, x: f64, y: f64) -> Option<f32> {
     let at = |image: &Image, u: f64, v: f64| {
         let (px, py) = (u.floor(), v.floor());
         if px < 0. || py < 0. || px >= f64::from(image.width) || py >= f64::from(image.height) {
@@ -681,7 +690,8 @@ fn luma_under(below: &[(Shown, Option<Arc<Image>>)], wallpaper: Option<&Image>, 
             }
         }
     }
-    at(wallpaper?, x, y + HEADER)
+    let (wallpaper, origin) = wallpaper?;
+    at(wallpaper, x + f64::from(origin[0]), y + HEADER + f64::from(origin[1]))
 }
 
 /// How a control is drawn.
@@ -1104,7 +1114,7 @@ mod tests {
 
     fn picture(w: u32, h: u32, frames: usize, resizable: bool) -> Arc<Picture> {
         let frame = Arc::new(Image::rgba(w, h, vec![0u8; (w * h * 4) as usize]).unwrap());
-        Arc::new(Picture { frames: vec![frame; frames], stretch: [resizable; 2] })
+        Arc::new(Picture { frames: vec![frame; frames], stretch: [resizable; 2], atlas: None })
     }
 
     #[test]
@@ -1314,8 +1324,8 @@ mod tests {
         let at = |x, y, w, h| Shown { control: 0, kind: Kind::Label, x, y, w, h, z: 0, picture: None };
         let wallpaper = Image::rgba(1, 100, [0u8, 0, 0, 255].repeat(100)).unwrap();
         let below = vec![(at(0., 0., 10., 10.), Some(white.clone())), (at(0., 0., 5., 5.), Some(clear))];
-        assert_eq!(luma_under(&below, Some(&wallpaper), 2., 2.), Some(1.), "a clear picture shows the one under it");
-        assert_eq!(luma_under(&below, Some(&wallpaper), 0., 20.), Some(0.), "else the wallpaper, below its header rows");
+        assert_eq!(luma_under(&below, Some((&wallpaper, [0; 2])), 2., 2.), Some(1.), "a clear picture shows the one under it");
+        assert_eq!(luma_under(&below, Some((&wallpaper, [0; 2])), 0., 20.), Some(0.), "else the wallpaper, below its header rows");
         assert_eq!(luma_under(&below, None, 50., 50.), None);
         assert_eq!(ink(Some(1.)), Color::srgb(0.1, 0.1, 0.1));
         assert_eq!(ink(None), ink(Some(0.)));
