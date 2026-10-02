@@ -547,6 +547,8 @@ pub(crate) enum Address {
         group: u16,
         index: u16,
         bipolar: bool,
+        /// Independently verified cubic law for signed pitch targets only.
+        cubic: bool,
     },
     /// An internal pitch/filter/EQ-envelope depth, in original target order.
     InternalIntensity {
@@ -554,6 +556,8 @@ pub(crate) enum Address {
         envelope: u8,
         target: u16,
         bipolar: bool,
+        /// Independently verified cubic law for signed pitch targets only.
+        cubic: bool,
     },
     /// Legacy cubic bipolar depth, measured for pitch and filter-cutoff targets.
     LegacyInternalIntensity { group: u16, envelope: u8, target: u16 },
@@ -667,6 +671,7 @@ impl Address {
                         group: g,
                         index: u16::try_from(index + target).ok()?,
                         bipolar,
+                        cubic: bipolar && matches!(groups[g as usize].mods.get(index + target)?.target, ModTarget::Pitch),
                     },
                     None => {
                         let envelope = m.envelope?;
@@ -686,7 +691,7 @@ impl Address {
                         let target = u16::try_from(target).ok()?;
                         if par.id == id::INTMOD_INTENSITY {
                             Self::LegacyInternalIntensity { group: g, envelope, target }
-                        } else { Self::InternalIntensity { group: g, envelope, target, bipolar } }
+                        } else { Self::InternalIntensity { group: g, envelope, target, bipolar, cubic: bipolar && matches!(routed, ModTarget::Pitch) } }
                     }
                 }
             }
@@ -815,6 +820,10 @@ impl Address {
             // Primary KSP measurements give cubic legacy depth; Analog cutoff
             // magnitudes corroborate it. Not Kontakt render calibrated.
             Self::LegacyInternalIntensity { .. } => (2. * value as f32 / UNIT - 1.).powi(3),
+            // Conflux's modern pitch writer uses cbrt(semitones / 12);
+            // its saved 2 st target corroborates the inverse cubic depth.
+            Self::Intensity { cubic: true, .. }
+            | Self::InternalIntensity { cubic: true, .. } => (2.0 * value as f32 / UNIT - 1.0).powi(3),
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. } => 2.0 * x - 1.0,
             Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) => f32::from(value != 0),
@@ -868,6 +877,8 @@ impl Address {
                 Stage::Decay | Stage::Release => time_value(v, LONG),
             },
             Self::LegacyInternalIntensity { .. } => return ((v.cbrt() + 1.) * 0.5 * UNIT).round() as i32,
+            Self::Intensity { cubic: true, .. }
+            | Self::InternalIntensity { cubic: true, .. } => return ((v.cbrt() + 1.0) * 0.5 * UNIT).round() as i32,
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. }
             | Self::Fx(_, _, FxParam::Pan)
@@ -1034,19 +1045,20 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
                 }
             }
         }
-        Address::Intensity { group, index, .. } => {
+        Address::Intensity { group, index, cubic, .. } => {
+            if cubic && !value.is_finite() { return false; }
             let m = settings
                 .get_mut(group as usize)
                 .and_then(|s| s.mods.mods.get_mut(index as usize));
             let Some(m) = m else {
                 return false;
             };
-            m.intensity = value.clamp(-1.0, 1.0);
+            m.intensity = if cubic { value } else { value.clamp(-1.0, 1.0) };
         }
         Address::InternalIntensity { group, envelope, target, .. }
         | Address::LegacyInternalIntensity { group, envelope, target } => {
             if !value.is_finite() { return false; }
-            let value = if matches!(address, Address::LegacyInternalIntensity { .. }) {
+            let value = if matches!(address, Address::LegacyInternalIntensity { .. } | Address::InternalIntensity { cubic: true, .. }) {
                 value
             } else { value.clamp(-1., 1.) };
             let Some(settings) = settings.get_mut(group as usize) else { return false; };
@@ -1387,6 +1399,7 @@ mod tests {
             group: 0,
             index: 0,
             bipolar: false,
+            cubic: false,
         };
         assert!((intensity.decode(704_316) - 0.4961).abs() < 1e-3);
         // Areia sets these at init; its saved envelopes hold the same times.
@@ -1672,7 +1685,7 @@ mod tests {
         )
         .unwrap();
         assert!(write(&mut settings, address, address.decode(250_000)));
-        assert_eq!(read(&settings, address), Some(-0.5));
+        assert_eq!(read(&settings, address), Some(-0.125));
         assert_eq!(address.encode(read(&settings, address).unwrap()), 250_000);
         let attack = Address::resolve(
             EnginePar {
@@ -1688,7 +1701,7 @@ mod tests {
         assert_eq!(read(&settings, attack), Some(0.02));
         let p = &settings[0].pitch_envelopes[0];
         let mut state = Envelope::new(&p.env, 48_000.);
-        assert!((p.pitch(&mut state, 480, 48_000.) + 3.).abs() < 1e-4);
+        assert!((p.pitch(&mut state, 480, 48_000.) + 0.75).abs() < 1e-4);
 
         // A held +6 semitone pitch envelope must reach the actual resampler.
         let legacy = Address::resolve(EnginePar { id: id::INTMOD_INTENSITY, group: 0, slot: 0, generic: 0 }, &groups).unwrap();
@@ -1700,7 +1713,7 @@ mod tests {
             assert!(write(&mut settings, legacy, depth));
             assert_eq!(read(&settings, legacy), Some(depth));
         }
-        assert_eq!(address.decode(750_000), 0.5); // Modern MP is linear, legacy is cubic.
+        assert_eq!(address.decode(750_000), 0.125); // Both signed pitch APIs use the cubic law.
         assert!(!write(&mut settings, legacy, f32::NAN));
         assert!(write(&mut settings, legacy, -0.5));
         let bypass = Address::resolve(EnginePar { id: id::INTMOD_BYPASS, group: 0, slot: 0, generic: -1 }, &groups).unwrap();
@@ -1743,6 +1756,18 @@ mod tests {
         assert!(reference.iter().any(|x| x.abs() > 0.01));
         assert!(pitched.iter().zip(reference).all(|(a, b)| (a - b).abs() < 1e-6));
         assert!(all_slots.iter().zip(reference).all(|(a, b)| (a - b).abs() < 1e-6));
+        for (raw, st) in [(1_129_961, 24.), (1_221_125, 36.)] {
+            let mut pitched = groups[0].clone();
+            let env = &mut pitched.envelopes[0];
+            (env.env.attack_ms, env.env.sustain) = (0., 1.);
+            env.targets[0].intensity = address.decode(raw);
+            let pitched = render(pitched);
+            let ratio = 2f64.powf(f64::from(address.decode(raw)));
+            assert!((ratio - 2f64.powf(f64::from(st) / 12.)).abs() < 1e-4);
+            let reference = render(Group { tune: ratio, ..Group::default() });
+            assert!(pitched.iter().zip(reference).all(|(a,b)| (a-b).abs() < 1e-4),
+                "modern signed depth must reach the actual resampler at {st} semitones");
+        }
         full.envelopes.push(full.envelopes[0].clone());
         assert!(super::super::Bank::from_samples(vec![full], Vec::new(), Vec::new()).is_err());
     }
@@ -1835,6 +1860,49 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "plugin")]
+    fn modern_signed_pitch_depth_matches_native_writer_without_heap() {
+        let mut g = group();
+        g.mods[1].target = ModTarget::Pitch;
+        g.modulators[1].targets = vec!["Volume".into(), "Pitch".into()];
+        g.modulators.truncate(2);
+        let groups = [g];
+        let mut settings = [GroupSettings::from(&groups[0])];
+        let par = |id, generic| EnginePar { id, group: 0, slot: 1, generic };
+        let pitch = Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 1), &groups).unwrap();
+        let volume = Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 0), &groups).unwrap();
+        let unipolar = Address::resolve(par(id::MOD_TARGET_INTENSITY, 1), &groups).unwrap();
+        assert_eq!(volume.decode(750_000), 0.5, "unverified non-pitch law remains unchanged");
+        assert_eq!(Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 2), &groups), None);
+        // Actual Conflux PB->PITCH UP target: raw775160 and saved depth .16666558385.
+        assert!((pitch.decode(775_160) - 0.16666558385).abs() < 1e-7);
+        let mut native = super::super::native_state::NativeState::default();
+        native.prepare(pitch, par(id::MOD_TARGET_MP_INTENSITY, 1), pitch.encode(1.));
+        native.prepare(unipolar, par(id::MOD_TARGET_INTENSITY, 1), unipolar.encode(1.));
+        assert_eq!(native.capacity().0, 1, "aliases share the physical target");
+        let mut saved = native.snapshot();
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for (raw, st) in [(0, -12.), (250_000, -1.5), (500_000, 0.),
+                (750_000, 1.5), (775_160, 2.), (1_000_000, 12.), (1_129_961, 24.), (1_221_125, 36.)] {
+                let physical = pitch.decode(raw);
+                assert!((physical * 12. - st).abs() < 1e-3);
+                assert!((pitch.encode(physical) - raw).abs() <= 1);
+                assert!(write(&mut settings, pitch, physical));
+                assert_eq!(read(&settings, pitch), Some(physical));
+                assert_eq!(read(&settings, unipolar), Some(physical));
+                assert_eq!(settings[0].mods.mods[0].intensity, 1., "adjacent volume target is unchanged");
+                native.capture(pitch, par(id::MOD_TARGET_MP_INTENSITY, 1), raw, physical);
+            }
+            assert!(!write(&mut settings, pitch, f32::NAN));
+            assert!(!write(&mut settings, pitch, f32::INFINITY));
+            while !native.refresh(&mut saved, 1) {}
+        }), 0);
+        let edits = saved.saved();
+        assert_eq!(edits.len(), 1);
+        assert_eq!((edits[0].par, edits[0].value), (par(id::MOD_TARGET_MP_INTENSITY, 1), 1_221_125));
+    }
+
+    #[test]
     fn addresses_resolve_by_decoded_names() {
         let groups = [group()];
         assert_eq!(find_mod(&groups, 0, &|n| n == "CC_VOLUME"), Some(2));
@@ -1853,7 +1921,8 @@ mod tests {
             Some(Address::Intensity {
                 group: 0,
                 index: 1,
-                bipolar: false
+                bipolar: false,
+                cubic: false,
             })
         );
         assert_eq!(
