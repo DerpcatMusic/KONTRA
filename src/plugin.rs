@@ -518,8 +518,8 @@ pub(crate) struct PartView {
     pub(crate) runtime_status: String,
     pub(crate) diagnostics_lent: Option<Instant>,
     /// Latest bounded raw diagnostics; formatting never delays live-buffer recycling.
-    live_diagnostics: Option<Arc<LiveDiagnostics>>,
-    diagnostics_dirty: bool,
+    pub(crate) live_diagnostics: Option<Arc<LiveDiagnostics>>,
+    pub(crate) diagnostics_dirty: bool,
     pub(crate) wallpaper: Option<Arc<artwork::Picture>>,
     /// Control pictures the scripts name, by name.
     pub(crate) pictures: Arc<HashMap<String, Arc<artwork::Picture>>>,
