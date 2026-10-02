@@ -4888,9 +4888,9 @@ end on"#;
         let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
         std::fs::write(resources.join("main.nui"),r#"
             local ui=require('native_ui') local p=require('kontakt').connect_parameter('Amount')
-            return @ui.ZStack {
+            return @ui.ZStack { alignment="top right"
                 @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
-                @ui.Rectangle {color=ui.Color.blue}.frame(width=20,height=10).opacity(0.5)
+                @ui.Rectangle {color=ui.Color.blue}.frame(width=40,height=20).opacity(0.5)
                 @ui.Rectangle {color=ui.Color.white}.frame(width=20,height=10).on_tap_gesture(start=function() end).opacity(0)
             }.opacity(ui.create_computed(function() return p:value()/100 end)).frame(width=40,height=20)
         "#).unwrap();
@@ -4909,7 +4909,8 @@ end on"#;
             assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(40.,20.));
             for node in nodes {
                 let key=format!("native-snapshot-{}",node.id);let surface=rendered.surface(&key).unwrap();
-                assert_eq!((surface.frame.size.width,surface.frame.size.height),(20.,10.));assert!(!surface.disabled,"opacity must not hide or disable controls");
+                let expected=if matches!(node.paint,Paint::Rectangle([0.,0.,1.,1.],_)){(0.,0.,40.,20.)}else{(20.,0.,20.,10.)};
+                assert_eq!((surface.frame.x,surface.frame.y,surface.frame.size.width,surface.frame.size.height),expected,"ZStack aligns unequal children within its intrinsic extent");assert!(!surface.disabled,"opacity must not hide or disable controls");
                 if node.opacity!=1. {assert!(rendered.paint.iter().any(|p|p.key.as_str()==key&&matches!(p.layer,moose::mui::mui::scene::Layer::Blend{opacity,..} if opacity==node.opacity)),"each leaf receives its own MUI layer, not a flattened parent layer");}
             }
             fn tap_id(node:&Node)->Option<usize>{if node.tap{Some(node.id)}else{node.children.iter().find_map(tap_id)}}
