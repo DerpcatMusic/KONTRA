@@ -5050,6 +5050,12 @@ end on"#.into()], ..Default::default() };
         assert!(snapshot.native.changed);
         let expected_send = engine.fx().param(Rack::Insert,7,FxParam::SendLevel(0)).unwrap();
         assert_eq!(engine.fx().param(Rack::Insert,7,FxParam::Bypass),Some(0.));
+        let rebuilt = crate::engine::effects(&i,engine.script(),48000.);
+        let mut retired = None;
+        assert_eq!(allocations(|| { retired = Some(engine.set_fx(rebuilt)); }),0);
+        drop(retired); // A worker disposes rebuilt/retired DSP allocations.
+        assert_eq!(engine.fx().param(Rack::Insert,7,FxParam::SendLevel(0)),Some(expected_send));
+        assert_eq!(engine.fx().param(Rack::Insert,7,FxParam::Bypass),Some(0.));
         let p = SamplerParams::new();
         {
             let mut view = p.shared.view.lock().unwrap(); let v = &mut view.parts[0];

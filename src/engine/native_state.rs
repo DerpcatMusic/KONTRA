@@ -108,6 +108,17 @@ impl NativeState {
         }
     }
 
+    pub(super) fn replay_fx(&self, fx: &mut crate::fx::FxProcessor) {
+        // Effect rebuilds also restore edits made after the last host snapshot.
+        // Resolved global FX addresses need no group lookup or allocation.
+        for record in self.records.iter().filter(|r| r.order != 0) {
+            if let Some(address @ Address::Fx(rack, slot, par)) = Address::resolve(record.par, &[])
+            {
+                fx.set_param(rack, slot, par, address.decode(record.value));
+            }
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> NativeSnapshot {
         NativeSnapshot {
             records: self.records.clone(),

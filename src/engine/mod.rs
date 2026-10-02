@@ -320,6 +320,7 @@ impl Engine {
     pub fn set_fx(&mut self, fx: FxProcessor) -> FxProcessor {
         let old = std::mem::replace(&mut self.fx, fx);
         self.replay(|a| matches!(a, Address::Fx(..)));
+        if let Some(rt) = self.script.as_deref() { rt.native_state.replay_fx(&mut self.fx); }
         old
     }
 
