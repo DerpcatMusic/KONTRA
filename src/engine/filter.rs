@@ -2522,8 +2522,8 @@ mod tests {
             .into(),
             // Stereo Modeller: mono, panned half right.
             mixers: [Mixer { slot: 2, stereo: Some([-1.0, 0.5]), bypass: false, gain: 1.0 }].into(),
-            stages: [].into(),
-            inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix_interleaved: false,
+            stages: [].into(), taps: [].into(),
+            inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, pre_sends: false, matrix_interleaved: false,
             matrix: IDENTITY,
             envs: [].into(),
             ext: [].into(),
@@ -2557,7 +2557,7 @@ mod tests {
     #[test]
     fn filter_types_switch_and_play() {
         let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [0.6, 0.7, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2 };
-        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
+        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [].into(), taps: [].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, pre_sends: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
         f.compile_inserts();
         let table = ModTable::default();
         let cc = [0u8; 128];
@@ -2594,7 +2594,7 @@ mod tests {
         let mut fields = [0.0; blocks::FIELDS];
         fields[0] = 1.0;
         let stage = Stage { slot: 2, kind: Kind::SurroundPanner, fields, bypass: false, gain: 1.0 };
-        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [stage].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
+        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [stage].into(), taps: [].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, pre_sends: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
         f.compile_inserts();
         let table = ModTable::default();
         let cc = [0u8; 128];
