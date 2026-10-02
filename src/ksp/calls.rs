@@ -1231,6 +1231,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 SetKnobLabel => b::CONTROL_PAR_LABEL,
                 _ => b::CONTROL_PAR_HELP,
             };
+            if f != AddTextLine && matches!(m.slot.ui.controls[c].get(p), Some(Prop::Str(s)) if s == text) {
+                return Ok(Step::Next);
+            }
             let s = m.slot.ui.controls[c].str_mut(p).map_err(Fault)?;
             if f == AddTextLine {
                 if !s.is_empty() {

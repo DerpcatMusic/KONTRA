@@ -218,8 +218,10 @@ fn wallpaper_uses_last_assigning_slot_and_offsets_refresh_without_controls() {
 #[test]
 fn scalar_edits_refresh_large_views_without_recopying_unchanged_metadata() {
     let mut source = String::from("on init\nmake_perfview\n");
-    for n in 0..1000 { source.push_str(&format!("declare ui_slider $s{n}(0,100)\n")); }
-    source.push_str("declare ui_menu $menu\nadd_menu_item($menu,\"first\",1)\nadd_menu_item($menu,\"second\",2)\nset_menu_item_visibility(get_ui_id($menu),1,0)\n$menu := 1\ndeclare ui_table %table[96](1,1,127)\nend on\non ui_control($s0)\nset_control_par_str(get_ui_id($s998),$CONTROL_PAR_TEXT,\"changed\")\n$s999 := $s0 + 1\n%table[73] := $s0\nset_menu_item_str(get_ui_id($menu),0,\"renamed\")\n$menu := 2\nend on");
+    for n in 0..1000 { source.push_str(&format!("declare ui_slider $s{n}(0,100)\nset_text($s{n},\"same\")\n")); }
+    source.push_str("declare ui_menu $menu\nadd_menu_item($menu,\"first\",1)\nadd_menu_item($menu,\"second\",2)\nset_menu_item_visibility(get_ui_id($menu),1,0)\n$menu := 1\ndeclare ui_table %table[96](1,1,127)\nend on\non ui_control($s0)\n");
+    for n in 0..1000 { source.push_str(&format!("set_text($s{n},\"same\")\n")); }
+    source.push_str("set_control_par_str(get_ui_id($s998),$CONTROL_PAR_TEXT,\"changed\")\n$s999 := $s0 + 1\n%table[73] := $s0\nset_menu_item_str(get_ui_id($menu),0,\"renamed\")\n$menu := 2\nend on");
     let mut rig = Rig::new(&[&source]);
     let mut live = rig.rt.live();
     rig.rt.ui_control(&mut rig.engine, 0, 0, 65);
