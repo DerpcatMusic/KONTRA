@@ -1703,7 +1703,7 @@ fn ksp_system_conditions_control_native_sustain_and_release_without_blocking_man
     for (directives, enabled) in [(String::new(), true), (flags.to_owned(), false),
         (format!("{flags}\nRESET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nRESET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)"), true)] {
         let mut e = engine_with(layered(groups(), &[0.1, 0.2]));
-        e.set_script(runtime(&format!("on init\n{directives}\nend on\non note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on")));
+        e.set_script(runtime(&format!("on init\n{directives}\nend on\non note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nend on")));
         for _ in 0..2 {
             e.cc(0, 64, 127);
             e.note_on(0, 60, 100);
