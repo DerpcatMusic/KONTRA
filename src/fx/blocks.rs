@@ -1170,9 +1170,17 @@ mod tests {
             assert_eq!(ar, br);
             assert!(al.iter().chain(&ar).all(|v| v.is_finite()));
             assert!(al[..at - 2].iter().all(|v| v.abs() < 1e-6), "no premature echo for {ms} ms");
-            let first = al[at - 2..at + 3].iter().map(|v| v.abs()).fold(0.0, f32::max);
-            let echo = al[2 * at - 2..2 * at + 3].iter().map(|v| v.abs()).fold(0.0, f32::max);
-            assert!(first > 0.9 && (0.35..0.55).contains(&echo), "{ms} ms: first {first}, echo {echo}");
+            // Fractional reads split an impulse between adjacent frames;
+            // feedback interpolates the first echo again. Their area and
+            // centroid preserve gain and time independently of tap peaks.
+            for (center, area, tolerance) in [(at, 1.0, 0.25), (2 * at, 0.5, 0.5)] {
+                // Include the short 20kHz loop-filter tail in the feedback area.
+                let taps = &al[center - 2..center + 24];
+                let sum: f32 = taps.iter().sum();
+                assert!((sum - area).abs() < 1e-6, "{ms} ms: echo area {sum}, expected {area}");
+                let offset = taps.iter().enumerate().map(|(i, v)| (i as f32 - 2.0) * v).sum::<f32>() / sum;
+                assert!(offset.abs() < tolerance, "{ms} ms: echo centroid offset {offset}");
+            }
         }
         assert!((stored(Kind::Delay, 0, 0.0) - 5.0).abs() < 1e-5);
         assert_eq!(normalized(Kind::Delay, 0, 5.0), 0.0);
