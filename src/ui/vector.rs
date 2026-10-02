@@ -11,7 +11,43 @@ use crate::artwork::Picture;
 use crate::ksp::{Control, Interface, Value};
 use moose::mui::mui::scene::Image;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+
+/// Immutable artwork classifications owned by one editor. Weak entries retain
+/// no pixels and expire when a library's pictures leave the rack.
+#[derive(Default)]
+pub struct Assets {
+    images: HashMap<usize, (Weak<Image>, f32)>,
+    pictures: HashMap<usize, (Weak<Picture>, bool)>,
+    #[cfg(test)]
+    sampled: usize,
+}
+
+impl Assets {
+    fn prune(&mut self) {
+        self.images.retain(|_, (source, _)| source.strong_count() > 0);
+        self.pictures.retain(|_, (source, _)| source.strong_count() > 0);
+    }
+
+    fn opacity(&mut self, image: &Arc<Image>) -> f32 {
+        let key = Arc::as_ptr(image) as usize;
+        if let Some((_, value)) = self.images.get(&key) { return *value; }
+        let value = opacity(image);
+        #[cfg(test)]
+        { self.sampled += 1; }
+        self.images.insert(key, (Arc::downgrade(image), value));
+        value
+    }
+
+    fn clear(&mut self, picture: &Arc<Picture>) -> bool {
+        let key = Arc::as_ptr(picture) as usize;
+        if let Some((_, value)) = self.pictures.get(&key) { return *value; }
+        let value = picture.frames.iter().step_by(picture.frames.len().div_ceil(8).max(1))
+            .all(|frame| self.opacity(frame) < 0.02);
+        self.pictures.insert(key, (Arc::downgrade(picture), value));
+        value
+    }
+}
 
 /// The smallest a word is set, against its size: Kontakt's own knob names
 /// are about this small.
@@ -128,7 +164,8 @@ fn inside(a: &Shown, b: &Shown) -> f64 {
 
 /// The plan for every control of `drawn` (in drawing order, each with the
 /// frame of its picture the original view shows).
-pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, drawn: &[(Shown, Option<Arc<Image>>)]) -> Vec<Plan> {
+pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, drawn: &[(Shown, Option<Arc<Image>>)], assets: &mut Assets) -> Vec<Plan> {
+    assets.prune();
     let (vw, vh) = (f64::from(interface.width), f64::from(interface.height));
     let view = vw * vh;
     let names = names(interface, pictures, drawn);
@@ -136,9 +173,9 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
     for (n, (s, frame)) in drawn.iter().enumerate() {
         let c = &interface.controls[s.control];
         let picture = prop(c, "$CONTROL_PAR_PICTURE");
-        let solid = frame.as_deref().map(opacity);
+        let solid = frame.as_ref().map(|f| assets.opacity(f));
         // Clear in every state: a place to click, nothing to see.
-        let clear = s.picture.as_ref().is_some_and(|p| p.frames.iter().step_by(p.frames.len().div_ceil(8).max(1)).all(|f| opacity(f) < 0.02));
+        let clear = s.picture.as_ref().is_some_and(|p| assets.clear(p));
         let said = !caption_of(c, s.kind, value(c)).0.trim().is_empty();
         let named = |w: &[&str]| [picture, c.variable.as_str()].iter().any(|n| panel::raw_words(n).iter().any(|x| w.contains(&x.as_str())));
         let lower = format!("{picture} {}", c.variable).to_lowercase();
@@ -406,12 +443,47 @@ mod tests {
         let u = crate::ksp::initialize("on init\nmake_perfview\nset_ui_height_px(100)\ndeclare ui_switch $tab\nset_text($tab, \"\")\nmove_control_px($tab, 10, 20)\nset_control_par(get_ui_id($tab), $CONTROL_PAR_WIDTH, 40)\nset_control_par(get_ui_id($tab), $CONTROL_PAR_HEIGHT, 24)\nset_control_par_str(get_ui_id($tab), $CONTROL_PAR_HELP, \"Workbench Tab: Opens the page\")\ndeclare ui_switch $space\nset_text($space, \"\")\nmove_control_px($space, 100, 20)\nset_control_par_str(get_ui_id($space), $CONTROL_PAR_HELP, \"Space On/Off: Activates convolution\")\nend on", 0, 8).unwrap();
         let pictures = HashMap::new();
         let drawn = super::super::perf_view::layout(&u, &pictures).into_iter().map(|s| (s, None)).collect::<Vec<_>>();
-        let plans = plan(&u, &pictures, &drawn);
+        let plans = plan(&u, &pictures, &drawn, &mut Assets::default());
         assert!(matches!(plans[0].face, Face::Normal));
         assert!(plans[0].words.iter().any(|w| w.text == "Workbench"));
         let names = names(&u, &pictures, &drawn);
         assert_eq!(names.get(&0).map(String::as_str), Some("Workbench"));
         assert_eq!(names.get(&1).map(String::as_str), Some("Space"));
+    }
+
+    #[test]
+    fn cached_artwork_classification_preserves_live_plans_and_releases_pixels() {
+        let mut u = crate::ksp::initialize("on init\nmake_perfview\nset_ui_height_px(100)\ndeclare ui_switch $s\nset_text($s, \"\")\nset_control_par_str(get_ui_id($s), $CONTROL_PAR_PICTURE, \"clear\")\nend on", 0, 8).unwrap();
+        let image = Arc::new(Image::rgba(24, 24, vec![0; 24 * 24 * 4]).unwrap());
+        let picture = Arc::new(Picture {frames: vec![image.clone(); 9], stretch: [false; 2], atlas: None});
+        let mut pictures: HashMap<_, _> = [("clear".to_owned(), picture)].into();
+        let mut assets = Assets::default();
+        for value in [0, 1, 0] {
+            u.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), Value::Int(value));
+            let drawn: Vec<_> = super::super::perf_view::layout(&u, &pictures).into_iter()
+                .map(|s| { let image = super::super::perf_view::frame_of(&s, &u.controls[s.control]); (s,image) }).collect();
+            let cached = plan(&u, &pictures, &drawn, &mut assets);
+            let fresh = plan(&u, &pictures, &drawn, &mut Assets::default());
+            assert!(cached.iter().zip(&fresh).all(|(a,b)| a.face == b.face && a.words == b.words), "live plans retain their faces and text");
+            assert_eq!(assets.sampled, 1, "immutable pixels are sampled once across live value changes");
+        }
+        let solid = Arc::new(Image::rgba(24, 24, vec![255; 24 * 24 * 4]).unwrap());
+        pictures.insert("clear".into(), Arc::new(Picture {frames: vec![solid.clone(); 9], stretch: [false; 2], atlas: None}));
+        let drawn: Vec<_> = super::super::perf_view::layout(&u, &pictures).into_iter()
+            .map(|s| { let image = super::super::perf_view::frame_of(&s, &u.controls[s.control]); (s,image) }).collect();
+        let cached = plan(&u, &pictures, &drawn, &mut assets);
+        let fresh = plan(&u, &pictures, &drawn, &mut Assets::default());
+        assert!(cached.iter().zip(&fresh).all(|(a,b)| a.face == b.face && a.words == b.words), "replaced artwork receives its new classification");
+        assert_eq!(assets.sampled, 2);
+        assert!(!matches!(cached[0].face, Face::Clear), "opaque replacement is visible");
+        drop(drawn);
+        drop(pictures);
+        assert_eq!(Arc::strong_count(&image), 1, "the cache retains no image pixels");
+        assert_eq!(Arc::strong_count(&solid), 1);
+        drop(image);
+        drop(solid);
+        assets.prune();
+        assert!(assets.images.is_empty() && assets.pictures.is_empty(), "retired library metadata is reclaimed");
     }
 
     #[test]
