@@ -2024,7 +2024,41 @@ mod tests {
             reference.mods[1].intensity = 0.16666558385;
             reference.mods[2].intensity = if i == 0 { -0.125 } else { 0.125 };
             let reference = render(reference, &format!("on init\n{readback}"), pitch_raw, cutoff_raw);
+            // Authored serialized target records exercise the import path too:
+            // magnitudes are positive; the negative cutoff is target flag0x02,
+            // independently of the serialized invert button (left false).
+            use ni_file::kontakt::{Chunk, StructuredObject};
+            let name = |out: &mut Vec<u8>, text: &str| {
+                out.extend((text.len() as u32).to_le_bytes()); out.extend(text.as_bytes());
+            };
+            let object = |id, version: u16, private: &[u8], public: &[u8]| {
+                let mut data = vec![1]; data.extend(version.to_le_bytes());
+                for part in [private, public, &[]] {
+                    data.extend((part.len() as u32).to_le_bytes()); data.extend(part);
+                }
+                Chunk { id, data }
+            };
+            let mut private = 3u32.to_le_bytes().to_vec();
+            for (param, label, slot, depth, flags) in [
+                ("volume", "Volume", None, 1.0f32, 0x10),
+                ("pitch", "Pitch", None, 0.16666558385, 0x10),
+                ("filterCutoff", "Cutoff", Some(0), 0.125, if i == 0 { 0x12 } else { 0x10 })] {
+                name(&mut private, param); private.extend(depth.to_le_bytes());
+                private.extend((-1i16).to_le_bytes()); private.push(flags); private.extend(0u16.to_le_bytes());
+                name(&mut private, label); private.extend(slot); private.push(0);
+            }
+            private.extend([0; 3]); name(&mut private, "Constant");
+            private.extend(1u32.to_le_bytes()); private.extend(9u32.to_le_bytes());
+            private.extend([0; 4]); private.extend(0u32.to_le_bytes());
+            let mut public = vec![1]; object(0x0c, 0x102, &private, &[]).write(&mut public).unwrap();
+            public.extend([0; 31]);
+            let raw = ni_file::kontakt::objects::Group(StructuredObject { version: 0x95,
+                public_data: vec![], private_data: vec![], children: vec![object(0x3c, 0x10, &[], &public)] });
+            let imported = crate::modulation::read_group(&raw).unwrap();
+            let mut saved = group.clone(); saved.mods = imported.mods; saved.modulators = imported.modulators;
+            let saved = render(saved, &format!("on init\n{readback}"), pitch_raw, cutoff_raw);
             assert_eq!(legacy, modern, "aliases must produce identical PCM");
+            assert_eq!(saved, reference, "saved signed targets must match the physical-depth reference");
             assert!(legacy.iter().zip(reference).all(|(a,b)| (a-b).abs() < 1e-6),
                 "signed setters must match independently supplied physical depths");
             power[i] = legacy.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>();

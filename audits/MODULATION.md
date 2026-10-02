@@ -37,7 +37,7 @@ per target:
   str8  param          "volume" | "pitch" | "playPos" | "eqGain1" | "filterCutoff" | "ahdsr_attack" ...
   f32   intensity
   i16   unknown        (-1 in every record)
-  u8    flags          (0x10 always; 0x04/0x02 unknown)
+  u8    flags          (0x02 negative target depth; other bits retained)
   u16   lag            (0, 40, 120, 128, 250, 500)
   str8  target name    KSP find_target name; "<none>" or "" when unnamed
   u8    slot           ONLY when param is not volume/pitch/playPos
@@ -53,7 +53,7 @@ str8 is a `u32` length followed by bytes.
 | Field | Confidence | Evidence |
 |---|---|---|
 | param | high | Readable ids. Only `volume`, `pitch` and `playPos` omit the slot byte. The rule is inferred from the parameter name, and every record parses exactly. |
-| intensity | high (storage), medium (scale) | Always 0..=1 locally, never negative. `pitch` from pitch bend is 0.1667 in 214k records (0.1599 in 168), and 2/12 matches the usual ±2 semitone bend. `Group::pitch_bend_range()` therefore uses intensity × 12. |
+| intensity | high (storage), medium (scale) | Stored as a magnitude with negative direction in target flag 0x02. `pitch` from pitch bend is 0.1667 in 214k records (0.1599 in 168), and 2/12 matches the usual ±2 semitone bend. `Group::pitch_bend_range()` therefore uses signed intensity × 12. |
 | lag_ms | medium | The Kontakt manual gives Lag in ms. Values are round numbers: 250 on PB_PITCH, 500/120/128 on CC volume. |
 | slot | medium | eqGain\* uses slots 0/2/4, filterCutoff 0/2/3/5 and ahdsr_attack/release 0/1. These match FX-chain positions and internal-modulator slots. |
 | invert | medium | Always 0/1. It is set on 63,805 volume assignments. Its order relative to the shaper has not been verified. |
@@ -444,10 +444,43 @@ returns 507160. This corroborates the
 (post 34, edited May 2025), without claiming Kontakt render calibration.
 Both internal and external cutoff depth addresses use this law and retain their
 normalized limits. Pitch alone permits extended modern depths. Unipolar depth,
-other signed targets, source flags, target polarity flags and shapers retain their
+other signed targets, source flags and shapers retain their
 existing behavior. The three inspected Conflux snapshots are script-only and
 provide no independent native target-depth records; their changed UI amounts
 are not treated as matched saved-depth evidence.
+
+### Saved target direction and signed intensity aliases
+
+Independent native producer inspection establishes the target sign separately
+from the serialized `invert` control. The signed setter at `1408cb735` converts
+depth, writes its absolute magnitude through parameter 718, then writes the
+negative comparison through parameter 1056. That parameter's setter at
+`1408c3834` sets or clears bit 1 of the original target's flag byte. The shared
+target reader `140d09d50` and writer `140d16040` identify the same byte decoded as
+`ModTarget::unknown_flags`, independently of the invert byte. This closes the
+previously uncertain 0x02 interpretation without using saved UI values as an
+oracle. The inspected local executable's SHA-256 is
+`0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8`.
+
+Import applies this negative direction to the independently supported slotless
+`pitch` and module `filterCutoff` targets in both AHDSR and external assignments.
+The raw magnitude, flags and independent invert field remain unchanged in the
+vendor reader/writer. Other target laws retain their existing behavior. In the
+actual Contradiction snapshot, group 37's filter envelope has magnitude 1 and
+flags 0x12; Beta Decay group 51 has magnitude 1 and flags 0x10. These now import
+as -1 and +1 respectively. This does not establish either program's complete
+sound parity or explain its loudness in isolation.
+
+Native KSP registration assigns both `INTMOD_INTENSITY` and
+`MOD_TARGET_MP_INTENSITY` the same public constant 449. For proven pitch and
+cutoff routes they now resolve to the same physical address, signed cubic
+conversion and readback, including external assignments. Other legacy target
+laws remain rejected by the existing resolver guards. The authored saved-target
+regression checks both source layouts, signs, target indices, raw preservation,
+and separate invert state. The PCM alias gate also compares imported signed
+records with physical-depth reference groups and both live setters, with finite
+output and zero audio-thread allocations. These are engine causal checks,
+not Kontakt reference renders.
 
 Explicit `INTMOD_BYPASS` and modern `MOD_TARGET_INTENSITY` /
 `MOD_TARGET_MP_INTENSITY` now also address decoded AHDSRs driving group filter,
