@@ -517,8 +517,7 @@ pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
                 out.push(format!("Group filter type {} is not implemented; audio passes through", f.filter_type));
             }
             Params::Filter(_) | Params::Eq(_) => {}
-            _ if VoiceEffect::supports(fx.kind) && blocks::fields(&fx.params).is_some()
-                && (fx.kind != Kind::Compressor || amp_split.is_some()) => {}
+            _ if VoiceEffect::supports_at(fx.kind, amp_split) && blocks::fields(&fx.params).is_some() => {}
             _ if fx.kind == Kind::SolidGeq => {}
             Params::StereoModeller(s) if s.pseudo_stereo => {
                 out.push("Group Stereo Modeller: pseudo stereo is not applied".into());
@@ -576,7 +575,7 @@ impl GroupFilter {
             .collect();
         mixers.sort_unstable_by_key(|mixer| mixer.slot);
         let mut stages: Box<[Stage]> = (group.fx.slots.iter())
-            .filter(|fx| VoiceEffect::supports(fx.kind) && (fx.kind != Kind::Compressor || group.amp_split_slot.is_some()))
+            .filter(|fx| VoiceEffect::supports_at(fx.kind, group.amp_split_slot))
             .filter_map(|fx| {
                 Some(Stage {
                     slot: fx.slot as u8,
@@ -1776,6 +1775,73 @@ mod tests {
         let unknown = Group { fx: Chain { slots: vec![chain.slots[1].clone()] }, ..Group::default() };
         assert!(GroupFilter::new(&unknown).is_none(), "missing native placement does not invent a compressor route");
         assert!(unsupported(&unknown.fx).iter().any(|w| w.contains("Compressor is not applied")));
+    }
+
+    #[test]
+    fn group_dynamics_families_match_rack_and_native_edits_without_heap() {
+        use crate::{fx::{Effect, params::Field}, engine::{GroupSettings, params::{self, Address}}, ksp::EnginePar};
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        for (kind, name, native) in [
+            (Kind::FeedbackCompressor, "$ENGINE_PAR_FCOMP_INPUT", 900_000),
+            (Kind::Limiter, "$ENGINE_PAR_LIM_IN_GAIN", 900_000),
+            (Kind::SolidBusComp, "$ENGINE_PAR_SCOMP_THRESHOLD", 100_000),
+        ] {
+            let fx = Effect { slot: 3, kind, version: 0, bypass: false, output_gain: 0.8, dry_level: 0.0,
+                params: Params::Fields(crate::fx::params::layout_names(kind).unwrap().iter()
+                    .zip(blocks::defaults(kind).unwrap())
+                    .map(|(&name, &value)| Field { name, value: Value::Number(value) }).collect()),
+            };
+            let groups = [Group { fx: Chain { slots: vec![fx.clone()] }, amp_split_slot: Some(8), ..Group::default() }];
+            let id = (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 512)
+                .find(|&id| crate::ksp::engine_par_name(id) == Some(name)).unwrap();
+            let address = Address::resolve(EnginePar { id, group: 0, slot: 3, generic: -1 }, &groups).unwrap();
+            let (mapped, field) = blocks::engine_par(name).unwrap();
+            assert_eq!(mapped, kind);
+            let unknown = Group { amp_split_slot: None, ..groups[0].clone() };
+            assert!(GroupFilter::new(&unknown).is_none());
+            assert!(unsupported(&unknown.fx).iter().any(|w| w.contains(kind.name())));
+            for split in [0, 8] {
+                let mut outputs = [[0.0f32; 8192]; 2];
+                for (phase, output) in outputs.iter_mut().enumerate() {
+                    let group = Group { amp_split_slot: Some(split), ..groups[0].clone() };
+                    let mut settings = [GroupSettings::from(&group)];
+                    let mut reference = blocks::Block::new(&fx, RATE).unwrap();
+                    if phase == 1 {
+                        assert_eq!(crate::plugin::tests::allocations(|| {
+                            assert!(params::write(&mut settings, address, address.decode(native)));
+                            assert_eq!(address.encode(params::read(&settings, address).unwrap()), native);
+                            assert!(reference.set(kind, field, native as f32 / 1_000_000.0));
+                        }), 0);
+                    }
+                    let f = settings[0].filter.as_ref().unwrap();
+                    assert!(unsupported_at(&group.fx, Some(split)).is_empty());
+                    let mut voice = VoiceFilter::new(Some(f), &table, &input, RATE);
+                    assert!(voice.hold(f, &table, RATE).is_none());
+                    assert_eq!(crate::plugin::tests::allocations(|| {
+                        for block in 0..64 {
+                            let mut l: [f32; 128] = std::array::from_fn(|i| 0.3 * (TAU * 1000.0 * (block * 128 + i) as f32 / RATE).sin());
+                            let (mut r, mut expected_l, mut expected_r) = (l, l, l);
+                            let amp = [0.7; 128];
+                            let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.6], delta: [0.0; 2] };
+                            if split == 0 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
+                            reference.process(&mut expected_l, &mut expected_r);
+                            expected_l.iter_mut().chain(&mut expected_r).for_each(|x| *x *= fx.output_gain);
+                            if split == 8 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
+                            voice.process_amplified(f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE,
+                                &amp, amplifier.gains, amplifier.delta);
+                            assert!(l.iter().chain(&r).all(|x| x.is_finite()));
+                            assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r))
+                                .all(|(a,b)| (a-b).abs() < 2e-6), "{kind:?}, split{split}, phase{phase}");
+                            output[block * 128..(block + 1) * 128].copy_from_slice(&l);
+                        }
+                    }), 0);
+                }
+                let difference: f64 = outputs[0].iter().zip(&outputs[1]).map(|(a,b)| f64::from(a-b).powi(2)).sum();
+                assert!(difference > 1e-6, "{kind:?}, split{split}: native edit must affect PCM");
+            }
+        }
     }
 
     #[test]

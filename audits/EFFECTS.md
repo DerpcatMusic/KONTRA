@@ -359,6 +359,14 @@ and pending inline matrix ramps: their section states are not the canonical stat
 used by the shared lane. The shared post-Amplifier linear optimization remains for
 chains where it is applicable. The unfiltered SIMD path is unchanged.
 
+Feedback Compressor, Limiter and Solid Bus Compressor use that same fixed Comp
+state and their existing rack parameter laws when native Amplifier placement is
+known. Opaque parameter records and unknown placement stay unsupported. The added
+family routing has one authored group/rack PCM-reference regression covering both
+Amplifier sides, changed native control readback and allocation guards; validation
+of this follow-up is pending. No locally installed authentic group preset of these
+three families was available for a control/audio check.
+
 On the checked Rust 1.98.1 release build, both the old Drive and the new VoiceEffect
 enum are 72 bytes. The fixed voice state adds 128 bytes for per-slot gain/mixer
 smoothing and a four-byte type revision counter, and removes the old 16-byte

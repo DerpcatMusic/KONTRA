@@ -439,12 +439,16 @@ impl Default for VoiceEffect {
 }
 
 impl VoiceEffect {
-    pub(crate) fn supports(kind: Kind) -> bool {
-        Drive::supports(kind) || kind == Kind::Compressor
+    fn dynamics(kind: Kind) -> bool {
+        matches!(kind, Kind::Compressor | Kind::FeedbackCompressor | Kind::Limiter | Kind::SolidBusComp)
+    }
+
+    pub(crate) fn supports_at(kind: Kind, amp_split: Option<u8>) -> bool {
+        Drive::supports(kind) || (amp_split.is_some() && Self::dynamics(kind))
     }
 
     pub(crate) fn tune(&mut self, kind: Kind, fields: &Fields, rate: f32) {
-        if kind == Kind::Compressor {
+        if Self::dynamics(kind) {
             if !matches!(self, Self::Comp(_)) { *self = Self::Comp(Comp::new()); }
             if let Self::Comp(comp) = self { comp.tune(kind, fields, rate); }
         } else {
