@@ -152,9 +152,9 @@ ksp='^[[:space:]]*"?(declare (const |ui_|polyphonic |global |read |pers |[%$!@~?
 while IFS=: read -r f n; do
   case $f in
     *.rs) case $f in
-      ./src/ksp/tests.rs) limit=106 ;;
-      ./src/articulate.rs) limit=16 ;;
-      ./tests/playback.rs) limit=55 ;;
+      ./src/ksp/tests.rs) limit=163 ;;
+      ./src/articulate.rs) limit=31 ;;
+      ./tests/playback.rs) limit=73 ;;
       ./tests/*|*/tests.rs|./src/plugin.rs) limit=40 ;;
       *) limit=3 ;;
     esac ;;

@@ -330,6 +330,12 @@ impl Engine {
             rt.set_sample_rate(self.player.rate);
         }
         let old = std::mem::replace(&mut self.script, script);
+        self.player.controller_defaults.fill(None);
+        if let Some(rt) = self.script.as_deref() {
+            for &(cc, value) in &rt.init_controllers {
+                if cc < 128 { self.player.controller_defaults[cc as usize] = Some(value); }
+            }
+        }
         self.player.native_sustain = !self.script.as_ref().is_some_and(|rt| rt.condition("NO_SYS_SCRIPT_PEDAL"));
         self.player.native_release_triggers = !self.script.as_ref().is_some_and(|rt| rt.condition("NO_SYS_SCRIPT_RLS_TRIG"));
         if !self.player.native_release_triggers { self.player.pending_releases.clear(); }
@@ -433,7 +439,8 @@ impl Engine {
     /// bank, effects, scripts and group mask. Effects stay built for their own
     /// rate: replace them with [`set_fx`](Self::set_fx) when `rate` changes.
     pub fn reset(&mut self, rate: f64) {
-        self.cancel_notes(u16::MAX);
+        self.release_script_pedals();
+        self.cleanup_script_notes();
         self.player.clear_voices(self.bank.as_deref());
         self.commands.clear();
         self.writes.clear();
@@ -445,6 +452,13 @@ impl Engine {
         }
         self.apply_init_controllers();
         if let Some(rt) = self.script.as_deref_mut() { rt.reset_controllers(Some(&self.player.cc[0])); }
+        // A script's saved/default pedal-down value is restored with its other
+        // init controllers. Its private cache must see that restored value too.
+        self.notify_script_pedals([64usize, 66].map(|cc| {
+            let value = self.player.cc[0][cc];
+            (value >= 64).then_some(value)
+        }));
+        self.cleanup_script_notes();
     }
 
     fn cancel_notes(&mut self, channels: u16) {
@@ -454,9 +468,38 @@ impl Engine {
             || matches!(command.kind, script::Kind::Controller { .. }));
     }
 
+    fn cleanup_script_notes(&mut self) {
+        if let Some((rt, mut host)) = self.scripted(0) { rt.cleanup_notes(&mut host); }
+        // Cleanup runs under the normal callback budget; old performance
+        // commands are cut now, and its resumed callbacks cannot start notes.
+        self.commands.retain(|command| matches!(command.kind, script::Kind::Controller { .. }));
+    }
+
+    fn notify_script_pedals(&mut self, values: [Option<u8>; 2]) {
+        if self.script.is_none() { return; }
+        for channel in 0..16 {
+            for (cc, value) in [64, 66].into_iter().zip(values) {
+                if let Some(value) = value { self.cc(channel, cc, value); }
+            }
+        }
+    }
+
+    fn release_script_pedals(&mut self) {
+        // Libraries cache pedal state in their own globals. Resetting %CC alone
+        // leaves their next release callback believing the pedal is still down.
+        if let Some(rt) = self.script.as_ref() {
+            let down = [64usize, 66].map(|cc| rt.env.input.cc[cc] >= 64
+                || self.player.cc.iter().any(|row| row[cc] >= 64));
+            self.notify_script_pedals(down.map(|down| down.then_some(0)));
+        }
+    }
+
     /// Stop every performance context in one pass, preserving script/UI setup.
     pub fn panic(&mut self) {
-        self.cancel_notes(u16::MAX);
+        self.release_script_pedals();
+        // Pedal-up callbacks may release, create or wait on notes; cancel their
+        // remaining performance work too, so Panic cannot resurrect a voice.
+        self.cleanup_script_notes();
         self.commands.retain(|command| !matches!(command.kind,
             script::Kind::Controller { cc: 1 | 11 | 64 | 66 | 128 | 129, .. }));
         let defaults = self.defaults();
@@ -485,6 +528,10 @@ impl Engine {
             .iter()
             .map(|v| VoiceInfo {
                 group: v.group,
+                event: v.event,
+                input_channel: v.input_channel,
+                owner: v.owner,
+                held: v.held,
                 channel: v.channel,
                 note: v.note,
                 released: v.released,
@@ -621,6 +668,37 @@ impl Engine {
             }
         }
         if self.script.is_some() {
+            if cc == 121 {
+                let channels = (1 << channel) | self.player.mpe_zone
+                    .filter(|(master, _)| *master == channel).map_or(0, |(_, members)| members);
+                let previous = self.player.cc;
+                let controller_defaults = self.player.controller_defaults;
+                let script_previous = self.script.as_deref().unwrap().env.input.cc;
+                self.commands.retain(|c| channels & (1 << c.channel) == 0
+                    || !matches!(c.kind, script::Kind::Controller { cc, .. }
+                        if crate::ksp::reset_controller_value(cc, None).is_some()));
+                self.script.as_deref_mut().unwrap().cancel_performance_controllers(channels);
+                // Authors often mirror controllers in globals. Deliver the
+                // same defaults the native reset uses before synchronizing %CC.
+                for c in (0..16u8).filter(|&c| channels & (1 << c) != 0) {
+                    // Deselect parameter addresses before data-entry defaults:
+                    // authored RPN/NRPN handlers must retain parameter values.
+                    for cc in (98..102u8).chain(0..98).chain(102..120) {
+                        let Some(value) = crate::ksp::reset_controller_value(cc, controller_defaults[cc as usize]) else { continue; };
+                        // Always refresh the standard performance caches; other
+                        // supported CCs need a callback only when changed.
+                        if matches!(cc, 1 | 11 | 64..=67 | 98..=101)
+                            || previous[c as usize][cc as usize] != value
+                            || script_previous[cc as usize] != i32::from(value)
+                        {
+                            self.cc_from(c, input_channel, cc, value);
+                        }
+                    }
+                    self.pitch_bend_from(c, input_channel, 8192);
+                    self.channel_pressure_from(c, input_channel, 0);
+                }
+                self.script.as_deref_mut().unwrap().reset_controllers(None);
+            }
             if cc < 120 {
                 if let Some((rt, mut host)) = self.scripted_from(channel, input_channel) {
                     rt.controller(&mut host, 0, cc, value.min(127));
@@ -722,6 +800,25 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             rt.ui_control(&mut host, slot, control, value);
         }
+    }
+
+    pub fn pop_array_read(&mut self) -> Option<Box<crate::ksp::ArrayRead>> {
+        self.script.as_deref_mut()?.pop_array_read()
+    }
+
+    pub fn can_finish_array_read(&self) -> bool {
+        self.script.as_deref().is_some_and(Runtime::can_finish_array_read)
+    }
+
+    pub fn finish_array_read(&mut self, request: Box<crate::ksp::ArrayRead>) -> Result<(), Box<crate::ksp::ArrayRead>> {
+        match self.script.as_deref_mut() {
+            Some(rt) => rt.finish_array_read(request),
+            None => Err(request),
+        }
+    }
+
+    pub fn pop_retired_array_read(&mut self) -> Option<Box<crate::ksp::ArrayRead>> {
+        self.script.as_deref_mut()?.pop_retired_array_read()
     }
 
     pub fn pop_ir_request(&mut self) -> Option<IrRequest> {
@@ -874,8 +971,7 @@ impl Engine {
     }
 
     /// Bounded pending work for worker-side support reports: commands, writes, releases.
-    #[cfg(feature = "plugin")]
-    pub(crate) fn pending_work(&self) -> [usize; 3] {
+    pub fn pending_work(&self) -> [usize; 3] {
         [self.commands.len(), self.writes.len(), self.player.pending_releases.len()]
     }
 
@@ -1011,6 +1107,11 @@ impl Engine {
 #[derive(Clone, Copy, Debug)]
 pub struct VoiceInfo {
     pub group: u32,
+    pub event: EventId,
+    /// Physical input provenance, retained through script rerouting.
+    pub input_channel: Option<u8>,
+    pub owner: Option<(u8, u8)>,
+    pub held: bool,
     pub channel: u8,
     pub note: u8,
     pub released: bool,
@@ -1078,6 +1179,8 @@ struct Player {
     sostenuto_down: [bool; 16],
     bend: [f32; 16],
     cc: [[u8; 128]; 16],
+    /// Authored device defaults for extra controllers, prepared when scripts load.
+    controller_defaults: [Option<u8>; 128],
     /// Channel pressure.
     pressure: [u8; 16],
     /// Per-channel/key expression, by the voices' MIDI channel and note.
@@ -1136,6 +1239,7 @@ impl Player {
             sostenuto_down: [false; 16],
             bend: [0.0; 16],
             cc: [[0; 128]; 16],
+            controller_defaults: [None; 128],
             pressure: [0; 16],
             expression: Box::new([[Expression::default(); 128]; 16]),
             keys: [[0; 128]; 16],
@@ -1426,6 +1530,13 @@ impl Player {
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),
             mods,
+            pitch_envs: {
+                let mut states = [Envelope::new(&Ahdsr::UNITY, self.rate as f32); params::PITCH_ENVS];
+                for (state, envelope) in states.iter_mut().zip(&settings.pitch_envelopes) {
+                    *state = Envelope::new(&envelope.env, self.rate as f32);
+                }
+                states
+            },
             modulated: (1.0, 0.0),
             settled: None,
             stream,
@@ -1552,14 +1663,14 @@ impl Player {
     }
 
     /// Release one event's voices; a held sustain pedal defers them like a key
-    /// release. Returns the first voice's channel, note, velocity and whether
-    /// it is itself a release trigger.
+    /// release. Native release samples run independently of further note-off
+    /// events. Returns the first ordinary voice's channel, note and velocity.
     fn release_voices(&mut self, bank: &Bank, id: EventId) -> Option<(u8, u8, u8, bool, bool, Option<u8>)> {
         let mut first = None;
         for v in self
             .voices
             .iter_mut()
-            .filter(|v| v.event == id && !v.released)
+            .filter(|v| v.event == id && !v.released && !v.release_trigger)
         {
             let event = first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger, false, v.input_channel));
             event.4 |= v.sostenuto;
@@ -1712,8 +1823,11 @@ impl Player {
                 self.cc(bank, channel, 66, 0, defaults);
                 self.bend[c] = 0.0;
                 self.pressure[c] = 0;
-                self.cc[c][1] = 0;
-                self.cc[c][11] = 127;
+                for cc in 0..128 {
+                    if let Some(value) = crate::ksp::reset_controller_value(cc as u8, self.controller_defaults[cc]) {
+                        self.cc[c][cc] = value;
+                    }
+                }
             }
             123 => {
                 if let Some(bank) = bank {

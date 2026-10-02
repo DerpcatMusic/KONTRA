@@ -79,6 +79,8 @@ pub struct GroupSettings {
     pub bus: Option<u8>,
     /// External modulation (velocity, controllers, pitch bend...).
     pub mods: ModTable,
+    /// Internal AHDSRs driving pitch; every native internal-modulator slot.
+    pub pitch_envelopes: Box<[super::params::PitchEnvelope]>,
     /// Insert filters and EQs; `None` costs voices nothing.
     pub filter: Option<Box<GroupFilter>>,
     /// Kontakt interpolation quality; every setting currently uses 4-point Hermite.
@@ -99,6 +101,7 @@ impl From<&Group> for GroupSettings {
             tune: 12.0 * group.tune.log2() as f32,
             bus: None,
             mods: ModTable::from(group),
+            pitch_envelopes: super::params::PitchEnvelope::from_group(group),
             filter: GroupFilter::new(group),
             interp_quality: group.interp_quality,
             voice_group: None,
@@ -895,6 +898,8 @@ impl Builder {
                 issues.notes.join("; ")
             );
         }
+        anyhow::ensure!(groups.iter().all(|g| g.envelopes.len() <= super::params::PITCH_ENVS),
+            "Internal AHDSR envelope count exceeds Kontakt's sixteen modulator slots");
         let mut settings: Vec<_> = groups.iter().map(GroupSettings::from).collect();
         super::params::share_curves(settings.iter_mut().map(|s| &mut s.mods));
         Ok(Self {

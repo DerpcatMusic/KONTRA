@@ -7,6 +7,8 @@
 
 mod builtins;
 mod calls;
+mod arrays;
+pub use arrays::ArrayRead;
 mod compile;
 pub mod engine;
 mod idiom;
@@ -25,8 +27,8 @@ pub use engine::{
     NoteLength, NoteSpec, VoicePar, engine_par_name,
 };
 pub use inventory::requirements;
-pub use runtime::{Live, MAX_SLOTS, Persisted, Refresh, Runtime, settle_persistence};
-pub(crate) use runtime::EVENT_CAPACITY;
+pub use runtime::{Live, LiveFault, MAX_SLOTS, Persisted, Refresh, Runtime, settle_persistence};
+pub(crate) use runtime::{EVENT_CAPACITY, reset_controller_value};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -117,6 +119,12 @@ pub struct Interface {
     pub wallpaper: String,
     #[serde(default)]
     pub wallpaper_state: i32,
+    /// Vertical background offset in pixels, independent of picture state.
+    #[serde(default)]
+    pub skin_offset: i32,
+    /// Init-only named bitmap fonts; IDs are 26 + their slot-local index.
+    #[serde(default)]
+    pub fonts: Vec<String>,
     pub controls: Vec<Control>,
     pub diagnostics: BTreeSet<String>,
     pub listeners: BTreeMap<String, i32>,
@@ -131,6 +139,8 @@ impl Default for Interface {
             title: String::new(),
             wallpaper: String::new(),
             wallpaper_state: 0,
+            skin_offset: 0,
+            fonts: Vec::new(),
             controls: Vec::new(),
             diagnostics: BTreeSet::new(),
             listeners: BTreeMap::new(),

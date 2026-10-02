@@ -6,7 +6,8 @@ use super::compile::{Callback, Ty, VarId};
 use super::engine::{EnginePar, Fade, GroupMask, VoicePar};
 use super::runtime::{read_value, refresh_value, write_value_rt};
 use super::ui::{MenuItem, Prop};
-use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text};
+use super::arrays::{read_path, nka};
+use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text, put_variable_text};
 use super::{KeyState, Value};
 
 fn ints<const N: usize>(m: &mut Machine) -> [i32; N] {
@@ -151,40 +152,6 @@ fn library_dir(instrument: &std::path::Path) -> String {
     dir(found.unwrap_or_else(|| instrument.parent().unwrap_or(instrument)))
 }
 
-/// A file a script names, matching names without case when the exact
-/// path is not there (libraries are made on case-insensitive systems).
-fn read_path(path: &str) -> Option<Vec<u8>> {
-    let path = std::path::Path::new(path);
-    if let Ok(bytes) = crate::resources::read_file(path) {
-        return Some(bytes);
-    }
-    let mut at = std::path::PathBuf::from("/");
-    for part in path.components().skip(1) {
-        let want = part.as_os_str().to_string_lossy();
-        let next = std::fs::read_dir(&at).ok()?.flatten().map(|e| e.path()).find(|p| {
-            p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&want))
-        })?;
-        at = next;
-    }
-    crate::resources::read_file(&at).ok()
-}
-
-/// An `.nka` file's values for an array of type `ty` named `name`: the
-/// array's name, then one value per line. `None` when the name differs.
-fn nka(bytes: &[u8], ty: Ty, name: &str) -> Option<Value> {
-    let text = String::from_utf8_lossy(bytes);
-    let mut lines = text.lines().map(|l| l.strip_suffix('\r').unwrap_or(l));
-    let head = lines.next()?.trim();
-    if head.trim_start_matches(['%', '!', '?', '$', '@', '~']) != name {
-        return None;
-    }
-    let value = |l: &str| match ty {
-        Ty::Int => Value::Int(l.trim().parse().unwrap_or(0)),
-        Ty::Real => Value::Real(l.trim().parse().unwrap_or(0.0)),
-        Ty::Str => Value::Text(l.to_owned()),
-    };
-    Some(Value::Array(lines.map(value).collect()))
-}
 
 fn async_done(m: &mut Machine, status: i32) -> i32 {
     let id = m.env.next_async();
@@ -429,6 +396,28 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             push_int(m, equal as i32)
         }
         LoadArray | LoadArrayStr | SaveArray | SaveArrayStr => {
+            if f == LoadArrayStr && !m.env.loading {
+                let v = m.stk.var();
+                let path = m.stk.strs.pop();
+                let id = m.env.next_async();
+                let spare = m.env.array_spares.iter().position(|r| r.slot == slot && r.var == v);
+                if m.env.array_inflight < super::arrays::ARRAY_QUEUE
+                    && let Some(spare) = spare
+                    && path.len() <= m.env.array_spares[spare].path.capacity()
+                {
+                    let mut request = m.env.array_spares.swap_remove(spare);
+                    request.path.push_str(path);
+                    request.id = id;
+                    m.env.array_requests.push_back(request);
+                    m.env.array_inflight += 1;
+                } else {
+                    m.env.note("load_array_str: prepared request queue or path capacity exhausted");
+                    if m.env.async_done.len() < m.env.async_done.capacity() {
+                        m.env.async_done.push((slot, id, 0));
+                    }
+                }
+                return push_int(m, id);
+            }
             let (mode, path) = if matches!(f, LoadArray | SaveArray) {
                 (m.stk.int(), None)
             } else {
@@ -453,7 +442,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     *saved = true;
                 }
                 1
-            } else if let Some((value, true)) = m.env.saved_arrays.get(&(slot, v)) {
+            } else if f == LoadArray && let Some((value, true)) = m.env.saved_arrays.get(&(slot, v)) {
                 write_value_rt(&mut m.slot.mem, var, value, m.env.loading)?;
                 1
             } else if mode == 0 {
@@ -497,6 +486,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         // ---- Events ------------------------------------------------------------------
         PlayNote => {
             let [note, velocity, offset, duration] = ints(m);
+            if m.t.ctx.cleanup { return push_int(m, 0); }
             if !(0..128).contains(&note) {
                 m.env.note("play_note: note outside 0..127 ignored");
                 return push_int(m, 0);
@@ -725,7 +715,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .env
                 .events
                 .get(id)
-                .is_some_and(|e| e.live && e.voice.is_none_or(|v| m.engine.voice_active(v)));
+                .is_some_and(|e| e.live && !e.silenced && e.voice.is_none_or(|v| m.engine.voice_active(v)));
             push_int(m, live as i32)
         }
         GetEventIds => {
@@ -791,6 +781,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         // ---- Time --------------------------------------------------------------------
         Wait | WaitTicks => {
             let [n] = ints(m);
+            if m.t.ctx.ignore_wait { return Ok(Step::Next); }
             let us = if f == Wait {
                 i64::from(n)
             } else {
@@ -1080,7 +1071,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];
             if p == b::CONTROL_PAR_VALUE && var.ty == Ty::Str && var.len.is_none() {
                 let dst = &mut m.slot.mem.strs[var.slot as usize];
-                put_text(dst, text, m.env.loading)?;
+                put_variable_text(dst, text, m.env.loading)?;
             } else if p == b::CONTROL_PAR_TEXTLINE {
                 let dst = m.slot.ui.controls[c].str_mut(b::CONTROL_PAR_TEXT).map_err(Fault)?;
                 if !dst.is_empty() { append_text(dst, "\n", m.env.loading)?; }
@@ -1105,7 +1096,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let slot = if p == b::CONTROL_PAR_VALUE { Some(control_value_slot(m, id, Some(index), Ty::Str)?) } else { None };
             let text = m.stk.strs.pop();
             if let Some(slot) = slot {
-                put_text(&mut m.slot.mem.strs[slot], text, m.env.loading)?;
+                put_variable_text(&mut m.slot.mem.strs[slot], text, m.env.loading)?;
             } else if p != b::CONTROL_PAR_NONE {
                 m.env.note("Indexed control metadata is unavailable");
             }
@@ -1231,6 +1222,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 SetKnobLabel => b::CONTROL_PAR_LABEL,
                 _ => b::CONTROL_PAR_HELP,
             };
+            if f != AddTextLine && matches!(m.slot.ui.controls[c].get(p), Some(Prop::Str(s)) if s == text) {
+                return Ok(Step::Next);
+            }
             let s = m.slot.ui.controls[c].str_mut(p).map_err(Fault)?;
             if f == AddTextLine {
                 if !s.is_empty() {
@@ -1361,7 +1355,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let c = control(m, id)?;
             push_int(m, m.slot.ui.controls[c].menu.len() as i32)
         }
-        SetSkinOffset | SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
+        SetSkinOffset => {
+            let [pixels] = ints(m);
+            m.slot.ui.skin_offset = pixels;
+            Ok(Step::Next)
+        }
+        SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
             if f == FsNavigate {
                 m.stk.int();
             }
@@ -1396,8 +1395,24 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             Ok(Step::Next)
         }
         GetFontId => {
-            // Numeric IDs (older scripts) pass through; named fonts are not rendered.
-            let n = m.stk.strs.pop().parse().unwrap_or(0);
+            let name = m.stk.strs.pop();
+            // Retain the historical numeric-ID form. Named fonts are an
+            // init-only resource registry, never allocated during callbacks.
+            let n = if let Ok(n) = name.parse() { n } else if !m.env.loading {
+                m.env.note("get_font_id: named bitmap fonts can only be registered on init; using the default font");
+                0
+            } else if name.is_empty() || name.contains(['/', '\\']) {
+                m.env.note("get_font_id: invalid bitmap font resource name; using the default font");
+                0
+            } else {
+                let fonts = &mut m.slot.ui.fonts;
+                let index = fonts.iter().position(|font| font == name).unwrap_or_else(|| {
+                    fonts.push(name.to_owned());
+                    fonts.len() - 1
+                });
+                i32::try_from(index).ok().and_then(|index| index.checked_add(26))
+                    .ok_or(Fault("Bitmap font ID space exhausted"))?
+            };
             push_int(m, n)
         }
         GetFolder => {

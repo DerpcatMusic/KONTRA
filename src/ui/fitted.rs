@@ -98,6 +98,22 @@ pub fn cut(image: &Arc<Image>, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Ima
     piece
 }
 
+/// A visible wallpaper window. Bound offsets cached for each full source atlas,
+/// while retaining enough windows for all sixteen simultaneously visible parts.
+pub fn window(image: &Arc<Image>, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
+    let source = Arc::as_ptr(image) as usize;
+    let key = (source, true, [x, y, w, h]);
+    let mut made = made_lock();
+    if let Some((_, piece)) = made.get(&key) { return piece.clone(); }
+    if made.keys().filter(|k| k.0 == source && k.1).count() >= 16
+        && let Some(old) = made.keys().find(|k| k.0 == source && k.1).copied() {
+        made.remove(&old);
+    }
+    let piece = artwork::crop(image, x, y, w, h);
+    made.insert(key, (Arc::downgrade(image), piece.clone()));
+    piece
+}
+
 /// Shrunk by area averaging, or grown by whole pixels.
 fn resize(image: &Image, w: u32, h: u32) -> Option<Image> {
     if w <= image.width && h <= image.height {
@@ -121,6 +137,17 @@ fn resize(image: &Image, w: u32, h: u32) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wallpaper_windows_are_cached_and_bounded_for_large_atlases() {
+        let image = Arc::new(Image::rgba(2, 20_000, [80, 120, 160, 255].repeat(40_000)).unwrap());
+        let first = window(&image, 0, 8_180, 2, 40).unwrap();
+        assert_eq!((first.width, first.height), (2, 40), "only the viewport reaches the GPU, even across its atlas limit");
+        assert!(Arc::ptr_eq(&first, &window(&image, 0, 8_180, 2, 40).unwrap()), "unchanged windows retain image identity");
+        for y in 0..32 { window(&image, 0, y, 2, 40).unwrap(); }
+        assert!(made_lock().keys().filter(|k| k.0 == Arc::as_ptr(&image) as usize && k.1).count() <= 16);
+        assert_eq!(first.rgba.as_ref(), &[80, 120, 160, 255].repeat(80), "an evicted window still held by a scene stays alive");
+    }
 
     #[test]
     fn pictures_are_made_to_the_pixel_once() {

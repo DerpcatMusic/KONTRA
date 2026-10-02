@@ -1715,9 +1715,9 @@ fn the_original_view_edits_the_script_and_switches() {
     {
         let mut view = p.shared.view.lock().unwrap();
         let frame = Arc::new(moose::mui::mui::scene::Image::rgba(40, 40, vec![255; 40 * 40 * 4]).unwrap());
-        let strip = Arc::new(artwork::Picture { frames: vec![frame; 11], stretch: [false; 2] });
+        let strip = Arc::new(artwork::Picture { frames: vec![frame; 11], stretch: [false; 2], atlas: None });
         view.parts[0].pictures = Arc::new([("strip".to_owned(), strip)].into());
-        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, vec![40; 632 * 268 * 4]).unwrap())], stretch: [false; 2] }));
+        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, vec![40; 632 * 268 * 4]).unwrap())], stretch: [false; 2], atlas: None }));
     }
     let value = |n: usize| control_value(&p, n);
     let mut h = Harness::new(&p, 1180., 760.);
@@ -1759,6 +1759,36 @@ fn the_original_view_edits_the_script_and_switches() {
     assert!(h.ui.scene().unwrap().surface("kpv-0-1").is_some());
 }
 
+/// Offsets select a pixel window across page boundaries, rather than rounding
+/// to a frame, and an in-place script update invalidates the view memo.
+#[test]
+fn original_wallpaper_pixel_offsets_render_across_frames() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $v(0,100)\nmove_control_px($v,30,40)\nset_skin_offset(170)\nend on");
+    let mut rgba = [220, 20, 40, 255].repeat(632 * 268);
+    rgba.extend([20, 40, 220, 255].repeat(632 * 268));
+    let image = Arc::new(moose::mui::mui::scene::Image::rgba(632, 536, rgba).unwrap());
+    p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
+        frames: vec![image], stretch: [false; 2], atlas: Some([632, 268]),
+    }));
+    p.selection.write().unwrap().parts[0].view = 1;
+    let mut h = Harness::new(&p, 1180., 760.);
+    let control = h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame;
+    let at = |y: f64| (y as usize * 1180 + (control.x + 300.) as usize) * 4;
+    let above = at(control.y - 30.);
+    let below = at(control.y + 20.);
+    let painted = pixels(&h.ui, 1180, 760);
+    assert_eq!(&painted[above..above+4], &[220, 20, 40, 255], "the window begins in the first frame");
+    assert_eq!(&painted[below..below+4], &[20, 40, 220, 255], "the same window crosses into the next frame");
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).skin_offset = 271;
+    }
+    h.idle(2);
+    let moved = pixels(&h.ui, 1180, 760);
+    assert_eq!(&moved[above..above+4], &[20, 40, 220, 255], "a changed offset redraws without changing the selected animation state");
+    assert_eq!(h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame, control, "artwork scrolling never moves controls");
+}
+
 /// The vectorized view keeps every control of the original where it was, at
 /// its size: only the drawing changes.
 #[test]
@@ -1767,6 +1797,7 @@ fn original_tables_render_dense_values_at_the_declared_range() {
     p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
         frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 248, vec![40; 632 * 248 * 4]).unwrap())],
         stretch: [false; 2],
+        atlas: None,
     }));
     let mut h = Harness::new(&p, 1180., 760.);
     let empty = pixels(&h.ui, 1180, 760);
@@ -1797,8 +1828,18 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
     let p = Arc::new(SamplerParams::new());
     p.selection.write().unwrap().parts.push(Part { path: "/missing-kontra-test/instrument.nki".into(), ..Default::default() });
     crate::plugin::Load.run(&p);
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let report = Arc::make_mut(view.parts[0].load_report.as_mut().unwrap());
+        assert!(report["failure"].is_string());
+        report["issues"] = serde_json::json!([]);
+        report["issues_omitted"] = serde_json::json!(7);
+    }
     let mut h = Harness::new(&p, 1180., 760.);
     h.press("tab-info");
+    let failure = h.ui.scene().unwrap().surface("load-diagnostic-failure").expect("failure cause stays visible even when issue examples were omitted").frame;
+    assert!(failure.y >= 0. && failure.y + failure.size.height < 760., "failure is visible: {failure:?}");
+    assert!(h.ui.scene().unwrap().surface("load-diagnostic-counts").is_some(), "retention and omitted occurrences are disclosed");
     let frame = h.ui.scene().unwrap().surface("load-diagnostic-status").expect("failed imports still show their diagnostic report").frame;
     assert!(frame.y >= 0. && frame.y + frame.size.height < 760., "status is visible: {frame:?}");
     h.press("tab-logs");
@@ -1814,15 +1855,44 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
 }
 
 #[test]
+fn automatic_performance_scale_fits_rack_height_and_explicit_zoom_stays_scrollable() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(540)\ndeclare ui_slider $bottom(0,100)\nmove_control_px($bottom,40,500)\nend on");
+    p.selection.write().unwrap().parts[0].view = 1;
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).width = 732;
+        let image = Arc::new(moose::mui::mui::scene::Image::rgba(732,608,vec![40;732*608*4]).unwrap());
+        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture {frames:vec![image],stretch:[false;2],atlas:None}));
+    }
+    let mut h = Harness::new(&p,2560.,1440.);
+    h.ui.set_scale(Some(1.5));
+    for height in [1440.,800.] {
+        h.size.height = height;
+        h.idle(8);
+        let scene = h.ui.scene().unwrap();
+        let rack = scene.surface("rack-view").unwrap().frame;
+        let stage = scene.surface("stage-0").unwrap().frame;
+        let bottom = scene.surface("kpv-0-0").unwrap().frame;
+        assert!(stage.y + stage.size.height <= rack.y + rack.size.height + 1., "auto fits the rack at {height}: stage={stage:?}, rack={rack:?}");
+        assert!(bottom.y + bottom.size.height <= rack.y + rack.size.height + 1., "bottom controls stay visible at {height}: {bottom:?}");
+    }
+    p.shared.libraries.edit(|s| s.view_scale = 3.);
+    h.idle(8);
+    let scene = h.ui.scene().unwrap();
+    assert!((scene.surface("stage-0").unwrap().frame.size.height - 1620.).abs() < 1., "explicit zoom is retained rather than fitted away");
+    assert!(scene.surface("rack-bar").is_some(), "explicit zoom can scroll");
+}
+
+#[test]
 fn the_vectorized_view_keeps_the_original_layout() {
     let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $vol(0, 100)\nmove_control_px($vol, 30, 40)\nset_control_par_str(get_ui_id($vol), $CONTROL_PAR_PICTURE, \"knob\")\ndeclare ui_switch $legato\nmove_control_px($legato, 120, 40)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nmove_control_px($mic, 200, 90)\ndeclare ui_label $title(1,1)\nset_text($title, \"Tone\")\nmove_control_px($title, 30, 100)\nend on");
     {
         let frame = Arc::new(moose::mui::mui::scene::Image::rgba(48, 50, vec![200; 48 * 50 * 4]).unwrap());
-        let knob = artwork::Picture { frames: vec![frame; 11], stretch: [false; 2] };
+        let knob = artwork::Picture { frames: vec![frame; 11], stretch: [false; 2], atlas: None };
         let mut view = p.shared.view.lock().unwrap();
         view.parts[0].pictures = Arc::new([("knob".to_owned(), Arc::new(knob))].into());
         let wallpaper = Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, [210, 180, 140, 255].repeat(632 * 268)).unwrap());
-        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![wallpaper], stretch: [false; 2] }));
+        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![wallpaper], stretch: [false; 2], atlas: None }));
     }
     let rects = |code: u8| {
         p.selection.write().unwrap().parts[0].view = code;
@@ -2635,4 +2705,18 @@ fn the_cursor_follows_what_is_under_the_pointer() {
     let corner = frame(&h, "window-corner");
     cursor_at(&mut h, Point::new(corner.x + corner.size.width - 2., corner.y + corner.size.height - 2.));
     assert!(h.ui.get("window-corner").hovered, "the window's resize corner");
+}
+
+
+#[test]
+fn frame_views_leave_large_persistence_json_with_the_loader() {
+    let p = SamplerParams::new();
+    let saved = "x".repeat(1_000_000);
+    let address = saved.as_ptr();
+    p.shared.view.lock().unwrap().parts[0].script_state = saved;
+    let frame = super::shown(&p.shared.view);
+    assert!(frame.parts[0].script_state.is_empty(), "frames do not read persistence JSON");
+    let view = p.shared.view.lock().unwrap();
+    assert_eq!(view.parts[0].script_state.len(), 1_000_000);
+    assert_eq!(view.parts[0].script_state.as_ptr(), address, "the loader retains the original allocation");
 }
