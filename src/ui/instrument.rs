@@ -125,6 +125,25 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
 }
 
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
+    let page = stage_page(ui, cx, slot);
+    let pages = cx.view.parts[slot].script_pages.clone();
+    if pages.views.len() < 2 { return page; }
+    let selected = cx.view.parts[slot].script_slot;
+    let mut tabs = Vec::with_capacity(pages.views.len());
+    for p in &pages.views {
+        let (clicked, tab) = theme::tab(ui, format!("script-page-{slot}-{}", p.slot), &p.title, p.slot == selected);
+        if clicked && cx.p.shared.select_script_page(slot, cx.view.parts[slot].script_epoch, p.slot) {
+            cx.state.held = None;
+            cx.state.typing = None;
+            cx.state.reveal = Some(slot);
+        }
+        tabs.push(tab);
+    }
+    col![page, row(tabs).gap(0).w(Len::Pct(100.)).min_w(0).id(format!("script-pages-{slot}"))]
+        .gap(0).align(Align::Stretch).w(Len::Pct(100.))
+}
+
+fn stage_page(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let loaded = instrument_of(cx, slot).is_some();
     if loaded && perf_view::shows(cx, slot) != ViewMode::Kontra {
         // The articulation setup follows the controls whichever view shows them.
