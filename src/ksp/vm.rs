@@ -64,6 +64,8 @@ pub struct Ctx {
     pub common: bool,
     /// Shared configuration callback storage, independent of performance ownership.
     pub configuration: bool,
+    /// Repeat performance effects of a common callback, using the one shared UI.
+    pub ui_replay: bool,
     pub kind: Kind,
     pub event: i32,
     pub callback_id: i32,
@@ -98,6 +100,7 @@ impl Ctx {
             domain: 0,
             common: false,
             configuration: false,
+            ui_replay: false,
             kind,
             event: 0,
             callback_id: 0,

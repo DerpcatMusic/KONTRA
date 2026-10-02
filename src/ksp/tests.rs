@@ -932,6 +932,60 @@ impl Rig {
 const PASS: &str = "on init\nend on";
 
 #[test]
+fn prepared_common_ui_replays_keep_one_menu_and_text_while_assigning_private_table_values() {
+    let source = r#"on init
+declare ui_slider $edit(0,10)
+declare ui_label $info(1,1)
+set_text($info,"seed")
+declare ui_menu $menu
+add_menu_item($menu,"seed",1)
+declare ui_table %table[2](1,1,127)
+declare $history := 0
+make_persistent($history)
+end on
+on ui_control($edit)
+inc($history)
+add_text_line($info,"step" & $history)
+add_menu_item($menu,"step" & $history,$history+10)
+set_control_par(get_ui_id($edit),$CONTROL_PAR_VALUE,$edit+1)
+set_control_par_arr(get_ui_id(%table),$CONTROL_PAR_VALUE,$edit,0)
+wait(1000)
+add_text_line($info,"done")
+end on
+on note
+change_vol($EVENT_ID,-1000*%table[0],0)
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    rig.rt.prepare_channel_domains((1<<1)|(1<<3)|(1<<5),7);
+    rig.rt.prepare_channel_configuration();
+    let mut live = rig.rt.live();
+    let mut edit = || {
+        rig.rt.ui_control_configuration(&mut rig.engine,0,0,3);
+        for owner in [1,3,5] { rig.rt.ui_control_replay(&mut rig.engine,owner,0,0,3); }
+        rig.block(96);
+        rig.rt.refresh_live(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(|| edit()),0);
+    #[cfg(not(feature = "plugin"))]
+    edit();
+    let interface = live.interface.as_ref().unwrap();
+    assert_eq!(prop(interface,1,"$CONTROL_PAR_TEXT"),"seed\nstep1\ndone",
+        "private replays cannot append history-dependent metadata, including after wait");
+    assert_eq!(interface.controls[2].menu,vec![("seed".into(),1),("step1".into(),11)]);
+    assert_eq!(interface.controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(4));
+    assert_eq!(interface.controls[3].properties["$CONTROL_PAR_VALUE"],Value::IntArray(vec![4,0]));
+    assert_eq!(rig.rt.persistence()[0]["$history"],Value::Int(1));
+    for owner in [1,3,5] { rig.rt.note_on_from(&mut rig.engine,0,owner,60,100); }
+    let played: Vec<_> = rig.engine.calls.iter().filter_map(|c| match c {
+        EngineCall::PlayNote { channel,volume_mdb,.. } => Some((*channel,*volume_mdb)), _ => None,
+    }).collect();
+    assert_eq!(played,vec![(7,-4000);3],"VALUE/table writes must still reach every private callback bank");
+    for owner in [5,1,3] { rig.rt.note_off_from(&mut rig.engine,0,owner,60); }
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
 fn prepared_configuration_waits_keep_ui_history_and_performance_event_ids_separate() {
     let source = r#"on init
 declare ui_slider $edit(0,10)

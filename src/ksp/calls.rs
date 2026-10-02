@@ -197,9 +197,45 @@ fn charge(m: &Machine, fuel: &mut u64, count: u64) -> Exec<()> {
     Ok(())
 }
 
+/// Private common-control replays keep their variable assignments and native
+/// performance effects; mutating the single shared UI twice would duplicate
+/// menu rows/text and replay history-dependent metadata changes.
+fn shared_metadata(m: &Machine, f: Builtin, argc: u8) -> bool {
+    use Builtin::*;
+    match f {
+        SetControlPar | SetControlParStr | SetControlParReal
+        | SetControlParArr | SetControlParStrArr | SetControlParRealArr => {
+            let args = &f.sig().args[..argc as usize];
+            let integers = args.iter().filter(|a| **a == b::Arg::I).count();
+            // UI signatures put the parameter second; VALUE writes script
+            // memory and must still happen in each performance prefix.
+            m.stk.ints[m.stk.ints.len() - integers + 1] != b::CONTROL_PAR_VALUE
+        }
+        AttachLevelMeter | SetText | AddTextLine | SetKnobLabel | SetKnobUnit
+        | SetKnobDefval | SetControlHelp | MoveControl | MoveControlPx | HidePart
+        | AddMenuItem | SetMenuItemStr | SetMenuItemVisibility | SetMenuItemValue
+        | SetTableStepsShown | AttachZone | SetSkinOffset | SetUiColor | SetUiHeight
+        | SetUiHeightPx | SetUiWidthPx | SetScriptTitle | MakePerfview | SetSnapshotType
+        | ShowLibraryTab | SetUiWfProperty | FsNavigate | SetKeyColor | SetKeyName
+        | SetKeyType | SetKeyPressed | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange => true,
+        _ => false,
+    }
+}
+
 pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step> {
     use Builtin::*;
     let slot = m.slot.index;
+    if m.t.ctx.ui_replay && shared_metadata(m, f, argc) {
+        for arg in f.sig().args[..argc as usize].iter().rev() {
+            match arg {
+                b::Arg::I | b::Arg::N => { m.stk.int(); }
+                b::Arg::R => { m.stk.real(); }
+                b::Arg::S => { m.stk.strs.pop(); }
+                b::Arg::V | b::Arg::A | b::Arg::K => { m.stk.var(); }
+            }
+        }
+        return Ok(Step::Next);
+    }
     match f {
         // ---- Arithmetic --------------------------------------------------------------
         Abs => {

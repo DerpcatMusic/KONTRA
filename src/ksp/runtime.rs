@@ -2077,19 +2077,26 @@ impl Runtime {
 
     /// Common UI inputs replay the authored callback in each prepared bank.
     pub fn ui_control(&mut self, engine: &mut dyn KspEngine, slot: usize, control: usize, value: i32) {
-        for domain in 0..self.domain_count { self.ui_control_domain(engine, slot, control, value, domain, true, false); }
+        for domain in 0..self.domain_count { self.ui_control_domain(engine, slot, control, value, domain, true, false, false); }
     }
 
     /// Staged canonical pass; production routing remains disabled until common
     /// metadata replay and service-generated child ownership are admitted too.
     pub(crate) fn ui_control_configuration(&mut self, engine: &mut dyn KspEngine, slot: usize, control: usize, value: i32) {
         assert!(self.configuration_domain.is_some(), "canonical storage must be prepared by the worker");
-        self.ui_control_domain(engine, slot, control, value, 0, true, true);
+        self.ui_control_domain(engine, slot, control, value, 0, true, true, false);
+    }
+
+    /// Repeat a common control's performance effects for one admitted origin.
+    /// Metadata stays owned by the canonical pass, including after wait().
+    pub(crate) fn ui_control_replay(&mut self, engine: &mut dyn KspEngine, input: u8, slot: usize, control: usize, value: i32) {
+        assert!(self.configuration_domain.is_some(), "canonical UI pass must be prepared");
+        self.ui_control_domain(engine, slot, control, value, self.domain_map[input.min(15) as usize], true, false, true);
     }
 
     /// An articulation control belongs only to its physical input's domain.
     pub(crate) fn ui_control_from(&mut self, engine: &mut dyn KspEngine, input: u8, slot: usize, control: usize, value: i32) {
-        self.ui_control_domain(engine, slot, control, value, self.domain_map[input.min(15) as usize], false, false);
+        self.ui_control_domain(engine, slot, control, value, self.domain_map[input.min(15) as usize], false, false, false);
     }
 
     /// A path validated by the editor's file worker; no filesystem work on audio.
@@ -2116,6 +2123,7 @@ impl Runtime {
         domain: u8,
         common: bool,
         configuration: bool,
+        ui_replay: bool,
     ) {
         self.select_domain(domain);
         if configuration {
@@ -2151,6 +2159,7 @@ impl Runtime {
         ctx.domain = domain;
         ctx.common = common;
         ctx.configuration = configuration;
+        ctx.ui_replay = ui_replay;
         self.spawn_cb(engine, slot as u8, Callback::UiControls, ctx);
         if let Some(entry) = entry {
             let mut ctx = Ctx::new(slot as u8, Kind::UiControl);
@@ -2158,12 +2167,14 @@ impl Runtime {
         ctx.domain = domain;
         ctx.common = common;
         ctx.configuration = configuration;
+        ctx.ui_replay = ui_replay;
             self.spawn(engine, entry, ctx);
         }
         let mut ctx = Ctx::new(slot as u8, Kind::Cb(Callback::UiUpdate));
         ctx.domain = domain;
         ctx.common = common;
         ctx.configuration = configuration;
+        ctx.ui_replay = ui_replay;
         self.spawn_cb(engine, slot as u8, Callback::UiUpdate, ctx);
         self.settle(engine);
     }
