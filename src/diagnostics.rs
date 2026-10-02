@@ -232,7 +232,9 @@ impl Session {
                             if let Err(error) = journal.write_event(&row) { journal.error(error); }
                         }
                         Command::Flush(reply) => {
-                            let _ = reply.send(journal.flush().map_err(|e| e.to_string()));
+                            let result = journal.flush().map_err(|e| e.to_string())
+                                .and_then(|_| crate::support::flush_journal(Duration::from_secs(2)));
+                            let _ = reply.send(result);
                         }
                         Command::Export {
                             id,
@@ -816,6 +818,7 @@ impl Journal {
         Ok(())
     }
     fn write_event(&mut self, event: &LogEvent) -> std::io::Result<()> {
+        crate::support::journal_event(event);
         let mut bytes = serde_json::to_vec(event)?;
         bytes.push(b'\n');
         if bytes.len() as u64 > LOG_LIMIT {

@@ -8,6 +8,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+- Confirmed previous-session crashes now recover native host crash evidence and complete sanitized diagnostic activity, then automatically submit a receipt-checked support report and KONTRA issue through BUFFR’s reporting service. Failed reports remain available for retry; no host-wide crash handlers are installed.
+
 ### Verified processing and diagnostics follow-ups
 
 - Tube and Transistor Distortion now use their checked native scalar curves without the previous invented drive compensation. Independent signed boundaries, live Drive readback, group/rack routing and zero-heap gates pass. Damping/DC filtering remains explicitly approximate; whole-effect parity and corrected actual preset replay are not established.
