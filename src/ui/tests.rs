@@ -2935,6 +2935,7 @@ fn rack_growth_preserves_restored_slots_and_same_frame_duplicate() {
         keys: vec![KeyPress { key: Key::Char('d'), mods: Mods { ctrl: true, ..Default::default() } }],
         ..Default::default()
     });
+    h.idle(1); // The harness delivers keys to the following editor build.
     assert_eq!(read(&p.selection).parts.len(), 130);
     assert_eq!(read(&p.selection).parts[129].path, read(&p.selection).parts[128].path);
     assert_eq!(selected_slot(&p), 129);
@@ -2960,6 +2961,7 @@ fn rack_growth_preserves_restored_slots_and_same_frame_duplicate() {
         keys: vec![KeyPress { key: Key::Char('d'), mods: Mods { ctrl: true, ..Default::default() } }],
         ..Default::default()
     });
+    h.idle(1); // Dispatch the queued shortcut through the normal build path.
     assert_eq!(read(&p.selection).parts.len(), 131);
     h.idle(60); // Allow the ordinary rack scroll spring to finish.
     let scene = h.ui.scene().unwrap();
