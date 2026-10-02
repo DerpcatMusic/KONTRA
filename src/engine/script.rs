@@ -199,6 +199,8 @@ pub(super) struct Host<'a> {
     pub common: bool,
     pub channel: u8,
     pub domain: u8,
+    pub settings_domain: u8,
+    pub ui_replay: bool,
     pub bank: Option<&'a Bank>,
     pub fx: &'a FxProcessor,
     pub player: &'a mut Player,
@@ -263,7 +265,15 @@ impl Host<'_> {
 }
 
 impl KspEngine for Host<'_> {
-    fn set_domain(&mut self, domain: u8, common: bool) { self.domain = domain; self.common = common; }
+    fn set_domain(&mut self, domain: u8, common: bool) {
+        self.set_callback_scope(domain, domain, common, false);
+    }
+    fn set_callback_scope(&mut self, domain: u8, settings: u8, common: bool, ui_replay: bool) {
+        self.domain = domain;
+        self.settings_domain = settings;
+        self.common = common;
+        self.ui_replay = ui_replay;
+    }
     fn request_ir_sample(&mut self, file: &str, slot: i32, generic: i32, script_slot: u8, id: i32) -> Option<bool> {
         let Some((rack, slot)) = params::rack(generic).zip(u8::try_from(slot).ok())
             .filter(|&(r, s)| self.fx.param(r, s, FxParam::Type) == Some(f32::from(crate::fx::Kind::Convolution.ser_id())))
@@ -415,7 +425,7 @@ impl KspEngine for Host<'_> {
         let Some(address) = self.address(par) else {
             return self.bank.is_some_and(|b| Address::inert(par, b.groups()));
         };
-        let domain = if address.is_group() { self.domain } else { 0 };
+        let domain = if address.is_group() { self.settings_domain } else { 0 };
         let native = value;
         let value = address.decode(value);
         if let Address::GroupType(g, s) = address {
@@ -424,6 +434,12 @@ impl KspEngine for Host<'_> {
         if !loaded(address, value, |r, s| self.fx.param(r, s, FxParam::Type)) {
             return false;
         }
+        // The canonical pass owns common instrument/FX configuration. Private
+        // UI replay still applies group overrides, without overwriting shared
+        // postmix effects or their saved values with the last origin's state.
+        if self.ui_replay && !address.is_group() { return true; }
+        let local = address.is_group() && self.player.domain_origins.is_some()
+            && (!self.common || self.ui_replay);
         // Render applies every parameter before notes at the same sample. Keep
         // its last value, including what later callbacks read, without queuing
         // a full group-envelope restore again for each articulation switch.
@@ -434,7 +450,7 @@ impl KspEngine for Host<'_> {
                 .filter(|(_, w)| w.at == at).map(|(i, w)| ((w.domain, w.address), i)));
         }
         if let Some(&i) = self.write_index.1.get(&(domain, address)) {
-            self.writes[i].local = !self.common && self.player.domain_origins.is_some() && address.is_group();
+            self.writes[i].local = local;
             self.writes[i].value = value;
             self.writes[i].par = par;
             self.writes[i].native = native;
@@ -447,7 +463,7 @@ impl KspEngine for Host<'_> {
         let i = self.writes.partition_point(|w| w.at <= at);
         // Insertion follows every existing write at this sample, so it cannot
         // move an index cached for the current batch, even with future writes.
-        self.writes.insert(i, Write { local: !self.common && self.player.domain_origins.is_some() && address.is_group(), domain, at, address, value, par, native });
+        self.writes.insert(i, Write { local, domain, at, address, value, par, native });
         self.write_index.1.insert((domain, address), i);
         true
     }
@@ -455,7 +471,7 @@ impl KspEngine for Host<'_> {
     /// The latest queued value, else the engine's current one.
     fn engine_par(&self, par: EnginePar) -> Option<i32> {
         let address = self.address(par)?;
-        let domain = if address.is_group() { self.domain } else { 0 };
+        let domain = if address.is_group() { self.settings_domain } else { 0 };
         let queued = self.writes.iter().rev().find(|w| w.domain == domain && w.address == address);
         let value = match queued {
             Some(w) => w.value,

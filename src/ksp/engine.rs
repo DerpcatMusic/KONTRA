@@ -82,6 +82,11 @@ pub struct NativeEdit {
 pub trait KspEngine {
     /// Select the callback's prepared performance storage; effects remain shared.
     fn set_domain(&mut self, _domain: u8, _common: bool) {}
+    /// Group parameter storage may be canonical while event ownership remains
+    /// in a performance domain. Replays apply private group parameters only.
+    fn set_callback_scope(&mut self, domain: u8, _settings: u8, common: bool, _ui_replay: bool) {
+        self.set_domain(domain, common);
+    }
     fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<EventId>;
     /// Freeze per-note controls before a release callback can wait or create notes.
     fn release_expression(&self, _at: u32, _voice: Option<EventId>, _channel: u8, _note: u8) -> Option<Expression> { None }

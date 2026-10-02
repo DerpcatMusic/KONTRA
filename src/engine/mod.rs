@@ -631,6 +631,8 @@ impl Engine {
         let host = Host {
             channel,
             domain: 0,
+            settings_domain: 0,
+            ui_replay: false,
             common: false,
             bank: self.bank.as_deref(),
             fx: &self.fx,
@@ -2370,6 +2372,106 @@ impl Pace {
             self.start += late;
         }
         late
+    }
+}
+
+#[cfg(test)]
+mod prepared_scope_tests {
+    use super::*;
+    use crate::ksp::{EnginePar, KspEngine, NoteLength, NoteSpec};
+
+    #[test]
+    fn prepared_canonical_group_scope_survives_note_commands_and_guards_shared_fx_replay() {
+        let source = "on init\nmake_perfview\ndeclare ui_slider $edit(0,1000000)\ndeclare $private\nend on\non note\n$private := $EVENT_VELOCITY\nset_engine_par($ENGINE_PAR_VOLUME,$private*5000,0,-1,-1)\nend on\non ui_control($edit)\nset_engine_par($ENGINE_PAR_VOLUME,$edit+$private*1000,0,-1,-1)\nset_engine_par($ENGINE_PAR_PAN,500000+$private*1000,-1,-1,-1)\nset_engine_par($ENGINE_PAR_VOLUME,$edit+$private*1000,-1,-1,$NI_BUS_OFFSET)\nwait(1000)\nset_engine_par($ENGINE_PAR_VOLUME,$edit+$private*1000+10000,0,-1,-1)\nset_engine_par($ENGINE_PAR_PAN,510000+$private*1000,-1,-1,-1)\nset_engine_par($ENGINE_PAR_VOLUME,$edit+$private*1000+10000,-1,-1,$NI_BUS_OFFSET)\nend on";
+        let instrument = crate::import::Instrument {
+            groups: vec![crate::import::Group::default()],
+            scripts: vec![source.into()],
+            fx: crate::fx::ProgramFx {
+                buses: vec![crate::fx::Bus { index: 0, name: "shared".into(), volume: 1., pan: 0., output: -1, chain: Default::default() }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (mut runtime, errors) = script::load_scripts(&instrument, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let rt = runtime.as_deref_mut().unwrap();
+        rt.prepare_channel_domains((1<<1)|(1<<3)|(1<<5), 7);
+        rt.prepare_channel_configuration();
+        assert_eq!(rt.group_storage_count(), 4, "three configured origins plus one canonical prefix");
+        let fx = script::effects(&instrument, Some(rt), 48000.);
+        let mut prepared = PreparedGroups::new(&instrument, rt);
+        let mut bank = Bank::from_samples(instrument.groups.clone(), vec![crate::import::Zone::default()],
+            vec![(std::path::PathBuf::new(), crate::audio::Sample { rate: 48000, frames: vec![[0.25;2];24000] })]).unwrap();
+        prepared.install(&mut bank);
+        assert_eq!(bank.domain_settings.len(), 3);
+        let samples = bank.samples.as_ptr();
+        let mut engine = Engine::default();
+        engine.set_bank(Some(Box::new(bank)));
+        engine.set_fx(fx);
+        engine.set_script(runtime);
+        let (mut left, mut right) = ([0.;96], [0.;96]);
+        let group = EnginePar { id: params::id::VOLUME, group: 0, slot: -1, generic: -1 };
+        let pan = EnginePar { id: params::id::PAN, group: -1, slot: -1, generic: -1 };
+        let bus = EnginePar { id: params::id::VOLUME, group: -1, slot: -1, generic: 1000 }; // $NI_BUS_OFFSET
+        let address = Address::Group(0, params::GroupPar::Volume);
+        let mut edit = || {
+            for (owner, velocity) in [(1,20),(3,40),(5,60)] { engine.note_on_from(7,owner,60,velocity); }
+            engine.render(&mut left, &mut right);
+            let (rt, mut host) = engine.scripted(7).unwrap();
+            rt.ui_control_configuration(&mut host,0,0,400000);
+            for owner in [1,3,5] { rt.ui_control_replay(&mut host,owner,0,0,400000); }
+            engine.render(&mut left, &mut right);
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| edit()), 0);
+        #[cfg(not(feature = "plugin"))]
+        edit();
+        let bank = engine.bank().unwrap();
+        assert_eq!(bank.samples.as_ptr(), samples);
+        for (domain, value) in [(0,430000),(1,450000),(2,470000),(3,410000)] {
+            assert!((bank.base_for(domain)[0].gain-address.decode(value)).abs()<1e-6);
+        }
+        assert!((engine.player.instrument.1 - 0.02).abs() < 1e-5, "only canonical instrument pan applies");
+        let shared = Address::Fx(crate::fx::Rack::Bus(0),0,crate::fx::FxParam::Volume);
+        assert!((engine.fx().param(crate::fx::Rack::Bus(0),0,crate::fx::FxParam::Volume).unwrap()-shared.decode(410000)).abs()<1e-6);
+        let voices = engine.voice_census();
+        assert_eq!(voices.len(), 3);
+        assert!(voices.iter().all(|v|v.envelope>0. && v.gain>0. && v.channel==7));
+        assert!(left.iter().any(|x|x.abs()>0.001));
+        let saved = engine.script().unwrap().engine_state();
+        for (par, value) in [(group,410000),(pan,510000),(bus,410000)] {
+            assert_eq!(saved.iter().find(|e|e.par==par).unwrap().value, value, "save canonical edits rather than the last private replay");
+        }
+        // These native event operations change Host.domain. They must not
+        // redirect the callback's subsequent group writes or parameter reads.
+        let groups = GroupMask::all();
+        let note = NoteSpec { event: 100, channel: 7, domain: 1, frozen_expression: None,
+            owner: Some((3,64)), input_channel: Some(3), note: 64, velocity: 100,
+            sample_offset_us: 0, length: NoteLength::UntilNoteOff,
+            volume_mdb: 0, tune_mc: 0, pan: 0, groups: &groups };
+        let mut child = || {
+            let (_, mut host) = engine.scripted(7).unwrap();
+            host.set_callback_scope(0,3,true,false);
+            let id = host.play_note(0,&note).unwrap();
+            assert!(host.set_engine_par(0,group,600000));
+            host.note_off(0,id,&note);
+            assert_eq!(host.engine_par(group),Some(600000));
+            assert_eq!(host.settings_domain,3);
+            assert_eq!(host.domain,1);
+            assert_eq!(host.commands.len(),2);
+            assert!(host.commands.iter().all(|c|c.domain==1 && c.input_channel==Some(3)));
+            engine.render(&mut left,&mut right);
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| child()),0);
+        #[cfg(not(feature = "plugin"))]
+        child();
+        let bank = engine.bank().unwrap();
+        for (domain,value) in [(0,430000),(1,450000),(2,470000),(3,600000)] {
+            assert!((bank.base_for(domain)[0].gain-address.decode(value)).abs()<1e-6);
+        }
+        assert_eq!(engine.dropped_commands(),0);
+        assert!(engine.script().unwrap().diagnostics().is_empty(),"{:?}",engine.script().unwrap().diagnostics());
     }
 }
 

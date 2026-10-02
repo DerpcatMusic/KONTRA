@@ -442,7 +442,7 @@ impl PreparedGroups {
                 super::params::write(&mut base, address, address.decode(value));
             }
         }
-        let count = runtime.channel_domain_mask().map_or(1, |mask| mask.count_ones() as usize);
+        let count = runtime.group_storage_count();
         Self {
             settings: base.clone(),
             domain_base: (1..count).map(|_| base.clone()).collect(),

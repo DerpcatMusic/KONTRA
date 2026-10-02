@@ -928,6 +928,12 @@ impl Runtime {
 
     pub(crate) fn channel_domains_prepared(&self) -> bool { self.domain_mask.is_some() }
 
+    /// One group settings bank per prepared performance prefix, plus the
+    /// canonical prefix when present. Samples and global effects stay shared.
+    pub(crate) fn group_storage_count(&self) -> usize {
+        usize::from(self.domain_count) + usize::from(self.configuration_domain.is_some())
+    }
+
     /// Exact typed writable cells and total cells, for preparation/memory audits.
     pub fn channel_capacity(&self) -> Vec<([u32; 3], [u32; 3])> {
         self.programs.iter().map(|p| (p.domain_slots, [p.ints, p.real_slots, p.strs])).collect()
@@ -2824,7 +2830,9 @@ impl Runtime {
             let bank = self.configuration_domain.expect("waiting configuration callback retains its prepared storage");
             self.states.iter_mut().for_each(|state| state.mem.select(bank));
         }
-        engine.set_domain(domain, self.threads[i as usize].ctx.common);
+        let ctx = &self.threads[i as usize].ctx;
+        let settings = if ctx.configuration { self.configuration_domain.unwrap() } else { domain };
+        engine.set_callback_scope(domain, settings, ctx.common, ctx.ui_replay);
         let t = &mut self.threads[i as usize];
         let slot = t.ctx.slot as usize;
         let budget = self
