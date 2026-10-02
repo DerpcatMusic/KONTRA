@@ -438,7 +438,11 @@ impl View {
                 self.optional_int(&id, "ZERO_LINE_COLOR", &v["colors"], "zeroLine")?;
             }
             if index == 6 {
-                let entries = v["entries"].as_array().context("Invalid menu entries")?;
+                let entries: &[Value] = match v.get("entries") {
+                    Some(Value::Null) => &[], // Creator Tools exports an empty menu as null.
+                    Some(Value::Array(entries)) => entries,
+                    _ => bail!("Invalid menu entries"),
+                };
                 ensure!(entries.len() <= 4096, "Menu item limit");
                 for (i, entry) in entries.iter().enumerate() {
                     let text = self.quoted(string(entry, "string")?)?;

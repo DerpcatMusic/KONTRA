@@ -31,7 +31,8 @@ fn performance_view_loads_hierarchy_defaults_callbacks_and_resource_cache_identi
             {"index":3,"value":{"common":common("Amount"),"ratio":1,"unit":0,"value":{"min":0,"max":100,"default":default}}},
             {"index":6,"value":{"common":common("Choice"),"entries":[{"show":true,"string":"First \"quoted\"","value":42},{"show":false,"string":"Hidden","value":91}]}},
             {"index":9,"value":{"common":common("Curve"),"bipolar":true,"maxValue":1000,"steps":{"total":4,"visible":4}}},
-            {"index":10,"value":{"common":common("Name"),"text":{"string":"Exact \"name\"\nC:\\folder"}}}
+            {"index":10,"value":{"common":common("Name"),"text":{"string":"Exact \"name\"\nC:\\folder"}}},
+            {"index":6,"value":{"common":common("Empty"),"entries":null}}
         ]}}]
     }}});
     let path = resources.join("fixture.nckp");
@@ -42,7 +43,8 @@ fn performance_view_loads_hierarchy_defaults_callbacks_and_resource_cache_identi
     let (mut first, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
     assert!(errors.iter().all(Option::is_none), "{errors:?}");
     let ui = first.interface(0);
-    assert_eq!(ui.controls.len(),5);
+    assert_eq!(ui.controls.len(),6);
+    assert!(ui.controls[5].menu.is_empty());
     assert_eq!(ui.controls[1].variable,"$Section__Amount");
     assert_eq!(ui.controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(17));
     assert_eq!(ui.controls[1].properties["$CONTROL_PAR_POS_X"],Value::Int(7));
