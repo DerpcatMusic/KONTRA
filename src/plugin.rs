@@ -3816,6 +3816,7 @@ end on"#, dir.display(), dir.display());
         let mut dsp = Dsp::default();
         dsp.script_epoch[0] = 1;
         let rt = rt.unwrap();
+        let mut retained = rt.live();
         {
             let mut view = p.shared.view.lock().unwrap();
             view.parts[0].script_epoch = 1;
@@ -3844,6 +3845,12 @@ end on"#, dir.display(), dir.display());
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()));
+        assert_eq!(allocations(|| {
+            assert!(dsp.rack.parts[0].script().unwrap().refresh_live(&mut retained));
+        }), 0);
+        assert_eq!(retained.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"],
+            crate::ksp::Value::Array(vec![crate::ksp::Value::Int(84);600]),
+            "retained Live table follows typed memory mutation revisions");
         load_arrays(&p); // Free parse buffers on the worker and return the prepared job.
         tick(&mut dsp, &mut buffer, &mut cx);
         assert_eq!(allocations(|| {
@@ -3857,6 +3864,10 @@ end on"#, dir.display(), dir.display());
             for _ in 0..3 { tick(&mut dsp, &mut buffer, &mut cx); }
         }), 0);
         assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:42:42".into()));
+        assert_eq!(allocations(|| { dsp.rack.parts[0].script().unwrap().refresh_live(&mut retained); }), 0);
+        assert_eq!(retained.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"],
+            crate::ksp::Value::Array(vec![crate::ksp::Value::Int(42);600]),
+            "a subsequent file invalidates the same retained table snapshot");
         assert_eq!(allocations(|| {
             for _ in 0..3 { tick(&mut dsp, &mut buffer, &mut cx); }
         }), 0);
