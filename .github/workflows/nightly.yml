@@ -28,8 +28,8 @@ jobs:
     with:
       release_validation: true
 
+  # Package the same SHA while shipping checks run; publication still needs both.
   build:
-    needs: verify
     if: github.ref == 'refs/heads/main' && !github.event.repository.private
     concurrency:
       group: nightly-build-${{ matrix.name }}
@@ -122,7 +122,7 @@ jobs:
           printf '%s\n' "$GITHUB_SHA" > "$stage/SOURCE_COMMIT.txt"
           "$stage/$exe" --build-info > "$stage/build-info.json"
           echo "STAGE=$stage" >> "$GITHUB_ENV"
-      - name: Ad-hoc codesign (macOS)
+      - name: Normalize macOS bundle versions
         if: runner.os == 'macOS'
         run: |
           python3 - <<'PYPLIST'
@@ -134,8 +134,17 @@ jobs:
               info.update(CFBundleShortVersionString=version.split("-", 1)[0], CFBundleVersion=version.split("-", 1)[0], KONTRAVersion=version)
               path.write_bytes(plistlib.dumps(info, sort_keys=False))
           PYPLIST
-          codesign --force --deep --sign - "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3" "$STAGE/kontakto-standalone"
-          codesign --verify --deep --verbose=2 "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3"
+      - name: Developer ID sign and notarize macOS
+        if: runner.os == 'macOS'
+        env:
+          APPLE_APPLICATION_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_APPLICATION_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_DEVELOPER_ID_APPLICATION: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KONTRA_TARGET: ${{ matrix.target }}
+        run: bash .github/scripts/notarize_macos.sh
       - name: Zip
         shell: bash
         run: |

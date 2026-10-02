@@ -21,6 +21,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const HISTORY_LIMIT: usize = 2048;
 const HISTORY_BYTES: usize = 2 * 1024 * 1024;
 const EVENT_BYTES: usize = 32 * 1024;
+const DETAIL_BYTES: usize = EVENT_BYTES / 4;
 const LOG_LIMIT: u64 = 8 * 1024 * 1024;
 const QUEUE_LIMIT: usize = 256;
 static NEXT_LOAD: AtomicU64 = AtomicU64::new(1);
@@ -1483,6 +1484,8 @@ fn script_fault_details(runtime: &crate::ksp::Runtime, fault: crate::ksp::LiveFa
 /// operation observed by the journal, without claiming every row reached disk.
 pub struct LoadTrace {
     report: Value,
+    journal_details: Value,
+    detail_revision: u64,
     seen: std::collections::HashSet<(&'static str, &'static str, String)>,
     #[cfg(test)]
     test_session: Option<Arc<Session>>,
@@ -1501,6 +1504,8 @@ impl LoadTrace {
         );
         let mut this = Self {
             report: json!({"load_id":id,"path":path,"program":program,"part":part,"version":env!("CARGO_PKG_VERSION"),"build_hash":env!("KONTRA_BUILD_HASH"),"import_hash":env!("KONTRA_IMPORT_HASH"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"status":"loading","stages_ms":{},"details":{},"issues":[]}),
+            journal_details: json!({}),
+            detail_revision: 0,
             seen: Default::default(),
             #[cfg(test)]
             test_session: None,
@@ -1562,7 +1567,59 @@ impl LoadTrace {
         self.issue(self.stage, "failed", message);
     }
     pub fn detail(&mut self, key: &str, value: impl Into<Value>) {
-        self.report["details"][key] = value.into();
+        let value = value.into();
+        let mut compact = value.clone();
+        // Sanitize before partitioning, so credentials/source payloads cannot
+        // hide inside an inventory. Typed items keep export path redaction valid.
+        clean(&mut compact, false);
+        self.detail_revision += 1;
+        self.compact_detail(&mut vec![key.to_owned()], &mut compact);
+        self.report["details"][key] = value;
+        self.journal_details[key] = compact;
+    }
+    fn compact_detail(&mut self, field: &mut Vec<String>, value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for (key, value) in map {
+                    field.push(key.clone());
+                    self.compact_detail(field, value);
+                    field.pop();
+                }
+            }
+            Value::Array(items) if serde_json::to_vec(&*items).unwrap().len() > DETAIL_BYTES => {
+                for (index, item) in items.iter_mut().enumerate() {
+                    field.push(index.to_string());
+                    self.compact_detail(field, item);
+                    field.pop();
+                }
+                let total = items.len();
+                let (mut chunk, mut bytes, mut start, mut index) = (Vec::new(), 2, 0, 0);
+                for item in std::mem::take(items) {
+                    let size = serde_json::to_vec(&item).unwrap().len() + 1;
+                    if !chunk.is_empty() && bytes + size > DETAIL_BYTES {
+                        let count = chunk.len();
+                        self.detail_chunk(field, index, start, total, chunk);
+                        start += count;
+                        index += 1;
+                        chunk = Vec::new();
+                        bytes = 2;
+                    }
+                    chunk.push(item);
+                    bytes += size;
+                }
+                self.detail_chunk(field, index, start, total, chunk);
+                *value = json!({"journal_inventory":{"field":field,"revision":self.detail_revision,"items":total,"chunks":index+1}});
+            }
+            _ => {}
+        }
+    }
+    fn detail_chunk(&mut self, field: &[String], index: usize, start: usize, total: usize, items: Vec<Value>) {
+        self.record("load_detail", json!({
+            "code":"load_detail_inventory", "field":field, "revision":self.detail_revision,
+            "chunk":index, "item_start":start, "items_total":total, "final":start+items.len()==total,
+            "message":format!("Load detail {}: items {}..{} of {total}", field.join("."), start, start+items.len()),
+            "items":items,
+        }));
     }
     pub fn issue(&mut self, stage: &'static str, code: &'static str, message: impl Into<String>) {
         self.issue_details(stage, code, message.into(), json!({}));
@@ -1648,7 +1705,7 @@ impl LoadTrace {
             "load_finished",
             json!({
                 "status":self.report["status"], "elapsed_ms":self.report["elapsed_ms"], "reason":self.report["failure"],
-                "stages_ms":self.report["stages_ms"], "details":self.report["details"],
+                "stages_ms":self.report["stages_ms"], "details":self.journal_details,
                 "issues_retained":self.report["issues"].as_array().unwrap().len(),
                 "issues_omitted":self.report["issues_omitted"].as_u64().unwrap_or(0),
                 "last_error":self.report["last_error"],
@@ -1709,6 +1766,74 @@ pub fn code(message: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_detail_inventory_preserves_large_metadata_in_bounded_journal_and_export() {
+        let directory = std::env::temp_dir().join(format!("kontra-detail-contract-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let session = Session::start(directory.join("logs"));
+        let dependencies: Vec<Value> = (0..700).map(|n| json!({
+            "path":format!("/private/inventory-owner/{}/Authored dependency {n}.wav", "directory-".repeat(12)),
+            "version":[n,1790000000000000000u64+n],
+        })).collect();
+        assert!(serde_json::to_vec(&dependencies).unwrap().len() > 64*1024);
+        let mut trace = LoadTrace::new(Path::new("Authored inventory.nki"), 0, None);
+        trace.test_session = Some(session.clone());
+        trace.stage("import");
+        trace.detail("applied_instrument", json!({"name":"Authored inventory", "dependencies":dependencies}));
+        let excerpt = json!({"script_slot":1,"line":3,"text":"3 | authored_array[700] := 1"});
+        trace.issue_details("scripts", "warning", "Authored warning stays separate from the inventory".into(), json!({"source_excerpt":excerpt}));
+        let report = trace.finish("loaded");
+        assert_eq!(report["details"]["applied_instrument"]["dependencies"], json!(dependencies), "local report retains the complete original inventory");
+        let (reply, done) = mpsc::channel();
+        lock(&session.sender).as_ref().unwrap().send(Command::Flush(reply)).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let read = |path: &Path| -> Vec<Value> {
+            std::fs::read_to_string(path).unwrap().lines().map(|line| {
+                assert!(line.len() <= EVENT_BYTES);
+                serde_json::from_str(line).unwrap()
+            }).collect()
+        };
+        let reassemble = |rows: &[Value]| -> Vec<Value> {
+            let mut chunks: Vec<_> = rows.iter().filter(|row| row["event"] == "load_detail").collect();
+            chunks.sort_by_key(|row| row["data"]["chunk"].as_u64().unwrap());
+            let summary = rows.iter().find(|row| row["event"] == "load_finished").unwrap();
+            let reference = &summary["data"]["details"]["applied_instrument"]["dependencies"]["journal_inventory"];
+            assert_eq!(reference["items"], 700);
+            assert_eq!(reference["chunks"].as_u64().unwrap(), chunks.len() as u64);
+            let mut items = Vec::new();
+            for (index, row) in chunks.iter().enumerate() {
+                let data = &row["data"];
+                assert_eq!(data["field"], json!(["applied_instrument","dependencies"]));
+                assert_eq!(data["revision"], reference["revision"]);
+                assert_eq!(data["chunk"], json!(index));
+                assert_eq!(data["item_start"], json!(items.len()));
+                assert_eq!(data["items_total"], 700);
+                assert_eq!(data["final"], index+1 == chunks.len());
+                items.extend(data["items"].as_array().unwrap().iter().cloned());
+            }
+            assert_eq!(items.len(), 700);
+            items
+        };
+        let rows = read(&session.path);
+        assert_eq!(reassemble(&rows), dependencies);
+        assert!(rows.iter().any(|row| row["data"]["source_excerpt"] == excerpt), "inventory chunking preserves separate offending code excerpts");
+        let history = lock(&session.history);
+        assert_eq!((history.status.dropped_events, history.status.write_errors, history.status.truncated_events), (0,0,0));
+        assert_eq!(history.status.journal_events_written, rows.len() as u64);
+        let snapshot = DiagnosticSnapshot { revision:revision(), events:history.events.iter().map(|(event,_)|event.clone()).collect(), status:history.status.clone(), build:build_identity() };
+        drop(history);
+        let bundle = directory.join("bundle");
+        export_bundle(&bundle, &json!({"load":report.as_ref()}), &snapshot, &session.path, None).unwrap();
+        let exported = read(&bundle.join("journal.jsonl"));
+        assert!(exported.iter().any(|row| row["data"]["source_excerpt"] == excerpt));
+        let mut redacted = json!(dependencies);
+        clean(&mut redacted,true);
+        assert_eq!(json!(reassemble(&exported)), redacted);
+        assert!(!std::fs::read_to_string(bundle.join("journal.jsonl")).unwrap().contains("/private/inventory-owner"));
+        let mut owner = Some(session.clone());
+        stop(&mut owner).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn load_warning_journal_retains_records_beyond_report_example_limit() {

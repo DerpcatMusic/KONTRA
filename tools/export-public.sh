@@ -155,10 +155,11 @@ ksp='^[[:space:]]*"?(declare (const |ui_|polyphonic |global |read |pers |[%$!@~?
 while IFS=: read -r f n; do
   case $f in
     *.rs) case $f in
-      ./src/ksp/tests.rs) limit=200 ;; # Authored selector, structured fault and native-menu persistence fixtures.
+      ./src/ksp/tests.rs) limit=209 ;; # Authored native-menu persistence and delayed control-name fixtures.
+      ./src/import.rs) limit=5 ;; # Authored wavetable control-constant fixture.
       ./src/articulate.rs) limit=31 ;;
       ./tests/playback.rs) limit=79 ;;
-      ./src/plugin.rs) limit=92 ;; # Authored native-send, source-context, script-page and persistence-lock fixtures.
+      ./src/plugin.rs) limit=99 ;; # Authored native-send, source-context, script-page and live IR-switch fixtures.
       ./src/ui/vector.rs) limit=15 ;; # Authored graph/fader projection fixture.
       ./src/ksp/vm.rs) limit=7 ;; # Authored shared revision-owner fixture.
       ./tests/*|*/tests.rs) limit=40 ;;

@@ -24,6 +24,7 @@ mod script;
 pub(crate) mod native_state;
 mod stream;
 mod voice;
+mod wavetable;
 
 pub(crate) use bank::parallel;
 pub use audit::audit_dsp;
@@ -171,6 +172,8 @@ pub struct Expression {
     pub gain: f32,
     /// −1..=1, added to the voice's pan.
     pub pan: f32,
+    /// Absolute registered per-note CC74, independent of channel controllers.
+    pub note_cc74: Option<u8>,
     /// Raw member controls frozen at physical key-up; manager controls stay live.
     pub member_cc74: Option<u8>,
     pub member_pressure: Option<u8>,
@@ -178,7 +181,7 @@ pub struct Expression {
 
 impl Default for Expression {
     fn default() -> Self {
-        Self { tune: 0.0, gain: 1.0, pan: 0.0, member_cc74: None, member_pressure: None }
+        Self { tune: 0.0, gain: 1.0, pan: 0.0, note_cc74: None, member_cc74: None, member_pressure: None }
     }
 }
 
@@ -557,6 +560,7 @@ impl Engine {
                 gain: v.gains[0].abs().max(v.gains[1].abs()),
                 envelope: v.env.level() * v.flex.as_ref().map_or(1.0, |f| f.level()) * v.fade.value(),
                 sample: v.sample,
+                wavetable: v.wavetable.map(|table| (table.first, table.cycles)),
                 pos: v.pos,
                 step: v.step * v.tune * v.pitch.1,
                 filtered: self.bank.as_ref().is_some_and(|b| b.settings[v.group as usize].filter.is_some()),
@@ -937,7 +941,13 @@ impl Engine {
 
     pub fn set_expression_on(&mut self, channel: u8, note: u8, expression: Expression) {
         if channel < 16 && note < 128 {
+            let previous = self.player.expression[channel as usize][note as usize];
             self.player.expression[channel as usize][note as usize] = expression;
+            // Settled modulation must see changed note controls without an unrelated CC.
+            if previous.note_cc74 != expression.note_cc74
+                || previous.member_cc74 != expression.member_cc74
+                || previous.member_pressure != expression.member_pressure
+            { self.player.touch(); }
         }
     }
 
@@ -1168,6 +1178,8 @@ pub struct VoiceInfo {
     /// Sample, virtual position and source frames per output frame before
     /// modulation: voices sharing a step and a position's fraction resample alike.
     pub sample: u32,
+    /// Resident wavetable source start and complete 2048-frame cycle count.
+    pub wavetable: Option<(usize, usize)>,
     pub pos: f64,
     pub step: f64,
     /// The group runs a per-voice filter or EQ.
@@ -1356,6 +1368,10 @@ impl Player {
                 slots[stream.slot as usize].stop();
             }
             let sample = &new.samples[v.sample as usize];
+            if let Some(table) = v.wavetable {
+                v.span = sample.span_at(table.first as u64).expect("resident wavetable after bank upgrade");
+                continue;
+            }
             let first = (v.pos as u64).saturating_sub(1);
             v.span = (v.map.run(first, v.wraps))
                 .and_then(|run| sample.span_at(run.frame))
@@ -1485,14 +1501,16 @@ impl Player {
         } else {
             1.0
         };
-        let step = f64::from(sample.rate) / self.rate * zone.tune * key;
+        let step = if play.wavetable.is_some() {
+            wavetable::step(ev.note, self.rate) * zone.tune
+        } else { f64::from(sample.rate) / self.rate * zone.tune * key };
         let c = ev.channel as usize;
         let master = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0).map(|(master, _)| master as usize);
         let expression_key = ev.owner.map_or(ev.note, |(_, key)| key);
         let expression = ev.frozen_expression.unwrap_or(self.expression[c][expression_key as usize & 127]);
         let inputs = params::Inputs {
             cc: &self.cc[c],
-            cc74: master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127)),
+            cc74: expression.note_cc74.or_else(|| master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127))),
             bend: self.bend[c] + master.map_or(0., |m| self.bend[m]),
             pressure: master.map_or(self.pressure[c], |m| expression.member_pressure.unwrap_or(self.pressure[c]).max(self.pressure[m])),
             note: ev.note,
@@ -1508,8 +1526,10 @@ impl Player {
             .map(|_| if manager == ev.channel { 0. } else { self.bend[c] }));
         let mods = settings.mods.start(&inputs, bend_pitch);
         let modulated = (settings.mods.start_offset(&inputs) * play.start_mod as f32) as u64;
-        let offset = ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)
-            .min(play.start_mod);
+        let offset = if play.wavetable.is_some() { 0 } else {
+            ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)
+                .min(play.start_mod)
+        };
         // A release-triggered voice starts with its key already up.
         let wraps = play
             .map
@@ -1517,14 +1537,15 @@ impl Player {
         // The resident span holding the voice's first window frame (one
         // before the start, for the cubic's left tap), if any does.
         let first = offset.saturating_sub(1);
-        let span_index = play
-            .map
-            .run(first, wraps)
-            .and_then(|run| sample.span_at(run.frame))
-            .unwrap_or(0);
+        let span_index = if let Some(table) = play.wavetable {
+            sample.span_at(table.first as u64).expect("prepared complete wavetable")
+        } else {
+            play.map.run(first, wraps)
+                .and_then(|run| sample.span_at(run.frame)).unwrap_or(0)
+        };
         let span = &sample.spans[span_index as usize];
         let limit = play.map.resident_limit(first, wraps, span.start, span.end());
-        let stream = if sample.streamed {
+        let stream = if sample.streamed && play.wavetable.is_none() {
             self.free.pop()
         } else {
             None
@@ -1582,12 +1603,13 @@ impl Player {
             frozen_expression: ev.frozen_expression,
             age: self.clock,
             sample: play.sample,
+            wavetable: play.wavetable,
             span: span_index,
             map: play.map,
             wraps,
-            length: play.map.len(wraps),
+            length: if play.wavetable.is_some() { FOREVER } else { play.map.len(wraps) },
             limit,
-            pos: offset as f64,
+            pos: if play.wavetable.is_some() { f64::from(settings.wavetable.unwrap().phase).rem_euclid(1.) * wavetable::CYCLE as f64 } else { offset as f64 },
             step,
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),
