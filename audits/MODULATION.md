@@ -725,3 +725,48 @@ frequency/phase modulation buffers. These details, plus group freewheel
 ownership, prevent treating a generic per-voice digital oscillator as
 verified playback. No proprietary waveform tables, arbitrary calibration,
 source bypass clock law or amplitude-lifetime change is included here.
+
+
+## Constant loop-boundary controls (2026-10-02)
+
+The native target registry identifies `loopStart`/`loopLength` as destinations
+7/8. The common target-output binder places their 32-frame control buffers at
+voice-context offsets 0x2f10/0x3010; SamplerModule reads those same buffers and
+passes them to the loop consumer. That consumer adds truncated float32
+fractions of total physical sample frames to both loop bounds (`loopStart`)
+or to the end (`loopLength`). Independent decoder-length and WAV byte-bound
+setters identify its total-frame member. Its gating member is a signed sample
+preload-byte budget, not a source-mode enum; serialized mode 0 produces zero
+budget, while mode 3 prepares a nonzero budget and disables this consumer.
+The exact named-mode registry bridge remains separate.
+
+A stored UI/timing case and the original script inverse lookup independently
+produce normalized writes 751086/14233. Cubic signed conversion yields
++0.1266360866/-0.9170098731, matching native magnitudes 0.1266360730/0.9170099497
+within float32 precision. Thus loop targets share the signed cubic setter and
+inverse-cube-root readback law; this is a matched writer record, not an
+assumption from the pitch law. The independently traced target sign bit is
+applied to these two destinations; the separate Invert button is retained.
+The official [NI zone API](https://docs.native-instruments.com/ni-tech-manuals/kontakt-api-reference-manual/en/zone)
+defines loop geometry in sample frames, but does not publish this normalized
+modulation law. The producer/binder/consumer chain supplies that evidence.
+
+Playback prepares all eligible Constant, zero-lag, unshaped and non-inverted
+assignments, including initially zero depths. On held forward full-sample
+loops in serialized Source mode 0, geometry updates at native 32-frame ticks.
+Native sample bounds and minimum four-frame length are retained. The saved
+crossfade is clamped **after** the offset, so moving a zero-start loop does
+not erase its crossfade. Live edits preserve the fractional physical sample
+cursor and reconfigure the existing streamer with the same map used by RAM
+playback. Until-release paths keep their final seam and tail after note-off.
+
+Cropped, reverse, alternating, other-source, shaped, inverted and lagged
+assignments remain diagnosed. Behind-cursor seam transitions and invalid
+signed bounds are deferred; each distinct edit is counted once in the voice
+census and retried on eligible control ticks without audio allocation.
+Edits after release retain the final geometry. No arbitrary assignment cap,
+forced whole-sample RAM, new modulation framework or full Kontakt loop-parity
+claim is introduced. The focused authored gate covers signed writer/readback,
+physical bounds, nonaligned control fragments, fractional cursor continuity,
+RAM/stream PCM equality, deferred retry and until-release lifetime with zero
+audio-thread heap operations. Actual-library PCM validation remains separate.

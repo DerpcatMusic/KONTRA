@@ -4,7 +4,7 @@ use super::{
     DECLICK, EventId, MAX_BLOCK,
     bank::{Bank, Span},
     filter::{FilterKey, LaneFilter, VoiceFilter},
-    map::{FOREVER, PlayMap, Run},
+    map::{FOREVER, LoopMap, PlayMap, Run},
     params::{Inputs, VOICE_MODS, PITCH_ENVS},
     stream::Slot,
 };
@@ -953,6 +953,11 @@ pub(crate) struct Voice {
     pub wavetable: Option<super::wavetable::Table>,
     pub span: u32,
     pub map: PlayMap,
+    /// Saved geometry; control offsets always apply to it, never accumulate.
+    pub base_loop: Option<LoopMap>,
+    pub loop_offsets: [f32; 2],
+    pub loop_deferred: Option<[f32; 2]>,
+    pub loop_deferred_edits: u32,
     pub wraps: u64,
     /// Virtual path length for the current wraps.
     pub length: u64,
@@ -1115,6 +1120,7 @@ impl Voice {
     /// passes to the output through a fader at rest.
     #[inline(always)]
     pub fn plan(&mut self, cx: &Context, n: usize, bus: Option<u8>, through: Option<[f32; 2]>) -> Option<Lane> {
+        if cx.native_control_tick { self.refresh_loop(cx); }
         let group = &cx.bank.settings[self.group as usize];
         let key = self.owner.map_or(self.note, |(_, key)| key);
         let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][key as usize & 127]);
@@ -1207,6 +1213,59 @@ impl Voice {
         }
         self.plan = plan;
         lane
+    }
+
+    /// Live boundary edits preserve the fractional physical cursor. Once released,
+    /// the existing until-release seam and tail retain their final geometry.
+    fn refresh_loop(&mut self, cx: &Context) {
+        let Some(base) = self.base_loop else { return; };
+        let offsets = cx.bank.settings[self.group as usize].mods.loop_offsets();
+        if offsets == self.loop_offsets { return; }
+        if self.released { self.defer_loop(offsets); return; }
+        let sample = &cx.bank.samples[self.sample as usize];
+        let Some(map) = (PlayMap { looped: Some(base), ..self.map })
+            .controlled_loop(offsets, sample.frames) else { self.defer_loop(offsets); return; };
+        if map == self.map {
+            self.loop_offsets = offsets;
+            self.loop_deferred = None;
+            return;
+        }
+        let Some(run) = self.map.run(self.pos as u64, self.wraps) else { return; };
+        let physical = run.frame as f64 + self.pos.fract();
+        // The native behind-end seam transition is not established. Keep this
+        // edit inert rather than invent a cursor reset; a later valid edit works.
+        if physical > map.looped.unwrap().end as f64 + 4. { self.defer_loop(offsets); return; }
+        self.loop_offsets = offsets;
+        self.loop_deferred = None;
+        self.pos = physical;
+        self.map = map;
+        self.wraps = map.wraps(FOREVER);
+        self.length = map.len(self.wraps);
+        let first = (self.pos as u64).saturating_sub(1);
+        if let Some(run) = map.run(first, self.wraps)
+            && let Some(span) = sample.span_at(run.frame) { self.span = span; }
+        let span = self.span(cx.bank);
+        self.limit = map.resident_limit(first, self.wraps, span.start, span.end());
+        if let Some(stream) = &mut self.stream {
+            let slot = &cx.slots[stream.slot as usize];
+            if self.limit == FOREVER {
+                slot.stop();
+                (stream.tag, stream.trusted, stream.paused) = (0, 0, false);
+            }
+            else {
+                let from = self.limit.max(first);
+                stream.tag = slot.configure(self.sample, &map, self.wraps, from, first);
+                stream.trusted = from;
+                stream.paused = false;
+            }
+        }
+    }
+
+    fn defer_loop(&mut self, offsets: [f32; 2]) {
+        if self.loop_deferred != Some(offsets) {
+            self.loop_deferred_edits = self.loop_deferred_edits.saturating_add(1);
+            self.loop_deferred = Some(offsets);
+        }
     }
 
     /// Mix the planned block into `left`/`right`, through the group's

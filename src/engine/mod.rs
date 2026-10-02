@@ -19,7 +19,7 @@ mod map;
 mod host_notes;
 pub use host_notes::{HostNote, HostPattern, HostExpression, HostRef};
 pub mod overrides;
-mod params;
+pub(crate) mod params;
 mod rack;
 mod residency;
 mod script;
@@ -576,6 +576,8 @@ impl Engine {
                 wavetable: v.wavetable.map(|table| (table.first, table.cycles)),
                 pos: v.pos,
                 step: v.step * v.tune * v.pitch.1,
+                loop_control_deferred: v.loop_deferred.is_some(),
+                loop_deferred_edits: v.loop_deferred_edits,
                 filtered: self.bank.as_ref().is_some_and(|b| b.settings[v.group as usize].filter.is_some()),
                 phase: v.env.phase(),
             })
@@ -1372,6 +1374,9 @@ pub struct VoiceInfo {
     /// The group runs a per-voice filter or EQ.
     pub filtered: bool,
     pub phase: voice::Phase,
+    /// Deferred live loop edits are counted once each and retried at control ticks.
+    pub loop_control_deferred: bool,
+    pub loop_deferred_edits: u32,
 }
 
 /// One released event, retaining the script's release-sample selection until
@@ -1721,9 +1726,22 @@ impl Player {
             ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)
                 .min(play.start_mod)
         };
+        let loop_offsets = settings.mods.loop_offsets();
+        // Keep the saved width before play_map's static-start clamp: modulation
+        // can move a zero-start loop far enough to admit its saved crossfade.
+        let base_map = map::PlayMap { looped: play.map.looped.map(|mut l| {
+            l.xfade = zone.loop_range.as_ref().map_or(l.xfade, |l| l.crossfade as u64);
+            l
+        }), ..play.map };
+        let base_loop = (settings.mods.has_loop_controls()
+            && zone.loop_range.as_ref().is_some_and(|l| !l.alternating)
+            && base_map.controlled_loop([0.; 2], sample.frames).is_some())
+            .then_some(base_map.looped).flatten();
+        let controlled = base_loop.and_then(|_| base_map.controlled_loop(loop_offsets, sample.frames));
+        let loop_deferred = (base_loop.is_some() && controlled.is_none()).then_some(loop_offsets);
+        let map = controlled.unwrap_or(play.map);
         // A release-triggered voice starts with its key already up.
-        let wraps = play
-            .map
+        let wraps = map
             .wraps(if release_trigger { offset } else { FOREVER });
         // The resident span holding the voice's first window frame (one
         // before the start, for the cubic's left tap), if any does.
@@ -1731,11 +1749,11 @@ impl Player {
         let span_index = if let Some(table) = play.wavetable {
             sample.span_at(table.first as u64).expect("prepared complete wavetable")
         } else {
-            play.map.run(first, wraps)
+            map.run(first, wraps)
                 .and_then(|run| sample.span_at(run.frame)).unwrap_or(0)
         };
         let span = &sample.spans[span_index as usize];
-        let limit = play.map.resident_limit(first, wraps, span.start, span.end());
+        let limit = map.resident_limit(first, wraps, span.start, span.end());
         let stream = if sample.streamed && play.wavetable.is_none() {
             self.free.pop()
         } else {
@@ -1755,7 +1773,7 @@ impl Player {
                 // the resident range streams from there, not from the zone start.
                 let tag = bank.slots()[slot as usize].configure(
                     play.sample,
-                    &play.map,
+                    &map,
                     wraps,
                     limit,
                     first,
@@ -1797,9 +1815,13 @@ impl Player {
             sample: play.sample,
             wavetable: play.wavetable,
             span: span_index,
-            map: play.map,
+            map,
+            base_loop,
+            loop_offsets: if loop_deferred.is_some() { [f32::NAN; 2] } else { loop_offsets },
+            loop_deferred,
+            loop_deferred_edits: u32::from(loop_deferred.is_some()),
             wraps,
-            length: if play.wavetable.is_some() { FOREVER } else { play.map.len(wraps) },
+            length: if play.wavetable.is_some() { FOREVER } else { map.len(wraps) },
             limit,
             pos: if play.wavetable.is_some() { f64::from(settings.wavetable.unwrap().phase).rem_euclid(1.) * wavetable::CYCLE as f64 } else { offset as f64 },
             step,
