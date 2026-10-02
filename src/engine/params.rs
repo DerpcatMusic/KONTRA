@@ -1498,6 +1498,27 @@ mod tests {
         let p = &settings[0].pitch_envelopes[0];
         let mut state = Envelope::new(&p.env, 48_000.);
         assert!((p.pitch(&mut state, 480, 48_000.) + 3.).abs() < 1e-4);
+
+        // A held +6 semitone pitch envelope must reach the actual resampler.
+        let mut pitched = groups[0].clone();
+        let env = &mut pitched.envelopes[0];
+        (env.env.attack_ms, env.env.sustain) = (0., 1.);
+        let reference = Group { tune: 2f64.powf(0.5), ..Group::default() };
+        let render = |group| {
+            let sample = crate::audio::Sample { rate: 48_000, frames: (0..4096)
+                .map(|i| [(i as f32 * 0.08).sin() * 0.25; 2]).collect() };
+            let bank = super::super::Bank::from_samples(vec![group], vec![crate::import::Zone::default()],
+                vec![(std::path::PathBuf::new(), sample)]).unwrap();
+            let mut engine = super::super::Engine::default();
+            engine.set_bank(Some(Box::new(bank)));
+            engine.note_on(0, 60, 100);
+            let (mut l, mut r) = ([0.; 1024], [0.; 1024]);
+            engine.render(&mut l, &mut r);
+            l
+        };
+        let (pitched, reference) = (render(pitched), render(reference));
+        assert!(reference.iter().any(|x| x.abs() > 0.01));
+        assert!(pitched.iter().zip(reference).all(|(a, b)| (a - b).abs() < 1e-6));
     }
 
     #[test]
