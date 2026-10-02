@@ -1441,6 +1441,8 @@ fn redact_text(text: &str) -> String {
 pub struct LoadTrace {
     report: Value,
     seen: std::collections::HashSet<(&'static str, &'static str, String)>,
+    #[cfg(test)]
+    test_session: Option<Arc<Session>>,
     started: Instant,
     stage_started: Instant,
     stage: &'static str,
@@ -1457,6 +1459,8 @@ impl LoadTrace {
         let mut this = Self {
             report: json!({"load_id":id,"path":path,"program":program,"part":part,"version":env!("CARGO_PKG_VERSION"),"build_hash":env!("KONTRA_BUILD_HASH"),"import_hash":env!("KONTRA_IMPORT_HASH"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"status":"loading","stages_ms":{},"details":{},"issues":[]}),
             seen: Default::default(),
+            #[cfg(test)]
+            test_session: None,
             started: Instant::now(),
             stage_started: Instant::now(),
             stage: "",
@@ -1480,9 +1484,15 @@ impl LoadTrace {
             "import" => "import",
             _ => "loader",
         };
-        if let Some(error) = emit(
-            json!({"event":event,"module":module,"load_id":self.report["load_id"],"path":self.report["path"],"program":self.report["program"],"part":self.report["part"],"instance_id":self.report["details"]["instance_id"],"library":self.report["details"]["library"],"stage":stage,"data":data}),
-        ) {
+        let row = json!({"event":event,"module":module,"load_id":self.report["load_id"],"path":self.report["path"],"program":self.report["program"],"part":self.report["part"],"instance_id":self.report["details"]["instance_id"],"library":self.report["details"]["library"],"stage":stage,"data":data});
+        #[cfg(test)]
+        let error = match &self.test_session {
+            Some(session) => emit_to(session, row),
+            None => emit(row),
+        };
+        #[cfg(not(test))]
+        let error = emit(row);
+        if let Some(error) = error {
             self.report["logging_error"] = json!(error);
         }
     }
@@ -1549,12 +1559,12 @@ impl LoadTrace {
             let omitted = self.report["issues_omitted"].as_u64().unwrap_or(0) + 1;
             self.report["issues_omitted"] = json!(omitted);
             if omitted == 1 {
-                self.record("issue", json!({"stage":stage,"code":"diagnostics_truncated","message":"Load report issues retain the first 1024 distinct examples; additional occurrences are counted in issues_omitted. Errors still produce log events; the latest is retained as last_error"}));
+                self.record("issue", json!({"stage":stage,"code":"diagnostics_truncated","message":"Load report issues retain the first 1024 distinct examples; additional occurrences are counted in issues_omitted. Additional warnings and errors still attempt journal delivery; recorder drop/write counters report delivery loss. The latest error is retained as last_error"}));
             }
             if error {
                 self.report["last_error"] = issue.clone();
-                self.record("issue", issue);
             }
+            self.record("issue", issue);
             return;
         }
         self.seen.insert(key);
@@ -1642,6 +1652,55 @@ pub fn code(message: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_warning_journal_retains_records_beyond_report_example_limit() {
+        let directory = std::env::temp_dir().join(format!("kontra-load-warning-contract-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let session = Session::start(directory.join("logs"));
+        let mut trace = LoadTrace::new(Path::new("Authored warning fixture.nki"), 0, None);
+        // An isolated real worker/journal avoids unrelated parallel producers
+        // changing this contract's queue pressure or rotating its history away.
+        trace.test_session = Some(session.clone());
+        let flush = || {
+            let (reply, done) = mpsc::channel();
+            lock(&session.sender).as_ref().unwrap().send(Command::Flush(reply)).unwrap();
+            done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        };
+        for n in 0..1026 {
+            trace.issue("effects", "unsupported_group_effect", format!("Group {n}: authored unsupported effect"));
+            // Test the retention boundary, not intentional bounded-queue loss.
+            if n % 128 == 127 { flush(); }
+        }
+        trace.issue("effects", "unsupported_group_effect", "Group 0: authored unsupported effect");
+        let report = trace.finish("loaded");
+        flush();
+        assert_eq!(report["issues"].as_array().unwrap().len(), 1024);
+        assert_eq!(report["issues_omitted"], 2, "known duplicates are not omitted examples");
+        assert_eq!(report["status"], "partial");
+        let journal = std::fs::read_to_string(&session.path).unwrap();
+        let records: Vec<Value> = journal.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        let warnings: Vec<_> = records.iter().filter(|row| row["code"] == "unsupported_group_effect").collect();
+        assert_eq!(warnings.len(), 1026, "every distinct warning reaches the real journal after the report cap");
+        for n in [0, 1023, 1024, 1025] {
+            let message = format!("Group {n}: authored unsupported effect");
+            assert_eq!(warnings.iter().filter(|row| row["reason"] == message).count(), 1);
+        }
+        let history = lock(&session.history);
+        assert!(history.events.len() <= HISTORY_LIMIT);
+        assert_eq!((history.status.dropped_events, history.status.write_errors), (0, 0));
+        let snapshot = DiagnosticSnapshot {
+            revision: revision(), events: history.events.iter().map(|(event, _)| event.clone()).collect(),
+            status: history.status.clone(), build: build_identity(),
+        };
+        drop(history);
+        let bundle = directory.join("bundle");
+        export_bundle(&bundle, &json!({"load":report.as_ref()}), &snapshot, &session.path, None).unwrap();
+        let exported = std::fs::read_to_string(bundle.join("journal.jsonl")).unwrap();
+        assert_eq!(exported.lines().filter(|line| serde_json::from_str::<Value>(line).unwrap()["code"] == "unsupported_group_effect").count(), 1026, "support export includes warnings omitted only from the load summary");
+        let mut owner = Some(session.clone());
+        stop(&mut owner).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn journal_contract_bounds_rotates_recovers_and_exports_private_reports() {
