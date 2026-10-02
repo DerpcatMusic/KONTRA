@@ -3060,3 +3060,42 @@ fn rack_growth_preserves_restored_slots_and_same_frame_duplicate() {
         "revealed header intersects the viewport: {header:?}, {viewport:?}");
     bounded(&h, 131);
 }
+
+#[test]
+fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
+    let p = Arc::new(SamplerParams::new());
+    let dir = "/virtual/rename-fixture/Tubular Bell";
+    p.shared.libraries.edit(|s| { s.rename_library(dir, ""); s.sort = crate::library::Sort::Name; });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.files = Arc::new(vec![format!("{dir}/Bell.nki").into()]);
+        view.shelf = Arc::new(crate::library::Shelf::new(vec![crate::library::Library {
+            dir: dir.into(), name: String::new(), instruments: 1, ..Default::default()
+        }]));
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let at = center(&h.ui, "library-0"); // Empty metadata names still have a visible folder fallback.
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
+    }
+    h.idle(2);
+    h.press("menu-item-0");
+    h.idle(2);
+    assert_eq!(h.ui.focus_key(), Some("library-name"));
+    h.tick(Input { keys: vec![KeyPress { key: Key::Char('a'), mods: Mods { ctrl: true, ..Default::default() } }], ..Default::default() });
+    h.tick(Input { text: "Evening Bells Library".into(), ..Default::default() });
+    h.tick(enter()); h.idle(3);
+    let settings = p.shared.libraries.settings();
+    assert_eq!(settings.names.get(dir).map(String::as_str), Some("Evening Bells Library"));
+    let view = p.shared.view.lock().unwrap();
+    assert_eq!(view.shelf.libraries[0].name, "", "resource and source identity is unchanged");
+    assert_eq!(view.files[0], PathBuf::from(format!("{dir}/Bell.nki")));
+    assert_eq!(settings.library_name(&view.shelf.libraries[0]), "Evening Bells Library", "typed names retain their suffix");
+    drop(view);
+    h.ui.focus("library-filter");
+    h.tick(Input { text: "evening".into(), ..Default::default() }); h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("library-0").is_some(), "the new name is searchable");
+    h.press("library-0");
+    assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(), "selection retains its canonical source");
+    p.shared.libraries.edit(|s| s.rename_library(dir, ""));
+}

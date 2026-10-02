@@ -69,12 +69,14 @@ pub struct Browse {
     typing: Option<&'static str>,
     /// Ctrl+F opened the browser: the filter takes the focus once it is drawn.
     pub find: bool,
+    /// A library display name being typed, keyed by its stable folder.
+    pub renaming: Option<(String, String)>,
 }
 
 impl Browse {
     /// Esc this frame was meant for one of the browser's fields.
     pub fn typing(&self) -> bool {
-        self.typing.is_some()
+        self.typing.is_some() || self.renaming.is_some()
     }
 }
 
@@ -155,9 +157,8 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &presets)) || *shelf != scanned || *kind != multis {
         let mut by: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for (n, file) in presets.iter().enumerate().filter(|(_, f)| import::is_multi(f) == multis) {
-            let library = super::library_of(&catalog, file);
-            if !library.is_empty() {
-                by.entry(library).or_default().push(n);
+            if let Some(library) = catalog.of(file) {
+                by.entry(library.name.clone()).or_default().push(n);
             }
         }
         (*files, *shelf, *kind, *grouped) = (Arc::downgrade(&presets), scanned, multis, Arc::new(by));
@@ -254,7 +255,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         sources.push(("source-recent".to_owned(), Source::Recent));
     }
     for (n, library) in arranged.iter().enumerate() {
-        let hay = format!("{} {}", library.name, library.vendor).to_lowercase();
+        let hay = format!("{} {} {}", settings.library_name(library), library.name, library.vendor).to_lowercase();
         if words.iter().all(|w| hay.contains(w.as_str())) {
             sources.push((format!("library-{n}"), Source::Library(library.name.clone())));
         }
@@ -302,13 +303,14 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let dragging = ui.dragging::<LibraryDrag>().map(|d| d.0.clone());
     for (n, (id, source)) in sources.iter().enumerate() {
         let r = ui.get(id.as_str());
-        if r.clicked_with(Button::Primary) {
+        let editing = matches!(source, Source::Library(name) if view.shelf.named(name).is_some_and(|l| cx.state.browse.renaming.as_ref().is_some_and(|(dir, _)| Path::new(dir) == l.dir)));
+        if !editing && r.clicked_with(Button::Primary) {
             // A second click lets the library go: the search spans them all.
             cx.state.source = (cx.state.source.as_ref() != Some(source)).then(|| source.clone());
             cx.state.cursor = None;
             keep_place(cx);
         }
-        if r.key_activated {
+        if !editing && r.key_activated {
             cx.state.source = Some(source.clone());
             cx.state.cursor = None;
             enter = true;
@@ -333,7 +335,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         };
         let mut over = false;
         if let Some(dir) = &dir {
-            if r.dragged && r.button == Some(Button::Primary) {
+            if !editing && r.dragged && r.button == Some(Button::Primary) {
                 ui.start_drag(id.as_str(), LibraryDrag(dir.clone()));
             }
             if let Some(LibraryDrag(from)) = ui.dropped_on::<LibraryDrag>(id.as_str()) {
@@ -345,7 +347,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             Source::Favorites => ("Favorites".to_owned(), favorites.len(), symbol(Icon::Star)),
             Source::Recent => ("Recent".to_owned(), recent.len(), symbol(Icon::Recent)),
             Source::Library(name) => (
-                library_label(name),
+                view.shelf.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
                 grouped[name].len(),
                 match cx.looks(name).and_then(|l| l.thumb.clone()) {
                     Some(image) => block(THUMB.0, THUMB.1)
@@ -364,10 +366,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             _ => None,
         };
         let about = match source {
-            Source::Library(name) => catalog.named(name).map(|l| about(l, dir.as_deref().is_some_and(pinned))),
+            Source::Library(name) => catalog.named(name).map(|l| about(l, &label, dir.as_deref().is_some_and(pinned))),
             _ => None,
         };
-        let el = source_row(id, label, count, thumb, chosen, progress, about);
+        let edit = dir.as_deref().and_then(|dir| library_name(ui, cx, dir));
+        let el = source_row(id, label, count, thumb, chosen, progress, about, edit);
         rows.push(if over {
             stack![el, block(Len::Pct(100.), 2).fill(accent()).anchor(Align::Start, Align::Start)].shrink(0)
         } else {
@@ -432,7 +435,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let made_of = {
         let mut h = DefaultHasher::new();
         (Arc::as_ptr(&presets) as usize, presets.len(), Arc::as_ptr(&catalog) as usize, multis).hash(&mut h);
-        (&cx.state.source, &needle, &favorites, &recent, &dirs, &settings.folders).hash(&mut h);
+        (&cx.state.source, &needle, &favorites, &recent, &dirs, &settings.folders, &settings.names).hash(&mut h);
         h.finish()
     };
     if cx.state.browse.rows.0 != Some(made_of) {
@@ -494,7 +497,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         && let Some(library) = catalog.named(name)
     {
         let size = cx.p.shared.libraries.size(&library.dir);
-        above.push(library_heading(library, size));
+        above.push(library_heading(library, settings.library_name(library), size));
         if needle.is_empty() {
             above.extend(crumbs(ui, cx, library, &listed));
         }
@@ -608,7 +611,7 @@ fn list(
     // A preset's library and its folders inside it.
     let place = |path: &Path| -> (String, String) {
         match view.shelf.of(path) {
-            Some(l) => (library_label(&l.name), folders(&l.dir, path)),
+            Some(l) => (cx.settings.library_name(l), folders(&l.dir, path)),
             None => (String::new(), path.parent().map(stem).unwrap_or_default()),
         }
     };
@@ -757,6 +760,24 @@ fn symbol(icon: Icon) -> El {
         .shrink(0)
 }
 
+/// The active inline display-name field, committed through global preferences.
+fn library_name(ui: &mut Ui, cx: &mut Cx, dir: &str) -> Option<El> {
+    let (_, text) = cx.state.browse.renaming.as_mut().filter(|(at, _)| at == dir)?;
+    let id = "library-name";
+    let existed = ui.scene().is_some_and(|s| s.surface(id).is_some());
+    if !existed { ui.focus(id); }
+    let field = text_edit(ui, id, text, TextOpts::default());
+    let cancel = ui.keys(id).iter().any(|k| k.key == Key::Escape);
+    let done = field.changed.submitted || (existed && !ui.focused(id));
+    let el = field.el.h(STRIP).flex(1).min_w(0).named("Library display name");
+    if cancel { cx.state.browse.renaming = None; }
+    else if done {
+        let (dir, name) = cx.state.browse.renaming.take().unwrap();
+        cx.p.shared.libraries.edit(|settings| settings.rename_library(&dir, &name));
+    }
+    Some(el)
+}
+
 /// One entry of the upper pane: an accent edge when chosen, the thumbnail,
 /// the name, how many presets; while one of its instruments loads, how far
 /// it is, and a thin bar under the name filling with it.
@@ -768,12 +789,13 @@ fn source_row(
     chosen: bool,
     loading: Option<f64>,
     about: Option<String>,
+    edit: Option<El>,
 ) -> El {
-    let name = body(label.clone())
+    let name = edit.unwrap_or_else(|| body(label.clone())
         .text_size(TEXT)
         .fill(if chosen || loading.is_some() { Fill::from(Role::Ink) } else { secondary() })
         .lines(1)
-        .min_w(0);
+        .min_w(0));
     let named = format!("{label}, {count} presets");
     let (name, count) = match loading {
         Some(done) => (
@@ -810,8 +832,8 @@ fn source_row(
 
 /// A library's tooltip: its vendor, and whether it has a library file or
 /// was recognized by its folders.
-fn about(library: &Library, pinned: bool) -> String {
-    let mut out = library_label(&library.name);
+fn about(library: &Library, name: &str, pinned: bool) -> String {
+    let mut out = name.to_owned();
     if !library.vendor.is_empty() {
         out += &format!(" by {}", library.vendor);
     }
@@ -824,7 +846,7 @@ fn about(library: &Library, pinned: bool) -> String {
 
 /// The chosen library over its presets: its name, vendor, how many
 /// instruments and multis, and its size on disk once measured.
-fn library_heading(library: &Library, size: Option<u64>) -> El {
+fn library_heading(library: &Library, name: String, size: Option<u64>) -> El {
     let plural = |n: usize, one: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") };
     let mut facts = vec![plural(library.instruments, "instrument")];
     if library.multis > 0 {
@@ -835,7 +857,7 @@ fn library_heading(library: &Library, size: Option<u64>) -> El {
         Some(bytes) => format!("{:.0} MB", bytes as f64 / f64::from(1 << 20)),
         None => "measuring size".into(),
     });
-    let mut lines = vec![body(library_label(&library.name)).text_size(TEXT).lines(1).min_w(0)];
+    let mut lines = vec![body(name).text_size(TEXT).lines(1).min_w(0)];
     if !library.vendor.is_empty() {
         lines.push(caption(library.vendor.clone()).fill(secondary()).lines(1).min_w(0));
     }

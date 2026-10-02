@@ -1046,6 +1046,9 @@ fn build(
 /// to save the rack as a multi.
 fn picked(cx: &mut Cx) {
     match cx.state.picker.take() {
+        Some(picker::Picked::Revealed(result)) => {
+            if let Err(error) = result { cx.state.notice = error; }
+        }
         Some(picker::Picked::ScriptFile { part, epoch, slot, control, result }) => {
             cx.state.notice = match result {
                 Ok(path) if cx.p.shared.select_control_file(part, epoch, slot, control, &path) => String::new(),
