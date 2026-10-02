@@ -666,7 +666,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             warnings.push(format!("{}: native group start conditions are retained but not evaluated (mask {}, raw mode/operator/cycle records {records:?}, {} opaque tail bytes); native numeric IDs are not verified", v.name, v.start_criteria.mask, v.start_criteria.unknown_tail.len()));
         }
         if v.release_trigger_note_monophonic {warnings.push("Release-trigger note monophony is not imported".into());}
-        let modulation = match crate::modulation::read_group(g) {
+        let modulation = match crate::modulation::read_group_partial(g, groups.len(), &v.name) {
             Ok(modulation) => modulation,
             Err(e) => {
                 warnings.push(format!("{}: modulation not imported: {e:#}", v.name));

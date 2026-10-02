@@ -92,7 +92,8 @@ pub struct Modulator {
     #[serde(default)]
     pub envelope: Option<usize>,
     /// Modulator kind, for audits: `ahdsr`, `flex`, `lfo`, `chunk 0xNN` (an
-    /// undecoded internal modulator) or `external`.
+    /// undecoded internal modulator), `external`, or `undecoded` (an occupied
+    /// slot whose parameters could not be read; its empty name is not usable).
     #[serde(default)]
     pub kind: String,
 }
@@ -118,6 +119,16 @@ pub struct ModEnvelope {
 
 /// Read internal and external modulators from a group's child chunks.
 pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
+    read_group_impl(group, None)
+}
+
+/// Ordinary imports can retain independent, readable slots. Snapshot overlays
+/// use `read_group` so a corrupt/incompatible record rejects the transaction.
+pub(crate) fn read_group_partial(group: &RawGroup, index: usize, name: &str) -> Result<GroupModulation> {
+    read_group_impl(group, Some((index, name)))
+}
+
+fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<GroupModulation> {
     let mut out = GroupModulation::default();
 
     // Internal-modulator slot of the volume AHDSR, which module targets address.
@@ -126,7 +137,14 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
         let mut skipped = 0;
         let mut skipped_lfos = 0;
         for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
-            let params = modulator.params()?;
+            let params = match modulator.params() {
+                Ok(params) => params,
+                Err(error) => {
+                    let Some(identity) = recover else { return Err(error.into()); };
+                    out.failed_slot(identity, "internal", slot, modulator.0.version, &error);
+                    continue;
+                }
+            };
             if params.unknown_flags[0] != 0 {
                 out.warnings.push(format!("Internal modulator {} has an undecoded mode/bypass flag; preset bypass is not applied", params.name));
             }
@@ -214,8 +232,15 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
     }
 
     if let Some(chunk) = group.0.find_first(EXTERNAL_MODS_ID) {
-        for (_, assignment) in ExternalModArray32::try_from(chunk)?.slots()? {
-            let params = assignment.params()?;
+        for (slot, assignment) in ExternalModArray32::try_from(chunk)?.slots()? {
+            let params = match assignment.params() {
+                Ok(params) => params,
+                Err(error) => {
+                    let Some(identity) = recover else { return Err(error.into()); };
+                    out.failed_slot(identity, "external", slot, assignment.0.version, &error);
+                    continue;
+                }
+            };
             out.modulators.push(Modulator {
                 name: params.name.clone(),
                 targets: params.targets.iter().map(|t| t.name.clone()).collect(),
@@ -258,6 +283,18 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
     }
 
     Ok(out)
+}
+
+impl GroupModulation {
+    fn failed_slot(&mut self, (index, name): (usize, &str), source: &str, slot: usize, version: u16, error: &ni_file::Error) {
+        // Occupied slots still count in find_mod's order. Never assign an
+        // invented name/source to a record whose parameters could not be read.
+        self.modulators.push(Modulator {
+            name: String::new(), targets: Vec::new(), assignments: None,
+            volume_env: false, flex: false, envelope: None, kind: "undecoded".into(),
+        });
+        self.warnings.push(format!("Group {index} {name:?}: {source} modulation slot {slot}, version 0x{version:x}, not imported: {error}; independent readable slots are retained"));
+    }
 }
 
 impl Group {
@@ -381,6 +418,73 @@ mod tests {
         assert!(matches!(p.modulator, Modulator::Lfo(_)));
         assert_eq!(p.targets[0].param, "pan");
         assert_eq!(p.targets[0].intensity, 0.5);
+    }
+
+    #[test]
+    fn ordinary_import_keeps_readable_modulation_slots_but_snapshots_remain_strict() {
+        use ni_file::kontakt::{Chunk, StructuredObject};
+        fn name(out: &mut Vec<u8>, text: &str) {
+            out.extend((text.len() as u32).to_le_bytes()); out.extend(text.as_bytes());
+        }
+        fn object(id: u16, version: u16, private: &[u8], public: &[u8], children: &[u8]) -> Chunk {
+            let mut data = vec![1]; data.extend(version.to_le_bytes());
+            for part in [private, public, children] { data.extend((part.len() as u32).to_le_bytes()); data.extend(part); }
+            Chunk { id, data }
+        }
+        fn targets(params: &[(&str, Option<u8>)], invert: u8, shaper: u8) -> Vec<u8> {
+            let mut data = (params.len() as u32).to_le_bytes().to_vec();
+            for (param, slot) in params {
+                name(&mut data, param); data.extend(0.5f32.to_le_bytes());
+                data.extend((-1i16).to_le_bytes()); data.push(0); data.extend(0u16.to_le_bytes());
+                name(&mut data, "Target"); data.extend(slot); data.push(invert);
+            }
+            for _ in params { data.push(shaper); if shaper != 0 { data.push(0); } }
+            data
+        }
+        fn slots(id: u16, count: usize, items: &[Chunk]) -> Chunk {
+            let mut public = Vec::new();
+            for i in 0..count {
+                public.push(u8::from(i < items.len()));
+                if let Some(item) = items.get(i) { item.write(&mut public).unwrap(); }
+            }
+            object(id, 0x10, &[], &public, &[])
+        }
+        let envelope = Ahdsr { attack_curve: 0., attack_ms: 10., decay_ms: 30., hold_ms: 20.,
+            release_ms: 100., sustain: 0.5, unknown_flag: 0, unknown_tail: vec![0;52] };
+        let mut concrete = Vec::new(); envelope.write(&mut concrete).unwrap();
+        let mut wrapped = Vec::new(); object(7, 0x90, &[], &0u32.to_le_bytes(), &concrete).write(&mut wrapped).unwrap();
+        let internal = |category: u32, label: &str| {
+            let mut private = targets(&[("volume", None)], 0, 0);
+            private.extend([0;4]); private.extend(0u32.to_le_bytes()); name(&mut private, label);
+            private.extend(category.to_le_bytes()); object(0x0d, 0x80, &private, &[], &wrapped)
+        };
+        let external = |invert, shaper, label: &str| {
+            let mut private = targets(&[("volume", None), ("pitch", None), ("ahdsr_attack", Some(1))], invert, shaper);
+            name(&mut private, label); private.extend(1u32.to_le_bytes());
+            private.extend(6u32.to_le_bytes()); // existing decoded velocity source
+            private.extend([0;4]); private.extend(17u32.to_le_bytes());
+            object(0x0c, 0x102, &private, &[], &[])
+        };
+        let mut group = RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![], children: vec![
+            slots(INTERNAL_MODS_ID, 16, &[internal(3, "UnknownEnv"), internal(2, "GoodEnv")]),
+            slots(EXTERNAL_MODS_ID, 32, &[external(0, 8, "UnknownShaper"), external(2, 0, "UnknownFlag"), external(0, 0, "GoodVelocity")]),
+        ] });
+        assert!(read_group(&group).unwrap_err().to_string().contains("category 3"), "snapshot reader stays strict");
+        let parsed = read_group_partial(&group, 7, "Authored").unwrap();
+        assert_eq!(parsed.volume_env, Some(envelope));
+        assert_eq!(parsed.mods.len(), 3, "all targets of readable siblings survive");
+        assert_eq!(parsed.mods[2].target, ModTarget::Attack, "native volume-envelope slot remains 1");
+        assert_eq!(parsed.modulators.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["", "GoodEnv", "", "", "GoodVelocity"]);
+        assert_eq!(parsed.modulators[4].assignments, Some(0));
+        for i in [0, 2, 3] { assert_eq!(parsed.modulators[i].kind, "undecoded"); assert!(parsed.modulators[i].targets.is_empty()); }
+        assert_eq!(parsed.warnings.len(), 3);
+        for error in ["category 3", "shaper kind 8", "Invalid boolean byte 2"] {
+            assert!(parsed.warnings.iter().any(|w| w.starts_with("Group 7 \"Authored\"") && w.contains(error)));
+        }
+        group.0.children.remove(0);
+        assert!(read_group(&group).unwrap_err().to_string().contains("shaper kind 8"));
+        group.0.children[0].data.pop();
+        assert!(read_group_partial(&group, 7, "Authored").is_err(), "bad array boundaries still reject decoding");
     }
 
     #[test]
