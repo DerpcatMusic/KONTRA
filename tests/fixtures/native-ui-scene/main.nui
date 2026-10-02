@@ -1,5 +1,6 @@
 local ui = require("native_ui")
 local Card = require("components")
+local context=require("context")
 return function()
     return @ui.ZStack {
         @ui.Rectangle {color=
@@ -8,5 +9,5 @@ return function()
         @Card {parameter_id="Amount"}
         or @ui.ZStack {}
         @Card {parameter_id="Remote"}
-    }.frame(width=640 height=400)
+    }.context(key=context,value="inherited").frame(width=640 height=400)
 end

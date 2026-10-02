@@ -1,0 +1,2 @@
+local ui=require("native_ui")
+return ui.create_context()

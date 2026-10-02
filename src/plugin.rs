@@ -4665,6 +4665,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(resources.join("components")).unwrap();
         std::fs::write(resources.join("main.nui"), include_str!("../tests/fixtures/native-ui-scene/main.nui")).unwrap();
         std::fs::write(resources.join("components/init.nui"), include_str!("../tests/fixtures/native-ui-scene/components/card.nui")).unwrap();
+        std::fs::write(resources.join("context.nui"), include_str!("../tests/fixtures/native-ui-scene/context.nui")).unwrap();
         let i = Instrument { path: directory.join("fixture.nki"), scripts: vec![
             "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Amount(0,100)\n$Amount := 17\nend on\non ui_control($Amount)\n$Amount := $Amount*2\nend on".into(),
             "on init\nmake_perfview\ndeclare ui_slider $Remote(0,100)\n$Remote := 9\ndeclare ui_slider $Amount(0,100)\n$Amount := 90\nend on\non ui_control($Remote)\n$Remote := $Remote+10\nend on".into()
@@ -4675,7 +4676,7 @@ pub(crate) mod tests {
         let mut trace=crate::diagnostics::LoadTrace::new(&i.path,0,Some(0));
         let (scene,status)=native_scene(&i,Some(&rt),&mut live,&pages,&mut trace);
         assert!(status.is_empty(),"{status}");let scene=scene.unwrap();
-        assert_eq!(scene.lock().unwrap().resources.len(),2);
+        assert_eq!(scene.lock().unwrap().resources.len(),3);
         let p=SamplerParams::new();let mut dsp=Dsp::default();
         let epoch={let mut view=p.shared.view.lock().unwrap();
             let epoch=next_epoch(&mut view,0,None,live);
@@ -4685,10 +4686,12 @@ pub(crate) mod tests {
         let initial=scene.lock().unwrap().snapshot().unwrap();let mut labels=Vec::new();texts(&initial,&mut labels);
         assert_eq!(labels,["Amount:17:0","Remote:9:0"]);
         let watch_before=crate::ui::native_watch_fingerprint(&p.shared.view.lock().unwrap());
-        for node in &initial.children {if node.tap {
-            let edits=scene.lock().unwrap().tap(node.id).unwrap();
+        fn taps(node:&Node,out:&mut Vec<usize>) {if node.tap {out.push(node.id)} for child in &node.children {taps(child,out)}}
+        let mut ids=Vec::new();taps(&initial,&mut ids);
+        for id in ids {
+            let edits=scene.lock().unwrap().tap(id).unwrap();
             for edit in edits {assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
-        }}
+        }
         assert_ne!(watch_before,crate::ui::native_watch_fingerprint(&p.shared.view.lock().unwrap()),"native-only local changes wake an idle editor");
         assert!(!p.shared.edit_control_slot(0,epoch.wrapping_sub(1),1,0,70),"stale scenes cannot edit a new runtime");
         assert!(!p.shared.edit_control_slot(0,epoch,1,1,0),"later duplicate is not an exposed connection");

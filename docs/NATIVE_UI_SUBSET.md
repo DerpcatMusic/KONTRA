@@ -7,7 +7,9 @@ errors identify `.nui.lowered.lua`; line counts after a component are preserved,
 while locations inside the rewritten property/child tables refer to lowered Lua.
 
 Supported scene primitives are `ZStack`, `Text` and `Rectangle`, with explicit
-frames, RGB colors, computed text, local scalar state and tap callbacks. The
+frames, RGB colors, computed text, local scalar state, inherited contexts and tap callbacks. Component functions
+expand lazily within their parent context; local state hooks persist by
+component source identity and scene path across refreshes. The
 editor uses the existing MUI painter. Connected integer KSP UI controls retain
 their exact script slot/control ID; duplicate identifiers use the first slot,
 as specified for `expose_controls`. Tap edits use the existing bounded plug-in

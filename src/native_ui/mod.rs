@@ -51,6 +51,7 @@ pub(crate) struct Scene {
     instructions: Arc<AtomicUsize>,
     revision: Arc<AtomicU64>,
     gestures: Vec<Option<Function>>,
+    identities: BTreeMap<String, usize>,
     pub identity: String,
     pub resources: Vec<(String, Vec<u8>)>,
 }
@@ -189,6 +190,20 @@ impl Scene {
                 Ok(())
             })?,
         )?;
+        lua.globals().set(
+            "native_component_key",
+            lua.create_function(|_, target: Function| {
+                let info = target.info();
+                if info.what != "Lua" {
+                    return Err(invalid("Native component targets require Lua functions"));
+                }
+                Ok(format!(
+                    "{}:{}",
+                    info.source.unwrap_or_default(),
+                    info.line_defined.unwrap_or(0)
+                ))
+            })?,
+        )?;
         lua.load(include_str!("host.lua"))
             .set_name("@kontra/native-ui-host")
             .exec()?;
@@ -306,6 +321,7 @@ impl Scene {
             instructions,
             revision,
             gestures: Vec::new(),
+            identities: BTreeMap::new(),
             identity: name.into(),
             resources,
         };
@@ -345,16 +361,43 @@ impl Scene {
         self.gestures.clear();
         let mut seen = BTreeSet::new();
         let root = self.root.clone();
-        self.node(root, 0, &mut seen)
+        let mut retained = Vec::new();
+        self.node(
+            root,
+            self.lua.create_table()?,
+            "0".into(),
+            0,
+            &mut seen,
+            &mut retained,
+        )
     }
-    fn node(&mut self, node: Table, depth: usize, seen: &mut BTreeSet<usize>) -> Result<Node> {
+    fn node(
+        &mut self,
+        node: Table,
+        context: Table,
+        path: String,
+        depth: usize,
+        seen: &mut BTreeSet<usize>,
+        retained: &mut Vec<Table>,
+    ) -> Result<Node> {
         ensure!(
             depth <= 64 && seen.len() < 4096,
             "Native UI scene budget exceeded"
         );
-        let id: usize = node.get("id")?;
-        ensure!(id < 4096, "Invalid native UI node identity");
-        ensure!(seen.insert(id), "Aliased native UI node identity {id}");
+        ensure!(
+            seen.insert(node.to_pointer() as usize),
+            "Aliased native UI node identity"
+        );
+        // Keep visited tables alive so Lua GC cannot reuse a checked pointer.
+        retained.push(node.clone());
+        ensure!(
+            self.identities.len() < 4096 || self.identities.contains_key(&path),
+            "Native UI identity budget exceeded"
+        );
+        let next = self.identities.len();
+        let id = *self.identities.entry(path.clone()).or_insert(next);
+        let expand: Function = self.lua.globals().get("native_expand")?;
+        let (node, context): (Table, Table) = expand.call((node, path.clone(), context))?;
         let props: Table = node.get("props")?;
         let modifiers: Table = node.get("modifiers")?;
         let paint = match node.get::<String>("kind")?.as_str() {
@@ -424,8 +467,15 @@ impl Scene {
         }
         let children: Table = node.get("children")?;
         let mut nodes = Vec::new();
-        for child in children.sequence_values::<Table>() {
-            nodes.push(self.node(child?, depth + 1, seen)?);
+        for (index, child) in children.sequence_values::<Table>().enumerate() {
+            nodes.push(self.node(
+                child?,
+                context.clone(),
+                format!("{path}/{index}"),
+                depth + 1,
+                seen,
+                retained,
+            )?);
         }
         Ok(Node {
             id,
