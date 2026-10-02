@@ -557,7 +557,7 @@ impl Engine {
                 release_trigger: v.release_trigger,
                 streams: v.stream.is_some_and(|s| !s.paused),
                 gain: v.gains[0].abs().max(v.gains[1].abs()),
-                envelope: v.env.level() * v.flex.as_ref().map_or(1.0, |f| f.level()) * v.fade.value(),
+                envelope: self.bank.as_ref().map_or(0., |bank| v.envelope_level(&bank.settings[v.group as usize])),
                 sample: v.sample,
                 pos: v.pos,
                 step: v.step * v.tune * v.pitch.1,
@@ -1052,7 +1052,7 @@ impl Engine {
         }
         // Offline renders have no deadline: retain tails even if a live
         // block's load estimate carried over or decoding takes longer.
-        if !self.blocking_streams { self.player.shed(self.load); }
+        if !self.blocking_streams && let Some(bank) = &self.bank { self.player.shed(bank, self.load); }
         let defaults = self.defaults();
         let (mut next, mut written) = (0, 0);
         let block_size = MAX_BLOCK.min(self.fx.block_size());
@@ -1960,7 +1960,7 @@ impl Player {
     /// Under `load`, fade out released voices: first those below a floor
     /// that rises with the load, then near the deadline the quietest. Held
     /// notes and muted voices (which cost next to nothing) are left alone.
-    fn shed(&mut self, load: f32) {
+    fn shed(&mut self, bank: &Bank, load: f32) {
         if load < SHED_FROM {
             return;
         }
@@ -1974,7 +1974,7 @@ impl Player {
             if !v.released || v.fade.dying() || v.gains == [0.0; 2] {
                 continue;
             }
-            let level = v.level();
+            let level = v.level(&bank.settings[v.group as usize]);
             if level < floor {
                 v.fade.start(0.0, fade, true);
             } else if steal > 0 && level < quietest[0].0 {

@@ -2218,6 +2218,7 @@ fn modulated_groups() -> Instrument {
             targets: vec![String::new()],
             assignments: Some(0),
             volume_env: false,
+            bypassed: false,
             flex: false,
             envelope: None,
             kind: String::new(),
@@ -3816,4 +3817,92 @@ fn growing_the_rack_keeps_voices_held_notes_and_recorded_targets_without_audio_h
         rack.set_controls(&shortened);
         assert_eq!(rack.controls[32], Default::default(), "removed slots lose their old routing");
     }), 0, "growth, routing, alignment and playback must neither allocate nor free on audio");
+}
+
+
+#[test]
+fn saved_amplitude_bypass_and_live_resume_keep_native_envelope_clocks_without_allocating() {
+    for flex in [false, true] {
+        for saved_bypass in [false, true] {
+            let mut group = Group::default();
+            if flex {
+                group.flex_env = Some(FlexEnvelope {
+                    points: vec![FlexPoint { time_ms: 100., level: 1., curve: 0.5 },
+                        FlexPoint { time_ms: 100., level: 0., curve: 0.5 }],
+                    sustain: 0,
+                    unknown_index: 0,
+                    unknown_tail: Vec::new(),
+                });
+            } else {
+                group.volume_env = Some(kontakto::import::Ahdsr {
+                    attack_ms: 100., attack_curve: 0., hold_ms: 0., decay_ms: 0.,
+                    sustain: 1., release_ms: 100., unknown_flag: 0, unknown_tail: Vec::new(),
+                });
+            }
+            group.modulators.push(Modulator { name: "Env".into(), targets: vec!["volume".into()],
+                assignments: None, volume_env: true, bypassed: saved_bypass, flex,
+                envelope: None, kind: if flex { "flex" } else { "ahdsr" }.into() });
+            let mut reference_group = group.clone();
+            reference_group.modulators[0].bypassed = false;
+            let mut reference = engine_with(layered(vec![reference_group], &[0.5]));
+            let mut instrument = instrument(vec![group.clone()], Vec::new());
+            instrument.scripts = vec![r#"on init
+make_perfview
+declare ui_switch $bypass
+declare ui_label $read(1,1)
+$bypass := get_engine_par($ENGINE_PAR_INTMOD_BYPASS,0,0,-1)
+set_text($read,$bypass)
+end on
+on ui_control($bypass)
+set_engine_par($ENGINE_PAR_INTMOD_BYPASS,$bypass,0,0,-1)
+set_text($read,get_engine_par($ENGINE_PAR_INTMOD_BYPASS,0,0,-1))
+end on"#.into()];
+            let (runtime, errors) = load_scripts(&instrument, Vec::new(), 48000.);
+            assert!(errors.is_empty(), "{errors:?}");
+            let mut engine = engine_with(layered(vec![group], &[0.5]));
+            engine.set_script(runtime);
+            let read = |e: &Engine| e.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_TEXT"].clone();
+            assert_eq!(read(&engine), Value::Text(if saved_bypass { "1" } else { "0" }.into()));
+            let (mut left, mut right) = ([0.; 2400], [0.; 2400]);
+            let (mut expected_left, mut expected_right) = ([0.; 2400], [0.; 2400]);
+            reference.note_on(0, 60, 100);
+            reference.render(&mut expected_left, &mut expected_right);
+            assert_eq!(allocations(|| {
+                engine.begin_audio_block(2400, 1, true);
+                engine.note_on(0, 60, 100);
+                engine.render(&mut left, &mut right);
+            }), 0);
+            if saved_bypass { assert!((left[2399] - 0.5).abs() < 1e-5); }
+            else { assert!((left[2399] - expected_left[2399]).abs() < 1e-5); }
+            // Mask another 50 ms while the original clock advances, then unmask.
+            assert_eq!(allocations(|| {
+                engine.ui_control(0, 0, 1);
+                engine.render(&mut left, &mut right);
+            }), 0);
+            assert_eq!(read(&engine), Value::Text("1".into()));
+            assert!((left[2399] - 0.5).abs() < 1e-5);
+            reference.render(&mut expected_left, &mut expected_right);
+            assert_eq!(allocations(|| {
+                engine.ui_control(0, 0, 0);
+                engine.render(&mut left[..32], &mut right[..32]);
+            }), 0);
+            reference.render(&mut expected_left[..32], &mut expected_right[..32]);
+            assert_eq!(read(&engine), Value::Text("0".into()));
+            assert!(left[..32].iter().zip(&expected_left[..32]).all(|(a,b)| (a-b).abs() < 1e-5), "unmask must resume elapsed {flex} clock, not retrigger");
+            // A finished masked release remains audible until its source/fade ends.
+            engine.ui_control(0, 0, 1);
+            engine.note_off(0, 60);
+            for _ in 0..20 { engine.render(&mut left, &mut right); }
+            assert_eq!(engine.active_voices(), 1);
+            assert!((left[2399] - 0.5).abs() < 1e-5);
+            assert_eq!(allocations(|| {
+                engine.ui_control(0, 0, 0);
+                engine.render(&mut left[..32], &mut right[..32]);
+            }), 0);
+            assert_eq!(engine.active_voices(), 0, "unmask exposes the already-finished release");
+            assert!(left[..32].iter().all(|x| *x == 0.));
+            assert_eq!(engine.dropped_commands(), 0);
+            assert!(engine.script().unwrap().diagnostics().is_empty());
+        }
+    }
 }

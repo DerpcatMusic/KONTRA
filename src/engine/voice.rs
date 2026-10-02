@@ -1098,10 +1098,16 @@ impl Voice {
         true
     }
 
+    /// Effective amplitude-source and fade gain, including live bypass.
+    pub fn envelope_level(&self, group: &super::GroupSettings) -> f32 {
+        let amp = if group.envelope_bypass { 1. } else { self.env.level() };
+        let flex = if group.flex_bypass { 1. } else { self.flex.as_ref().map_or(1., Envelope::level) };
+        amp * flex * self.fade.value()
+    }
+
     /// Peak gain the voice ended its last block at, sample aside.
-    pub fn level(&self) -> f32 {
-        let flex = self.flex.as_ref().map_or(1.0, Envelope::level);
-        self.gains[0].max(self.gains[1]) * self.env.level() * flex * self.fade.value()
+    pub fn level(&self, group: &super::GroupSettings) -> f32 {
+        self.gains[0].max(self.gains[1]) * self.envelope_level(group)
     }
 
     /// Work out one block (at most [`MAX_BLOCK`] frames) before rendering
@@ -1173,10 +1179,12 @@ impl Voice {
         // summed, weighted, with others resampled alike.
         if let Some(class) = class.filter(|_| !muted && !declick && self.gains == target && self.fade.steady()) {
             let flex = match &self.flex {
+                _ if group.flex_bypass => Some(Shape::Flat(1.)),
                 Some(env) => env.shape(n),
                 None => Some(Shape::Flat(1.0)),
             };
-            if let Some(shape) = self.env.shape(n).zip(flex).and_then(|(a, b)| a.times(b)) {
+            let amp = if group.envelope_bypass { Some(Shape::Flat(1.)) } else { self.env.shape(n) };
+            if let Some(shape) = amp.zip(flex).and_then(|(a, b)| a.times(b)) {
                 let (level, decay) = match shape {
                     Shape::Flat(level) => (level, 0),
                     Shape::Decay(k, level) => (level, k.to_bits()),
@@ -1226,10 +1234,15 @@ impl Voice {
             }
             self.fade.skip(n);
         } else {
-            self.env.render(amp, None, cx.rate);
+            if group.envelope_bypass {
+                self.env.skip(n, None, cx.rate);
+                amp.fill(1.);
+            } else { self.env.render(amp, None, cx.rate); }
             if let Some(env) = &mut self.flex {
-                env.render(flex, group.flex.as_ref(), cx.rate);
-                amp.iter_mut().zip(flex.iter()).for_each(|(a, f)| *a *= f);
+                if group.flex_bypass { env.skip(n, group.flex.as_ref(), cx.rate); } else {
+                    env.render(flex, group.flex.as_ref(), cx.rate);
+                    amp.iter_mut().zip(flex.iter()).for_each(|(a, f)| *a *= f);
+                }
             }
             self.fade.apply(amp);
             if let Some(end) = declick {
@@ -1400,8 +1413,9 @@ impl Voice {
         if let Some(stream) = self.stream.filter(|s| !s.paused) {
             cx.slots[stream.slot as usize].release_below((self.pos as u64).saturating_sub(1));
         }
-        !self.env.done()
-            && !self.flex.as_ref().is_some_and(Envelope::done)
+        let group = &cx.bank.settings[self.group as usize];
+        (group.envelope_bypass || !self.env.done())
+            && (group.flex_bypass || !self.flex.as_ref().is_some_and(Envelope::done))
             && !self.fade.finished()
             && self.pos < self.length as f64
     }

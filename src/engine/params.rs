@@ -561,8 +561,10 @@ pub(crate) enum Address {
     },
     /// Legacy cubic bipolar depth, measured for pitch and filter-cutoff targets.
     LegacyInternalIntensity { group: u16, envelope: u8, target: u16 },
-    /// Explicit KSP bypass, separate from the undecoded preset flags.
+    /// Internal source bypass, initialized from the saved native flag.
     InternalBypass(u16, u8),
+    VolumeBypass(u16),
+    FlexBypass(u16),
     Fx(Rack, u8, FxParam),
     /// A group insert slot's filter/EQ knob (normalized), bypass, output
     /// gain or Stereo Modeller setting.
@@ -633,6 +635,7 @@ impl Address {
             id::ATTACK | id::ATK_CURVE | id::DECAY | id::SUSTAIN | id::RELEASE | id::HOLD | id::ENV_AHD => {
                 let g = group()?;
                 let m = modulator(g)?;
+                if m.flex { return None; }
                 let stage = match par.id {
                     id::ATTACK => Stage::Attack,
                     id::ATK_CURVE => Stage::Curve,
@@ -650,7 +653,11 @@ impl Address {
             }
             id::INTMOD_BYPASS => {
                 let g = group()?;
-                let e = modulator(g)?.envelope?;
+                let m = modulator(g)?;
+                if m.volume_env {
+                    return Some(if m.flex { Self::FlexBypass(g) } else { Self::VolumeBypass(g) });
+                }
+                let e = m.envelope?;
                 groups[g as usize].envelopes.get(e)?.targets.iter()
                     .any(|t| match &t.target {
                         ModTarget::Pitch => true,
@@ -777,7 +784,7 @@ impl Address {
                 | Self::Envelope(..)
                 | Self::ModEnvelope(..)
                 | Self::InternalIntensity { .. }
-                | Self::InternalBypass(..)
+                | Self::InternalBypass(..) | Self::VolumeBypass(..) | Self::FlexBypass(..)
                 | Self::LegacyInternalIntensity { .. }
                 | Self::Intensity { .. }
                 | Self::Filter(..)
@@ -826,7 +833,7 @@ impl Address {
             | Self::InternalIntensity { cubic: true, .. } => (2.0 * value as f32 / UNIT - 1.0).powi(3),
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. } => 2.0 * x - 1.0,
-            Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) => f32::from(value != 0),
+            Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) | Self::VolumeBypass(..) | Self::FlexBypass(..) => f32::from(value != 0),
             Self::Filter(_, _, Knob::Type) => value as f32,
             Self::Filter(_, _, Knob::Output) => effect_gain(x),
             Self::Filter(_, _, Knob::SendLevel(_)) => volume(x),
@@ -861,7 +868,7 @@ impl Address {
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => return i32::from(v >= 0.5),
             Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => v,
             Self::Filter(_, _, Knob::Type) => return v as i32,
-            Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) => {
+            Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) | Self::VolumeBypass(..) | Self::FlexBypass(..) => {
                 return i32::from(v != 0.0);
             }
             Self::Group(_, p) | Self::Instrument(p) => match p {
@@ -1074,6 +1081,14 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             }
             return applied;
         }
+        Address::VolumeBypass(g) | Address::FlexBypass(g) => {
+            let Some(settings) = settings.get_mut(g as usize) else { return false; };
+            match address {
+                Address::VolumeBypass(_) => settings.envelope_bypass = value != 0.,
+                _ => settings.flex_bypass = value != 0.,
+            }
+            return true;
+        }
         Address::InternalBypass(g, index) => {
             let Some(settings) = settings.get_mut(g as usize) else { return false; };
             let mut applied = false;
@@ -1164,6 +1179,8 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
                 .and_then(|e| e.targets.iter().find(|t| t.0 == target)).map(|t| t.2.intensity)
                 .or_else(|| settings.filter.as_ref()?.envelope_mod_at(envelope, target).map(|m| m.intensity))
         },
+        Address::VolumeBypass(g) => Some(f32::from(settings.get(g as usize)?.envelope_bypass)),
+        Address::FlexBypass(g) => Some(f32::from(settings.get(g as usize)?.flex_bypass)),
         Address::InternalBypass(g, index) => {
             let settings = settings.get(g as usize)?;
             settings.pitch_envelopes.iter().find(|e| e.index == index).map(|e| f32::from(e.bypass))

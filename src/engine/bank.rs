@@ -66,8 +66,11 @@ const DEFAULT_POLYPHONY: usize = 512;
 pub struct GroupSettings {
     /// Amplitude envelope; `None` uses the engine's attack/release defaults.
     pub envelope: Option<Ahdsr>,
+    /// Bypass masks amplitude while the envelope clock keeps advancing.
+    pub envelope_bypass: bool,
     /// Flex amplitude envelope, multiplied with `envelope`.
     pub flex: Option<Flex>,
+    pub flex_bypass: bool,
     /// Linear group volume.
     pub gain: f32,
     /// -1 (left) to 1 (right).
@@ -95,6 +98,8 @@ impl From<&Group> for GroupSettings {
         Self {
             envelope: group.volume_env.as_ref().map(Ahdsr::from),
             flex: group.flex_env.as_ref().map(Flex::from),
+            envelope_bypass: group.modulators.iter().find(|m| m.volume_env && !m.flex).is_some_and(|m| m.bypassed),
+            flex_bypass: group.modulators.iter().find(|m| m.volume_env && m.flex).is_some_and(|m| m.bypassed),
             gain: group.gain,
             pan: group.pan,
             tune: 12.0 * group.tune.log2() as f32,

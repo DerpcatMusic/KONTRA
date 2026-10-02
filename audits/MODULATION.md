@@ -602,3 +602,38 @@ lag zero. Their loop offset/range semantics remain unsupported.
   ext-mod unknown bytes and id.
 - LFOs: source identity, record dimensions, target routes, and actual script calls
   are observed; packed field meanings and playback behavior remain undecoded.
+
+
+## Native internal source switches (2026-10-02)
+
+The BParInternalMod v0x80/v0x81 typed reader and native XML importer
+independently identify the four packed bytes after the target list. The reader
+stores them at object offsets 0x549, 0x540, 0xab8 and 0x548 respectively.
+The XML importer compares `routersOpen`, `bypass` and `retrigger` against `yes`
+and writes offsets 0x549, 0x540 and 0xab8. Therefore byte 0 is router UI state,
+byte 1 is source bypass, and byte 2 is retrigger. Byte 3 remains unnamed.
+This mapping comes from exact same-object stores, not correlations between
+preset values. The former byte-0 mode/bypass warning was incorrect.
+
+Saved bypass now initializes the first volume AHDSR/flex and supported
+pitch/filter/EQ AHDSRs. Script `$ENGINE_PAR_INTMOD_BYPASS` addresses the same
+state, with its documented boolean readback. Bypass masks the source's
+contribution while its existing envelope clock advances; changing it does not
+restart the clock, rewrite target depth, or allocate. A bypassed amplitude
+source's completion cannot retire the voice; sample ends, explicit fades and
+other active amplitude sources still can. Re-enabling the source observes its
+elapsed state. The authored playback gate covers active/bypassed AHDSR and
+flex, live readback, resumption and a completed masked release.
+
+For LFO BParLFO v0x71, exact native XML-to-object stores and the typed binary
+reader also identify delay/frequency/pulseWidth/startPhase at public offsets
+4/8/12/16, normalization at 20, noteValue_frequency at 21, noteValue_delay at
+34, and five waveform mixer levels at 47/51/55/59/63 (sine, rectangle,
+triangle, sawtooth, random). Its enum maps 0..5 to sine, rectangle, triangle,
+sawtooth, random, Multi. Remaining sync fields, freewheel/retrigger timing,
+converter laws and the older Multi waveform law remain unresolved; no
+oscillator, arbitrary frequency calibration or inferred flag-3 behavior is
+applied. The 2,400-record Analog census has 2,180 sources with saved bypass,
+so future LFO playback must retain that switch as well as target smoothing.
+None of this establishes reference Kontakt sonic parity or resolves all six
+reported Analog preset differences.
