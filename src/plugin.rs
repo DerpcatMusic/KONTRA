@@ -2667,7 +2667,8 @@ impl PluginLogic for Sampler {
         for engine in &mut s.rack.parts {
             engine.begin_audio_block(frames, scripted, offline);
         }
-        s.rack.set_transport(cx.transport.playing, cx.transport.tempo, cx.transport.position_beats);
+        s.rack.set_transport(cx.transport.playing, cx.transport.tempo, cx.transport.position_beats,
+            (cx.transport.time_sig_num, cx.transport.time_sig_den));
         if !holding && s.align.next_due().is_some() {
             s.align.flush(&mut s.rack, &mut s.routers);
         }
@@ -5033,7 +5034,7 @@ set_text($transition,$starts & ":" & $stops & ":" & $NI_SONG_POSITION & ":" & $D
 end on
 on note
 ignore_event($EVENT_ID)
-set_text($position,$NI_SONG_POSITION & ":" & $NI_TRANSPORT_RUNNING & ":" & $DURATION_QUARTER)
+set_text($position,$NI_SONG_POSITION & ":" & $NI_TRANSPORT_RUNNING & ":" & $DURATION_QUARTER & ":" & $SIGNATURE_NUM & "/" & $SIGNATURE_DENOM & ":" & $DURATION_BAR)
 end on"#;
         let mut log = crate::ksp::LogEngine::new(Vec::new(), 48_000.);
         let (rt, errors) = Runtime::with_scripts(&[source], &mut log, 8, Vec::new());
@@ -5049,14 +5050,14 @@ end on"#;
         let mut outgoing = EventList::with_capacity(4);
         // Each host position is authoritative: a seek never accrues the gap
         // since the previous snapshot, and stopped transport stays fixed.
-        for (playing, tempo, beats, position, transition) in [
-            (true, 120., 2., "1924:1:500000", "1:0:1920:500000"),
-            (true, 60., 10., "9602:1:1000000", "1:0:1920:500000"),
-            (false, 90., 3.5, "3360:0:666666", "1:1:3360:666666"),
-            (false, 90., -1.25, "-1200:0:666666", "1:1:3360:666666"),
-            (true, 90., 100., "96003:1:666666", "2:1:96000:666666"),
+        for (playing, tempo, beats, signature, position, transition) in [
+            (true, 120., 2., (3,4), "1924:1:500000:3/4:1500000", "1:0:1920:500000"),
+            (true, 60., 10., (7,8), "9602:1:1000000:7/8:3500000", "1:0:1920:500000"),
+            (false, 90., 3.5, (7,8), "3360:0:666666:7/8:0", "1:1:3360:666666"),
+            (false, 90., -1.25, (0,0), "-1200:0:666666:7/8:0", "1:1:3360:666666"),
+            (true, 90., 100., (4,4), "96003:1:666666:4/4:2666666", "2:1:96000:666666"),
         ] {
-            let transport = TransportInfo { playing, tempo, position_beats: beats, ..TransportInfo::default() };
+            let transport = TransportInfo { playing, tempo, position_beats: beats, time_sig_num: signature.0, time_sig_den: signature.1, ..TransportInfo::default() };
             let mut cx = ProcessContext::new(&transport, 48_000., 128, &mut outgoing);
             assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0,
                 "host timing updates and transport listeners must not allocate or free");

@@ -1286,8 +1286,12 @@ fn sys_of(ctx: &Ctx, env: &Env, slot: u8, v: SysVar) -> i32 {
         SysVar::DurationQuarterTriplet => env.quarter_us() * 2 / 3,
         SysVar::DurationEighthTriplet => env.quarter_us() / 3,
         SysVar::DurationSixteenthTriplet => env.quarter_us() / 6,
-        SysVar::DurationBar => env.quarter_us() * 4,
+        SysVar::DurationBar => if env.transport {
+            (60e6 / env.tempo * 4.0 * f64::from(env.signature.0) / f64::from(env.signature.1)) as i32
+        } else { 0 },
         SysVar::SongPosition => env.song_position(),
+        SysVar::SignatureNum => i32::from(env.signature.0),
+        SysVar::SignatureDenom => i32::from(env.signature.1),
         SysVar::TransportRunning => bool_int(env.transport),
         SysVar::Tempo => env.tempo as i32,
         SysVar::CurrentScriptSlot => i32::from(slot),

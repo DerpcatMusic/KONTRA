@@ -435,6 +435,7 @@ pub struct Env {
     pub sample_rate: f64,
     pub tempo: f64,
     pub transport: bool,
+    pub signature: (u8, u8),
     song_beats: f64,
     song_at: u64,
     pub timer_origin: u64,
@@ -490,6 +491,7 @@ impl Env {
             sample_rate: 48_000.0,
             tempo: 120.0,
             transport: false,
+            signature: (4, 4),
             song_beats: 0.0,
             song_at: 0,
             timer_origin: 0,
@@ -1854,7 +1856,8 @@ impl Runtime {
 
     /// Host snapshot at the current sample clock. Beats are quarter notes;
     /// KSP exposes 960 pulses per quarter and advances within the audio block.
-    pub fn set_host_transport(&mut self, engine: &mut dyn KspEngine, playing: bool, tempo: f64, beats: f64) {
+    pub fn set_host_transport(&mut self, engine: &mut dyn KspEngine, playing: bool, tempo: f64, beats: f64, signature: (u8, u8)) {
+        if signature.0 > 0 && signature.1 > 0 { self.env.signature = signature; }
         self.env.song_beats = if beats.is_finite() { beats } else { self.env.song_beats() };
         self.env.song_at = self.env.clock();
         self.set_tempo(tempo);
