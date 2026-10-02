@@ -303,7 +303,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let dragging = ui.dragging::<LibraryDrag>().map(|d| d.0.clone());
     for (n, (id, source)) in sources.iter().enumerate() {
         let r = ui.get(id.as_str());
-        let editing = matches!(source, Source::Library(name) if view.shelf.named(name).is_some_and(|l| cx.state.browse.renaming.as_ref().is_some_and(|(dir, _)| Path::new(dir) == l.dir)));
+        let editing = matches!(source, Source::Library(name) if catalog.named(name).is_some_and(|l| cx.state.browse.renaming.as_ref().is_some_and(|(dir, _)| Path::new(dir) == l.dir)));
         if !editing && r.clicked_with(Button::Primary) {
             // A second click lets the library go: the search spans them all.
             cx.state.source = (cx.state.source.as_ref() != Some(source)).then(|| source.clone());
@@ -347,7 +347,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             Source::Favorites => ("Favorites".to_owned(), favorites.len(), symbol(Icon::Star)),
             Source::Recent => ("Recent".to_owned(), recent.len(), symbol(Icon::Recent)),
             Source::Library(name) => (
-                view.shelf.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
+                catalog.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
                 grouped[name].len(),
                 match cx.looks(name).and_then(|l| l.thumb.clone()) {
                     Some(image) => block(THUMB.0, THUMB.1)
