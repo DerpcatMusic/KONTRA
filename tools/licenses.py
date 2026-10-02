@@ -135,7 +135,8 @@ def self_test():
         copies = []
         with patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1790962911"}):
             for index in (1, 2):
-                checkout = root / f"checkout-{index}"
+                # Exercise a noncanonical temporary path, as macOS /var does.
+                checkout = root / ".." / root.name / f"checkout-{index}"
                 vendor = checkout / "vendor/symphonia-format-riff"
                 vendor.mkdir(parents=True)
                 for name in ("Cargo.toml", "lib.rs"):
@@ -143,7 +144,7 @@ def self_test():
                     path.write_bytes(b"authored deterministic source\n")
                     os.utime(path, (index * 100, index * 100))
                     path.chmod(0o600 if index == 1 else 0o644)
-                with patch.dict(globals(), {"ROOT": checkout}):
+                with patch.dict(globals(), {"ROOT": checkout.resolve()}):
                     bundle_source(dict(package, manifest_path=str(vendor / "Cargo.toml")), output)
                 copies.append((output / "symphonia-format-riff-0.5.5.crate").read_bytes())
         assert copies[0] == copies[1], "Source archive depends on architecture checkout metadata"

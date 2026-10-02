@@ -138,10 +138,12 @@ with open(os.environ['MOCK_LOG'], 'a') as log: log.write(json.dumps([name, args]
 if name == os.environ.get('FAIL_TOOL') or (name == 'xcrun' and args[:2] == ['stapler', os.environ.get('FAIL_TOOL')]): sys.exit(1)
 if name == 'pkgbuild':
     if '--analyze' in args:
-        pathlib.Path(args[-1]).write_bytes(plistlib.dumps([{'BundleIsRelocatable': True}]))
+        pathlib.Path(args[-1]).write_bytes(plistlib.dumps([{'BundleIsRelocatable': True, 'BundleIsVersionChecked': True}]))
     else:
         components = plistlib.loads(pathlib.Path(args[args.index('--component-plist')+1]).read_bytes())
         assert components[0]['BundleIsRelocatable'] is False
+        assert components[0]['BundleIsVersionChecked'] is False
+        assert components[0]['BundleOverwriteAction'] == 'upgrade'
         assert args[args.index('--install-location')+1] == '/'
         pathlib.Path(args[-1]).write_bytes(b'synthetic installer payload')
 if name == 'productsign': pathlib.Path(args[-1]).write_bytes(pathlib.Path(args[-2]).read_bytes())

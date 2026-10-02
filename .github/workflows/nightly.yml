@@ -55,6 +55,9 @@ jobs:
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           python3 tools/version.py nightly --write
+      - name: License bundle checks
+        shell: bash
+        run: python3 tools/licenses.py --self-test
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.99.0
@@ -103,7 +106,6 @@ jobs:
         shell: bash
         run: |
           cargo install --locked --version 0.9.2 --features cli cargo-about
-          python3 tools/licenses.py --self-test
           python3 tools/licenses.py --output license-bundle
       - name: Stage
         shell: bash
@@ -209,6 +211,34 @@ jobs:
             --x86-64 inputs/KONTRA-nightly-macos-x86_64 --stage universal-stage \
             --revision "$GITHUB_SHA" --version "$version"
           bash .github/scripts/package_macos.sh universal-stage dist/KONTRA-nightly-macos-universal.pkg
+      - name: Validate native installation and explicit rollback
+        run: |
+          set -euo pipefail
+          package=dist/KONTRA-nightly-macos-universal.pkg
+          pkgutil --expand "$package" expanded-installer
+          find expanded-installer -name PackageInfo -exec cat {} \;
+          sudo installer -pkg "$package" -target /
+          # Prove a deliberately newer installed version cannot suppress rollback.
+          for bundle in /Library/Audio/Plug-Ins/CLAP/KONTRA.clap /Library/Audio/Plug-Ins/VST3/KONTRA.vst3 /Applications/KONTRA.app; do
+            sudo /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 999999' "$bundle/Contents/Info.plist"
+          done
+          sudo installer -pkg "$package" -target /
+          python3 - <<'PYINSTALL'
+          import hashlib, pathlib, subprocess
+          payload = pathlib.Path('universal-stage/payload')
+          for relative in ('Library/Audio/Plug-Ins/CLAP/KONTRA.clap',
+                           'Library/Audio/Plug-Ins/VST3/KONTRA.vst3', 'Applications/KONTRA.app'):
+              expected, installed = payload / relative, pathlib.Path('/') / relative
+              def inventory(root):
+                  return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                          for p in root.rglob('*') if p.is_file()}
+              assert inventory(expected) == inventory(installed), f'Installed payload differs: {relative}'
+              subprocess.run(['lipo', str(installed / 'Contents/MacOS/KONTRA'),
+                              '-verify_arch', 'arm64', 'x86_64'], check=True)
+              subprocess.run(['codesign', '--verify', '--deep', '--strict', '--all-architectures',
+                              str(installed)], check=True)
+              print(f'Installed and rollback-verified: /{relative}')
+          PYINSTALL
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: KONTRA-nightly-macos-universal

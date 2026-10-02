@@ -120,6 +120,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Portable license bundle checks
+        run: python3 tools/licenses.py --self-test
       - name: Nightly shipping identity
         if: inputs.release_validation
         shell: bash
@@ -153,7 +155,9 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Universal installer orchestration checks
-        run: python3 .github/scripts/test_package_macos.py
+        run: |
+          python3 tools/licenses.py --self-test
+          python3 .github/scripts/test_package_macos.py
       - name: Nightly shipping identity
         if: inputs.release_validation
         shell: bash
