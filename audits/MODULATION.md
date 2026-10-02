@@ -770,3 +770,35 @@ claim is introduced. The focused authored gate covers signed writer/readback,
 physical bounds, nonaligned control fragments, fractional cursor continuity,
 RAM/stream PCM equality, deferred retry and until-release lifetime with zero
 audio-thread heap operations. Actual-library PCM validation remains separate.
+
+## Saved sine-only Multi pitch playback (2026-10-02)
+
+A first audible subset now prepares saved version0x71 Multi sources only:
+retrigger enabled, zero delay and phase, synchronized positive note value
+and count>=1, sine weight magnitude<=1, and the other four weights zero.
+Only ordinary sampler pitch targets with finite signed depth, zero lag,
+no inversion and no enabled shaper are applied. External assignments to
+the source's own parameters exclude it. Other states and live LFO engine
+parameter writes retain explicit unsupported diagnostics.
+
+Independent source scheduling identifies a sampleRate/32 source clock,
+ceil(audioFrames/32) waveform points and correction for the final partial
+control interval. The sine-only legacy Multi component has the opposite
+sign from the simple sine source. Source bypass pauses its phase. The
+pitch target binder is independently connected to the ordinary sampler's
+pitch buffer: it linearly interpolates previous/current control points
+per audio frame with a retained modulo32 offset, rather than holding
+pitch for32 frames. The renderer applies that curve only to affected
+voices; ordinary fixed-pitch lanes retain their existing fast path.
+The oscillator continues through the existing release envelope and does
+not extend voice lifetime. No amplitude bypass lifecycle is changed.
+
+Sine values use the standard sine function rather than copying the
+proprietary legacy waveform table; this is an explicit numerical
+approximation. The authored gate independently generates control points
+and the audio ramp, then compares actual PCM from a linear sample, both
+bipolar halves, short fragments, retrigger, release retirement and zero
+heap activity. It does not establish full reference Kontakt sonic parity.
+Free-running/shared ownership, other waveforms and Multi mixes, positive
+fade/delay, external phase/frequency modulation, lag and live legacy
+frequency dispatch remain unsupported.

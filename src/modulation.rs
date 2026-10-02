@@ -103,6 +103,25 @@ pub struct Modulator {
     pub kind: String,
 }
 
+/// Saved retriggered, zero-delay sine-only Multi source driving pitch.
+/// This is a bounded implemented subset, not a fallback for other LFO states.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PitchLfo {
+    pub slot: u8,
+    pub count: f32,
+    pub note_value: f32,
+    pub sine: f32,
+    pub depth: f32,
+    pub bypassed: bool,
+}
+
+impl PitchLfo {
+    pub(crate) fn frequency(&self, tempo: f32) -> f32 {
+        let tempo = if tempo.is_finite() && tempo >= 0.1 { tempo } else { 120. };
+        (tempo / (60. * self.note_value * self.count)).clamp(0.01, 210.)
+    }
+}
+
 /// Modulation read from one group, plus notes about what was left out.
 #[derive(Debug, Default)]
 pub(crate) struct GroupModulation {
@@ -111,6 +130,7 @@ pub(crate) struct GroupModulation {
     pub mods: Vec<ModAssignment>,
     pub modulators: Vec<Modulator>,
     pub envelopes: Vec<ModEnvelope>,
+    pub pitch_lfos: Vec<PitchLfo>,
     pub warnings: Vec<String>,
 }
 
@@ -204,8 +224,26 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                     out.envelopes.push(ModEnvelope { env, targets });
                     false
                 }
-                RawModulator::Lfo(_) => {
-                    skipped_lfos += 1;
+                RawModulator::Lfo(lfo) => {
+                    // Retain strict diagnostics for every state outside the
+                    // independently established saved-only source clock.
+                    let weights = lfo.trailing_values.unwrap_or([0.; 5]);
+                    let supported = lfo.version == 0x71 && lfo.waveform == 5 && params.unknown_flags[2] != 0
+                        && lfo.initial_values[0] == 0. && lfo.initial_values[3] == 0.
+                        && lfo.initial_values[1].is_finite() && lfo.initial_values[1] >= 1.
+                        && lfo.records[0].values[0].is_finite() && lfo.records[0].values[0] > 0.
+                        && lfo.records[1].flag && weights[0].is_finite() && weights[0].abs() <= 1.
+                        && weights[1..].iter().all(|&v| v == 0.);
+                    let pitch: Vec<_> = params.targets.iter().filter(|t| t.param == "pitch" && t.slot.is_none()).collect();
+                    let depth: f32 = pitch.iter().map(|t| target_depth(t)).sum();
+                    if supported && depth.is_finite() && !pitch.is_empty() && pitch.iter().all(|t| !t.invert && t.lag_ms == 0
+                        && !t.shaper.as_ref().is_some_and(|s| s.enabled) && target_depth(t).is_finite()) {
+                        out.pitch_lfos.push(PitchLfo { slot: slot as u8,
+                            count: lfo.initial_values[1], note_value: lfo.records[0].values[0],
+                            sine: weights[0], depth,
+                            bypassed: params.unknown_flags[1] != 0 });
+                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered zero-delay sine-only Multi pitch is eligible for ordinary sampler playback; live LFO parameters and other targets remain unsupported"));
+                    } else { skipped_lfos += 1; }
                     false
                 }
                 _ => {
@@ -289,6 +327,13 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
         }
     }
 
+    // External frequency/phase/weight assignments invalidate this narrow
+    // saved-only clock; never silently substitute its initial state.
+    out.pitch_lfos.retain(|lfo| {
+        let driven = out.mods.iter().any(|m| matches!(m.target, ModTarget::Module { slot, .. } if slot == lfo.slot));
+        if driven { out.warnings.push(format!("Internal LFO slot {} pitch not applied: external source controls its parameters", lfo.slot)); }
+        !driven
+    });
     Ok(out)
 }
 
