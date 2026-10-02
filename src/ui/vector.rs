@@ -6,7 +6,7 @@
 
 use super::cover::advance;
 use super::panel;
-use super::perf_view::{FONT, Kind, LINE, Shown, break_lines, caption_of, keep_spaces, knob_like, prop, value};
+use super::perf_view::{FONT, Kind, LINE, Shown, break_lines, caption_of, frame, keep_spaces, knob_like, prop, value};
 use crate::artwork::Picture;
 use crate::ksp::{Control, Interface, Value};
 use moose::mui::mui::scene::Image;
@@ -108,6 +108,8 @@ impl Words {
 pub struct Plan {
     pub face: Face,
     pub words: Vec<Words>,
+    /// An authored animated face was replaced: cover its entire footprint.
+    pub skin: bool,
 }
 
 /// `text` set to fit `room` points: at `size`, or smaller down to
@@ -182,11 +184,17 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
     for (n, (label, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[label.control];
         if label.kind != Kind::Label || !prop(c, "$CONTROL_PAR_TEXT").trim().is_empty()
-            || !label.picture.as_ref().is_some_and(|p| p.frames.len() > 1)
+            || !label.picture.as_ref().is_some_and(|p| p.frames.len() > 1 && p.stretch == [false; 2])
         { continue; }
         for &m in &controls {
             let control = &drawn[m].0;
-            if inside(label, control) >= 0.9 * (label.w * label.h).max(control.w * control.h)
+            let target = &interface.controls[control.control];
+            let at = frame(value(target), f64::from(int(target, "$CONTROL_PAR_MIN_VALUE").unwrap_or(0)),
+                f64::from(int(target, "$CONTROL_PAR_MAX_VALUE").unwrap_or(1_000_000)), label.picture.as_ref().unwrap().frames.len());
+            let phase = int(c, "$CONTROL_PAR_PICTURE_STATE").and_then(|v| usize::try_from(v).ok());
+            // Integer KSP arithmetic may truncate where native sprites round.
+            if phase.is_some_and(|p| p == at || p.checked_add(1) == Some(at))
+                && inside(label, control) >= 0.9 * (label.w * label.h).max(control.w * control.h)
             {
                 pairs.push((n, m));
                 counts[n] += 1;
@@ -345,7 +353,7 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
             let (x, wide) = w.ink();
             (s.x + x, s.y + w.y + (w.h - w.size * 1.2).max(0.) / 2., wide, w.size * 1.2)
         }));
-        out.push(Plan { face, words });
+        out.push(Plan { face, words, skin: pairs.iter().any(|&(label, control)| control == n && paired[label]) });
     }
     out.reverse();
     out
@@ -531,6 +539,7 @@ mod tests {
         // second declares 800x67 but its nonstretch picture controls its size.
         let mut u = crate::ksp::initialize("on init\nmake_perfview\nset_ui_height_px(300)\ndeclare ui_label $face(1,1)\nset_text($face,\"\")\nmove_control_px($face,0,87)\nset_control_par_str(get_ui_id($face),$CONTROL_PAR_PICTURE,\"face\")\ndeclare ui_slider $macro(0,1000000)\nmove_control_px($macro,0,86)\nset_control_par_str(get_ui_id($macro),$CONTROL_PAR_PICTURE,\"transparent\")\nend on", 0, 8).unwrap();
         u.width = 800;
+        u.controls[1].properties.insert("$CONTROL_PAR_VALUE".into(), Value::Int(568554));
         u.controls[0].properties.insert("$CONTROL_PAR_PICTURE_STATE".into(), Value::Int(101));
         let mut name = u.controls[0].clone();
         name.id += 2;
@@ -577,6 +586,26 @@ mod tests {
         let p = plans(&u);
         assert_eq!(p[1].face, Face::Marker, "waveform position controls remain markers");
         assert_ne!(p[0].face, Face::Clear, "waveform artwork is never paired away");
+    }
+
+    #[test]
+    fn pictured_waveform_layers_do_not_become_slider_skins() {
+        // Actual source display: 180-frame, horizontally cropped 258x63
+        // pictures at source index32, overlaid by a 260x58 loop-start slider0.
+        let mut u = crate::ksp::initialize("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_label $dark(1,1)\nset_text($dark,\"\")\nset_control_par_str(get_ui_id($dark),$CONTROL_PAR_PICTURE,\"wave\")\nset_control_par(get_ui_id($dark),$CONTROL_PAR_WIDTH,258)\nset_control_par(get_ui_id($dark),$CONTROL_PAR_PICTURE_STATE,32)\ndeclare ui_label $bright(1,1)\nset_text($bright,\"\")\nset_control_par_str(get_ui_id($bright),$CONTROL_PAR_PICTURE,\"wave\")\nset_control_par(get_ui_id($bright),$CONTROL_PAR_WIDTH,257)\nset_control_par(get_ui_id($bright),$CONTROL_PAR_PICTURE_STATE,32)\ndeclare ui_slider $start(0,1000000)\nset_control_par_str(get_ui_id($start),$CONTROL_PAR_PICTURE,\"transparent\")\nend on", 0, 8).unwrap();
+        let pictures: HashMap<_, _> = [
+            ("wave".into(), Arc::new(Picture { frames: vec![Arc::new(Image::rgba(258,63,vec![255;258*63*4]).unwrap());180], stretch: [true,false], atlas: None })),
+            ("transparent".into(), Arc::new(Picture { frames: vec![Arc::new(Image::rgba(260,58,vec![0;260*58*4]).unwrap())], stretch: [false;2], atlas: None })),
+        ].into();
+        for source in [32, 0] {
+            for label in &mut u.controls[..2] { label.properties.insert("$CONTROL_PAR_PICTURE_STATE".into(), Value::Int(source)); }
+            let drawn: Vec<_> = super::super::perf_view::layout(&u, &pictures).into_iter()
+                .map(|s| {let image = super::super::perf_view::frame_of(&s, &u.controls[s.control]); (s,image)}).collect();
+            let p = plan(&u, &pictures, &drawn, &mut Assets::default());
+            assert_ne!(p[0].face, Face::Clear);
+            assert_ne!(p[1].face, Face::Clear);
+            assert!(!p[2].skin, "source0 coinciding with slider0 is still a resizable display, not its face");
+        }
     }
 
     #[test]
