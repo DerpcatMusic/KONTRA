@@ -222,6 +222,29 @@ pub fn read_snapshot(base: &Path, snapshot: &Path) -> Result<Instrument> {
         .map_err(|_| anyhow::anyhow!("Malformed Kontakt snapshot or base instrument"))?
 }
 
+/// Container identity only, for the off-thread snapshot catalog. Snapshot
+/// metadata names its base instrument, not the snapshot itself; the latter's
+/// authored name is its file stem (as in `read_snapshot`).
+pub(crate) fn snapshot_instrument(path: &Path) -> Result<String> {
+    std::panic::catch_unwind(|| {
+        let c = chunks(path)?;
+        c.find_first(0x4f).context("Snapshot state missing")?;
+        Ok(ni_file::kontakt::objects::snapshot_instrument_name(
+            c.find_first(0x51).context("Snapshot metadata missing")?,
+        )?)
+    }).map_err(|_| anyhow::anyhow!("Malformed snapshot metadata"))?
+}
+
+/// The same exact base identity used by snapshot validation, without loading
+/// zones, samples, scripts or artwork.
+pub(crate) fn snapshot_base_name(path: &Path) -> Result<String> {
+    std::panic::catch_unwind(|| {
+        let c = chunks(path)?;
+        let program = Program::try_from(c.find_first(0x28).context("Base program missing")?)?;
+        Ok(program.params()?.name)
+    }).map_err(|_| anyhow::anyhow!("Malformed base instrument metadata"))?
+}
+
 fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
     use ni_file::kontakt::objects::{Snapshot, snapshot_instrument_name};
     let snapshot_chunks = chunks(snapshot).context("Snapshot container")?;
