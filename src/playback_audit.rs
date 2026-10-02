@@ -118,6 +118,7 @@ fn phase(
     let (mut left, mut right) = ([0.; MAX_BLOCK], [0.; MAX_BLOCK]);
     let mut pace = kontakto::engine::Pace::start();
     let mut elapsed = 0u64;
+    let mut last_frames = 0;
     while frames > 0 {
         if realtime {
             pace.until(std::time::Duration::from_secs_f64(
@@ -125,6 +126,7 @@ fn phase(
             ));
         }
         let n = frames.min(MAX_BLOCK as u64) as usize;
+        last_frames = n;
         meter.measured(n, || {
             rack.parts[0].begin_audio_block(n, 1, !realtime);
             if elapsed == 0 {
@@ -149,7 +151,10 @@ fn phase(
         elapsed += n as u64;
         frames -= n as u64;
     }
-    snapshot(&rack.parts[0], name, meter, start_samples, start_square)
+    let mut out = snapshot(&rack.parts[0], name, meter, start_samples, start_square);
+    out["last_block_rms"] = json!((left[..last_frames].iter().chain(&right[..last_frames])
+        .map(|&x| f64::from(x).powi(2)).sum::<f64>() / (last_frames * 2).max(1) as f64).sqrt());
+    out
 }
 
 pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -> Result<Value> {
@@ -437,7 +442,9 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
             ],
         );
         drop(go);
+        let panic_started = Instant::now();
         meter.measured(0, || rack.parts[0].panic());
+        let panic_ms = panic_started.elapsed().as_secs_f64() * 1000.;
         stages.push(phase(
             &mut rack,
             &mut routers,
@@ -476,7 +483,7 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
             .map(|rt| rt.diagnostics())
             .unwrap_or_default();
         cases.push(json!({
-            "case":case,"articulations_found":found.len(),"stages":stages,
+            "case":case,"articulations_found":found.len(),"stages":stages,"panic_ms":panic_ms,
             "heap_operations_on_render_thread":meter.heap,"blocks":meter.blocks,
             "render_ms":meter.wall_ms,"max_block_or_event_ms":meter.max_ms,"blocks_exceeding_duration":meter.over_deadline,
             "peak":meter.peak,"rms":(meter.square/meter.samples.max(1) as f64).sqrt(),"nonfinite_samples":meter.nonfinite,
