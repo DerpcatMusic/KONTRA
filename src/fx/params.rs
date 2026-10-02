@@ -154,20 +154,45 @@ pub struct IrBand {
 pub struct IrSettings {
     pub values: [f32; 3],
     pub size: f32,
+    // Omitted in older host states: retain the native saved flags in that case.
+    #[serde(default)]
+    pub reverse: Option<bool>,
+    #[serde(default)]
+    pub auto_gain: Option<bool>,
 }
 
 impl IrSettings {
-    pub const DEFAULT: Self = Self { values: [0., 0.5, 0.5], size: 0.5 };
+    pub const DEFAULT: Self = Self { values: [0., 0.5, 0.5], size: 0.5, reverse: None, auto_gain: None };
     pub fn from_convolution(p: &Convolution) -> Self {
         let values = [
             ((p.predelay_ms.max(0.) / 2. + 1.).ln() / 151f32.ln()).clamp(0., 1.),
             (p.early.length_ratio - 0.5).clamp(0., 1.),
             (p.late.length_ratio - 0.5).clamp(0., 1.),
         ];
-        Self { values, size: values[2] }
+        Self { values, size: values[2], reverse: Some(p.reversed()), auto_gain: Some(p.auto_gain()) }
+    }
+
+    /// Continuous fields 0..2, then native Reverse and Auto Gain switches.
+    pub fn value(&self, field: u8) -> Option<f32> {
+        match field {
+            3 => self.reverse.map(f32::from),
+            4 => self.auto_gain.map(f32::from),
+            n => self.values.get(n as usize).copied(),
+        }
+    }
+
+    pub(super) fn inherit_flags(mut self, native: Self) -> Self {
+        self.reverse = self.reverse.or(native.reverse);
+        self.auto_gain = self.auto_gain.or(native.auto_gain);
+        self
     }
 
     pub fn set(&mut self, field: u8, value: f32) -> bool {
+        match field {
+            3 => { self.reverse = Some(value != 0.0); return true },
+            4 => { self.auto_gain = Some(value != 0.0); return true },
+            _ => {}
+        }
         let Some(v) = self.values.get_mut(field as usize) else { return false };
         let next = value.clamp(0., 1.);
         // Replaying unchanged script values after a rate rebuild must retain
@@ -187,6 +212,8 @@ impl IrSettings {
         p.predelay_ms = Self::predelay_ms(self.values[0]);
         p.early.length_ratio = 0.5 + self.size;
         p.late.length_ratio = p.early.length_ratio;
+        if let Some(reverse) = self.reverse { p.flags[0] = reverse; }
+        if let Some(auto_gain) = self.auto_gain { p.flags[1] = auto_gain; }
     }
 }
 

@@ -6018,11 +6018,11 @@ end on"#.into()], ..Default::default() };
         let resources = dir.join("Resources/ir_samples");
         std::fs::create_dir_all(&resources).unwrap();
         let mut wav = Vec::new();
-        wav.extend(b"RIFF"); wav.extend(40u32.to_le_bytes()); wav.extend(b"WAVEfmt ");
+        wav.extend(b"RIFF"); wav.extend(44u32.to_le_bytes()); wav.extend(b"WAVEfmt ");
         wav.extend(16u32.to_le_bytes()); wav.extend(3u16.to_le_bytes()); wav.extend(1u16.to_le_bytes());
         wav.extend(48000u32.to_le_bytes()); wav.extend(192000u32.to_le_bytes());
         wav.extend(4u16.to_le_bytes()); wav.extend(32u16.to_le_bytes()); wav.extend(b"data");
-        wav.extend(4u32.to_le_bytes()); wav.extend(0.5f32.to_le_bytes());
+        wav.extend(8u32.to_le_bytes()); wav.extend(0.5f32.to_le_bytes()); wav.extend(0.25f32.to_le_bytes());
         std::fs::write(resources.join("Room.wav"), wav).unwrap();
         std::fs::write(resources.join("Broken.wav"), b"invalid audio").unwrap();
         let band = IrBand { length_ratio: 1., low_cut_hz: 20., high_cut_hz: 20000. };
@@ -6042,6 +6042,10 @@ make_perfview
 declare ui_slider $room(0, 2)
 declare ui_slider $size(0, 1000000)
 declare ui_slider $distance(0, 1000000)
+declare ui_button $reverse
+declare ui_button $automatic
+$reverse := get_engine_par($ENGINE_PAR_IRC_REVERSE,-1,0,$NI_INSERT_BUS)
+$automatic := get_engine_par($ENGINE_PAR_IRC_AUTO_GAIN,-1,0,$NI_INSERT_BUS)
 declare $id
 end on
 on ui_control($room)
@@ -6060,6 +6064,12 @@ set_engine_par($ENGINE_PAR_IRC_LENGTH_RATIO_LR, $size, -1, 0, $NI_INSERT_BUS)
 end on
 on ui_control($distance)
 set_engine_par($ENGINE_PAR_IRC_PREDELAY, $distance, -1, 0, $NI_INSERT_BUS)
+end on
+on ui_control($reverse)
+set_engine_par($ENGINE_PAR_IRC_REVERSE,$reverse,-1,0,$NI_INSERT_BUS)
+end on
+on ui_control($automatic)
+set_engine_par($ENGINE_PAR_IRC_AUTO_GAIN,$automatic,-1,0,$NI_INSERT_BUS)
 end on
 on async_complete
 message($NI_ASYNC_ID & ":" & $NI_ASYNC_EXIT_STATUS)
@@ -6112,6 +6122,53 @@ end on"#.into()],
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "1:1");
         assert_eq!(p.shared.discard.len(), 1, "the worker receives the old kernel");
         while p.shared.discard.pop().is_some() {}
+        // Native switches use 0/1, coalesce through the same worker path,
+        // and read back before/after installation without RT allocation.
+        let switch = |name| crate::ksp::engine::EnginePar {
+            id: (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 1024)
+                .find(|&id| crate::ksp::engine_par_name(id) == Some(name)).unwrap(), group: -1, slot: 0, generic: 1,
+        };
+        assert_eq!(allocations(|| {
+            dsp.rack.parts[0].ui_control(0, 3, 1);
+            dsp.rack.parts[0].ui_control(0, 4, 1);
+            tick(&mut dsp, &mut buffer, &mut cx);
+        }), 0);
+        for name in ["$ENGINE_PAR_IRC_REVERSE", "$ENGINE_PAR_IRC_AUTO_GAIN"] {
+            assert_eq!(dsp.rack.parts[0].script().unwrap().engine_par(switch(name)), Some(1));
+        }
+        assert_eq!(p.shared.ir_requests.len(), 1, "two switches need one IR rebuild");
+        load_irs(&p);
+        assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
+        let installed = dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
+        assert_eq!((installed.reverse, installed.auto_gain), (Some(true), Some(true)));
+        let (instrument, loads) = {
+            let view = p.shared.view.lock().unwrap();
+            (view.parts[0].instrument.as_ref().unwrap().clone(), view.parts[0].irs.clone())
+        };
+        let saved = instrument.fx.ir_settings_with(&loads);
+        let json = serde_json::to_string(&saved).unwrap();
+        let saved: Vec<crate::fx::IrSlotSettings> = serde_json::from_str(&json).unwrap();
+        let (restored, errors) = crate::engine::load_scripts_with_state(&instrument, Vec::new(), 48000., &saved, &[]);
+        assert!(errors.is_empty(), "{errors:?}");
+        for name in ["$ENGINE_PAR_IRC_REVERSE", "$ENGINE_PAR_IRC_AUTO_GAIN"] {
+            assert_eq!(restored.as_ref().unwrap().engine_par(switch(name)), Some(1), "restored switch");
+        }
+        let mut rebuilt = crate::engine::effects(&instrument, restored.as_deref(), 48000.);
+        let (mut l, mut r) = ([1.,0.,0.,0.], [1.,0.,0.,0.]);
+        assert_eq!(allocations(|| rebuilt.process(&mut l, &mut r)), 0);
+        let gain = (0.5f32 / (0.5f32.powi(2) + 0.25f32.powi(2))).sqrt();
+        for out in [l, r] {
+            assert!((out[0] - 0.25 * gain).abs() < 1e-6);
+            assert!((out[1] - 0.5 * gain).abs() < 1e-6, "restored Reverse + Auto Gain change the impulse");
+        }
+        let legacy: crate::fx::params::IrSettings = serde_json::from_str(r#"{"values":[0,0.5,0.5],"size":0.5}"#).unwrap();
+        assert_eq!((legacy.reverse, legacy.auto_gain), (None, None));
+        let native = instrument.fx.with_loads(&loads);
+        let legacy_load = crate::fx::ScriptIr { rack: crate::fx::Rack::Insert, slot: 0, load: FxLoad::Convolution(legacy) };
+        let legacy_processor = native.processor_with(48000., 64, &[legacy_load]);
+        let legacy_settings = legacy_processor.ir_settings(crate::fx::Rack::Insert, 0).unwrap();
+        assert_eq!((legacy_settings.reverse, legacy_settings.auto_gain), (Some(true), Some(true)), "old host states retain native switches");
+        while p.shared.discard.pop().is_some() {}
         let before = p.shared.view.lock().unwrap().parts[0].irs.clone();
         assert!(matches!(before[0].load, FxLoad::Ir { .. }));
         dsp.rack.parts[0].ui_control(0, 0, 0);
@@ -6146,6 +6203,7 @@ end on"#.into()],
         // callback before the handoff so the obsolete kernel is rejected.
         assert_eq!(allocations(|| {
             dsp.rack.parts[0].ui_control(0, 1, 0);
+            dsp.rack.parts[0].ui_control(0, 3, 0);
             dsp.rack.parts[0].render(&mut [0.; 64], &mut [0.; 64]);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
@@ -6153,6 +6211,8 @@ end on"#.into()],
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
         assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().values, [0.25, 0.5, 0.]);
+        assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().reverse, Some(false), "newer switch wins over the stale prepared kernel");
+        assert_eq!(dsp.rack.parts[0].script().unwrap().engine_par(switch("$ENGINE_PAR_IRC_REVERSE")), Some(0));
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0");
         dsp.rack.parts[0].ui_control(0, 0, 2);
         tick(&mut dsp, &mut buffer, &mut cx);
@@ -6178,6 +6238,8 @@ end on"#.into()],
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "4:1", "the original request ID completes after rebuilding at the new rate");
+        let flags = dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
+        assert_eq!((flags.reverse, flags.auto_gain), (Some(false), Some(true)), "rate rebuild retains latest switches");
         dsp.rack.parts[0].ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);

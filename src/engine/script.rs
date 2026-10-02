@@ -60,8 +60,10 @@ pub fn load_scripts_with_state(
             }
         }
         setup.loads.push(ScriptIr { rack, slot, load: Load::Convolution(settings) });
-        for (n, value) in settings.values.into_iter().enumerate() {
-            setup.effects.push((Address::Fx(rack, slot, FxParam::Convolution(n as u8)), value));
+        for n in 0..5 {
+            if let Some(value) = settings.value(n) {
+                setup.effects.push((Address::Fx(rack, slot, FxParam::Convolution(n)), value));
+            }
         }
     }
     setup.saved = engine_state.iter().copied().filter(|edit| {
@@ -761,8 +763,11 @@ impl KspEngine for ScriptSetup<'_> {
             let mut settings = self.loads.iter().rev().find_map(|l| match l.load {
                 Load::Convolution(s) if (l.rack, l.slot) == (rack, slot) => Some(s), _ => None,
             }).unwrap_or_else(|| {
-                let values = [0, 1, 2].map(|n| self.fx.param(rack, slot, FxParam::Convolution(n)).unwrap_or(crate::fx::params::IrSettings::DEFAULT.values[n as usize]));
-                crate::fx::params::IrSettings { values, size: values[2] }
+                let mut settings = crate::fx::params::IrSettings::DEFAULT;
+                for n in 0..5 {
+                    if let Some(value) = self.fx.param(rack, slot, FxParam::Convolution(n)) { settings.set(n, value); }
+                }
+                settings
             });
             if !settings.set(n, v) { return false }
             self.loads.retain(|l| (l.rack, l.slot) != (rack, slot) || !matches!(l.load, Load::Convolution(_)));

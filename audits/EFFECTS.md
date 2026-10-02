@@ -126,8 +126,12 @@ Volume Envelope, independent early/late sizing and filtering remain unapplied an
 warn explicitly; Auto Gain then warns that it uses the approximated prepared IR.
 The native sample-rate/latency modes and automatic early/late boundary remain
 unimplemented. Existing serialized field names retain those raw settings.
-Live KSP Auto Gain and Reverse writes are not yet bound. Large accumulated peaks
-alone do not establish preset correctness or justify a new limiter.
+Live KSP Auto Gain and Reverse switches use native 0/1 values and reuse the
+existing coalesced worker rebuild path. Optional saved flags let older host states
+retain the instrument's native flags. The existing live IR regression now checks
+switch callbacks, readback, restored impulse processing, stale settings and rate
+handoffs without audio-thread allocation; this API extension is validation-pending.
+Large accumulated peaks alone do not establish preset correctness or justify a limiter.
 
 ## DSP
 
