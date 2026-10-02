@@ -55,6 +55,9 @@ jobs:
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           python3 tools/version.py nightly --write
+      - name: License bundle checks
+        shell: bash
+        run: python3 tools/licenses.py --self-test
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.99.0
@@ -103,7 +106,6 @@ jobs:
         shell: bash
         run: |
           cargo install --locked --version 0.9.2 --features cli cargo-about
-          python3 tools/licenses.py --self-test
           python3 tools/licenses.py --output license-bundle
       - name: Stage
         shell: bash
