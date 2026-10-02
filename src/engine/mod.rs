@@ -753,6 +753,8 @@ impl Engine {
         for v in self.player.voices.iter_mut().filter(|v| selected(v.input_channel)) {
             affected |= 1 << v.channel;
             v.fade.start(0.0, fade, true);
+            // Relinquish key ownership during the fade, as the logical stop does.
+            v.held = false;
         }
         self.player.pending_releases.retain(|r| {
             if !selected(r.input_channel) { return true; }
@@ -2360,6 +2362,28 @@ mod release_note_mono_tests {
             tick(&mut e);
         }), 0);
         assert_eq!(e.dropped_commands(), 0);
+
+        // Channel-mode inputs can share one logical home and the same key.
+        // The physical stop must relinquish only its selected input owner.
+        let mut e = engine(false, false, false);
+        e.note_on_from(7, 1, 60, 100);
+        e.note_on_from(7, 2, 60, 100);
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            e.all_sound_off_from(7, 1 << 1);
+            assert!(e.player.voices.iter().filter(|v| v.input_channel == Some(1)).all(|v| !v.held && v.fade.dying()));
+            assert!(e.player.voices.iter().filter(|v| v.input_channel == Some(2)).all(|v| v.held && !v.fade.dying()));
+            e.note_off_from(7, 1, 60);
+            assert!(!e.player.voices.iter().any(|v| v.release_trigger));
+            assert!(e.key_down(7,60), "the other physical input still holds the shared key");
+            tick(&mut e);
+            assert!(!e.player.voices.iter().any(|v| v.input_channel == Some(1)));
+            e.note_off_from(7, 2, 60);
+            assert!(!e.key_down(7,60));
+            assert_eq!(e.player.voices.iter().filter(|v| v.release_trigger).count(), 2);
+            assert!(e.player.voices.iter().filter(|v| v.release_trigger).all(|v| v.input_channel == Some(2)));
+            tick(&mut e);
+        }),0);
+        assert_eq!(e.dropped_commands(),0);
     }
 
     #[test]
