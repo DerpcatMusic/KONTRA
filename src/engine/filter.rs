@@ -2235,7 +2235,9 @@ mod tests {
         let depth = address(id::MOD_TARGET_MP_INTENSITY, 2).unwrap();
         let unipolar = address(id::MOD_TARGET_INTENSITY, 2).unwrap();
         let bypass = address(id::INTMOD_BYPASS, -1).unwrap();
-        assert!(address(id::INTMOD_INTENSITY, 2).is_none(), "unknown legacy filter law stays explicit");
+        let legacy = address(id::INTMOD_INTENSITY, 2).unwrap();
+        assert!(address(id::INTMOD_INTENSITY, 3).is_none(), "other legacy module laws are not inferred");
+        assert!(address(id::INTMOD_INTENSITY, 0).is_none(), "unsupported target does not alias cutoff");
         assert!(address(id::MOD_TARGET_MP_INTENSITY, 0).is_none(), "unsupported target does not alias a routed one");
         let table = ModTable::default();
         let cc = [0; 128];
@@ -2248,12 +2250,23 @@ mod tests {
         let mut clock = Envelope::new(&Ahdsr::from(&groups[0].envelopes[1].env), RATE);
         let mut ctl = [0.; MAX_BLOCK];
         let mut difference = 0f32;
+        let mut legacy_energy = [0f64; 2];
         assert_eq!(crate::plugin::tests::allocations(|| {
+            for (raw, expected) in [(0, -1.), (250_000, -0.125), (500_000, 0.), (750_000, 0.125), (1_000_000, 1.)] {
+                assert_eq!(legacy.decode(raw), expected);
+                assert!(params::write(&mut settings, legacy, legacy.decode(raw)));
+                assert_eq!(params::read(&settings, legacy), Some(expected));
+                assert_eq!(legacy.encode(params::read(&settings, legacy).unwrap()), raw);
+            }
+            // Independent saved Analog magnitude, not generated from this decoder.
+            assert!((legacy.decode(482_450).abs() - 0.00004324349).abs() < 1e-9);
             assert!(params::write(&mut settings, unipolar, unipolar.decode(500_000)));
             assert_eq!(params::read(&settings, unipolar), Some(0.25));
             assert!(params::write(&mut settings, depth, depth.decode(750_000)));
             assert_eq!(params::read(&settings, depth), Some(0.5));
             assert_eq!(depth.encode(params::read(&settings, depth).unwrap()), 750_000);
+            assert!(params::write(&mut settings, legacy, legacy.decode(750_000)));
+            assert_eq!(params::read(&settings, legacy), Some(0.125));
             assert!(params::write(&mut settings, bypass, bypass.decode(1)));
             assert!(settings[0].pitch_envelopes[0].bypass, "all copies of a mixed envelope share bypass");
             for block in 0..48 {
@@ -2261,11 +2274,19 @@ mod tests {
                 let (mut l, mut r) = (source, source);
                 let (mut dl, mut dr) = (source, source);
                 if block == 24 { assert!(params::write(&mut settings, bypass, 0.)); }
+                if block == 32 {
+                    assert!(params::write(&mut settings, legacy, legacy.decode(250_000)));
+                    assert_eq!(params::read(&settings, legacy), Some(-0.125));
+                    assert_eq!(legacy.encode(params::read(&settings, legacy).unwrap()), 250_000);
+                }
                 voice.process(settings[0].filter.as_ref().unwrap(), &table, &mut ctl, &mut l, &mut r, RATE);
                 reference.process(&dry, &table, &mut ctl, &mut dl, &mut dr, RATE);
                 clock.skip(128, None, RATE);
                 assert_eq!(voice.envs[0].level(), clock.level(), "bypass does not restart or freeze the clock");
                 assert!(l.iter().chain(&r).all(|x| x.is_finite()));
+                let power = l.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>();
+                if (28..32).contains(&block) { legacy_energy[0] += power; }
+                if (44..48).contains(&block) { legacy_energy[1] += power; }
                 if block < 24 { assert_eq!(l, dl, "bypass removes even the shaper intercept"); }
                 else { difference += l.iter().zip(&dl).map(|(a,b)| (a-b).abs()).sum::<f32>(); }
             }
@@ -2277,6 +2298,8 @@ mod tests {
             assert_eq!(voice.envs[0].level(), clock.level());
         }), 0);
         assert!(difference > 1., "resuming the elapsed envelope changes actual PCM: {difference}");
+        assert!(legacy_energy[0] > legacy_energy[1] * 4.,
+            "negative legacy cutoff depth must lower the low-pass response: {legacy_energy:?}");
     }
 
     /// The rearranged SSE section matches Simper's textbook update.

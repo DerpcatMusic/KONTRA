@@ -555,8 +555,8 @@ pub(crate) enum Address {
         target: u16,
         bipolar: bool,
     },
-    /// Legacy cubic bipolar depth, inferred for pitch targets only.
-    LegacyPitchIntensity { group: u16, envelope: u8, target: u16 },
+    /// Legacy cubic bipolar depth, measured for pitch and filter-cutoff targets.
+    LegacyInternalIntensity { group: u16, envelope: u8, target: u16 },
     /// Explicit KSP bypass, separate from the undecoded preset flags.
     InternalBypass(u16, u8),
     Fx(Rack, u8, FxParam),
@@ -677,14 +677,15 @@ impl Address {
                             .get(target)?.target;
                         match routed {
                             ModTarget::Pitch => {},
-                            ModTarget::Module { param, .. } if par.id != id::INTMOD_INTENSITY
-                                && (Knob::parse(param).is_some() || super::filter::stage_knob(param).is_some()) => {},
+                            ModTarget::Module { param, .. } if param == "filterCutoff"
+                                || (par.id != id::INTMOD_INTENSITY
+                                    && (Knob::parse(param).is_some() || super::filter::stage_knob(param).is_some())) => {},
                             _ => return None,
                         }
                         let envelope = u8::try_from(envelope).ok()?;
                         let target = u16::try_from(target).ok()?;
                         if par.id == id::INTMOD_INTENSITY {
-                            Self::LegacyPitchIntensity { group: g, envelope, target }
+                            Self::LegacyInternalIntensity { group: g, envelope, target }
                         } else { Self::InternalIntensity { group: g, envelope, target, bipolar } }
                     }
                 }
@@ -772,7 +773,7 @@ impl Address {
                 | Self::ModEnvelope(..)
                 | Self::InternalIntensity { .. }
                 | Self::InternalBypass(..)
-                | Self::LegacyPitchIntensity { .. }
+                | Self::LegacyInternalIntensity { .. }
                 | Self::Intensity { .. }
                 | Self::Filter(..)
         )
@@ -811,9 +812,9 @@ impl Address {
                 Stage::Attack | Stage::Hold => time(x, SHORT),
                 Stage::Decay | Stage::Release => time(x, LONG),
             },
-            // NI developer's pitch points: 1129961 -> 24 st, 1221125 -> 36 st.
-            // Inferred cubic, not Kontakt reference-render calibrated.
-            Self::LegacyPitchIntensity { .. } => (2. * value as f32 / UNIT - 1.).powi(3),
+            // Primary KSP measurements give cubic legacy depth; Analog cutoff
+            // magnitudes corroborate it. Not Kontakt render calibrated.
+            Self::LegacyInternalIntensity { .. } => (2. * value as f32 / UNIT - 1.).powi(3),
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. } => 2.0 * x - 1.0,
             Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) => f32::from(value != 0),
@@ -866,7 +867,7 @@ impl Address {
                 Stage::Attack | Stage::Hold => time_value(v, SHORT),
                 Stage::Decay | Stage::Release => time_value(v, LONG),
             },
-            Self::LegacyPitchIntensity { .. } => return ((v.cbrt() + 1.) * 0.5 * UNIT).round() as i32,
+            Self::LegacyInternalIntensity { .. } => return ((v.cbrt() + 1.) * 0.5 * UNIT).round() as i32,
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. }
             | Self::Fx(_, _, FxParam::Pan)
@@ -1043,9 +1044,9 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             m.intensity = value.clamp(-1.0, 1.0);
         }
         Address::InternalIntensity { group, envelope, target, .. }
-        | Address::LegacyPitchIntensity { group, envelope, target } => {
+        | Address::LegacyInternalIntensity { group, envelope, target } => {
             if !value.is_finite() { return false; }
-            let value = if matches!(address, Address::LegacyPitchIntensity { .. }) {
+            let value = if matches!(address, Address::LegacyInternalIntensity { .. }) {
                 value
             } else { value.clamp(-1., 1.) };
             let Some(settings) = settings.get_mut(group as usize) else { return false; };
@@ -1055,8 +1056,7 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
                 m.2.intensity = value;
                 applied = true;
             }
-            if matches!(address, Address::InternalIntensity { .. })
-                && let Some(m) = settings.filter.as_mut().and_then(|f| f.envelope_mod(envelope, target)) {
+            if let Some(m) = settings.filter.as_mut().and_then(|f| f.envelope_mod(envelope, target)) {
                 m.intensity = value;
                 applied = true;
             }
@@ -1146,7 +1146,7 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
             .get(index as usize)
             .map(|m| m.intensity),
         Address::InternalIntensity { group, envelope, target, .. }
-        | Address::LegacyPitchIntensity { group, envelope, target } => {
+        | Address::LegacyInternalIntensity { group, envelope, target } => {
             let settings = settings.get(group as usize)?;
             settings.pitch_envelopes.iter().find(|e| e.index == envelope)
                 .and_then(|e| e.targets.iter().find(|t| t.0 == target)).map(|t| t.2.intensity)
