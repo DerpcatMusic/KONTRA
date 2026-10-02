@@ -1741,21 +1741,32 @@ impl Runtime {
     pub(crate) fn note_off_from(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8) {
         self.advance(engine, at);
         let note = note.min(127);
-        let (mut id, _) = std::mem::take(&mut self.env.input.keys[owner.min(15) as usize][note as usize]);
+        let row=owner.min(15) as usize;
+        let (mut id, _) = std::mem::take(&mut self.env.input.keys[row][note as usize]);
+        let (mut first,mut last)=(0,0);
+        while id != 0 {
+            let Some(e) = self.env.events.get_mut(id) else { break };
+            let next = std::mem::take(&mut e.next_input);
+            // Raw MIDI note-off is distinct from an exact host wildcard.
+            // Keep exact roots linked until their own tuple is released.
+            if e.host_note.is_some() {
+                if first==0 { first=id; }
+                if last!=0 { self.env.events.get_mut(last).unwrap().next_input=id; }
+                last=id;
+            } else {
+                e.held = false;
+                if e.frozen_expression.is_none() {
+                    e.frozen_expression = engine.release_expression(at, e.voice, e.channel, note);
+                }
+                self.env.queue(Work::Release { event: id, slot: 0 });
+            }
+            id = next;
+        }
+        self.env.input.keys[row][note as usize]=(first,last);
         let held = self.env.input.keys.iter().any(|channel| channel[note as usize].0 != 0);
         if !self.env.cleaning {
             self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
             self.key_down_oct(note);
-        }
-        while id != 0 {
-            let Some(e) = self.env.events.get_mut(id) else { break };
-            e.held = false;
-            if e.frozen_expression.is_none() {
-                e.frozen_expression = engine.release_expression(at, e.voice, e.channel, note);
-            }
-            let next = std::mem::take(&mut e.next_input);
-            self.env.queue(Work::Release { event: id, slot: 0 });
-            id = next;
         }
         self.settle(engine);
     }
@@ -1925,7 +1936,9 @@ impl Runtime {
         });
         self.env.stop_waits.retain(|(id, _)| threads.iter().any(|t| t.live && t.ctx.callback_id == *id));
         for note in 0..128 {
-            let held = !self.env.cleaning && self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
+            // A scoped exact cleanup must expose other roots to its release
+            // callback. Full Panic/reset still suppresses all held keys.
+            let held = (!self.env.cleaning || host_note.is_some()) && self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
             self.set_sys(SysArray::KeyDown, note, i32::from(held));
         }
         for note in 0..12 { self.key_down_oct(note); }

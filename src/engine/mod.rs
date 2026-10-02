@@ -262,7 +262,7 @@ impl Engine {
     /// Install `bank`, stopping every voice; returns the previous bank for
     /// disposal off the audio thread.
     pub fn set_bank(&mut self, bank: Option<Box<Bank>>) -> Option<Box<Bank>> {
-        self.player.host_notes.stop(None, None, self.player.now);
+        self.choke_host_notes();
         self.player.clear_voices(self.bank.as_deref());
         self.player.pending_releases.clear();
         self.player.touch();
@@ -341,9 +341,7 @@ impl Engine {
     pub fn set_script(&mut self, mut script: Option<Box<Runtime>>) -> Option<Box<Runtime>> {
         // An old callback/root cannot migrate into the replacement runtime.
         // Close only exact owners; anonymous MIDI behavior stays unchanged.
-        if !self.player.host_notes.active.is_empty() {
-            for clap in [true,false] { self.host_note_choke(HostPattern { port:-1, channel:-1, key:-1, id:-1, clap }); }
-        }
+        self.choke_host_notes();
         self.commands.clear();
         self.writes.clear();
         self.write_index.1.clear();
@@ -688,6 +686,11 @@ impl Engine {
         }
     }
 
+    fn choke_host_notes(&mut self) {
+        if self.player.host_notes.active.is_empty() { return; }
+        for clap in [true,false] { self.host_note_choke(HostPattern { port:-1, channel:-1, key:-1, id:-1, clap }); }
+    }
+
     pub(crate) fn host_note_choke(&mut self, pattern: HostPattern) {
         for i in 0..self.player.host_notes.active.len() {
             let id = self.player.host_notes.active[i];
@@ -757,6 +760,10 @@ impl Engine {
     pub(crate) fn host_key_held(&self, channel: u8, key: u8) -> bool {
         self.player.host_notes.active.iter().any(|r| self.player.host_notes.get(*r).is_some_and(|o| o.held && o.note.channel == channel && o.note.key == key))
     }
+    pub(crate) fn held_host_route(&self, input:u8, key:u8) -> Option<(u8,u8)> {
+        self.player.host_notes.active.iter().rev().filter_map(|r| self.player.host_notes.get(*r))
+            .find(|o| o.held && o.note.channel==input && o.note.key==key).map(|o| (o.channel,o.key))
+    }
     pub(crate) fn host_note_drops(&self) -> u64 { self.player.host_notes.dropped }
     /// Retained anonymous/script roots use the router's captured mapped key.
     pub(crate) fn input_key_down_from(&self, input:u8, channel:u8, key:u8) -> bool {
@@ -793,22 +800,22 @@ impl Engine {
         if channel >= 16 || owner >= 16 || note >= 128 {
             return;
         }
-        for v in self.player.voices.iter_mut().filter(|v| v.channel == channel && v.owner == Some((owner, note)) && v.held && !v.release_trigger) {
+        for v in self.player.voices.iter_mut().filter(|v| v.host_note.is_none() && v.channel == channel && v.owner == Some((owner, note)) && v.held && !v.release_trigger) {
             v.counter_stop.get_or_insert(self.player.now);
         }
         for c in self.commands.iter_mut().filter(|c| c.channel == channel) {
-            if let script::Kind::Start { owner: input, counter_stop, .. } = &mut c.kind
-                && *input == Some((owner, note)) { counter_stop.get_or_insert(self.player.now); }
+            if let script::Kind::Start { owner: input, host_note, counter_stop, .. } = &mut c.kind
+                && host_note.is_none() && *input == Some((owner, note)) { counter_stop.get_or_insert(self.player.now); }
         }
         // Capture at the physical key-up, before a delayed KSP release or
         // member reuse can replace this event's channel/key expression.
         if self.player.mpe_zone.is_some_and(|(_, members)| members & (1 << channel) != 0) {
             let x = self.release_snapshot(channel, note);
             for c in self.commands.iter_mut().filter(|c| c.channel == channel) {
-                if let script::Kind::Start { owner: input, expression, .. } = &mut c.kind
-                    && *input == Some((owner, note)) { expression.get_or_insert(x); }
+                if let script::Kind::Start { owner: input, host_note, expression, .. } = &mut c.kind
+                    && host_note.is_none() && *input == Some((owner, note)) { expression.get_or_insert(x); }
             }
-            for v in self.player.voices.iter_mut().filter(|v| v.channel == channel && v.owner == Some((owner, note)) && v.held && !v.release_trigger) {
+            for v in self.player.voices.iter_mut().filter(|v| v.host_note.is_none() && v.channel == channel && v.owner == Some((owner, note)) && v.held && !v.release_trigger) {
                 v.frozen_expression.get_or_insert(x);
             }
         }
@@ -820,13 +827,17 @@ impl Engine {
             if let Some((rt, mut host)) = self.scripted(channel) {
                 rt.note_off_from(&mut host, 0, owner, note);
             }
+            let exact = self.player.host_notes.active.iter().filter_map(|r| self.player.host_notes.get(*r))
+                .filter(|o| o.held && o.channel==channel && o.key==note).map(|o| o.velocity.max(1)).max().unwrap_or(0);
+            self.player.keys[channel as usize][note as usize]=self.player.keys[channel as usize][note as usize].max(exact);
             return;
         }
         let defaults = self.defaults();
         if let Some(bank) = self.bank.as_deref() {
             self.player.note_off(bank, channel, note, Some(owner), defaults);
         } else {
-            self.player.keys[channel as usize][note as usize] = 0;
+            self.player.keys[channel as usize][note as usize] = self.player.host_notes.active.iter().filter_map(|r| self.player.host_notes.get(*r))
+                .filter(|o| o.held && o.channel==channel && o.key==note).map(|o| o.velocity.max(1)).max().unwrap_or(0);
         }
     }
 
@@ -1899,10 +1910,12 @@ impl Player {
             self.keys[c][n]
         };
         let remaining = self.input_keys.iter().filter(|r| r[n].0 == channel).map(|r| r[n].1).max().unwrap_or(0);
+        let exact = self.host_notes.active.iter().filter_map(|r| self.host_notes.get(*r))
+            .filter(|o| o.held && o.channel==channel && o.key==note).map(|o| o.velocity.max(1)).max().unwrap_or(0);
         // Direct start_event callers may have no physical-input record.
-        let velocity = if velocity == 0 && remaining == 0 { self.keys[c][n] } else { velocity };
-        self.keys[c][n] = remaining;
-        if velocity > 0 && remaining == 0 {
+        let velocity = if velocity == 0 && remaining == 0 && exact == 0 { self.keys[c][n] } else { velocity };
+        self.keys[c][n] = remaining.max(exact);
+        if velocity > 0 && remaining == 0 && exact == 0 {
             self.key_up[c][n] = self.now;
         }
         let allowed = self.allowed;
@@ -1910,7 +1923,7 @@ impl Player {
         // Layered voices share an event. Releasing that event clears held on
         // every layer, so each distinct physical retrigger fires exactly once.
         // ponytail: scan per event; index event voices if dense retrigger releases dominate.
-        while let Some(source) = self.voices.iter().find(|v| v.channel == channel
+        while let Some(source) = self.voices.iter().find(|v| v.host_note.is_none() && v.channel == channel
             && owner.map_or(v.note == note, |owner| v.owner.map_or(v.note == note, |input| input == (owner, note)))
             && v.held && !v.released && !v.release_trigger).map(|v| v.event) {
             if let Some((channel, note, velocity, false, captured, input_channel)) = self.release_voices(bank, source) {
