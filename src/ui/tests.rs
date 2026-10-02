@@ -1975,6 +1975,14 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
     use moose::prelude::BackgroundTask;
     let p = Arc::new(SamplerParams::new());
     p.selection.write().unwrap().parts.push(Part { path: "/missing-kontra-test/instrument.nki".into(), ..Default::default() });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].loading = true;
+        view.parts[0].status = "Loading import…".into();
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let stage_label = |ui: &Ui| ui.scene().unwrap().surface("stage-0").unwrap().semantics.as_ref().unwrap().label.as_ref().unwrap().to_string();
+    assert_eq!(stage_label(&h.ui), "Loading instrument…", "an active import uses the loading placeholder");
     crate::plugin::Load.run(&p);
     {
         let mut view = p.shared.view.lock().unwrap();
@@ -1983,7 +1991,8 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
         report["issues"] = serde_json::json!([]);
         report["issues_omitted"] = serde_json::json!(7);
     }
-    let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(2);
+    assert!(stage_label(&h.ui).starts_with("Instrument could not be loaded."), "terminal failure replaces the cached loading placeholder");
     h.press("tab-info");
     let failure = h.ui.scene().unwrap().surface("load-diagnostic-failure").expect("failure cause stays visible even when issue examples were omitted").frame;
     assert!(failure.y >= 0. && failure.y + failure.size.height < 760., "failure is visible: {failure:?}");
