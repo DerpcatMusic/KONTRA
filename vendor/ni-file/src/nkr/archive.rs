@@ -105,12 +105,19 @@ fn directory<R: ReadBytesExt>(
     issues: &mut Vec<String>,
     depth: usize,
 ) -> Result<(), Error> {
-    if depth > 32 || !visited.insert(offset) || offset.checked_add(22).is_none_or(|n| n > length) {
-        return Err(invalid("Invalid/cyclic NKX directory"));
+    if depth > 32 || !visited.insert(offset) {
+        return Err(invalid(&format!("Invalid/cyclic NKX directory at {offset:#x} ({prefix}), depth {depth}, file length {length}")));
+    }
+    let available = length.saturating_sub(offset);
+    if offset.checked_add(22).is_none_or(|n| n > length) {
+        return Err(invalid(&format!("Truncated NKX directory header at {offset:#x} ({prefix}): need 22 bytes, available {available}, file length {length}")));
     }
     r.seek(SeekFrom::Start(offset))?;
-    if r.read_u32_le()? != 0x5e70ac54 {
-        let issue = format!("Invalid NKX directory signature at {offset:#x} ({prefix})");
+    let magic = r.read_u32_le().map_err(|e| Error::context(
+        format!("NKX directory signature read at {offset:#x} ({prefix}), file length {length}"), e,
+    ))?;
+    if magic != 0x5e70ac54 {
+        let issue = format!("Invalid NKX directory signature at {offset:#x} ({prefix}): got {magic:#010x} (little-endian), expected 0x5e70ac54, file length {length}, available {available}");
         if depth == 0 {
             return Err(invalid(&issue));
         }
@@ -119,7 +126,7 @@ fn directory<R: ReadBytesExt>(
     }
     let version = r.read_u16_le()?;
     if version != 0x110 && version != 0x111 {
-        return Err(invalid("Unsupported NKX directory version"));
+        return Err(invalid(&format!("Unsupported NKX directory version {version:#x} at {offset:#x} ({prefix}), supported 0x110/0x111, file length {length}")));
     }
     r.read_u32_le()?;
     r.read_u32_le()?;
@@ -132,12 +139,15 @@ fn directory<R: ReadBytesExt>(
     // Entries are contiguous after the 22-byte directory header: read them
     // all before any seek elsewhere, tracking the position without syscalls.
     let mut start = offset + 22;
-    for _ in 0..count {
+    for entry in 0..count {
+        if start.checked_add(8).is_none_or(|n| n > length) {
+            return Err(invalid(&format!("Truncated NKX directory entry {entry}/{count} at {start:#x} ({prefix}): need 8 bytes, available {}, file length {length}", length.saturating_sub(start))));
+        }
         let size = r.read_u16_le()? as u64;
         let reference = r.read_u32_le()?;
         let kind = r.read_u16_le()?;
         if size < 8 || size % 2 != 0 || start + size > length {
-            return Err(invalid("Invalid NKX entry length"));
+            return Err(invalid(&format!("Invalid NKX directory entry {entry}/{count} length {size} at {start:#x} ({prefix}), available {}, file length {length}", length.saturating_sub(start))));
         }
         // Bounded by the check above; `read_bytes` would seek and drop the read buffer.
         let mut bytes = vec![0; (size - 8) as usize];

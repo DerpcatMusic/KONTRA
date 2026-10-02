@@ -16,7 +16,7 @@ use super::{
 };
 use crate::fx::{
     Chain, Kind, Params,
-    blocks::{self, Drive, Fields},
+    blocks::{self, Fields, VoiceEffect},
     params::{EqBand, Value},
 };
 use crate::audio::Frame;
@@ -380,6 +380,16 @@ const MAX_STAGES: usize = 8;
 /// Knob rows modulation reaches: the units', then the drive stages'.
 const ROWS: usize = MAX_UNITS + MAX_STAGES;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Operation {
+    Unit { index: u8, section: u8 },
+    Stage(u8),
+    Mixer(u8),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Insert { slot: u8, operation: Operation }
+
 /// A drive stage's value a modulation target names.
 pub(crate) fn stage_knob(param: &str) -> Option<(Kind, u8)> {
     Some(match param {
@@ -398,11 +408,27 @@ struct Route {
     knob: u8,
     /// Invert button, read as a negative direction.
     sign: f32,
+    /// Original internal target index (external routes do not use it).
+    target: u16,
 }
 
 /// `[ll, lr, rl, rr]`: `l' = ll·l + lr·r`, `r' = rl·l + rr·r`.
 type Matrix = [f32; 4];
 const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0];
+
+#[derive(Clone, Copy)]
+struct Amplifier<'a> { amp: &'a [f32], gains: [f32; 2], delta: [f32; 2] }
+impl Amplifier<'_> {
+    fn apply(self, start: usize, left: &mut [f32], right: &mut [f32]) {
+        for (i, (l, r)) in left.iter_mut().zip(right).enumerate() {
+            let frame = start + i;
+            let a = self.amp[frame];
+            *l *= a * (self.gains[0] + self.delta[0] * frame as f32);
+            *r *= a * (self.gains[1] + self.delta[1] * frame as f32);
+        }
+    }
+}
+
 
 /// A group's filters, EQs and channel mixers with their modulation, shared
 /// by its voices.
@@ -412,13 +438,19 @@ pub struct GroupFilter {
     mixers: Box<[Mixer]>,
     /// In slot order; the first [`MAX_STAGES`] play.
     stages: Box<[Stage]>,
+    inserts: Box<[Insert]>,
+    amp_split: Option<u8>,
+    slot_matrices: [Matrix; 8],
+    type_revision: u32,
+    pre_active: bool,
+    matrix_interleaved: bool,
     /// Stereo Modellers and every active slot's output gain as one matrix:
     /// they are linear and the filters treat both channels alike, so the
     /// order does not matter.
     matrix: Matrix,
     /// Module envelopes and what they drive (intensity and shaper in `Mod`),
     /// with their index in `Group::envelopes`.
-    envs: Box<[(Ahdsr, Box<[(Route, Mod)]>, u8)]>,
+    envs: Box<[(Ahdsr, Box<[(Route, Mod)]>, u8, bool)]>,
     /// External assignments: index into the group's `ModTable`.
     ext: Box<[(Route, u16)]>,
 }
@@ -475,7 +507,9 @@ fn inverter_flags(params: &Params) -> bool {
 }
 
 /// Import warnings for group effects that do not play.
-pub fn unsupported(chain: &Chain) -> Vec<String> {
+pub fn unsupported(chain: &Chain) -> Vec<String> { unsupported_at(chain, None) }
+
+pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
     let mut out = Vec::new();
     for fx in chain.slots.iter().filter(|fx| !fx.bypass) {
         match &fx.params {
@@ -483,7 +517,9 @@ pub fn unsupported(chain: &Chain) -> Vec<String> {
                 out.push(format!("Group filter type {} is not implemented; audio passes through", f.filter_type));
             }
             Params::Filter(_) | Params::Eq(_) => {}
-            _ if Drive::supports(fx.kind) || fx.kind == Kind::SolidGeq => {}
+            _ if VoiceEffect::supports(fx.kind) && blocks::fields(&fx.params).is_some()
+                && (fx.kind != Kind::Compressor || amp_split.is_some()) => {}
+            _ if fx.kind == Kind::SolidGeq => {}
             Params::StereoModeller(s) if s.pseudo_stereo => {
                 out.push("Group Stereo Modeller: pseudo stereo is not applied".into());
             }
@@ -495,6 +531,9 @@ pub fn unsupported(chain: &Chain) -> Vec<String> {
             }
             _ => out.push(format!("Group insert effect {} is not applied", fx.kind.name())),
         }
+    }
+    if amp_split.is_none() && !chain.slots.is_empty() {
+        out.push("Group insert Amplifier placement is unknown; existing inserts use post-Amplifier routing".into());
     }
     let (units, sections) = units(chain).fold((0, 0), |(u, s), unit| (u + 1, s + unit.sections as usize));
     if units > MAX_UNITS || sections > MAX_SECTIONS {
@@ -515,8 +554,9 @@ impl GroupFilter {
             }
             units_.push(unit);
         }
+        units_.sort_unstable_by_key(|unit| unit.slot);
         let units = units_;
-        let mixers: Box<[Mixer]> = group
+        let mut mixers: Box<[Mixer]> = group
             .fx
             .slots
             .iter()
@@ -534,8 +574,9 @@ impl GroupFilter {
                 })
             })
             .collect();
-        let stages: Box<[Stage]> = (group.fx.slots.iter())
-            .filter(|fx| Drive::supports(fx.kind))
+        mixers.sort_unstable_by_key(|mixer| mixer.slot);
+        let mut stages: Box<[Stage]> = (group.fx.slots.iter())
+            .filter(|fx| VoiceEffect::supports(fx.kind) && (fx.kind != Kind::Compressor || group.amp_split_slot.is_some()))
             .filter_map(|fx| {
                 Some(Stage {
                     slot: fx.slot as u8,
@@ -547,27 +588,28 @@ impl GroupFilter {
             })
             .take(MAX_STAGES)
             .collect();
+        stages.sort_unstable_by_key(|stage| stage.slot);
         if units.is_empty() && mixers.is_empty() && stages.is_empty() {
             return None;
         }
         // Drive stages are routed as rows after the units'.
-        let route = |m: &ModAssignment| {
+        let route = |m: &ModAssignment, target| {
             let ModTarget::Module { param, slot } = &m.target else {
                 return None;
             };
             let sign = if m.invert { -1.0 } else { 1.0 };
             if let Some((kind, n)) = stage_knob(param) {
                 let i = stages.iter().position(|s| s.slot == *slot && s.kind == kind)?;
-                return Some(Route { unit: (units.len() + i) as u8, knob: n, sign });
+                return Some(Route { unit: (units.len() + i) as u8, knob: n, sign, target });
             }
             let knob = Knob::parse(param)?;
             let unit = units.iter().position(|u| u.slot == *slot && knob.fits(u.shape, u.sections))?;
-            Some(Route { unit: unit as u8, knob: knob.index()? as u8, sign })
+            Some(Route { unit: unit as u8, knob: knob.index()? as u8, sign, target })
         };
         let envs = (group.envelopes.iter().enumerate())
             .filter_map(|(i, e)| {
-                let routes: Box<[_]> = e.targets.iter().filter_map(|m| Some((route(m)?, Mod::from(m)))).collect();
-                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes, i as u8))
+                let routes: Box<[_]> = e.targets.iter().enumerate().filter_map(|(t, m)| Some((route(m, t as u16)?, Mod::from(m)))).collect();
+                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes, i as u8, false))
             })
             .take(MAX_ENVS)
             .collect();
@@ -575,19 +617,70 @@ impl GroupFilter {
             .mods
             .iter()
             .enumerate()
-            .filter_map(|(i, m)| Some((route(m)?, i as u16)))
+            .filter_map(|(i, m)| Some((route(m, 0)?, i as u16)))
             .take(MAX_EXT)
             .collect();
         let mut out = Box::new(Self {
             units: units.into(),
             mixers,
             stages,
+            inserts: [].into(),
+            amp_split: group.amp_split_slot,
+            slot_matrices: [IDENTITY; 8],
+            type_revision: 0,
+            pre_active: false,
+            matrix_interleaved: false,
             matrix: IDENTITY,
             envs,
             ext,
         });
-        out.matrix = out.mix();
+        out.compile_inserts();
         Some(out)
+    }
+
+    fn compile_inserts(&mut self) {
+        let mut inserts = Vec::with_capacity(8);
+        let mut section = 0;
+        for (index, unit) in self.units.iter().enumerate() {
+            if unit.slot < 8 { inserts.push(Insert { slot: unit.slot, operation: Operation::Unit { index: index as u8, section } }); }
+            section += unit.sections;
+        }
+        for (index, stage) in self.stages.iter().enumerate() {
+            if stage.slot < 8 { inserts.push(Insert { slot: stage.slot, operation: Operation::Stage(index as u8) }); }
+        }
+        for (index, mixer) in self.mixers.iter().enumerate() {
+            if mixer.slot < 8 { inserts.push(Insert { slot: mixer.slot, operation: Operation::Mixer(index as u8) }); }
+        }
+        inserts.sort_unstable_by_key(|op| op.slot);
+        self.inserts = inserts.into();
+        self.refresh_matrices();
+    }
+
+    fn refresh_matrices(&mut self) {
+        self.matrix = self.mix();
+        self.slot_matrices.fill(IDENTITY);
+        self.pre_active = false;
+        self.matrix_interleaved = false;
+        let mut matrix_before = false;
+        for insert in &self.inserts {
+            let (bypass, gain, stereo) = match insert.operation {
+                Operation::Unit { index, .. } => { let u = &self.units[index as usize]; (u.bypass, u.gain, None) }
+                Operation::Stage(index) => { let s = &self.stages[index as usize]; (s.bypass, s.gain, None) }
+                Operation::Mixer(index) => { let m = &self.mixers[index as usize]; (m.bypass, m.gain, m.stereo) }
+            };
+            if bypass { continue; }
+            self.pre_active |= self.amp_split.is_some_and(|split| insert.slot < split);
+            self.matrix_interleaved |= matrix_before && matches!(insert.operation, Operation::Unit { .. });
+            let mut matrix = IDENTITY;
+            if let Some([spread, pan]) = stereo {
+                let w = (1.0 + spread).clamp(0.0, 2.0);
+                let (same, other) = (0.5 * (1.0 + w), 0.5 * (1.0 - w));
+                let (bl, br) = ((1.0 - pan).clamp(0.0, 1.0), (1.0 + pan).clamp(0.0, 1.0));
+                matrix = [bl * same, bl * other, br * other, br * same];
+            }
+            self.slot_matrices[insert.slot as usize] = matrix.map(|x| x * gain);
+            matrix_before |= self.slot_matrices[insert.slot as usize] != IDENTITY;
+        }
     }
 
     /// The stereo matrix of the active mixers and output gains. The Stereo
@@ -670,6 +763,24 @@ impl GroupFilter {
         self.envs.iter().find(|e| e.2 == i).map(|e| &e.0)
     }
 
+    pub(crate) fn envelope_bypass(&mut self, i: u8) -> Option<&mut bool> {
+        self.envs.iter_mut().find(|e| e.2 == i).map(|e| &mut e.3)
+    }
+
+    pub(crate) fn envelope_bypass_at(&self, i: u8) -> Option<bool> {
+        self.envs.iter().find(|e| e.2 == i).map(|e| e.3)
+    }
+
+    pub(crate) fn envelope_mod(&mut self, i: u8, target: u16) -> Option<&mut Mod> {
+        self.envs.iter_mut().find(|e| e.2 == i)?.1.iter_mut()
+            .find(|(r, _)| r.target == target).map(|(_, m)| m)
+    }
+
+    pub(crate) fn envelope_mod_at(&self, i: u8, target: u16) -> Option<&Mod> {
+        self.envs.iter().find(|e| e.2 == i)?.1.iter()
+            .find(|(r, _)| r.target == target).map(|(_, m)| m)
+    }
+
     /// Switch a filter slot to another filter type. The voices' section
     /// states stay where they are, so a switch that changes the section
     /// count rearranges them for the notes playing.
@@ -681,6 +792,14 @@ impl GroupFilter {
         match filter_type(kind) {
             Some((shape, sections)) if total - u.sections as usize + sections as usize <= MAX_SECTIONS => {
                 (u.shape, u.sections, u.kind) = (shape, sections, kind);
+                self.type_revision = self.type_revision.wrapping_add(1);
+                let mut section = 0;
+                for insert in &mut self.inserts {
+                    if let Operation::Unit { index, section: start } = &mut insert.operation {
+                        *start = section;
+                        section += self.units[*index as usize].sections;
+                    }
+                }
                 true
             }
             _ => false,
@@ -702,7 +821,7 @@ impl GroupFilter {
                 }
                 _ => return false,
             }
-            self.matrix = self.mix();
+            self.refresh_matrices();
             return true;
         }
         let unit = self.units.iter_mut().find(|u| u.slot == slot);
@@ -721,7 +840,7 @@ impl GroupFilter {
             }
             _ => return false,
         }
-        self.matrix = self.mix();
+        self.refresh_matrices();
         true
     }
 }
@@ -1015,8 +1134,9 @@ pub(crate) struct VoiceFilter {
     /// Knobs of each section's last coefficients (NaN: none yet), so static
     /// settings cost no coefficient math.
     tuned: [[f32; 3]; MAX_SECTIONS],
-    matrix: Matrix,
-    drives: [Drive; MAX_STAGES],
+    drives: [VoiceEffect; MAX_STAGES],
+    slot_matrices: [Matrix; 8],
+    type_revision: u32,
     /// The values each drive is tuned for (NaN: none yet).
     drive_fields: [Fields; MAX_STAGES],
     /// The last [`VoiceFilter::hold`]: the filter, and its active sections
@@ -1032,8 +1152,9 @@ impl VoiceFilter {
             ext: [0.0; MAX_EXT],
             sections: [Section::default(); MAX_SECTIONS],
             tuned: [[f32::NAN; 3]; MAX_SECTIONS],
-            matrix: IDENTITY,
-            drives: [Drive::default(); MAX_STAGES],
+            drives: [VoiceEffect::default(); MAX_STAGES],
+            slot_matrices: [IDENTITY; 8],
+            type_revision: 0,
             drive_fields: [[f32::NAN; blocks::FIELDS]; MAX_STAGES],
             held: FilterKey::default(),
             slots: [0; LANE_SECTIONS],
@@ -1045,12 +1166,20 @@ impl VoiceFilter {
             for (value, (_, i)) in out.ext.iter_mut().zip(&f.ext) {
                 *value = table.mods[*i as usize].start_value(input);
             }
-            out.matrix = f.matrix;
+            out.slot_matrices = f.slot_matrices;
+            out.type_revision = f.type_revision;
         }
         out
     }
 
-    /// Move the external sources on over `n` frames, before [`process`](Self::process).
+    fn check_type_revision(&mut self, f: &GroupFilter) {
+        if self.type_revision != f.type_revision {
+            self.tuned.fill([f32::NAN; 3]);
+            self.type_revision = f.type_revision;
+        }
+    }
+
+    /// Move external sources over `n` frames before [`process_amplified`](Self::process_amplified).
     #[inline(always)]
     pub fn follow(&mut self, f: &GroupFilter, table: &ModTable, input: &Inputs, n: usize, rate: f32) {
         for (value, (_, i)) in self.ext.iter_mut().zip(&f.ext) {
@@ -1063,8 +1192,10 @@ impl VoiceFilter {
     /// active sections. Tunes the sections it keeps. Returns the key's hash.
     #[inline(always)]
     pub fn hold(&mut self, f: &GroupFilter, table: &ModTable, rate: f32) -> Option<u64> {
+        self.check_type_revision(f);
         // Drives are nonlinear: voices cannot share them.
-        if !f.envs.is_empty() || self.matrix != f.matrix || f.stages.iter().any(|s| !s.bypass) {
+        if f.pre_active || f.matrix_interleaved
+            || !f.envs.is_empty() || self.slot_matrices != f.slot_matrices || f.stages.iter().any(|s| !s.bypass) {
             return None;
         }
         let mut knobs: [[f32; KNOBS]; ROWS] =
@@ -1107,7 +1238,7 @@ impl VoiceFilter {
     /// Clear the sections' state, as silent input leaves it.
     pub fn rest(&mut self) {
         self.sections.iter_mut().for_each(|s| s.s = [0.0; 4]);
-        self.drives.iter_mut().for_each(Drive::clear);
+        self.drives.iter_mut().for_each(VoiceEffect::clear);
     }
 
     /// Run drive stage `i` over one stretch of frames; `m` is the
@@ -1132,9 +1263,21 @@ impl VoiceFilter {
         self.drives[i].process(left, right);
     }
 
+    /// Process inserts without an Amplifier (reference tests).
+    #[cfg(test)]
+    pub fn process(&mut self, f: &GroupFilter, table: &ModTable, ctl: &mut [f32; MAX_BLOCK], left: &mut [f32], right: &mut [f32], rate: f32) {
+        self.process_chain(f, table, ctl, left, right, rate, None);
+    }
+
+    /// Process native insert slots with the Amplifier at its stored split.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_amplified(&mut self, f: &GroupFilter, table: &ModTable, ctl: &mut [f32; MAX_BLOCK], left: &mut [f32], right: &mut [f32], rate: f32, amp: &[f32], gains: [f32; 2], delta: [f32; 2]) {
+        self.process_chain(f, table, ctl, left, right, rate, Some(Amplifier { amp, gains, delta }));
+    }
+
     /// Filter one block (at most [`MAX_BLOCK`] frames) in place; `ctl` is scratch.
     #[allow(clippy::too_many_arguments)]
-    pub fn process(
+    fn process_chain(
         &mut self,
         f: &GroupFilter,
         table: &ModTable,
@@ -1142,8 +1285,11 @@ impl VoiceFilter {
         left: &mut [f32],
         right: &mut [f32],
         rate: f32,
+        amplifier: Option<Amplifier<'_>>,
     ) {
         let n = left.len();
+        if n == 0 { return; }
+        self.check_type_revision(f);
         // Envelope levels at each control tick. External sources move once
         // a block, so knobs change within one only while an envelope moves.
         let mut levels = [[0.0; MAX_BLOCK / CONTROL]; MAX_ENVS];
@@ -1164,14 +1310,16 @@ impl VoiceFilter {
         // Held knobs filter the block in one pass: the same frames pair up
         // (CONTROL is even), so the output is the same as tick by tick.
         let step = if moving { CONTROL } else { n };
-        let work = !f.units.is_empty() || !f.stages.is_empty();
-        for (t, start) in (0..n).step_by(step).enumerate().take_while(|_| work) {
+        for (t, start) in (0..n).step_by(step).enumerate() {
             let end = (start + step).min(n);
             // Units' knobs, then each drive stage's modulation (normalized).
             let mut rows: [[f32; KNOBS]; ROWS] = std::array::from_fn(|u| {
                 f.units.get(u).map_or([0.0; KNOBS], |unit| unit.knobs)
             });
-            for (e, (_, routes, _)) in f.envs.iter().enumerate() {
+            for (e, (_, routes, _, bypass)) in f.envs.iter().enumerate() {
+                // Bypass disconnects every target, including nonzero shaper
+                // intercepts. The envelope above still advances while bypassed.
+                if *bypass { continue; }
                 for (r, m) in routes.iter() {
                     rows[r.unit as usize][r.knob as usize] += r.sign * m.intensity * m.shape(levels[e][t]);
                 }
@@ -1179,41 +1327,46 @@ impl VoiceFilter {
             for ((r, i), value) in f.ext.iter().zip(&self.ext) {
                 rows[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * value;
             }
-            let mut s = 0;
-            // Drive stages run between the units, in slot order.
-            let mut next = 0;
-            for (unit, knobs) in f.units.iter().zip(&rows) {
-                while next < f.stages.len() && f.stages[next].slot < unit.slot {
-                    let m = &rows[f.units.len() + next];
-                    self.drive(f, next, m, &mut left[start..end], &mut right[start..end], rate);
-                    next += 1;
+            let (l, r) = (&mut left[start..end], &mut right[start..end]);
+            let mut amplified = amplifier.is_none();
+            let split = f.amp_split.unwrap_or(0);
+            for insert in &f.inserts {
+                if !amplified && insert.slot >= split {
+                    amplifier.unwrap().apply(start, l, r);
+                    amplified = true;
                 }
-                for b in 0..unit.sections as usize {
-                    let (section, tuned) = (&mut self.sections[s + b], &mut self.tuned[s + b]);
-                    let (key, flat) = unit.key(knobs, b);
-                    // Bypassed units and flat EQ bands are identities: skip
-                    // them, restarting from rest when they return.
-                    if unit.bypass || flat {
-                        section.s = [0.0; 4];
-                        continue;
+                match insert.operation {
+                    Operation::Unit { index, section } => {
+                        let unit = &f.units[index as usize];
+                        let knobs = &rows[index as usize];
+                        for band in 0..unit.sections as usize {
+                            let index = section as usize + band;
+                            let (section, tuned) = (&mut self.sections[index], &mut self.tuned[index]);
+                            let (key, flat) = unit.key(knobs, band);
+                            if unit.bypass || flat { section.s = [0.0; 4]; continue; }
+                            if key != *tuned {
+                                *tuned = key;
+                                section.coefficients(Proto::of(unit.shape, key, band, rate));
+                            }
+                            section.process(l, r);
+                        }
                     }
-                    if key != *tuned {
-                        *tuned = key;
-                        section.coefficients(Proto::of(unit.shape, key, b, rate));
+                    Operation::Stage(index) => {
+                        let index = index as usize;
+                        self.drive(f, index, &rows[f.units.len() + index], l, r, rate);
                     }
-                    section.process(&mut left[start..end], &mut right[start..end]);
+                    Operation::Mixer(_) => {}
                 }
-                s += unit.sections as usize;
+                let slot = insert.slot as usize;
+                let (from, to) = (self.slot_matrices[slot], f.slot_matrices[slot]);
+                if from != IDENTITY || to != IDENTITY {
+                    let at = |frame: usize| std::array::from_fn(|i| from[i] + (to[i] - from[i]) * (frame as f32 / n as f32));
+                    apply(at(start), at(end), l, r);
+                }
             }
-            for i in next..f.stages.len() {
-                let m = &rows[f.units.len() + i];
-                self.drive(f, i, m, &mut left[start..end], &mut right[start..end], rate);
-            }
+            if !amplified { amplifier.unwrap().apply(start, l, r); }
         }
-        if f.matrix != IDENTITY || self.matrix != IDENTITY {
-            apply(self.matrix, f.matrix, left, right);
-            self.matrix = f.matrix;
-        }
+        self.slot_matrices = f.slot_matrices;
     }
 }
 
@@ -1558,6 +1711,208 @@ mod tests {
 
     const RATE: f32 = 48_000.0;
 
+    #[test]
+    fn native_insert_order_and_amplifier_split_match_rack_dsp_without_heap() {
+        use crate::{fx::{Effect, params::{Field, Filter}}, engine::{GroupSettings, params::{Address, self}}, ksp::EnginePar};
+        eprintln!("group voice state: Drive={} VoiceEffect={} VoiceFilter={} bytes",
+            std::mem::size_of::<blocks::Drive>(), std::mem::size_of::<VoiceEffect>(), std::mem::size_of::<VoiceFilter>());
+        let effect = |slot, kind, values: &[f32], output_gain| Effect {
+            slot, kind, version: 0, bypass: false, output_gain, dry_level: 0.0,
+            params: Params::Fields(crate::fx::params::layout_names(kind).unwrap().iter().zip(values)
+                .map(|(&name, &value)| Field { name, value: Value::Number(value) }).collect()),
+        };
+        let chain = Chain { slots: vec![
+            Effect { slot: 0, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.5,
+                dry_level: 0.0, params: Params::Filter(Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3] }) },
+            effect(2, Kind::Compressor, &[0.0, -12.0, 0.5, 1.0, 50.0, 1.0], 0.8),
+            effect(7, Kind::SurroundPanner, &[1.0, 0.0], 0.7),
+        ] };
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let mut energies = [0.0f64; 3];
+        for (case, split) in [0, 6, 8].into_iter().enumerate() {
+            let groups = [Group { fx: chain.clone(), amp_split_slot: Some(split), ..Group::default() }];
+            let mut settings = [GroupSettings::from(&groups[0])];
+            let threshold_id = (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 512)
+                .find(|&id| crate::ksp::engine_par_name(id) == Some("$ENGINE_PAR_THRESHOLD")).unwrap();
+            let threshold = Address::resolve(EnginePar { id: threshold_id,
+                group: 0, slot: 2, generic: -1 }, &groups).unwrap();
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                assert!(params::write(&mut settings, threshold, threshold.decode(500_000)));
+                assert_eq!(threshold.encode(params::read(&settings, threshold).unwrap()), 500_000);
+            }), 0);
+            let f = settings[0].filter.as_ref().unwrap();
+            assert!(unsupported_at(&groups[0].fx, Some(split)).is_empty());
+            let mut voice = VoiceFilter::new(Some(f), &table, &input, RATE);
+            assert_eq!(voice.hold(f, &table, RATE), None, "compressors remain per voice");
+            let mut reference: Vec<_> = chain.slots.iter().map(|fx| blocks::Block::new(fx, RATE).unwrap()).collect();
+            assert!(reference[1].set(Kind::Compressor, 1, 0.5));
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                for block in 0..32 {
+                    let source: [f32; 128] = std::array::from_fn(|i| 0.8 * (TAU * 1000.0 * (block * 128 + i) as f32 / RATE).sin());
+                    let (mut l, mut r, mut expected_l, mut expected_r) = (source, source, source, source);
+                    let amp: [f32; 128] = std::array::from_fn(|i| 0.6 + 0.4 * i as f32 / 128.0);
+                    let amplifier = Amplifier { amp: &amp, gains: [0.1, 0.2], delta: [-0.02 / 128.0, 0.01 / 128.0] };
+                    let mut applied = false;
+                    for (fx, dsp) in chain.slots.iter().zip(&mut reference) {
+                        if !applied && fx.slot >= split as usize {
+                            amplifier.apply(0, &mut expected_l, &mut expected_r);
+                            applied = true;
+                        }
+                        dsp.process(&mut expected_l, &mut expected_r);
+                        expected_l.iter_mut().chain(&mut expected_r).for_each(|x| *x *= fx.output_gain);
+                    }
+                    if !applied { amplifier.apply(0, &mut expected_l, &mut expected_r); }
+                    voice.process_amplified(f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE,
+                        &amp, amplifier.gains, amplifier.delta);
+                    assert!(l.iter().chain(&r).all(|x| x.is_finite()));
+                    assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r)).all(|(a,b)| (a-b).abs() < 2e-6));
+                    energies[case] += l.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+                }
+            }), 0);
+        }
+        assert!(energies[0] > energies[2] * 2.0, "pre-Amplifier detection must not use attenuated input: {energies:?}");
+        let unknown = Group { fx: Chain { slots: vec![chain.slots[1].clone()] }, ..Group::default() };
+        assert!(GroupFilter::new(&unknown).is_none(), "missing native placement does not invent a compressor route");
+        assert!(unsupported(&unknown.fx).iter().any(|w| w.contains("Compressor is not applied")));
+    }
+
+    #[test]
+    fn interleaved_slot_gains_do_not_share_canonical_filter_states() {
+        let mut group = Group { amp_split_slot: Some(0), ..Group::default() };
+        for slot in [0, 1] {
+            group.fx.slots.push(crate::fx::Effect {
+                slot, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0,
+                params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.5, resonance: 0.0, extra: [0.0; 3] }),
+            });
+        }
+        let mut f = GroupFilter::new(&group).unwrap();
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
+        assert!(voice.hold(&f, &table, RATE).is_some());
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            assert!(f.set_knob(0, Knob::Output, 2.0));
+            assert!(f.set_knob(1, Knob::Output, 0.5));
+            assert_eq!(f.matrix, IDENTITY, "the collapsed final gain hides the interleaving");
+            for block in 0..8 {
+                let mut l: [f32; 128] = std::array::from_fn(|i| (TAU * 1000.0 * (block * 128 + i) as f32 / RATE).sin());
+                let mut r = l;
+                voice.process(&f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE);
+            }
+            // Unit 1 has processed twice the canonical lane input. Summing
+            // these states into a lane followed by one final gain is invalid.
+            assert!(voice.hold(&f, &table, RATE).is_none());
+            assert!(f.set_knob(0, Knob::Output, 1.0));
+            assert!(f.set_knob(1, Knob::Output, 1.0));
+            assert!(voice.hold(&f, &table, RATE).is_none(), "pending inline ramps cannot collapse to a final matrix");
+            let (mut l, mut r) = ([0.0; 128], [0.0; 128]);
+            voice.process(&f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE);
+            assert!(voice.hold(&f, &table, RATE).is_some(), "canonical routing returns after the inline ramp");
+        }), 0);
+    }
+
+    #[test]
+    fn live_filter_type_change_retunes_identical_knobs_without_heap() {
+        let group = Group { amp_split_slot: Some(8), fx: Chain { slots: vec![crate::fx::Effect {
+            slot: 0, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0,
+            params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.3, resonance: 0.0, extra: [0.0; 3] }),
+        }] }, ..Group::default() };
+        let mut f = GroupFilter::new(&group).unwrap();
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
+        let mut energy = [0.0f64; 2];
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for (case, kind) in [2, 3].into_iter().enumerate() {
+                assert!(f.set_knob(0, Knob::Type, kind as f32));
+                for block in 0..32 {
+                    let mut l: [f32; 128] = std::array::from_fn(|i| (TAU * 5000.0 * (block * 128 + i) as f32 / RATE).sin());
+                    let mut r = l;
+                    voice.process(&f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE);
+                    if block >= 16 { energy[case] += l.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>(); }
+                }
+            }
+        }), 0);
+        assert!(energy[1] > energy[0] * 100.0, "same cutoff/resonance must not retain the low-pass coefficients: {energy:?}");
+    }
+
+    #[test]
+    fn module_envelope_controls_preserve_targets_and_elapsed_clock_without_heap() {
+        use crate::{engine::{GroupSettings, params::{self, Address, id}}, import::{ModSource, Modulator},
+            modulation::{Ahdsr as ImportedAhdsr, ModEnvelope}, ksp::EnginePar};
+        let target = |target, shaper| ModAssignment { name: "Envelope".into(), source: ModSource::Unassigned,
+            target, intensity: 0.5, invert: false, lag_ms: 0, shaper };
+        let env = ImportedAhdsr { attack_curve: 0., attack_ms: 100., hold_ms: 0., decay_ms: 0.,
+            sustain: 1., release_ms: 100., unknown_flag: 0, unknown_tail: Vec::new() };
+        let group = Group {
+            envelopes: vec![ModEnvelope { env: env.clone(), targets: vec![] }, ModEnvelope { env, targets: vec![
+                target(ModTarget::Group("loopLength".into()), None),
+                target(ModTarget::Pitch, None),
+                target(ModTarget::Module { param: "filterCutoff".into(), slot: 0 },
+                    Some(crate::import::ShaperCurve::Table(vec![0.3, 1.]))),
+                target(ModTarget::Module { param: "filterQ".into(), slot: 0 }, None),
+            ] }],
+            modulators: vec![Modulator { name: "Envelope".into(), targets: vec![String::new(); 4],
+                assignments: None, volume_env: false, flex: false, envelope: Some(1), kind: "ahdsr".into() }],
+            fx: Chain { slots: vec![crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 0,
+                bypass: false, output_gain: 1., dry_level: 1., params: Params::Filter(crate::fx::params::Filter {
+                    filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3] }) }] },
+            ..Group::default()
+        };
+        let groups = [group];
+        let mut settings = [GroupSettings::from(&groups[0])];
+        let address = |id, generic| Address::resolve(EnginePar { id, group: 0, slot: 0, generic }, &groups);
+        let depth = address(id::MOD_TARGET_MP_INTENSITY, 2).unwrap();
+        let unipolar = address(id::MOD_TARGET_INTENSITY, 2).unwrap();
+        let bypass = address(id::INTMOD_BYPASS, -1).unwrap();
+        assert!(address(id::INTMOD_INTENSITY, 2).is_none(), "unknown legacy filter law stays explicit");
+        assert!(address(id::MOD_TARGET_MP_INTENSITY, 0).is_none(), "unsupported target does not alias a routed one");
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc: &cc, cc74: None, bend: 0., pressure: 0, note: 60, velocity: 100, counter: 0. };
+        let f = settings[0].filter.as_ref().unwrap();
+        let mut dry = f.clone();
+        dry.envs = [].into();
+        let mut voice = VoiceFilter::new(Some(f), &table, &input, RATE);
+        let mut reference = VoiceFilter::new(Some(&dry), &table, &input, RATE);
+        let mut clock = Envelope::new(&Ahdsr::from(&groups[0].envelopes[1].env), RATE);
+        let mut ctl = [0.; MAX_BLOCK];
+        let mut difference = 0f32;
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            assert!(params::write(&mut settings, unipolar, unipolar.decode(500_000)));
+            assert_eq!(params::read(&settings, unipolar), Some(0.25));
+            assert!(params::write(&mut settings, depth, depth.decode(750_000)));
+            assert_eq!(params::read(&settings, depth), Some(0.5));
+            assert_eq!(depth.encode(params::read(&settings, depth).unwrap()), 750_000);
+            assert!(params::write(&mut settings, bypass, bypass.decode(1)));
+            assert!(settings[0].pitch_envelopes[0].bypass, "all copies of a mixed envelope share bypass");
+            for block in 0..48 {
+                let source = std::array::from_fn::<_, 128, _>(|n| (TAU * 2000. * (block * 128 + n) as f32 / RATE).sin());
+                let (mut l, mut r) = (source, source);
+                let (mut dl, mut dr) = (source, source);
+                if block == 24 { assert!(params::write(&mut settings, bypass, 0.)); }
+                voice.process(settings[0].filter.as_ref().unwrap(), &table, &mut ctl, &mut l, &mut r, RATE);
+                reference.process(&dry, &table, &mut ctl, &mut dl, &mut dr, RATE);
+                clock.skip(128, None, RATE);
+                assert_eq!(voice.envs[0].level(), clock.level(), "bypass does not restart or freeze the clock");
+                assert!(l.iter().chain(&r).all(|x| x.is_finite()));
+                if block < 24 { assert_eq!(l, dl, "bypass removes even the shaper intercept"); }
+                else { difference += l.iter().zip(&dl).map(|(a,b)| (a-b).abs()).sum::<f32>(); }
+            }
+            voice.release();
+            clock.release(None);
+            let (mut l, mut r) = ([0.; 128], [0.; 128]);
+            voice.process(settings[0].filter.as_ref().unwrap(), &table, &mut ctl, &mut l, &mut r, RATE);
+            clock.skip(128, None, RATE);
+            assert_eq!(voice.envs[0].level(), clock.level());
+        }), 0);
+        assert!(difference > 1., "resuming the elapsed envelope changes actual PCM: {difference}");
+    }
+
     /// The rearranged SSE section matches Simper's textbook update.
     #[test]
     fn section_matches_the_reference_svf() {
@@ -1651,7 +2006,7 @@ mod tests {
                 resonance: 0.0, extra: [0.0; 3],
             }),
         };
-        assert!(unsupported(&Chain { slots: vec![fx.clone()] }).is_empty());
+        assert!(unsupported_at(&Chain { slots: vec![fx.clone()] }, Some(8)).is_empty());
         for hz in [10.0, 1000.0, 20_000.0] {
             let mut filter = RackFilter::new(&fx, RATE).expect("native notch must not pass through");
             assert_eq!(filter.active, 2, "four poles require two SVF sections");
@@ -1799,11 +2154,12 @@ mod tests {
             // Stereo Modeller: mono, panned half right.
             mixers: [Mixer { slot: 2, stereo: Some([-1.0, 0.5]), bypass: false, gain: 1.0 }].into(),
             stages: [].into(),
+            inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix_interleaved: false,
             matrix: IDENTITY,
             envs: [].into(),
             ext: [].into(),
         };
-        f.matrix = f.mix();
+        f.compile_inserts();
         let table = ModTable::default();
         let cc = [0u8; 128];
         let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
@@ -1832,7 +2188,8 @@ mod tests {
     #[test]
     fn filter_types_switch_and_play() {
         let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [0.6, 0.7, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2 };
-        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [].into(), matrix: IDENTITY, envs: [].into(), ext: [].into() };
+        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
+        f.compile_inserts();
         let table = ModTable::default();
         let cc = [0u8; 128];
         let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
@@ -1868,7 +2225,8 @@ mod tests {
         let mut fields = [0.0; blocks::FIELDS];
         fields[0] = 1.0;
         let stage = Stage { slot: 2, kind: Kind::SurroundPanner, fields, bypass: false, gain: 1.0 };
-        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [stage].into(), matrix: IDENTITY, envs: [].into(), ext: [].into() };
+        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [stage].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
+        f.compile_inserts();
         let table = ModTable::default();
         let cc = [0u8; 128];
         let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };

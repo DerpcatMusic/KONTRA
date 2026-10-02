@@ -232,6 +232,42 @@ fn truncated_chunk_is_an_error_not_partial_success() {
         .is_empty());
 }
 #[test]
+fn nkx_directory_errors_distinguish_signature_offset_and_truncation() {
+    let mut header = 0x5e70ac54u32.to_le_bytes().to_vec();
+    header.extend(0x110u16.to_le_bytes());
+    header.extend([0; 16]);
+    assert!(Archive::read_index(Cursor::new(&header)).unwrap().entries.is_empty());
+    header[4..6].copy_from_slice(&0x111u16.to_le_bytes());
+    assert!(Archive::read_index(Cursor::new(&header)).unwrap().entries.is_empty());
+
+    for magic in [0u32, 0x12345678] {
+        let mut wrong = header.clone();
+        wrong[..4].copy_from_slice(&magic.to_le_bytes());
+        let error = Archive::read_index(Cursor::new(wrong)).unwrap_err().to_string();
+        assert!(error.contains("at 0x0 ()"), "{error}");
+        assert!(error.contains(&format!("got {magic:#010x}")), "{error}");
+        assert!(error.contains("expected 0x5e70ac54, file length 22"), "{error}");
+    }
+    for length in [0, 4, 21] {
+        let error = Archive::read_index(Cursor::new(&header[..length])).unwrap_err().to_string();
+        assert!(error.contains("Truncated NKX directory header"), "{error}");
+        assert!(error.contains(&format!("available {length}, file length {length}")), "{error}");
+    }
+    header[4..6].copy_from_slice(&0x999u16.to_le_bytes());
+    assert!(Archive::read_index(Cursor::new(&header)).unwrap_err().to_string().contains("version 0x999 at 0x0"));
+    header[4..6].copy_from_slice(&0x110u16.to_le_bytes());
+    header[14..18].copy_from_slice(&1u32.to_le_bytes());
+    let error = Archive::read_index(Cursor::new(&header)).unwrap_err().to_string();
+    assert!(error.contains("entry 0/1 at 0x16"), "{error}");
+    assert!(error.contains("need 8 bytes, available 0"), "{error}");
+    header.extend(12u16.to_le_bytes());
+    header.extend([0; 6]);
+    let error = Archive::read_index(Cursor::new(&header)).unwrap_err().to_string();
+    assert!(error.contains("entry 0/1 length 12 at 0x16"), "{error}");
+    assert!(error.contains("available 8, file length 30"), "{error}");
+}
+
+#[test]
 fn clear_nkx_member_and_bad_sibling_are_independent() {
     let mut b = Vec::new();
     b.extend(0x5e70ac54u32.to_le_bytes());
@@ -886,4 +922,118 @@ fn generic_nis_read_reuses_detection_and_preserves_stream_consumption() {
     assert_eq!(reader.bytes.position(), bytes.len() as u64);
     bytes[60..64].copy_from_slice(&2u32.to_le_bytes()); // corrupt child-list version
     assert!(NIFile::read(Cursor::new(&bytes)).is_err());
+}
+
+#[test]
+fn explicit_slot_counts_preserve_slots_and_reject_mismatches() {
+    use ni_file::kontakt::{objects::BParamArrayBParFX8, Chunk};
+    let mut data = vec![0, 0x13, 0];
+    data.extend(2u32.to_le_bytes());
+    data.extend([0, 1]);
+    Chunk {
+        id: 0x25,
+        data: b"authored".to_vec(),
+    }
+    .write(&mut data)
+    .unwrap();
+    let array = BParamArrayBParFX8::read(Cursor::new(&data), 2).unwrap();
+    assert_eq!(array.version, 0x13);
+    assert_eq!(array.items.len(), 2);
+    assert!(array.items[0].is_none());
+    assert_eq!(array.items[1].as_ref().unwrap().data, b"authored");
+    assert!(BParamArrayBParFX8::read(Cursor::new(&data), 8).is_err());
+    for end in 0..data.len() {
+        assert!(
+            BParamArrayBParFX8::read(Cursor::new(&data[..end]), 2).is_err(),
+            "end={end}"
+        );
+    }
+    data[7] = 2;
+    assert!(BParamArrayBParFX8::read(Cursor::new(data), 2).is_err());
+}
+
+#[test]
+fn flat_filename_tables_keep_global_indices_and_reject_damage() {
+    use ni_file::kontakt::objects::FNTableImpl;
+    // Authored v3 records: opaque metadata, one index space for every kind of
+    // reference. This fixture contains no library data or native preset bytes.
+    let names = ["Resources.nkr", "Sample.ncw", "Impulse.ncw"];
+    let mut data = 3u16.to_le_bytes().to_vec();
+    data.extend((names.len() as u32).to_le_bytes());
+    for (i, name) in names.iter().enumerate() {
+        data.extend([i as u8; 8]);
+        data.extend(1i32.to_le_bytes());
+        data.push(4);
+        data.extend((name.len() as u32).to_le_bytes());
+        data.extend(name.encode_utf16().flat_map(u16::to_le_bytes));
+        data.extend([i as u8; 20]);
+    }
+    let table = FNTableImpl::read(Cursor::new(&data)).unwrap();
+    for (i, name) in names.iter().enumerate() {
+        assert_eq!(table.special_filetable[&(i as u32)], *name);
+        assert_eq!(table.sample_filetable[&(i as u32)], *name);
+        assert_eq!(table.other_filetable[&(i as u32)], *name);
+    }
+    assert!(table.sample_timestamp_table.is_empty());
+    for end in 0..data.len() {
+        assert!(
+            FNTableImpl::read(Cursor::new(&data[..end])).is_err(),
+            "end={end}"
+        );
+    }
+    for (offset, bytes) in [(2, u32::MAX.to_le_bytes()), (14, (-1i32).to_le_bytes())] {
+        let mut damaged = data.clone();
+        damaged[offset..offset + 4].copy_from_slice(&bytes);
+        assert!(FNTableImpl::read(Cursor::new(damaged)).is_err());
+    }
+    data[0] = 4;
+    assert!(FNTableImpl::read(Cursor::new(data))
+        .unwrap_err()
+        .to_string()
+        .contains("version 4"));
+}
+
+#[test]
+fn modern_source_identity_retains_opaque_bytes_and_keeps_snapshot_codec_strict() {
+    use ni_file::kontakt::{StructuredObject, objects::{Group, SourceIdentity}};
+    let mut private = Vec::new();
+    for _ in 0..136 { private.extend(8u32.to_le_bytes()); private.extend([0; 8]); }
+    private.extend([0; 24]);
+    private.extend([0, 0x13, 0]);
+    private.extend(8u32.to_le_bytes());
+    private.extend([0; 8]);
+    let flag = private.len();
+    private.push(0);
+    let source = private.len();
+    private.extend([0, 6, 1]);
+    private.extend(9u32.to_le_bytes());
+    private.extend([0x5a; 114]); // Opaque remainder; not asserted as a source length.
+    let mut group = Group(StructuredObject { version: 150, public_data: Vec::new(), private_data: private, children: Vec::new() });
+    for value in [0, 1] {
+        group.0.private_data[flag] = value;
+        let before = group.0.private_data.clone();
+        assert_eq!(group.source_identity().unwrap(), SourceIdentity { flag: value, structured: false, version: 0x106, mode: 9 });
+        assert_eq!(group.0.private_data, before, "identity reads preserve the entire unknown remainder");
+        assert!(group.source_state().is_err(), "modern identity cannot masquerade as a legacy snapshot record");
+    }
+    group.0.private_data[flag] = 2;
+    assert!(group.source_identity().is_err());
+    group.0.private_data[flag] = 0;
+    group.0.private_data[source] = 1;
+    assert!(group.source_identity().is_err());
+    group.0.private_data[source] = 0;
+    group.0.private_data[source + 1] = 7;
+    assert!(group.source_identity().is_err(), "future versions remain unclassified");
+    group.0.private_data[source + 1] = 6;
+    let full = group.0.private_data.clone();
+    for bytes in 0..7 {
+        group.0.private_data = full[..source + bytes].to_vec();
+        assert!(group.source_identity().is_err(), "truncated identity {bytes}");
+    }
+    group.0.private_data = full[..source + 7].to_vec();
+    assert_eq!(group.source_identity().unwrap().mode, 9, "only the identity is consumed; no claim of a decoded tail");
+    group.0.private_data = full;
+    group.0.private_data[source + 1] = 2;
+    assert_eq!(group.source_identity().unwrap().version, 0x102);
+    assert!(group.source_state().is_ok());
 }
