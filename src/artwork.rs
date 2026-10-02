@@ -412,10 +412,13 @@ fn pixel_budget(width: u32, height: u32, limit: usize) -> Result<(), String> {
     }
     Ok(())
 }
-fn decode_png_report(bytes: &[u8], limit: usize) -> Result<Image, String> {
+pub(crate) fn png_reader(bytes: &[u8], limit: usize) -> Result<png::Reader<Cursor<&[u8]>>, String> {
     let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: limit });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().map_err(|e| format!("PNG header: {e}"))?;
+    decoder.read_info().map_err(|e| format!("PNG header: {e}"))
+}
+fn decode_png_report(bytes: &[u8], limit: usize) -> Result<Image, String> {
+    let mut reader = png_reader(bytes, limit)?;
     pixel_budget(reader.info().width, reader.info().height, limit)?;
     let size = reader.output_buffer_size().ok_or("PNG dimensions overflow")?;
     let mut data = Vec::new();
