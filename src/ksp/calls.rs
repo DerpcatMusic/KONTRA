@@ -160,7 +160,7 @@ fn library_dir(instrument: &std::path::Path) -> String {
 fn async_done(m: &mut Machine, status: i32) -> i32 {
     let id = m.env.next_async();
     if m.env.async_done.len() < m.env.async_done.capacity() {
-        m.env.async_done.push((m.slot.index, m.t.ctx.scope(), id, status));
+        m.env.async_done.push((m.slot.index, m.t.ctx.scope().completion(id), id, status));
     }
     id
 }
@@ -445,7 +445,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 m.t.ctx.array_call = call.saturating_add(1);
                 if scope.ui_replay && scope.common_input != 0
                     && let Some(shared) = m.env.shared_arrays.iter_mut().find(|s|
-                        s.matches(slot,v,scope,m.t.ctx.kind,call,saving,m.stk.strs.top()))
+                        s.matches(slot,v,scope,m.t.ctx.kind,m.t.pc as u32,call,saving,m.stk.strs.top()))
                 {
                     m.stk.strs.pop();
                     if m.env.pending_async.len() < m.env.pending_async.capacity()
@@ -454,7 +454,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                         m.env.pending_async.push((slot,id));
                     } else {
                         m.env.note("KSP common array subscriber capacity exhausted; replay operation failed");
-                        if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,scope,id,0)); }
+                        if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,scope.completion(id),id,0)); }
                         else { m.env.note("KSP async completion callback queue exhausted"); }
                     }
                     return push_int(m,id);
@@ -463,7 +463,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     m.stk.strs.pop();
                     m.env.note(if saving {"save_array_str: replay has no matching canonical operation; file was not written"}
                         else {"load_array_str: replay has no matching canonical operation; array was not changed"});
-                    if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,scope,id,0)); }
+                    if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,scope.completion(id),id,0)); }
                     else { m.env.note("KSP async completion callback queue exhausted"); }
                     return push_int(m,id);
                 }
@@ -480,7 +480,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     if !fits {
                         m.stk.strs.pop();
                         m.env.note("save_array_str: snapshot exceeds audio block budget");
-                        if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,m.t.ctx.scope(),id,0)); }
+                        if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,m.t.ctx.scope().completion(id),id,0)); }
                         return push_int(m,id);
                     }
                 }
@@ -502,9 +502,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                         refresh_value(&m.slot.mem, &m.prog.vars[v as usize],
                             request.snapshot.as_mut().expect("prepared array save snapshot"));
                     }
-                    if scope.configuration && scope.common_input != 0 {
+                    if scope.configuration && scope.common_input != 0 && super::arrays::SharedArray::supports(m.t.ctx.kind) {
                         debug_assert!(m.env.shared_arrays.len() < m.env.shared_arrays.capacity());
-                        m.env.shared_arrays.push(super::arrays::SharedArray::new(&request,m.t.ctx.kind,call));
+                        m.env.shared_arrays.push(super::arrays::SharedArray::new(&request,m.t.ctx.kind,m.t.pc as u32,call));
                     }
                     m.env.array_requests.push_back(request);
                     m.env.pending_async.push((slot, id));
@@ -513,7 +513,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     m.env.note(if saving { "save_array_str: prepared request queue or path capacity exhausted" }
                         else { "load_array_str: prepared request queue or path capacity exhausted" });
                     if m.env.async_done.len() < m.env.async_done.capacity() {
-                        m.env.async_done.push((slot, m.t.ctx.scope(), id, 0));
+                        m.env.async_done.push((slot, m.t.ctx.scope().completion(id), id, 0));
                     }
                 }
                 return push_int(m, id);
@@ -961,6 +961,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let mut scope = m.t.ctx.scope();
             // A subscription creates future callbacks, not continuations of this edit.
             scope.common_input = 0;
+            scope.common_async = 0;
             if matches!(m.t.ctx.kind, super::vm::Kind::Cb(
                 super::compile::Callback::Init | super::compile::Callback::PersistenceChanged)) {
                 scope.common = true;
@@ -1174,7 +1175,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             }
             let loaded = loaded == Some(true);
             if m.env.async_done.len() < m.env.async_done.capacity() {
-                m.env.async_done.push((m.slot.index, m.t.ctx.scope(), id, i32::from(loaded)));
+                m.env.async_done.push((m.slot.index, m.t.ctx.scope().completion(id), id, i32::from(loaded)));
             }
             push_int(m, id)
         }

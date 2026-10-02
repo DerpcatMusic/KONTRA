@@ -64,10 +64,16 @@ pub struct CallbackScope {
     pub ui_replay: bool,
     /// Shared UI edit identity; zero means no common worker operation.
     pub common_input: u64,
+    /// Logical parent worker command, shared by its replay completions.
+    pub common_async: i32,
 }
 
 impl CallbackScope {
     pub(super) fn performance(domain: u8) -> Self { Self { domain, ..Self::default() } }
+    pub(super) fn completion(mut self, root:i32) -> Self {
+        if self.common_input!=0 { self.common_async=root; }
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -81,6 +87,7 @@ pub struct Ctx {
     /// Repeat performance effects of a common callback, using the one shared UI.
     pub ui_replay: bool,
     pub common_input: u64,
+    pub common_async: i32,
     pub array_call: u32,
     pub kind: Kind,
     pub event: i32,
@@ -112,7 +119,7 @@ pub struct Ctx {
 impl Ctx {
     pub(super) fn scope(&self) -> CallbackScope {
         CallbackScope { domain: self.domain, common: self.common,
-            configuration: self.configuration, ui_replay: self.ui_replay, common_input: self.common_input }
+            configuration: self.configuration, ui_replay: self.ui_replay, common_input: self.common_input, common_async:self.common_async }
     }
     pub(super) fn inherit_scope(&mut self, scope: CallbackScope) {
         self.domain = scope.domain;
@@ -120,6 +127,7 @@ impl Ctx {
         self.configuration = scope.configuration;
         self.ui_replay = scope.ui_replay;
         self.common_input = scope.common_input;
+        self.common_async = scope.common_async;
     }
     pub fn new(slot: u8, kind: Kind) -> Self {
         Self {
@@ -129,6 +137,7 @@ impl Ctx {
             configuration: false,
             ui_replay: false,
             common_input: 0,
+            common_async: 0,
             array_call: 0,
             kind,
             event: 0,

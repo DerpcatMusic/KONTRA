@@ -19,6 +19,8 @@ pub(super) struct SharedArray {
     pub slot: u8,
     var: VarId,
     input: u64,
+    parent: i32,
+    pc: u32,
     kind: super::vm::Kind,
     call: u32,
     write: bool,
@@ -32,9 +34,13 @@ pub(super) struct SharedArray {
 }
 
 impl SharedArray {
-    pub fn new(job: &ArrayJob, kind: super::vm::Kind, call: u32) -> Self {
+    pub fn supports(kind:super::vm::Kind) -> bool {
+        use super::{compile::Callback,vm::Kind};
+        matches!(kind,Kind::UiControl | Kind::Cb(Callback::UiControls | Callback::UiUpdate | Callback::AsyncComplete))
+    }
+    pub fn new(job: &ArrayJob, kind: super::vm::Kind, pc:u32, call: u32) -> Self {
         let mut shared = Self { root:job.id, slot:job.slot, var:job.var,
-            input:job.scope.common_input, kind, call, write:job.write,
+            input:job.scope.common_input, parent:job.scope.common_async, pc, kind, call, write:job.write,
             path:[0;PATH_BYTES], len:job.path.len(), subscribers:[None;17],
             count:1, copied:0, notified:0, source_success:None };
         shared.path[..shared.len].copy_from_slice(job.path.as_bytes());
@@ -42,9 +48,9 @@ impl SharedArray {
         shared
     }
     pub fn matches(&self, slot:u8, var:VarId, scope:super::vm::CallbackScope,
-        kind:super::vm::Kind, call:u32, write:bool, path:&str) -> bool {
+        kind:super::vm::Kind, pc:u32, call:u32, write:bool, path:&str) -> bool {
         self.slot==slot && self.var==var && self.input==scope.common_input
-            && self.kind==kind && self.call==call && self.write==write && self.path[..self.len]==*path.as_bytes()
+            && self.parent==scope.common_async && self.kind==kind && self.pc==pc && self.call==call && self.write==write && self.path[..self.len]==*path.as_bytes()
     }
     pub fn subscribe(&mut self, scope:super::vm::CallbackScope, storage:u8, id:i32) -> bool {
         if self.count==self.subscribers.len() { return false }

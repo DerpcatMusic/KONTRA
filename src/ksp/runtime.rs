@@ -951,7 +951,7 @@ impl Runtime {
             if !canonical.scopes[3].common { canonical.transport &= !2; }
             for scope in &mut canonical.scopes {
                 if scope.common {
-                    *scope = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false, common_input:0 };
+                    *scope = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false, common_input:0, common_async:0 };
                 }
             }
             for listener in &mut state.domain_listeners {
@@ -971,7 +971,7 @@ impl Runtime {
                 for _ in 0..2 {
                     let mut job = super::ArrayJob::prepared(state.index, v, &p.vars[v as usize]);
                     job.storage = self.domain_count;
-                    job.scope = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false, common_input:0 };
+                    job.scope = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false, common_input:0, common_async:0 };
                     if p.array_writes.contains(&v) {
                         let mut snapshot = read_value(&state.mem, &p.vars[v as usize]);
                         let mut i = p.vars[v as usize].slot as usize;
@@ -2166,7 +2166,7 @@ impl Runtime {
             self.env.note("load_ir_sample: file not found, or that slot holds no convolution effect");
         }
         if self.env.async_done.len() < self.env.async_done.capacity() {
-            self.env.async_done.push((slot, scope, id, i32::from(loaded)));
+            self.env.async_done.push((slot, scope.completion(id), id, i32::from(loaded)));
         } else {
             self.env.note("KSP async completion callback queue exhausted");
         }
@@ -2453,11 +2453,11 @@ impl Runtime {
             if let Some((subscribers,first,count)) = completions {
                 for subscriber in subscribers[first..count].iter().rev().flatten() {
                     self.env.finish_async(request.slot,subscriber.id);
-                    self.env.async_done.push((request.slot,subscriber.scope,subscriber.id,i32::from(subscriber.status==Some(true))));
+                    self.env.async_done.push((request.slot,subscriber.scope.completion(request.id),subscriber.id,i32::from(subscriber.status==Some(true))));
                 }
             } else {
                 self.env.finish_async(request.slot,request.id);
-                self.env.async_done.push((request.slot,request.scope,request.id,i32::from(request.success)));
+                self.env.async_done.push((request.slot,request.scope.completion(request.id),request.id,i32::from(request.success)));
             }
             self.env.array_retired.push_back(request);
             self.changes += 1;
@@ -3005,7 +3005,7 @@ impl Runtime {
 
     fn scope_for_storage(&self, storage: u8) -> CallbackScope {
         if self.configuration_domain == Some(storage) {
-            CallbackScope { domain:0, common:true, configuration:true, ui_replay:false, common_input:0 }
+            CallbackScope { domain:0, common:true, configuration:true, ui_replay:false, common_input:0, common_async:0 }
         } else { CallbackScope::performance(storage) }
     }
 
@@ -3492,6 +3492,7 @@ on async_complete
 inc($done)
 $status := $NI_ASYNC_EXIT_STATUS
 set_controller(22,%data[599]+$private)
+wait(10000)
 end on"#,root.display(),root.display());
         let receiver = "on init\ndeclare $seen22\ndeclare $seen23\nend on\non controller\nif ($CC_NUM=22)\n$seen22 := %CC[22]\nelse\n$seen23 := %CC[23]\nend if\nend on";
         for reference in [false,true] {
@@ -3524,6 +3525,7 @@ end on"#,root.display(),root.display());
                 #[cfg(not(feature="plugin"))]
                 begin();
                 let mut job = rt.pop_array_job().unwrap();
+                let logical_root=job.id;
                 assert_eq!(job.is_write(),edit==2);
                 assert!(rt.pop_array_job().is_none());
                 assert_eq!(job.perform(),edit!=3);
@@ -3538,7 +3540,20 @@ end on"#,root.display(),root.display());
                 assert_eq!(value(&rt,0,0,"$done"),Value::Int(edit-1));
                 assert_eq!(value(&rt,0,1,"$done"),Value::Int(edit-1));
                 assert!(rt.pop_retired_array_job().is_none(),"result remains owned while private callbacks have not reached their delayed call");
-                let mut finish = || { for _ in 0..12 { rt.process(&mut engine,128); } };
+                let mut completions=[None;3];
+                for t in rt.threads.iter().filter(|t|t.live && t.ctx.kind==Kind::Cb(Callback::AsyncComplete)) {
+                    assert_eq!(t.ctx.common_async,logical_root);
+                    let bank=if t.ctx.configuration {2} else {t.ctx.domain as usize};
+                    completions[bank]=Some(t.ctx.async_id);
+                }
+                let mut finish = || { for _ in 0..12 {
+                    rt.process(&mut engine,128);
+                    for t in rt.threads.iter().filter(|t|t.live && t.ctx.kind==Kind::Cb(Callback::AsyncComplete)) {
+                        assert_eq!(t.ctx.common_async,logical_root,"replay completion IDs retain the same logical worker parent");
+                        let bank=if t.ctx.configuration {2} else {t.ctx.domain as usize};
+                        completions[bank]=Some(t.ctx.async_id);
+                    }
+                } };
                 #[cfg(feature="plugin")]
                 assert_eq!(crate::plugin::tests::allocations(||finish()),0);
                 #[cfg(not(feature="plugin"))]
@@ -3546,6 +3561,7 @@ end on"#,root.display(),root.display());
                 assert!(rt.pop_array_job().is_none(),"late replays never reread or rewrite the file");
                 let ids=[value(&rt,0,2,"$id"),value(&rt,0,0,"$id"),value(&rt,0,1,"$id")];
                 assert!(ids[0]!=ids[1] && ids[1]!=ids[2] && ids[0]!=ids[2],"each callback retains its unique command ID");
+                for bank in [0,1,2] { assert!(completions[bank].is_some(),"a retained completion was observed for every bank"); }
                 for (bank,private) in [(2,0),(0,1),(1,2)] {
                     assert_eq!(value(&rt,0,bank,"$done"),Value::Int(edit));
                     assert_eq!(value(&rt,0,bank,"$status"),Value::Int(i32::from(edit!=3)));
@@ -3627,8 +3643,8 @@ set_text($info,"C:" & %data[599])
 set_controller(22,%data[599])
 end on"#,root.display());
         let receiver = "on init\ndeclare $seen22\ndeclare $seen23\ndeclare $count\nend on\non controller\ninc($count)\nif ($CC_NUM=22)\n$seen22 := %CC[22]\nelse\n$seen23 := %CC[23]\nend if\nend on";
-        let canonical = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false, common_input:1 };
-        let replay = |domain| CallbackScope { domain, common:true, configuration:false, ui_replay:true, common_input:0 };
+        let canonical = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false, common_input:1, common_async:0 };
+        let replay = |domain| CallbackScope { domain, common:true, configuration:false, ui_replay:true, common_input:0, common_async:0 };
         let scopes = [canonical,CallbackScope::performance(0),CallbackScope::performance(1)];
         for reference in [false,true] {
             vm::REFERENCE.set(reference);
@@ -3718,8 +3734,8 @@ end on"#,root.display());
         assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
         rt.prepare_channel_domains((1<<1)|(1<<3)|(1<<5),7);
         rt.prepare_channel_configuration();
-        let canonical = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false, common_input:0 };
-        let replay = |domain|CallbackScope { domain, common:true, configuration:false, ui_replay:true, common_input:0 };
+        let canonical = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false, common_input:0, common_async:0 };
+        let replay = |domain|CallbackScope { domain, common:true, configuration:false, ui_replay:true, common_input:0, common_async:0 };
         let mut due:Vec<_> = rt.env.timers.iter().filter_map(|Reverse(t)|match t.kind {
             TimerKind::Listener { scope,signal,.. } if signal==b::signal::TIMER_MS=>Some((t.at,scope)),
             _=>None,
