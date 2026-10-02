@@ -112,8 +112,17 @@ assert result.returncode == 1 and "Missing required signing secret:" in result.s
 native_mock = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys
 name=pathlib.Path(sys.argv[0]).name; args=sys.argv[1:]
+state=pathlib.Path(os.environ["NATIVE_CALLS"]).with_suffix(".keychains")
+original=["/Users/test user/login.keychain-db", "/Library/Keychains/System.keychain"]
 with open(os.environ["NATIVE_CALLS"],"a") as calls: calls.write(name+" "+" ".join(args[:2])+"\n")
-if name=="uuidgen": print("12345678-1234-1234-1234-123456789abc")
+if name=="security" and args[0]=="list-keychains":
+    if "-s" in args: state.write_text(json.dumps(args[args.index("-s")+1:]))
+    else: print("\n".join('"'+p+'"' for p in original))
+elif name=="security" and args[0]=="find-certificate": print("synthetic-public-certificate")
+elif name=="curl": pathlib.Path(args[args.index("-o")+1]).write_bytes(b"synthetic-public-certificate")
+elif name=="codesign" and "--sign" in args:
+    assert json.loads(state.read_text())[0]==args[args.index("--keychain")+1], "signing keychain was not selected"
+elif name=="uuidgen": print("12345678-1234-1234-1234-123456789abc")
 elif name=="hdiutil" and args[0]=="create": pathlib.Path(args[-1]).write_bytes(b"fixture"+b"koly"+b"\0"*508)
 elif name=="xcrun" and args[:2]==["notarytool","submit"]:
     print(json.dumps(dict(status="Invalid" if os.environ["SIGNING_CASE"]=="rejected" else "Accepted",id="12345678-1234-1234-1234-123456789abc")))
@@ -122,7 +131,7 @@ elif name=="xcrun" and args[:2]==["stapler","validate"] and os.environ["SIGNING_
 for case in ("accepted", "rejected", "bad-ticket"):
     with tempfile.TemporaryDirectory(prefix="kontra-signing-check-") as directory:
         root=Path(directory); tools=root/"tools"; tools.mkdir(); script=tools/"mock";script.write_text(native_mock);script.chmod(0o755)
-        for name in ("uuidgen","security","lipo","codesign","hdiutil","xcrun","spctl"): tools.joinpath(name).symlink_to("mock")
+        for name in ("uuidgen","security","lipo","codesign","hdiutil","xcrun","spctl","curl"): tools.joinpath(name).symlink_to("mock")
         stage=root/"stage";stage.mkdir()
         for product in ("KONTRA.clap/Contents/MacOS/KONTRA","KONTRA.vst3/Contents/MacOS/KONTRA","kontakto-standalone"):
             path=stage/product;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b"fixture")
@@ -135,6 +144,7 @@ for case in ("accepted", "rejected", "bad-ticket"):
         assert (stage/"notarization.json").exists()==(case=="accepted")
         calls=root.joinpath("calls").read_text()
         assert "security delete-keychain" in calls
+        assert json.loads(root.joinpath("calls.keychains").read_text())==["/Users/test user/login.keychain-db", "/Library/Keychains/System.keychain"], "original keychains were not restored"
         if case=="accepted":
             receipt=json.loads(stage.joinpath("notarization.json").read_text())
             assert receipt["status"]=="Accepted" and receipt["stapled"] and receipt["signatures_verified"]
