@@ -30,7 +30,7 @@ mod routing;
 #[cfg(feature="plugin")]
 mod ui;
 #[cfg(feature="plugin")]
-pub use plugin::{Plugin, bench_host};
+pub use plugin::{Plugin, bench_host, bench_ui_control};
 /// `kontakto audit-ui`: see `ui::audit`.
 #[cfg(feature="plugin")]
 pub use ui::audit::run as audit_ui;

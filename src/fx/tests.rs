@@ -43,6 +43,58 @@ fn convolution(ir: &[f32]) -> Effect {
 }
 
 #[test]
+fn convolution_uniform_filters_shape_audio_and_keep_unknown_splits_explicit() {
+    let make = |low, high, unequal| {
+        let mut fx = convolution(&[1.0]);
+        let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+        c.early.low_cut_hz = low;
+        c.late.low_cut_hz = if unequal { 20.0 } else { low };
+        c.early.high_cut_hz = high;
+        c.late.high_cut_hz = high;
+        ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() }
+    };
+    let gain = |fx: &ProgramFx, hz: f32| {
+        let mut p = fx.processor(SR, 64);
+        let mut energy = 0.0;
+        let mut input_energy = 0.0;
+        for block in 0..128 {
+            let mut left = std::array::from_fn::<_, 64, _>(|i| {
+                (2.0 * std::f32::consts::PI * hz * (block * 64 + i) as f32 / SR).sin()
+            });
+            let mut right = left;
+            let input = left;
+            p.process(&mut left, &mut right);
+            assert!(left.iter().chain(&right).all(|v| v.is_finite()));
+            if block >= 64 {
+                energy += left.iter().map(|v| v * v).sum::<f32>();
+                input_energy += input.iter().map(|v| v * v).sum::<f32>();
+            }
+        }
+        (energy / input_energy).sqrt()
+    };
+    let hp = make(1000.0, 20_000.0, false);
+    assert!(hp.warnings().is_empty());
+    assert!(gain(&hp, 100.0) < 0.02);
+    assert!((gain(&hp, 4000.0) - 1.0).abs() < 0.02);
+    let lp = make(20.0, 1000.0, false);
+    assert!(gain(&lp, 8000.0) < 0.02);
+    assert!((gain(&lp, 100.0) - 1.0).abs() < 0.02);
+    let split = make(1000.0, 20_000.0, true);
+    assert!(split.warnings().iter().any(|w| w.contains("independent early/late IR filtering")));
+    assert!((gain(&split, 100.0) - 1.0).abs() < 1e-5, "do not apply one band's cutoff to the other band");
+    let default = make(20.0, 20_000.0, false);
+    assert!((gain(&default, 100.0) - 1.0).abs() < 1e-5);
+    let mut sized = default;
+    let Params::Convolution(c) = &mut sized.insert.slots[0].params else { unreachable!() };
+    c.early.length_ratio = 1.5;
+    c.late.length_ratio = 1.5;
+    assert!(sized.warnings().is_empty(), "uniform sizing already plays");
+    let Params::Convolution(c) = &mut sized.insert.slots[0].params else { unreachable!() };
+    c.early.length_ratio = 1.0;
+    assert!(sized.warnings().iter().any(|w| w.contains("independent early/late IR sizing")));
+}
+
+#[test]
 fn live_ir_swap_keeps_the_slot_mix_and_rejects_other_effects() {
     let fx = ProgramFx { insert: Chain { slots: vec![convolution(&[1.0])] }, ..Default::default() };
     let mut p = fx.processor(SR, 64);

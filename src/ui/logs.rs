@@ -358,7 +358,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         content.push(
             body(crate::build_info::SUMMARY)
                 .text_size(TEXT)
-                .lines(5)
+                .w(Len::Pct(100.))
                 .pad(INSET)
                 .shrink(0)
                 .id("logs-about"),
@@ -1095,6 +1095,16 @@ mod tests {
             900,
             700,
         );
+        state.about = true;
+        tick(&mut ui, &mut state, &params, Input::default());
+        let about = ui.scene().unwrap().surface("logs-about").unwrap().frame;
+        assert!(about.size.height >= crate::build_info::SUMMARY.lines().count() as f64 * body_pitch + 2. * INSET - 1.,
+            "all build fields must fit, including target/profile/features beyond the fifth line: {about:?}");
+        assert!(about.size.width >= 850., "About uses the offered Logs width: {about:?}");
+        let path = Path::new("artifacts/diagnostics/log-about-fixture.png");
+        moose::core::screenshot::save_png(path, &super::super::tests::pixels(&ui, 900, 700), 900, 700);
+        press(&mut ui, &mut state, &params, "logs-close-about");
+        assert!(!state.about);
         press(&mut ui, &mut state, &params, "logs-export-preview");
         assert!(
             state.preview && state.redact,

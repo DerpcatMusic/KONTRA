@@ -30,6 +30,8 @@ pub struct MenuItem {
 pub struct ControlState {
     pub var: VarId,
     pub props: Vec<(i32, Prop)>,
+    /// Static metadata need not be recopied on every scalar value edit.
+    pub revision: u64,
     pub menu: Vec<MenuItem>,
     pub frozen: bool,
     pub spare_menu: Vec<MenuItem>,
@@ -63,6 +65,8 @@ impl ControlState {
     }
 
     pub fn set_int(&mut self, par: i32, value: i32) -> Result<(), &'static str> {
+        if matches!(self.get(par), Some(Prop::Int(n)) if *n == value) { return Ok(()) }
+        self.revision = self.revision.wrapping_add(1);
         let full = self.frozen && self.props.len() == self.props.capacity();
         match self.props.iter_mut().find(|(p, _)| *p == par) {
             Some((_, v @ Prop::Str(_))) if self.frozen => {
@@ -77,12 +81,14 @@ impl ControlState {
     }
 
     pub fn set_str(&mut self, par: i32, value: &str) -> Result<(), &'static str> {
+        if matches!(self.get(par), Some(Prop::Str(s)) if s == value) { return Ok(()) }
         let loading = !self.frozen;
         let dst = self.str_mut(par)?;
         super::vm::put_text(dst, value, loading).map_err(|e| e.0)
     }
 
     pub fn str_mut(&mut self, par: i32) -> Result<&mut String, &'static str> {
+        self.revision = self.revision.wrapping_add(1);
         let i = match self.props.iter().position(|(p, _)| *p == par) {
             Some(i) if matches!(self.props[i].1, Prop::Str(_)) => i,
             Some(i) if self.frozen => {
@@ -177,6 +183,7 @@ pub struct Ui {
     pub title: String,
     pub wallpaper: String,
     pub wallpaper_state: i32,
+    pub skin_offset: i32,
     pub listeners: BTreeMap<&'static str, i32>,
     pub diagnostics: BTreeSet<Cow<'static, str>>,}
 
@@ -192,6 +199,7 @@ impl Ui {
             title: String::new(),
             wallpaper: String::new(),
             wallpaper_state: 0,
+            skin_offset: 0,
             listeners: BTreeMap::new(),
             diagnostics: BTreeSet::new(),        }
     }
@@ -222,6 +230,7 @@ impl Ui {
         let mut c = ControlState {
             var: v,
             props: Vec::with_capacity(8),
+            revision: 0,
             menu: Vec::new(),
             spare_menu: Vec::new(),
             spare_text: Vec::new(),
@@ -282,6 +291,9 @@ impl Ui {
         mem: &Memory,
         out: &mut Interface,
         menu_spares: &mut [Vec<(String, i32)>],
+        revisions: &mut [u64],
+        value_revisions: &mut [u64],
+        value_revision: &mut u64,
         next: &mut usize,
         value_at: &mut usize,
         budget: usize,
@@ -291,22 +303,35 @@ impl Ui {
                 != self.wallpaper_state,
             budget,
         );
+        changed |= std::mem::replace(&mut out.skin_offset, self.skin_offset) != self.skin_offset;
         for (index, (c, o)) in self.controls.iter().zip(&mut out.controls).enumerate().skip(*next) {
             if left == 0 {
                 break;
             }
+            let var = &prog.vars[c.var as usize];
+            let revision = match var.ty {
+                Ty::Int => mem.ints.revision(var.slot as usize),
+                Ty::Real => mem.reals.revision(var.slot as usize),
+                Ty::Str => mem.strs.revision(var.slot as usize),
+            };
             if *value_at == 0 {
-                left = left.saturating_sub(c.props.len() + c.menu.len() + 1);
-                for (par, v) in &c.props {
-                    let Some(name) = prog.symbol_name(*par) else {
-                        continue;
-                    };
-                    changed |= match (v, o.properties.get_mut(name)) {
-                        (Prop::Int(n), Some(Value::Int(d))) => std::mem::replace(d, *n) != *n,
-                        (Prop::Str(s), Some(Value::Text(d))) => copy_text(d, s),
-                        _ => false,
+                *value_revision = revision;
+                left = left.saturating_sub(c.menu.len() + 1);
+                if revisions[index] != c.revision {
+                    left = left.saturating_sub(c.props.len());
+                    revisions[index] = c.revision;
+                    for (par, v) in &c.props {
+                        let Some(name) = prog.symbol_name(*par) else {
+                            continue;
+                        };
+                        changed |= match (v, o.properties.get_mut(name)) {
+                            (Prop::Int(n), Some(Value::Int(d))) => std::mem::replace(d, *n) != *n,
+                            (Prop::Str(s), Some(Value::Text(d))) => copy_text(d, s),
+                            _ => false,
+                        }
                     }
                 }
+                // Selected hidden rows can change through ordinary script assignments.
                 let count = c.visible_menu(prog, mem).count();
                 let spare = &mut menu_spares[index];
                 while o.menu.len() > count {
@@ -325,7 +350,10 @@ impl Ui {
                     changed |= std::mem::replace(value, m.value) != m.value;
                 }
             }
-            let var = &prog.vars[c.var as usize];
+            if *value_at == 0 && value_revisions[index] == revision {
+                *next += 1;
+                continue;
+            }
             let len = var.len.map_or(1, |n| n as usize);
             // Metadata can exceed this coarse budget; still make progress.
             let end = len.min(value_at.saturating_add(left.max(1)));
@@ -337,6 +365,9 @@ impl Ui {
                 *value_at = end;
                 break;
             }
+            // A write between chunks leaves its newer revision pending for
+            // the next refresh instead of claiming earlier cells are current.
+            value_revisions[index] = *value_revision;
             *value_at = 0;
             *next += 1;
         }
@@ -378,6 +409,10 @@ impl Ui {
                     ),
                 };
                 properties.insert("$CONTROL_PAR_VALUE".into(), value);
+                if let Some(Some(menu)) = prog.picture_menus.get(&c.var) {
+                    let id = self.var_ids[*menu as usize];
+                    if id > 0 { properties.insert("picture menu".into(), Value::Int(id)); }
+                }
                 Control {
                     id: self.var_ids[c.var as usize],
                     variable: var.name.to_string(),
@@ -405,6 +440,7 @@ impl Ui {
             title: self.title.clone(),
             wallpaper: self.wallpaper.clone(),
             wallpaper_state: self.wallpaper_state,
+            skin_offset: self.skin_offset,
             controls,
             diagnostics,
             listeners: self

@@ -864,7 +864,7 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
     let pre = (p.predelay_ms.max(0.0) * 0.001 * sample_rate) as usize;
     // ponytail: linear interpolation aliases slightly on rate changes; use a
     // windowed-sinc resampler if IR brightness at 44.1k<->48k ever matters.
-    Some(std::array::from_fn(|ch| {
+    let mut shaped = std::array::from_fn(|ch| {
         let mut out = vec![0.0; pre];
         out.extend((0..len.max(1)).map(|i| {
             let x = i as f32 * ratio;
@@ -874,7 +874,13 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
             a + (b - a) * frac
         }));
         out
-    }))
+    });
+    // No ER/LR boundary is decoded. Equal cutoffs are independent of that
+    // boundary; unequal settings remain unprocessed and reported on import.
+    if p.early.low_cut_hz == p.late.low_cut_hz && p.early.high_cut_hz == p.late.high_cut_hz {
+        crate::engine::filter::filter_ir(&mut shaped, p.late.low_cut_hz, p.late.high_cut_hz, sample_rate);
+    }
+    Some(shaped)
 }
 
 /// An output channel, 0..[`OUTS`], or -1 for the instrument output.

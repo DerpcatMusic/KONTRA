@@ -18,6 +18,8 @@ pub use ni_file::kontakt::objects::{
 
 const INTERNAL_MODS_ID: u16 = 0x3B;
 const EXTERNAL_MODS_ID: u16 = 0x3C;
+/// Kontakt groups have sixteen internal-modulator slots (InternalModArray16).
+pub(crate) const PITCH_ENVS: usize = 16;
 /// Pitch modulation at intensity 1.0 spans one octave (PB_PITCH stores 2/12).
 const PITCH_SEMITONES_PER_INTENSITY: f32 = 12.0;
 
@@ -86,10 +88,10 @@ pub struct Modulator {
     /// `$ENGINE_PAR_ATTACK` and friends addressed to it.
     #[serde(default)]
     pub flex: bool,
-    /// Index into `Group::envelopes` of an AHDSR driving module parameters.
+    /// Index into `Group::envelopes` of an AHDSR driving pitch or module parameters.
     #[serde(default)]
     pub envelope: Option<usize>,
-    /// Modulator kind, for audits: `ahdsr`, `flex`, `chunk 0xNN` (an
+    /// Modulator kind, for audits: `ahdsr`, `flex`, `lfo`, `chunk 0xNN` (an
     /// undecoded internal modulator) or `external`.
     #[serde(default)]
     pub kind: String,
@@ -106,7 +108,7 @@ pub(crate) struct GroupModulation {
     pub warnings: Vec<String>,
 }
 
-/// An internal AHDSR driving module parameters (filter cutoff, EQ gain...),
+/// An internal AHDSR driving pitch or module parameters (filter cutoff, EQ gain...),
 /// not volume. Targets use `ModSource::Unassigned`; the envelope is the source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModEnvelope {
@@ -122,10 +124,11 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
     let mut volume_env_slot = None;
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS_ID) {
         let mut skipped = 0;
+        let mut skipped_lfos = 0;
         for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
             let params = modulator.params()?;
             if params.unknown_flags[0] != 0 {
-                out.warnings.push(format!("Internal modulator {} has an undecoded mode/bypass flag; envelope bypass is not applied", params.name));
+                out.warnings.push(format!("Internal modulator {} has an undecoded mode/bypass flag; preset bypass is not applied", params.name));
             }
             match &params.modulator {
                 RawModulator::Ahdsr(env) if env.unknown_flag != 0 => out.warnings.push(
@@ -140,6 +143,7 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
             let kind = match params.modulator {
                 RawModulator::Ahdsr(_) => "ahdsr".to_owned(),
                 RawModulator::Flex(_) => "flex".to_owned(),
+                RawModulator::Lfo(_) => "lfo".to_owned(),
                 RawModulator::Other { chunk_id } => format!("chunk 0x{chunk_id:02x}"),
             };
             let envelope = (matches!(params.modulator, RawModulator::Ahdsr(_)) && !volume)
@@ -162,9 +166,13 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                             Some(ModAssignment {
                                 name: params.name.clone(),
                                 source: ModSource::Unassigned,
-                                target: ModTarget::Module {
-                                    param: t.param.clone(),
-                                    slot: t.slot?,
+                                target: match (t.param.as_str(), t.slot) {
+                                    ("pitch", None) => ModTarget::Pitch,
+                                    (_, Some(slot)) => ModTarget::Module {
+                                        param: t.param.clone(),
+                                        slot,
+                                    },
+                                    _ => ModTarget::Group(t.param.clone()),
                                 },
                                 intensity: t.intensity,
                                 invert: t.invert,
@@ -174,6 +182,10 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                         })
                         .collect();
                     out.envelopes.push(ModEnvelope { env, targets });
+                    false
+                }
+                RawModulator::Lfo(_) => {
+                    skipped_lfos += 1;
                     false
                 }
                 _ => {
@@ -190,6 +202,9 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                 envelope,
                 kind,
             });
+        }
+        if skipped_lfos > 0 {
+            out.warnings.push(format!("{skipped_lfos} internal LFO sources are identified; their timing, waveforms and target assignments are not applied"));
         }
         if skipped > 0 {
             out.warnings.push(
@@ -355,9 +370,30 @@ mod tests {
         int.extend(187u32.to_le_bytes());
         name(&mut int, "LFO_P1");
         int.extend(1u32.to_le_bytes());
-        let lfo = Chunk { id: 0x08, data: Vec::new() };
+        // Authored structured-object fixture, independent of any library bytes.
+        let mut data = vec![0]; // unstructured public data
+        data.extend(0x71u16.to_le_bytes());
+        data.extend(5u32.to_le_bytes());
+        data.extend([0; 63]);
+        let lfo = Chunk { id: 0x08, data };
         let p = InternalMod(object(0x80, int, vec![lfo])).params().unwrap();
-        assert_eq!((p.name.as_str(), p.modulator), ("LFO_P1", Modulator::Other { chunk_id: 0x08 }));
+        assert_eq!(p.name, "LFO_P1");
+        assert!(matches!(p.modulator, Modulator::Lfo(_)));
+        assert_eq!(p.targets[0].param, "pan");
+        assert_eq!(p.targets[0].intensity, 0.5);
+    }
+
+    #[test]
+    #[ignore = "requires an installed ANALOG STRINGS instrument"]
+    fn analog_strings_lfo_sources_and_targets_are_identified() {
+        let path = std::env::var_os("KONTRA_ANALOG_NKI").expect("set KONTRA_ANALOG_NKI");
+        let program = crate::import::read(std::path::Path::new(&path)).unwrap();
+        let lfos: Vec<_> = program.groups.iter().flat_map(|g| &g.modulators)
+            .filter(|m| m.kind == "lfo").collect();
+        assert_eq!(lfos.len(), 2_400);
+        assert_eq!(lfos.iter().map(|m| m.targets.len()).sum::<usize>(), 19_680);
+        assert_eq!(lfos.iter().filter(|m| m.targets.len() == 1).count(), 480);
+        assert!(lfos.iter().all(|m| m.assignments.is_none() && m.envelope.is_none()));
     }
 
     #[test]

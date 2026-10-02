@@ -156,8 +156,8 @@ mod tests {
         assert!(slope > 20.0, "{slope}");
         // Resonance peaks near fc and, uncompensated, drops the bass.
         assert!(db(lp4, [c, 0.9, 0.0], 1000.0) > 10.0);
-        let daft = Model::Ladder { response: Response::Low, poles: 4, compensate: false };
-        assert!(db(daft, [c, 1.0, 0.0], 50.0) < -12.0);
+        let uncompensated = Model::Ladder { response: Response::Low, poles: 2, compensate: false };
+        assert!(db(uncompensated, [c, 1.0, 0.0], 50.0) < -12.0);
         let hp2 = Model::Ladder { response: Response::High, poles: 2, compensate: true };
         assert!(db(hp2, [c, 0.0, 0.0], 100.0) < -30.0 && db(hp2, [c, 0.0, 0.0], 15000.0).abs() < 0.5);
         let bp2 = Model::Ladder { response: Response::Band, poles: 2, compensate: true };

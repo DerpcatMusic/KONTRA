@@ -205,6 +205,244 @@ pub fn read_program(path:&Path,program:u32)->Result<Instrument> {
     std::panic::catch_unwind(||read_inner(path,program)).map_err(|_|anyhow::anyhow!("Malformed Kontakt program"))?
 }
 
+/// Apply a Kontakt snapshot to its explicitly supplied base NKI. Snapshots do
+/// not contain a sample mapping. Compact saved group/source/modulation state
+/// is not yet imported; the returned instrument reports that limitation.
+pub fn read_snapshot(base: &Path, snapshot: &Path) -> Result<Instrument> {
+    std::panic::catch_unwind(|| read_snapshot_inner(base, snapshot))
+        .map_err(|_| anyhow::anyhow!("Malformed Kontakt snapshot or base instrument"))?
+}
+
+fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
+    use ni_file::kontakt::objects::{Snapshot, snapshot_instrument_name};
+    let snapshot_chunks = chunks(snapshot).context("Snapshot container")?;
+    let name = snapshot_instrument_name(
+        snapshot_chunks
+            .find_first(0x51)
+            .context("Snapshot metadata missing")?,
+    )?;
+    let saved = Snapshot::try_from(
+        snapshot_chunks
+            .find_first(0x4f)
+            .context("Snapshot state missing")?,
+    )?;
+    let base_chunks = chunks(base).context("Base instrument container")?;
+    let program = Program::try_from(
+        base_chunks
+            .find_first(0x28)
+            .context("Snapshot requires a base NKI")?,
+    )?;
+    ensure!(
+        name == program.params()?.name,
+        "Snapshot requires base instrument {name:?}"
+    );
+    let mut instrument = read(base)?;
+    ensure!(
+        saved.group_count as usize == instrument.groups.len(),
+        "Snapshot/base group counts differ"
+    );
+    let native_groups = GroupList::try_from(
+        program
+            .0
+            .find_first(0x33)
+            .context("Base group list missing")?,
+    )?;
+    ensure!(
+        native_groups.groups.len() == instrument.groups.len(),
+        "Base group mapping differs"
+    );
+    let snapshot_groups = saved.group_snapshots().context("Compact snapshot groups")?;
+    let mut states = Vec::new();
+    let mut warnings = Vec::new();
+    for ((id, saved), mut native) in snapshot_groups.into_iter().zip(native_groups.groups) {
+        let id = id as usize;
+        ensure!(
+            native.source_state()?[..7] == saved.source_data[..7],
+            "Snapshot group {id}: source mode differs from base"
+        );
+        let native_fx = native.insert_fx()?;
+        snapshot_slot_shape(&native_fx, &saved.fx)
+            .with_context(|| format!("Snapshot group {id} effects"))?;
+        for (chunk_id, count, slots) in [(0x3b, 16, &saved.internal), (0x3c, 32, &saved.external)] {
+            let original = native
+                .0
+                .find_first(chunk_id)
+                .context("Base modulation array missing")?;
+            let original = ni_file::kontakt::objects::BParamArrayBParFX8::read(
+                Cursor::new(&original.data),
+                count,
+            )?;
+            snapshot_slot_shape(&original, slots)
+                .with_context(|| format!("Snapshot group {id} modulation"))?;
+        }
+        for chunk in saved.modulation_chunks()? {
+            let original = native
+                .0
+                .children
+                .iter_mut()
+                .find(|c| c.id == chunk.id)
+                .context("Base modulation array missing")?;
+            *original = chunk;
+        }
+        let modulation = crate::modulation::read_group(&native)
+            .with_context(|| format!("Snapshot group {id} modulation parameters"))?;
+        let fx = crate::fx::Chain::from_array(&saved.fx)
+            .with_context(|| format!("Snapshot group {id} effect parameters"))?;
+        warnings.extend(modulation.warnings);
+        warnings.extend(crate::engine::filter::unsupported(&fx));
+        let group = &mut instrument.groups[id];
+        group.volume_env = modulation.volume_env;
+        group.flex_env = modulation.flex_env;
+        group.mods = modulation.mods;
+        group.modulators = modulation.modulators;
+        group.envelopes = modulation.envelopes;
+        group.fx = fx;
+    }
+    let mut slots = 0;
+    for (slot, chunk) in program.0.children.iter().filter(|c| c.id == 6).enumerate() {
+        slots += 1;
+        let params = BParScript::try_from(chunk)?.params()?;
+        ensure!(
+            slot < saved.persistent.len(),
+            "Base instrument has more snapshot script slots"
+        );
+        if !params.bypass && script_source(base, slot, &params, &mut warnings).is_some() {
+            states.push(crate::ksp::saved_persistence(&saved.persistent[slot]));
+        }
+    }
+    ensure!(
+        saved.persistent[slots..].iter().all(Vec::is_empty),
+        "Snapshot has state for absent base script slots"
+    );
+    ensure!(
+        states.len() == instrument.scripts.len(),
+        "Snapshot/base active script slots differ"
+    );
+    ensure!(
+        instrument.script_state.len() == states.len(),
+        "Base script persistence slots differ"
+    );
+    // Reuse the regular effect importer after the entire snapshot has parsed.
+    let effects = Program(StructuredObject {
+        version: program.0.version,
+        public_data: Vec::new(),
+        private_data: Vec::new(),
+        children: saved.effect_children,
+    });
+    let mut fx = crate::fx::ProgramFx::read(&effects).context("Snapshot effects")?;
+    let files = other_files(&snapshot_chunks)?;
+    // Reject an invalid rooted path before applying any saved state/effects.
+    for name in files.values() { snapshot_rooted_path(name)?; }
+    fx.name_impulses(&files);
+    let parent = base.parent().context("Base instrument has no parent")?;
+    let root = base
+        .ancestors()
+        .find(|p| p.join("Samples").is_dir())
+        .unwrap_or(parent);
+    let mut resolver = Resolver::new(root);
+    let container = resource_container(&base_chunks)?;
+    let mut dependencies = vec![snapshot.to_path_buf()];
+    fx.load_impulses(|name, max_frames| {
+        // Snapshot filename segment 0x0b anchors the saved path at the base
+        // library. The generic filename table retains it as a leading slash.
+        let rooted = snapshot_rooted_path(name)?;
+        let (at, relative) = rooted.as_deref().map_or((parent, Path::new(name)), |n| (root, n));
+        let ir = match (
+            resolver.resolve(at, &relative.to_string_lossy())?,
+            &container,
+            name.find("Resources/"),
+        ) {
+            (Some(ir), ..) => Some(ir),
+            (None, Some(nkr), Some(at)) => {
+                resolver.resolve(parent, &format!("{nkr}/{}", &name[at..]))?
+            }
+            _ => None,
+        }
+        .context("file missing or its archive member is unreadable")?;
+        dependencies.push(ir.clone());
+        crate::audio::decode(&ir, max_frames)
+    });
+    warnings.extend(fx.warnings());
+    warnings.push("Snapshot: unknown group public/source fields and trailing selection flags are retained but not applied; base scalar/source settings remain in use".into());
+    warnings.push("Snapshot: group IDs require the supplied base NKI's original group arrangement; a reordered foreign base with the same name/count cannot be detected".into());
+    for (base, saved) in instrument.script_state.iter_mut().zip(states) {
+        base.extend(saved);
+    }
+    fx.main = std::mem::take(&mut instrument.fx.main);
+    instrument.fx = fx;
+    instrument.warnings.extend(warnings);
+    instrument.warnings.sort();
+    instrument.warnings.dedup();
+    instrument.name = snapshot
+        .file_stem()
+        .context("Snapshot has no name")?
+        .to_string_lossy()
+        .into_owned();
+    instrument
+        .dependencies
+        .extend(crate::cache::dependencies(dependencies));
+    Ok(instrument)
+}
+
+fn snapshot_slot_shape(
+    base: &ni_file::kontakt::objects::BParamArrayBParFX8,
+    saved: &ni_file::kontakt::objects::BParamArrayBParFX8,
+) -> Result<()> {
+    use ni_file::kontakt::objects::{ExternalMod, InternalMod};
+    let identity = |chunk: &ni_file::kontakt::Chunk| -> Result<_> {
+        let (name, targets) = match chunk.id {
+            0x0d => {
+                let p = InternalMod::try_from(chunk)?.params()?;
+                (p.name, p.targets)
+            }
+            0x0c => {
+                let p = ExternalMod::try_from(chunk)?.params()?;
+                (p.name, p.targets)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some((
+            name,
+            targets
+                .into_iter()
+                .map(|t| (t.param, t.slot, t.name))
+                .collect::<Vec<_>>(),
+        )))
+    };
+    ensure!(base.items.len() == saved.items.len(), "Slot counts differ");
+    for (base, saved) in base.items.iter().zip(&saved.items) {
+        ensure!(
+            base.as_ref().map(|c| c.id) == saved.as_ref().map(|c| c.id),
+            "Slot occupancy/types differ"
+        );
+        if let (Some(base), Some(saved)) = (base, saved) {
+            ensure!(
+                identity(base)? == identity(saved)?,
+                "Modulator/target identities differ"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn snapshot_rooted_path(name: &str) -> Result<Option<PathBuf>> {
+    let Some(relative) = name.strip_prefix('/') else {
+        return Ok(None);
+    };
+    let relative = PathBuf::from(relative.replace('\\', "/"));
+    let mut depth = 0usize;
+    for component in relative.components() {
+        use std::path::Component;
+        match component {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir if depth > 0 => depth -= 1,
+            _ => bail!("Snapshot filename escapes its library root"),
+        }
+    }
+    Ok(Some(relative))
+}
+
 /// [`read_program`], shared: parts and plugin instances in one process that
 /// load the same program hold one parsed copy while any of them lives.
 pub fn shared_program(path: &Path, program: u32) -> Result<std::sync::Arc<Instrument>> {
@@ -415,7 +653,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         let s = BParScript::try_from(c)?.params().context("Script parameters")?;
         if !s.bypass && let Some(text) = script_source(&path, slot, &s, &mut warnings) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
     }
-    warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, and velocity, key, CC, pitch bend and aftertouch drive volume, pitch, sample start and the AHDSR's attack and release times; LFOs, further envelopes, the invert button, effect targets and other modulator parameters are not applied".into());
+    warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, internal pitch AHDSRs drive voice pitch, and velocity, key, CC, pitch bend and aftertouch drive supported volume, pitch, sample-start, envelope-time and group-effect targets; LFOs, additional volume envelopes, flexible pitch envelopes, external inversion, unsupported effect targets and other modulator parameters are not applied".into());
     let parent = path.parent().context("Instrument has no parent")?;
     let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
     let mut resolver = Resolver::new(root);
@@ -790,6 +1028,16 @@ pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod preset_tests {
+    #[test]
+    fn rooted_snapshot_paths_stay_inside_the_library() {
+        use super::snapshot_rooted_path;
+        assert!(snapshot_rooted_path("../Samples/relative.ncw").unwrap().is_none());
+        assert_eq!(snapshot_rooted_path("/Samples/../Resources/authored.ncw").unwrap(), Some("Samples/../Resources/authored.ncw".into()));
+        for path in ["/../outside.ncw", "/Samples/../../outside.ncw", "/Samples\\..\\..\\outside.ncw", "//machine/absolute"] {
+            assert!(snapshot_rooted_path(path).is_err(), "{path}");
+        }
+    }
+
     #[test]
     fn zero_filled_presets_fail_before_entering_the_container_parser() {
         let path =

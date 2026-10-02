@@ -6,7 +6,7 @@ use super::compile::{Callback, Ty, VarId};
 use super::engine::{EnginePar, Fade, GroupMask, VoicePar};
 use super::runtime::{read_value, refresh_value, write_value_rt};
 use super::ui::{MenuItem, Prop};
-use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text};
+use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text, put_variable_text};
 use super::{KeyState, Value};
 
 fn ints<const N: usize>(m: &mut Machine) -> [i32; N] {
@@ -497,6 +497,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         // ---- Events ------------------------------------------------------------------
         PlayNote => {
             let [note, velocity, offset, duration] = ints(m);
+            if m.t.ctx.cleanup { return push_int(m, 0); }
             if !(0..128).contains(&note) {
                 m.env.note("play_note: note outside 0..127 ignored");
                 return push_int(m, 0);
@@ -725,7 +726,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .env
                 .events
                 .get(id)
-                .is_some_and(|e| e.live && e.voice.is_none_or(|v| m.engine.voice_active(v)));
+                .is_some_and(|e| e.live && !e.silenced && e.voice.is_none_or(|v| m.engine.voice_active(v)));
             push_int(m, live as i32)
         }
         GetEventIds => {
@@ -791,6 +792,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         // ---- Time --------------------------------------------------------------------
         Wait | WaitTicks => {
             let [n] = ints(m);
+            if m.t.ctx.ignore_wait { return Ok(Step::Next); }
             let us = if f == Wait {
                 i64::from(n)
             } else {
@@ -1080,7 +1082,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];
             if p == b::CONTROL_PAR_VALUE && var.ty == Ty::Str && var.len.is_none() {
                 let dst = &mut m.slot.mem.strs[var.slot as usize];
-                put_text(dst, text, m.env.loading)?;
+                put_variable_text(dst, text, m.env.loading)?;
             } else if p == b::CONTROL_PAR_TEXTLINE {
                 let dst = m.slot.ui.controls[c].str_mut(b::CONTROL_PAR_TEXT).map_err(Fault)?;
                 if !dst.is_empty() { append_text(dst, "\n", m.env.loading)?; }
@@ -1105,7 +1107,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let slot = if p == b::CONTROL_PAR_VALUE { Some(control_value_slot(m, id, Some(index), Ty::Str)?) } else { None };
             let text = m.stk.strs.pop();
             if let Some(slot) = slot {
-                put_text(&mut m.slot.mem.strs[slot], text, m.env.loading)?;
+                put_variable_text(&mut m.slot.mem.strs[slot], text, m.env.loading)?;
             } else if p != b::CONTROL_PAR_NONE {
                 m.env.note("Indexed control metadata is unavailable");
             }
@@ -1231,6 +1233,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 SetKnobLabel => b::CONTROL_PAR_LABEL,
                 _ => b::CONTROL_PAR_HELP,
             };
+            if f != AddTextLine && matches!(m.slot.ui.controls[c].get(p), Some(Prop::Str(s)) if s == text) {
+                return Ok(Step::Next);
+            }
             let s = m.slot.ui.controls[c].str_mut(p).map_err(Fault)?;
             if f == AddTextLine {
                 if !s.is_empty() {
@@ -1361,7 +1366,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let c = control(m, id)?;
             push_int(m, m.slot.ui.controls[c].menu.len() as i32)
         }
-        SetSkinOffset | SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
+        SetSkinOffset => {
+            let [pixels] = ints(m);
+            m.slot.ui.skin_offset = pixels;
+            Ok(Step::Next)
+        }
+        SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
             if f == FsNavigate {
                 m.stk.int();
             }
