@@ -71,6 +71,16 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let watch_params = params.clone();
     let mut watch = Watch::default();
     MuiEditor::new(params, theme::ui(), (1180, 760), build)
+        .on_log(|line| {
+            let failed = line.contains("unavailable") || line.contains("failed") || line.contains("panic");
+            crate::diagnostics::event(if failed { crate::diagnostics::LogLevel::Warning } else { crate::diagnostics::LogLevel::Info },
+                "renderer", "native_window", serde_json::json!({"stage":"renderer", "reason":line}));
+            // Persist the attempt before entering native graphics code: an
+            // access violation does not unwind or wait for queued log writes.
+            if line.starts_with("mui-baseview: GPU init ") {
+                let _ = crate::diagnostics::flush(std::time::Duration::from_millis(100));
+            }
+        })
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, ui, at, paths, dropped))
         .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
@@ -218,13 +228,14 @@ impl Watch {
             let selection = read(&p.selection);
             let pending = view.scanned != p.shared.libraries.wanted()
                 || lock(&p.shared.multi_request).is_some()
+                || lock(&p.shared.snapshot_request).is_some()
                 || (0..RACK_SLOTS).any(|n| {
-                    let (path, program) = selection
+                    let (path, program, snapshot) = selection
                         .parts
                         .get(n)
-                        .map_or(("", 0), |p| (p.path.as_str(), p.program));
+                        .map_or(("", 0, ""), |p| (p.path.as_str(), p.program, p.snapshot.as_str()));
                     match &view.parts[n].attempted {
-                        Some((a, b)) => (a.as_str(), *b) != (path, program),
+                        Some((a, b, c)) => (a.as_str(), *b, c.as_str()) != (path, program, snapshot),
                         None => !path.is_empty(),
                     }
                 });
@@ -614,6 +625,14 @@ impl Cx<'_> {
         }
     }
 
+    /// Apply to an explicit base, leaving the part intact until validation.
+    fn snapshot(&mut self, slot: usize, path: String) {
+        let accepted = self.selection.parts.get(slot)
+            .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path));
+        if accepted { self.show(slot); }
+        else { self.state.notice = "Select a base NKI instrument before loading a snapshot.".into(); }
+    }
+
     /// Put another instrument (or a multi) in `slot`.
     fn replace(&mut self, slot: usize, path: String) {
         self.remember(&path);
@@ -676,6 +695,7 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 
 /// Instrument state belongs to its preset; rack routing and player settings stay.
 fn replace_part(part: &mut Part, path: String) {
+    part.snapshot.clear();
     part.path = path;
     part.program = 0;
     part.group = u32::MAX;
@@ -683,6 +703,7 @@ fn replace_part(part: &mut Part, path: String) {
     part.edits = Default::default();
     part.script_state.clear();
     part.ir_settings.clear();
+    part.engine_state.clear();
 }
 
 /// A part for `path` on the input and output the settings give new parts.
@@ -806,6 +827,14 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
         if dropped {
             p.shared.queue_multi(paths[0].to_string_lossy().into());
         }
+        return true;
+    }
+    if paths.len() == 1 && paths[0].extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")) {
+        let selection = read(&p.selection);
+        let Some(slot) = (0..selection.parts.len()).find(|n| inside(&format!("header-{n}"))) else { return false; };
+        let part = &selection.parts[slot];
+        if !part.snapshot_base() { return false; }
+        if dropped { p.shared.queue_snapshot(slot, part, paths[0].to_string_lossy().into_owned()); }
         return true;
     }
     let nki = |p: &PathBuf| crate::creator::is_instrument(p);
@@ -1015,6 +1044,11 @@ fn build(
 /// to save the rack as a multi.
 fn picked(cx: &mut Cx) {
     match cx.state.picker.take() {
+        Some(picker::Picked::Snapshot { slot, source, path }) => {
+            if cx.selection.parts.get(slot).is_some_and(|p| p.source() == source) {
+                cx.snapshot(slot, path.to_string_lossy().into_owned());
+            } else { cx.state.notice = "Snapshot selection canceled because the base instrument changed.".into(); }
+        }
         Some(picker::Picked::Folder(path, single)) => cx.p.shared.libraries.add_root(&path, single),
         Some(picker::Picked::Artwork { library, picture }) => {
             if let Err(e) = cx.p.shared.libraries.set_artwork(&library, &picture) {

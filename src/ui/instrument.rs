@@ -49,6 +49,11 @@ pub fn welcome(cx: &Cx) -> El {
 pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
     let v = &cx.view.parts[slot];
     let mut out = Vec::new();
+    if v.status == "Loading snapshot…" {
+        out.push(banner(Role::Ink, v.status.clone()));
+    } else if let Some(reason) = v.status.strip_prefix("Snapshot was not loaded: ") {
+        out.push(banner(Role::Danger, format!("Snapshot was not loaded: {reason}")));
+    }
     if let Some(reason) = v.status.strip_prefix("Load failed: ") {
         let still = if v.active.is_empty() {
             String::new()

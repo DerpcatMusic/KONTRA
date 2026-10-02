@@ -31,7 +31,7 @@ const HIDE_WHOLE: i32 = 16;
 /// The bundled face's default approximation; factory glyphs are not bundled.
 pub(super) const FONT: f64 = 11.;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Kind {
     Knob,
     Slider,
@@ -392,7 +392,7 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
             }
             if !errors.is_empty() && let Some(load) = &mut v.load_report {
                 let load = Arc::make_mut(load);
-                load["status"] = "partial".into();
+                if load["status"] == "loaded" { load["status"] = "partial".into(); }
                 for issue in report["issues"].as_array().into_iter().flatten() {
                     let issues = load["issues"].as_array_mut().unwrap();
                     if !issues.contains(issue) { issues.push(issue.clone()); }
@@ -400,6 +400,31 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
             }
         }
     });
+}
+
+/// A published row's stamps cover its properties, menu and dense value. The
+/// interface identity remains the fallback for fixtures without publication stamps.
+fn control_deps(cx: &Cx, slot: usize, interface: &Arc<Interface>, shown: &Shown, scale: (f64, f64), resources: u64, under: Option<f32>) -> u64 {
+    let part = &cx.view.parts[slot];
+    let mut h = DefaultHasher::new();
+    (part.script_epoch, part.script_slot, shown.control, shown.kind).hash(&mut h);
+    if part.live_control_versions.len() == interface.controls.len() {
+        part.live_control_versions[shown.control].hash(&mut h);
+    } else {
+        (Arc::as_ptr(interface) as usize).hash(&mut h);
+    }
+    (shown.x.to_bits(), shown.y.to_bits(), shown.w.to_bits(), shown.h.to_bits(), shown.z,
+        scale.0.to_bits(), scale.1.to_bits(), resources, under.map(f32::to_bits)).hash(&mut h);
+    part.control_value(shown.control).map(f64::to_bits).hash(&mut h);
+    cx.state.held.filter(|&(p, n, _)| (p, n) == (slot, shown.control))
+        .map(|(_, _, value)| value.to_bits()).hash(&mut h);
+    cx.state.menu.as_ref().is_some_and(|menu| matches!(&menu.target,
+        Target::Script { part, control } if *part == slot && *control == shown.control)).hash(&mut h);
+    if shown.kind == Kind::Waveform {
+        attached(part.instrument.as_deref(), &interface.controls[shown.control])
+            .and_then(super::wave::ask).map(|wave| Arc::as_ptr(&wave) as usize).hash(&mut h);
+    }
+    h.finish()
 }
 
 /// `slot`'s performance view as its library drew it, or vectorized: the
@@ -444,10 +469,19 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .collect();
     let part = &cx.view.parts[slot];
     let plans = if vector { super::vector::plan(&interface, &pictures, &drawn, &mut cx.state.vector_assets, |n| part.control_value(n)) } else { Vec::new() };
+    let resources = if vector { 0 } else {
+        // Shared resource dependencies once, rather than scanning each control's
+        // properties or invalidating every row on an unrelated publication.
+        let mut h = DefaultHasher::new();
+        (Arc::as_ptr(&pictures) as usize, part.instrument.as_ref().map(|i| Arc::as_ptr(i) as usize),
+            fitted::generation(slot), cx.selection.appearance).hash(&mut h);
+        interface.fonts.hash(&mut h);
+        h.finish()
+    };
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {
-            Some(plan) if matches!(shown.kind, Kind::Knob | Kind::Slider)
+            Some(plan) if super::vector::native_control(shown, c)
                 || shown.kind == Kind::Label && plan.face == VFace::Clear => Look::Vector(plan),
             _ => {
                 // What its text sits on: its own picture, else what is under it.
@@ -460,7 +494,18 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
                 Look::Original(under)
             }
         };
-        layers.push(control(ui, cx, slot, shown, c, s, look).at(px(shown.x * s), px(shown.y * s)));
+        let el = if !vector {
+            let Look::Original(under) = look else { unreachable!() };
+            let deps = control_deps(cx, slot, &interface, shown, (s, dev), resources, under);
+            // MUI heats nested memos for hover, focus and pointer capture. A
+            // table publication can therefore keep every other control's
+            // styled/layout/paint subtree without delaying the active drag.
+            ui.memo(format!("kpv-memo-{slot}-{}", shown.control), deps,
+                |ui| control(ui, cx, slot, shown, c, s, look))
+        } else {
+            control(ui, cx, slot, shown, c, s, look)
+        };
+        layers.push(el.at(px(shown.x * s), px(shown.y * s)));
     }
     // Over everything: the value a drag is setting, or a value being typed.
     let find = |n: usize| drawn.iter().find(|(d, _)| d.control == n).map(|(d, _)| d.clone());
