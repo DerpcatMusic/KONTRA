@@ -106,6 +106,7 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let at = |a: Option<*const ()>| a.map_or(0, |p| p as usize);
     let mut h = DefaultHasher::new();
     slot.hash(&mut h);
+    (v.loading, &v.status).hash(&mut h);
     v.live_revisions.hash(&mut h);
     for edit in v.edited_values() { edit.hash(&mut h); }
     at(v.interface.as_ref().map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
@@ -124,6 +125,25 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
 }
 
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
+    let page = stage_page(ui, cx, slot);
+    let pages = cx.view.parts[slot].script_pages.clone();
+    if pages.views.len() < 2 { return page; }
+    let selected = cx.view.parts[slot].script_slot;
+    let mut tabs = Vec::with_capacity(pages.views.len());
+    for p in &pages.views {
+        let (clicked, tab) = tab(ui, format!("script-page-{slot}-{}", p.slot), &p.title, p.slot == selected);
+        if clicked && cx.p.shared.select_script_page(slot, cx.view.parts[slot].script_epoch, p.slot) {
+            cx.state.held = None;
+            cx.state.typing = None;
+            cx.state.reveal = Some(slot);
+        }
+        tabs.push(tab);
+    }
+    col![page, row(tabs).gap(0).w(Len::Pct(100.)).min_w(0).id(format!("script-pages-{slot}"))]
+        .gap(0).align(Align::Stretch).w(Len::Pct(100.))
+}
+
+fn stage_page(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let loaded = instrument_of(cx, slot).is_some();
     if loaded && perf_view::shows(cx, slot) != ViewMode::Kontra {
         // The articulation setup follows the controls whichever view shows them.
@@ -154,7 +174,13 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
                 })
         });
     let text = if !loaded {
-        "Loading instrument…".to_owned()
+        if v.loading {
+            "Loading instrument…"
+        } else if v.status.starts_with("Load failed: ") {
+            "Instrument could not be loaded. See the error above or Logs for details."
+        } else {
+            "No instrument is loaded."
+        }.to_owned()
     } else if let (true, Some(error)) = (scripted, failed) {
         format!("This instrument's script shows no controls. {}", sentence(error))
     } else if scripted {
@@ -162,8 +188,9 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     } else {
         "This instrument has no performance controls. Play it from the keyboard.".to_owned()
     };
-    row![caption(text).fill(secondary()).lines(3).min_w(0)]
+    row![caption(text.clone()).fill(secondary()).lines(3).min_w(0)]
         .align(Align::Center)
+        .named(text)
         .pad(INSET)
         .w(Len::Pct(100.))
         .id(format!("stage-{slot}"))
@@ -274,10 +301,11 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
 pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
     let (logs, logs_el) = action(ui, "info-open-logs", "Open Logs for this load", false);
     if logs {
-        cx.state.logs.load = cx.part_view().load_report.as_ref().map(|report| {
+        let load = cx.part_view().load_report.as_ref().map(|report| {
             report["load_id"].as_str().map(str::to_owned)
                 .or_else(|| report["load_id"].as_u64().map(|id| id.to_string())).unwrap_or_default()
         }).unwrap_or_default();
+        cx.state.logs.for_load(&load);
         cx.state.tab = super::Tab::Logs;
     }
     let v = cx.part_view();

@@ -324,8 +324,8 @@ normalized x = value/1e6 through a law):
 | Filter, EQ, Solid G-EQ | the group filter sections (`RackFilter`) | as group filters; G-EQ +-15 dB, bands 30-450, 200-2500, 600-7000, 1500-16k Hz, shelves unless the bell switch is on | low |
 
 Effect `0x1d` (class name Surround Panner) is Saturation: `$ENGINE_PAR_SHAPE` reaches it
-and its first float is -1..1. Group slots of the drive kinds and Solid G-EQ run per voice
-(at most 2 drive stages, in slot order between the filter units); the group modulation
+and its first float is -1..1. Group slots of the drive kinds, Compressor and Solid G-EQ run per voice
+(with eight fixed drive/dynamics states); the group modulation
 targets `shaper`, `distortionIntensity`, `bitdepth` and `downsample` move them
 (normalized). A rack Filter/EQ storing output gain 0 and dry level 0 is read as unset
 (unity): ANALOG STRINGS' active insert EQ is stored so and no script sets it. Bypassed
@@ -336,3 +336,75 @@ Corda, CHORUS and Afflatus 2 Horns unchanged. Mega Brass +1 dB (Skreamer, Satura
 one Skreamer stores +10.5 dB output, so audit-libraries' chord is 11 dB louder). ANALOG
 STRINGS +8 dB (one note) / +11.6 dB (audit-libraries chord): the compressor's stored
 +9 dB output gain now applies. None of these levels is checked against Kontakt.
+
+
+### Native group insert order and Amplifier split
+
+The [NI signal-flow manual](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/using-filters-and-effects-in-classic-view)
+defines eight group insert slots and an Amplifier split: modules execute in slot order,
+with the chosen rightmost modules after the Amplifier. The native parser's
+`fx_idx_amp_split_point` is preserved as `Group::amp_split_slot` (0 all after,
+8 all before). The compiled per-voice chain applies each module's output gain and
+Stereo Modeller in its own slot, and applies the existing voice envelope/gain/pan ramp
+at that split. Previously inserts all ran after the Amplifier and all output gains
+collapsed to one final matrix, which changes nonlinear detector/shaper inputs.
+
+Group Compressor now reuses the existing bounded rack compressor and its existing
+parameter laws, with independent detector state per voice. This is the generic model
+above, with the same stated confidence; it does not establish Kontakt algorithm or
+sonic equivalence. Unknown Amplifier metadata retains existing post-Amplifier routing
+with a diagnostic and does not enable a new compressor. Active pre-Amplifier inserts
+use their own voice processing, as do inline gains/mixers before a later active filter
+and pending inline matrix ramps: their section states are not the canonical states
+used by the shared lane. The shared post-Amplifier linear optimization remains for
+chains where it is applicable. The unfiltered SIMD path is unchanged.
+
+Feedback Compressor, Limiter and Solid Bus Compressor use that same fixed Comp
+state and their existing rack parameter laws when native Amplifier placement is
+known. Opaque parameter records and unknown placement stay unsupported. The added
+family routing has one authored group/rack PCM-reference regression covering both
+Amplifier sides, changed native control readback and allocation guards; validation
+passed on the release build. No locally installed authentic group preset of these
+three families was available for a control/audio check.
+
+Group [Transient Master](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/effect-reference)
+similarly reuses the existing fixed rack envelope-shaping
+model and its decoded input/attack/sustain/smooth fields with known Amplifier
+placement. Its constructor and reset are shared with the rack. One authored
+regression compares burst attack/body/silence PCM and native attack/sustain edits
+on both Amplifier sides, guards allocations and reports the actual state sizes.
+This separate follow-up passed on the release build; no authentic local group
+preset or Kontakt audio reference was available.
+
+The fixed filter/EQ capacity now covers all eight native insert slots and up to
+32 two-pole sections (eight four-band EQs), instead of four units/eight sections.
+The render loop visits compiled units and their actual sections; empty storage is
+not processed. The shared lane still accepts at most four active sections and
+larger chains use the per-voice path. One authored eight-EQ rack-reference check
+covers Amplifier splits 0/4/8, slot 7 native gain readback, changed finite PCM and
+allocation guards, and passed on the release build. This addresses a capacity
+warning observed in external library reports; no installed authentic over-capacity
+group was available. Section state plus tuning keys add 1248 fixed bytes per voice
+(1.22 MiB for 1024 voices); the temporary control rows add 192 stack bytes. The
+compiled test measured Section at 40 bytes and VoiceFilter at 3052 bytes. The
+Transient Master state is 36 bytes and fits the existing 72-byte VoiceEffect
+enum, adding no fixed voice storage.
+
+On the previously checked Rust 1.98.1 release build, both the old Drive and the new VoiceEffect
+enum are 72 bytes. The fixed voice state adds 128 bytes for per-slot gain/mixer
+smoothing and a four-byte type revision counter, and removes the old 16-byte
+aggregate smoothing matrix: 116 bytes of added inline fields per voice (116 KiB
+for 1024 voices); VoiceFilter is 1804 bytes. Live filter subtype
+changes invalidate shape-sensitive coefficient caches even when cutoff/resonance are
+unchanged. Chains beyond the native eight-slot/32-section bound, opaque filter subtypes,
+unimplemented group send/dynamics families and reverb/IR shaping gaps remain explicit.
+
+Validation: the split 0/6/8 rack-reference PCM, changed native compressor threshold,
+live same-knob subtype retuning and interleaved-state eligibility regressions passed,
+as did the 83 playback tests. Three local factory states preserved split 8 for all
+six selected groups. Matched scripted parent gates and both layers' native Saturation
+readback produced changed PCM in each state. Their native routing and an explicit
+split-0 reference completed 4500 resident Engine::render calls without allocations;
+all PCM was finite and peaks stayed below 1. The reference changes only authored
+routing metadata in the same engine and is not Kontakt audio. These are functional
+checks; they do not establish throughput or Kontakt algorithm equivalence.

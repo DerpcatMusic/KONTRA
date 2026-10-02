@@ -34,8 +34,15 @@ impl NKSContainer {
         // For BPatchHeaderV1, this field is zlib_start
         let compressed_length = reader.read_u32_le()? as usize;
         let header = BPatchHeader::read_le(&mut reader)?;
+        let version = match &header {
+            BPatchHeader::BPatchHeaderV1(_) => "v1",
+            BPatchHeader::BPatchHeaderV2(_) => "v2",
+            BPatchHeader::BPatchHeaderV42(_) => "v42",
+        };
+        let at = reader.stream_position()?;
+        let size_field = if version == "v1" { "zlib offset" } else { "declared length" };
 
-        let compressed_data = match header {
+        let compressed_data = (|| -> Result<Vec<u8>, NKSError> { Ok(match header {
             BPatchHeader::BPatchHeaderV1(_) => reader.read_all()?,
             BPatchHeader::BPatchHeaderV2(ref h) => match h.is_monolith {
                 true => {
@@ -61,7 +68,7 @@ impl NKSContainer {
                 }
                 false => reader.read_bytes(compressed_length)?,
             },
-        };
+        }) })().map_err(|e| NKSError::context(format!("NKS {version} compressed body at offset {at}, {size_field} {compressed_length}"), e))?;
 
         // std::fs::write("compressed", &compressed_data)?;
 
@@ -70,7 +77,7 @@ impl NKSContainer {
             BPatchHeader::BPatchHeaderV1(_) => None,
             BPatchHeader::BPatchHeaderV2(_) => None,
             BPatchHeader::BPatchHeaderV42(_) => {
-                Some(BPatchMetaInfoHeader::read(&mut Cursor::new(footer_raw))?)
+                Some(BPatchMetaInfoHeader::read(&mut Cursor::new(&footer_raw)).map_err(|e| NKSError::context(format!("NKS {version} footer at offset {}, available {} bytes", at + compressed_data.len() as u64, footer_raw.len()), e))?)
             }
         };
 

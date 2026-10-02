@@ -36,11 +36,12 @@ fn push_fmt(m: &mut Machine, args: std::fmt::Arguments) -> Exec<Step> {
     Ok(Step::Next)
 }
 
-fn midi_note(n: i32) -> Exec<u8> {
-    u8::try_from(n)
-        .ok()
-        .filter(|n| *n < 128)
-        .ok_or(Fault("MIDI note must be 0..127"))
+fn midi_note(env: &mut super::runtime::Env, builtin: Builtin, argument: u8, n: i32) -> Exec<u8> {
+    if let Ok(note) = u8::try_from(n) && note < 128 { return Ok(note); }
+    env.fault_context = Some(super::runtime::FaultContext::MidiNote {
+        builtin: builtin.name(), argument, value: n,
+    });
+    Err(Fault("MIDI note must be 0..127"))
 }
 
 fn key_name_ok(key: &str) -> bool {
@@ -808,7 +809,6 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         SetRpn | SetNrpn => {
             let [address, value] = ints(m);
-            if m.env.loading { return Err(Fault("RPN messages are unavailable during initialization")); }
             if !(0..=16383).contains(&address) || !(0..=16383).contains(&value) {
                 return Err(Fault("RPN address or value out of range"));
             }
@@ -872,24 +872,31 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 _ => false,
             };
             if !valid {
+                m.env.fault_context = Some(super::runtime::FaultContext::Listener {
+                    change: f == ChangeListenerPar,
+                    signal,
+                    parameter: value,
+                });
                 return Err(Fault("Invalid listener signal/parameter"));
             }
             let l = &mut m.slot.listener;
             match signal {
                 b::signal::TIMER_MS => {
                     l.timer_us = value;
-                    l.beats = 0;
                 }
                 b::signal::TIMER_BEAT => {
                     l.beats = value;
-                    l.timer_us = 0;
                 }
                 _ => {
                     let bit = if signal == b::signal::TRANSP_START { 1 } else { 2 };
                     if value == 0 { l.transport &= !bit; } else { l.transport |= bit; }
                 }
             }
-            l.generation = l.generation.wrapping_add(1);
+            if matches!(signal, b::signal::TIMER_MS | b::signal::TIMER_BEAT) {
+                let index = usize::from(signal == b::signal::TIMER_BEAT);
+                l.generations[index] = l.generations[index].wrapping_add(1);
+                m.env.listeners_changed[m.t.ctx.domain as usize] |= 1 << (usize::from(slot) * 2 + index);
+            }
             let name = match signal {
                 b::signal::TIMER_MS => "$NI_SIGNAL_TIMER_MS",
                 b::signal::TIMER_BEAT => "$NI_SIGNAL_TIMER_BEAT",
@@ -905,7 +912,6 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 else if m.env.loading { m.slot.ui.listeners.insert(name, value); }
                 else { return Err(Fault("KSP listener storage was not prepared")); }
             }
-            m.env.listeners_changed |= 1 << (m.t.ctx.domain * 8 + slot);
             Ok(Step::Next)
         }
         // ---- Groups, modules and engine parameters -------------------------------------
@@ -1081,7 +1087,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             if var.ui.as_deref() != Some("ui_level_meter") {
                 return Err(Fault("attach_level_meter requires a ui_level_meter"));
             }
-            if group < -1 || slot < -1 || !(0..16).contains(&channel) || !(-4..16).contains(&generic) {
+            let named_chain = matches!(m.prog.symbol_name(generic),
+                Some("$NI_LEVEL_METER_MAIN" | "$NI_LEVEL_METER_GROUP" | "$NI_LEVEL_METER_INSERT"));
+            if group < -1 || slot < -1 || !(0..16).contains(&channel)
+                || !((-4..16).contains(&generic) || named_chain) {
                 return Err(Fault("Invalid level meter attachment"));
             }
             // ponytail: no per-group/FX taps yet; preserve initialization and
@@ -1357,6 +1366,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 let item = control.spare_menu.pop().unwrap();
                 control.menu.push(item);
             }
+            control.revision = control.revision.wrapping_add(1);
             snap_menu(m, c);
             Ok(Step::Next)
         }
@@ -1364,26 +1374,33 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let [id, index] = ints(m);
             let text = m.stk.strs.pop();
             let c = m.slot.ui.control(id).ok_or(NO_CONTROL)?;
+            let control = &mut m.slot.ui.controls[c];
             if let Some(item) = usize::try_from(index)
                 .ok()
-                .and_then(|i| m.slot.ui.controls[c].menu.get_mut(i))
+                .and_then(|i| control.menu.get_mut(i))
+                && item.text != text
             {
                 put_text(&mut item.text, text, m.env.loading)?;
+                control.revision = control.revision.wrapping_add(1);
             }
             Ok(Step::Next)
         }
         SetMenuItemVisibility | SetMenuItemValue => {
             let [id, index, value] = ints(m);
             let c = control(m, id)?;
+            let control = &mut m.slot.ui.controls[c];
             if let Some(item) = usize::try_from(index)
                 .ok()
-                .and_then(|i| m.slot.ui.controls[c].menu.get_mut(i))
+                .and_then(|i| control.menu.get_mut(i))
             {
                 if f == SetMenuItemValue {
+                    if item.value == value { return Ok(Step::Next); }
                     item.value = value;
                 } else {
+                    if item.visible == (value != 0) { return Ok(Step::Next); }
                     item.visible = value != 0;
                 }
+                control.revision = control.revision.wrapping_add(1);
             }
             Ok(Step::Next)
         }
@@ -1422,6 +1439,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
             if f == FsNavigate {
                 m.stk.int();
+                m.env.note("fs_navigate: file navigation is unavailable; select a file with the picker");
             }
             m.stk.int();
             Ok(Step::Next)
@@ -1486,8 +1504,20 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             Ok(Step::Next)
         }
         FsGetFilename => {
-            ints::<2>(m);
-            m.stk.strs.push()?;
+            let [id, mode] = ints(m);
+            let c = control(m, id)?;
+            if m.prog.vars[m.slot.ui.controls[c].var as usize].ui.as_deref() != Some("ui_file_selector") {
+                return Err(Fault("ID does not refer to a file selector"));
+            }
+            let path = match m.slot.ui.controls[c].get(b::CONTROL_PAR_FILEPATH) { Some(Prop::Str(path)) => path.as_str(), _ => "" };
+            let filename = path.rsplit('/').next().unwrap_or(path);
+            let text = match mode {
+                0 => filename.rsplit_once('.').map_or(filename, |(stem, _)| stem),
+                1 => filename,
+                2 => path,
+                _ => return Err(Fault("File selector return parameter must be 0, 1 or 2")),
+            };
+            m.stk.strs.push_str(text)?;
             Ok(Step::Next)
         }
         // ---- Keyboard display ----------------------------------------------------------
@@ -1502,18 +1532,19 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         SetKeyName => {
             let [note] = ints(m);
             let text = m.stk.strs.pop();
+            let note = midi_note(m.env, f, 1, note)?;
             let key = m
                 .env
                 .host
                 .keyboard
-                .entry(midi_note(note)?)
+                .entry(note)
                 .or_insert_with(KeyState::default);
             put_text(&mut key.name, text, m.env.loading)?;
             Ok(Step::Next)
         }
         SetKeyColor | SetKeyType | SetKeyPressed => {
             let [note, value] = ints(m);
-            let note = midi_note(note)?;
+            let note = midi_note(m.env, f, 1, note)?;
             if f == SetKeyPressed {
                 if !(0..=1).contains(&value) {
                     return Err(Fault("Pressed state must be 0 or 1"));
@@ -1531,7 +1562,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         GetKeyName => {
             let [note] = ints(m);
-            let note = midi_note(note)?;
+            let note = midi_note(m.env, f, 1, note)?;
             let name = m
                 .env
                 .host
@@ -1543,7 +1574,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         GetKeyColor | GetKeyType | GetKeyTriggerstate => {
             let [note] = ints(m);
-            let note = midi_note(note)?;
+            let note = midi_note(m.env, f, 1, note)?;
             if f == GetKeyTriggerstate && !m.env.host.script_pressed {
                 return Err(Fault(
                     "get_key_triggerstate requires script pressed support",
@@ -1568,7 +1599,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         SetKeyrange => {
             let [lo, hi] = ints(m);
-            let (lo, hi) = (midi_note(lo)?, midi_note(hi)?);
+            let (lo, hi) = (midi_note(m.env, f, 1, lo)?, midi_note(m.env, f, 2, hi)?);
             let (lo, hi) = (lo.min(hi), lo.max(hi));
             let name = m.stk.strs.pop();
             // Reuse an overlapping range before recycling any others. Validate
@@ -1595,7 +1626,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         RemoveKeyrange => {
             let [note] = ints(m);
-            let note = midi_note(note)?;
+            let note = midi_note(m.env, f, 1, note)?;
             remove_keyranges(m.env, note, note, None);
             Ok(Step::Next)
         }

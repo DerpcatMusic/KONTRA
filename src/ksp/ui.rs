@@ -253,6 +253,10 @@ impl Ui {
             c.set_int(b::CONTROL_PAR_MIN_VALUE, *min)?;
             c.set_int(b::CONTROL_PAR_MAX_VALUE, *max)?;
         }
+        if kind == "ui_file_selector" {
+            c.set_str(b::CONTROL_PAR_FILEPATH, "")?;
+            c.set_str(b::CONTROL_PAR_BASEPATH, "")?;
+        }
         if kind == "ui_table" {
             let [_, _, range, ..] = params else { return Err("Table range missing"); };
             c.set_int(b::CONTROL_PAR_MIN_VALUE, if *range < 0 { *range } else { 0 })?;
@@ -318,8 +322,9 @@ impl Ui {
             };
             if *value_at == 0 {
                 *value_revision = revision;
-                left = left.saturating_sub(c.menu.len() + 1);
-                if revisions[index] != c.revision {
+                left = left.saturating_sub(1);
+                let metadata_changed = revisions[index] != c.revision;
+                if metadata_changed {
                     left = left.saturating_sub(c.props.len());
                     revisions[index] = c.revision;
                     for (par, v) in &c.props {
@@ -340,23 +345,27 @@ impl Ui {
                         }
                     }
                 }
-                // Selected hidden rows can change through ordinary script assignments.
-                let count = c.visible_menu(prog, mem).count();
-                let spare = &mut menu_spares[index];
-                while o.menu.len() > count {
-                    let mut item = o.menu.pop().unwrap();
-                    item.0.clear();
-                    item.1 = 0;
-                    spare.push(item);
-                    changed = true;
-                }
-                while o.menu.len() < count && !spare.is_empty() {
-                    o.menu.push(spare.pop().unwrap());
-                    changed = true;
-                }
-                for (m, (text, value)) in c.visible_menu(prog, mem).zip(&mut o.menu) {
-                    changed |= copy_text(text, &m.text);
-                    changed |= std::mem::replace(value, m.value) != m.value;
+                // Menu rows depend on their metadata and their own selected
+                // value. Unrelated edits need not scan or recopy every menu.
+                if !c.menu.is_empty() && (metadata_changed || value_revisions[index] != revision) {
+                    left = left.saturating_sub(c.menu.len());
+                    let count = c.visible_menu(prog, mem).count();
+                    let spare = &mut menu_spares[index];
+                    while o.menu.len() > count {
+                        let mut item = o.menu.pop().unwrap();
+                        item.0.clear();
+                        item.1 = 0;
+                        spare.push(item);
+                        changed = true;
+                    }
+                    while o.menu.len() < count && !spare.is_empty() {
+                        o.menu.push(spare.pop().unwrap());
+                        changed = true;
+                    }
+                    for (m, (text, value)) in c.visible_menu(prog, mem).zip(&mut o.menu) {
+                        changed |= copy_text(text, &m.text);
+                        changed |= std::mem::replace(value, m.value) != m.value;
+                    }
                 }
             }
             if *value_at == 0 && value_revisions[index] == revision {

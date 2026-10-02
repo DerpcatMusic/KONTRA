@@ -20,15 +20,24 @@ use std::sync::{Arc, Mutex, Weak};
 /// `source` compiled for `setup`, one copy per process while any runtime
 /// holds it: parts and plugin instances playing one instrument run the same
 /// code over their own memory.
-fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>) -> Result<Arc<Program>> {
-    type Compiled = std::collections::HashMap<(Box<str>, usize, usize, usize, BTreeSet<String>), Weak<Program>>;
+fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>, instrument: Option<&std::path::Path>) -> Result<Arc<Program>> {
+    type Compiled = std::collections::HashMap<(Box<str>, usize, usize, usize, BTreeSet<String>, Vec<u8>), Weak<Program>>;
     static COMPILED: Mutex<Option<Compiled>> = Mutex::new(None);
     let lock = || COMPILED.lock().unwrap_or_else(|e| e.into_inner());
-    let key = (Box::from(source), setup.groups, setup.outputs, setup.zones, inherited.clone());
+    // Ordinary scripts keep the existing cache-hit path: no tokenization or I/O.
+    let prepared = if source.contains("load_performance_view") {
+        Some(super::performance_view::prepare(source, inherited, instrument)?)
+    } else { None };
+    let resource = prepared.as_ref().map_or_else(Vec::new, |p| p.resource.clone());
+    let key = (Box::from(source), setup.groups, setup.outputs, setup.zones, inherited.clone(), resource);
     if let Some(p) = lock().get_or_insert_default().get(&key).and_then(Weak::upgrade) {
         return Ok(p);
     }
-    let program = Arc::new(compile::compile_with_conditions(source, setup, inherited)?);
+    let prepared = match prepared {
+        Some(p) => p,
+        None => super::performance_view::prepare(source, inherited, instrument)?,
+    };
+    let program = Arc::new(compile::compile_prepared(prepared, setup)?);
     let mut compiled = lock();
     let compiled = compiled.get_or_insert_default();
     compiled.retain(|_, p| p.strong_count() > 0);
@@ -79,13 +88,49 @@ pub const INIT_FUEL: u64 = 1_000_000_000;
 /// Saved values of persistent variables, per script slot, keyed by variable name.
 pub type Persisted = BTreeMap<String, Value>;
 
+/// Prepared argument details; collecting a fault never formats or allocates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub enum FaultContext {
+    MidiNote { builtin: &'static str, argument: u8, value: i32 },
+    Listener { change: bool, signal: i32, parameter: i32 },
+}
+
+impl std::fmt::Display for FaultContext {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MidiNote { builtin, argument, value } => write!(out, "{builtin} argument {argument} = {value}"),
+            Self::Listener { change, signal, parameter } => {
+                let command = if *change { "change_listener_par" } else { "set_listener" };
+                let name = match *signal {
+                    super::builtins::signal::TIMER_MS => "$NI_SIGNAL_TIMER_MS",
+                    super::builtins::signal::TIMER_BEAT => "$NI_SIGNAL_TIMER_BEAT",
+                    super::builtins::signal::TRANSP_START => "$NI_SIGNAL_TRANSP_START",
+                    super::builtins::signal::TRANSP_STOP => "$NI_SIGNAL_TRANSP_STOP",
+                    _ => "unknown signal",
+                };
+                write!(out, "{command} signal {name} ({signal}), parameter {parameter}")
+            }
+        }
+    }
+}
+
 /// One bounded, allocation-free runtime fault snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct LiveFault {
     pub slot: u8,
     pub line: u32,
     pub message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<FaultContext>,
     pub count: u32,
+}
+
+impl std::fmt::Display for LiveFault {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "Slot {} line {}: {}", self.slot, self.line, self.message)?;
+        if let Some(context) = self.context { write!(out, " ({context})")?; }
+        write!(out, " ({}x)", self.count)
+    }
 }
 
 /// What the host shows of running scripts, refreshed in place.
@@ -93,10 +138,13 @@ pub struct LiveFault {
 pub struct Live {
     /// Copied without formatting or allocating on the audio thread.
     pub faults: Vec<LiveFault>,
+    /// Executions at unretained fault locations, cumulative for this runtime.
+    /// This is not a count of distinct locations; repeats cannot be deduplicated.
+    pub fault_occurrences_omitted: u64,
     pub notes: Vec<&'static str>,
     pub refresh_interface: bool,
     pub(crate) interface_current: bool,
-    /// Script slot of `interface`: the last slot with a performance view.
+    /// Script slot of `interface`; retained across allocation-free refreshes.
     pub slot: usize,
     pub interface: Option<Interface>,
     /// Every key; unset names and colors are empty.
@@ -126,7 +174,7 @@ impl Live {
 // Copying history is not part of a snapshot's semantic equality.
 impl PartialEq for Live {
     fn eq(&self, other: &Self) -> bool {
-        self.faults == other.faults && self.notes == other.notes
+        self.faults == other.faults && self.fault_occurrences_omitted == other.fault_occurrences_omitted && self.notes == other.notes
             && self.refresh_interface == other.refresh_interface
             && self.interface_current == other.interface_current && self.slot == other.slot
             && self.interface == other.interface && self.keys == other.keys
@@ -408,7 +456,7 @@ pub enum Work {
 enum TimerKind {
     Resume { thread: u16, generation: u32 },
     Release { event: i32, slot: u8 },
-    Listener { slot: u8, domain: u8, generation: u32 },
+    Listener { slot: u8, domain: u8, signal: i32, generation: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -423,6 +471,7 @@ struct FaultRecord {
     slot: u8,
     pc: u32,
     what: &'static str,
+    context: Option<FaultContext>,
     count: u32,
 }
 
@@ -492,12 +541,14 @@ pub struct Env {
     /// Distinct service notes, preallocated so noting never allocates.
     pub notes: Vec<&'static str>,
     faults: Vec<FaultRecord>,
+    pub(super) fault_context: Option<FaultContext>,
+    fault_occurrences_omitted: u64,
     rng: u64,
     next_callback_id: i32,
     next_async_id: i32,
     pub async_done: Vec<(u8, u8, i32, i32)>,
     pub stop_waits: Vec<(i32, i32)>,
-    pub listeners_changed: u128,
+    pub listeners_changed: [u16; 16],
     pub pgs_changed: bool,
 }
 
@@ -547,12 +598,14 @@ impl Env {
             persisted,
             notes: Vec::with_capacity(NOTE_CAPACITY),
             faults: Vec::with_capacity(FAULT_CAPACITY),
+            fault_context: None,
+            fault_occurrences_omitted: 0,
             rng: 0x9E37_79B9_7F4A_7C15,
             next_callback_id: 0,
             next_async_id: 0,
             async_done: Vec::with_capacity(64),
             stop_waits: Vec::with_capacity(64),
-            listeners_changed: 0,
+            listeners_changed: [0; 16],
             pgs_changed: false,
         }
     }
@@ -647,10 +700,11 @@ impl Env {
     }
 
     pub fn fault(&mut self, slot: u8, pc: u32, what: &'static str) {
+        let context = self.fault_context.take();
         if let Some(f) = self
             .faults
             .iter_mut()
-            .find(|f| f.slot == slot && f.pc == pc && f.what == what)
+            .find(|f| f.slot == slot && f.pc == pc && f.what == what && f.context == context)
         {
             f.count = f.count.saturating_add(1);
         } else if self.faults.len() < FAULT_CAPACITY {
@@ -658,9 +712,11 @@ impl Env {
                 slot,
                 pc,
                 what,
+                context,
                 count: 1,
             });
         } else {
+            self.fault_occurrences_omitted = self.fault_occurrences_omitted.saturating_add(1);
             self.note("KSP diagnostics limit reached; additional fault locations are omitted");
         }
     }
@@ -830,7 +886,9 @@ impl Runtime {
         self.env.engine_pars.reserve(ENGINE_PAR_HEADROOM * count as usize);
         for domain in 1..count {
             for slot in 0..self.states.len() as u8 {
-                self.schedule_listener(slot, domain, self.env.clock());
+                for signal in [b::signal::TIMER_MS, b::signal::TIMER_BEAT] {
+                    self.schedule_listener(slot, domain, signal, self.env.clock());
+                }
             }
             for (p, state) in self.programs.iter().zip(&self.states) {
                 for &v in &p.array_jobs {
@@ -902,8 +960,8 @@ impl Runtime {
             .take(MAX_SLOTS)
             .map(|s| rt.load(engine, s.as_ref()).err().map(|e| format!("{e:#}")))
             .collect();
-        // Per-note messages emitted by persistence callbacks can now reach
-        // later slots, whose initialization had not yet run when emitted.
+        // Internal messages emitted while loading can now reach later slots,
+        // whose initialization had not yet run when emitted.
         rt.settle(engine);
         (rt, errors)
     }
@@ -1061,6 +1119,12 @@ impl Runtime {
                 let menu = dynamic_menu
                     && prog.vars[control.var as usize].ui.as_deref() == Some("ui_menu");
                 control.prepare(text_bytes, menu);
+                if prog.vars[control.var as usize].ui.as_deref() == Some("ui_file_selector") {
+                    for par in [b::CONTROL_PAR_FILEPATH, b::CONTROL_PAR_BASEPATH] {
+                        let path = control.str_mut(par).unwrap();
+                        path.reserve(vm::MAX_STRING_VAR_BYTES.saturating_sub(path.len()));
+                    }
+                }
             }
             for s in [&mut state.ui.title, &mut state.ui.wallpaper] {
                 s.reserve(text_bytes.saturating_sub(s.len()));
@@ -1166,7 +1230,7 @@ impl Runtime {
         };
         let inherited = self.programs.iter().zip(&self.states).rev()
             .find(|(_, state)| state.error.is_none()).map(|(p, _)| p.conditions.clone()).unwrap_or_default();
-        let program = match compiled(source, &setup, &inherited) {
+        let program = match compiled(source, &setup, &inherited, engine.instrument_path()) {
             Ok(p) => p,
             Err(e) => {
                 self.programs.push(Arc::default());
@@ -1239,13 +1303,19 @@ impl Runtime {
                 t.pc,
                 "on init exceeded its instruction budget and was stopped",
             ),
-            Err(f) => bail!("KSP line {}: {}", prog.line(t.pc.saturating_sub(1)), f.0),
+            Err(f) => {
+                let line = prog.line(t.pc.saturating_sub(1));
+                if let Some(context) = self.env.fault_context.take() {
+                    bail!("KSP line {line}: {} ({context})", f.0);
+                }
+                bail!("KSP line {line}: {}", f.0);
+            }
         }
         // Nothing plays yet, so init's notes are dropped; controllers it sets
         // settle with `on persistence_changed`.
         self.env
             .work
-            .retain(|w| matches!(w, Work::Controller { .. } | Work::NoteController { .. }));
+            .retain(|w| matches!(w, Work::Controller { .. } | Work::NoteController { .. } | Work::Rpn { .. }));
         Ok(())
     }
 
@@ -1350,10 +1420,19 @@ impl Runtime {
     /// What the host shows while the scripts run, shaped for
     /// [`refresh_live`](Self::refresh_live): every string has room to grow and
     /// every key has an entry.
+    pub fn performance_slots(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.states.iter().enumerate().filter(|(_, s)| s.ui.performance)
+            .map(|(slot, s)| (slot, s.ui.title.as_str()))
+    }
+
     pub fn live(&self) -> Live {
-        let slot = (0..self.states.len())
-            .rev()
-            .find(|&s| self.states[s].ui.performance);
+        self.live_for_slot(self.performance_slots().last().map(|(s, _)| s))
+    }
+
+    /// Prepare a particular performance page off-thread. The buffer retains
+    /// its slot while refreshed, so identical control IDs never cross pages.
+    pub fn live_for_slot(&self, slot: Option<usize>) -> Live {
+        let slot = slot.filter(|&s| self.states.get(s).is_some_and(|s| s.ui.performance));
         let mut interface = slot.map(|s| self.interface(s));
         for c in interface.iter_mut().flat_map(|i| &mut i.controls) {
             // Properties scripts often first set while running.
@@ -1433,6 +1512,7 @@ impl Runtime {
             .collect();
         let mut live = Live {
             faults: Vec::with_capacity(FAULT_CAPACITY),
+            fault_occurrences_omitted: 0,
             notes: Vec::with_capacity(NOTE_CAPACITY),
             interface_revision: 0,
             keys_revision: 0,
@@ -1473,11 +1553,13 @@ impl Runtime {
     /// [`refresh_live`](Self::refresh_live) a piece at a time, about `budget`
     /// control properties from where `at` stands; true once done.
     pub fn refresh_diagnostics(&self, live: &mut Live) {
+        live.fault_occurrences_omitted = self.env.fault_occurrences_omitted;
         live.faults.clear();
         live.faults.extend(self.env.faults.iter().map(|f| LiveFault {
             slot: f.slot + 1,
             line: self.programs[f.slot as usize].line(f.pc.saturating_sub(1)),
             message: f.what,
+            context: f.context,
             count: f.count,
         }));
         live.notes.clear();
@@ -1548,9 +1630,12 @@ impl Runtime {
         }
         out.extend(self.env.faults.iter().map(|f| {
             let line = self.programs[f.slot as usize].line(f.pc.saturating_sub(1));
-            format!("Slot {} line {line}: {} ({}x)", f.slot + 1, f.what, f.count)
+            LiveFault { slot: f.slot + 1, line, message: f.what, context: f.context, count: f.count }.to_string()
         }));
         out.extend(self.env.notes.iter().map(|n| n.to_string()));
+        if self.env.fault_occurrences_omitted != 0 {
+            out.push(format!("KSP fault diagnostics omitted {} executions at additional locations", self.env.fault_occurrences_omitted));
+        }
         out.sort();
         out.dedup();
         out
@@ -1982,6 +2067,20 @@ impl Runtime {
         self.ui_control_domain(engine, slot, control, value, self.domain_map[input.min(15) as usize], false);
     }
 
+    /// A path validated by the editor's file worker; no filesystem work on audio.
+    pub fn ui_file_selection(&mut self, engine: &mut dyn KspEngine, slot: usize, control: usize, path: &str) -> bool {
+        let Some(state) = self.states.get_mut(slot) else { return false };
+        let Some(c) = state.ui.controls.get_mut(control) else { return false };
+        let var = &self.programs[slot].vars[c.var as usize];
+        if var.ui.as_deref() != Some("ui_file_selector") || c.set_str(b::CONTROL_PAR_FILEPATH, path).is_err() { return false }
+        let at = var.slot as usize;
+        self.select_domain(0);
+        let value = self.states[slot].mem.ints[at];
+        self.changes += 1;
+        self.ui_control(engine, slot, control, value);
+        true
+    }
+
     /// A host-side edit of control `control` (index into `Interface::controls`).
     fn ui_control_domain(
         &mut self,
@@ -2196,19 +2295,20 @@ impl Runtime {
                     }
                 }
                 TimerKind::Release { event, slot } => self.env.queue(Work::Release { event, slot }),
-                TimerKind::Listener { slot, domain, generation } => {
+                TimerKind::Listener { slot, domain, signal, generation } => {
                     self.select_domain(domain);
-                    let l = self.states[slot as usize].listener;
-                    if l.generation == generation {
+                    let index = usize::from(signal == b::signal::TIMER_BEAT);
+                    if self.states[slot as usize].listener.generations[index] == generation {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Listener));
                         ctx.domain = domain;
-                        ctx.signal = if l.timer_us > 0 {
-                            b::signal::TIMER_MS
-                        } else {
-                            b::signal::TIMER_BEAT
-                        };
+                        ctx.signal = signal;
                         self.spawn_cb(engine, slot, Callback::Listener, ctx);
-                        self.schedule_listener(slot, domain, t.at);
+                        // A listener may retune itself. Its changed bit schedules
+                        // the new generation; do not also schedule it here.
+                        self.select_domain(domain);
+                        if self.states[slot as usize].listener.generations[index] == generation {
+                            self.schedule_listener(slot, domain, signal, t.at);
+                        }
                     }
                 }
             }
@@ -2216,25 +2316,19 @@ impl Runtime {
         }
     }
 
-    fn schedule_listener(&mut self, slot: u8, domain: u8, from: u64) {
+    fn schedule_listener(&mut self, slot: u8, domain: u8, signal: i32, from: u64) {
         self.select_domain(domain);
         let l = self.states[slot as usize].listener;
-        let us = if l.timer_us > 0 {
-            i64::from(l.timer_us)
-        } else if l.beats > 0 {
-            i64::from(self.env.quarter_us() / l.beats)
-        } else {
-            return;
+        let us = match signal {
+            b::signal::TIMER_MS if l.timer_us > 0 => i64::from(l.timer_us),
+            b::signal::TIMER_BEAT if l.beats > 0 => i64::from(self.env.quarter_us() / l.beats),
+            _ => return,
         };
         let at = from + self.env.samples(us).max(1);
-        self.env.timer(
-            at,
-            TimerKind::Listener {
-                slot,
-                domain,
-                generation: l.generation,
-            },
-        );
+        self.env.timer(at, TimerKind::Listener {
+            slot, domain, signal,
+            generation: l.generations[usize::from(signal == b::signal::TIMER_BEAT)],
+        });
     }
 
     // ---- Scheduling ------------------------------------------------------------------
@@ -2256,7 +2350,8 @@ impl Runtime {
                     _ => None,
                 };
                 let unloaded = self.env.loading && matches!(w,
-                    Work::NoteController { slot, .. } if slot as usize >= self.programs.len());
+                    Work::NoteController { slot, .. } | Work::Rpn { slot, .. }
+                        if slot as usize >= self.programs.len());
                 if unloaded || self.env.cleaning && event.is_some_and(|id| self.env.events.get(id).is_some_and(|e| !e.cleanup)) {
                     // Rotate work awaiting a later slot's initialization, or
                     // fresh notes held behind the existing cleanup fence.
@@ -2290,12 +2385,14 @@ impl Runtime {
                 self.stop_waits(engine);
                 continue;
             }
-            if self.env.listeners_changed != 0 {
+            if self.env.listeners_changed.iter().any(|&changed| changed != 0) {
                 let changed = std::mem::take(&mut self.env.listeners_changed);
                 for domain in 0..self.domain_count {
                     for slot in 0..self.states.len() as u8 {
-                        if changed & (1 << (domain * 8 + slot)) != 0 {
-                            self.schedule_listener(slot, domain, self.env.clock());
+                        for (index, signal) in [b::signal::TIMER_MS, b::signal::TIMER_BEAT].into_iter().enumerate() {
+                            if changed[domain as usize] & (1 << (usize::from(slot) * 2 + index)) != 0 {
+                                self.schedule_listener(slot, domain, signal, self.env.clock());
+                            }
                         }
                     }
                 }

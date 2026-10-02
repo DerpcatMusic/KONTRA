@@ -43,7 +43,7 @@ impl ItemHeader {
         };
 
         if version != 1 {
-            return Err(NIFileError::Generic("version must be 1".into()));
+            return Err(NIFileError::VersionMismatch { expected: 1, got: version });
         };
 
         Ok(Self {

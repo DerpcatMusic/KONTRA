@@ -2,22 +2,36 @@ KONTRA
 Copyright 2026 Matari Audio
 Copyright 2026 DerpcatMusic and contributors
 
-This product is licensed under the Apache License, Version 2.0 (see
-LICENSE). Third-party components and their licenses are listed in
-THIRD_PARTY.md.
+Project-authored code and documentation are licensed under the Apache
+License, Version 2.0 (see LICENSE). Third-party components retain their
+own terms; THIRD_PARTY.md records their licenses and unresolved
+redistribution permission for the vendored ni-file parser. This notice
+does not assign Apache-2.0 to that parser or other third-party material.
 
-KONTRA is an independent educational and research project about sample
-playback and instrument file formats. It is not affiliated with,
-sponsored by, or endorsed by the owner of Kontakt.
+KONTRA is an independent sampler and interoperability project intended
+to support musicians using instruments they are entitled to use,
+including on Linux. Its development includes education and file-format
+research. It is not affiliated with, sponsored by, or endorsed by
+the owner of Kontakt.
 
 Kontakt and Kontakt Player are trademarks of their owner.
 Other product names are trademarks of their respective owners and
 are used here only to describe compatibility.
 
-KONTRA ships no third-party instruments, samples, scripts or artwork.
-To use it you need your own, legally obtained sample libraries, used
-under the terms of their licenses.
+KONTRA does not supply commercial Kontakt instrument libraries. Users
+supply their own instruments and samples. The source tree includes
+upstream codec test fixtures and a font under separate terms, as
+described in THIRD_PARTY.md.
 
-KONTRA is provided AS IS, without warranty of any kind. The authors are
-not liable for any damages arising from its use. Sections 7 and 8 of
-the Apache License, Version 2.0 set out the full terms.
+The project's license grants no rights in Kontakt, third-party library
+content, scripts, artwork or access credentials. Technical compatibility
+does not establish authorization to access or redistribute that material.
+See docs/LEGAL.md for the licensing and interoperability review.
+
+This NOTICE is informational and does not modify the Apache License.
+
+KONTRA is provided AS IS, subject to the warranty disclaimer and
+limitation of liability in Sections 7 and 8 of the Apache License,
+Version 2.0, including their exceptions for applicable law and written
+agreements. Educational or interoperability purposes do not establish
+immunity from liability, legal claims or hosting takedowns.

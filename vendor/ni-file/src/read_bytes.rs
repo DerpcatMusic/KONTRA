@@ -50,7 +50,8 @@ pub trait ReadBytesExt: Read + Seek {
         self.seek(std::io::SeekFrom::Start(position))?;
         if bytes as u64 > end.saturating_sub(position) {
             return Err(ReadBytesError::Generic(format!(
-                "Invalid byte count {bytes}"
+                "Read at offset {position}: declared {bytes} bytes, available {} bytes",
+                end.saturating_sub(position)
             )));
         }
         let mut buf = Vec::new();
@@ -58,8 +59,9 @@ pub trait ReadBytesExt: Read + Seek {
             ReadBytesError::Generic(format!("Unable to allocate {bytes} bytes: {e}"))
         })?;
         buf.resize(bytes, 0);
-        self.read_exact(&mut buf)
-            .map_err(|_| ReadBytesError::Generic(format!("Failed to read {bytes} bytes")))?;
+        self.read_exact(&mut buf).map_err(|e| {
+            ReadBytesError::IO(io::Error::new(e.kind(), format!("Read at offset {position}: required {bytes} bytes: {e}")))
+        })?;
         Ok(buf)
     }
 
@@ -81,7 +83,10 @@ pub trait ReadBytesExt: Read + Seek {
             heap.resize(size, 0);
             heap.as_mut_slice()
         };
-        self.read_exact(bytes)?;
+        self.read_exact(bytes).map_err(|e| {
+            let at = self.stream_position().ok();
+            io::Error::new(e.kind(), format!("Scalar read failed at cursor {at:?}: required {size} bytes: {e}"))
+        })?;
         Ok(match endian {
             Endian::LE => T::from_le_bytes(bytes),
             Endian::BE => T::from_be_bytes(bytes),

@@ -3,16 +3,42 @@
 //! Built only with the `library-access` feature; `no_access.rs` stands in
 //! otherwise. No keys are embedded, logged or persisted.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ni_file::nis::LibraryKey;
 use std::{fs::File, io::Read, path::Path, sync::Arc};
 
-/// The access key of the library `path` belongs to: the first `.nicnt` in
-/// its folders (up to the library root) with access fields, if any.
+/// The access key of the library `path` belongs to, if locally available.
 pub(crate) fn library_key(path: &Path) -> Result<Option<Arc<dyn LibraryKey>>> {
+    Ok(lookup(path)?.0)
+}
+
+/// Required by encrypted content; report why local access data was not found.
+pub(crate) fn require_library_key(path: &Path) -> Result<Arc<dyn LibraryKey>> {
+    let (key, reason) = lookup(path)?;
+    key.context(reason)
+}
+
+fn lookup(path: &Path) -> Result<(Option<Arc<dyn LibraryKey>>, String)> {
+    let path = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut checked = Vec::new();
+    let mut last = path.clone();
     for parent in path.ancestors().skip(1) {
-        for entry in std::fs::read_dir(parent)? {
-            let file = entry?.path();
+        last = parent.to_owned();
+        let mut files = std::fs::read_dir(parent)
+            .with_context(|| {
+                format!(
+                    "Reading local library access directory {}",
+                    parent.display()
+                )
+            })?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        files.sort();
+        for file in files {
             if !file
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
@@ -21,29 +47,72 @@ pub(crate) fn library_key(path: &Path) -> Result<Option<Arc<dyn LibraryKey>>> {
             }
             // Product XML precedes artwork. Bound reads even for malformed containers.
             let mut bytes = Vec::new();
-            File::open(&file)?.take(64 * 1024).read_to_end(&mut bytes)?;
-            if let (Some(key), Some(iv)) =
-                (field::<32>(&bytes, b"<JDX>"), field::<16>(&bytes, b"<HU>"))
-            {
-                return Ok(Some(Arc::new(Keystream::new(key, iv))));
+            File::open(&file)
+                .with_context(|| {
+                    format!("Reading local library access metadata {}", file.display())
+                })?
+                .take(64 * 1024)
+                .read_to_end(&mut bytes)?;
+            let key = field::<32>(&bytes, b"<JDX>");
+            let iv = field::<16>(&bytes, b"<HU>");
+            if let (Some(key), Some(iv)) = (key, iv) {
+                return Ok((Some(Arc::new(Keystream::new(key, iv))), String::new()));
             }
+            checked.push(format!(
+                "{}: missing or malformed {}{} in first 64 KiB",
+                file.display(),
+                if key.is_none() { "JDX" } else { "" },
+                if iv.is_none() {
+                    if key.is_none() {
+                        "/HU"
+                    } else {
+                        "HU"
+                    }
+                } else {
+                    ""
+                }
+            ));
         }
         if parent.join("Samples").is_dir() {
             break;
         }
     }
-    Ok(None)
+    let reason = if checked.is_empty() {
+        format!(
+            "no .nicnt metadata found between {} and {}",
+            path.parent().unwrap_or(&path).display(),
+            last.display()
+        )
+    } else {
+        checked.join("; ")
+    };
+    Ok((
+        None,
+        format!(
+            "Encrypted library content needs local access data for {}: {reason}",
+            path.display()
+        ),
+    ))
 }
 
-/// `N` hex-encoded bytes following `tag`, closed by the next tag.
+/// Exactly `N` hex-encoded bytes inside the matching XML element.
 fn field<const N: usize>(bytes: &[u8], tag: &[u8]) -> Option<[u8; N]> {
     let start = bytes.windows(tag.len()).position(|w| w == tag)? + tag.len();
-    let text = bytes.get(start..start + N * 2)?;
+    let closing = [b"</".as_slice(), tag.get(1..)?].concat();
+    let end = bytes
+        .get(start..)?
+        .windows(closing.len())
+        .position(|w| w == closing)?
+        + start;
+    let text = bytes.get(start..end)?.trim_ascii();
+    if text.len() != N * 2 {
+        return None;
+    }
     let mut out = [0; N];
     for (dest, pair) in out.iter_mut().zip(text.chunks_exact(2)) {
         *dest = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
-    (bytes.get(start + N * 2) == Some(&b'<')).then_some(out)
+    Some(out)
 }
 
 /// Library-provided AES-256 key and counter, expanded once into the
@@ -157,6 +226,14 @@ mod tests {
     fn access_fields_need_their_closing_tag() {
         let hex = "ab".repeat(16);
         assert_eq!(
+            field::<16>(format!("<HU> \r\n{hex}\n </HU>").as_bytes(), b"<HU>"),
+            Some([0xab; 16])
+        );
+        assert_eq!(
+            field::<16>(format!("<HU>{hex}</JDX>").as_bytes(), b"<HU>"),
+            None
+        );
+        assert_eq!(
             field::<16>(format!("<HU>{hex}</HU>").as_bytes(), b"<HU>"),
             Some([0xab; 16])
         );
@@ -164,5 +241,52 @@ mod tests {
             field::<16>(format!("<HU>{hex}ab</HU>").as_bytes(), b"<HU>"),
             None
         );
+    }
+
+    #[test]
+    fn local_metadata_lookup_decrypts_and_explains_missing_fields() {
+        let root = std::env::temp_dir().join(format!("kontra-access-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Instruments")).unwrap();
+        std::fs::create_dir_all(root.join("Samples")).unwrap();
+        let preset = root.join("Instruments/authored.nki");
+        assert!(library_key(&preset).unwrap().is_none());
+        let reason = require_library_key(&preset).err().unwrap().to_string();
+        assert!(reason.contains("no .nicnt metadata found"), "{reason}");
+        let metadata = root.join("authored.NICNT");
+        std::fs::write(&metadata, "<JDX>00</JDX><HU>00</HU>").unwrap();
+        let reason = require_library_key(&preset).err().unwrap().to_string();
+        assert!(reason.contains("missing or malformed JDX/HU"), "{reason}");
+        // All-zero authored access data, not a native library key.
+        std::fs::write(
+            &metadata,
+            format!(
+                "<JDX>\n {} \r\n</JDX><HU> {} </HU>",
+                "00".repeat(32),
+                "00".repeat(16)
+            ),
+        )
+        .unwrap();
+        let key = require_library_key(&preset).unwrap();
+        let mut payload = vec![3, b't', b'e', b's', b't'];
+        Keystream::new([0; 32], [0; 16]).apply(&mut payload);
+        let mut frame = 1u32.to_le_bytes().to_vec();
+        frame.push(1);
+        frame.extend(4u32.to_le_bytes());
+        frame.extend(5u32.to_le_bytes());
+        frame.extend(payload);
+        assert_eq!(
+            SubtreeItem::read_with_key(Cursor::new(&frame), Some(&*key))
+                .unwrap()
+                .inner_data,
+            b"test"
+        );
+        std::fs::write(
+            &metadata,
+            format!("<JDX>{}</JDX><HU>{}</HU>", "01".repeat(32), "00".repeat(16)),
+        )
+        .unwrap();
+        let wrong = require_library_key(&preset).unwrap();
+        assert!(SubtreeItem::read_with_key(Cursor::new(&frame), Some(&*wrong)).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

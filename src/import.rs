@@ -25,6 +25,10 @@ pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEn
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Group {
     pub name: String,
+    /// Native group-start records, including unknown mode/operator IDs.
+    /// Retained for writing; playback does not yet evaluate these conditions.
+    #[serde(default)]
+    pub start_criteria: ni_file::kontakt::objects::StartCriteriaList,
     /// Linear amplitude ratio.
     pub gain: f32,
     pub pan: f32,
@@ -50,8 +54,12 @@ pub struct Group {
     pub modulators: Vec<Modulator>,
     /// Internal AHDSRs driving module parameters (filter cutoff, EQ gain).
     pub envelopes: Vec<ModEnvelope>,
-    /// Group insert effects (only filters and EQs play).
+    /// Group insert effects.
     pub fx: crate::fx::Chain,
+    /// First insert slot after the Amplifier (0: all after, 8: all before).
+    /// Absent in older caches or when the native split is not valid.
+    #[serde(default)]
+    pub amp_split_slot: Option<u8>,
     /// Kontakt voice group (choke/voice-limit group) index, if assigned.
     pub voice_group: Option<u32>,
     /// Raw interpolation quality setting; 0 in every local preset.
@@ -60,8 +68,8 @@ pub struct Group {
 
 impl Default for Group {
     fn default() -> Self {
-        Self { name: String::new(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), voice_group: None, interp_quality: 0 }
+        Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0 }
     }
 }
 
@@ -152,7 +160,8 @@ pub fn read(path: &Path) -> Result<Instrument> {
 }
 
 fn chunks(path: &Path) -> Result<KontaktChunks> {
-    ensure!(path.metadata()?.len() <= 128 * 1024 * 1024, "Instrument container exceeds 128 MiB import limit");
+    let file_bytes = path.metadata()?.len();
+    ensure!(file_bytes <= 128 * 1024 * 1024, "Instrument container exceeds 128 MiB import limit");
     let mut file = File::open(path)?;
     let mut header = [0; 16];
     file.read_exact(&mut header)
@@ -162,13 +171,14 @@ fn chunks(path: &Path) -> Result<KontaktChunks> {
         "Instrument header contains only zero bytes; check for an incomplete/damaged copy or filesystem read failure"
     );
     file.rewind()?;
-    let bytes = match NIFile::read(file).context("NIS/NKS container headers")? {
-        NIFile::NKSContainer(n) => n.decompressed_preset()?,
-        NIFile::NISoundContainer(n) => nis_payload(n,path,0)?,
+    let bytes = match NIFile::read(&mut file).with_context(|| format!("NIS/NKS container {} ({file_bytes} bytes), decoder cursor {:?}", path.display(), file.stream_position().ok()))? {
+        NIFile::NKSContainer(n) => n.decompressed_preset().with_context(|| format!("NKS preset decompression in {}, compressed {} bytes", path.display(), n.compressed_data.len()))?,
+        NIFile::NISoundContainer(n) => nis_payload(n,path,0).with_context(|| format!("NIS preset payload in {}", path.display()))?,
         _ => bail!("Unsupported instrument container; choose an NKI or NKM preset"),
     };
     ensure!(bytes.len() <= 256 * 1024 * 1024, "Expanded instrument exceeds 256 MiB limit");
-    Ok(KontaktChunks::read(Cursor::new(bytes))?)
+    let expanded_bytes = bytes.len();
+    KontaktChunks::read(Cursor::new(bytes)).with_context(|| format!("Kontakt chunks in {}, expanded payload {expanded_bytes} bytes", path.display()))
 }
 fn nis_payload(n:ni_file::nis::ItemContainer,path:&Path,depth:usize)->Result<Vec<u8>> {
     ensure!(depth<4,"Too many nested NIS wrappers");
@@ -178,7 +188,7 @@ fn nis_payload(n:ni_file::nis::ItemContainer,path:&Path,depth:usize)->Result<Vec
     }
     Ok(match Repository::from(n).infer_schema() {
             NISObject::BNISoundPreset(p) => {
-                let key = if p.is_encrypted()? { crate::access::library_key(path)? } else { None };
+                let key = if p.is_encrypted()? { Some(crate::access::require_library_key(path).context("NIS preset access lookup")?) } else { None };
                 let enc = p.encryption_item_with_key(key.as_deref()).context("NIS preset subtree")?;
                 ni_file::nis::schema::PresetChunkItem::from(enc.subtree.item()?).properties()?.0
             },
@@ -220,6 +230,29 @@ pub fn read_snapshot(base: &Path, snapshot: &Path) -> Result<Instrument> {
         .map_err(|_| anyhow::anyhow!("Malformed Kontakt snapshot or base instrument"))?
 }
 
+/// Container identity only, for the off-thread snapshot catalog. Snapshot
+/// metadata names its base instrument, not the snapshot itself; the latter's
+/// authored name is its file stem (as in `read_snapshot`).
+pub(crate) fn snapshot_instrument(path: &Path) -> Result<String> {
+    std::panic::catch_unwind(|| {
+        let c = chunks(path)?;
+        c.find_first(0x4f).context("Snapshot state missing")?;
+        Ok(ni_file::kontakt::objects::snapshot_instrument_name(
+            c.find_first(0x51).context("Snapshot metadata missing")?,
+        )?)
+    }).map_err(|_| anyhow::anyhow!("Malformed snapshot metadata"))?
+}
+
+/// The same exact base identity used by snapshot validation, without loading
+/// zones, samples, scripts or artwork.
+pub(crate) fn snapshot_base_name(path: &Path) -> Result<String> {
+    std::panic::catch_unwind(|| {
+        let c = chunks(path)?;
+        let program = Program::try_from(c.find_first(0x28).context("Base program missing")?)?;
+        Ok(program.params()?.name)
+    }).map_err(|_| anyhow::anyhow!("Malformed base instrument metadata"))?
+}
+
 fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
     use ni_file::kontakt::objects::{Snapshot, snapshot_instrument_name};
     let snapshot_chunks = chunks(snapshot).context("Snapshot container")?;
@@ -245,7 +278,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
     );
     let mut instrument = read(base)?;
     ensure!(
-        saved.group_count as usize == instrument.groups.len(),
+        saved.groups.is_none() || saved.group_count as usize == instrument.groups.len(),
         "Snapshot/base group counts differ"
     );
     let native_groups = GroupList::try_from(
@@ -296,7 +329,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         let fx = crate::fx::Chain::from_array(&saved.fx)
             .with_context(|| format!("Snapshot group {id} effect parameters"))?;
         warnings.extend(modulation.warnings);
-        warnings.extend(crate::engine::filter::unsupported(&fx));
+        warnings.extend(crate::engine::filter::unsupported_at(&fx, instrument.groups[id].amp_split_slot));
         let group = &mut instrument.groups[id];
         group.volume_env = modulation.volume_env;
         group.flex_env = modulation.flex_env;
@@ -329,54 +362,59 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         instrument.script_state.len() == states.len(),
         "Base script persistence slots differ"
     );
-    // Reuse the regular effect importer after the entire snapshot has parsed.
-    let effects = Program(StructuredObject {
-        version: program.0.version,
-        public_data: Vec::new(),
-        private_data: Vec::new(),
-        children: saved.effect_children,
-    });
-    let mut fx = crate::fx::ProgramFx::read(&effects).context("Snapshot effects")?;
+    let mut dependencies = vec![snapshot.to_path_buf()];
     let files = other_files(&snapshot_chunks)?;
     // Reject an invalid rooted path before applying any saved state/effects.
     for name in files.values() { snapshot_rooted_path(name)?; }
-    fx.name_impulses(&files);
-    let parent = base.parent().context("Base instrument has no parent")?;
-    let root = base
-        .ancestors()
-        .find(|p| p.join("Samples").is_dir())
-        .unwrap_or(parent);
-    let mut resolver = Resolver::new(root);
-    let container = resource_container(&base_chunks)?;
-    let mut dependencies = vec![snapshot.to_path_buf()];
-    fx.load_impulses(|name, max_frames| {
-        // Snapshot filename segment 0x0b anchors the saved path at the base
-        // library. The generic filename table retains it as a leading slash.
-        let rooted = snapshot_rooted_path(name)?;
-        let (at, relative) = rooted.as_deref().map_or((parent, Path::new(name)), |n| (root, n));
-        let ir = match (
-            resolver.resolve(at, &relative.to_string_lossy())?,
-            &container,
-            name.find("Resources/"),
-        ) {
-            (Some(ir), ..) => Some(ir),
-            (None, Some(nkr), Some(at)) => {
-                resolver.resolve(parent, &format!("{nkr}/{}", &name[at..]))?
+    // Script-only snapshots retain every native group/rack from the base.
+    if !saved.effect_children.is_empty() {
+        // Reuse the regular effect importer after the entire snapshot has parsed.
+        let effects = Program(StructuredObject {
+            version: program.0.version,
+            public_data: Vec::new(),
+            private_data: Vec::new(),
+            children: saved.effect_children,
+        });
+        let mut fx = crate::fx::ProgramFx::read(&effects).context("Snapshot effects")?;
+        fx.name_impulses(&files);
+        let parent = base.parent().context("Base instrument has no parent")?;
+        let root = base
+            .ancestors()
+            .find(|p| p.join("Samples").is_dir())
+            .unwrap_or(parent);
+        let mut resolver = Resolver::new(root);
+        let container = resource_container(&base_chunks)?;
+        fx.load_impulses(|name, max_frames| {
+            // Snapshot filename segment 0x0b anchors the saved path at the base
+            // library. The generic filename table retains it as a leading slash.
+            let rooted = snapshot_rooted_path(name)?;
+            let (at, relative) = rooted.as_deref().map_or((parent, Path::new(name)), |n| (root, n));
+            let ir = match (
+                resolver.resolve(at, &relative.to_string_lossy())?,
+                &container,
+                name.find("Resources/"),
+            ) {
+                (Some(ir), ..) => Some(ir),
+                (None, Some(nkr), Some(at)) => {
+                    resolver.resolve(parent, &format!("{nkr}/{}", &name[at..]))?
+                }
+                _ => None,
             }
-            _ => None,
-        }
-        .context("file missing or its archive member is unreadable")?;
-        dependencies.push(ir.clone());
-        crate::audio::decode(&ir, max_frames)
-    });
-    warnings.extend(fx.warnings());
-    warnings.push("Snapshot: unknown group public/source fields and trailing selection flags are retained but not applied; base scalar/source settings remain in use".into());
-    warnings.push("Snapshot: group IDs require the supplied base NKI's original group arrangement; a reordered foreign base with the same name/count cannot be detected".into());
+            .context("file missing or its archive member is unreadable")?;
+            dependencies.push(ir.clone());
+            crate::audio::decode(&ir, max_frames)
+        });
+        warnings.extend(fx.warnings());
+        fx.main = std::mem::take(&mut instrument.fx.main);
+        instrument.fx = fx;
+    }
+    if saved.groups.is_some() {
+        warnings.push("Snapshot: unknown group public/source fields and trailing selection flags are retained but not applied; base scalar/source settings remain in use".into());
+        warnings.push("Snapshot: group IDs require the supplied base NKI's original group arrangement; a reordered foreign base with the same name/count cannot be detected".into());
+    }
     for (base, saved) in instrument.script_state.iter_mut().zip(states) {
         base.extend(saved);
     }
-    fx.main = std::mem::take(&mut instrument.fx.main);
-    instrument.fx = fx;
     instrument.warnings.extend(warnings);
     instrument.warnings.sort();
     instrument.warnings.dedup();
@@ -604,18 +642,36 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     let p = if let Some(p)=c.find_first(0x28) {ensure!(index==0,"NKI has only one instrument");Program::try_from(p)?}else{multi_programs(&c)?.1.into_iter().find(|(id,_)|*id==index).context("Multi program not found")?.1};
     let mut warnings = Vec::new();
     let program = p.params().context("Program parameters")?;
-    let table = c.0.iter().find(|c| c.id == 0x4b).map(FNTableImpl::try_from).transpose().context("Sample file table")?.map(|f| f.sample_filetable)
-        .or(c.0.iter().find(|c| c.id == 0x3d).map(FileNameListPreK51::try_from).transpose().context("Legacy file table")?.map(|f| f.sample_filetable))
-        .context("Missing Kontakt sample file table")?;
+    // Decode each file table once: resource/IR lookup needs only a few paths,
+    // but parsing it again would recreate every sample path and timestamp.
+    let modern = c.0.iter().find(|c| c.id == 0x4b).map(FNTableImpl::try_from).transpose().context("Sample file table")?;
+    let legacy = c.0.iter().find(|c| c.id == 0x3d).map(FileNameListPreK51::try_from).transpose().context("Legacy file table")?;
+    let (table, impulse_files, container) = match modern {
+        Some(t) => {
+            let container = t.special_filetable.into_values().find(|f| f.to_lowercase().ends_with(".nkr"));
+            (t.sample_filetable, t.other_filetable, container)
+        }
+        None => (legacy.context("Missing Kontakt sample file table")?.sample_filetable, HashMap::new(), None),
+    };
     let gl = GroupList::try_from(p.0.find_first(0x33).context("Missing group list")?).context("Group list")?;
     ensure!(gl.groups.len() <= crate::engine::MAX_GROUPS, "Too many groups (Kontakt allows {})", crate::engine::MAX_GROUPS);
     let mut groups = Vec::new();
     for g in &gl.groups {
         let v = g.params().with_context(|| format!("Group {} version {:x}", groups.len(),g.0.version))?;
         ensure!(v.volume.is_finite() && v.pan.is_finite() && v.tune.is_finite() && v.tune > 0.0, "Invalid group gain/tuning");
-        if !v.start_criteria.items.is_empty() { warnings.push(format!("{}: native group start conditions are not implemented", v.name)); }
+        match g.source_identity() {
+            Ok(source) if source.version == 0x106 && source.mode == 9 => warnings.push(format!(
+                "{}: Kontakt 8 wavetable source playback is not implemented (source version 0x106, mode 9, flag {}); mapped zones use ordinary sample playback, without wavetable position, forms or audio-rate modulation", v.name, source.flag)),
+            Ok(_) => {},
+            Err(error) => warnings.push(format!("{}: source identity is not decoded: {error}; source-specific playback parameters are not applied", v.name)),
+        }
+        if !v.start_criteria.items.is_empty() || !v.start_criteria.unknown_tail.is_empty() {
+            let records: Vec<_> = v.start_criteria.items.iter()
+                .map(|c| (c.mode, c.next_criteria, c.cycle_class)).collect();
+            warnings.push(format!("{}: native group start conditions are retained but not evaluated (mask {}, raw mode/operator/cycle records {records:?}, {} opaque tail bytes); native numeric IDs are not verified", v.name, v.start_criteria.mask, v.start_criteria.unknown_tail.len()));
+        }
         if v.release_trigger_note_monophonic {warnings.push("Release-trigger note monophony is not imported".into());}
-        let modulation = match crate::modulation::read_group(g) {
+        let modulation = match crate::modulation::read_group_partial(g, groups.len(), &v.name) {
             Ok(modulation) => modulation,
             Err(e) => {
                 warnings.push(format!("{}: modulation not imported: {e:#}", v.name));
@@ -630,10 +686,11 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
                 Default::default()
             }
         };
-        warnings.extend(crate::engine::filter::unsupported(&fx));
+        warnings.extend(crate::engine::filter::unsupported_at(&fx, u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8)));
         // Gain and tuning are linear ratios (see audits/MODULATION.md).
         groups.push(Group {
             name: v.name,
+            start_criteria: v.start_criteria,
             gain: v.volume,
             pan: v.pan,
             tune: v.tune as f64,
@@ -650,6 +707,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             modulators: modulation.modulators,
             envelopes: modulation.envelopes,
             fx,
+            amp_split_slot: u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8),
             voice_group: u32::try_from(v.voice_group_index).ok(),
             interp_quality: v.interp_quality,
         });
@@ -666,7 +724,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     let mut resolver = Resolver::new(root);
     let mut dependency_paths = vec![path.clone(), root.to_path_buf()];
     // Include absent resource paths too: installing them invalidates the entry.
-    if let Some(container) = resource_container(&c)? {
+    if let Some(container) = &container {
         dependency_paths.push(parent.join(container.replace('\\', "/")));
     }
     dependency_paths.extend(library_metadata(&path));
@@ -704,7 +762,9 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             order.push(file_id);
         }
         zone_ids.push(file_id);
-        ensure!([lk,hk,lv,hv,root].iter().chain(&fades).all(|v| (0..=127).contains(v)) && lk <= hk && lv <= hv, "Invalid zone mapping");
+        if let Some(reason) = zone_mapping_error([lk,hk], [lv,hv], root, fades) {
+            bail!("Invalid zone mapping in {}: zone {} v{:x}, group {group}, sample ID {file_id}: {reason}; keys {lk}..={hk}, velocity {lv}..={hv}, root {root}, fades {fades:?}", path.display(), zones.len(), so.version);
+        }
         let [fade_low_velocity, fade_high_velocity, fade_low_key, fade_high_key] = fades.map(|v| v as u8);
         ensure!(start >= 0 && end <= 0 && gain.is_finite() && pan.is_finite() && tune.is_finite() && tune > 0.0, "Invalid zone {} v{:x}: start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}",zones.len(),so.version);
         let loops = so.find_first(0x39).map(LoopArray::try_from).transpose().with_context(|| format!("Zone {} loops",zones.len()))?;
@@ -745,8 +805,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     if c.find_first(3).is_some(){warnings.push("Multi routing, master processing and multi scripts are not restored; parts use manual playback".into());}
     let fx = match crate::fx::ProgramFx::read(&p) {
         Ok(mut fx) => {
-            fx.name_impulses(&other_files(&c)?);
-            let container = resource_container(&c)?;
+            fx.name_impulses(&impulse_files);
             fx.load_impulses(|name, max_frames| {
                 // Kontakt maps any `<dir>/Resources/...` path into the resource container.
                 let ir = match (resolver.resolve(parent, name)?, &container, name.find("Resources/")) {
@@ -799,6 +858,21 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     })
 }
 
+// Diagnose the original serialized values before narrowing them to MIDI bytes.
+fn zone_mapping_error(keys: [i16;2], velocity: [i16;2], root: i16, fades: [i16;4]) -> Option<String> {
+    for (field, value) in [
+        ("low key",keys[0]), ("high key",keys[1]),
+        ("low velocity",velocity[0]), ("high velocity",velocity[1]), ("root key",root),
+        ("low velocity fade",fades[0]), ("high velocity fade",fades[1]),
+        ("low key fade",fades[2]), ("high key fade",fades[3]),
+    ] {
+        if !(0..=127).contains(&value) { return Some(format!("{field} {value} is outside 0..=127")); }
+    }
+    if keys[0] > keys[1] { return Some(format!("low key {} exceeds high key {}",keys[0],keys[1])); }
+    if velocity[0] > velocity[1] { return Some(format!("low velocity {} exceeds high velocity {}",velocity[0],velocity[1])); }
+    None
+}
+
 /// (mount point, fs type, source) of the deepest mount containing `path`, from mountinfo text.
 fn mount_of(mountinfo: &str, path: &Path) -> Option<(PathBuf, String, String)> {
     let unescape = |s: &str| s.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\");
@@ -848,6 +922,7 @@ fn voice_groups(data: &[u8]) -> Result<(VoiceLimit, Vec<Option<VoiceLimit>>)> {
 
 pub struct Resolver {
     root: PathBuf,
+    canonical_root: Option<PathBuf>,
     dependencies: std::collections::HashSet<PathBuf>,
     index: Option<HashMap<String, Vec<PathBuf>>>,
     /// Lazily indexed archives with an open handle for member headers.
@@ -866,6 +941,7 @@ impl Resolver {
     pub fn new(root: &Path) -> Self {
         Self {
             root: root.into(),
+            canonical_root: root.canonicalize().ok(),
             dependencies: Default::default(),
             index: None,
             archives: HashMap::new(),
@@ -879,7 +955,7 @@ impl Resolver {
         let direct = parent.join(&name);
         self.dependencies.insert(direct.clone());
         // Archive members first: a path inside an archive file is never a file itself.
-        if let Some((archive, member)) = self.archive_member(&direct) {
+        if let Some((archive, member)) = self.archive_member_from(parent, &name) {
             if !self.archives.contains_key(archive.as_os_str()) {
                 let mut file = File::open(&archive)?;
                 let index = ni_file::nkr::Archive::read_index(&mut file).with_context(|| format!("Archive {}", archive.display()))?;
@@ -916,8 +992,9 @@ impl Resolver {
     pub fn resolve_all(&mut self, parent: &Path, names: &[&str]) -> Result<Vec<Option<PathBuf>>> {
         let (mut resolved, mut jobs, mut loose) = (vec![None; names.len()], Vec::new(), Vec::new());
         for (i, name) in names.iter().enumerate() {
-            let direct = parent.join(name.replace('\\', "/"));
-            let Some((archive, member)) = self.archive_member(&direct) else { loose.push(i); continue };
+            let name = name.replace('\\', "/");
+            let direct = parent.join(&name);
+            let Some((archive, member)) = self.archive_member_from(parent, &name) else { loose.push(i); continue };
             if !self.archives.contains_key(archive.as_os_str()) {
                 let mut file = File::open(&archive)?;
                 let index = ni_file::nkr::Archive::read_index(&mut file).with_context(|| format!("Archive {}", archive.display()))?;
@@ -952,6 +1029,25 @@ impl Resolver {
             Some(entry) if entry.issue == Some("Zero-filled NKX member header") => { self.undownloaded.insert(direct.to_path_buf()); Ok(None) }
             _ => Ok(None),
         }
+    }
+
+    /// Relative archive prefixes can be rooted at the library rather than
+    /// the NKI's Instruments folder. Preserve direct references first and
+    /// search only the hierarchy within this library, never another library.
+    fn archive_member_from(&mut self, parent: &Path, name: &str) -> Option<(PathBuf, String)> {
+        if let Some(member) = self.archive_member(&parent.join(name)) { return Some(member); }
+        if Path::new(name).is_absolute() { return None; }
+        for at in parent.ancestors().skip(1) {
+            if !at.starts_with(&self.root) { break; }
+            let Some((archive, member)) = self.archive_member(&at.join(name)) else { continue };
+            if !self.canonical.contains_key(archive.as_os_str()) {
+                self.canonical.insert(archive.clone().into(), archive.canonicalize().ok()?);
+            }
+            if self.canonical_root.as_ref().is_some_and(|root| self.canonical[archive.as_os_str()].starts_with(root)) {
+                return Some((archive, member));
+            }
+        }
+        None
     }
 
     /// [`archive_member`], remembering which archive paths are files: one
@@ -1038,6 +1134,68 @@ pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod preset_tests {
+
+    #[test]
+    fn relative_archives_resolve_within_the_library_and_validate_members() {
+        use super::Resolver;
+        fn archive(path: &std::path::Path, name: &str) {
+            let mut bytes = 0x5e70ac54u32.to_le_bytes().to_vec();
+            bytes.extend(0x110u16.to_le_bytes()); bytes.extend([0; 8]);
+            bytes.extend(1u32.to_le_bytes()); bytes.extend([0; 4]);
+            let name: Vec<_> = name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+            bytes.extend(((name.len() + 8) as u16).to_le_bytes());
+            bytes.extend((128u32 ^ 0x1f4e0c8d).to_le_bytes()); bytes.extend(2u16.to_le_bytes()); bytes.extend(name);
+            bytes.resize(128, 0); bytes.extend(0x4916e63cu32.to_le_bytes());
+            bytes.extend(0x110u16.to_le_bytes()); bytes.extend([0; 13]);
+            bytes.extend(4u32.to_le_bytes()); bytes.extend([0; 4]); bytes.extend(*b"test");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap(); std::fs::write(path, bytes).unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("kontra-archive-root-{}", std::process::id()));
+        let root = dir.join("Library"); let parent = root.join("Instruments");
+        std::fs::create_dir_all(&parent).unwrap();
+        let bank = root.join("Samples/Bank.nkx"); archive(&bank, "voice.ncw");
+        let outside = dir.join("Outside/Bank.nkx"); archive(&outside, "voice.ncw");
+        let expected = bank.canonicalize().unwrap().join("voice.ncw");
+        let mut resolver = Resolver::new(&root);
+        assert_eq!(resolver.resolve(&parent, "Samples/Bank.nkx/voice.ncw").unwrap(), Some(expected.clone()));
+        assert_eq!(resolver.resolve_all(&parent, &["Samples/Bank.nkx/voice.ncw", "Samples/Bank.nkx/missing.ncw", r"..\Samples\Bank.nkx\voice.ncw"]).unwrap(), [Some(expected.clone()), None, Some(expected)]);
+        assert_eq!(resolver.resolve(&parent, "../Outside/Bank.nkx/voice.ncw").unwrap(), None, "fallback never crosses the library boundary");
+        // An existing direct archive stays authoritative even if another
+        // same-named archive above it contains the requested member.
+        archive(&parent.join("Samples/Bank.nkx"), "different.ncw");
+        assert_eq!(Resolver::new(&root).resolve(&parent, "Samples/Bank.nkx/voice.ncw").unwrap(), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the local Conflux archive and library access data"]
+    fn actual_conflux_archive_members_resolve_and_decode_without_extracting() {
+        let nki = std::path::PathBuf::from(std::env::var_os("KONTRA_CONFLUX_INSTRUMENT").expect("set KONTRA_CONFLUX_INSTRUMENT"));
+        let parent = nki.parent().unwrap(); let root = parent.parent().unwrap();
+        let names = ["Samples/CNX_01.nkx/Samples/01 AdditivMix.wav", "Samples/CNX_01.nkx/Samples/01 Sin-Square.wav"];
+        let paths = super::Resolver::new(root).resolve_all(parent, &names).unwrap();
+        let mut sources = crate::audio::Sources::default();
+        for (name, path) in names.iter().zip(paths) {
+            let path = path.expect("existing library-root archive member must resolve");
+            assert_eq!(path, root.canonicalize().unwrap().join(name));
+            let source = sources.source(&path).unwrap(); let mut reader = source.open().unwrap();
+            assert!(reader.header().frames > 0);
+            let mut pcm = [[0.0;2];64]; reader.read(0, &mut pcm).unwrap();
+            assert!(pcm.iter().flatten().all(|v| v.is_finite()));
+            eprintln!("Conflux archive member verified: {} frames", reader.header().frames);
+        }
+    }
+
+    #[test]
+    fn invalid_zone_mapping_names_rejected_values_without_narrowing() {
+        use super::zone_mapping_error;
+        assert_eq!(zone_mapping_error([0,127],[0,127],60,[0;4]), None);
+        assert_eq!(zone_mapping_error([-1,127],[0,127],60,[0;4]).unwrap(), "low key -1 is outside 0..=127");
+        assert_eq!(zone_mapping_error([0,127],[0,128],60,[0;4]).unwrap(), "high velocity 128 is outside 0..=127");
+        assert_eq!(zone_mapping_error([0,127],[0,127],60,[0,0,0,128]).unwrap(), "high key fade 128 is outside 0..=127");
+        assert_eq!(zone_mapping_error([61,60],[0,127],60,[0;4]).unwrap(), "low key 61 exceeds high key 60");
+        assert_eq!(zone_mapping_error([0,127],[100,99],60,[0;4]).unwrap(), "low velocity 100 exceeds high velocity 99");
+    }
 
     #[test]
     #[ignore = "requires the local Una Corda instruments; no proprietary fixtures"]

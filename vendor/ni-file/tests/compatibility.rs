@@ -8,6 +8,50 @@ use ni_file::{
 use std::io::Cursor;
 
 #[test]
+fn truncated_containers_preserve_decoder_context_and_valid_roundtrips() {
+    use ni_file::{NIFile, NIFileError, nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader},
+        kontakt::{Chunk, objects::BPatchMetaInfoHeader}};
+    let item = ItemContainer {
+        header: ItemHeader { length: 40, magic: b"hsin".to_vec(), header_flags: 0, reserved: 0, uuid: vec![0; 16] },
+        data: ItemData { header: ItemDataHeader { length: 20, domain_id: *b"NISD", item_id: 1, version: 1 }, inner: None, data: vec![] },
+        children: vec![], child_headers: vec![], trailing_data: vec![],
+    };
+    let mut bytes = Vec::new();
+    item.write(&mut bytes).unwrap();
+    let valid = NIFile::read(Cursor::new(&bytes)).unwrap();
+    let mut encoded = Vec::new();
+    valid.write(&mut encoded).unwrap();
+    assert_eq!(encoded, bytes, "a supported NIS roundtrip preserves every byte");
+    let error = NIFile::read(Cursor::new(&bytes[..bytes.len()-1])).err().unwrap();
+    let message = error.to_string();
+    assert!(message.contains("NIS item body at offset 40") && message.contains("declared body length 28/version 1")
+        && message.contains("available 27"), "{message}");
+    assert!(!message.contains("Unknown"), "a recognized NIS signature retains the decoder cause");
+    let mut error = NIFile::read(Cursor::new(&bytes[..21])).err().unwrap();
+    assert!(error.to_string().contains("NIS item header at offset 0"));
+    while let NIFileError::Context { source, .. } = error { error = *source; }
+    assert!(matches!(error, NIFileError::IO(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof),
+        "context preserves the original EOF error: {error:?}");
+
+    let chunks = KontaktChunks(vec![Chunk { id: 0x28, data: vec![1,2,3] }]);
+    let mut bytes = Vec::new();
+    chunks.write(&mut bytes).unwrap();
+    let mut encoded = Vec::new();
+    KontaktChunks::read(Cursor::new(&bytes)).unwrap().write(&mut encoded).unwrap();
+    assert_eq!(encoded, bytes);
+    for (len, expected) in [(4, "chunk 0x0028 length at offset 2"), (8, "chunk 0x0028 body at offset 6, declared length 3")] {
+        let message = KontaktChunks::read(Cursor::new(&bytes[..len])).unwrap_err().to_string();
+        assert!(message.contains(expected), "{message}");
+    }
+    let mut bytes = 0x7FA89012u32.to_le_bytes().to_vec();
+    bytes.extend(5u32.to_le_bytes());
+    bytes.extend(0x1000u16.to_le_bytes());
+    let message = NIFile::read(Cursor::new(bytes)).err().unwrap().to_string();
+    assert!(message.contains("NKS patch header at offset 8, format word 0x1000") && message.contains("declared 212"), "{message}");
+    assert!(BPatchMetaInfoHeader::read(Cursor::new([0;8])).is_err(), "invalid metadata returns an error rather than panicking");
+}
+
+#[test]
 fn malformed_nis_lengths_and_children_return_errors() {
     use ni_file::nis::{ItemContainer, ItemData, ItemDataHeader, ItemType};
     let mut frame = 39u64.to_le_bytes().to_vec();
@@ -188,6 +232,42 @@ fn truncated_chunk_is_an_error_not_partial_success() {
         .is_empty());
 }
 #[test]
+fn nkx_directory_errors_distinguish_signature_offset_and_truncation() {
+    let mut header = 0x5e70ac54u32.to_le_bytes().to_vec();
+    header.extend(0x110u16.to_le_bytes());
+    header.extend([0; 16]);
+    assert!(Archive::read_index(Cursor::new(&header)).unwrap().entries.is_empty());
+    header[4..6].copy_from_slice(&0x111u16.to_le_bytes());
+    assert!(Archive::read_index(Cursor::new(&header)).unwrap().entries.is_empty());
+
+    for magic in [0u32, 0x12345678] {
+        let mut wrong = header.clone();
+        wrong[..4].copy_from_slice(&magic.to_le_bytes());
+        let error = Archive::read_index(Cursor::new(wrong)).unwrap_err().to_string();
+        assert!(error.contains("at 0x0 ()"), "{error}");
+        assert!(error.contains(&format!("got {magic:#010x}")), "{error}");
+        assert!(error.contains("expected 0x5e70ac54, file length 22"), "{error}");
+    }
+    for length in [0, 4, 21] {
+        let error = Archive::read_index(Cursor::new(&header[..length])).unwrap_err().to_string();
+        assert!(error.contains("Truncated NKX directory header"), "{error}");
+        assert!(error.contains(&format!("available {length}, file length {length}")), "{error}");
+    }
+    header[4..6].copy_from_slice(&0x999u16.to_le_bytes());
+    assert!(Archive::read_index(Cursor::new(&header)).unwrap_err().to_string().contains("version 0x999 at 0x0"));
+    header[4..6].copy_from_slice(&0x110u16.to_le_bytes());
+    header[14..18].copy_from_slice(&1u32.to_le_bytes());
+    let error = Archive::read_index(Cursor::new(&header)).unwrap_err().to_string();
+    assert!(error.contains("entry 0/1 at 0x16"), "{error}");
+    assert!(error.contains("need 8 bytes, available 0"), "{error}");
+    header.extend(12u16.to_le_bytes());
+    header.extend([0; 6]);
+    let error = Archive::read_index(Cursor::new(&header)).unwrap_err().to_string();
+    assert!(error.contains("entry 0/1 length 12 at 0x16"), "{error}");
+    assert!(error.contains("available 8, file length 30"), "{error}");
+}
+
+#[test]
 fn clear_nkx_member_and_bad_sibling_are_independent() {
     let mut b = Vec::new();
     b.extend(0x5e70ac54u32.to_le_bytes());
@@ -364,6 +444,45 @@ fn malformed_start_criteria_returns_error() {
         assert!(StartCriteriaList::read(Cursor::new(data)).is_err());
     }
     assert!(StartCriteriaList::read(Cursor::new([0])).unwrap().items.is_empty());
+}
+
+#[test]
+fn start_criteria_preserve_sparse_rows_unknown_ids_and_edits() {
+    use ni_file::kontakt::objects::StartCriteriaList;
+    let mut raw = vec![0b1010];
+    for (mode, operator, cycle, sequencer) in [(99i32, -7i32, 0i32, 1), (3, 0, 2, 0)] {
+        raw.extend([0, 0x70, 0]);
+        raw.extend(mode.to_le_bytes());
+        raw.extend(operator.to_le_bytes());
+        for v in [24i16, 25, 64, 0, 127] { raw.extend(v.to_le_bytes()); }
+        for v in [cycle, -1, -2] { raw.extend(v.to_le_bytes()); }
+        raw.push(sequencer);
+    }
+    let records_len = raw.len();
+    raw.extend([0xA5, 0, 0xFF]);
+    let mut criteria = StartCriteriaList::read(Cursor::new(&raw)).unwrap();
+    assert_eq!(criteria.mask, 0b1010);
+    assert_eq!(criteria.items[0].mode, 99);
+    let mut written = Vec::new();
+    criteria.write(&mut written).unwrap();
+    assert_eq!(written, raw);
+    criteria.items[1].cycle_class = 7;
+    written.clear();
+    criteria.write(&mut written).unwrap();
+    let mut expected = raw.clone();
+    expected[56..60].copy_from_slice(&7i32.to_le_bytes());
+    assert_eq!(written, expected, "editing one field retains unknown IDs and sparse row mask");
+    assert_eq!(StartCriteriaList::read(Cursor::new(&written)).unwrap(), criteria);
+    criteria.mask = 1;
+    written.clear();
+    assert!(criteria.write(&mut written).is_err());
+    assert!(written.is_empty(), "reject mismatched masks before output");
+    for len in 0..records_len { assert!(StartCriteriaList::read(Cursor::new(&raw[..len])).is_err()); }
+    raw[records_len - 1] = 2;
+    assert!(StartCriteriaList::read(Cursor::new(&raw)).is_err());
+    raw[records_len - 1] = 0;
+    raw[1] = 2;
+    assert!(StartCriteriaList::read(Cursor::new(raw)).is_err());
 }
 
 #[test]
@@ -842,4 +961,118 @@ fn generic_nis_read_reuses_detection_and_preserves_stream_consumption() {
     assert_eq!(reader.bytes.position(), bytes.len() as u64);
     bytes[60..64].copy_from_slice(&2u32.to_le_bytes()); // corrupt child-list version
     assert!(NIFile::read(Cursor::new(&bytes)).is_err());
+}
+
+#[test]
+fn explicit_slot_counts_preserve_slots_and_reject_mismatches() {
+    use ni_file::kontakt::{objects::BParamArrayBParFX8, Chunk};
+    let mut data = vec![0, 0x13, 0];
+    data.extend(2u32.to_le_bytes());
+    data.extend([0, 1]);
+    Chunk {
+        id: 0x25,
+        data: b"authored".to_vec(),
+    }
+    .write(&mut data)
+    .unwrap();
+    let array = BParamArrayBParFX8::read(Cursor::new(&data), 2).unwrap();
+    assert_eq!(array.version, 0x13);
+    assert_eq!(array.items.len(), 2);
+    assert!(array.items[0].is_none());
+    assert_eq!(array.items[1].as_ref().unwrap().data, b"authored");
+    assert!(BParamArrayBParFX8::read(Cursor::new(&data), 8).is_err());
+    for end in 0..data.len() {
+        assert!(
+            BParamArrayBParFX8::read(Cursor::new(&data[..end]), 2).is_err(),
+            "end={end}"
+        );
+    }
+    data[7] = 2;
+    assert!(BParamArrayBParFX8::read(Cursor::new(data), 2).is_err());
+}
+
+#[test]
+fn flat_filename_tables_keep_global_indices_and_reject_damage() {
+    use ni_file::kontakt::objects::FNTableImpl;
+    // Authored v3 records: opaque metadata, one index space for every kind of
+    // reference. This fixture contains no library data or native preset bytes.
+    let names = ["Resources.nkr", "Sample.ncw", "Impulse.ncw"];
+    let mut data = 3u16.to_le_bytes().to_vec();
+    data.extend((names.len() as u32).to_le_bytes());
+    for (i, name) in names.iter().enumerate() {
+        data.extend([i as u8; 8]);
+        data.extend(1i32.to_le_bytes());
+        data.push(4);
+        data.extend((name.len() as u32).to_le_bytes());
+        data.extend(name.encode_utf16().flat_map(u16::to_le_bytes));
+        data.extend([i as u8; 20]);
+    }
+    let table = FNTableImpl::read(Cursor::new(&data)).unwrap();
+    for (i, name) in names.iter().enumerate() {
+        assert_eq!(table.special_filetable[&(i as u32)], *name);
+        assert_eq!(table.sample_filetable[&(i as u32)], *name);
+        assert_eq!(table.other_filetable[&(i as u32)], *name);
+    }
+    assert!(table.sample_timestamp_table.is_empty());
+    for end in 0..data.len() {
+        assert!(
+            FNTableImpl::read(Cursor::new(&data[..end])).is_err(),
+            "end={end}"
+        );
+    }
+    for (offset, bytes) in [(2, u32::MAX.to_le_bytes()), (14, (-1i32).to_le_bytes())] {
+        let mut damaged = data.clone();
+        damaged[offset..offset + 4].copy_from_slice(&bytes);
+        assert!(FNTableImpl::read(Cursor::new(damaged)).is_err());
+    }
+    data[0] = 4;
+    assert!(FNTableImpl::read(Cursor::new(data))
+        .unwrap_err()
+        .to_string()
+        .contains("version 4"));
+}
+
+#[test]
+fn modern_source_identity_retains_opaque_bytes_and_keeps_snapshot_codec_strict() {
+    use ni_file::kontakt::{StructuredObject, objects::{Group, SourceIdentity}};
+    let mut private = Vec::new();
+    for _ in 0..136 { private.extend(8u32.to_le_bytes()); private.extend([0; 8]); }
+    private.extend([0; 24]);
+    private.extend([0, 0x13, 0]);
+    private.extend(8u32.to_le_bytes());
+    private.extend([0; 8]);
+    let flag = private.len();
+    private.push(0);
+    let source = private.len();
+    private.extend([0, 6, 1]);
+    private.extend(9u32.to_le_bytes());
+    private.extend([0x5a; 114]); // Opaque remainder; not asserted as a source length.
+    let mut group = Group(StructuredObject { version: 150, public_data: Vec::new(), private_data: private, children: Vec::new() });
+    for value in [0, 1] {
+        group.0.private_data[flag] = value;
+        let before = group.0.private_data.clone();
+        assert_eq!(group.source_identity().unwrap(), SourceIdentity { flag: value, structured: false, version: 0x106, mode: 9 });
+        assert_eq!(group.0.private_data, before, "identity reads preserve the entire unknown remainder");
+        assert!(group.source_state().is_err(), "modern identity cannot masquerade as a legacy snapshot record");
+    }
+    group.0.private_data[flag] = 2;
+    assert!(group.source_identity().is_err());
+    group.0.private_data[flag] = 0;
+    group.0.private_data[source] = 1;
+    assert!(group.source_identity().is_err());
+    group.0.private_data[source] = 0;
+    group.0.private_data[source + 1] = 7;
+    assert!(group.source_identity().is_err(), "future versions remain unclassified");
+    group.0.private_data[source + 1] = 6;
+    let full = group.0.private_data.clone();
+    for bytes in 0..7 {
+        group.0.private_data = full[..source + bytes].to_vec();
+        assert!(group.source_identity().is_err(), "truncated identity {bytes}");
+    }
+    group.0.private_data = full[..source + 7].to_vec();
+    assert_eq!(group.source_identity().unwrap().mode, 9, "only the identity is consumed; no claim of a decoded tail");
+    group.0.private_data = full;
+    group.0.private_data[source + 1] = 2;
+    assert_eq!(group.source_identity().unwrap().version, 0x102);
+    assert!(group.source_state().is_ok());
 }

@@ -31,7 +31,7 @@ const HIDE_WHOLE: i32 = 16;
 /// The bundled face's default approximation; factory glyphs are not bundled.
 pub(super) const FONT: f64 = 11.;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Kind {
     Knob,
     Slider,
@@ -42,6 +42,7 @@ pub enum Kind {
     Label,
     Table,
     TextEdit,
+    FileSelector,
     /// Takes the pointer in Kontakt, shows nothing: `ui_mouse_area`.
     Area,
     /// `ui_level_meter`: Kontakt draws it from its colours, never a picture.
@@ -65,6 +66,7 @@ impl Kind {
             "ui_label" => Self::Label,
             "ui_table" => Self::Table,
             "ui_text_edit" => Self::TextEdit,
+            "ui_file_selector" => Self::FileSelector,
             "ui_mouse_area" => Self::Area,
             "ui_level_meter" => Self::Meter,
             "ui_waveform" => Self::Waveform,
@@ -298,7 +300,8 @@ fn room_height(ui: &Ui, slot: usize) -> f64 {
     let Some(scene) = ui.scene() else { return 0. };
     let (Some(rack), Some(part), Some(stage)) = (scene.surface("rack-view"),
         scene.surface(&format!("part-{slot}")), scene.surface(&format!("stage-{slot}"))) else { return 0. };
-    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.)).max(0.)
+    let tabs = scene.surface(&format!("script-pages-{slot}")).map_or(0., |s| s.frame.size.height);
+    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs).max(0.)
 }
 
 /// Reference cost of the former scalar/table memo scan, measured by the opt-in UI probe.
@@ -371,7 +374,8 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
     }
     let p = cx.p.clone();
     let program = v.program;
-    let generation = p.shared.generation[slot].load(std::sync::atomic::Ordering::Acquire);
+    let Some(shared) = p.shared.part(slot) else { return };
+    let generation = shared.generation.load(std::sync::atomic::Ordering::Acquire);
     let _ = std::thread::Builder::new().name("kontakto-pictures".into()).spawn(move || {
         let mut trace = crate::diagnostics::LoadTrace::new(&path, program, Some(slot));
         trace.detail("operation", "control_pictures");
@@ -383,7 +387,7 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
         let mut view = p.shared.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let v = &mut view.parts[slot];
         if v.instrument.as_ref().is_some_and(|i| i.path == path) && v.program == program
-            && p.shared.generation[slot].load(std::sync::atomic::Ordering::Acquire) == generation
+            && shared.generation.load(std::sync::atomic::Ordering::Acquire) == generation
         {
             if !found.is_empty() {
                 let mut all = (*v.pictures).clone();
@@ -400,6 +404,31 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
             }
         }
     });
+}
+
+/// A published row's stamps cover its properties, menu and dense value. The
+/// interface identity remains the fallback for fixtures without publication stamps.
+fn control_deps(cx: &Cx, slot: usize, interface: &Arc<Interface>, shown: &Shown, scale: (f64, f64), resources: u64, under: Option<f32>) -> u64 {
+    let part = &cx.view.parts[slot];
+    let mut h = DefaultHasher::new();
+    (part.script_epoch, part.script_slot, shown.control, shown.kind).hash(&mut h);
+    if part.live_control_versions.len() == interface.controls.len() {
+        part.live_control_versions[shown.control].hash(&mut h);
+    } else {
+        (Arc::as_ptr(interface) as usize).hash(&mut h);
+    }
+    (shown.x.to_bits(), shown.y.to_bits(), shown.w.to_bits(), shown.h.to_bits(), shown.z,
+        scale.0.to_bits(), scale.1.to_bits(), resources, under.map(f32::to_bits)).hash(&mut h);
+    part.control_value(shown.control).map(f64::to_bits).hash(&mut h);
+    cx.state.held.filter(|&(p, n, _)| (p, n) == (slot, shown.control))
+        .map(|(_, _, value)| value.to_bits()).hash(&mut h);
+    cx.state.menu.as_ref().is_some_and(|menu| matches!(&menu.target,
+        Target::Script { part, control } if *part == slot && *control == shown.control)).hash(&mut h);
+    if shown.kind == Kind::Waveform {
+        attached(part.instrument.as_deref(), &interface.controls[shown.control])
+            .and_then(super::wave::ask).map(|wave| Arc::as_ptr(&wave) as usize).hash(&mut h);
+    }
+    h.finish()
 }
 
 /// `slot`'s performance view as its library drew it, or vectorized: the
@@ -444,6 +473,15 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .collect();
     let part = &cx.view.parts[slot];
     let plans = if vector { super::vector::plan(&interface, &pictures, &drawn, &mut cx.state.vector_assets, |n| part.control_value(n)) } else { Vec::new() };
+    let resources = if vector { 0 } else {
+        // Shared resource dependencies once, rather than scanning each control's
+        // properties or invalidating every row on an unrelated publication.
+        let mut h = DefaultHasher::new();
+        (Arc::as_ptr(&pictures) as usize, part.instrument.as_ref().map(|i| Arc::as_ptr(i) as usize),
+            fitted::generation(slot), cx.selection.appearance).hash(&mut h);
+        interface.fonts.hash(&mut h);
+        h.finish()
+    };
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {
@@ -460,7 +498,18 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
                 Look::Original(under)
             }
         };
-        layers.push(control(ui, cx, slot, shown, c, s, look).at(px(shown.x * s), px(shown.y * s)));
+        let el = if !vector {
+            let Look::Original(under) = look else { unreachable!() };
+            let deps = control_deps(cx, slot, &interface, shown, (s, dev), resources, under);
+            // MUI heats nested memos for hover, focus and pointer capture. A
+            // table publication can therefore keep every other control's
+            // styled/layout/paint subtree without delaying the active drag.
+            ui.memo(format!("kpv-memo-{slot}-{}", shown.control), deps,
+                |ui| control(ui, cx, slot, shown, c, s, look))
+        } else {
+            control(ui, cx, slot, shown, c, s, look)
+        };
+        layers.push(el.at(px(shown.x * s), px(shown.y * s)));
     }
     // Over everything: the value a drag is setting, or a value being typed.
     let find = |n: usize| drawn.iter().find(|(d, _)| d.control == n).map(|(d, _)| d.clone());
@@ -541,6 +590,10 @@ pub(super) fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, O
         Kind::Value if hide & HIDE_VALUE != 0 => String::new(),
         Kind::Value if hide & HIDE_TITLE != 0 || own.is_empty() => format!("{value}"),
         Kind::Value => format!("{own} {value}"),
+        Kind::FileSelector => {
+            let path = prop(c, "$CONTROL_PAR_FILEPATH");
+            if path.is_empty() { "Select file…".into() } else { path.rsplit('/').next().unwrap_or(path).into() }
+        }
         Kind::TextEdit => match c.properties.get("$CONTROL_PAR_VALUE") {
             Some(Value::Text(t)) => t.clone(),
             _ => own,
@@ -887,6 +940,19 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
                 cx.p.shared.edit_control(slot, shown.control, now as i32);
             }
         }
+        Kind::FileSelector => {
+            if ui.get(id.as_str()).activated() {
+                let base = prop(c, "$CONTROL_PAR_BASEPATH");
+                let v = &cx.view.parts[slot];
+                let ask = super::picker::Ask::ScriptFile {
+                    part: slot, epoch: v.script_epoch, slot: v.script_slot, control: shown.control,
+                    from: std::path::PathBuf::from(base.replace('\\', "/")),
+                    file_type: int(c, "$CONTROL_PAR_FILE_TYPE").unwrap_or(0),
+                };
+                if base.is_empty() { cx.state.notice = "File selector has no base directory.".into(); }
+                else if !cx.state.picker.ask(ask) { cx.state.notice = "The file picker is unavailable in this session.".into(); }
+            }
+        }
         Kind::Menu => {
             if ui.get(id.as_str()).activated() {
                 menu::open_under(ui, cx, Target::Script { part: slot, control: shown.control }, &id);
@@ -989,7 +1055,9 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         })
         .named(name);
     let el = if help.is_empty() { el } else { el.tip(help.to_owned()) };
-    let el = if matches!(shown.kind, Kind::Knob | Kind::Slider | Kind::Value) {
+    let el = if shown.kind == Kind::FileSelector {
+        el.focusable().a11y(A11y::Button)
+    } else if matches!(shown.kind, Kind::Knob | Kind::Slider | Kind::Value) {
         el.focusable().a11y(A11y::Slider { value: now, min: lo, max: hi })
     } else {
         el
@@ -1114,7 +1182,7 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
                     ));
                 }
             }
-            Kind::Value | Kind::TextEdit => boxed(&mut d, Role::Field.alpha(1.)),
+            Kind::Value | Kind::TextEdit | Kind::FileSelector => boxed(&mut d, Role::Field.alpha(1.)),
             Kind::Table => {
                 boxed(&mut d, Role::Field.alpha(1.));
                 let baseline = (hi / (hi - lo)).clamp(0., 1.) * (h - 2.) + 1.;

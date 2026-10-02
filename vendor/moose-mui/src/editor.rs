@@ -23,12 +23,20 @@ pub(crate) struct Session<P: Params> {
     changed: Option<Changed>,
     file_drop: Option<FileDrop>,
     cancel: Option<Box<dyn FnMut(&Ui) + Send>>,
+    /// Native window/renderer diagnostics, outside painting and audio.
+    log: Option<Box<dyn FnMut(&str) + Send>>,
     /// The size `build` was designed at, fitted to the window; `None` is
     /// [`MuiEditor::fixed_zoom`].
     design: Option<Size>,
+    /// App zoom, independent of physical host/display scale.
+    user_zoom: Option<Box<dyn Fn(Size) -> f64 + Send>>,
+    closed: Option<Box<dyn FnMut() + Send>>,
 }
 
 impl<P: Params> View for Session<P> {
+    fn log(&mut self, line: &str) {
+        if let Some(log) = &mut self.log { log(line); } else { eprintln!("{line}"); }
+    }
     fn build(&mut self, ui: &mut Ui, _: &Input) -> El {
         let root = (self.build)(ui, &mut self.bridge);
         self.bridge.end_unbound();
@@ -43,9 +51,11 @@ impl<P: Params> View for Session<P> {
         self.bridge.changed() | self.changed.as_mut().is_some_and(|f| f())
     }
     fn zoom(&self, window: Size) -> f64 {
-        self.design.map_or(1.0, |d| {
+        let fit = self.design.map_or(1.0, |d| {
             (window.width / d.width).min(window.height / d.height)
-        })
+        });
+        let user = self.user_zoom.as_ref().map_or(1.0, |f| f(window));
+        fit * if user.is_finite() && user > 0.0 { user } else { 1.0 }
     }
     fn request_resize(&mut self, width: u32, height: u32) -> bool {
         self.bridge
@@ -142,7 +152,10 @@ impl<P: Params> MuiEditor<P> {
             changed: None,
             file_drop: None,
             cancel: None,
+            log: None,
             design: Some(size),
+            user_zoom: None,
+            closed: None,
         };
         Self {
             shared: Arc::new(Mutex::new(Shared { ui, view: session })),
@@ -170,6 +183,13 @@ impl<P: Params> MuiEditor<P> {
     #[must_use]
     pub fn changed(self, f: impl FnMut() -> bool + Send + 'static) -> Self {
         lock(&self.shared).view.changed = Some(Box::new(f));
+        self
+    }
+
+    /// Receive native window and GPU startup/failure diagnostics.
+    #[must_use]
+    pub fn on_log(self, f: impl FnMut(&str) + Send + 'static) -> Self {
+        lock(&self.shared).view.log = Some(Box::new(f));
         self
     }
 
@@ -217,6 +237,21 @@ impl<P: Params> MuiEditor<P> {
     #[must_use]
     pub fn fixed_zoom(self) -> Self {
         lock(&self.shared).view.design = None;
+        self
+    }
+
+    /// App-controlled zoom. `window` is the unzoomed host logical size, so
+    /// physical DPI and editor resizing keep their existing meanings.
+    #[must_use]
+    pub fn user_zoom(self, f: impl Fn(Size) -> f64 + Send + 'static) -> Self {
+        lock(&self.shared).view.user_zoom = Some(Box::new(f));
+        self
+    }
+
+    /// Finish app-owned persistence on close/drop, outside frame building.
+    #[must_use]
+    pub fn on_close(self, f: impl FnMut() + Send + 'static) -> Self {
+        lock(&self.shared).view.closed = Some(Box::new(f));
         self
     }
 
@@ -288,6 +323,7 @@ impl<P: Params> Editor for MuiEditor<P> {
             // And the app's own (a held note): the window's last event may
             // never come, and a host may build a fresh editor next time.
             s.view.cancel(&s.ui);
+            if let Some(f) = &mut s.view.closed { f(); }
         }
         self.close_window();
     }
@@ -325,8 +361,12 @@ impl<P: Params> Editor for MuiEditor<P> {
 
 impl<P: Params> Drop for MuiEditor<P> {
     fn drop(&mut self) {
-        // The host may have torn its side down already: no callbacks here.
-        lock(&self.shared).view.bridge.detach();
+        // The host may have torn its side down already: no host callbacks here.
+        {
+            let mut s = lock(&self.shared);
+            s.view.bridge.detach();
+            if let Some(f) = &mut s.view.closed { f(); }
+        }
         self.close_window();
     }
 }

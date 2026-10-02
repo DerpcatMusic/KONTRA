@@ -22,6 +22,8 @@ pub enum Target {
     Part(usize),
     /// How a rack slot shows its library's performance view.
     View(usize),
+    /// Actual NKSN files for this base instrument.
+    Snapshots(usize),
     /// A key on the keyboard.
     Key(u8),
     /// The editor's own menu in the top bar.
@@ -69,9 +71,11 @@ pub enum Command {
     Duplicate(usize),
     Remove(usize),
     Rename(usize),
+    RenameLibrary(String),
     /// Show a part's envelope, filter and effects in the Sound tab.
     EditSound(usize),
     LoadSnapshot(usize),
+    SelectSnapshot { slot: usize, source: (String, u32, String), path: String },
     Mute(usize),
     Solo(usize),
     /// How a part shows its performance view ([`crate::plugin::Part::view`]).
@@ -227,6 +231,8 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             let chosen = cx.settings.covers.get(&dir);
             let own = cx.view.artwork.contains_key(name);
             let mut items = vec![
+                act("Rename…", "Display name only; files stay where they are", Command::RenameLibrary(dir.clone())),
+                Item::Rule,
                 act("Move library up", "", Command::MoveLibrary(dir.clone(), -1)),
                 act("Move library down", "", Command::MoveLibrary(dir.clone(), 1)),
                 Item::Rule,
@@ -289,6 +295,25 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Reveal in folder", "", Command::Reveal(path.clone())),
                 act("Copy path", "", Command::CopyPath(path.clone())),
             ]);
+            items
+        }
+        Target::Snapshots(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot).filter(|p| p.snapshot_base()) else { return Vec::new(); };
+            let mut items = Vec::new();
+            if let Some(catalog) = cx.view.shelf.snapshots.get(Path::new(&part.path)) {
+                for path in &catalog.paths {
+                    let label = super::header::stem(&path.to_string_lossy());
+                    let category = path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy();
+                    items.push(Item::Act {
+                        label: format!("{label} · {category}"),
+                        hint: "",
+                        on: path == Path::new(&part.snapshot),
+                        command: Command::SelectSnapshot { slot: *slot, source: part.source(), path: path.to_string_lossy().into_owned() },
+                    });
+                }
+            }
+            if !items.is_empty() { items.push(Item::Rule); }
+            items.push(act("Load snapshot…", "", Command::LoadSnapshot(*slot)));
             items
         }
         Target::View(slot) => {
@@ -690,7 +715,11 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
         run(ui, cx, command);
         return None;
     }
-    let x = menu.at.x.min(window.width - WIDTH - TIGHT).max(TIGHT);
+    // Authored snapshot names and categories can be much longer than built-in
+    // commands. Other popup sizes keep their existing law.
+    let width = (if matches!(menu.target, Target::Snapshots(_)) { WIDTH * 1.5 } else { WIDTH })
+        .min(window.width - 2. * TIGHT);
+    let x = menu.at.x.min(window.width - width - TIGHT).max(TIGHT);
     let y = if menu.at.y + height > window.height - TIGHT {
         (menu.at.y - height).max(TIGHT)
     } else {
@@ -704,8 +733,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
             .gap(0)
             .align(Align::Stretch)
             .pad(TIGHT)
-            .w(WIDTH)
-            .max_size(Size::new(WIDTH, window.height - 2. * TIGHT))
+            .w(width)
+            .max_size(Size::new(width, window.height - 2. * TIGHT))
             .scroll()
             .fill(Role::Level(3))
             .stroke(Role::Ink.alpha(0.14))
@@ -724,14 +753,30 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
     match command {
         Command::Open(path) => cx.open(Path::new(&path)),
         Command::OpenNew(path) => cx.add(path),
-        Command::Reveal(path) => { if let Err(error) = reveal(Path::new(&path)) { cx.state.notice = error; } },
+        Command::Reveal(path) => {
+            if !cx.state.picker.ask(super::picker::Ask::Reveal(path.into())) {
+                cx.state.notice = "Could not start Reveal: another file operation is still running. Retry when it finishes.".into();
+            }
+        },
         Command::CopyPath(path) => ui.set_clipboard(path),
         Command::Favorite(path) => cx.toggle_favorite(&path),
         Command::Duplicate(slot) => cx.duplicate(slot),
         Command::Remove(slot) => cx.remove(slot),
+        Command::RenameLibrary(dir) => {
+            if let Some(library) = cx.view.shelf.libraries.iter().find(|l| l.dir == Path::new(&dir)) {
+                cx.state.browse.renaming = Some((dir, cx.settings.library_name(library)));
+            }
+        }
         Command::Rename(slot) => {
             cx.show(slot);
             cx.state.renaming = Some((slot, super::rack::name(cx, slot)));
+        }
+        Command::SelectSnapshot { slot, source, path } => {
+            if cx.selection.parts.get(slot).is_some_and(|part| part.source() == source) {
+                cx.snapshot(slot, path);
+            } else {
+                cx.state.notice = "Snapshot ignored: the base instrument changed while its menu was open.".into();
+            }
         }
         Command::LoadSnapshot(slot) => {
             if let Some(part) = cx.selection.parts.get(slot) {
@@ -905,19 +950,124 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
 }
 
 /// Show `path` in the system's file manager.
+/// Called by the owned file-operation worker, never while painting.
 pub fn reveal(path: &Path) -> Result<(), String> {
-    let folder = path.parent().unwrap_or(path);
+    let target = reveal_target(path);
+    let result = match &target {
+        Ok((target, directory)) => reveal_native(target, *directory),
+        Err(error) => Err(error.clone()),
+    };
+    crate::diagnostics::event(
+        if result.is_err() { crate::diagnostics::LogLevel::Warning } else { crate::diagnostics::LogLevel::Info },
+        "browser", if result.is_err() { "reveal_failed" } else { "reveal_started" },
+        serde_json::json!({"path":path, "resolved":target.as_ref().ok().map(|(p, _)| p), "reason":result.as_ref().err()}),
+    );
+    result
+}
+
+fn reveal_target(path: &Path) -> Result<(std::path::PathBuf, bool), String> {
+    let target = path.canonicalize().map_err(|error| format!("Could not reveal {}: {error}", path.display()))?;
+    let metadata = target.metadata().map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
+    if !(metadata.is_file() || metadata.is_dir()) {
+        return Err(format!("Could not reveal {}: this is neither a file nor a folder", path.display()));
+    }
+    Ok((target, metadata.is_dir()))
+}
+
+fn reveal_native(target: &Path, directory: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    let spawned = std::process::Command::new("open").arg("-R").arg(path).spawn();
+    let spawned = {
+        let mut command = std::process::Command::new("open");
+        if !directory { command.arg("-R"); }
+        command.arg(&target).spawn()
+    };
     #[cfg(target_os = "windows")]
-    let spawned = std::process::Command::new("explorer")
-        .arg(format!("/select,{}", path.display()))
-        .spawn();
+    let spawned = {
+        use std::os::windows::{ffi::{OsStrExt, OsStringExt}, process::CommandExt};
+        let units = windows_shell_units(&target.as_os_str().encode_wide().collect::<Vec<_>>())
+            .map_err(|error| format!("Could not reveal {}: {error}", target.display()))?;
+        let mut command = std::process::Command::new("explorer.exe");
+        if directory {
+            command.arg(std::ffi::OsString::from_wide(&units));
+        } else {
+            // Explorer parses its own comma syntax. Quoting the whole /select
+            // argument via Command::arg can send a spaced path to Documents.
+            // Windows file names cannot contain a quote; canonicalization has
+            // already validated this filesystem path.
+            let mut selected: Vec<u16> = "/select,\"".encode_utf16().collect();
+            selected.extend_from_slice(&units); selected.push(b'"' as u16);
+            command.raw_arg(std::ffi::OsString::from_wide(&selected));
+        }
+        command.spawn()
+    };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let spawned = std::process::Command::new("xdg-open").arg(folder).spawn();
-    let _ = folder;
-    // Reap it off this thread so it leaves no zombie behind.
-    let mut child = spawned.map_err(|e| format!("Could not open the log/file folder: {e}"))?;
-    std::thread::spawn(move || child.wait());
+    let spawned = std::process::Command::new("xdg-open")
+        .arg(if directory { target } else { target.parent().unwrap_or(target) }).spawn();
+    let mut child = spawned.map_err(|error| format!("Could not start the file manager for {}: {error}", target.display()))?;
+    // Explorer may hand this request to an existing shell and its exit code
+    // does not confirm which window opened. Closing its handle is sufficient
+    // on Windows; Unix children are reaped by this owned worker.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let status = child.wait().map_err(|error| format!("File manager failed for {}: {error}", target.display()))?;
+        if !status.success() { return Err(format!("File manager could not reveal {}: {status}", target.display())); }
+    }
+    #[cfg(target_os = "windows")]
+    let _ = &mut child;
     Ok(())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_shell_units(path: &[u16]) -> Result<Vec<u16>, String> {
+    // The filesystem's extended namespace is not Explorer's shell namespace.
+    let slash = b'\\' as u16;
+    if path.starts_with(&[slash, slash, b'.' as u16, slash]) {
+        return Err("Reveal cannot open a Windows device path".into());
+    }
+    if !path.starts_with(&[slash, slash, b'?' as u16, slash]) { return Ok(path.to_vec()); }
+    let rest = &path[4..];
+    if rest.len() >= 4 && rest[..4].iter().zip(b"UNC\\").all(|(&u, &b)| u == b as u16 || u == b.to_ascii_lowercase() as u16) {
+        let mut unc = vec![slash, slash]; unc.extend_from_slice(&rest[4..]); return Ok(unc);
+    }
+    if rest.len() >= 3 && matches!(rest[0], 65..=90 | 97..=122) && rest[1] == b':' as u16 && rest[2] == slash {
+        return Ok(rest.to_vec());
+    }
+    Err("Reveal cannot open this Windows extended path namespace".into())
+}
+
+#[cfg(test)]
+mod reveal_tests {
+    use super::*;
+
+    #[test]
+    fn reveal_keeps_native_folders_and_rejects_missing_targets() {
+        let dir = std::env::temp_dir().join(format!("kontra-reveal-{}", std::process::id())).join("Library With Spaces – Bells");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Preset.nki");
+        std::fs::write(&file, []).unwrap();
+        assert_eq!(reveal_target(&dir).unwrap(), (dir.canonicalize().unwrap(), true));
+        assert_eq!(reveal_target(&file).unwrap(), (file.canonicalize().unwrap(), false));
+        let missing = dir.join("Not Here.nki");
+        assert!(reveal_target(&missing).unwrap_err().contains(&missing.display().to_string()));
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn explorer_paths_preserve_drive_unc_spaces_and_unicode() {
+        for (from, to) in [
+            (r"\\?\D:\Sound Sets\Café Bells", r"D:\Sound Sets\Café Bells"),
+            (r"\\?\UNC\server\share\Sound Sets\Bells", r"\\server\share\Sound Sets\Bells"),
+            (r"\\server\share\Sound Sets", r"\\server\share\Sound Sets"),
+            (r"C:\Sound Sets", r"C:\Sound Sets"),
+        ] {
+            let units: Vec<_> = from.encode_utf16().collect();
+            assert_eq!(windows_shell_units(&units).unwrap(), to.encode_utf16().collect::<Vec<_>>());
+        }
+        for path in [r"\\.\PhysicalDrive0", r"\\?\Volume{opaque}\"] {
+            assert!(windows_shell_units(&path.encode_utf16().collect::<Vec<_>>()).is_err());
+        }
+        let mut native: Vec<_> = r"\\?\C:\Library\".encode_utf16().collect();
+        native.push(0xd800); // Native Windows names need not be valid Rust UTF-8.
+        assert_eq!(windows_shell_units(&native).unwrap(), native[4..]);
+    }
 }

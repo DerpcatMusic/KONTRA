@@ -4,6 +4,45 @@ KONTRA is under active development. Keep changes small, describe the behavior th
 change, and report the checks actually run. Do not commit proprietary sample banks,
 local logs, support reports, build output or machine-specific configuration.
 
+## Rights and provenance
+
+Submit original work that you are entitled to contribute. Intentional
+contributions to project-authored code follow Apache-2.0 section 5;
+third-party code retains its own license. A public GitHub repository is
+not sufficient evidence of redistribution rights. Preserve copyright,
+license and NOTICE files and clearly identify modifications to vendored code.
+
+For a dependency, copied implementation or interoperability change, record
+its origin: repository/document URL, exact revision, author, applicable
+license or written permission, and the information actually used. Distinguish
+format observations and mathematical facts from copied source expression.
+Record access to reference implementations accurately; do not describe
+existing work as clean-room work without supporting development records.
+Keep lawful-acquisition and permission records privately; never publish
+receipts, account information or library access values as proof.
+
+Do not submit Kontakt executable code, leaked SDKs, patches to remove
+activation checks, account credentials, serial numbers, library-key lists,
+commercial instruments/samples, extracted scripts, impulse responses,
+artwork or manuals without appropriate rights. Use synthetic fixtures or
+material with an explicit redistribution grant. A library purchase or a
+personal music-production license does not establish fixture-sharing rights.
+Keep licensing questions visible; do not remove provenance to pass a scan.
+
+Bug reports should contain reproduction steps and the minimum reviewed
+diagnostics needed. Commercial presets, `.nicnt` access metadata, caches,
+screenshots of library artwork and converted instruments may contain
+protected or private material. Do not attach them by default. Local
+testing does not authorize uploading its inputs or outputs to an issue.
+The maintainer's lawful-interoperability purpose is not permission to
+publish content or facilitate unauthorized use. Do not add piracy links,
+shared credentials, or instructions for acquiring unlicensed libraries.
+
+Before distributing binaries, regenerate the [license/source bundle](THIRD_PARTY.md#distribution-notices-and-assets)
+from the locked dependency graph and review new licenses, native components
+and vendored changes. The required `ni-file` permission and focused GPL
+reference review remain unresolved; a successful build is not clearance.
+
 ## Local workflow
 
 The declared minimum is Rust 1.92, matching the pinned plugin framework. CI and contributors
@@ -38,20 +77,23 @@ Update the compatibility notes when supported behavior or a known limit changes.
 
 The root `[package].version` in `Cargo.toml` is authoritative. The root package in
 `Cargo.lock`, plugin descriptors and bundle metadata must agree. Do not add a
-separate version literal or a `moose.toml` override. The next planned release is
-`0.2.0`; its changelog is explicitly unreleased until publication.
+separate version literal or a `moose.toml` override. Published snapshots keep their
+original identity; the reviewed fix ledger starts after the shipped `0.3.0` baseline.
 
 Follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). During `0.y.z`
 development, use a deliberate minor bump for incompatible behavior or substantial
 new capabilities and a patch bump for compatible fixes. After `1.0.0`, incompatible
 public API/behavior changes require a major bump, compatible additions a minor bump,
 and compatible fixes a patch bump. A commit does not automatically increment the
-package version. The release maintainer chooses the next version after reviewing
-the accumulated changes, updates the changelog, and includes both in the release
-preparation commit:
+package version. `release-fixes.json` records stable logical defect IDs, source
+checkpoints, validation and explicit maintainer acceptance. Each accepted ID advances
+the baseline patch once: ten accepted fixes after `0.3.0` produce `0.3.10`.
+Features, repeated commits, test follow-ups and pending fixes do not increase that
+count. Review and accept the shipped fix IDs, update the changelog, then prepare
+the authoritative Cargo and lockfile version:
 
 ```sh
-python3 tools/version.py set 0.2.0 --write
+python3 tools/version.py fixes --write
 python3 tools/version.py check
 ```
 
@@ -65,7 +107,7 @@ commit or imply complete Kontakt compatibility.
 
 ## Nightly builds and source identity
 
-Nightlies are prereleases such as `0.2.0-nightly.20261002.g012345abcdef`. The date
+Nightlies are prereleases such as `0.3.10-nightly.20261002.g012345abcdef`. The date
 comes from the source epoch in UTC and the `g` prefix keeps a hexadecimal revision
 from becoming an invalid numeric SemVer identifier. An identical revision and epoch
 produce the same version. CI prepares it in its disposable checkout:
@@ -79,7 +121,12 @@ python3 tools/version.py check --tag "v$(python3 tools/version.py check)"
 The helper rewrites only the root package version and matching lockfile entry. This
 makes the build's tracked source state `modified`, which the identity reports
 truthfully. Ignore/untracked build artifacts do not mark the source modified. A
-nightly is not a new stable release and does not require a fabricated daily changelog.
+nightly includes reviewed Added, Changed, Fixed and Known limits deltas from the
+previous published source, the complete shipped public commit messages and merged
+PR descriptions, and a comparison link. The versioned changelog is also retained
+inside `release-manifest.json`. Keep every accepted fix described in CHANGELOG.md;
+never describe a pending candidate as shipped. An unchanged-source rerun preserves
+the published notes and assets.
 Nightly packaging retains its documented bounded snapshot history; stable tags and
 assets follow the stable release policy.
 
