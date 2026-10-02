@@ -3680,3 +3680,30 @@ fn instrument_rack_filter_eq_and_stereo_controls_change_playing_audio() {
     assert_eq!(e.fx().param(FxRack::Insert, 0, FxParam::Filter(fx::FilterParam::Type)), Some(3.0));
     assert!(e.script().unwrap().diagnostics().is_empty(), "{:?}", e.script().unwrap().diagnostics());
 }
+
+#[test]
+fn independent_listener_disable_and_delivery_do_not_allocate_on_audio() {
+    let mut e = scripted("on init\ndeclare ui_slider $ms(0,10000)\ndeclare ui_slider $beat(0,10000)\ndeclare ui_switch $disable\nset_listener($NI_SIGNAL_TIMER_MS,1000)\nset_listener($NI_SIGNAL_TIMER_BEAT,4)\nend on\non listener\nif($NI_SIGNAL_TYPE=$NI_SIGNAL_TIMER_MS)\ninc($ms)\nelse\ninc($beat)\nend if\nend on\non ui_control($disable)\nchange_listener_par($NI_SIGNAL_TIMER_MS,0)\nend on");
+    let (mut left,mut right)=([0.;512],[0.;512]);
+    assert_eq!(allocations(|| {
+        for _ in 0..20 {
+            e.begin_audio_block(512,1,true);
+            e.render(&mut left,&mut right);
+        }
+    }),0);
+    let ui=e.script().unwrap().interface(0);
+    assert_eq!(ui.controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(213));
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(1));
+    assert_eq!(allocations(|| {
+        e.ui_control(0,2,1);
+        for _ in 0..20 {
+            e.begin_audio_block(512,1,true);
+            e.render(&mut left,&mut right);
+        }
+    }),0);
+    let rt=e.script().unwrap();
+    let ui=rt.interface(0);
+    assert_eq!(ui.controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(213));
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(3));
+    assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+}
