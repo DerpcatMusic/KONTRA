@@ -864,6 +864,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 _ => false,
             };
             if !valid {
+                m.env.fault_context = Some(super::runtime::FaultContext::Listener {
+                    change: f == ChangeListenerPar,
+                    signal,
+                    parameter: value,
+                });
                 return Err(Fault("Invalid listener signal/parameter"));
             }
             let l = &mut m.slot.listener;
