@@ -2716,11 +2716,10 @@ fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
         ExactEventBody::Note { kind, address, velocity } => on(kind,address,velocity,true,0.),
         // VST3 tuning is cents; the engine's expression is semitones. Carry
         // it with the onset so only its newly admitted host owner receives it.
-        // Length remains only a hint; explicit NoteOff is mandatory. Preserve
-        // the existing negative-hint guard (the SDK defines no signed range).
-        ExactEventBody::DetailedNote { kind, address, velocity, tuning, length } => {
-            if matches!(kind,ExactNoteKind::On) && length.is_some_and(|n| n < 0) { ExactInput::Unsupported }
-            else { on(kind,address,f64::from(velocity),false,tuning / 100.) }
+        // Length is unused metadata with no SDK-defined signed range. It never
+        // schedules release here; explicit NoteOff remains mandatory.
+        ExactEventBody::DetailedNote { kind, address, velocity, tuning, .. } => {
+            on(kind,address,f64::from(velocity),false,tuning / 100.)
         },
         ExactEventBody::NoteExpression { expression_id:5, .. }
         | ExactEventBody::NormalizedNoteExpression { expression_id:5, .. } => ExactInput::Brightness,
@@ -7002,7 +7001,7 @@ end on"#;
         use crate::{audio::Sample, import::{Group,Zone}};
         let address=ExactNoteAddress::from_vst3_signed(0,4,60,42);
         let mut reference=None;
-        for length in [0,16,12000] {
+        for length in [0,16,12000,-1,i32::MIN] {
             let params=SamplerParams::new();
             let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
             dsp.rack.parts[0].reset(48000.);
@@ -7040,7 +7039,7 @@ end on"#;
             assert!(!dsp.rack.parts[0].host_key_held(4,60),"explicit NoteOff failed to close the owner");
             assert_eq!(dsp.unsupported_host_expression,0);
         }
-        for (length,velocity,tuning) in [(Some(-1),0.8,0.),(Some(16),f32::NAN,0.),(Some(16),0.8,f32::NAN)] {
+        for (length,velocity,tuning) in [(Some(16),f32::NAN,0.),(Some(16),0.8,f32::NAN)] {
             let mut invalid=EventList::with_capacity(1);
             invalid.try_push_exact(ExactEvent::new(0,ExactEventBody::DetailedNote {
                 kind:ExactNoteKind::On,address,velocity,tuning,length })).unwrap();
