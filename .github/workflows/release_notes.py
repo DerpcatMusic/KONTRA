@@ -5,6 +5,7 @@ import re
 import subprocess
 
 SECTIONS = ("Added", "Changed", "Fixed", "Known limits")
+REVIEWED = "Reviewed source changes"
 
 
 def entry(text, version):
@@ -16,7 +17,7 @@ def entry(text, version):
 
 
 def sections(text):
-    result = {name: [] for name in SECTIONS}
+    result = {name: [] for name in (*SECTIONS, REVIEWED)}
     unreleased = next((p for p in re.split(r"(?m)^## ", text)[1:]
                        if "unreleased" in p.partition("\n")[0].lower()), "")
     for part in re.split(r"(?m)^### ", unreleased)[1:]:
@@ -39,12 +40,16 @@ def render(repo, revision, version, checkpoint, current, previous_text, previous
         body = frozen
     else:
         now, before = sections(current), sections(previous_text)
-        assert any(now.values()), "CHANGELOG.md must contain reviewed release notes"
+        assert any(now[name] for name in SECTIONS), "CHANGELOG.md must contain reviewed release notes"
         lines = [f"## Changelog — {version}", "", f"Reviewed export checkpoint: `{checkpoint}`.", ""]
         for name in SECTIONS:
             old = {normalized(b) for b in before[name]}
             changes = now[name] if name == "Known limits" else [b for b in now[name] if normalized(b) not in old]
             lines += [f"### {name}", "", "\n\n".join(changes) or "- No reviewed changes in this category since the previous release.", ""]
+        old = {normalized(b) for b in before[REVIEWED]}
+        reviewed = [b for b in now[REVIEWED] if normalized(b) not in old]
+        if reviewed:
+            lines += [f"### {REVIEWED}", "", "\n\n".join(reviewed), ""]
         body = "\n".join(lines).strip()
     if previous:
         base = previous["target_commitish"]
