@@ -302,8 +302,8 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                     let label = super::header::stem(&path.to_string_lossy());
                     let category = path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy();
                     items.push(Item::Act {
-                        label,
-                        hint: category.into_owned(),
+                        label: format!("{label} · {category}"),
+                        hint: "",
                         on: path == Path::new(&part.snapshot),
                         command: Command::SelectSnapshot { slot: *slot, source: part.source(), path: path.to_string_lossy().into_owned() },
                     });
@@ -712,8 +712,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
         run(ui, cx, command);
         return None;
     }
-    // Snapshot categories sit beside authored names, which can be much longer
-    // than the built-in commands. Other popup sizes keep their existing law.
+    // Authored snapshot names and categories can be much longer than built-in
+    // commands. Other popup sizes keep their existing law.
     let width = (if matches!(menu.target, Target::Snapshots(_)) { WIDTH * 1.5 } else { WIDTH })
         .min(window.width - 2. * TIGHT);
     let x = menu.at.x.min(window.width - width - TIGHT).max(TIGHT);
