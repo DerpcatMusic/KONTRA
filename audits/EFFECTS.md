@@ -367,7 +367,8 @@ Amplifier sides, changed native control readback and allocation guards; validati
 of this follow-up is pending. No locally installed authentic group preset of these
 three families was available for a control/audio check.
 
-Group Transient Master similarly reuses the existing fixed rack envelope-shaping
+Group [Transient Master](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/effect-reference)
+similarly reuses the existing fixed rack envelope-shaping
 model and its decoded input/attack/sustain/smooth fields with known Amplifier
 placement. Its constructor and reset are shared with the rack. One authored
 regression compares burst attack/body/silence PCM and native attack/sustain edits
