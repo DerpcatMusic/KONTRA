@@ -204,7 +204,9 @@ fn groups(groups: &[Group]) -> Result<Vec<u8>> {
         }
         let mut children = chunk(0x3b, &mods);
         children.extend(chunk(0x3c, &hex(GROUP_EXTERNAL_MODS)));
-        children.extend(chunk(0x38, &[0]));
+        let mut criteria = Vec::new();
+        g.start_criteria.write(&mut criteria)?;
+        children.extend(chunk(0x38, &criteria));
         let mut dynamics = vec![0, 0x10, 0];
         dynamics.resize(259, 0);
         children.extend(chunk(0x4a, &dynamics));
@@ -519,6 +521,44 @@ pub(crate) fn md5(data: &[u8]) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_start_conditions_survive_new_instrument_writing() {
+        use ni_file::kontakt::objects::{GroupList, StartCriteriaList};
+        use std::io::Cursor;
+        // Authored raw IDs deliberately include an unknown mode/operator.
+        let mut raw = vec![0b1000, 0, 0x70, 0];
+        raw.extend(99i32.to_le_bytes());
+        raw.extend((-7i32).to_le_bytes());
+        for value in [24i16, 25, 64, 0, 127] { raw.extend(value.to_le_bytes()); }
+        for value in [2i32, -1, -2] { raw.extend(value.to_le_bytes()); }
+        raw.push(0);
+        raw.extend([0xA5, 0, 0xFF]);
+        let group = crate::import::Group {
+            name: "Authored condition".into(),
+            start_criteria: StartCriteriaList::read(Cursor::new(&raw)).unwrap(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&group).unwrap();
+        let saved: crate::import::Group = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(saved.start_criteria, group.start_criteria);
+        let mut older = json;
+        older.as_object_mut().unwrap().remove("start_criteria");
+        let older: crate::import::Group = serde_json::from_value(older).unwrap();
+        assert_eq!(older.start_criteria, StartCriteriaList::default());
+        let bytes = super::container(&super::Program {
+            name: "Authored", author: "Test", groups: &[group],
+            zones: &[], samples: &[], script: None,
+        }, "Authored.nki").unwrap();
+        let file = ni_file::NIFile::read(Cursor::new(bytes)).unwrap();
+        let chunks = ni_file::kontakt::KontaktChunks::read(Cursor::new(file.inner_preset().unwrap())).unwrap();
+        let program = chunks.program().unwrap().unwrap();
+        let groups = GroupList::try_from(program.0.find_first(0x33).unwrap()).unwrap();
+        let criteria = groups.groups[0].params().unwrap().start_criteria;
+        let mut written = Vec::new();
+        criteria.write(&mut written).unwrap();
+        assert_eq!(written, raw, "NKI writer retains native fields without interpreting them");
+    }
+
     #[test]
     fn checksums_match_their_references() {
         let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();

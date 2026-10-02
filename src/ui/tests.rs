@@ -279,20 +279,59 @@ fn selected_slot(p: &SamplerParams) -> usize {
 /// the name shrinks before anything leaves the rack.
 #[test]
 fn a_header_is_one_line_at_any_width() {
-    for width in [900., 1180.] {
-        let p = Arc::new(SamplerParams::new());
-        p.selection.write().unwrap().parts.push(Part {
-            path: "/virtual/Library/Una Corda Pure.nki".into(),
-            ..Default::default()
-        });
+    for width in [900., 1180., 1920.] {
+        let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_knob $tone(0,100,1)\nend on");
+        {
+            let mut selection = write(&p.selection);
+            let part = &mut selection.parts[0];
+            part.name = "Analog Strings · Extended performance instrument".into();
+            part.channel = 15;
+            part.port = 3;
+            part.output = 3;
+            part.output_manual = true;
+        }
+        {
+            let mut view = lock(&p.shared.view);
+            view.files = Arc::new(vec![
+                "/virtual/Library/Alpha.nki".into(), "/virtual/Library/Solo.nki".into(), "/virtual/Library/Zeta.nki".into(),
+            ]);
+            // The view selector is available for authored artwork, rather
+            // than an unskinned script that only offers KONTRA's controls.
+            view.parts[0].wallpaper = Some(Arc::new(artwork::Picture {
+                frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632,268,vec![40;632*268*4]).unwrap())],
+                stretch: [false;2], atlas: None,
+            }));
+        }
         let mut h = Harness::new(&p, width, 600.);
         h.idle(2);
         let scene = h.ui.scene().unwrap();
-        let frame = |id: &str| scene.surface(id).unwrap().frame;
-        let (header, name, port, remove) = (frame("header-0"), frame("name-0"), frame("midi-0"), frame("remove-0"));
+        let frame = |id: &str| scene.surface(id).unwrap_or_else(|| panic!("missing header control {id} at window width {width}")).frame;
+        let (header, name, port) = (frame("header-0"), frame("name-0"), frame("midi-0"));
         assert!((header.size.height - (rack::SLIM - 1.)).abs() < 0.5, "at {width}: {header:?}");
+        assert!(name.size.width >= 120. - 0.5,"the title remains meaningful at {width}: {name:?}, {header:?}");
         assert!(port.y < name.y + name.size.height && name.y < port.y + port.size.height, "at {width}");
-        assert!(remove.x + remove.size.width <= header.x + header.size.width, "at {width}");
+        for id in ["name-0","collapse-0","preset-prev-0","preset-next-0","midi-0","output-0","pan-0","volume-0","tune-0","solo-0","mute-0","view-0","more-0"] {
+            let f = frame(id);
+            assert!(f.x >= header.x - 0.5 && f.x + f.size.width <= header.x + header.size.width + 0.5,
+                "{id} remains inside the header at {width}: {f:?}, {header:?}");
+        }
+        if let Some(remove) = scene.surface("remove-0") {
+            assert!(remove.frame.x + remove.frame.size.width <= header.x + header.size.width + 0.5,"at {width}");
+        }
+        h.press("midi-0");
+        h.press("menu-item-1");
+        assert_eq!(read(&p.selection).parts[0].channel,0,"compact MIDI retains its routing menu");
+        h.press("output-0");
+        h.press("menu-item-3");
+        assert_eq!(read(&p.selection).parts[0].output,1,"compact output retains its routing menu");
+        h.press("mute-0");
+        assert!(read(&p.selection).parts[0].mute,"mix controls remain interactive");
+        h.press("preset-next-0");
+        assert_eq!(read(&p.selection).parts[0].path,"/virtual/Library/Zeta.nki","preset navigation remains interactive");
+        h.press("more-0");
+        let last = (0..64).filter(|n| h.ui.scene().unwrap().surface(&format!("menu-item-{n}")).is_some()).last().unwrap();
+        h.press(&format!("menu-item-{last}"));
+        assert!(read(&p.selection).parts[0].path.is_empty(),"Remove remains reachable from the Part menu at {width}");
     }
 }
 
