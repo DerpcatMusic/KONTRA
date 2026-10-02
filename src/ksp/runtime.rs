@@ -746,6 +746,7 @@ pub struct Runtime {
     states: Vec<SlotState>,
     domain_map: [u8; 16],
     domain_count: u8,
+    domain_mask: Option<u16>,
     pub env: Env,
     stacks: Stacks,
     threads: Vec<Thread>,
@@ -785,7 +786,8 @@ impl Runtime {
     /// Prepare performance storage off the audio thread, after all slots load.
     /// Only assigned Channel-mode origins need a bank; the UI and scheduler stay shared.
     pub fn prepare_channel_domains(&mut self, channels: u16) {
-        assert_eq!(self.domain_count, 1, "channel domains are prepared once per loaded runtime");
+        assert!(self.domain_mask.is_none(), "channel domains are prepared once per loaded runtime");
+        self.domain_mask = Some(channels);
         let count = channels.count_ones().max(1) as u8;
         let mut next = 0;
         for c in 0..16 {
@@ -845,6 +847,7 @@ impl Runtime {
             states: Vec::new(),
             domain_map: [0; 16],
             domain_count: 1,
+            domain_mask: None,
             env: Env::new(host, persisted),
             stacks: Stacks::with_capacity(1024),
             threads: vec![Thread::default(); THREAD_CAPACITY],
