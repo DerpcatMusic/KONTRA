@@ -1844,6 +1844,12 @@ fn the_original_view_edits_the_script_and_switches() {
 #[test]
 fn popup_retires_tooltips_and_consumes_its_outside_dismissal_click() {
     let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $switch\nmove_control_px($switch,10,120)\nend on");
+    {
+        let image = Arc::new(moose::mui::mui::scene::Image::rgba(632, 200, vec![40; 632 * 200 * 4]).unwrap());
+        p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
+            frames: vec![image], stretch: [false; 2], atlas: None,
+        }));
+    }
     let mut h = Harness::new(&p, 1180., 760.);
     let trigger = center(&h.ui, "view-0");
     for _ in 0..60 { h.tick(pointer(trigger, false)); }
