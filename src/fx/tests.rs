@@ -26,7 +26,7 @@ fn convolution(ir: &[f32]) -> Effect {
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
-        // Raw-gain fixtures deliberately disable unsupported native Auto Gain.
+        // Raw-gain fixtures deliberately disable native Auto Gain.
         b.extend([0, 0, 1, 1, 0]);
         b.extend([0u8; 8]);
         b.extend(0i32.to_le_bytes());
@@ -84,8 +84,66 @@ fn convolution_reverse_preserves_asymmetric_ir_gain_predelay_and_rate_without_he
     c.flags[1] = true;
     c.flags[4] = true;
     let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
-    assert!(fx.warnings().iter().any(|w| w.contains("Auto Gain is not applied")));
+    assert!(fx.warnings().iter().any(|w| w.contains("Auto Gain uses the approximated IR")));
     assert!(fx.warnings().iter().any(|w| w.contains("Volume Envelope is not applied")));
+}
+
+#[test]
+fn convolution_auto_gain_uses_prepared_stereo_energy_and_preserves_dry_without_heap() {
+    // A louder right channel must determine the same wet gain for both sides.
+    // Small responses exercise the native low-energy threshold and 2x cap.
+    for (source, reference_gain) in [
+        (vec![[1.0, 2.0], [0.0, -1.0]], (0.5f32 / 5.0).sqrt()),
+        (vec![[0.25, 0.125]], 2.0),
+        (vec![[0.01, 0.02]], 1.0),
+        (vec![[0.0, 0.0]], 1.0),
+        (vec![[0.5, 0.5]], 2.0f32.sqrt()),
+        (vec![], 1.0),
+    ] {
+        for automatic in [false, true] {
+            let mut fx = convolution(&[1.0]);
+            fx.output_gain = 0.5;
+            fx.dry_level = 0.25;
+            let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+            c.flags[1] = automatic;
+            c.ir = Some(Impulse(Arc::new(Sample { rate: SR as u32, frames: source.clone() })));
+            let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+            assert!(fx.warnings().is_empty());
+            let mut p = fx.processor(SR, 4);
+            let (mut left, mut right) = ([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
+            assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+            let gain = if automatic { reference_gain } else { 1.0 };
+            for n in 0..4 {
+                for (ch, out) in [left[n], right[n]].into_iter().enumerate() {
+                    let wet = source.get(n).map_or(0.0, |v| v[ch]) * gain * 0.5;
+                    let dry = if n == 0 { 0.25 } else { 0.0 };
+                    assert!((out - wet - dry).abs() < 1e-6, "automatic={automatic} frame={n} channel={ch}: {out}");
+                }
+            }
+        }
+    }
+    // At half the source rate, 1.5x size has a 4/3 source-frame stride.
+    // Gain must follow this prepared response, before its independent wet mix.
+    let source = [[1.0, 0.0], [0.0, 0.0], [0.0, 2.0], [0.0, 0.0]];
+    let prepared = [[1.0, 0.0], [0.0, 2.0 / 3.0], [0.0, 2.0 / 3.0]];
+    let mut fx = convolution(&[1.0]);
+    let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+    c.flags[1] = true;
+    c.early.length_ratio = 1.5;
+    c.late.length_ratio = 1.5;
+    c.predelay_ms = 0.1; // 2.4 frames, truncated to two.
+    c.ir = Some(Impulse(Arc::new(Sample { rate: SR as u32, frames: source.to_vec() })));
+    let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+    let mut p = fx.processor(SR / 2.0, 8);
+    let (mut left, mut right) = ([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+    for n in 0usize..8 {
+        let expected = n.checked_sub(2).and_then(|i| prepared.get(i)).copied().unwrap_or([0.0; 2]);
+        for ch in 0..2 {
+            let out = [left[n], right[n]][ch];
+            assert!((out - expected[ch] * 0.5f32.sqrt()).abs() < 2e-6, "frame={n} channel={ch}: {out}");
+        }
+    }
 }
 
 #[test]

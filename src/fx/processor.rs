@@ -954,6 +954,14 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
     if p.early.low_cut_hz == p.late.low_cut_hz && p.early.high_cut_hz == p.late.high_cut_hz {
         crate::engine::filter::filter_ir(&mut shaped, p.late.low_cut_hz, p.late.high_cut_hz, sample_rate);
     }
+    if p.auto_gain() {
+        // Native Auto Gain uses the loudest prepared IR channel's energy,
+        // not RMS or peak normalization. Baking the wet gain into this
+        // linear kernel leaves the slot's dry signal unchanged.
+        let energy = shaped.iter().map(|ch| ch.iter().map(|x| x * x).sum::<f32>()).fold(0.0f32, f32::max);
+        let gain = if energy >= 0.001 { (0.5 / energy).sqrt().min(2.0) } else { 1.0 };
+        shaped.iter_mut().flatten().for_each(|x| *x *= gain);
+    }
     Some(shaped)
 }
 
