@@ -871,6 +871,26 @@ pub(crate) fn effect_knob(fx: &crate::fx::Effect, knob: Knob) -> Option<f32> {
     }
 }
 
+/// Offline convolution IR shaping with the same non-resonant SVF as the racks.
+/// Pad the decay before filtering so a short IR does not truncate the poles.
+pub(crate) fn filter_ir(ir: &mut [Vec<f32>; 2], low: f32, high: f32, rate: f32) {
+    let highpass = low > 20.5;
+    let lowpass = high < 19_990.0;
+    if !highpass && !lowpass { return }
+    let cutoff = match (highpass, lowpass) { (true, true) => low.min(high), (true, false) => low, _ => high }.clamp(20.0, rate * 0.49);
+    // A Butterworth pole's envelope falls as exp(-2*pi*cutoff*t/sqrt(2)).
+    let tail = (rate * 16.0 / (2.0 * std::f32::consts::PI * cutoff * Q_MIN)).ceil() as usize;
+    for channel in ir.iter_mut() { channel.resize(channel.len() + tail, 0.0); }
+    let [left, right] = ir;
+    for (response, hz, enabled) in [(Response::High, low, highpass), (Response::Low, high, lowpass)] {
+        if enabled {
+            let mut section = Section::default();
+            section.set(response, hz.clamp(20.0, rate * 0.49), Q_MIN, rate);
+            section.process(left, right);
+        }
+    }
+}
+
 /// A Filter/EQ effect in an instrument rack or bus: the group filter's
 /// sections at the stored knobs.
 pub(crate) struct RackFilter {

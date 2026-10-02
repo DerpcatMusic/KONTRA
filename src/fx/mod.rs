@@ -472,11 +472,11 @@ impl ProgramFx {
                     if let Some(e) = &c.ir_error {
                         out.push(format!("{at}: impulse response unavailable ({e})"));
                     }
-                    let band = |b: &params::IrBand| {
-                        b.low_cut_hz > 20.5 || b.high_cut_hz < 19_990.0 || b.length_ratio != 1.0
-                    };
-                    if band(&c.early) || band(&c.late) {
-                        out.push(format!("{at}: IR filter/length shaping is not applied"));
+                    if c.early.low_cut_hz != c.late.low_cut_hz || c.early.high_cut_hz != c.late.high_cut_hz {
+                        out.push(format!("{at}: independent early/late IR filtering is not applied"));
+                    }
+                    if c.early.length_ratio != c.late.length_ratio {
+                        out.push(format!("{at}: independent early/late IR sizing is not applied; late size stretches the whole IR"));
                     }
                 }
                 Params::StereoModeller(s) if s.pseudo_stereo => {
