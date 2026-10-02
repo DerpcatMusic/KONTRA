@@ -662,6 +662,34 @@ impl Engine {
             }
         }
         if self.script.is_some() {
+            if cc == 121 {
+                let channels = (1 << channel) | self.player.mpe_zone
+                    .filter(|(master, _)| *master == channel).map_or(0, |(_, members)| members);
+                let previous = self.player.cc;
+                let script_previous = self.script.as_deref().unwrap().env.input.cc;
+                self.commands.retain(|c| channels & (1 << c.channel) == 0
+                    || !matches!(c.kind, script::Kind::Controller { cc, .. }
+                        if crate::ksp::reset_controller_value(cc).is_some()));
+                self.script.as_deref_mut().unwrap().cancel_performance_controllers(channels);
+                // Authors often mirror controllers in globals. Deliver the
+                // same defaults the native reset uses before synchronizing %CC.
+                for c in (0..16u8).filter(|&c| channels & (1 << c) != 0) {
+                    for cc in 0..120u8 {
+                        let Some(value) = crate::ksp::reset_controller_value(cc) else { continue; };
+                        // Always refresh the standard performance caches; other
+                        // supported CCs need a callback only when changed.
+                        if matches!(cc, 1 | 11 | 64..=67 | 98..=101)
+                            || previous[c as usize][cc as usize] != value
+                            || script_previous[cc as usize] != i32::from(value)
+                        {
+                            self.cc_from(c, input_channel, cc, value);
+                        }
+                    }
+                    self.pitch_bend_from(c, input_channel, 8192);
+                    self.channel_pressure_from(c, input_channel, 0);
+                }
+                self.script.as_deref_mut().unwrap().reset_controllers(None);
+            }
             if cc < 120 {
                 if let Some((rt, mut host)) = self.scripted_from(channel, input_channel) {
                     rt.controller(&mut host, 0, cc, value.min(127));
@@ -1764,8 +1792,11 @@ impl Player {
                 self.cc(bank, channel, 66, 0, defaults);
                 self.bend[c] = 0.0;
                 self.pressure[c] = 0;
-                self.cc[c][1] = 0;
-                self.cc[c][11] = 127;
+                for cc in 0..128 {
+                    if let Some(value) = crate::ksp::reset_controller_value(cc as u8) {
+                        self.cc[c][cc] = value;
+                    }
+                }
             }
             123 => {
                 if let Some(bank) = bank {

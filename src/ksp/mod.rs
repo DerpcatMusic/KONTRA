@@ -26,7 +26,7 @@ pub use engine::{
 };
 pub use inventory::requirements;
 pub use runtime::{Live, LiveFault, MAX_SLOTS, Persisted, Refresh, Runtime, settle_persistence};
-pub(crate) use runtime::EVENT_CAPACITY;
+pub(crate) use runtime::{EVENT_CAPACITY, reset_controller_value};
 
 use anyhow::Result;
 use serde::Serialize;

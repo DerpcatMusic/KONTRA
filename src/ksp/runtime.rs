@@ -36,6 +36,17 @@ fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>) -> Result
     Ok(program)
 }
 
+/// MIDI RP-015 defaults. None preserves a controller and registered values;
+/// controllers without a device-specific default return to zero.
+pub(crate) fn reset_controller_value(cc: u8) -> Option<u8> {
+    match cc {
+        0 | 7 | 10 | 32 | 70..=79 | 91..=95 | 120..=127 => None,
+        11 | 98..=101 => Some(127),
+        1..=119 | 128 | 129 => Some(0),
+        _ => None,
+    }
+}
+
 pub const MAX_SLOTS: usize = 5;
 pub const EVENT_CAPACITY: usize = 4096;
 const EVENT_INDEX_BITS: u32 = 12;
@@ -1572,15 +1583,18 @@ impl Runtime {
     }
 
     /// Synchronize a full Panic/reset's controller state without script callbacks.
-    /// With no replacement state, reset performance controls while retaining
-    /// volume, pan and other controls, as the engine's CC121 does.
+    /// With no replacement state, use the MIDI RP-015 CC121 defaults.
     pub fn reset_controllers(&mut self, controllers: Option<&[u8; 128]>) {
         if let Some(controllers) = controllers {
             for (cc, &value) in controllers.iter().enumerate() {
                 self.env.input.cc[cc] = i32::from(value);
             }
         } else {
-            for (cc, value) in [(1, 0), (11, 127), (64, 0), (66, 0)] { self.env.input.cc[cc] = value; }
+            for cc in 0..128 {
+                if let Some(value) = reset_controller_value(cc as u8) {
+                    self.env.input.cc[cc] = i32::from(value);
+                }
+            }
         }
         self.env.input.cc[b::VCC_PITCH_BEND as usize] = 0;
         self.env.input.cc[b::VCC_MONO_AT as usize] = 0;
@@ -1589,7 +1603,36 @@ impl Runtime {
             self.set_sys(SysArray::Cc, cc, self.env.input.cc[cc]);
             self.set_sys(SysArray::CcTouched, cc, 0);
         }
+        for note in 0..128 { self.set_sys(SysArray::PolyAt, note, 0); }
         self.changes += 1;
+    }
+
+    /// Fence older performance-controller callbacks without canceling keys,
+    /// note/release callbacks, UI edits or unrelated MIDI channels.
+    pub(crate) fn cancel_performance_controllers(&mut self, channels: u16) {
+        let selected = |channel: u8, cc: u8| channels & (1 << channel.min(15)) != 0
+            && reset_controller_value(cc).is_some();
+        self.env.work.retain(|w| match *w {
+            Work::Controller { channel, cc, .. } => !selected(channel, cc),
+            Work::PolyAt { channel, .. } => !selected(channel, 129),
+            _ => true,
+        });
+        for i in 0..self.threads.len() {
+            let t = &self.threads[i];
+            if !t.live || !(t.ctx.kind == Kind::Cb(Callback::Controller) && selected(t.ctx.channel, t.ctx.cc)
+                || t.ctx.kind == Kind::Cb(Callback::PolyAt) && selected(t.ctx.channel, 129)) { continue; }
+            self.threads[i].ctx.forward = Forward::None;
+            self.finish(i as u16);
+        }
+        let threads = &self.threads;
+        self.env.timers.retain(|Reverse(t)| match t.kind {
+            TimerKind::Resume { thread, generation } => {
+                let t = &threads[thread as usize];
+                t.live && t.generation == generation
+            }
+            _ => true,
+        });
+        self.env.stop_waits.retain(|(id, _)| threads.iter().any(|t| t.live && t.ctx.callback_id == *id));
     }
 
     /// Controller 0..127; use `pitch_bend`/`channel_pressure` for the virtual ones.
