@@ -1330,10 +1330,10 @@ mod tests {
     }
 
     #[test]
-    fn prepared_native_common_callbacks_keep_the_configured_logical_home() {
+    fn prepared_native_common_callbacks_keep_home_and_soundoff_domain() {
         let (mut e, mut r) = three_articulation_part();
         let source = GLOBAL_ARTICULATION.replace("declare $art := 0", "declare $art := 0\ndeclare ui_switch $go")
-            + "\non ui_control($go)\nplay_note(64,100,0,0)\nset_controller(23,$MIDI_CHANNEL)\nend on";
+            + "\non ui_control($go)\nplay_note(64,100,0,0)\nset_controller(23,$MIDI_CHANNEL)\nwait(10000)\nset_controller(24,$MIDI_CHANNEL+10)\nend on";
         e.set_script(Some(Box::new(runtime(&source))));
         e.prepare_channel_domains(r.route.channel_origins(), 7);
         no_audio_heap(|| {
@@ -1347,6 +1347,25 @@ mod tests {
         assert_eq!(e.voice_census().len(),6);
         assert!(e.voice_census().iter().all(|v| v.channel == 7));
         assert_eq!([e.cc_state()[0][23],e.cc_state()[1][23],e.cc_state()[2][23]], [7,7,7]);
+        let before = e.voice_census();
+        assert_eq!(before.iter().filter(|v| v.input_channel.is_none()).count(),3);
+        // A service note has no physical input_channel, but belongs to one
+        // prepared bank. Cut that bank and preserve the other audible notes.
+        no_audio_heap(|| {
+            feed(&mut r,&mut e,In::Cc(1,120,0),7);
+            for _ in 0..5 { render(&mut e); }
+        });
+        let after = e.voice_census();
+        assert_eq!(after.len(),4, "CC120 must cut one physical and one service note in its bank");
+        assert_eq!(after.iter().filter(|v| v.input_channel.is_none()).count(),2);
+        assert!(after.iter().all(|v| v.gain>0. && v.envelope>0.));
+        assert_eq!([e.cc_state()[0][23],e.cc_state()[1][23],e.cc_state()[2][23]], [7,7,7]);
+        // The common UI remains usable after the cut; replay starts a new
+        // service note in each bank rather than canceling its script state.
+        no_audio_heap(|| { e.ui_control(0,0,0); render(&mut e); });
+        assert_eq!(e.voice_census().len(),7);
+        no_audio_heap(|| { for _ in 0..10 { render(&mut e); } });
+        assert_eq!([e.cc_state()[0][24],e.cc_state()[1][24],e.cc_state()[2][24]], [17,17,17], "sound-off must retain shared UI wait continuations");
         no_audio_heap(|| { e.panic(); for _ in 0..5 { render(&mut e); } });
         assert!(e.voice_census().is_empty());
         assert_eq!(e.dropped_commands(),0);

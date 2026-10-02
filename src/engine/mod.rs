@@ -796,21 +796,26 @@ impl Engine {
     /// Cut a physical performance context, including notes a script rerouted.
     pub(crate) fn all_sound_off_from(&mut self, channel: u8, input_mask: u16) {
         if channel >= 16 || input_mask == 0 { return; }
-        let selected = |input_channel: Option<u8>| input_channel.is_some_and(|input| input_mask & (1 << input.min(15)) != 0);
+        let origins = self.player.domain_origins;
+        let selected_input = |input_channel: Option<u8>| input_channel.is_some_and(|input| input_mask & (1 << input.min(15)) != 0);
+        let selected = |input_channel: Option<u8>, domain: u8| selected_input(origins.map_or(input_channel, |o| Some(o[domain as usize])));
         let mut affected = 1 << channel;
         if let Some(rt) = self.script.as_deref_mut() { affected |= rt.all_sound_off_from(input_mask); }
         self.commands.retain(|c| {
-            if !selected(c.input_channel) { return true; }
+            let cut = if matches!(c.kind, script::Kind::Controller { .. }) {
+                selected_input(c.input_channel)
+            } else { selected(c.input_channel, c.domain) };
+            if !cut { return true; }
             affected |= 1 << c.channel;
             false
         });
         let fade = self.player.fade_frames(STEAL_FADE);
-        for v in self.player.voices.iter_mut().filter(|v| selected(v.input_channel)) {
+        for v in self.player.voices.iter_mut().filter(|v| selected(v.input_channel, v.domain)) {
             affected |= 1 << v.channel;
             v.fade.start(0.0, fade, true);
         }
         self.player.pending_releases.retain(|r| {
-            if !selected(r.input_channel) { return true; }
+            if !selected(r.input_channel, r.domain) { return true; }
             affected |= 1 << r.channel;
             false
         });

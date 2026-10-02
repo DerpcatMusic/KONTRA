@@ -1677,8 +1677,15 @@ impl Runtime {
     fn cancel_sound(&mut self, channel_mask: u16, input_mask: Option<u16>, cleanup: bool) -> u16 {
         if channel_mask == 0 { return 0; }
         let mut affected = 0;
-        let selected = |channel: u8, input_channel: Option<u8>| channel_mask & (1 << channel.min(15)) != 0
+        let origins = self.domain_mask.map(|_| self.domain_origins);
+        let selected_input = |channel: u8, input_channel: Option<u8>| channel_mask & (1 << channel.min(15)) != 0
             && input_mask.is_none_or(|mask| input_channel.is_some_and(|c| mask & (1 << c.min(15)) != 0));
+        // Prepared service notes have no physical input event. Their native
+        // control owner is still the bank's pinned origin; sound-off must cut
+        // their notes without canceling the shared UI/listener that made them.
+        let selected = |channel: u8, input_channel: Option<u8>, domain: u8| {
+            selected_input(channel, origins.map_or(input_channel, |o| Some(o[domain as usize])))
+        };
         // A physical input chain can contain events routed to different channels.
         // Detach selected roots before their rows are recycled.
         for owner in 0..16 {
@@ -1686,7 +1693,7 @@ impl Runtime {
                 let mut id = self.env.input.keys[owner][note].0;
                 let (mut first, mut last) = (0, 0);
                 while let Some(e) = self.env.events.get(id) {
-                    let (next, remove) = (e.next_input, selected(e.channel, e.input_channel)
+                    let (next, remove) = (e.next_input, selected(e.channel, e.input_channel, e.domain)
                         && (cleanup || e.source >= 0 || !e.held));
                     if !remove {
                         if first == 0 { first = id; }
@@ -1699,7 +1706,7 @@ impl Runtime {
                 self.env.input.keys[owner][note] = (first, last);
             }
         }
-        for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected(e.channel, e.input_channel)) {
+        for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected(e.channel, e.input_channel, e.domain)) {
             affected |= 1 << e.channel.min(15);
             // Already running cleanup survives a repeated Panic. Only notes
             // that reached a slot need a release; queued fresh attacks do not.
@@ -1717,10 +1724,10 @@ impl Runtime {
         }
         let events = &self.env.events;
         self.env.work.retain(|w| match *w {
-            Work::Note { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel)),
-            Work::Release { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel) || e.cleanup),
+            Work::Note { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel, e.domain)),
+            Work::Release { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel, e.domain) || e.cleanup),
             Work::Controller { channel, input_channel, .. } | Work::PolyAt { channel, input_channel, .. }
-                | Work::Rpn { channel, input_channel, .. } | Work::NoteController { channel, input_channel, .. } => !selected(channel, input_channel),
+                | Work::Rpn { channel, input_channel, .. } | Work::NoteController { channel, input_channel, .. } => !selected_input(channel, input_channel),
         });
         for i in 0..self.threads.len() {
             let t = &self.threads[i];
@@ -1749,15 +1756,16 @@ impl Runtime {
                 }
                 continue;
             }
-            if !(self.env.events.get(t.ctx.event).is_some_and(|e| selected(e.channel, e.input_channel))
-                || input && selected(t.ctx.channel, t.ctx.input_channel)) { continue; }
+            if !(self.env.events.get(t.ctx.event).is_some_and(|e| selected(e.channel, e.input_channel, e.domain))
+                || input && selected_input(t.ctx.channel, t.ctx.input_channel)) { continue; }
             let ctx = t.ctx;
             if matches!(ctx.kind, Kind::Cb(Callback::Controller)) {
                 // A budget-paused controller may not have forwarded yet. Keep
                 // the touched flag if an unrelated callback still owns it.
-                let touched = (input_mask.is_some() || channel_mask != u16::MAX) && self.threads.iter().any(|t| t.live && !selected(t.ctx.channel, t.ctx.input_channel)
-                    && t.ctx.slot == ctx.slot && t.ctx.cc == ctx.cc
+                let touched = (input_mask.is_some() || channel_mask != u16::MAX) && self.threads.iter().any(|t| t.live && !selected_input(t.ctx.channel, t.ctx.input_channel)
+                    && t.ctx.domain == ctx.domain && t.ctx.slot == ctx.slot && t.ctx.cc == ctx.cc
                     && t.ctx.forward == Forward::Controller);
+                self.select_domain(ctx.domain);
                 self.write_sys(ctx.slot, SysArray::CcTouched, ctx.cc as usize, i32::from(touched));
             }
             self.threads[i].ctx.forward = Forward::None;
@@ -1765,7 +1773,7 @@ impl Runtime {
         }
         for i in 0..self.env.events.slots.len() {
             let e = &self.env.events.slots[i];
-            if e.live && selected(e.channel, e.input_channel) {
+            if e.live && selected(e.channel, e.input_channel, e.domain) {
                 debug_assert!(e.callbacks == 0 || e.cleanup);
                 let id = i32::from(e.generation) << EVENT_INDEX_BITS | i as i32;
                 if e.cleanup {
