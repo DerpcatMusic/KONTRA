@@ -2120,6 +2120,111 @@ fn a_later_ui_control_callback_replaces_the_earlier() {
 }
 
 #[test]
+fn wait_async_retains_context_until_validated_completion_without_audio_heap_work() {
+    let root = std::env::temp_dir().join(format!("kontra-wait-async-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("ready.nka"), format!("%data\n{}", "42\n".repeat(600))).unwrap();
+    for reference in [false, true] {
+        super::vm::REFERENCE.set(reference);
+        for success in [true, false] {
+            let source = format!(r#"on init
+ declare %data[600]
+ declare $id
+ declare $callback
+ declare $resumed_callback
+ declare $event
+ declare $resumed_event
+ declare $channel
+ declare $order
+ declare $status
+ declare $completed_value
+ make_persistent($callback)
+ make_persistent($resumed_callback)
+ make_persistent($event)
+ make_persistent($resumed_event)
+ make_persistent($channel)
+ make_persistent($order)
+ make_persistent($status)
+ make_persistent($completed_value)
+end on
+on note
+ ignore_event($EVENT_ID)
+ $callback := $NI_CALLBACK_ID
+ $event := $EVENT_ID
+ $id := load_array_str(%data,"{}/{}.nka")
+ wait_async(-1)
+ wait_async(2147483647)
+ $order := 1
+ wait_async($id)
+ $resumed_callback := $NI_CALLBACK_ID
+ $resumed_event := $EVENT_ID
+ $channel := $MIDI_CHANNEL
+ $order := $order * 10 + 3
+ wait_async($id)
+end on
+on async_complete
+ $status := $NI_ASYNC_EXIT_STATUS
+ $completed_value := %data[599]
+ $order := $order * 10 + 2
+end on"#,root.display(),if success { "ready" } else { "missing" });
+            let mut rig = Rig::new(&[&source,PASS]);
+            let state = |rt: &Runtime| rt.persistence().remove(0);
+            let mut start = || {
+                rig.rt.set_midi_channel(2);
+                rig.rt.note_on(&mut rig.engine,0,60,100);
+                rig.rt.note_off(&mut rig.engine,0,60);
+                rig.rt.set_midi_channel(9);
+            };
+            #[cfg(feature = "plugin")]
+            assert_eq!(crate::plugin::tests::allocations(|| start()),0);
+            #[cfg(not(feature = "plugin"))]
+            start();
+            let mut request = rig.rt.pop_array_job().unwrap();
+            assert_eq!(state(&rig.rt)["$order"],Value::Int(1),"unknown IDs continue; the valid worker ID suspends");
+            let mut delay = || {
+                for _ in 0..8 { rig.rt.process(&mut rig.engine,128); }
+                // A completion from another slot must not wake the original.
+                rig.rt.async_complete(&mut rig.engine,1,request.id,true);
+            };
+            #[cfg(feature = "plugin")]
+            assert_eq!(crate::plugin::tests::allocations(|| delay()),0);
+            #[cfg(not(feature = "plugin"))]
+            delay();
+            assert_eq!(state(&rig.rt)["$order"],Value::Int(1));
+            assert_eq!(request.perform(),success,"only the worker performs file I/O");
+            let mut install = || {
+                assert!(rig.rt.finish_array_job(request).is_ok());
+                rig.rt.process(&mut rig.engine,128);
+            };
+            #[cfg(feature = "plugin")]
+            assert_eq!(crate::plugin::tests::allocations(|| install()),0);
+            #[cfg(not(feature = "plugin"))]
+            install();
+            if success {
+                assert_eq!(state(&rig.rt)["$order"],Value::Int(1),"600 cells do not install in one block");
+                let mut finish = || { rig.rt.process(&mut rig.engine,128); rig.rt.process(&mut rig.engine,128); };
+                #[cfg(feature = "plugin")]
+                assert_eq!(crate::plugin::tests::allocations(|| finish()),0);
+                #[cfg(not(feature = "plugin"))]
+                finish();
+            }
+            let saved = state(&rig.rt);
+            assert_eq!(saved["$order"],Value::Int(123),"the local completion callback and resumed continuation see installed data");
+            assert_eq!(saved["$callback"],saved["$resumed_callback"]);
+            assert_eq!(saved["$event"],saved["$resumed_event"],"released note ownership survives suspension");
+            assert_eq!(saved["$channel"],Value::Int(2),"later MIDI input does not retarget the continuation");
+            assert_eq!(saved["$status"],Value::Int(i32::from(success)));
+            assert_eq!(saved["$completed_value"],Value::Int(if success {42} else {0}));
+            assert!(rig.rt.env.pending_async.is_empty());
+            assert_eq!(rig.rt.env.events.live_count(),0);
+            assert!(rig.rt.faults().next().is_none());
+        }
+    }
+    super::vm::REFERENCE.set(false);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn load_array_reads_library_files_in_init() {
     let root = std::env::temp_dir().join(format!("kontakto-nka-{}", std::process::id()));
     let meta = root.join("Library Data").join("Meta");

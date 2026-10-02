@@ -28,6 +28,8 @@ pub struct NoteSpec<'a> {
     pub owner: Option<(u8, u8)>,
     /// Cancellation provenance, inherited even by independent generated notes.
     pub input_channel: Option<u8>,
+    /// Exact host root, inherited independently of generated-note duration.
+    pub host_note: Option<crate::engine::HostRef>,
     pub note: u8,
     pub velocity: u8,
     /// Sample start offset in microseconds.

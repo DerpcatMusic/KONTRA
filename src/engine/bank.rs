@@ -80,6 +80,7 @@ pub struct GroupSettings {
     pub mods: ModTable,
     /// Internal AHDSRs driving pitch; every native internal-modulator slot.
     pub pitch_envelopes: Box<[super::params::PitchEnvelope]>,
+    pub pitch_lfos: Box<[crate::modulation::PitchLfo]>,
     /// Insert filters and EQs; `None` costs voices nothing.
     pub filter: Option<Box<GroupFilter>>,
     /// Kontakt interpolation quality; every setting currently uses 4-point Hermite.
@@ -103,6 +104,7 @@ impl From<&Group> for GroupSettings {
             bus: None,
             mods: ModTable::from(group),
             pitch_envelopes: super::params::PitchEnvelope::from_group(group),
+            pitch_lfos: if group.wavetable.is_none() { group.pitch_lfos.clone().into_boxed_slice() } else { Box::new([]) },
             filter: GroupFilter::new(group),
             interp_quality: group.interp_quality,
             wavetable: group.wavetable,
@@ -155,6 +157,8 @@ impl From<&crate::import::FlexEnvelope> for Flex {
 /// A sample's resident data: one or more spans of decoded frames.
 pub(crate) struct SampleData {
     pub rate: u32,
+    /// Total physical frames, independent of resident spans or zone bounds.
+    pub frames: u64,
     pub(crate) spans: Vec<Span>,
     /// Some zone path leaves the resident spans and must stream.
     pub(crate) streamed: bool,
@@ -398,6 +402,8 @@ pub struct Bank {
     pub(crate) playable: Vec<bool>,
     /// Prepared once: normal attacks need a tail scan only for Note Mono releases.
     pub(crate) note_mono_releases: bool,
+    /// Prepared native controls whose sample geometry updates every 32 frames.
+    native_controls: bool,
     /// Zones mapped to key `k` are `key_zones[key_start[k]..key_start[k + 1]]`.
     key_start: [u32; 129],
     key_zones: Arc<[u32]>,
@@ -433,6 +439,8 @@ pub struct Bank {
 pub const LOAD_DONE: u32 = 1000;
 
 impl Bank {
+    pub(crate) fn has_native_controls(&self) -> bool { self.native_controls }
+
     /// Load every group of `instrument` within [`MEMORY_LIMIT`], streaming
     /// long samples from disk.
     pub fn load(instrument: &Instrument) -> Result<Self> {
@@ -606,7 +614,7 @@ impl Bank {
                     Ok(())
                 };
                 let spans = read_spans().map(|()| kept);
-                (spans, streamed, header.rate, (source, path))
+                (spans, streamed, header.rate, header.frames, (source, path))
             },
         );
         check()?;
@@ -614,7 +622,7 @@ impl Bank {
         let mut samples = Vec::with_capacity(decoded.len());
         let mut streamed = Vec::with_capacity(decoded.len());
         let mut bytes = 0;
-        for (id, (spans, streamed_sample, rate, source)) in decoded.into_iter().enumerate() {
+        for (id, (spans, streamed_sample, rate, frames, source)) in decoded.into_iter().enumerate() {
             let (spans, streamed_sample) = match spans {
                 Ok(spans) => (spans, streamed_sample),
                 Err(e) => {
@@ -626,6 +634,7 @@ impl Bank {
             streamed.push(streamed_sample.then(|| resident::source(source)));
             samples.push(SampleData {
                 rate,
+                frames,
                 spans,
                 streamed: streamed_sample,
             });
@@ -764,6 +773,7 @@ impl Bank {
             }
             samples.push(SampleData {
                 rate: header.rate,
+                frames: header.frames,
                 spans: resident_spans,
                 streamed: true,
             });
@@ -805,6 +815,7 @@ impl Bank {
             .into_iter()
             .map(|(_, s)| SampleData {
                 rate: s.rate,
+                frames: s.frames.len() as u64,
                 spans: vec![Span {
                     start: 0,
                     data: Frames::new(Pcm::pack(&s.frames, false)),
@@ -977,6 +988,11 @@ impl Builder {
                             "loop crossfade shortened in {}",
                             zone.sample.display()
                         ));
+                    }
+                    if group.mods.iter().any(|m| super::params::loop_control_supported(group, m))
+                        && (zone.loop_range.as_ref().is_some_and(|l| l.alternating)
+                            || map.controlled_loop([0.; 2], frames).is_none()) {
+                        issues.note(format_args!("loop controls are not processed for cropped, reverse, alternating, absent or shorter-than-four-frame loops: {} (zone ID {zone_id})", zone.sample.display()));
                     }
                     let start_mod = zone
                         .start_mod
@@ -1258,11 +1274,16 @@ impl Builder {
             key_zones.extend(on_key.map(|(i, _)| i as u32));
         }
         key_start[128] = key_zones.len() as u32;
+        let native_controls = plays.iter().zip(&zones).any(|(p, z)|
+            self.settings[z.group].mods.has_loop_controls()
+                && z.loop_range.as_ref().is_some_and(|l| !l.alternating)
+                && p.map.controlled_loop([0.; 2], samples[p.sample as usize].frames).is_some());
         Ok(Bank {
             groups: self.groups,
             zones: intern(&ZONES, zones),
             source_zone_count: self.source_zone_count,
             base: self.settings.clone(),
+            native_controls,
             settings: self.settings,
             plays: intern(&PLAYS, plays),
             playable,

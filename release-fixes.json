@@ -772,9 +772,140 @@
       "source_commits": [
         "094369d3cbdbedf90eecadb54e1e1e144b46f038",
         "0819e5aa945983cd330c7f958192cd914cc0b3a0",
-        "2fe0dc564f8dbf4603724bd9fc55bc442b6a931d"
+        "2fe0dc564f8dbf4603724bd9fc55bc442b6a931d",
+        "0c666e1059d246f23b1f2ad58b786148ec2505f0",
+        "347689916532eb81d52477904a72beb05b48af63"
       ],
-      "validation": "Nineteen publication scenarios plus signing-script accepted/rejected/bad-ticket/missing-credential and package identity/hash gates passed; strict temporary-material permissions and wrapped-certificate handling checked. Existing Apple secrets successfully reused through owned Drop workflow37037003405. Actual Apple notarization of the next shipping source remains pending; no unsigned release fallback.",
+      "validation": "Nineteen publication scenarios plus signing-script accepted/rejected/bad-ticket/missing-credential and package identity/hash gates passed; strict temporary-material permissions and wrapped-certificate handling checked. Existing Apple secrets successfully reused through owned Drop workflow37037003405. Actual Apple notarization of the next shipping source remains pending; no unsigned release fallback. First actual hosted signing failed identity lookup before Apple submission; the reviewed temporary-keychain search/Developer ID trust-chain correction passes all19 publication/signing mock cases, with original keychains restored. Corrected actual submission remains pending. Corrected actual ARM83 hosted job110964001849 succeeds with Apple acceptance and staple validation; the obsolete per-architecture publication run was canceled for the required universal installer. Universal installer Apple acceptance remains pending.",
+      "accepted": true
+    },
+    {
+      "id": "wavetable-modulation-slot-boundary",
+      "summary": "Read wavetable group modulation targets without a module slot byte",
+      "source_commits": [
+        "6580cd7674365c22f43d9289f9be73978e4eb2ac"
+      ],
+      "validation": "Native parameter registrations11..16 and identical reader/writer slot predicates corroborate six slotless group names. Authored mixed group/module strict-boundary gate passes. All3752 actual Conflux assignments decode with zero failures and byte-exact records/base roundtrips; three raw snapshots roundtrip exactly. Shaper decoding remains strict0/1/2; this does not implement the target DSP.",
+      "accepted": true
+    },
+    {
+      "id": "explicit-unit-size-ir-early-late-split",
+      "summary": "Prepare explicit unit-size convolution early and late filters at matching sample rates",
+      "source_commits": [
+        "7a493ddcf93a154ed88aed16b4b9bbeb194f8822"
+      ],
+      "validation": "Independent scalar numeric gate and six existing IR/routing/live-load regressions pass at isolated0c8fb0a. Explicit positive crossover, mirrored Reverse, clipped50ms complementary overlap, original source length, predelay/envelope/AutoGain order, dry path and zero processing heap checked. Nonunit Size, automatic crossover and rate conversion remain approximate; none of the six reported Analog IR records is eligible.",
+      "accepted": true
+    },
+    {
+      "id": "wait-async-worker-completion",
+      "summary": "Keep wait_async suspended until its worker-backed operation is installed or fails",
+      "source_commits": [
+        "86d6cb3aec283b8fd7af1ba41792d796da8523ba"
+      ],
+      "validation": "Delayed600-cell NKA success/failure, invalid/completed IDs, wrong-slot completion, original event/channel context after note-off and both VM modes pass with zero processing heap. Existing array read/write/stale epoch, live IR completion, stop_wait and bounded async/PGS regressions all pass at5336388. Relative async_done callback order is local policy, not a claimed documented guarantee.",
+      "accepted": true
+    },
+    {
+      "id": "retained-exact-host-note-lifetimes",
+      "summary": "Retain exact host note identities through routed notes, pedals, callbacks and aggregate NOTE_END",
+      "source_commits": [
+        "f6e6da7c9b038cdc80de872f51b63b1e4c31252e",
+        "e81cef85df0ef0c6268ba2a3909a6d46ac90ad55",
+        "ddbbebc268707d498546fd430a30a3c80b304270",
+        "965e501b0c1244a2574478c3f1fd4948782d2780",
+        "6ac223e72cd3966befeb758ebf1043cd35cceb2a"
+      ],
+      "validation": "Fourteen focused ownership/routing/MPE/delayed-expression/backpressure gates pass at301d720 after reproducing and correcting keyswitch theft of the host ID. Includes overlapping same-key IDs, mixed anonymous MIDI, callback children/waits, bank-only replacement, paused scoped cleanup, safe generation reuse and zero processing heap. Native CLAP gain/pan/tuning laws supported; unverified expression types and VST3 attack tuning/duration remain diagnosed, not claimed compatible. Combined host/async/IR validation passes all27 exact gates atd6eda072f0bfd7c283f767db8ac46191c1978591; shipping remains separate.",
+      "accepted": true
+    },
+    {
+      "id": "independent-convolution-size-state",
+      "summary": "Retain independent native early and late convolution Size through callbacks and restore",
+      "source_commits": [
+        "ba28f73b52d3028f245035652124bb54f7761aee"
+      ],
+      "validation": "Combined development87 plus IR-state typecheck and 27 exact focused host ownership, wait_async and IR/routing gates pass atd6eda072f0bfd7c283f767db8ac46191c1978591. New authored callback/readback/restore/worker/PCM gate proves independent writes and zero audio heap. Older host states retain prior uniform behavior; nonunit time stretching remains approximate.",
+      "accepted": true
+    },
+    {
+      "id": "signed-pitch-cutoff-parameter-aliases",
+      "summary": "Resolve legacy and modern signed intensity aliases to the same proven pitch and cutoff routes",
+      "source_commits": [
+        "1d00f8ff2042736e74b9f6c923402f73948d77ee",
+        "c886598c4d4070b70402bbd2c4fcbc6f499ccb0f",
+        "21f2201e4eaf48aa6456d617939772ca79447127"
+      ],
+      "validation": "Native parameter449 registration establishes alias identity. Four exact gates pass at7007e7514f3346a13978007159411bdc9fdef38d, including real KSP init/note setters/readback and audible pitch/cutoff PCM physical references with zero processing heap. Unverified legacy volume and other targets retain their guards.",
+      "accepted": true
+    },
+    {
+      "id": "saved-pitch-cutoff-target-sign",
+      "summary": "Restore saved negative pitch and cutoff modulation direction from the native target sign bit",
+      "source_commits": [
+        "e8b20893053550d246ff37094b184187a1b4af0b",
+        "6d05f4c3402ba88c2fdd8835a7dfe1511e4906b6",
+        "21f2201e4eaf48aa6456d617939772ca79447127"
+      ],
+      "validation": "Independent native setter plus shared reader/writer corroborate target byte bit0x02 separately from invert. Four exact gates pass at7007e7514f3346a13978007159411bdc9fdef38d; authored internal/external records preserve raw magnitude/flags, target order/identity and neighboring unsupported laws, with imported positive/negative pitch and cutoff PCM matching physical references byte-exact. Loop frame law remains unimplemented.",
+      "accepted": true
+    },
+    {
+      "id": "native-constant-loop-boundary-processing",
+      "summary": "Apply previously ignored saved and live Constant loop start/length controls on eligible native sampler paths",
+      "source_commits": [
+        "da3f857432215146b4c7047aea24b512695e461f",
+        "04f6b50ed5d60c007ee389d16dfbd2b9b188d4ad",
+        "8277f0119fd50d7c85f8d534fbc9fe326acde877",
+        "c69c9d272a39156db653d541cf0b4ff106c281f9"
+      ],
+      "validation": "Four exact gates and all 89 playback tests pass on frozen b83ed44. Six matched actual snapshots on clean 27adc43 confirm applied Constant windows and physical wraps in Rad Prelude and Prelude; Prelude RMS changes by 8.71 dB. Contradiction remains quiet; no sonic parity claim. All 729 journal rows are retained without faults or delivery loss. Reverse, alternating, cropped and other source modes remain diagnosed; invalid and behind-cursor edits defer safely.",
+      "accepted": true
+    },
+    {
+      "id": "saved-sine-multi-pitch-processing",
+      "summary": "Render previously ignored saved retriggered sine-only Multi pitch assignments without fragment-dependent phase drift",
+      "source_commits": [
+        "fcd60e49025bf732dd3144b05fd65cf5bc890426",
+        "e10908348bc74802fcaf31891ec3e1a3cb7d9ecc"
+      ],
+      "validation": "Authored native-clock, RAM/stream partition, interpolation, release and zero-heap gates pass on frozen b83ed44; all 89 playback tests pass. Actual six-preset replay on 27adc43 exposed an effect/LFO namespace collision, fixed separately. New focused gates pass on b5d0a47, and three matched actual captures on clean abeafde prove fractional pitch-source travel in Rad Prelude and Beta Decay while Catastrophic stays byte-identical. All 361 journal rows are retained with zero faults or delivery loss; no sonic-parity claim. Other waveforms, source phases, delayed/free-running ownership and live frequency parameters remain unsupported; standard sine/exp math is a numerical approximation.",
+      "accepted": true
+    },
+    {
+      "id": "reviewed-nightly-notes-heading-loss",
+      "summary": "Retain reviewed processing and version-specific fix headings in structured nightly release notes",
+      "source_commits": [
+        "d798bc47fb22db5fada0d7f37ac61926683672a8"
+      ],
+      "validation": "Root check_nightly.py passes, including all 19 accepted 0.3.64-to-0.3.83 summaries and 23 publication scenarios. Live 0.3.83 notes were corrected without modifying binaries, asset identities or the original manifest.",
+      "accepted": true
+    },
+    {
+      "id": "effect-slot-collision-rejects-pitch-lfo",
+      "summary": "Keep group-effect targets from disabling unrelated same-numbered internal pitch LFO sources",
+      "source_commits": [
+        "9c76376f28a8ad1c10a2e7e88cd29e52c58b0727"
+      ],
+      "validation": "Actual 27adc43 Rad Prelude/Beta Decay captures exposed zero-depth shaper effect slot7 rejecting internal LFO7. Six focused gates pass on frozen b5d0a47, including actual-shaped raw records, retained effect assignments and conservative unknown-source rejection. Three matched actual captures on clean abeafde prove fractional pitch-source travel in Rad Prelude group234 and Beta Decay groups28/51, with unchanged controls/Constant windows and byte-identical Catastrophic negative control. All 361 journal rows are retained with zero faults or delivery loss; no sonic-parity claim.",
+      "accepted": true
+    },
+    {
+      "id": "admitted-pitch-lfo-intensity-live-writes",
+      "summary": "Apply previously ignored signed and unsigned intensity writes to admitted internal pitch LFO targets with native identity and restore",
+      "source_commits": [
+        "7b93fa535663369ee331f3239a74caa037379e76"
+      ],
+      "validation": "Six focused gates pass on frozen b5d0a47. End-to-end actual script callbacks compare PCM with independent physical depths after fragmented rendering, verify unchanged phase, exact source/target indices, alias coalescing, seeded restore getters, release retirement and zero audio heap. Unsupported target/source kinds, wavetable paths and live frequency remain rejected.",
+      "accepted": true
+    },
+    {
+      "id": "classic-saturation-native-transfer",
+      "summary": "Replace the incorrect Classic Saturation proxy with the native piecewise polynomial Shape law and unchanged linear Output",
+      "source_commits": [
+        "d3d7373f354787761d7d54939728469d012e8a81"
+      ],
+      "validation": "Four exact gates pass on frozen 6bf086e: independent scalar branch-boundary values, linear Output, ordered group processing, live address identity and zero audio heap. Existing LoFi max-rate law remains unchanged. Matched actual root 1e79e3d Contradiction capture gains 17.783694 dB RMS (peak 0.041667636 to 0.320852458) with identical onset, events, controls, native edits, full physical/virtual cursor census and loop bounds; bypassed Catastrophic PCM and census stay byte-identical to 0.3.92/0.3.95. All 242 journal rows and 216 warnings retained with zero faults, drops or underruns. All 89 playback regressions pass; both 64-second endpoints reach zero voices. Actual capture does not establish zero audio heap or sonic parity. Enhanced/Drums remain explicitly diagnosed approximations.",
       "accepted": true
     }
   ]

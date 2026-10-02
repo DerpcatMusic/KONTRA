@@ -421,6 +421,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 let path = m.stk.strs.pop();
                 let spare = m.env.array_spares.iter().position(|r| r.slot == slot && r.var == v);
                 if m.env.array_inflight < super::arrays::ARRAY_QUEUE
+                    && m.env.pending_async.len() < m.env.pending_async.capacity()
                     && let Some(spare) = spare
                     && path.len() <= m.env.array_spares[spare].path.capacity()
                 {
@@ -433,6 +434,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                             request.snapshot.as_mut().expect("prepared array save snapshot"));
                     }
                     m.env.array_requests.push_back(request);
+                    m.env.pending_async.push((slot, id));
                     m.env.array_inflight += 1;
                 } else {
                     m.env.note(if saving { "save_array_str: prepared request queue or path capacity exhausted" }
@@ -839,8 +841,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             Ok(Step::Wait(at))
         }
         WaitAsync => {
-            m.stk.int();
-            Ok(Step::Next)
+            let id = m.stk.int();
+            if !m.t.ctx.ignore_wait && m.env.pending_async.contains(&(slot, id)) {
+                m.t.async_wait = Some(id);
+                // Runtime holds this existing wait state until installation;
+                // no polling timer or filesystem work runs on the audio thread.
+                Ok(Step::Wait(u64::MAX))
+            } else {
+                Ok(Step::Next)
+            }
         }
         StopWait => {
             let [id, mode] = ints(m);
@@ -1050,9 +1059,15 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         LoadIrSample => {
             let [slot, generic] = ints(m);
             let file = m.stk.strs.pop();
+            if m.env.pending_async.len() == m.env.pending_async.capacity() {
+                m.env.note("load_ir_sample: pending async capacity exhausted");
+                let id = async_done(m, 0);
+                return push_int(m, id);
+            }
             let id = m.env.next_async();
             let request = m.engine.request_ir_sample(&file, slot, generic, m.slot.index, id);
             if request == Some(true) {
+                m.env.pending_async.push((m.slot.index, id));
                 return push_int(m, id);
             }
             // Asynchronous in Kontakt: `on async_complete` reports 1 once
