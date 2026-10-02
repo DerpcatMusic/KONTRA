@@ -2648,6 +2648,43 @@ end on"#;
     }
 
     #[test]
+    fn anonymous_note_expressions_keep_the_captured_channel_after_mode_and_key_remap() {
+        let mut r = router(&Articulate::default(), &Mpe::default());
+        r.route.mode = Mode::Channel;
+        r.route.keys[60] = 48;
+        let check = || {
+            r.input(In::NoteOn(4, 60, 100), 7, &mut |_| {});
+            r.route.mode = Mode::Keyswitch;
+            // A same-pitch neighbour now belongs to a different logical channel.
+            r.input(In::NoteOn(2, 60, 100), 7, &mut |_| {});
+            r.route.keys[60] = 49;
+            for ev in [In::NoteTune(4, 60, 12.), In::NoteGain(4, 60, 0.25),
+                In::NotePan(4, 60, 1.), In::PolyAt(4, 60, 32), In::NotePressure(4, 60, 127)]
+            {
+                let mut delivered = 0;
+                r.input(ev, 7, &mut |out| {
+                    match out {
+                        Out::Expression(channel, key, _) | Out::PolyAt(channel, key, _) =>
+                            assert_eq!((channel, key), (7, 48), "{ev:?}: held expression must target the attack's channel and key"),
+                        other => panic!("unexpected expression delivery {other:?}"),
+                    }
+                    delivered += 1;
+                });
+                assert!(delivered > 0, "{ev:?}: expression disappeared");
+            }
+            assert_eq!(r.expression[7][48], Expression { tune:12., gain:1., pan:1., ..Default::default() });
+            assert_eq!(r.expression[2][48], Expression::default(), "the neighbour's expression changed");
+            // Key-up still closes exactly the same captured route.
+            r.input(In::NoteOff(4, 60), 7, &mut |out| assert_eq!(out, Out::NoteOffFrom(7, 4, 48)));
+            assert_eq!(r.held[2][60], (2, 48));
+        };
+        #[cfg(feature="plugin")]
+        assert_eq!(crate::plugin::tests::allocations(check), 0);
+        #[cfg(not(feature="plugin"))]
+        { let mut check = check; check(); }
+    }
+
+    #[test]
     #[cfg(feature = "plugin")]
     fn host_events_read_per_note_and_narrow_the_rest() {
         let tune = midi::per_note_bend_from_semitones(-3.5);
