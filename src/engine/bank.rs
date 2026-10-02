@@ -1272,12 +1272,16 @@ impl Builder {
             key_zones.extend(on_key.map(|(i, _)| i as u32));
         }
         key_start[128] = key_zones.len() as u32;
+        let native_controls = plays.iter().zip(&zones).any(|(p, z)|
+            self.settings[z.group].mods.has_loop_controls()
+                && z.loop_range.as_ref().is_some_and(|l| !l.alternating)
+                && p.map.controlled_loop([0.; 2], samples[p.sample as usize].frames).is_some());
         Ok(Bank {
             groups: self.groups,
             zones: intern(&ZONES, zones),
             source_zone_count: self.source_zone_count,
             base: self.settings.clone(),
-            native_controls: self.settings.iter().any(|s| s.mods.has_loop_controls()),
+            native_controls,
             settings: self.settings,
             plays: intern(&PLAYS, plays),
             playable,
