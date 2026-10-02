@@ -391,6 +391,8 @@ pub struct Bank {
     pub(crate) plays: Arc<[ZonePlay]>,
     /// Per group: not muted and, when any group is soloed, soloed.
     pub(crate) playable: Vec<bool>,
+    /// Prepared once: normal attacks need a tail scan only for Note Mono releases.
+    pub(crate) note_mono_releases: bool,
     /// Zones mapped to key `k` are `key_zones[key_start[k]..key_start[k + 1]]`.
     key_start: [u32; 129],
     key_zones: Arc<[u32]>,
@@ -1188,6 +1190,7 @@ impl Builder {
         let mut zones = self.zones;
         zones.iter_mut().for_each(|z| z.sample = PathBuf::new());
         let any_solo = self.groups.iter().any(|g| g.soloed);
+        let note_mono_releases = self.groups.iter().any(|g| g.release_trigger && g.release_trigger_note_monophonic);
         let playable = self
             .groups
             .iter()
@@ -1213,6 +1216,7 @@ impl Builder {
             settings: self.settings,
             plays: intern(&PLAYS, plays),
             playable,
+            note_mono_releases,
             key_start,
             key_zones: intern(&KEY_ZONES, key_zones),
             samples,
