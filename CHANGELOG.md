@@ -44,9 +44,21 @@ are added when a release is actually published; commit history is not a changelo
   values, forwarding, waits and startup persistence delivery. External MIDI2 input
   and multi-script MIDI-input callbacks remain absent; the selected 13-script
   census contains no uses, so this does not establish an actual-library benefit.
+- Lossless native v2 filename-table records preserve segment kinds, UTF-16 units,
+  full timestamps, uninterpreted sample records and trailing metadata. Three actual
+  tables covering 102,026 sample references pass byte-exact and edited readback checks.
+  Existing raw chunk writing was already lossless; this adds typed editing access.
+- Opt-in native UI timing capture records one bounded ten-second drag window and
+  summarizes it on the diagnostics worker. It measures application callback and
+  presentation-submission time, without forced GPU synchronization or display-FPS claims.
 
 ### Fixed
 
+- Host position, tempo, play/stop and time signature reach script callbacks before
+  MIDI input. Song position advances within the block at callback sample offsets;
+  bar duration follows the host meter. Start/stop listener subscriptions are independent.
+  Beat listeners still use elapsed-clock phase; missing host timeline validity is
+  an upstream limitation, so unavailable beat position cannot be distinguished from zero.
 - Instrument replacement clears previous script state and convolution settings;
   source epochs on both live-request and snapshot queues reject stale updates.
   A native Areia-to-CHORUS transition verifies the new logo, controls, header and
@@ -87,6 +99,10 @@ are added when a release is actually published; commit history is not a changelo
 - Scalar edits avoid copying the imported interface under the view lock. A matched
   Analog trial measures mean edit submission at 1.152 to 0.000240 ms; whole observed
   frame means are 4.223 and 4.395 ms, providing no frame-rate improvement evidence.
+- Changed publications reuse unchanged control storage; a separate matched Analog
+  trial measures publication mean at 0.122 to 0.047 ms. Its final macro update copies
+  3 of 934 controls; startup updates copy more. Drawing uses published revisions
+  instead of scanning all control properties every frame. Native FPS remains unverified.
 - Internal pitch AHDSR routing to voice modulation, selected filter coefficients
   and worker-built convolution cutoff processing. These changes do not establish
   Kontakt parameter-law or sonic equivalence.
