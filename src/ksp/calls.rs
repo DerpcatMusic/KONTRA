@@ -36,11 +36,12 @@ fn push_fmt(m: &mut Machine, args: std::fmt::Arguments) -> Exec<Step> {
     Ok(Step::Next)
 }
 
-fn midi_note(n: i32) -> Exec<u8> {
-    u8::try_from(n)
-        .ok()
-        .filter(|n| *n < 128)
-        .ok_or(Fault("MIDI note must be 0..127"))
+fn midi_note(env: &mut super::runtime::Env, builtin: Builtin, argument: u8, n: i32) -> Exec<u8> {
+    if let Ok(note) = u8::try_from(n) && note < 128 { return Ok(note); }
+    env.fault_context = Some(super::runtime::FaultContext::MidiNote {
+        builtin: builtin.name(), argument, value: n,
+    });
+    Err(Fault("MIDI note must be 0..127"))
 }
 
 fn key_name_ok(key: &str) -> bool {
@@ -1514,18 +1515,19 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         SetKeyName => {
             let [note] = ints(m);
             let text = m.stk.strs.pop();
+            let note = midi_note(m.env, f, 1, note)?;
             let key = m
                 .env
                 .host
                 .keyboard
-                .entry(midi_note(note)?)
+                .entry(note)
                 .or_insert_with(KeyState::default);
             put_text(&mut key.name, text, m.env.loading)?;
             Ok(Step::Next)
         }
         SetKeyColor | SetKeyType | SetKeyPressed => {
             let [note, value] = ints(m);
-            let note = midi_note(note)?;
+            let note = midi_note(m.env, f, 1, note)?;
             if f == SetKeyPressed {
                 if !(0..=1).contains(&value) {
                     return Err(Fault("Pressed state must be 0 or 1"));
@@ -1543,7 +1545,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         GetKeyName => {
             let [note] = ints(m);
-            let note = midi_note(note)?;
+            let note = midi_note(m.env, f, 1, note)?;
             let name = m
                 .env
                 .host
@@ -1555,7 +1557,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         GetKeyColor | GetKeyType | GetKeyTriggerstate => {
             let [note] = ints(m);
-            let note = midi_note(note)?;
+            let note = midi_note(m.env, f, 1, note)?;
             if f == GetKeyTriggerstate && !m.env.host.script_pressed {
                 return Err(Fault(
                     "get_key_triggerstate requires script pressed support",
@@ -1580,7 +1582,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         SetKeyrange => {
             let [lo, hi] = ints(m);
-            let (lo, hi) = (midi_note(lo)?, midi_note(hi)?);
+            let (lo, hi) = (midi_note(m.env, f, 1, lo)?, midi_note(m.env, f, 2, hi)?);
             let (lo, hi) = (lo.min(hi), lo.max(hi));
             let name = m.stk.strs.pop();
             // Reuse an overlapping range before recycling any others. Validate
@@ -1607,7 +1609,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         RemoveKeyrange => {
             let [note] = ints(m);
-            let note = midi_note(note)?;
+            let note = midi_note(m.env, f, 1, note)?;
             remove_keyranges(m.env, note, note, None);
             Ok(Step::Next)
         }

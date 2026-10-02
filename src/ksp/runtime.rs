@@ -88,13 +88,49 @@ pub const INIT_FUEL: u64 = 1_000_000_000;
 /// Saved values of persistent variables, per script slot, keyed by variable name.
 pub type Persisted = BTreeMap<String, Value>;
 
+/// Prepared argument details; collecting a fault never formats or allocates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub enum FaultContext {
+    MidiNote { builtin: &'static str, argument: u8, value: i32 },
+    Listener { change: bool, signal: i32, parameter: i32 },
+}
+
+impl std::fmt::Display for FaultContext {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MidiNote { builtin, argument, value } => write!(out, "{builtin} argument {argument} = {value}"),
+            Self::Listener { change, signal, parameter } => {
+                let command = if *change { "change_listener_par" } else { "set_listener" };
+                let name = match *signal {
+                    super::builtins::signal::TIMER_MS => "$NI_SIGNAL_TIMER_MS",
+                    super::builtins::signal::TIMER_BEAT => "$NI_SIGNAL_TIMER_BEAT",
+                    super::builtins::signal::TRANSP_START => "$NI_SIGNAL_TRANSP_START",
+                    super::builtins::signal::TRANSP_STOP => "$NI_SIGNAL_TRANSP_STOP",
+                    _ => "unknown signal",
+                };
+                write!(out, "{command} signal {name} ({signal}), parameter {parameter}")
+            }
+        }
+    }
+}
+
 /// One bounded, allocation-free runtime fault snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct LiveFault {
     pub slot: u8,
     pub line: u32,
     pub message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<FaultContext>,
     pub count: u32,
+}
+
+impl std::fmt::Display for LiveFault {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "Slot {} line {}: {}", self.slot, self.line, self.message)?;
+        if let Some(context) = self.context { write!(out, " ({context})")?; }
+        write!(out, " ({}x)", self.count)
+    }
 }
 
 /// What the host shows of running scripts, refreshed in place.
@@ -418,6 +454,7 @@ struct FaultRecord {
     slot: u8,
     pc: u32,
     what: &'static str,
+    context: Option<FaultContext>,
     count: u32,
 }
 
@@ -473,6 +510,7 @@ pub struct Env {
     /// Distinct service notes, preallocated so noting never allocates.
     pub notes: Vec<&'static str>,
     faults: Vec<FaultRecord>,
+    pub(super) fault_context: Option<FaultContext>,
     fault_occurrences_omitted: u64,
     rng: u64,
     next_callback_id: i32,
@@ -526,6 +564,7 @@ impl Env {
             persisted,
             notes: Vec::with_capacity(NOTE_CAPACITY),
             faults: Vec::with_capacity(FAULT_CAPACITY),
+            fault_context: None,
             fault_occurrences_omitted: 0,
             rng: 0x9E37_79B9_7F4A_7C15,
             next_callback_id: 0,
@@ -627,10 +666,11 @@ impl Env {
     }
 
     pub fn fault(&mut self, slot: u8, pc: u32, what: &'static str) {
+        let context = self.fault_context.take();
         if let Some(f) = self
             .faults
             .iter_mut()
-            .find(|f| f.slot == slot && f.pc == pc && f.what == what)
+            .find(|f| f.slot == slot && f.pc == pc && f.what == what && f.context == context)
         {
             f.count = f.count.saturating_add(1);
         } else if self.faults.len() < FAULT_CAPACITY {
@@ -638,6 +678,7 @@ impl Env {
                 slot,
                 pc,
                 what,
+                context,
                 count: 1,
             });
         } else {
@@ -1151,7 +1192,13 @@ impl Runtime {
                 t.pc,
                 "on init exceeded its instruction budget and was stopped",
             ),
-            Err(f) => bail!("KSP line {}: {}", prog.line(t.pc.saturating_sub(1)), f.0),
+            Err(f) => {
+                let line = prog.line(t.pc.saturating_sub(1));
+                if let Some(context) = self.env.fault_context.take() {
+                    bail!("KSP line {line}: {} ({context})", f.0);
+                }
+                bail!("KSP line {line}: {}", f.0);
+            }
         }
         // Nothing plays yet, so init's notes are dropped; controllers it sets
         // settle with `on persistence_changed`.
@@ -1392,6 +1439,7 @@ impl Runtime {
             slot: f.slot + 1,
             line: self.programs[f.slot as usize].line(f.pc.saturating_sub(1)),
             message: f.what,
+            context: f.context,
             count: f.count,
         }));
         live.notes.clear();
@@ -1462,7 +1510,7 @@ impl Runtime {
         }
         out.extend(self.env.faults.iter().map(|f| {
             let line = self.programs[f.slot as usize].line(f.pc.saturating_sub(1));
-            format!("Slot {} line {line}: {} ({}x)", f.slot + 1, f.what, f.count)
+            LiveFault { slot: f.slot + 1, line, message: f.what, context: f.context, count: f.count }.to_string()
         }));
         out.extend(self.env.notes.iter().map(|n| n.to_string()));
         if self.env.fault_occurrences_omitted != 0 {
