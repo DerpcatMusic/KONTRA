@@ -62,8 +62,16 @@ The graph is:
    full nightly version remains in `KONTRAVersion` and embedded build JSON. See
    Apple's [bundle build version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion)
    and [release version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring) formats.
-6. Retain the newest and one previous complete release, preserving immutable stable
-   source tags. Only after successful publication or a safe superseded-head exit,
+6. Publish under an immutable `v<nightly SemVer>` tag with GitHub's Latest flag.
+   These are experimental nightlies, not stable-quality releases. GitHub's
+   prerelease flag is false because prereleases cannot serve its permanent
+   `/releases/latest/download/<asset>` URLs. The SemVer itself remains a nightly.
+   See [GitHub release API](https://docs.github.com/en/rest/releases/releases).
+   Keep the newest and one previous complete release without editing historical
+   tags or release records. This works with the built-in `GITHUB_TOKEN`: historical
+   targets containing changed workflows otherwise require Workflows write permission,
+   which that token cannot receive. Preserve immutable stable source tags.
+   Only after successful publication or a safe superseded-head exit,
    remove this run's transient Actions artifacts. Failed builds/uploads retain their
    artifacts for one day. Release downloads are independent of Actions artifacts.
 

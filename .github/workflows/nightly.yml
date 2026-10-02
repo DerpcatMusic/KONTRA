@@ -1,7 +1,7 @@
 name: Nightly
 
-# Every public main update builds all platforms for the rolling `nightly`
-# pre-release. Builds may be superseded; publishing must finish uninterrupted.
+# Every public main update builds an experimental versioned nightly snapshot.
+# GitHub Latest links serve the newest complete snapshot. Builds may be superseded; publishing must finish uninterrupted.
 # Standard GitHub-hosted runners are free for public repositories.
 
 on:
@@ -173,7 +173,7 @@ jobs:
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           python3 tools/version.py nightly --write
-      - name: Publish the nightly pre-release
+      - name: Publish the experimental nightly
         id: publish
         env:
           GH_TOKEN: ${{ github.token }}
