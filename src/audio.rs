@@ -1390,6 +1390,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extended_pcm_wave_formats_decode_and_reject_incomplete_descriptors() {
+        let dir = std::env::temp_dir().join(format!("kontra-extended-pcm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wave = |fmt_len: usize, cb_size: u16, align: u16| {
+            let mut fmt = Vec::new();
+            fmt.extend(1u16.to_le_bytes()); // WAVE_FORMAT_PCM
+            fmt.extend(1u16.to_le_bytes()); // mono
+            fmt.extend(48000u32.to_le_bytes());
+            fmt.extend(96000u32.to_le_bytes());
+            fmt.extend(align.to_le_bytes());
+            fmt.extend(16u16.to_le_bytes());
+            fmt.resize(fmt_len, 0);
+            if fmt_len >= 18 {
+                fmt[16..18].copy_from_slice(&cb_size.to_le_bytes());
+            }
+            let mut bytes = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+            bytes.extend((fmt_len as u32).to_le_bytes());
+            bytes.extend(fmt);
+            if fmt_len % 2 != 0 {
+                bytes.push(0);
+            } // RIFF padding is outside fmt.
+            bytes.extend(b"data");
+            bytes.extend(4u32.to_le_bytes());
+            bytes.extend(8192i16.to_le_bytes());
+            bytes.extend((-16384i16).to_le_bytes());
+            let size = bytes.len() as u32 - 8;
+            bytes[4..8].copy_from_slice(&size.to_le_bytes());
+            bytes
+        };
+        for fmt_len in [16, 18, 20, 22, 40] {
+            for cb_size in [0, 65535] {
+                let path = dir.join(format!("valid-{fmt_len}-{cb_size}.wav"));
+                std::fs::write(&path, wave(fmt_len, cb_size, 2)).unwrap();
+                let sample = decode(&path, 8).unwrap();
+                assert_eq!(sample.rate, 48000);
+                assert_eq!(
+                    sample.frames,
+                    [[0.25; 2], [-0.5; 2]],
+                    "fmt{fmt_len}, cbSize{cb_size}"
+                );
+            }
+        }
+        for (name, bytes) in [
+            ("partial-base", wave(15, 0, 2)),
+            ("partial-cbSize", wave(17, 0, 2)),
+            ("bad-alignment", wave(20, 0, 3)),
+            ("zero-alignment", wave(20, 0, 0)),
+            ("truncated-extension", wave(20, 0, 2)[..38].to_vec()),
+        ] {
+            let path = dir.join(format!("invalid-{name}.wav"));
+            std::fs::write(&path, bytes).unwrap();
+            assert!(
+                decode(&path, 8).is_err(),
+                "{name} must not decode as valid PCM"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn shared_file_readers_seek_independently_and_decode_can_be_canceled() {
         let path =
             std::env::temp_dir().join(format!("kontra-cancel-read-{}.wav", std::process::id()));

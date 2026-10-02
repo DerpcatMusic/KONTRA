@@ -25,6 +25,35 @@ def package():
     return tomllib.loads((ROOT / 'Cargo.toml').read_text())['package']
 
 
+def fix_version(ledger):
+    """Only reviewed logical fixes advance the patch, never commit counts."""
+    base = validate(ledger['baseline_version'])
+    if base[4] or base[5]:
+        raise ValueError('Fix ledger baseline must be a release SemVer')
+    if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', ledger['baseline_source']):
+        raise ValueError('Fix ledger needs its full published baseline source checkpoint')
+    ids = set()
+    accepted = 0
+    for fix in ledger['fixes']:
+        if not re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', fix['id']) or fix['id'] in ids:
+            raise ValueError('Fix IDs must be unique, stable kebab-case names')
+        ids.add(fix['id'])
+        if type(fix['accepted']) is not bool or not fix['summary'].strip():
+            raise ValueError('Each fix needs a summary and explicit acceptance')
+        if fix['accepted']:
+            if not fix.get('validation', '').strip() or not fix.get('source_commits'):
+                raise ValueError('Accepted fixes need reviewed validation and source checkpoints')
+            for revision in fix['source_commits']:
+                if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', revision):
+                    raise ValueError('Fix source checkpoints must be full Git object IDs')
+            accepted += 1
+    return f'{base[1]}.{base[2]}.{int(base[3]) + accepted}'
+
+
+def ledger_version():
+    return fix_version(json.loads((ROOT / 'release-fixes.json').read_text()))
+
+
 def check():
     pkg = package()
     validate(pkg['version'])
@@ -35,11 +64,15 @@ def check():
     plugins = tomllib.loads((ROOT / 'moose.toml').read_text()).get('plugin', [])
     if any(p.get('version', pkg['version']) != pkg['version'] for p in plugins):
         raise ValueError('moose.toml overrides the authoritative Cargo package version')
+    if '.'.join(validate(pkg['version']).group(1, 2, 3)) != ledger_version():
+        raise ValueError('Package base differs from reviewed fix ledger; run tools/version.py fixes --write')
     return pkg['version']
 
 
 def write(version):
     validate(version)
+    if '.'.join(validate(version).group(1, 2, 3)) != ledger_version():
+        raise ValueError('Chosen version differs from the reviewed fix ledger')
     pkg = package()
     updates = []
     for filename, header in [('Cargo.toml', '[package]'), ('Cargo.lock', '[[package]]')]:
@@ -89,6 +122,8 @@ def main():
     p.add_argument('--write', action='store_true')
     p = commands.add_parser('nightly', help='derive a reproducible prerelease from this checkout')
     p.add_argument('--write', action='store_true')
+    p = commands.add_parser('fixes', help='derive the patch from explicitly accepted logical fix IDs')
+    p.add_argument('--write', action='store_true')
     p = commands.add_parser('manifest', help='validate and print the exact build.rs package manifest')
     p.add_argument('--file', required=True, type=Path)
     commands.add_parser('self-test', help='check SemVer edge cases and deterministic nightly identity')
@@ -104,7 +139,23 @@ def main():
         actual = nightly('0.2.0', revision, 0)
         assert actual == nightly('0.2.0-nightly.old', revision, 0) == '0.2.0-nightly.19700101.g000000000001'
         validate(actual)
-        print('SemVer and deterministic nightly checks passed')
+        fix = dict(id='one-defect', summary='Resolved defect', accepted=True, validation='Focused regression passed', source_commits=['a'*40])
+        ledger = dict(baseline_version='0.3.0', baseline_source='b'*40, fixes=[fix, dict(fix, id='pending-defect', accepted=False)])
+        assert fix_version(ledger) == '0.3.1'
+        ledger['fixes'].append(dict(fix))
+        try:
+            fix_version(ledger)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Duplicate logical fixes were counted twice')
+        print('SemVer, reviewed fix counting and deterministic nightly checks passed')
+        return
+    if args.command == 'fixes':
+        version = ledger_version()
+        if args.write:
+            write(version)
+        print(version)
         return
     current = check()
     if args.command == 'check':

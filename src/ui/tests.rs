@@ -478,6 +478,85 @@ fn snapshot_drop_targets_an_explicit_header_without_changing_active_state() {
 }
 
 #[test]
+fn snapshot_header_steps_and_selects_without_replacing_the_base() {
+    let p = Arc::new(SamplerParams::new());
+    let base = "/virtual/Library/Piano.nki";
+    let paths: Vec<PathBuf> = ["Bright", "Warm", "Wide"].map(|n| format!("/virtual/Library/Snapshots/{n}.nksn").into()).into();
+    let original = Part { path: base.into(), snapshot: paths[1].to_string_lossy().into_owned(),
+        script_state: "retained".into(), channel: 3, gain: -4., ..Default::default() };
+    p.selection.write().unwrap().parts = vec![original.clone()];
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let mut shelf = crate::library::Shelf::default();
+        shelf.snapshots.insert(base.into(), crate::library::Snapshots { instrument: "Piano".into(), paths });
+        view.shelf = Arc::new(shelf);
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    for id in ["snapshot-prev-0", "snapshot-next-0"] {
+        h.press(id);
+        assert!(lock(&p.shared.snapshot_request).take().is_some(), "{id} queues transactional validation");
+        assert!(p.selection.read().unwrap().parts[0] == original, "until validated, the source, routing and saved state stay intact");
+    }
+    h.press("snapshot-0");
+    assert!(h.ui.scene().unwrap().surface("menu-item-0").is_some());
+    h.press("menu-item-2");
+    assert!(lock(&p.shared.snapshot_request).take().is_some(), "selector uses the snapshot loader");
+    assert!(p.selection.read().unwrap().parts[0] == original);
+    p.selection.write().unwrap().parts[0].program = 1;
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("snapshot-0").is_none(), "the row must not offer snapshots for unsupported bank programs");
+}
+
+#[test]
+fn empty_rack_canvas_appends_and_scrolls_beyond_the_add_button() {
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.files = Arc::new(vec!["/virtual/Library/Piano.nki".into(), "/virtual/Library/Strings.nki".into()]);
+        view.shelf = Arc::new(crate::library::Shelf::under("/virtual", &view.files));
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("library-0");
+    h.drag("instrument-0", "rack-welcome");
+    assert_eq!(p.selection.read().unwrap().order, [0], "the empty welcome canvas accepts a browser drop");
+    p.selection.write().unwrap().parts[0].collapsed = true;
+    h.idle(30);
+    h.drag("instrument-1", "rack-empty");
+    {
+        let selection = p.selection.read().unwrap();
+        assert_eq!(selection.order, [0, 1], "a drop beyond Add appends a new part");
+        assert!(selection.parts[0].path.ends_with("Piano.nki"));
+        assert!(selection.parts[1].path.ends_with("Strings.nki"));
+    }
+    p.selection.write().unwrap().parts[1].collapsed = true;
+    h.idle(30);
+    let at = center(&h.ui, "rack-empty");
+    for down in [true, false] { h.tick(pointer(at, down)); }
+    h.idle(2);
+    assert_eq!(p.selection.read().unwrap().order.len(), 2, "clicking empty canvas never adds an instrument");
+    let before = h.ui.scene().unwrap().surface("rack-drop").unwrap().frame;
+    h.tick(Input { wheel: Vec2::new(0., 10_000.), ..pointer(at, false) });
+    h.idle(60);
+    let scene = h.ui.scene().unwrap();
+    let footer = scene.surface("rack-drop").unwrap().frame;
+    let viewport = scene.surface("rack-view").unwrap().frame;
+    let empty = scene.surface("rack-empty").unwrap().frame;
+    assert!(before.y - footer.y > before.size.height, "the rack scrolls further than the Add footer: {before:?} → {footer:?}");
+    assert!(footer.y + footer.size.height <= viewport.y + 1., "Add can scroll completely above the empty viewport: {footer:?}, {viewport:?}");
+    assert!(empty.size.height >= viewport.size.height - 1., "a full viewport of empty canvas remains: {empty:?}");
+    h.tick(Input { wheel: Vec2::new(0., -10_000.), ..pointer(center(&h.ui, "rack-view"), false) });
+    h.idle(60);
+    h.drag("instrument-0", "header-1");
+    {
+        let selection = p.selection.read().unwrap();
+        assert_eq!(selection.order.len(), 2, "an explicit header drop still replaces");
+        assert!(selection.parts[1].path.ends_with("Piano.nki"));
+    }
+    h.drag("name-1", "header-0");
+    assert_eq!(p.selection.read().unwrap().order, [1, 0], "explicit header reordering remains intact");
+}
+
+#[test]
 fn rack_interactions() {
     let p = Arc::new(SamplerParams::new());
     {
@@ -638,7 +717,8 @@ fn rack_interactions() {
     let Some((0, Play::Note(60, soft))) = p.shared.keyboard.pop() else { panic!("C plays") };
     assert!(soft < loud, "the top of a key plays softer: {soft} vs {loud}");
     assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 0))));
-    p.shared.key_owners[61].store(1, Ordering::Relaxed);
+    p.shared.press_key(1, 61, 1);
+    assert_eq!(p.shared.keyboard.pop(), Some((1, Play::Note(61, 1))));
     p.shared.release_keyboard();
     assert_eq!(p.shared.keyboard.pop(), Some((1, Play::Note(61, 0))));
     p.shared.release_keyboard();
@@ -698,14 +778,16 @@ fn rack_interactions() {
         "a dropped file takes the free slot"
     );
     assert!(!native_files(&p, &Default::default(), ui, at, &[PathBuf::from("bad.wav")], true));
-    assert!(!native_files(
+    let before_append = parts(&p).len();
+    assert!(native_files(
         &p,
         &Default::default(),
         ui,
         at,
-        &vec![PathBuf::from("full.nki"); RACK_SLOTS],
+        &vec![PathBuf::from("full.nki"); 17],
         true
     ));
+    assert_eq!(parts(&p).len(), before_append + 17, "a native drop grows the rack rather than rejecting files");
     let at = center(ui, "header-1");
     assert!(native_files(&p, &Default::default(), ui, at, &files, true));
     assert!(
@@ -1118,7 +1200,7 @@ fn racked(
             view.parts[slot].loading = true;
             view.parts[slot].bytes = 0;
             let done = (f64::from(crate::engine::LOAD_DONE) * done) as u32;
-            p.shared.load_progress[slot].store(done, Ordering::Relaxed);
+            p.shared.part(slot).unwrap().load_progress.store(done, Ordering::Relaxed);
         }
         view.parts[2].instrument = None;
         view.parts[2].interface = None;
@@ -1470,7 +1552,7 @@ fn screenshot() {
                 p.shared.scope.push(&signal);
             }
             if state.starts_with("mixer") {
-                p.shared.meters.clips.parts[1].store(true, Ordering::Relaxed);
+                p.shared.part(1).unwrap().clip.store(true, Ordering::Relaxed);
                 // Mid-song: parts on two buses, one sending to a named third.
                 let mut selection = p.selection.write().unwrap();
                 for (slot, part) in selection.parts.iter_mut().enumerate() {
@@ -1485,10 +1567,12 @@ fn screenshot() {
                 selection.bus_mut(1).gain = -4.5;
                 drop(selection);
                 let m = &p.shared.meters;
-                for (meter, [l, r]) in m.parts.iter().zip([[0.5, 0.42], [0.9, 1.05], [0.05, 0.03]]) {
-                    meter[0].store(f32::to_bits(l), Ordering::Relaxed);
-                    meter[1].store(f32::to_bits(r), Ordering::Relaxed);
-                }
+                p.shared.with_parts(|parts| {
+                    for (part, [l, r]) in parts.iter().zip([[0.5, 0.42], [0.9, 1.05], [0.05, 0.03]]) {
+                        part.meter[0].store(f32::to_bits(l), Ordering::Relaxed);
+                        part.meter[1].store(f32::to_bits(r), Ordering::Relaxed);
+                    }
+                });
                 for (meter, [l, r]) in m.buses.iter().zip([[0.7, 0.6], [0.04, 0.03], [0.2, 0.25]]) {
                     meter[0].store(f32::to_bits(l), Ordering::Relaxed);
                     meter[1].store(f32::to_bits(r), Ordering::Relaxed);
@@ -2273,7 +2357,7 @@ fn mixer_meters_paint_without_a_rebuild() {
     let root = (h.build)(&mut h.ui, &mut h.bridge);
     h.ui.frame(root.clone(), Some(h.size), Input::default(), 0.).unwrap();
     let quiet = pixels(&h.ui, width, height);
-    for m in &p.shared.meters.parts[0] {
+    for m in &p.shared.part(0).unwrap().meter {
         m.store(0.8f32.to_bits(), Ordering::Relaxed);
     }
     h.ui.frame(root, Some(h.size), Input::default(), 0.).unwrap();
@@ -2296,7 +2380,7 @@ fn mixer_meters_paint_without_a_rebuild() {
     let mut changed = || watch.changed(&p, &meters, &computer);
     let settle = Duration::from_millis(ANIMATION_MS + 5);
     let level = |v: f32| {
-        for m in &p.shared.meters.parts[0] {
+        for m in &p.shared.part(0).unwrap().meter {
             m.store(v.to_bits(), Ordering::Relaxed);
         }
     };
@@ -2351,7 +2435,7 @@ fn editor_opens_while_parts_load() {
         h.idle(1);
         (worst, frames) = (worst.max(t.elapsed()), frames + 1);
         for (slot, last) in last.iter_mut().enumerate() {
-            let now = p.shared.load_progress[slot].load(Ordering::Relaxed);
+            let now = p.shared.part(slot).unwrap().load_progress.load(Ordering::Relaxed);
             assert!(now >= *last, "slot {slot} progress fell from {last} to {now}");
             *last = now;
         }
@@ -2909,4 +2993,136 @@ fn optimistic_values_keep_callback_snapshots_immutable_and_invalidate_views() {
     let revision = signature(&view);
     view.parts[0].live_revisions = Some((2,0));
     assert_ne!(signature(&view), revision, "a reused snapshot address cannot hide a new source revision");
+}
+
+#[test]
+fn rack_growth_preserves_restored_slots_and_same_frame_duplicate() {
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut selection = write(&p.selection);
+        selection.parts = (0..129).map(|n| Part {
+            path: format!("/virtual/Restored/Part {n}.nki"),
+            collapsed: true,
+            ..Default::default()
+        }).collect();
+        selection.order = vec![128, 0, 128, 400];
+    }
+    // Slot128 was formerly also the no-focus sentinel. It remains a real
+    // requested part, independently of the current registry capacity.
+    p.shared.focus_request.store(128, Ordering::Relaxed);
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(2);
+    assert_eq!(read(&p.selection).parts.len(), 129, "restoration never truncates the rack");
+    assert_eq!(read(&p.selection).order.len(), 129, "order covers every occupied slot once");
+    assert_eq!(selected_slot(&p), 128);
+    assert_eq!(p.shared.focus_request.load(Ordering::Relaxed), u64::MAX);
+    assert!(lock(&p.shared.view).parts.len() >= 129);
+    // This append runs inside the editor frame, after its view was captured.
+    // Rendering the new part must use a prepared row, not the prior snapshot's
+    // length, and selection/routing still commit through the ordinary path.
+    h.tick(Input {
+        keys: vec![KeyPress { key: Key::Char('d'), mods: Mods { ctrl: true, ..Default::default() } }],
+        ..Default::default()
+    });
+    h.idle(1); // The harness delivers keys to the following editor build.
+    assert_eq!(read(&p.selection).parts.len(), 130);
+    assert_eq!(read(&p.selection).parts[129].path, read(&p.selection).parts[128].path);
+    assert_eq!(selected_slot(&p), 129);
+    assert!(p.shared.part(129).is_some(), "meter/loader atomics are prepared before rendering");
+    assert!(lock(&p.shared.view).parts.len() >= 130);
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("header-129").is_some(), "the duplicated part is revealed");
+    let bounded = |h: &Harness, count: usize| {
+        let scene = h.ui.scene().unwrap();
+        let viewport = scene.surface("rack-view").unwrap().frame;
+        let headers = (0..count).filter(|n| scene.surface(&format!("header-{n}")).is_some()).count();
+        assert!(headers <= (viewport.size.height / rack::SLIM).ceil() as usize + 4,
+            "header subtrees follow the viewport, not {count} stored parts: {headers}, {viewport:?}");
+        assert!(scene.surface("rack-content").unwrap().frame.size.height >= count as f64 * rack::SLIM,
+            "offscreen rows retain their scroll extent");
+    };
+    bounded(&h, 130);
+    // Put the selected source at the far end, then exercise the real keyboard
+    // append/reveal path there. A virtual row has no old surface to scroll to.
+    write(&p.selection).order.rotate_left(2);
+    h.idle(2);
+    h.tick(Input {
+        keys: vec![KeyPress { key: Key::Char('d'), mods: Mods { ctrl: true, ..Default::default() } }],
+        ..Default::default()
+    });
+    h.idle(1); // Dispatch the queued shortcut through the normal build path.
+    assert_eq!(read(&p.selection).parts.len(), 131);
+    h.idle(60); // Allow the ordinary rack scroll spring to finish.
+    let scene = h.ui.scene().unwrap();
+    let viewport = scene.surface("rack-view").unwrap().frame;
+    let header = scene.surface("header-130").expect("the appended virtual row is revealed").frame;
+    assert!(header.y < viewport.y + viewport.size.height && header.y + header.size.height > viewport.y,
+        "revealed header intersects the viewport: {header:?}, {viewport:?}");
+    bounded(&h, 131);
+}
+
+#[test]
+fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
+    let p = Arc::new(SamplerParams::new());
+    let dir = "/virtual/rename-fixture/Tubular Bell";
+    p.shared.libraries.edit(|s| { s.rename_library(dir, ""); s.sort = crate::library::Sort::Name; });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.files = Arc::new(vec![format!("{dir}/Bell.nki").into()]);
+        view.shelf = Arc::new(crate::library::Shelf::new(vec![crate::library::Library {
+            dir: dir.into(), name: String::new(), instruments: 1, ..Default::default()
+        }]));
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let at = center(&h.ui, "library-0"); // Empty metadata names still have a visible folder fallback.
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
+    }
+    h.idle(2);
+    h.press("menu-item-0");
+    h.idle(2);
+    assert_eq!(h.ui.focus_key(), Some("library-name"));
+    h.tick(Input { keys: vec![KeyPress { key: Key::Char('a'), mods: Mods { ctrl: true, ..Default::default() } }], ..Default::default() });
+    h.tick(Input { text: "Evening Bells Library".into(), ..Default::default() });
+    h.tick(enter()); h.idle(3);
+    let settings = p.shared.libraries.settings();
+    assert_eq!(settings.names.get(dir).map(String::as_str), Some("Evening Bells Library"));
+    let view = p.shared.view.lock().unwrap();
+    assert_eq!(view.shelf.libraries[0].name, "", "resource and source identity is unchanged");
+    assert_eq!(view.files[0], PathBuf::from(format!("{dir}/Bell.nki")));
+    assert_eq!(settings.library_name(&view.shelf.libraries[0]), "Evening Bells Library", "typed names retain their suffix");
+    drop(view);
+    h.ui.focus("library-filter");
+    h.tick(Input { text: "evening".into(), ..Default::default() }); h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("library-0").is_some(), "the new name is searchable");
+    h.press("library-0");
+    assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(), "selection retains its canonical source");
+    p.shared.libraries.edit(|s| s.rename_library(dir, ""));
+}
+
+#[test]
+fn authored_script_pages_show_footer_tabs_and_switch_the_visible_controls() {
+    let first = "on init\nmake_perfview\nset_script_title(\"Performance\")\nset_ui_height_px(200)\ndeclare ui_knob $layer(0,100,1)\nend on";
+    let second = "on init\nmake_perfview\nset_script_title(\"FX Rack\")\nset_ui_height_px(160)\ndeclare ui_switch $effect\nend on";
+    let p = scripted_part(first);
+    let mut engine = crate::ksp::LogEngine::new(Vec::new(),48000.);
+    let (rt, errors) = crate::ksp::Runtime::with_scripts(&[first,second],&mut engine,8,Vec::new());
+    assert!(errors.iter().all(Option::is_none),"{errors:?}");
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].script_pages = crate::plugin::script_pages(Some(&rt));
+        view.parts[0].script_epoch = 1;
+    }
+    let mut h = Harness::new(&p,1180.,760.);
+    assert!(h.ui.scene().unwrap().surface("script-page-0-0").is_some());
+    assert!(h.ui.scene().unwrap().surface("script-page-0-1").is_some());
+    h.press("script-page-0-1");
+    let view = p.shared.view.lock().unwrap();
+    assert_eq!(view.parts[0].script_slot,1);
+    assert_eq!(view.parts[0].interface.as_ref().unwrap().controls[0].kind,"ui_switch");
+    drop(view);
+    h.press("script-page-0-0");
+    let view = p.shared.view.lock().unwrap();
+    assert_eq!(view.parts[0].script_slot,0);
+    assert_eq!(view.parts[0].interface.as_ref().unwrap().controls[0].kind,"ui_knob");
 }

@@ -9,7 +9,9 @@
 //! ([`Part::output_manual`]) is never moved, and automatic routes keep off
 //! its bus and off buses used as sends.
 
-use crate::engine::{BUSES, RACK_SLOTS};
+use crate::engine::BUSES;
+#[cfg(test)]
+use crate::engine::RACK_SLOTS;
 use crate::fx::OUTS;
 use crate::plugin::{Part, Selection};
 use std::time::{Duration, Instant};
@@ -52,7 +54,7 @@ impl Outputs {
 /// Per rack slot and output channel, what the instrument routes there past
 /// its own output: 0 nothing, `1 + b` its instrument bus `b`, `0x100 + g`
 /// its group `g` (published by the audio thread, `plugin::outs_of`).
-pub type Mics = [[u16; OUTS]; RACK_SLOTS];
+pub type Mics = [[u16; OUTS]];
 
 /// Loaded slots, rack order first.
 fn loaded(sel: &Selection) -> Vec<usize> {
@@ -336,7 +338,7 @@ mod tests {
         sel
     }
 
-    const NO_MICS: Mics = [[0; OUTS]; RACK_SLOTS];
+    const NO_MICS: [[u16; OUTS]; RACK_SLOTS] = [[0; OUTS]; RACK_SLOTS];
 
     fn outputs(sel: &Selection) -> Vec<u8> {
         sel.parts.iter().map(|p| p.output).collect()

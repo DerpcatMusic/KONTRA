@@ -18,6 +18,76 @@ fn label(source: &str) -> String {
 }
 
 #[test]
+fn performance_view_loads_hierarchy_defaults_callbacks_and_resource_cache_identity() {
+    use serde_json::json;
+    let directory = std::env::temp_dir().join(format!("kontra-nckp-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let resources = directory.join("Resources/performance_view");
+    std::fs::create_dir_all(&resources).unwrap();
+    let instrument = directory.join("fixture.nki");
+    let common = |id: &str| json!({"id":id,"infoPaneText":"authored help","position":{"x":7,"y":9},"show":true,"size":{"width":85,"height":40},"zLayer":2});
+    let view = |default: i32| json!({"formatVersion":0,"type":{"name":"UI","version":0},"value":{"performanceView":{
+        "size":{"width":640,"height":400},"background":{"color":123,"image":"wallpaper"},"icon":{"image":"icon","show":true},
+        "controls":[{"index":0,"value":{"common":common("Section_"),"controls":[
+            {"index":3,"value":{"common":common("Amount"),"ratio":1,"unit":0,"value":{"min":0,"max":100,"default":default}}},
+            {"index":6,"value":{"common":common("Choice"),"entries":[{"show":true,"string":"First \"quoted\"","value":42},{"show":false,"string":"Hidden","value":91}]}},
+            {"index":9,"value":{"common":common("Curve"),"bipolar":true,"maxValue":1000,"steps":{"total":4,"visible":4}}},
+            {"index":10,"value":{"common":common("Name"),"text":{"string":"Exact \"name\"\nC:\\folder"}}},
+            {"index":6,"value":{"common":common("Empty"),"entries":null}}
+        ]}}]
+    }}});
+    let path = resources.join("fixture.nckp");
+    let source = "on init\nload_native_ui(\"main\")\nload_performance_view(\"fixture\")\n%Section__Curve[2] := $Section__Amount\nend on\non ui_control($Section__Choice)\n$Section__Amount := $Section__Choice\n%Section__Curve[1] := $Section__Choice\nend on";
+    std::fs::write(&path, serde_json::to_vec(&view(17)).unwrap()).unwrap();
+    let mut engine = LogEngine::new(Vec::new(),48000.0);
+    engine.instrument = Some(instrument);
+    let (mut first, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    let ui = first.interface(0);
+    assert_eq!(ui.controls.len(),6);
+    assert!(ui.controls[5].menu.is_empty());
+    assert_eq!(ui.controls[1].variable,"$Section__Amount");
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(17));
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_POS_X"],Value::Int(7));
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_PARENT_PANEL"],Value::Int(ui.controls[0].id));
+    assert_eq!(ui.controls[2].menu,vec![("First \"quoted\"".into(),42)]);
+    assert_eq!(ui.controls[3].properties["$CONTROL_PAR_VALUE"],Value::IntArray(vec![0,0,17,0]));
+    assert_eq!(ui.controls[4].properties["$CONTROL_PAR_VALUE"],Value::Text("Exact \"name\"\nC:\\folder".into()));
+    assert!(first.diagnostics().iter().any(|d| d.contains("scripted native UI execution is unavailable")));
+    first.ui_control(&mut engine,0,2,42);
+    assert_eq!(first.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(42));
+    assert_eq!(first.interface(0).controls[3].properties["$CONTROL_PAR_VALUE"],Value::IntArray(vec![0,42,17,0]));
+    std::fs::write(&path, serde_json::to_vec(&view(31)).unwrap()).unwrap();
+    let (second, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    assert_eq!(second.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(31));
+    assert_eq!(first.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(42));
+    // Inserted resource statements keep the original source's diagnostic lines.
+    let invalid = "on init\nload_performance_view(\"fixture\")\n$Section__Amount := $missing\nend on";
+    let (_, errors) = Runtime::with_scripts(&[invalid], &mut engine, 8, Vec::new());
+    assert!(errors.iter().flatten().any(|d| d.contains("line 3")), "{errors:?}");
+    let incompatible = "on init\nmake_perfview\nload_performance_view(\"fixture\")\nend on";
+    let (_, errors) = Runtime::with_scripts(&[incompatible], &mut engine, 8, Vec::new());
+    assert!(errors.iter().flatten().any(|d| d.contains("cannot be combined")), "{errors:?}");
+    std::fs::write(&path,b"{}").unwrap();
+    let (_, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
+    assert!(errors.iter().flatten().any(|d| d.contains("Performance view") && d.contains("line 3")), "{errors:?}");
+    let excluded = "on init\nUSE_CODE_IF(ABSENT)\nload_performance_view(\"missing\")\nEND_USE_CODE\ndeclare ui_button $valid\nend on";
+    let (_, errors) = Runtime::with_scripts(&[excluded], &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn legacy_pgs_callback_dispatches_through_the_same_shared_storage() {
+    let sender = "on init\n_pgs_create_key(shared_value,1)\ndeclare ui_button $send\nend on\non ui_control($send)\n_pgs_set_key_val(shared_value,0,42)\nend on";
+    let receiver = "on init\ndeclare ui_slider $received(0,100)\nend on\non _pgs_changed\n$received := _pgs_get_key_val(shared_value,0)\nend on";
+    let mut rig = Rig::new(&[sender,receiver]);
+    rig.rt.ui_control(&mut rig.engine,0,0,1);
+    assert_eq!(rig.rt.interface(1).controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(42));
+    assert!(rig.rt.diagnostics().is_empty());
+}
+
+#[test]
 fn script_conditions_inherit_successful_slots_and_partition_the_compiled_cache() {
     let set = "on init\nSET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(KEEP)\nend on";
     let read = "on init\ndeclare ui_label $info(1,1)\nUSE_CODE_IF(NO_SYS_SCRIPT_PEDAL)\nset_text($info,\"disabled\")\nEND_USE_CODE\nUSE_CODE_IF_NOT(NO_SYS_SCRIPT_PEDAL)\nset_text($info,\"default\")\nEND_USE_CODE\nend on";
@@ -150,6 +220,17 @@ fn auxiliary_meter_setup_preserves_the_rest_of_init() {
     );
     let wrong = initialize("on init\ndeclare ui_label $label(1,1)\nattach_level_meter(get_ui_id($label),-1,-1,0,-1)\nend on", 0, 8).unwrap_err();
     assert!(wrong.to_string().contains("requires a ui_level_meter"));
+    // Documented named chains are symbolic identities, not bus indices.
+    for chain in ["$NI_LEVEL_METER_MAIN", "$NI_LEVEL_METER_GROUP", "$NI_LEVEL_METER_INSERT", "15"] {
+        let source = format!("on init\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter),-1,0,0,{chain})\ndeclare ui_switch $ready\n$ready := 1\nend on");
+        let ui = initialize(&source,0,8).unwrap();
+        assert_eq!(prop(&ui,1,"$CONTROL_PAR_VALUE"),"1");
+        assert!(ui.diagnostics.iter().any(|d|d.contains("meter attachments are unavailable")));
+    }
+    for chain in ["$NI_LEVEL_METER_UNKNOWN", "16"] {
+        let source = format!("on init\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter),-1,0,0,{chain})\nend on");
+        assert!(initialize(&source,0,8).unwrap_err().to_string().contains("Invalid level meter attachment"));
+    }
 }
 
 #[test]
@@ -1457,6 +1538,119 @@ fn faults_name_their_own_line() {
 }
 
 #[test]
+fn keyboard_note_faults_report_builtin_argument_value_and_original_line() {
+    for (command, name, argument, value) in [
+        ("set_key_name(-1,\"Invalid\")", "set_key_name", 1, -1),
+        ("set_key_color(128,$KEY_COLOR_RED)", "set_key_color", 1, 128),
+        ("set_key_type(-1,$NI_KEY_TYPE_DEFAULT)", "set_key_type", 1, -1),
+        ("set_key_pressed(128,1)", "set_key_pressed", 1, 128),
+        ("message(get_key_name(-1))", "get_key_name", 1, -1),
+        ("message(get_key_color(128))", "get_key_color", 1, 128),
+        ("message(get_key_type(-1))", "get_key_type", 1, -1),
+        ("message(get_key_triggerstate(128))", "get_key_triggerstate", 1, 128),
+        ("set_keyrange(-1,127,\"Invalid\")", "set_keyrange", 1, -1),
+        ("set_keyrange(0,128,\"Invalid\")", "set_keyrange", 2, 128),
+        ("remove_keyrange(-1)", "remove_keyrange", 1, -1),
+    ] {
+        let source = format!("on init\n\n{command}\nend on");
+        let error = initialize(&source,0,0).unwrap_err().to_string();
+        let expected = format!("line 3: MIDI note must be 0..127 ({name} argument {argument} = {value})");
+        assert!(error.contains(&expected), "{command}: {error}");
+    }
+    let ui = initialize("on init\nset_key_name(0,\"Lowest\")\nset_key_name(127,\"Highest\")\nset_keyrange(0,127,\"All keys\")\nend on",0,0).unwrap();
+    assert!(ui.diagnostics.is_empty(), "{:?}", ui.diagnostics);
+}
+
+#[test]
+fn listener_faults_preserve_command_signal_parameter_and_distinct_runtime_values() {
+    use super::runtime::FaultContext;
+    for (command, context) in [
+        ("set_listener($NI_SIGNAL_TIMER_MS,999)", "set_listener signal $NI_SIGNAL_TIMER_MS (1), parameter 999"),
+        ("set_listener($NI_SIGNAL_TIMER_BEAT,25)", "set_listener signal $NI_SIGNAL_TIMER_BEAT (2), parameter 25"),
+        ("change_listener_par($NI_SIGNAL_TRANSP_START,1)", "change_listener_par signal $NI_SIGNAL_TRANSP_START (3), parameter 1"),
+        ("set_listener(999,1)", "set_listener signal unknown signal (999), parameter 1"),
+    ] {
+        let error = initialize(&format!("on init\n{command}\nend on"),0,0).unwrap_err().to_string();
+        assert!(error.contains("line 2: Invalid listener signal/parameter"), "{error}");
+        assert!(error.contains(context), "{error}");
+    }
+    let source = "on init\ndeclare ui_value_edit $period(0,999,1)\nend on\non ui_control($period)\nchange_listener_par($NI_SIGNAL_TIMER_MS,$period)\nend on";
+    let mut rig = Rig::new(&[source]);
+    let mut live = rig.rt.live();
+    let mut exercise = || {
+        for parameter in [998,999,998] { rig.rt.ui_control(&mut rig.engine,0,0,parameter); }
+        rig.rt.refresh_diagnostics(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(|| exercise()),0);
+    #[cfg(not(feature = "plugin"))]
+    exercise();
+    assert_eq!(live.faults.len(),2);
+    assert_eq!(live.faults[0].count,2);
+    assert_eq!(live.faults[0].context,Some(FaultContext::Listener { change:true, signal:1, parameter:998 }));
+    assert_eq!(live.faults[1].context,Some(FaultContext::Listener { change:true, signal:1, parameter:999 }));
+    assert!(live.faults[0].to_string().contains("change_listener_par signal $NI_SIGNAL_TIMER_MS (1), parameter 998"));
+    let encoded = serde_json::to_value(live.faults[0]).unwrap();
+    assert_eq!(encoded["context"]["Listener"]["parameter"],998);
+}
+
+#[test]
+fn note_fault_context_is_bounded_distinct_and_does_not_leak_to_another_callback() {
+    use super::runtime::FaultContext;
+    let script = "on init\ndeclare ui_knob $bad(0,256,1)\ndeclare ui_button $other\nend on\non ui_control($bad)\nset_key_color($bad,$KEY_COLOR_RED)\nend on\non ui_control($other)\n$other := 1 / $other\nend on";
+    let mut rig = Rig::new(&[script]);
+    let mut live = rig.rt.live();
+    let mut exercise = || {
+        for value in [128,129,128] { rig.rt.ui_control(&mut rig.engine,0,0,value); }
+        rig.rt.ui_control(&mut rig.engine,0,1,0);
+        rig.rt.refresh_diagnostics(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(|| exercise()),0);
+    #[cfg(not(feature = "plugin"))]
+    exercise();
+    assert_eq!(live.faults.len(),3);
+    assert_eq!(live.faults[0].line,6);
+    assert_eq!(live.faults[0].count,2);
+    assert_eq!(live.faults[0].context,Some(FaultContext::MidiNote { builtin:"set_key_color",argument:1,value:128 }));
+    assert_eq!(live.faults[1].context,Some(FaultContext::MidiNote { builtin:"set_key_color",argument:1,value:129 }));
+    assert_eq!(live.faults[2].context,None);
+    assert_eq!(live.faults[2].line,9);
+    assert!(live.faults[0].to_string().contains("set_key_color argument 1 = 128"));
+    let encoded = serde_json::to_value(live.faults[0]).unwrap();
+    assert_eq!(encoded["context"]["MidiNote"]["value"],128);
+}
+
+#[test]
+fn omitted_fault_executions_are_counted_without_growing_audio_storage() {
+    let mut rig = Rig::new(&["on init\nend on"]);
+    let mut live = rig.rt.live();
+    let capacity = live.faults.capacity();
+    let fault = "synthetic bounded fault";
+    let mut exercise = || {
+        for pc in 0..600 { rig.rt.env.fault(0, pc, fault); }
+        for _ in 0..10 { rig.rt.env.fault(0, 599, fault); }
+        rig.rt.env.fault(0, 0, fault);
+        rig.rt.refresh_diagnostics(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0, "fault retention, overflow and snapshot copying must not allocate");
+    #[cfg(not(feature = "plugin"))]
+    exercise();
+    assert_eq!(live.faults.len(), capacity);
+    assert_eq!(live.faults.capacity(), capacity);
+    assert_eq!(live.faults[0].count, 2, "retained locations continue counting after overflow");
+    assert_eq!(live.fault_occurrences_omitted, 610 - capacity as u64);
+    assert!(rig.rt.diagnostics().iter().any(|s| s.contains(&format!("omitted {} executions", live.fault_occurrences_omitted))));
+    let previous = live.clone();
+    rig.rt.env.fault(0, 599, fault);
+    rig.rt.refresh_diagnostics(&mut live);
+    assert_eq!(live.fault_occurrences_omitted, previous.fault_occurrences_omitted + 1);
+    assert_ne!(live, previous, "omission-only changes must reach the publisher");
+    assert_eq!(Rig::new(&["on init\nend on"]).rt.live().fault_occurrences_omitted, 0);
+}
+
+#[test]
 fn engine_par_display_follows_kontakt_laws() {
     // Afflatus labels its mic faders `get_engine_par_disp(...) & " dB"`; it read "630000 dB".
     let source = "on init\ndeclare ui_label $l(1,1)\nset_engine_par($ENGINE_PAR_VOLUME, 630000, -1, -1, -1)\nset_engine_par($ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN, 396851, -1, 1, 1)\nset_engine_par($ENGINE_PAR_SEND_EFFECT_DRY_LEVEL, 0, -1, 1, 0)\nset_engine_par($ENGINE_PAR_PAN, 250000, -1, -1, -1)\nset_text($l, get_engine_par_disp($ENGINE_PAR_VOLUME, -1, -1, -1) & \" dB|\" & get_engine_par_disp($ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN, -1, 1, 1) & \"|\" & get_engine_par_disp($ENGINE_PAR_SEND_EFFECT_DRY_LEVEL, -1, 1, 0) & \"|\" & get_engine_par_disp($ENGINE_PAR_PAN, -1, -1, -1) & \"|\" & get_engine_par($ENGINE_PAR_VOLUME, -1, -1, -1))\nend on";
@@ -2292,4 +2486,51 @@ fn transport_listener_start_and_stop_subscriptions_are_independent() {
     for (slot, count) in [1,1,2].into_iter().enumerate() {
         assert_eq!(rt.interface(slot).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(count));
     }
+}
+
+#[test]
+fn file_selector_reads_path_modes_before_running_its_callback() {
+    let source = r#"on init
+make_perfview
+declare ui_file_selector $files
+declare ui_label $result(1,1)
+set_control_par_str(get_ui_id($files),$CONTROL_PAR_FILEPATH,"/presets/Restored.nka")
+set_control_par(get_ui_id($files),$CONTROL_PAR_FILE_TYPE,$NI_FILE_TYPE_ARRAY)
+end on
+on ui_control($files)
+set_text($result,fs_get_filename(get_ui_id($files),0) & ":" & fs_get_filename(get_ui_id($files),1) & ":" & fs_get_filename(get_ui_id($files),2))
+if (fs_get_filename(get_ui_id($files),0)="Quiet")
+set_engine_par($ENGINE_PAR_VOLUME,250000,-1,-1,-1)
+else
+set_engine_par($ENGINE_PAR_VOLUME,1000000,-1,-1,-1)
+end if
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_FILEPATH"),"/presets/Restored.nka");
+    for (path, expected) in [("/presets/Quiet.nka","Quiet:Quiet.nka:/presets/Quiet.nka"), ("/presets/Loud.nka","Loud:Loud.nka:/presets/Loud.nka")] {
+        assert!(rig.rt.ui_file_selection(&mut rig.engine,0,0,path));
+        assert_eq!(prop(&rig.rt.interface(0),1,"$CONTROL_PAR_TEXT"),expected);
+    }
+    assert!(!rig.rt.ui_file_selection(&mut rig.engine,0,1,"/presets/Quiet.nka"));
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn ms_and_beat_listeners_retain_independent_phase_through_disable_retune_and_transport() {
+    let source = "on init\ndeclare ui_slider $ms(0,10000)\ndeclare ui_slider $beat(0,10000)\ndeclare ui_slider $start(0,10000)\ndeclare ui_slider $stop(0,10000)\ndeclare ui_slider $mode(0,3)\ndeclare $retune\nset_listener($NI_SIGNAL_TIMER_MS,1000)\nset_listener($NI_SIGNAL_TIMER_BEAT,4)\nset_listener($NI_SIGNAL_TRANSP_START,1)\nset_listener($NI_SIGNAL_TRANSP_STOP,1)\nend on\non listener\nselect($NI_SIGNAL_TYPE)\ncase $NI_SIGNAL_TIMER_MS\ninc($ms)\nif($retune=1)\n$retune := 0\nchange_listener_par($NI_SIGNAL_TIMER_MS,1000)\nend if\ncase $NI_SIGNAL_TIMER_BEAT\ninc($beat)\ncase $NI_SIGNAL_TRANSP_START\ninc($start)\ncase $NI_SIGNAL_TRANSP_STOP\ninc($stop)\nend select\nend on\non ui_control($mode)\nif($mode=1)\nchange_listener_par($NI_SIGNAL_TIMER_MS,0)\nelse\n$retune := 1\nchange_listener_par($NI_SIGNAL_TIMER_MS,2000)\nend if\nend on";
+    let mut rig = Rig::new(&[source]);
+    rig.block(6001);
+    let values = |rt: &Runtime| (0..4).map(|i|rt.interface(0).controls[i].properties["$CONTROL_PAR_VALUE"].clone()).collect::<Vec<_>>();
+    assert_eq!(values(&rig.rt),vec![Value::Int(125),Value::Int(1),Value::Int(0),Value::Int(0)]);
+    rig.rt.set_host_transport(&mut rig.engine,true,120.,0.,(4,4));
+    rig.rt.ui_control(&mut rig.engine,0,4,1);
+    rig.block(6000);
+    assert_eq!(values(&rig.rt),vec![Value::Int(125),Value::Int(2),Value::Int(1),Value::Int(0)]);
+    rig.rt.set_host_transport(&mut rig.engine,false,120.,0.,(4,4));
+    rig.rt.ui_control(&mut rig.engine,0,4,2);
+    rig.block(241);
+    assert_eq!(values(&rig.rt),vec![Value::Int(129),Value::Int(2),Value::Int(1),Value::Int(1)],"self-retuning schedules one new timer, not two");
+    rig.block(5759);
+    assert_eq!(rig.rt.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(3),"MS retuning and transport do not postpone the existing beat deadline");
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
 }
