@@ -997,7 +997,7 @@ fn wavetable_cycles_ignore_sample_rate_and_root_and_keep_common_note_lifetimes()
             let x = ((i % 2048) as f32 * std::f32::consts::TAU / 2048.).sin() * 0.2;
             [if i < 2048 { x } else { -x }; 2]
         }).collect();
-        let group = Group { volume_env: Some(kontakto::import::Ahdsr { attack_ms: 0., decay_ms: 0., hold_ms: 0., sustain: 1., release_ms: 1., attack_curve: 0. }),
+        let group = Group { volume_env: Some(kontakto::import::Ahdsr { attack_ms: 0., decay_ms: 0., hold_ms: 0., sustain: 1., release_ms: 1., attack_curve: 0., unknown_flag: 0, unknown_tail: Vec::new() }),
             wavetable: Some(Wavetable { quality: 2, ..Default::default() }), ..Group::default() };
         engine_with(Bank::from_samples(vec![group], vec![Zone { sample: path.clone(), root, ..Zone::default() }],
             vec![(path.clone(), Sample { rate, frames })]).unwrap())
