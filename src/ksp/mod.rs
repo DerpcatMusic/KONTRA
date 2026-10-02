@@ -28,7 +28,7 @@ pub use engine::{
     NoteLength, NoteSpec, VoicePar, engine_par_name,
 };
 pub use inventory::requirements;
-pub use runtime::{Live, LiveFault, MAX_SLOTS, Persisted, Refresh, Runtime, settle_persistence};
+pub use runtime::{FaultAction, FaultContext, Live, LiveFault, MAX_SLOTS, Persisted, Refresh, Runtime, settle_persistence};
 pub(crate) use runtime::{EVENT_CAPACITY, reset_controller_value};
 
 use anyhow::Result;
@@ -39,6 +39,11 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(untagged)]
 pub enum Value {
     Int(i32),
+    /// Native Kontakt persistence stores a menu's entry position, whereas
+    /// KONTRA host state stores its assigned value. Keep the origin until the
+    /// declared control and its entries are available; ordinary scalars use it
+    /// as an integer. The object shape survives the imported instrument cache.
+    NativeInt { native_int: i32 },
     Real(f64),
     Text(String),
     /// Dense snapshots keep numeric tables at their native element size.
@@ -120,6 +125,9 @@ pub struct Interface {
     pub wallpaper: String,
     #[serde(default)]
     pub wallpaper_state: i32,
+    /// Authored performance-view background, packed as 0xRRGGBB.
+    #[serde(default)]
+    pub background_color: Option<u32>,
     /// Vertical background offset in pixels, independent of picture state.
     #[serde(default)]
     pub skin_offset: i32,
@@ -140,6 +148,7 @@ impl Default for Interface {
             title: String::new(),
             wallpaper: String::new(),
             wallpaper_state: 0,
+            background_color: None,
             skin_offset: 0,
             fonts: Vec::new(),
             controls: Vec::new(),
@@ -157,10 +166,9 @@ pub fn saved_persistence(entries: &[String]) -> Persisted {
         .iter()
         .filter_map(|entry| {
             let (name, rest) = entry.split_once(' ').unwrap_or((entry, ""));
-            let ints = || rest.split_whitespace().map(|x| x.parse().map(Value::Int));
             let reals = || rest.split_whitespace().map(|x| x.parse().map(Value::Real));
             let value = match name.as_bytes().first()? {
-                b'$' => ints().next()?.ok()?,
+                b'$' => Value::NativeInt { native_int: rest.split_whitespace().next()?.parse().ok()? },
                 b'~' => reals().next()?.ok()?,
             b'%' => Value::IntArray(rest.split_whitespace().map(str::parse).collect::<Result<_, _>>().ok()?),
             b'?' => Value::RealArray(rest.split_whitespace().map(str::parse).collect::<Result<_, _>>().ok()?),

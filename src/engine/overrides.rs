@@ -70,6 +70,7 @@ impl Param {
                     Stage::Decay => Self::Decay,
                     Stage::Sustain => Self::Sustain,
                     Stage::Release => Self::Release,
+                    Stage::AhdOnly => return None,
                 },
             ),
             Address::Filter(g, s, knob) => (

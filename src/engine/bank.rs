@@ -29,13 +29,12 @@ use std::{
 /// streaming until the bank fits.
 pub const MEMORY_LIMIT: usize = 1 << 30;
 /// Frames of every sample kept in RAM past the furthest start offset
-/// (Kontakt's DFD preload). Voices start from this instantly while the
-/// streamer fetches the rest; 2048 frames is ≈43 ms at 48 kHz (12 KiB per
-/// 24-bit stereo sample, a fifth of Kontakt's 60 KB default). Measured on
-/// NVMe with a cold page cache (audits/PERFORMANCE.md): no underruns at
-/// 1000 streaming voices and 256 note starts per second; 1024 frames
-/// underruns. Shrinks toward [`MIN_PRELOAD`] to fit the budget.
-pub const PRELOAD_FRAMES: u64 = 2048;
+/// (Kontakt's DFD preload). The first render block must be resident even
+/// at the maximum admitted source consumption: a note cannot wait for a
+/// cold stream worker within that same callback. The cubic's last tap is
+/// inside this bound because MAX_STEP exceeds its three extra taps.
+/// Shrinks toward [`MIN_PRELOAD`] to fit the budget.
+pub const PRELOAD_FRAMES: u64 = (super::MAX_BLOCK as f64 * super::voice::MAX_STEP) as u64;
 /// Smallest preload the budget forces before start-offset ranges start to
 /// stream: ≈21 ms at 48 kHz.
 pub const MIN_PRELOAD: u64 = 1024;
@@ -118,6 +117,8 @@ impl From<&crate::import::Ahdsr> for Ahdsr {
             decay: env.decay_ms / 1000.0,
             sustain: env.sustain.clamp(0.0, 1.0),
             release: env.release_ms / 1000.0,
+            // Native mode/flag bytes have no verified AHD mapping.
+            ahd_only: false,
         }
     }
 }
@@ -389,6 +390,8 @@ pub struct Bank {
     pub(crate) plays: Arc<[ZonePlay]>,
     /// Per group: not muted and, when any group is soloed, soloed.
     pub(crate) playable: Vec<bool>,
+    /// Prepared once: normal attacks need a tail scan only for Note Mono releases.
+    pub(crate) note_mono_releases: bool,
     /// Zones mapped to key `k` are `key_zones[key_start[k]..key_start[k + 1]]`.
     key_start: [u32; 129],
     key_zones: Arc<[u32]>,
@@ -1186,6 +1189,7 @@ impl Builder {
         let mut zones = self.zones;
         zones.iter_mut().for_each(|z| z.sample = PathBuf::new());
         let any_solo = self.groups.iter().any(|g| g.soloed);
+        let note_mono_releases = self.groups.iter().any(|g| g.release_trigger && g.release_trigger_note_monophonic);
         let playable = self
             .groups
             .iter()
@@ -1211,6 +1215,7 @@ impl Builder {
             settings: self.settings,
             plays: intern(&PLAYS, plays),
             playable,
+            note_mono_releases,
             key_start,
             key_zones: intern(&KEY_ZONES, key_zones),
             samples,

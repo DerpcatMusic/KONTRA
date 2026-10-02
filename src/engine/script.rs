@@ -105,7 +105,7 @@ pub fn load_scripts_with_state(
 /// responses `script`'s `on init` loaded. Allocates: build off the audio thread.
 pub fn effects(instrument: &Instrument, script: Option<&Runtime>, rate: f32) -> FxProcessor {
     let irs = script.map_or(&[][..], |rt| &rt.init_irs);
-    instrument.fx.processor_with(rate, super::MAX_BLOCK, irs)
+    instrument.fx.processor_for_groups(rate, super::MAX_BLOCK, irs, &instrument.groups)
 }
 
 /// Script engine calls one render can hold; the rest are dropped and counted.

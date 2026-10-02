@@ -6,6 +6,28 @@ use mui::Ui;
 use mui::prelude::{El, Input, knob};
 
 #[test]
+fn gpu_startup_panic_keeps_the_backend_cause() {
+    assert_eq!(gpu_panic_reason(&"Vulkan loader unavailable"),
+        "panic while creating GPU resources: Vulkan loader unavailable");
+    assert_eq!(gpu_panic_reason(&String::from("shader validation failed")),
+        "panic while creating GPU resources: shader validation failed");
+    assert_eq!(gpu_panic_reason(&42_u32),
+        "panic while creating GPU resources: non-string panic payload");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_embedding_identifies_x11_and_rejects_wayland_without_a_raw_handle_dump() {
+    use raw_window_handle::{RawWindowHandle, WaylandWindowHandle, XcbWindowHandle, XlibWindowHandle};
+    assert_eq!(linux_parent_api(XlibWindowHandle::new(1).into()), Ok("X11/Xlib"));
+    assert_eq!(linux_parent_api(XcbWindowHandle::new(std::num::NonZeroU32::new(1).unwrap()).into()), Ok("X11/Xcb"));
+    let handle = WaylandWindowHandle::new(std::ptr::NonNull::dangling());
+    let reason = linux_parent_api(RawWindowHandle::Wayland(handle)).unwrap_err();
+    assert!(reason.contains("XWayland"));
+    assert!(!reason.contains("0x"));
+}
+
+#[test]
 fn windows_gpu_defaults_to_dx12_and_explicit_backend_choices_stay_authoritative() {
     use wgpu::Backends as B;
     assert_eq!(gpu_backends(true, None), B::DX12);

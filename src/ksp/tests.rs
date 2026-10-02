@@ -2,7 +2,7 @@ use super::*;
 
 fn text(v: &Value) -> String {
     match v {
-        Value::Int(n) => n.to_string(),
+        Value::Int(n) | Value::NativeInt { native_int: n } => n.to_string(),
         Value::Real(n) => n.to_string(),
         Value::Text(s) => s.clone(),
         Value::Array(_) | Value::IntArray(_) | Value::RealArray(_) => "[array]".into(),
@@ -238,6 +238,25 @@ fn callback_only_scripts_do_not_require_an_empty_init() {
     let mut rig = Rig::new(&["on note\nignore_event($EVENT_ID)\nend on"]);
     assert!(rig.on(0, 60).log().is_empty());
     assert!(initialize("{ no readable callbacks }", 0, 8).is_err());
+}
+
+#[test]
+fn performance_background_colors_refresh_and_preserve_key_revisions() {
+    let mut rig = Rig::new(&[
+        "on init\nmake_perfview\nset_ui_color(0ff0000h)\ndeclare ui_switch $page\nend on\non ui_control($page)\nset_ui_color(000ff00h)\nend on",
+    ]);
+    let mut live = rig.rt.live();
+    assert_eq!(live.interface.as_ref().unwrap().background_color, Some(0xff0000));
+    let revisions = live.revisions();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert!(rig.rt.refresh_live(&mut live));
+    assert_eq!(live.interface.as_ref().unwrap().background_color, Some(0x00ff00));
+    assert!(live.revisions().0 > revisions.0);
+    assert_eq!(live.revisions().1, revisions.1, "background changes leave keyboard metadata alone");
+    let changed = live.revisions();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert!(!rig.rt.refresh_live(&mut live), "identical colors must not invalidate publication");
+    assert_eq!(live.revisions(), changed);
 }
 
 #[test]
@@ -837,7 +856,7 @@ fn saved_persistence_decodes_every_kind() {
     ]
     .map(String::from);
     let saved = saved_persistence(&entries);
-    assert_eq!(saved["$a"], Value::Int(5));
+    assert_eq!(saved["$a"], Value::NativeInt { native_int: 5 });
     assert_eq!(
         saved["%b"],
         Value::IntArray(vec![1, 2, 3])
@@ -1554,7 +1573,7 @@ fn keyboard_note_faults_report_builtin_argument_value_and_original_line() {
     ] {
         let source = format!("on init\n\n{command}\nend on");
         let error = initialize(&source,0,0).unwrap_err().to_string();
-        let expected = format!("line 3: MIDI note must be 0..127 ({name} argument {argument} = {value})");
+        let expected = format!("line 3: MIDI note must be 0..127 ({name} argument {argument} = {value}; on init)");
         assert!(error.contains(&expected), "{command}: {error}");
     }
     let ui = initialize("on init\nset_key_name(0,\"Lowest\")\nset_key_name(127,\"Highest\")\nset_keyrange(0,127,\"All keys\")\nend on",0,0).unwrap();
@@ -1592,6 +1611,52 @@ fn listener_faults_preserve_command_signal_parameter_and_distinct_runtime_values
     assert!(live.faults[0].to_string().contains("change_listener_par signal $NI_SIGNAL_TIMER_MS (1), parameter 998"));
     let encoded = serde_json::to_value(live.faults[0]).unwrap();
     assert_eq!(encoded["context"]["Listener"]["parameter"],998);
+}
+
+#[test]
+fn headless_fault_context_preserves_array_action_and_source_without_audio_allocations() {
+    let sources = vec!["on init\nend on".to_string(),
+        "on init\ndeclare %bad[2]\ndeclare $index := 3\ndeclare $result\nend on\non note\nignore_event($EVENT_ID)\n$result := %bad[$index]\nend on".to_string()];
+    for reference in [false, true] {
+        super::vm::REFERENCE.set(reference);
+        let mut rig = Rig::new(&[&sources[0], &sources[1]]);
+        rig.engine.calls.reserve(16);
+        let mut live = rig.rt.live();
+        let mut first_event = None;
+        let mut exercise = || {
+            rig.rt.set_midi_channel(2);
+            rig.rt.note_on(&mut rig.engine, 0, 60, 100);
+            first_event = rig.rt.faults().next().unwrap().last_action.unwrap().event_id;
+            rig.rt.note_on(&mut rig.engine, 0, 62, 90);
+            rig.rt.refresh_diagnostics(&mut live);
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+        #[cfg(not(feature = "plugin"))]
+        exercise();
+        assert_eq!(live.faults.len(), 1, "new event IDs must not grow retained fault locations");
+        assert_eq!((live.faults[0].slot, live.faults[0].line, live.faults[0].count), (2, 8, 2));
+        let action = live.faults[0].last_action.unwrap();
+        assert_eq!((action.callback, action.note, action.midi_channel), ("note", Some(62), Some(2)));
+        assert!(action.callback_id > 0 && action.event_id.is_some());
+        assert_ne!(first_event, action.event_id, "the retained action identifies the latest occurrence");
+        assert!(rig.rt.env.fault_action.is_none(), "a later unrelated service cannot inherit callback context");
+        let context = crate::diagnostics::script_runtime_report(&rig.rt, &sources);
+        let fault = &context["faults"][0];
+        assert_eq!(fault["array"], serde_json::json!({"name":"%bad","index":3,"length":2}));
+        assert_eq!(fault["script_slot"], 1);
+        assert_eq!(fault["last_action"]["callback"], "note");
+        assert_eq!(fault["source_excerpt"]["script_slot"], 2);
+        assert!(crate::diagnostics::excerpt_text(fault).unwrap().contains(">      8 | $result := %bad[$index]"));
+        let mut trace = crate::diagnostics::LoadTrace::new(std::path::Path::new("Authored context.nki"), 0, None);
+        assert_eq!(trace.script_runtime(&rig.rt, &sources), 1);
+        let report = trace.finish("loaded");
+        assert_eq!(report["issues"].as_array().unwrap().len(), 1, "the rendered string must not duplicate its structured fault");
+        assert_eq!(report["issues"][0]["array"], fault["array"]);
+        assert_eq!(report["issues"][0]["last_action"], fault["last_action"]);
+        assert!(crate::diagnostics::excerpt_text(&report["issues"][0]).is_some());
+    }
+    super::vm::REFERENCE.set(false);
 }
 
 #[test]
@@ -2146,7 +2211,7 @@ fn a_waveform_keeps_its_zone_flags_and_cursor() {
 #[test]
 fn menus_snap_invalid_control_and_persistent_values_before_indexing() {
     // Una Corda's room menu has values 60..89, sets VALUE to 0 in its
-    // control setup, and saves a stale value 2. Its captions index by item.
+    // control setup. Host values select by assigned value, not item position.
     let source = r#"on init
 make_perfview
 declare !names[3] := ("First", "Second", "Last")
@@ -2161,7 +2226,7 @@ declare ui_label $restored(1,1)
 set_text($init, !names[get_control_par(get_ui_id($room), $CONTROL_PAR_SELECTED_ITEM_IDX)])
 end on
 on persistence_changed
-set_text($restored, !names[get_control_par(get_ui_id($room), $CONTROL_PAR_SELECTED_ITEM_IDX)])
+set_text($restored, !names[get_control_par(get_ui_id($room), $CONTROL_PAR_VALUE)])
 end on"#;
     for (saved, value, label) in [(2, 60, "First"), (61, 61, "Second"), (89, 89, "Last")] {
         let mut engine = LogEngine::new(Vec::new(), 48000.);
@@ -2173,6 +2238,76 @@ end on"#;
         assert_eq!(prop(&ui, 0, "$CONTROL_PAR_VALUE"), value.to_string());
         assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "First");
         assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), label);
+    }
+}
+
+#[test]
+fn native_menu_positions_restore_entries_and_host_state_preserves_assigned_values() {
+    let source = r#"on init
+make_perfview
+declare !names[3] := ("First", "Middle", "Last")
+declare ui_menu $room
+make_persistent($room)
+read_persistent_var($room)
+declare $cached := $room
+declare $ordinary
+make_persistent($ordinary)
+read_persistent_var($ordinary)
+add_menu_item($room, "Header", -1)
+add_menu_item($room, "Room A", 0)
+add_menu_item($room, "Another header", -1)
+add_menu_item($room, "Room B", 1)
+add_menu_item($room, "Room Z", 2)
+declare $built := $room
+make_persistent($built)
+declare ui_label $caption(1,1)
+end on
+on persistence_changed
+if ($room >= 0)
+$cached := $room
+set_text($caption, !names[$cached])
+else
+set_text($caption, "Header")
+end if
+end on
+on ui_control($room)
+read_persistent_var($room)
+end on"#;
+    for (position, value, caption) in [
+        (0, -1, "Header"), (1, 0, "First"), (2, -1, "Header"),
+        (3, 1, "Middle"), (4, 2, "Last"), (-1, -1, "Header"), (99, -1, "Header"),
+    ] {
+        // Both NKI and NKSN import use this decoder. The distinct object also
+        // keeps native origin through the imported instrument's JSON cache.
+        let saved = saved_persistence(&[format!("$room {position}"), "$ordinary 73".into()]);
+        let saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        let mut engine = LogEngine::new(Vec::new(), 48_000.);
+        let (mut rt, errors) = Runtime::with_scripts(&[source], &mut engine, 8, vec![saved]);
+        assert!(errors.iter().all(Option::is_none), "{position}: {errors:?}");
+        assert!(rt.diagnostics().is_empty(), "{position}: {:?}", rt.diagnostics());
+        let ui = rt.interface(0);
+        assert_eq!(prop(&ui, 0, "$CONTROL_PAR_VALUE"), value.to_string());
+        assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), caption);
+        let host_saved = rt.persistence();
+        assert_eq!(host_saved[0]["$ordinary"], Value::Int(73));
+        assert_eq!(host_saved[0]["$room"], Value::Int(value));
+        if (0..5).contains(&position) {
+            assert_eq!(host_saved[0]["$built"], Value::Int(value), "deferred init selection");
+        }
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| rt.ui_control(&mut engine, 0, 0, 0)), 0);
+        #[cfg(not(feature = "plugin"))]
+        rt.ui_control(&mut engine, 0, 0, 0);
+        assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_VALUE"), value.to_string());
+        assert!(rt.diagnostics().is_empty());
+        // KONTRA host-state integers already contain assigned values. In
+        // particular value2 must not be reinterpreted as the header at index2.
+        let host_saved = serde_json::from_str(&serde_json::to_string(&host_saved).unwrap()).unwrap();
+        let (restored, errors) = Runtime::with_scripts(&[source], &mut engine, 8, host_saved);
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        assert_eq!(prop(&restored.interface(0), 0, "$CONTROL_PAR_VALUE"), value.to_string());
+        assert_eq!(prop(&restored.interface(0), 1, "$CONTROL_PAR_TEXT"), caption);
+        assert!(restored.diagnostics().is_empty());
     }
 }
 

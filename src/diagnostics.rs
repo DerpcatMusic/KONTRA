@@ -90,6 +90,9 @@ pub struct LogStatus {
     pub dropped_events: u64,
     pub truncated_events: u64,
     pub write_errors: u64,
+    /// Complete journal records written this session, including rotated history.
+    #[serde(default)]
+    pub journal_events_written: u64,
     pub last_error: Option<String>,
     pub retention_errors: u64,
 }
@@ -122,6 +125,8 @@ struct History {
 }
 enum Command {
     Event(LogEvent),
+    #[cfg(test)]
+    Pause(mpsc::Sender<()>, mpsc::Receiver<()>),
     #[cfg(feature = "plugin")]
     NativeTiming(moose::mui::window::NativeTimingReport, u64),
     Flush(mpsc::Sender<Result<(), String>>),
@@ -205,6 +210,11 @@ impl Session {
                 let mut journal = Journal::new(worker_path, worker_history);
                 while let Ok(command) = receiver.recv() {
                     match command {
+                        #[cfg(test)]
+                        Command::Pause(entered, resume) => {
+                            let _ = entered.send(());
+                            let _ = resume.recv();
+                        }
                         Command::Event(event) => {
                             if let Err(error) = journal.write_event(&event) {
                                 journal.error(error);
@@ -545,22 +555,32 @@ fn retain_event(history: &mut History, row: &mut LogEvent, bytes: usize, truncat
 }
 
 fn emit_to(session: &Session, value: Value) -> Option<String> {
+    enqueue(session, value, false)
+}
+
+// LoadTrace runs on loader/catalog/picture workers or the CLI. Backpressure
+// keeps their bursts on the existing bounded queue; UI/runtime events do not wait.
+fn enqueue(session: &Session, value: Value, wait: bool) -> Option<String> {
     let (mut row, bytes, truncated) = prepare_event(&session.id, session.started, value);
+    retain_event(&mut lock(&session.history), &mut row, bytes, truncated);
+    let sender = lock(&session.sender).clone();
+    // Neither mutex can remain held while waiting: the writer needs history
+    // to report disk failures and successful delivery, and shutdown takes sender.
+    let error = match sender {
+        Some(sender) if wait => sender.send(Command::Event(row)).err()
+            .map(|_| "Diagnostics worker is unavailable"),
+        Some(sender) => sender.try_send(Command::Event(row)).err().map(|error| match error {
+            TrySendError::Full(_) => "Diagnostics queue is full; event retained in recent history only",
+            TrySendError::Disconnected(_) => "Diagnostics worker is unavailable",
+        }),
+        None => Some("Diagnostics worker is unavailable"),
+    };
     let mut history = lock(&session.history);
-    retain_event(&mut history, &mut row, bytes, truncated);
-    let result = lock(&session.sender)
-        .as_ref()
-        .map(|s| s.try_send(Command::Event(row)));
-    match result {
-        Some(Ok(())) => history.status.last_error.clone(),
-        Some(Err(TrySendError::Full(_))) => {
-            history.status.dropped_events += 1;
-            Some("Diagnostics queue is full; event retained in recent history only".into())
-        }
-        _ => {
-            history.status.dropped_events += 1;
-            Some("Diagnostics worker is unavailable".into())
-        }
+    if let Some(error) = error {
+        history.status.dropped_events += 1;
+        Some(error.into())
+    } else {
+        history.status.last_error.clone()
     }
 }
 
@@ -834,6 +854,7 @@ impl Journal {
             return Err(error);
         }
         self.bytes += bytes.len() as u64;
+        lock(&self.history).status.journal_events_written += 1;
         Ok(())
     }
     fn error(&self, error: std::io::Error) {
@@ -1435,12 +1456,36 @@ fn redact_text(text: &str) -> String {
     }
     result
 }
+/// Materialize bounded runtime context from cached metadata/source off audio.
+/// Fault slots and excerpt slots are one-based; promoted script_slot is zero-based.
+pub fn script_runtime_report(runtime: &crate::ksp::Runtime, sources: &[String]) -> Value {
+    json!({"faults":runtime.faults().map(|fault| script_fault_details(runtime, fault, sources)).collect::<Vec<_>>(),
+        "fault_occurrences_omitted":runtime.fault_occurrences_omitted(),
+        "action_scope":"last occurrence per retained fault; counts aggregate repeated occurrences"})
+}
+fn script_fault_details(runtime: &crate::ksp::Runtime, fault: crate::ksp::LiveFault, sources: &[String]) -> Value {
+    let mut details = serde_json::to_value(fault).unwrap();
+    if let Some(slot) = fault.slot.checked_sub(1) {
+        details["script_slot"] = json!(slot);
+        if let Some(source) = sources.get(slot as usize)
+            && let Some(excerpt) = script_excerpt(source, fault.slot as u32, fault.line, None)
+        { details["source_excerpt"] = excerpt; }
+        else { details["source_excerpt_unavailable"] = json!("Cached script source or reported line is unavailable"); }
+    }
+    if let Some(crate::ksp::FaultContext::ArrayIndex { variable, index, length }) = fault.context {
+        details["array"] = json!({"name":runtime.fault_variable_name(fault.slot, variable),"index":index,"length":length});
+    }
+    details
+}
+
 /// One instrument attempt; enqueue stage starts before blocking loader work.
 /// A crash may lose queued rows; the last persisted start identifies the last
 /// operation observed by the journal, without claiming every row reached disk.
 pub struct LoadTrace {
     report: Value,
     seen: std::collections::HashSet<(&'static str, &'static str, String)>,
+    #[cfg(test)]
+    test_session: Option<Arc<Session>>,
     started: Instant,
     stage_started: Instant,
     stage: &'static str,
@@ -1457,6 +1502,8 @@ impl LoadTrace {
         let mut this = Self {
             report: json!({"load_id":id,"path":path,"program":program,"part":part,"version":env!("CARGO_PKG_VERSION"),"build_hash":env!("KONTRA_BUILD_HASH"),"import_hash":env!("KONTRA_IMPORT_HASH"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"status":"loading","stages_ms":{},"details":{},"issues":[]}),
             seen: Default::default(),
+            #[cfg(test)]
+            test_session: None,
             started: Instant::now(),
             stage_started: Instant::now(),
             stage: "",
@@ -1480,9 +1527,15 @@ impl LoadTrace {
             "import" => "import",
             _ => "loader",
         };
-        if let Some(error) = emit(
-            json!({"event":event,"module":module,"load_id":self.report["load_id"],"path":self.report["path"],"program":self.report["program"],"part":self.report["part"],"instance_id":self.report["details"]["instance_id"],"library":self.report["details"]["library"],"stage":stage,"data":data}),
-        ) {
+        let row = json!({"event":event,"module":module,"load_id":self.report["load_id"],"path":self.report["path"],"program":self.report["program"],"part":self.report["part"],"instance_id":self.report["details"]["instance_id"],"library":self.report["details"]["library"],"stage":stage,"data":data});
+        #[cfg(test)]
+        let error = match &self.test_session {
+            Some(session) => enqueue(session, row, true),
+            None => enqueue(&session(), row, true),
+        };
+        #[cfg(not(test))]
+        let error = enqueue(&session(), row, true);
+        if let Some(error) = error {
             self.report["logging_error"] = json!(error);
         }
     }
@@ -1532,6 +1585,20 @@ impl LoadTrace {
         }
         self.issue_details("scripts", code, message, details);
     }
+    /// Record all existing diagnostics, retaining structured fault context and
+    /// excerpts rather than reparsing their rendered strings. Off-thread only.
+    pub fn script_runtime(&mut self, runtime: &crate::ksp::Runtime, sources: &[String]) -> usize {
+        let diagnostics = runtime.diagnostics();
+        let faults: std::collections::HashSet<String> = runtime.faults().map(|fault| {
+            let message = fault.to_string();
+            self.issue_details("scripts", code(&message), message.clone(), script_fault_details(runtime, fault, sources));
+            message
+        }).collect();
+        for message in &diagnostics {
+            if !faults.contains(message) { self.script_issue(code(message), message, sources); }
+        }
+        diagnostics.len()
+    }
     fn issue_details(&mut self, stage: &'static str, code: &'static str, mut message: String, mut issue: Value) {
         truncate(&mut message, 4096);
         issue["stage"] = json!(stage);
@@ -1549,12 +1616,12 @@ impl LoadTrace {
             let omitted = self.report["issues_omitted"].as_u64().unwrap_or(0) + 1;
             self.report["issues_omitted"] = json!(omitted);
             if omitted == 1 {
-                self.record("issue", json!({"stage":stage,"code":"diagnostics_truncated","message":"Load report issues retain the first 1024 distinct examples; additional occurrences are counted in issues_omitted. Errors still produce log events; the latest is retained as last_error"}));
+                self.record("issue", json!({"stage":stage,"code":"diagnostics_truncated","message":"Load report issues retain the first 1024 distinct examples; additional occurrences are counted in issues_omitted. Additional warnings and errors wait for bounded worker queue capacity; recorder drop/write counters report delivery failure. The latest error is retained as last_error"}));
             }
             if error {
                 self.report["last_error"] = issue.clone();
-                self.record("issue", issue);
             }
+            self.record("issue", issue);
             return;
         }
         self.seen.insert(key);
@@ -1642,6 +1709,69 @@ pub fn code(message: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_warning_journal_retains_records_beyond_report_example_limit() {
+        let directory = std::env::temp_dir().join(format!("kontra-load-warning-contract-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let session = Session::start(directory.join("logs"));
+        let mut trace = LoadTrace::new(Path::new("Authored warning fixture.nki"), 0, None);
+        // An isolated real worker/journal avoids unrelated parallel producers
+        // changing this contract's queue pressure or rotating its history away.
+        trace.test_session = Some(session.clone());
+        let flush = || {
+            let (reply, done) = mpsc::channel();
+            lock(&session.sender).as_ref().unwrap().send(Command::Flush(reply)).unwrap();
+            done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        };
+        // Pause the real disk worker, fill its queue, then let the load worker
+        // continue through backpressure. No intermediate flush hides burst loss.
+        let (entered, paused) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        lock(&session.sender).as_ref().unwrap().send(Command::Pause(entered, resumed)).unwrap();
+        paused.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (filled, full) = mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            for n in 0..4098 {
+                trace.issue("effects", "unsupported_group_effect", format!("Group {n}: authored unsupported effect"));
+                if n == QUEUE_LIMIT - 1 { filled.send(()).unwrap(); }
+            }
+            trace.issue("effects", "unsupported_group_effect", "Group 0: authored unsupported effect");
+            trace.finish("loaded")
+        });
+        full.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(lock(&session.history).status.total_events <= (QUEUE_LIMIT + 2) as u64, "the load worker waits on the bounded queue");
+        resume.send(()).unwrap();
+        let report = producer.join().unwrap();
+        flush();
+        assert_eq!(report["issues"].as_array().unwrap().len(), 1024);
+        assert_eq!(report["issues_omitted"], 3074, "known duplicates are not omitted examples");
+        assert_eq!(report["status"], "partial");
+        let journal = std::fs::read_to_string(&session.path).unwrap();
+        let records: Vec<Value> = journal.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        let warnings: Vec<_> = records.iter().filter(|row| row["code"] == "unsupported_group_effect").collect();
+        assert_eq!(warnings.len(), 4098, "every distinct warning reaches the real journal after the report cap");
+        for n in [0, 1023, 1024, 4097] {
+            let message = format!("Group {n}: authored unsupported effect");
+            assert_eq!(warnings.iter().filter(|row| row["reason"] == message).count(), 1);
+        }
+        let history = lock(&session.history);
+        assert!(history.events.len() <= HISTORY_LIMIT);
+        assert_eq!((history.status.dropped_events, history.status.write_errors), (0, 0));
+        assert_eq!(history.status.journal_events_written, records.len() as u64);
+        assert!(history.status.history_evicted > 0);
+        let snapshot = DiagnosticSnapshot {
+            revision: revision(), events: history.events.iter().map(|(event, _)| event.clone()).collect(),
+            status: history.status.clone(), build: build_identity(),
+        };
+        drop(history);
+        let bundle = directory.join("bundle");
+        export_bundle(&bundle, &json!({"load":report.as_ref()}), &snapshot, &session.path, None).unwrap();
+        let exported = std::fs::read_to_string(bundle.join("journal.jsonl")).unwrap();
+        assert_eq!(exported.lines().filter(|line| serde_json::from_str::<Value>(line).unwrap()["code"] == "unsupported_group_effect").count(), 4098, "support export includes warnings omitted only from the load summary");
+        let mut owner = Some(session.clone());
+        stop(&mut owner).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn journal_contract_bounds_rotates_recovers_and_exports_private_reports() {

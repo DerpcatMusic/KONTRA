@@ -1210,6 +1210,7 @@ fn prepare_interface(live: &Live, previous: Option<&Interface>, versions: &[(u64
         performance: source.performance, width: source.width, height: source.height,
         title: source.title.clone(), wallpaper: source.wallpaper.clone(),
         wallpaper_state: source.wallpaper_state, skin_offset: source.skin_offset,
+        background_color: source.background_color,
         fonts: source.fonts.clone(), controls: Vec::new(),
         diagnostics: source.diagnostics.clone(), listeners: source.listeners.clone(),
     };
@@ -1985,7 +1986,7 @@ impl BackgroundTask for Load {
                     scripts(&instrument, &part.script_state, &part.ir_settings, &part.engine_state, params.shared.rate());
                 for e in &errors { trace.script_issue("initialization_failed", e, &instrument.scripts); }
                 if let Some(rt) = script.as_deref() {
-                    for e in rt.diagnostics() { trace.script_issue(crate::diagnostics::code(&e), e, &instrument.scripts); }
+                    trace.script_runtime(rt, &instrument.scripts);
                 }
                 let live = script.as_deref().map(first_script_live);
                 let pages = script_pages(script.as_deref());
@@ -2138,7 +2139,7 @@ impl BackgroundTask for Load {
                 });
                 for e in script_errors { trace.script_issue("initialization_failed", e, &instrument.scripts); }
                 if let Some(rt) = script.as_deref() {
-                    for d in rt.diagnostics() { trace.script_issue(crate::diagnostics::code(&d), d, &instrument.scripts); }
+                    trace.script_runtime(rt, &instrument.scripts);
                 }
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
                 progress.fetch_max(crate::engine::LOAD_DONE / 10, Ordering::Relaxed);
@@ -2465,7 +2466,7 @@ impl BackgroundTask for Load {
                     .map(|i| (i, v.irs.clone()))
             };
             let Some((instrument, irs)) = stale else { continue };
-            let fx = instrument.fx.processor_with(rate as f32, MAX_BLOCK, &irs);
+            let fx = instrument.fx.processor_for_groups(rate as f32, MAX_BLOCK, &irs, &instrument.groups);
             params.shared.view.lock().unwrap().parts[slot].fx_rate = rate;
             let _ = params.shared.publish_part((
                 slot,
@@ -4821,7 +4822,7 @@ end on"#;
                 assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
                 let (slot, epoch, mut live) = p.shared.lives.pop().expect("audio completes a live view");
                 assert_eq!((&*live as *const Live) as usize, address, "the same prepared buffer is recycled");
-                live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", context: None, count: value as u32 });
+                live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", context: None, last_action: None, count: value as u32 });
                 p.shared.lives.push((slot, epoch, live)).ok().unwrap();
             }), "completed script changes wake an otherwise idle editor before build");
             assert_eq!(label(&p), Value::Text(format!("value {value}")), "callback-derived labels publish without Load");
@@ -4835,7 +4836,7 @@ end on"#;
         let retained = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
         let (slot, epoch, mut live) = p.shared.lives.pop().unwrap();
-        live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", context: None, count: 84 });
+        live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", context: None, last_action: None, count: 84 });
         p.shared.lives.push((slot, epoch, live)).ok().unwrap();
         p.shared.publish_live(true);
         assert!(Arc::ptr_eq(&retained, p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap()),
