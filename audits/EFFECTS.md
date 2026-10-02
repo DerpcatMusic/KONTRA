@@ -367,6 +367,14 @@ Amplifier sides, changed native control readback and allocation guards; validati
 of this follow-up is pending. No locally installed authentic group preset of these
 three families was available for a control/audio check.
 
+Group Transient Master similarly reuses the existing fixed rack envelope-shaping
+model and its decoded input/attack/sustain/smooth fields with known Amplifier
+placement. Its constructor and reset are shared with the rack. One authored
+regression compares burst attack/body/silence PCM and native attack/sustain edits
+on both Amplifier sides, guards allocations and reports the actual state sizes.
+This separate follow-up also awaits compiled validation; no authentic local group
+preset or Kontakt audio reference was available.
+
 On the checked Rust 1.98.1 release build, both the old Drive and the new VoiceEffect
 enum are 72 bytes. The fixed voice state adds 128 bytes for per-slot gain/mixer
 smoothing and a four-byte type revision counter, and removes the old 16-byte
