@@ -27,9 +27,10 @@ impl Chunk {
     }
 
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
-        let id = reader.read_u16_le()?;
-        let length = reader.read_u32_le()? as usize;
-        let data = reader.read_bytes(length)?;
+        let at = reader.stream_position()?;
+        let id = reader.read_u16_le().map_err(|e| Error::context(format!("Kontakt chunk ID at offset {at}"), e))?;
+        let length = reader.read_u32_le().map_err(|e| Error::context(format!("Kontakt chunk 0x{id:04x} length at offset {}", at + 2), e))? as usize;
+        let data = reader.read_bytes(length).map_err(|e| Error::context(format!("Kontakt chunk 0x{id:04x} body at offset {}, declared length {length}", at + 6), e))?;
         Ok(Self { id, data })
     }
 

@@ -152,7 +152,8 @@ pub fn read(path: &Path) -> Result<Instrument> {
 }
 
 fn chunks(path: &Path) -> Result<KontaktChunks> {
-    ensure!(path.metadata()?.len() <= 128 * 1024 * 1024, "Instrument container exceeds 128 MiB import limit");
+    let file_bytes = path.metadata()?.len();
+    ensure!(file_bytes <= 128 * 1024 * 1024, "Instrument container exceeds 128 MiB import limit");
     let mut file = File::open(path)?;
     let mut header = [0; 16];
     file.read_exact(&mut header)
@@ -162,13 +163,14 @@ fn chunks(path: &Path) -> Result<KontaktChunks> {
         "Instrument header contains only zero bytes; check for an incomplete/damaged copy or filesystem read failure"
     );
     file.rewind()?;
-    let bytes = match NIFile::read(file).context("NIS/NKS container headers")? {
-        NIFile::NKSContainer(n) => n.decompressed_preset()?,
-        NIFile::NISoundContainer(n) => nis_payload(n,path,0)?,
+    let bytes = match NIFile::read(&mut file).with_context(|| format!("NIS/NKS container {} ({file_bytes} bytes), decoder cursor {:?}", path.display(), file.stream_position().ok()))? {
+        NIFile::NKSContainer(n) => n.decompressed_preset().with_context(|| format!("NKS preset decompression in {}, compressed {} bytes", path.display(), n.compressed_data.len()))?,
+        NIFile::NISoundContainer(n) => nis_payload(n,path,0).with_context(|| format!("NIS preset payload in {}", path.display()))?,
         _ => bail!("Unsupported instrument container; choose an NKI or NKM preset"),
     };
     ensure!(bytes.len() <= 256 * 1024 * 1024, "Expanded instrument exceeds 256 MiB limit");
-    Ok(KontaktChunks::read(Cursor::new(bytes))?)
+    let expanded_bytes = bytes.len();
+    KontaktChunks::read(Cursor::new(bytes)).with_context(|| format!("Kontakt chunks in {}, expanded payload {expanded_bytes} bytes", path.display()))
 }
 fn nis_payload(n:ni_file::nis::ItemContainer,path:&Path,depth:usize)->Result<Vec<u8>> {
     ensure!(depth<4,"Too many nested NIS wrappers");

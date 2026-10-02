@@ -8,6 +8,50 @@ use ni_file::{
 use std::io::Cursor;
 
 #[test]
+fn truncated_containers_preserve_decoder_context_and_valid_roundtrips() {
+    use ni_file::{NIFile, NIFileError, nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader},
+        kontakt::{Chunk, objects::BPatchMetaInfoHeader}};
+    let item = ItemContainer {
+        header: ItemHeader { length: 40, magic: b"hsin".to_vec(), header_flags: 0, reserved: 0, uuid: vec![0; 16] },
+        data: ItemData { header: ItemDataHeader { length: 20, domain_id: *b"NISD", item_id: 1, version: 1 }, inner: None, data: vec![] },
+        children: vec![], child_headers: vec![], trailing_data: vec![],
+    };
+    let mut bytes = Vec::new();
+    item.write(&mut bytes).unwrap();
+    let valid = NIFile::read(Cursor::new(&bytes)).unwrap();
+    let mut encoded = Vec::new();
+    valid.write(&mut encoded).unwrap();
+    assert_eq!(encoded, bytes, "a supported NIS roundtrip preserves every byte");
+    let error = NIFile::read(Cursor::new(&bytes[..bytes.len()-1])).err().unwrap();
+    let message = error.to_string();
+    assert!(message.contains("NIS item body at offset 40") && message.contains("declared body length 28/version 1")
+        && message.contains("available 27"), "{message}");
+    assert!(!message.contains("Unknown"), "a recognized NIS signature retains the decoder cause");
+    let mut error = NIFile::read(Cursor::new(&bytes[..21])).err().unwrap();
+    assert!(error.to_string().contains("NIS item header at offset 0"));
+    while let NIFileError::Context { source, .. } = error { error = *source; }
+    assert!(matches!(error, NIFileError::IO(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof),
+        "context preserves the original EOF error: {error:?}");
+
+    let chunks = KontaktChunks(vec![Chunk { id: 0x28, data: vec![1,2,3] }]);
+    let mut bytes = Vec::new();
+    chunks.write(&mut bytes).unwrap();
+    let mut encoded = Vec::new();
+    KontaktChunks::read(Cursor::new(&bytes)).unwrap().write(&mut encoded).unwrap();
+    assert_eq!(encoded, bytes);
+    for (len, expected) in [(4, "chunk 0x0028 length at offset 2"), (8, "chunk 0x0028 body at offset 6, declared length 3")] {
+        let message = KontaktChunks::read(Cursor::new(&bytes[..len])).unwrap_err().to_string();
+        assert!(message.contains(expected), "{message}");
+    }
+    let mut bytes = 0x7FA89012u32.to_le_bytes().to_vec();
+    bytes.extend(5u32.to_le_bytes());
+    bytes.extend(0x1000u16.to_le_bytes());
+    let message = NIFile::read(Cursor::new(bytes)).err().unwrap().to_string();
+    assert!(message.contains("NKS patch header at offset 8, format word 0x1000") && message.contains("declared 212"), "{message}");
+    assert!(BPatchMetaInfoHeader::read(Cursor::new([0;8])).is_err(), "invalid metadata returns an error rather than panicking");
+}
+
+#[test]
 fn malformed_nis_lengths_and_children_return_errors() {
     use ni_file::nis::{ItemContainer, ItemData, ItemDataHeader, ItemType};
     let mut frame = 39u64.to_le_bytes().to_vec();
