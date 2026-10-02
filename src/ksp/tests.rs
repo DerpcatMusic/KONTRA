@@ -215,6 +215,35 @@ fn wallpaper_uses_last_assigning_slot_and_offsets_refresh_without_controls() {
     assert!(!rig.rt.refresh_live(&mut live));
 }
 
+#[test]
+fn scalar_edits_refresh_large_views_without_recopying_unchanged_metadata() {
+    let mut source = String::from("on init\nmake_perfview\n");
+    for n in 0..1000 { source.push_str(&format!("declare ui_slider $s{n}(0,100)\n")); }
+    source.push_str("declare ui_menu $menu\nadd_menu_item($menu,\"first\",1)\nadd_menu_item($menu,\"second\",2)\nset_menu_item_visibility(get_ui_id($menu),1,0)\n$menu := 1\ndeclare ui_table %table[96](1,1,127)\nend on\non ui_control($s0)\nset_control_par_str(get_ui_id($s998),$CONTROL_PAR_TEXT,\"changed\")\n$s999 := $s0 + 1\n%table[73] := $s0\nset_menu_item_str(get_ui_id($menu),0,\"renamed\")\n$menu := 2\nend on");
+    let mut rig = Rig::new(&[&source]);
+    let mut live = rig.rt.live();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 65);
+    let mut refresh = Refresh::default();
+    let mut passes = 1;
+    while !rig.rt.refresh_live_within(&mut live, &mut refresh, 512) { passes += 1; }
+    assert!(passes <= 5, "a scalar edit took {passes} audio blocks");
+    assert!(refresh.changed);
+    let ui = live.interface.as_ref().unwrap();
+    assert_eq!(prop(ui, 0, "$CONTROL_PAR_VALUE"), "65");
+    assert_eq!(prop(ui, 998, "$CONTROL_PAR_TEXT"), "changed");
+    assert_eq!(prop(ui, 999, "$CONTROL_PAR_VALUE"), "66");
+    assert_eq!(ui.controls[1000].menu, [("renamed".into(),1), ("second".into(),2)]);
+    assert_eq!(ui.controls[1001].properties["$CONTROL_PAR_VALUE"], Value::IntArray((0..96).map(|n| if n == 73 { 65 } else { 0 }).collect()));
+    // A second prepared consumer has its own metadata history.
+    let mut other = rig.rt.live();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 70);
+    assert!(rig.rt.refresh_live(&mut other));
+    assert_eq!(prop(other.interface.as_ref().unwrap(), 999, "$CONTROL_PAR_VALUE"), "71");
+    assert!(rig.rt.refresh_live(&mut live));
+    assert_eq!(prop(live.interface.as_ref().unwrap(), 999, "$CONTROL_PAR_VALUE"), "71");
+    assert!(!rig.rt.refresh_live(&mut live));
+}
+
 // ---- Initialization (ported from the init-only interpreter) ---------------------------
 
 #[test]

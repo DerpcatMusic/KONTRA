@@ -30,6 +30,8 @@ pub struct MenuItem {
 pub struct ControlState {
     pub var: VarId,
     pub props: Vec<(i32, Prop)>,
+    /// Static metadata need not be recopied on every scalar value edit.
+    pub revision: u64,
     pub menu: Vec<MenuItem>,
     pub frozen: bool,
     pub spare_menu: Vec<MenuItem>,
@@ -63,6 +65,8 @@ impl ControlState {
     }
 
     pub fn set_int(&mut self, par: i32, value: i32) -> Result<(), &'static str> {
+        if matches!(self.get(par), Some(Prop::Int(n)) if *n == value) { return Ok(()) }
+        self.revision = self.revision.wrapping_add(1);
         let full = self.frozen && self.props.len() == self.props.capacity();
         match self.props.iter_mut().find(|(p, _)| *p == par) {
             Some((_, v @ Prop::Str(_))) if self.frozen => {
@@ -77,12 +81,14 @@ impl ControlState {
     }
 
     pub fn set_str(&mut self, par: i32, value: &str) -> Result<(), &'static str> {
+        if matches!(self.get(par), Some(Prop::Str(s)) if s == value) { return Ok(()) }
         let loading = !self.frozen;
         let dst = self.str_mut(par)?;
         super::vm::put_text(dst, value, loading).map_err(|e| e.0)
     }
 
     pub fn str_mut(&mut self, par: i32) -> Result<&mut String, &'static str> {
+        self.revision = self.revision.wrapping_add(1);
         let i = match self.props.iter().position(|(p, _)| *p == par) {
             Some(i) if matches!(self.props[i].1, Prop::Str(_)) => i,
             Some(i) if self.frozen => {
@@ -224,6 +230,7 @@ impl Ui {
         let mut c = ControlState {
             var: v,
             props: Vec::with_capacity(8),
+            revision: 0,
             menu: Vec::new(),
             spare_menu: Vec::new(),
             spare_text: Vec::new(),
@@ -284,6 +291,7 @@ impl Ui {
         mem: &Memory,
         out: &mut Interface,
         menu_spares: &mut [Vec<(String, i32)>],
+        revisions: &mut [u64],
         next: &mut usize,
         value_at: &mut usize,
         budget: usize,
@@ -299,17 +307,22 @@ impl Ui {
                 break;
             }
             if *value_at == 0 {
-                left = left.saturating_sub(c.props.len() + c.menu.len() + 1);
-                for (par, v) in &c.props {
-                    let Some(name) = prog.symbol_name(*par) else {
-                        continue;
-                    };
-                    changed |= match (v, o.properties.get_mut(name)) {
-                        (Prop::Int(n), Some(Value::Int(d))) => std::mem::replace(d, *n) != *n,
-                        (Prop::Str(s), Some(Value::Text(d))) => copy_text(d, s),
-                        _ => false,
+                left = left.saturating_sub(c.menu.len() + 1);
+                if revisions[index] != c.revision {
+                    left = left.saturating_sub(c.props.len());
+                    revisions[index] = c.revision;
+                    for (par, v) in &c.props {
+                        let Some(name) = prog.symbol_name(*par) else {
+                            continue;
+                        };
+                        changed |= match (v, o.properties.get_mut(name)) {
+                            (Prop::Int(n), Some(Value::Int(d))) => std::mem::replace(d, *n) != *n,
+                            (Prop::Str(s), Some(Value::Text(d))) => copy_text(d, s),
+                            _ => false,
+                        }
                     }
                 }
+                // Selected hidden rows can change through ordinary script assignments.
                 let count = c.visible_menu(prog, mem).count();
                 let spare = &mut menu_spares[index];
                 while o.menu.len() > count {

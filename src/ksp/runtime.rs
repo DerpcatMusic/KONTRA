@@ -89,6 +89,7 @@ pub struct Live {
     pub keys: BTreeMap<u8, KeyState>,
     /// Preallocated rows recycled when script menus change visibility.
     menu_spares: Vec<Vec<(String, i32)>>,
+    control_revisions: Vec<u64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1177,6 +1178,7 @@ impl Runtime {
             interface,
             keys,
             menu_spares,
+            control_revisions: slot.map_or_else(Vec::new, |s| self.states[s].ui.controls.iter().map(|c| c.revision).collect()),
         };
         self.refresh_live(&mut live);
         live
@@ -1218,7 +1220,7 @@ impl Runtime {
             && at.item != usize::MAX
         {
             let prog = &self.programs[live.slot];
-            at.changed |= state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut at.item, &mut at.at, budget);
+            at.changed |= state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut live.control_revisions, &mut at.item, &mut at.at, budget);
             if at.item != usize::MAX {
                 return false;
             }
