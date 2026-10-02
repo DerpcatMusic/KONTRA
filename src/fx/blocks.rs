@@ -220,6 +220,21 @@ fn soft(x: f32) -> f32 {
     x * (27.0 + x * x) / (27.0 + 9.0 * x * x)
 }
 
+/// Native Tube Distortion scalar core; filters and Output follow it.
+#[inline(always)]
+fn tube_curve(x: f32, k: f32, negative: f32, positive: f32) -> f32 {
+    if x < 0.0 {
+        if negative == 0.0 { return x; }
+        let r = ((k - x) * x / (1.0 + (x - (k - 1.0)) * x)).clamp(-1.0, 1.0);
+        negative * (r * r * r) + (1.0 - negative) * x
+    } else {
+        if positive == 0.0 { return x; }
+        let r = ((k + x) * x / (1.0 + (x + k - 1.0) * x)).clamp(-1.0, 1.0);
+        let complement = 1.0 - r;
+        positive * (1.0 - complement * complement * complement) + (1.0 - positive) * x
+    }
+}
+
 /// Keeps decaying feedback out of subnormal floats.
 const ANTI_DENORMAL: f32 = 1e-20;
 
@@ -281,18 +296,18 @@ impl Drive {
                 let q = 0.975 * (4.0 + a) + 0.1;
                 [s, f[1], a, q, 1.0 / (1.0 + q), 0.0, 0.0, 0.0]
             }
-            // Gain 0..=48 dB into tanh (transistor: hard clip), half of it
-            // made up after; damping is a low-pass 20 kHz..=200 Hz.
-            DriveKind::Distortion => [
-                db(48.0 * x(1)),
-                db(-24.0 * x(1)),
-                one_pole(20_000.0 * 0.01f32.powf(x(2)), rate),
-                f32::from(f[0] >= 0.5),
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
+            // Native Tube core has no drive makeup. Retain the existing
+            // Transistor and filtering proxies until their laws are proved.
+            DriveKind::Distortion => {
+                let d = x(1);
+                let hard = f[0] >= 0.5;
+                let negative = if d > 0.75 { 1.0 } else { (0.5625 - (0.75 - d).powi(2)) * (16.0 / 9.0) };
+                let positive = if d < 0.25 { 0.0 } else { (0.5625 - (1.0 - d).powi(2)) * (16.0 / 9.0) };
+                [if hard { db(48.0 * d) } else { 1.0 },
+                    if hard { db(-24.0 * d) } else { 1.0 },
+                    one_pole(20_000.0 * 0.01f32.powf(x(2)), rate),
+                    f32::from(hard), negative, positive, 1.0 + 1.5 * d, 0.0]
+            }
             // Bits 1..=32; higher native FREQUENCY means less reduction.
             // ANALOG STRINGS' authored SRate control defaults to 1M and says
             // higher values are pristine; its normalized field is not inverted.
@@ -358,11 +373,11 @@ impl Drive {
                 left.iter_mut().chain(right.iter_mut()).for_each(|x| *x = curve(*x));
             }
             DriveKind::Distortion => {
-                let [g, out, a, hard, ..] = self.c;
+                let [g, out, a, hard, negative, positive, k, ..] = self.c;
                 for (ch, buf) in [left, right].into_iter().enumerate() {
                     let mut lp = self.s[ch];
                     for x in buf.iter_mut() {
-                        let y = if hard > 0.0 { (g * *x).clamp(-1.0, 1.0) } else { soft(g * *x) };
+                        let y = if hard > 0.0 { (g * *x).clamp(-1.0, 1.0) } else { tube_curve(*x, k, negative, positive) };
                         lp += a * (y * out - lp) + ANTI_DENORMAL;
                         *x = lp;
                     }
@@ -1128,6 +1143,45 @@ mod tests {
         assert!(program.warnings().iter().any(|w| w.contains("Enhanced/Drums modes use an unverified")));
         assert!(crate::engine::filter::unsupported_at(&program.insert, Some(8)).iter()
             .any(|w| w.contains("Enhanced/Drums modes use an unverified")));
+    }
+
+    #[test]
+    fn tube_distortion_matches_independent_numeric_boundaries_without_heap() {
+        // Decimal scalar reference values, independently evaluated at the
+        // native Drive blend boundaries. These are before filtering/Output.
+        let input = [-4.0, -1.0, -0.25, -0.01, 0.0, 0.01, 0.25, 1.0, 4.0];
+        let cases: [(f32, [f64; 9]); 6] = [
+            (0.0, [-4.0, -1.0, -0.25, -0.01, 0.0, 0.01, 0.25, 1.0, 4.0]),
+            (0.2499, [-2.33386672, -1.0, -0.13523993351503, -0.0044476805163085, 0.0, 0.01, 0.25, 1.0, 4.0]),
+            (0.25, [-2.3333333333333, -1.0, -0.13520752308188, -0.0044459034950162, 0.0, 0.01, 0.25, 1.0, 4.0]),
+            (0.75, [-1.0, -1.0, -0.086269133535412, -9.407824380947e-6, 0.0, 0.056225468642652, 0.76211423732082, 1.0, 1.3333333333333]),
+            (0.7501, [-1.0, -1.0, -0.08627825680086, -9.409765565272e-6, 0.0, 0.056233800503188, 0.76217837834686, 1.0, 1.33306672]),
+            (1.0, [-1.0, -1.0, -0.10939426317087, -1.511801183946e-5, 0.0, 0.072360783382485, 0.85797649379469, 1.0, 1.0]),
+        ];
+        let mut values = [0.0; FIELDS];
+        let mut d = Drive::default();
+        for (drive, expected) in cases {
+            values[1] = drive;
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                assert!(d.tune(Kind::Distortion, &values, RATE));
+                let [_, out, _, _, negative, positive, k, ..] = d.c;
+                assert_eq!(out, 1.0, "Tube has no drive makeup");
+                for (x, expected) in input.into_iter().zip(expected) {
+                    let actual = tube_curve(x, k, negative, positive);
+                    assert!((f64::from(actual) - expected).abs() < 2e-6, "drive{drive}, input{x}: {actual} != {expected}");
+                    if drive == 0.0 { assert_eq!(actual, x); }
+                }
+            }), 0);
+        }
+        let mut fx = crate::fx::ProgramFx {
+            insert: crate::fx::Chain { slots: vec![effect(Kind::Distortion, &[0.0, 0.0, 0.0])] },
+            ..Default::default()
+        };
+        assert!(fx.warnings().iter().any(|w| w.contains("native DC filtering is not applied")));
+        assert!(fx.warnings().iter().all(|w| !w.contains("Transistor")));
+        fx.insert.slots[0] = effect(Kind::Distortion, &[1.0, 0.0, 0.0]);
+        assert!(crate::engine::filter::unsupported_at(&fx.insert, Some(8)).iter()
+            .any(|w| w.contains("Transistor mode retains an unverified")));
     }
 
     #[test]
