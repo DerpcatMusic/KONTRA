@@ -885,7 +885,7 @@ pub(crate) fn filter_ir(ir: &mut [Vec<f32>; 2], low: f32, high: f32, rate: f32) 
     for (response, hz, enabled) in [(Response::High, low, highpass), (Response::Low, high, lowpass)] {
         if enabled {
             let mut section = Section::default();
-            section.set(response, hz.clamp(20.0, rate * 0.49), Q_MIN, rate);
+            section.coefficients(Proto::filter(response, hz.clamp(20.0, rate * 0.49), Q_MIN, rate));
             section.process(left, right);
         }
     }
