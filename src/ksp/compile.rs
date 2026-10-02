@@ -452,6 +452,10 @@ pub struct Program {
     pub poly: u32,
     /// Mutable global prefix per type; callbacks share the initialized suffix.
     pub domain_slots: [u32; 3],
+    /// Write provenance, computed before bytecode optimization and shared by all
+    /// runtimes. A route may designate an ordinary UI callback as articulation.
+    domain_performance_writes: Vec<bool>,
+    domain_ui_writes: Vec<Vec<VarId>>,
     pub revision_owners: [Arc<[u32]>; 3],
     pub revision_counts: [usize; 3],
     pub sys_arrays: [Option<VarId>; 6],
@@ -470,13 +474,10 @@ pub struct Program {
 pub const AUTO_SYMBOL_BASE: i32 = 0x0400_0000;
 
 impl Program {
-    /// Follow every non-init entry and its callees before optimization. References
-    /// are conservative: a builtin may write its referenced variable. UI inputs,
-    /// system arrays and asynchronous destinations are writable by the host too.
-    fn prepare_domains(&mut self) {
-        let mut mutable: Vec<bool> = self.vars.iter().map(|v| v.ui.is_some()).collect();
-        for &v in self.sys_arrays.iter().flatten().chain(&self.array_jobs) { mutable[v as usize] = true; }
-        let mut pending: Vec<u32> = self.callbacks.iter().skip(1).chain(&self.ui_callbacks).flatten().copied().collect();
+    fn callback_writes(&self, entries: impl Iterator<Item = u32>) -> (Vec<bool>, bool) {
+        let mut pending: Vec<u32> = entries.collect();
+        let mut writes = vec![false; self.vars.len()];
+        let mut event_state = false;
         let mut visited = vec![false; self.code.len()];
         let slots: [HashMap<u32, usize>; 3] = std::array::from_fn(|t| self.vars.iter().enumerate()
             .filter(|(_, v)| !v.poly && v.len.is_none() && v.ty == [Ty::Int, Ty::Real, Ty::Str][t])
@@ -485,15 +486,20 @@ impl Program {
             let Some(seen) = visited.get_mut(pc as usize) else { continue; };
             if std::mem::replace(seen, true) { continue; }
             let op = self.code[pc as usize];
+            event_state |= matches!(op,
+                Op::Sys(SysVar::EventId | SysVar::EventNote | SysVar::EventVelocity | SysVar::NoteHeld
+                    | SysVar::CallbackId | SysVar::AsyncId | SysVar::MidiChannel)
+                | Op::Builtin(Builtin::PlayNote | Builtin::GetEventIds | Builtin::GetEventPar
+                    | Builtin::GetEventParArr | Builtin::EventStatus | Builtin::ByMarks, _));
             match op {
                 Op::StI(s) | Op::StR(s) | Op::StS(s) => {
                     let t = match op { Op::StR(_) => 1, Op::StS(_) => 2, _ => 0 };
-                    if let Some(&v) = slots[t].get(&s) { mutable[v] = true; }
+                    if let Some(&v) = slots[t].get(&s) { writes[v] = true; }
                 }
                 Op::StIA(v) | Op::StRA(v) | Op::StSA(v) | Op::Ref(v) | Op::Declare(v) => {
-                    if let Some(m) = mutable.get_mut(v as usize) { *m = true; }
+                    if let Some(m) = writes.get_mut(v as usize) { *m = true; }
                 }
-                Op::InitArray(i) => mutable[self.inits[i as usize].var as usize] = true,
+                Op::InitArray(i) => writes[self.inits[i as usize].var as usize] = true,
                 _ => {}
             }
             match op {
@@ -505,6 +511,57 @@ impl Program {
                 _ => pending.push(pc + 1),
             }
         }
+        (writes, event_state)
+    }
+
+    /// Only configuration written by common UI inputs can seed a newly prepared
+    /// origin. Never copy performance buffers, event handles, or a channel's
+    /// current articulation. The result is built on the loader, not the audio path.
+    pub(super) fn domain_configuration_ranges(&self, private_ui: &[VarId]) -> [Vec<std::ops::Range<usize>>; 3] {
+        let mut performance = self.domain_performance_writes.clone();
+        for &id in private_ui {
+            if let Some(writes) = self.domain_ui_writes.get(id as usize) {
+                for &v in writes { performance[v as usize] = true; }
+            }
+            if let Some(v) = performance.get_mut(id as usize) { *v = true; }
+        }
+        let mut common: Vec<bool> = self.vars.iter().map(|v| v.ui.is_some()).collect();
+        for writes in &self.domain_ui_writes {
+            for &v in writes { common[v as usize] = true; }
+        }
+        std::array::from_fn(|t| {
+            let ty = [Ty::Int, Ty::Real, Ty::Str][t];
+            let mut ranges: Vec<std::ops::Range<usize>> = self.vars.iter().enumerate()
+                .filter(|(i, v)| !v.poly && v.ty == ty && common[*i] && !performance[*i])
+                .map(|(_, v)| v.slot as usize..(v.slot + v.len.unwrap_or(1)) as usize)
+                .filter(|r| !r.is_empty()).collect();
+            ranges.sort_unstable_by_key(|r| r.start);
+            let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
+            for range in ranges {
+                if let Some(last) = merged.last_mut().filter(|last| last.end == range.start) { last.end = range.end; }
+                else { merged.push(range); }
+            }
+            merged
+        })
+    }
+
+    /// Follow every non-init entry and its callees before optimization. References
+    /// are conservative: a builtin may write its referenced variable. UI inputs,
+    /// system arrays and asynchronous destinations are writable by the host too.
+    fn prepare_domains(&mut self) {
+        let mut mutable: Vec<bool> = self.vars.iter().map(|v| v.ui.is_some()).collect();
+        for &v in self.sys_arrays.iter().flatten().chain(&self.array_jobs) { mutable[v as usize] = true; }
+        let (writes, _) = self.callback_writes(self.callbacks.iter().skip(1).chain(&self.ui_callbacks).flatten().copied());
+        for (m, w) in mutable.iter_mut().zip(writes) { *m |= w; }
+        let (mut performance, _) = self.callback_writes(self.callbacks.iter().skip(1).flatten().copied());
+        for &v in self.sys_arrays.iter().flatten().chain(&self.array_jobs) { performance[v as usize] = true; }
+        self.domain_ui_writes = self.ui_callbacks.iter().map(|entry| {
+            let Some(entry) = entry else { return Vec::new(); };
+            let (writes, event_state) = self.callback_writes(std::iter::once(*entry));
+            if event_state { for (p, w) in performance.iter_mut().zip(&writes) { *p |= *w; } }
+            writes.into_iter().enumerate().filter_map(|(i, w)| w.then_some(i as VarId)).collect()
+        }).collect();
+        self.domain_performance_writes = performance;
         let mut remap: [HashMap<u32, u32>; 3] = std::array::from_fn(|_| HashMap::new());
         for (t, ty) in [Ty::Int, Ty::Real, Ty::Str].into_iter().enumerate() {
             let mut next = 0;
@@ -1836,6 +1893,62 @@ fn fold_int(op: BinOp, a: i32, b: i32) -> Option<i32> {
 #[cfg(test)]
 mod domain_tests {
     use super::*;
+    #[test]
+    fn channel_configuration_excludes_pitch_state_private_art_and_ui_event_handles() {
+        let p = compile(r#"on init
+declare ui_knob $gain(0,100,1)
+declare ui_switch $art
+declare ui_button $preview
+declare $history := 0
+declare $current_art := 0
+declare $preview_id := 0
+declare %held[128]
+end on
+function configure
+inc($history)
+end function
+function select_art
+$current_art := $art
+end function
+function make_preview
+$preview_id := play_note(60,100,0,-1)
+end function
+on ui_control($gain)
+call configure
+end on
+on ui_control($art)
+call select_art
+end on
+on ui_control($preview)
+call make_preview
+end on
+on note
+%held[$EVENT_NOTE] := $EVENT_ID
+change_vol($EVENT_ID,$gain,0)
+end on
+on release
+note_off(%held[$EVENT_NOTE])
+%held[$EVENT_NOTE] := 0
+end on"#, &Setup { groups:3,zones:0,outputs:8 }).unwrap();
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let variable = |name: &str| p.vars.iter().position(|v| &*v.name == name).unwrap();
+        let art = variable("$art") as VarId;
+        let ranges = p.domain_configuration_ranges(&[art]);
+        let eligible = |name: &str| {
+            let v = &p.vars[variable(name)];
+            let ty = match v.ty { Ty::Int => 0, Ty::Real => 1, Ty::Str => 2 };
+            ranges[ty].iter().any(|r| r.contains(&(v.slot as usize)))
+        };
+        assert!(eligible("$gain"), "a shared control remains common when notes only read it");
+        assert!(eligible("$history"), "history must seed from its actual common value, not callback replay");
+        for name in ["$art", "$current_art", "%held", "$preview_id"] {
+            assert!(!eligible(name), "{name} cannot seed a new origin with performance state");
+        }
+        assert!(p.domain_configuration_ranges(&[])[0].iter().any(|r|
+            r.contains(&(p.vars[variable("$current_art")].slot as usize))),
+            "only the configured channel-art control is private");
+    }
+
     #[test]
     fn channel_write_set_follows_callbacks_functions_and_host_destinations() {
         let p = compile(r#"on init
