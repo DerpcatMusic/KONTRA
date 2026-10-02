@@ -1411,7 +1411,7 @@ impl Player {
         if ev.channel >= 16 || ev.note >= 128 || !(1..=127).contains(&ev.velocity) {
             return None;
         }
-        if !release_trigger {
+        if !release_trigger && bank.note_mono_releases {
             // Kontakt Source module Note Mono cuts a still-sounding release
             // on the next same-key attack. Deferred pedal releases are not
             // playing yet, so their independent event identities stay intact.
@@ -2319,6 +2319,15 @@ mod release_note_mono_tests {
     }
     fn tick(e: &mut Engine) { e.render(&mut [0.;512], &mut [0.;512]); }
     fn tails(e: &Engine) -> usize { e.voice_census().iter().filter(|v|v.release_trigger && v.group==1).count() }
+
+    #[test]
+    fn note_mono_scan_is_prepared_only_for_enabled_release_groups() {
+        for (release_trigger, note_mono, expected) in [(false, true, false), (true, false, false), (true, true, true)] {
+            let groups = vec![crate::import::Group { release_trigger, release_trigger_note_monophonic: note_mono, ..Default::default() }];
+            let bank = Bank::from_samples(groups, Vec::new(), Vec::new()).unwrap();
+            assert_eq!(bank.note_mono_releases, expected);
+        }
+    }
 
     #[test]
     fn note_mono_cuts_only_matching_sounding_release_tails() {
