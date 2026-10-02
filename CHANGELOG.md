@@ -503,10 +503,15 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 
 #### Reviewed next-cut candidates — not shipped
 
-The following 13 distinct outcomes are source-reviewed candidates, not accepted
+The following 14 distinct outcomes are source-reviewed candidates, not accepted
 fixes or published behavior. Runtime gates, actual factory checks and native hosted
 platform checks are pending for this cut; the accepted ledger remains 101.
 Follow-up and safety fixtures belong to their existing outcome, not new counts.
+The 14 ledger proposals are explicitly unaccepted until the final frozen verdict.
+Promotion will place the shipped fixes under `Fixed` and the reporter/support
+workflow under `Added`; no candidate statement describes the previous 0.3.96
+release. Actual Mac recognition/host behavior and real-world crash delivery are
+not established by Linux or mock tests.
 
 - Optional VST3 note-length metadata no longer rejects ordinary host notes or
   shortens their retained ownership; unused negative hints are ignored too.
@@ -541,6 +546,10 @@ Follow-up and safety fixtures belong to their existing outcome, not new counts.
   fault ownership. Sources: `665ffee`, `72d3b9b`, `0c7b622`.
 - VST3 initial cents tuning is applied atomically with note onset, including
   bounded handling of extreme finite values. Sources: `53ab06f`, `2d5822e`.
+
+- Zero-rate integer sample taps avoid the reproduced zero-stride iterator panic.
+  This shared renderer correction is a distinct defect from atomic initial tuning;
+  its final runtime acceptance is pending. Source: `4529cbf`.
 
 These scopes do not implement Conflux's native Lua interface or establish complete
 Kontakt processing parity. Native crash evidence depends on the host/OS producing
