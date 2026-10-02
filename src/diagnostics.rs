@@ -1279,7 +1279,7 @@ fn prohibited(key: &str) -> bool {
 }
 /// Sanitization is deliberately centralized so preview, report and both log
 /// streams have the same privacy behavior. It does not read any asset files.
-fn clean(value: &mut Value, redact_paths: bool) {
+pub(crate) fn clean(value: &mut Value, redact_paths: bool) {
     match value {
         Value::Object(map) => {
             map.retain(|key, _| !prohibited(key));

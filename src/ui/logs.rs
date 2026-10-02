@@ -10,10 +10,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-// Noto Sans has a 1.362 em pitch: two SMALL captions, one TEXT body and
-// both 1 px insets require 48.308 px. MUI keeps raw metrics without a device
-// scale (including offscreen rendering), so reserve the full rounded-up span.
-const ROW: f64 = 49.;
+// One SMALL caption and one TEXT reason, including both 2 px insets.
+const ROW: f64 = 36.;
 static WAKE: AtomicU64 = AtomicU64::new(0);
 
 /// A completed snapshot also wakes an idle plugin editor.
@@ -33,15 +31,17 @@ pub struct State {
     reader_thread: Option<std::thread::JoinHandle<()>>,
     export_thread: Option<std::thread::JoinHandle<()>>,
     export_answer: Arc<Mutex<Option<Result<u64, String>>>>,
+    copy_thread: Option<std::thread::JoinHandle<()>>,
+    copy_answer: Arc<Mutex<Option<Result<String, String>>>>,
+    copy_ready: Option<String>,
+    copy_message: Option<String>,
+    copy_error: Option<String>,
     snapshot: Option<Arc<DiagnosticSnapshot>>,
     requested: Option<u64>,
     read_error: Option<String>,
     search: String,
-    library: String,
-    patch: String,
-    pub(super) load: String,
     levels: [bool; 4],
-    filtered: Option<(u64, String, String, String, String, [bool; 4])>,
+    filtered: Option<(u64, String, [bool; 4])>,
     matches: Vec<usize>,
     selected: Option<u64>,
     detail: Option<(u64, Arc<str>)>,
@@ -63,14 +63,16 @@ impl Default for State {
             reader_thread: None,
             export_thread: None,
             export_answer: Arc::default(),
+            copy_thread: None,
+            copy_answer: Arc::default(),
+            copy_ready: None,
+            copy_message: None,
+            copy_error: None,
             snapshot: None,
             requested: None,
             read_error: None,
             search: String::new(),
-            library: String::new(),
-            patch: String::new(),
-            load: String::new(),
-            levels: [false, true, true, true],
+            levels: [false, false, true, true],
             filtered: None,
             matches: Vec::new(),
             selected: None,
@@ -91,7 +93,7 @@ impl Default for State {
 impl Drop for State {
     fn drop(&mut self) {
         // The plugin library cannot unload while one of its workers is running.
-        for handle in [self.reader_thread.take(), self.export_thread.take()]
+        for handle in [self.reader_thread.take(), self.export_thread.take(), self.copy_thread.take()]
             .into_iter()
             .flatten()
         {
@@ -100,7 +102,24 @@ impl Drop for State {
     }
 }
 impl State {
+    pub(super) fn for_load(&mut self, load: &str) {
+        self.search = if load.is_empty() { String::new() } else { format!("load:{load}") };
+        self.levels = [true; 4];
+    }
+
     fn refresh(&mut self, params: &Arc<SamplerParams>) {
+        if self.copy_thread.is_some() {
+            if let Some(answer) = super::lock(&self.copy_answer).take() {
+                let _ = self.copy_thread.take().unwrap().join();
+                match answer {
+                    Ok(text) => self.copy_ready = Some(text),
+                    Err(error) => {
+                        self.copy_message = None;
+                        self.copy_error = Some(error);
+                    }
+                }
+            }
+        }
         if self.export_thread.is_some() {
             if let Some(answer) = super::lock(&self.export_answer).take() {
                 let _ = self.export_thread.take().unwrap().join();
@@ -160,9 +179,6 @@ impl State {
         let key = (
             snapshot.revision,
             self.search.clone(),
-            self.library.clone(),
-            self.patch.clone(),
-            self.load.clone(),
             self.levels,
         );
         if self.filtered.as_ref() == Some(&key) {
@@ -170,11 +186,8 @@ impl State {
         }
         let needle = self.search.to_lowercase();
         let words: Vec<_> = needle.split_whitespace().collect();
-        let library = self.library.trim().to_lowercase();
-        let patch = self.patch.trim().to_lowercase();
-        let load = self.load.trim();
         let criteria_changed = self.filtered.as_ref().is_none_or(|old| {
-            (&old.1, &old.2, &old.3, &old.4, old.5) != (&key.1, &key.2, &key.3, &key.4, key.5)
+            (&old.1, old.2) != (&key.1, key.2)
         });
         self.matches = snapshot
             .events
@@ -185,30 +198,9 @@ impl State {
                 if !self.levels[level_index(event.level)] {
                     return None;
                 }
-                if !library.is_empty()
-                    && ![event.library.as_deref(), event.path.as_deref()]
-                        .into_iter()
-                        .flatten()
-                        .any(|text| text.to_lowercase().contains(&library))
-                {
-                    return None;
-                }
-                if !patch.is_empty()
-                    && !event
-                        .path
-                        .as_deref()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .contains(&patch)
-                {
-                    return None;
-                }
-                if !load.is_empty() && event.load_id.as_deref() != Some(load) {
-                    return None;
-                }
                 if !words.is_empty() {
                     let hay = format!(
-                        "{} {} {} {} {} {} {} {} {}",
+                        "{} {} {} {} {} {} {} {} {} {} {:?} {:?} {}",
                         event.module,
                         event.event,
                         event.stage.as_deref().unwrap_or_default(),
@@ -217,10 +209,15 @@ impl State {
                         event.library.as_deref().unwrap_or_default(),
                         event.path.as_deref().unwrap_or_default(),
                         event.load_id.as_deref().unwrap_or_default(),
-                        event.details
+                        event.details,
+                        level_name(event.level), event.script_slot, event.line,
+                        event.outcome.as_deref().unwrap_or_default()
                     )
                     .to_lowercase();
-                    if !words.iter().all(|w| hay.contains(w)) {
+                    if !words.iter().all(|w| match w.strip_prefix("load:") {
+                        Some(load) => event.load_id.as_deref().is_some_and(|id| id.to_lowercase() == load),
+                        None => hay.contains(w),
+                    }) {
                         return None;
                     }
                 }
@@ -259,7 +256,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
 
 fn field(ui: &mut Ui, id: &str, text: &mut String, label: &str) -> El {
     col![
-        caption(label).fill(secondary()),
+        row![caption(label).fill(secondary())].justify(Justify::Start),
         text_input(ui, id, text)
             .el
             .named(label.to_owned())
@@ -301,7 +298,37 @@ fn details(event: &LogEvent) -> String {
     serde_json::to_string_pretty(event).unwrap_or_else(|_| "Could not format this event.".into())
 }
 
+/// Runs on the support worker; includes every retained row, never the UI filter.
+fn support_text(snapshot: DiagnosticSnapshot, context: serde_json::Value) -> Result<String, String> {
+    use std::fmt::Write;
+    let status = &snapshot.status;
+    let mut text = format!("KONTRA diagnostics — retained session report\n{}\n\nCoverage: current session retained view and available load summaries; all levels, independent of search.\nRetained {} / {} session events. Session levels: Debug {}, Info {}, Warning {}, Error {}.\nOlder events evicted from view: {}; recorder drops: {}; abbreviated events: {}; write errors: {}; retention errors: {}.\nRuntime/load-summary omission counts and cap notices are separate from recorder loss; a notice without a count has unknown omitted cardinality.\nPrevious sessions and rotated disk history are NOT included in this clipboard report. Export support report includes available retained journal history across sessions.\nPaths are redacted; filenames and diagnostic messages remain. No samples, script contents or credentials.\n\n",
+        crate::build_info::SUMMARY, snapshot.events.len(), status.total_events,
+        status.level_counts[0], status.level_counts[1], status.level_counts[2], status.level_counts[3],
+        status.history_evicted, status.dropped_events, status.truncated_events, status.write_errors, status.retention_errors);
+    let mut safe = json!({"build":snapshot.build,"status":snapshot.status,"context":context,"events":snapshot.events});
+    diagnostics::clean(&mut safe, true);
+    let events = safe.as_object_mut().unwrap().remove("events").unwrap();
+    text.push_str("CONFIGURATION, STATUS AND LOAD SUMMARIES\n");
+    text.push_str(&serde_json::to_string_pretty(&safe).map_err(|e| e.to_string())?);
+    text.push_str("\n\nALL RETAINED EVENTS (chronological; full warning/error records included)\n");
+    for event in events.as_array().unwrap() {
+        let _ = writeln!(text, "\n[{}] {} · {} / {}\n{}",
+            event["level"].as_str().unwrap_or("unknown"), time(event["timestamp_ms"].as_u64().unwrap_or(0)),
+            event["stage"].as_str().or_else(|| event["module"].as_str()).unwrap_or("application"),
+            event["code"].as_str().or_else(|| event["event"].as_str()).unwrap_or("event"),
+            event["reason"].as_str().unwrap_or(""));
+        text.push_str(&serde_json::to_string_pretty(event).map_err(|e| e.to_string())?);
+        text.push('\n');
+    }
+    Ok(text)
+}
+
 fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
+    if let Some(text) = state.copy_ready.take() {
+        ui.set_clipboard(text);
+        state.copy_message = Some("Copied retained session diagnostics. Export includes older journal history.".into());
+    }
     let snapshot = state.snapshot.clone();
     let status = snapshot.as_ref().map(|s| &s.status);
     let (refresh, refresh_el) = action(ui, "logs-refresh", "Refresh", false);
@@ -344,7 +371,31 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                 .into_owned();
         }
     }
-    let mut content = vec![section_bar("Logs", vec![refresh_el, open_el, export_el])];
+    let (copy, copy_el) = action(ui, "logs-copy-all", "Copy all diagnostics", false);
+    if copy && state.copy_thread.is_none() {
+        let params = params.clone();
+        let answer = state.copy_answer.clone();
+        state.copy_error = None;
+        state.copy_message = Some("Preparing retained session diagnostics…".into());
+        match std::thread::Builder::new().name("kontra-copy-diagnostics".into()).spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let context = params.diagnostic_report();
+                support_text(diagnostics::snapshot(), context)
+            })).unwrap_or_else(|_| Err("Could not collect diagnostics. Retry Copy all.".into()));
+            *super::lock(&answer) = Some(result);
+            WAKE.fetch_add(1, Ordering::Release);
+        }) {
+            Ok(handle) => state.copy_thread = Some(handle),
+            Err(error) => {
+                state.copy_message = None;
+                state.copy_error = Some(format!("Could not start diagnostics copy: {error}"));
+            }
+        }
+    }
+    let mut content = vec![section_bar("Logs", vec![copy_el.when(state.copy_thread.is_some(), El::disabled), export_el, open_el, refresh_el])];
+    if let Some(message) = &state.copy_message {
+        content.push(row![caption(message.clone()).fill(secondary()).lines(2)].justify(Justify::Start).pad((INSET, TIGHT)).shrink(0));
+    }
     if state.about {
         let (copy, copy_el) = action(ui, "logs-copy-build", "Copy build info", false);
         if copy {
@@ -374,7 +425,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             .min_w(0)
             .id("logs-panel");
     }
-    for error in [&state.read_error, &state.folder_error, &state.export_error]
+    for error in [&state.read_error, &state.folder_error, &state.export_error, &state.copy_error]
         .into_iter()
         .flatten()
     {
@@ -519,18 +570,8 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             ui,
             "logs-search",
             &mut state.search,
-            "Search messages, stages and reasons"
+            "Search diagnostics: message, library, patch, stage or load ID"
         )]
-        .pad((INSET, TIGHT))
-        .shrink(0),
-    );
-    content.push(
-        row![
-            field(ui, "logs-library", &mut state.library, "Library or folder"),
-            field(ui, "logs-patch", &mut state.patch, "Patch or path"),
-            field(ui, "logs-load", &mut state.load, "Exact load ID")
-        ]
-        .gap(SPACE)
         .pad((INSET, TIGHT))
         .shrink(0),
     );
@@ -561,9 +602,6 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
     let (clear, clear_el) = action(ui, "logs-clear-filters", "Reset filters", false);
     if clear {
         state.search.clear();
-        state.library.clear();
-        state.patch.clear();
-        state.load.clear();
         state.levels = [true; 4];
     }
     content.push(
@@ -596,7 +634,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
     };
     let fresh = state.filter(&snapshot);
     content.push(
-        caption(format!(
+        row![caption(format!(
             "{} matching / {} retained (up to {}) · {} session events · {} write errors · UTC",
             state.matches.len(),
             snapshot.events.len(),
@@ -605,7 +643,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             snapshot.status.write_errors
         ))
         .fill(secondary())
-        .lines(2)
+        .lines(2)].justify(Justify::Start)
         .pad((INSET, TIGHT))
         .shrink(0)
         .id("logs-count"),
@@ -615,8 +653,8 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         || snapshot.status.truncated_events > 0
         || snapshot.status.retention_errors > 0
     {
-        content.push(caption(format!("{} older events left the live view · {} dropped · {} oversized events abbreviated · {} retention errors. Export includes available rotated history.", snapshot.status.history_evicted, snapshot.status.dropped_events, snapshot.status.truncated_events, snapshot.status.retention_errors))
-            .fill(secondary()).lines(2).pad((INSET, TIGHT)).shrink(0));
+        content.push(row![caption(format!("{} older events left the live view · {} dropped · {} oversized events abbreviated · {} retention errors. Export includes available rotated history.", snapshot.status.history_evicted, snapshot.status.dropped_events, snapshot.status.truncated_events, snapshot.status.retention_errors))
+            .fill(secondary()).lines(2)].justify(Justify::Start).pad((INSET, TIGHT)).shrink(0));
     }
     content.push(rule());
     let view_h = ui
@@ -695,39 +733,12 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         let selected = state.selected == Some(event.sequence);
         let stage = event.stage.as_deref().unwrap_or(&event.module);
         let code = event.code.as_deref().unwrap_or(&event.event);
-        let title = format!(
-            "{} · {} · {stage} / {code}",
-            time(event.timestamp_ms),
-            level_name(event.level)
-        );
-        let library = event
-            .library
-            .clone()
-            .or_else(|| {
-                event
-                    .path
-                    .as_deref()
-                    .and_then(|p| Path::new(p).parent())
-                    .map(|p| p.display().to_string())
-            })
-            .unwrap_or_else(|| "Application".into());
-        let scope = format!(
-            "{} · {} · load {}{}",
-            library,
-            event
-                .path
-                .as_deref()
-                .and_then(|p| Path::new(p).file_name())
-                .unwrap_or_default()
-                .to_string_lossy(),
-            event.load_id.as_deref().unwrap_or("—"),
-            event
-                .line
-                .map_or(String::new(), |line| format!(" · line {line}"))
-        );
+        let patch = event.path.as_deref().and_then(|p| Path::new(p).file_name())
+            .map(|p| p.to_string_lossy().into_owned()).or_else(|| event.library.clone()).unwrap_or_else(|| "Application".into());
+        let title = format!("{} · {patch} · {stage} / {code}", level_name(event.level));
         items.push(interactive(
             col![
-                caption(title)
+                row![caption(title)
                     .fill(if event.level == LogLevel::Error {
                         Fill::from(Role::Warning)
                     } else {
@@ -735,22 +746,18 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                     })
                     .lines(1)
                     .min_w(0)
-                    .id(format!("{id}-title")),
-                body(event.reason.as_deref().unwrap_or(&event.event))
+                    .id(format!("{id}-title"))].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
+                row![body(event.reason.as_deref().unwrap_or(&event.event))
                     .text_size(TEXT)
                     .lines(1)
                     .min_w(0)
-                    .id(format!("{id}-reason")),
-                caption(scope)
-                    .fill(secondary())
-                    .lines(1)
-                    .min_w(0)
-                    .id(format!("{id}-scope")),
+                    .id(format!("{id}-reason"))].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
             ]
             .gap(0)
-            .align(Align::Stretch)
+            .align(Align::Start)
             .h(ROW)
-            .pad((INSET, 1.))
+            .pad((INSET, 2.))
+            .clip()
             .shrink(0)
             .when(selected, |e| e.fill(Role::Raised))
             .focusable()
@@ -823,7 +830,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         }
         let (scope, scope_el) = action(ui, "logs-this-load", "This load", false);
         if scope && let Some(load) = &event.load_id {
-            state.load = load.clone();
+            state.for_load(load);
         }
         content.push(rule());
         content.push(section_bar(
@@ -877,6 +884,11 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Board(Arc<Mutex<String>>);
+    impl moose::mui::mui::Clipboard for Board {
+        fn get(&mut self) -> Option<String> { Some(super::super::lock(&self.0).clone()) }
+        fn set(&mut self, text: &str) { *super::super::lock(&self.0) = text.to_owned(); }
+    }
 
     fn tick(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>, input: Input) {
         let root = draw(ui, state, params).w(900.).h(700.);
@@ -951,7 +963,8 @@ mod tests {
     #[test]
     fn the_global_log_panel_filters_and_virtualizes_retained_history() {
         let params = Arc::new(SamplerParams::new());
-        let mut ui = super::super::theme::ui();
+        let clipboard = Arc::new(Mutex::new(String::new()));
+        let mut ui = super::super::theme::ui().clipboard(Board(clipboard.clone()));
         let events: Vec<_> = (0..2048)
             .map(|n| LogEvent {
                 schema_version: 1,
@@ -1019,8 +1032,8 @@ mod tests {
         }
         assert_eq!(
             state.matches.len(),
-            1536,
-            "debug is hidden, other levels remain searchable"
+            1024,
+            "warnings and errors show first; catalog progress remains available by severity"
         );
         let mounted = (1..=2048)
             .filter(|n| {
@@ -1052,25 +1065,20 @@ mod tests {
         }
         assert_eq!(
             state.selected,
-            Some(2),
+            Some(3),
             "End reaches the oldest matching event"
         );
-        assert!(ui.scene().unwrap().surface("log-event-2").is_some());
-        type_into(&mut ui, &mut state, &params, "logs-search", "Marker 1001");
-        type_into(
-            &mut ui,
-            &mut state,
-            &params,
-            "logs-library",
-            "Fixture Strings",
-        );
-        type_into(&mut ui, &mut state, &params, "logs-patch", "Violin");
-        type_into(&mut ui, &mut state, &params, "logs-load", "15");
+        assert!(ui.scene().unwrap().surface("log-event-3").is_some());
+        press(&mut ui, &mut state, &params, "logs-level-1");
+        type_into(&mut ui, &mut state, &params, "logs-search", "Marker 1001 Fixture Strings Violin samples load:15");
         assert_eq!(
             state.matches.len(),
             1,
-            "search and all three scopes intersect"
+            "one query intersects message, inferred library path, patch, stage and exact load"
         );
+        for removed in ["logs-library", "logs-patch", "logs-load"] {
+            assert!(ui.scene().unwrap().surface(removed).is_none(), "only one search input remains");
+        }
         press(&mut ui, &mut state, &params, "log-event-1002");
         assert_eq!(state.selected, Some(1002));
         assert!(ui.scene().unwrap().surface("logs-copy").is_some());
@@ -1079,18 +1087,25 @@ mod tests {
         let row = scene.surface("log-event-1002").unwrap().frame;
         let title = scene.surface("log-event-1002-title").unwrap().frame;
         let reason = scene.surface("log-event-1002-reason").unwrap().frame;
-        let scope = scene.surface("log-event-1002-scope").unwrap().frame;
         let font = Font::new(NOTO_SANS).unwrap();
         let caption_pitch = ui.text_run(&font, "M", SMALL).unwrap().line_height;
         let body_pitch = ui.text_run(&font, "M", TEXT).unwrap().line_height;
         assert!(
-            scope.y + scope.size.height <= row.y + row.size.height - 1.,
-            "the third line must fit above the bottom inset: row={row:?}, \
-             title={title:?}, reason={reason:?}, scope={scope:?}, \
+            reason.y + reason.size.height <= row.y + row.size.height - 2.,
+            "both compact lines fit above the bottom inset: row={row:?}, \
+             title={title:?}, reason={reason:?}, \
              caption_pitch={caption_pitch}, body_pitch={body_pitch}, \
              required_span={}",
-            caption_pitch * 2. + body_pitch + 2.,
+            caption_pitch + body_pitch + 4.,
         );
+        assert!((title.x - row.x - INSET).abs() <= 1. && (reason.x - title.x).abs() <= 1., "row text starts at the left inset: {row:?}, {title:?}, {reason:?}");
+        let copied = support_text(state.snapshot.as_ref().unwrap().as_ref().clone(), json!({
+            "parts":[{"path":"/virtual/private-user/Diagnostic Test.nki","load":{"issues_omitted":7,"notes":["runtime diagnostic cap reached; omitted locations unknown"]}}],
+            "script_source":"private script payload"})).unwrap();
+        assert!(copied.contains("Marker 0:") && copied.contains("Marker 2047:"), "Copy all includes every retained severity, independent of this single-row search");
+        assert!(copied.contains("7952") && copied.contains("10000") && copied.contains("issues_omitted") && copied.contains("omitted locations unknown"), "recorder coverage and load/runtime omissions remain distinct");
+        assert!(copied.contains("Diagnostic Test.nki") && !copied.contains("/virtual/private-user") && !copied.contains("private script payload"), "default redaction keeps filenames and removes private payloads");
+        assert!(copied.contains("Previous sessions and rotated disk history are NOT included"));
         let shot = Path::new("artifacts/diagnostics/log-panel-fixture.png");
         std::fs::create_dir_all(shot.parent().unwrap()).unwrap();
         moose::core::screenshot::save_png(
@@ -1140,6 +1155,18 @@ mod tests {
             !state.filter(state.snapshot.clone().as_ref().unwrap()),
             "unchanged filters reuse the index"
         );
+
+        press(&mut ui, &mut state, &params, "logs-copy-all");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while state.copy_thread.is_some() {
+            state.refresh(&params);
+            tick(&mut ui, &mut state, &params, Input::default());
+            assert!(std::time::Instant::now() < until, "Copy all diagnostics worker did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(state.copy_error.is_none(), "{:?}", state.copy_error);
+        let copied = super::super::lock(&clipboard).clone();
+        assert!(copied.starts_with("KONTRA diagnostics") && copied.contains(crate::build_info::SUMMARY) && copied.contains("CONFIGURATION, STATUS AND LOAD SUMMARIES"), "the actual Copy all action publishes worker report text to the clipboard");
 
         // The actual export handoff also works with a selected path but no loaded bank.
         params
