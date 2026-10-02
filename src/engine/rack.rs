@@ -169,6 +169,11 @@ impl Rack {
         self.controls = controls;
     }
 
+    /// One host timing snapshot reaches every instrument before its MIDI input.
+    pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64) {
+        for engine in &mut self.parts { engine.set_transport(playing, tempo, beats); }
+    }
+
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
         self.note_on_port(0, channel, note, velocity);
     }

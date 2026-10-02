@@ -399,7 +399,8 @@ pub struct SlotState {
 pub struct Listener {
     pub timer_us: i32,
     pub beats: i32,
-    pub transport: bool,
+    /// Independent start/stop subscription bits.
+    pub transport: u8,
     /// Bumped when the timer changes so stale timer entries are dropped.
     pub generation: u32,
 }
@@ -1286,7 +1287,7 @@ fn sys_of(ctx: &Ctx, env: &Env, slot: u8, v: SysVar) -> i32 {
         SysVar::DurationEighthTriplet => env.quarter_us() / 3,
         SysVar::DurationSixteenthTriplet => env.quarter_us() / 6,
         SysVar::DurationBar => env.quarter_us() * 4,
-        SysVar::SongPosition => 0,
+        SysVar::SongPosition => env.song_position(),
         SysVar::TransportRunning => bool_int(env.transport),
         SysVar::Tempo => env.tempo as i32,
         SysVar::CurrentScriptSlot => i32::from(slot),

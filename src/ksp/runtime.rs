@@ -435,6 +435,8 @@ pub struct Env {
     pub sample_rate: f64,
     pub tempo: f64,
     pub transport: bool,
+    song_beats: f64,
+    song_at: u64,
     pub timer_origin: u64,
     pub block_fuel: u64,
     pub(super) deadline: Option<std::time::Instant>,
@@ -488,6 +490,8 @@ impl Env {
             sample_rate: 48_000.0,
             tempo: 120.0,
             transport: false,
+            song_beats: 0.0,
+            song_at: 0,
             timer_origin: 0,
             block_fuel: BLOCK_FUEL,
             deadline: None,
@@ -545,6 +549,16 @@ impl Env {
             }
             Err(i) => self.engine_pars.insert(i, (par, value)),
         }
+    }
+
+    pub fn song_beats(&self) -> f64 {
+        self.song_beats + if self.transport {
+            self.clock().saturating_sub(self.song_at) as f64 * self.tempo / (60.0 * self.sample_rate)
+        } else { 0.0 }
+    }
+
+    pub fn song_position(&self) -> i32 {
+        (self.song_beats() * 960.0).floor() as i32
     }
 
     pub fn quarter_us(&self) -> i32 {
@@ -804,6 +818,9 @@ impl Runtime {
 
     pub fn set_tempo(&mut self, bpm: f64) {
         if bpm.is_finite() && bpm > 0.0 {
+            // Tempo changes affect future samples, never the elapsed position.
+            self.env.song_beats = self.env.song_beats();
+            self.env.song_at = self.env.clock();
             self.env.tempo = bpm;
         }
     }
@@ -1835,10 +1852,21 @@ impl Runtime {
         self.settle(engine);
     }
 
+    /// Host snapshot at the current sample clock. Beats are quarter notes;
+    /// KSP exposes 960 pulses per quarter and advances within the audio block.
+    pub fn set_host_transport(&mut self, engine: &mut dyn KspEngine, playing: bool, tempo: f64, beats: f64) {
+        self.env.song_beats = if beats.is_finite() { beats } else { self.env.song_beats() };
+        self.env.song_at = self.env.clock();
+        self.set_tempo(tempo);
+        self.set_transport(engine, playing);
+    }
+
     pub fn set_transport(&mut self, engine: &mut dyn KspEngine, playing: bool) {
         if self.env.transport == playing {
             return;
         }
+        self.env.song_beats = self.env.song_beats();
+        self.env.song_at = self.env.clock();
         self.env.transport = playing;
         let signal = if playing {
             b::signal::TRANSP_START
@@ -1846,7 +1874,7 @@ impl Runtime {
             b::signal::TRANSP_STOP
         };
         for slot in 0..self.states.len() as u8 {
-            if self.states[slot as usize].listener.transport {
+            if self.states[slot as usize].listener.transport & (if playing { 1 } else { 2 }) != 0 {
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Listener));
                 ctx.signal = signal;
                 self.spawn_cb(engine, slot, Callback::Listener, ctx);
