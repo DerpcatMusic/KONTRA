@@ -44,6 +44,8 @@ To load a snapshot, first load its base NKI, then use the instrument header menu
 
 **Full** means verified end to end for the named behavior. **Partial** means only a subset is implemented or exercised. **Unsupported** means the feature is not implemented. **Untested** means there is not enough reference or host testing to make a claim. **Experimental** means limited validation and an evolving interface. No broad compatibility area below is marked full.
 
+The [compatibility implementation checklist](docs/COMPATIBILITY.md) groups the remaining format, script, UI, DSP and reporting gaps, links their code paths, and separates source changes awaiting validation from published build behavior.
+
 | Area | Status | Implemented | Known limits |
 |---|---|---|---|
 | Preset parsing | **Partial** | Reads NKI instruments and NKM multis, including common groups, zones, key and velocity maps, loops, tuning, release triggers, and voice groups. Native NKSN snapshots apply supported saved controls, instrument/group FX, known envelopes and modulation assignments to an explicit base NKI. | Unknown or unsupported structures may be skipped or rejected. Opaque source state and unknown saved scalars produce warnings and remain unapplied; parsing is not proof of correct behavior. |
