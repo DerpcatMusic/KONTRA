@@ -60,7 +60,9 @@ The [compatibility implementation checklist](docs/COMPATIBILITY.md) groups the r
 | Release-event identity and timing | **Partial** | Script-transposed input notes and following-parent children retain physical ownership and live expression. Samples created in release callbacks inherit the parent's frozen expression. Following children freeze before delayed callbacks and retain that snapshot for release samples; freezing has independent command storage. Surviving attack events keep separate release-counter clocks; pedal-deferred samples retain duration at key-up. | Release-only/exhausted-voice clocks and pre-engine script delays remain under review. Libraries with pitch-indexed script state can still mix identical pitches from different articulation channels in one script instance. |
 | REAPER project migration | **Experimental** | Explicit SavedMulti mappings replace selected Kontakt instances in a copied RPP. An isolated REAPER check verified state through save/reopen and retained two tracks, MIDI and a send. | Opaque Kontakt state, parameter automation and nested containers are not translated. Other DAWs, host versions and sonic parity remain unverified. |
 | Kontakt parity | **Untested** | No compatibility guarantee is made. | A successful load or short render is not a reference comparison. |
-| Other sampler formats | **Unsupported** | None. | KONTRA does not load separate proprietary formats such as UVI, Toontrack, IK, or Ample Sound libraries. |
+| Other sampler formats | **Unsupported for playback** | The development inspector reads bounded UVI UFS headers and clear UVIP XML metadata. | UFS member indexing, sample access, UVIScript, Falcon UI and DSP remain unimplemented. Other sampler formats are not playable. |
+
+Falcon groundwork is documented in the [format findings](docs/FALCON_FORMAT_GROUNDWORK.md) and [runtime/UI compatibility map](docs/FALCON_RUNTIME_UI_GROUNDWORK.md). Run `python3 tools/inspect_uvi.py --self-test` to check the metadata inspector; it does not make a bank playable.
 
 ### Representative patch checks
 
