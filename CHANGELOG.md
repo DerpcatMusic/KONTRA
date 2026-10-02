@@ -508,6 +508,9 @@ fixes or published behavior. Runtime gates, actual factory checks and native hos
 platform checks are pending for this cut; the accepted ledger remains 101.
 Follow-up and safety fixtures belong to their existing outcome, not new counts.
 The 14 ledger proposals are explicitly unaccepted until the final frozen verdict.
+Root reports the focused optimized extreme-onset, zero-stride PCM and exact
+scalar/SIMD gates pass at `d7b9e11` with frozen executable prefix `eebeb2eb1efd`.
+The full suite and actual factory checks remain pending; this is not acceptance.
 Promotion will place the shipped fixes under `Fixed` and the reporter/support
 workflow under `Added`; no candidate statement describes the previous 0.3.96
 release. Actual Mac recognition/host behavior and real-world crash delivery are

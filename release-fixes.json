@@ -1073,7 +1073,7 @@
         "53ab06fd060ef5584899b74a8e9fcbb21ce84053",
         "2d5822e18ac85666e936e6d2416fdf07637c4048"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "validation": "Root reports focused optimized gates pass on source d7b9e11ad096283aab06c79c15732d9bd5a48a03, frozen executable prefix eebeb2eb1efd: unchanged extreme-onset coverage, direct zero-stride PCM and scalar/SIMD exactness. Full combined suite and actual factory checks remain pending; acceptance remains false.",
       "accepted": false
     },
     {
@@ -1082,7 +1082,7 @@
       "source_commits": [
         "4529cbf592b0b4809129db180fbdaeb523f62de4"
       ],
-      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published. Shared correction follows the reproduced step_by(0) failure in extreme initial-tuning coverage; safety and negative-length fixtures do not add counts.",
+      "validation": "Root reports focused optimized gates pass on source d7b9e11ad096283aab06c79c15732d9bd5a48a03, frozen executable prefix eebeb2eb1efd: unchanged extreme-onset coverage, direct zero-stride PCM and scalar/SIMD exactness. Full combined suite and actual factory checks remain pending; acceptance remains false.",
       "accepted": false
     }
   ]
