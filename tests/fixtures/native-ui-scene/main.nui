@@ -1,4 +1,19 @@
 local ui = require("native_ui")
+local util = require("native_ui_util")
+local nested={value=1}
+local original=setmetatable({[1]="first",[3]="third",field=false,nested=nested}, {__index={inherited=true}})
+local copy=table.shallow_copy(original)
+assert(copy~=original and copy[1]=="first" and copy[2]==nil and copy[3]=="third")
+assert(copy.field==false and copy.nested==nested and copy.inherited==nil)
+copy.nested.value=2
+assert(original.nested.value==2)
+assert(util.clamp(-2,0,10)==0 and util.clamp(6,0,10)==6 and util.clamp(11,0,10)==10)
+local bound=util.partial(function(...) return table.pack(...), "multiple",nil end, false,nil)
+local args,marker,last=bound(5,nil)
+assert(args.n==4 and args[1]==false and args[2]==nil and args[3]==5 and args[4]==nil)
+assert(marker=="multiple" and last==nil)
+assert(not pcall(function() return util.unsupported() end))
+
 local connected,kontakt=pcall(require,"kontakt")
 assert(connected and kontakt.connect_parameter)
 local remote=kontakt.connect_parameter("Remote")

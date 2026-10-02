@@ -263,6 +263,7 @@ impl Scene {
         let loaded = lua.create_table()?;
         loaded.set("native_ui", lua.globals().get::<Table>("native_ui_host")?)?;
         loaded.set("kontakt", lua.globals().get::<Table>("kontakt_host")?)?;
+        loaded.set("native_ui_util", lua.globals().get::<Table>("native_ui_util_host")?)?;
         let loading = Arc::new(Mutex::new(BTreeSet::<String>::new()));
         struct Modules {
             resources: crate::resources::Resources,

@@ -13,6 +13,32 @@ local function strict(name, values)
         error("Unsupported native UI API: "..name.."."..tostring(key),2)
     end})
 end
+-- Legacy native_ui_util augments Lua's table library as well as exporting
+-- scalar helpers. Copies retain nested identities, never inherited fields.
+table.shallow_copy = function(source)
+    assert(type(source)=="table","shallow_copy requires a table")
+    local result={}
+    for key,value in next,source do result[key]=value end
+    return result
+end
+native_ui_util_host = strict("native_ui_util", {
+    clamp=function(value,minimum,maximum)
+        assert(type(value)=="number" and type(minimum)=="number" and type(maximum)=="number"
+            and value==value and minimum<=maximum,"Invalid clamp range or value")
+        return math.min(maximum,math.max(minimum,value))
+    end,
+    partial=function(fn,...)
+        assert(type(fn)=="function","partial requires a function")
+        local bound=table.pack(...)
+        return function(...)
+            local rest=table.pack(...)
+            local args={}
+            for index=1,bound.n do args[index]=bound[index] end
+            for index=1,rest.n do args[bound.n+index]=rest[index] end
+            return fn(table.unpack(args,1,bound.n+rest.n))
+        end
+    end,
+})
 local active, instances = nil, {}
 local instance_count = 0
 local function color(r,g,b,a)
