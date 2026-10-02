@@ -1660,7 +1660,7 @@ fn panic_and_rate_reset_clear_script_cached_pedals_without_allocating() {
                 assert_eq!(e.active_voices(), 0, "fresh note on channel {channel} releases after CC{pedal} stop");
             }
             assert_eq!(e.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(37));
-            assert!(e.script().unwrap().diagnostics().is_empty());
+            assert!(e.script().unwrap().diagnostics().is_empty(), "{:?}", e.script().unwrap().diagnostics());
         }
     }
 
