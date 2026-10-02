@@ -24,10 +24,10 @@ use crate::import::{Group, ModAssignment, ModTarget};
 
 /// Frames between coefficient updates.
 pub(crate) const CONTROL: usize = 32;
-/// Filter and EQ units per group.
-const MAX_UNITS: usize = 4;
-/// 2-pole sections per voice, all units together.
-const MAX_SECTIONS: usize = 8;
+/// One filter or EQ unit per native group insert slot.
+const MAX_UNITS: usize = 8;
+/// Eight four-band EQs are the largest supported native insert chain.
+const MAX_SECTIONS: usize = MAX_UNITS * 4;
 /// Module envelopes and external assignments a voice follows.
 const MAX_ENVS: usize = 4;
 const MAX_EXT: usize = 8;
@@ -1784,6 +1784,74 @@ mod tests {
             (Kind::Limiter, "$ENGINE_PAR_LIM_IN_GAIN", 900_000),
             (Kind::SolidBusComp, "$ENGINE_PAR_SCOMP_THRESHOLD", 100_000),
         ]);
+    }
+
+    #[test]
+    fn eight_group_eq_inserts_match_rack_and_native_edits_without_heap() {
+        use crate::{fx::{Effect, params::Field}, engine::{GroupSettings, params::{self, Address}}, ksp::EnginePar};
+        eprintln!("eight-slot filter state: Section={} VoiceFilter={} bytes",
+            std::mem::size_of::<Section>(), std::mem::size_of::<VoiceFilter>());
+        let mut values = blocks::defaults(Kind::SolidGeq).unwrap().to_vec();
+        for band in [0, 3, 6, 9] { values[band] = 0.52; }
+        let chain = Chain { slots: (0..8).map(|slot| Effect {
+            slot, kind: Kind::SolidGeq, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0,
+            params: Params::Fields(crate::fx::params::layout_names(Kind::SolidGeq).unwrap().iter()
+                .zip(&values).map(|(&name, &value)| Field { name, value: Value::Number(value) }).collect()),
+        }).collect() };
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let name = "$ENGINE_PAR_SEQ_HF_GAIN";
+        let id = (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 512)
+            .find(|&id| crate::ksp::engine_par_name(id) == Some(name)).unwrap();
+        let (_, field) = blocks::engine_par(name).unwrap();
+        for split in [0, 4, 8] {
+            let groups = [Group { fx: chain.clone(), amp_split_slot: Some(split), ..Group::default() }];
+            let address = Address::resolve(EnginePar { id, group: 0, slot: 7, generic: -1 }, &groups).unwrap();
+            let mut outputs = [[0.0f32; 4096]; 2];
+            for (phase, output) in outputs.iter_mut().enumerate() {
+                let mut settings = [GroupSettings::from(&groups[0])];
+                let mut reference: Vec<_> = chain.slots.iter().map(|fx| blocks::Block::new(fx, RATE).unwrap()).collect();
+                if phase == 1 {
+                    assert_eq!(crate::plugin::tests::allocations(|| {
+                        assert!(params::write(&mut settings, address, address.decode(900_000)));
+                        assert_eq!(address.encode(params::read(&settings, address).unwrap()), 900_000);
+                        assert!(reference[7].set(Kind::SolidGeq, field, 0.9));
+                    }), 0);
+                }
+                let f = settings[0].filter.as_ref().unwrap();
+                assert_eq!(f.units.len(), 8);
+                assert_eq!(f.units.iter().map(|u| usize::from(u.sections)).sum::<usize>(), 32);
+                assert!(unsupported_at(&groups[0].fx, Some(split)).is_empty());
+                let mut voice = VoiceFilter::new(Some(f), &table, &input, RATE);
+                assert!(voice.hold(f, &table, RATE).is_none(), "32 active sections use the per-voice path");
+                assert_eq!(crate::plugin::tests::allocations(|| {
+                    for block in 0..32 {
+                        let mut l: [f32; 128] = std::array::from_fn(|i| {
+                            let t = (block * 128 + i) as f32 / RATE;
+                            [110.0, 1000.0, 8000.0, 16000.0].iter()
+                                .map(|hz| 0.025 * (TAU * hz * t).sin()).sum()
+                        });
+                        let (mut r, mut expected_l, mut expected_r) = (l, l, l);
+                        let amp = [0.7; 128];
+                        let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.6], delta: [0.0; 2] };
+                        for (slot, dsp) in reference.iter_mut().enumerate() {
+                            if slot == split as usize { amplifier.apply(0, &mut expected_l, &mut expected_r); }
+                            dsp.process(&mut expected_l, &mut expected_r);
+                        }
+                        if split == 8 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
+                        voice.process_amplified(f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE,
+                            &amp, amplifier.gains, amplifier.delta);
+                        assert!(l.iter().chain(&r).all(|x| x.is_finite()));
+                        assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r))
+                            .all(|(a,b)| (a-b).abs() < 2e-6), "split{split}, phase{phase}");
+                        output[block * 128..(block + 1) * 128].copy_from_slice(&l);
+                    }
+                }), 0);
+            }
+            let difference: f64 = outputs[0].iter().zip(&outputs[1]).map(|(a,b)| f64::from(a-b).powi(2)).sum();
+            assert!(difference > 1e-6, "split{split}: the eighth insert's native edit must affect PCM");
+        }
     }
 
     #[test]
