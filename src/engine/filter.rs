@@ -90,9 +90,9 @@ pub(crate) fn filter_type(id: i32) -> Option<(Shape, u8)> {
         104 => ladder(Band, 2, true),
         105 => ladder(Band, 4, true),
         // NI's Daft filters have a 2-pole (12 dB/octave) response.
-        // Gain/resonance still use the shared linear ladder proxy.
-        106 => ladder(Low, 2, false),
-        107 => ladder(High, 2, false),
+        // The SVF is a linear proxy; Massive's nonlinear gain is unmodelled.
+        106 => return Some(svf(Low, 1)),
+        107 => return Some(svf(High, 1)),
         _ => return None,
     };
     Some((Shape::Model(model), model.sections()))
@@ -1597,6 +1597,30 @@ mod tests {
             }
         }
         20.0 * peak.log10()
+    }
+
+    #[test]
+    fn daft_two_pole_proxy_preserves_passbands_and_resonates_at_cutoff() {
+        let c = (1000.0 / CUTOFF_MIN_HZ).log2() / CUTOFF_OCTAVES;
+        for (id, response) in [(106, Response::Low), (107, Response::High)] {
+            let (shape, sections) = filter_type(id).unwrap();
+            assert_eq!(sections, 1, "Daft is a two-pole filter");
+            assert!(matches!(shape, Shape::Filter(r) if r == response));
+            // Actual saved ANALOG STRINGS resonance; the shared SVF keeps
+            // unity in the pass band instead of adding ladder feedback loss.
+            let proto = Proto::of(shape, [c, 0.594595, 0.0], 0, RATE);
+            let pass = if response == Response::Low { 10.0 } else { 20_000.0 };
+            assert!((proto.gain(pass, RATE) - 1.0).abs() < 0.01);
+            let mut s = Section::default();
+            s.coefficients(proto);
+            let expected = 20.0 * proto.gain(1000.0, RATE).log10();
+            assert!(expected > 10.0 && expected < 20.0);
+            assert!((gain_db(s, 1000.0) - expected).abs() < 0.1);
+            let proto = Proto::of(shape, [c, 0.0, 0.0], 0, RATE);
+            let (near, far) = if response == Response::Low { (4000.0, 8000.0) } else { (125.0, 62.5) };
+            let slope = 20.0 * (proto.gain(near, RATE) / proto.gain(far, RATE)).log10();
+            assert!((slope - 12.0).abs() < 2.0, "type {id}: {slope} dB/octave");
+        }
     }
 
     #[test]
