@@ -40,23 +40,19 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
         epoch: u64,
         scene: &std::sync::Arc<std::sync::Mutex<crate::native_ui::Scene>>,
         node: &Node,
-        offered: (f64, f64),
         assets: &crate::native_assets::Assets,
     ) -> El {
-        let natural = intrinsic(node, assets, offered);
-        let (w, h) = (
-            node.width.unwrap_or(natural.0),
-            node.height.unwrap_or(natural.1),
-        );
         let children = node
             .children
             .iter()
-            .map(|child| {
-                draw(ui, cx, part, epoch, scene, child, (w, h), assets)
-                    .anchor(node.alignment.0, node.alignment.1)
+            .enumerate()
+            .map(|(index, child)| {
+                let el = draw(ui, cx, part, epoch, scene, child, assets)
+                    .anchor(node.alignment.0, node.alignment.1);
+                if node.background && index==0 { el.underlay() } else { el }
             })
             .collect();
-        let el = primitive(node, w, h, children, assets);
+        let el = primitive(node, children, assets);
         let id = format!("native-ui-{part}-{}", node.id);
         if node.tap {
             let response = ui.get(id.as_str());
@@ -105,9 +101,8 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
             el.id(id)
         }
     }
-    let size = (root.width?, root.height?);
     Some(
-        draw(ui, cx, part, epoch, &scene, &root, size, &assets)
+        draw(ui, cx, part, epoch, &scene, &root, &assets)
             .clip()
             .shrink(0)
             .named("Native UI subset scene"),
@@ -115,23 +110,8 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
 }
 
 // Both native editor rendering and the authored headless gate use this mapping.
-fn intrinsic(
-    node: &Node,
-    assets: &crate::native_assets::Assets,
-    offered: (f64, f64),
-) -> (f64, f64) {
-    if let Paint::Asset(reference) = &node.paint
-        && !reference.resizable
-        && let Some(Ok(asset)) = assets.entries.get(&reference.resource)
-    {
-        return asset.size();
-    }
-    offered
-}
 fn primitive(
     node: &Node,
-    w: f64,
-    h: f64,
     children: Vec<El>,
     assets: &crate::native_assets::Assets,
 ) -> El {
@@ -144,48 +124,62 @@ fn primitive(
             ))
             .w(node.width.map_or(Len::Auto, Len::Px))
             .h(node.height.map_or(Len::Auto, Len::Px)),
-        Paint::Rectangle(color) => {
-            block(w, h).fill(Color::srgba(color[0], color[1], color[2], color[3]))
-        }
+        Paint::Rectangle(color, radius) => block(0, 0)
+            .w(node.width.map_or(Len::Pct(100.), Len::Px))
+            .h(node.height.map_or(Len::Pct(100.), Len::Px))
+            .round(*radius)
+            .fill(Color::srgba(color[0], color[1], color[2], color[3])),
         Paint::Stack => stack(children)
             .w(node.width.map_or(Len::Auto, Len::Px))
             .h(node.height.map_or(Len::Auto, Len::Px))
             .pad(node.padding),
-        Paint::Asset(reference) => match assets.entries.get(&reference.resource) {
-            Some(Ok(asset)) => match asset.as_ref() {
+        Paint::Asset(reference) => {
+            let asset = assets.entries.get(&reference.resource).and_then(|a|a.as_ref().ok());
+            let size = asset.map_or((0.,0.),|a|a.size());
+            let width = node.width.map_or(if reference.resizable { Len::Pct(100.) } else { Len::Px(size.0) },Len::Px);
+            let height = node.height.map_or(if reference.resizable { Len::Pct(100.) } else { Len::Px(size.1) },Len::Px);
+            let el = block(0,0).w(width).h(height);
+            match asset {
+            Some(asset) => match asset.as_ref() {
                 crate::native_assets::Asset::Vector(vector) => {
-                    block(w, h).fill(Fill::Vector(vector.clone(), Fit::Fill))
+                    el.fill(Fill::Vector(vector.clone(), Fit::Fill))
                 }
                 crate::native_assets::Asset::Bitmap(image) => {
-                    block(w, h).fill(Fill::Image(image.clone(), Fit::Fill))
+                    el.fill(Fill::Image(image.clone(), Fit::Fill))
                 }
             },
-            _ => block(w, h), // Pending/failed assets never become fabricated artwork.
+            None => el, // Pending/failed assets never become fabricated artwork.
+            }
         },
     };
     if node.hidden { el.opacity(0.).disabled() } else { el }
 }
 #[cfg(test)]
 pub(crate) fn paint_snapshot(node: &Node, offered: (f64, f64)) -> El {
-    paint_snapshot_assets(node, offered, &crate::native_assets::Assets::default())
+    { let _ = offered; scene_tree(node, &crate::native_assets::Assets::default()) }
 }
-#[cfg(test)]
-pub(crate) fn paint_snapshot_assets(
-    node: &Node,
-    offered: (f64, f64),
-    assets: &crate::native_assets::Assets,
-) -> El {
-    let natural = intrinsic(node, assets, offered);
-    let (w, h) = (
-        node.width.unwrap_or(natural.0),
-        node.height.unwrap_or(natural.1),
-    );
+pub(crate) fn scene_tree(node: &Node, assets: &crate::native_assets::Assets) -> El {
     let children = node
         .children
         .iter()
-        .map(|child| {
-            paint_snapshot_assets(child, (w, h), assets).anchor(node.alignment.0, node.alignment.1)
+        .enumerate()
+        .map(|(index, child)| {
+            let el = scene_tree(child, assets).anchor(node.alignment.0, node.alignment.1);
+            if node.background && index==0 { el.underlay() } else { el }
         })
         .collect();
-    primitive(node, w, h, children, assets).id(format!("native-snapshot-{}", node.id))
+    primitive(node, children, assets).id(format!("native-snapshot-{}", node.id))
+}
+
+// Admission uses the same font/layout/asset adapter as editor rendering, not
+// guessed root dimensions through transparent component wrappers.
+pub(crate) fn validate_root(node: &Node, assets: &crate::native_assets::Assets) -> anyhow::Result<()> {
+    static FONT: std::sync::OnceLock<Font> = std::sync::OnceLock::new();
+    let font = FONT.get_or_init(|| Font::new(&include_bytes!("../../assets/NotoSans.ttf")[..]).expect("embedded native fallback font"));
+    let spec = moose::mui::mui::scene::SceneSpec::new(scene_tree(node, assets))
+        .offered(Size::new(4096.,4096.)).font(font.clone());
+    let scene = moose::mui::mui::scene::resolve(&spec).map_err(|error|anyhow::anyhow!("Native UI root layout: {error}"))?;
+    let size = scene.layout.size;
+    anyhow::ensure!(size.width.is_finite() && size.height.is_finite() && size.width>0. && size.height>0. && size.width<=4096. && size.height<=4096.,"Native UI measured root exceeds positive 4096px bounds: {}×{}",size.width,size.height);
+    Ok(())
 }

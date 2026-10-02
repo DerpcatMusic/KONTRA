@@ -4887,7 +4887,7 @@ pub(crate) mod tests {
         assert!(!first_assets.entries.contains_key("assets/pics/changed.svg"),"retained asset snapshots stay immutable");
         labels.clear();texts(&published,&mut labels);
         use moose::mui::mui::prelude::{Size,Font};
-        let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::paint_snapshot_assets(&published,(640.,400.),&assets))
+        let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&published,&assets))
             .offered(Size::new(640.,400.)).font(Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap());
         let rendered=moose::mui::mui::scene::resolve(&spec).unwrap();
         fn image_id(node:&Node) -> Option<usize> {
@@ -4895,6 +4895,14 @@ pub(crate) mod tests {
         }
         let frame=rendered.surface(&format!("native-snapshot-{}",image_id(&published).unwrap())).unwrap().frame;
         assert_eq!((frame.x,frame.y,frame.size.width,frame.size.height),(374.,228.,40.,20.),"padding and nested frames use real MUI geometry and retain intrinsic image size");
+        fn blue_background_id(node:&Node) -> Option<usize> {if matches!(node.paint,Paint::Rectangle([0.,0.,1.,1.],3.)) {Some(node.id)} else {node.children.iter().find_map(blue_background_id)}}
+        let background=rendered.surface(&format!("native-snapshot-{}",blue_background_id(&published).unwrap())).unwrap();
+        assert_eq!((background.frame.x,background.frame.y,background.frame.size.width,background.frame.size.height),(370.,220.,50.,30.),"background mirrors the measured padded foreground without inflating it");
+        let background_key=format!("native-snapshot-{}",blue_background_id(&published).unwrap());
+        let background_paint=rendered.paint.iter().position(|p|p.key.as_str()==background_key&&p.layer==moose::mui::mui::scene::Layer::Fill).unwrap();
+        let foreground_key=format!("native-snapshot-{}",image_id(&published).unwrap());
+        let foreground_paint=rendered.paint.iter().position(|p|p.key.as_str()==foreground_key&&matches!(p.paint,moose::mui::mui::scene::Paint::Vector {..})).unwrap();
+        assert!(background_paint<foreground_paint,"background paints beneath its foreground instead of becoming a portal overlay");
         fn hidden_id(node:&Node) -> Option<usize> { if node.hidden {Some(node.id)} else {node.children.iter().find_map(hidden_id)} }
         let hidden=rendered.surface(&format!("native-snapshot-{}",hidden_id(&published).unwrap())).unwrap();
         assert_eq!((hidden.frame.size.width,hidden.frame.size.height),(180.,24.),"hidden content retains its measured space");
@@ -4944,6 +4952,8 @@ pub(crate) mod tests {
         std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @{ @ui.Text{text='fragment'} }.frame(width=10,height=10)").unwrap();
         let mut fragment=Scene::prepare(&i.path,rt).unwrap().unwrap();
         assert_eq!(fragment.snapshot().unwrap().children.len(),1,"anonymous authored groups compose their children");
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.Text{text='bounds'}.frame(width=4096,height=400).padding(1)").unwrap();
+        assert!(format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err()).contains("measured root exceeds"),"padding around legal frames still respects the measured root budget");
         std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.Text{text='positional'}.frame(42)").unwrap();
         assert!(format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err()).contains("Unsupported positional native UI modifier: frame"),"positional arguments reach the host validation rather than being misparsed");
         std::fs::write(resources.join("main.nui"),"while true do pcall(function() pcall(function() while true do end end) end) end").unwrap();

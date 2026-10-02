@@ -16,7 +16,7 @@ use std::sync::{
 pub(crate) enum Paint {
     Stack,
     Text(String),
-    Rectangle([f32; 4]),
+    Rectangle([f32; 4], f64),
     Asset(crate::native_assets::AssetRef),
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -30,10 +30,15 @@ pub(crate) struct Node {
     pub alignment: (Align, Align),
     pub padding: Insets,
     pub hidden: bool,
+    pub background: bool,
     pub tap: bool,
     pub children: Vec<Node>,
 }
 impl Node {
+    fn text_bytes(&self) -> usize {
+        let own = match &self.paint { Paint::Text(text) => text.len(), _ => 0 };
+        self.children.iter().fold(own, |sum, child| sum.saturating_add(child.text_bytes()))
+    }
     pub(crate) fn asset_names(&self) -> BTreeSet<String> {
         fn collect(node: &Node, names: &mut BTreeSet<String>) {
             if let Paint::Asset(asset) = &node.paint {
@@ -401,10 +406,6 @@ impl Scene {
             resources,
         };
         let root = scene.snapshot().context("Native UI scene validation")?;
-        ensure!(
-            root.width.is_some_and(|v| v > 0.) && root.height.is_some_and(|v| v > 0.),
-            "Native UI root requires an explicit positive frame"
-        );
         let names = root.asset_names();
         ensure!(names.len() <= 256, "Native UI asset count exceeds 256");
         scene.assets = Arc::new(crate::native_assets::Assets::prepare_bounded(
@@ -412,6 +413,7 @@ impl Scene {
             names,
             128 << 20,
         ));
+        crate::ui::native_scene::validate_root(&root, &scene.assets)?;
         Ok(Some(scene))
     }
     pub(crate) fn reserve_assets(&mut self, names: BTreeSet<String>) -> Result<Vec<String>> {
@@ -519,7 +521,7 @@ impl Scene {
         let mut seen = BTreeSet::new();
         let root = self.root.clone();
         let mut retained = Vec::new();
-        self.node(
+        let node = self.node(
             root,
             self.lua.create_table()?,
             (14., [1.; 4], false),
@@ -527,7 +529,9 @@ impl Scene {
             0,
             &mut seen,
             &mut retained,
-        )
+        )?;
+        ensure!(node.text_bytes()<=1<<20,"Native UI text layout exceeds 1 MiB");
+        Ok(node)
     }
     fn node(
         &mut self,
@@ -559,6 +563,7 @@ impl Scene {
         let (node, context): (Table, Table) = expand.call((node, path.clone(), context))?;
         let props: Table = node.get("props")?;
         let modifiers: Table = node.get("modifiers")?;
+        let background = modifiers.get::<Option<Table>>("background")?.is_some();
         let (mut text_size, mut text_color, mut hidden) = style;
         if let Some(modifier) = modifiers.get::<Option<Table>>("hidden")? {
             let value = match modifier.get::<Value>("value")? {
@@ -608,12 +613,14 @@ impl Scene {
             }
             "Rectangle" => {
                 let color: Table = props.get("color")?;
+                let radius = props.get::<Option<f64>>("corner_radius")?.unwrap_or(0.);
+                ensure!(radius.is_finite() && (0. ..=4096.).contains(&radius),"Invalid native UI corner radius");
                 Paint::Rectangle([
                     color.get::<f32>("r")? / 255.,
                     color.get::<f32>("g")? / 255.,
                     color.get::<f32>("b")? / 255.,
                     color.get::<Option<f32>>("a")?.unwrap_or(1.),
-                ])
+                ], radius)
             }
             "Image" => {
                 let value = props.get::<Value>("file")?;
@@ -688,7 +695,7 @@ impl Scene {
                 .all(|v| v.is_finite() && (0. ..=4096.).contains(&v)),
             "Invalid native UI frame"
         );
-        if let Paint::Rectangle(color) = &paint {
+        if let Paint::Rectangle(color, _) = &paint {
             ensure!(
                 color
                     .iter()
@@ -723,6 +730,7 @@ impl Scene {
                 retained,
             )?);
         }
+        ensure!(!background || nodes.len()==2,"Invalid native UI background wrapper");
         Ok(Node {
             id,
             paint,
@@ -733,6 +741,7 @@ impl Scene {
             alignment,
             padding,
             hidden,
+            background,
             tap: has_tap,
             children: nodes,
         })
