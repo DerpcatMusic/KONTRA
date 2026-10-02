@@ -149,12 +149,14 @@ impl ControlState {
                 .iter()
                 .any(|(p, v)| p == par && matches!(v, Prop::Str(_)))
         });
-        self.spare_text.reserve(self.props.len() + 5);
+        self.spare_text.reserve(self.props.len() + 7);
         for par in [
             b::CONTROL_PAR_TEXT,
             b::CONTROL_PAR_LABEL,
             b::CONTROL_PAR_HELP,
             b::CONTROL_PAR_PICTURE,
+            b::CONTROL_PAR_SHORT_NAME,
+            b::CONTROL_PAR_AUTOMATION_NAME,
         ] {
             if self.get(par).is_none() {
                 self.set_str(par, "").unwrap();
