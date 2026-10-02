@@ -555,6 +555,9 @@ pub struct Env {
     pub work: VecDeque<Work>,
     /// Fresh note work waits for the retained cleanup releases to finish.
     cleaning: bool,
+    /// Full sound-off/Panic hides input keys through budget-paused cleanup.
+    /// A scoped exact choke keeps the surviving input chains visible.
+    hide_cleanup_keys: bool,
     timers: BinaryHeap<Reverse<Timer>>,
     timer_seq: u64,
     /// Sample time at the start of the current block, and the offset within it.
@@ -618,6 +621,7 @@ impl Env {
             },
             work: VecDeque::with_capacity(WORK_CAPACITY),
             cleaning: false,
+            hide_cleanup_keys: false,
             timers: BinaryHeap::with_capacity(TIMER_CAPACITY),
             timer_seq: 0,
             now: 0,
@@ -1667,7 +1671,7 @@ impl Runtime {
     pub(crate) fn note_on_host(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: u8, host_note: Option<crate::engine::HostRef>) {
         self.advance(engine, at);
         let note = note.min(127);
-        if !self.env.cleaning { self.set_sys(SysArray::KeyDown, note as usize, 1); }
+        if !self.env.hide_cleanup_keys { self.set_sys(SysArray::KeyDown, note as usize, 1); }
         let Some(id) = self.env.events.alloc() else {
             self.env.note("KSP event pool exhausted; note dropped");
             return;
@@ -1687,7 +1691,7 @@ impl Runtime {
             self.env.events.get_mut(keys.1).expect("held MIDI event").next_input = id;
         }
         keys.1 = id;
-        if !self.env.cleaning { self.key_down_oct(note); }
+        if !self.env.hide_cleanup_keys { self.key_down_oct(note); }
         self.env.queue(Work::Note { event: id, slot: 0 });
         self.settle(engine);
     }
@@ -1710,7 +1714,7 @@ impl Runtime {
             }
             previous = id; id = next;
         }
-        if !self.env.cleaning {
+        if !self.env.hide_cleanup_keys {
             let held = self.env.input.keys.iter().any(|row| row[note as usize].0 != 0);
             self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
             self.key_down_oct(note);
@@ -1764,7 +1768,7 @@ impl Runtime {
         }
         self.env.input.keys[row][note as usize]=(first,last);
         let held = self.env.input.keys.iter().any(|channel| channel[note as usize].0 != 0);
-        if !self.env.cleaning {
+        if !self.env.hide_cleanup_keys {
             self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
             self.key_down_oct(note);
         }
@@ -1935,14 +1939,15 @@ impl Runtime {
             TimerKind::Listener { .. } => true,
         });
         self.env.stop_waits.retain(|(id, _)| threads.iter().any(|t| t.live && t.ctx.callback_id == *id));
+        if host_note.is_none() && self.env.cleaning { self.env.hide_cleanup_keys = true; }
         for note in 0..128 {
-            // A scoped exact cleanup must expose other roots to its release
-            // callback. Full Panic/reset still suppresses all held keys.
-            let held = (!self.env.cleaning || host_note.is_some()) && self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
+            let held = !self.env.hide_cleanup_keys && self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
             self.set_sys(SysArray::KeyDown, note, i32::from(held));
         }
         for note in 0..12 { self.key_down_oct(note); }
-        if !cleanup && !self.env.events.slots.iter().any(|e| e.live && e.cleanup) { self.env.cleaning = false; }
+        if !cleanup && !self.env.events.slots.iter().any(|e| e.live && e.cleanup) {
+            self.env.cleaning = false; self.env.hide_cleanup_keys = false;
+        }
         self.changes += 1;
         affected
     }
@@ -2372,6 +2377,7 @@ impl Runtime {
             }
             if self.env.cleaning && !self.env.events.slots.iter().any(|e| e.live && e.cleanup) {
                 self.env.cleaning = false;
+                self.env.hide_cleanup_keys = false;
                 for note in 0..128 {
                     let held = self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
                     self.set_sys(SysArray::KeyDown, note, i32::from(held));
@@ -2512,6 +2518,9 @@ impl Runtime {
                     return;
                 };
                 if e.live && e.silenced && e.source < 0 && !e.held {
+                    // A later key-up after ordinary CC120 enters full cleanup.
+                    // Exact choke already marked its event scoped at cancel.
+                    if !e.cleanup { self.env.hide_cleanup_keys = true; }
                     e.cleanup = true;
                     self.env.cleaning = true;
                 }

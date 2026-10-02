@@ -6947,7 +6947,7 @@ end on"#;
             let unmatched=ExactNoteAddress::from_raw_signed(7,4,60,12+i32::from(holding));
             let mut absent=EventList::with_capacity(2);
             absent.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:unmatched,velocity:0.8 })).unwrap();
-            assert_eq!(allocations(|| Sampler::process(&mut dsp,&params,&mut buffer,&absent,&mut cx)),0);
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp,&params,&mut buffer,&absent,&mut cx); }),0);
             assert!(cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address,.. } if *address==unmatched))),"a no-sound route retained the host identity");
         }
         let mut art=crate::articulate::Articulate::default();
@@ -6956,7 +6956,7 @@ end on"#;
         let switch=ExactNoteAddress::from_raw_signed(0,4,60,14);
         let mut switched=EventList::with_capacity(2);
         switched.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:switch,velocity:0.8 })).unwrap();
-        assert_eq!(allocations(|| Sampler::process(&mut dsp,&params,&mut buffer,&switched,&mut cx)),0);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp,&params,&mut buffer,&switched,&mut cx); }),0);
         assert!(cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address,.. } if *address==switch))),"aligned keyswitch retained the host identity");
     }
 
