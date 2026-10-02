@@ -1150,6 +1150,29 @@ fn damaged_zones_are_skipped_not_fatal() {
 }
 
 #[test]
+fn rejected_loops_report_bounds_and_do_not_substitute_a_sample() {
+    let path = PathBuf::from("authored-loop.wav");
+    let zone = Zone { sample: path.clone(), low_key: 60, high_key: 60, ..Zone::default() };
+    let invalid = Zone {
+        low_key: 61, high_key: 61, end: -1,
+        loop_range: Some(Loop { start: 4, end: 32, alternating: false, until_release: false, crossfade: 0 }),
+        ..zone.clone()
+    };
+    let bank = Bank::from_samples(vec![Group::default()], vec![zone, invalid],
+        vec![(path, constant([0.25; 2], 32))]).unwrap();
+    assert_eq!((bank.zones().len(), bank.skipped_zones), (1, 1));
+    let issue = bank.issues.iter().find(|s| s.starts_with("invalid loop:")).unwrap();
+    for detail in ["zone ID 2", "group 0", "keys 61..=61", "sample frames 32", "zone start 0", "end offset -1", "loop Some((4, 32))"] {
+        assert!(issue.contains(detail), "missing {detail}: {issue}");
+    }
+    let mut e = engine_with(bank);
+    e.note_on(0, 61, 100);
+    assert!(render(&mut e, 64).iter().all(|f| *f == [0.; 2]), "a rejected zone must stay silent");
+    e.note_on(0, 60, 100);
+    assert!(render(&mut e, 64).iter().any(|f| *f != [0.; 2]), "unaffected zones must still play");
+}
+
+#[test]
 fn wav_decode_and_case_insensitive_resolution() {
     let dir = std::env::temp_dir().join(format!("kontakto-check-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("Samples")).unwrap();
