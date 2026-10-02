@@ -323,8 +323,7 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
     let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| e.to_string())?;
     if filtered {
         let size = tree.size();
-        let retained = std::mem::size_of::<usvg::Tree>()
-            .saturating_add(normalized_tree_bytes(tree.root(), bytes.len()))
+        let retained = normalized_storage(&tree, bytes.len())
             .saturating_add(bytes.len())
             .saturating_add(FILTER_CACHE_LIMIT);
         if retained > PIXEL_LIMIT {
@@ -355,6 +354,27 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
     let size = tree.size();
     Vector::new(size.width() as f64, size.height() as f64, sink.0)
         .ok_or_else(|| "Invalid native SVG geometry or layer stack".into())
+}
+fn normalized_storage(tree: &usvg::Tree, source_bytes: usize) -> usize {
+    let mut bytes = std::mem::size_of::<usvg::Tree>()
+        .saturating_add(normalized_tree_bytes(tree.root(), source_bytes));
+    // subroots visits only the first nested clip. The normalized tree's full
+    // referenced-clip index covers arbitrary clip chains; duplicate charges
+    // are conservative and do not require an allocation/identity tracker.
+    bytes = bytes.saturating_add(
+        tree.clip_paths()
+            .len()
+            .saturating_mul(2)
+            .max(4)
+            .saturating_mul(std::mem::size_of::<Arc<usvg::ClipPath>>()),
+    );
+    for clip in tree.clip_paths() {
+        bytes = bytes
+            .saturating_add(std::mem::size_of::<usvg::ClipPath>())
+            .saturating_add(clip.id().len().saturating_mul(2))
+            .saturating_add(normalized_tree_bytes(clip.root(), source_bytes));
+    }
+    bytes
 }
 /// Count normalized nodes, not source length: <use> may expand a compact
 /// document into many retained boxes. Repeated shared paint/path buffers are
