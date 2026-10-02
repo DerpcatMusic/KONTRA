@@ -15,6 +15,7 @@ mod idiom;
 mod inventory;
 mod lexer;
 mod parser;
+mod performance_view;
 mod runtime;
 mod ui;
 mod vm;

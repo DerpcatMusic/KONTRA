@@ -2,8 +2,8 @@
 //! memory slots, builtins to enum values, constants fold; the VM never sees a name.
 
 use super::builtins::{self, Arg, Builtin, Ret, SysArray, SysVar};
-use super::lexer::{Interner, Sym, lex};
-use super::parser::{BinOp, Block, Declare, Expr, Stmt, StmtKind, UnOp, parse, preprocess};
+use super::lexer::{Interner, Sym};
+use super::parser::{BinOp, Block, Declare, Expr, Stmt, StmtKind, UnOp, parse};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -547,8 +547,11 @@ pub fn compile_with_conditions(
     setup: &Setup,
     inherited: &BTreeSet<String>,
 ) -> Result<Program> {
-    let mut tokens = lex(source)?;
-    let conditions = preprocess(&mut tokens, inherited)?;
+    compile_prepared(super::performance_view::prepare(source, inherited, None)?, setup)
+}
+
+pub(super) fn compile_prepared(prepared: super::performance_view::Prepared, setup: &Setup) -> Result<Program> {
+    let super::performance_view::Prepared { tokens, conditions, .. } = prepared;
     let blocks = parse(&tokens)?;
     let mut c = Compiler {
         syms: &tokens.syms,
@@ -1548,10 +1551,11 @@ impl<'a> Compiler<'a> {
     /// the call does nothing (its arguments are not evaluated) and yields an
     /// empty value of the type its name suggests.
     fn unsupported(&mut self, fname: &str, want_value: bool) -> Option<Ty> {
-        self.p.diagnostics.insert(format!(
-            "{UNSUPPORTED_FUNCTION}{fname} (line {}): does nothing, returns 0",
-            self.line
-        ));
+        self.p.diagnostics.insert(if matches!(fname, "load_native_ui" | "load_komplete_ui") {
+            format!("{UNSUPPORTED_FUNCTION}{fname} (line {}): scripted native UI execution is unavailable; exported performance-view controls can be loaded separately", self.line)
+        } else {
+            format!("{UNSUPPORTED_FUNCTION}{fname} (line {}): does nothing, returns 0", self.line)
+        });
         if !want_value {
             return None;
         }
