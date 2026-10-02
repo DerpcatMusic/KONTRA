@@ -303,6 +303,7 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
         found.problems.retain(|k, _| k.starts_with("script"));
         return None;
     };
+    for warning in perf_view::font_fallbacks(&u) { trace.issue("ui", "font_fallback", &warning); }
     found.size = (u.width.max(0) as u32, u.height.max(0) as u32);
     let names = u.controls.iter().map(|c| prop(c, "$CONTROL_PAR_PICTURE")).filter(|n| !n.is_empty());
     trace.stage("artwork");
@@ -405,32 +406,50 @@ mod tests {
     fn real_instrument_frame_benchmark() {
         use moose::mui::mui::vello::{self, vello_cpu::{Pixmap, RenderContext, Resources}};
         let patch = std::env::var_os("KONTRA_UI_BENCH_PATCH").expect("KONTRA_UI_BENCH_PATCH");
+        let option = |key: &str, default: u32| std::env::var(key).ok().map(|v| v.parse().expect(key)).unwrap_or(default);
+        let program = option("KONTRA_UI_BENCH_PROGRAM", 0);
+        let mode = option("KONTRA_UI_BENCH_MODE", 1);
+        assert!((1..=3).contains(&mode), "mode must be Original=1, KONTRA=2, Vectorized=3");
+        let device_scale = option("KONTRA_UI_BENCH_DEVICE_SCALE", 1);
+        assert!((1..=2).contains(&device_scale), "device scale must be 1 or 2");
         let started = Instant::now();
-        let instrument = Arc::new(import::read_program(Path::new(&patch), 0).unwrap());
+        let instrument = Arc::new(import::read_program(Path::new(&patch), program).unwrap());
         let import_ms = started.elapsed().as_secs_f64() * 1000.;
         let started = Instant::now();
-        let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&patch), 0, Some(0));
-        let part = audit_one(&instrument, &mut Found::default(), &mut trace).expect("performance view");
+        let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&patch), program, Some(0));
+        let Some(mut part) = audit_one(&instrument, &mut Found::default(), &mut trace) else {
+            println!("UI_BENCH status=skipped reason=no_performance_view program={program}");
+            return;
+        };
+        part.program = program;
+        println!("UI_BENCH program={program} mode={mode} device_scale={device_scale}");
         println!("UI_BENCH import_ms={import_ms:.3} setup_ms={:.3} controls={} pictures={}",
             started.elapsed().as_secs_f64() * 1000., part.interface.as_ref().unwrap().controls.len(), part.pictures.len());
         let shown = perf_view::layout(part.interface.as_ref().unwrap(), &part.pictures);
-        let changed = shown.iter()
+        let pictured = shown.iter()
             .filter(|c| matches!(c.kind, Kind::Knob | Kind::Slider) && c.picture.as_ref().is_some_and(|p| p.frames.len() > 1))
-            .max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h))).expect("visible animated knob or slider");
+            .max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)));
+        let Some(changed) = pictured.or_else(|| shown.iter().find(|c| matches!(c.kind, Kind::Knob | Kind::Slider) && c.picture.is_none())) else {
+            println!("UI_BENCH status=skipped reason=no_animated_knob_or_slider program={program}");
+            return;
+        };
         let changed_control = changed.control;
         println!("UI_BENCH control={changed_control} kind={:?} size={}x{} sprite_frames={}",
-            changed.kind, changed.w, changed.h, changed.picture.as_ref().unwrap().frames.len());
+            changed.kind, changed.w, changed.h, changed.picture.as_ref().map_or(0, |p| p.frames.len()));
         let params = Arc::new(SamplerParams::new());
         params.selection.write().unwrap().parts.push(Part {
             path: instrument.path.to_string_lossy().into(),
-            view: 1,
+            program,
+            view: mode as u8,
             ..Default::default()
         });
-        params.shared.view.lock().unwrap().parts[0] = part;
+        params.shared.view.lock().unwrap().parts[0] = part.clone();
         let mut ui = theme::ui();
-        let mut build = build(&params, Arc::default(), Arc::default(), Arc::default(), Arc::default());
+        ui.set_scale(Some(f64::from(device_scale)));
+        let mut draw = build(&params, Arc::default(), Arc::default(), Arc::default(), Arc::default());
         let mut bridge = Bridge::new(params.clone());
-        let (width, height) = (1180u16, 900u16);
+        let (width, height) = ((1180 * device_scale) as u16, (900 * device_scale) as u16);
+        let transform = vello::kurbo::Affine::scale(f64::from(device_scale));
         let mut ctx = RenderContext::new(width, height);
         let mut resources = Resources::default();
         let mut cache = vello::Cache::default();
@@ -478,6 +497,7 @@ mod tests {
             let mut snapshot_ms = Vec::new();
             let mut changed_renders = 0;
             for frame in 0..frame_count + 8 {
+                fitted::ready();
                 if changing {
                     let drawing_interface = params.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
                     let control = &drawing_interface.controls[changed_control];
@@ -495,15 +515,15 @@ mod tests {
                 if frame >= 8 { snapshot_ms.push(start.elapsed().as_secs_f64() * 1000.); }
                 drop(snapshot);
                 let start = Instant::now();
-                let tree = build(&mut ui, &mut bridge);
+                let tree = draw(&mut ui, &mut bridge);
                 let built = Instant::now();
-                ui.frame(tree, Some(Size::new(f64::from(width), f64::from(height))), Input::default(), 1. / 60.).unwrap();
+                ui.frame(tree, Some(Size::new(1180., 900.)), Input::default(), 1. / 60.).unwrap();
                 let laid_out = Instant::now();
                 let scene = ui.scene().unwrap();
                 let scene_copy = scene.clone();
                 let cloned = Instant::now();
                 let painted = if let Some((device, renderer, target)) = &mut gpu {
-                    let stats = renderer.render(&scene_copy, vello::kurbo::Affine::IDENTITY, target).unwrap();
+                    let stats = renderer.render(&scene_copy, transform, target).unwrap();
                     gpu_pixels += stats.rendered_pixels;
                     if changing && frame >= 8 && stats.renders > 0 { changed_renders += 1; }
                     let painted = Instant::now();
@@ -511,7 +531,7 @@ mod tests {
                     painted
                 } else {
                     ctx.reset();
-                    vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut cache }, &scene_copy, vello::kurbo::Affine::IDENTITY).unwrap();
+                    vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut cache }, &scene_copy, transform).unwrap();
                     ctx.flush();
                     let painted = Instant::now();
                     ctx.render(&mut pixmap, &mut resources);
@@ -535,6 +555,69 @@ mod tests {
                 println!("UI_BENCH changing={changing} stage={stage} n={} mean_ms={:.3} median_ms={:.3} p99_ms={:.3}",
                     samples.len(), samples.iter().sum::<f64>() / samples.len() as f64, samples[samples.len()/2], samples[((samples.len()-1) as f64 * 0.99).ceil() as usize]);
             }
+        }
+        if std::env::var_os("KONTRA_UI_BENCH_CALLBACKS").is_some() {
+            let (runtime, errors) = crate::engine::load_scripts(&instrument, instrument.script_state.clone(), 48000.);
+            assert!(errors.is_empty(), "authored callback initialization failed");
+            let runtime = runtime.expect("performance instrument runtime");
+            let interface = runtime.live().interface.expect("performance interface");
+            let control = std::env::var("KONTRA_UI_BENCH_CONTROL_VARIABLE").ok().map_or(changed_control, |name| {
+                interface.controls.iter().position(|c| c.variable == name).expect("requested callback control exists")
+            });
+            let bound = |name, default| match interface.controls[control].properties.get(name) {
+                Some(crate::ksp::Value::Int(n)) => *n, _ => default,
+            };
+            let (low, high) = (bound("$CONTROL_PAR_MIN_VALUE", 0), bound("$CONTROL_PAR_MAX_VALUE", 127));
+            let mut engine = crate::engine::Engine::default();
+            engine.set_bank(Some(Box::new(crate::engine::Bank::load_bare(&instrument).unwrap())));
+            engine.set_fx(crate::engine::effects(&instrument, Some(&runtime), 48000.));
+            engine.set_script(Some(runtime));
+            let mut observer_draw = None;
+            let mut rendered = Vec::new();
+            let mut rendered_changes = 0;
+            let mut observer = |published: &Arc<SamplerParams>| -> anyhow::Result<()> {
+                if observer_draw.is_none() {
+                    published.selection.write().unwrap().parts[0].view = mode as u8;
+                    let mut view = published.shared.view.lock().unwrap();
+                    view.parts[0].pictures = part.pictures.clone();
+                    view.parts[0].wallpaper = part.wallpaper.clone();
+                    drop(view);
+                    observer_draw = Some((Bridge::new(published.clone()), build(published, Arc::default(), Arc::default(), Arc::default(), Arc::default())));
+                }
+                fitted::ready();
+                let start = Instant::now();
+                let (bridge, draw) = observer_draw.as_mut().unwrap();
+                let tree = draw(&mut ui, bridge);
+                ui.frame(tree, Some(Size::new(1180.,900.)), Input::default(),1./60.).unwrap();
+                let scene = ui.scene().unwrap();
+                if let Some((device, renderer, target)) = &mut gpu {
+                    let stats = renderer.render(scene, transform, target).unwrap();
+                    rendered_changes += usize::from(stats.renders > 0);
+                    device.poll(vello::vello::wgpu::PollType::wait_indefinitely()).unwrap();
+                } else {
+                    ctx.reset();
+                    vello::paint(&mut vello::Cpu {ctx: &mut ctx, resources: &mut resources, cache: &mut cache}, scene, transform).unwrap();
+                    ctx.flush();
+                    ctx.render(&mut pixmap, &mut resources);
+                }
+                rendered.push(start.elapsed().as_secs_f64()*1000.);
+                Ok(())
+            };
+            let edits = option("KONTRA_UI_BENCH_EDITS", 24).clamp(4,120) as usize;
+            let frames = option("KONTRA_UI_BENCH_HOST_FRAMES",128) as usize;
+            let (report, _) = crate::plugin::bench_ui_worker(engine, instrument.clone(), program, control, low, high, frames, edits, Some(&mut observer)).unwrap();
+            assert!(!rendered.is_empty(), "native publication must reach the observer");
+            rendered.sort_by(f64::total_cmp);
+            println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
+                "callback_published_render_ms":{"mean":rendered.iter().sum::<f64>()/rendered.len() as f64,"p99":rendered[((rendered.len()-1) as f64*0.99).ceil() as usize]}}));
+        }
+        if let Some(to) = std::env::var_os("KONTRA_UI_BENCH_SHOT") {
+            ctx.reset();
+            vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut cache }, ui.scene().unwrap(), transform).unwrap();
+            ctx.flush();
+            ctx.render(&mut pixmap, &mut resources);
+            let rgba: Vec<u8> = pixmap.take_unpremultiplied().iter().flat_map(|p| [p.r,p.g,p.b,p.a]).collect();
+            moose::core::screenshot::save_png(Path::new(&to), &rgba, u32::from(width), u32::from(height));
         }
         if gpu.is_some() {
             assert!(gpu_pixels > 0, "real GPU UI renders pixels");
