@@ -3786,6 +3786,13 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
     let mut tasks = moose::core::tasks::TaskSpawnerBundle::new();
     tasks.push(worker.clone());
     let tasks = tasks.into_any().unwrap();
+    #[cfg(test)]
+    if std::env::var_os("KONTRA_UI_BENCH_CONCURRENT_AUDIO").is_some() {
+        let result = bench_ui_concurrent_audio(dsp, &params, &tasks, control, low, high, frames, edits, observer.take(), &load_times);
+        drop(tasks);
+        drop(worker);
+        return result;
+    }
     let transport = TransportInfo::default();
     let mut data = vec![vec![0.0f32; frames]; 2 * BUSES];
     let mut outgoing = EventList::with_capacity(0);
@@ -3869,6 +3876,134 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
         "load_runs":load_times.len(),"load_wall_ms":summary(load_times),"audio_process_ms":summary(process_times),
         "editor_frames":observer_gaps.len(),"editor_frame_gap_ms":summary(observer_gaps),"editor_requested_hz":if observer.is_some() {60} else {0},
         "latest_edits_published":publication_latencies.len(),"latest_edit_to_publication_observer_ms":summary(publication_latencies)}), std::mem::take(&mut dsp.rack.parts[0])))
+}
+
+/// Opt-in actual host pacing: audio and the editor run independently, while
+/// retaining the same serialized Load lane and immutable publication path.
+#[cfg(test)]
+fn bench_ui_concurrent_audio(mut dsp: Dsp, params: &Arc<SamplerParams>, tasks: &moose::core::tasks::AnyTaskSpawner,
+    control: usize, low: i32, high: i32, frames: usize, edits: usize,
+    mut observer: Option<&mut dyn FnMut(&Arc<SamplerParams>) -> anyhow::Result<()>>, load_times: &Arc<Mutex<Vec<f64>>>)
+    -> anyhow::Result<(serde_json::Value, Engine)> {
+    use moose::core::bus_routing::{BusActivation, BusRouting};
+    use std::time::Duration;
+    let chord = std::env::var("KONTRA_UI_BENCH_CHORD").ok().map(|notes| notes.split(',')
+        .map(|note| note.trim().parse::<u8>()).collect::<Result<Vec<_>, _>>()).transpose()?.unwrap_or_default();
+    anyhow::ensure!(chord.iter().all(|note| *note < 128), "benchmark chord notes must be 0..127");
+    let summary = |mut samples: Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        if samples.is_empty() { return serde_json::json!({}); }
+        serde_json::json!({"n":samples.len(),"mean":samples.iter().sum::<f64>()/samples.len() as f64,
+            "p50":samples[samples.len()/2],"p99":samples[((samples.len()-1) as f64*0.99).ceil() as usize],"max":samples[samples.len()-1]})
+    };
+    let stop = AtomicBool::new(false);
+    // Drop precedes Scope's join on both observer errors and panics.
+    struct Stop<'a>(&'a AtomicBool);
+    impl Drop for Stop<'_> { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
+    let start = Instant::now();
+    let warmup = Duration::from_millis(250);
+    let duration = warmup + Duration::from_secs_f64(edits as f64/60. + 1.);
+    std::thread::scope(|scope| {
+        let audio = scope.spawn(|| {
+            let mut data = vec![vec![0.f32; frames]; 2*BUSES];
+            let mut outgoing = EventList::with_capacity(0);
+            let mut incoming = EventList::with_capacity(chord.len());
+            let transport = TransportInfo::default();
+            let mut process_times = Vec::new();
+            let (mut block, mut peak_voices, mut late_starts, mut missed) = (0, 0, 0, 0);
+            let mut peak = 0.f32;
+            let (mut edit_peak_voices, mut audible_blocks, mut nonfinite_samples) = (0, 0, 0);
+            let (mut gaps, mut last_completion, mut seen) = (Vec::new(), start, dsp.live_seen[0]);
+            while !stop.load(Ordering::Acquire) {
+                let scheduled = start + Duration::from_secs_f64(block as f64*frames as f64/48000.);
+                if let Some(left) = scheduled.checked_duration_since(Instant::now()) { std::thread::sleep(left); }
+                if stop.load(Ordering::Acquire) { break; }
+                if Instant::now().saturating_duration_since(scheduled).as_secs_f64()*1000. > frames as f64/48. { late_starts += 1; }
+                incoming.clear();
+                if block == 0 {
+                    for &note in &chord { incoming.push(Event::new(0, EventBody::NoteOn {group:0,channel:0,note,velocity:100})); }
+                }
+                let mut channels: Vec<_> = data.iter_mut().map(|channel| channel.as_mut_slice()).collect();
+                let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, frames);
+                let mut routing = BusRouting::new();
+                for _ in 0..BUSES { routing.push_output(2, BusActivation::Active); }
+                let mut context = ProcessContext::new(&transport, 48000., frames, &mut outgoing).with_bus_routing(routing).with_tasks(tasks);
+                let at = Instant::now();
+                Sampler::process(&mut dsp, params, &mut buffer, &incoming, &mut context);
+                let elapsed = at.elapsed().as_secs_f64()*1000.;
+                missed += usize::from(elapsed > frames as f64/48.);
+                process_times.push(elapsed);
+                peak_voices = peak_voices.max(dsp.rack.parts[0].active_voices());
+                if start.elapsed() >= warmup && start.elapsed() < warmup + Duration::from_secs_f64(edits as f64/60.) {
+                    edit_peak_voices = edit_peak_voices.max(dsp.rack.parts[0].active_voices());
+                }
+                let mut audible = false;
+                for sample in data.iter().flatten() {
+                    nonfinite_samples += usize::from(!sample.is_finite());
+                    peak = peak.max(sample.abs());
+                    audible |= sample.abs()>1e-8;
+                }
+                audible_blocks += usize::from(audible);
+                if dsp.live_seen[0] != seen {
+                    seen = dsp.live_seen[0];
+                    gaps.push(last_completion.elapsed().as_secs_f64()*1000.);
+                    last_completion = Instant::now();
+                }
+                block += 1;
+            }
+            let report = serde_json::json!({"blocks":block,"deadline_ms":frames as f64/48.,"process_deadline_misses":missed,
+                "late_starts_over_one_block":late_starts,"peak_voices":peak_voices,"peak_voices_during_edits":edit_peak_voices,
+                "audible_blocks":audible_blocks,"nonfinite_samples":nonfinite_samples,"output_peak":peak,
+                "underruns":dsp.rack.parts[0].underruns(),"dropped_commands":dsp.rack.parts[0].dropped_commands()});
+            (dsp, process_times, gaps, report)
+        });
+        let _stop_on_exit = Stop(&stop);
+        let (mut edit, mut next_edit, mut next_observe) = (0, warmup, Duration::ZERO);
+        let (mut waits, mut edit_times, mut acknowledgements, mut observer_times) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut pending = None;
+        while start.elapsed() < duration {
+            params.shared.watched.store(true, Ordering::Relaxed);
+            if edit < edits && start.elapsed() >= next_edit {
+                let at = Instant::now();
+                let retained = params.shared.view.lock().unwrap().parts[0].interface.clone();
+                waits.push(at.elapsed().as_secs_f64()*1000.);
+                let value = (i64::from(low)+(i64::from(high)-i64::from(low))*(edit%101) as i64/100) as i32;
+                let at = Instant::now();
+                params.shared.edit_control(0, control, value);
+                edit_times.push(at.elapsed().as_secs_f64()*1000.);
+                pending = Some(at);
+                drop(retained);
+                edit += 1;
+                next_edit = warmup + Duration::from_secs_f64(edit as f64/60.);
+            }
+            if start.elapsed() >= next_observe {
+                let at = Instant::now();
+                if let Some(observer) = observer.as_mut() { observer(params)?; } else { params.shared.publish_live(true); }
+                observer_times.push(at.elapsed().as_secs_f64()*1000.);
+                if pending.is_some() && !params.shared.view.lock().unwrap().parts[0].edited.iter().any(|edit| edit.0 == control) {
+                    acknowledgements.push(pending.take().unwrap().elapsed().as_secs_f64()*1000.);
+                }
+                next_observe = Duration::from_secs_f64(((start.elapsed().as_secs_f64()*60.).floor()+1.)/60.);
+            }
+            let due = if edit < edits { next_observe.min(next_edit) } else { next_observe };
+            if let Some(left) = due.checked_sub(start.elapsed()) { std::thread::sleep(left.min(Duration::from_millis(2))); }
+        }
+        stop.store(true, Ordering::Release);
+        let (mut dsp, process_times, completion_gaps, audio_report) = audio.join().map_err(|_| anyhow::anyhow!("benchmark audio thread panicked"))?;
+        let load_times = load_times.lock().unwrap().clone();
+        let mut report = serde_json::json!({"concurrent_audio":true,"held_chord":chord,"host_frames":frames,"edits_delivered":edit,
+            "audio_process_ms":summary(process_times),"audio":audio_report,"load_runs":load_times.len(),"load_wall_ms":summary(load_times),
+            "live_completion_gap_ms":summary(completion_gaps),"view_mutex_acquire_ms":summary(waits),"shared_edit_ms":summary(edit_times),
+            "editor_frames":observer_times.len(),"observer_wall_ms":summary(observer_times),"editor_requested_hz":60,
+            "latest_edits_published":acknowledgements.len(),"latest_edit_to_publication_observer_ms":summary(acknowledgements)});
+        report["warmup_ms"] = serde_json::json!(warmup.as_secs_f64()*1000.);
+        if !chord.is_empty() {
+            anyhow::ensure!(audio_report["peak_voices_during_edits"].as_u64().unwrap_or(0)>0 && audio_report["output_peak"].as_f64().unwrap_or(0.)>0.,
+                "held-chord benchmark must play actual nonzero sample output: {audio_report}");
+        }
+        dsp.rack.parts[0].panic();
+        Ok((report, std::mem::take(&mut dsp.rack.parts[0])))
+    })
 }
 
 /// Profile real script control edits separately from view copying and saved-state
