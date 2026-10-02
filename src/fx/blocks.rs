@@ -273,8 +273,14 @@ impl Drive {
         self.kind = k;
         let x = |i: usize| f[i].clamp(0.0, 1.0);
         self.c = match k {
-            // Shape -1..=1: positive bends toward tanh, negative expands.
-            DriveKind::Saturator => [f[0].clamp(-1.0, 1.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            // Classic: native Shape/2 feeds the piecewise quadratic/cubic
+            // kernel. Enhanced and Drums retain the existing proxy below.
+            DriveKind::Saturator => {
+                let s = f[0].clamp(-1.0, 1.0);
+                let a = 4.0 * s;
+                let q = 0.975 * (4.0 + a) + 0.1;
+                [s, f[1], a, q, 1.0 / (1.0 + q), 0.0, 0.0, 0.0]
+            }
             // Gain 0..=48 dB into tanh (transistor: hard clip), half of it
             // made up after; damping is a low-pass 20 kHz..=200 Hz.
             DriveKind::Distortion => [
@@ -331,12 +337,21 @@ impl Drive {
     pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         match self.kind {
             DriveKind::Saturator => {
-                let s = self.c[0];
-                if s == 0.0 {
+                let [s, mode, a, q, inverse, ..] = self.c;
+                if s == 0.0 || (mode == 0.0 && s.abs() <= 0.0001) {
                     return;
                 }
                 let e = s.abs();
                 let curve = |x: f32| {
+                    if mode == 0.0 {
+                        return if s < 0.0 {
+                            (x * x + q) * x * inverse
+                        } else {
+                            let u = (if a >= 1.0 { a * x } else { x }).abs().min(1.0);
+                            let bent = (2.0 * u - u * u).copysign(x);
+                            if a >= 1.0 { bent } else { (1.0 - a) * x + a * bent }
+                        };
+                    }
                     let bent = if s > 0.0 { 0.5 * soft(2.0 * x) } else { x * x.abs().min(1.0) };
                     x + e * (bent - x)
                 };
@@ -1059,16 +1074,65 @@ mod tests {
     }
 
     #[test]
-    fn drives_keep_quiet_signals_near_unity_and_bend_loud_ones() {
-        // Saturation: unity small-signal gain, compressed peaks.
+    fn classic_saturation_matches_native_piecewise_transfer_and_output_without_heap() {
+        // Independent scalar values at branch boundaries, with signals above
+        // unity as well as quiet inputs. This is the Classic mode, not tanh.
+        let input = [-4.0, -1.0, -0.5, -0.25, -0.01, 0.0, 0.01, 0.25, 0.5, 1.0, 4.0];
+        let reference = |shape: f64, x: f64| {
+            if shape.abs() <= 0.0001 { return x; }
+            if shape < 0.0 {
+                let q = 4.0 + 3.9 * shape;
+                return x * (x * x + q) / (1.0 + q);
+            }
+            let amount = 4.0 * shape;
+            let magnitude = (x * if amount >= 1.0 { amount } else { 1.0 }).abs().min(1.0);
+            let quadratic = (2.0 * magnitude - magnitude * magnitude).copysign(x);
+            if amount >= 1.0 { quadratic } else { (1.0 - amount) * x + amount * quadratic }
+        };
+        let mut values = [0.0; FIELDS];
         let mut d = Drive::default();
-        assert!(d.tune(Kind::SurroundPanner, &[0.5; FIELDS], RATE));
-        let (mut l, mut r) = sine(200.0, 0.01, 4800);
-        d.process(&mut l, &mut r);
-        assert!((rms(&l) / (0.01 / 2f32.sqrt()) - 1.0).abs() < 0.01);
-        let (mut l, mut r) = sine(200.0, 1.0, 4800);
-        d.process(&mut l, &mut r);
-        assert!(l.iter().fold(0f32, |m, x| m.max(x.abs())) < 0.85);
+        for shape in [-1.0, -0.5, -0.0001, 0.0, 0.0001, 0.125, 0.2499, 0.25, 0.2501, 0.5, 1.0] {
+            values[0] = shape;
+            let (mut l, mut r) = (input, input.map(|x| -x));
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                assert!(d.tune(Kind::SurroundPanner, &values, RATE));
+                d.process(&mut l, &mut r);
+            }), 0);
+            for (x, (l, r)) in input.iter().zip(l.iter().zip(&r)) {
+                let expected = reference(f64::from(shape), f64::from(*x));
+                assert!((f64::from(*l) - expected).abs() < 2e-5, "shape{shape}, input{x}");
+                assert!((f64::from(*r) + expected).abs() < 2e-5);
+            }
+        }
+        // The common effect wrapper applies linear Output after shaping.
+        let effect = crate::fx::Effect {
+            slot: 0, kind: Kind::SurroundPanner, version: 0, bypass: false,
+            output_gain: 0.79292566, dry_level: 0.0,
+            params: Params::Fields(vec![
+                crate::fx::params::Field { name: "param_0", value: Value::Number(1.0) },
+                crate::fx::params::Field { name: "param_1", value: Value::Number(0.0) },
+            ]),
+        };
+        let mut program = crate::fx::ProgramFx { insert: crate::fx::Chain { slots: vec![effect] }, ..Default::default() };
+        assert!(program.warnings().is_empty());
+        assert!(crate::engine::filter::unsupported_at(&program.insert, Some(8)).is_empty());
+        let mut processor = program.processor(RATE, input.len());
+        let (mut l, mut r) = (input, input);
+        assert_eq!(crate::plugin::tests::allocations(|| processor.process(&mut l, &mut r)), 0);
+        for (x, y) in input.iter().zip(l) {
+            assert!((f64::from(y) - reference(1.0, f64::from(*x)) * 0.79292566).abs() < 2e-6);
+        }
+        assert!((l[6] - 0.06216537).abs() < 1e-7, "quiet signals receive the native saturation gain");
+        let Params::Fields(fields) = &mut program.insert.slots[0].params else { unreachable!() };
+        fields[1].value = Value::Number(1.0);
+        assert!(program.warnings().iter().any(|w| w.contains("Enhanced/Drums modes use an unverified")));
+        assert!(crate::engine::filter::unsupported_at(&program.insert, Some(8)).iter()
+            .any(|w| w.contains("Enhanced/Drums modes use an unverified")));
+    }
+
+    #[test]
+    fn lofi_reduction_preserves_pristine_and_crushed_endpoints() {
+        let mut d = Drive::default();
         // Lo-Fi at maximum sample rate is all but transparent.
         let mut f = [0.0; FIELDS];
         f[..5].copy_from_slice(&[0.5, 1.0, 0.0, 0.0, 0.2]);
