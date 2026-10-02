@@ -827,6 +827,28 @@
       ],
       "validation": "Combined development87 plus IR-state typecheck and 27 exact focused host ownership, wait_async and IR/routing gates pass atd6eda072f0bfd7c283f767db8ac46191c1978591. New authored callback/readback/restore/worker/PCM gate proves independent writes and zero audio heap. Older host states retain prior uniform behavior; nonunit time stretching remains approximate.",
       "accepted": true
+    },
+    {
+      "id": "signed-pitch-cutoff-parameter-aliases",
+      "summary": "Resolve legacy and modern signed intensity aliases to the same proven pitch and cutoff routes",
+      "source_commits": [
+        "1d00f8ff2042736e74b9f6c923402f73948d77ee",
+        "c886598c4d4070b70402bbd2c4fcbc6f499ccb0f",
+        "21f2201e4eaf48aa6456d617939772ca79447127"
+      ],
+      "validation": "Native parameter449 registration establishes alias identity. Four exact gates pass at7007e7514f3346a13978007159411bdc9fdef38d, including real KSP init/note setters/readback and audible pitch/cutoff PCM physical references with zero processing heap. Unverified legacy volume and other targets retain their guards.",
+      "accepted": true
+    },
+    {
+      "id": "saved-pitch-cutoff-target-sign",
+      "summary": "Restore saved negative pitch and cutoff modulation direction from the native target sign bit",
+      "source_commits": [
+        "e8b20893053550d246ff37094b184187a1b4af0b",
+        "6d05f4c3402ba88c2fdd8835a7dfe1511e4906b6",
+        "21f2201e4eaf48aa6456d617939772ca79447127"
+      ],
+      "validation": "Independent native setter plus shared reader/writer corroborate target byte bit0x02 separately from invert. Four exact gates pass at7007e7514f3346a13978007159411bdc9fdef38d; authored internal/external records preserve raw magnitude/flags, target order/identity and neighboring unsupported laws, with imported positive/negative pitch and cutoff PCM matching physical references byte-exact. Loop frame law remains unimplemented.",
+      "accepted": true
     }
   ]
 }

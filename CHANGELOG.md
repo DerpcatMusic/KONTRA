@@ -10,6 +10,9 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
+- Legacy and modern signed modulation aliases now share the verified pitch/cutoff laws and exact target identity. Other unsupported legacy target laws remain guarded.
+- Saved negative pitch and cutoff modulation now applies the native target sign bit independently of invert, with raw records preserved and both directions checked against physical-depth PCM references. Loop modulation remains incomplete.
+
 - Native convolution early/late Size ratios now survive Reverse, Auto Gain, predelay, callbacks and restore independently; editing one Size leaves the other intact. Older host states retain their prior uniform behavior. Native nonunit time stretch remains incomplete.
 
 - Exact host note IDs now retain their routed ownership through sustain, script children and waits, delayed expressions, release tails, and aggregate NOTE_END delivery. Generated articulation keyswitches cannot take the musical note ID; mixed raw MIDI releases and scoped cleanup preserve unrelated held notes. Unverified host expression types remain diagnosed.
