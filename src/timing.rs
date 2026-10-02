@@ -250,7 +250,11 @@ struct Queued {
 }
 
 /// One part's held-back events, in the order they play.
+#[derive(Clone, Copy)]
+struct HostHold { note: crate::engine::HostNote, hold: u64, mono: bool, held: bool }
+
 pub struct Scheduler {
+    host: Vec<HostHold>,
     queue: Box<[Queued]>,
     head: usize,
     len: usize,
@@ -279,6 +283,7 @@ impl Default for Scheduler {
     fn default() -> Self {
         let empty = Queued { due: 0, ev: In::Pressure(0, 0), art: NO_ART };
         Self {
+            host: Vec::with_capacity(crate::ksp::EVENT_CAPACITY),
             queue: vec![empty; CAPACITY].into_boxed_slice(),
             head: 0,
             len: 0,
@@ -328,10 +333,40 @@ impl Scheduler {
     /// Hold `ev`, arriving at frame `now`, back by its articulation's hold.
     /// Returns it when it must play at once (the queue is full).
     pub fn arrive(&mut self, ev: In, now: u64, holds: &Holds, rate: f64, router: &Router) -> Option<In> {
+        if let In::HostOff(pattern) | In::HostChoke(pattern) | In::HostExpression(pattern, _) = ev {
+            for i in 0..self.host.len() {
+                let owner = self.host[i];
+                if !pattern.matches(owner.note) || (matches!(ev, In::HostOff(_)) && !owner.held) { continue; }
+                let pattern = crate::engine::HostPattern { port:i32::from(owner.note.port), channel:i32::from(owner.note.channel), key:i32::from(owner.note.key), id:owner.note.id, clap:owner.note.clap };
+                let to = match ev {
+                    In::HostOff(_) => In::HostOff(pattern),
+                    In::HostChoke(_) => In::HostChoke(pattern),
+                    In::HostExpression(_, x) => In::HostExpression(pattern, x),
+                    _ => unreachable!(),
+                };
+                let lane = if router.by_channel() { owner.note.channel as usize } else { 0 };
+                let due = (now + owner.hold).max(if owner.mono { self.last_on[lane] } else { 0 });
+                if matches!(ev, In::HostOff(_) | In::HostChoke(_)) {
+                    self.host[i].held = false;
+                    if owner.held { self.down[lane] = self.down[lane].saturating_sub(1); }
+                    self.last_off[lane] = self.last_off[lane].max(due);
+                    if !self.host.iter().any(|o| o.held && o.note.channel == owner.note.channel && o.note.key == owner.note.key) {
+                        self.held[owner.note.channel as usize][owner.note.key as usize] = UP;
+                    }
+                }
+                if !self.push(Queued { due, ev:to, art:NO_ART }) { return Some(ev); }
+            }
+            return None;
+        }
+        if let In::HostOn(note, _) = ev {
+            if self.host.len() == self.host.capacity() || (note.id != -1 && self.host.iter().any(|o| o.note == note)) {
+                self.overflows = self.overflows.saturating_add(1); return None;
+            }
+        }
         let frames = |row, legato, velocity| holds.frames(row, legato, velocity, rate);
         let lane = |channel: u8| if router.by_channel() { usize::from(channel & 15) } else { 0 };
         let (due, art) = match ev {
-            In::NoteOn(channel, note, velocity) => {
+            In::NoteOn(channel, note, velocity) | In::HostOn(crate::engine::HostNote { channel, key: note, .. }, velocity) => {
                 let key = &mut self.held[usize::from(channel & 15)][usize::from(note & 127)];
                 let (row, switch) = router.articulation_of(channel, note, velocity);
                 if switch {
@@ -352,11 +387,12 @@ impl Scheduler {
                 self.last_on[lane] = self.last_on[lane].max(due);
                 self.ctl_hold = due - now;
                 let key = &mut self.held[usize::from(channel & 15)][usize::from(note & 127)];
-                if *key == UP || *key == SWITCH {
+                if *key == UP || *key == SWITCH || matches!(ev, In::HostOn(..)) {
                     self.down[lane] += 1;
                 }
                 let mono = if holds.1[row.min(LOADED)] { MONO } else { 0 };
                 *key = ((due - now) as u32).min(MONO - 1) | mono;
+                if let In::HostOn(note, _) = ev { self.host.push(HostHold { note, hold:due - now, mono:mono != 0, held:true }); }
                 let art = if picked || row == LOADED { NO_ART } else { row as u8 };
                 (due, art)
             }
@@ -376,6 +412,12 @@ impl Scheduler {
                 let due = if mono { (now + hold).max(self.last_on[lane]) } else { now + hold };
                 self.last_off[lane] = self.last_off[lane].max(due);
                 (due, NO_ART)
+            }
+            // Exact wildcard/old-ID events cannot borrow a newer key row's
+            // hold. Queue after the preceding ingress so their owner exists.
+            In::HostOff(_) | In::HostChoke(_) | In::HostExpression(_, _) => {
+                let latest = if self.len > 0 { self.at(self.len - 1).due } else { now };
+                (latest.max(now), NO_ART)
             }
             // Per note: with its note.
             In::PolyAt(channel, note, _)
@@ -429,6 +471,7 @@ impl Scheduler {
 
     /// Forget everything held: the host stopped processing.
     pub fn clear(&mut self) {
+        self.host.clear();
         self.len = 0;
         self.head = 0;
         self.held = [[UP; 128]; 16];
@@ -481,6 +524,24 @@ impl Align {
     }
 
     /// Whether notes are held back now.
+    pub(crate) fn host_note_waiting(&self, note:crate::engine::HostNote) -> bool {
+        self.parts.iter().any(|s| (0..s.len).any(|i| matches!(s.at(i).ev,In::HostOn(n,_) if n==note)))
+    }
+    pub(crate) fn host_note_at(&self, mut index:usize) -> Option<(crate::engine::HostNote,bool)> {
+        for s in &self.parts {
+            if let Some(o)=s.host.get(index) { return Some((o.note,o.held)); }
+            index=index.saturating_sub(s.host.len());
+        }
+        None
+    }
+    pub(crate) fn host_key_held(&self, channel:u8, key:u8) -> bool {
+        self.parts.iter().any(|s| s.host.iter().any(|o| o.held && o.note.channel == channel && o.note.key == key))
+    }
+
+    pub(crate) fn retire_host_note(&mut self, note: crate::engine::HostNote) {
+        for scheduler in &mut self.parts { scheduler.host.retain(|o| o.note != note); }
+    }
+
     pub fn holding(&self, playing: bool) -> bool {
         self.plan.on && (playing || !self.plan.transport_only)
     }
@@ -924,6 +985,22 @@ mod tests {
     use super::*;
 
     const RATE: f64 = 48_000.0;
+
+    #[test]
+    fn exact_stacked_owners_keep_their_own_delays_after_key_reuse() {
+        let router=Router::default(); let mut scheduler=Scheduler::default();
+        let first=crate::engine::HostNote { port:0,channel:0,key:60,id:10,clap:true };
+        let second=crate::engine::HostNote { id:11,..first };
+        assert!(scheduler.arrive(In::HostOn(first,100),0,&holds(0.,0.,10.),RATE,&router).is_none());
+        assert!(scheduler.arrive(In::HostOn(second,100),96,&holds(0.,0.,20.),RATE,&router).is_none());
+        let old=crate::engine::HostPattern { port:0,channel:0,key:60,id:10,clap:true };
+        assert!(scheduler.arrive(In::HostOff(old),192,&holds(0.,0.,20.),RATE,&router).is_none());
+        assert!(scheduler.arrive(In::HostExpression(old,crate::engine::HostExpression::Tune(12.)),240,&holds(0.,0.,20.),RATE,&router).is_none());
+        let due:Vec<_>=(0..scheduler.len).map(|i| *scheduler.at(i)).collect();
+        assert!(due.iter().any(|q| matches!(q.ev,In::HostOff(p) if p.id==10) && q.due==672),"release borrowed the newer key's 20ms delay");
+        assert!(due.iter().any(|q| matches!(q.ev,In::HostExpression(p,_) if p.id==10) && q.due==720));
+        assert!(scheduler.host.iter().find(|h| h.note.id==11).unwrap().held);
+    }
 
     #[test]
     fn alignment_math() {

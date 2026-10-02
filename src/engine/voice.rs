@@ -926,6 +926,7 @@ pub(crate) struct Plan {
 /// One playing zone. Plain data; the engine owns the storage.
 pub(crate) struct Voice {
     pub event: EventId,
+    pub host_note: Option<super::HostRef>,
     pub zone_id: u32,
     pub group: u32,
     pub voice_group: Option<u16>,
@@ -1011,6 +1012,7 @@ pub(crate) struct Context<'a> {
     pub pressure: &'a [u8; 16],
     /// Per-channel/key MPE and note expression.
     pub expression: &'a [[super::Expression; 128]; 16],
+    pub host_notes: &'a super::host_notes::Owners,
     /// Instrument tune in semitones.
     pub tune: f32,
     pub rate: f32,
@@ -1114,6 +1116,7 @@ impl Voice {
         let group = &cx.bank.settings[self.group as usize];
         let key = self.owner.map_or(self.note, |(_, key)| key);
         let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][key as usize & 127]);
+        let x = cx.host_notes.overlay(self.host_note, x);
         let inputs = cx.inputs(self.channel, self.note, self.velocity, x);
         let master = cx.mpe_zone.filter(|(master, members)| *master == self.channel || members & (1 << self.channel) != 0)
             .and_then(|(master, _)| cx.mpe_master_bend_range.map(|range| (master, cx.bend[master as usize], range)));
