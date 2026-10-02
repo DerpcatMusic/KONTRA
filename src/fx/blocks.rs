@@ -287,11 +287,15 @@ impl Drive {
                 0.0,
                 0.0,
             ],
-            // Bits 1..=32; the sample rate held down by 1..=64 times.
+            // Bits 1..=32; higher native FREQUENCY means less reduction.
+            // ANALOG STRINGS' authored SRate control defaults to 1M and says
+            // higher values are pristine; its normalized field is not inverted.
+            // ponytail: retain the 1..=64 hold proxy; exact Hz calibration,
+            // Kontakt's 50 Hz floor and proprietary interpolation remain unresolved.
             DriveKind::LoFi => {
                 let bits = 1.0 + 31.0 * x(0);
                 let step = if bits >= 24.0 { 0.0 } else { (1.0 - bits).exp2() };
-                let hold = 1.0 + 63.0 * x(1).powi(3);
+                let hold = 1.0 + 63.0 * (1.0 - x(1)).powi(3);
                 let noise = if x(2) > 0.0 { db(-96.0 + 90.0 * x(2)) } else { 0.0 };
                 let color = one_pole(20_000.0 * 0.02f32.powf(x(4)), rate);
                 [step, 1.0 / hold, noise, color, 0.0, 0.0, 0.0, 0.0]
@@ -1065,9 +1069,9 @@ mod tests {
         let (mut l, mut r) = sine(200.0, 1.0, 4800);
         d.process(&mut l, &mut r);
         assert!(l.iter().fold(0f32, |m, x| m.max(x.abs())) < 0.85);
-        // Lo-Fi at the stored defaults is all but transparent.
+        // Lo-Fi at maximum sample rate is all but transparent.
         let mut f = [0.0; FIELDS];
-        f[..5].copy_from_slice(&[0.5, 0.1, 0.0, 0.0, 0.2]);
+        f[..5].copy_from_slice(&[0.5, 1.0, 0.0, 0.0, 0.2]);
         assert!(d.tune(Kind::LoFi, &f, RATE));
         let (mut l, mut r) = sine(200.0, 0.5, 4800);
         let dry = l.clone();
@@ -1075,12 +1079,46 @@ mod tests {
         let err: Vec<f32> = l.iter().zip(&dry).map(|(a, b)| a - b).collect();
         assert!(rms(&err) < 0.02, "{}", rms(&err));
         // Crushed: 2 bits, held 64 times.
-        f[..2].copy_from_slice(&[0.03, 1.0]);
+        f[..2].copy_from_slice(&[0.03, 0.0]);
         d.tune(Kind::LoFi, &f, RATE);
         let (mut l, mut r) = sine(200.0, 0.5, 4800);
         d.process(&mut l, &mut r);
         let levels: std::collections::BTreeSet<i32> = l.iter().map(|x| (x * 1000.0) as i32).collect();
         assert!(levels.len() <= 5, "{levels:?}");
+    }
+
+    #[test]
+    fn lofi_frequency_direction_endpoints_and_retuning_preserve_state_without_heap() {
+        let check = || {
+            assert_eq!(engine_par("$ENGINE_PAR_FREQUENCY"), Some((Kind::LoFi, 1)));
+            for rate in [44_100., 48_000., 96_000.] {
+                let mut f = [0.0; FIELDS];
+                f[0] = 1.0; // Full bit depth, no noise: isolate sample-rate reduction.
+                let mut d = Drive::default();
+                assert!(d.tune(Kind::LoFi, &f, rate));
+                let dry = std::array::from_fn::<_, 65, _>(|i| i as f32 * 0.001);
+                let (mut l, mut r) = (dry, dry);
+                d.process(&mut l, &mut r);
+                assert!(l[..63].iter().all(|v| *v == 0.0));
+                assert_eq!((l[63], l[64]), (dry[63], dry[63]));
+                let (state, noise) = (d.s, d.noise);
+                let mut previous = d.c[1];
+                for frequency in [0.25, 0.5, 0.97368, 1.0] {
+                    f[1] = frequency;
+                    assert!(d.tune(Kind::LoFi, &f, rate));
+                    assert!(d.c[1] > previous, "higher frequency samples more often");
+                    previous = d.c[1];
+                    assert_eq!((d.s, d.noise), (state, noise), "retuning retains held samples and clock phase");
+                }
+                let (mut l, mut r) = (dry, dry);
+                d.process(&mut l, &mut r);
+                assert_eq!((l, r), (dry, dry), "the pristine endpoint samples every frame");
+            }
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(check), 0);
+        #[cfg(not(feature = "plugin"))]
+        check();
     }
 
     #[test]

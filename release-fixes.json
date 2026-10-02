@@ -329,6 +329,269 @@
       ],
       "validation": "Actual license generation self-test passed with non-ASCII UTF-8 output and emulated CP1252 default; prior default decoding reproduces the Windows packaging failure.",
       "accepted": true
+    },
+    {
+      "id": "bounded-modulation-slot-recovery",
+      "summary": "Retain readable modulation siblings when one bounded ordinary-import slot is undecodable",
+      "source_commits": [
+        "d4dae04181cecc07f17ba8328169959093424f69"
+      ],
+      "validation": "Production ordinary-import regression passed at d4dae04: unknown category/shaper/boolean slots remain explicit placeholders, valid envelope and target identities survive; strict snapshot decoding still rejects malformed records. Actual library benefit awaits headless loads.",
+      "accepted": true
+    },
+    {
+      "id": "load-warning-journal-cap",
+      "summary": "Retain load warnings in the persistent journal beyond bounded report examples",
+      "source_commits": [
+        "e12f8a0b79b9f58c4792b28a836d025b2aad3644"
+      ],
+      "validation": "Root focused production gate passed at 00b879d; actual Areia load delivered all 1125 warnings beyond the bounded report examples.",
+      "accepted": true
+    },
+    {
+      "id": "scripted-ahd-only-envelope",
+      "summary": "Apply scripted AHD Only through the shared envelope kernel",
+      "source_commits": [
+        "de730e157c6807b3a51ae84a8fa486d12625d24d"
+      ],
+      "validation": "Root explicit AHD Only gate passed; uses the shared envelope kernel. This does not establish every imported envelope or Kontakt sound parity.",
+      "accepted": true
+    },
+    {
+      "id": "script-only-v3-snapshot",
+      "summary": "Apply script-only Kontakt v3 snapshots without replacing native instrument state",
+      "source_commits": [
+        "76d1e097cdd97466bcb0a48d55c32d8f596516ef"
+      ],
+      "validation": "Vendor reads_script_only_v3_without_inventing_native_state passed at c286fe4; root independently applied three actual Conflux presets and checked audio outputs. Realtime underruns remain.",
+      "accepted": true
+    },
+    {
+      "id": "library-root-archive-sample-paths",
+      "summary": "Resolve library-root archive samples from nested instrument directories",
+      "source_commits": [
+        "b29eef1b054e5de0f9c7ee8302a517a28f1881cd"
+      ],
+      "validation": "Root authored resolution and actual archive-member checks passed; actual Conflux load retained 1985 playable zones. Full-library playback and sound parity remain unverified.",
+      "accepted": true
+    },
+    {
+      "id": "counted-modulation-array-slots",
+      "summary": "Decode counted native modulation arrays with 64 external slots",
+      "source_commits": [
+        "9bf24017fcbe9f7d29e9f6220cbc8356297146b0"
+      ],
+      "validation": "Vendor counted_external_slots_keep_high_identity_and_unknown_bytes passed at c286fe4; actual byte-preservation checks passed. Parsing and preservation do not certify processing every modulation route.",
+      "accepted": true
+    },
+    {
+      "id": "modern-bounded-source-identities",
+      "summary": "Read bounded native source identities in Kontakt v0x103 and v0x104",
+      "source_commits": [
+        "e92be6571f900ba65e00b7b1683699c68eeb3baa"
+      ],
+      "validation": "Vendor source_identity_reads_known_headers_without_interpreting_opaque_state passed at c286fe4 for known v0x103/v0x104 headers; opaque state remains uninterpreted. Morphology application is still blocked.",
+      "accepted": true
+    },
+    {
+      "id": "off-thread-load-journal-delivery",
+      "summary": "Preserve off-thread load diagnostic bursts and report delivery status",
+      "source_commits": [
+        "3a36b64721769d5c9398bc7d396c91072ae3e0a2"
+      ],
+      "validation": "Root production journal burst/export gate passed at 00b879d, retaining 4098 warning records and delivery status off-thread. Distinct from expanding capture beyond bounded report examples; no audio-throughput claim.",
+      "accepted": true
+    },
+    {
+      "id": "release-trigger-note-mono",
+      "summary": "Preserve and apply release-trigger Note Mono",
+      "source_commits": [
+        "7c09b821feb5ed4ba43e509c63aab18ff07fccab"
+      ],
+      "validation": "Production note_mono_cuts_only_matching_sounding_release_tails and native_start_conditions_survive_new_instrument_writing passed at 00b879d. Covers matching release tails and record writing, not every imported start condition.",
+      "accepted": true
+    },
+    {
+      "id": "compact-modern-snapshot-records",
+      "summary": "Decode and preserve modern v3 snapshot and v4 compact source records",
+      "source_commits": [
+        "3801b2e4f44f9ba15865b7fa3062034019d24663"
+      ],
+      "validation": "Vendor compact_v4_preserves_mode_dependent_sources_and_counted_slots passed at c286fe4 with bounded modern v3/v4 parsing and record roundtrip. Morphology application remains blocked; parsing is not full snapshot processing.",
+      "accepted": true
+    },
+    {
+      "id": "native-group-send-level-routing",
+      "summary": "Route native group Send Levels taps into existing instrument returns",
+      "source_commits": [
+        "b77b748d36771bf9a786f1059554cb3610e351a0"
+      ],
+      "validation": "Production group_send_taps_keep_native_order_dry_gain_and_return_tails_without_heap passed at 00b879d; analytical ordering, dry gain, tails and zero-heap checks passed. Kontakt bus/sound equivalence remains unverified.",
+      "accepted": true
+    },
+    {
+      "id": "fractional-image-resampling",
+      "summary": "Preserve fractional image coverage and transparent edge colors without repeated enlargement",
+      "source_commits": [
+        "bd911af1bc64a479f616278e4b01d27840f0d9a8"
+      ],
+      "validation": "Production fractional_resizing_preserves_coverage_and_transparent_edge_color and pictures_are_made_to_the_pixel_once passed at 00b879d. Covers fractional/alpha behavior and retained enlargement, not universal resource or GPU performance parity.",
+      "accepted": true
+    },
+    {
+      "id": "authored-performance-background",
+      "summary": "Retain authored performance-view background colors across live publications",
+      "source_commits": [
+        "c286fe420adbef24aef32f8eb2cd848b26596bb7"
+      ],
+      "validation": "Root reports authored background gates passed among eight focused production-library checks; No universal layout or Lua UI parity claim. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "native-ar-filter-identities",
+      "summary": "Map native AR filter identities to the intended responses and pole counts",
+      "source_commits": [
+        "aa416d3e6608f5e8d798d886be686c8693d362e6"
+      ],
+      "validation": "Root reports native mapping gate passed, covering the six authored AR LP/HP/BP identities. no calibrated Kontakt sound parity. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "native-daft-filter-identities",
+      "summary": "Map native Daft LP/HP identities without inventing aliases for unproved IDs",
+      "source_commits": [
+        "aa416d3e6608f5e8d798d886be686c8693d362e6"
+      ],
+      "validation": "Root reports native mapping gate passed for Daft IDs70/71; IDs106/107 remain unsupported. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "native-daft-filter-field-order",
+      "summary": "Decode native Daft cutoff/resonance after the retained leading parameter",
+      "source_commits": [
+        "aa416d3e6608f5e8d798d886be686c8693d362e6"
+      ],
+      "validation": "Root reports authored decoding, coefficient/PCM changes, live edit/readback and zero-heap gate passed. The leading parameter remains retained without an invented gain law; Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "external-modulation-v104-footer",
+      "summary": "Decode external modulation v0x104 while retaining opaque footer bytes",
+      "source_commits": [
+        "486408c13a7dd38d02d494fbac82c9383cae7f03"
+      ],
+      "validation": "Root reports vendor gate and actual byte-preservation review passed. Parsing/preservation does not implement every modulation route or opaque field. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "physical-note-off-mode-ownership",
+      "summary": "Retain physical note-off ownership after channel mode changes",
+      "source_commits": [
+        "b629fbc72882ba373ade2b24dff7516be36b5caf"
+      ],
+      "validation": "Root reports focused route-owner gate passed among eight production-library checks. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "native-lofi-frequency-direction",
+      "summary": "Make higher native LoFi frequency values sample more often without resetting state",
+      "source_commits": [
+        "fc9a7b64beade917a4bce5d114bf3411d0be5113"
+      ],
+      "validation": "Root reports authored direction/endpoints/retuning and zero-heap gate passed at44100/48000/96000Hz. Kontakt frequency calibration and sound parity remain unverified; Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "maximum-consumption-first-stream-block",
+      "summary": "Keep the first maximum-consumption stream block resident",
+      "source_commits": [
+        "f084a9450464134cc07cd362a2270fe866fe6a77",
+        "451af4c0db758d27e6a0172514308869d53b0cd7"
+      ],
+      "validation": "Root 4096-frame first-block RAM coverage and zero-heap gate passed. Earlier 1f62da4 actual four-Conflux preloaded runs had zero underruns and complete journal delivery. Fresh 1bbd31c six-Analog and three-Morphology replay verdict passed. Fixture RAM-reference decoding is a follow-up, not another count; no general realtime-underrun elimination claim.",
+      "accepted": true
+    },
+    {
+      "id": "cc120-held-note-ownership",
+      "summary": "Clear held ownership on CC120 stop fade to prevent late key-up release tails",
+      "source_commits": [
+        "4c16489a19d16b289e5382663cab8b9842efa19c",
+        "87d694c46b11ff4c447197e170c5dc83a13e43e4"
+      ],
+      "validation": "Root focused CC120 stop-fade/late-key-up runtime gate passed; narrow ownership correction accepted in the 17-unit replay verdict. Physical-sibling follow-up87d694c (root backportf414cb7) belongs to this same logical unit and must pass its gate before shipping/install; it does not advance the fix count.",
+      "accepted": true
+    },
+    {
+      "id": "menu-control-value-index",
+      "summary": "Return the documented ui_menu entry index for CONTROL_PAR_VALUE",
+      "source_commits": [
+        "1f62da4c8f155c315715a71cf9d40ff4a2dd85a1"
+      ],
+      "validation": "Root reports focused ui_menu CONTROL_PAR_VALUE runtime gate passed in the twelve-check runtime set. no every-menu or Lua UI parity claim. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "template-snapshot-binding",
+      "summary": "Bind template-named snapshots to the verified instrument without weakening identity guards",
+      "source_commits": [
+        "0ebf976e9d7c8c614b125b5985b3c20ebb3ac8d4"
+      ],
+      "validation": "Root reports template-binding production gate passed at 9bbce5e, including rejecting foreign names and truncated metadata. no arbitrary snapshot binding claim. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "snapshot-modulation-slot-removal",
+      "summary": "Apply explicit snapshot modulation removals while preserving sibling identities",
+      "source_commits": [
+        "0ebf976e9d7c8c614b125b5985b3c20ebb3ac8d4"
+      ],
+      "validation": "Root reports slot-removal production gate passed at 9bbce5e. Malformed removed records, additions, sibling replacement and incompatible effect topology remain rejected; fresh Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "gpu-startup-cause-retention",
+      "summary": "Retain GPU startup causes and diagnose Linux editor embedding",
+      "source_commits": [
+        "4bfa3ad26667f487608a2e5b85651f6913fb862d"
+      ],
+      "validation": "Root includes startup-cause retention in this reviewed candidate; Startup-cause diagnostic scope accepted; Void/editor repair remains unverified. Diagnostics do not establish that blank windows or embedding are repaired. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "structured-runtime-fault-actions",
+      "summary": "Retain runtime fault actions, array values and readable source context in headless diagnostics",
+      "source_commits": [
+        "515a2f5aab7fcd03e0b4ce8ab2273d122c0e36d0"
+      ],
+      "validation": "Root reports structured action/excerpt and zero-heap gate passed at 9bbce5e. Fault locations remain bounded; repeated events update the latest action without duplicating retained locations. Fresh Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "ownerless-controller-home-routing",
+      "summary": "Route ownerless script controllers through the configured part home",
+      "source_commits": [
+        "44ea2c58e36c221aba2ce31ace1966a8ef4883ca"
+      ],
+      "validation": "Root reports home UI/listener CC and MPE zero-heap gates passed at 9bbce5e. Covers configured-home routing for callbacks without a MIDI owner; fresh Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "legacy-cutoff-envelope-intensity",
+      "summary": "Apply legacy AHDSR cutoff intensity using the checked cubic depth law",
+      "source_commits": [
+        "91a4b02ef5730c3b281747f16dbe80b071ffd3f7"
+      ],
+      "validation": "Root reports legacy filter-envelope cubic PCM, readback and zero-heap gate passed at 9bbce5e. Authored processing evidence does not establish every original preset or calibrated Kontakt sound parity; fresh Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
+    },
+    {
+      "id": "native-persisted-menu-position",
+      "summary": "Restore native persisted menu selections by entry position",
+      "source_commits": [
+        "9bbce5ecae976978c80a72b6b900430fc6127e52"
+      ],
+      "validation": "Root reports native menu origin, host-state and zero-heap gate passed at 9bbce5e. Distinct from the ui_menu VALUE getter correction; Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "accepted": true
     }
   ]
 }

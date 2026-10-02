@@ -26,7 +26,7 @@ fn key(address: Address) -> Address {
             target,
             ..
         }
-        | Address::LegacyPitchIntensity {
+        | Address::LegacyInternalIntensity {
             group,
             envelope,
             target,

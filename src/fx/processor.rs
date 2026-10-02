@@ -80,6 +80,8 @@ pub struct FxProcessor {
     types: Box<[(Rack, u8, f32)]>,
     max_block: usize,
     sleep: Sleep,
+    /// Group taps have filled the current block's return inputs.
+    group_inputs: bool,
     /// Output channels, `max_block` each; empty for the default processor.
     outs: Vec<[Box<[f32]>; 2]>,
     /// Channels written since they were last cleared.
@@ -115,13 +117,17 @@ impl Sleep {
     /// input that loud. True while the chain must process.
     fn feed(&mut self, left: &[f32], right: &[f32], tail: impl Fn(f32) -> usize) -> bool {
         let peak = left.iter().chain(right).fold(0f32, |m, x| m.max(x.abs()));
+        self.feed_peak(left.len(), peak, tail)
+    }
+
+    fn feed_peak(&mut self, n: usize, peak: f32, tail: impl Fn(f32) -> usize) -> bool {
         if peak > SILENCE {
             (self.silent, self.peak) = (0, self.peak.max(peak));
         } else {
             if self.silent == 0 {
                 self.tail = tail(self.peak);
             }
-            self.silent = self.silent.saturating_add(left.len());
+            self.silent = self.silent.saturating_add(n);
             if self.sleeping() {
                 self.peak = 0.0;
             }
@@ -147,6 +153,26 @@ struct Tap {
 struct Return {
     slot: Slot,
     buffer: [Box<[f32]>; 2],
+}
+
+/// Borrowed inputs to the existing instrument send returns. A group tap adds
+/// its signal here without changing the group's dry insert chain.
+pub(crate) struct SendInputs<'a> {
+    returns: &'a mut [Return],
+    offset: usize,
+}
+
+impl SendInputs<'_> {
+    pub(crate) fn tap(&mut self, levels: &[f32; 8], gain: f32, start: usize, left: &[f32], right: &[f32]) {
+        let at = self.offset + start;
+        for ret in self.returns.iter_mut().filter(|r| !r.slot.bypass) {
+            let level = levels.get(ret.slot.index as usize).copied().unwrap_or(0.0) * gain;
+            if level == 0.0 { continue; }
+            let [l, r] = &mut ret.buffer;
+            mix(&mut l[at..at + left.len()], left, level);
+            mix(&mut r[at..at + right.len()], right, level);
+        }
+    }
 }
 
 /// One active effect with its slot's wet/dry levels.
@@ -216,6 +242,10 @@ impl ProgramFx {
     /// out; bypassed ones are built so scripts can switch them on. Every
     /// stored bus gets input buffers of `max_block`.
     pub fn processor(&self, sample_rate: f32, max_block: usize) -> FxProcessor {
+        self.processor_sends(sample_rate, max_block, false)
+    }
+
+    pub(super) fn processor_sends(&self, sample_rate: f32, max_block: usize, group_sends: bool) -> FxProcessor {
         let max_block = max_block.max(1);
         let build = |fx: &Effect| Slot::new(fx, sample_rate, max_block);
         let tapped = self
@@ -224,7 +254,7 @@ impl ProgramFx {
             .iter()
             .any(|fx| matches!(fx.params, Params::SendLevels(_)));
         // Unfed send slots would only ever process silence.
-        let sends: Vec<_> = if tapped {
+        let sends: Vec<_> = if tapped || group_sends {
             self.send.slots.iter().filter_map(build).collect()
         } else {
             Vec::new()
@@ -294,6 +324,7 @@ impl ProgramFx {
             max_block,
             // Nothing rings yet.
             sleep: Sleep::ASLEEP,
+            group_inputs: false,
             outs: (0..OUTS).map(|_| [zeros(max_block), zeros(max_block)]).collect(),
             out_fed: 0,
             outs_done: false,
@@ -304,7 +335,7 @@ impl ProgramFx {
 impl FxProcessor {
     /// Whether processing leaves audio unchanged.
     pub fn is_empty(&self) -> bool {
-        self.insert.is_empty() && self.main.is_empty()
+        self.insert.is_empty() && self.returns.is_empty() && self.main.is_empty()
     }
 
     /// Silences every tail without allocating.
@@ -326,6 +357,8 @@ impl FxProcessor {
             bus.sleep = Sleep::ASLEEP;
         }
         self.sleep = Sleep::ASLEEP;
+        self.group_inputs = false;
+        self.returns.iter_mut().flat_map(|r| &mut r.buffer).for_each(|b| b.fill(0.0));
         self.outs.iter_mut().flatten().for_each(|b| b.fill(0.0));
         self.out_fed = 0;
     }
@@ -333,13 +366,21 @@ impl FxProcessor {
     /// Processes the program output in place. Once the input has been silent
     /// for longer than every tail, blocks pass through untouched.
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let group_inputs = std::mem::take(&mut self.group_inputs);
         if self.is_empty() {
             return;
         }
         let n = left.len().min(right.len());
         let (left, right) = (&mut left[..n], &mut right[..n]);
         let mut sleep = self.sleep;
-        let awake = sleep.feed(left, right, |peak| tail(self.slots(), peak));
+        // Include summed group feeds: a pre-Amplifier tap may feed the
+        // returns while the instrument's dry signal is completely silent.
+        let group_peak = if group_inputs {
+            self.returns.iter().filter(|r| !r.slot.bypass).flat_map(|r| &r.buffer)
+                .flat_map(|b| &b[..n]).fold(0.0f32, |p, x| p.max(x.abs()))
+        } else { 0.0 };
+        let peak = left.iter().chain(right.iter()).fold(group_peak, |p, x| p.max(x.abs()));
+        let awake = sleep.feed_peak(n, peak, |peak| tail(self.slots(), peak));
         self.sleep = sleep;
         if !awake {
             return;
@@ -348,8 +389,42 @@ impl FxProcessor {
             .chunks_mut(self.max_block)
             .zip(right.chunks_mut(self.max_block))
         {
-            self.process_block(l, r);
+            self.process_block(l, r, group_inputs);
         }
+    }
+
+    /// Maximum voice/send block supported by the fixed worker buffers.
+    pub(crate) fn block_size(&self) -> usize {
+        if self.max_block == 0 { usize::MAX } else { self.max_block }
+    }
+
+    /// Clear the fixed return inputs once, before all voice segments in a block.
+    pub(crate) fn begin_group_sends(&mut self, n: usize) {
+        for ret in &mut self.returns {
+            ret.buffer.iter_mut().for_each(|b| b[..n].fill(0.0));
+        }
+        self.group_inputs = true;
+    }
+
+    /// Disjoint output and send-input borrows for a voice's current segment.
+    pub(crate) fn voice_inputs(&mut self, bus: Option<u8>, frames: Range<usize>)
+        -> (Option<(&mut [f32], &mut [f32])>, SendInputs<'_>)
+    {
+        if bus.is_some_and(|b| b >= DIRECT) { self.fresh_outs(); }
+        let input = bus.and_then(|b| {
+            if let Some(c) = b.checked_sub(DIRECT) {
+                let [l, r] = self.outs.get_mut(c as usize)?;
+                self.out_fed |= 1 << c;
+                Some((l.get_mut(frames.clone())?, r.get_mut(frames.clone())?))
+            } else {
+                let bus = self.buses.get_mut(*self.bus_of.get(b as usize)? as usize)?;
+                let [l, r] = &mut bus.input;
+                let input = (l.get_mut(frames.clone())?, r.get_mut(frames.clone())?);
+                bus.fed = true;
+                Some(input)
+            }
+        });
+        (input, SendInputs { returns: &mut self.returns, offset: frames.start })
     }
 
     /// The channel gains of bus `bus` when it only passes its input to the
@@ -364,15 +439,7 @@ impl FxProcessor {
     /// `max_block`); `None` when the program has no such bus.
     /// Buses [`DIRECT`]` + c` are output channel `c`.
     pub fn bus_input(&mut self, bus: u8, frames: Range<usize>) -> Option<(&mut [f32], &mut [f32])> {
-        if let Some(c) = bus.checked_sub(DIRECT) {
-            return self.out(c as usize, frames);
-        }
-        let i = *self.bus_of.get(bus as usize)?;
-        let bus = self.buses.get_mut(i as usize)?;
-        let [l, r] = &mut bus.input;
-        let input = (l.get_mut(frames.clone())?, r.get_mut(frames)?);
-        bus.fed = true;
-        Some(input)
+        self.voice_inputs(Some(bus), frames).0
     }
 
     /// Runs every bus that was fed or still rings on its first `left.len()`
@@ -680,11 +747,13 @@ impl FxProcessor {
     }
 
     /// `left.len() == right.len() <= max_block`.
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32], group_inputs: bool) {
         let n = left.len();
-        for ret in &mut self.returns {
-            for buffer in &mut ret.buffer {
-                buffer[..n].fill(0.0);
+        if !group_inputs {
+            for ret in &mut self.returns {
+                for buffer in &mut ret.buffer {
+                    buffer[..n].fill(0.0);
+                }
             }
         }
         for stage in &mut self.insert {

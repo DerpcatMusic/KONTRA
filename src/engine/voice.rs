@@ -43,6 +43,8 @@ pub struct Ahdsr {
     /// Linear sustain level, 0–1.
     pub sustain: f32,
     pub release: f32,
+    /// Explicit KSP AHD Only: one-shot attack/hold/decay, independent of key release.
+    pub ahd_only: bool,
 }
 
 /// Where an envelope is, as the editor shows it.
@@ -80,8 +82,8 @@ impl Ahdsr {
     /// falls from the sustain level. A stage of no time is one point.
     pub fn trace(&self, points: usize) -> [Vec<f32>; 3] {
         let n = points.max(1);
-        let sustain = self.sustain.clamp(0.0, 1.0);
-        let base = Ahdsr { attack: 0.0, curve: 0.0, hold: 0.0, decay: 0.0, sustain, release: f32::INFINITY };
+        let sustain = if self.ahd_only { 0. } else { self.sustain.clamp(0.0, 1.0) };
+        let base = Ahdsr { attack: 0.0, curve: 0.0, hold: 0.0, decay: 0.0, sustain, release: f32::INFINITY, ahd_only: false };
         let timed = |seconds: f32| seconds > 0.0 && seconds.is_finite();
         let mut out = [vec![1.0], vec![sustain], vec![0.0]];
         if timed(self.attack) {
@@ -96,7 +98,7 @@ impl Ahdsr {
             out[1] = vec![0.0; n + 1];
             e.render(&mut out[1], None, 1.0);
         }
-        if timed(self.release) {
+        if !self.ahd_only && timed(self.release) {
             // Full level, then the sustain level (no decay time), then let go.
             let mut e = Envelope::new(&Ahdsr { release: self.release, ..base }, n as f32 / self.release);
             let mut lead = [0.0; 2];
@@ -116,6 +118,7 @@ impl Ahdsr {
         decay: 0.0,
         sustain: 1.0,
         release: f32::INFINITY,
+        ahd_only: false,
     };
 }
 
@@ -166,6 +169,7 @@ pub(crate) struct Envelope {
     decay: f32,
     sustain: f32,
     release: f32,
+    ahd_only: bool,
     /// The attack's or decay's [`edge`], NaN until a skip works it out.
     edge: f32,
 }
@@ -410,8 +414,9 @@ impl Envelope {
             },
             left: (p.hold.max(0.0) * rate) as u32,
             decay: exp_coef(p.decay, rate),
-            sustain: p.sustain.clamp(0.0, 1.0),
+            sustain: if p.ahd_only { 0. } else { p.sustain.clamp(0.0, 1.0) },
             release: exp_coef(p.release, rate),
+            ahd_only: p.ahd_only,
             edge: f32::NAN,
         }
     }
@@ -426,6 +431,7 @@ impl Envelope {
             decay: 0.0,
             sustain: 0.0,
             release: 0.0,
+            ahd_only: false,
             edge: f32::NAN,
         }
     }
@@ -433,6 +439,7 @@ impl Envelope {
     /// Enter the release: the flex segment after the sustain point, or the
     /// AHDSR release.
     pub fn release(&mut self, flex: Option<&Flex>) {
+        if self.ahd_only && flex.is_none() { return; }
         self.stage = match (self.stage, flex) {
             (Stage::Done, _) => Stage::Done,
             (_, Some(flex)) => Stage::Enter((flex.sustain + 1) as u8),
@@ -586,7 +593,7 @@ impl Envelope {
                     match end {
                         Some(end) => {
                             self.level = sustain;
-                            self.stage = Stage::Sustain;
+                            self.stage = if self.ahd_only { Stage::Done } else { Stage::Sustain };
                             end + 1
                         }
                         None => n,
@@ -1136,7 +1143,8 @@ impl Voice {
         // Same-frame host expression may arrive after an unscripted note was
         // spawned. Start at the final initial value; later edits still ramp.
         if initial { self.gains = target; }
-        let muted = target == [0.0; 2] && self.gains == [0.0; 2];
+        let muted = target == [0.0; 2] && self.gains == [0.0; 2]
+            && !group.filter.as_ref().is_some_and(|f| f.pre_sends);
         // A sample ending mid-waveform ramps out over its last millisecond.
         let end = ((self.length as f64 - self.pos) / step) as f32;
         let declick = end < n as f32 + DECLICK * cx.rate;
@@ -1202,6 +1210,7 @@ impl Voice {
         left: &mut [f32],
         right: &mut [f32],
         bare: bool,
+        sends: Option<&mut crate::fx::SendInputs<'_>>,
     ) -> (bool, bool) {
         let Plan { n, step, target, muted, declick, .. } = self.plan;
         let group = &cx.bank.settings[self.group as usize];
@@ -1275,7 +1284,7 @@ impl Voice {
             }
             if let Some(filter) = own {
                 let (l, r) = (&mut out_l[..n], &mut out_r[..n]);
-                self.filter.process_amplified(filter, &group.mods, &mut scratch.flex, l, r, cx.rate, amp, self.gains, delta);
+                self.filter.process_amplified(filter, &group.mods, &mut scratch.flex, l, r, cx.rate, amp, self.gains, delta, sends);
                 left[..n].iter_mut().zip(l.iter()).for_each(|(o, x)| *o += x);
                 right[..n].iter_mut().zip(r.iter()).for_each(|(o, x)| *o += x);
             }
@@ -2053,6 +2062,7 @@ mod tests {
             decay: 0.1,
             sustain: 0.5,
             release: 0.1,
+            ahd_only: false,
         };
         let mut env = Envelope::new(&p, rate);
         let mut out = [0.0; 400];
@@ -2092,7 +2102,7 @@ mod tests {
             .into(),
             sustain: 1,
         };
-        let ahdsr = |curve| Ahdsr { attack: 0.011, curve, hold: 0.003, decay: 0.07, sustain: 0.4, release: 0.09 };
+        let ahdsr = |curve| Ahdsr { attack: 0.011, curve, hold: 0.003, decay: 0.07, sustain: 0.4, release: 0.09, ahd_only: false };
         let cases = [
             (Envelope::new(&ahdsr(0.0), rate), None),
             (Envelope::new(&ahdsr(0.8), rate), None),
@@ -2176,7 +2186,7 @@ mod tests {
     /// The editor's envelope drawing follows the laws voices play by.
     #[test]
     fn trace_follows_the_envelope_laws() {
-        let env = Ahdsr { attack: 0.3, curve: 0.0, hold: 0.1, decay: 2.0, sustain: 0.25, release: 4.0 };
+        let env = Ahdsr { attack: 0.3, curve: 0.0, hold: 0.1, decay: 2.0, sustain: 0.25, release: 4.0, ahd_only: false };
         let [attack, decay, release] = env.trace(100);
         assert_eq!((attack.len(), decay.len(), release.len()), (101, 101, 101));
         assert_eq!(attack[0], 0.0);
@@ -2197,7 +2207,7 @@ mod tests {
     #[test]
     fn sub_frame_curved_attack_is_instant_not_nan() {
         for curve in [-1.0, 1.0] {
-            let p = Ahdsr { attack: 1e-7, curve, hold: 0.0, decay: 0.0, sustain: 1.0, release: 0.3 };
+            let p = Ahdsr { attack: 1e-7, curve, hold: 0.0, decay: 0.0, sustain: 1.0, release: 0.3, ahd_only: false };
             let mut out = [0.0; 8];
             Envelope::new(&p, 48_000.0).render(&mut out, None, 48_000.0);
             assert!(out[2..].iter().all(|&x| x == 1.0), "{curve}: {out:?}");
@@ -2215,6 +2225,7 @@ mod tests {
                 decay: 0.0,
                 sustain: 1.0,
                 release: 0.1,
+                ahd_only: false,
             };
             let mut out = [0.0; 120];
             Envelope::new(&p, rate).render(&mut out, None, rate);
