@@ -2213,3 +2213,20 @@ end on"#]);
         assert_eq!(rig.rt.interface(2).controls[i].properties["$CONTROL_PAR_VALUE"], Value::Int(value));
     }
 }
+
+#[test]
+fn transport_listener_start_and_stop_subscriptions_are_independent() {
+    let make = |start, stop| format!("on init\ndeclare ui_slider $count(0,100)\nset_listener($NI_SIGNAL_TRANSP_START,{start})\nset_listener($NI_SIGNAL_TRANSP_STOP,{stop})\nend on\non listener\ninc($count)\nend on");
+    let sources = [make(1,0), make(0,1), make(1,1)];
+    let mut engine = LogEngine::new(Vec::new(), 48000.);
+    let (mut rt, errors) = Runtime::with_scripts(&sources, &mut engine, 8, Vec::new());
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    rt.set_host_transport(&mut engine, true, 120., 0., (4,4));
+    for (slot, count) in [1,0,1].into_iter().enumerate() {
+        assert_eq!(rt.interface(slot).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(count));
+    }
+    rt.set_host_transport(&mut engine, false, 120., 1., (4,4));
+    for (slot, count) in [1,1,2].into_iter().enumerate() {
+        assert_eq!(rt.interface(slot).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(count));
+    }
+}

@@ -301,7 +301,8 @@ fn room_height(ui: &Ui, slot: usize) -> f64 {
     (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.)).max(0.)
 }
 
-/// The scalar/table part of the memo key, also measured by the opt-in UI probe.
+/// Reference cost of the former scalar/table memo scan, measured by the opt-in UI probe.
+#[cfg(test)]
 pub(super) fn hash_properties(i: &Interface, h: &mut DefaultHasher) {
     for c in &i.controls {
         for (k, v) in &c.properties {
@@ -342,8 +343,8 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     (Arc::as_ptr(&v.pictures) as usize, v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
     if let Some(i) = &v.interface {
         (Arc::as_ptr(i) as usize, i.width, i.height, i.wallpaper_state, i.skin_offset).hash(&mut h);
-        // Keep callback-derived metadata in the canvas memo dependencies.
-        hash_properties(i, &mut h);
+        // Published interfaces are immutable; source revisions and pending
+        // scalar pairs above invalidate drawing without rescanning properties.
     }
     // A wave read since.
     if let (Some(i), Some(u)) = (&v.instrument, &v.interface) {
