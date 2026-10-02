@@ -167,10 +167,16 @@ pub fn detail(e: &Effect) -> String {
     }
 }
 
-/// Whether KONTRA runs `e` where it sits: a group plays its filters and
-/// EQs; the instrument, the effects with DSP here.
-fn played(e: &Effect, in_group: bool) -> bool {
-    if in_group { matches!(e.params, Params::Filter(_) | Params::Eq(_)) } else { e.is_implemented() }
+/// Whether this effect has DSP in its group or instrument rack.
+fn played(e: &Effect, in_group: bool, amp_split: Option<u8>) -> bool {
+    if !in_group { return e.is_implemented(); }
+    match &e.params {
+        Params::Filter(_) | Params::Eq(_) | Params::StereoModeller(_) => e.is_implemented(),
+        _ => (crate::fx::blocks::VoiceEffect::supports(e.kind)
+                && crate::fx::blocks::fields(&e.params).is_some()
+                && (e.kind != crate::fx::Kind::Compressor || amp_split.is_some()))
+            || matches!(e.kind, crate::fx::Kind::SolidGeq | crate::fx::Kind::Inverter),
+    }
 }
 
 /// A slot's bypass light: filled when it plays, hollow when bypassed.
@@ -189,8 +195,8 @@ pub fn bypass_light(on: bool) -> El {
     .named(if on { "On" } else { "Bypassed" })
 }
 
-fn effect_line(e: &Effect, in_group: bool) -> El {
-    let played = played(e, in_group);
+fn effect_line(e: &Effect, in_group: bool, amp_split: Option<u8>) -> El {
+    let played = played(e, in_group, amp_split);
     let lit = played && !e.bypass;
     let mut cells = vec![
         bypass_light(!e.bypass),
@@ -217,7 +223,7 @@ pub fn effects(instrument: &Instrument, group: &Group) -> El {
             return;
         }
         rows.push(row![section(&title)].pad(edges(TIGHT, 0., 0., 0.)).shrink(0));
-        rows.extend(c.slots.iter().map(|e| effect_line(e, in_group)));
+        rows.extend(c.slots.iter().map(|e| effect_line(e, in_group, group.amp_split_slot)));
     };
     chain("Group inserts".into(), &group.fx, true);
     let fx = &instrument.fx;
@@ -242,7 +248,7 @@ pub fn inserts(instrument: Option<&Instrument>, rows: usize) -> El {
         .iter()
         .take(rows)
         .map(|e| {
-            let lit = played(e, false) && !e.bypass;
+            let lit = played(e, false, None) && !e.bypass;
             row![
                 bypass_light(!e.bypass),
                 caption(e.kind.name()).fill(if lit { Fill::from(Role::Ink) } else { secondary() }).lines(1).min_w(0)
@@ -270,4 +276,3 @@ pub fn inserts(instrument: Option<&Instrument>, rows: usize) -> El {
     }
     col(lines).gap(0).align(Align::Stretch).min_w(0).shrink(0)
 }
-

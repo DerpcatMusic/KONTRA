@@ -324,8 +324,8 @@ normalized x = value/1e6 through a law):
 | Filter, EQ, Solid G-EQ | the group filter sections (`RackFilter`) | as group filters; G-EQ +-15 dB, bands 30-450, 200-2500, 600-7000, 1500-16k Hz, shelves unless the bell switch is on | low |
 
 Effect `0x1d` (class name Surround Panner) is Saturation: `$ENGINE_PAR_SHAPE` reaches it
-and its first float is -1..1. Group slots of the drive kinds and Solid G-EQ run per voice
-(at most 2 drive stages, in slot order between the filter units); the group modulation
+and its first float is -1..1. Group slots of the drive kinds, Compressor and Solid G-EQ run per voice
+(with eight fixed drive/dynamics states); the group modulation
 targets `shaper`, `distortionIntensity`, `bitdepth` and `downsample` move them
 (normalized). A rack Filter/EQ storing output gain 0 and dry level 0 is read as unset
 (unity): ANALOG STRINGS' active insert EQ is stored so and no script sets it. Bypassed
@@ -336,3 +336,29 @@ Corda, CHORUS and Afflatus 2 Horns unchanged. Mega Brass +1 dB (Skreamer, Satura
 one Skreamer stores +10.5 dB output, so audit-libraries' chord is 11 dB louder). ANALOG
 STRINGS +8 dB (one note) / +11.6 dB (audit-libraries chord): the compressor's stored
 +9 dB output gain now applies. None of these levels is checked against Kontakt.
+
+
+### Native group insert order and Amplifier split
+
+The [NI signal-flow manual](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/using-filters-and-effects-in-classic-view)
+defines eight group insert slots and an Amplifier split: modules execute in slot order,
+with the chosen rightmost modules after the Amplifier. The native parser's
+`fx_idx_amp_split_point` is preserved as `Group::amp_split_slot` (0 all after,
+8 all before). The compiled per-voice chain applies each module's output gain and
+Stereo Modeller in its own slot, and applies the existing voice envelope/gain/pan ramp
+at that split. Previously inserts all ran after the Amplifier and all output gains
+collapsed to one final matrix, which changes nonlinear detector/shaper inputs.
+
+Group Compressor now reuses the existing bounded rack compressor and its existing
+parameter laws, with independent detector state per voice. This is the generic model
+above, with the same stated confidence; it does not establish Kontakt algorithm or
+sonic equivalence. Unknown Amplifier metadata retains existing post-Amplifier routing
+with a diagnostic and does not enable a new compressor. Active pre-Amplifier inserts
+use their own voice processing; the shared post-Amplifier linear optimization remains
+for chains where it is applicable. The unfiltered SIMD path is unchanged.
+
+The fixed voice state adds 32 bytes for the drive/compressor enum, 128 bytes for
+per-slot gain/mixer smoothing and a small type revision counter. Live filter subtype
+changes invalidate shape-sensitive coefficient caches even when cutoff/resonance are
+unchanged. Existing filter-unit/section capacity limits, opaque filter subtypes,
+unimplemented group send/dynamics families and reverb/IR shaping gaps remain explicit.
