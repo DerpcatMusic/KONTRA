@@ -811,3 +811,11 @@ It does not establish full reference Kontakt sonic parity.
 Free-running/shared ownership, other waveforms and Multi mixes, positive
 fade/delay, external phase/frequency modulation, lag and live legacy
 frequency dispatch remain unsupported.
+
+Recognized group-insert modulation targets use a separate slot namespace from
+internal LFO sources. A saved `shaper` assignment to group effect slot7 therefore
+does not invalidate the saved pitch LFO at internal slot7. The shared reader uses
+the existing effect-parameter classifiers; unknown same-numbered module targets
+still exclude the saved-only source clock with a diagnostic. The authored raw
+fixture preserves the actual-shaped Constant zero-depth/15 ms lag assignment and
+checks both the recognized insert case and conservative unknown-source rejection.
