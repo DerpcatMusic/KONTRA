@@ -1527,6 +1527,57 @@ fn faults_name_their_own_line() {
 }
 
 #[test]
+fn keyboard_note_faults_report_builtin_argument_value_and_original_line() {
+    for (command, name, argument, value) in [
+        ("set_key_name(-1,\"Invalid\")", "set_key_name", 1, -1),
+        ("set_key_color(128,$KEY_COLOR_RED)", "set_key_color", 1, 128),
+        ("set_key_type(-1,$NI_KEY_TYPE_DEFAULT)", "set_key_type", 1, -1),
+        ("set_key_pressed(128,1)", "set_key_pressed", 1, 128),
+        ("message(get_key_name(-1))", "get_key_name", 1, -1),
+        ("message(get_key_color(128))", "get_key_color", 1, 128),
+        ("message(get_key_type(-1))", "get_key_type", 1, -1),
+        ("message(get_key_triggerstate(128))", "get_key_triggerstate", 1, 128),
+        ("set_keyrange(-1,127,\"Invalid\")", "set_keyrange", 1, -1),
+        ("set_keyrange(0,128,\"Invalid\")", "set_keyrange", 2, 128),
+        ("remove_keyrange(-1)", "remove_keyrange", 1, -1),
+    ] {
+        let source = format!("on init\n\n{command}\nend on");
+        let error = initialize(&source,0,0).unwrap_err().to_string();
+        let expected = format!("line 3: MIDI note must be 0..127 ({name} argument {argument} = {value})");
+        assert!(error.contains(&expected), "{command}: {error}");
+    }
+    let ui = initialize("on init\nset_key_name(0,\"Lowest\")\nset_key_name(127,\"Highest\")\nset_keyrange(0,127,\"All keys\")\nend on",0,0).unwrap();
+    assert!(ui.diagnostics.is_empty(), "{:?}", ui.diagnostics);
+}
+
+#[test]
+fn note_fault_context_is_bounded_distinct_and_does_not_leak_to_another_callback() {
+    use super::runtime::FaultContext;
+    let script = "on init\ndeclare ui_knob $bad(0,256,1)\ndeclare ui_button $other\nend on\non ui_control($bad)\nset_key_color($bad,$KEY_COLOR_RED)\nend on\non ui_control($other)\n$other := 1 / $other\nend on";
+    let mut rig = Rig::new(&[script]);
+    let mut live = rig.rt.live();
+    let mut exercise = || {
+        for value in [128,129,128] { rig.rt.ui_control(&mut rig.engine,0,0,value); }
+        rig.rt.ui_control(&mut rig.engine,0,1,0);
+        rig.rt.refresh_diagnostics(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(|| exercise()),0);
+    #[cfg(not(feature = "plugin"))]
+    exercise();
+    assert_eq!(live.faults.len(),3);
+    assert_eq!(live.faults[0].line,6);
+    assert_eq!(live.faults[0].count,2);
+    assert_eq!(live.faults[0].context,Some(FaultContext::MidiNote { builtin:"set_key_color",argument:1,value:128 }));
+    assert_eq!(live.faults[1].context,Some(FaultContext::MidiNote { builtin:"set_key_color",argument:1,value:129 }));
+    assert_eq!(live.faults[2].context,None);
+    assert_eq!(live.faults[2].line,9);
+    assert!(live.faults[0].to_string().contains("set_key_color argument 1 = 128"));
+    let encoded = serde_json::to_value(live.faults[0]).unwrap();
+    assert_eq!(encoded["context"]["MidiNote"]["value"],128);
+}
+
+#[test]
 fn omitted_fault_executions_are_counted_without_growing_audio_storage() {
     let mut rig = Rig::new(&["on init\nend on"]);
     let mut live = rig.rt.live();

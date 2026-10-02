@@ -45,6 +45,9 @@ macro_rules! builtins {
             fn lookup(name: &str) -> Option<Self> {
                 match name { $($name => Some(Self::$id),)* _ => None }
             }
+            pub fn name(self) -> &'static str {
+                match self { $(Self::$id => $name,)* }
+            }
             pub fn sig(self) -> Sig {
                 match self {
                     $(Self::$id => Sig { args: &[$(Arg::$arg),*], optional: $opt, ret: Ret::$ret },)*
