@@ -1103,15 +1103,18 @@ end on"#);
                 let mut fx = make(rack, false).processor(SR, 128);
                 assert!(fx.set_param(rack, 0, time, 0.0)); // exactly one saved quarter.
                 engine.set_fx(fx); engine.set_transport(false, bpm as f64, 0.0, (4,4));
-                let mut fx = engine.set_fx(FxProcessor::default());
+                // Retain the processor outside the counted closure: moving
+                // it into the closure also disposes its buffers on return.
+                let mut active = Some(engine.set_fx(FxProcessor::default()));
                 let mut l = vec![0.0; n]; let mut r = vec![0.0; n]; l[0]=1.0; r[0]=1.0;
                 assert_eq!(crate::plugin::tests::allocations(|| {
                     let mut at = 0;
                     while at < n {
                         if change && at == 8192 {
-                            engine.set_fx(fx); engine.set_transport(false, 240.0, 0.0, (4,4));
-                            fx = engine.set_fx(FxProcessor::default());
+                            engine.set_fx(active.take().unwrap()); engine.set_transport(false, 240.0, 0.0, (4,4));
+                            active = Some(engine.set_fx(FxProcessor::default()));
                         }
+                        let fx = active.as_mut().unwrap();
                         let boundary = if change && at < 8192 { 8192 } else { n };
                         let end = (at+chunk).min(boundary).min(n);
                         let (l,r)=(&mut l[at..end],&mut r[at..end]);
@@ -1122,7 +1125,7 @@ end on"#);
                         }
                         fx.process(l,r); at=end;
                     }
-                }),0);
+                }),0,"{rack:?}/{bpm}/{change}/{chunk}: processing and tempo updates retain their buffers");
                 assert!(l[..onset-1].iter().all(|v| v.abs()<1e-6));
                 for (center, area) in [(onset,1.0),(onset*2,0.5)] {
                     let taps=&l[center-1..center+24];
