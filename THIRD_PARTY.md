@@ -74,7 +74,9 @@ KONTRA (section 3), and it is not.
 | ISC | libloading |
 | CC0-1.0 | hexf-parse |
 
-MPL-2.0 is file-level copyleft: the symphonia sources are used
-unmodified from crates.io; if they are ever modified, those files must
-stay MPL-2.0 and be published. Regenerate this list with
+MPL-2.0 is file-level copyleft. `vendor/symphonia-format-riff` contains
+Symphonia 0.5.5 sources with a PCM WAVE format-boundary patch; the modified
+files retain MPL-2.0 notices and are published with this repository.
+Provenance and patch scope: `vendor/symphonia-format-riff/PATCHES.md`.
+Other Symphonia crates are used unmodified from crates.io. Regenerate this list with
 `cargo deny --all-features list`.
