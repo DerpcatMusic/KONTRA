@@ -620,12 +620,7 @@ impl Cx<'_> {
             self.p.shared.queue_multi(path);
             return;
         }
-        let part = &mut self.selection.parts[slot];
-        part.path = path;
-        part.program = 0;
-        part.group = u32::MAX;
-        part.name.clear();
-        part.edits = Default::default();
+        replace_part(&mut self.selection.parts[slot], path);
         self.show(slot);
     }
 
@@ -680,6 +675,17 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 
 /// Put `part` in the first empty slot; `None` when the rack is full.
 /// A part for `path` on the input and output the settings give new parts.
+/// Instrument state belongs to its preset; rack routing and player settings stay.
+fn replace_part(part: &mut Part, path: String) {
+    part.path = path;
+    part.program = 0;
+    part.group = u32::MAX;
+    part.name.clear();
+    part.edits = Default::default();
+    part.script_state.clear();
+    part.ir_settings.clear();
+}
+
 fn new_part(selection: &Selection, settings: &crate::library::Settings, path: String) -> Part {
     let (port, channel) = settings.new_input.unwrap_or_else(|| selection.next_input());
     Part {
@@ -823,11 +829,7 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
             let path = path.to_string_lossy().into_owned();
             let slot = match target.filter(|_| n == 0) {
                 Some(slot) => {
-                    let part = &mut selection.parts[slot];
-                    part.path = path;
-                    part.program = 0;
-                    part.group = u32::MAX;
-                    part.name.clear();
+                    replace_part(&mut selection.parts[slot], path);
                     Some(slot)
                 }
                 None => {

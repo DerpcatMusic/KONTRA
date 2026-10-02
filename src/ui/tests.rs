@@ -390,6 +390,72 @@ fn the_browser_finds_by_library_and_folder() {
 }
 
 #[test]
+fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths() {
+    use crate::ksp::Value;
+    let script = |caption| format!("on init\nmake_perfview\ndeclare @caption\n@caption := \"{caption}\"\nmake_persistent(@caption)\nread_persistent_var(@caption)\ndeclare ui_label $l(1,1)\nset_text($l,@caption)\nend on");
+    let instrument = |caption| import::Instrument { scripts: vec![script(caption)], ..Default::default() };
+    let old = instrument("Areia");
+    let (old_rt, errors) = load_scripts(&old, Vec::new(), 48000.);
+    assert!(errors.is_empty());
+    let old_state = old_rt.unwrap().persistence();
+    let new = instrument("CHORUS");
+    let caption = |saved| {
+        let (rt, errors) = load_scripts(&new, saved, 48000.);
+        assert!(errors.is_empty());
+        rt.unwrap().live().interface.unwrap().controls[0].properties["$CONTROL_PAR_TEXT"].clone()
+    };
+    assert_eq!(caption(old_state.clone()), Value::Text("Areia".into()), "same-named persistent variables contaminate another preset");
+    for dropped in [false, true] {
+        let p = Arc::new(SamplerParams::new());
+        let original = Part {
+            path: "/virtual/Library/Piano.nki".into(),
+            name: "Old name".into(),
+            group: 7,
+            script_state: serde_json::to_string(&old_state).unwrap(),
+            ir_settings: vec![crate::fx::IrSlotSettings {
+                rack: crate::fx::Rack::Insert, slot: 0,
+                settings: crate::fx::params::IrSettings::DEFAULT, file: None,
+            }],
+            port: 1, channel: 3, output: 4, output_manual: true,
+            gain: -8., pan: 0.25, tune: 2., aux: 5, aux_gain: -12., view: 1,
+            mpe: crate::articulate::Mpe { zone: crate::articulate::Zone::Lower, ..Default::default() },
+            ..Default::default()
+        };
+        {
+            let mut selection = p.selection.write().unwrap();
+            selection.parts = vec![original.clone()];
+            selection.order = vec![0];
+        }
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.files = Arc::new(vec![original.path.clone().into(), "/virtual/Library/Strings.nki".into()]);
+            view.shelf = Arc::new(crate::library::Shelf::under("/virtual", &view.files));
+        }
+        let mut h = Harness::new(&p, 1180., 760.);
+        if dropped {
+            let at = center(&h.ui, "header-0");
+            assert!(native_files(&p, &Default::default(), &h.ui, at, &["/virtual/Library/Strings.nki".into()], true));
+        } else {
+            h.press("name-0");
+            h.press("library-0");
+            h.ui.focus("instrument-1");
+            h.tick(Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() });
+            h.idle(3);
+        }
+        let part = p.selection.read().unwrap().parts[0].clone();
+        let mut expected = original;
+        expected.path = "/virtual/Library/Strings.nki".into();
+        expected.group = u32::MAX;
+        expected.name.clear();
+        expected.script_state.clear();
+        expected.ir_settings.clear();
+        assert_eq!(part, expected, "both replacement paths clear preset state and preserve player settings");
+        let restored = serde_json::from_str(&part.script_state).unwrap_or_else(|_| new.script_state.clone());
+        assert_eq!(caption(restored), Value::Text("CHORUS".into()), "replacement uses its own authored defaults");
+    }
+}
+
+#[test]
 fn rack_interactions() {
     let p = Arc::new(SamplerParams::new());
     {

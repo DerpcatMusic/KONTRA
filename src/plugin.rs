@@ -1616,6 +1616,7 @@ impl BackgroundTask for Load {
                 params.shared.load_progress[slot].store(0, Ordering::Relaxed);
                 v.loading = true;
                 v.script_epoch = 0;
+                v.edited.clear();
                 v.snapshot = None;
                 v.live = None;
                 v.live_revisions = None;
