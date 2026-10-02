@@ -1,7 +1,12 @@
 //! Native UI assets decoded only by the existing preparation worker.
 //! SVG paths stay retained vectors; bitmap assets retain their source pixels.
 use moose::mui::mui::scene::{Image, Vector, VectorCommand};
-use std::{collections::HashMap, io::Cursor, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    io::Cursor,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 use vello_svg::{
     kurbo::{Affine, Shape},
     peniko::{BlendMode, Brush, Fill},
@@ -55,6 +60,9 @@ impl Asset {
                 if let Some(s) = stroke {
                     bytes = bytes.saturating_add(s.dash_pattern.capacity() * size_of::<f64>());
                 }
+            }
+            if let Some(source) = v.raster_source() {
+                bytes = bytes.saturating_add(source.retained_bytes());
             }
             bytes
         };
@@ -145,9 +153,8 @@ fn decode(name: &str, bytes: &[u8]) -> Result<Asset, String> {
     match ext.as_str() {
         "svg" => decode_svg(bytes).map(|v| Asset::Vector(Arc::new(v))),
         "webp" => decode_webp(bytes).map(|i| Asset::Bitmap(Arc::new(i))),
-        "png" | "jpg" | "jpeg" => {
-            crate::artwork::decode_report(bytes).map(|i| Asset::Bitmap(Arc::new(i)))
-        }
+        "png" | "jpg" | "jpeg" => crate::artwork::decode_report_bounded(bytes, PIXEL_LIMIT)
+            .map(|i| Asset::Bitmap(Arc::new(i))),
         _ => Err(format!("Unsupported native UI asset format {ext:?}")),
     }
 }
@@ -194,7 +201,6 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
             "text"
                 | "image"
                 | "mask"
-                | "filter"
                 | "pattern"
                 | "script"
                 | "animate"
@@ -206,6 +212,9 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
             return Err(format!("Native SVG feature {name:?} is not supported"));
         }
     }
+    let filtered = xml
+        .descendants()
+        .any(|n| n.is_element() && n.tag_name().name() == "filter");
     let mut options = usvg::Options::default();
     // No side-channel filesystem/network reads from SVG image hrefs.
     options.image_href_resolver = usvg::ImageHrefResolver {
@@ -213,11 +222,98 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
         resolve_string: Box::new(|_, _| None),
     };
     let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| e.to_string())?;
+    if filtered {
+        let size = tree.size();
+        return Vector::filtered(
+            size.width() as f64,
+            size.height() as f64,
+            Arc::new(FilteredSvg {
+                tree,
+                source: bytes.into(),
+                images: Mutex::new(Vec::new()),
+            }),
+        )
+        .ok_or_else(|| "Invalid filtered SVG extent".into());
+    }
     let mut sink = Commands::default();
     sink.group(tree.root(), Affine::IDENTITY, false)?;
     let size = tree.size();
     Vector::new(size.width() as f64, size.height() as f64, sink.0)
         .ok_or_else(|| "Invalid native SVG geometry or layer stack".into())
+}
+// Effects require compositing. Preserve the normalized vector tree and source;
+// only the exact requested device-sized intermediate is rasterized. The source
+// belongs to this instrument's asset cache, with no global cache or worker.
+const FILTER_CACHE_LIMIT: usize = 8 << 20;
+#[derive(Debug)]
+struct FilteredSvg {
+    tree: usvg::Tree,
+    source: Arc<[u8]>,
+    images: Mutex<Vec<Image>>,
+}
+impl moose::mui::mui::scene::RasterSource for FilteredSvg {
+    fn retained_bytes(&self) -> usize {
+        // usvg's normalized tree expands source records/paths. Conservatively
+        // charge the source, an expansion allowance, and the full raster cache.
+        self.source
+            .len()
+            .saturating_mul(65)
+            .saturating_add(FILTER_CACHE_LIMIT)
+    }
+    fn rasterize(&self, width: u32, height: u32) -> Result<Image, String> {
+        let charge = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or("SVG filter extent overflow")?;
+        if charge == 0 || charge > FILTER_CACHE_LIMIT {
+            return Err(
+                "SVG filter requested device extent exceeds 8 MiB intermediate budget".into(),
+            );
+        }
+        let mut images = self
+            .images
+            .lock()
+            .map_err(|_| "SVG filter cache unavailable")?;
+        if let Some(image) = images
+            .iter()
+            .find(|i| i.width == width && i.height == height)
+        {
+            return Ok(image.clone());
+        }
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
+            .ok_or("Cannot allocate SVG filter intermediate")?;
+        let size = self.tree.size();
+        resvg::render(
+            &self.tree,
+            resvg::tiny_skia::Transform::from_scale(
+                width as f32 / size.width(),
+                height as f32 / size.height(),
+            ),
+            &mut pixmap.as_mut(),
+        );
+        // resvg produces premultiplied sRGB; MUI's shared CPU/GPU image seam
+        // accepts straight RGBA and premultiplies once during upload.
+        let mut rgba = pixmap.take();
+        for p in rgba.chunks_exact_mut(4) {
+            let a = p[3] as u32;
+            for c in &mut p[..3] {
+                *c = if a == 0 {
+                    0
+                } else {
+                    ((*c as u32 * 255 + a / 2) / a).min(255) as u8
+                };
+            }
+        }
+        let image = Image::rgba(width, height, rgba).ok_or("Invalid SVG filter pixels")?;
+        while !images.is_empty()
+            && (images.len() >= 2
+                || images.iter().map(|i| i.rgba.len()).sum::<usize>() + charge > FILTER_CACHE_LIMIT)
+        {
+            images.remove(0);
+        }
+        images.push(image.clone());
+        Ok(image)
+    }
 }
 #[derive(Default)]
 struct Commands(Vec<VectorCommand>);
@@ -411,7 +507,87 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, VectorCommand::PushLayer { alpha, .. } if *alpha == 0.7))
         );
-        assert!(decode("bad.svg", br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="16"><filter id="f"/></svg>"#).unwrap_err().contains("filter"));
+        assert!(decode("bad.svg", br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="16"><mask id="m"/></svg>"#).unwrap_err().contains("mask"));
+    }
+    #[test]
+    fn native_svg_filter_glow_preserves_pixels_and_device_cache_identity() {
+        use moose::mui::mui::{
+            scene::{self, prelude::*},
+            vello::{
+                self,
+                vello_cpu::{Pixmap, RenderContext, Resources},
+            },
+        };
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><defs><filter id="glow" x="0" y="0" width="20" height="20" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB"><feFlood flood-opacity="0" result="background"/><feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/><feOffset/><feGaussianBlur stdDeviation="2"/><feComposite in2="hardAlpha" operator="out"/><feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .5 0"/><feBlend in2="background" mode="normal" result="effect"/><feBlend in="SourceGraphic" in2="effect" mode="normal"/></filter></defs><rect x="7" y="7" width="6" height="6" fill="#ff0000" filter="url(#glow)"/></svg>"##;
+        let vector = Arc::new(decode_svg(svg).unwrap());
+        let source = vector.raster_source().unwrap();
+        let first = source.rasterize(20, 20).unwrap();
+        let again = source.rasterize(20, 20).unwrap();
+        assert!(
+            Arc::ptr_eq(&first.rgba, &again.rgba),
+            "same scale must reuse texture identity"
+        );
+        let second = source.rasterize(40, 40).unwrap();
+        assert!(!Arc::ptr_eq(&first.rgba, &second.rgba));
+        assert_eq!((second.width, second.height), (40, 40));
+        let different = decode_svg(svg).unwrap();
+        let revised = different
+            .raster_source()
+            .unwrap()
+            .rasterize(20, 20)
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&first.rgba, &revised.rgba),
+            "new asset revision must own new pixels"
+        );
+        assert!(
+            source.rasterize(4096, 4096).is_err(),
+            "bounded cache cannot allocate arbitrary device extents"
+        );
+        let root = block(20., 20.).fill(scene::Fill::Vector(vector.clone(), scene::Fit::Fill));
+        let scene =
+            scene::resolve(&scene::SceneSpec::new(root).offered(scene::Size::new(20., 20.)))
+                .unwrap();
+        let mut cache = vello::Cache::default();
+        for scale in [1u16, 2] {
+            let w = 20 * scale;
+            let mut ctx = RenderContext::new(w, w);
+            let mut resources = Resources::default();
+            vello::paint(
+                &mut vello::Cpu {
+                    ctx: &mut ctx,
+                    resources: &mut resources,
+                    cache: &mut cache,
+                },
+                &scene,
+                Affine::scale(scale as f64),
+            )
+            .unwrap();
+            ctx.flush();
+            let mut pixels = Pixmap::new(w, w);
+            ctx.render(&mut pixels, &mut resources);
+            let center = pixels.data()[10 * scale as usize * w as usize + 10 * scale as usize];
+            let glow = pixels.data()[9 * scale as usize * w as usize + 5 * scale as usize];
+            assert!(
+                center.r > 245 && center.g < 5 && center.a > 245,
+                "source must survive graph at {scale}x: {center:?}"
+            );
+            assert!(
+                glow.a > 0
+                    && glow.a < 128
+                    && glow.r.abs_diff(glow.g) <= 1
+                    && glow.g.abs_diff(glow.b) <= 1,
+                "faithful white translucent outer glow at {scale}x: {glow:?}"
+            );
+        }
+        assert!(Asset::Vector(vector).retained_bytes() >= FILTER_CACHE_LIMIT);
+        assert!(
+            Assets::prepare_bounded(Path::new("/does-not-exist.nki"), ["assets/a.svg"], 0).entries
+                ["assets/a.svg"]
+                .as_ref()
+                .unwrap_err()
+                .contains("budget")
+        );
     }
     #[test]
     fn native_svg_compound_and_nested_clips_intersect_at_device_scale() {
