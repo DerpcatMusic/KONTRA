@@ -290,13 +290,22 @@ fn a_header_is_one_line_at_any_width() {
             part.output = 3;
             part.output_manual = true;
         }
-        lock(&p.shared.view).files = Arc::new(vec![
-            "/virtual/Library/Alpha.nki".into(), "/virtual/Library/Solo.nki".into(), "/virtual/Library/Zeta.nki".into(),
-        ]);
+        {
+            let mut view = lock(&p.shared.view);
+            view.files = Arc::new(vec![
+                "/virtual/Library/Alpha.nki".into(), "/virtual/Library/Solo.nki".into(), "/virtual/Library/Zeta.nki".into(),
+            ]);
+            // The view selector is available for authored artwork, rather
+            // than an unskinned script that only offers KONTRA's controls.
+            view.parts[0].wallpaper = Some(Arc::new(artwork::Picture {
+                frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632,268,vec![40;632*268*4]).unwrap())],
+                stretch: [false;2], atlas: None,
+            }));
+        }
         let mut h = Harness::new(&p, width, 600.);
         h.idle(2);
         let scene = h.ui.scene().unwrap();
-        let frame = |id: &str| scene.surface(id).unwrap().frame;
+        let frame = |id: &str| scene.surface(id).unwrap_or_else(|| panic!("missing header control {id} at window width {width}")).frame;
         let (header, name, port) = (frame("header-0"), frame("name-0"), frame("midi-0"));
         assert!((header.size.height - (rack::SLIM - 1.)).abs() < 0.5, "at {width}: {header:?}");
         assert!(name.size.width >= 120. - 0.5,"the title remains meaningful at {width}: {name:?}, {header:?}");
