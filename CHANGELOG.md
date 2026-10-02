@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
+- Native convolution early/late Size ratios now survive Reverse, Auto Gain, predelay, callbacks and restore independently; editing one Size leaves the other intact. Older host states retain their prior uniform behavior. Native nonunit time stretch remains incomplete.
+
 - Exact host note IDs now retain their routed ownership through sustain, script children and waits, delayed expressions, release tails, and aggregate NOTE_END delivery. Generated articulation keyswitches cannot take the musical note ID; mixed raw MIDI releases and scoped cleanup preserve unrelated held notes. Unverified host expression types remain diagnosed.
 
 - `wait_async` now retains the original callback until its admitted NKA/IR operation has finished installation or failed. Unknown and completed IDs continue immediately; the bounded wait state retains event/channel context without polling or audio-thread I/O.

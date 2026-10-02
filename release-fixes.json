@@ -773,9 +773,10 @@
         "094369d3cbdbedf90eecadb54e1e1e144b46f038",
         "0819e5aa945983cd330c7f958192cd914cc0b3a0",
         "2fe0dc564f8dbf4603724bd9fc55bc442b6a931d",
-        "0c666e1059d246f23b1f2ad58b786148ec2505f0"
+        "0c666e1059d246f23b1f2ad58b786148ec2505f0",
+        "347689916532eb81d52477904a72beb05b48af63"
       ],
-      "validation": "Nineteen publication scenarios plus signing-script accepted/rejected/bad-ticket/missing-credential and package identity/hash gates passed; strict temporary-material permissions and wrapped-certificate handling checked. Existing Apple secrets successfully reused through owned Drop workflow37037003405. Actual Apple notarization of the next shipping source remains pending; no unsigned release fallback. First actual hosted signing failed identity lookup before Apple submission; the reviewed temporary-keychain search/Developer ID trust-chain correction passes all19 publication/signing mock cases, with original keychains restored. Corrected actual submission remains pending.",
+      "validation": "Nineteen publication scenarios plus signing-script accepted/rejected/bad-ticket/missing-credential and package identity/hash gates passed; strict temporary-material permissions and wrapped-certificate handling checked. Existing Apple secrets successfully reused through owned Drop workflow37037003405. Actual Apple notarization of the next shipping source remains pending; no unsigned release fallback. First actual hosted signing failed identity lookup before Apple submission; the reviewed temporary-keychain search/Developer ID trust-chain correction passes all19 publication/signing mock cases, with original keychains restored. Corrected actual submission remains pending. Corrected actual ARM83 hosted job110964001849 succeeds with Apple acceptance and staple validation; the obsolete per-architecture publication run was canceled for the required universal installer. Universal installer Apple acceptance remains pending.",
       "accepted": true
     },
     {
@@ -815,7 +816,16 @@
         "965e501b0c1244a2574478c3f1fd4948782d2780",
         "6ac223e72cd3966befeb758ebf1043cd35cceb2a"
       ],
-      "validation": "Fourteen focused ownership/routing/MPE/delayed-expression/backpressure gates pass at301d720 after reproducing and correcting keyswitch theft of the host ID. Includes overlapping same-key IDs, mixed anonymous MIDI, callback children/waits, bank-only replacement, paused scoped cleanup, safe generation reuse and zero processing heap. Native CLAP gain/pan/tuning laws supported; unverified expression types and VST3 attack tuning/duration remain diagnosed, not claimed compatible. Combined root validation follows before shipping.",
+      "validation": "Fourteen focused ownership/routing/MPE/delayed-expression/backpressure gates pass at301d720 after reproducing and correcting keyswitch theft of the host ID. Includes overlapping same-key IDs, mixed anonymous MIDI, callback children/waits, bank-only replacement, paused scoped cleanup, safe generation reuse and zero processing heap. Native CLAP gain/pan/tuning laws supported; unverified expression types and VST3 attack tuning/duration remain diagnosed, not claimed compatible. Combined host/async/IR validation passes all27 exact gates atd6eda072f0bfd7c283f767db8ac46191c1978591; shipping remains separate.",
+      "accepted": true
+    },
+    {
+      "id": "independent-convolution-size-state",
+      "summary": "Retain independent native early and late convolution Size through callbacks and restore",
+      "source_commits": [
+        "ba28f73b52d3028f245035652124bb54f7761aee"
+      ],
+      "validation": "Combined development87 plus IR-state typecheck and 27 exact focused host ownership, wait_async and IR/routing gates pass atd6eda072f0bfd7c283f767db8ac46191c1978591. New authored callback/readback/restore/worker/PCM gate proves independent writes and zero audio heap. Older host states retain prior uniform behavior; nonunit time stretching remains approximate.",
       "accepted": true
     }
   ]
