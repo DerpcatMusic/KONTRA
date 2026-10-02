@@ -521,6 +521,13 @@ mod tests {
         println!("UI_BENCH program={program} mode={mode} device_scale={device_scale} snapshot_restored={}", snapshot.is_some());
         println!("UI_BENCH import_ms={import_ms:.3} setup_ms={:.3} controls={} pictures={}",
             started.elapsed().as_secs_f64() * 1000., part.interface.as_ref().unwrap().controls.len(), part.pictures.len());
+        if std::env::var_os("KONTRA_UI_BENCH_FONTS").is_some() {
+            for (n, name) in part.interface.as_ref().unwrap().fonts.iter().enumerate() {
+                let font = part.pictures.get(&artwork::font_key(name)).expect("requested bitmap font was loaded without fallback");
+                assert_eq!(font.frames.len(), 256);
+                println!("UI_BENCH_FONT id={} glyphs={} height={} A_advance={} i_advance={}", n+26, font.frames.len(), font.frames[0].height, font.frames[65].width, font.frames[105].width);
+            }
+        }
         let shown = perf_view::layout(part.interface.as_ref().unwrap(), &part.pictures);
         let pictured = shown.iter()
             .filter(|c| matches!(c.kind, Kind::Knob | Kind::Slider) && c.picture.as_ref().is_some_and(|p| p.frames.len() > 1))
