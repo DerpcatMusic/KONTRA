@@ -120,6 +120,9 @@ pub struct Interface {
     pub wallpaper: String,
     #[serde(default)]
     pub wallpaper_state: i32,
+    /// Authored performance-view background, packed as 0xRRGGBB.
+    #[serde(default)]
+    pub background_color: Option<u32>,
     /// Vertical background offset in pixels, independent of picture state.
     #[serde(default)]
     pub skin_offset: i32,
@@ -140,6 +143,7 @@ impl Default for Interface {
             title: String::new(),
             wallpaper: String::new(),
             wallpaper_state: 0,
+            background_color: None,
             skin_offset: 0,
             fonts: Vec::new(),
             controls: Vec::new(),
