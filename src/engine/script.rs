@@ -69,7 +69,8 @@ pub fn load_scripts_with_state(
             !matches!(a, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)))
     }).collect();
     for &crate::ksp::engine::NativeEdit { par, value } in engine_state {
-        if setup.saved.iter().any(|e| e.par == par) && setup.engine_par(par).is_some() {
+        if Address::resolve(par, setup.groups).is_some_and(|a| !matches!(a, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)))
+            && setup.engine_par(par).is_some() {
             setup.set_engine_par(0, par, value);
         }
     }
@@ -79,7 +80,8 @@ pub fn load_scripts_with_state(
     // seeding the getter state before init. Only accepted addresses are replayed.
     let mut restored = Vec::new();
     for &crate::ksp::engine::NativeEdit { par, value } in engine_state {
-        if setup.saved.iter().any(|e| e.par == par) && setup.engine_par(par).is_some()
+        if Address::resolve(par, setup.groups).is_some_and(|a| !matches!(a, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)))
+            && setup.engine_par(par).is_some()
             && setup.set_engine_par(0, par, value) { restored.push((par, value)); }
         else { restore_errors.push(format!("Saved engine parameter is unavailable: {par:?}")); }
     }
