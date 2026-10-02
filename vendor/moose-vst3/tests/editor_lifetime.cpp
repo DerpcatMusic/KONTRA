@@ -9,6 +9,23 @@ static void require(bool ok) {
     if (!ok) { std::fputs("FAIL: editor/context ownership invariant\n", stderr); std::abort(); }
 }
 
+struct Frame {
+    void** vtbl;
+    int refs = 1;
+    int resizes = 0;
+};
+static tresult frame_query(void*, const TUID, void** out) { *out = nullptr; return kNoInterface; }
+static uint32 frame_add_ref(void* self) {
+    auto* frame = static_cast<Frame*>(self); require(frame->refs > 0); return ++frame->refs;
+}
+static uint32 frame_release(void* self) {
+    auto* frame = static_cast<Frame*>(self); require(frame->refs > 0); return --frame->refs;
+}
+static tresult frame_resize(void* self, void*, ViewRect* rect) {
+    auto* frame = static_cast<Frame*>(self); require(frame->refs > 0);
+    require(rect->right == 1180 && rect->bottom == 760); ++frame->resizes; return kResultOk;
+}
+
 int main() {
     Vst3Callbacks callbacks{};
     callbacks.create = []() -> void* { require(!context_alive); context_alive = true; return &context_alive; };
@@ -51,5 +68,24 @@ int main() {
     auto* view = static_cast<MoosePlugView*>(com->vtbl_controller->createView(&com->vtbl_controller, "editor"));
     require(view && view->vtbl->release(view) == 0 && context_alive);
     require(com->vtbl_component->release(com) == 0 && !context_alive && destroys == 101);
-    std::puts("PASS: component-first and view-first release, multiple views, reopen, scale interface, exactly-once teardown");
+    // IPlugFrame is another independent COM owner. The host may release its
+    // reference after setFrame; retain it until replacement, clear or teardown.
+    void* frame_vtbl[] = {reinterpret_cast<void*>(frame_query), reinterpret_cast<void*>(frame_add_ref),
+        reinterpret_cast<void*>(frame_release), reinterpret_cast<void*>(frame_resize)};
+    Frame first_frame{frame_vtbl}, second_frame{frame_vtbl}, final_frame{frame_vtbl};
+    com = create_component();
+    view = static_cast<MoosePlugView*>(com->vtbl_controller->createView(&com->vtbl_controller, "editor"));
+    require(view->vtbl->setFrame(view, &first_frame) == kResultOk && first_frame.refs == 2);
+    require(view->vtbl->setFrame(view, &first_frame) == kResultOk && first_frame.refs == 2);
+    require(frame_release(&first_frame) == 1);
+    require(moose_vst3_request_resize(com->impl.rustContext(), 1180, 760) == 1 && first_frame.resizes == 1);
+    require(view->vtbl->setFrame(view, &second_frame) == kResultOk && first_frame.refs == 0 && second_frame.refs == 2);
+    require(frame_release(&second_frame) == 1);
+    require(view->vtbl->setFrame(view, nullptr) == kResultOk && second_frame.refs == 0);
+    require(moose_vst3_request_resize(com->impl.rustContext(), 1180, 760) == 0);
+    require(view->vtbl->setFrame(view, &final_frame) == kResultOk && final_frame.refs == 2);
+    require(frame_release(&final_frame) == 1);
+    require(view->vtbl->release(view) == 0 && final_frame.refs == 0 && context_alive);
+    require(com->vtbl_component->release(com) == 0 && !context_alive && destroys == 102);
+    std::puts("PASS: component/view/scale ownership and reopen; frame same/replacement/null/final release and retained resize");
 }
