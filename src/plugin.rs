@@ -4742,6 +4742,11 @@ pub(crate) mod tests {
         assert_eq!(fragment.snapshot().unwrap().children.len(),1,"anonymous authored groups compose their children");
         std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.Text{text='positional'}.frame(42)").unwrap();
         assert!(format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err()).contains("Unsupported positional native UI modifier: frame"),"positional arguments reach the host validation rather than being misparsed");
+        std::fs::write(resources.join("main.nui"),"while true do pcall(function() pcall(function() while true do end end) end) end").unwrap();
+        let error=format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err());
+        assert!(error.contains("instruction budget exceeded"),"nested protected calls cannot swallow instruction exhaustion: {error}");
+        std::fs::write(resources.join("main.nui"),"local ok,reason=pcall(function() error('ordinary') end) assert(not ok and string.find(reason,'ordinary')) local yes,a,b=pcall(function() return nil,7 end) assert(yes and a==nil and b==7) local ui=require('native_ui') return @ui.ZStack{}.frame(width=10,height=10)").unwrap();
+        assert!(Scene::prepare(&i.path,rt).unwrap().is_some(),"ordinary protected calls retain Lua return/error semantics");
         std::fs::remove_dir_all(directory).unwrap();
     }
 

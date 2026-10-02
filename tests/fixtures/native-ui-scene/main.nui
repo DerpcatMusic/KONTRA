@@ -1,4 +1,6 @@
 local ui = require("native_ui")
+local connected,kontakt=pcall(require,"kontakt")
+assert(connected and kontakt.connect_parameter)
 local Card = require("components")
 local context=require("context")
 return function()
