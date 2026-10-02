@@ -1186,7 +1186,9 @@ mod tests {
             }
             assert_eq!(e.dropped_commands(),0);
             assert!(e.script().unwrap().diagnostics().is_empty(), "{:?}",e.script().unwrap().diagnostics());
-            no_audio_heap(|| { e.panic(); render(&mut e); });
+            // Panic uses the native 5 ms click-free cut; allow that cut and
+            // one extra block before requiring no remaining voices.
+            no_audio_heap(|| { e.panic(); for _ in 0..5 { render(&mut e); } });
             assert_eq!(e.voice_census().len(),0);
         }
     }
@@ -1213,7 +1215,7 @@ mod tests {
         assert_eq!(voices.len(),3);
         assert!(voices.iter().all(|v| v.gain > gains[2]));
         assert!(voices.iter().all(|v| (v.gain-voices[0].gain).abs()<1e-5));
-        e.panic();
+        no_audio_heap(|| { e.panic(); for _ in 0..5 { render(&mut e); } });
         assert!(e.voice_census().is_empty());
         assert_eq!(e.dropped_commands(),0);
         assert!(e.script().unwrap().diagnostics().is_empty());
