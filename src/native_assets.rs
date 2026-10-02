@@ -1030,10 +1030,18 @@ mod tests {
         );
         let unlimited = crate::artwork::decode_report(&bytes).unwrap();
         assert_eq!((unlimited.width, unlimited.height), (1, 1));
-        let error = crate::artwork::decode_report_bounded(&bytes, 1024).unwrap_err();
+        let normal = crate::artwork::png_reader(&bytes, usize::MAX).unwrap();
+        assert_eq!(normal.info().icc_profile.as_ref().unwrap().len(), 64 << 10);
+        let bounded = crate::artwork::png_reader(&bytes, 1024).unwrap();
         assert!(
-            error.to_ascii_lowercase().contains("limit"),
-            "metadata must hit decoder bound before RGBA allocation: {error}"
+            bounded.info().icc_profile.is_none(),
+            "bounded decoder must discard over-limit noncritical ICC before allocation"
+        );
+        let pixels = crate::artwork::decode_report_bounded(&bytes, 1024).unwrap();
+        assert_eq!(
+            pixels.rgba.as_ref(),
+            unlimited.rgba.as_ref(),
+            "discarding noncritical metadata must preserve valid pixels"
         );
     }
     #[test]
