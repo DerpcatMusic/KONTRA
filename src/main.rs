@@ -1254,6 +1254,16 @@ fn audit_patch(args: &[String]) -> Result<()> {
     };
     trace.detail("audit", row.clone());
     row["diagnostics"] = (*trace.finish(status)).clone();
+    // Identity is recorded as soon as import succeeds, including later failures.
+    row["applied_instrument"] = row["diagnostics"]["details"]["applied_instrument"].clone();
+    let flush_error = kontakto::diagnostics::flush(std::time::Duration::from_secs(5)).err();
+    let recorder = kontakto::diagnostics::snapshot();
+    row["recorder"] = serde_json::json!({
+        "scope":"current process session, through audit-patch completion",
+        "session_id":recorder.events.first().map(|event| &event.session_id),
+        "flush_complete":flush_error.is_none(), "flush_error":flush_error,
+        "status":recorder.status,
+    });
     println!("{row}");
     result.map(|_| ())
 }
@@ -1272,6 +1282,36 @@ fn audit_patch_rejects_invalid_selection() {
     }
 }
 
+// Reuse the cache's metadata identities and standard fingerprint approach.
+// Hash imported persistence rather than publishing variable names/values.
+fn audit_applied_identity(instrument: &import::Instrument, program: u32, snapshot: Option<&Path>) -> Result<serde_json::Value> {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::hash::DefaultHasher::new();
+    serde_json::to_vec(&instrument.script_state)?.hash(&mut hash);
+    Ok(serde_json::json!({
+        "name":instrument.name, "base_path":instrument.path, "program":program,
+        "snapshot":snapshot, "dependencies":instrument.dependencies,
+        "script_slots":instrument.scripts.len(),
+        "persisted_slots":instrument.script_state.len(),
+        "groups":instrument.groups.len(), "zones":instrument.zones.len(),
+        "script_state_fingerprint":format!("{:016x}", hash.finish()),
+        "fingerprint_scope":"imported script persistence; std DefaultHasher over serde JSON, non-cryptographic; supported effects/group state are identified by source dependency stamps, not certified by this fingerprint",
+    }))
+}
+
+#[test]
+fn audit_applied_identity_tracks_imported_name_and_persistence_without_payloads() {
+    let mut instrument = import::Instrument { name:"Authored applied snapshot".into(), path:"Authored base.nki".into(), ..Default::default() };
+    instrument.script_state.push(kontakto::ksp::Persisted::new());
+    let before = audit_applied_identity(&instrument, 0, Some(Path::new("Authored preset.nksn"))).unwrap();
+    instrument.script_state[0].insert("private_authored_fixture".into(), kontakto::ksp::Value::Int(42));
+    let after = audit_applied_identity(&instrument, 0, Some(Path::new("Authored preset.nksn"))).unwrap();
+    assert_eq!(after["name"], "Authored applied snapshot");
+    assert_eq!(after["snapshot"], "Authored preset.nksn");
+    assert_ne!(before["script_state_fingerprint"], after["script_state_fingerprint"]);
+    assert!(!after.to_string().contains("private_authored_fixture"));
+}
+
 fn audit_patch_report(path: &Path, program: u32, snapshot: Option<&Path>, trace: &mut kontakto::diagnostics::LoadTrace) -> Result<serde_json::Value> {
     let started = std::time::Instant::now();
     trace.stage("import");
@@ -1279,6 +1319,7 @@ fn audit_patch_report(path: &Path, program: u32, snapshot: Option<&Path>, trace:
         Some(snapshot) => import::read_snapshot(path, snapshot),
         None => import::read_program(path, program),
     }.inspect_err(|e| trace.fail(format!("{e:#}")))?;
+    trace.detail("applied_instrument", audit_applied_identity(&instrument, program, snapshot)?);
     for w in &instrument.warnings { trace.issue("import", kontakto::diagnostics::code(w), w); }
     for name in &instrument.missing_samples { trace.issue("samples", "missing", name); }
     trace.stage("scripts");

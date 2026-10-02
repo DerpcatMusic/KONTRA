@@ -90,6 +90,9 @@ pub struct LogStatus {
     pub dropped_events: u64,
     pub truncated_events: u64,
     pub write_errors: u64,
+    /// Complete journal records written this session, including rotated history.
+    #[serde(default)]
+    pub journal_events_written: u64,
     pub last_error: Option<String>,
     pub retention_errors: u64,
 }
@@ -122,6 +125,8 @@ struct History {
 }
 enum Command {
     Event(LogEvent),
+    #[cfg(test)]
+    Pause(mpsc::Sender<()>, mpsc::Receiver<()>),
     #[cfg(feature = "plugin")]
     NativeTiming(moose::mui::window::NativeTimingReport, u64),
     Flush(mpsc::Sender<Result<(), String>>),
@@ -205,6 +210,11 @@ impl Session {
                 let mut journal = Journal::new(worker_path, worker_history);
                 while let Ok(command) = receiver.recv() {
                     match command {
+                        #[cfg(test)]
+                        Command::Pause(entered, resume) => {
+                            let _ = entered.send(());
+                            let _ = resume.recv();
+                        }
                         Command::Event(event) => {
                             if let Err(error) = journal.write_event(&event) {
                                 journal.error(error);
@@ -545,22 +555,32 @@ fn retain_event(history: &mut History, row: &mut LogEvent, bytes: usize, truncat
 }
 
 fn emit_to(session: &Session, value: Value) -> Option<String> {
+    enqueue(session, value, false)
+}
+
+// LoadTrace runs on loader/catalog/picture workers or the CLI. Backpressure
+// keeps their bursts on the existing bounded queue; UI/runtime events do not wait.
+fn enqueue(session: &Session, value: Value, wait: bool) -> Option<String> {
     let (mut row, bytes, truncated) = prepare_event(&session.id, session.started, value);
+    retain_event(&mut lock(&session.history), &mut row, bytes, truncated);
+    let sender = lock(&session.sender).clone();
+    // Neither mutex can remain held while waiting: the writer needs history
+    // to report disk failures and successful delivery, and shutdown takes sender.
+    let error = match sender {
+        Some(sender) if wait => sender.send(Command::Event(row)).err()
+            .map(|_| "Diagnostics worker is unavailable"),
+        Some(sender) => sender.try_send(Command::Event(row)).err().map(|error| match error {
+            TrySendError::Full(_) => "Diagnostics queue is full; event retained in recent history only",
+            TrySendError::Disconnected(_) => "Diagnostics worker is unavailable",
+        }),
+        None => Some("Diagnostics worker is unavailable"),
+    };
     let mut history = lock(&session.history);
-    retain_event(&mut history, &mut row, bytes, truncated);
-    let result = lock(&session.sender)
-        .as_ref()
-        .map(|s| s.try_send(Command::Event(row)));
-    match result {
-        Some(Ok(())) => history.status.last_error.clone(),
-        Some(Err(TrySendError::Full(_))) => {
-            history.status.dropped_events += 1;
-            Some("Diagnostics queue is full; event retained in recent history only".into())
-        }
-        _ => {
-            history.status.dropped_events += 1;
-            Some("Diagnostics worker is unavailable".into())
-        }
+    if let Some(error) = error {
+        history.status.dropped_events += 1;
+        Some(error.into())
+    } else {
+        history.status.last_error.clone()
     }
 }
 
@@ -834,6 +854,7 @@ impl Journal {
             return Err(error);
         }
         self.bytes += bytes.len() as u64;
+        lock(&self.history).status.journal_events_written += 1;
         Ok(())
     }
     fn error(&self, error: std::io::Error) {
@@ -1487,11 +1508,11 @@ impl LoadTrace {
         let row = json!({"event":event,"module":module,"load_id":self.report["load_id"],"path":self.report["path"],"program":self.report["program"],"part":self.report["part"],"instance_id":self.report["details"]["instance_id"],"library":self.report["details"]["library"],"stage":stage,"data":data});
         #[cfg(test)]
         let error = match &self.test_session {
-            Some(session) => emit_to(session, row),
-            None => emit(row),
+            Some(session) => enqueue(session, row, true),
+            None => enqueue(&session(), row, true),
         };
         #[cfg(not(test))]
-        let error = emit(row);
+        let error = enqueue(&session(), row, true);
         if let Some(error) = error {
             self.report["logging_error"] = json!(error);
         }
@@ -1559,7 +1580,7 @@ impl LoadTrace {
             let omitted = self.report["issues_omitted"].as_u64().unwrap_or(0) + 1;
             self.report["issues_omitted"] = json!(omitted);
             if omitted == 1 {
-                self.record("issue", json!({"stage":stage,"code":"diagnostics_truncated","message":"Load report issues retain the first 1024 distinct examples; additional occurrences are counted in issues_omitted. Additional warnings and errors still attempt journal delivery; recorder drop/write counters report delivery loss. The latest error is retained as last_error"}));
+                self.record("issue", json!({"stage":stage,"code":"diagnostics_truncated","message":"Load report issues retain the first 1024 distinct examples; additional occurrences are counted in issues_omitted. Additional warnings and errors wait for bounded worker queue capacity; recorder drop/write counters report delivery failure. The latest error is retained as last_error"}));
             }
             if error {
                 self.report["last_error"] = issue.clone();
@@ -1666,28 +1687,42 @@ mod tests {
             lock(&session.sender).as_ref().unwrap().send(Command::Flush(reply)).unwrap();
             done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
         };
-        for n in 0..1026 {
-            trace.issue("effects", "unsupported_group_effect", format!("Group {n}: authored unsupported effect"));
-            // Test the retention boundary, not intentional bounded-queue loss.
-            if n % 128 == 127 { flush(); }
-        }
-        trace.issue("effects", "unsupported_group_effect", "Group 0: authored unsupported effect");
-        let report = trace.finish("loaded");
+        // Pause the real disk worker, fill its queue, then let the load worker
+        // continue through backpressure. No intermediate flush hides burst loss.
+        let (entered, paused) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        lock(&session.sender).as_ref().unwrap().send(Command::Pause(entered, resumed)).unwrap();
+        paused.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (filled, full) = mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            for n in 0..4098 {
+                trace.issue("effects", "unsupported_group_effect", format!("Group {n}: authored unsupported effect"));
+                if n == QUEUE_LIMIT - 1 { filled.send(()).unwrap(); }
+            }
+            trace.issue("effects", "unsupported_group_effect", "Group 0: authored unsupported effect");
+            trace.finish("loaded")
+        });
+        full.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(lock(&session.history).status.total_events <= (QUEUE_LIMIT + 2) as u64, "the load worker waits on the bounded queue");
+        resume.send(()).unwrap();
+        let report = producer.join().unwrap();
         flush();
         assert_eq!(report["issues"].as_array().unwrap().len(), 1024);
-        assert_eq!(report["issues_omitted"], 2, "known duplicates are not omitted examples");
+        assert_eq!(report["issues_omitted"], 3074, "known duplicates are not omitted examples");
         assert_eq!(report["status"], "partial");
         let journal = std::fs::read_to_string(&session.path).unwrap();
         let records: Vec<Value> = journal.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
         let warnings: Vec<_> = records.iter().filter(|row| row["code"] == "unsupported_group_effect").collect();
-        assert_eq!(warnings.len(), 1026, "every distinct warning reaches the real journal after the report cap");
-        for n in [0, 1023, 1024, 1025] {
+        assert_eq!(warnings.len(), 4098, "every distinct warning reaches the real journal after the report cap");
+        for n in [0, 1023, 1024, 4097] {
             let message = format!("Group {n}: authored unsupported effect");
             assert_eq!(warnings.iter().filter(|row| row["reason"] == message).count(), 1);
         }
         let history = lock(&session.history);
         assert!(history.events.len() <= HISTORY_LIMIT);
         assert_eq!((history.status.dropped_events, history.status.write_errors), (0, 0));
+        assert_eq!(history.status.journal_events_written, records.len() as u64);
+        assert!(history.status.history_evicted > 0);
         let snapshot = DiagnosticSnapshot {
             revision: revision(), events: history.events.iter().map(|(event, _)| event.clone()).collect(),
             status: history.status.clone(), build: build_identity(),
@@ -1696,7 +1731,7 @@ mod tests {
         let bundle = directory.join("bundle");
         export_bundle(&bundle, &json!({"load":report.as_ref()}), &snapshot, &session.path, None).unwrap();
         let exported = std::fs::read_to_string(bundle.join("journal.jsonl")).unwrap();
-        assert_eq!(exported.lines().filter(|line| serde_json::from_str::<Value>(line).unwrap()["code"] == "unsupported_group_effect").count(), 1026, "support export includes warnings omitted only from the load summary");
+        assert_eq!(exported.lines().filter(|line| serde_json::from_str::<Value>(line).unwrap()["code"] == "unsupported_group_effect").count(), 4098, "support export includes warnings omitted only from the load summary");
         let mut owner = Some(session.clone());
         stop(&mut owner).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
