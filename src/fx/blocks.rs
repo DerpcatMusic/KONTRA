@@ -235,6 +235,21 @@ fn tube_curve(x: f32, k: f32, negative: f32, positive: f32) -> f32 {
     }
 }
 
+/// Native Transistor core. The low-level joins avoid powers, and the
+/// negative/positive power branches retain native float/double precision.
+#[inline(always)]
+fn transistor_curve(x: f32, drive: f32, power: f32, threshold: f32, scale: f32, inverse_power: f64) -> f32 {
+    if drive == 0.0 || x >= 0.25 || x < -0.25 { return x; }
+    if x < 0.0 {
+        let magnitude = -x;
+        let shaped = if magnitude < threshold { magnitude * scale } else { 0.25 * (4.0 * magnitude).powf(power) };
+        (1.0 - drive) * x - drive * shaped
+    } else {
+        let shaped = if x <= 1.0 / 4096.0 { x / scale } else { 0.25 * f64::from(4.0 * x).powf(inverse_power) as f32 };
+        (1.0 - drive) * x + drive * shaped
+    }
+}
+
 /// Keeps decaying feedback out of subnormal floats.
 const ANTI_DENORMAL: f32 = 1e-20;
 
@@ -296,17 +311,20 @@ impl Drive {
                 let q = 0.975 * (4.0 + a) + 0.1;
                 [s, f[1], a, q, 1.0 / (1.0 + q), 0.0, 0.0, 0.0]
             }
-            // Native Tube core has no drive makeup. Retain the existing
-            // Transistor and filtering proxies until their laws are proved.
+            // Neither native scalar core has drive makeup. Filtering
+            // retains the existing approximation until its law is proved.
             DriveKind::Distortion => {
                 let d = x(1);
-                let hard = f[0] >= 0.5;
-                let negative = if d > 0.75 { 1.0 } else { (0.5625 - (0.75 - d).powi(2)) * (16.0 / 9.0) };
-                let positive = if d < 0.25 { 0.0 } else { (0.5625 - (1.0 - d).powi(2)) * (16.0 / 9.0) };
-                [if hard { db(48.0 * d) } else { 1.0 },
-                    if hard { db(-24.0 * d) } else { 1.0 },
-                    one_pole(20_000.0 * 0.01f32.powf(x(2)), rate),
-                    f32::from(hard), negative, positive, 1.0 + 1.5 * d, 0.0]
+                let a = one_pole(20_000.0 * 0.01f32.powf(x(2)), rate);
+                if f[0] >= 0.5 {
+                    let threshold = f64::from(8.0 * d - 12.0).exp2() as f32;
+                    [d, -60.0 / (48.0 * d - 60.0), a, 1.0,
+                        threshold, (1.0 / 4096.0) / threshold, 0.0, 0.0]
+                } else {
+                    let negative = if d > 0.75 { 1.0 } else { (0.5625 - (0.75 - d).powi(2)) * (16.0 / 9.0) };
+                    let positive = if d < 0.25 { 0.0 } else { (0.5625 - (1.0 - d).powi(2)) * (16.0 / 9.0) };
+                    [1.0, 1.0, a, 0.0, negative, positive, 1.0 + 1.5 * d, 0.0]
+                }
             }
             // Bits 1..=32; higher native FREQUENCY means less reduction.
             // ANALOG STRINGS' authored SRate control defaults to 1M and says
@@ -373,12 +391,15 @@ impl Drive {
                 left.iter_mut().chain(right.iter_mut()).for_each(|x| *x = curve(*x));
             }
             DriveKind::Distortion => {
-                let [g, out, a, hard, negative, positive, k, ..] = self.c;
+                let [drive, power, a, transistor, c4, c5, k, ..] = self.c;
+                let inverse_power = 1.0 / f64::from(power);
                 for (ch, buf) in [left, right].into_iter().enumerate() {
                     let mut lp = self.s[ch];
                     for x in buf.iter_mut() {
-                        let y = if hard > 0.0 { (g * *x).clamp(-1.0, 1.0) } else { tube_curve(*x, k, negative, positive) };
-                        lp += a * (y * out - lp) + ANTI_DENORMAL;
+                        let y = if transistor > 0.0 {
+                            transistor_curve(*x, drive, power, c4, c5, inverse_power)
+                        } else { tube_curve(*x, k, c4, c5) };
+                        lp += a * (y - lp) + ANTI_DENORMAL;
                         *x = lp;
                     }
                     self.s[ch] = lp;
@@ -1181,7 +1202,65 @@ mod tests {
         assert!(fx.warnings().iter().all(|w| !w.contains("Transistor")));
         fx.insert.slots[0] = effect(Kind::Distortion, &[1.0, 0.0, 0.0]);
         assert!(crate::engine::filter::unsupported_at(&fx.insert, Some(8)).iter()
-            .any(|w| w.contains("Transistor mode retains an unverified")));
+            .any(|w| w.contains("native DC filtering is not applied")));
+    }
+
+    #[test]
+    fn transistor_distortion_matches_independent_boundaries_and_rates_without_heap() {
+        // Independently evaluated decimal reference, including both threshold
+        // joins, quarter-amplitude exits, quiet signals and above-unit input.
+        let input = [-4.0, -0.25000006, -0.25, -0.24999997, -0.06250001, -0.0625,
+            -0.06249999, -0.00390625, -0.000244140625, 0.0, 0.00024412, 0.000244140625,
+            0.00024416, 0.00390625, 0.01, 0.24999997, 0.25, 4.0];
+        let cases: [(f32, [f64; 18]); 3] = [
+            (0.0, [-4.0, -0.25000006, -0.25, -0.24999997, -0.06250001, -0.0625,
+                -0.06249999, -0.00390625, -0.000244140625, 0.0, 0.00024412, 0.000244140625,
+                0.00024416, 0.00390625, 0.01, 0.24999997, 0.25, 4.0]),
+            (0.5, [-4.0, -0.25000006, -0.25, -0.24999996, -0.043651579025587,
+                -0.043651570718502, -0.043651562411416, -0.0020751953125, -0.00012969970703125,
+                0.0, 0.00207502, 0.0020751953125, 0.002075297998524, 0.012261780552913,
+                0.023119491591942, 0.249999976, 0.25, 4.0]),
+            (1.0, [-4.0, -0.25000006, -0.25, -0.24999985000004, -0.00024414082031256,
+                -0.000244140625, -0.0002441405859375, -1.52587890625e-5, -9.5367431640625e-7,
+                0.0, 0.06249472, 0.0625, 0.062500991968511, 0.10881882041202,
+                0.13132639022019, 0.249999994, 0.25, 4.0]),
+        ];
+        let mut values = [0.0; FIELDS];
+        values[0] = 1.0;
+        let mut d = Drive::default();
+        for rate in [44_100.0f32, 96_000.0] {
+            for (drive, expected) in cases {
+                values[1] = drive;
+                let (mut l, mut r) = (input, input);
+                r.reverse();
+                assert_eq!(crate::plugin::tests::allocations(|| {
+                    d.clear();
+                    assert!(d.tune(Kind::Distortion, &values, rate));
+                    let [drive, power, _, _, threshold, scale, ..] = d.c;
+                    let inverse_power = 1.0 / f64::from(power);
+                    for (x, expected) in input.into_iter().zip(expected) {
+                        let actual = transistor_curve(x, drive, power, threshold, scale, inverse_power);
+                        assert!((f64::from(actual) - expected).abs() < 2e-7, "drive{drive}, input{x}: {actual} != {expected}");
+                        if drive == 0.0 { assert_eq!(actual, x); }
+                        if x >= 0.25 || x < -0.25 { assert_eq!(actual, x); }
+                    }
+                    d.process(&mut l, &mut r);
+                }), 0);
+                // The existing filter approximation is deliberately preserved.
+                // Its rate-dependent one-pole recurrence is independent of the
+                // scalar fixture; resetting it must remove previous-rate state.
+                let cutoff = 20_000.0f64.min(0.45 * f64::from(rate));
+                let a = 1.0 - (-std::f64::consts::TAU * cutoff / f64::from(rate)).exp();
+                for (buffer, reversed) in [(&l, false), (&r, true)] {
+                    let mut state = 0.0;
+                    for (i, actual) in buffer.iter().enumerate() {
+                        let source = expected[if reversed { expected.len() - 1 - i } else { i }];
+                        state += a * (source - state);
+                        assert!((f64::from(*actual) - state).abs() < 2e-6);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

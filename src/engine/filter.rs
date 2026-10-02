@@ -526,10 +526,7 @@ pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
             out.push("Group Saturation: Enhanced/Drums modes use an unverified transfer-curve proxy".into());
         }
         if fx.kind == Kind::Distortion {
-            let transistor = if blocks::fields(&fx.params).is_some_and(|f| f[0] >= 0.5) {
-                "; Transistor mode retains an unverified transfer-curve proxy"
-            } else { "" };
-            out.push(format!("Group Distortion: Damping uses a low-pass approximation; native DC filtering is not applied{transistor}"));
+            out.push("Group Distortion: Damping uses a low-pass approximation; native DC filtering is not applied".into());
         }
         match &fx.params {
             Params::Filter(f) if filter_type(f.filter_type).is_none() => {
@@ -2797,18 +2794,18 @@ mod tests {
     #[test]
     fn tube_distortion_native_drive_edits_and_routing_match_rack_without_heap() {
         use crate::{fx::{Effect, params::Field}, engine::{GroupSettings, params::{Address, self}}, ksp::EnginePar};
-        let effect = Effect {
-            slot: 6, kind: Kind::Distortion, version: 0, bypass: false,
-            output_gain: 0.75, dry_level: 0.0,
-            params: Params::Fields(crate::fx::params::layout_names(Kind::Distortion).unwrap().iter()
-                .map(|&name| Field { name, value: Value::Number(0.0) }).collect()),
-        };
         let drive_id = (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 512)
             .find(|&id| crate::ksp::engine_par_name(id) == Some("$ENGINE_PAR_DRIVE")).unwrap();
         let table = ModTable::default();
         let cc = [0; 128];
         let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
-        for split in [0, 8] {
+        for (mode, split) in [(0.0, 0), (0.0, 8), (1.0, 0), (1.0, 8)] {
+            let effect = Effect {
+                slot: 6, kind: Kind::Distortion, version: 0, bypass: false,
+                output_gain: 0.75, dry_level: 0.0,
+                params: Params::Fields(crate::fx::params::layout_names(Kind::Distortion).unwrap().iter()
+                    .enumerate().map(|(i, &name)| Field { name, value: Value::Number(if i == 0 { mode } else { 0.0 }) }).collect()),
+            };
             let groups = [Group { fx: Chain { slots: vec![effect.clone()] }, amp_split_slot: Some(split), ..Group::default() }];
             let mut settings = [GroupSettings::from(&groups[0])];
             let address = Address::resolve(EnginePar { id: drive_id, group: 0, slot: 6, generic: -1 }, &groups).unwrap();
