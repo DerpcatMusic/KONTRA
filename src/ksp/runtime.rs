@@ -534,6 +534,8 @@ pub struct Env {
     pub(super) array_inflight: usize,
     pub(super) shared_arrays: Vec<super::arrays::SharedArray>,
     common_input: u64,
+    pub(super) shared_irs: Vec<super::arrays::SharedIr>,
+    pub(super) ir_sequence: u64,
     array_results: VecDeque<Box<super::ArrayJob>>,
     array_retired: VecDeque<Box<super::ArrayJob>>,
     pub spare_pgs_ints: Vec<(String, Vec<i32>)>,
@@ -597,6 +599,8 @@ impl Env {
             array_inflight: 0,
             shared_arrays: Vec::new(),
             common_input: 0,
+            shared_irs: Vec::new(),
+            ir_sequence: 0,
             array_results: VecDeque::with_capacity(super::arrays::ARRAY_QUEUE),
             array_retired: VecDeque::with_capacity(super::arrays::ARRAY_QUEUE),
             spare_pgs_ints: Vec::new(),
@@ -964,6 +968,7 @@ impl Runtime {
         }
         self.configuration_domain = Some(self.domain_count);
         self.env.shared_arrays.reserve(super::arrays::ARRAY_QUEUE);
+        self.env.shared_irs.reserve(super::arrays::IR_QUEUE);
         // Jobs are prepared for selected storage, not just the event domain:
         // canonical callbacks and the first performance bank both use domain 0.
         for (p, state) in self.programs.iter().zip(&self.states) {
@@ -2160,17 +2165,58 @@ impl Runtime {
     }
 
     pub(crate) fn async_complete_scope(&mut self, engine: &mut dyn KspEngine, slot: u8, scope: CallbackScope, id: i32, loaded: bool) {
-        if slot as usize >= self.states.len() { return; }
-        self.env.finish_async(slot, id);
+        self.async_complete_ir(engine,slot,scope,id,loaded,false);
+    }
+
+    pub(crate) fn ir_request_current(&self, id:i32) -> Option<bool> {
+        let entry=self.env.shared_irs.iter().find(|s|s.root==id)?;
+        Some(entry.outcome.is_none() && !self.env.shared_irs.iter().any(|s|
+            entry.same_slot(s) && s.serial>entry.serial))
+    }
+
+    pub(crate) fn async_complete_ir(&mut self, engine:&mut dyn KspEngine, slot:u8,
+        scope:CallbackScope, id:i32, loaded:bool, superseded:bool) {
+        if slot as usize>=self.states.len() {return}
         if !loaded {
-            self.env.note("load_ir_sample: file not found, or that slot holds no convolution effect");
+            self.env.note(if superseded {"load_ir_sample: newer slot request superseded this load; prepared IR was not installed"}
+                else {"load_ir_sample: file not found, or that slot holds no convolution effect"});
         }
-        if self.env.async_done.len() < self.env.async_done.capacity() {
-            self.env.async_done.push((slot, scope.completion(id), id, i32::from(loaded)));
+        if let Some(entry)=self.env.shared_irs.iter_mut().find(|s|s.root==id) {
+            if entry.outcome.is_none() {entry.outcome=Some(loaded);}
         } else {
-            self.env.note("KSP async completion callback queue exhausted");
+            self.env.finish_async(slot,id);
+            if self.env.async_done.len()<self.env.async_done.capacity() {
+                self.env.async_done.push((slot,scope.completion(id),id,i32::from(loaded)));
+            } else {self.env.note("KSP async completion callback queue exhausted");}
         }
         self.settle(engine);
+    }
+
+    fn publish_ir_completions(&mut self) {
+        for at in 0..self.env.shared_irs.len() {
+            let entry=&mut self.env.shared_irs[at];
+            let Some(loaded)=entry.outcome else {continue};
+            if entry.notified==entry.count || self.env.async_done.capacity()-self.env.async_done.len()<entry.count-entry.notified {continue}
+            let (slot,root,first,count,subscribers)=(entry.slot,entry.root,entry.notified,entry.count,entry.subscribers);
+            entry.notified=count;
+            for subscriber in subscribers[first..count].iter().rev().flatten() {
+                self.env.finish_async(slot,subscriber.id);
+                self.env.async_done.push((slot,subscriber.scope.completion(root),subscriber.id,i32::from(loaded)));
+            }
+        }
+    }
+
+    fn prune_ir_results(&mut self) {
+        for at in (0..self.env.shared_irs.len()).rev() {
+            let entry=&self.env.shared_irs[at];
+            let input=entry.input();
+            if entry.outcome.is_some() && entry.notified==entry.count
+                && (input==0 || !self.common_input_live(input))
+                // Keep the latest accepted outcome as a watermark while an
+                // older result for that global slot can still arrive.
+                && !self.env.shared_irs.iter().any(|s|entry.same_slot(s) && s.serial<entry.serial && s.outcome.is_none())
+            {self.env.shared_irs.swap_remove(at);}
+        }
     }
 
     /// Common UI inputs replay the authored callback in each prepared bank.
@@ -2470,6 +2516,7 @@ impl Runtime {
     /// Finish the current block: resume every callback due before its end.
     pub fn process(&mut self, engine: &mut dyn KspEngine, frames: u32) {
         self.install_array_jobs(256);
+        self.publish_ir_completions();
         let end = self.env.now + u64::from(frames);
         // What the last settle left for later (see `settle`).
         if self.env.cleaning || self.env.pgs_changed || !self.env.async_done.is_empty() || self.env.async_ready {
@@ -2482,6 +2529,7 @@ impl Runtime {
         }
         self.env.now = end;
         self.env.offset = 0;
+        self.prune_ir_results();
         if !self.audio_block {
             self.env.block_fuel = BLOCK_FUEL;
         }
@@ -2556,6 +2604,7 @@ impl Runtime {
         // asynchronous call (a retry that can never succeed here).
         let mut completions = 0;
         loop {
+            self.publish_ir_completions();
             let mut deferred = 0;
             while let Some(w) = self.env.work.pop_front() {
                 let event = match w {

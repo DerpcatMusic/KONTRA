@@ -454,6 +454,8 @@ pub struct Shared {
     /// IR loads requested by scripts: part, instrument generation, script epoch.
     ir_requests: ArrayQueue<(usize, u64, u64, crate::engine::IrRequest)>,
     ir_ready: ArrayQueue<(usize, u64, IrHandoff)>,
+    /// Serialized file worker waits for the installed metadata acknowledgment.
+    ir_inflight: AtomicBool,
     array_requests: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
     array_ready: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
     array_retired: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
@@ -633,7 +635,7 @@ pub(crate) struct PartView {
     pub(crate) freed: u64,
     /// Rate of the effects handed to the audio thread; 0 when none were.
     pub(crate) fx_rate: f64,
-    /// Impulse responses the runtime's `on init` loaded, built into the effects.
+    /// Impulse responses actually installed, including acknowledged live loads.
     pub(crate) irs: Vec<crate::fx::ScriptIr>,
     /// `Part::script_state` the audio thread's runtime matches (loaded from or last saved).
     pub(crate) script_state: String,
@@ -730,6 +732,7 @@ impl Default for Shared {
             file_selections: ArrayQueue::new(16),
             ir_requests: ArrayQueue::new(64),
             ir_ready: ArrayQueue::new(64),
+            ir_inflight: AtomicBool::new(false),
             array_requests: ArrayQueue::new(64),
             array_ready: ArrayQueue::new(64),
             array_retired: ArrayQueue::new(64),
@@ -981,6 +984,7 @@ struct Edit {
 /// Loader-built state for one rack slot, installed by the audio thread.
 struct IrHandoff {
     ir: Option<crate::fx::PreparedIr>,
+    state: Option<Vec<crate::fx::ScriptIr>>,
     epoch: u64,
     rate: f64,
     request: crate::engine::IrRequest,
@@ -1018,11 +1022,34 @@ struct Retired {
     groups: Option<crate::engine::PreparedGroups>,
     heads: Option<Heads>,
     ir: Option<crate::fx::PreparedIr>,
+    ir_state: Option<(usize,u64,u64,bool,Option<Vec<crate::fx::ScriptIr>>)>,
     growth: Option<Box<PreparedGrowth>>,
     controls: Option<Mix>,
     routes: Option<Vec<Route>>,
     plan: Option<Plan>,
     diagnostic: Option<AudioDiagnostics>,
+}
+
+fn discard_retired(params:&SamplerParams) -> bool {
+    let mut freed=false;
+    while let Some(mut retired)=params.shared.discard.pop() {
+        if let Some((part,generation,epoch,installed,state))=retired.ir_state.take() {
+            if installed && params.shared.part(part).is_some_and(|p|p.generation.load(Ordering::Acquire)==generation) {
+                let mut view=params.shared.view.lock().unwrap();
+                if let Some(v)=view.parts.get_mut(part).filter(|v|v.script_epoch==epoch) {
+                    if let Some(state)=state {
+                        for entry in &state {
+                            v.irs.retain(|old|(old.rack,old.slot)!=(entry.rack,entry.slot));
+                        }
+                        v.irs.extend(state);
+                    }
+                }
+            }
+            params.shared.ir_inflight.store(false,Ordering::Release);
+        }
+        freed=true;
+    }
+    freed
 }
 
 /// Array reads, writes and disposal share the serialized file-service worker.
@@ -1074,6 +1101,10 @@ fn load_arrays(params: &SamplerParams) {
 
 /// Resolve and build requested convolution replacements off the audio thread.
 fn load_irs(params: &SamplerParams) {
+    discard_retired(params);
+    // A settings-only rebuild must read the actually installed file, including
+    // the previous request's acknowledgment. One owned kernel waits in flight.
+    if params.shared.ir_inflight.load(Ordering::Acquire) {return}
     while !params.shared.ir_ready.is_full() {
         let Some((part, generation, epoch, request)) = params.shared.ir_requests.pop() else { break };
         let source = {
@@ -1122,15 +1153,17 @@ fn load_irs(params: &SamplerParams) {
             }
             Err(error) => { report("ir_load_failed", &error); None }
         };
-        let mut view = params.shared.view.lock().unwrap();
-        let v = &mut view.parts[part];
+        let view = params.shared.view.lock().unwrap();
+        let v = &view.parts[part];
         if v.script_epoch != epoch || generation != params.shared.part(part).unwrap().generation.load(Ordering::Acquire) {
             continue;
         }
         let loaded = ir.is_some();
+        irs.retain(|entry|(entry.rack,entry.slot)==(request.rack,request.slot));
         // Only this serialized worker produces; the audio thread only pops.
-        params.shared.ir_ready.push((part, generation, IrHandoff { ir, epoch, rate, request })).ok().unwrap();
-        if loaded { v.irs = irs; }
+        params.shared.ir_inflight.store(true,Ordering::Release);
+        params.shared.ir_ready.push((part, generation, IrHandoff { ir, state:loaded.then_some(irs), epoch, rate, request })).ok().unwrap();
+        break;
     }
 }
 /// Persistent script values to restore: the host's saved state, else the instrument's.
@@ -1868,11 +1901,7 @@ impl BackgroundTask for Load {
         drain_audio_diagnostics(params);
         params.shared.flush_ready();
         load_arrays(params);
-        let mut freed = false;
-        while params.shared.discard.pop().is_some() {
-            freed = true;
-        }
-        if freed {
+        if discard_retired(params) {
             crate::audio::trim_heap();
         }
         let requested = { params.shared.multi_request.lock().unwrap().take() };
@@ -3196,19 +3225,22 @@ impl PluginLogic for Sampler {
             let _ = p.shared.discard.push(retired);
         }
         while !p.shared.discard.is_full() {
-            let Some((slot, generation, IrHandoff { ir, epoch, rate: ir_rate, request })) = p.shared.ir_ready.pop() else { break };
+            let Some((slot, generation, IrHandoff { ir, state, epoch, rate: ir_rate, request })) = p.shared.ir_ready.pop() else { break };
             let engine = &mut s.rack.parts[slot];
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire) && epoch == s.script_epoch[slot];
             let settings_current = engine.fx().ir_settings(request.rack, request.slot).is_none_or(|s| s == request.settings);
-            let ir = if !current { ir } else if ir_rate == engine.rate() && settings_current {
-                engine.finish_ir_scope(request.script_slot, request.scope, request.id, ir)
+            let (ir,installed)=if !current {(ir,false)} else if ir_rate==engine.rate() && settings_current {
+                engine.finish_ir_checked(request.script_slot,request.scope,request.id,ir)
             } else {
-                if let Err(request) = engine.retry_ir_request(request) {
-                    engine.finish_ir_scope(request.script_slot, request.scope, request.id, None);
+                if let Err(request)=engine.retry_ir_request(request) {
+                    engine.finish_ir_scope(request.script_slot,request.scope,request.id,None);
                 }
-                ir
+                (ir,false)
             };
-            let _ = p.shared.discard.push(Retired { ir, ..Retired::default() });
+            // Failed/stale metadata also returns to the worker for disposal.
+            let ir_state=Some((slot,generation,epoch,installed,state));
+            let _ = p.shared.discard.push(Retired { ir, ir_state, ..Retired::default() });
+            if let Some(tasks)=cx.tasks::<Load>() {tasks.spawn_coalescing(Load);}
         }
         while !p.shared.array_retired.is_full() {
             let Some((slot, generation, epoch, request)) = p.shared.array_ready.pop() else { break };
@@ -3507,6 +3539,7 @@ impl PluginLogic for Sampler {
                 let Some(request) = engine.pop_ir_request() else { break };
                 let generation = part_atoms(&s.shared_parts, &p.shared, part).unwrap().generation.load(Ordering::Acquire);
                 let _ = p.shared.ir_requests.push((part, generation, s.script_epoch[part], request));
+                arrays_queued = true;
             }
         }
         if arrays_queued && let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
@@ -6008,10 +6041,12 @@ end on"#.into()], ..Default::default() };
             p.shared.ir_requests.push((0, 0, 1, request)).ok().unwrap();
             assert!(engine.pop_ir_request().is_none());
             load_irs(&p);
-            let (_, _, IrHandoff { ir, request, .. }) = p.shared.ir_ready.pop().unwrap();
+            let (_, _, IrHandoff { ir, state, request, .. }) = p.shared.ir_ready.pop().unwrap();
             assert!(ir.is_some(), "the real NCW is decoded and its replacement DSP is built");
-            let retired = engine.finish_ir_scope(request.script_slot, request.scope, request.id, ir);
-            assert!(retired.is_some(), "the new DSP replaced the old one");
+            let (retired,installed) = engine.finish_ir_checked(request.script_slot,request.scope,request.id,ir);
+            assert!(retired.is_some() && installed, "the new DSP replaced the old one");
+            p.shared.discard.push(Retired {ir:retired,ir_state:Some((0,0,1,installed,state)),..Default::default()}).ok().unwrap();
+            discard_retired(&p);
             let view = p.shared.view.lock().unwrap();
             let loaded = view.parts[0].irs.iter().find(|l| l.rack == crate::fx::Rack::Send && l.slot == 0 && matches!(l.load, crate::fx::Load::Ir { .. })).unwrap();
             let crate::fx::Load::Ir { file: loaded_file, ir: impulse } = &loaded.load else { panic!("IR") };
@@ -6037,9 +6072,12 @@ end on"#.into()], ..Default::default() };
             p.shared.ir_requests.push((0, 0, 1, request)).ok().unwrap();
             assert!(engine.pop_ir_request().is_none());
             load_irs(&p);
-            let (_, _, IrHandoff { ir, request, .. }) = p.shared.ir_ready.pop().unwrap();
+            let (_, _, IrHandoff { ir, state, request, .. }) = p.shared.ir_ready.pop().unwrap();
             assert!(ir.is_some());
-            assert!(engine.finish_ir_scope(request.script_slot, request.scope, request.id, ir).is_some());
+            let (retired,installed)=engine.finish_ir_checked(request.script_slot,request.scope,request.id,ir);
+            assert!(retired.is_some() && installed);
+            p.shared.discard.push(Retired {ir:retired,ir_state:Some((0,0,1,installed,state)),..Default::default()}).ok().unwrap();
+            discard_retired(&p);
             assert_eq!((engine.fx().param(crate::fx::Rack::Send, 0, crate::fx::FxParam::Convolution(field as u8)).unwrap() * 1e6).round() as i32, expected);
             assert_eq!(mix(&engine), saved_mix);
             let view = p.shared.view.lock().unwrap();
@@ -6174,7 +6212,7 @@ end on"#.into()],
         let pending = p.shared.ir_requests.pop().unwrap();
         for _ in 0..p.shared.ready.capacity() {
             p.shared.ready.push((0, 0, Handoff::Fx(FxProcessor::default()))).ok().unwrap();
-            p.shared.ir_ready.push((0, 0, IrHandoff { ir: None, epoch: 0, rate: 48000., request: pending.3.clone() })).ok().unwrap();
+            p.shared.ir_ready.push((0, 0, IrHandoff { ir: None, state:None, epoch: 0, rate: 48000., request: pending.3.clone() })).ok().unwrap();
         }
         p.shared.ir_requests.push(pending).ok().unwrap();
         load_irs(&p);
@@ -6183,11 +6221,15 @@ end on"#.into()],
         while p.shared.ready.pop().is_some() {}
         while p.shared.ir_ready.pop().is_some() {}
         load_irs(&p);
+        assert!(p.shared.ir_inflight.load(Ordering::Acquire));
+        assert!(p.shared.view.lock().unwrap().parts[0].irs.is_empty(), "prepared worker metadata is not installed state");
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "");
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0, "installing or completing the IR allocated or freed on the audio thread");
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "1:1");
-        assert_eq!(p.shared.discard.len(), 1, "the worker receives the old kernel");
-        while p.shared.discard.pop().is_some() {}
+        assert_eq!(p.shared.discard.len(), 1, "the worker receives the old kernel and installation acknowledgment");
+        assert!(p.shared.view.lock().unwrap().parts[0].irs.is_empty());
+        discard_retired(&p);
+        assert!(!p.shared.ir_inflight.load(Ordering::Acquire));
         let before = p.shared.view.lock().unwrap().parts[0].irs.clone();
         assert!(matches!(before[0].load, FxLoad::Ir { .. }));
         dsp.rack.parts[0].ui_control(0, 0, 0);

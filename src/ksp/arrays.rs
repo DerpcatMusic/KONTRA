@@ -60,6 +60,55 @@ impl SharedArray {
     }
 }
 
+pub(super) const IR_QUEUE:usize = 32;
+
+pub(super) struct SharedIr {
+    pub root:i32,
+    pub serial:u64,
+    pub slot:u8,
+    pub fx_slot:i32,
+    pub generic:i32,
+    input:u64,
+    parent:i32,
+    kind:super::vm::Kind,
+    pc:u32,
+    call:u32,
+    file:[u8;1024],
+    len:usize,
+    pub subscribers:[Option<Subscriber>;17],
+    pub count:usize,
+    pub notified:usize,
+    pub outcome:Option<bool>,
+}
+
+impl SharedIr {
+    pub fn new(root:i32, serial:u64, slot:u8, scope:super::vm::CallbackScope,
+        kind:super::vm::Kind, pc:u32, call:u32, fx_slot:i32, generic:i32, file:&str) -> Self {
+        let mut entry=Self {root,serial,slot,fx_slot,generic,input:scope.common_input,
+            parent:scope.common_async,kind,pc,call,file:[0;1024],len:file.len(),
+            subscribers:[None;17],count:1,notified:0,outcome:None};
+        entry.file[..entry.len].copy_from_slice(file.as_bytes());
+        entry.subscribers[0]=Some(Subscriber {scope,storage:0,id:root,status:None});
+        entry
+    }
+    pub fn matches(&self, slot:u8, scope:super::vm::CallbackScope,
+        kind:super::vm::Kind, pc:u32, call:u32, fx_slot:i32, generic:i32, file:&str) -> bool {
+        self.slot==slot && self.input==scope.common_input && self.parent==scope.common_async
+            && self.kind==kind && self.pc==pc && self.call==call && self.fx_slot==fx_slot
+            && self.generic==generic && self.file[..self.len]==*file.as_bytes()
+    }
+    pub fn subscribe(&mut self, scope:super::vm::CallbackScope, id:i32) -> bool {
+        if self.count==self.subscribers.len() {return false}
+        self.subscribers[self.count]=Some(Subscriber {scope,storage:0,id,status:None});
+        self.count+=1;
+        true
+    }
+    pub fn same_slot(&self, other:&Self) -> bool {
+        self.fx_slot==other.fx_slot && self.generic==other.generic
+    }
+    pub fn input(&self) -> u64 {self.input}
+}
+
 /// An owned file job. Perform/recycle it off the audio thread; installing its
 /// result retains the job for worker disposal, never dropping strings on audio.
 #[derive(Debug)]

@@ -1158,8 +1158,39 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return push_int(m, id);
             }
             let id = m.env.next_async();
-            let request = m.engine.request_ir_sample(&file, slot, generic, m.slot.index, id, m.t.ctx.scope());
+            let scope=m.t.ctx.scope();
+            let call=m.t.ctx.ir_call;
+            m.t.ctx.ir_call=call.saturating_add(1);
+            if scope.ui_replay {
+                if scope.common_input!=0 && super::arrays::SharedArray::supports(m.t.ctx.kind) && let Some(entry)=m.env.shared_irs.iter_mut().find(|s|
+                    s.matches(m.slot.index,scope,m.t.ctx.kind,m.t.pc as u32,call,slot,generic,file)) {
+                    if entry.subscribe(scope,id) {m.env.pending_async.push((m.slot.index,id));}
+                    else {
+                        m.env.note("KSP common IR subscriber capacity exhausted; replay operation failed");
+                        if m.env.async_done.len()<m.env.async_done.capacity() {m.env.async_done.push((m.slot.index,scope.completion(id),id,0));}
+                        else {m.env.note("KSP async completion callback queue exhausted");}
+                    }
+                } else {
+                    m.env.note("load_ir_sample: replay has no matching canonical operation; IR request was not repeated");
+                    if m.env.async_done.len()<m.env.async_done.capacity() {m.env.async_done.push((m.slot.index,scope.completion(id),id,0));}
+                    else {m.env.note("KSP async completion callback queue exhausted");}
+                }
+                return push_int(m,id);
+            }
+            let tracked=m.env.shared_irs.capacity()!=0;
+            if tracked && (m.env.shared_irs.len()==m.env.shared_irs.capacity() || file.len()>1024) {
+                m.env.note("load_ir_sample: prepared IR operation or path capacity exhausted");
+                if m.env.async_done.len()<m.env.async_done.capacity() {m.env.async_done.push((m.slot.index,scope.completion(id),id,0));}
+                else {m.env.note("KSP async completion callback queue exhausted");}
+                return push_int(m,id);
+            }
+            let request = m.engine.request_ir_sample(&file, slot, generic, m.slot.index, id, scope);
             if request == Some(true) {
+                if tracked {
+                    m.env.ir_sequence=m.env.ir_sequence.checked_add(1).expect("IR operation sequence exhausted");
+                    m.env.shared_irs.push(super::arrays::SharedIr::new(id,m.env.ir_sequence,m.slot.index,scope,
+                        m.t.ctx.kind,m.t.pc as u32,call,slot,generic,file));
+                }
                 m.env.pending_async.push((m.slot.index, id));
                 return push_int(m, id);
             }

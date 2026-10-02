@@ -957,7 +957,8 @@ impl Engine {
             self.fx.mark_ir_changed(request.rack, request.slot);
             return Ok(());
         }
-        if self.ir_requests.len() == self.ir_requests.capacity() { return Err(request) }
+        if self.script.as_deref().and_then(|rt|rt.ir_request_current(request.id))==Some(false)
+            || self.ir_requests.len() == self.ir_requests.capacity() { return Err(request) }
         if let Some(settings) = self.fx.ir_request_settings(request.rack, request.slot) { request.settings = settings; }
         self.ir_requests.push(request);
         Ok(())
@@ -970,17 +971,20 @@ impl Engine {
     }
 
     pub(crate) fn finish_ir_scope(&mut self, slot: u8, scope: crate::ksp::CallbackScope, id: i32, ir: Option<crate::fx::PreparedIr>) -> Option<crate::fx::PreparedIr> {
-        let (loaded, retired) = match ir {
-            Some(ir) => match self.fx.replace_ir(ir) {
-                Ok(old) => (true, Some(old)),
-                Err(ir) => (false, Some(ir)),
-            },
-            None => (false, None),
-        };
-        if id >= 0 && let Some((rt, mut host)) = self.scripted(self.script_channel) {
-            rt.async_complete_scope(&mut host, slot, scope, id, loaded);
+        self.finish_ir_checked(slot,scope,id,ir).0
+    }
+
+    pub(crate) fn finish_ir_checked(&mut self, slot:u8, scope:crate::ksp::CallbackScope,
+        id:i32, ir:Option<crate::fx::PreparedIr>) -> (Option<crate::fx::PreparedIr>,bool) {
+        let superseded=self.script.as_deref().and_then(|rt|rt.ir_request_current(id))==Some(false);
+        let (loaded,retired)=if superseded {(false,ir)} else {match ir {
+            Some(ir)=>match self.fx.replace_ir(ir) {Ok(old)=>(true,Some(old)),Err(ir)=>(false,Some(ir))},
+            None=>(false,None),
+        }};
+        if id>=0 && let Some((rt,mut host))=self.scripted(self.script_channel) {
+            rt.async_complete_ir(&mut host,slot,scope,id,loaded,superseded);
         }
-        retired
+        (retired,loaded)
     }
 
     /// Polyphonic key pressure; only scripts react to it.
@@ -2397,6 +2401,155 @@ impl Pace {
 mod prepared_scope_tests {
     use super::*;
     use crate::ksp::{EnginePar, KspEngine, NoteLength, NoteSpec};
+
+    #[test]
+    fn common_ir_results_wait_for_install_retain_delayed_scopes_and_reject_stale_slot_edits_without_heap() {
+        use crate::{audio::Sample,fx::{Chain,Effect,Kind,Params,params::{Convolution,Impulse,IrBand}}};
+        let root=std::env::temp_dir().join(format!("kontra-common-ir-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=root.join("Resources/ir_samples");
+        std::fs::create_dir_all(&resources).unwrap();
+        let write=|name:&str,value:f32| {
+            let mut wav=Vec::new();
+            wav.extend(b"RIFF"); wav.extend(40u32.to_le_bytes()); wav.extend(b"WAVEfmt ");
+            wav.extend(16u32.to_le_bytes()); wav.extend(3u16.to_le_bytes()); wav.extend(1u16.to_le_bytes());
+            wav.extend(48000u32.to_le_bytes()); wav.extend(192000u32.to_le_bytes());
+            wav.extend(4u16.to_le_bytes()); wav.extend(32u16.to_le_bytes()); wav.extend(b"data");
+            wav.extend(4u32.to_le_bytes()); wav.extend(value.to_le_bytes());
+            std::fs::write(resources.join(name),wav).unwrap();
+        };
+        write("Room.wav",0.5); write("Other.wav",0.25);
+        let band=IrBand {length_ratio:1.,low_cut_hz:20.,high_cut_hz:20000.};
+        let instrument=crate::import::Instrument {
+            path:root.join("Instrument.nki"),groups:vec![crate::import::Group::default()],
+            fx:crate::fx::ProgramFx {insert:Chain {slots:vec![Effect {
+                slot:0,kind:Kind::Convolution,version:0,bypass:false,output_gain:1.,dry_level:0.,
+                params:Params::Convolution(Box::new(Convolution {
+                    unknown:[0.;2],predelay_ms:0.,early:band,late:band,unknown_9:0.,flags:[false;5],
+                    curve_x:Vec::new(),curve_db:Vec::new(),ir_index:-1,ir_file:None,ir_error:None,
+                    ir:Some(Impulse(std::sync::Arc::new(Sample {rate:48000,frames:vec![[1.;2]]}))),
+                })),
+            }]},..Default::default()},
+            scripts:vec![r#"on init
+make_perfview
+declare ui_slider $room(1,3)
+declare $private
+declare $id
+declare $callback
+end on
+on note
+$private := $EVENT_VELOCITY-1
+ignore_event($EVENT_ID)
+end on
+on ui_control($room)
+if ($private>0)
+ wait($private*10000)
+end if
+if ($room=1)
+ $id := load_ir_sample("room",0,$NI_INSERT_BUS)
+else
+ if ($room=2)
+  $id := load_ir_sample("other",0,$NI_INSERT_BUS)
+ else
+  $id := load_ir_sample("missing",0,$NI_INSERT_BUS)
+ end if
+end if
+$callback := $NI_CALLBACK_ID
+wait_async($id)
+if ($callback=$NI_CALLBACK_ID)
+ set_engine_par($ENGINE_PAR_PAN,500000+$private*10000+$id*1000,0,-1,-1)
+else
+ set_engine_par($ENGINE_PAR_PAN,999999,0,-1,-1)
+end if
+end on
+on async_complete
+set_engine_par($ENGINE_PAR_VOLUME,100000+$private*10000+$NI_ASYNC_ID*1000+$NI_ASYNC_EXIT_STATUS*100000,0,-1,-1)
+wait(5000)
+end on"#.into()],..Default::default()
+        };
+        let (mut runtime,errors)=script::load_scripts(&instrument,Vec::new(),48000.);
+        assert!(errors.is_empty(),"{errors:?}");
+        let rt=runtime.as_deref_mut().unwrap();
+        rt.prepare_channel_domains((1<<1)|(1<<3),7);
+        rt.prepare_channel_configuration();
+        let fx=script::effects(&instrument,Some(rt),48000.);
+        let mut groups=PreparedGroups::new(&instrument,rt);
+        let mut bank=Bank::from_samples(instrument.groups.clone(),Vec::new(),Vec::new()).unwrap();
+        groups.install(&mut bank);
+        let mut engine=Engine::default(); engine.set_bank(Some(Box::new(bank)));
+        engine.set_fx(fx); engine.set_script(runtime);
+        let render=|engine:&mut Engine,n:usize| {for _ in 0..n {engine.render(&mut [0.;128],&mut [0.;128]);}};
+        let audio=|f:&mut dyn FnMut()| {
+            #[cfg(feature="plugin")]
+            assert_eq!(crate::plugin::tests::allocations(f),0,"IR callbacks/install allocate or free on audio");
+            #[cfg(not(feature="plugin"))]
+            f();
+        };
+        let prepare=|request:&IrRequest| {
+            let file=crate::resources::ir_sample(&instrument.path,request.file()).unwrap();
+            let source=crate::fx::ScriptIr::load(request.rack,request.slot,file).unwrap();
+            instrument.fx.prepare_ir(request.rack,request.slot,48000.,MAX_BLOCK,&[source,
+                crate::fx::ScriptIr {rack:request.rack,slot:request.slot,load:crate::fx::Load::Convolution(request.settings)}]).unwrap()
+        };
+        let check=|engine:&Engine,ids:[i32;3],private:[i32;3],success:bool,check_caller:bool| {
+            for bank in 0..3 {
+                let id=ids[bank]; let private=private[bank];
+                let volume=Address::Group(0,params::GroupPar::Volume).decode(100000+private*10000+id*1000+i32::from(success)*100000);
+                let pan=Address::Group(0,params::GroupPar::Pan).decode(500000+private*10000+id*1000);
+                let actual=&engine.bank().unwrap().base_for(bank as u8)[0];
+                assert!((actual.gain-volume).abs()<1e-6,"completion ID/status/private storage mismatched in bank {bank}");
+                if check_caller {assert!((actual.pan-pan).abs()<1e-6,"wait_async lost the original callback/private storage in bank {bank}");}
+            }
+        };
+        audio(&mut || {engine.note_on_from(7,1,60,2);engine.note_on_from(7,3,60,3);
+            render(&mut engine,1);engine.ui_control(0,0,1);render(&mut engine,2);});
+        let request=engine.pop_ir_request().unwrap();
+        assert!(request.scope.configuration && request.scope.common_input!=0);
+        assert!(engine.pop_ir_request().is_none());
+        let mut prepared=Some(prepare(&request));
+        std::fs::remove_file(resources.join("Room.wav")).unwrap();
+        assert_eq!(engine.script().unwrap().ir_request_current(request.id),Some(true));
+        assert!((engine.bank().unwrap().base_for(2)[0].gain-1.).abs()<1e-6,"worker preparation is not async success");
+        let mut retired=None;
+        audio(&mut || {let (old,installed)=engine.finish_ir_checked(request.script_slot,request.scope,request.id,prepared.take());
+            assert!(installed);retired=old;render(&mut engine,16);});
+        assert!(retired.is_some()); drop(retired.take());
+        check(&engine,[2,3,1],[1,2,0],true,true);
+        assert!(engine.pop_ir_request().is_none(),"late private replays reuse the already installed outcome after the source file is removed");
+        assert!(engine.script().unwrap().diagnostics().is_empty(),"{:?}",engine.script().unwrap().diagnostics());
+        // Make the subsequent edits immediate in all banks. Two actual worker
+        // results may arrive out of order; the newest slot result is retained
+        // even after its callbacks finish while an older load is outstanding.
+        audio(&mut || {for owner in [1,3] {engine.note_on_from(7,owner,61,1);}render(&mut engine,1);engine.ui_control(0,0,2);});
+        let older=engine.pop_ir_request().unwrap();let mut old_kernel=Some(prepare(&older));
+        write("Room.wav",0.5);
+        audio(&mut ||engine.ui_control(0,0,1));
+        let newer=engine.pop_ir_request().unwrap();let mut new_kernel=Some(prepare(&newer));
+        audio(&mut || {let (old,installed)=engine.finish_ir_checked(newer.script_slot,newer.scope,newer.id,new_kernel.take());
+            assert!(installed);retired=old;render(&mut engine,16);});
+        drop(retired.take());
+        check(&engine,[8,9,7],[0,0,0],true,true);
+        assert_eq!(engine.script().unwrap().ir_request_current(older.id),Some(false));
+        assert!(engine.retry_ir_request(older.clone()).is_err(),"superseded loads must not reread the source");
+        audio(&mut || {let (old,installed)=engine.finish_ir_checked(older.script_slot,older.scope,older.id,old_kernel.take());
+            assert!(!installed,"a late old kernel cannot replace the newer global slot");retired=old;render(&mut engine,16);});
+        assert!(retired.is_some(),"uninstalled owned DSP returns for worker disposal");drop(retired.take());
+        // Concurrent edits overwrite authored scalar $id/$callback. The
+        // completion carries its original async ID independently of them.
+        check(&engine,[5,6,4],[0,0,0],false,false);
+        assert!(engine.pop_ir_request().is_none());
+        audio(&mut ||engine.ui_control(0,0,3));
+        let failed=engine.pop_ir_request().unwrap();
+        assert!(crate::resources::ir_sample(&instrument.path,failed.file()).is_none());
+        audio(&mut || {let (old,installed)=engine.finish_ir_checked(failed.script_slot,failed.scope,failed.id,None);
+            assert!(old.is_none() && !installed);render(&mut engine,16);});
+        check(&engine,[11,12,10],[0,0,0],false,true);
+        assert!(engine.pop_ir_request().is_none());
+        let notes=engine.script().unwrap().diagnostics();
+        assert!(notes.iter().any(|s|s.contains("superseded")) && notes.iter().any(|s|s.contains("file not found")),"{notes:?}");
+        assert!(!notes.iter().any(|s|s.contains("matching canonical") || s.contains("capacity exhausted")),"{notes:?}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn prepared_canonical_group_scope_survives_note_commands_and_guards_shared_fx_replay() {
