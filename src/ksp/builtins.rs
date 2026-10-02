@@ -483,6 +483,9 @@ pub fn real_constant(name: &str) -> Option<f64> {
 /// the type ids NKIs store (`audits/EFFECTS.md`); the AR, Daft, phaser and
 /// formant ones are in `engine::filter::ksp_filter_type`.
 const VALUED: &[(&str, i32)] = &[
+    ("$NI_FILE_TYPE_MIDI", 0),
+    ("$NI_FILE_TYPE_AUDIO", 1),
+    ("$NI_FILE_TYPE_ARRAY", 2),
     ("$KNOB_UNIT_NONE", 0),
     ("$KNOB_UNIT_DB", 1),
     ("$KNOB_UNIT_HZ", 2),
@@ -746,6 +749,7 @@ pub const SYMBOLS: &[&str] = &[
     "$CONTROL_PAR_RECEIVE_DRAG_EVENTS",
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
+    "$CONTROL_PAR_FILEPATH",
     // `ui_waveform` properties (`set_ui_wf_property`), kept on the control.
     "$UI_WF_PROP_PLAY_CURSOR",
     "$UI_WF_PROP_FLAGS",
@@ -791,6 +795,7 @@ const CONTROL_TYPES: &[(&str, &str)] = &[
 pub fn control_type(kind: &str) -> i32 {
     CONTROL_TYPES.iter().position(|(k, _)| *k == kind).unwrap_or(0) as i32
 }
+pub const CONTROL_PAR_FILEPATH: i32 = SYMBOL_BASE + SYMBOLS.len() as i32 - 7;
 pub const UI_WF_PROP_FLAGS: i32 = SYMBOL_BASE + SYMBOLS.len() as i32 - 5;
 pub const ATTACHED_ZONE: i32 = SYMBOL_BASE + SYMBOLS.len() as i32 - 1;
 

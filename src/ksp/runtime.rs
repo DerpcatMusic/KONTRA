@@ -958,6 +958,10 @@ impl Runtime {
                 let menu = dynamic_menu
                     && prog.vars[control.var as usize].ui.as_deref() == Some("ui_menu");
                 control.prepare(text_bytes, menu);
+                if prog.vars[control.var as usize].ui.as_deref() == Some("ui_file_selector") {
+                    let path = control.str_mut(b::CONTROL_PAR_FILEPATH).unwrap();
+                    path.reserve(vm::MAX_STRING_VAR_BYTES.saturating_sub(path.len()));
+                }
             }
             for s in [&mut state.ui.title, &mut state.ui.wallpaper] {
                 s.reserve(text_bytes.saturating_sub(s.len()));
@@ -1825,6 +1829,18 @@ impl Runtime {
     }
 
     /// A host-side edit of control `control` (index into `Interface::controls`).
+    /// A path validated by the editor's file worker; no filesystem work on audio.
+    pub fn ui_file_selection(&mut self, engine: &mut dyn KspEngine, slot: usize, control: usize, path: &str) -> bool {
+        let Some(state) = self.states.get_mut(slot) else { return false };
+        let Some(c) = state.ui.controls.get_mut(control) else { return false };
+        let var = &self.programs[slot].vars[c.var as usize];
+        if var.ui.as_deref() != Some("ui_file_selector") || c.set_str(b::CONTROL_PAR_FILEPATH, path).is_err() { return false }
+        let value = state.mem.ints[var.slot as usize];
+        self.changes += 1;
+        self.ui_control(engine, slot, control, value);
+        true
+    }
+
     pub fn ui_control(
         &mut self,
         engine: &mut dyn KspEngine,

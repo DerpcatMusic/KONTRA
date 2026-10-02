@@ -424,6 +424,7 @@ pub struct Shared {
     publish_gate: Mutex<Option<Arc<std::sync::Barrier>>>,
     /// Edits of script controls from the performance view.
     edits: ArrayQueue<Edit>,
+    file_selections: ArrayQueue<FileSelection>,
     /// IR loads requested by scripts: part, instrument generation, script epoch.
     ir_requests: ArrayQueue<(usize, u64, u64, crate::engine::IrRequest)>,
     ir_ready: ArrayQueue<(usize, u64, IrHandoff)>,
@@ -655,6 +656,7 @@ impl Default for Shared {
             #[cfg(test)]
             publish_gate: Mutex::new(None),
             edits: ArrayQueue::new(256),
+            file_selections: ArrayQueue::new(16),
             ir_requests: ArrayQueue::new(64),
             ir_ready: ArrayQueue::new(64),
             array_requests: ArrayQueue::new(64),
@@ -888,6 +890,12 @@ pub(crate) enum Play {
     Mod(u8),
 }
 /// A script control edit for the runtime of `part` tagged `epoch`.
+// Inline paths keep selection delivery and stale-epoch rejection free of audio allocations/frees.
+struct FileSelection {
+    part: usize, epoch: u64, slot: usize, control: usize,
+    path: [u8; 1280], len: usize,
+}
+
 struct Edit {
     part: usize,
     epoch: u64,
@@ -1316,6 +1324,17 @@ impl Shared {
 
     /// Set script control `control` of `part`'s performance view and run its
     /// `on ui_control`; the view shows the value until the scripts report back.
+    pub(crate) fn select_control_file(&self, part: usize, epoch: u64, slot: usize, control: usize, path: &str) -> bool {
+        if path.len() > 1280 || path.chars().count() > 320 { return false }
+        let view = self.view.lock().unwrap();
+        let Some(v) = view.parts.get(part) else { return false };
+        if epoch == 0 || v.script_epoch != epoch || v.script_slot != slot
+            || !v.interface.as_ref().and_then(|u| u.controls.get(control)).is_some_and(|c| c.kind == "ui_file_selector") { return false }
+        let mut selected = FileSelection { part, epoch, slot, control, path: [0; 1280], len: path.len() };
+        selected.path[..path.len()].copy_from_slice(path.as_bytes());
+        self.file_selections.push(selected).is_ok()
+    }
+
     pub(crate) fn edit_control(&self, part: usize, control: usize, value: i32) {
         let mut view = self.view.lock().unwrap();
         let v = &mut view.parts[part];
@@ -2840,6 +2859,14 @@ impl PluginLogic for Sampler {
                 engine.set_override(o);
             }
         }
+        while let Some(e) = p.shared.file_selections.pop() {
+            if e.epoch != 0 && s.script_epoch.get(e.part) == Some(&e.epoch)
+                && let Some(engine) = s.rack.parts.get_mut(e.part)
+                && let Ok(path) = std::str::from_utf8(&e.path[..e.len])
+            {
+                engine.ui_file_selection(e.slot, e.control, path);
+            }
+        }
         while let Some(e) = p.shared.edits.pop() {
             if e.epoch != 0 && e.epoch == s.script_epoch[e.part] {
                 s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
@@ -4320,6 +4347,84 @@ end on"#;
         p.shared.publish_live(false);
         assert_eq!(label(&p), Value::Text("hidden update".into()), "closed editors retain worker fallback");
         assert!(!p.shared.live_requests.pop().unwrap().2.refresh_interface, "hidden views only refresh diagnostics");
+    }
+
+    #[test]
+    fn file_selector_callbacks_load_real_presets_and_reject_stale_selections_without_allocating() {
+        let dir = std::env::temp_dir().join(format!("kontra-selector-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, value) in [("Quiet.nka", 250000), ("Loud.nka", 1000000)] {
+            std::fs::write(dir.join(name), format!("%preset\n{value}\n")).unwrap();
+        }
+        let source = format!(r#"on init
+make_perfview
+declare ui_file_selector $files
+declare ui_label $result(1,1)
+declare %preset[1]
+declare $id
+set_control_par_str(get_ui_id($files),$CONTROL_PAR_BASEPATH,"{}")
+set_control_par(get_ui_id($files),$CONTROL_PAR_FILE_TYPE,$NI_FILE_TYPE_ARRAY)
+end on
+on ui_control($files)
+set_text($result,fs_get_filename(get_ui_id($files),0) & ":" & fs_get_filename(get_ui_id($files),1))
+$id := load_array_str(%preset,fs_get_filename(get_ui_id($files),2))
+end on
+on async_complete
+if ($NI_ASYNC_ID=$id and $NI_ASYNC_EXIT_STATUS=1)
+set_engine_par($ENGINE_PAR_VOLUME,%preset[0],-1,-1,-1)
+end if
+end on"#,dir.display());
+        let instrument = Instrument { scripts: vec![source], ..Default::default() };
+        let (rt, errors) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let rt = rt.unwrap();
+        let p = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        dsp.script_epoch[0] = 1;
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.parts[0].script_epoch = 1;
+            view.parts[0].interface = Some(Arc::new(rt.interface(0)));
+        }
+        let bank = crate::engine::Bank::from_samples(vec![crate::import::Group::default()],
+            vec![crate::import::Zone::default()], vec![(std::path::PathBuf::new(), crate::audio::Sample {
+                rate:48000, frames:vec![[0.25;2];48000],
+            })]).unwrap();
+        dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+        dsp.rack.parts[0].set_script(Some(rt));
+        dsp.rack.parts[0].note_on(0,60,100);
+        let mut outputs = vec![vec![0.;64];2];
+        let mut refs:Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[],&mut refs,64);
+        let transport = TransportInfo::default();
+        let mut midi_out = EventList::with_capacity(0);
+        let mut cx = ProcessContext::new(&transport,48000.,64,&mut midi_out);
+        let events = EventList::with_capacity(0);
+        let mut peaks = Vec::new();
+        for name in ["Quiet.nka","Loud.nka"] {
+            let path = dir.join(name).to_string_lossy().into_owned();
+            assert!(p.shared.select_control_file(0,1,0,0,&path));
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); }),0);
+            let u = dsp.rack.parts[0].script().unwrap().interface(0);
+            assert_eq!(u.controls[1].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text(format!("{}:{name}",name.trim_end_matches(".nka"))));
+            assert_eq!(u.controls[0].properties["$CONTROL_PAR_FILEPATH"],crate::ksp::Value::Text(path));
+            assert_eq!(p.shared.array_requests.len(),1);
+            load_arrays(&p);
+            assert_eq!(allocations(|| { for _ in 0..10 { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); } }),0);
+            assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_FILE_TYPE"],crate::ksp::Value::Int(2));
+            peaks.push(buffer.output(0).iter().copied().map(f32::abs).fold(0.,f32::max));
+            load_arrays(&p);
+        }
+        assert!(peaks[1]>peaks[0]*4.,"selected presets must change audio, not just filenames: {peaks:?}");
+        assert!(!p.shared.select_control_file(0,2,0,0,"/stale.nka"));
+        assert!(!p.shared.select_control_file(0,1,0,1,"/not-selector.nka"));
+        assert!(!p.shared.select_control_file(0,1,0,0,&"x".repeat(321)));
+        assert!(p.shared.select_control_file(0,1,0,0,"/stale.nka"));
+        dsp.script_epoch[0]=2;
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); }),0);
+        assert!(p.shared.array_requests.is_empty(),"queued old selections must not execute on a replacement script");
+        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

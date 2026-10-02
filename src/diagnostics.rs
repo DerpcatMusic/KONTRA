@@ -1521,7 +1521,8 @@ pub fn widget_limit(kind: &str) -> Option<&'static str> {
         "ui_waveform" => {
             Some("waveform peaks and play cursor are supported; slice/table editing is unavailable")
         }
-        "ui_xy" | "ui_wavetable" | "ui_file_selector" => {
+        "ui_file_selector" => Some("file selection is supported through the native picker; embedded columns and fs_navigate are unavailable"),
+        "ui_xy" | "ui_wavetable" => {
             Some("this widget's drawing and interaction are unavailable")
         }
         _ => None,

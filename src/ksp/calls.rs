@@ -1421,6 +1421,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
             if f == FsNavigate {
                 m.stk.int();
+                m.env.note("fs_navigate: file navigation is unavailable; select a file with the picker");
             }
             m.stk.int();
             Ok(Step::Next)
@@ -1485,8 +1486,20 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             Ok(Step::Next)
         }
         FsGetFilename => {
-            ints::<2>(m);
-            m.stk.strs.push()?;
+            let [id, mode] = ints(m);
+            let c = control(m, id)?;
+            if m.prog.vars[m.slot.ui.controls[c].var as usize].ui.as_deref() != Some("ui_file_selector") {
+                return Err(Fault("ID does not refer to a file selector"));
+            }
+            let path = match m.slot.ui.controls[c].get(b::CONTROL_PAR_FILEPATH) { Some(Prop::Str(path)) => path.as_str(), _ => "" };
+            let filename = path.rsplit('/').next().unwrap_or(path);
+            let text = match mode {
+                0 => filename.rsplit_once('.').map_or(filename, |(stem, _)| stem),
+                1 => filename,
+                2 => path,
+                _ => return Err(Fault("File selector return parameter must be 0, 1 or 2")),
+            };
+            m.stk.strs.push_str(text)?;
             Ok(Step::Next)
         }
         // ---- Keyboard display ----------------------------------------------------------

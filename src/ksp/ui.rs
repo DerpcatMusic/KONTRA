@@ -253,6 +253,9 @@ impl Ui {
             c.set_int(b::CONTROL_PAR_MIN_VALUE, *min)?;
             c.set_int(b::CONTROL_PAR_MAX_VALUE, *max)?;
         }
+        if kind == "ui_file_selector" {
+            c.set_str(b::CONTROL_PAR_FILEPATH, "")?;
+        }
         if kind == "ui_table" {
             let [_, _, range, ..] = params else { return Err("Table range missing"); };
             c.set_int(b::CONTROL_PAR_MIN_VALUE, if *range < 0 { *range } else { 0 })?;

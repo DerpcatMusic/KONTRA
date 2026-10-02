@@ -1058,6 +1058,13 @@ fn build(
 /// to save the rack as a multi.
 fn picked(cx: &mut Cx) {
     match cx.state.picker.take() {
+        Some(picker::Picked::ScriptFile { part, epoch, slot, control, result }) => {
+            cx.state.notice = match result {
+                Ok(path) if cx.p.shared.select_control_file(part, epoch, slot, control, &path) => String::new(),
+                Ok(_) => "File selection canceled because the instrument changed or its control queue is full.".into(),
+                Err(error) => error,
+            };
+        }
         Some(picker::Picked::Snapshot { slot, source, path }) => {
             if cx.selection.parts.get(slot).is_some_and(|p| p.source() == source) {
                 cx.snapshot(slot, path.to_string_lossy().into_owned());

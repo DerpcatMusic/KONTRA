@@ -42,6 +42,7 @@ pub enum Kind {
     Label,
     Table,
     TextEdit,
+    FileSelector,
     /// Takes the pointer in Kontakt, shows nothing: `ui_mouse_area`.
     Area,
     /// `ui_level_meter`: Kontakt draws it from its colours, never a picture.
@@ -65,6 +66,7 @@ impl Kind {
             "ui_label" => Self::Label,
             "ui_table" => Self::Table,
             "ui_text_edit" => Self::TextEdit,
+            "ui_file_selector" => Self::FileSelector,
             "ui_mouse_area" => Self::Area,
             "ui_level_meter" => Self::Meter,
             "ui_waveform" => Self::Waveform,
@@ -586,6 +588,10 @@ pub(super) fn caption_of(c: &Control, kind: Kind, value: f64) -> (String, i32, O
         Kind::Value if hide & HIDE_VALUE != 0 => String::new(),
         Kind::Value if hide & HIDE_TITLE != 0 || own.is_empty() => format!("{value}"),
         Kind::Value => format!("{own} {value}"),
+        Kind::FileSelector => {
+            let path = prop(c, "$CONTROL_PAR_FILEPATH");
+            if path.is_empty() { "Select file…".into() } else { path.rsplit('/').next().unwrap_or(path).into() }
+        }
         Kind::TextEdit => match c.properties.get("$CONTROL_PAR_VALUE") {
             Some(Value::Text(t)) => t.clone(),
             _ => own,
@@ -932,6 +938,19 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
                 cx.p.shared.edit_control(slot, shown.control, now as i32);
             }
         }
+        Kind::FileSelector => {
+            if ui.get(id.as_str()).activated() {
+                let base = prop(c, "$CONTROL_PAR_BASEPATH");
+                let v = &cx.view.parts[slot];
+                let ask = super::picker::Ask::ScriptFile {
+                    part: slot, epoch: v.script_epoch, slot: v.script_slot, control: shown.control,
+                    from: std::path::PathBuf::from(base.replace('\\', "/")),
+                    file_type: int(c, "$CONTROL_PAR_FILE_TYPE").unwrap_or(0),
+                };
+                if base.is_empty() { cx.state.notice = "File selector has no base directory.".into(); }
+                else if !cx.state.picker.ask(ask) { cx.state.notice = "The file picker is unavailable in this session.".into(); }
+            }
+        }
         Kind::Menu => {
             if ui.get(id.as_str()).activated() {
                 menu::open_under(ui, cx, Target::Script { part: slot, control: shown.control }, &id);
@@ -1034,7 +1053,9 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
         })
         .named(name);
     let el = if help.is_empty() { el } else { el.tip(help.to_owned()) };
-    let el = if matches!(shown.kind, Kind::Knob | Kind::Slider | Kind::Value) {
+    let el = if shown.kind == Kind::FileSelector {
+        el.focusable().a11y(A11y::Button)
+    } else if matches!(shown.kind, Kind::Knob | Kind::Slider | Kind::Value) {
         el.focusable().a11y(A11y::Slider { value: now, min: lo, max: hi })
     } else {
         el
@@ -1159,7 +1180,7 @@ fn face(kind: Kind, c: &Control, value: f64, lo: f64, hi: f64, vertical: bool, r
                     ));
                 }
             }
-            Kind::Value | Kind::TextEdit => boxed(&mut d, Role::Field.alpha(1.)),
+            Kind::Value | Kind::TextEdit | Kind::FileSelector => boxed(&mut d, Role::Field.alpha(1.)),
             Kind::Table => {
                 boxed(&mut d, Role::Field.alpha(1.));
                 let baseline = (hi / (hi - lo)).clamp(0., 1.) * (h - 2.) + 1.;

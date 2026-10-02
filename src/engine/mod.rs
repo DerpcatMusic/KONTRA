@@ -811,6 +811,11 @@ impl Engine {
 
     /// A host edit of script control `control` in script slot `slot`: sets its
     /// value and runs the script's `on ui_control`.
+    pub fn ui_file_selection(&mut self, slot: usize, control: usize, path: &str) -> bool {
+        let channel = self.script_channel;
+        self.scripted(channel).is_some_and(|(rt, mut host)| rt.ui_file_selection(&mut host, slot, control, path))
+    }
+
     pub fn ui_control(&mut self, slot: usize, control: usize, value: i32) {
         let channel = self.script_channel;
         if let Some((rt, mut host)) = self.scripted(channel) {

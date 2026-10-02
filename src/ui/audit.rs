@@ -51,6 +51,7 @@ fn kind_name(k: Kind) -> &'static str {
         Kind::Label => "label",
         Kind::Table => "table",
         Kind::TextEdit => "text edit",
+        Kind::FileSelector => "file selector",
         Kind::Area => "mouse area",
         Kind::Meter => "level meter",
         Kind::Waveform => "waveform",
