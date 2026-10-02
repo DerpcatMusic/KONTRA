@@ -129,10 +129,15 @@ fn primitive(
             .h(node.height.map_or(Len::Pct(100.), Len::Px))
             .radius(*radius)
             .fill(Color::srgba(color[0], color[1], color[2], color[3])),
-        Paint::Stack => stack(children)
-            .w(node.width.map_or(Len::Auto, Len::Px))
-            .h(node.height.map_or(Len::Auto, Len::Px))
-            .pad(node.padding),
+        Paint::Stack | Paint::HStack(_) | Paint::VStack(_) => {
+            let el = match &node.paint {
+                Paint::HStack(spacing) => row(children).gap(*spacing).align(node.alignment.1),
+                Paint::VStack(spacing) => col(children).gap(*spacing).align(node.alignment.0),
+                _ => stack(children),
+            };
+            el.w(node.width.map_or(Len::Auto, Len::Px))
+                .h(node.height.map_or(Len::Auto, Len::Px)).pad(node.padding)
+        },
         Paint::Asset(reference) => {
             let asset = assets.entries.get(&reference.resource).and_then(|a|a.as_ref().ok());
             let size = asset.map_or((0.,0.),|a|a.size());
@@ -154,7 +159,7 @@ fn primitive(
     };
     // NI opacity applies to each painted descendant, not a flattened stack.
     // Carry the product through composition and let MUI blend each primitive.
-    let el = if !matches!(node.paint, Paint::Stack) && node.opacity != 1. {
+    let el = if !matches!(node.paint, Paint::Stack | Paint::HStack(_) | Paint::VStack(_)) && node.opacity != 1. {
         el.opacity(node.opacity)
     } else { el };
     if node.hidden { el.opacity(0.).disabled() } else { el }

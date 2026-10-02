@@ -89,7 +89,7 @@ local ui = {
     create_computed=function(compute) assert(type(compute)=="function"); return compute end,
     Color=Color,
 }
-for _,kind in ipairs({"ZStack","Text","Rectangle","Image"}) do ui[kind]={kind=kind} end
+for _,kind in ipairs({"ZStack","HStack","VStack","Text","Rectangle","Image"}) do ui[kind]={kind=kind} end
 native_ui_host = strict("native_ui",ui)
 kontakt_host = strict("kontakt", {
     connect_level_meter=function(name) return strict("level_meter",native_connect_level_meter(name)) end,
@@ -117,9 +117,9 @@ function native_component(target,props,children)
         return {kind="Component",target=target,props=props,children=children,modifiers={}}
     end
     assert(type(target)=="table" and target.kind,"Unsupported component target")
-    local supported={ZStack={children=true,alignment=true},Text={children=true,text=true},Rectangle={children=true,color=true,corner_radius=true},Image={children=true,file=true,resizable=true}}
+    local supported={ZStack={children=true,alignment=true},HStack={children=true,spacing=true,alignment=true},VStack={children=true,spacing=true,alignment=true},Text={children=true,text=true},Rectangle={children=true,color=true,corner_radius=true},Image={children=true,file=true,resizable=true}}
     assert(supported[target.kind],"Unsupported component")
-    assert(target.kind=="ZStack" or #children==0,"Primitive children require ZStack")
+    assert(target.kind=="ZStack" or target.kind=="HStack" or target.kind=="VStack" or #children==0,"Primitive children require a stack")
     for key in pairs(props) do assert(supported[target.kind][key],"Unsupported primitive property: "..target.kind.."."..key) end
     return {kind=target.kind,props=props,children=children,modifiers={}}
 end

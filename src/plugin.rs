@@ -4852,6 +4852,52 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_stacks_use_intrinsic_geometry_cross_alignment_and_bounded_computed_spacing() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-stacks-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local spacing=require('kontakt').connect_parameter('Spacing')
+            return @ui.VStack { alignment="right" spacing=ui.create_computed(function() return spacing:value() end)
+                @ui.HStack {alignment="bottom" spacing=3
+                    @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
+                    @ui.Rectangle {color=ui.Color.white}.frame(width=10,height=20)
+                }
+                @ui.Rectangle {color=ui.Color.black}.frame(width=10,height=5)
+            }
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Spacing(0,100)\n$Spacing := 5\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let mut engine=Engine::default();engine.set_script(Some(rt));
+        fn rectangles<'a>(node:&'a Node,out:&mut Vec<&'a Node>){if matches!(node.paint,Paint::Rectangle(..)){out.push(node)}for child in &node.children{rectangles(child,out)}}
+        for spacing in [5,9] {
+            let (mut left,mut right)=([0.;64],[0.;64]);
+            assert_eq!(allocations(||{engine.ui_control(0,0,spacing);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+            scene.observe(&live);let root=scene.snapshot().unwrap();
+            let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets));
+            let rendered=moose::mui::mui::scene::resolve(&spec).unwrap();
+            assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(33.,25.+spacing as f64));
+            let mut nodes=Vec::new();rectangles(&root,&mut nodes);
+            for (node,expected) in nodes.into_iter().zip([(0.,10.,20.,10.),(23.,0.,10.,20.),(23.,20.+spacing as f64,10.,5.)]) {
+                let surface=rendered.surface(&format!("native-snapshot-{}",node.id)).unwrap();
+                assert_eq!((surface.frame.x,surface.frame.y,surface.frame.size.width,surface.frame.size.height),expected);
+            }
+        }
+        for (properties,expected) in [
+            ("HStack {alignment='left'}","requires vertical alignment"),
+            ("VStack {alignment='top'}","requires horizontal alignment"),
+            ("HStack {spacing=function() return 0/0 end}","native UI stack spacing"),
+            ("VStack {spacing=function() return 4097 end}","native UI stack spacing"),
+            ("VStack {spacing=-1}","unsupported negative"),
+        ] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.{properties}")).unwrap();
+            assert!(format!("{:#}",Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap_err()).contains(expected));
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_opacity_updates_each_descendant_without_changing_layout_or_hits() {
         use crate::native_ui::{Node, Paint, Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-opacity-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
