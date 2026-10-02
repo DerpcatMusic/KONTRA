@@ -637,11 +637,11 @@ impl Router {
         }
     }
 
-    /// The key the engine got for `note` held on `channel`, or its remap.
-    fn key_of(&self, channel: u8, note: u8) -> u8 {
+    /// The channel and key the held attack received, or the current route.
+    fn note_route(&self, channel: u8, note: u8, to: u8) -> (u8, u8) {
         match self.held[channel as usize & 15][note as usize & 127] {
-            (_, NONE) => self.route.keys[note as usize & 127],
-            (_, key) => key,
+            (_, NONE) => (to, self.route.keys[note as usize & 127]),
+            held => held,
         }
     }
 
@@ -768,7 +768,10 @@ impl Router {
                 out(Out::Pressure(to, value));
             }
             In::Pressure(_, value) => out(Out::Pressure(to, value)),
-            In::PolyAt(_, note, value) => out(Out::PolyAt(to, self.key_of(channel, note), value)),
+            In::PolyAt(_, note, value) => {
+                let (to, key) = self.note_route(channel, note, to);
+                if key != NONE { out(Out::PolyAt(to, key, value)); }
+            }
             In::Cc(_, 121, value) => {
                 // The engine fences older callbacks first; the pressure-zero
                 // callbacks below belong to this reset and must survive it.
@@ -830,25 +833,25 @@ impl Router {
                 out(Out::Cc(to, cc, value));
             }
             In::NoteTune(_, note, semitones) => {
-                let key = self.key_of(channel, note);
+                let (to, key) = self.note_route(channel, note, to);
                 if key != NONE {
                     self.set_expression(to, key, |x| x.tune = semitones, out);
                 }
             }
             In::NotePressure(_, note, value) => {
-                let key = self.key_of(channel, note);
+                let (to, key) = self.note_route(channel, note, to);
                 if key != NONE {
                     self.pressure(to, key, value, out);
                 }
             }
             In::NoteGain(_, note, gain) => {
-                let key = self.key_of(channel, note);
+                let (to, key) = self.note_route(channel, note, to);
                 if key != NONE {
                     self.set_expression(to, key, |x| x.gain = gain.clamp(0.0, 4.0), out);
                 }
             }
             In::NotePan(_, note, pan) => {
-                let key = self.key_of(channel, note);
+                let (to, key) = self.note_route(channel, note, to);
                 if key != NONE {
                     self.set_expression(to, key, |x| x.pan = pan.clamp(-1.0, 1.0), out);
                 }
@@ -856,10 +859,7 @@ impl Router {
             In::NoteBrightness(_, note, value) => {
                 // Retain the note-on route, including its logical channel, even
                 // when articulation mapping changes while the key is held.
-                let (to, key) = match self.held[channel as usize][note as usize & 127] {
-                    (_, NONE) => (to, r.keys[note as usize & 127]),
-                    held => held,
-                };
+                let (to, key) = self.note_route(channel, note, to);
                 if key != NONE {
                     self.set_expression(to, key, |x| x.note_cc74 = Some(value.min(127)), out);
                 }
