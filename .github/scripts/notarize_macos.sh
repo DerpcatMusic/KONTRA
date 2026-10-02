@@ -23,7 +23,7 @@ trap cleanup EXIT
 export APPLICATION_P12="$work/application.p12"
 python3 - <<'PY'
 import base64, os, pathlib
-pathlib.Path(os.environ['APPLICATION_P12']).write_bytes(base64.b64decode(os.environ['APPLE_APPLICATION_CERTIFICATE_P12_BASE64'], validate=True))
+pathlib.Path(os.environ['APPLICATION_P12']).write_bytes(base64.b64decode(''.join(os.environ['APPLE_APPLICATION_CERTIFICATE_P12_BASE64'].split()), validate=True))
 PY
 security create-keychain -p "$keychain_password" "$keychain"
 security set-keychain-settings -lut 21600 "$keychain"
