@@ -4794,12 +4794,21 @@ pub(crate) mod tests {
         std::fs::create_dir_all(directory.join("Resources/info")).unwrap();
         std::fs::write(directory.join("Resources/info/library.json"),r#"{"general":{"kontaktTargetVersion":"8.1"}}"#).unwrap();
         let i = Instrument { path: directory.join("fixture.nki"), scripts: vec![
-            "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Amount(0,100)\n$Amount := 17\nend on\non ui_control($Amount)\n$Amount := $Amount*2\nend on".into(),
+            "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Amount(0,100)\n$Amount := 17\ndeclare ui_switch $Toggle\ndeclare ui_menu $Choice\nadd_menu_item($Choice,\"entry\",7)\nend on\non ui_control($Amount)\n$Amount := $Amount*2\nset_control_par(get_ui_id($Amount),$CONTROL_PAR_MIN_VALUE,10)\nset_control_par(get_ui_id($Amount),$CONTROL_PAR_MAX_VALUE,80)\nend on".into(),
             "on init\nmake_perfview\ndeclare ui_slider $Remote(0,100)\n$Remote := 9\ndeclare ui_slider $Amount(0,100)\n$Amount := 90\nend on\non ui_control($Remote)\n$Remote := $Remote+10\nend on".into()
         ], ..Default::default() };
         let (rt, errors) = crate::engine::load_scripts(&i, Vec::new(), 48000.);
         assert!(errors.is_empty(), "{errors:?}"); let rt=rt.unwrap();
         let mut live=Some(first_script_live(&rt)); let pages=script_pages(Some(&rt));
+        rt.prepare_native_controls(live.as_mut().unwrap());
+        let mut metadata=live.as_ref().unwrap().as_ref().clone();
+        let scalar=live.as_ref().unwrap().native_controls.iter().find(|c| c.name=="Amount").unwrap();
+        assert_eq!((scalar.slot,scalar.control,scalar.kind.as_ref(),scalar.range),(0,0,"ui_slider",Some((0,100))));
+        for (name,kind) in [("Toggle","ui_switch"),("Choice","ui_menu")] {
+            let scalar=live.as_ref().unwrap().native_controls.iter().find(|c| c.name==name).unwrap();
+            assert_eq!((scalar.kind.as_ref(),scalar.range),(kind,None),"discrete controls must not acquire a fabricated continuous range");
+        }
+
         let mut trace=crate::diagnostics::LoadTrace::new(&i.path,0,Some(0));
         let (scene,status)=native_scene(&i,Some(&rt),&mut live,&pages,&mut trace);
         assert!(status.is_empty(),"{status}");let scene=scene.unwrap();
@@ -4841,6 +4850,11 @@ pub(crate) mod tests {
         let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
         assert_eq!(allocations(||{for _ in 0..8 {Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);
         p.shared.publish_live(true);
+        let mut refresh=crate::ksp::Refresh::default();
+        assert_eq!(allocations(|| assert!(!dsp.rack.parts[0].script().unwrap().refresh_live_within(&mut metadata,&mut refresh,1))),0);
+        let scalar=metadata.native_controls.iter().find(|c| c.name=="Amount").unwrap();
+        assert_eq!(scalar.range,Some((10,80)),"authored callbacks can change the continuous range");
+
         let published=scene.lock().unwrap().snapshot().unwrap();
         p.shared.request_native_assets(0,epoch,published.asset_names()).unwrap();
         assert!(!scene.lock().unwrap().assets.entries.contains_key("assets/pics/changed.svg"),"editor evaluation only queues image work");
