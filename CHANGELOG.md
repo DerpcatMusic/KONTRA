@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
+- `wait_async` now retains the original callback until its admitted NKA/IR operation has finished installation or failed. Unknown and completed IDs continue immediately; the bounded wait state retains event/channel context without polling or audio-thread I/O.
+
 - Explicit positive convolution crossover now prepares separate early/late filters at unit Size and matching sample rates, with the checked 50 ms blend and original source duration. Nonunit Size, automatic crossover and resampling remain approximate.
 
 - Both Mac release architectures now require timestamped Developer ID signatures, Apple acceptance, and a validated stapled DMG; unsigned fallback is removed. Existing credentials were reused through the owned signing workflow. The next real Apple submission is pending.

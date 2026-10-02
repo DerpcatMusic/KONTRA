@@ -795,6 +795,15 @@
       ],
       "validation": "Independent scalar numeric gate and six existing IR/routing/live-load regressions pass at isolated0c8fb0a. Explicit positive crossover, mirrored Reverse, clipped50ms complementary overlap, original source length, predelay/envelope/AutoGain order, dry path and zero processing heap checked. Nonunit Size, automatic crossover and rate conversion remain approximate; none of the six reported Analog IR records is eligible.",
       "accepted": true
+    },
+    {
+      "id": "wait-async-worker-completion",
+      "summary": "Keep wait_async suspended until its worker-backed operation is installed or fails",
+      "source_commits": [
+        "86d6cb3aec283b8fd7af1ba41792d796da8523ba"
+      ],
+      "validation": "Delayed600-cell NKA success/failure, invalid/completed IDs, wrong-slot completion, original event/channel context after note-off and both VM modes pass with zero processing heap. Existing array read/write/stale epoch, live IR completion, stop_wait and bounded async/PGS regressions all pass at5336388. Relative async_done callback order is local policy, not a claimed documented guarantee.",
+      "accepted": true
     }
   ]
 }
