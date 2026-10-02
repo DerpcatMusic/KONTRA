@@ -39,6 +39,11 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(untagged)]
 pub enum Value {
     Int(i32),
+    /// Native Kontakt persistence stores a menu's entry position, whereas
+    /// KONTRA host state stores its assigned value. Keep the origin until the
+    /// declared control and its entries are available; ordinary scalars use it
+    /// as an integer. The object shape survives the imported instrument cache.
+    NativeInt { native_int: i32 },
     Real(f64),
     Text(String),
     /// Dense snapshots keep numeric tables at their native element size.
@@ -161,10 +166,9 @@ pub fn saved_persistence(entries: &[String]) -> Persisted {
         .iter()
         .filter_map(|entry| {
             let (name, rest) = entry.split_once(' ').unwrap_or((entry, ""));
-            let ints = || rest.split_whitespace().map(|x| x.parse().map(Value::Int));
             let reals = || rest.split_whitespace().map(|x| x.parse().map(Value::Real));
             let value = match name.as_bytes().first()? {
-                b'$' => ints().next()?.ok()?,
+                b'$' => Value::NativeInt { native_int: rest.split_whitespace().next()?.parse().ok()? },
                 b'~' => reals().next()?.ok()?,
             b'%' => Value::IntArray(rest.split_whitespace().map(str::parse).collect::<Result<_, _>>().ok()?),
             b'?' => Value::RealArray(rest.split_whitespace().map(str::parse).collect::<Result<_, _>>().ok()?),

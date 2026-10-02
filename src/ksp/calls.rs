@@ -1688,6 +1688,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .and_then(|p| p.get(&*var.name))
             {
                 write_value_rt(&mut m.slot.mem, var, value, m.env.loading)?;
+                if let Some(c) = m.slot.ui.control_of(v) {
+                    m.slot.ui.controls[c].restore_menu(m.prog, &mut m.slot.mem, value, m.env.loading);
+                }
             }
             if let Some(c) = m.slot.ui.control_of(v) {
                 snap_menu(m, c);
@@ -1825,6 +1828,7 @@ fn snap_menu(m: &mut Machine, c: usize) {
 }
 
 fn set_value(m: &mut Machine, c: usize, value: i32) {
+    m.slot.ui.controls[c].native_menu_index = None;
     let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];
     if var.ty == Ty::Int && var.len.is_none() {
         m.slot.mem.ints[var.slot as usize] = value;

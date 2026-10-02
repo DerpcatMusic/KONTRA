@@ -2,7 +2,7 @@ use super::*;
 
 fn text(v: &Value) -> String {
     match v {
-        Value::Int(n) => n.to_string(),
+        Value::Int(n) | Value::NativeInt { native_int: n } => n.to_string(),
         Value::Real(n) => n.to_string(),
         Value::Text(s) => s.clone(),
         Value::Array(_) | Value::IntArray(_) | Value::RealArray(_) => "[array]".into(),
@@ -856,7 +856,7 @@ fn saved_persistence_decodes_every_kind() {
     ]
     .map(String::from);
     let saved = saved_persistence(&entries);
-    assert_eq!(saved["$a"], Value::Int(5));
+    assert_eq!(saved["$a"], Value::NativeInt { native_int: 5 });
     assert_eq!(
         saved["%b"],
         Value::IntArray(vec![1, 2, 3])
@@ -2211,7 +2211,7 @@ fn a_waveform_keeps_its_zone_flags_and_cursor() {
 #[test]
 fn menus_snap_invalid_control_and_persistent_values_before_indexing() {
     // Una Corda's room menu has values 60..89, sets VALUE to 0 in its
-    // control setup, and saves a stale value 2. Its captions index by item.
+    // control setup. Host values select by assigned value, not item position.
     let source = r#"on init
 make_perfview
 declare !names[3] := ("First", "Second", "Last")
@@ -2238,6 +2238,76 @@ end on"#;
         assert_eq!(prop(&ui, 0, "$CONTROL_PAR_VALUE"), value.to_string());
         assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "First");
         assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), label);
+    }
+}
+
+#[test]
+fn native_menu_positions_restore_entries_and_host_state_preserves_assigned_values() {
+    let source = r#"on init
+make_perfview
+declare !names[3] := ("First", "Middle", "Last")
+declare ui_menu $room
+make_persistent($room)
+read_persistent_var($room)
+declare $cached := $room
+declare $ordinary
+make_persistent($ordinary)
+read_persistent_var($ordinary)
+add_menu_item($room, "Header", -1)
+add_menu_item($room, "Room A", 0)
+add_menu_item($room, "Another header", -1)
+add_menu_item($room, "Room B", 1)
+add_menu_item($room, "Room Z", 2)
+declare $built := $room
+make_persistent($built)
+declare ui_label $caption(1,1)
+end on
+on persistence_changed
+if ($room >= 0)
+$cached := $room
+set_text($caption, !names[$cached])
+else
+set_text($caption, "Header")
+end if
+end on
+on ui_control($room)
+read_persistent_var($room)
+end on"#;
+    for (position, value, caption) in [
+        (0, -1, "Header"), (1, 0, "First"), (2, -1, "Header"),
+        (3, 1, "Middle"), (4, 2, "Last"), (-1, -1, "Header"), (99, -1, "Header"),
+    ] {
+        // Both NKI and NKSN import use this decoder. The distinct object also
+        // keeps native origin through the imported instrument's JSON cache.
+        let saved = saved_persistence(&[format!("$room {position}"), "$ordinary 73".into()]);
+        let saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        let mut engine = LogEngine::new(Vec::new(), 48_000.);
+        let (mut rt, errors) = Runtime::with_scripts(&[source], &mut engine, 8, vec![saved]);
+        assert!(errors.iter().all(Option::is_none), "{position}: {errors:?}");
+        assert!(rt.diagnostics().is_empty(), "{position}: {:?}", rt.diagnostics());
+        let ui = rt.interface(0);
+        assert_eq!(prop(&ui, 0, "$CONTROL_PAR_VALUE"), value.to_string());
+        assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), caption);
+        let host_saved = rt.persistence();
+        assert_eq!(host_saved[0]["$ordinary"], Value::Int(73));
+        assert_eq!(host_saved[0]["$room"], Value::Int(value));
+        if (0..5).contains(&position) {
+            assert_eq!(host_saved[0]["$built"], Value::Int(value), "deferred init selection");
+        }
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| rt.ui_control(&mut engine, 0, 0, 0)), 0);
+        #[cfg(not(feature = "plugin"))]
+        rt.ui_control(&mut engine, 0, 0, 0);
+        assert_eq!(prop(&rt.interface(0), 0, "$CONTROL_PAR_VALUE"), value.to_string());
+        assert!(rt.diagnostics().is_empty());
+        // KONTRA host-state integers already contain assigned values. In
+        // particular value2 must not be reinterpreted as the header at index2.
+        let host_saved = serde_json::from_str(&serde_json::to_string(&host_saved).unwrap()).unwrap();
+        let (restored, errors) = Runtime::with_scripts(&[source], &mut engine, 8, host_saved);
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        assert_eq!(prop(&restored.interface(0), 0, "$CONTROL_PAR_VALUE"), value.to_string());
+        assert_eq!(prop(&restored.interface(0), 1, "$CONTROL_PAR_TEXT"), caption);
+        assert!(restored.diagnostics().is_empty());
     }
 }
 

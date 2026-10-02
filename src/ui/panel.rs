@@ -985,7 +985,7 @@ fn shape(interface: &Interface) -> u64 {
 
 fn hash_value(v: &Value, h: &mut DefaultHasher) {
     match v {
-        Value::Int(n) => n.hash(h),
+        Value::Int(n) | Value::NativeInt { native_int: n } => n.hash(h),
         Value::Real(r) => r.to_bits().hash(h),
         Value::Text(t) => t.hash(h),
         Value::IntArray(a) => a.iter().for_each(|n| n.hash(h)),

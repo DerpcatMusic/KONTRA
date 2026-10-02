@@ -1306,7 +1306,7 @@ impl Runtime {
             if let Some(value) = saved.get(&*var.name) {
                 write_value(&mut state.mem, var, value);
                 if let Some(c) = state.ui.control_of(v) {
-                    state.ui.controls[c].snap_menu(prog, &mut state.mem);
+                    state.ui.controls[c].restore_menu(prog, &mut state.mem, value, false);
                 }
             }
         }
@@ -2994,7 +2994,7 @@ pub fn write_value(mem: &mut vm::Memory, var: &compile::Var, value: &Value) {
     }
     let s = var.slot as usize;
     let one = |mem: &mut vm::Memory, i: usize, v: &Value| match (var.ty, v) {
-        (Ty::Int, Value::Int(n)) => mem.ints[i] = *n,
+        (Ty::Int, Value::Int(n) | Value::NativeInt { native_int: n }) => mem.ints[i] = *n,
         (Ty::Real, Value::Real(n)) => mem.reals[i] = *n,
         (Ty::Str, Value::Text(t)) => {
             mem.strs[i].clear();
