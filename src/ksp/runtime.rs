@@ -93,6 +93,9 @@ pub struct LiveFault {
 pub struct Live {
     /// Copied without formatting or allocating on the audio thread.
     pub faults: Vec<LiveFault>,
+    /// Executions at unretained fault locations, cumulative for this runtime.
+    /// This is not a count of distinct locations; repeats cannot be deduplicated.
+    pub fault_occurrences_omitted: u64,
     pub notes: Vec<&'static str>,
     pub refresh_interface: bool,
     pub(crate) interface_current: bool,
@@ -126,7 +129,7 @@ impl Live {
 // Copying history is not part of a snapshot's semantic equality.
 impl PartialEq for Live {
     fn eq(&self, other: &Self) -> bool {
-        self.faults == other.faults && self.notes == other.notes
+        self.faults == other.faults && self.fault_occurrences_omitted == other.fault_occurrences_omitted && self.notes == other.notes
             && self.refresh_interface == other.refresh_interface
             && self.interface_current == other.interface_current && self.slot == other.slot
             && self.interface == other.interface && self.keys == other.keys
@@ -461,6 +464,7 @@ pub struct Env {
     /// Distinct service notes, preallocated so noting never allocates.
     pub notes: Vec<&'static str>,
     faults: Vec<FaultRecord>,
+    fault_occurrences_omitted: u64,
     rng: u64,
     next_callback_id: i32,
     next_async_id: i32,
@@ -513,6 +517,7 @@ impl Env {
             persisted,
             notes: Vec::with_capacity(NOTE_CAPACITY),
             faults: Vec::with_capacity(FAULT_CAPACITY),
+            fault_occurrences_omitted: 0,
             rng: 0x9E37_79B9_7F4A_7C15,
             next_callback_id: 0,
             next_async_id: 0,
@@ -627,6 +632,7 @@ impl Env {
                 count: 1,
             });
         } else {
+            self.fault_occurrences_omitted = self.fault_occurrences_omitted.saturating_add(1);
             self.note("KSP diagnostics limit reached; additional fault locations are omitted");
         }
     }
@@ -1324,6 +1330,7 @@ impl Runtime {
             .collect();
         let mut live = Live {
             faults: Vec::with_capacity(FAULT_CAPACITY),
+            fault_occurrences_omitted: 0,
             notes: Vec::with_capacity(NOTE_CAPACITY),
             interface_revision: 0,
             keys_revision: 0,
@@ -1364,6 +1371,7 @@ impl Runtime {
     /// [`refresh_live`](Self::refresh_live) a piece at a time, about `budget`
     /// control properties from where `at` stands; true once done.
     pub fn refresh_diagnostics(&self, live: &mut Live) {
+        live.fault_occurrences_omitted = self.env.fault_occurrences_omitted;
         live.faults.clear();
         live.faults.extend(self.env.faults.iter().map(|f| LiveFault {
             slot: f.slot + 1,
@@ -1442,6 +1450,9 @@ impl Runtime {
             format!("Slot {} line {line}: {} ({}x)", f.slot + 1, f.what, f.count)
         }));
         out.extend(self.env.notes.iter().map(|n| n.to_string()));
+        if self.env.fault_occurrences_omitted != 0 {
+            out.push(format!("KSP fault diagnostics omitted {} executions at additional locations", self.env.fault_occurrences_omitted));
+        }
         out.sort();
         out.dedup();
         out

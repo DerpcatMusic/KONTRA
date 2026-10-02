@@ -539,6 +539,7 @@ struct Measure {
 pub(crate) struct LiveDiagnostics {
     epoch: u64,
     faults: Vec<LiveFault>,
+    fault_occurrences_omitted: u64,
     notes: Vec<&'static str>,
 }
 
@@ -1163,9 +1164,9 @@ impl Shared {
             });
             let keys = keys_changed.then(|| Arc::new(live.keys.clone()));
             let diagnostics = previous_diagnostics.filter(|old|
-                old.epoch == epoch && old.faults == live.faults && old.notes == live.notes
+                old.epoch == epoch && old.faults == live.faults && old.fault_occurrences_omitted == live.fault_occurrences_omitted && old.notes == live.notes
             ).unwrap_or_else(|| Arc::new(LiveDiagnostics {
-                epoch, faults: live.faults.clone(), notes: live.notes.clone(),
+                epoch, faults: live.faults.clone(), fault_occurrences_omitted: live.fault_occurrences_omitted, notes: live.notes.clone(),
             }));
             #[cfg(test)]
             if let Some(gate) = self.publish_gate.lock().unwrap().take() {
@@ -1264,7 +1265,7 @@ impl Shared {
                         v.instrument.as_ref().map(|i| i.path.clone()), v.program))
             };
             let Some((diagnostics, previous, path, program)) = pending else { continue };
-            let runtime = serde_json::json!({"faults":diagnostics.faults,"notes":diagnostics.notes});
+            let runtime = serde_json::json!({"faults":diagnostics.faults,"fault_occurrences_omitted":diagnostics.fault_occurrences_omitted,"notes":diagnostics.notes});
             if previous["runtime"] == runtime { continue; }
             let mut new_issues = Vec::new();
             for fault in runtime["faults"].as_array().into_iter().flatten() {
@@ -1278,11 +1279,17 @@ impl Shared {
                     new_issues.push(serde_json::json!({"message":note}));
                 }
             }
+            let omitted = (diagnostics.fault_occurrences_omitted != 0).then(|| format!("KSP fault diagnostics omitted {} executions at additional locations", diagnostics.fault_occurrences_omitted));
+            if let Some(message) = &omitted
+                && previous["runtime"]["fault_occurrences_omitted"].as_u64().unwrap_or(0) != diagnostics.fault_occurrences_omitted
+            {
+                new_issues.push(serde_json::json!({"code":"fault_diagnostics_omitted","message":message,"fault_occurrences_omitted":diagnostics.fault_occurrences_omitted}));
+            }
             let status = diagnostics.faults.iter().map(|f| format!("Slot {} line {}: {} ({}x)", f.slot, f.line, f.message, f.count))
-                .chain(diagnostics.notes.iter().map(|n| (*n).to_owned())).collect::<Vec<_>>().join("\n");
+                .chain(diagnostics.notes.iter().map(|n| (*n).to_owned())).chain(omitted).collect::<Vec<_>>().join("\n");
             let load_id = previous["script_restore"]["load_id"].as_str().or_else(|| previous["load_id"].as_str()).map(str::to_owned);
             let mut report = (*previous).clone();
-            if report["status"] == "loaded" && (!diagnostics.faults.is_empty() || !diagnostics.notes.is_empty()) {
+            if report["status"] == "loaded" && (!diagnostics.faults.is_empty() || diagnostics.fault_occurrences_omitted != 0 || !diagnostics.notes.is_empty()) {
                 report["status"] = "partial".into();
             }
             report["runtime"] = runtime;
@@ -3973,7 +3980,7 @@ pub(crate) mod tests {
                 part.script_epoch = 1;
                 part.diagnostics_dirty = true;
                 part.live_diagnostics = Some(Arc::new(LiveDiagnostics {
-                    epoch: 1, faults: Vec::new(), notes: vec!["Existing runtime feature remains unsupported"],
+                    epoch: 1, faults: Vec::new(), fault_occurrences_omitted: 17, notes: vec!["Existing runtime feature remains unsupported"],
                 }));
                 part.load_report = Some(Arc::new(serde_json::json!({"status": initial, "failure": "Foreign base rejected"})));
             }
@@ -3983,6 +3990,8 @@ pub(crate) mod tests {
             assert_eq!(report["status"], if initial == "loaded" { "partial" } else { initial });
             assert_eq!(report["failure"], "Foreign base rejected");
             assert_eq!(report["runtime"]["notes"][0], "Existing runtime feature remains unsupported");
+            assert_eq!(report["runtime"]["fault_occurrences_omitted"], 17);
+            assert!(view.parts[0].runtime_status.contains("omitted 17 executions"));
         }
     }
 
