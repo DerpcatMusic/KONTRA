@@ -54,6 +54,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Added
 
+- Bounded Falcon/UVI metadata inspection and format/runtime research document
+  the next compatibility requirements. This does not add Falcon playback.
+- A Rust dependency audit records reuse opportunities and verified runtime limits.
+
 - Headless `audit-patch` accepts explicit snapshot and program selection while
   using the existing import, script, bank, effect and paced note/chord path.
   It retains structured load stages and diagnostics without opening an editor.
@@ -118,9 +122,10 @@ below record reviewed source checkpoints; they are not claims about pending work
   782-file / 788-program corpus verifies 230,627 byte-exact record roundtrips and
   edited-value readbacks with zero errors.
 - Typed native LFO parsing and writing for known fields, with 9,600 actual-library
-  chunks round-tripping byte-for-byte. Import preserves this metadata; LFO clocks,
-  waveform generation and routing remain unsupported, some tables remain raw,
-  and typed rate/phase metadata does not establish DSP behavior.
+  chunks round-tripping byte-for-byte. Eligible retriggered zero-delay sine Multi
+  pitch sources now play; broader waveforms, free-running/delayed clocks and live
+  frequency remain unsupported. Some tables remain raw, and typed metadata alone
+  does not establish DSP behavior.
 - Named bitmap font loading for 256-glyph Windows-1252 RGBA strips declared during
   initialization. Actual Areia Advanced resources verify two 256-glyph, 14-pixel
   fonts with variable advances and the native gray/orange switch-state change;
