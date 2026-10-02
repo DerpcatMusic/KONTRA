@@ -2923,7 +2923,7 @@ fn rack_growth_preserves_restored_slots_and_same_frame_duplicate() {
     p.shared.focus_request.store(128, Ordering::Relaxed);
     let mut h = Harness::new(&p, 1180., 760.);
     h.idle(2);
-    assert_eq!(parts(&p).len(), 129, "restoration never truncates the rack");
+    assert_eq!(read(&p.selection).parts.len(), 129, "restoration never truncates the rack");
     assert_eq!(read(&p.selection).order.len(), 129, "order covers every occupied slot once");
     assert_eq!(selected_slot(&p), 128);
     assert_eq!(p.shared.focus_request.load(Ordering::Relaxed), u64::MAX);
@@ -2935,8 +2935,8 @@ fn rack_growth_preserves_restored_slots_and_same_frame_duplicate() {
         keys: vec![KeyPress { key: Key::Char('d'), mods: Mods { ctrl: true, ..Default::default() } }],
         ..Default::default()
     });
-    assert_eq!(parts(&p).len(), 130);
-    assert_eq!(parts(&p)[129].path, parts(&p)[128].path);
+    assert_eq!(read(&p.selection).parts.len(), 130);
+    assert_eq!(read(&p.selection).parts[129].path, read(&p.selection).parts[128].path);
     assert_eq!(selected_slot(&p), 129);
     assert!(p.shared.part(129).is_some(), "meter/loader atomics are prepared before rendering");
     assert!(lock(&p.shared.view).parts.len() >= 130);
