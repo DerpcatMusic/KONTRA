@@ -275,7 +275,10 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         children: saved.effect_children,
     });
     let mut fx = crate::fx::ProgramFx::read(&effects).context("Snapshot effects")?;
-    fx.name_impulses(&other_files(&snapshot_chunks)?);
+    let files = other_files(&snapshot_chunks)?;
+    // Reject an invalid rooted path before applying any saved state/effects.
+    for name in files.values() { snapshot_rooted_path(name)?; }
+    fx.name_impulses(&files);
     let parent = base.parent().context("Base instrument has no parent")?;
     let root = base
         .ancestors()
@@ -285,8 +288,12 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
     let container = resource_container(&base_chunks)?;
     let mut dependencies = vec![snapshot.to_path_buf()];
     fx.load_impulses(|name, max_frames| {
+        // Snapshot filename segment 0x0b anchors the saved path at the base
+        // library. The generic filename table retains it as a leading slash.
+        let rooted = snapshot_rooted_path(name)?;
+        let (at, relative) = rooted.as_deref().map_or((parent, Path::new(name)), |n| (root, n));
         let ir = match (
-            resolver.resolve(parent, name)?,
+            resolver.resolve(at, &relative.to_string_lossy())?,
             &container,
             name.find("Resources/"),
         ) {
@@ -317,6 +324,24 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         .dependencies
         .extend(crate::cache::dependencies(dependencies));
     Ok(instrument)
+}
+
+fn snapshot_rooted_path(name: &str) -> Result<Option<PathBuf>> {
+    let Some(relative) = name.strip_prefix('/') else {
+        return Ok(None);
+    };
+    let relative = PathBuf::from(relative.replace('\\', "/"));
+    let mut depth = 0usize;
+    for component in relative.components() {
+        use std::path::Component;
+        match component {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir if depth > 0 => depth -= 1,
+            _ => bail!("Snapshot filename escapes its library root"),
+        }
+    }
+    Ok(Some(relative))
 }
 
 /// [`read_program`], shared: parts and plugin instances in one process that
@@ -904,6 +929,16 @@ pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod preset_tests {
+    #[test]
+    fn rooted_snapshot_paths_stay_inside_the_library() {
+        use super::snapshot_rooted_path;
+        assert!(snapshot_rooted_path("../Samples/relative.ncw").unwrap().is_none());
+        assert_eq!(snapshot_rooted_path("/Samples/../Resources/authored.ncw").unwrap(), Some("Samples/../Resources/authored.ncw".into()));
+        for path in ["/../outside.ncw", "/Samples/../../outside.ncw", "/Samples\\..\\..\\outside.ncw", "//machine/absolute"] {
+            assert!(snapshot_rooted_path(path).is_err(), "{path}");
+        }
+    }
+
     #[test]
     fn zero_filled_presets_fail_before_entering_the_container_parser() {
         let path =
