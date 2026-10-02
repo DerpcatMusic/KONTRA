@@ -116,11 +116,10 @@ Every one of the 229,184 internal modulators in the 778 NKIs is an envelope:
 | ENV_AHDSR | filterCutoff | 563 | Dolce, Vista, Pacific, Una Corda |
 | ENV_AHDSR | eqGain2 + eqGain3 | 556 | Dolce, Vista, Pacific |
 
-**There is no LFO (or any other modulator kind) anywhere in the corpus**, so the LFO
-chunk layout cannot be discovered from local data and LFOs are not implemented. An
-LFO would not sit in the `0x07` BParEnv wrapper, so its group fails with a
-"modulation not imported" warning instead of being misread. No internal modulator
-targets pitch or pan. Every internal volume target stores intensity 1, no invert and
+This older corpus contained no LFOs or other source kinds. The later ANALOG STRINGS
+audit below supersedes that observation: direct `0x08` LFO children import as opaque
+sources without dropping their group's other modulation. No internal modulator in
+this older corpus targets pitch or pan. Every internal volume target stores intensity 1, no invert and
 no shaper (Afflatus, Vista, Solo checked), so intensity is not modelled for envelopes.
 
 Two volume envelopes in one group occur in 2,332 groups: Afflatus (2,192, AHDSR then
@@ -444,6 +443,49 @@ regression. Run the ignored `analog_strings_pitch_envelopes_are_routed` with
 `KONTRA_ANALOG_NKI` pointing to the installed instrument to verify its aggregate
 483 pitch-envelope routes without publishing library content.
 
+## Opaque LFO investigation (2026-10-02)
+
+A second metadata-only census of the same 782 files and 788 programs completed
+with zero failures. All 2,400 opaque sources were direct `0x08` BParLFO children
+with structured-object version `0x71`, 67 public bytes, no private bytes, and no
+child chunks. The Analog instrument had 271 distinct source payloads. Its source
+records use shape word 5; this observation alone does not establish a waveform
+enumeration or justify treating a stored frequency as Hz.
+
+Stored nonzero target intensities show that this gap affects initial playback:
+
+| Target | Nonzero assignments |
+|---|---:|
+| pitch | 63 |
+| volume | 672 |
+| pan | 364 |
+| filterCutoff | 62 |
+| filterQ | 18 |
+| bitdepth | 1,104 |
+| downsample | 1,084 |
+| shaper | 831 |
+| distortionIntensity | 557 |
+
+The current importer preserves source and target names for `find_mod` and
+`find_target`; the raw preset retains the complete chunks. Playback does not
+prepare or apply an LFO source. This is independent of the pitch AHDSR repair.
+The actual script changes LFO frequency, bypass, pulse width, five waveform mix
+parameters, and assignment depth. It also addresses separate external modulators
+named `Phase_P1_Retrigger` and `Phase_P2_Retrigger`, and their freewheel counterparts.
+The native metadata contains 1,920 such external Constant assignments targeting
+`startPhase` on internal-modulator slots. Their routes are retained as module
+targets; playback does not apply them. Phase routing therefore needs to be
+implemented as well as the source record.
+
+The [NI modulation manual](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation)
+distinguishes tempo-synchronized frequency, freewheel and retrigger timing, and
+normalized bipolar waveform mixtures. It also distinguishes the older Multi
+LFO's analog-style ripples from Multi Digital's mathematical waveforms. A generic
+oscillator would not establish compatibility with these records. Packed sync
+fields, source flags, target scaling and smoothing, and the older waveform law
+remain unresolved; no guessed source fields or audible LFO implementation were
+added from this census.
+
 ## Not verified
 
 - How Kontakt combines intensity, invert and shaper for volume and pitch (the
@@ -453,4 +495,5 @@ regression. Run the ignored `analog_strings_pitch_envelopes_are_routed` with
   unknown index and tail, the envelope-time modulation law, 0x4A dynamics, the source
   module, internal-modulator bypass, the extra AHDSR flag and records, and the
   ext-mod unknown bytes and id.
-- LFOs: none in the corpus, so neither their layout nor their behaviour.
+- LFOs: source identity, record dimensions, target routes, and actual script calls
+  are observed; packed field meanings and playback behavior remain undecoded.
