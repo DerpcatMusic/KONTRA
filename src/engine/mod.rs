@@ -1858,6 +1858,9 @@ impl Player {
                 let fade = self.fade_frames(STEAL_FADE);
                 for v in self.voices.iter_mut().filter(|v| v.channel == channel) {
                     v.fade.start(0.0, fade, true);
+                    // The stop fade may outlive a physical key-up. This voice
+                    // no longer owns a held key and must not fire a new release.
+                    v.held = false;
                 }
                 self.pending_releases.retain(|r| r.channel != channel);
                 self.keys[c].fill(0);
@@ -2319,6 +2322,33 @@ mod release_note_mono_tests {
     }
     fn tick(e: &mut Engine) { e.render(&mut [0.;512], &mut [0.;512]); }
     fn tails(e: &Engine) -> usize { e.voice_census().iter().filter(|v|v.release_trigger && v.group==1).count() }
+
+    #[test]
+    fn all_sound_off_relinquishes_note_owners_before_late_key_up() {
+        let mut e = engine(false, false, false);
+        e.note_on_from(0, 1, 60, 100);
+        e.note_on_from(1, 2, 61, 100);
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            e.cc_from(0, 1, 120, 0);
+            assert!(e.player.voices.iter().filter(|v| v.channel == 0).all(|v| !v.held && v.fade.dying()));
+            assert!(e.player.voices.iter().filter(|v| v.channel == 1).all(|v| v.held && !v.fade.dying()));
+            // Key-up arrives before even one sample of the stop fade is rendered.
+            e.note_off_from(0, 1, 60);
+            assert!(!e.player.voices.iter().any(|v| v.release_trigger));
+            tick(&mut e);
+            assert!(!e.player.voices.iter().any(|v| v.channel == 0));
+            assert!(e.key_down(1, 61));
+            // Fresh notes retain their normal native release behavior. Neither
+            // the stopped key nor another physical owner is released again.
+            e.note_on_from(0, 1, 60, 100);
+            e.note_off_from(0, 1, 60);
+            assert_eq!(e.player.voices.iter().filter(|v| v.release_trigger).count(), 2);
+            assert!(e.player.voices.iter().filter(|v| v.release_trigger).all(|v| v.channel == 0 && v.input_channel == Some(1)));
+            assert!(e.player.voices.iter().any(|v| v.channel == 1 && v.held));
+            tick(&mut e);
+        }), 0);
+        assert_eq!(e.dropped_commands(), 0);
+    }
 
     #[test]
     fn note_mono_scan_is_prepared_only_for_enabled_release_groups() {
