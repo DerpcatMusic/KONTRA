@@ -1008,10 +1008,12 @@ public:
     // (Cubase theme change, Live dock/undock) would otherwise leave
     // a dangling pointer in the closure.
     MoosePlugView* plugView;
+    // Native GUI ownership changes on attachment, not merely createView.
+    MoosePlugView* attachedView;
 
     MooseComponent() : ctx(nullptr), sampleRate(44100), maxFrames(1024),
                        componentHandler(nullptr), inPerformEdit(false),
-                       plugView(nullptr) {
+                       plugView(nullptr), attachedView(nullptr) {
         if (g_desc) {
             inputBusActive.store(
                 default_active_bus_mask(g_desc->num_input_buses, g_desc->input_bus_kinds),
@@ -2124,6 +2126,7 @@ struct IPlugViewContentScaleSupportVtbl {
 // pointer arithmetic, matching the MooseComponent pattern.
 static uint32 comp_release(void* s);
 static tresult pv_setFrame(void* s, void* frame);
+static tresult pv_removed(void* s);
 
 struct MoosePlugView {
     IPlugViewVtbl* vtbl;
@@ -2165,6 +2168,7 @@ static uint32 pv_addRef(void* s) { return ++((MoosePlugView*)s)->refCount; }
 static uint32 pv_release(void* s) {
     auto* pv = (MoosePlugView*)s;
     if (--pv->refCount <= 0) {
+        pv_removed(pv);
         // Only the current view may unregister the component's run loop.
         pv_setFrame(pv, nullptr);
         if (pv->comp) {
@@ -2220,11 +2224,16 @@ static tresult pv_attached(void* s, void* parent, FIDString /*type*/) {
     // KONTAKTO patch: IPlugView attachment creates the view independently
     // of processor activation or state restoration. An inactive fresh
     // instance may receive neither; deferring here leaves only a host frame.
+    if (pv->comp) pv->comp->attachedView = pv;
     g_cb->gui_open(pv->ctx, parent);
     return kResultOk;
 }
 static tresult pv_removed(void* s) {
     auto* pv = (MoosePlugView*)s;
+    if (pv->comp) {
+        if (pv->comp->attachedView != pv) return kResultOk;
+        pv->comp->attachedView = nullptr;
+    }
     if (g_cb && pv->ctx) g_cb->gui_close(pv->ctx);
     return kResultOk;
 }
