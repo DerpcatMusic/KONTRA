@@ -629,10 +629,12 @@ impl Engine {
     }
 
     /// Exact host ingress. The route is captured once, before KSP can transpose.
-    pub(crate) fn host_note_on(&mut self, note: HostNote, channel: u8, key: u8, velocity: u8) -> bool {
+    pub(crate) fn host_note_on(&mut self, note: HostNote, channel: u8, key: u8, velocity: u8, tune: f32) -> bool {
+        if !tune.is_finite() { return false; }
         if note.channel >= 16 || note.key >= 128 || channel >= 16 || key >= 128 || velocity > 127 { return false; }
         let event = self.player.next_id();
         let Some(host_note) = self.player.host_notes.allocate(note, channel, key, velocity, event, self.player.now) else { return false };
+        self.player.host_notes.change(host_note, HostExpression::Tune(tune));
         self.player.keys[channel as usize][key as usize] = velocity.max(1);
         self.player.key_on[channel as usize][key as usize] = self.player.now;
         if let Some((rt, mut host)) = self.scripted_from(channel, note.channel) {

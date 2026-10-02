@@ -358,7 +358,7 @@ impl Scheduler {
             }
             return None;
         }
-        if let In::HostOn(note, _) = ev {
+        if let In::HostOn(note, ..) = ev {
             if self.host.len() == self.host.capacity() || (note.id != -1 && self.host.iter().any(|o| o.note == note)) {
                 self.overflows = self.overflows.saturating_add(1); return None;
             }
@@ -366,7 +366,7 @@ impl Scheduler {
         let frames = |row, legato, velocity| holds.frames(row, legato, velocity, rate);
         let lane = |channel: u8| if router.by_channel() { usize::from(channel & 15) } else { 0 };
         let (due, art) = match ev {
-            In::NoteOn(channel, note, velocity) | In::HostOn(crate::engine::HostNote { channel, key: note, .. }, velocity) => {
+            In::NoteOn(channel, note, velocity) | In::HostOn(crate::engine::HostNote { channel, key: note, .. }, velocity, _) => {
                 let key = &mut self.held[usize::from(channel & 15)][usize::from(note & 127)];
                 let (row, switch) = router.articulation_of(channel, note, velocity);
                 if switch {
@@ -392,7 +392,7 @@ impl Scheduler {
                 }
                 let mono = if holds.1[row.min(LOADED)] { MONO } else { 0 };
                 *key = ((due - now) as u32).min(MONO - 1) | mono;
-                if let In::HostOn(note, _) = ev { self.host.push(HostHold { note, hold:due - now, mono:mono != 0, held:true }); }
+                if let In::HostOn(note, ..) = ev { self.host.push(HostHold { note, hold:due - now, mono:mono != 0, held:true }); }
                 let art = if picked || row == LOADED { NO_ART } else { row as u8 };
                 (due, art)
             }
@@ -528,7 +528,7 @@ impl Align {
         // Any delayed exact work retains the old tuple until it is applied.
         // Otherwise an ended root's queued expression could hit a reused ID.
         self.parts.iter().any(|s| (0..s.len).any(|i| match s.at(i).ev {
-            In::HostOn(n,_) => n==note,
+            In::HostOn(n, ..) => n==note,
             In::HostOff(pattern) | In::HostChoke(pattern) | In::HostExpression(pattern,_) => pattern.matches(note),
             _ => false,
         }))
@@ -997,8 +997,8 @@ mod tests {
         let router=Router::default(); let mut scheduler=Scheduler::default();
         let first=crate::engine::HostNote { port:0,channel:0,key:60,id:10,clap:true };
         let second=crate::engine::HostNote { id:11,..first };
-        assert!(scheduler.arrive(In::HostOn(first,100),0,&holds(0.,0.,10.),RATE,&router).is_none());
-        assert!(scheduler.arrive(In::HostOn(second,100),96,&holds(0.,0.,20.),RATE,&router).is_none());
+        assert!(scheduler.arrive(In::HostOn(first,100,0.),0,&holds(0.,0.,10.),RATE,&router).is_none());
+        assert!(scheduler.arrive(In::HostOn(second,100,0.),96,&holds(0.,0.,20.),RATE,&router).is_none());
         let old=crate::engine::HostPattern { port:0,channel:0,key:60,id:10,clap:true };
         assert!(scheduler.arrive(In::HostOff(old),192,&holds(0.,0.,20.),RATE,&router).is_none());
         assert!(scheduler.arrive(In::HostExpression(old,crate::engine::HostExpression::Tune(12.)),240,&holds(0.,0.,20.),RATE,&router).is_none());
