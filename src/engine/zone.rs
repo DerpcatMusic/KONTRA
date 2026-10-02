@@ -144,6 +144,50 @@ impl Bank {
         self.zone_spares =
             VecDeque::with_capacity(source.len().saturating_mul(3).saturating_add(64).max(QUEUE));
     }
+    /// Apply synchronous KSP init edits offthread before publishing this bank.
+    /// Outside-init IDs remain pending for the genuine live service worker.
+    pub fn apply_script_zone_init(&mut self, runtime: &crate::ksp::Runtime) -> Result<()> {
+        ensure!(
+            self.zone_init_source_matches(runtime.init_zone_source),
+            "Initial zone mapping belongs to another source"
+        );
+        self.prepare_zone_init(runtime.service_epoch, &runtime.init_zone_edits, &|| false)
+    }
+    pub(crate) fn prepare_zone_init(
+        &mut self,
+        epoch: u64,
+        edits: &[ZoneEdit],
+        canceled: &dyn Fn() -> bool,
+    ) -> Result<()> {
+        if self.zone_init_epoch == epoch {
+            return Ok(());
+        }
+        let jobs: Vec<_> = edits
+            .iter()
+            .filter(|e| e.id < 0)
+            .map(|&e| self.zone_job(e).unwrap())
+            .collect();
+        if !jobs.is_empty() {
+            let base = jobs[0].base.clone();
+            let mut prepared = Prepared::build(jobs, base, canceled);
+            ensure!(
+                prepared.success,
+                "Initial zone mapping: {}",
+                prepared.error.as_deref().unwrap_or("preparation failed")
+            );
+            ensure!(
+                self.install_zone_map(&mut prepared),
+                "Initial zone mapping source changed"
+            );
+            // This is the initial baseline, not a live revision. Bare/full
+            // banks of this runtime publish the same synchronous mappings.
+            Arc::get_mut(self.zone_state.as_mut().unwrap())
+                .unwrap()
+                .revision = 0;
+        }
+        self.zone_init_epoch = epoch;
+        Ok(())
+    }
     pub(crate) fn zone_par(&self, zone: i32, par: ZonePar) -> Option<i32> {
         usize::try_from(zone)
             .ok()
@@ -455,7 +499,9 @@ impl Prepared {
                             fresh.version == source.version,
                             "Zone sample changed during wavetable read"
                         );
-                        sample.spans.push(Span { start: 0, data });
+                        let span = Span { start: 0, data };
+                        super::bank::resident::insert((path.clone(), false, source.version), &span);
+                        sample.spans.push(span);
                     }
                     Some(table)
                 }
