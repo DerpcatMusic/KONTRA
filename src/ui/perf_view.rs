@@ -399,8 +399,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         let x = origin[0];
         let y = origin[1].saturating_add(HEADER as u32);
         let width = frame_width.unwrap_or(image.width);
-        let (cw, ch) = (interface.width.min(width).min(image.width.saturating_sub(x)),
-            interface.height.min(image.height.saturating_sub(y)));
+        let (cw, ch) = ((interface.width.max(0) as u32).min(width).min(image.width.saturating_sub(x)),
+            (interface.height.max(0) as u32).min(image.height.saturating_sub(y)));
         // Only the visible window reaches the GPU. Large valid PNG strips can exceed
         // its image-atlas limit; retaining the full strip there is not sufficient.
         if let Some(window) = fitted::window(image, x, y, cw, ch) {
@@ -1255,7 +1255,7 @@ mod tests {
                     let mut ui = crate::ui::theme::ui();
                     ui.set_scale(Some(device_scale));
                     let size = Size::new(w * view_scale, h * view_scale);
-                    let root = || canvas(|_| {}).w(size.width).h(size.height).id("slider");
+                    let root = || canvas(|_| Vec::new()).w(size.width).h(size.height).id("slider");
                     ui.frame(root(), Some(size), Input::default(), 0.).unwrap();
                     let vertical = drags_vertically(Kind::Slider, w, h, picture, behaviour);
                     let distance = travel(Kind::Slider, behaviour, 1_000_000., (w, h), picture) * view_scale;
