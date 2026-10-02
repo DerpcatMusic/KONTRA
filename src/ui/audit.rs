@@ -718,6 +718,8 @@ mod tests {
             let partition = std::env::var_os("KONTRA_UI_BENCH_PARTITION").is_some();
             let mut last_published = None;
             let mut published_arc_owners = Vec::new();
+            let mut publication_rows = Vec::new();
+            let mut previous_revision = None;
             let mut observer = |published: &Arc<SamplerParams>| -> anyhow::Result<()> {
                 if partition { last_published = Some(published.clone()); }
                 if observer_draw.is_none() {
@@ -745,6 +747,17 @@ mod tests {
                 let start = Instant::now();
                 published.shared.publish_live(true);
                 publication_ms.push(start.elapsed().as_secs_f64()*1000.);
+                if partition {
+                    let view = published.shared.view.lock().unwrap();
+                    let part = &view.parts[0];
+                    let revision = part.live_revisions.map(|(interface, _)| interface);
+                    if revision != previous_revision {
+                        if let Some((copied, total, reused)) = part.publication_rows {
+                            publication_rows.push(serde_json::json!({"copied_rows":copied,"total_rows":total,"reused_controls_allocation":reused}));
+                        }
+                        previous_revision = revision;
+                    }
+                }
                 let (bridge, draw) = observer_draw.as_mut().unwrap();
                 let tree = draw(&mut ui, bridge);
                 ui.frame(tree, Some(Size::new(1180.,900.)), Input::default(),1./60.).unwrap();
@@ -781,6 +794,10 @@ mod tests {
                     "unique_strong_frames":published_arc_owners.iter().filter(|(strong,_)| *strong == 1).count(),
                     "max_strong":published_arc_owners.iter().map(|(strong,_)| *strong).max(),
                     "max_weak":published_arc_owners.iter().map(|(_,weak)| *weak).max(),
+                });
+                costs["publication_rows"] = serde_json::json!({
+                    "scope":"source revision changes only; stamp candidates plus independently compared menu rows; initial or retained-reader snapshots copy all rows",
+                    "updates":publication_rows,
                 });
                 println!("UI_BENCH_COST {}", costs);
             }

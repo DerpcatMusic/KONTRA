@@ -548,6 +548,10 @@ pub(crate) struct PartView {
     /// Live view buffer for this slot's runtime while the loader holds it.
     pub(crate) live: Option<Box<Live>>,
     pub(crate) live_revisions: Option<(u64, u64)>,
+    /// Published control stamps, shared cheaply by frame snapshots; never touched by audio.
+    pub(crate) live_control_versions: Arc<[(u64, u64)]>,
+    #[cfg(test)]
+    pub(crate) publication_rows: Option<(usize, usize, bool)>,
     /// Script slot that `interface` belongs to.
     pub(crate) script_slot: usize,
     /// Samples are being read for this slot.
@@ -1047,10 +1051,44 @@ fn next_epoch(
     v.snapshot_lent = None;
     v.live = live;
     v.live_revisions = None;
+    v.live_control_versions = Arc::default();
     v.live_diagnostics = None;
     v.diagnostics_dirty = false;
     view.script_epoch
 }
+/// Copies prepared outside the view lock. A delta owns only changed controls;
+/// the unique published interface can donate its unchanged controls allocation.
+struct InterfaceUpdate {
+    interface: Option<Interface>,
+    rows: Option<Vec<(usize, crate::ksp::Control)>>,
+    versions: Arc<[(u64, u64)]>,
+}
+
+fn prepare_interface(live: &Live, previous: Option<&Interface>, versions: &[(u64, u64)]) -> InterfaceUpdate {
+    let next: Arc<[(u64, u64)]> = live.control_versions().collect::<Vec<_>>().into();
+    let Some(source) = &live.interface else {
+        return InterfaceUpdate { interface: None, rows: None, versions: next };
+    };
+    let Some(previous) = previous.filter(|old|
+        old.controls.len() == source.controls.len() && versions.len() == source.controls.len()
+            && next.len() == source.controls.len()) else {
+        return InterfaceUpdate { interface: Some(source.clone()), rows: None, versions: next };
+    };
+    let rows = source.controls.iter().zip(&previous.controls).enumerate().filter_map(|(n, (new, old))| {
+        // Visible menu rows depend on arbitrary script variables, not just the
+        // control's metadata/value stamps. No full property-map comparisons.
+        (versions[n] != next[n] || old.menu != new.menu).then(|| (n, new.clone()))
+    }).collect();
+    let header = Interface {
+        performance: source.performance, width: source.width, height: source.height,
+        title: source.title.clone(), wallpaper: source.wallpaper.clone(),
+        wallpaper_state: source.wallpaper_state, skin_offset: source.skin_offset,
+        fonts: source.fonts.clone(), controls: Vec::new(),
+        diagnostics: source.diagnostics.clone(), listeners: source.listeners.clone(),
+    };
+    InterfaceUpdate { interface: Some(header), rows: Some(rows), versions: next }
+}
+
 impl Shared {
     /// Publish visible script state on the editor thread, with a worker fallback
     /// after the editor closes. Neither caller may keep this guard while loading.
@@ -1066,26 +1104,27 @@ impl Shared {
             }
             if owner.is_some_and(|at| at.elapsed() < LIVE_WATCH) { return; }
         }
-        // ponytail: one changed interface copy per editor frame; share control
-        // metadata if that copy exceeds the frame budget. Unseen diagnostics
-        // may drain the bounded rack queue in one worker pass.
+        // One completed interface per editor frame. Prepare changed rows off
+        // the view lock; keep retained reader snapshots immutable. Unseen
+        // diagnostics may drain the bounded rack queue in one worker pass.
         for _ in 0..if editor { 1 } else { RACK_SLOTS } {
             let Some((slot, epoch, live)) = self.lives.pop() else { break };
-            let previous = {
+            let revisions = live.revisions();
+            let (keys_changed, previous, previous_diagnostics) = {
                 let view = self.view.lock().unwrap();
                 let v = &view.parts[slot];
                 if epoch == 0 || epoch != v.script_epoch { continue; }
-                (v.live_revisions, v.live_diagnostics.clone())
+                let changed = live.refresh_interface && v.live_revisions.is_none_or(|old| old.0 != revisions.0);
+                (live.refresh_interface && v.live_revisions.is_none_or(|old| old.1 != revisions.1),
+                    changed.then(|| (v.interface.clone(), if v.live_revisions.is_some() && v.script_slot == live.slot { v.live_control_versions.clone() } else { Arc::default() })), v.live_diagnostics.clone())
             };
-            // Prepare copies before taking the view lock: readers retain their
-            // previous Arc snapshots, and the audio buffer is immediately reusable.
-            let revisions = live.revisions();
-            let interface = (live.refresh_interface
-                && previous.0.is_none_or(|old| old.0 != revisions.0))
-                .then(|| live.interface.clone().map(Arc::new));
-            let keys = (live.refresh_interface && previous.0.is_none_or(|old| old.1 != revisions.1))
-                .then(|| Arc::new(live.keys.clone()));
-            let diagnostics = previous.1.filter(|old|
+            // This temporary reader exists only during off-lock preparation;
+            // release it before testing whether the published Arc is unique.
+            let mut interface = previous.map(|(old, versions)| {
+                prepare_interface(&live, old.as_deref(), &versions)
+            });
+            let keys = keys_changed.then(|| Arc::new(live.keys.clone()));
+            let diagnostics = previous_diagnostics.filter(|old|
                 old.epoch == epoch && old.faults == live.faults && old.notes == live.notes
             ).unwrap_or_else(|| Arc::new(LiveDiagnostics {
                 epoch, faults: live.faults.clone(), notes: live.notes.clone(),
@@ -1095,11 +1134,53 @@ impl Shared {
                 gate.wait();
                 gate.wait();
             }
+            // Drop replaced maps, strings and old snapshots after unlocking.
+            let mut retired_rows = Vec::with_capacity(interface.as_ref().and_then(|u| u.rows.as_ref()).map_or(0, Vec::len));
+            let mut retired_interface = None;
+            let mut retired_arc = None;
+            let mut retired_versions = None;
+            #[cfg(test)]
+            let mut publication_rows = None;
             let mut view = self.view.lock().unwrap();
+            if epoch == 0 || epoch != view.parts[slot].script_epoch { continue; }
+            if let Some(update) = &mut interface {
+                if let Some(rows) = update.rows.take() {
+                    let previous = view.parts[slot].interface.take();
+                    match previous.map(Arc::try_unwrap) {
+                        Some(Ok(mut old)) => {
+                            let new = update.interface.as_mut().expect("delta has an interface");
+                            new.controls = std::mem::take(&mut old.controls);
+                            #[cfg(test)]
+                            { publication_rows = Some((rows.len(), new.controls.len(), true)); }
+                            for (n, control) in rows {
+                                retired_rows.push(std::mem::replace(&mut new.controls[n], control));
+                            }
+                            retired_interface = Some(old);
+                        }
+                        previous => {
+                            // A reader still owns the old snapshot. Restore it
+                            // immediately, then copy the fallback outside the lock.
+                            view.parts[slot].interface = previous.and_then(Result::err);
+                            drop(view);
+                            retired_rows.extend(rows.into_iter().map(|(_, control)| control));
+                            update.interface = live.interface.clone();
+                            view = self.view.lock().unwrap();
+                            if epoch == 0 || epoch != view.parts[slot].script_epoch { continue; }
+                        }
+                    }
+                }
+                #[cfg(test)]
+                if publication_rows.is_none() {
+                    let count = update.interface.as_ref().map_or(0, |i| i.controls.len());
+                    publication_rows = Some((count, count, false));
+                }
+                let new = update.interface.take().map(Arc::new);
+                retired_arc = std::mem::replace(&mut view.parts[slot].interface, new);
+                retired_versions = Some(std::mem::replace(&mut view.parts[slot].live_control_versions, update.versions.clone()));
+            }
             let v = &mut view.parts[slot];
-            // A restore/unload can replace the runtime during preparation.
-            if epoch == 0 || epoch != v.script_epoch { continue; }
-            if let Some(interface) = interface { v.interface = interface; }
+            #[cfg(test)]
+            if publication_rows.is_some() { v.publication_rows = publication_rows; }
             if live.refresh_interface {
                 // Pending edits are a view overlay. Matching callbacks acknowledge
                 // them; refused values become visible when their grace expires.
@@ -1113,6 +1194,8 @@ impl Shared {
             }
             v.script_slot = live.slot;
             v.live = Some(live);
+            drop(view);
+            drop((retired_rows, retired_interface, retired_arc, retired_versions));
         }
         let mut view = self.view.lock().unwrap();
         let shown = view.watched_at.is_some_and(|at| at.elapsed() < LIVE_WATCH);
@@ -1620,6 +1703,7 @@ impl BackgroundTask for Load {
                 v.snapshot = None;
                 v.live = None;
                 v.live_revisions = None;
+                v.live_control_versions = Arc::default();
                 v.live_diagnostics = None;
                 v.diagnostics_dirty = false;
             };
@@ -3660,6 +3744,86 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publisher_reuses_unique_rows_and_preserves_retained_snapshots_and_menus() {
+        use crate::ksp::Value;
+        let script = r#"on init
+make_perfview
+declare ui_switch $page
+declare ui_label $caption(1,1)
+set_text($caption, "start")
+declare ui_menu $choices
+add_menu_item($choices, "first", 0)
+add_menu_item($choices, "second", 1)
+set_menu_item_visibility(get_ui_id($choices), 1, 0)
+declare ui_text_edit @fixed
+@fixed := "fixed"
+end on
+on ui_control($page)
+set_text($caption, "page " & $page)
+set_control_par(get_ui_id($caption), $CONTROL_PAR_FONT_TYPE, 23)
+set_skin_offset($page * 10)
+set_menu_item_visibility(get_ui_id($choices), 1, $page)
+end on"#;
+        let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.);
+        let (mut rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let p = SamplerParams::new();
+        p.shared.view.lock().unwrap().parts[0].script_epoch = 1;
+        p.shared.lives.push((0, 1, Box::new(rt.live()))).ok().unwrap();
+        p.shared.publish_live(true);
+        let (allocation, fixed_text, weak) = {
+            let view = p.shared.view.lock().unwrap();
+            let source = view.parts[0].interface.as_ref().unwrap();
+            let Value::Text(text) = &source.controls[3].properties["$CONTROL_PAR_VALUE"] else { panic!("fixed text") };
+            (source.controls.as_ptr() as usize, text.as_ptr() as usize, Arc::downgrade(source))
+        };
+        let (slot, epoch, mut live) = p.shared.live_requests.pop().unwrap();
+        assert_eq!(allocations(|| {
+            rt.ui_control(&mut engine, 0, 0, 1);
+            rt.refresh_live(&mut live);
+        }), 0, "row publication adds no audio allocation or freeing");
+        let expected = live.interface.clone().unwrap();
+        p.shared.lives.push((slot, epoch, live)).ok().unwrap();
+        p.shared.publish_live(true);
+        let retained = {
+            let view = p.shared.view.lock().unwrap();
+            let source = view.parts[0].interface.as_ref().unwrap();
+            assert_eq!(source.as_ref(), &expected, "all callback metadata, fonts, menus and wallpaper match the completed Live");
+            assert_eq!(source.controls.as_ptr() as usize, allocation, "unique source donates its controls allocation");
+            let Value::Text(text) = &source.controls[3].properties["$CONTROL_PAR_VALUE"] else { panic!("fixed text") };
+            assert_eq!(text.as_ptr() as usize, fixed_text, "an unchanged property map is not copied");
+            assert!(view.parts[0].publication_rows.unwrap().2);
+            source.clone()
+        };
+        assert!(weak.upgrade().is_none(), "a Weak panel cache does not prevent unique row reuse");
+        let (slot, epoch, mut live) = p.shared.live_requests.pop().unwrap();
+        rt.ui_control(&mut engine, 0, 0, 0);
+        rt.refresh_live(&mut live);
+        let next = live.interface.clone().unwrap();
+        p.shared.lives.push((slot, epoch, live)).ok().unwrap();
+        p.shared.publish_live(true);
+        {
+            let view = p.shared.view.lock().unwrap();
+            let source = view.parts[0].interface.as_ref().unwrap();
+            assert_eq!(source.as_ref(), &next);
+            assert_eq!(retained.as_ref(), &expected, "retained readers keep the previous callback snapshot");
+            assert_ne!(source.controls.as_ptr(), retained.controls.as_ptr(), "retained readers get a full immutable fallback");
+            assert!(!view.parts[0].publication_rows.unwrap().2);
+        }
+        // Menu rows can change from another variable while this control's own
+        // metadata and value stamps stay equal. They must still be published.
+        let mut live = rt.live();
+        let previous = live.interface.clone().unwrap();
+        let versions = live.control_versions().collect::<Vec<_>>();
+        live.interface.as_mut().unwrap().controls[2].menu[0].0 = "renamed".into();
+        let update = prepare_interface(&live, Some(&previous), &versions);
+        let rows = update.rows.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, 2);
+        assert_eq!(rows[0].1.menu[0].0, "renamed", "menu visibility/text is independent of per-control stamps");
+    }
 
     #[test]
     fn editor_publishes_and_recycles_live_views_while_another_part_loads() {

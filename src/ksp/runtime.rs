@@ -115,6 +115,12 @@ impl Live {
     pub fn revisions(&self) -> (u64, u64) {
         (self.interface_revision, self.keys_revision)
     }
+
+    /// Metadata and value revisions represented by each completed control row.
+    /// Menu visibility can depend on other variables; publishers compare menus too.
+    pub(crate) fn control_versions(&self) -> impl ExactSizeIterator<Item = (u64, u64)> + '_ {
+        self.control_revisions.iter().copied().zip(self.control_value_revisions.iter().copied())
+    }
 }
 
 // Copying history is not part of a snapshot's semantic equality.
