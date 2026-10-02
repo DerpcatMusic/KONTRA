@@ -435,6 +435,27 @@ fn read(
     Some((item, picture_name.to_owned()))
 }
 
+/// The existing picture/variable fallback, shared with native Vectorized knobs.
+/// Nearby authored labels are handled by each view before asking for a guess.
+pub(super) fn guess_name(c: &Control, picture: &str, prefixes: &[String], bipolar: bool, terse: bool) -> String {
+    let own = clean(match c.properties.get("$CONTROL_PAR_TEXT") {
+        Some(Value::Text(t)) => t, _ => "",
+    });
+    if !own.is_empty() { return spell_out(&own); }
+    // A picture that says no more than a couple of letters ("Uc") yields
+    // to a readable variable name.
+    let from_picture = words(picture, prefixes);
+    let from_variable = readable(&c.variable).then(|| words(&c.variable, prefixes)).flatten();
+    match from_picture {
+        Some(p) if p.len() <= 3 && from_variable.is_some() => from_variable,
+        Some(p) => Some(p),
+        None => from_variable,
+    }
+        .or_else(|| bipolar.then(|| "Pan".to_owned()))
+        .or_else(|| terse.then(|| c.variable.trim_start_matches(['$', '~', '?', '%', '@', '!']).to_owned()))
+        .unwrap_or_default()
+}
+
 /// Each visible control's name, as KONTRA's view gives it, by control.
 pub fn names(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> HashMap<usize, String> {
     items(interface, pictures).into_iter().map(|i| (i.control, i.name)).collect()
@@ -533,21 +554,8 @@ fn items(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec
         if taken[n] || !item.name.is_empty() {
             continue;
         }
-        let variable = &interface.controls[item.control].variable;
-        // A picture that says no more than a couple of letters ("Uc") yields
-        // to a readable variable name.
-        let from_picture = words(picture, &prefixes);
-        let from_variable = readable(variable).then(|| words(variable, &prefixes)).flatten();
-        item.name = match from_picture {
-            Some(p) if p.len() <= 3 && from_variable.is_some() => from_variable,
-            Some(p) => Some(p),
-            None => from_variable,
-        }
-            .or_else(|| item.bipolar.then(|| "Pan".to_owned()))
-            // Every control stays editable: a terse variable beats no control.
-            // A menu stays nameless; its choice says what it is.
-            .or_else(|| (!matches!(item.face, Face::Text | Face::Menu)).then(|| variable.trim_start_matches(['$', '~', '?', '%', '@', '!']).to_owned()))
-            .unwrap_or_default();
+        item.name = guess_name(&interface.controls[item.control], picture, &prefixes, item.bipolar,
+            !matches!(item.face, Face::Text | Face::Menu));
     }
     let mut kept: Vec<Item> = read
         .into_iter()

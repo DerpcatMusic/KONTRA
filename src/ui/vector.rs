@@ -166,11 +166,11 @@ fn inside(a: &Shown, b: &Shown) -> f64 {
 
 /// The plan for every control of `drawn` (in drawing order, each with the
 /// frame of its picture the original view shows).
-pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, drawn: &[(Shown, Option<Arc<Image>>)], assets: &mut Assets) -> Vec<Plan> {
+pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, drawn: &[(Shown, Option<Arc<Image>>)], assets: &mut Assets) -> Vec<Plan> {
     assets.prune();
     let (vw, vh) = (f64::from(interface.width), f64::from(interface.height));
     let view = vw * vh;
-    let names = names(interface, pictures, drawn);
+    let names = names(interface, drawn);
     let clear: Vec<bool> = drawn.iter().map(|(s, _)| s.picture.as_ref().is_some_and(|p| assets.clear(p))).collect();
     // Structural skin pairing: an otherwise empty animated label can draw
     // the face of a transparent control occupying the same rectangle. Hide
@@ -232,12 +232,12 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
     for (n, (s, frame)) in drawn.iter().enumerate() {
         let c = &interface.controls[s.control];
         let picture = prop(c, "$CONTROL_PAR_PICTURE");
-        let solid = frame.as_ref().map(|f| assets.opacity(f));
+        let solid = (s.kind == Kind::Label).then(|| frame.as_ref().map(|f| assets.opacity(f))).flatten();
         // Clear in every state: a place to click, nothing to see.
         let clear = clear[n];
-        let said = !caption_of(c, s.kind, value(c)).0.trim().is_empty();
+        let said = matches!(s.kind, Kind::Switch | Kind::Button)
+            && !keep_spaces(prop(c, "$CONTROL_PAR_TEXT")).trim().is_empty();
         let named = |w: &[&str]| [picture, c.variable.as_str()].iter().any(|n| panel::raw_words(n).iter().any(|x| w.contains(&x.as_str())));
-        let lower = format!("{picture} {}", c.variable).to_lowercase();
         let face = match s.kind {
             Kind::Label if paired[n] => Face::Clear,
             Kind::Switch | Kind::Button | Kind::Label if named(&["cover", "mask"]) => Face::Cover,
@@ -249,17 +249,6 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
             // A clear slider shows through to the pictures under it that draw it
             // (ANALOG STRINGS' strings); over nothing, it shows nothing.
             Kind::Slider | Kind::Knob if clear && !drawn.iter().any(|(o, f)| o.kind == Kind::Label && f.is_some() && inside(o, s) > 0.) => Face::Clear,
-            Kind::Switch | Kind::Button if !said && (lower.contains("prev") || lower.contains("left")) => Face::Mark(Mark::Left),
-            Kind::Switch | Kind::Button if !said && (lower.contains("next") || lower.contains("right")) => Face::Mark(Mark::Right),
-            // A small switch shows its state, as does a button that turns
-            // something on; another button only acts: its name or an empty frame.
-            Kind::Switch | Kind::Button
-                if !said && s.w.min(s.h) <= 26. && s.w <= 2. * s.h
-                    && !names.get(&s.control).is_some_and(|n| matches!(n.as_str(), "?" | "i") || n.starts_with(['+', '-']))
-                    && names.get(&s.control).is_some_and(|n| matches!(n.as_str(), "On" | "Off" | "Power")) =>
-            {
-                Face::Mark(Mark::Dot)
-            }
             Kind::Slider if over_wave(drawn, s) => Face::Marker,
             _ => Face::Normal,
         };
@@ -272,6 +261,12 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
     for (n, (s, _)) in drawn.iter().enumerate().rev() {
         let c = &interface.controls[s.control];
         let face = faces[n];
+        // Retained labels contribute text occlusion, but the renderer consumes
+        // no Vectorized words for the other Original controls.
+        if !matches!(s.kind, Kind::Knob | Kind::Slider | Kind::Label) {
+            out.push(Plan { face, words: Vec::new(), skin: false });
+            continue;
+        }
         let mut words = Vec::new();
         let (said, align, top) = caption_of(c, s.kind, value(c));
         // What lies on it, drawn after: its words go beside them.
@@ -312,24 +307,6 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
                     }
                 }
             }
-            (Kind::Switch | Kind::Button, _) => {
-                let name = if said.trim().is_empty() { names.get(&s.control).cloned().unwrap_or_default() } else { said };
-                let tab = prop(c, "$CONTROL_PAR_HELP").split_once(':').is_some_and(|(title, _)| title.ends_with(" Tab"));
-                // A small switch's name that will not fit whole is its
-                // initials, as a mixer strip's S and M; more than two say
-                // nothing, so its frame stands alone. A step (-12) shrinks.
-                let step = name.trim().starts_with(['+', '-']);
-                let name = if !step && fitted(&name, s.w - if tab { 0. } else { 4. }, FONT).is_none() {
-                    let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).collect();
-                    if initials.chars().count() <= 2 { initials } else { String::new() }
-                } else {
-                    name
-                };
-                let room = if tab { (-2., s.w + 4.) } else { spot(&name, align) };
-                push(&mut words, &name, room, 0., s.h, align);
-            }
-            (Kind::Menu, _) => push(&mut words, &said, (0., if s.w > 30. { s.w - 14. } else { s.w }), 0., s.h, align),
-            (Kind::Value | Kind::TextEdit, _) => push(&mut words, &said, (0., s.w), 0., s.h, align),
             (Kind::Knob, _) => {
                 // Kontakt's own knob: its name over it, its value under it.
                 let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
@@ -370,6 +347,7 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
             let (x, wide) = w.ink();
             (s.x + x, s.y + w.y + (w.h - w.size * 1.2).max(0.) / 2., wide, w.size * 1.2)
         }));
+        if s.kind == Kind::Label { words.clear(); }
         out.push(Plan { face, words, skin: pairs.iter().any(|&(label, control)| control == n && paired[label]) });
     }
     out.reverse();
@@ -412,89 +390,38 @@ fn free(w: f64, taken: &[(f64, f64)]) -> (f64, f64) {
     best
 }
 
-/// Names for the controls whose pictures said them, as KONTRA's own view
-/// reads them; none where one of the script's labels already says it
-/// beside the control. A row of switches that share their first words
-/// (Header Main, Header Edit, ...) says only what differs.
-fn names(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, drawn: &[(Shown, Option<Arc<Image>>)]) -> HashMap<usize, String> {
-    let said: std::collections::HashSet<String> = (interface.controls.iter())
+/// Names for native round sliders, except where an authored label names them.
+fn names(interface: &Interface, drawn: &[(Shown, Option<Arc<Image>>)]) -> HashMap<usize, String> {
+    // Only round sliders consume inferred names. Native knobs use authored
+    // text; menus, switches and labels are still drawn by the Original view.
+    let knobs: Vec<_> = drawn.iter().map(|(s, _)| s)
+        .filter(|s| s.kind == Kind::Slider && knob_like(prop(&interface.controls[s.control], "$CONTROL_PAR_PICTURE"), s.w, s.h))
+        .collect();
+    if knobs.is_empty() { return HashMap::new(); }
+    let said: std::collections::HashSet<String> = interface.controls.iter()
         .filter(|c| c.kind == "ui_label")
         .map(|c| keep_spaces(prop(c, "$CONTROL_PAR_TEXT")).trim().to_lowercase())
         .collect();
     let prefixes = panel::prefixes(interface);
-    let mut names: HashMap<usize, String> = panel::names(interface, pictures)
-        .into_iter()
-        .filter(|(_, n)| !said.contains(&n.trim().to_lowercase()))
-        .collect();
-    // A library's explicit tooltip heading beats a guessed picture prefix.
-    for (s, _) in drawn.iter().filter(|(s, _)| matches!(s.kind, Kind::Switch | Kind::Button)) {
-        if let Some((title, _)) = prop(&interface.controls[s.control], "$CONTROL_PAR_HELP").split_once(':') {
-            if title.ends_with(" Tab") || title.ends_with(" On/Off") {
-                names.insert(s.control, title.trim_end_matches(" Tab").trim_end_matches(" On/Off").to_owned());
-            }
-        }
-    }
-    let near = |s: &Shown, o: &Shown| {
-        let t = &interface.controls[o.control];
-        o.kind == Kind::Label && !prop(t, "$CONTROL_PAR_TEXT").trim().is_empty()
+    knobs.into_iter().filter_map(|s| {
+        // Keep the authored label, including one just above or below its knob.
+        if drawn.iter().any(|(o, _)| o.kind == Kind::Label
+            && !prop(&interface.controls[o.control], "$CONTROL_PAR_TEXT").trim().is_empty()
             && o.x < s.x + s.w + 8. && o.x + o.w > s.x - 8.
-            && o.y < s.y + s.h + FONT * 2. && o.y + o.h > s.y - FONT * 2.
-    };
-    let toggles: Vec<&Shown> = drawn.iter().map(|(s, _)| s).filter(|s| matches!(s.kind, Kind::Switch | Kind::Button)).collect();
-    for s in drawn.iter().map(|(s, _)| s) {
-        if drawn.iter().any(|(o, _)| near(s, o)) && !matches!(s.kind, Kind::Switch | Kind::Button) {
-            names.remove(&s.control);
-        }
-        // A wide switch named for what it turns on ("On") is a tab: its picture says what.
-        if names.get(&s.control).is_some_and(|n| matches!(n.as_str(), "On" | "Power")) && s.w >= 3. * s.h {
-            if let Some(w) = panel::words(prop(&interface.controls[s.control], "$CONTROL_PAR_PICTURE"), &prefixes) {
-                names.insert(s.control, w);
-            }
-        }
-    }
-    // What a step button's picture says: help, or a step up or down ("tune_nag_12": -12).
-    for s in &toggles {
-        let picture = prop(&interface.controls[s.control], "$CONTROL_PAR_PICTURE").to_lowercase();
-        let parts: Vec<&str> = picture.split(['_', '-', ' ', '.']).collect();
-        let step = parts.windows(2).find_map(|p| {
-            let sign = match p[0] {
-                "neg" | "nag" | "minus" | "down" | "dec" => "-",
-                "pos" | "plus" | "up" | "inc" => "+",
-                _ => return None,
-            };
-            p[1].parse::<u32>().ok().map(|n| format!("{sign}{n}"))
-        });
-        if let Some(step) = step {
-            names.insert(s.control, step);
-        } else if parts.contains(&"help") {
-            names.insert(s.control, "?".into());
-        } else if parts.contains(&"info") {
-            names.insert(s.control, "i".into());
-        }
-    }
-    // Rows: switches of one height level with each other, touching.
-    let mut rows: Vec<Vec<&Shown>> = Vec::new();
-    let mut sorted = toggles.clone();
-    sorted.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
-    for s in sorted {
-        match rows.iter_mut().find(|r| r.last().is_some_and(|l| (l.y - s.y).abs() <= 2. && l.h == s.h && (s.x - (l.x + l.w)).abs() <= 16.)) {
-            Some(r) => r.push(s),
-            None => rows.push(vec![s]),
-        }
-    }
-    for row in rows.iter().filter(|r| r.len() > 1) {
-        let split: Vec<Vec<String>> = row.iter().map(|s| names.get(&s.control).map(|n| n.split(' ').map(str::to_owned).collect()).unwrap_or_default()).collect();
-        let mut common = split.iter().map(Vec::len).min().unwrap_or(0).saturating_sub(1);
-        while common > 0 && !split.iter().all(|w| w[..common] == split[0][..common]) {
-            common -= 1;
-        }
-        if common > 0 {
-            for (s, w) in row.iter().zip(&split) {
-                names.insert(s.control, w[common..].join(" "));
-            }
-        }
-    }
-    names
+            && o.y < s.y + s.h + FONT * 2. && o.y + o.h > s.y - FONT * 2.)
+        { return None; }
+        let c = &interface.controls[s.control];
+        let picture = prop(c, "$CONTROL_PAR_PICTURE");
+        let mentions_pan = |t: &str| t.to_lowercase().split(['_', ' ', '$']).any(|w| w == "pan");
+        let number = |name, default| match c.properties.get(name) {
+            Some(Value::Int(n)) => f64::from(*n), Some(Value::Real(r)) => *r, _ => default,
+        };
+        let (lo, hi) = (number("$CONTROL_PAR_MIN_VALUE", 0.), number("$CONTROL_PAR_MAX_VALUE", 1_000_000.));
+        let bipolar = picture.to_lowercase().contains("bip") || mentions_pan(prop(c, "$CONTROL_PAR_TEXT"))
+            || mentions_pan(&c.variable) || (lo < 0. && lo == -hi);
+        let name = panel::guess_name(c, picture, &prefixes, bipolar, true);
+        (!said.contains(&name.trim().to_lowercase())).then_some((s.control, name))
+    }).collect()
 }
 
 #[cfg(test)]
@@ -502,16 +429,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tooltip_headings_name_picture_only_tabs_and_switches() {
-        let u = crate::ksp::initialize("on init\nmake_perfview\nset_ui_height_px(100)\ndeclare ui_switch $tab\nset_text($tab, \"\")\nmove_control_px($tab, 10, 20)\nset_control_par(get_ui_id($tab), $CONTROL_PAR_WIDTH, 40)\nset_control_par(get_ui_id($tab), $CONTROL_PAR_HEIGHT, 24)\nset_control_par_str(get_ui_id($tab), $CONTROL_PAR_HELP, \"Workbench Tab: Opens the page\")\ndeclare ui_switch $space\nset_text($space, \"\")\nmove_control_px($space, 100, 20)\nset_control_par_str(get_ui_id($space), $CONTROL_PAR_HELP, \"Space On/Off: Activates convolution\")\nend on", 0, 8).unwrap();
+    fn native_slider_names_update_and_original_controls_keep_their_text() {
+        let mut u = crate::ksp::initialize("on init\nmake_perfview\nset_ui_height_px(140)\ndeclare ui_switch $tab\nset_text($tab, \"Workbench\")\nmove_control_px($tab, 200, 20)\ndeclare ui_slider $tone(0,100)\nset_text($tone, \"Cutoff\")\nmove_control_px($tone, 30, 30)\nset_control_par(get_ui_id($tone), $CONTROL_PAR_WIDTH, 50)\nset_control_par(get_ui_id($tone), $CONTROL_PAR_HEIGHT, 50)\ndeclare ui_label $label(1,1)\nset_text($label, \"Authored caption\")\nmove_control_px($label, 200, 100)\nend on", 0, 8).unwrap();
         let pictures = HashMap::new();
-        let drawn = super::super::perf_view::layout(&u, &pictures).into_iter().map(|s| (s, None)).collect::<Vec<_>>();
-        let plans = plan(&u, &pictures, &drawn, &mut Assets::default());
-        assert!(matches!(plans[0].face, Face::Normal));
-        assert!(plans[0].words.iter().any(|w| w.text == "Workbench"));
-        let names = names(&u, &pictures, &drawn);
-        assert_eq!(names.get(&0).map(String::as_str), Some("Workbench"));
-        assert_eq!(names.get(&1).map(String::as_str), Some("Space"));
+        let read = |u: &Interface| {
+            let drawn = super::super::perf_view::layout(u, &pictures).into_iter().map(|s| (s,None)).collect::<Vec<_>>();
+            plan(u, &pictures, &drawn, &mut Assets::default())
+        };
+        let p = read(&u);
+        assert!(p[0].words.is_empty() && p[2].words.is_empty(), "Original switch and label text is not replanned");
+        assert_eq!(prop(&u.controls[0], "$CONTROL_PAR_TEXT"), "Workbench");
+        assert!(p[1].words.iter().any(|w| w.text == "Cutoff"));
+        u.controls[1].properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text("Resonance".into()));
+        u.controls[1].properties.insert("$CONTROL_PAR_VALUE".into(), Value::Int(77));
+        assert!(read(&u)[1].words.iter().any(|w| w.text == "Resonance"), "live names do not go stale");
+        u.controls[2].properties.insert("$CONTROL_PAR_POS_X".into(), Value::Int(30));
+        u.controls[2].properties.insert("$CONTROL_PAR_POS_Y".into(), Value::Int(81));
+        assert!(read(&u)[1].words.is_empty(), "a nearby authored Original label still suppresses a duplicate name");
+        assert_eq!(prop(&u.controls[2], "$CONTROL_PAR_TEXT"), "Authored caption");
     }
 
     #[test]
