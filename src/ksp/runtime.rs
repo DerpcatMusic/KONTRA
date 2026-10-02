@@ -144,7 +144,7 @@ pub struct Live {
     pub notes: Vec<&'static str>,
     pub refresh_interface: bool,
     pub(crate) interface_current: bool,
-    /// Script slot of `interface`: the last slot with a performance view.
+    /// Script slot of `interface`; retained across allocation-free refreshes.
     pub slot: usize,
     pub interface: Option<Interface>,
     /// Every key; unset names and colors are empty.
@@ -1309,10 +1309,19 @@ impl Runtime {
     /// What the host shows while the scripts run, shaped for
     /// [`refresh_live`](Self::refresh_live): every string has room to grow and
     /// every key has an entry.
+    pub fn performance_slots(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.states.iter().enumerate().filter(|(_, s)| s.ui.performance)
+            .map(|(slot, s)| (slot, s.ui.title.as_str()))
+    }
+
     pub fn live(&self) -> Live {
-        let slot = (0..self.states.len())
-            .rev()
-            .find(|&s| self.states[s].ui.performance);
+        self.live_for_slot(self.performance_slots().last().map(|(s, _)| s))
+    }
+
+    /// Prepare a particular performance page off-thread. The buffer retains
+    /// its slot while refreshed, so identical control IDs never cross pages.
+    pub fn live_for_slot(&self, slot: Option<usize>) -> Live {
+        let slot = slot.filter(|&s| self.states.get(s).is_some_and(|s| s.ui.performance));
         let mut interface = slot.map(|s| self.interface(s));
         for c in interface.iter_mut().flat_map(|i| &mut i.controls) {
             // Properties scripts often first set while running.

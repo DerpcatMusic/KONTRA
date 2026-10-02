@@ -569,6 +569,42 @@ pub(crate) struct LiveDiagnostics {
     notes: Vec<&'static str>,
 }
 
+pub(crate) struct ScriptPage {
+    pub(crate) slot: usize,
+    pub(crate) title: String,
+    pub(crate) interface: Arc<Interface>,
+    last_view: Mutex<Option<Arc<Interface>>>,
+}
+
+/// Prepared on Load; frame snapshots share these unused page buffers instead
+/// of copying every page's controls. Audio only receives one existing Live.
+#[derive(Default)]
+pub(crate) struct ScriptPages {
+    pub(crate) views: Vec<ScriptPage>,
+    buffers: Mutex<Vec<Box<Live>>>,
+}
+
+pub(crate) fn script_pages(rt: Option<&Runtime>) -> Arc<ScriptPages> {
+    let mut pages = ScriptPages::default();
+    if let Some(rt) = rt.filter(|rt| rt.performance_slots().count() > 1) {
+        for (slot, title) in rt.performance_slots() {
+            let live = Box::new(rt.live_for_slot(Some(slot)));
+            pages.views.push(ScriptPage {
+                slot, title: if title.is_empty() { format!("Script {}", slot + 1) } else { title.into() },
+                interface: Arc::new(live.interface.as_ref().unwrap().clone()),
+                last_view: Mutex::new(None),
+            });
+            // The first page has a separate buffer in PartView::live.
+            if pages.views.len() > 1 { pages.buffers.get_mut().unwrap().push(live); }
+        }
+    }
+    Arc::new(pages)
+}
+
+fn first_script_live(rt: &Runtime) -> Box<Live> {
+    Box::new(rt.live_for_slot(rt.performance_slots().next().map(|(slot, _)| slot)))
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
     pub(crate) program: u32,
@@ -616,6 +652,7 @@ pub(crate) struct PartView {
     pub(crate) publication_rows: Option<(usize, usize, bool)>,
     /// Script slot that `interface` belongs to.
     pub(crate) script_slot: usize,
+    pub(crate) script_pages: Arc<ScriptPages>,
     /// Samples are being read for this slot.
     pub(crate) loading: bool,
     /// Keyboard colors and names the scripts set, kept current while they run.
@@ -1200,6 +1237,10 @@ impl Shared {
                 let view = self.view.lock().unwrap();
                 let v = &view.parts[slot];
                 if epoch == 0 || epoch != v.script_epoch { continue; }
+                if !v.script_pages.views.is_empty() && v.script_slot != live.slot {
+                    v.script_pages.buffers.lock().unwrap().push(live);
+                    continue;
+                }
                 let changed = live.refresh_interface && v.live_revisions.is_none_or(|old| old.0 != revisions.0);
                 (live.refresh_interface && v.live_revisions.is_none_or(|old| old.1 != revisions.1),
                     changed.then(|| (v.interface.clone(), if v.live_revisions.is_some() && v.script_slot == live.slot { v.live_control_versions.clone() } else { Arc::default() })), v.live_diagnostics.clone())
@@ -1229,6 +1270,10 @@ impl Shared {
             let mut publication_rows = None;
             let mut view = self.view.lock().unwrap();
             if epoch == 0 || epoch != view.parts[slot].script_epoch { continue; }
+            if !view.parts[slot].script_pages.views.is_empty() && view.parts[slot].script_slot != live.slot {
+                view.parts[slot].script_pages.buffers.lock().unwrap().push(live);
+                continue;
+            }
             if let Some(update) = &mut interface {
                 if let Some(rows) = update.rows.take() {
                     let previous = view.parts[slot].interface.take();
@@ -1252,6 +1297,10 @@ impl Shared {
                             update.interface = live.interface.clone();
                             view = self.view.lock().unwrap();
                             if epoch == 0 || epoch != view.parts[slot].script_epoch { continue; }
+                            if !view.parts[slot].script_pages.views.is_empty() && view.parts[slot].script_slot != live.slot {
+                                view.parts[slot].script_pages.buffers.lock().unwrap().push(live);
+                                continue;
+                            }
                         }
                     }
                 }
@@ -1292,6 +1341,14 @@ impl Shared {
             let slot = (start + step) % count;
             owner.1 = (slot + 1) % count;
             let v = &mut view.parts[slot];
+            if v.live.is_none() {
+                let mut buffers = v.script_pages.buffers.lock().unwrap();
+                if let Some(at) = buffers.iter().position(|live| live.slot == v.script_slot) {
+                    let mut live = buffers.swap_remove(at);
+                    live.interface_current = false;
+                    v.live = Some(live);
+                }
+            }
             if (shown || v.diagnostics_lent.is_none_or(|at| at.elapsed().as_secs() >= 1))
                 && let Some(mut live) = v.live.take()
             {
@@ -1306,6 +1363,27 @@ impl Shared {
                 }
             }
         }
+    }
+
+    pub(crate) fn select_script_page(&self, part: usize, epoch: u64, slot: usize) -> bool {
+        let mut view = self.view.lock().unwrap();
+        let Some(v) = view.parts.get_mut(part) else { return false };
+        if epoch == 0 || epoch != v.script_epoch { return false; }
+        let Some(page) = v.script_pages.views.iter().find(|p| p.slot == slot) else { return false };
+        if v.script_slot == slot { return false; }
+        let next = page.last_view.lock().unwrap().take().unwrap_or_else(|| page.interface.clone());
+        let retired = v.interface.replace(next);
+        let retired = if let Some(previous) = v.script_pages.views.iter().find(|p| p.slot == v.script_slot) {
+            std::mem::replace(&mut *previous.last_view.lock().unwrap(), retired)
+        } else { retired };
+        v.script_slot = slot;
+        v.live_revisions = None;
+        v.live_control_versions = Arc::default();
+        v.edited.clear();
+        if let Some(live) = v.live.take() { v.script_pages.buffers.lock().unwrap().push(live); }
+        drop(view);
+        drop(retired);
+        true
     }
 
     /// Formatting and journal I/O stay on Load; a busy loader cannot retain
@@ -1889,7 +1967,8 @@ impl BackgroundTask for Load {
                 if let Some(rt) = script.as_deref() {
                     for e in rt.diagnostics() { trace.script_issue(crate::diagnostics::code(&e), e, &instrument.scripts); }
                 }
-                let live = script.as_deref().map(|rt| Box::new(rt.live()));
+                let live = script.as_deref().map(first_script_live);
+                let pages = script_pages(script.as_deref());
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
                 let fx_rate = {
                     let view = params.shared.view.lock().unwrap();
@@ -1904,6 +1983,8 @@ impl BackgroundTask for Load {
                 let interface_status = errors.join("\n");
                 let mut view = params.shared.view.lock().unwrap();
                 let epoch = next_epoch(&mut view, slot, snapshot, live);
+                view.parts[slot].script_pages = pages;
+                if let Some(selected) = view.parts[slot].live.as_ref().map(|live| live.slot) { view.parts[slot].script_slot = selected; }
                 view.parts[slot].script_state = part.script_state.clone();
                 view.parts[slot].ir_settings = part.ir_settings.clone();
                 view.parts[slot].engine_state = part.engine_state.clone().into();
@@ -1948,6 +2029,7 @@ impl BackgroundTask for Load {
                 atoms.load_progress.store(0, Ordering::Relaxed);
                 v.loading = true;
                 v.script_epoch = 0;
+                v.script_pages = Arc::default();
                 v.edited.clear();
                 v.snapshot = None;
                 v.live = None;
@@ -2103,12 +2185,13 @@ impl BackgroundTask for Load {
             // Keep both outside the editor's view lock, including controller patches.
             if result.is_ok() { set_stage(&mut trace, "effects"); }
             let result = result.map(|(instrument, bank, script, snapshot, preload, art)| {
-                let live = script.as_deref().map(|rt| Box::new(rt.live()));
+                let live = script.as_deref().map(first_script_live);
+                let pages = script_pages(script.as_deref());
                 let rate = params.shared.rate();
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
                 trace_effects(&mut trace, &instrument);
                 let fx = crate::engine::effects(&instrument, script.as_deref(), rate as f32);
-                (instrument, bank, script, snapshot, preload, art, live, fx, rate, irs)
+                (instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs)
             });
             if canceled() {
                 let report = trace.finish("canceled");
@@ -2118,7 +2201,7 @@ impl BackgroundTask for Load {
                 continue;
             }
             let status = match &result {
-                Ok((_, bank, _, _, _, _, _, _, _, _)) => {
+                Ok((_, bank, _, _, _, _, _, _, _, _, _)) => {
                     if let Some(b) = bank.as_deref() {
                         trace.detail("samples_loaded", b.sample_count());
                         trace.detail("samples_streamed", b.streamed_samples());
@@ -2143,12 +2226,14 @@ impl BackgroundTask for Load {
             view.parts[slot].runtime_status.clear();
             view.parts[slot].diagnostics_lent = None;
             match result {
-                Ok((instrument, bank, script, snapshot, preload, art, live, fx, rate, irs)) => {
+                Ok((instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs)) => {
                     let epoch = if script.is_some() {
                         next_epoch(&mut view, slot, snapshot, live)
                     } else {
                         0
                     };
+                    view.parts[slot].script_pages = pages;
+                    if let Some(selected) = view.parts[slot].live.as_ref().map(|live| live.slot) { view.parts[slot].script_slot = selected; }
                     let mut bank = bank;
                     let residency = bank.as_mut().and_then(|b| b.take_residency());
                     params.shared.residency.lock().unwrap()[slot] =
@@ -2188,14 +2273,15 @@ impl BackgroundTask for Load {
                         trace.stage("artwork");
                         let interface = interface.as_deref();
                         let wallpaper = artwork::performance(&instrument, interface);
-                        let names: Vec<_> = interface.into_iter().flat_map(artwork::picture_names).collect();
+                        let pages = params.shared.view.lock().unwrap().parts[slot].script_pages.clone();
+                        let names: Vec<_> = interface.into_iter().chain(pages.views.iter().map(|p| p.interface.as_ref())).flat_map(artwork::picture_names).collect();
                         let (pictures, errors) = artwork::pictures_report(&instrument.path, names.iter().map(|name| name.as_ref()));
                         for e in errors { trace.issue("artwork", crate::diagnostics::code(&e), e); }
                         if let Err(e) = &wallpaper { trace.issue("artwork", crate::diagnostics::code(e), e); }
                         trace.detail("pictures_loaded", pictures.len());
                         trace.detail("performance_view", interface.is_some_and(|u| u.performance));
                         trace.detail("controls", interface.map_or(0, |u| u.controls.len()));
-                        for warning in interface.into_iter().flat_map(crate::ui::font_fallbacks) {
+                        for warning in interface.into_iter().chain(pages.views.iter().map(|p| p.interface.as_ref())).flat_map(crate::ui::font_fallbacks) {
                             trace.issue("ui", "font_fallback", warning);
                         }
                         for c in interface.into_iter().flat_map(|u| &u.controls) {
@@ -3417,7 +3503,7 @@ pub(crate) fn script_interface(rt: Option<&Runtime>) -> ScriptView {
     let Some(rt) = rt else {
         return ScriptView::default();
     };
-    let live = rt.live();
+    let live = first_script_live(rt);
     ScriptView {
         interface: live.interface.map(Arc::new),
         slot: live.slot,
@@ -4163,6 +4249,61 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn performance_pages_keep_slot_callbacks_and_late_buffers_separate() {
+        let first = "on init\nmake_perfview\nset_script_title(\"Performance\")\nset_ui_height_px(200)\nset_skin_offset(0)\ndeclare ui_knob $amount(0,100,1)\ndeclare ui_label $caption(1,1)\nset_text($caption,\"Layer one\")\nend on\non ui_control($amount)\nset_text($caption,\"Performance edited\")\nend on";
+        let second = "on init\nmake_perfview\nset_script_title(\"FX Rack\")\nset_ui_height_px(160)\nset_skin_offset(268)\ndeclare ui_knob $amount(0,100,1)\ndeclare ui_label $caption(1,1)\nset_text($caption,\"Effect\")\nend on\non ui_control($amount)\nset_text($caption,\"FX edited\")\nend on";
+        let mut engine = crate::ksp::LogEngine::new(Vec::new(),48000.);
+        let (mut rt, errors) = Runtime::with_scripts(&[first,second], &mut engine,8,Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let parsed = script_interface(Some(&rt));
+        assert_eq!(parsed.slot,0,"host opens the first authored page");
+        let p = SamplerParams::new();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            let v = &mut view.parts[0];
+            v.interface = parsed.interface;
+            v.script_pages = script_pages(Some(&rt));
+            v.script_epoch = 1;
+            v.script_slot = 0;
+            v.live = Some(first_script_live(&rt));
+            assert_eq!(v.script_pages.views.iter().map(|p| p.title.as_str()).collect::<Vec<_>>(),["Performance","FX Rack"]);
+        }
+        p.shared.publish_live(true);
+        let (_, epoch, mut old) = p.shared.live_requests.pop().unwrap();
+        assert_eq!(old.slot,0);
+        assert!(p.shared.select_script_page(0,epoch,1));
+        p.shared.edit_control(0,0,67);
+        let edit = p.shared.edits.pop().unwrap();
+        assert_eq!(edit.slot,1,"the same control index belongs to the selected script slot");
+        assert_eq!(allocations(|| {
+            rt.ui_control(&mut engine,edit.slot,edit.control,edit.value);
+            rt.refresh_live(&mut old);
+        }),0,"callbacks and prepared page refresh remain allocation-free");
+        p.shared.lives.push((0,epoch,old)).ok().unwrap();
+        p.shared.publish_live(true);
+        let (_, _, mut selected) = p.shared.live_requests.pop().unwrap();
+        assert_eq!(selected.slot,1,"late old-page completions cannot replace the chosen page");
+        assert!(!selected.interface_current,"a selected cached page must read current callback state");
+        assert_eq!(allocations(|| { rt.refresh_live(&mut selected); }),0);
+        p.shared.lives.push((0,epoch,selected)).ok().unwrap();
+        p.shared.publish_live(true);
+        {
+            let view = p.shared.view.lock().unwrap();
+            let v = &view.parts[0];
+            let interface = v.interface.as_ref().unwrap();
+            assert_eq!(v.script_slot,1);
+            assert_eq!((interface.height,interface.skin_offset),(160,268));
+            assert_eq!(interface.controls[1].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("FX edited".into()));
+            assert_eq!(v.control_value(0),Some(67.));
+        }
+        assert!(p.shared.select_script_page(0,epoch,0));
+        assert_eq!(rt.interface(0).controls[0].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(0));
+        p.shared.view.lock().unwrap().parts[0].script_epoch = 2;
+        assert!(!p.shared.select_script_page(0,epoch,1),"buttons retained from a replaced instrument cannot select its successor's pages");
+    }
+
 
     #[test]
     fn snapshot_requests_validate_before_mutating_and_preserve_older_host_state() {

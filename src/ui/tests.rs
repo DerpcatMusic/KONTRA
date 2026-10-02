@@ -3099,3 +3099,30 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
     assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(), "selection retains its canonical source");
     p.shared.libraries.edit(|s| s.rename_library(dir, ""));
 }
+
+#[test]
+fn authored_script_pages_show_footer_tabs_and_switch_the_visible_controls() {
+    let first = "on init\nmake_perfview\nset_script_title(\"Performance\")\nset_ui_height_px(200)\ndeclare ui_knob $layer(0,100,1)\nend on";
+    let second = "on init\nmake_perfview\nset_script_title(\"FX Rack\")\nset_ui_height_px(160)\ndeclare ui_switch $effect\nend on";
+    let p = scripted_part(first);
+    let mut engine = crate::ksp::LogEngine::new(Vec::new(),48000.);
+    let (rt, errors) = crate::ksp::Runtime::with_scripts(&[first,second],&mut engine,8,Vec::new());
+    assert!(errors.iter().all(Option::is_none),"{errors:?}");
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].script_pages = crate::plugin::script_pages(Some(&rt));
+        view.parts[0].script_epoch = 1;
+    }
+    let mut h = Harness::new(&p,1180.,760.);
+    assert!(h.ui.scene().unwrap().surface("script-page-0-0").is_some());
+    assert!(h.ui.scene().unwrap().surface("script-page-0-1").is_some());
+    h.press("script-page-0-1");
+    let view = p.shared.view.lock().unwrap();
+    assert_eq!(view.parts[0].script_slot,1);
+    assert_eq!(view.parts[0].interface.as_ref().unwrap().controls[0].kind,"ui_switch");
+    drop(view);
+    h.press("script-page-0-0");
+    let view = p.shared.view.lock().unwrap();
+    assert_eq!(view.parts[0].script_slot,0);
+    assert_eq!(view.parts[0].interface.as_ref().unwrap().controls[0].kind,"ui_knob");
+}

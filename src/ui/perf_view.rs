@@ -300,7 +300,8 @@ fn room_height(ui: &Ui, slot: usize) -> f64 {
     let Some(scene) = ui.scene() else { return 0. };
     let (Some(rack), Some(part), Some(stage)) = (scene.surface("rack-view"),
         scene.surface(&format!("part-{slot}")), scene.surface(&format!("stage-{slot}"))) else { return 0. };
-    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.)).max(0.)
+    let tabs = scene.surface(&format!("script-pages-{slot}")).map_or(0., |s| s.frame.size.height);
+    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs).max(0.)
 }
 
 /// Reference cost of the former scalar/table memo scan, measured by the opt-in UI probe.
