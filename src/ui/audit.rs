@@ -465,6 +465,10 @@ mod tests {
             "view_script_state_bytes":p.shared.view.lock().unwrap().parts.iter().map(|p|p.script_state.len()).sum::<usize>(),
             "controls":interface.controls.len(),"visible_controls":drawn.len(),
             "properties":interface.controls.iter().map(|c|c.properties.len()).sum::<usize>(),
+            "interface_array_cells":interface.controls.iter().flat_map(|c|c.properties.values()).map(|v| match v {
+                crate::ksp::Value::IntArray(a) => a.len(), crate::ksp::Value::RealArray(a) => a.len(),
+                crate::ksp::Value::Array(a) => a.len(), _ => 0,
+            }).sum::<usize>(),
             "groups":instrument.groups.len(),"zones":instrument.zones.len(),
             "missing_notice_active":!instrument.warnings.iter().any(|w|w.contains("read back as zeros"))
                 && (part.status.contains("zones skipped") || !instrument.missing_samples.is_empty()),"stages":stages})
