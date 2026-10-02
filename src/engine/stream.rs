@@ -84,6 +84,7 @@ struct Config {
 const REVERSE: u64 = 1;
 const LOOPED: u64 = 2;
 const UNTIL_RELEASE: u64 = 4;
+const ALTERNATING: u64 = 8;
 
 impl Slot {
     fn new(ring: NonNull<AtomicU64>, wake: NonNull<Wake>) -> Self {
@@ -116,10 +117,12 @@ impl Slot {
             end: 0,
             xfade: 0,
             until_release: false,
+            alternating: false,
         });
         let flags = (u64::from(map.reverse) * REVERSE)
             | (u64::from(map.looped.is_some()) * LOOPED)
-            | (u64::from(l.until_release) * UNTIL_RELEASE);
+            | (u64::from(l.until_release) * UNTIL_RELEASE)
+            | (u64::from(l.alternating) * ALTERNATING);
         self.write(
             sample,
             [
@@ -260,6 +263,7 @@ impl Slot {
             end: loop_end,
             xfade,
             until_release: flags & UNTIL_RELEASE != 0,
+            alternating: flags & ALTERNATING != 0,
         });
         let map = PlayMap {
             start,

@@ -255,11 +255,11 @@ fn zones(p: &Program) -> Result<Vec<u8>> {
         match &z.loop_range {
             Some(l) => {
                 loops.extend([1, 0, 0x60, 0]);
-                loops.extend(1i32.to_le_bytes()); // until end
+                loops.extend((if l.until_release { 2i32 } else { 1 }).to_le_bytes());
                 loops.extend((l.start as i32).to_le_bytes());
                 loops.extend(((l.end - l.start) as i32).to_le_bytes());
                 loops.extend(0i32.to_le_bytes()); // count
-                loops.push(0); // alternating
+                loops.push(u8::from(l.alternating));
                 loops.extend(1.0f32.to_le_bytes());
                 loops.extend((l.crossfade as i32).to_le_bytes());
             }

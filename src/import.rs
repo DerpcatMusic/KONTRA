@@ -78,7 +78,14 @@ pub struct VoiceLimit {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
-pub struct Loop { pub start: usize, pub end: usize, pub until_release: bool, pub crossfade: usize }
+pub struct Loop {
+    pub start: usize,
+    pub end: usize,
+    pub until_release: bool,
+    pub crossfade: usize,
+    #[serde(default)]
+    pub alternating: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct Zone {
@@ -705,13 +712,16 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         if let Some(loops) = loops {
             if loops.items.iter().filter(|l| l.mode != 0).count() > 1 {warnings.push("Multiple loops are parsed; playback currently uses the first supported loop".into());}
             for l in loops.items.into_iter().filter(|l| l.mode != 0) {
-                if l.alternating_loop || l.loop_count != 0 || (l.loop_tuning - 1.0).abs() > 0.001 {
-                    warnings.push("An unsupported alternating/counted/tuned loop was skipped".into()); continue;
+                if l.loop_count != 0 || (l.loop_tuning - 1.0).abs() > 0.001 {
+                    warnings.push("An unsupported counted or tuned loop was skipped".into()); continue;
+                }
+                if l.alternating_loop && l.x_fade_length != 0 {
+                    warnings.push("A crossfaded alternating loop is preserved; playback uses forward crossfading".into());
                 }
                 ensure!(l.loop_start >= 0 && l.loop_length > 0, "Invalid sample loop");
                 // Only mode 1 occurs locally; mode 2 as "until release" is unverified.
                 loop_range = Some(Loop { start: l.loop_start as usize, end: l.loop_start as usize + l.loop_length as usize,
-                    until_release: l.mode == 2, crossfade: l.x_fade_length.max(0) as usize });
+                    alternating: l.alternating_loop, until_release: l.mode == 2, crossfade: l.x_fade_length.max(0) as usize });
                 break;
             }
         }
@@ -1028,6 +1038,21 @@ pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod preset_tests {
+
+    #[test]
+    #[ignore = "requires the local Una Corda instruments; no proprietary fixtures"]
+    fn actual_una_corda_alternating_loops_are_preserved() {
+        let dir = std::env::var_os("KONTRA_UNA_CORDA_INSTRUMENTS")
+            .expect("set KONTRA_UNA_CORDA_INSTRUMENTS to the Instruments directory");
+        for name in ["Una Corda Pure.nki", "Una Corda Felt.nki", "Una Corda Cotton.nki"] {
+            let instrument = super::read(&std::path::PathBuf::from(&dir).join(name)).unwrap();
+            let loops: Vec<_> = instrument.zones.iter().filter_map(|z| z.loop_range.as_ref()).collect();
+            assert_eq!(loops.len(), 31, "{name}");
+            assert_eq!(loops.iter().filter(|l| l.alternating).count(), 28, "{name}");
+            assert!(loops.iter().all(|l| !l.until_release && l.crossfade == 0), "{name}");
+            assert!(!instrument.warnings.iter().any(|w| w.contains("unsupported") && w.contains("loop")), "{name}");
+        }
+    }
     #[test]
     fn rooted_snapshot_paths_stay_inside_the_library() {
         use super::snapshot_rooted_path;
