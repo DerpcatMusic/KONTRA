@@ -344,18 +344,23 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
 
 /// The whole window with `part` racked alone, its view in mode `code`
 /// ([`Part::view`]), drawn by the CPU renderer to a PNG at `to`.
-#[cfg(not(feature = "shots"))]
+#[cfg(not(any(feature = "shots", test)))]
 fn shot(_: &PartView, _: u8, _: &Path) -> anyhow::Result<()> {
     anyhow::bail!("built without the CPU renderer: cargo build --release --features shots")
 }
 
-#[cfg(feature = "shots")]
+#[cfg(any(feature = "shots", test))]
 fn shot(part: &PartView, code: u8, to: &Path) -> anyhow::Result<()> {
+    shot_scaled(part, code, to, 1.)
+}
+
+#[cfg(any(feature = "shots", test))]
+fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyhow::Result<()> {
     use moose::mui::mui::vello::{
         self,
         vello_cpu::{Pixmap, RenderContext, Resources},
     };
-    let (width, height) = (1180u16, 900u16);
+    let (width, height) = ((1180. * device_scale).round() as u16, (900. * device_scale).round() as u16);
     let p = Arc::new(SamplerParams::new());
     let i = part.instrument.as_ref().expect("a viewed part has its instrument");
     p.selection.write().unwrap().parts.push(Part {
@@ -370,11 +375,12 @@ fn shot(part: &PartView, code: u8, to: &Path) -> anyhow::Result<()> {
         view.parts[0] = part.clone();
     }
     let mut ui = theme::ui();
+    ui.set_scale(Some(device_scale));
     let mut build = build(&p, Arc::default(), Arc::default(), Arc::default(), Arc::default());
     let mut bridge = Bridge::new(p.clone());
     for _ in 0..8 {
         let root = build(&mut ui, &mut bridge);
-        ui.frame(root, Some(Size::new(f64::from(width), f64::from(height))), Input::default(), 1. / 60.)
+        ui.frame(root, Some(Size::new(1180., 900.)), Input::default(), 1. / 60.)
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     }
     let scene = ui.scene().ok_or_else(|| anyhow::anyhow!("nothing drawn"))?;
@@ -383,7 +389,7 @@ fn shot(part: &PartView, code: u8, to: &Path) -> anyhow::Result<()> {
     vello::paint(
         &mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut vello::Cache::default() },
         scene,
-        vello::kurbo::Affine::IDENTITY,
+        vello::kurbo::Affine::scale(device_scale),
     )
     .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     ctx.flush();
@@ -532,6 +538,16 @@ mod tests {
                 assert_eq!(font.frames.len(), 256);
                 println!("UI_BENCH_FONT id={} glyphs={} height={} A_advance={} i_advance={}", n+26, font.frames.len(), font.frames[0].height, font.frames[65].width, font.frames[105].width);
             }
+        }
+        if std::env::var_os("KONTRA_UI_BENCH_CAPTURE_ONLY").is_some() {
+            let to = std::env::var_os("KONTRA_UI_BENCH_SHOT").expect("capture output PNG");
+            shot_scaled(&part, mode as u8, Path::new(&to), device_scale).unwrap();
+            println!("UI_CAPTURE {}", serde_json::json!({"build":crate::build_info::LABEL,"mode":mode,
+                "device_scale":device_scale,"snapshot_restored":snapshot.is_some(),
+                "page_callbacks":std::env::var("KONTRA_UI_BENCH_PAGE").ok(),
+                "controls":part.interface.as_ref().unwrap().controls.len(),"pictures":part.pictures.len(),
+                "wallpaper_loaded":part.wallpaper.is_some()}));
+            return;
         }
         let shown = perf_view::layout(part.interface.as_ref().unwrap(), &part.pictures);
         let pictured = shown.iter()
