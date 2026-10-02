@@ -330,6 +330,12 @@ impl Engine {
             rt.set_sample_rate(self.player.rate);
         }
         let old = std::mem::replace(&mut self.script, script);
+        self.player.controller_defaults.fill(None);
+        if let Some(rt) = self.script.as_deref() {
+            for &(cc, value) in &rt.init_controllers {
+                if cc < 128 { self.player.controller_defaults[cc as usize] = Some(value); }
+            }
+        }
         self.player.native_sustain = !self.script.as_ref().is_some_and(|rt| rt.condition("NO_SYS_SCRIPT_PEDAL"));
         self.player.native_release_triggers = !self.script.as_ref().is_some_and(|rt| rt.condition("NO_SYS_SCRIPT_RLS_TRIG"));
         if !self.player.native_release_triggers { self.player.pending_releases.clear(); }
@@ -666,10 +672,11 @@ impl Engine {
                 let channels = (1 << channel) | self.player.mpe_zone
                     .filter(|(master, _)| *master == channel).map_or(0, |(_, members)| members);
                 let previous = self.player.cc;
+                let controller_defaults = self.player.controller_defaults;
                 let script_previous = self.script.as_deref().unwrap().env.input.cc;
                 self.commands.retain(|c| channels & (1 << c.channel) == 0
                     || !matches!(c.kind, script::Kind::Controller { cc, .. }
-                        if crate::ksp::reset_controller_value(cc).is_some()));
+                        if crate::ksp::reset_controller_value(cc, None).is_some()));
                 self.script.as_deref_mut().unwrap().cancel_performance_controllers(channels);
                 // Authors often mirror controllers in globals. Deliver the
                 // same defaults the native reset uses before synchronizing %CC.
@@ -677,7 +684,7 @@ impl Engine {
                     // Deselect parameter addresses before data-entry defaults:
                     // authored RPN/NRPN handlers must retain parameter values.
                     for cc in (98..102u8).chain(0..98).chain(102..120) {
-                        let Some(value) = crate::ksp::reset_controller_value(cc) else { continue; };
+                        let Some(value) = crate::ksp::reset_controller_value(cc, controller_defaults[cc as usize]) else { continue; };
                         // Always refresh the standard performance caches; other
                         // supported CCs need a callback only when changed.
                         if matches!(cc, 1 | 11 | 64..=67 | 98..=101)
@@ -1153,6 +1160,8 @@ struct Player {
     sostenuto_down: [bool; 16],
     bend: [f32; 16],
     cc: [[u8; 128]; 16],
+    /// Authored device defaults for extra controllers, prepared when scripts load.
+    controller_defaults: [Option<u8>; 128],
     /// Channel pressure.
     pressure: [u8; 16],
     /// Per-channel/key expression, by the voices' MIDI channel and note.
@@ -1211,6 +1220,7 @@ impl Player {
             sostenuto_down: [false; 16],
             bend: [0.0; 16],
             cc: [[0; 128]; 16],
+            controller_defaults: [None; 128],
             pressure: [0; 16],
             expression: Box::new([[Expression::default(); 128]; 16]),
             keys: [[0; 128]; 16],
@@ -1795,7 +1805,7 @@ impl Player {
                 self.bend[c] = 0.0;
                 self.pressure[c] = 0;
                 for cc in 0..128 {
-                    if let Some(value) = crate::ksp::reset_controller_value(cc as u8) {
+                    if let Some(value) = crate::ksp::reset_controller_value(cc as u8, self.controller_defaults[cc]) {
                         self.cc[c][cc] = value;
                     }
                 }

@@ -36,13 +36,16 @@ fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>) -> Result
     Ok(program)
 }
 
-/// MIDI RP-015 defaults. None preserves a controller and registered values;
-/// controllers without a device-specific default return to zero.
-pub(crate) fn reset_controller_value(cc: u8) -> Option<u8> {
+/// MIDI RP-015 mandatory defaults; None preserves a controller and parameter values.
+/// Extra controllers restore their authored on-init device default, or zero if
+/// unspecified. Scripts use these extra CCs for internal dynamics and expression.
+/// https://midi.org/response-to-reset-all-controllers
+pub(crate) fn reset_controller_value(cc: u8, initial: Option<u8>) -> Option<u8> {
     match cc {
         0 | 7 | 10 | 32 | 70..=79 | 91..=95 | 120..=127 => None,
         11 | 98..=101 => Some(127),
-        1..=119 | 128 | 129 => Some(0),
+        1 | 64..=67 | 128 | 129 => Some(0),
+        2..=119 => Some(initial.unwrap_or(0)),
         _ => None,
     }
 }
@@ -1605,7 +1608,9 @@ impl Runtime {
             }
         } else {
             for cc in 0..128 {
-                if let Some(value) = reset_controller_value(cc as u8) {
+                let initial = self.init_controllers.iter().rev()
+                    .find(|&&(controller, _)| controller as usize == cc).map(|&(_, value)| value);
+                if let Some(value) = reset_controller_value(cc as u8, initial) {
                     self.env.input.cc[cc] = i32::from(value);
                 }
             }
@@ -1625,7 +1630,7 @@ impl Runtime {
     /// note/release callbacks, UI edits or unrelated MIDI channels.
     pub(crate) fn cancel_performance_controllers(&mut self, channels: u16) {
         let selected = |channel: u8, cc: u8| channels & (1 << channel.min(15)) != 0
-            && reset_controller_value(cc).is_some();
+            && reset_controller_value(cc, None).is_some();
         self.env.work.retain(|w| match *w {
             Work::Controller { channel, cc, .. } => !selected(channel, cc),
             Work::PolyAt { channel, .. } => !selected(channel, 129),
