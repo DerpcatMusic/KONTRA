@@ -197,7 +197,7 @@ fn selection_differences(expected: &Selection, readback: &Selection) -> Vec<Stri
             path, group, port, output, channel, gain, pan, tune, mute, solo, program,
             script_state, ir_settings, name, collapsed, height, aux, aux_gain,
             articulate, mpe, streaming, edits, timing, output_manual, mic_buses,
-            mic_names, view,
+            mic_names, view, snapshot,
         );
         for field in &mut differences[start..] {
             *field = format!("parts[{index}].{field}");

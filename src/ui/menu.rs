@@ -71,6 +71,7 @@ pub enum Command {
     Rename(usize),
     /// Show a part's envelope, filter and effects in the Sound tab.
     EditSound(usize),
+    LoadSnapshot(usize),
     Mute(usize),
     Solo(usize),
     /// How a part shows its performance view ([`crate::plugin::Part::view`]).
@@ -318,6 +319,9 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 Item::Rule,
                 Item::Info("MPE".into()),
             ];
+            if part.snapshot_base() {
+                items.insert(1, act("Load snapshot…", "", Command::LoadSnapshot(slot)));
+            }
             for (zone, label) in [(Zone::Off, "MPE off"), (Zone::Lower, "Lower zone"), (Zone::Upper, "Upper zone")] {
                 items.push(check(label, part.mpe.zone == zone, Command::Mpe(slot, zone)));
             }
@@ -728,6 +732,16 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Rename(slot) => {
             cx.show(slot);
             cx.state.renaming = Some((slot, super::rack::name(cx, slot)));
+        }
+        Command::LoadSnapshot(slot) => {
+            if let Some(part) = cx.selection.parts.get(slot) {
+                let from = Path::new(if part.snapshot.is_empty() { &part.path } else { &part.snapshot })
+                    .parent().unwrap_or(Path::new(".")).to_path_buf();
+                let ask = super::picker::Ask::Snapshot { slot, source: part.source(), from };
+                if !cx.state.picker.ask(ask) {
+                    cx.state.notice = "No file dialog here: drop a .nksn snapshot onto this instrument's header.".into();
+                }
+            }
         }
         Command::EditSound(slot) => {
             cx.show(slot);
