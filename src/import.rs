@@ -205,6 +205,120 @@ pub fn read_program(path:&Path,program:u32)->Result<Instrument> {
     std::panic::catch_unwind(||read_inner(path,program)).map_err(|_|anyhow::anyhow!("Malformed Kontakt program"))?
 }
 
+/// Apply a Kontakt snapshot to its explicitly supplied base NKI. Snapshots do
+/// not contain a sample mapping. Compact saved group/source/modulation state
+/// is not yet imported; the returned instrument reports that limitation.
+pub fn read_snapshot(base: &Path, snapshot: &Path) -> Result<Instrument> {
+    std::panic::catch_unwind(|| read_snapshot_inner(base, snapshot))
+        .map_err(|_| anyhow::anyhow!("Malformed Kontakt snapshot or base instrument"))?
+}
+
+fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
+    use ni_file::kontakt::objects::{Snapshot, snapshot_instrument_name};
+    let snapshot_chunks = chunks(snapshot).context("Snapshot container")?;
+    let name = snapshot_instrument_name(
+        snapshot_chunks
+            .find_first(0x51)
+            .context("Snapshot metadata missing")?,
+    )?;
+    let saved = Snapshot::try_from(
+        snapshot_chunks
+            .find_first(0x4f)
+            .context("Snapshot state missing")?,
+    )?;
+    let base_chunks = chunks(base).context("Base instrument container")?;
+    let program = Program::try_from(
+        base_chunks
+            .find_first(0x28)
+            .context("Snapshot requires a base NKI")?,
+    )?;
+    ensure!(
+        name == program.params()?.name,
+        "Snapshot requires base instrument {name:?}"
+    );
+    let mut instrument = read(base)?;
+    ensure!(
+        saved.group_count as usize == instrument.groups.len(),
+        "Snapshot/base group counts differ"
+    );
+    let mut states = Vec::new();
+    let mut warnings = Vec::new();
+    let mut slots = 0;
+    for (slot, chunk) in program.0.children.iter().filter(|c| c.id == 6).enumerate() {
+        slots += 1;
+        let params = BParScript::try_from(chunk)?.params()?;
+        ensure!(
+            slot < saved.persistent.len(),
+            "Base instrument has more snapshot script slots"
+        );
+        if !params.bypass && script_source(base, slot, &params, &mut warnings).is_some() {
+            states.push(crate::ksp::saved_persistence(&saved.persistent[slot]));
+        }
+    }
+    ensure!(
+        saved.persistent[slots..].iter().all(Vec::is_empty),
+        "Snapshot has state for absent base script slots"
+    );
+    ensure!(
+        states.len() == instrument.scripts.len(),
+        "Snapshot/base active script slots differ"
+    );
+    ensure!(
+        instrument.script_state.len() == states.len(),
+        "Base script persistence slots differ"
+    );
+    // Reuse the regular effect importer after the entire snapshot has parsed.
+    let effects = Program(StructuredObject {
+        version: program.0.version,
+        public_data: Vec::new(),
+        private_data: Vec::new(),
+        children: saved.effect_children,
+    });
+    let mut fx = crate::fx::ProgramFx::read(&effects).context("Snapshot effects")?;
+    fx.name_impulses(&other_files(&snapshot_chunks)?);
+    let parent = base.parent().context("Base instrument has no parent")?;
+    let root = base
+        .ancestors()
+        .find(|p| p.join("Samples").is_dir())
+        .unwrap_or(parent);
+    let mut resolver = Resolver::new(root);
+    let container = resource_container(&base_chunks)?;
+    let mut dependencies = vec![snapshot.to_path_buf()];
+    fx.load_impulses(|name, max_frames| {
+        let ir = match (
+            resolver.resolve(parent, name)?,
+            &container,
+            name.find("Resources/"),
+        ) {
+            (Some(ir), ..) => Some(ir),
+            (None, Some(nkr), Some(at)) => {
+                resolver.resolve(parent, &format!("{nkr}/{}", &name[at..]))?
+            }
+            _ => None,
+        }
+        .context("file missing or its archive member is unreadable")?;
+        dependencies.push(ir.clone());
+        crate::audio::decode(&ir, max_frames)
+    });
+    warnings.extend(fx.warnings());
+    warnings.push("Snapshot: compact saved group/source/modulation state is not imported; base group settings remain in use".into());
+    for (base, saved) in instrument.script_state.iter_mut().zip(states) {
+        base.extend(saved);
+    }
+    fx.main = std::mem::take(&mut instrument.fx.main);
+    instrument.fx = fx;
+    instrument.warnings.extend(warnings);
+    instrument.name = snapshot
+        .file_stem()
+        .context("Snapshot has no name")?
+        .to_string_lossy()
+        .into_owned();
+    instrument
+        .dependencies
+        .extend(crate::cache::dependencies(dependencies));
+    Ok(instrument)
+}
+
 /// [`read_program`], shared: parts and plugin instances in one process that
 /// load the same program hold one parsed copy while any of them lives.
 pub fn shared_program(path: &Path, program: u32) -> Result<std::sync::Arc<Instrument>> {
