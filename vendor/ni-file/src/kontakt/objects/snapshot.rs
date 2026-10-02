@@ -160,8 +160,15 @@ impl TryFrom<&Chunk> for Snapshot {
     }
 }
 
-/// Snapshot metadata v1 names the required base instrument; it is not a path.
+/// Snapshot metadata v1's first stored name; it is not a path.
 pub fn snapshot_instrument_name(chunk: &Chunk) -> Result<String, Error> {
+    Ok(snapshot_metadata_names(chunk)?.0)
+}
+
+/// Both stored metadata names, without substituting a path or inferring aliases.
+/// Some factory snapshots retain the template name `Kontakt` in the first
+/// field and their named base in the second.
+pub fn snapshot_metadata_names(chunk: &Chunk) -> Result<(String, String), Error> {
     if chunk.id != 0x51 {
         return Err(Error::Static("Expected Kontakt snapshot metadata"));
     }
@@ -174,11 +181,11 @@ pub fn snapshot_instrument_name(chunk: &Chunk) -> Result<String, Error> {
         return Err(Error::Static("Unsupported snapshot metadata flags"));
     }
     let name = reader.read_widestring_utf16()?;
-    let _library_name = reader.read_widestring_utf16()?;
+    let content_name = reader.read_widestring_utf16()?;
     if reader.position() as usize != object.public_data.len() || name.is_empty() {
         return Err(Error::Static("Invalid snapshot metadata"));
     }
-    Ok(name)
+    Ok((name, content_name))
 }
 
 #[cfg(test)]

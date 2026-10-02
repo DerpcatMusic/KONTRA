@@ -240,9 +240,10 @@ pub(crate) fn snapshot_instrument(path: &Path) -> Result<String> {
     std::panic::catch_unwind(|| {
         let c = chunks(path)?;
         c.find_first(0x4f).context("Snapshot state missing")?;
-        Ok(ni_file::kontakt::objects::snapshot_instrument_name(
+        let names = ni_file::kontakt::objects::snapshot_metadata_names(
             c.find_first(0x51).context("Snapshot metadata missing")?,
-        )?)
+        )?;
+        Ok(snapshot_binding_name(&names, None)?.to_owned())
     }).map_err(|_| anyhow::anyhow!("Malformed snapshot metadata"))?
 }
 
@@ -256,10 +257,22 @@ pub(crate) fn snapshot_base_name(path: &Path) -> Result<String> {
     }).map_err(|_| anyhow::anyhow!("Malformed base instrument metadata"))?
 }
 
+// A factory snapshot may retain Kontakt's generic template name. Only use
+// its second embedded name when it also exactly names the supplied NKI file;
+// the program name, group/source/slot identities are still validated below.
+fn snapshot_binding_name<'a>(names: &'a (String, String), base: Option<&Path>) -> Result<&'a str> {
+    if names.0 != "Kontakt" || names.1.is_empty() { return Ok(&names.0); }
+    if let Some(base) = base {
+        ensure!(base.file_stem().and_then(|s| s.to_str()) == Some(names.1.as_str()),
+            "Generic snapshot requires base filename {:?}", names.1);
+    }
+    Ok(&names.1)
+}
+
 fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
-    use ni_file::kontakt::objects::{Snapshot, snapshot_instrument_name};
+    use ni_file::kontakt::objects::{Snapshot, snapshot_metadata_names};
     let snapshot_chunks = chunks(snapshot).context("Snapshot container")?;
-    let name = snapshot_instrument_name(
+    let names = snapshot_metadata_names(
         snapshot_chunks
             .find_first(0x51)
             .context("Snapshot metadata missing")?,
@@ -275,10 +288,10 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
             .find_first(0x28)
             .context("Snapshot requires a base NKI")?,
     )?;
-    ensure!(
-        name == program.params()?.name,
-        "Snapshot requires base instrument {name:?}"
-    );
+    let program_name = program.params()?.name;
+    let name = if names.0 == program_name { names.0.as_str() }
+        else { snapshot_binding_name(&names, Some(base))? };
+    ensure!(name == program_name, "Snapshot requires base instrument {name:?}");
     let mut instrument = read(base)?;
     ensure!(
         saved.groups.is_none() || saved.group_count as usize == instrument.groups.len(),
@@ -308,7 +321,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
             "Snapshot group {id}: source mode differs from base"
         );
         let native_fx = native.insert_fx()?;
-        snapshot_slot_shape(&native_fx, &saved.fx)
+        snapshot_slot_shape(&native_fx, &saved.fx, false)
             .with_context(|| format!("Snapshot group {id} effects"))?;
         for (chunk_id, count, slots) in [(0x3b, saved.internal.items.len() as u32, &saved.internal), (0x3c, saved.external.items.len() as u32, &saved.external)] {
             let original = native
@@ -319,7 +332,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
                 Cursor::new(&original.data),
                 count,
             )?;
-            snapshot_slot_shape(&original, slots)
+            snapshot_slot_shape(&original, slots, true)
                 .with_context(|| format!("Snapshot group {id} modulation"))?;
         }
         for chunk in saved.modulation_chunks()? {
@@ -439,30 +452,33 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
 fn snapshot_slot_shape(
     base: &ni_file::kontakt::objects::BParamArrayBParFX8,
     saved: &ni_file::kontakt::objects::BParamArrayBParFX8,
+    allow_modulation_removal: bool,
 ) -> Result<()> {
     use ni_file::kontakt::objects::{ExternalMod, InternalMod};
     let identity = |chunk: &ni_file::kontakt::Chunk| -> Result<_> {
         let (name, targets) = match chunk.id {
             0x0d => {
                 let p = InternalMod::try_from(chunk)?.params()?;
-                (p.name, p.targets)
+                (p.name, p.targets.into_iter().map(|t| (t.param, t.slot, t.name)).collect::<Vec<_>>())
             }
             0x0c => {
                 let p = ExternalMod::try_from(chunk)?.params()?;
-                (p.name, p.targets)
+                (p.name, p.targets.into_iter().map(|t| (t.param, t.slot, t.name)).collect::<Vec<_>>())
             }
             _ => return Ok(None),
         };
-        Ok(Some((
-            name,
-            targets
-                .into_iter()
-                .map(|t| (t.param, t.slot, t.name))
-                .collect::<Vec<_>>(),
-        )))
+        Ok(Some((name, targets)))
     };
     ensure!(base.items.len() == saved.items.len(), "Slot counts differ");
     for (base, saved) in base.items.iter().zip(&saved.items) {
+        // Native snapshots serialize empty physical slots explicitly. Removing
+        // a decoded assignment is saved state, not a reorder or replacement.
+        if allow_modulation_removal && saved.is_none() {
+            if let Some(base) = base {
+                ensure!(identity(base)?.is_some(), "Undecoded slot removal");
+            }
+            continue;
+        }
         ensure!(
             base.as_ref().map(|c| c.id) == saved.as_ref().map(|c| c.id),
             "Slot occupancy/types differ"
@@ -1218,6 +1234,57 @@ mod preset_tests {
             assert!(!instrument.warnings.iter().any(|w| w.contains("unsupported") && w.contains("loop")), "{name}");
         }
     }
+    #[test]
+    fn template_snapshot_binding_and_removed_modulation_preserve_identity_guards() {
+        use super::{snapshot_binding_name, snapshot_slot_shape};
+        use ni_file::kontakt::{Chunk, objects::{BParamArrayBParFX8, EnvelopeAhdsr}};
+        fn object(id: u16, version: u16, private: &[u8], public: &[u8], children: &[u8]) -> Chunk {
+            let mut data = vec![1]; data.extend(version.to_le_bytes());
+            for part in [private, public, children] { data.extend((part.len() as u32).to_le_bytes()); data.extend(part); }
+            Chunk { id, data }
+        }
+        let mut public = 0u32.to_le_bytes().to_vec();
+        for name in ["Kontakt", "Authored Piano"] {
+            let units: Vec<_> = name.encode_utf16().collect();
+            public.extend((units.len() as u32).to_le_bytes());
+            public.extend(units.into_iter().flat_map(u16::to_le_bytes));
+        }
+        let metadata = object(0x51, 1, &[], &public, &[]);
+        let names = ni_file::kontakt::objects::snapshot_metadata_names(&metadata).unwrap();
+        assert_eq!(names, ("Kontakt".into(), "Authored Piano".into()));
+        assert_eq!(snapshot_binding_name(&names, Some(std::path::Path::new("/Library/Authored Piano.nki"))).unwrap(), "Authored Piano");
+        assert!(snapshot_binding_name(&names, Some(std::path::Path::new("/Library/Foreign.nki"))).is_err());
+        assert_eq!(snapshot_binding_name(&("Actual Name".into(), "Library".into()), None).unwrap(), "Actual Name");
+        for end in 0..public.len() {
+            assert!(ni_file::kontakt::objects::snapshot_metadata_names(&object(0x51, 1, &[], &public[..end], &[])).is_err());
+        }
+        let envelope = EnvelopeAhdsr { attack_curve: 0., attack_ms: 10., hold_ms: 0.,
+            decay_ms: 30., sustain: 0.5, release_ms: 100., unknown_flag: 0, unknown_tail: vec![0;52] };
+        let mut concrete = Vec::new(); envelope.write(&mut concrete).unwrap();
+        let mut wrapped = Vec::new(); object(7, 0x90, &[], &0u32.to_le_bytes(), &concrete).write(&mut wrapped).unwrap();
+        let assignment = |label: &str| {
+            let mut private = 1u32.to_le_bytes().to_vec();
+            private.extend(6u32.to_le_bytes()); private.extend(b"volume");
+            private.extend(0.5f32.to_le_bytes()); private.extend((-1i16).to_le_bytes());
+            private.push(0); private.extend(0u16.to_le_bytes());
+            private.extend(6u32.to_le_bytes()); private.extend(b"Target");
+            private.extend([0,0]); // invert, shaper
+            private.extend([0;4]); private.extend(0u32.to_le_bytes());
+            private.extend((label.len() as u32).to_le_bytes()); private.extend(label.as_bytes());
+            private.extend(2u32.to_le_bytes()); object(0x0d, 0x80, &private, &[], &wrapped)
+        };
+        let array = |items| BParamArrayBParFX8 { version: 0x12, items };
+        let base = array(vec![Some(assignment("Keep")), None, Some(assignment("Remove"))]);
+        let saved = array(vec![Some(assignment("Keep")), None, None]);
+        assert!(snapshot_slot_shape(&base, &saved, true).is_ok(), "explicit removal retains slot identities");
+        assert!(snapshot_slot_shape(&base, &saved, false).is_err(), "effect topology remains strict");
+        assert!(snapshot_slot_shape(&saved, &base, true).is_err(), "adding an assignment is unsupported");
+        let foreign = array(vec![Some(assignment("Foreign")), None, None]);
+        assert!(snapshot_slot_shape(&base, &foreign, true).is_err(), "known siblings cannot be replaced");
+        let damaged = array(vec![Some(Chunk { id:0x0d, data:vec![1] }), None, None]);
+        assert!(snapshot_slot_shape(&damaged, &array(vec![None,None,None]), true).is_err(), "malformed removed records still reject");
+    }
+
     #[test]
     fn rooted_snapshot_paths_stay_inside_the_library() {
         use super::snapshot_rooted_path;
