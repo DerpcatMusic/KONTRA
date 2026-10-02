@@ -169,6 +169,7 @@ pub(super) struct Host<'a> {
     pub player: &'a mut Player,
     pub commands: &'a mut Vec<Command>,
     pub writes: &'a mut Vec<Write>,
+    pub write_index: &'a mut (u32, std::collections::HashMap<Address, usize>),
     pub ir_requests: &'a mut Vec<IrRequest>,
 }
 
@@ -386,8 +387,14 @@ impl KspEngine for Host<'_> {
         // Render applies every parameter before notes at the same sample. Keep
         // its last value, including what later callbacks read, without queuing
         // a full group-envelope restore again for each articulation switch.
-        if let Some(write) = self.writes.iter_mut().rev().find(|w| w.at == at && w.address == address) {
-            write.value = value;
+        if self.write_index.0 != at {
+            self.write_index.0 = at;
+            self.write_index.1.clear();
+            self.write_index.1.extend(self.writes.iter().enumerate()
+                .filter(|(_, w)| w.at == at).map(|(i, w)| (w.address, i)));
+        }
+        if let Some(&i) = self.write_index.1.get(&address) {
+            self.writes[i].value = value;
             return true;
         }
         if self.writes.len() == MAX_WRITES {
@@ -395,7 +402,10 @@ impl KspEngine for Host<'_> {
             return true;
         }
         let i = self.writes.partition_point(|w| w.at <= at);
+        // Insertion follows every existing write at this sample, so it cannot
+        // move an index cached for the current batch, even with future writes.
         self.writes.insert(i, Write { at, address, value });
+        self.write_index.1.insert(address, i);
         true
     }
 
