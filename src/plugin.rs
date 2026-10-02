@@ -4815,7 +4815,7 @@ pub(crate) mod tests {
         assert!(typed_errors.is_empty(),"{typed_errors:?}");
         let error=format!("{:#}",Scene::prepare(&typed.path,&typed_rt.unwrap()).unwrap_err());
         assert!(error.contains("Unsupported typed Komplete UI entry main.kscript")&&error.contains("8.1"),"{error}");
-        let p=SamplerParams::new();let mut dsp=Dsp::default();
+        let p=Arc::new(SamplerParams::new());let mut dsp=Dsp::default();
         let epoch={let mut view=p.shared.view.lock().unwrap();
             let epoch=next_epoch(&mut view,0,None,live);
             let v=&mut view.parts[0];v.native_scene=Some(scene.clone());v.script_pages=pages;v.instrument=Some(Arc::new(Instrument {path:i.path.clone(),..Default::default()}));v.interface=Some(Arc::new(rt.interface(0)));v.attempted=Some(Part::default().source());epoch};
@@ -4860,7 +4860,7 @@ pub(crate) mod tests {
             let _ = completed.send(());
         }));
         p.shared.native_asset_loader(&tasks); // Already queued work must wake too.
-        completion.recv_timeout(Duration::from_secs(5)).expect("idle editor request wakes the real Load lane");
+        completion.recv_timeout(std::time::Duration::from_secs(5)).expect("idle editor request wakes the real Load lane");
         let assets=scene.lock().unwrap().assets.clone();
         assert!(assets.entries["assets/pics/changed.svg"].is_ok());
         assert!(!first_assets.entries.contains_key("assets/pics/changed.svg"),"retained asset snapshots stay immutable");
@@ -4875,14 +4875,14 @@ pub(crate) mod tests {
             moose::mui::mui::scene::Paint::Vector{vector,..}=>vector.raster_source().cloned(),_=>None,
         }).unwrap();
         assert!(source.prepared_image(40,20).unwrap().is_none(),"cold filter paint only requests worker preparation");
-        completion.recv_timeout(Duration::from_secs(5)).expect("cold paint schedules Load without another frame or audio block");
+        completion.recv_timeout(std::time::Duration::from_secs(5)).expect("cold paint schedules Load without another frame or audio block");
         assert!(source.prepared_image(40,20).unwrap().is_some(),"same loader prepares the requested device size");
         *paused.0.lock().unwrap() = true;
         for _ in 0..16 {p.shared.native_asset_requests.push(NativeAssetJob{part:0,epoch:epoch-1,path:i.path.clone(),scene:scene.clone(),names:Vec::new()}).ok().unwrap();}
         assert!(source.prepared_image(80,40).unwrap().is_none());
         *paused.0.lock().unwrap() = false; paused.1.notify_one();
-        completion.recv_timeout(Duration::from_secs(5)).expect("full artwork queue wakes its existing loader");
-        completion.recv_timeout(Duration::from_secs(5)).expect("loader retry tail schedules itself without UI polling");
+        completion.recv_timeout(std::time::Duration::from_secs(5)).expect("full artwork queue wakes its existing loader");
+        completion.recv_timeout(std::time::Duration::from_secs(5)).expect("loader retry tail schedules itself without UI polling");
         assert!(source.prepared_image(80,40).unwrap().is_some(),"queue-full misses recover without editor raster work or another thread");
         assert_eq!(labels,["Amount:44:1","Remote:24:1"],"same scene observes callback results and retains local state");
         let rt=dsp.rack.parts[0].script().unwrap();
@@ -4893,7 +4893,7 @@ pub(crate) mod tests {
         assert!(source.prepared_image(120,60).unwrap().is_none());
         {let mut view=p.shared.view.lock().unwrap();view.parts[0].script_epoch=epoch+1;view.parts[0].native_scene=None;}
         *paused.0.lock().unwrap() = false; paused.1.notify_one();
-        completion.recv_timeout(Duration::from_secs(5)).expect("stale jobs still leave the worker runnable");
+        completion.recv_timeout(std::time::Duration::from_secs(5)).expect("stale jobs still leave the worker runnable");
         assert!(!scene.lock().unwrap().assets.entries.contains_key("assets/pics/stale.svg"),"stale image jobs are discarded before reading or publication");
         assert!(source.prepared_image(120,60).unwrap().is_none(),"a replaced scene's raster job does not prepare or publish after its source changes");
         drop(tasks);
