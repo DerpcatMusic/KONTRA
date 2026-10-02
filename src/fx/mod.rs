@@ -548,6 +548,10 @@ impl ProgramFx {
             if fx.kind == Kind::Distortion {
                 out.push(format!("{at}: Damping parameter smoothing is not applied"));
             }
+            if fx.kind == Kind::Delay && blocks::fields(&fx.params).is_some_and(|f|
+                f[4] > 0.0 && blocks::normalized_field(Kind::Delay, 4, &f, 120.0).is_none()) {
+                out.push(format!("{at}: saved synchronized beat multiplier is retained, but numeric Time Unit readback is unsupported"));
+            }
             if !fx.is_implemented() {
                 out.push(format!(
                     "{at} is active but not implemented; audio passes through"

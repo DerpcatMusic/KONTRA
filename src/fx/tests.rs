@@ -1025,6 +1025,14 @@ fn legacy_delay_sync_cache_transport_and_authored_readback_all_racks_without_hea
     for rack in [Rack::Insert, Rack::Send, Rack::Main, Rack::Bus(3)] {
         let saved = make(rack, false);
         let json = serde_json::to_string(&saved).unwrap();
+        let mut unknown=saved.clone();
+        let Params::Fields(fields)=&mut unknown.chain_mut(rack).unwrap().slots[0].params else { panic!("Delay fields") };
+        fields[4].value=params::Value::Number(16.0);
+        assert_eq!(unknown.param(rack,0,sync),None,"unclassified native units have no invented numeric alias");
+        assert!(unknown.warnings().iter().any(|w|w.contains("numeric Time Unit readback is unsupported")));
+        let mut unknown=unknown.processor(SR,128);
+        assert!(unknown.set_param(rack,0,sync,unit(5)),"known named unit can replace an unclassified saved multiplier");
+        assert_eq!(unknown.param(rack,0,sync),Some(unit(5)));
         assert_eq!(saved.param(rack, 0, sync), Some(unit(5)));
         assert!((saved.param(rack, 0, time).unwrap() - 2.0/11.0).abs() < 1e-6);
         let mut fx = saved.processor(SR, 128);
