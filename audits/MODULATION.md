@@ -393,6 +393,32 @@ in every group that has one (1.92 in 168 Dolce groups). `cc_volume` is CC 111/11
 CHORUS). Most groups have a volume AHDSR; most of the ones without it (Vista, some
 Dolce, CHORUS and Pacific groups) have a volume flex envelope instead.
 
+## Internal pitch AHDSRs (2026-10-02)
+
+The older envelope census above predates the ANALOG STRINGS library. Its actual
+instrument contains 480 `Pitch_Envelope` AHDSRs plus three `ENV_AHDSR` pitch
+AHDSRs. Their slotless `pitch` targets previously disappeared during import because
+module-envelope targets required an FX slot. Import now retains these targets in
+original order. Playback reuses the existing AHDSR DSP and adds `12 * depth * level`
+semitones to each voice's existing resampler pitch, including target shaping and
+the direction convention already used for internal filter envelopes. KSP target
+intensity and envelope-stage addresses preserve the original modulator/target
+indices; target depth changes reach active voices, stage settings reach new voices.
+
+The [Kontakt modulation manual](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation)
+describes internal envelopes as modulation sources and AHDSR stage behavior. This
+implementation uses the existing engine's per-block pitch control rate; sample
+accurate pitch curves and Kontakt reference-render parity have not been verified.
+Four pitch envelopes fit in the preallocated voice workspace; import warns if a
+group exceeds that limit. No allocation occurs when processing these envelopes.
+LFO objects remain opaque, and the ambiguous external invert byte remains ignored.
+Mixed volume/pitch envelopes and flexible pitch envelopes remain unsupported.
+
+Run `pitch_envelope_uses_ahdsr_and_script_addresses` for the focused DSP/script
+regression. Run the ignored `analog_strings_pitch_envelopes_are_routed` with
+`KONTRA_ANALOG_NKI` pointing to the installed instrument to verify its aggregate
+483 pitch-envelope routes without publishing library content.
+
 ## Not verified
 
 - How Kontakt combines intensity, invert and shaper for volume and pitch (the

@@ -6,7 +6,7 @@
 //! semantics, with their confidence, are in `audits/MODULATION.md`
 //! ("Runtime modulation and engine parameters").
 
-use super::{Ahdsr, GroupSettings, filter::Knob};
+use super::{Ahdsr, GroupSettings, filter::Knob, voice::Envelope};
 use crate::fx::{DIRECT, FxParam, OUTS, Rack};
 use crate::import::{Group, ModAssignment, ModSource, ModTarget};
 use crate::ksp::{ENGINE_PAR_BASE, EnginePar};
@@ -15,6 +15,52 @@ use std::sync::Arc;
 /// Modulation values one voice tracks: its group's first volume and pitch
 /// assignments with a modelled source.
 pub const VOICE_MODS: usize = 8;
+
+pub(crate) use crate::modulation::PITCH_ENVS;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PitchEnvelope {
+    pub env: Ahdsr,
+    /// Original Group::envelopes index, preserving script addresses.
+    pub index: u8,
+    /// Original target index, direction and prepared shaper/depth.
+    pub targets: Box<[(u16, f32, Mod)]>,
+}
+
+impl PitchEnvelope {
+    pub(crate) fn from_group(group: &Group) -> Box<[Self]> {
+        group
+            .envelopes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, e)| {
+                let targets: Box<[_]> = e
+                    .targets
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m.target == ModTarget::Pitch)
+                    .map(|(i, m)| (i as u16, if m.invert { -1. } else { 1. }, Mod::from(m)))
+                    .collect();
+                (!targets.is_empty()).then(|| Self {
+                    env: Ahdsr::from(&e.env),
+                    index: index as u8,
+                    targets,
+                })
+            })
+            // ponytail: fixed voice workspace holds four; import warns if exceeded.
+            .take(PITCH_ENVS)
+            .collect()
+    }
+
+    /// Existing voice control rate, with the same AHDSR as amplitude/filter modulation.
+    pub(crate) fn pitch(&self, state: &mut Envelope, frames: usize, rate: f32) -> f32 {
+        state.skip(frames, None, rate);
+        self.targets
+            .iter()
+            .map(|(_, sign, m)| 12. * sign * m.intensity * m.shape(state.level()))
+            .sum()
+    }
+}
 
 /// Modulation source the engine models.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,7 +168,13 @@ impl Mod {
     /// Advance a live source's lagged `value` over `frames`.
     pub(crate) fn follow(&self, value: &mut f32, input: &Inputs, frames: usize, rate: f32) {
         if let Some((source, _)) = self.route.filter(|(s, _)| s.live()) {
-            approach(value, self.shape(input.read(source)), self.lag, frames, rate);
+            approach(
+                value,
+                self.shape(input.read(source)),
+                self.lag,
+                frames,
+                rate,
+            );
         }
     }
 }
@@ -203,7 +255,13 @@ impl Inputs<'_> {
             Source::Velocity => f32::from(self.velocity) / 127.0,
             Source::Key => f32::from(self.note) / 127.0,
             Source::Constant => 1.0,
-            Source::Cc(cc) => f32::from(if cc == 74 { self.cc74.unwrap_or(self.cc[74]) } else { self.cc[cc as usize] }) / 127.0,
+            Source::Cc(cc) => {
+                f32::from(if cc == 74 {
+                    self.cc74.unwrap_or(self.cc[74])
+                } else {
+                    self.cc[cc as usize]
+                }) / 127.0
+            }
             Source::Bend => (self.bend + 1.0) * 0.5,
             Source::Pressure => f32::from(self.pressure) / 127.0,
             Source::Counter => self.counter,
@@ -296,13 +354,19 @@ impl ModTable {
         velocities: std::ops::RangeInclusive<u8>,
     ) -> (f32, f32) {
         let reads = |source| {
-            self.starts
-                .iter()
-                .any(|&i| self.mods[i as usize].route.is_some_and(|(s, _)| s == source))
+            self.starts.iter().any(|&i| {
+                self.mods[i as usize]
+                    .route
+                    .is_some_and(|(s, _)| s == source)
+            })
         };
         // Only sources some start modulation reads need sweeping.
         let one = |r: std::ops::RangeInclusive<u8>, source| {
-            if reads(source) { r } else { *r.start()..=*r.start() }
+            if reads(source) {
+                r
+            } else {
+                *r.start()..=*r.start()
+            }
         };
         let velocities = one(velocities, Source::Velocity);
         let counters = one(0..=127, Source::Counter);
@@ -311,7 +375,15 @@ impl ModTable {
             for velocity in velocities.clone() {
                 for counter in counters.clone() {
                     let counter = f32::from(counter) / 127.0;
-                    let input = Inputs { cc74: None, cc, bend: 0.0, pressure: 0, note, velocity, counter };
+                    let input = Inputs {
+                        cc74: None,
+                        cc,
+                        bend: 0.0,
+                        pressure: 0,
+                        note,
+                        velocity,
+                        counter,
+                    };
                     let x = self.start_offset(&input);
                     (low, high) = (low.min(x), high.max(x));
                 }
@@ -345,8 +417,14 @@ impl ModTable {
 /// distinct).
 pub(crate) fn share_curves<'a>(tables: impl Iterator<Item = &'a mut ModTable>) {
     let mut seen = std::collections::HashMap::new();
-    for curve in tables.flat_map(|t| t.mods.iter_mut()).filter_map(|m| m.curve.as_mut()) {
-        *curve = Arc::clone(seen.entry(curve.map(f32::to_bits)).or_insert_with(|| Arc::clone(curve)));
+    for curve in tables
+        .flat_map(|t| t.mods.iter_mut())
+        .filter_map(|m| m.curve.as_mut())
+    {
+        *curve = Arc::clone(
+            seen.entry(curve.map(f32::to_bits))
+                .or_insert_with(|| Arc::clone(curve)),
+        );
     }
 }
 
@@ -464,6 +542,13 @@ pub(crate) enum Address {
         index: u16,
         bipolar: bool,
     },
+    /// An internal pitch-envelope target depth, in original target order.
+    InternalIntensity {
+        group: u16,
+        envelope: u8,
+        target: u16,
+        bipolar: bool,
+    },
     Fx(Rack, u8, FxParam),
     /// A group insert slot's filter/EQ knob (normalized), bypass, output
     /// gain or Stereo Modeller setting.
@@ -501,7 +586,13 @@ impl Address {
         let fx = |param| Some(Self::Fx(rack()?, u8::try_from(par.slot).ok()?, param));
         let slot = |knob| Some(Self::Filter(group()?, u8::try_from(par.slot).ok()?, knob));
         // Group inserts are addressed by group; the racks by `group == -1`.
-        let insert = |knob, param| if par.group >= 0 { slot(knob) } else { fx(param) };
+        let insert = |knob, param| {
+            if par.group >= 0 {
+                slot(knob)
+            } else {
+                fx(param)
+            }
+        };
         let filter = |knob| insert(knob, FxParam::Filter(knob));
         Some(match par.id {
             id::VOLUME | id::PAN | id::TUNE | id::OUTPUT_CHANNEL => {
@@ -547,10 +638,30 @@ impl Address {
                 let m = modulator(g)?;
                 let target = usize::try_from(par.generic).unwrap_or(0);
                 (target < m.targets.len()).then_some(())?;
-                Self::Intensity {
-                    group: g,
-                    index: u16::try_from(m.assignments? + target).ok()?,
-                    bipolar: par.id == id::MOD_TARGET_MP_INTENSITY,
+                let bipolar = par.id == id::MOD_TARGET_MP_INTENSITY;
+                match m.assignments {
+                    Some(index) => Self::Intensity {
+                        group: g,
+                        index: u16::try_from(index + target).ok()?,
+                        bipolar,
+                    },
+                    None => {
+                        let envelope = m.envelope?;
+                        (groups[g as usize]
+                            .envelopes
+                            .get(envelope)?
+                            .targets
+                            .get(target)?
+                            .target
+                            == ModTarget::Pitch)
+                            .then_some(())?;
+                        Self::InternalIntensity {
+                            group: g,
+                            envelope: u8::try_from(envelope).ok()?,
+                            target: u16::try_from(target).ok()?,
+                            bipolar,
+                        }
+                    }
                 }
             }
             id::CUTOFF => filter(Knob::Cutoff)?,
@@ -590,9 +701,17 @@ impl Address {
             id::SENDLEVEL_0..=id::SENDLEVEL_7 => {
                 // Una Corda addresses its insert Send Levels with generic 0.
                 // These are the send inputs, not parameters of the return rack.
-                let rack = if par.generic == 0 { Rack::Insert } else { rack()? };
+                let rack = if par.generic == 0 {
+                    Rack::Insert
+                } else {
+                    rack()?
+                };
                 (par.group == -1).then_some(())?;
-                Self::Fx(rack, u8::try_from(par.slot).ok()?, FxParam::SendLevel((par.id - id::SENDLEVEL_0) as u8))
+                Self::Fx(
+                    rack,
+                    u8::try_from(par.slot).ok()?,
+                    FxParam::SendLevel((par.id - id::SENDLEVEL_0) as u8),
+                )
             }
             _ => match crate::ksp::engine_par_name(par.id)? {
                 "$ENGINE_PAR_IRC_PREDELAY" => fx(FxParam::Convolution(0))?,
@@ -631,6 +750,7 @@ impl Address {
             Self::Group(..)
                 | Self::Envelope(..)
                 | Self::ModEnvelope(..)
+                | Self::InternalIntensity { .. }
                 | Self::Intensity { .. }
                 | Self::Filter(..)
         )
@@ -650,7 +770,9 @@ impl Address {
             },
             Self::Fx(_, _, FxParam::Output) if (0..OUTS as i32).contains(&value) => value as f32,
             Self::Fx(_, _, FxParam::Output) => -1.0,
-            Self::Fx(_, _, FxParam::Type | FxParam::Filter(Knob::Type)) | Self::GroupType(..) => value as f32,
+            Self::Fx(_, _, FxParam::Type | FxParam::Filter(Knob::Type)) | Self::GroupType(..) => {
+                value as f32
+            }
             // `$NI_REVERB2_TYPE_ROOM` (0) or `_HALL` (1).
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => f32::from(value != 0),
             Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => x,
@@ -666,16 +788,18 @@ impl Address {
                 Stage::Attack | Stage::Hold => time(x, SHORT),
                 Stage::Decay | Stage::Release => time(x, LONG),
             },
-            Self::Intensity { bipolar: true, .. } => 2.0 * x - 1.0,
+            Self::Intensity { bipolar: true, .. }
+            | Self::InternalIntensity { bipolar: true, .. } => 2.0 * x - 1.0,
             Self::Filter(_, _, Knob::Bypass) => f32::from(value != 0),
             Self::Filter(_, _, Knob::Type) => value as f32,
             Self::Filter(_, _, Knob::Output) => effect_gain(x),
             // Afflatus sets 434210 where it stores spread -0.1316, Solo 500000 for 0.
-            Self::Filter(_, _, Knob::Spread | Knob::Pan) | Self::Fx(_, _, FxParam::Filter(Knob::Spread | Knob::Pan)) => 2.0 * x - 1.0,
+            Self::Filter(_, _, Knob::Spread | Knob::Pan)
+            | Self::Fx(_, _, FxParam::Filter(Knob::Spread | Knob::Pan)) => 2.0 * x - 1.0,
             // Stored knobs are the KSP value / 1e6: Solo sets 1000000 and 0 where it stores 1 and 0.
             Self::Filter(..) | Self::Fx(_, _, FxParam::Filter(_)) => x,
             // Square law: Areia sets 704316 where its presets store 0.4961.
-            Self::Intensity { .. } => x * x,
+            Self::Intensity { .. } | Self::InternalIntensity { .. } => x * x,
             Self::Fx(_, _, FxParam::Bypass) => f32::from(value != 0),
             Self::Fx(_, _, FxParam::Pan) => 2.0 * x - 1.0,
             Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => effect_gain(x),
@@ -694,7 +818,9 @@ impl Address {
                 };
             }
             Self::Fx(_, _, FxParam::Output) => return if v >= 0.0 { v as i32 } else { -1 },
-            Self::Fx(_, _, FxParam::Type | FxParam::Filter(Knob::Type)) | Self::GroupType(..) => return v as i32,
+            Self::Fx(_, _, FxParam::Type | FxParam::Filter(Knob::Type)) | Self::GroupType(..) => {
+                return v as i32;
+            }
             Self::Fx(_, _, FxParam::Reverb(0 | 10)) => return i32::from(v >= 0.5),
             Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => v,
             Self::Filter(_, _, Knob::Type) => return v as i32,
@@ -713,10 +839,11 @@ impl Address {
                 Stage::Decay | Stage::Release => time_value(v, LONG),
             },
             Self::Intensity { bipolar: true, .. }
+            | Self::InternalIntensity { bipolar: true, .. }
             | Self::Fx(_, _, FxParam::Pan)
             | Self::Filter(_, _, Knob::Spread | Knob::Pan)
             | Self::Fx(_, _, FxParam::Filter(Knob::Spread | Knob::Pan)) => (v + 1.0) * 0.5,
-            Self::Intensity { .. } => v.abs().sqrt(),
+            Self::Intensity { .. } | Self::InternalIntensity { .. } => v.abs().sqrt(),
             Self::Filter(_, _, Knob::Output) | Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => {
                 (v.max(0.0) / EFFECT_MAX_GAIN).cbrt()
             }
@@ -811,8 +938,12 @@ pub fn display(id: i32, value: i32) -> Option<Disp> {
         // Stereo Modeller spread: 0 % mono, 100 % as recorded, 200 % widest.
         id::STEREO => Disp::Num(x * 200.0, 1),
         _ => match crate::ksp::engine_par_name(id)? {
-            "$ENGINE_PAR_IRC_PREDELAY" => Disp::Num(crate::fx::params::IrSettings::predelay_ms(x), 2),
-            "$ENGINE_PAR_IRC_LENGTH_RATIO_ER" | "$ENGINE_PAR_IRC_LENGTH_RATIO_LR" => Disp::Num(50. + 100. * x, 1),
+            "$ENGINE_PAR_IRC_PREDELAY" => {
+                Disp::Num(crate::fx::params::IrSettings::predelay_ms(x), 2)
+            }
+            "$ENGINE_PAR_IRC_LENGTH_RATIO_ER" | "$ENGINE_PAR_IRC_LENGTH_RATIO_LR" => {
+                Disp::Num(50. + 100. * x, 1)
+            }
             _ => return None,
         },
     })
@@ -845,6 +976,17 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
                 Stage::Sustain => env.sustain = value.clamp(0.0, 1.0),
                 Stage::Release => env.release = value.max(0.0),
             }
+            // One modulator may drive pitch and a filter; both copies share its knobs.
+            let updated = *env;
+            if let Address::ModEnvelope(g, e, _) = address {
+                if let Some(env) = settings[g as usize]
+                    .filter
+                    .as_mut()
+                    .and_then(|f| f.envelope(e))
+                {
+                    *env = updated;
+                }
+            }
         }
         Address::Intensity { group, index, .. } => {
             let m = settings
@@ -854,6 +996,21 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
                 return false;
             };
             m.intensity = value.clamp(-1.0, 1.0);
+        }
+        Address::InternalIntensity {
+            group,
+            envelope,
+            target,
+            ..
+        } => {
+            let Some(m) = settings
+                .get_mut(group as usize)
+                .and_then(|s| s.pitch_envelopes.iter_mut().find(|e| e.index == envelope))
+                .and_then(|e| e.targets.iter_mut().find(|t| t.0 == target))
+            else {
+                return false;
+            };
+            m.2.intensity = value.clamp(-1., 1.);
         }
         Address::Filter(g, slot, knob) => {
             let filter = settings.get_mut(g as usize).and_then(|s| s.filter.as_mut());
@@ -867,9 +1024,18 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
 /// The envelope `address` names and the stage.
 fn envelope(settings: &mut [GroupSettings], address: Address) -> Option<(&mut Ahdsr, Stage)> {
     match address {
-        Address::Envelope(g, stage) => Some((settings.get_mut(g as usize)?.envelope.as_mut()?, stage)),
+        Address::Envelope(g, stage) => {
+            Some((settings.get_mut(g as usize)?.envelope.as_mut()?, stage))
+        }
         Address::ModEnvelope(g, e, stage) => {
-            Some((settings.get_mut(g as usize)?.filter.as_mut()?.envelope(e)?, stage))
+            let settings = settings.get_mut(g as usize)?;
+            let env = if let Some(env) = settings.pitch_envelopes.iter_mut().find(|p| p.index == e)
+            {
+                &mut env.env
+            } else {
+                settings.filter.as_mut()?.envelope(e)?
+            };
+            Some((env, stage))
         }
         _ => None,
     }
@@ -889,7 +1055,15 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
         }
         Address::Envelope(g, stage) | Address::ModEnvelope(g, _, stage) => {
             let env = match address {
-                Address::ModEnvelope(_, e, _) => *settings.get(g as usize)?.filter.as_ref()?.envelope_at(e)?,
+                Address::ModEnvelope(_, e, _) => {
+                    let settings = settings.get(g as usize)?;
+                    settings
+                        .pitch_envelopes
+                        .iter()
+                        .find(|p| p.index == e)
+                        .map(|p| p.env)
+                        .or_else(|| settings.filter.as_ref()?.envelope_at(e).copied())?
+                }
                 _ => settings.get(g as usize)?.envelope?,
             };
             Some(match stage {
@@ -907,7 +1081,23 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
             .mods
             .get(index as usize)
             .map(|m| m.intensity),
-        Address::Filter(g, slot, knob) => settings.get(g as usize)?.filter.as_ref()?.knob(slot, knob),
+        Address::InternalIntensity {
+            group,
+            envelope,
+            target,
+            ..
+        } => settings
+            .get(group as usize)?
+            .pitch_envelopes
+            .iter()
+            .find(|e| e.index == envelope)?
+            .targets
+            .iter()
+            .find(|t| t.0 == target)
+            .map(|t| t.2.intensity),
+        Address::Filter(g, slot, knob) => {
+            settings.get(g as usize)?.filter.as_ref()?.knob(slot, knob)
+        }
         _ => None,
     }
 }
@@ -942,7 +1132,13 @@ pub(crate) fn find_target(
     modulator: usize,
     is: &dyn Fn(&str) -> bool,
 ) -> Option<usize> {
-    groups.get(group)?.modulators.get(modulator)?.targets.iter().position(|t| is(t))
+    groups
+        .get(group)?
+        .modulators
+        .get(modulator)?
+        .targets
+        .iter()
+        .position(|t| is(t))
 }
 
 #[cfg(test)]
@@ -975,19 +1171,34 @@ mod tests {
                 intensity: 0.5,
                 invert: false,
                 lag_ms: 0,
-                shaper: Some(ShaperCurve::Table((0..128).map(|i| 1.0 - 0.58 * i as f32 / 127.0).collect())),
+                shaper: Some(ShaperCurve::Table(
+                    (0..128).map(|i| 1.0 - 0.58 * i as f32 / 127.0).collect(),
+                )),
             }],
             ..Group::default()
         };
         let table = ModTable::from(&group);
         let cc = [0u8; 128];
-        let at = |counter| table.start_offset(&Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter });
+        let at = |counter| {
+            table.start_offset(&Inputs {
+                cc74: None,
+                cc: &cc,
+                bend: 0.0,
+                pressure: 0,
+                note: 60,
+                velocity: 100,
+                counter,
+            })
+        };
         // A 700 ms note under T = 1500 ms leaves 0.53 of the counter.
         let x = release_counter(1500, 700.0);
         assert!((x - 0.533).abs() < 1e-3);
         assert!((at(x) - 0.5 * (1.0 - 0.58 * x)).abs() < 1e-2, "{}", at(x));
         let (low, high) = table.start_offset_range(&cc, 60..=60, 100..=100);
-        assert!((low - 0.21).abs() < 1e-2 && (high - 0.5).abs() < 1e-3, "{low}..{high}");
+        assert!(
+            (low - 0.21).abs() < 1e-2 && (high - 0.5).abs() < 1e-3,
+            "{low}..{high}"
+        );
     }
 
     #[test]
@@ -1167,24 +1378,147 @@ mod tests {
             params: Params::Opaque { bytes: 0 },
         });
         let groups = [g];
-        let par = |id, group, slot, generic| EnginePar { id, group, slot, generic };
+        let par = |id, group, slot, generic| EnginePar {
+            id,
+            group,
+            slot,
+            generic,
+        };
         let ty = |slot| Address::resolve(par(id::EFFECT_TYPE, 0, slot, -1), &groups);
         assert_eq!((ty(2), ty(8)), (Some(Address::GroupType(0, 2)), None));
-        assert_eq!((group_type(&groups, 0, 2), group_type(&groups, 0, 1)), (Some(31.0), Some(0.0)));
+        assert_eq!(
+            (group_type(&groups, 0, 2), group_type(&groups, 0, 1)),
+            (Some(31.0), Some(0.0))
+        );
         // A filter's type is its subtype; it decodes as the raw type id.
         let sub = Address::resolve(par(id::EFFECT_SUBTYPE, 0, 1, -1), &groups);
         assert_eq!(sub, Some(Address::Filter(0, 1, Knob::Type)));
-        assert_eq!((Address::Filter(0, 1, Knob::Type).decode(106), Address::Filter(0, 1, Knob::Type).encode(106.0)), (106.0, 106));
+        assert_eq!(
+            (
+                Address::Filter(0, 1, Knob::Type).decode(106),
+                Address::Filter(0, 1, Knob::Type).encode(106.0)
+            ),
+            (106.0, 106)
+        );
         // Reverb: the stored EQ values are the cut amounts; freeze is a switch.
-        let rv = |id| Address::resolve(par(id, -1, 0, 0), &[]).map(|a| match a {
-            Address::Fx(_, _, FxParam::Reverb(n)) => n,
-            _ => u8::MAX,
-        });
+        let rv = |id| {
+            Address::resolve(par(id, -1, 0, 0), &[]).map(|a| match a {
+                Address::Fx(_, _, FxParam::Reverb(n)) => n,
+                _ => u8::MAX,
+            })
+        };
         let unresolved = |id| Address::resolve(par(id, -1, 0, 0), &[]).is_none();
-        assert_eq!([id::RV2_EQ_HIGH_GAIN, id::RV2_EQ_LOW_GAIN, id::RV2_FREEZE].map(rv), [Some(7), Some(8), Some(10)]);
+        assert_eq!(
+            [id::RV2_EQ_HIGH_GAIN, id::RV2_EQ_LOW_GAIN, id::RV2_FREEZE].map(rv),
+            [Some(7), Some(8), Some(10)]
+        );
         assert!(unresolved(id::RV2_EQ_LOW_FREQ) && unresolved(id::RV2_EQ_HIGH_FREQ));
         let freeze = Address::Fx(Rack::Send, 0, FxParam::Reverb(10));
-        assert_eq!((freeze.decode(1_000_000), freeze.decode(0), freeze.encode(1.0)), (1.0, 0.0, 1));
+        assert_eq!(
+            (
+                freeze.decode(1_000_000),
+                freeze.decode(0),
+                freeze.encode(1.0)
+            ),
+            (1.0, 0.0, 1)
+        );
+    }
+
+    #[test]
+    fn pitch_envelope_uses_ahdsr_and_script_addresses() {
+        use crate::modulation::{Ahdsr as ImportedAhdsr, ModEnvelope};
+        let env = ImportedAhdsr {
+            attack_curve: 0.,
+            attack_ms: 10.,
+            hold_ms: 0.,
+            decay_ms: 10.,
+            sustain: 0.25,
+            release_ms: 10.,
+            unknown_flag: 0,
+            unknown_tail: Vec::new(),
+        };
+        let mut pitch = group().mods.remove(0);
+        pitch.source = ModSource::Unassigned;
+        pitch.target = ModTarget::Pitch;
+        pitch.intensity = 0.5;
+        pitch.shaper = None;
+        let g = Group {
+            envelopes: vec![ModEnvelope {
+                env,
+                targets: vec![pitch],
+            }],
+            modulators: vec![Modulator {
+                name: "Pitch".into(),
+                targets: vec!["Depth".into()],
+                assignments: None,
+                volume_env: false,
+                flex: false,
+                envelope: Some(0),
+                kind: "ahdsr".into(),
+            }],
+            ..Group::default()
+        };
+        let mut settings = vec![GroupSettings::from(&g)];
+        let p = &settings[0].pitch_envelopes[0];
+        let mut state = Envelope::new(&p.env, 48_000.);
+        assert!((p.pitch(&mut state, 480, 48_000.) - 6.).abs() < 1e-4);
+        let peak = p.pitch(&mut state, 1, 48_000.);
+        assert!((peak - 6.).abs() < 1e-4);
+        let sustain = p.pitch(&mut state, 20_000, 48_000.);
+        assert!((sustain - 1.5).abs() < 1e-4);
+        state.release(None);
+        assert!(p.pitch(&mut state, 480, 48_000.) < sustain);
+        assert_eq!(p.pitch(&mut state, 20_000, 48_000.), 0.);
+        let groups = [g];
+        let address = Address::resolve(
+            EnginePar {
+                id: id::MOD_TARGET_MP_INTENSITY,
+                group: 0,
+                slot: 0,
+                generic: 0,
+            },
+            &groups,
+        )
+        .unwrap();
+        assert!(write(&mut settings, address, address.decode(250_000)));
+        assert_eq!(read(&settings, address), Some(-0.5));
+        assert_eq!(address.encode(read(&settings, address).unwrap()), 250_000);
+        let attack = Address::resolve(
+            EnginePar {
+                id: id::ATTACK,
+                group: 0,
+                slot: 0,
+                generic: -1,
+            },
+            &groups,
+        )
+        .unwrap();
+        assert!(write(&mut settings, attack, 0.02));
+        assert_eq!(read(&settings, attack), Some(0.02));
+        let p = &settings[0].pitch_envelopes[0];
+        let mut state = Envelope::new(&p.env, 48_000.);
+        assert!((p.pitch(&mut state, 480, 48_000.) + 3.).abs() < 1e-4);
+    }
+
+    #[test]
+    #[ignore = "requires the user's installed library; only aggregate modulation facts are printed"]
+    fn analog_strings_pitch_envelopes_are_routed() {
+        let path = std::env::var_os("KONTRA_ANALOG_NKI").expect("set KONTRA_ANALOG_NKI");
+        let i = crate::import::read(std::path::Path::new(&path)).unwrap();
+        let mut count = 0;
+        for g in &i.groups {
+            let settings = GroupSettings::from(g);
+            count += settings.pitch_envelopes.len();
+            for m in &g.modulators {
+                if m.name == "Pitch_Envelope" {
+                    let e = &g.envelopes[m.envelope.unwrap()];
+                    assert!(e.targets.iter().any(|t| t.target == ModTarget::Pitch));
+                    assert!(!settings.pitch_envelopes.is_empty());
+                }
+            }
+        }
+        println!("groups={} pitch_envelopes={count}", i.groups.len());
+        assert_eq!(count, 483);
     }
 
     #[test]
@@ -1257,7 +1591,10 @@ mod tests {
     fn addresses_resolve_by_decoded_names() {
         let groups = [group()];
         assert_eq!(find_mod(&groups, 0, &|n| n == "CC_VOLUME"), Some(2));
-        assert_eq!(find_target(&groups, 0, 0, &|n| n == "ENV_AHDSR_VOLUME"), Some(0));
+        assert_eq!(
+            find_target(&groups, 0, 0, &|n| n == "ENV_AHDSR_VOLUME"),
+            Some(0)
+        );
         let par = |id, slot, generic| EnginePar {
             id,
             group: 0,
@@ -1281,7 +1618,18 @@ mod tests {
         // missing slot: Kontakt ignores those; an external modulator's are
         // left unmapped.
         let mut flex = group();
-        flex.modulators.insert(1, Modulator { name: "ENV_FLEX".into(), targets: Vec::new(), assignments: None, volume_env: false, flex: true, envelope: None, kind: "flex".into() });
+        flex.modulators.insert(
+            1,
+            Modulator {
+                name: "ENV_FLEX".into(),
+                targets: Vec::new(),
+                assignments: None,
+                volume_env: false,
+                flex: true,
+                envelope: None,
+                kind: "flex".into(),
+            },
+        );
         let flex = [flex];
         assert!(Address::inert(par(id::ATTACK, 1, -1), &flex));
         assert!(Address::inert(par(id::RELEASE, 9, -1), &flex));

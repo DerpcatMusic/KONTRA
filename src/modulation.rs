@@ -18,6 +18,8 @@ pub use ni_file::kontakt::objects::{
 
 const INTERNAL_MODS_ID: u16 = 0x3B;
 const EXTERNAL_MODS_ID: u16 = 0x3C;
+/// Pitch envelopes kept in each preallocated voice.
+pub(crate) const PITCH_ENVS: usize = 4;
 /// Pitch modulation at intensity 1.0 spans one octave (PB_PITCH stores 2/12).
 const PITCH_SEMITONES_PER_INTENSITY: f32 = 12.0;
 
@@ -86,7 +88,7 @@ pub struct Modulator {
     /// `$ENGINE_PAR_ATTACK` and friends addressed to it.
     #[serde(default)]
     pub flex: bool,
-    /// Index into `Group::envelopes` of an AHDSR driving module parameters.
+    /// Index into `Group::envelopes` of an AHDSR driving pitch or module parameters.
     #[serde(default)]
     pub envelope: Option<usize>,
     /// Modulator kind, for audits: `ahdsr`, `flex`, `chunk 0xNN` (an
@@ -106,7 +108,7 @@ pub(crate) struct GroupModulation {
     pub warnings: Vec<String>,
 }
 
-/// An internal AHDSR driving module parameters (filter cutoff, EQ gain...),
+/// An internal AHDSR driving pitch or module parameters (filter cutoff, EQ gain...),
 /// not volume. Targets use `ModSource::Unassigned`; the envelope is the source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModEnvelope {
@@ -162,9 +164,13 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
                             Some(ModAssignment {
                                 name: params.name.clone(),
                                 source: ModSource::Unassigned,
-                                target: ModTarget::Module {
-                                    param: t.param.clone(),
-                                    slot: t.slot?,
+                                target: match (t.param.as_str(), t.slot) {
+                                    ("pitch", None) => ModTarget::Pitch,
+                                    (_, Some(slot)) => ModTarget::Module {
+                                        param: t.param.clone(),
+                                        slot,
+                                    },
+                                    _ => ModTarget::Group(t.param.clone()),
                                 },
                                 intensity: t.intensity,
                                 invert: t.invert,
@@ -242,6 +248,10 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
         }
     }
 
+    let pitch_envelopes = out.envelopes.iter().filter(|e| e.targets.iter().any(|t| t.target == ModTarget::Pitch)).count();
+    if pitch_envelopes > PITCH_ENVS {
+        out.warnings.push(format!("Group has {pitch_envelopes} pitch AHDSRs; playback applies the first {PITCH_ENVS}"));
+    }
     Ok(out)
 }
 
