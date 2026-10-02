@@ -907,6 +907,51 @@
       ],
       "validation": "Four exact gates pass on frozen 6bf086e: independent scalar branch-boundary values, linear Output, ordered group processing, live address identity and zero audio heap. Existing LoFi max-rate law remains unchanged. Matched actual root 1e79e3d Contradiction capture gains 17.783694 dB RMS (peak 0.041667636 to 0.320852458) with identical onset, events, controls, native edits, full physical/virtual cursor census and loop bounds; bypassed Catastrophic PCM and census stay byte-identical to 0.3.92/0.3.95. All 242 journal rows and 216 warnings retained with zero faults, drops or underruns. All 89 playback regressions pass; both 64-second endpoints reach zero voices. Actual capture does not establish zero audio heap or sonic parity. Enhanced/Drums remain explicitly diagnosed approximations.",
       "accepted": true
+    },
+    {
+      "id": "tube-distortion-native-transfer",
+      "summary": "Replace the incorrect Tube Distortion scalar proxy and invented makeup with the native asymmetric rational/cubic law",
+      "source_commits": [
+        "334265511f83c847bf46d9eb80d482a03a808bdf"
+      ],
+      "validation": "Independent signed numeric blend-boundary and neutral Drive gates, native readback, group/rack pre/post-amplifier routing and zero audio heap pass. Damping/DC filtering remains explicitly approximate; actual Factory Prelude applicability is metadata-confirmed, corrected replay pending. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
+      "accepted": true
+    },
+    {
+      "id": "transistor-distortion-native-transfer",
+      "summary": "Replace the incorrect Transistor hard-clip proxy and invented makeup with the native threshold/power/blend law",
+      "source_commits": [
+        "6c963845b32c915e28b01fe84f3747a409544575"
+      ],
+      "validation": "Independent signed threshold/quarter-range/Drive boundaries, two sample rates, state reset, shared group/rack routing and zero audio heap pass. Damping/DC filtering remains explicitly approximate; no actual-preset sound claim. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-note-off-offset-retained-event",
+      "summary": "Honor optional note_off microsecond offsets and replace existing duration timers without losing the scheduled event",
+      "source_commits": [
+        "8775d97522791ee86775e8266a17fc930c03eee8"
+      ],
+      "validation": "Focused gate passes exact timer replacement, original channel/event identity, independent concurrent notes, immediate offset, whole-sample pool pressure, negative-offset diagnostics and zero audio heap. Areia repetition is not attributed to this gap. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
+      "accepted": true
+    },
+    {
+      "id": "stale-script-restore-publication",
+      "summary": "Cancel stale script restores before old state acquires a new epoch or reaches the audio handoff",
+      "source_commits": [
+        "869bf7a6399ee0975568497bf4ee90545a6183eb"
+      ],
+      "validation": "Controlled worker barrier gate passes source replacement, newer saved state, generation changes and removal cancellation, plus valid gain-only edits. Initial fixture epoch collision corrected using production allocator; production freshness check unchanged. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
+      "accepted": true
+    },
+    {
+      "id": "saved-legacy-pitch-lfo-fade-in",
+      "summary": "Render proven saved legacy unsynchronized fade-in on admitted retriggered sine Multi pitch sources",
+      "source_commits": [
+        "b8885133bd4a0a9523e7ad00e37a40a1f46ee2ff"
+      ],
+      "validation": "Independent physical cursor/PCM, 32-frame clock, block partition, retrigger/release and zero-heap gates pass; malformed/synchronized states remain rejected. Standalone clock math passes 18 cases across 44.1/48/96k. Finite millisecond fades do not establish a cause for longer preset repetition/thinness. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
+      "accepted": true
     }
   ]
 }

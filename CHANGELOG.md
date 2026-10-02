@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
+- Tube and Transistor Distortion now use their checked native scalar curves without the previous invented drive compensation. Independent signed boundaries, live Drive readback, group/rack routing and zero-heap gates pass. Damping/DC filtering remains explicitly approximate; whole-effect parity and corrected actual preset replay are not established.
+- Optional KSP `note_off` microsecond offsets now replace existing duration timers and retain the exact scheduled event under pool pressure. Concurrent-note, channel, timing, invalid-offset and zero-heap checks pass.
+- Stale script restores now cancel before obtaining a fresh epoch or publishing old scripts/effects. Controlled races cover source/state replacement, generation changes and removal; unrelated gain edits preserve valid restores.
+- Saved legacy unsynchronized fade-in now reaches eligible retriggered sine Multi pitch sources on the same 32-frame clock. Independent physical cursor/PCM, fragmentation, retrigger, lifetime and zero-heap checks pass. Synchronized fades, wider waveforms, free-running clocks and live frequency remain unsupported.
+- The combined follow-up source passes 510 library tests and all 89 playback regressions, with 30 and four deliberately ignored cases respectively.
 - Classic Saturation now uses the checked native piecewise polynomial Shape law and linear Output instead of the previous proxy. Independent scalar/ordered-processing/readback/zero-heap gates pass, alongside all 89 playback regressions. Matched Contradiction replay gains 17.78 dB RMS with unchanged onset, events, controls, cursor travel and loop bounds; the bypassed Catastrophic control remains byte-identical. These observations do not certify sonic parity. Enhanced/Drums modes retain explicitly diagnosed approximations.
 - Recognized group-effect targets no longer disable an unrelated internal pitch LFO at the same numeric slot. Unknown source-parameter assignments remain guarded; legitimate effect assignments are retained.
 - Signed and unsigned intensity writes now reach admitted internal pitch LFO targets using original source/target indices. Callback readback, physical-depth PCM, unchanged phase, alias persistence, seeded restore and zero audio heap pass focused gates.
@@ -122,9 +127,10 @@ below record reviewed source checkpoints; they are not claims about pending work
   782-file / 788-program corpus verifies 230,627 byte-exact record roundtrips and
   edited-value readbacks with zero errors.
 - Typed native LFO parsing and writing for known fields, with 9,600 actual-library
-  chunks round-tripping byte-for-byte. Eligible retriggered zero-delay sine Multi
-  pitch sources now play; broader waveforms, free-running/delayed clocks and live
-  frequency remain unsupported. Some tables remain raw, and typed metadata alone
+  chunks round-tripping byte-for-byte. Eligible retriggered sine Multi pitch
+  sources now play with proven legacy unsynchronized fade-in; broader waveforms,
+  free-running clocks, synchronized fades and live frequency remain unsupported.
+  Some tables remain raw, and typed metadata alone
   does not establish DSP behavior.
 - Named bitmap font loading for 256-glyph Windows-1252 RGBA strips declared during
   initialization. Actual Areia Advanced resources verify two 256-glyph, 14-pixel

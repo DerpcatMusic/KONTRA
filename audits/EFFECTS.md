@@ -423,8 +423,9 @@ implemented. Transistor now uses its native piecewise linear/power scalar law,
 with linked inverse thresholds, float negative power and double positive power.
 Drive 0 and input beyond the native quarter-amplitude range preserve input.
 Group/rack diagnostics name the remaining filtering gaps. This is a scalar core
-correction, not whole-effect native equivalence. Numeric boundary and allocation/routing gates are authored;
-combined compilation and validation are pending. The Transistor power branches
+correction, not whole-effect native equivalence. Independent numeric boundary,
+allocation, readback and routing gates pass in the combined 510-test library suite
+and 89-test playback suite. The Transistor power branches
 cost more than the old hard-clip proxy; no throughput/FPS improvement is claimed.
 Both kernels reuse existing coefficients and add no per-voice state.
 
@@ -442,7 +443,9 @@ diagnostics. Native modulation smoothing and those two kernels remain unverified
 The independent numeric gate covers branch boundaries, signed stereo input,
 above-unit input, linear Output and zero allocations; the existing ordered group
 gate now checks the native quiet-input transfer instead of an invented peak limit.
-Cargo validation of this correction is pending the combined build.
+Four focused release gates and the combined library/playback suites pass. Matched
+actual Contradiction replay confirms the output change with identical source
+travel, loop bounds, events and controls; Catastrophic remains byte-identical.
 
 Level checks (`kontakto render`, before and after): Dolce, Pacific, Vista, Solo, Una
 Corda, CHORUS and Afflatus 2 Horns unchanged. Mega Brass +1 dB (Skreamer, Saturation;
