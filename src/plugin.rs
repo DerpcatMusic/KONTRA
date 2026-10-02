@@ -1852,7 +1852,7 @@ impl BackgroundTask for Load {
             }
             let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&part.path), part.program, Some(slot));
             trace.detail("instance_id", params.shared.instance_id);
-            if !part.snapshot.is_empty() { trace.detail("snapshot", &part.snapshot); }
+            if !part.snapshot.is_empty() { trace.detail("snapshot", part.snapshot.as_str()); }
             trace.detail("sample_rate", params.shared.rate());
             trace.detail("streaming_requested", format!("{streaming:?}"));
             let set_stage = |trace: &mut crate::diagnostics::LoadTrace, name: &'static str| {
@@ -3967,7 +3967,7 @@ mod tests {
             let part = p.selection.read().unwrap().parts[0].clone();
             assert_eq!((&part.path, &part.snapshot, part.channel, part.gain), (&base, &path, 0, -2.));
             assert_eq!(p.shared.view.lock().unwrap().parts[0].attempted, Some(part.source()));
-            assert_eq!(allocations(|| Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx)), 0,
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0,
                 "installing the prepared snapshot allocated or freed on audio");
             assert!(dsp.script_epoch[0] > epoch); epoch = dsp.script_epoch[0];
             assert!(dsp.rack.parts[0].bank().is_some());
