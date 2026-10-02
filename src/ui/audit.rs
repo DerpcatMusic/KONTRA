@@ -715,7 +715,15 @@ mod tests {
             let (low, high) = (bound("$CONTROL_PAR_MIN_VALUE", 0), bound("$CONTROL_PAR_MAX_VALUE", 127));
             println!("UI_BENCH callback_control={control} callback_variable={} callback_min={low} callback_max={high}", interface.controls[control].variable);
             let mut engine = crate::engine::Engine::default();
-            engine.set_bank(Some(Box::new(crate::engine::Bank::load_bare(&instrument).unwrap())));
+            let bank_started = Instant::now();
+            let full_bank = std::env::var_os("KONTRA_UI_BENCH_FULL_BANK").is_some();
+            let bank = if full_bank {
+                crate::engine::Bank::load_counting(&instrument, 512 << 20, crate::engine::Streaming::Auto,
+                    &runtime.init_controllers, &std::sync::atomic::AtomicU32::new(0)).unwrap()
+            } else { crate::engine::Bank::load_bare(&instrument).unwrap() };
+            println!("UI_BENCH_BANK full={full_bank} load_ms={:.3} resident_bytes={} zones={} skipped={}",
+                bank_started.elapsed().as_secs_f64()*1000., bank.bytes, bank.zones().len(), bank.skipped_zones);
+            engine.set_bank(Some(Box::new(bank)));
             engine.set_fx(crate::engine::effects(&instrument, Some(&runtime), 48000.));
             engine.set_script(Some(runtime));
             let mut observer_draw = None;
@@ -787,7 +795,10 @@ mod tests {
                 previous_fitted = counts;
                 let stage = Instant::now();
                 let scene = ui.scene().unwrap();
-                if let Some((device, renderer, target)) = &mut gpu {
+                if std::env::var_os("KONTRA_UI_BENCH_BUILD_ONLY").is_some() {
+                    // The concurrent host probe isolates callback delivery and
+                    // UI build/layout from software reference rasterization.
+                } else if let Some((device, renderer, target)) = &mut gpu {
                     let stats = renderer.render(scene, transform, target).unwrap();
                     rendered_changes += usize::from(stats.renders > 0);
                     device.poll(vello::vello::wgpu::PollType::wait_indefinitely()).unwrap();
