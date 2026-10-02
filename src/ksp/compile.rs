@@ -450,6 +450,8 @@ pub struct Program {
     pub real_slots: u32,
     pub strs: u32,
     pub poly: u32,
+    /// Mutable global prefix per type; callbacks share the initialized suffix.
+    pub domain_slots: [u32; 3],
     pub revision_owners: [Arc<[u32]>; 3],
     pub revision_counts: [usize; 3],
     pub sys_arrays: [Option<VarId>; 6],
@@ -468,6 +470,64 @@ pub struct Program {
 pub const AUTO_SYMBOL_BASE: i32 = 0x0400_0000;
 
 impl Program {
+    /// Follow every non-init entry and its callees before optimization. References
+    /// are conservative: a builtin may write its referenced variable. UI inputs,
+    /// system arrays and asynchronous destinations are writable by the host too.
+    fn prepare_domains(&mut self) {
+        let mut mutable: Vec<bool> = self.vars.iter().map(|v| v.ui.is_some()).collect();
+        for &v in self.sys_arrays.iter().flatten().chain(&self.array_jobs) { mutable[v as usize] = true; }
+        let mut pending: Vec<u32> = self.callbacks.iter().skip(1).chain(&self.ui_callbacks).flatten().copied().collect();
+        let mut visited = vec![false; self.code.len()];
+        let slots: [HashMap<u32, usize>; 3] = std::array::from_fn(|t| self.vars.iter().enumerate()
+            .filter(|(_, v)| !v.poly && v.ty == [Ty::Int, Ty::Real, Ty::Str][t])
+            .map(|(i, v)| (v.slot, i)).collect());
+        while let Some(pc) = pending.pop() {
+            let Some(seen) = visited.get_mut(pc as usize) else { continue; };
+            if std::mem::replace(seen, true) { continue; }
+            let op = self.code[pc as usize];
+            match op {
+                Op::StI(s) | Op::StR(s) | Op::StS(s) => {
+                    let t = match op { Op::StR(_) => 1, Op::StS(_) => 2, _ => 0 };
+                    if let Some(&v) = slots[t].get(&s) { mutable[v] = true; }
+                }
+                Op::StIA(v) | Op::StRA(v) | Op::StSA(v) | Op::Ref(v) | Op::Declare(v) => {
+                    if let Some(m) = mutable.get_mut(v as usize) { *m = true; }
+                }
+                Op::InitArray(i) => mutable[self.inits[i as usize].var as usize] = true,
+                _ => {}
+            }
+            match op {
+                Op::Jump(t) => pending.push(t),
+                Op::JumpIfZero(t) | Op::JumpIfNonZero(t) => { pending.push(t); pending.push(pc + 1); }
+                Op::Case(a) => { pending.push(self.cases[a as usize].miss); pending.push(pc + 1); }
+                Op::Call(f) => { pending.push(self.functions[f as usize]); pending.push(pc + 1); }
+                Op::Ret | Op::Exit | Op::Halt => {}
+                _ => pending.push(pc + 1),
+            }
+        }
+        let mut remap: [HashMap<u32, u32>; 3] = std::array::from_fn(|_| HashMap::new());
+        for (t, ty) in [Ty::Int, Ty::Real, Ty::Str].into_iter().enumerate() {
+            let mut next = 0;
+            for writable in [true, false] {
+                for (i, v) in self.vars.iter_mut().enumerate().filter(|(_, v)| !v.poly && v.ty == ty) {
+                    if mutable[i] != writable { continue; }
+                    remap[t].insert(v.slot, next);
+                    v.slot = next;
+                    next += v.len.unwrap_or(1);
+                }
+                if writable { self.domain_slots[t] = next; }
+            }
+        }
+        for op in &mut self.code {
+            match op {
+                Op::LdI(s) | Op::StI(s) => *s = remap[0][s],
+                Op::LdR(s) | Op::StR(s) => *s = remap[1][s],
+                Op::LdS(s) | Op::StS(s) => *s = remap[2][s],
+                _ => {}
+            }
+        }
+    }
+
     pub fn callback(&self, cb: Callback) -> Option<u32> {
         self.callbacks[cb as usize]
     }
@@ -654,6 +714,7 @@ pub fn compile_with_conditions(
             }
         }
     }
+    c.p.prepare_domains();
     // Idioms first: they match loops by their unthreaded shape.
     for at in 0..c.p.code.len() {
         if let Some(l) = super::idiom::find(&c.p.code, at) {
@@ -1766,4 +1827,48 @@ fn fold_int(op: BinOp, a: i32, b: i32) -> Option<i32> {
         BinOp::Ge => (a >= b) as i32,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod domain_tests {
+    use super::*;
+    #[test]
+    fn channel_write_set_follows_callbacks_functions_and_host_destinations() {
+        let p = compile(r#"on init
+declare %lookup[1000] := (7)
+declare %held[128]
+declare $scratch
+declare ~level
+declare @text
+declare $init_only := 42
+declare ui_switch $setting
+end on
+function remember
+%held[$EVENT_NOTE] := %lookup[$EVENT_NOTE]
+$scratch := $init_only
+end function
+on note
+call remember
+end on
+on release
+~level := 0.5
+end on
+on async_complete
+@text := "complete"
+end on
+on ui_control($setting)
+inc($scratch)
+end on"#, &Setup { groups:3,zones:0,outputs:8 }).unwrap();
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        for name in ["%held", "$scratch", "~level", "@text", "$setting"] {
+            let v = p.vars.iter().find(|v| &*v.name == name).unwrap();
+            let t = match v.ty { Ty::Int=>0, Ty::Real=>1, Ty::Str=>2 };
+            assert!(v.slot < p.domain_slots[t], "{name} needs writable domain storage");
+        }
+        for name in ["%lookup", "$init_only"] {
+            let v = p.vars.iter().find(|v| &*v.name == name).unwrap();
+            assert!(v.slot >= p.domain_slots[0], "{name} is initialized once and remains shared");
+        }
+        assert!(p.domain_slots[0] < p.ints);
+    }
 }

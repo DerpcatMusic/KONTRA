@@ -22,6 +22,7 @@ pub struct NoteSpec<'a> {
     /// KSP event ID, for logging and correlation only.
     pub event: i32,
     pub channel: u8,
+    pub domain: u8,
     /// A released parent's expression, inherited by generated release samples.
     pub frozen_expression: Option<Expression>,
     /// Physical channel and original input key, inherited by following notes.
@@ -79,6 +80,8 @@ pub struct NativeEdit {
 
 
 pub trait KspEngine {
+    /// Select the callback's prepared performance storage; effects remain shared.
+    fn set_domain(&mut self, _domain: u8, _common: bool) {}
     fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<EventId>;
     /// Freeze per-note controls before a release callback can wait or create notes.
     fn release_expression(&self, _at: u32, _voice: Option<EventId>, _channel: u8, _note: u8) -> Option<Expression> { None }

@@ -184,31 +184,35 @@ impl Engine {
             Some(g) => g as usize..(g as usize + 1).min(bank.base.len()),
             None => 0..bank.base.len(),
         };
-        for g in groups {
-            let address = param.address(g as u16);
-            if let Some(base) = params::read(&bank.base, address) {
-                let value = param.apply(base, self.overrides.offset(g as u16, param));
-                params::write(&mut bank.settings, address, value);
+        for domain in 0..=bank.domain_base.len() {
+            let (base, settings) = bank.parameters_mut(domain as u8);
+            for g in groups.clone() {
+                let address = param.address(g as u16);
+                if let Some(base) = params::read(base, address) {
+                    let value = param.apply(base, self.overrides.offset(g as u16, param));
+                    params::write(settings, address, value);
+                }
             }
         }
     }
 
     /// Apply a script's group-level write: to the base, then what plays.
-    pub(super) fn write_group(&mut self, address: Address, value: f32) -> bool {
+    pub(super) fn write_group_domain(&mut self, domain: u8, address: Address, value: f32) -> bool {
         let Some(bank) = self.bank.as_deref_mut() else {
             return false;
         };
-        if !params::write(&mut bank.base, address, value) {
+        let (base, settings) = bank.parameters_mut(domain);
+        if !params::write(base, address, value) {
             return false;
         }
         let value = match Param::of(address) {
             Some((g, p)) => {
-                let base = params::read(&bank.base, address).unwrap_or(value);
+                let base = params::read(base, address).unwrap_or(value);
                 p.apply(base, self.overrides.offset(g, p))
             }
             None => value,
         };
-        params::write(&mut bank.settings, address, value)
+        params::write(settings, address, value)
     }
 
     /// Publish what the editor watches: `group`'s envelope and filter

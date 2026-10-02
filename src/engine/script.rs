@@ -121,6 +121,7 @@ pub struct IrRequest {
     pub rack: Rack,
     pub slot: u8,
     pub script_slot: u8,
+    pub domain: u8,
     pub id: i32,
     pub settings: crate::fx::params::IrSettings,
     file: [u8; 1024],
@@ -129,7 +130,7 @@ pub struct IrRequest {
 
 impl IrRequest {
     pub(crate) fn rebuild(rack: Rack, slot: u8, settings: crate::fx::params::IrSettings) -> Self {
-        Self { rack, slot, settings, script_slot: 0, id: -1, file: [0; 1024], len: 0 }
+        Self { rack, slot, settings, script_slot: 0, domain: 0, id: -1, file: [0; 1024], len: 0 }
     }
     pub fn file(&self) -> &str {
         std::str::from_utf8(&self.file[..self.len]).unwrap()
@@ -141,6 +142,7 @@ impl IrRequest {
 pub(super) struct Command {
     pub at: u32,
     pub channel: u8,
+    pub domain: u8,
     pub input_channel: Option<u8>,
     /// Target event; unused by controllers.
     pub id: EventId,
@@ -192,13 +194,15 @@ impl Kind {
 
 /// The engine as the runtime sees it during one call, borrowed from `Engine`.
 pub(super) struct Host<'a> {
+    pub common: bool,
     pub channel: u8,
+    pub domain: u8,
     pub bank: Option<&'a Bank>,
     pub fx: &'a FxProcessor,
     pub player: &'a mut Player,
     pub commands: &'a mut Vec<Command>,
     pub writes: &'a mut Vec<Write>,
-    pub write_index: &'a mut (u32, std::collections::HashMap<Address, usize>),
+    pub write_index: &'a mut (u32, std::collections::HashMap<(u8, Address), usize>),
     pub ir_requests: &'a mut Vec<IrRequest>,
 }
 
@@ -251,12 +255,13 @@ impl Host<'_> {
             return false;
         }
         let i = self.commands.partition_point(|c| c.at <= at);
-        self.commands.insert(i, Command { at, channel, input_channel, id, kind });
+        self.commands.insert(i, Command { at, domain: self.domain, channel, input_channel, id, kind });
         true
     }
 }
 
 impl KspEngine for Host<'_> {
+    fn set_domain(&mut self, domain: u8, common: bool) { self.domain = domain; self.common = common; }
     fn request_ir_sample(&mut self, file: &str, slot: i32, generic: i32, script_slot: u8, id: i32) -> Option<bool> {
         let Some((rack, slot)) = params::rack(generic).zip(u8::try_from(slot).ok())
             .filter(|&(r, s)| self.fx.param(r, s, FxParam::Type) == Some(f32::from(crate::fx::Kind::Convolution.ser_id())))
@@ -265,7 +270,7 @@ impl KspEngine for Host<'_> {
             return Some(false);
         }
         let settings = self.fx.ir_settings(rack, slot).unwrap_or(crate::fx::params::IrSettings::DEFAULT);
-        let mut request = IrRequest { rack, slot, script_slot, id, settings, file: [0; 1024], len: file.len() };
+        let mut request = IrRequest { rack, slot, script_slot, domain: self.domain, id, settings, file: [0; 1024], len: file.len() };
         request.file[..file.len()].copy_from_slice(file.as_bytes());
         self.ir_requests.push(request);
         Some(true)
@@ -273,6 +278,7 @@ impl KspEngine for Host<'_> {
     fn play_note(&mut self, at: u32, n: &NoteSpec<'_>) -> Option<EventId> {
         self.bank?;
         let id = self.player.next_id();
+        self.domain = n.domain;
         let kind = Kind::Start {
             note: n.note,
             velocity: n.velocity,
@@ -300,6 +306,7 @@ impl KspEngine for Host<'_> {
     }
 
     fn note_off(&mut self, at: u32, voice: EventId, n: &NoteSpec<'_>) {
+        self.domain = n.domain;
         let kind = Kind::Release {
             trigger: (n.length != NoteLength::Sample).then_some((n.note, n.velocity)),
             groups: *n.groups,
@@ -406,6 +413,7 @@ impl KspEngine for Host<'_> {
         let Some(address) = self.address(par) else {
             return self.bank.is_some_and(|b| Address::inert(par, b.groups()));
         };
+        let domain = if address.is_group() { self.domain } else { 0 };
         let native = value;
         let value = address.decode(value);
         if let Address::GroupType(g, s) = address {
@@ -421,9 +429,10 @@ impl KspEngine for Host<'_> {
             self.write_index.0 = at;
             self.write_index.1.clear();
             self.write_index.1.extend(self.writes.iter().enumerate()
-                .filter(|(_, w)| w.at == at).map(|(i, w)| (w.address, i)));
+                .filter(|(_, w)| w.at == at).map(|(i, w)| ((w.domain, w.address), i)));
         }
-        if let Some(&i) = self.write_index.1.get(&address) {
+        if let Some(&i) = self.write_index.1.get(&(domain, address)) {
+            self.writes[i].local = !self.common && self.bank.is_some_and(|b| !b.domain_base.is_empty()) && address.is_group();
             self.writes[i].value = value;
             self.writes[i].par = par;
             self.writes[i].native = native;
@@ -436,22 +445,23 @@ impl KspEngine for Host<'_> {
         let i = self.writes.partition_point(|w| w.at <= at);
         // Insertion follows every existing write at this sample, so it cannot
         // move an index cached for the current batch, even with future writes.
-        self.writes.insert(i, Write { at, address, value, par, native });
-        self.write_index.1.insert(address, i);
+        self.writes.insert(i, Write { local: !self.common && self.bank.is_some_and(|b| !b.domain_base.is_empty()) && address.is_group(), domain, at, address, value, par, native });
+        self.write_index.1.insert((domain, address), i);
         true
     }
 
     /// The latest queued value, else the engine's current one.
     fn engine_par(&self, par: EnginePar) -> Option<i32> {
         let address = self.address(par)?;
-        let queued = self.writes.iter().rev().find(|w| w.address == address);
+        let domain = if address.is_group() { self.domain } else { 0 };
+        let queued = self.writes.iter().rev().find(|w| w.domain == domain && w.address == address);
         let value = match queued {
             Some(w) => w.value,
             None => match address {
                 Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param)?,
                 Address::Instrument(p) => instrument(self.player.instrument, p)?,
                 Address::GroupType(g, s) => params::group_type(self.bank?.groups(), g, s)?,
-                _ => params::read(&self.bank?.base, address)?,
+                _ => params::read(self.bank?.base_for(domain), address)?,
             },
         };
         Some(address.encode(value))
@@ -510,6 +520,7 @@ impl Player {
             } => {
                 let event = NoteEvent {
                     channel,
+                    domain: c.domain,
                     note,
                     velocity,
                     owner,
@@ -533,7 +544,7 @@ impl Player {
             Kind::Release { trigger, groups, expression } => {
                 let latched = self.release_voices(bank, id).is_some_and(|event| event.4);
                 if let &Some((note, velocity)) = trigger {
-                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, *expression, c.input_channel, defaults);
+                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, *expression, c.input_channel, c.domain, defaults);
                 }
             }
             &Kind::Freeze(expression) => {

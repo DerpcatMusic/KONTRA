@@ -118,6 +118,7 @@ impl std::fmt::Debug for GroupMask {
 #[derive(Clone, Copy)]
 pub struct NoteEvent<'a> {
     pub channel: u8,
+    pub domain: u8,
     pub note: u8,
     pub velocity: u8,
     /// Physical channel and original engine input key, before KSP transposition.
@@ -146,6 +147,7 @@ impl NoteEvent<'_> {
     pub fn new(channel: u8, note: u8, velocity: u8) -> Self {
         Self {
             channel,
+            domain: 0,
             note,
             velocity,
             owner: None,
@@ -205,7 +207,7 @@ pub struct Engine {
     /// Script engine parameter changes for the next render, ordered by frame.
     writes: Vec<Write>,
     /// Current-sample parameter positions, allocated before audio processing.
-    write_index: (u32, std::collections::HashMap<Address, usize>),
+    write_index: (u32, std::collections::HashMap<(u8, Address), usize>),
     ir_requests: Vec<IrRequest>,
     /// MIDI channel of the latest input routed to the script; its notes play there.
     script_channel: u8,
@@ -285,6 +287,8 @@ impl Engine {
         // write it, and overrides recompute what plays from it.
         std::mem::swap(&mut old.settings, &mut bank.settings);
         std::mem::swap(&mut old.base, &mut bank.base);
+        std::mem::swap(&mut old.domain_base, &mut bank.domain_base);
+        std::mem::swap(&mut old.domain_settings, &mut bank.domain_settings);
         self.player.touch();
         self.player.rebind(old, &bank);
         self.bank.replace(bank)
@@ -393,6 +397,19 @@ impl Engine {
         }
     }
 
+    /// Prepare configured Channel-mode origins on the loading thread.
+    pub fn prepare_channel_domains(&mut self, channels: u16) {
+        if let Some(rt) = self.script.as_deref_mut() { rt.prepare_channel_domains(channels); }
+        if let Some(bank) = self.bank.as_deref_mut() { bank.prepare_channel_domains(channels.count_ones().max(1) as usize); }
+    }
+
+    fn write_domain(&mut self, domain: u8, address: Address, value: f32) -> bool {
+        if address.is_group() {
+            self.player.touch();
+            self.write_group_domain(domain, address, value)
+        } else { self.write(address, value) }
+    }
+
     /// Apply one engine parameter; false when nothing installed holds it.
     fn write(&mut self, address: Address, value: f32) -> bool {
         self.player.touch();
@@ -408,7 +425,12 @@ impl Engine {
                 }
                 true
             }
-            _ => self.write_group(address, value),
+            _ => {
+                let count = self.bank.as_deref().map_or(1, |b| b.domain_base.len() + 1);
+                let mut changed = false;
+                for domain in 0..count { changed |= self.write_group_domain(domain as u8, address, value); }
+                changed
+            },
 
         }
     }
@@ -586,6 +608,8 @@ impl Engine {
         rt.set_midi_channel(channel);
         let host = Host {
             channel,
+            domain: 0,
+            common: false,
             bank: self.bank.as_deref(),
             fx: &self.fx,
             player: &mut self.player,
@@ -818,6 +842,12 @@ impl Engine {
         }
     }
 
+    pub(crate) fn ui_control_from(&mut self, input: u8, slot: usize, control: usize, value: i32) {
+        if let Some((rt, mut host)) = self.scripted_from(self.script_channel, input) {
+            rt.ui_control_from(&mut host, input, slot, control, value);
+        }
+    }
+
     pub fn pop_array_job(&mut self) -> Option<Box<crate::ksp::ArrayJob>> {
         self.script.as_deref_mut()?.pop_array_job()
     }
@@ -861,6 +891,10 @@ impl Engine {
     /// Install an off-thread-built IR, retaining slot gains and returning the
     /// old DSP for disposal off the audio thread. Failures keep the old IR.
     pub fn finish_ir(&mut self, slot: u8, id: i32, ir: Option<crate::fx::PreparedIr>) -> Option<crate::fx::PreparedIr> {
+        self.finish_ir_domain(slot, 0, id, ir)
+    }
+
+    pub(crate) fn finish_ir_domain(&mut self, slot: u8, domain: u8, id: i32, ir: Option<crate::fx::PreparedIr>) -> Option<crate::fx::PreparedIr> {
         let (loaded, retired) = match ir {
             Some(ir) => match self.fx.replace_ir(ir) {
                 Ok(old) => (true, Some(old)),
@@ -869,7 +903,7 @@ impl Engine {
             None => (false, None),
         };
         if id >= 0 && let Some((rt, mut host)) = self.scripted(self.script_channel) {
-            rt.async_complete(&mut host, slot, id, loaded);
+            rt.async_complete_domain(&mut host, slot, domain, id, loaded);
         }
         retired
     }
@@ -900,11 +934,11 @@ impl Engine {
         let Some(bank) = self.bank.as_deref() else {
             return;
         };
-        if let Some((channel, note, velocity, false, latched, input_channel)) = self.player.release_voices(bank, id) {
+        if let Some((channel, note, velocity, false, latched, input_channel, domain)) = self.player.release_voices(bank, id) {
             let allowed = self.player.allowed;
             let key = (channel, note, velocity);
             let expression = self.player.release_expression(id, channel, note);
-            self.player.trigger_release(bank, id, key, &allowed, latched, expression, input_channel, defaults);
+            self.player.trigger_release(bank, id, key, &allowed, latched, expression, input_channel, domain, defaults);
         }
     }
 
@@ -1040,7 +1074,7 @@ impl Engine {
                     .get(written)
                     .filter(|w| w.at as usize <= base + pos)
                 {
-                    if self.write(w.address, w.value) && let Some(rt) = self.script.as_deref_mut() {
+                    if self.write_domain(w.domain, w.address, w.value) && !w.local && let Some(rt) = self.script.as_deref_mut() {
                         rt.native_state.capture(w.address, w.par, w.native);
                     }
                     written += 1;
@@ -1090,7 +1124,7 @@ impl Engine {
         // Only an empty render leaves changes behind: apply them now.
         for i in written..self.writes.len() {
             let w = self.writes[i];
-            if self.write(w.address, w.value) && let Some(rt) = self.script.as_deref_mut() {
+            if self.write_domain(w.domain, w.address, w.value) && !w.local && let Some(rt) = self.script.as_deref_mut() {
                 rt.native_state.capture(w.address, w.par, w.native);
             }
         }
@@ -1157,6 +1191,7 @@ pub struct VoiceInfo {
 struct PendingRelease {
     source: EventId,
     input_channel: Option<u8>,
+    domain: u8,
     channel: u8,
     note: u8,
     velocity: u8,
@@ -1433,12 +1468,12 @@ impl Player {
         let zone = &bank.zones()[z as usize];
         let play = &bank.plays[z as usize];
         let group = &bank.groups()[zone.group];
-        let settings = &bank.settings[zone.group];
+        let settings = &bank.settings_for(ev.domain)[zone.group];
         let sample = &bank.samples[play.sample as usize];
         // One writer, the audio thread: no read-modify-write needed.
         let played = &bank.usage[play.sample as usize];
         played.store(played.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
-        self.make_room(bank, settings.voice_group);
+        self.make_room(bank, settings.voice_group, ev.domain);
 
         let key = if group.key_tracking {
             2f64.powf((f64::from(ev.note) - f64::from(zone.root)) / 12.0)
@@ -1533,6 +1568,7 @@ impl Player {
             velocity: ev.velocity,
             counter_start: self.now,
             counter_stop: ev.counter_stop,
+            domain: ev.domain,
             owner: ev.owner,
             input_channel: ev.input_channel,
             held: !release_trigger,
@@ -1590,12 +1626,12 @@ impl Player {
     }
 
     /// Enforce voice-group, exclusion and instrument limits before a new voice.
-    fn make_room(&mut self, bank: &Bank, voice_group: Option<u16>) {
+    fn make_room(&mut self, bank: &Bank, voice_group: Option<u16>, domain: u8) {
         let limits = &bank.voice_groups;
         let rules = voice_group.and_then(|g| Some((g, limits.get(g as usize)?.as_ref()?)));
         if let Some((group, rule)) = rules {
             if rule.exclusion >= 0 {
-                for v in &mut self.voices {
+                for v in self.voices.iter_mut().filter(|v| v.domain == domain) {
                     let Some(other) = v.voice_group.filter(|&o| o != group) else {
                         continue;
                     };
@@ -1612,7 +1648,7 @@ impl Player {
             if self.voices.len() >= rule.max_voices {
                 let (live, victim) = victim(
                     &self.voices,
-                    |v| v.voice_group == Some(group),
+                    |v| v.domain == domain && v.voice_group == Some(group),
                     rule.kill_mode,
                     rule.prefer_released,
                 );
@@ -1670,31 +1706,31 @@ impl Player {
         while let Some(source) = self.voices.iter().find(|v| v.channel == channel
             && owner.map_or(v.note == note, |owner| v.owner.map_or(v.note == note, |input| input == (owner, note)))
             && v.held && !v.released && !v.release_trigger).map(|v| v.event) {
-            if let Some((channel, note, velocity, false, captured, input_channel)) = self.release_voices(bank, source) {
+            if let Some((channel, note, velocity, false, captured, input_channel, domain)) = self.release_voices(bank, source) {
                 found = true;
                 let expression = self.release_expression(source, channel, note);
-                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, expression, input_channel, defaults);
+                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, expression, input_channel, domain, defaults);
             }
         }
         // Release-only instruments can have a key but no attack voice.
         if !found && velocity > 0 {
             let source = self.next_id();
             let expression = self.release_expression(source, channel, note);
-            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, expression, owner, defaults);
+            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, expression, owner, 0, defaults);
         }
     }
 
     /// Release one event's voices; a held sustain pedal defers them like a key
     /// release. Native release samples run independently of further note-off
     /// events. Returns the first ordinary voice's channel, note and velocity.
-    fn release_voices(&mut self, bank: &Bank, id: EventId) -> Option<(u8, u8, u8, bool, bool, Option<u8>)> {
+    fn release_voices(&mut self, bank: &Bank, id: EventId) -> Option<(u8, u8, u8, bool, bool, Option<u8>, u8)> {
         let mut first = None;
         for v in self
             .voices
             .iter_mut()
             .filter(|v| v.event == id && !v.released && !v.release_trigger)
         {
-            let event = first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger, false, v.input_channel));
+            let event = first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger, false, v.input_channel, v.domain));
             event.4 |= v.sostenuto;
             v.counter_stop.get_or_insert(self.now);
             let c = v.channel as usize & 15;
@@ -1757,6 +1793,7 @@ impl Player {
         latched: bool,
         expression: Option<Expression>,
         input_channel: Option<u8>,
+        domain: u8,
         defaults: Ahdsr,
     ) {
         if !self.native_release_triggers { return; }
@@ -1770,7 +1807,7 @@ impl Player {
                 return;
             }
             self.pending_releases.push(PendingRelease {
-                source, input_channel, channel, note, velocity, groups: *groups, captured: latched, expression, held_ms,
+                source, input_channel, domain, channel, note, velocity, groups: *groups, captured: latched, expression, held_ms,
             });
             return;
         }
@@ -1780,6 +1817,7 @@ impl Player {
             frozen_expression: expression,
             release_held_ms: Some(held_ms),
             input_channel,
+            domain,
             ..NoteEvent::new(channel, note, velocity)
         };
         self.start(bank, &event, id, true, defaults);
@@ -1896,7 +1934,7 @@ impl Player {
             let r = self.pending_releases[i];
             if r.channel == channel && !r.captured {
                 let id = self.next_id();
-                let event = NoteEvent { input_channel: r.input_channel, groups: Some(&r.groups), frozen_expression: r.expression, release_held_ms: Some(r.held_ms), ..NoteEvent::new(r.channel, r.note, r.velocity) };
+                let event = NoteEvent { domain: r.domain, input_channel: r.input_channel, groups: Some(&r.groups), frozen_expression: r.expression, release_held_ms: Some(r.held_ms), ..NoteEvent::new(r.channel, r.note, r.velocity) };
                 self.start(bank, &event, id, true, defaults);
             } else {
                 self.pending_releases[keep] = r;
@@ -1974,7 +2012,7 @@ impl Player {
                 self.lanes.skip(i as u16);
                 continue;
             }
-            let bus = bank.settings[voice.group as usize].bus;
+            let bus = bank.settings_for(voice.domain)[voice.group as usize].bus;
             let through = bus.filter(|_| steady).and_then(|b| fx.bus_gains(b));
             match voice.plan(&cx, n, bus, through).filter(|_| self.shared) {
                 Some(lane) => self.lanes.add(lane, voice.plan.class, &voice.filter.held, i as u16),
@@ -1986,7 +2024,7 @@ impl Player {
             if self.lanes.shared(i as u16) || voice.hold > 0 {
                 continue;
             }
-            let bus = bank.settings[voice.group as usize].bus;
+            let bus = bank.settings_for(voice.domain)[voice.group as usize].bus;
             let (alive, underrun) = match bus.and_then(|b| fx.bus_input(b, offset..offset + n)) {
                 Some((l, r)) => voice.render(&cx, &mut self.scratch, l, r, false),
                 None => voice.render(&cx, &mut self.scratch, left, right, false),

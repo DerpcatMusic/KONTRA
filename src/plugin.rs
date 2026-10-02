@@ -2793,10 +2793,10 @@ impl PluginLogic for Sampler {
             let current = generation == p.shared.generation[slot].load(Ordering::Acquire) && epoch == s.script_epoch[slot];
             let settings_current = engine.fx().ir_settings(request.rack, request.slot).is_none_or(|s| s == request.settings);
             let ir = if !current { ir } else if ir_rate == engine.rate() && settings_current {
-                engine.finish_ir(request.script_slot, request.id, ir)
+                engine.finish_ir_domain(request.script_slot, request.domain, request.id, ir)
             } else {
                 if let Err(request) = engine.retry_ir_request(request) {
-                    engine.finish_ir(request.script_slot, request.id, None);
+                    engine.finish_ir_domain(request.script_slot, request.domain, request.id, None);
                 }
                 ir
             };
@@ -3896,7 +3896,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     Ok(())
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -4840,7 +4840,7 @@ end on"#,dir.display());
     static GLOBAL: Counting = Counting;
 
     /// Allocations and frees `f` makes on this thread.
-    fn allocations(f: impl FnOnce()) -> usize {
+    pub(crate) fn allocations(f: impl FnOnce()) -> usize {
         let before = CALLS.with(Cell::get);
         COUNTING.with(|c| c.set(true));
         f();
@@ -5179,7 +5179,7 @@ end on"#.into()], ..Default::default() };
             load_irs(&p);
             let (_, _, IrHandoff { ir, request, .. }) = p.shared.ir_ready.pop().unwrap();
             assert!(ir.is_some(), "the real NCW is decoded and its replacement DSP is built");
-            let retired = engine.finish_ir(request.script_slot, request.id, ir);
+            let retired = engine.finish_ir_domain(request.script_slot, request.domain, request.id, ir);
             assert!(retired.is_some(), "the new DSP replaced the old one");
             let view = p.shared.view.lock().unwrap();
             let loaded = view.parts[0].irs.iter().find(|l| l.rack == crate::fx::Rack::Send && l.slot == 0 && matches!(l.load, crate::fx::Load::Ir { .. })).unwrap();
@@ -5208,7 +5208,7 @@ end on"#.into()], ..Default::default() };
             load_irs(&p);
             let (_, _, IrHandoff { ir, request, .. }) = p.shared.ir_ready.pop().unwrap();
             assert!(ir.is_some());
-            assert!(engine.finish_ir(request.script_slot, request.id, ir).is_some());
+            assert!(engine.finish_ir_domain(request.script_slot, request.domain, request.id, ir).is_some());
             assert_eq!((engine.fx().param(crate::fx::Rack::Send, 0, crate::fx::FxParam::Convolution(field as u8)).unwrap() * 1e6).round() as i32, expected);
             assert_eq!(mix(&engine), saved_mix);
             let view = p.shared.view.lock().unwrap();

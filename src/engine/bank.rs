@@ -351,6 +351,8 @@ pub struct Bank {
     /// The library's values as its scripts have set them, under the
     /// player's overrides (see `overrides.rs`).
     pub base: Vec<GroupSettings>,
+    pub(crate) domain_base: Vec<Vec<GroupSettings>>,
+    pub(crate) domain_settings: Vec<Vec<GroupSettings>>,
     pub(crate) plays: Arc<[ZonePlay]>,
     /// Per group: not muted and, when any group is soloed, soloed.
     pub(crate) playable: Vec<bool>,
@@ -388,6 +390,24 @@ pub struct Bank {
 pub const LOAD_DONE: u32 = 1000;
 
 impl Bank {
+    /// Called by the loader, never by MIDI ingress. Samples, zones and program
+    /// effects remain shared; only group playback parameters have extra banks.
+    pub fn prepare_channel_domains(&mut self, count: usize) {
+        assert!(self.domain_settings.is_empty());
+        self.domain_base = (1..count).map(|_| self.base.clone()).collect();
+        self.domain_settings = (1..count).map(|_| self.settings.clone()).collect();
+    }
+    pub(crate) fn settings_for(&self, domain: u8) -> &[GroupSettings] {
+        if domain == 0 { &self.settings } else { &self.domain_settings[domain as usize - 1] }
+    }
+    pub(crate) fn base_for(&self, domain: u8) -> &[GroupSettings] {
+        if domain == 0 { &self.base } else { &self.domain_base[domain as usize - 1] }
+    }
+    pub(crate) fn parameters_mut(&mut self, domain: u8) -> (&mut [GroupSettings], &mut [GroupSettings]) {
+        if domain == 0 { (&mut self.base, &mut self.settings) }
+        else { (&mut self.domain_base[domain as usize - 1], &mut self.domain_settings[domain as usize - 1]) }
+    }
+
     /// Load every group of `instrument` within [`MEMORY_LIMIT`], streaming
     /// long samples from disk.
     pub fn load(instrument: &Instrument) -> Result<Self> {
@@ -1152,6 +1172,8 @@ impl Builder {
             groups: self.groups,
             zones: intern(&ZONES, zones),
             source_zone_count: self.source_zone_count,
+            domain_base: Vec::new(),
+            domain_settings: Vec::new(),
             base: self.settings.clone(),
             settings: self.settings,
             plays: intern(&PLAYS, plays),

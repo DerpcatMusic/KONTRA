@@ -923,6 +923,7 @@ pub(crate) struct Voice {
     pub group: u32,
     pub voice_group: Option<u16>,
     pub channel: u8,
+    pub domain: u8,
     pub note: u8,
     pub velocity: u8,
     /// Counter timing belongs to this event, independent of same-key retriggers.
@@ -1103,7 +1104,7 @@ impl Voice {
     /// passes to the output through a fader at rest.
     #[inline(always)]
     pub fn plan(&mut self, cx: &Context, n: usize, bus: Option<u8>, through: Option<[f32; 2]>) -> Option<Lane> {
-        let group = &cx.bank.settings[self.group as usize];
+        let group = &cx.bank.settings_for(self.domain)[self.group as usize];
         let key = self.owner.map_or(self.note, |(_, key)| key);
         let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][key as usize & 127]);
         let inputs = cx.inputs(self.channel, self.note, self.velocity, x);
@@ -1204,7 +1205,7 @@ impl Voice {
         bare: bool,
     ) -> (bool, bool) {
         let Plan { n, step, target, muted, declick, .. } = self.plan;
-        let group = &cx.bank.settings[self.group as usize];
+        let group = &cx.bank.settings_for(self.domain)[self.group as usize];
         let own = group.filter.as_ref().filter(|_| !bare);
         let amp = &mut scratch.amp[..n];
         let flex = &mut scratch.flex[..n];
@@ -1287,7 +1288,7 @@ impl Voice {
         filter: Option<&mut LaneFilter>,
     ) -> (bool, bool) {
         let Plan { n, target, weights, .. } = self.plan;
-        let group = &cx.bank.settings[self.group as usize];
+        let group = &cx.bank.settings_for(self.domain)[self.group as usize];
         // The lane renders the envelope's curve; the voice's own only moves on.
         self.env.skip(n, None, cx.rate);
         if let Some(env) = &mut self.flex {
@@ -1499,7 +1500,7 @@ impl Voice {
         self.filter.release();
         for env in &mut self.pitch_envs { env.release(None); }
         if let Some(env) = &mut self.flex {
-            env.release(bank.settings[self.group as usize].flex.as_ref());
+            env.release(bank.settings_for(self.domain)[self.group as usize].flex.as_ref());
         }
         let wraps = self.map.wraps(self.pos as u64 + 3);
         if wraps == self.wraps {

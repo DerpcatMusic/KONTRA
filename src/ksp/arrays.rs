@@ -9,6 +9,7 @@ const PATH_BYTES: usize = 4096;
 #[derive(Debug)]
 pub struct ArrayJob {
     pub slot: u8,
+    pub(super) domain: u8,
     pub id: i32,
     pub(super) var: VarId,
     pub(super) path: String,
@@ -27,7 +28,7 @@ pub struct ArrayJob {
 
 impl ArrayJob {
     pub(super) fn prepared(slot: u8, var: VarId, info: &Var) -> Self {
-        Self { slot, id: -1, var, path: String::with_capacity(PATH_BYTES),
+        Self { slot, domain: 0, id: -1, var, path: String::with_capacity(PATH_BYTES),
             name: info.name.trim_start_matches(['%', '!', '?', '$', '@', '~']).into(),
             ty: info.ty, len: info.len.unwrap_or(0) as usize, values: None,
             write: false, snapshot: None, progress: 0, validated: false, success: false, failure: None, detail: None }

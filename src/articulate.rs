@@ -240,6 +240,11 @@ impl Default for Route {
 }
 
 impl Route {
+    pub(crate) fn channel_origins(&self) -> u16 {
+        if self.by_channel() { self.arts().iter().filter(|a| a.enabled).fold(0, |mask, a| mask | (1 << a.channel)) }
+        else { 0 }
+    }
+
     /// The route for the instrument at `path`; a list read from another
     /// instrument routes nothing.
     pub fn new(path: &str, a: &Articulate, mpe: &Mpe) -> Self {
@@ -420,6 +425,7 @@ pub enum Out {
     PolyAt(u8, u8, u8),
     /// A script control set (script slot, control, value), as a click on it.
     Control(usize, usize, i32),
+    ControlFrom(u8, usize, usize, i32),
     Expression(u8, u8, Expression),
     FreezeExpression(u8, u8),
 }
@@ -437,6 +443,8 @@ pub struct Router {
     pub route: Route,
     /// The articulation the scripts were last switched to, as far as known.
     current: Option<usize>,
+    domain_current: [Option<usize>; 16],
+    domains: bool,
     /// Per input channel and key: the channel and key the engine got.
     held: [[(u8, u8); 128]; 16],
     /// MPE: member channels' pitch bend and the live bend range.
@@ -467,6 +475,8 @@ impl Default for Router {
             master_bend_range: None,
             route,
             current: None,
+            domain_current: [None; 16],
+            domains: false,
             held: [[(NONE, NONE); 128]; 16],
             bend: [8192; 16],
             member_pressure: [None; 16],
@@ -516,6 +526,7 @@ impl Router {
     /// switch again before the next note.
     pub fn forget(&mut self) {
         self.current = None;
+        self.domain_current.fill(None);
     }
 
     pub(crate) fn reset_midi(&mut self) {
@@ -600,8 +611,9 @@ impl Router {
         self.handles_pressure = rt.is_some_and(|rt| rt.handles_poly_at());
     }
 
-    fn switch(&mut self, to: usize, channel: u8, out: &mut impl FnMut(Out)) {
-        if self.current == Some(to) {
+    fn switch(&mut self, to: usize, channel: u8, origin: u8, out: &mut impl FnMut(Out)) {
+        let current = if self.domains && self.by_channel() { &mut self.domain_current[origin as usize] } else { &mut self.current };
+        if *current == Some(to) {
             return;
         }
         let a = self.route.arts[to];
@@ -611,7 +623,7 @@ impl Router {
         } else {
             out(Out::Control(usize::from(a.slot), usize::from(a.control), 1));
         }
-        self.current = Some(to);
+        *current = Some(to);
     }
 
     fn set_expression(&mut self, channel: u8, key: u8, f: impl FnOnce(&mut Expression), out: &mut impl FnMut(Out)) {
@@ -657,6 +669,7 @@ impl Router {
                 Out::Bend(c, v) => Out::BendFrom(c, channel, v),
                 Out::Pressure(c, v) => Out::PressureFrom(c, channel, v),
                 Out::PolyAt(c, n, v) => Out::PolyAtFrom(c, channel, n, v),
+                Out::Control(s, c, v) => Out::ControlFrom(channel, s, c, v),
                 o => o,
             }
         } else { o });
@@ -668,7 +681,7 @@ impl Router {
                 }
                 let mut velocity = velocity;
                 if let Some(ks) = r.arts().iter().position(|a| a.key == key) {
-                    self.current = Some(ks);
+                    if self.domains && r.by_channel() { self.domain_current[channel as usize] = Some(ks); } else { self.current = Some(ks); }
                 } else if let Some(a) = self.pick(channel, velocity) {
                     if r.mode == Mode::Velocity {
                         let art = r.arts[a];
@@ -681,7 +694,7 @@ impl Router {
                             fixed => fixed,
                         };
                     }
-                    self.switch(a, to, out);
+                    self.switch(a, to, channel, out);
                 }
                 // A new note on a key starts from its channel's expression.
                 if r.member(channel) {
@@ -894,6 +907,7 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
         Out::Pressure(c, v) => e.channel_pressure(c, v),
         Out::PolyAt(c, n, v) => e.poly_pressure(c, n, v),
         Out::Control(slot, control, value) => e.ui_control(slot, control, value),
+        Out::ControlFrom(input, slot, control, value) => e.ui_control_from(input, slot, control, value),
         Out::Expression(c, n, x) => e.set_expression_on(c, n, x),
         Out::FreezeExpression(c, n) => e.freeze_released_expression(c, n),
     }
@@ -903,6 +917,7 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
 /// arrive on `home`.
 pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
     r.follow(e);
+    r.domains = e.script().is_some_and(|rt| rt.channel_domains_prepared());
     let zone = if r.by_channel() { None } else { r.route.zone() };
     e.set_mpe_zone(zone.map(|(master, members)| (master, members.fold(0u16, |mask, member| mask | (1 << member)))));
     e.set_mpe_master_bend_range(r.master_bend_range.map(|(semitones, cents)|
@@ -1138,6 +1153,70 @@ mod tests {
         render(&mut e);
         assert_eq!((voices(&e, 60, false), voices(&e, 60, true)), (vec![], vec![0, 1, 2]));
         assert!(!e.key_down(0, 60));
+    }
+
+    fn no_audio_heap(f: impl FnOnce()) {
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(f), 0, "prepared domain audio work must not allocate or free");
+        #[cfg(not(feature = "plugin"))]
+        f();
+    }
+
+    #[test]
+    fn prepared_channel_domains_keep_delayed_articulation_and_same_pitch_ids() {
+        for waiting in [false, true] {
+            let (mut e, mut r) = three_articulation_part();
+            let source = format!("on init\ndeclare $art\ndeclare %ids[128]\nend on\non note\nif ($EVENT_NOTE < 24)\n$art := $EVENT_NOTE-12\nignore_event($EVENT_ID)\nelse\nignore_event($EVENT_ID)\n{}\ndisallow_group($ALL_GROUPS)\nallow_group($art)\n%ids[$EVENT_NOTE] := play_note($EVENT_NOTE,$EVENT_VELOCITY,0,0)\nend if\nend on\non release\nignore_event($EVENT_ID)\nif ($EVENT_NOTE >= 24)\nnote_off(%ids[$EVENT_NOTE])\nend if\nend on", if waiting { "wait(1000)" } else { "" });
+            e.set_script(Some(Box::new(runtime(&source))));
+            e.prepare_channel_domains(r.route.channel_origins());
+            no_audio_heap(|| {
+                for channel in 0..3 { feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0); }
+                render(&mut e);
+            });
+            assert_eq!(voices(&e,60,false), [0,1,2], "wait={waiting}");
+            for channel in [1,0,2] {
+                no_audio_heap(|| {
+                    feed(&mut r, &mut e, In::NoteOff(channel,60),0);
+                    render(&mut e);
+                });
+                assert!(e.voice_census().iter().filter(|v| v.input_channel == Some(channel)).all(|v| v.released), "wait={waiting}, channel={channel}");
+                for other in (0..3).filter(|c| *c != channel && e.key_down_from(*c,0,60)) {
+                    assert!(e.voice_census().iter().any(|v| v.input_channel == Some(other) && !v.released));
+                }
+            }
+            assert_eq!(e.dropped_commands(),0);
+            assert!(e.script().unwrap().diagnostics().is_empty(), "{:?}",e.script().unwrap().diagnostics());
+            no_audio_heap(|| { e.panic(); render(&mut e); });
+            assert_eq!(e.voice_census().len(),0);
+        }
+    }
+
+    #[test]
+    fn prepared_channel_groups_keep_held_gain_and_replay_common_ui() {
+        let (mut e, mut r) = three_articulation_part();
+        let source = "on init\ndeclare $art\ndeclare ui_slider $gain(0,1000000)\nend on\non note\nif ($EVENT_NOTE <24)\n$art := $EVENT_NOTE-12\nignore_event($EVENT_ID)\nelse\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nset_engine_par($ENGINE_PAR_VOLUME,($art+1)*200000,0,-1,-1)\nend if\nend on\non ui_control($gain)\nset_engine_par($ENGINE_PAR_VOLUME,$gain,0,-1,-1)\nend on";
+        e.set_script(Some(Box::new(runtime(source))));
+        e.prepare_channel_domains(r.route.channel_origins());
+        let mut gains = [0.;3];
+        for channel in 0..3 {
+            no_audio_heap(|| { feed(&mut r,&mut e,In::NoteOn(channel,60,100),0); render(&mut e); });
+            gains[channel as usize] = e.voice_census().iter().find(|v| v.input_channel == Some(channel)).unwrap().gain;
+            assert!(gains[channel as usize]>0.);
+            for previous in 0..channel {
+                let gain = e.voice_census().iter().find(|v| v.input_channel == Some(previous)).unwrap().gain;
+                assert!((gain-gains[previous as usize]).abs()<1e-5, "channel {channel} changed held channel {previous}");
+            }
+        }
+        assert!(gains[0]<gains[1] && gains[1]<gains[2]);
+        no_audio_heap(|| { e.ui_control(0,0,800000); render(&mut e); });
+        let voices = e.voice_census();
+        assert_eq!(voices.len(),3);
+        assert!(voices.iter().all(|v| v.gain > gains[2]));
+        assert!(voices.iter().all(|v| (v.gain-voices[0].gain).abs()<1e-5));
+        e.panic();
+        assert!(e.voice_census().is_empty());
+        assert_eq!(e.dropped_commands(),0);
+        assert!(e.script().unwrap().diagnostics().is_empty());
     }
 
     /// A part whose scripts were replaced (an instrument or its saved
@@ -1406,7 +1485,7 @@ end on"#;
         let mut r = router(&a, &Mpe::default());
         // Channel 2's articulation is off: the note plays as it is.
         assert_eq!(run(&mut r, &[In::NoteOn(1, 60, 90)]), [Out::NoteOnFrom(0, 1, 60, 90)]);
-        assert_eq!(run(&mut r, &[In::NoteOn(2, 62, 90)]), [Out::Control(1, 40, 1), Out::NoteOnFrom(0, 2, 62, 90)]);
+        assert_eq!(run(&mut r, &[In::NoteOn(2, 62, 90)]), [Out::ControlFrom(2, 1, 40, 1), Out::NoteOnFrom(0, 2, 62, 90)]);
         // Channel mode hears the articulations' channels on an omni or set part.
         let c = PartControls { channel: 0, ..PartControls::default() };
         assert!(r.hears(&c, 0, 2) && !r.hears(&c, 0, 1) && !r.hears(&c, 1, 2));

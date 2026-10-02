@@ -59,6 +59,9 @@ pub enum Forward {
 #[derive(Clone, Copy, Debug)]
 pub struct Ctx {
     pub slot: u8,
+    pub domain: u8,
+    /// A common UI input, replayed rather than a performance-local mutation.
+    pub common: bool,
     pub kind: Kind,
     pub event: i32,
     pub callback_id: i32,
@@ -76,6 +79,7 @@ pub struct Ctx {
     pub async_id: i32,
     pub async_status: i32,
     pub ignore_controller: bool,
+    pub controller_output: bool,
     /// stop_wait(..., 1) continues this callback without subsequent waits.
     pub ignore_wait: bool,
     /// Host Panic/reset cleanup writes script state while suppressing new notes.
@@ -89,6 +93,8 @@ impl Ctx {
     pub fn new(slot: u8, kind: Kind) -> Self {
         Self {
             slot,
+            domain: 0,
+            common: false,
             kind,
             event: 0,
             callback_id: 0,
@@ -103,6 +109,7 @@ impl Ctx {
             async_id: 0,
             async_status: 0,
             ignore_controller: false,
+            controller_output: true,
             ignore_wait: false,
             cleanup: false,
             release_blocked: false,
@@ -300,17 +307,38 @@ impl Stacks {
 /// pass through the same prepared owner map, including optimized VM loops.
 pub struct Values<T> {
     values: Vec<T>,
+    domains: Vec<Vec<T>>,
+    mutable: usize,
+    active: u8,
     owners: std::sync::Arc<[u32]>,
     revisions: Vec<u64>,
 }
 
 impl<T: Clone> Values<T> {
     fn new(value: T, len: usize, owners: &std::sync::Arc<[u32]>, count: usize) -> Self {
-        Self { values: vec![value; len], owners: owners.clone(), revisions: vec![0; count] }
+        Self { values: vec![value; len], domains: Vec::new(), mutable: 0, active: 0, owners: owners.clone(), revisions: vec![0; count] }
     }
 }
 
 impl<T> Values<T> {
+    fn prepare_domains(&mut self, count: usize, mutable: usize, clone: impl Fn(&T) -> T) {
+        assert!(self.domains.is_empty(), "prepare channel storage before performance starts");
+        self.mutable = mutable;
+        self.domains = (1..count).map(|_| self.values[..mutable].iter().map(&clone).collect()).collect();
+    }
+    fn select(&mut self, domain: u8) { self.active = domain; }
+    fn slice(&self, range: std::ops::Range<usize>) -> &[T] {
+        if self.active != 0 && range.start < self.mutable {
+            assert!(range.end <= self.mutable, "a variable cannot straddle domain storage");
+            &self.domains[self.active as usize - 1][range]
+        } else { &self.values[range] }
+    }
+    fn slice_mut(&mut self, range: std::ops::Range<usize>) -> &mut [T] {
+        if self.active != 0 && range.start < self.mutable {
+            assert!(range.end <= self.mutable, "a variable cannot straddle domain storage");
+            &mut self.domains[self.active as usize - 1][range]
+        } else { &mut self.values[range] }
+    }
     fn touch(&mut self, index: usize) {
         if let Some(&owner) = self.owners.get(index).filter(|&&o| o != u32::MAX) {
             self.revisions[owner as usize] = self.revisions[owner as usize].wrapping_add(1);
@@ -335,17 +363,32 @@ impl<T> std::ops::Deref for Values<T> {
     type Target = [T];
     fn deref(&self) -> &[T] { &self.values }
 }
-impl<T, I: std::slice::SliceIndex<[T]>> std::ops::Index<I> for Values<T> {
-    type Output = I::Output;
-    fn index(&self, index: I) -> &Self::Output { &self.values[index] }
+impl<T> std::ops::Index<usize> for Values<T> {
+    type Output = T;
+    fn index(&self, index: usize) -> &T {
+        if self.active != 0 && index < self.mutable { &self.domains[self.active as usize - 1][index] }
+        else { &self.values[index] }
+    }
+}
+impl<T> std::ops::Index<std::ops::Range<usize>> for Values<T> {
+    type Output = [T];
+    fn index(&self, range: std::ops::Range<usize>) -> &[T] { self.slice(range) }
+}
+impl<T> std::ops::Index<std::ops::RangeFull> for Values<T> {
+    type Output = [T];
+    fn index(&self, _: std::ops::RangeFull) -> &[T] { assert_eq!(self.active, 0); &self.values }
 }
 impl<T> std::ops::IndexMut<usize> for Values<T> {
-    fn index_mut(&mut self, index: usize) -> &mut T { self.touch(index); &mut self.values[index] }
+    fn index_mut(&mut self, index: usize) -> &mut T {
+        self.touch(index);
+        if self.active != 0 && index < self.mutable { &mut self.domains[self.active as usize - 1][index] }
+        else { &mut self.values[index] }
+    }
 }
 impl<T> std::ops::IndexMut<std::ops::Range<usize>> for Values<T> {
     fn index_mut(&mut self, range: std::ops::Range<usize>) -> &mut [T] {
         self.touch_range(range.clone());
-        &mut self.values[range]
+        self.slice_mut(range)
     }
 }
 impl<T> std::ops::IndexMut<std::ops::RangeFull> for Values<T> {
@@ -365,7 +408,12 @@ impl<'a, T> IntoIterator for &'a mut Values<T> {
 impl Values<i32> {
     pub fn copy_within(&mut self, range: std::ops::Range<usize>, to: usize) {
         self.touch_range(to..to + range.len());
-        self.values.copy_within(range, to);
+        if self.active == 0 { self.values.copy_within(range, to); }
+        else if range.start < self.mutable && to < self.mutable {
+            self.domains[self.active as usize - 1].copy_within(range, to);
+        } else if to < self.mutable {
+            self.domains[self.active as usize - 1][to..to + range.len()].copy_from_slice(&self.values[range]);
+        } else { self.values.copy_within(range, to); }
     }
 }
 
@@ -377,6 +425,21 @@ pub struct Memory {
     pub poly: Vec<i32>,
 }
 
+impl Memory {
+    pub(super) fn prepare_domains(&mut self, count: usize, slots: [u32; 3]) {
+        self.ints.prepare_domains(count, slots[0] as usize, |v| *v);
+        self.reals.prepare_domains(count, slots[1] as usize, |v| *v);
+        self.strs.prepare_domains(count, slots[2] as usize, |v| {
+            let mut copy = String::with_capacity(v.capacity());
+            copy.push_str(v);
+            copy
+        });
+    }
+    pub(super) fn select(&mut self, domain: u8) {
+        self.ints.select(domain); self.reals.select(domain); self.strs.select(domain);
+    }
+}
+
 /// Per-slot mutable state.
 pub struct SlotState {
     pub index: u8,
@@ -386,6 +449,8 @@ pub struct SlotState {
     pub pgs_keys: Vec<u32>,
     pub persistent: Vec<VarId>,
     pub listener: Listener,
+    pub(super) domain_listeners: Vec<Listener>,
+    pub(super) domain: u8,
     pub error: Option<String>,
 }
 
@@ -403,6 +468,14 @@ pub struct Listener {
 pub const POLY_ROWS: u32 = super::runtime::EVENT_CAPACITY as u32 + 1;
 
 impl SlotState {
+    pub(super) fn select(&mut self, domain: u8) {
+        if self.domain != domain && !self.domain_listeners.is_empty() {
+            self.domain_listeners[self.domain as usize] = self.listener;
+            self.listener = self.domain_listeners[domain as usize];
+        }
+        self.domain = domain;
+        self.mem.select(domain);
+    }
     pub fn new(index: u8, p: &Program) -> Self {
         Self {
             index,
@@ -416,6 +489,8 @@ impl SlotState {
             pgs_keys: vec![u32::MAX; p.strings.len()],
             persistent: Vec::new(),
             listener: Listener::default(),
+            domain_listeners: Vec::new(),
+            domain: 0,
             error: None,
         }
     }
@@ -1290,7 +1365,7 @@ fn sys_of(ctx: &Ctx, env: &Env, slot: u8, v: SysVar) -> i32 {
         SysVar::Tempo => env.tempo as i32,
         SysVar::CurrentScriptSlot => i32::from(slot),
         SysVar::UiId => ctx.ui_id,
-        SysVar::PlayedVoices => env.events.live_count() as i32,
+        SysVar::PlayedVoices => env.events.live_count_in(ctx.domain) as i32,
         // No song position from the host yet, so every bar starts now.
         SysVar::DistanceBarStart => 0,
         SysVar::Date(i) => civil_now()[i as usize],
@@ -1404,14 +1479,14 @@ end on"#, &setup).unwrap();
         let slot = |name| p.vars.iter().find(|v| &*v.name == name).unwrap().slot as usize;
         let table = slot("%table");
         let last = slot("$last");
-        assert_eq!(table, 255);
-        for i in [0,254,768,1000000] { first.mem.ints[i] = 1; }
+        assert_eq!(table, 0);
+        for i in [slot("%gap"),slot("%gap")+254,slot("%large_gap"),slot("%large_gap")+999999] { first.mem.ints[i] = 1; }
         assert_eq!(first.mem.ints.revision(table), 0, "unowned cells do not dirty UI values");
-        for i in [255,256,511,512,767] { first.mem.ints[i] = 2; }
+        for i in [table,table+1,table+256,table+257,table+512] { first.mem.ints[i] = 2; }
         assert_eq!(first.mem.ints.revision(table), 5);
-        first.mem.ints[254..769].fill(3);
+        first.mem.ints[table..table+513].fill(3);
         assert_eq!(first.mem.ints.revision(table), 6, "bulk borrows bump a contiguous variable once");
-        first.mem.ints.copy_within(255..768, 255);
+        first.mem.ints.copy_within(table..table+513, table);
         assert_eq!(first.mem.ints.revision(table), 7);
         for value in &mut first.mem.ints { *value += 1; }
         assert_eq!(first.mem.ints.revision(table), 8);

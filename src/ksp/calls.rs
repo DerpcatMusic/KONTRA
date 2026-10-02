@@ -66,6 +66,9 @@ fn control(m: &Machine, id: i32) -> Exec<usize> {
 fn targets(m: &mut Machine, id: i32) -> usize {
     let env = &mut *m.env;
     env.events.targets(id, &mut env.targets);
+    if id == b::ALL_EVENTS || id & b::MARKS_FLAG != 0 {
+        env.targets.retain(|&id| env.events.get(id).is_some_and(|e| e.domain == m.t.ctx.domain));
+    }
     env.targets.len()
 }
 
@@ -156,7 +159,7 @@ fn library_dir(instrument: &std::path::Path) -> String {
 fn async_done(m: &mut Machine, status: i32) -> i32 {
     let id = m.env.next_async();
     if m.env.async_done.len() < m.env.async_done.capacity() {
-        m.env.async_done.push((m.slot.index, id, status));
+        m.env.async_done.push((m.slot.index, m.t.ctx.domain, id, status));
     }
     id
 }
@@ -413,12 +416,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     if !fits {
                         m.stk.strs.pop();
                         m.env.note("save_array_str: snapshot exceeds audio block budget");
-                        if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,id,0)); }
+                        if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,m.t.ctx.domain,id,0)); }
                         return push_int(m,id);
                     }
                 }
                 let path = m.stk.strs.pop();
-                let spare = m.env.array_spares.iter().position(|r| r.slot == slot && r.var == v);
+                let spare = m.env.array_spares.iter().position(|r| r.slot == slot && r.var == v && r.domain == m.t.ctx.domain);
                 if m.env.array_inflight < super::arrays::ARRAY_QUEUE
                     && let Some(spare) = spare
                     && path.len() <= m.env.array_spares[spare].path.capacity()
@@ -426,6 +429,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     let mut request = m.env.array_spares.swap_remove(spare);
                     request.path.push_str(path);
                     request.id = id;
+                    request.domain = m.t.ctx.domain;
                     request.write = saving;
                     if saving {
                         refresh_value(&m.slot.mem, &m.prog.vars[v as usize],
@@ -437,7 +441,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     m.env.note(if saving { "save_array_str: prepared request queue or path capacity exhausted" }
                         else { "load_array_str: prepared request queue or path capacity exhausted" });
                     if m.env.async_done.len() < m.env.async_done.capacity() {
-                        m.env.async_done.push((slot, id, 0));
+                        m.env.async_done.push((slot, m.t.ctx.domain, id, 0));
                     }
                 }
                 return push_int(m, id);
@@ -524,7 +528,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             };
             let id = m
                 .env
-                .play_note(slot, parent, m.t.ctx.channel, m.t.ctx.input_channel, note, velocity.clamp(1, 127), offset, duration);
+                .play_note(slot, parent, m.t.ctx.channel, m.t.ctx.domain, m.t.ctx.input_channel, note, velocity.clamp(1, 127), offset, duration);
             push_int(m, id)
         }
         NoteOff => {
@@ -768,7 +772,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .filter(|&c| usize::from(c) < b::CC_SLOTS)
             {
                 Some(cc) => m.env.queue(super::runtime::Work::Controller {
+                    emit: true,
                     channel: m.t.ctx.channel,
+                    domain: m.t.ctx.domain,
                     input_channel: m.t.ctx.input_channel,
                     cc,
                     value,
@@ -790,6 +796,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             } else {
                 m.env.queue(super::runtime::Work::NoteController {
                     channel: m.t.ctx.channel,
+                    domain: m.t.ctx.domain,
                     input_channel: m.t.ctx.input_channel,
                     controller,
                     note: note as u8,
@@ -806,7 +813,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return Err(Fault("RPN address or value out of range"));
             }
             m.env.queue(super::runtime::Work::Rpn {
-                channel: m.t.ctx.channel, input_channel: m.t.ctx.input_channel, nrpn: f == SetNrpn, address, value, slot: slot + 1,
+                channel: m.t.ctx.channel,
+                    domain: m.t.ctx.domain, input_channel: m.t.ctx.input_channel, nrpn: f == SetNrpn, address, value, slot: slot + 1,
             });
             Ok(Step::Next)
         }
@@ -897,7 +905,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 else if m.env.loading { m.slot.ui.listeners.insert(name, value); }
                 else { return Err(Fault("KSP listener storage was not prepared")); }
             }
-            m.env.listeners_changed |= 1 << slot;
+            m.env.listeners_changed |= 1 << (m.t.ctx.domain * 8 + slot);
             Ok(Step::Next)
         }
         // ---- Groups, modules and engine parameters -------------------------------------
@@ -1061,7 +1069,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             }
             let loaded = loaded == Some(true);
             if m.env.async_done.len() < m.env.async_done.capacity() {
-                m.env.async_done.push((m.slot.index, id, i32::from(loaded)));
+                m.env.async_done.push((m.slot.index, m.t.ctx.domain, id, i32::from(loaded)));
             }
             push_int(m, id)
         }
