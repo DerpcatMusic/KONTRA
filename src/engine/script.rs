@@ -641,6 +641,15 @@ impl<'a> ScriptSetup<'a> {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn audit_native_preparation(instrument: &Instrument, rt: &Runtime) -> (usize, std::time::Duration) {
+        let mut setup = ScriptSetup::new(instrument, 48000.);
+        for &(par, value) in &rt.init_engine_pars { setup.set_engine_par(0, par, value); }
+        let start = std::time::Instant::now();
+        let state = setup.prepare_native_state();
+        (state.capacity().0, start.elapsed())
+    }
+
     fn prepare_native_state(&self) -> super::native_state::NativeState {
         let mut state = super::native_state::NativeState::default();
         let mut add = |par: EnginePar| {

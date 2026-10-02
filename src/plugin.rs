@@ -3898,7 +3898,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     Ok(())
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -4891,7 +4891,7 @@ end on"#,dir.display());
     static GLOBAL: Counting = Counting;
 
     /// Allocations and frees `f` makes on this thread.
-    fn allocations(f: impl FnOnce()) -> usize {
+    pub(crate) fn allocations(f: impl FnOnce()) -> usize {
         let before = CALLS.with(Cell::get);
         COUNTING.with(|c| c.set(true));
         f();
@@ -5193,7 +5193,10 @@ end on"#.into()], ..Default::default() };
         let i = import::read(&path).unwrap();
         let (rt,errors) = crate::engine::load_scripts(&i,i.script_state.clone(),48000.);
         assert!(errors.is_empty(),"{errors:?}");
-        eprintln!("Analog Strings native edit capacity {:?}",rt.unwrap().engine_state_capacity());
+        let rt = rt.unwrap();
+        let (count, preparation) = crate::engine::ScriptSetup::audit_native_preparation(&i,&rt);
+        assert_eq!(count,rt.engine_state_capacity().0);
+        eprintln!("Analog Strings native edit capacity {:?}, preparation {:?}",rt.engine_state_capacity(),preparation);
     }
 
     #[test]
