@@ -449,7 +449,8 @@ fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths()
         expected.name.clear();
         expected.script_state.clear();
         expected.ir_settings.clear();
-        assert!(part == expected, "both replacement paths clear preset state and preserve player settings");
+        assert!(part == expected, "replacement dropped={dropped}: actual {}, expected {}",
+            serde_json::to_string(&part).unwrap(), serde_json::to_string(&expected).unwrap());
         let restored = serde_json::from_str(&part.script_state).unwrap_or_else(|_| new.script_state.clone());
         assert_eq!(caption(restored), Value::Text("CHORUS".into()), "replacement uses its own authored defaults");
     }
