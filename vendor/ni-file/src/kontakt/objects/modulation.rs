@@ -11,9 +11,14 @@ use crate::{
     read_bytes::ReadBytesExt,
 };
 
-/// Target parameters stored without a module slot byte. Every other
-/// parameter (`eqGain1`, `filterCutoff`, `ahdsr_attack`, ...) carries one.
-const GROUP_TARGETS: [&str; 6] = ["volume", "pan", "pitch", "playPos", "loopStart", "loopLength"];
+/// Group/source parameters stored without a module slot byte. The six
+/// wavetable names map to native target IDs 11..=16; both native target
+/// readers and writers omit the module slot for these IDs.
+const GROUP_TARGETS: [&str; 12] = [
+    "volume", "pan", "pitch", "playPos", "loopStart", "loopLength",
+    "warpFactor", "warpFactor2", "wavetablePosition", "wavetableInharmonic",
+    "wavetableModAmount", "wavetableModFrequency",
+];
 const MAX_TARGETS: u32 = 16;
 const MAX_NAME_BYTES: u32 = 4096;
 const SHAPER_TABLE_LEN: usize = 128;
@@ -386,6 +391,42 @@ pub(crate) fn ensure_consumed(reader: &Cursor<&[u8]>) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wavetable_group_targets_do_not_consume_module_slot_bytes() {
+        for param in &GROUP_TARGETS[6..] {
+            let mut private = 2u32.to_le_bytes().to_vec();
+            for (target, slot, invert) in [(*param, None, true), ("filterCutoff", Some(7), false)] {
+                private.extend((target.len() as u32).to_le_bytes()); private.extend(target.as_bytes());
+                private.extend(0.25f32.to_le_bytes()); private.extend((-1i16).to_le_bytes());
+                private.push(0x10); private.extend(15u16.to_le_bytes());
+                private.extend(0u32.to_le_bytes()); // Unnamed target.
+                if let Some(slot) = slot { private.push(slot); }
+                private.push(u8::from(invert));
+            }
+            let shaper_offset = private.len();
+            private.extend([0, 0]); // Both shapers absent.
+            private.extend(0u32.to_le_bytes()); // Unnamed assignment.
+            private.extend(1u32.to_le_bytes()); private.extend(6u32.to_le_bytes()); // Velocity.
+            private.extend([0; 4]); private.extend(17u32.to_le_bytes()); private.push(0x80);
+            let mut body = vec![1, 3, 1];
+            body.extend((private.len() as u32).to_le_bytes()); body.extend(&private); body.extend([0; 8]);
+            let original = Chunk { id: 0x0c, data: body };
+            let parsed = ExternalMod::try_from(&original).unwrap().params().unwrap();
+            assert_eq!((parsed.targets[0].param.as_str(), parsed.targets[0].slot, parsed.targets[0].invert), (*param, None, true));
+            assert_eq!((parsed.targets[1].param.as_str(), parsed.targets[1].slot, parsed.targets[1].invert), ("filterCutoff", Some(7), false));
+            assert!(parsed.targets.iter().all(|target| target.shaper.is_none()));
+            assert_eq!(parsed.unknown_id, 17); assert_eq!(parsed.unknown_tail, [0x80]);
+            let mut before = Vec::new(); original.write(&mut before).unwrap();
+            let readback = Chunk::read(Cursor::new(&before)).unwrap();
+            assert_eq!(ExternalMod::try_from(&readback).unwrap().params().unwrap(), parsed);
+            let mut after = Vec::new(); readback.write(&mut after).unwrap(); assert_eq!(after, before);
+            let mut bad = private.clone();
+            bad[shaper_offset] = 15;
+            let object = ExternalMod(StructuredObject { version: 0x103, private_data: bad, public_data: Vec::new(), children: Vec::new() });
+            assert!(object.params().is_err(), "unknown shaper kinds remain rejected");
+        }
+    }
 
     #[test]
     fn modern_external_modulation_retains_opaque_footer_and_strict_bounds() {
