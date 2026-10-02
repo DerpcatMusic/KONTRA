@@ -195,7 +195,35 @@ impl std::convert::TryFrom<&Chunk> for FNTableImpl {
 impl FNTableImpl {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let version = reader.read_u16_le()?;
-        assert!(version == 2); // hard-coded to 2, kontakt throws exception otherwise
+        if version == 3 {
+            // Kontakt 8 stores one flat namespace instead of three separate
+            // tables. Keep the same native indices for every lookup category.
+            let count = reader.read_u32_le()?;
+            let position = reader.stream_position()?;
+            let end = reader.seek(std::io::SeekFrom::End(0))?;
+            reader.seek(std::io::SeekFrom::Start(position))?;
+            if u64::from(count) > end.saturating_sub(position) / 32 {
+                return Err(Error::Static("Invalid flat filename table count"));
+            }
+            let mut files = HashMap::new();
+            for i in 0..count {
+                // Native record header and metadata remain uninterpreted.
+                reader.read_bytes(8)?;
+                files.insert(i, BFileName::read(&mut reader)?.join("/"));
+                reader.read_bytes(20)?;
+            }
+            return Ok(Self {
+                special_filetable: files.clone(),
+                sample_filetable: files.clone(),
+                other_filetable: files,
+                sample_timestamp_table: HashMap::new(),
+            });
+        }
+        if version != 2 {
+            return Err(Error::Generic(format!(
+                "Unsupported filename table version {version}"
+            )));
+        }
 
         // special filetable
         let file_count = reader.read_u32_le()?;

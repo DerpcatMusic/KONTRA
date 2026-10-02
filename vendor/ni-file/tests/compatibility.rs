@@ -887,3 +887,72 @@ fn generic_nis_read_reuses_detection_and_preserves_stream_consumption() {
     bytes[60..64].copy_from_slice(&2u32.to_le_bytes()); // corrupt child-list version
     assert!(NIFile::read(Cursor::new(&bytes)).is_err());
 }
+
+#[test]
+fn explicit_slot_counts_preserve_slots_and_reject_mismatches() {
+    use ni_file::kontakt::{objects::BParamArrayBParFX8, Chunk};
+    let mut data = vec![0, 0x13, 0];
+    data.extend(2u32.to_le_bytes());
+    data.extend([0, 1]);
+    Chunk {
+        id: 0x25,
+        data: b"authored".to_vec(),
+    }
+    .write(&mut data)
+    .unwrap();
+    let array = BParamArrayBParFX8::read(Cursor::new(&data), 2).unwrap();
+    assert_eq!(array.version, 0x13);
+    assert_eq!(array.items.len(), 2);
+    assert!(array.items[0].is_none());
+    assert_eq!(array.items[1].as_ref().unwrap().data, b"authored");
+    assert!(BParamArrayBParFX8::read(Cursor::new(&data), 8).is_err());
+    for end in 0..data.len() {
+        assert!(
+            BParamArrayBParFX8::read(Cursor::new(&data[..end]), 2).is_err(),
+            "end={end}"
+        );
+    }
+    data[7] = 2;
+    assert!(BParamArrayBParFX8::read(Cursor::new(data), 2).is_err());
+}
+
+#[test]
+fn flat_filename_tables_keep_global_indices_and_reject_damage() {
+    use ni_file::kontakt::objects::FNTableImpl;
+    // Authored v3 records: opaque metadata, one index space for every kind of
+    // reference. This fixture contains no library data or native preset bytes.
+    let names = ["Resources.nkr", "Sample.ncw", "Impulse.ncw"];
+    let mut data = 3u16.to_le_bytes().to_vec();
+    data.extend((names.len() as u32).to_le_bytes());
+    for (i, name) in names.iter().enumerate() {
+        data.extend([i as u8; 8]);
+        data.extend(1i32.to_le_bytes());
+        data.push(4);
+        data.extend((name.len() as u32).to_le_bytes());
+        data.extend(name.encode_utf16().flat_map(u16::to_le_bytes));
+        data.extend([i as u8; 20]);
+    }
+    let table = FNTableImpl::read(Cursor::new(&data)).unwrap();
+    for (i, name) in names.iter().enumerate() {
+        assert_eq!(table.special_filetable[&(i as u32)], *name);
+        assert_eq!(table.sample_filetable[&(i as u32)], *name);
+        assert_eq!(table.other_filetable[&(i as u32)], *name);
+    }
+    assert!(table.sample_timestamp_table.is_empty());
+    for end in 0..data.len() {
+        assert!(
+            FNTableImpl::read(Cursor::new(&data[..end])).is_err(),
+            "end={end}"
+        );
+    }
+    for (offset, bytes) in [(2, u32::MAX.to_le_bytes()), (14, (-1i32).to_le_bytes())] {
+        let mut damaged = data.clone();
+        damaged[offset..offset + 4].copy_from_slice(&bytes);
+        assert!(FNTableImpl::read(Cursor::new(damaged)).is_err());
+    }
+    data[0] = 4;
+    assert!(FNTableImpl::read(Cursor::new(data))
+        .unwrap_err()
+        .to_string()
+        .contains("version 4"));
+}
