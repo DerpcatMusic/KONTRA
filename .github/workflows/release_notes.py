@@ -22,7 +22,13 @@ def sections(text):
                        if "unreleased" in p.partition("\n")[0].lower()), "")
     for part in re.split(r"(?m)^### ", unreleased)[1:]:
         name, _, body = part.partition("\n")
-        name = "Known limits" if name.strip() == "Compatibility" else name.strip()
+        name = name.strip()
+        if name == "Compatibility":
+            name = "Known limits"
+        elif name == "Verified processing and diagnostics follow-ups":
+            name = "Changed"
+        elif name.startswith("Fixed after "):
+            name = "Fixed"
         if name in result:
             result[name].extend(b.strip() for b in re.split(r"\n\s*\n|(?=^- )", body, flags=re.M) if b.strip())
     return result

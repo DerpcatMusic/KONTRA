@@ -119,6 +119,8 @@ pub struct Thread {
     pub generation: u32,
     pub live: bool,
     pub waiting: bool,
+    /// A worker-backed operation suspends this same callback without a timer.
+    pub async_wait: Option<i32>,
     /// Instructions run since the callback started or last waited.
     pub spent: u64,
     pub calls: [u32; MAX_CALL_DEPTH],
@@ -133,6 +135,7 @@ impl Default for Thread {
             generation: 0,
             live: false,
             waiting: false,
+            async_wait: None,
             spent: 0,
             calls: [0; MAX_CALL_DEPTH],
             ctx: Ctx::new(0, Kind::Cb(Callback::Init)),

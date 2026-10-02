@@ -20,7 +20,7 @@ use std::{
 /// last place a first run looks. The app's libraries come from its settings.
 pub const LIBRARY_ROOT: &str = "/path/to/Kontakt-Libraries";
 
-pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, ModSource, ModTarget, Modulator, ShaperCurve};
+pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, PitchLfo, ModSource, ModTarget, Modulator, ShaperCurve};
 
 /// Wavetable oscillator settings. Position and phase values are normalized.
 /// A zero form type is linear; other forms require an implemented phase map.
@@ -81,6 +81,9 @@ pub struct Group {
     pub tune: f64,
     pub key_tracking: bool,
     pub reverse: bool,
+    /// Serialized Source mode; native mode 0 has no sample preload-byte budget.
+    #[serde(default)]
+    pub source_mode: Option<u32>,
     pub release_trigger: bool,
     /// Release-trigger counter start `T` in ms (Source module): the counter
     /// counts down from it while the key is held; 0 disables it.
@@ -99,6 +102,8 @@ pub struct Group {
     pub modulators: Vec<Modulator>,
     /// Internal AHDSRs driving module parameters (filter cutoff, EQ gain).
     pub envelopes: Vec<ModEnvelope>,
+    #[serde(default)]
+    pub pitch_lfos: Vec<PitchLfo>,
     /// Group insert effects.
     pub fx: crate::fx::Chain,
     /// First insert slot after the Amplifier (0: all after, 8: all before).
@@ -118,8 +123,8 @@ pub struct Group {
 
 impl Default for Group {
     fn default() -> Self {
-        Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None }
+        Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false, source_mode: Some(0),
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), pitch_lfos: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None }
     }
 }
 
@@ -403,6 +408,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         group.mods = modulation.mods;
         group.modulators = modulation.modulators;
         group.envelopes = modulation.envelopes;
+        group.pitch_lfos = modulation.pitch_lfos;
         group.fx = fx;
     }
     let mut slots = 0;
@@ -729,7 +735,9 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     for g in &gl.groups {
         let v = g.params().with_context(|| format!("Group {} version {:x}", groups.len(),g.0.version))?;
         ensure!(v.volume.is_finite() && v.pan.is_finite() && v.tune.is_finite() && v.tune > 0.0, "Invalid group gain/tuning");
-        let wavetable = match g.source_identity() {
+        let source_identity = g.source_identity();
+        let source_mode = source_identity.as_ref().ok().map(|s| s.mode);
+        let wavetable = match source_identity {
             Ok(source) if source.version == 0x106 && source.mode == 9 => {
                 let state = g.wavetable_source().map_err(anyhow::Error::from)
                     .and_then(|state| wavetable_params(&state.context("Missing wavetable source record")?))
@@ -765,7 +773,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         };
         warnings.extend(crate::engine::filter::unsupported_at(&fx, u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8)));
         // Gain and tuning are linear ratios (see audits/MODULATION.md).
-        groups.push(Group {
+        let group = Group {
             name: v.name,
             start_criteria: v.start_criteria,
             gain: v.volume,
@@ -773,6 +781,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             tune: v.tune as f64,
             key_tracking: v.key_tracking,
             reverse: v.reverse,
+            source_mode,
             release_trigger: v.release_trigger,
             release_trigger_note_monophonic: v.release_trigger_note_monophonic,
             release_counter_ms: v.rls_trig_counter,
@@ -784,12 +793,21 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             mods: modulation.mods,
             modulators: modulation.modulators,
             envelopes: modulation.envelopes,
+            pitch_lfos: modulation.pitch_lfos,
             fx,
             amp_split_slot: u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8),
             voice_group: u32::try_from(v.voice_group_index).ok(),
             interp_quality: v.interp_quality,
             wavetable,
-        });
+        };
+        if group.mods.iter().any(|m| matches!(&m.target, crate::modulation::ModTarget::Group(p) if p == "loopStart" || p == "loopLength")
+            && !crate::engine::params::loop_control_supported(&group, m)) {
+            warnings.push(format!("{}: loop modulation is retained but only Constant, zero-lag, unshaped/non-inverted targets in Source mode 0 are processed; other loop assignments are unapplied", group.name));
+        }
+        if group.mods.iter().any(|m| crate::engine::params::loop_control_supported(&group, m)) {
+            warnings.push(format!("{}: Constant loop controls apply on native 32-frame ticks to held forward, non-alternating, full-sample loops with valid native four-frame bounds; cropped/reverse/alternating paths, edits whose end lies more than four frames behind the cursor and invalid signed bounds are deferred until eligible; edits after release retain their existing geometry", group.name));
+        }
+        groups.push(group);
     }
     let mut scripts = Vec::new();
     let mut script_state = Vec::new();
@@ -797,7 +815,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         let s = BParScript::try_from(c)?.params().context("Script parameters")?;
         if !s.bypass && let Some(text) = script_source(&path, slot, &s, &mut warnings) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
     }
-    warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, internal pitch AHDSRs drive voice pitch, and velocity, key, CC, pitch bend and aftertouch drive supported volume, pitch, sample-start, envelope-time and group-effect targets; LFOs, additional volume envelopes, flexible pitch envelopes, external inversion, unsupported effect targets and other modulator parameters are not applied".into());
+    warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, internal pitch AHDSRs drive voice pitch, and velocity, key, CC, pitch bend and aftertouch drive supported volume, pitch, sample-start, envelope-time and group-effect targets; LFO states outside saved retriggered zero-delay sine-only Multi pitch, additional volume envelopes, flexible pitch envelopes, external inversion, unsupported effect targets and other modulator parameters are not applied".into());
     let parent = path.parent().context("Instrument has no parent")?;
     let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
     let mut resolver = Resolver::new(root);

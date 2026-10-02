@@ -69,6 +69,32 @@ impl Blend {
 }
 
 impl PlayMap {
+    /// Native forward loop controls add truncated fractions of total sample frames.
+    /// Cropped/reverse/alternating paths have not been independently established.
+    pub fn controlled_loop(mut self, offsets: [f32; 2], frames: u64) -> Option<Self> {
+        let mut l = self.looped?;
+        if self.reverse || l.alternating || self.start != 0 || self.end != frames || frames < 4 || frames > i32::MAX as u64
+            || !offsets.iter().all(|v| v.is_finite()) { return None; }
+        let shifts = offsets.map(|v| frames as f32 * v);
+        if !shifts.iter().all(|&v| v.is_finite() && v >= i32::MIN as f32 && v < 2147483648.) { return None; }
+        let [start_shift, length_shift] = shifts.map(|v| i64::from(v as i32));
+        let n = frames as i64;
+        let mut start = l.start as i64 + start_shift;
+        let mut end = l.end as i64 + start_shift + length_shift;
+        if start < 0 { end = (end - start).min(n); start = 0; }
+        if end >= n { start = (start + n - end).max(0); end = n; }
+        if end - start < 4 {
+            if start < n - 4 { end = start + 4; } else if start >= 4 { start = end - 4; }
+        }
+        // Do not turn an out-of-range native signed bound into an unsigned path.
+        if start < 0 || end > n || end - start < 4 { return None; }
+        l.start = start as u64;
+        l.end = end as u64;
+        l.xfade = l.xfade.min(l.end - l.start - 1).min(l.start);
+        self.looped = Some(l);
+        Some(self)
+    }
+
     /// Loop geometry `(loop, first crossing, loop length)` when the path reaches the loop.
     fn cycle(&self) -> Option<(LoopMap, u64, u64)> {
         let l = self.looped.filter(|l| {

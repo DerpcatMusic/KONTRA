@@ -17,6 +17,7 @@ use crossbeam_queue::ArrayQueue;
 use crate::engine::load_scripts;
 use moose::mui::mui::scene::Image;
 use moose::prelude::*;
+use moose::core::{ExactAddress, ExactEvent, ExactEventBody, ExactEventRef, ExactNoteAddress, ExactNoteKind, LosslessEventRef};
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
@@ -383,6 +384,7 @@ struct PartDiagnostics {
     audible: usize,
     underruns: u64,
     dropped_commands: u64,
+    host_note_drops: u64,
     held_keys: [[u64; 2]; 16],
     sustain_cc: [u8; 16],
     sostenuto_cc: [u8; 16],
@@ -401,12 +403,15 @@ struct AudioDiagnostics {
     output_buses: [(usize, usize); BUSES],
     parts: Vec<PartDiagnostics>,
     unsupported_note_brightness: u64,
+    unsupported_host_expression: u64,
+    alignment_overflows: u64,
+    host_note_end_rejections: u64,
 }
 
 impl AudioDiagnostics {
     fn with_parts(count: usize) -> Self {
         Self { block: 0, sample_rate: 0.0, block_size: 0, output_channels: 0,
-            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count], unsupported_note_brightness: 0 }
+            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count], unsupported_note_brightness: 0, unsupported_host_expression: 0, alignment_overflows: 0, host_note_end_rejections: 0 }
     }
 }
 
@@ -1699,12 +1704,40 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
                 "reason":"Host note-expression brightness has no verified CC74 value law; an unlinked brightness event after event-buffer overflow also has unknown provenance. It was not applied to another note or to channel CC74.",
             }));
         }
+        let ends=audio.host_note_end_rejections.saturating_sub(previous.as_ref().map_or(0,|old| old.host_note_end_rejections));
+        if ends!=0 {
+            crate::diagnostics::event(crate::diagnostics::LogLevel::Warning,"midi","host_note_end_rejected",serde_json::json!({
+                "instance_id":params.shared.instance_id,"delta":ends,"total":audio.host_note_end_rejections,
+                "reason":"The host output-event queue rejected NOTE_END. Sounding owners remain retained for retry; a no-sound switch/unmatched route could not return its identity.",
+            }));
+        }
+        let aligned=audio.alignment_overflows.saturating_sub(previous.as_ref().map_or(0,|old| old.alignment_overflows));
+        if aligned!=0 {
+            crate::diagnostics::event(crate::diagnostics::LogLevel::Warning,"midi","alignment_queue_overflow",serde_json::json!({
+                "instance_id":params.shared.instance_id,"delta":aligned,"total":audio.alignment_overflows,
+                "reason":"A prepared alignment event queue or exact-owner list filled; excess events could not retain their calibrated delay/ownership.",
+            }));
+        }
+        let unsupported = audio.unsupported_host_expression.saturating_sub(previous.as_ref().map_or(0, |old| old.unsupported_host_expression));
+        if unsupported != 0 {
+            crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "midi", "unsupported_host_expression", serde_json::json!({
+                "instance_id":params.shared.instance_id, "delta":unsupported, "total":audio.unsupported_host_expression,
+                "reason":"Native note event or expression has an unsupported or invalid value law/address, or its exact provenance was lost to input-buffer overflow. It was not projected onto another note's key row.",
+            }));
+        }
         for (part, current) in audio.parts.iter().enumerate() {
             // Rack slots retain their Engine across instrument/script reloads;
             // these counters have Engine lifetime, not generation lifetime.
             let before = previous.as_ref().and_then(|old| old.parts.get(part)).copied();
             let underruns = current.underruns.saturating_sub(before.map_or(0, |p| p.underruns));
             let dropped = current.dropped_commands.saturating_sub(before.map_or(0, |p| p.dropped_commands));
+            let owners = current.host_note_drops.saturating_sub(before.map_or(0, |p| p.host_note_drops));
+            if owners != 0 {
+                crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "midi", "host_note_owner_exhausted", serde_json::json!({
+                    "instance_id":params.shared.instance_id, "part":part, "delta":owners, "total":current.host_note_drops,
+                    "reason":"Bounded host-note ownership is full or a concrete tuple was duplicated before NOTE_END; the new note was dropped without stealing another identity.",
+                }));
+            }
             if underruns == 0 && dropped == 0 { continue }
             crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "engine", "playback_drops", serde_json::json!({
                 "instance_id":params.shared.instance_id, "part":part, "generation":current.generation,
@@ -1720,6 +1753,7 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
 /// The simplified CC74 companion cannot supply a host expression's value law
 /// or note ID. Keep it unsupported, rather than applying it as absolute MIDI2
 /// CC74 to a newer same-pitch note. Direct registered MIDI2 CC74 stays admitted.
+#[cfg(test)]
 fn unsupported_host_brightness(events: &EventList, index: usize) -> bool {
     if !events.get(index).is_some_and(|event| matches!(event.body,
         EventBody::PerNoteCC { cc:74, registered:true, .. })) { return false }
@@ -1763,11 +1797,14 @@ fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, chan
     audio.block = p.shared.blocks.load(Ordering::Relaxed); audio.sample_rate = s.rack.parts[0].rate();
     audio.block_size = frames; audio.output_channels = channels; audio.offline = offline;
     audio.unsupported_note_brightness = s.unsupported_note_brightness;
+    audio.unsupported_host_expression = s.unsupported_host_expression;
+    audio.alignment_overflows=s.align.overflows();
+    audio.host_note_end_rejections=s.host_note_end_rejections;
     audio.output_buses = std::array::from_fn(|bus| cx.bus_routing.output(bus).map_or(if bus == 0 { (0, channels.min(2)) } else { (0, 0) }, |r| (r.channel_start(), r.channel_count())));
     for (part, current) in audio.parts.iter_mut().enumerate() {
         let e = &s.rack.parts[part]; let [pending_commands, pending_writes, pending_releases] = e.pending_work();
         *current = PartDiagnostics { generation:s.installed_generation[part], script_epoch:s.script_epoch[part],
-            voices:e.active_voices(), audible:e.audible_voices(), underruns:e.underruns(), dropped_commands:e.dropped_commands(),
+            voices:e.active_voices(), audible:e.audible_voices(), underruns:e.underruns(), dropped_commands:e.dropped_commands(), host_note_drops:e.host_note_drops(),
             held_keys:std::array::from_fn(|channel| std::array::from_fn(|half| (0..64).fold(0, |keys, note|
                 keys | (u64::from(e.key_down(channel as u8, (half * 64 + note) as u8)) << note)))),
             sustain_cc:std::array::from_fn(|channel| e.cc_state()[channel][64]),
@@ -2615,6 +2652,129 @@ impl BackgroundTask for Load {
         }
     }
 }
+enum ExactInput { Routed(In, u8), Brightness, Unsupported }
+
+fn host_pattern(address: ExactNoteAddress, clap: bool) -> Option<crate::engine::HostPattern> {
+    if matches!(address.port, ExactAddress::InvalidRaw(_)) || matches!(address.channel, ExactAddress::InvalidRaw(_))
+        || matches!(address.key, ExactAddress::InvalidRaw(_)) || matches!(address.note_id, ExactAddress::InvalidRaw(_)) { return None; }
+    Some(crate::engine::HostPattern { port:address.port.raw_i32(), channel:address.channel.raw_i32(),
+        key:address.key.raw_i32(), id:address.note_id.raw_i32(), clap })
+}
+
+fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
+    use crate::engine::{HostExpression, HostNote};
+    let on = |kind, address:ExactNoteAddress, velocity:f64, clap| {
+        let Some(pattern) = host_pattern(address, clap) else { return ExactInput::Unsupported };
+        match kind {
+            ExactNoteKind::On => {
+                let (Ok(port), Ok(channel), Ok(key)) = (u8::try_from(pattern.port), u8::try_from(pattern.channel), u8::try_from(pattern.key)) else { return ExactInput::Unsupported };
+                if channel >= 16 || key >= 128 || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) { return ExactInput::Unsupported; }
+                ExactInput::Routed(In::HostOn(HostNote { port, channel, key, id:pattern.id, clap }, (velocity * 127.).round() as u8), port)
+            }
+            ExactNoteKind::Off => ExactInput::Routed(In::HostOff(pattern), 0),
+            ExactNoteKind::Choke => ExactInput::Routed(In::HostChoke(pattern), 0),
+            _ => ExactInput::Unsupported,
+        }
+    };
+    Some(match *exact.body() {
+        ExactEventBody::Note { kind, address, velocity } => on(kind,address,velocity,true),
+        // The old adapter admitted only zero tuning/length. Add identity
+        // without silently discarding unsupported attack metadata. Note-off
+        // still closes its owner independently of those attack-only fields.
+        ExactEventBody::DetailedNote { kind, address, velocity, tuning, length } => {
+            if matches!(kind,ExactNoteKind::On) && (tuning != 0. || length.is_some_and(|n| n != 0)) { ExactInput::Unsupported }
+            else { on(kind,address,f64::from(velocity),false) }
+        },
+        ExactEventBody::NoteExpression { expression_id:5, .. }
+        | ExactEventBody::NormalizedNoteExpression { expression_id:5, .. } => ExactInput::Brightness,
+        ExactEventBody::NoteExpression { expression_id, address, value } => {
+            let Some(pattern) = host_pattern(address,true) else { return Some(ExactInput::Unsupported) };
+            let x = match expression_id {
+                0 if value.is_finite() && (0.0..=4.0).contains(&value) => HostExpression::Gain(value as f32),
+                1 if value.is_finite() && (0.0..=1.0).contains(&value) => HostExpression::Pan((value * 2. - 1.) as f32),
+                2 if value.is_finite() && (-120.0..=120.0).contains(&value) => HostExpression::Tune(value as f32),
+                _ => return Some(ExactInput::Unsupported),
+            };
+            ExactInput::Routed(In::HostExpression(pattern,x),0)
+        }
+        // The adapter's faithful VST3 poly-pressure fallback exists only for
+        // anonymous IDs. Preserve that established per-key path; concrete IDs
+        // cannot borrow it and are diagnosed until their value law is added.
+        ExactEventBody::DetailedPolyPressure { .. } if exact.fallback().is_some() => return None,
+        ExactEventBody::NormalizedNoteExpression { .. } | ExactEventBody::DetailedPolyPressure { .. } => ExactInput::Unsupported,
+        _ => return None,
+    })
+}
+
+fn input_offset(event: &LosslessEventRef<'_>) -> u32 {
+    match event { LosslessEventRef::Typed(e) => e.sample_offset, LosslessEventRef::Exact(e) => e.sample_offset() }
+}
+
+fn feed_host_input(s: &mut Dsp, p: &SamplerParams, ev: In, port: u8, offset: u32, holding: bool, rate: f64) {
+    let lit = |note:u8, velocity| { if let Some(lit) = p.shared.heard.get(note as usize) { lit.store(velocity,Ordering::Relaxed); } };
+    match ev {
+        In::NoteOn(_,note,velocity) | In::HostOn(crate::engine::HostNote { key:note, .. },velocity) => lit(note,velocity.max(1)),
+        In::NoteOff(_,note) => lit(note,0),
+        In::HostOff(pattern) | In::HostChoke(pattern) if (0..128).contains(&pattern.key) => lit(pattern.key as u8,0),
+        In::Cc(_,120|123,_) => (0..128).for_each(|note| lit(note,0)),
+        In::Bend(_,value) => p.shared.bend.store(u32::from(value),Ordering::Relaxed),
+        In::Cc(_,1,value) => p.shared.modulation.store(u32::from(value),Ordering::Relaxed),
+        _ => {},
+    }
+    if holding { s.align.arrive(&mut s.rack,&mut s.routers,port,ev,s.align.clock + u64::from(offset),rate); }
+    else { articulate::dispatch(&mut s.rack,&mut s.routers,port,ev); }
+    if let In::HostOff(pattern) | In::HostChoke(pattern) = ev {
+        for key in (0..128).filter(|key| pattern.key == -1 || pattern.key == *key) {
+            let held = (0..16).any(|channel| s.rack.parts.iter().any(|e| e.host_key_held(channel,key as u8))
+                || holding && s.align.host_key_held(channel,key as u8));
+            p.shared.heard[key as usize].store(u8::from(held),Ordering::Relaxed);
+        }
+    }
+}
+
+fn relay_typed_input(e: &Event, cx: &mut ProcessContext, thru: bool) {
+    if thru && matches!(e.body,EventBody::NoteOn { .. } | EventBody::NoteOff { .. } | EventBody::PitchBend { .. } | EventBody::ControlChange { .. }) {
+        let mut out = *e; out.port = 0; cx.output_events.push(out);
+    }
+}
+
+fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, overflow: bool, cx: &mut ProcessContext, thru: bool, holding: bool, rate: f64) {
+    relay_typed_input(e,cx,thru);
+    let Some(ev) = In::from_event(&e.body) else { return };
+    if overflow && matches!(ev,In::NoteTune(..)|In::NoteGain(..)|In::NotePan(..)|In::NotePressure(..)|In::NoteBrightness(..)) {
+        if matches!(ev,In::NoteBrightness(..)) { s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1); }
+        else { s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1); }
+        return;
+    }
+    feed_host_input(s,p,ev,e.port,e.sample_offset,holding,rate);
+}
+
+fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, offset: u32) {
+    for e in &mut s.rack.parts { e.mark_host_notes(); }
+    for part in 0..s.rack.parts.len() {
+        let mut index = 0;
+        while let Some((note,pinned)) = s.rack.parts[part].host_note_at(index) {
+            if pinned || s.rack.parts.iter().any(|e| e.host_note_pending(note)) || s.align.host_note_waiting(note) { index += 1; continue; }
+            let accepted = !note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
+                kind:ExactNoteKind::End, address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id), velocity:0.,
+            })).is_ok();
+            if !accepted { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
+            for e in &mut s.rack.parts { e.retire_host_note(note); }
+            s.align.retire_host_note(note);
+        }
+    }
+    // A disabled/remapped-away input can have a held alignment record but
+    // no engine root. Close it after key-up without leaking adapter owners.
+    let mut index=0;
+    while let Some((note,held))=s.align.host_note_at(index) {
+        if held || s.align.host_note_waiting(note) || s.rack.parts.iter().any(|e| e.host_note_present(note)) { index+=1; continue; }
+        let accepted=!note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
+            kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
+        })).is_ok();
+        if accepted { s.align.retire_host_note(note); } else { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
+    }
+}
+
 pub struct Dsp {
     /// Boxed: the rack is ~300 KB, too big for a host thread's stack.
     rack: Box<Rack>,
@@ -2646,6 +2806,8 @@ pub struct Dsp {
     shared_parts: Vec<Arc<PartShared>>,
     diagnostic: AudioDiagnostics,
     unsupported_note_brightness: u64,
+    unsupported_host_expression: u64,
+    host_note_end_rejections: u64,
     // Created off-thread with the rack, never acquired or replaced by reset/process.
     _diagnostics: crate::diagnostics::DiagnosticLease,
 }
@@ -2657,7 +2819,7 @@ impl Default for Dsp {
             snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
             align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
-            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, _diagnostics: crate::diagnostics::acquire() }
+            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, host_note_end_rejections: 0, _diagnostics: crate::diagnostics::acquire() }
     }
 }
 
@@ -3358,62 +3520,43 @@ impl PluginLogic for Sampler {
         let mut peak = [0f32; 2];
         let mut gains = [0f32; MAX_BLOCK];
         let scope = p.shared.scope.source.load(Ordering::Relaxed);
-        let (mut at, mut next) = (0, 0);
+        let mut at = 0;
+        let mut incoming = events.lossless_iter().peekable();
         loop {
-            // Apply events due now; once the buffer is rendered, apply any stragglers.
-            while let Some(e) = events
-                .get(next)
-                .filter(|e| at >= frames || e.sample_offset as usize <= at)
-            {
-                if thru
-                    && matches!(
-                        e.body,
-                        EventBody::NoteOn { .. }
-                            | EventBody::NoteOff { .. }
-                            | EventBody::PitchBend { .. }
-                            | EventBody::ControlChange { .. }
-                    )
-                {
-                    let mut out = *e;
-                    out.port = 0;
-                    cx.output_events.push(out);
-                }
-                if unsupported_host_brightness(events, next) {
-                    s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1);
-                } else if let Some(ev) = In::from_event(&e.body) {
-                    // The on-screen keys and wheels follow what the host plays.
-                    let lit = |note: u8, velocity| {
-                        if let Some(lit) = p.shared.heard.get(note as usize) {
-                            lit.store(velocity, Ordering::Relaxed);
+            // Exact events are consumed once; linked semantic companions do
+            // not replace the host tuple or fan an old ID into a new key row.
+            while incoming.peek().is_some_and(|e| at >= frames || input_offset(e) as usize <= at) {
+                match incoming.next().unwrap() {
+                    LosslessEventRef::Typed(e) => feed_typed_input(s,p,e,events.overflow().is_some(),cx,thru,holding,rate),
+                    LosslessEventRef::Exact(exact) => match exact_host_input(exact) {
+                        Some(ExactInput::Routed(ev,port)) => {
+                            if let Some(e) = exact.fallback() { relay_typed_input(e,cx,thru); }
+                            for e in exact.companions() { relay_typed_input(e,cx,thru); }
+                            feed_host_input(s,p,ev,port,exact.sample_offset(),holding,rate);
+                            // A switch or unmatched route creates no sounding
+                            // owner. Return that exact identity immediately.
+                            if let In::HostOn(note,_) = ev
+                                && note.clap && !s.align.host_note_waiting(note)
+                                && !s.rack.parts.iter().any(|e| e.host_note_present(note)) {
+                                if cx.output_events.try_push_exact(ExactEvent::new(exact.sample_offset(),ExactEventBody::Note {
+                                    kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
+                                })).is_err() { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); }
+                            }
                         }
-                    };
-                    match ev {
-                        In::NoteOn(_, note, velocity) => lit(note, velocity),
-                        In::NoteOff(_, note) => lit(note, 0),
-                        // All sound or all notes off, as a host sends on stop.
-                        In::Cc(_, 120 | 123, _) => (0..128).for_each(|note| lit(note, 0)),
-                        In::Bend(_, value) => p.shared.bend.store(u32::from(value), Ordering::Relaxed),
-                        In::Cc(_, 1, value) => {
-                            p.shared.modulation.store(u32::from(value), Ordering::Relaxed)
+                        Some(ExactInput::Brightness) => s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1),
+                        Some(ExactInput::Unsupported) => s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1),
+                        None => {
+                            if let Some(e) = exact.fallback() { feed_typed_input(s,p,e,false,cx,thru,holding,rate); }
+                            for e in exact.companions() { feed_typed_input(s,p,e,false,cx,thru,holding,rate); }
                         }
-                        _ => {}
-                    }
-                    if holding {
-                        let arrived = s.align.clock + e.sample_offset as u64;
-                        s.align.arrive(&mut s.rack, &mut s.routers, e.port, ev, arrived, rate);
-                    } else {
-                        articulate::dispatch(&mut s.rack, &mut s.routers, e.port, ev);
-                    }
+                    },
                 }
-                next += 1;
             }
             if at >= frames {
                 break;
             }
             let now = s.align.clock + at as u64;
-            let mut due = events
-                .get(next)
-                .map_or(frames, |e| (e.sample_offset as usize).min(frames));
+            let mut due = incoming.peek().map_or(frames,|e| (input_offset(e) as usize).min(frames));
             if holding {
                 s.align.release(now, &mut s.rack, &mut s.routers);
                 if let Some(held) = s.align.next_due() {
@@ -3478,6 +3621,7 @@ impl PluginLogic for Sampler {
             }
             at += len;
         }
+        finish_host_notes(s,cx,frames.saturating_sub(1) as u32);
         if s.snapshot.is_none() && !p.shared.snapshots.is_full() {
             s.snapshot = (p.shared.snapshot_requests.pop())
                 .map(|(slot, epoch, saved)| (slot, (epoch, version(s, slot).1), saved, Refresh::default()));
@@ -6748,6 +6892,130 @@ end on"#;
         overflow.push(brightness);
         assert!(overflow.exact_for_event(0).is_none());
         assert!(unsupported_host_brightness(&overflow,0));
+    }
+
+    #[test]
+    fn exact_host_ids_keep_old_expression_and_emit_end_after_every_part_without_heap() {
+        use crate::{audio::Sample, import::{Group,Zone}};
+        let params=SamplerParams::new();
+        let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+        for (part,size) in [(0,256),(1,24000)] {
+            dsp.rack.parts[part].reset(48000.);
+            let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.2;2];size] })]).unwrap();
+            dsp.rack.parts[part].set_bank(Some(Box::new(bank)));
+        }
+        let address=|id| ExactNoteAddress::from_raw_signed(0,4,60,id);
+        let mut on=EventList::with_capacity(4);
+        on.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:address(10),velocity:0.8 })).unwrap();
+        let mut reuse=EventList::with_capacity(8);
+        reuse.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::Off,address:address(10),velocity:0. })).unwrap();
+        reuse.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:address(11),velocity:0.8 })).unwrap();
+        let token=reuse.try_push_exact_token(ExactEvent::new(0,ExactEventBody::NoteExpression { expression_id:2,address:address(10),value:12. })).unwrap();
+        reuse.try_push_exact_companion(token,Event::on_port(0,0,EventBody::PerNotePitchBend { group:0,channel:4,note:60,value:moose::core::midi::per_note_bend_from_semitones(12.) })).unwrap();
+        let mut off=EventList::with_capacity(2);
+        off.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::Off,address:address(-1),velocity:0. })).unwrap();
+        let none=EventList::with_capacity(1);
+        let mut outgoing=EventList::with_capacity(128);
+        let transport=TransportInfo::default();
+        let mut cx=ProcessContext::new(&transport,48000.,128,&mut outgoing);
+        let (mut left,mut right)=([0.;128],[0.;128]);
+        let mut channels=[&mut left[..],&mut right[..]];
+        let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
+        assert_eq!(allocations(|| {
+            Sampler::process(&mut dsp,&params,&mut buffer,&on,&mut cx);
+            Sampler::process(&mut dsp,&params,&mut buffer,&reuse,&mut cx);
+        }),0);
+        let voices=dsp.rack.parts[1].voice_census();
+        assert!(voices.iter().any(|v| v.released && v.step>1.9));
+        assert!(voices.iter().any(|v| !v.released && (v.step-1.).abs()<0.01),"old-id expression changed the new same-key note");
+        assert!(params.shared.heard[60].load(Ordering::Relaxed)>0,"old key-up cleared the newer host key");
+        assert_eq!(dsp.unsupported_host_expression,0);
+        // Part 0's attack has ended; part 1's old release still owns id 10.
+        assert!(!cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,.. }))));
+        assert_eq!(allocations(|| {
+            Sampler::process(&mut dsp,&params,&mut buffer,&off,&mut cx);
+            for _ in 0..128 { Sampler::process(&mut dsp,&params,&mut buffer,&none,&mut cx); }
+        }),0);
+        let ended:Vec<_>=cx.output_events.lossless_iter().filter_map(|event| match event {
+            LosslessEventRef::Exact(e) => match *e.body() { ExactEventBody::Note { kind:ExactNoteKind::End,address,.. } => Some(address),_=>None },_=>None,
+        }).collect();
+        assert_eq!(ended.len(),2);
+        for id in [10,11] { assert!(ended.contains(&address(id))); }
+        assert!(dsp.rack.parts.iter().all(|e| e.host_note_at(0).is_none()));
+        for holding in [false,true] {
+            dsp.align.plan.on=holding;
+            let unmatched=ExactNoteAddress::from_raw_signed(7,4,60,12+i32::from(holding));
+            let mut absent=EventList::with_capacity(2);
+            absent.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:unmatched,velocity:0.8 })).unwrap();
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp,&params,&mut buffer,&absent,&mut cx); }),0);
+            assert!(cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address,.. } if *address==unmatched))),"a no-sound route retained the host identity");
+        }
+        let mut art=crate::articulate::Articulate::default();
+        art.sync("switch",&[("Switch".into(),Some(60),None)]);
+        for router in &mut dsp.routers { router.set_route(crate::articulate::Route::new("switch",&art,&crate::articulate::Mpe::default())); }
+        let switch=ExactNoteAddress::from_raw_signed(0,4,60,14);
+        let mut switched=EventList::with_capacity(2);
+        switched.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:switch,velocity:0.8 })).unwrap();
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp,&params,&mut buffer,&switched,&mut cx); }),0);
+        assert!(cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address,.. } if *address==switch))),"aligned keyswitch retained the host identity");
+    }
+
+    #[test]
+    fn exact_note_end_backpressure_retains_owners_for_one_retry_without_heap() {
+        use crate::engine::{HostNote,HostPattern};
+        let params=SamplerParams::new(); let mut dsp=Dsp::default();
+        let first=HostNote { port:0,channel:4,key:60,id:10,clap:true };
+        let second=HostNote { id:11,..first };
+        let pattern=HostPattern { port:0,channel:4,key:60,id:-1,clap:true };
+        let transport=TransportInfo::default(); let mut output=EventList::with_capacity(1);
+        let mut cx=ProcessContext::new(&transport,48000.,128,&mut output);
+        assert_eq!(allocations(|| {
+            feed_host_input(&mut dsp,&params,In::HostOn(first,100),0,0,false,48000.);
+            feed_host_input(&mut dsp,&params,In::HostOn(second,100),0,0,false,48000.);
+            feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,0,false,48000.);
+            finish_host_notes(&mut dsp,&mut cx,127);
+            assert_eq!(dsp.host_note_end_rejections,1,"repeated failures scanned the full owner pool");
+            assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(first) && e.host_note_present(second)));
+            cx.output_events.clear();
+            finish_host_notes(&mut dsp,&mut cx,127);
+            assert_eq!(dsp.host_note_end_rejections,1);
+            assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(second)));
+        }),0);
+    }
+
+    #[test]
+    fn delayed_exact_expression_retains_owner_until_safe_same_id_reuse() {
+        use crate::{audio::Sample, import::{Group,Zone}, engine::{HostNote,HostPattern,HostExpression}};
+        let params=SamplerParams::new(); let mut dsp=Dsp::default();
+        dsp.rack.parts[0].reset(48000.);
+        let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.2;2];32] })]).unwrap();
+        dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+        dsp.align.plan.parts[0]=Holds::of(&timing::Timing { override_ms:Some(0.),..Default::default() },&[],10.);
+        let note=HostNote { port:0,channel:4,key:60,id:10,clap:true };
+        let pattern=HostPattern { port:0,channel:4,key:60,id:10,clap:true };
+        let transport=TransportInfo::default(); let mut output=EventList::with_capacity(128);
+        let mut cx=ProcessContext::new(&transport,48000.,128,&mut output);
+        let (mut left,mut right)=([0.;64],[0.;64]);
+        assert_eq!(allocations(|| {
+            feed_host_input(&mut dsp,&params,In::HostOn(note,100),0,0,true,48000.);
+            feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,96,true,48000.);
+            feed_host_input(&mut dsp,&params,In::HostExpression(pattern,HostExpression::Gain(0.)),0,240,true,48000.);
+            dsp.align.release(600,&mut dsp.rack,&mut dsp.routers);
+            dsp.rack.parts[0].render(&mut left,&mut right);
+            finish_host_notes(&mut dsp,&mut cx,63);
+            assert_eq!(dsp.rack.parts[0].active_voices(),0);
+            assert!(dsp.align.host_note_waiting(note),"delayed old expression lost its owner pin");
+            assert!(dsp.rack.parts[0].host_note_present(note));
+            assert!(!dsp.rack.parts[0].admit_host_note(note),"same ID became reusable before delayed work completed");
+            assert!(!cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,.. }))));
+            dsp.align.release(720,&mut dsp.rack,&mut dsp.routers);
+            finish_host_notes(&mut dsp,&mut cx,63);
+            assert!(!dsp.align.host_note_waiting(note));
+            assert!(!dsp.rack.parts[0].host_note_present(note));
+            feed_host_input(&mut dsp,&params,In::HostOn(note,100),0,0,false,48000.);
+            dsp.rack.parts[0].render(&mut left,&mut right);
+            assert!(left.iter().any(|sample| sample.abs()>1e-6),"old gain expression leaked into reused host ID");
+        }),0);
     }
 
     /// The keys lit by the host's notes go out with its all-notes-off and
