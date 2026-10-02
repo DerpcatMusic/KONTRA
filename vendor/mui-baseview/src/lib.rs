@@ -34,6 +34,9 @@ use mui::vello::host::{Frame, Host, target_size};
 use mui::vello::kurbo::Affine;
 use raw_window_handle::HasWindowHandle;
 
+mod timing;
+pub use timing::{NativeFrameOutcome, NativeFrameSample, NativeTimingHook, NativeTimingReport, NATIVE_METRICS, NATIVE_OUTCOMES, NATIVE_TIMING_LIMIT};
+
 const GPU_RETRY: Duration = Duration::from_millis(500);
 /// KONTAKTO patch: MUI lines per wheel notch (see the wheel event below).
 /// baseview does not read the system's scroll-lines setting, so this is fixed:
@@ -86,6 +89,8 @@ pub struct Requests {
     keys: Mutex<Option<KeyHook>>,
     /// KONTAKTO patch: see [`PointerHook`].
     pointer: Mutex<Option<PointerHook>>,
+    /// KONTAKTO patch: one bounded native capture, configured before open.
+    timing: Mutex<Option<NativeTimingHook>>,
 }
 
 impl Requests {
@@ -97,6 +102,11 @@ impl Requests {
     /// KONTAKTO patch: let `hook` hide the pointer; see [`PointerHook`].
     pub fn on_pointer(&self, hook: PointerHook) {
         *self.pointer.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+    }
+
+    /// Capture the next primary drag for ten seconds; deliver one report off the frame path.
+    pub fn on_native_timing(&self, hook: NativeTimingHook) {
+        *self.timing.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
 
     /// Resize the child window to `width` x `height` logical points.
@@ -186,11 +196,14 @@ fn build<V: View + Send + 'static>(
         let mut handler = Handler::new(shared, requests, physical, size.scale_factor);
         handler.a11y = Some(A11y::new());
         handler.parented = parented;
+        let timed = handler.timing.is_some();
         Ok(Adapter {
             cx,
             handler: RefCell::new(handler),
             pending_resize: Cell::new(None),
             pending_events: RefCell::new(VecDeque::new()),
+            timed,
+            reentrant: Cell::new(0),
         })
     }
 }
@@ -223,6 +236,7 @@ pub struct Handler<V> {
     notch: (Option<Instant>, i32),
     /// The queue and the frame schedule.
     pub driver: Driver,
+    timing: Option<timing::Capture>,
 }
 
 impl<V: View> Handler<V> {
@@ -233,6 +247,8 @@ impl<V: View> Handler<V> {
         size: (u32, u32),
         scale: f64,
     ) -> Self {
+        let timing = requests.timing.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone().map(|hook| timing::Capture::new(hook, size, scale));
         Self {
             shared,
             requests,
@@ -248,10 +264,11 @@ impl<V: View> Handler<V> {
             hidden_at: None,
             notch: (None, 0),
             driver: Driver::new(size, scale, Box::new(Clipboard::default())),
+            timing,
         }
     }
 
-    fn tick(&mut self, window: &WindowContext) {
+    fn tick(&mut self, window: &WindowContext, sample: &mut Option<NativeFrameSample>) {
         let requests = &self.requests;
         let packed = requests.size.swap(0, Ordering::AcqRel);
         let bits = requests.scale.swap(0, Ordering::AcqRel);
@@ -273,9 +290,11 @@ impl<V: View> Handler<V> {
         // A hidden or detached editor cannot present, and on Windows this is
         // the host's GUI thread: a blocking present there freezes the host.
         let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+            if let Some(s) = sample { s.outcome = NativeFrameOutcome::NoWindow; }
             return;
         };
         if platform::should_skip_frame(handle) {
+            if let Some(s) = sample { s.outcome = NativeFrameOutcome::Hidden; }
             return;
         }
         // macOS: keep the child pinned to the parent's top as it resizes.
@@ -315,7 +334,9 @@ impl<V: View> Handler<V> {
         // `Arc<ResolvedScene>` if it shows in a profile.
         let mut hide = false;
         let scene = {
+            let lock_at = sample.as_ref().map(|_| Instant::now());
             let mut s = lock(&self.shared);
+            if let Some(sample) = sample { sample.lock_ns = timing::elapsed(lock_at); }
             let a11y = self.a11y.as_mut();
             if let Some(a11y) = &a11y
                 && a11y.wants_tree()
@@ -327,7 +348,12 @@ impl<V: View> Handler<V> {
             {
                 self.driver.redraw();
             }
+            let advance_at = sample.as_ref().map(|_| Instant::now());
             let fresh = self.driver.advance(&mut s, now);
+            if let Some(sample) = sample {
+                sample.advance_ns = timing::elapsed(advance_at);
+                sample.new_scene = fresh;
+            }
             // KONTAKTO patch: the app says whether the pointer hides.
             let hook = self.requests.pointer.lock().ok().and_then(|h| h.clone());
             if let Some(hook) = hook {
@@ -350,16 +376,38 @@ impl<V: View> Handler<V> {
             }
             self.unpainted |= fresh;
             if self.unpainted && self.gpu.is_some() {
-                s.ui.scene().cloned()
+                let scene_at = sample.as_ref().map(|_| Instant::now());
+                let scene = s.ui.scene().cloned();
+                if let Some(sample) = sample { sample.scene_ns = timing::elapsed(scene_at); }
+                scene
             } else {
                 None
             }
         };
+        if self.gpu.is_none() {
+            if let Some(sample) = sample { sample.outcome = NativeFrameOutcome::NoGpu; }
+        }
         if let (Some(gpu), Some(scene)) = (self.gpu.as_mut(), scene) {
+            let resize_at = sample.as_ref().map(|_| Instant::now());
+            let mut resize_failed = false;
             if let Err(e) = gpu.resize(size.0, size.1) {
+                resize_failed = true;
                 log(&self.shared, &format!("mui-baseview: {e}"));
             }
-            match gpu.present(&scene, Affine::scale(self.driver.ui_scale())) {
+            if let Some(sample) = sample { sample.resize_ns = timing::elapsed(resize_at); }
+            let present_at = sample.as_ref().map(|_| Instant::now());
+            let presented = gpu.present(&scene, Affine::scale(self.driver.ui_scale()));
+            if let Some(sample) = sample {
+                sample.present_ns = timing::elapsed(present_at);
+                sample.outcome = if resize_failed { NativeFrameOutcome::Error } else { match &presented {
+                    Ok(Frame::Presented(_)) => NativeFrameOutcome::Presented,
+                    Ok(Frame::Current) => NativeFrameOutcome::Current,
+                    Ok(Frame::Skipped) => NativeFrameOutcome::Skipped,
+                    Ok(Frame::SurfaceLost) => NativeFrameOutcome::SurfaceLost,
+                    Err(_) => NativeFrameOutcome::Error,
+                }};
+            }
+            match presented {
                 Ok(Frame::Presented(_) | Frame::Current) => self.unpainted = false,
                 Ok(Frame::Skipped) => {}
                 Ok(Frame::SurfaceLost) => {
@@ -421,10 +469,20 @@ impl<V: View> Handler<V> {
         self.scale = size.scale_factor;
         let physical = (size.physical.width, size.physical.height);
         self.driver.resized(physical, size.scale_factor);
+        if let Some(capture) = &mut self.timing { capture.geometry(physical, size.scale_factor); }
     }
 
     /// One native event, as baseview delivers it.
     pub fn on_event_inner(&mut self, event: &Event) -> EventStatus {
+        if let Some(capture) = &mut self.timing {
+            match event {
+                Event::Mouse(MouseEvent::ButtonPressed { button: MouseButton::Left, .. }) => capture.primary = true,
+                Event::Mouse(MouseEvent::ButtonReleased { button: MouseButton::Left, .. })
+                | Event::Window(WindowEvent::Unfocused) => capture.primary = false,
+                Event::Mouse(MouseEvent::CursorMoved { .. }) => capture.pointer_move(Instant::now()),
+                _ => {}
+            }
+        }
         let scale = self.scale;
         let points = |p: PhysicalPosition<f64>| Point::new(p.x / scale, p.y / scale);
         let d = &mut self.driver;
@@ -537,6 +595,8 @@ struct Adapter<V> {
     handler: RefCell<Handler<V>>,
     pending_resize: Cell<Option<WindowSize>>,
     pending_events: RefCell<VecDeque<Event>>,
+    timed: bool,
+    reentrant: Cell<u64>,
 }
 
 impl<V: View> Adapter<V> {
@@ -568,9 +628,21 @@ fn guard<V: View, R>(h: &mut Handler<V>, f: impl FnOnce(&mut Handler<V>) -> R) -
 impl<V: View + 'static> WindowHandler for Adapter<V> {
     fn on_frame(&self) -> Result<(), HandlerError> {
         if let Ok(mut h) = self.handler.try_borrow_mut() {
+            let at = h.timing.as_ref().map(|_| Instant::now());
             self.drain(&mut h);
-            guard(&mut h, |h| h.tick(&self.cx));
+            let mut sample = at.and_then(|at| h.timing.as_mut().and_then(|c| c.begin(at)));
+            if sample.as_ref().is_some_and(|s| s.interval_ns == 0) { self.reentrant.set(0); }
+            let completed = guard(&mut h, |h| h.tick(&self.cx, &mut sample)).is_some();
             self.drain(&mut h);
+            if let (Some(mut sample), Some(at)) = (sample, at) {
+                sample.total_ns = timing::ns(at.elapsed());
+                if !completed { sample.outcome = NativeFrameOutcome::Panicked; }
+                if let Some(capture) = &mut h.timing {
+                    capture.record(sample, Instant::now(), self.reentrant.replace(0));
+                }
+            }
+        } else if self.timed {
+            self.reentrant.set(self.reentrant.get().saturating_add(1));
         }
         Ok(())
     }

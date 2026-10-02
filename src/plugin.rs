@@ -2667,6 +2667,8 @@ impl PluginLogic for Sampler {
         for engine in &mut s.rack.parts {
             engine.begin_audio_block(frames, scripted, offline);
         }
+        s.rack.set_transport(cx.transport.playing, cx.transport.tempo, cx.transport.position_beats,
+            (cx.transport.time_sig_num, cx.transport.time_sig_den));
         if !holding && s.align.next_due().is_some() {
             s.align.flush(&mut s.rack, &mut s.routers);
         }
@@ -5009,6 +5011,62 @@ end on"#.into()],
         dsp.rack.parts[0].set_script(None);
         assert!(dsp.rack.parts[0].pop_ir_request().is_none(), "script replacement clears requests before they receive the new epoch");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn host_transport_reaches_ksp_with_sample_position_pause_seek_and_tempo_without_allocating() {
+        let source = r#"on init
+make_perfview
+declare ui_label $position(1,1)
+declare ui_label $transition(1,1)
+declare $starts := 0
+declare $stops := 0
+set_listener($NI_SIGNAL_TRANSP_START,1)
+set_listener($NI_SIGNAL_TRANSP_STOP,1)
+end on
+on listener
+if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TRANSP_START)
+inc($starts)
+else
+inc($stops)
+end if
+set_text($transition,$starts & ":" & $stops & ":" & $NI_SONG_POSITION & ":" & $DURATION_QUARTER)
+end on
+on note
+ignore_event($EVENT_ID)
+set_text($position,$NI_SONG_POSITION & ":" & $NI_TRANSPORT_RUNNING & ":" & $DURATION_QUARTER & ":" & $SIGNATURE_NUM & "/" & $SIGNATURE_DENOM & ":" & $DURATION_BAR)
+end on"#;
+        let mut log = crate::ksp::LogEngine::new(Vec::new(), 48_000.);
+        let (rt, errors) = Runtime::with_scripts(&[source], &mut log, 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let p = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+        let mut outputs = [vec![0.;128], vec![0.;128]];
+        let mut refs: Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 128);
+        let mut events = EventList::with_capacity(1);
+        events.push(Event::on_port(120, 0, EventBody::NoteOn { group: 0, channel: 0, note: 60, velocity: 100 }));
+        let mut outgoing = EventList::with_capacity(4);
+        // Each host position is authoritative: a seek never accrues the gap
+        // since the previous snapshot, and stopped transport stays fixed.
+        for (playing, tempo, beats, signature, position, transition) in [
+            (true, 120., 2., (3,4), "1924:1:500000:3/4:1500000", "1:0:1920:500000"),
+            (true, 60., 10., (7,8), "9602:1:1000000:7/8:3500000", "1:0:1920:500000"),
+            (false, 90., 3.5, (7,8), "3360:0:666666:7/8:0", "1:1:3360:666666"),
+            (false, 90., -1.25, (0,0), "-1200:0:666666:7/8:0", "1:1:3360:666666"),
+            (true, 90., 100., (4,4), "96003:1:666666:4/4:2666666", "2:1:96000:666666"),
+        ] {
+            let transport = TransportInfo { playing, tempo, position_beats: beats, time_sig_num: signature.0, time_sig_den: signature.1, ..TransportInfo::default() };
+            let mut cx = ProcessContext::new(&transport, 48_000., 128, &mut outgoing);
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0,
+                "host timing updates and transport listeners must not allocate or free");
+            let interface = dsp.rack.parts[0].script().unwrap().interface(0);
+            assert_eq!(interface.controls[0].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text(position.into()));
+            assert_eq!(interface.controls[1].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text(transition.into()),
+                "seeks/tempo changes must not fabricate start/stop transitions");
+        }
+        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
     }
 
     #[test]
