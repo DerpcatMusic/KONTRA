@@ -3036,6 +3036,8 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
     let mut process_times = Vec::new();
     let mut pending_edit = None;
     let mut publication_latencies = Vec::new();
+    let (mut next_observe, mut last_observe) = (Duration::ZERO, start);
+    let mut observer_gaps = Vec::new();
     let blocks = ((edits as f64 / 60.0 + 1.0) * 48000.0 / frames as f64).ceil() as usize;
     for block in 0..blocks {
         params.shared.watched.store(true, Ordering::Relaxed);
@@ -3061,9 +3063,19 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
         Sampler::process(&mut dsp, &params, &mut buffer, &none, &mut context);
         process_times.push(at.elapsed().as_secs_f64() * 1e3);
         let ready = publications.load(Ordering::Acquire);
-        if ready != published {
-            published = ready;
-            if let Some(observer) = observer.as_mut() { observer(&params)?; }
+        // The editor owns publication once its first frame marks the heartbeat.
+        // Pump real frames independently of Load; its completions cannot wake an
+        // editor that is now responsible for draining and re-lending live views.
+        let observing = observer.is_some();
+        let frame_due = observing && start.elapsed() >= next_observe;
+        if frame_due {
+            let at = Instant::now();
+            observer.as_mut().unwrap()(&params)?;
+            observer_gaps.push((at - last_observe).as_secs_f64() * 1e3);
+            last_observe = at;
+            next_observe = Duration::from_secs_f64(((start.elapsed().as_secs_f64() * 60.).floor() + 1.) / 60.);
+        }
+        if frame_due || (!observing && ready != published) {
             // Only a callback-derived Live value can settle the optimistic edit.
             // Coalesced drags measure delivery of the latest edit, including
             // observer rendering when one is installed.
@@ -3071,6 +3083,7 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
                 publication_latencies.push(pending_edit.take().unwrap().elapsed().as_secs_f64() * 1e3);
             }
         }
+        published = ready;
         if dsp.live_seen[0] != seen {
             seen = dsp.live_seen[0];
             completions += 1;
@@ -3092,6 +3105,7 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
     Ok((serde_json::json!({"host_frames":frames,"edits_delivered":edit,"live_refresh_completions":completions,
         "live_completion_gap_ms":summary(gaps),"view_mutex_acquire_ms":summary(waits),"shared_edit_ms":summary(edit_times),
         "load_runs":load_times.len(),"load_wall_ms":summary(load_times),"audio_process_ms":summary(process_times),
+        "editor_frames":observer_gaps.len(),"editor_frame_gap_ms":summary(observer_gaps),"editor_requested_hz":if observer.is_some() {60} else {0},
         "latest_edits_published":publication_latencies.len(),"latest_edit_to_publication_observer_ms":summary(publication_latencies)}), std::mem::take(&mut dsp.rack.parts[0])))
 }
 
