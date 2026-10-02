@@ -12,7 +12,7 @@ use super::compile::{self, Callback, Program, Setup, Ty};
 use super::engine::{EnginePar, EventId, Fade, GroupMask, KspEngine, NoteLength, NoteSpec};
 use super::vm::{self, Ctx, Forward, Kind, Machine, POLY_ROWS, SlotState, Stacks, Thread, Yield};
 use super::{HostState, Interface, KeyState, Value};
-use anyhow::{Result, bail};
+use anyhow::{Context as _,Result, bail};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
