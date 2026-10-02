@@ -67,7 +67,8 @@ def compose(arm64, x86_64, stage, revision, version, lipo="lipo"):
             require(actual == [arch], f"{arch}/{fmt}: expected one {arch} slice, found {actual}")
             if fmt != "standalone":
                 plist = plistlib.loads(files[f"KONTRA.{fmt}/Contents/Info.plist"])
-                require(plist.get("CFBundleExecutable") == "KONTRA" and plist.get("CFBundleIdentifier"), f"{arch}/{fmt}: invalid bundle identity")
+                require(plist.get("CFBundleExecutable") == "KONTRA" and plist.get("CFBundleIdentifier")
+                        and plist.get("CFBundlePackageType") == "BNDL", f"{arch}/{fmt}: invalid bundle identity/type")
                 require(plist.get("KONTRAVersion") == version
                         and plist.get("CFBundleVersion") == plist.get("CFBundleShortVersionString") == version.split("-", 1)[0],
                         f"{arch}/{fmt}: bundle version mismatch")

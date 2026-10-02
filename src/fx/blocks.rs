@@ -47,6 +47,8 @@ enum Law {
     Cube(f32),
     /// Stored in units, `lo · (hi/lo)^x`.
     Log(f32, f32),
+    /// Legacy Delay's native shifted exponential, stored in milliseconds.
+    DelayTime,
     /// The script's raw value (`$NI_SYNC_UNIT_*`), not scaled by 1e6.
     Raw,
 }
@@ -59,6 +61,7 @@ impl Law {
             Law::Lin(lo, hi) => lo + (hi - lo) * x,
             Law::Cube(max) => max * x * x * x,
             Law::Log(lo, hi) => lo * (hi / lo).powf(x),
+            Law::DelayTime => (6.0272455 * x + 1.9459101).exp() - 2.0,
             Law::Raw => (x * 1e6).round(),
         }
     }
@@ -69,6 +72,7 @@ impl Law {
             Law::Lin(lo, hi) => (v - lo) / (hi - lo),
             Law::Cube(max) => (v / max).max(0.0).cbrt(),
             Law::Log(lo, hi) => (v.max(lo) / lo).ln() / (hi / lo).ln(),
+            Law::DelayTime => ((v.max(5.0) + 2.0).ln() - 1.9459101) * 0.16591327,
             Law::Raw => v.max(0.0) / 1e6,
         };
         x.clamp(0.0, 1.0)
@@ -80,10 +84,11 @@ const THRESHOLD: Law = Law::Lin(-60.0, 0.0);
 /// Compressor attack and release (ms).
 const ATTACK: Law = Law::Cube(1000.0);
 const RELEASE: Law = Law::Cube(5000.0);
-/// Delay time (ms).
-const DELAY_TIME: Law = Law::Cube(2000.0);
+/// Legacy Delay time: 5..=2900 ms. Saved fields already contain milliseconds;
+/// only script writes/readback use this conversion.
+const DELAY_TIME: Law = Law::DelayTime;
 /// Delay line length (seconds), past the longest time.
-const MAX_DELAY_S: f32 = 2.1;
+const MAX_DELAY_S: f32 = 2.91;
 
 /// `$ENGINE_PAR_*` effect parameters: effect, field (layout position), law.
 const PARS: &[(&str, Kind, u8, Law)] = &[
@@ -220,8 +225,97 @@ fn soft(x: f32) -> f32 {
     x * (27.0 + x * x) / (27.0 + 9.0 * x * x)
 }
 
+/// Native Tube Distortion scalar core; filters and Output follow it.
+#[inline(always)]
+fn tube_curve(x: f32, k: f32, negative: f32, positive: f32) -> f32 {
+    if x < 0.0 {
+        if negative == 0.0 { return x; }
+        let r = ((k - x) * x / (1.0 + (x - (k - 1.0)) * x)).clamp(-1.0, 1.0);
+        negative * (r * r * r) + (1.0 - negative) * x
+    } else {
+        if positive == 0.0 { return x; }
+        let r = ((k + x) * x / (1.0 + (x + k - 1.0) * x)).clamp(-1.0, 1.0);
+        let complement = 1.0 - r;
+        positive * (1.0 - complement * complement * complement) + (1.0 - positive) * x
+    }
+}
+
+/// Native Transistor core. The low-level joins avoid powers, and the
+/// negative/positive power branches retain native float/double precision.
+#[inline(always)]
+fn transistor_curve(x: f32, drive: f32, power: f32, threshold: f32, scale: f32, inverse_power: f64) -> f32 {
+    if drive == 0.0 || x >= 0.25 || x < -0.25 { return x; }
+    if x < 0.0 {
+        let magnitude = -x;
+        let shaped = if magnitude < threshold { magnitude * scale } else { 0.25 * (4.0 * magnitude).powf(power) };
+        (1.0 - drive) * x - drive * shaped
+    } else {
+        let shaped = if x <= 1.0 / 4096.0 { x / scale } else { 0.25 * f64::from(4.0 * x).powf(inverse_power) as f32 };
+        (1.0 - drive) * x + drive * shaped
+    }
+}
+
 /// Keeps decaying feedback out of subnormal floats.
 const ANTI_DENORMAL: f32 = 1e-20;
+
+/// Native steady-state Distortion damping pole. The normalized cutoff uses
+/// an exponential polynomial followed by a sine-ratio bilinear transform.
+/// Native Damping parameter smoothing remains unmodelled.
+fn distortion_damping(damping: f32, rate: f32) -> f32 {
+    let p = (1.0 - 0.4 * damping.clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    let x = (f64::from(p) * 6.15) as f32;
+    let exp = 1.0 + x * (1.0 + x * (0.5 + x * (1.0 / 6.0 + x * (1.0 / 24.0
+        + x * (1.0 / 120.0 + x * (1.0 / 720.0 + x * (1.0 / 5040.0 + x / 40320.0)))))));
+    let normalized = ((exp - 1.0) * 0.0025728317).clamp(0.0, 1.0) + 0.002;
+    let normalized = (normalized * (44011.97604790419 / f64::from(rate)) as f32).clamp(0.0, 1.0);
+    let angle = (f64::from(normalized) * std::f64::consts::FRAC_PI_2) as f32;
+    let angle = (f64::from(angle) * 0.99) as f32;
+    let angle = (f64::from(angle) * 0.9987809049669) as f32;
+    let sin = |z: f32| {
+        let z2 = z * z;
+        z * (1.0 + z2 * (-1.0 / 6.0 + z2 * (1.0 / 120.0 - z2 / 5040.0)))
+    };
+    let k = f64::from(sin(0.5 - angle) / sin(0.5 + angle));
+    let prototype = f64::from(0.29340800642967224f32);
+    ((prototype + k) / (1.0 + prototype * k)) as f32
+}
+
+/// Native fixed DC filter preparation: order-two, zero-resonance prototype,
+/// all-pass frequency transform, HP sign change, then unity Nyquist gain.
+fn distortion_dc(rate: f32) -> [f32; 5] {
+    let tangent = 0.5f64.tan();
+    let pole = -std::f64::consts::FRAC_1_SQRT_2 * 8.0 * tangent;
+    let square = 4.0 * tangent * tangent;
+    let norm = 1.0 / (4.0 - pole + square);
+    let b = (square * norm) as f32;
+    let (b0, b1, b2) = (f64::from(b), f64::from(2.0 * b), f64::from(b));
+    let a1 = f64::from(((8.0 - 2.0 * square) * norm) as f32);
+    let a2 = f64::from(((-4.0 - pole - square) * norm) as f32);
+    let angle = (23.561944901923447 / f64::from(rate * 0.5)) as f32;
+    let angle = (f64::from(angle) * 0.99713317384107) as f32;
+    let cos = |z: f32| {
+        let z2 = z * z;
+        let z4 = z2 * z2;
+        let z6 = z4 * z2;
+        (z4 * (1.0 / 24.0) - z6 * (1.0 / 720.0)) + (1.0 - 0.5 * z2)
+    };
+    let k = f64::from(-cos(0.5 + angle) / cos(0.5 - angle));
+    let k2 = k * k;
+    let norm = 1.0 / (1.0 + a1 * k - a2 * k2);
+    // The native transform rounds before and after denominator scaling.
+    let scaled = |x: f64| (f64::from(x as f32) * norm) as f32;
+    let transformed_b0 = scaled(b0 - b1 * k + b2 * k2);
+    let transformed_b1 = -scaled(b1 - 2.0 * b0 * k + b1 * k2 - 2.0 * b2 * k);
+    let transformed_b2 = scaled(b0 * k2 - b1 * k + b2);
+    let transformed_a1 = -scaled(a1 * (k2 + 1.0) + 2.0 * k - 2.0 * a2 * k);
+    let transformed_a2 = scaled(a2 - a1 * k - k2);
+    let (mut b0, mut b1, mut b2, a1, a2) = (transformed_b0, transformed_b1, transformed_b2, transformed_a1, transformed_a2);
+    let gain = (1.0 - f64::from(a2 - a1)) / f64::from((b0 - b1) + b2);
+    b0 = (f64::from(b0) * gain) as f32;
+    b1 = (f64::from(b1) * gain) as f32;
+    b2 = (f64::from(b2) * gain) as f32;
+    [b0, b1, b2, a1, a2]
+}
 
 /// A per-sample stereo stage: Saturation (stored as `0x1d`, Kontakt's
 /// "Surround Panner" slot class but `$ENGINE_PAR_SHAPE`'s effect),
@@ -229,9 +323,10 @@ const ANTI_DENORMAL: f32 = 1e-20;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Drive {
     kind: DriveKind,
-    c: [f32; 8],
-    /// Filter and sample-hold states, left then right.
-    s: [f32; 8],
+    c: [f32; 12],
+    /// Distortion shares LP output history with HP input history (five/channel).
+    /// Other drive types use only their existing leading state slots.
+    s: [f32; 10],
     noise: u32,
 }
 
@@ -270,9 +365,14 @@ impl Drive {
         if self.noise == 0 {
             self.noise = 0x9E37_79B9;
         }
+        let dc = if k == DriveKind::Distortion {
+            if self.kind == k && self.c[11] == rate {
+                self.c[6..11].try_into().unwrap()
+            } else { distortion_dc(rate) }
+        } else { [0.0; 5] };
         self.kind = k;
         let x = |i: usize| f[i].clamp(0.0, 1.0);
-        self.c = match k {
+        self.c[..8].copy_from_slice(&match k {
             // Classic: native Shape/2 feeds the piecewise quadratic/cubic
             // kernel. Enhanced and Drums retain the existing proxy below.
             DriveKind::Saturator => {
@@ -281,18 +381,21 @@ impl Drive {
                 let q = 0.975 * (4.0 + a) + 0.1;
                 [s, f[1], a, q, 1.0 / (1.0 + q), 0.0, 0.0, 0.0]
             }
-            // Gain 0..=48 dB into tanh (transistor: hard clip), half of it
-            // made up after; damping is a low-pass 20 kHz..=200 Hz.
-            DriveKind::Distortion => [
-                db(48.0 * x(1)),
-                db(-24.0 * x(1)),
-                one_pole(20_000.0 * 0.01f32.powf(x(2)), rate),
-                f32::from(f[0] >= 0.5),
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
+            // Neither native scalar core has drive makeup. Damping uses its
+            // native steady-state pole and DC filter; smoothing remains unsupported.
+            DriveKind::Distortion => {
+                let d = x(1);
+                let a = distortion_damping(x(2), rate);
+                if f[0] >= 0.5 {
+                    let threshold = f64::from(8.0 * d - 12.0).exp2() as f32;
+                    [d, -60.0 / (48.0 * d - 60.0), a, 1.0,
+                        threshold, (1.0 / 4096.0) / threshold, 0.0, 0.0]
+                } else {
+                    let negative = if d > 0.75 { 1.0 } else { (0.5625 - (0.75 - d).powi(2)) * (16.0 / 9.0) };
+                    let positive = if d < 0.25 { 0.0 } else { (0.5625 - (1.0 - d).powi(2)) * (16.0 / 9.0) };
+                    [1.0 + 1.5 * d, 1.0, a, 0.0, negative, positive, 0.0, 0.0]
+                }
+            }
             // Bits 1..=32; higher native FREQUENCY means less reduction.
             // ANALOG STRINGS' authored SRate control defaults to 1M and says
             // higher values are pristine; its normalized field is not inverted.
@@ -326,12 +429,16 @@ impl Drive {
                 let t = bias.tanh();
                 [d, bias, t, 1.0 / (d * (1.0 - t * t)), one_pole(20_000.0 * 0.08f32.powf(x(2)), rate), 0.0, 0.0, 0.0]
             }
-        };
+        });
+        if k == DriveKind::Distortion {
+            self.c[6..11].copy_from_slice(&dc);
+            self.c[11] = rate;
+        }
         true
     }
 
     pub(crate) fn clear(&mut self) {
-        self.s = [0.0; 8];
+        self.s = [0.0; 10];
     }
 
     pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
@@ -358,15 +465,25 @@ impl Drive {
                 left.iter_mut().chain(right.iter_mut()).for_each(|x| *x = curve(*x));
             }
             DriveKind::Distortion => {
-                let [g, out, a, hard, ..] = self.c;
+                let [drive, power, a, transistor, c4, c5, b0, b1, b2, a1, a2, ..] = self.c;
+                let inverse_power = 1.0 / f64::from(power);
                 for (ch, buf) in [left, right].into_iter().enumerate() {
-                    let mut lp = self.s[ch];
+                    let base = 5 * ch;
+                    let state: [f32; 5] = self.s[base..base + 5].try_into().unwrap();
+                    let [mut previous, mut lp, mut lp2, mut hp, mut hp2] = state;
+                    let b = 0.5 * (1.0 - a);
                     for x in buf.iter_mut() {
-                        let y = if hard > 0.0 { (g * *x).clamp(-1.0, 1.0) } else { soft(g * *x) };
-                        lp += a * (y * out - lp) + ANTI_DENORMAL;
-                        *x = lp;
+                        let y = if transistor > 0.0 {
+                            transistor_curve(*x, drive, power, c4, c5, inverse_power)
+                        } else { tube_curve(*x, drive, c4, c5) };
+                        let damped = b * y + b * previous + a * lp + ANTI_DENORMAL;
+                        // Native SIMD feedforward-first order avoids the biased
+                        // steady DC tail of its scalar feedback-first sum.
+                        let output = (((damped * b0 + lp * b1) + lp2 * b2) + hp * a1) + hp2 * a2;
+                        (previous, lp2, lp, hp2, hp) = (y, lp, damped, hp, output);
+                        *x = output;
                     }
-                    self.s[ch] = lp;
+                    self.s[base..base + 5].copy_from_slice(&[previous, lp, lp2, hp, hp2]);
                 }
             }
             DriveKind::LoFi => {
@@ -660,9 +777,9 @@ impl Lines {
 
     #[inline]
     fn write(&mut self, l: f32, r: f32) {
-        self.pos = (self.pos + 1) & self.mask;
         self.buf[0][self.pos] = l;
         self.buf[1][self.pos] = r;
+        self.pos = (self.pos + 1) & self.mask;
     }
 
     fn clear(&mut self) {
@@ -968,6 +1085,17 @@ impl Block {
             }
             Dsp::Comp(_) | Dsp::Transient(_) => ms(50.0),
             Dsp::Phaser(_) | Dsp::Filter(_) => ms(100.0),
+            Dsp::Drive(d) if d.kind == DriveKind::Distortion => {
+                let (a1, a2) = (d.c[9], d.c[10]);
+                let discriminant = a1 * a1 + 4.0 * a2;
+                let radius = if discriminant < 0.0 { (-a2).sqrt() } else {
+                    let root = discriminant.sqrt();
+                    (0.5 * (a1 + root)).abs().max((0.5 * (a1 - root)).abs())
+                }.max(d.c[2].abs());
+                if peak <= super::processor::SILENCE { 0 } else {
+                    ((super::processor::SILENCE / peak).ln() / radius.ln()).ceil().max(0.0) as usize
+                }
+            }
             Dsp::Drive(_) => ms(10.0),
         }
     }
@@ -1074,6 +1202,54 @@ mod tests {
     }
 
     #[test]
+    fn legacy_delay_time_law_preserves_saved_units_and_authored_echo_clocks_without_heap() {
+        // Independent authored quarter-note writes at 60/120/240 BPM. These
+        // are absolute Time writes: no sync-unit conversion is involved.
+        for (raw, ms) in [(823_567, 1000.0), (708_896, 500.0), (594_553, 250.0), (1_000_000, 2900.0)] {
+            let x = raw as f32 / 1e6;
+            assert!((stored(Kind::Delay, 0, x) - ms).abs() < 0.01);
+            assert!((normalized(Kind::Delay, 0, ms) * 1e6 - raw as f32).abs() <= 1.0);
+            let at = (ms * RATE * 0.001).round() as usize;
+            let initial = effect(Kind::Delay, &[ms, 0.0, 0.0, 0.5, -1.0, 0.0, 1.0, 1.0]);
+            let (mut a, mut b) = (Block::new(&initial, RATE).unwrap(), Block::new(&initial, RATE).unwrap());
+            assert_eq!(a.fields[0], ms, "imported physical time is not normalized again");
+            assert!((a.get(Kind::Delay, 0).unwrap() * 1e6 - raw as f32).abs() <= 1.0);
+            let mut al = vec![0.0; 2 * at + 32];
+            al[0] = 1.0;
+            let (mut ar, mut bl, mut br) = (al.clone(), al.clone(), al.clone());
+            let mut exercise = || {
+                assert!(a.set(Kind::Delay, 0, x));
+                assert!(b.set(Kind::Delay, 0, x));
+                assert!((a.get(Kind::Delay, 0).unwrap() - x).abs() < 1e-6);
+                for (l, r) in al.chunks_mut(128).zip(ar.chunks_mut(128)) { a.process(l, r); }
+                for (l, r) in bl.chunks_mut(31).zip(br.chunks_mut(31)) { b.process(l, r); }
+            };
+            #[cfg(feature = "plugin")]
+            assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+            #[cfg(not(feature = "plugin"))]
+            exercise();
+            assert_eq!(al, bl, "host block partition preserves delay clock");
+            assert_eq!(ar, br);
+            assert!(al.iter().chain(&ar).all(|v| v.is_finite()));
+            assert!(al[..at - 2].iter().all(|v| v.abs() < 1e-6), "no premature echo for {ms} ms");
+            // Fractional reads split an impulse between adjacent frames;
+            // feedback interpolates the first echo again. Their area and
+            // centroid preserve gain and time independently of tap peaks.
+            for (center, area, tolerance) in [(at, 1.0, 0.25), (2 * at, 0.5, 0.5)] {
+                // Include the short 20kHz loop-filter tail in the feedback area.
+                let taps = &al[center - 2..center + 24];
+                let sum: f32 = taps.iter().sum();
+                assert!((sum - area).abs() < 1e-6, "{ms} ms: echo area {sum}, expected {area}");
+                let offset = taps.iter().enumerate().map(|(i, v)| (i as f32 - 2.0) * v).sum::<f32>() / sum;
+                assert!(offset.abs() < tolerance, "{ms} ms: echo centroid offset {offset}");
+            }
+        }
+        assert!((stored(Kind::Delay, 0, 0.0) - 5.0).abs() < 1e-5);
+        assert_eq!(normalized(Kind::Delay, 0, 5.0), 0.0);
+        assert!((normalized(Kind::Delay, 0, 2900.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn classic_saturation_matches_native_piecewise_transfer_and_output_without_heap() {
         // Independent scalar values at branch boundaries, with signals above
         // unity as well as quiet inputs. This is the Classic mode, not tanh.
@@ -1128,6 +1304,275 @@ mod tests {
         assert!(program.warnings().iter().any(|w| w.contains("Enhanced/Drums modes use an unverified")));
         assert!(crate::engine::filter::unsupported_at(&program.insert, Some(8)).iter()
             .any(|w| w.contains("Enhanced/Drums modes use an unverified")));
+    }
+
+    #[test]
+    fn tube_distortion_matches_independent_numeric_boundaries_without_heap() {
+        // Decimal scalar reference values, independently evaluated at the
+        // native Drive blend boundaries. These are before filtering/Output.
+        let input = [-4.0, -1.0, -0.25, -0.01, 0.0, 0.01, 0.25, 1.0, 4.0];
+        let cases: [(f32, [f64; 9]); 6] = [
+            (0.0, [-4.0, -1.0, -0.25, -0.01, 0.0, 0.01, 0.25, 1.0, 4.0]),
+            (0.2499, [-2.33386672, -1.0, -0.13523993351503, -0.0044476805163085, 0.0, 0.01, 0.25, 1.0, 4.0]),
+            (0.25, [-2.3333333333333, -1.0, -0.13520752308188, -0.0044459034950162, 0.0, 0.01, 0.25, 1.0, 4.0]),
+            (0.75, [-1.0, -1.0, -0.086269133535412, -9.407824380947e-6, 0.0, 0.056225468642652, 0.76211423732082, 1.0, 1.3333333333333]),
+            (0.7501, [-1.0, -1.0, -0.08627825680086, -9.409765565272e-6, 0.0, 0.056233800503188, 0.76217837834686, 1.0, 1.33306672]),
+            (1.0, [-1.0, -1.0, -0.10939426317087, -1.511801183946e-5, 0.0, 0.072360783382485, 0.85797649379469, 1.0, 1.0]),
+        ];
+        let mut values = [0.0; FIELDS];
+        let mut d = Drive::default();
+        for (drive, expected) in cases {
+            values[1] = drive;
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                assert!(d.tune(Kind::Distortion, &values, RATE));
+                let [k, out, _, _, negative, positive, ..] = d.c;
+                assert_eq!(out, 1.0, "Tube has no drive makeup");
+                for (x, expected) in input.into_iter().zip(expected) {
+                    let actual = tube_curve(x, k, negative, positive);
+                    assert!((f64::from(actual) - expected).abs() < 2e-6, "drive{drive}, input{x}: {actual} != {expected}");
+                    if drive == 0.0 { assert_eq!(actual, x); }
+                }
+            }), 0);
+        }
+        let mut fx = crate::fx::ProgramFx {
+            insert: crate::fx::Chain { slots: vec![effect(Kind::Distortion, &[0.0, 0.0, 0.0])] },
+            ..Default::default()
+        };
+        assert!(fx.warnings().iter().any(|w| w.contains("Damping parameter smoothing is not applied")));
+        assert!(fx.warnings().iter().all(|w| !w.contains("Transistor")));
+        fx.insert.slots[0] = effect(Kind::Distortion, &[1.0, 0.0, 0.0]);
+        assert!(crate::engine::filter::unsupported_at(&fx.insert, Some(8)).iter()
+            .any(|w| w.contains("Damping parameter smoothing is not applied")));
+    }
+
+    // Independently evaluated native float preparation, not effect-owned data.
+    fn dc_reference(rate: f32) -> [f32; 5] {
+        match rate as u32 {
+            44100 => [0.9984942674636841, -1.9969885349273682, 0.9984942674636841, 1.9969862699508667, -0.9969909191131592],
+            48000 => [0.9986164569854736, -1.9972329139709473, 0.9986164569854736, 1.9972310066223145, -0.9972348213195801],
+            96000 => [0.9993079900741577, -1.9986159801483154, 0.9993079900741577, 1.9986155033111572, -0.9986165165901184],
+            _ => unreachable!(),
+        }
+    }
+
+    fn dc_reference_step(x: f32, history: &mut [f32; 4], c: [f32; 5]) -> f32 {
+        let [b0, b1, b2, a1, a2] = c;
+        let [x1, x2, y1, y2] = *history;
+        // Native SIMD sum order, independent prepared coefficients above.
+        let y = (((x * b0 + x1 * b1) + x2 * b2) + y1 * a1) + y2 * a2;
+        *history = [x, x1, y, y1];
+        y
+    }
+
+    #[test]
+    fn transistor_distortion_matches_independent_boundaries_and_rates_without_heap() {
+        // Independently evaluated decimal reference, including both threshold
+        // joins, quarter-amplitude exits, quiet signals and above-unit input.
+        let input = [-4.0, -0.25000006, -0.25, -0.24999997, -0.06250001, -0.0625,
+            -0.06249999, -0.00390625, -0.000244140625, 0.0, 0.00024412, 0.000244140625,
+            0.00024416, 0.00390625, 0.01, 0.24999997, 0.25, 4.0];
+        let cases: [(f32, [f64; 18]); 3] = [
+            (0.0, [-4.0, -0.25000006, -0.25, -0.24999997, -0.06250001, -0.0625,
+                -0.06249999, -0.00390625, -0.000244140625, 0.0, 0.00024412, 0.000244140625,
+                0.00024416, 0.00390625, 0.01, 0.24999997, 0.25, 4.0]),
+            (0.5, [-4.0, -0.25000006, -0.25, -0.24999996, -0.043651579025587,
+                -0.043651570718502, -0.043651562411416, -0.0020751953125, -0.00012969970703125,
+                0.0, 0.00207502, 0.0020751953125, 0.002075297998524, 0.012261780552913,
+                0.023119491591942, 0.249999976, 0.25, 4.0]),
+            (1.0, [-4.0, -0.25000006, -0.25, -0.24999985000004, -0.00024414082031256,
+                -0.000244140625, -0.0002441405859375, -1.52587890625e-5, -9.5367431640625e-7,
+                0.0, 0.06249472, 0.0625, 0.062500991968511, 0.10881882041202,
+                0.13132639022019, 0.249999994, 0.25, 4.0]),
+        ];
+        let mut values = [0.0; FIELDS];
+        values[0] = 1.0;
+        let mut d = Drive::default();
+        for rate in [44_100.0f32, 96_000.0] {
+            for (drive, expected) in cases {
+                values[1] = drive;
+                let (mut l, mut r) = (input, input);
+                r.reverse();
+                assert_eq!(crate::plugin::tests::allocations(|| {
+                    d.clear();
+                    assert!(d.tune(Kind::Distortion, &values, rate));
+                    let [drive, power, _, _, threshold, scale, ..] = d.c;
+                    let inverse_power = 1.0 / f64::from(power);
+                    for (x, expected) in input.into_iter().zip(expected) {
+                        let actual = transistor_curve(x, drive, power, threshold, scale, inverse_power);
+                        assert!((f64::from(actual) - expected).abs() < 2e-7, "drive{drive}, input{x}: {actual} != {expected}");
+                        if drive == 0.0 { assert_eq!(actual, x); }
+                        if x >= 0.25 || x < -0.25 { assert_eq!(actual, x); }
+                    }
+                    d.process(&mut l, &mut r);
+                }), 0);
+                // Independent Decimal damping coefficients at native Damping 0.
+                let a = if rate == 44_100.0 { -0.968830620627632 } else { 0.072020615289497 };
+                assert!((f64::from(d.c[2]) - a).abs() < 3e-6);
+                let pole = d.c[2]; // Verified above, preserve the native float clock.
+                let b = 0.5 * (1.0 - pole);
+                for (buffer, reversed) in [(&l, false), (&r, true)] {
+                    let (mut previous, mut state) = (0.0f32, 0.0f32);
+                    let mut hp = [0.0; 4];
+                    for (i, actual) in buffer.iter().enumerate() {
+                        let source = expected[if reversed { expected.len() - 1 - i } else { i }] as f32;
+                        state = (b * source + b * previous) + pole * state + 1e-20;
+                        previous = source;
+                        let reference = dc_reference_step(state, &mut hp, dc_reference(rate));
+                        assert!((*actual - reference).abs() < 2e-6);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn distortion_damping_rates_impulse_partition_reset_without_heap() {
+        // Independent Decimal evaluation of the exponential and sine Taylor
+        // polynomials, followed by the bilinear pole and unity-DC normalization.
+        // Rows are native Damping 0, 0.5, 1; columns are 44.1, 48, 96 kHz.
+        let poles = [
+            [-0.968830620627632, -0.748475234218230, 0.072020615289497],
+            [0.281417361896059, 0.326787237731620, 0.613962547016527],
+            [0.727181173700699, 0.746823690647603, 0.865513282079401],
+        ];
+        for mode in [0.0, 1.0] {
+            for (rate_index, rate) in [44_100.0, 48_000.0, 96_000.0].into_iter().enumerate() {
+                for (damping_index, damping) in [0.0, 0.5, 1.0].into_iter().enumerate() {
+                    let mut fields = [0.0; FIELDS];
+                    fields[0] = mode; // Drive 0 isolates the damping filter.
+                    fields[2] = damping;
+                    let mut full = Drive::default();
+                    let (mut l, mut r) = ([0.0; 256], [0.0; 256]);
+                    l[0] = 1.0;
+                    r[7] = -0.25;
+                    let (mut split_l, mut split_r) = (l, r);
+                    assert_eq!(crate::plugin::tests::allocations(|| {
+                        assert!(full.tune(Kind::Distortion, &fields, rate));
+                        let a = poles[damping_index][rate_index];
+                        assert!((f64::from(full.c[2]) - a).abs() < 3e-6);
+                        assert!(full.c[2].abs() < 1.0);
+                        let mut partitioned = full;
+                        full.process(&mut l, &mut r);
+                        for (start, end) in [(0, 13), (13, 45), (45, 48), (48, 256)] {
+                            partitioned.process(&mut split_l[start..end], &mut split_r[start..end]);
+                        }
+                        assert_eq!(l, split_l);
+                        assert_eq!(r, split_r);
+                        assert_eq!(full.s, partitioned.s);
+                        // Coefficients are checked against the independent
+                        // Decimal law above; the state clock uses native f32.
+                        let pole = full.c[2];
+                        let b = 0.5 * (1.0 - pole);
+                        for (buffer, delay, amplitude) in [(&l, 0, 1.0), (&r, 7, -0.25)] {
+                            let (mut previous, mut state) = (0.0f32, 0.0f32);
+                            let mut hp = [0.0; 4];
+                            for (i, actual) in buffer.iter().enumerate() {
+                                let x = if i == delay { amplitude } else { 0.0 };
+                                state = (b * x + b * previous) + pole * state + 1e-20;
+                                previous = x;
+                                let reference = dc_reference_step(state, &mut hp, dc_reference(rate));
+                                assert!((*actual - reference).abs() < 4e-6,
+                                    "mode{mode} rate{rate} damping{damping} frame{i}");
+                            }
+                        }
+                        // A live retune keeps history; clear removes it even
+                        // after a different-rate preparation and warm processing.
+                        let state = full.s;
+                        assert!(full.tune(Kind::Distortion, &fields, rate * 2.0));
+                        assert_eq!(full.s, state);
+                        full.clear();
+                        assert_eq!(full.s, [0.0; 10]);
+                        assert!(full.tune(Kind::Distortion, &fields, rate));
+                        let (mut reset_l, mut reset_r) = ([0.0; 256], [0.0; 256]);
+                        reset_l[0] = 1.0;
+                        reset_r[7] = -0.25;
+                        full.process(&mut reset_l, &mut reset_r);
+                        assert_eq!(l, reset_l);
+                        assert_eq!(r, reset_r);
+                    }), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn distortion_dc_native_coefficients_constant_frequency_and_state_without_heap() {
+        eprintln!("Distortion DC state: Drive={} VoiceEffect={} VoiceFilter={} bytes",
+            std::mem::size_of::<Drive>(), std::mem::size_of::<VoiceEffect>(),
+            std::mem::size_of::<crate::engine::filter::VoiceFilter>());
+        assert_eq!(std::mem::size_of::<Drive>(), 96);
+        for rate in [44_100.0, 48_000.0, 96_000.0] {
+            let mut fields = [0.0; FIELDS];
+            fields[2] = 1.0;
+            let mut drive = Drive::default();
+            let mut dc_residual = [0.0; 2];
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                drive.tune(Kind::Distortion, &fields, rate);
+                assert_eq!(&drive.c[6..11], &dc_reference(rate));
+                let coefficients = drive.c;
+                for _ in 0..16 { drive.tune(Kind::Distortion, &fields, rate); }
+                assert_eq!(drive.c, coefficients, "same-rate preparation stays cached");
+                // Feed a stereo DC step for one second. Neither normalized
+                // Drive0 core changes the input; the final DC stage rejects it.
+                for _ in 0..(rate as usize / 64) {
+                    drive.process(&mut [1.0; 64], &mut [-0.25; 64]);
+                }
+                let (mut l, mut r) = ([1.0; 64], [-0.25; 64]);
+                drive.process(&mut l, &mut r);
+                dc_residual = [l.iter().fold(0.0f32, |peak, x| peak.max(x.abs())),
+                    r.iter().fold(0.0f32, |peak, x| peak.max(x.abs()))];
+                let c = dc_reference(rate).map(f64::from);
+                assert_eq!(c[0] + c[1] + c[2], 0.0, "zero at DC");
+                assert!(((c[0] - c[1] + c[2]) / (1.0 + c[3] - c[4]) - 1.0).abs() < 1e-7,
+                    "native Nyquist normalization");
+                // Compare steady sine amplitude with the independently
+                // prepared LP+HP transfer functions, including the DC corner.
+                for hz in [5.0, 15.0, 100.0] {
+                    drive.clear();
+                    let w = std::f64::consts::TAU * hz / f64::from(rate);
+                    let (mut sum_sin, mut sum_cos, mut measured) = (0.0, 0.0, 0usize);
+                    let frames = 2 * rate as usize;
+                    for start in (0..frames).step_by(64) {
+                        let length = (frames - start).min(64);
+                        let mut l = [0.0; 64];
+                        let mut r = [0.0; 64];
+                        for (i, x) in l[..length].iter_mut().enumerate() { *x = (w * (start + i) as f64).sin() as f32; }
+                        drive.process(&mut l[..length], &mut r[..length]);
+                        if start >= rate as usize {
+                            for (i, x) in l[..length].iter().enumerate() {
+                                let phase = w * (start + i) as f64;
+                                sum_sin += f64::from(*x) * phase.sin();
+                                sum_cos += f64::from(*x) * phase.cos();
+                                measured += 1;
+                            }
+                        }
+                    }
+                    let hp_num = (c[0] + c[1] * w.cos() + c[2] * (2.0 * w).cos()).powi(2)
+                        + (c[1] * w.sin() + c[2] * (2.0 * w).sin()).powi(2);
+                    let hp_den = (1.0 - c[3] * w.cos() - c[4] * (2.0 * w).cos()).powi(2)
+                        + (c[3] * w.sin() + c[4] * (2.0 * w).sin()).powi(2);
+                    let a = match rate as u32 { 44100 => 0.727181173700699, 48000 => 0.746823690647603, _ => 0.865513282079401 };
+                    let b = 0.5 * (1.0 - a);
+                    let lp_gain = ((b * (1.0 + w.cos())).powi(2) + (b * w.sin()).powi(2))
+                        / ((1.0 - a * w.cos()).powi(2) + (a * w.sin()).powi(2));
+                    let expected = (hp_num / hp_den * lp_gain).sqrt();
+                    let actual = 2.0 * sum_sin.hypot(sum_cos) / measured as f64;
+                    assert!((actual - expected).abs() < 0.002, "rate{rate} hz{hz}: {actual} != {expected}");
+                }
+                drive.clear();
+                assert_eq!(drive.s, [0.0; 10]);
+            }), 0);
+            eprintln!("Distortion DC residual rate{rate}: left={} right={}", dc_residual[0], dc_residual[1]);
+            assert!(dc_residual.into_iter().all(|x| x < 1e-4));
+            let block = Block::new(&effect(Kind::Distortion, &[0.0, 0.0, 1.0]), rate).unwrap();
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                assert_eq!(block.tail(0.0), 0);
+                let radius = (-dc_reference(rate)[4]).sqrt();
+                let expected = ((super::super::processor::SILENCE / 1.0).ln() / radius.ln()).ceil() as usize;
+                assert_eq!(block.tail(1.0), expected);
+                assert!(block.tail(1.0) > (0.1 * rate) as usize);
+            }), 0);
+        }
     }
 
     #[test]

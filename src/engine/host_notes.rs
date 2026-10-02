@@ -179,9 +179,9 @@ mod tests {
     fn exact_roots_keep_finite_attacks_pedals_children_and_late_expressions_without_heap() {
         let mut e=engine(false);
         assert_eq!(crate::plugin::tests::allocations(|| {
-            assert!(e.host_note_on(note(10),7,48,100)); render(&mut e,1);
+            assert!(e.host_note_on(note(10),7,48,100,0.)); render(&mut e,1);
             e.host_note_off(pattern(10));
-            assert!(e.host_note_on(note(11),7,48,100));
+            assert!(e.host_note_on(note(11),7,48,100,0.));
             e.host_expression(pattern(10),HostExpression::Gain(0.)); render(&mut e,2);
             let old=e.player.voices.iter().filter(|v| e.player.host_notes.get(v.host_note.unwrap()).unwrap().note.id==10);
             for v in old { assert!(v.gains.iter().all(|x| x.abs()<1e-7)); }
@@ -192,7 +192,7 @@ mod tests {
             e.host_note_choke(pattern(10)); render(&mut e,4); e.mark_host_notes();
             assert!(!e.host_note_pending(note(10))); assert!(e.host_note_pending(note(11)));
             let stale=e.player.host_notes.active[0]; e.retire_host_note(note(10));
-            assert!(e.host_note_on(note(12),7,48,100));
+            assert!(e.host_note_on(note(12),7,48,100,0.));
             assert!(!e.player.host_notes.change(stale,HostExpression::Gain(0.)));
             e.host_note_off(HostPattern { id:-1,..pattern(10) }); render(&mut e,64); e.mark_host_notes();
             assert!(!e.host_note_pending(note(11))); assert!(!e.host_note_pending(note(12)));
@@ -200,7 +200,7 @@ mod tests {
 
         let mut e=engine(true);
         assert_eq!(crate::plugin::tests::allocations(|| {
-            assert!(e.host_note_on(note(20),7,48,100)); render(&mut e,8);
+            assert!(e.host_note_on(note(20),7,48,100,0.)); render(&mut e,8);
             assert_eq!(e.active_voices(),0); e.mark_host_notes(); assert!(e.host_note_pending(note(20)));
             e.cc(7,66,127); e.host_note_off(pattern(20));
             assert_eq!(e.player.pending_releases.len(),1); e.mark_host_notes(); assert!(e.host_note_pending(note(20)));
@@ -218,10 +218,10 @@ mod tests {
         let old=HostPattern { channel:1,..pattern(25) };
         assert_eq!(crate::plugin::tests::allocations(|| {
             e.set_expression_on(1,48,Expression { tune:2.,..Default::default() });
-            assert!(e.host_note_on(first,1,48,100)); render(&mut e,1);
+            assert!(e.host_note_on(first,1,48,100,0.)); render(&mut e,1);
             e.host_note_off(old);
             e.set_expression_on(1,48,Expression { tune:8.,..Default::default() });
-            assert!(e.host_note_on(HostNote { id:26,..first },1,48,100));
+            assert!(e.host_note_on(HostNote { id:26,..first },1,48,100,0.));
             e.host_expression(old,HostExpression::Tune(12.)); render(&mut e,1);
             for voice in &e.player.voices {
                 let id=e.player.host_notes.get(voice.host_note.unwrap()).unwrap().note.id;
@@ -235,9 +235,9 @@ mod tests {
         let (rt,errors)=crate::ksp::Runtime::with_scripts(&[script],&mut crate::ksp::LogEngine::default(),0,Vec::new());
         assert!(errors.iter().all(Option::is_none)); e.set_script(Some(Box::new(rt)));
         assert_eq!(crate::plugin::tests::allocations(|| {
-            assert!(e.host_note_on(note(30),7,48,100)); render(&mut e,1);
+            assert!(e.host_note_on(note(30),7,48,100,0.)); render(&mut e,1);
             e.host_note_off(pattern(30));
-            assert!(e.host_note_on(note(31),7,48,100));
+            assert!(e.host_note_on(note(31),7,48,100,0.));
             e.host_expression(pattern(30),HostExpression::Gain(0.)); render(&mut e,8); e.mark_host_notes();
             assert!(e.host_note_pending(note(30)),"waiting root and independent child retain NOTE_END ownership");
             assert!(e.script().unwrap().key_down_from(4,7,48));
@@ -245,14 +245,14 @@ mod tests {
             e.host_note_choke(pattern(30)); render(&mut e,16); e.mark_host_notes();
             assert!(!e.host_note_pending(note(30))); assert!(e.host_note_pending(note(31)));
             e.panic(); render(&mut e,32); e.mark_host_notes(); assert!(!e.host_note_pending(note(31)));
-            assert!(e.host_note_on(note(32),7,48,100)); render(&mut e,1);
+            assert!(e.host_note_on(note(32),7,48,100,0.)); render(&mut e,1);
             e.all_sound_off_from(7,1<<4); render(&mut e,8); e.mark_host_notes();
             assert!(e.host_note_pending(note(32)),"CC120 retains the physical root for its eventual cleanup");
             e.host_note_off(pattern(32)); render(&mut e,32); e.mark_host_notes();
             assert!(!e.host_note_pending(note(32)),"exact key-up failed to clean a silenced root");
             assert_eq!(e.active_voices(),0,"late key-up resurrected a stopped child/release");
             e.reset(48000.);
-            assert!(e.host_note_on(note(31),7,48,100),"host reset must allow the same ID immediately");
+            assert!(e.host_note_on(note(31),7,48,100,0.),"host reset must allow the same ID immediately");
         }),0);
     }
 
@@ -265,7 +265,7 @@ mod tests {
             let mut e=engine(false); e.set_script(Some(Box::new(rt)));
             let b=HostNote { key:62,..note(11) }; let bp=HostPattern { key:62,..pattern(11) };
             let c=HostNote { key:64,..note(12) };
-            assert!(e.host_note_on(note(10),7,48,100)); assert!(e.host_note_on(b,7,50,100)); render(&mut e,1);
+            assert!(e.host_note_on(note(10),7,48,100,0.)); assert!(e.host_note_on(b,7,50,100,0.)); render(&mut e,1);
             let spent=e.script().unwrap().env.spent;
             assert_eq!(crate::plugin::tests::allocations(|| {
                 // Offline mode removes wall-clock variability; the fixed fuel
@@ -278,7 +278,7 @@ mod tests {
                 assert_eq!(e.script().unwrap().env.block_fuel,0);
                 assert!(e.script().unwrap().env.spent>spent);
                 e.host_note_off(bp);
-                assert!(e.host_note_on(c,7,52,100));
+                assert!(e.host_note_on(c,7,52,100,0.));
                 e.mark_host_notes(); assert!(e.host_note_pending(note(10)));
             }),0);
             let paused=e.script().unwrap().persistence();
@@ -302,8 +302,8 @@ mod tests {
         assert!(errors.iter().all(Option::is_none));
         let mut e=engine(false); e.set_script(Some(Box::new(rt)));
         assert_eq!(crate::plugin::tests::allocations(|| {
-            assert!(e.host_note_on(note(10),7,48,100));
-            assert!(e.host_note_on(HostNote { key:62,..note(11) },7,50,100)); render(&mut e,1);
+            assert!(e.host_note_on(note(10),7,48,100,0.));
+            assert!(e.host_note_on(HostNote { key:62,..note(11) },7,50,100,0.)); render(&mut e,1);
             e.host_note_choke(pattern(10));
             assert_eq!(e.script().unwrap().last_message(),"1","scoped cleanup hid another held key from on release");
             assert!(e.script().unwrap().key_down_from(4,7,50));
@@ -315,7 +315,7 @@ mod tests {
         let mut e=engine(false); e.set_script(Some(Box::new(rt)));
         let mut old=None;
         assert_eq!(crate::plugin::tests::allocations(|| {
-            assert!(e.host_note_on(note(20),7,48,100)); render(&mut e,1);
+            assert!(e.host_note_on(note(20),7,48,100,0.)); render(&mut e,1);
             e.mark_host_notes(); assert!(e.host_note_pending(note(20)));
             old=e.set_bank(None);
             render(&mut e,64); e.mark_host_notes();
@@ -337,8 +337,8 @@ mod tests {
                 assert!(errors.iter().all(Option::is_none)); e.set_script(Some(Box::new(rt)));
             }
             assert_eq!(crate::plugin::tests::allocations(|| {
-                assert!(e.host_note_on(note(10),7,48,100));
-                assert!(e.host_note_on(note(11),7,48,100));
+                assert!(e.host_note_on(note(10),7,48,100,0.));
+                assert!(e.host_note_on(note(11),7,48,100,0.));
                 e.note_on_from(7,4,48,100); render(&mut e,1);
                 e.note_off_from(7,4,48); render(&mut e,1);
                 assert!(e.key_down(7,48),"anonymous MIDI key-up cleared an exact root");

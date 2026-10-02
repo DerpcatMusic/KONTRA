@@ -158,6 +158,19 @@ pub fn open<V: View + Send + 'static>(
             return None;
         }
     };
+    // Persist through the existing app sink before parent extraction can
+    // retain a Cocoa view or native window creation can enter OS code.
+    let api = match handle.as_raw() {
+        raw_window_handle::RawWindowHandle::AppKit(_) => "AppKit/NSView",
+        raw_window_handle::RawWindowHandle::Win32(_) => "Win32/HWND",
+        raw_window_handle::RawWindowHandle::Xlib(_) => "X11/Xlib",
+        raw_window_handle::RawWindowHandle::Xcb(_) => "X11/Xcb",
+        raw_window_handle::RawWindowHandle::Wayland(_) => "Wayland",
+        _ => "unsupported",
+    };
+    log(&shared, &format!("mui-baseview: native window init entering native code os={} arch={} api={api} thread={:?} main_thread={:?} backend={:?} logical_size={size:?} scale_override={scale:?}",
+        std::env::consts::OS, std::env::consts::ARCH, std::thread::current().id(),
+        platform::main_thread_status(), gpu_backends(cfg!(target_os = "windows"), wgpu::Backends::from_env())));
     // KONTAKTO patch: baseview's Linux child is X11, including under a
     // Wayland desktop. Diagnose the API, never print a host's raw handle.
     #[cfg(target_os = "linux")]
@@ -173,8 +186,6 @@ pub fn open<V: View + Send + 'static>(
             std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty()),
             std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())));
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = handle;
     let settings = settings(title, size)
         .with_parent(parent)
         .with_scale_factor_override(scale);

@@ -160,6 +160,12 @@ jobs:
           archive = pathlib.Path(os.environ["STAGE"] + ".zip")
           archive.with_suffix(".zip.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n")
           PYHASH
+      - name: Verify macOS ZIP bundle recognition and factory discovery
+        if: runner.os == 'macOS'
+        run: |
+          ditto -x -k "$STAGE.zip" extracted-plugins
+          xcrun swift .github/scripts/check_macos_bundles.swift \
+            "extracted-plugins/$STAGE/KONTRA.clap" "extracted-plugins/$STAGE/KONTRA.vst3"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.STAGE }}
@@ -239,6 +245,8 @@ jobs:
                               str(installed)], check=True)
               print(f'Installed and rollback-verified: /{relative}')
           PYINSTALL
+          xcrun swift .github/scripts/check_macos_bundles.swift \
+            /Library/Audio/Plug-Ins/CLAP/KONTRA.clap /Library/Audio/Plug-Ins/VST3/KONTRA.vst3
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: KONTRA-nightly-macos-universal
