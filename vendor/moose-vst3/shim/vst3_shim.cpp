@@ -2038,7 +2038,7 @@ public:
     }
 #endif
 
-    void* createView(FIDString /*name*/);
+    void* createView(FIDString /*name*/, void* owner);
 };
 
 #if defined(__linux__)
@@ -2122,12 +2122,15 @@ struct IPlugViewContentScaleSupportVtbl {
 // a single COM object. queryInterface returns a pointer to the relevant
 // vtable slot; the functions behind each vtable derive the base with
 // pointer arithmetic, matching the MooseComponent pattern.
+static uint32 comp_release(void* s);
+
 struct MoosePlugView {
     IPlugViewVtbl* vtbl;
     IPlugViewContentScaleSupportVtbl* vtbl_scale;
     int32_t refCount;
     void* ctx;              // Rust plugin context
     MooseComponent* comp;   // owning component (resize and run-loop lifetime)
+    void* owner;            // retained component interface; released with the view
     // Stored by `pv_setFrame` (host hands the plug-view its
     // `IPlugFrame*`). Used by `moose_vst3_request_resize` to drive
     // the plugin -> host resize request. Nulled when the view is
@@ -2172,13 +2175,15 @@ static uint32 pv_release(void* s) {
             // Null the component's pointer to this view so
             // `moose_vst3_request_resize` doesn't dereference a
             // freed plug-view between the host releasing the
-            // editor and creating a new one. `pv->comp` is the
-            // component lifetime, longer than the plug view's.
+            // editor and creating a new one. The view retains the component
+            // until its own final release, independently of host references.
             if (pv->comp->plugView == pv) {
                 pv->comp->plugView = nullptr;
             }
         }
+        auto* owner = pv->owner;
         free(pv);
+        if (owner) comp_release(owner);
         return 0;
     }
     return pv->refCount;
@@ -2478,15 +2483,20 @@ struct MooseComponentCOM {
 };
 
 // Deferred: createView
-void* MooseComponent::createView(FIDString /*name*/) {
+void* MooseComponent::createView(FIDString /*name*/, void* owner) {
     if (!g_cb || !ctx) return nullptr;
     if (!g_cb->gui_has_editor(ctx)) return nullptr;
     auto* pv = (MoosePlugView*)calloc(1, sizeof(MoosePlugView));
+    if (!pv) return nullptr;
+    // Editor callbacks keep ctx/comp alive even after the host releases its
+    // controller/component interfaces. Match the SDK EditorView ownership.
+    addRef();
     pv->vtbl = &g_plugview_vtbl;
     pv->vtbl_scale = &g_plugview_scale_vtbl;
     pv->refCount = 1;
     pv->ctx = ctx;
     pv->comp = this;
+    pv->owner = owner;
     pv->frame = nullptr;
     // Track the live plug view on the component so
     // `moose_vst3_request_resize` can find it without holding a
@@ -2634,7 +2644,7 @@ static double ctrl_p2n(void* s, uint32 id, double v) { return CTRL(s).plainParam
 static double ctrl_getPN(void* s, uint32 id) { return CTRL(s).getParamNormalized(id); }
 static tresult ctrl_setPN(void* s, uint32 id, double v) { return CTRL(s).setParamNormalized(id, v); }
 static tresult ctrl_setHandler(void* s, void* h) { return CTRL(s).setComponentHandler(h); }
-static void* ctrl_createView(void* s, FIDString n) { return CTRL(s).createView(n); }
+static void* ctrl_createView(void* s, FIDString n) { return CTRL(s).createView(n, com_from_controller(s)); }
 
 // --- HostEditing vtable functions ---
 #define HEDIT(self) (com_from_host_editing(self)->impl)
