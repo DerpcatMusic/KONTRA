@@ -77,6 +77,8 @@ pub struct Ctx {
     pub ignore_controller: bool,
     /// stop_wait(..., 1) continues this callback without subsequent waits.
     pub ignore_wait: bool,
+    /// Host Panic/reset cleanup writes script state while suppressing new notes.
+    pub cleanup: bool,
     pub forward: Forward,
 }
 
@@ -99,6 +101,7 @@ impl Ctx {
             async_status: 0,
             ignore_controller: false,
             ignore_wait: false,
+            cleanup: false,
             forward: Forward::None,
         }
     }

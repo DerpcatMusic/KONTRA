@@ -3719,6 +3719,33 @@ mod tests {
     }
 
     #[test]
+    fn panic_and_host_reset_release_script_buffers_without_audio_allocations() {
+        let source = "on init\ndeclare $held\ndeclare $released\ndeclare ui_switch $setting\nmake_persistent($held)\nmake_persistent($released)\nend on\non note\ninc($held)\nend on\non release\nwait(1000000)\ndec($held)\ninc($released)\nplay_note(72,100,0,0)\nend on";
+        let mut init = crate::ksp::LogEngine::default();
+        let (rt, errors) = Runtime::with_scripts(&[source], &mut init, 0, Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        let mut engine = Engine::default();
+        engine.set_script(Some(Box::new(rt)));
+        engine.ui_control(0,0,1);
+        let mut left = [0f32;64];
+        let mut right = [0f32;64];
+        assert_eq!(allocations(|| {
+            engine.note_on(0,60,100);
+            engine.panic();
+            engine.render(&mut left,&mut right);
+            engine.note_on(0,60,100);
+            engine.reset(48000.0);
+            engine.render(&mut left,&mut right);
+        }),0);
+        let rt = engine.script().unwrap();
+        assert_eq!(rt.persistence()[0]["$held"],crate::ksp::Value::Int(0));
+        assert_eq!(rt.persistence()[0]["$released"],crate::ksp::Value::Int(2));
+        assert_eq!(rt.interface(0).controls[0].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(1));
+        assert_eq!(engine.pending_work(),[0,0,0]);
+        assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+    }
+
+    #[test]
     fn repeated_debug_string_growth_preserves_notes_without_audio_allocations() {
         let source = "on init\ndeclare @debug\ndeclare $notes\nmake_persistent($notes)\nend on\non note\n@debug := @debug & \"😀\"\nmessage(@debug)\ninc($notes)\nend on";
         let mut init = crate::ksp::LogEngine::default();

@@ -1972,3 +1972,55 @@ end on"#;
     assert_eq!(live.revisions(), table, "diagnostics do not invalidate visual snapshots");
     assert_eq!(live, rig.rt.live(), "copy history is excluded from semantic equality");
 }
+
+#[test]
+fn panic_cleanup_preserves_ui_and_fences_fresh_notes_until_legato_state_is_clear() {
+    let source = r#"on init
+ declare %buffer[2] := (-1,-1)
+ declare $count
+ declare ui_switch $go
+ declare ui_label $info(1,1)
+end on
+on note
+ ignore_event($EVENT_ID)
+ %buffer[1] := %buffer[0]
+ %buffer[0] := $EVENT_NOTE
+ set_text($info,"note:" & %buffer[1])
+end on
+on release
+ wait(1000000)
+ $count := 0
+ while ($count<10000)
+  inc($count)
+ end while
+ if (%buffer[1] # -1)
+  play_note(%buffer[1],100,0,0)
+ end if
+ %buffer[0] := %buffer[1]
+ %buffer[1] := -1
+ set_text($info,"cleared")
+end on
+on ui_control($go)
+ wait(10000)
+ $go := 7
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    rig.on(0,60).on(0,60);
+    rig.rt.ui_control(&mut rig.engine,0,0,1);
+    rig.rt.env.block_fuel = 32;
+    rig.rt.cleanup_notes(&mut rig.engine);
+    // The release skips authored waits, but remains subject to the block budget.
+    assert_eq!(prop(&rig.rt.interface(0),1,"$CONTROL_PAR_TEXT"),"note:60");
+    rig.on(0,60);
+    assert_eq!(prop(&rig.rt.interface(0),1,"$CONTROL_PAR_TEXT"),"note:60","fresh note must wait for cleanup");
+    rig.engine.calls.clear();
+    for _ in 0..8 { rig.rt.begin_audio_block(1024,1,true); rig.block(1024); }
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_VALUE"),"7","UI callback survives cleanup");
+    assert_eq!(prop(&rig.rt.interface(0),1,"$CONTROL_PAR_TEXT"),"note:-1","fresh note sees cleared legato buffer");
+    assert!(rig.engine.calls.is_empty(),"cleanup must not generate replacement voices: {:?}",rig.log());
+    rig.off(0,60).block(96000);
+    assert_eq!(prop(&rig.rt.interface(0),1,"$CONTROL_PAR_TEXT"),"cleared");
+    assert!(!rig.engine.calls.iter().any(|c| matches!(c,EngineCall::PlayNote{..})),"normal release has no phantom buffered note");
+    assert_eq!(rig.rt.env.events.live_count(),0);
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}

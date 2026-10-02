@@ -155,6 +155,8 @@ pub struct Event {
     /// Live callbacks retain their event and polyphonic memory through waits.
     callbacks: u16,
     recycle_pending: bool,
+    /// Physical release callback retained for host Panic/reset state cleanup.
+    cleanup: bool,
     /// MIDI key still down.
     pub held: bool,
     /// Next MIDI event on the same input channel/key, oldest first.
@@ -195,6 +197,7 @@ impl Event {
         voice: None,
         callbacks: 0,
         recycle_pending: false,
+        cleanup: false,
         held: false,
         next_input: 0,
         fade_in_us: 0,
@@ -390,6 +393,8 @@ pub struct Env {
     pub events: Events,
     pub input: Input,
     pub work: VecDeque<Work>,
+    /// Fresh note work waits for the retained cleanup releases to finish.
+    cleaning: bool,
     timers: BinaryHeap<Reverse<Timer>>,
     timer_seq: u64,
     /// Sample time at the start of the current block, and the offset within it.
@@ -439,6 +444,7 @@ impl Env {
                 keys: [[(0, 0); 128]; 16],
             },
             work: VecDeque::with_capacity(WORK_CAPACITY),
+            cleaning: false,
             timers: BinaryHeap::with_capacity(TIMER_CAPACITY),
             timer_seq: 0,
             now: 0,
@@ -1372,7 +1378,7 @@ impl Runtime {
         }
         self.advance(engine, at);
         let note = note.min(127);
-        self.set_sys(SysArray::KeyDown, note as usize, 1);
+        if !self.env.cleaning { self.set_sys(SysArray::KeyDown, note as usize, 1); }
         let Some(id) = self.env.events.alloc() else {
             self.env.note("KSP event pool exhausted; note dropped");
             return;
@@ -1391,7 +1397,7 @@ impl Runtime {
             self.env.events.get_mut(keys.1).expect("held MIDI event").next_input = id;
         }
         keys.1 = id;
-        self.key_down_oct(note);
+        if !self.env.cleaning { self.key_down_oct(note); }
         self.env.queue(Work::Note { event: id, slot: 0 });
         self.settle(engine);
     }
@@ -1405,8 +1411,10 @@ impl Runtime {
         let note = note.min(127);
         let (mut id, _) = std::mem::take(&mut self.env.input.keys[owner.min(15) as usize][note as usize]);
         let held = self.env.input.keys.iter().any(|channel| channel[note as usize].0 != 0);
-        self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
-        self.key_down_oct(note);
+        if !self.env.cleaning {
+            self.set_sys(SysArray::KeyDown, note as usize, i32::from(held));
+            self.key_down_oct(note);
+        }
         while id != 0 {
             let Some(e) = self.env.events.get_mut(id) else { break };
             e.held = false;
@@ -1437,14 +1445,22 @@ impl Runtime {
     /// Cancel existing note/input callbacks without invoking release callbacks.
     /// UI, listener and service callbacks retain their prepared state and timers.
     pub fn all_sound_off(&mut self, channel_mask: u16) {
-        self.cancel_sound(channel_mask, None);
+        self.cancel_sound(channel_mask, None, false);
     }
 
     pub(crate) fn all_sound_off_from(&mut self, input_mask: u16) -> u16 {
-        self.cancel_sound(u16::MAX, Some(input_mask))
+        self.cancel_sound(u16::MAX, Some(input_mask), false)
     }
 
-    fn cancel_sound(&mut self, channel_mask: u16, input_mask: Option<u16>) -> u16 {
+    /// Host Panic/reset releases physical notes to clear authored legato buffers.
+    /// Sound is cut independently by the host. Cleanup retains the ordinary
+    /// callback budget, ignores waits and cannot generate replacement notes.
+    pub(crate) fn cleanup_notes(&mut self, engine: &mut dyn KspEngine) {
+        self.cancel_sound(u16::MAX, None, true);
+        self.settle(engine);
+    }
+
+    fn cancel_sound(&mut self, channel_mask: u16, input_mask: Option<u16>, cleanup: bool) -> u16 {
         if channel_mask == 0 { return 0; }
         let mut affected = 0;
         let selected = |channel: u8, input_channel: Option<u8>| channel_mask & (1 << channel.min(15)) != 0
@@ -1468,24 +1484,48 @@ impl Runtime {
                 self.env.input.keys[owner][note] = (first, last);
             }
         }
-        let events = &self.env.events;
-        self.env.work.retain(|w| match *w {
-            Work::Note { event, .. } | Work::Release { event, .. } =>
-                events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel)),
-            Work::Controller { channel, input_channel, .. } | Work::PolyAt { channel, input_channel, .. }
-                | Work::Rpn { channel, input_channel, .. } => !selected(channel, input_channel),
-        });
         for e in self.env.events.slots.iter_mut().filter(|e| e.live && selected(e.channel, e.input_channel)) {
             affected |= 1 << e.channel.min(15);
+            // Already running cleanup survives a repeated Panic. Only notes
+            // that reached a slot need a release; queued fresh attacks do not.
+            e.cleanup |= cleanup && e.source < 0 && (e.held || e.released != 0) && e.reached > 0;
+            self.env.cleaning |= e.cleanup;
             e.held = false;
             e.next_input = 0;
             e.voice = None;
-            e.recycle_pending = true;
+            e.recycle_pending = !e.cleanup || e.released != 0;
         }
+        let events = &self.env.events;
+        self.env.work.retain(|w| match *w {
+            Work::Note { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel)),
+            Work::Release { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel) || cleanup && e.cleanup),
+            Work::Controller { channel, input_channel, .. } | Work::PolyAt { channel, input_channel, .. }
+                | Work::Rpn { channel, input_channel, .. } => !selected(channel, input_channel),
+        });
         for i in 0..self.threads.len() {
             let t = &self.threads[i];
             let input = matches!(t.ctx.kind, Kind::Cb(Callback::Controller | Callback::PolyAt | Callback::Rpn | Callback::Nrpn));
-            if !t.live || !(self.env.events.get(t.ctx.event).is_some_and(|e| selected(e.channel, e.input_channel))
+            if !t.live { continue; }
+            if cleanup && t.ctx.kind == Kind::Cb(Callback::Release)
+                && self.env.events.get(t.ctx.event).is_some_and(|e| e.cleanup) {
+                let t = &mut self.threads[i];
+                t.ctx.cleanup = true;
+                t.ctx.ignore_wait = true;
+                if t.waiting {
+                    t.waiting = false;
+                    t.generation = t.generation.wrapping_add(1);
+                    let generation = t.generation;
+                    if self.env.timers.len() >= TIMER_CAPACITY {
+                        self.env.note("KSP Panic cleanup resume queue full; state notification canceled");
+                        self.threads[i].ctx.forward = Forward::None;
+                        self.finish(i as u16);
+                    } else {
+                        self.env.timer(self.env.clock(), TimerKind::Resume { thread: i as u16, generation });
+                    }
+                }
+                continue;
+            }
+            if !(self.env.events.get(t.ctx.event).is_some_and(|e| selected(e.channel, e.input_channel))
                 || input && selected(t.ctx.channel, t.ctx.input_channel)) { continue; }
             let ctx = t.ctx;
             if matches!(ctx.kind, Kind::Cb(Callback::Controller)) {
@@ -1502,9 +1542,13 @@ impl Runtime {
         for i in 0..self.env.events.slots.len() {
             let e = &self.env.events.slots[i];
             if e.live && selected(e.channel, e.input_channel) {
-                debug_assert_eq!(e.callbacks, 0);
+                debug_assert!(e.callbacks == 0 || cleanup && e.cleanup);
                 let id = i32::from(e.generation) << EVENT_INDEX_BITS | i as i32;
-                self.env.events.free(id);
+                if cleanup && e.cleanup {
+                    if e.released == 0 { self.env.queue(Work::Release { event: id, slot: 0 }); }
+                } else {
+                    self.env.events.free(id);
+                }
             }
         }
         let (events, threads) = (&self.env.events, &self.threads);
@@ -1518,10 +1562,11 @@ impl Runtime {
         });
         self.env.stop_waits.retain(|(id, _)| threads.iter().any(|t| t.live && t.ctx.callback_id == *id));
         for note in 0..128 {
-            let held = self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
+            let held = !self.env.cleaning && self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
             self.set_sys(SysArray::KeyDown, note, i32::from(held));
         }
         for note in 0..12 { self.key_down_oct(note); }
+        if !cleanup && !self.env.events.slots.iter().any(|e| e.live && e.cleanup) { self.env.cleaning = false; }
         self.changes += 1;
         affected
     }
@@ -1776,8 +1821,44 @@ impl Runtime {
         // asynchronous call (a retry that can never succeed here).
         let mut completions = 0;
         loop {
+            let mut deferred = 0;
             while let Some(w) = self.env.work.pop_front() {
+                let event = match w {
+                    Work::Note { event, .. } | Work::Release { event, .. } => Some(event),
+                    _ => None,
+                };
+                if self.env.cleaning && event.is_some_and(|id| self.env.events.get(id).is_some_and(|e| !e.cleanup)) {
+                    // Rotate fresh note work in the existing bounded queue;
+                    // cleanup releases behind it still get their turn.
+                    self.env.work.push_back(w);
+                    deferred += 1;
+                    if deferred >= self.env.work.len() { break; }
+                    continue;
+                }
+                deferred = 0;
                 self.handle(engine, w);
+            }
+            if self.env.cleaning {
+                for index in 0..self.env.events.slots.len() {
+                    let e = &self.env.events.slots[index];
+                    if !e.live || !e.cleanup { continue; }
+                    let id = i32::from(e.generation) << EVENT_INDEX_BITS | index as i32;
+                    let callback = self.threads.iter().any(|t| t.live && t.ctx.event == id);
+                    let queued = self.env.work.iter().any(|w| matches!(w, Work::Release { event, .. } if *event == id));
+                    if !callback && !queued {
+                        self.env.note("KSP Panic cleanup could not finish state notification; note canceled");
+                        self.env.events.free(id);
+                    }
+                }
+            }
+            if self.env.cleaning && !self.env.events.slots.iter().any(|e| e.live && e.cleanup) {
+                self.env.cleaning = false;
+                for note in 0..128 {
+                    let held = self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
+                    self.set_sys(SysArray::KeyDown, note, i32::from(held));
+                }
+                for note in 0..12 { self.key_down_oct(note); }
+                continue;
             }
             if !self.env.stop_waits.is_empty() {
                 self.stop_waits(engine);
@@ -1929,6 +2010,8 @@ impl Runtime {
                         ctx.input_channel = self.env.events.get(event).and_then(|e| e.input_channel);
                         ctx.poly_row = Event::index(event) as u32;
                         ctx.forward = Forward::Release;
+                        ctx.cleanup = self.env.events.get(event).is_some_and(|e| e.cleanup);
+                        ctx.ignore_wait = ctx.cleanup;
                         self.spawn_cb(engine, slot, Callback::Release, ctx);
                     }
                     None => self.env.queue(Work::Release {
@@ -2074,6 +2157,7 @@ impl Runtime {
         let Some(i) = self.free_threads.pop() else {
             self.env
                 .note("KSP callback pool exhausted; callback dropped");
+            if ctx.cleanup { self.env.note("KSP Panic cleanup callback pool full; state notification incomplete"); }
             self.forward(ctx);
             return;
         };
@@ -2152,9 +2236,17 @@ impl Runtime {
                     pc,
                     "KSP callback exceeded its instruction budget",
                 );
+                if self.threads[i as usize].ctx.cleanup {
+                    self.env.note("KSP Panic cleanup instruction limit; state notification incomplete");
+                }
                 self.finish(i);
             }
             Ok(Yield::OutOfFuel | Yield::OutOfTime) => {
+                if self.threads[i as usize].ctx.cleanup && self.env.timers.len() >= TIMER_CAPACITY {
+                    self.env.note("KSP Panic cleanup resume queue full; state notification canceled");
+                    self.finish(i);
+                    return;
+                }
                 // Block budget spent: continue at the start of the next block.
                 let generation = self.threads[i as usize].generation;
                 let at = self.env.clock();
@@ -2167,6 +2259,9 @@ impl Runtime {
                 );
             }
             Err(f) => {
+                if self.threads[i as usize].ctx.cleanup {
+                    self.env.note("KSP Panic cleanup fault; state notification incomplete");
+                }
                 let pc = self.threads[i as usize].pc;
                 self.env.fault(slot as u8, pc, f.0);
                 self.finish(i);
