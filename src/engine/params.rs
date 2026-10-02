@@ -1181,7 +1181,7 @@ pub(crate) fn group_type(groups: &[Group], g: u16, slot: u8) -> Option<f32> {
 
 /// `find_mod`: position in `Group::modulators` of the first name `is` accepts.
 pub(crate) fn find_mod(groups: &[Group], group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
-    groups.get(group)?.modulators.iter().position(|m| is(&m.name))
+    groups.get(group)?.modulators.iter().position(|m| m.kind != "undecoded" && is(&m.name))
 }
 
 /// `find_target`: position among the modulator's targets.
