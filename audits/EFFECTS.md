@@ -401,7 +401,8 @@ normalized x = value/1e6 through a law):
 | Delay | stereo ring, ping-pong pan, damping low pass, feedback | time `2000 x^3` ms; `*_UNIT` raw (`-1` stored, read as free ms; a sync unit reads time x 125 ms, 120 BPM) | low |
 | Chorus, Flanger | modulated delay lines, feedback (flanger) | normalized | low |
 | Phaser | 6 allpasses | normalized | low |
-| Transient Master, Lo-Fi, Distortion, Skreamer, Tape Saturator, Saturation | per-sample shapers (Pade tanh), Lo-Fi bit/rate reduction | normalized; Saturation shape -1..1 | low |
+| Transient Master, Lo-Fi, Distortion, Skreamer, Tape Saturator | per-sample shapers (Pade tanh), Lo-Fi bit/rate reduction | normalized | low |
+| Saturation | native Classic piecewise quadratic/cubic transfer; Enhanced/Drums retain a warned proxy | Shape -1..1; linear Output | Classic law grounded; other modes unverified |
 | Filter, EQ, Solid G-EQ | the group filter sections (`RackFilter`) | as group filters; G-EQ +-15 dB, bands 30-450, 200-2500, 600-7000, 1500-16k Hz, shelves unless the bell switch is on | low |
 
 Effect `0x1d` (class name Surround Panner) is Saturation: `$ENGINE_PAR_SHAPE` reaches it
@@ -411,6 +412,22 @@ targets `shaper`, `distortionIntensity`, `bitdepth` and `downsample` move them
 (normalized). A rack Filter/EQ storing output gain 0 and dry level 0 is read as unset
 (unity): ANALOG STRINGS' active insert EQ is stored so and no script sets it. Bypassed
 send slots return nothing.
+
+Classic Saturation now uses the native parameter binding and scalar transfer law,
+shared by rack and group inserts. With Shape `s`, let `a = 4s`. For `s >= 0.25`,
+the output is `sign(x) * (2u - u²)`, where `u = min(abs(ax), 1)`. For
+`0 < s < 0.25`, it blends that quadratic at unscaled input with the original input
+using weight `a`. Negative Shape uses `x * (x² + q) / (1 + q)`, with
+`q = 4 + 3.9s`. The native near-zero Shape interval passes input unchanged.
+The common linear Output gain follows the shaper; it is not a gain-compensation
+control. In particular, Shape 1 maps quiet input 0.01 to 0.0784 before Output,
+which the former tanh proxy failed to do. Enhanced and Drums select separate native
+kernels; those modes retain the previous approximation with explicit group/rack
+diagnostics. Native modulation smoothing and those two kernels remain unverified.
+The independent numeric gate covers branch boundaries, signed stereo input,
+above-unit input, linear Output and zero allocations; the existing ordered group
+gate now checks the native quiet-input transfer instead of an invented peak limit.
+Cargo validation of this correction is pending the combined build.
 
 Level checks (`kontakto render`, before and after): Dolce, Pacific, Vista, Solo, Una
 Corda, CHORUS and Afflatus 2 Horns unchanged. Mega Brass +1 dB (Skreamer, Saturation;
