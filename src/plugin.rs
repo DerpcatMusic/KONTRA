@@ -1670,13 +1670,15 @@ fn trace_effects(trace: &mut crate::diagnostics::LoadTrace, instrument: &Instrum
 }
 
 fn drain_audio_diagnostics(params: &SamplerParams) {
+    // Report/export, Load and the independent snapshot lane may all drain.
+    // Serialize dequeue with baseline updates so an older snapshot cannot
+    // overtake the newer one whose cumulative counters it should precede.
+    let mut latest = params.shared.diagnostic_latest.lock().unwrap();
     while let Some(audio) = params.shared.diagnostic_audio.pop() {
-        let mut latest = params.shared.diagnostic_latest.lock().unwrap();
         if latest.as_ref().is_some_and(|old| old.block >= audio.block) {
             let _ = params.shared.diagnostic_free.force_push(audio); continue
         }
         let previous = latest.replace(audio.clone());
-        drop(latest);
         if previous.as_ref().is_none_or(|old| (old.sample_rate, old.block_size, old.output_channels, old.offline, old.output_buses)
             != (audio.sample_rate, audio.block_size, audio.output_channels, audio.offline, audio.output_buses)) {
             crate::diagnostics::event(crate::diagnostics::LogLevel::Info, "audio", "host_audio_config", serde_json::json!({
@@ -1685,8 +1687,9 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
             }));
         }
         for (part, current) in audio.parts.iter().enumerate() {
-            let before = previous.as_ref().and_then(|old| old.parts.get(part)).copied().filter(|old|
-                (old.generation, old.script_epoch) == (current.generation, current.script_epoch));
+            // Rack slots retain their Engine across instrument/script reloads;
+            // these counters have Engine lifetime, not generation lifetime.
+            let before = previous.as_ref().and_then(|old| old.parts.get(part)).copied();
             let underruns = current.underruns.saturating_sub(before.map_or(0, |p| p.underruns));
             let dropped = current.dropped_commands.saturating_sub(before.map_or(0, |p| p.dropped_commands));
             if underruns == 0 && dropped == 0 { continue }
@@ -1743,6 +1746,9 @@ fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, chan
     }
     std::mem::swap(&mut s.diagnostic, &mut spare);
     p.shared.diagnostic_audio.push(spare).ok().unwrap();
+    if let Some(tasks) = cx.tasks::<AudioDiagnosticsTask>() {
+        tasks.spawn_coalescing(AudioDiagnosticsTask);
+    }
 }
 
 pub(crate) struct SnapshotRequest {
@@ -1827,6 +1833,16 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
             None
         }
     }
+}
+
+/// Periodic audio snapshots must not wait behind this instance's serialized
+/// instrument loader. Scheduling is bounded and coalesced; shared pool pressure
+/// can still overwrite snapshots, which diagnostic_dropped continues to count.
+pub struct AudioDiagnosticsTask;
+impl BackgroundTask for AudioDiagnosticsTask {
+    type Params = SamplerParams;
+    const SERIALIZED: bool = true;
+    fn run(self, params: &SamplerParams) { drain_audio_diagnostics(params); }
 }
 
 pub struct Load;
@@ -3519,7 +3535,7 @@ pub(crate) struct ScriptView {
     pub(crate) keys: Arc<BTreeMap<u8, KeyState>>,
 }
 
-moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
+moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load, AudioDiagnosticsTask] }
 
 /// This thread's CPU time in seconds (Linux), which a busy machine's
 /// preemption does not inflate the way wall time does; 0 elsewhere.
@@ -7188,6 +7204,73 @@ end on"
         }), 0);
         assert!(dsp.rack.parts.iter().all(|e| e.active_voices() == 0));
         assert!(dsp.key_slots.0.iter().all(|row| row.iter().all(|held| !held)));
+    }
+
+    #[test]
+    fn audio_snapshots_wake_their_own_lane_without_a_loader_or_audio_heap_work() {
+        use moose::core::tasks::{TaskSpawner, TaskSpawnerBundle};
+        let p = Arc::new(SamplerParams::new());
+        let mut dsp = Dsp::default();
+        dsp.until_poll = usize::MAX;
+        moose::core::tasks::warm_pool();
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = runs.clone();
+        let worker = p.clone();
+        let mut tasks = TaskSpawnerBundle::new();
+        // No Load lane exists: a Load-only wake cannot drain this fixture.
+        tasks.push(TaskSpawner::<AudioDiagnosticsTask>::new_serialized(move |task| {
+            task.run(&worker);
+            counted.fetch_add(1, Ordering::Release);
+        }));
+        let tasks = tasks.into_any().unwrap();
+        let transport = TransportInfo::default();
+        let mut midi = EventList::with_capacity(0);
+        let events = EventList::with_capacity(0);
+        let mut cx = ProcessContext::new(&transport, 48000., 64, &mut midi).with_tasks(&tasks);
+        let mut left = [0f32;64]; let mut right = [0f32;64];
+        let mut outputs = [&mut left[..], &mut right[..]];
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outputs, 64);
+        for block in 1..=3 {
+            dsp.until_diagnostics = 0;
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+            let deadline = Instant::now() + std::time::Duration::from_secs(2);
+            while runs.load(Ordering::Acquire) < block && Instant::now() < deadline { std::thread::yield_now(); }
+            assert_eq!(runs.load(Ordering::Acquire), block, "each published snapshot wakes the independent lane");
+            assert_eq!(p.shared.diagnostic_latest.lock().unwrap().as_ref().unwrap().block, block as u64);
+            assert!(p.shared.diagnostic_audio.is_empty());
+        }
+        assert_eq!(p.shared.diagnostic_dropped.load(Ordering::Relaxed), 0);
+        for _ in 0..8 {
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+        }
+        assert_eq!(runs.load(Ordering::Acquire), 3, "blocks without a snapshot must not wake its worker");
+        drop(tasks);
+    }
+
+    #[test]
+    fn audio_drop_warning_deltas_survive_instrument_and_script_reload() {
+        let p = SamplerParams::new();
+        // Mirrors a cumulative counter carried through repeated reloads: the
+        // journal must report only 25 + 15 + 6, not recount 25/40 on reload.
+        for (block, generation, epoch, underruns, commands) in [
+            (1, 1, 1, 25, 5), (2, 2, 2, 25, 5), (3, 3, 3, 40, 7),
+            (4, 3, 4, 40, 7), (5, 4, 5, 46, 8),
+        ] {
+            let mut audio = AudioDiagnostics::with_parts(RACK_SLOTS);
+            audio.block = block;
+            audio.parts[0] = PartDiagnostics { generation, script_epoch:epoch, underruns,
+                dropped_commands:commands, ..Default::default() };
+            p.shared.diagnostic_audio.push(audio).ok().unwrap();
+            drain_audio_diagnostics(&p);
+        }
+        crate::diagnostics::flush(std::time::Duration::from_secs(2)).unwrap();
+        let history = crate::diagnostics::snapshot();
+        let warnings: Vec<_> = history.events.iter().filter(|event|
+            event.instance_id == Some(p.shared.instance_id) && event.event == "playback_drops").collect();
+        assert_eq!(warnings.len(), 3, "unchanged lifetime counters cannot become new reload warnings");
+        assert_eq!(warnings.iter().map(|event| event.details["underruns_delta"].as_u64().unwrap()).collect::<Vec<_>>(), [25, 15, 6]);
+        assert_eq!(warnings.iter().map(|event| event.details["dropped_commands_delta"].as_u64().unwrap()).collect::<Vec<_>>(), [5, 2, 1]);
+        assert_eq!(p.shared.diagnostic_latest.lock().unwrap().as_ref().unwrap().parts[0].underruns, 46);
     }
 
     #[test]
