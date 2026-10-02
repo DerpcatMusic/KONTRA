@@ -621,7 +621,9 @@ fn step(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> 
             Op::StIA(v) => {
                 let value = s.int();
                 let i = s.int();
-                if let Some(e) = element(m, *pc, v, i) {
+                if let Some(e) = element(m, *pc, v, i)
+                    && m.slot.mem.ints[e] != value
+                {
                     m.slot.mem.ints[e] = value;
                 }
             }
@@ -1022,7 +1024,9 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
             Op::StIA(v) => {
                 let value = pop!();
                 let i = pop!();
-                if let Some(e) = elem!(v, i, p) {
+                if let Some(e) = elem!(v, i, p)
+                    && ints[e] != value
+                {
                     ints[e] = value;
                 }
             }
