@@ -332,6 +332,10 @@ impl Route {
 /// What reaches a part.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum In {
+    HostOn(crate::engine::HostNote, u8),
+    HostOff(crate::engine::HostPattern),
+    HostChoke(crate::engine::HostPattern),
+    HostExpression(crate::engine::HostPattern, crate::engine::HostExpression),
     NoteOn(u8, u8, u8),
     NoteOff(u8, u8),
     Cc(u8, u8, u8),
@@ -386,6 +390,8 @@ impl In {
 
     fn channel(self) -> u8 {
         match self {
+            Self::HostOn(note, _) => note.channel,
+            Self::HostOff(p) | Self::HostChoke(p) | Self::HostExpression(p, _) => p.channel.max(0).min(15) as u8,
             Self::NoteOn(c, ..)
             | Self::NoteOff(c, _)
             | Self::Cc(c, ..)
@@ -665,6 +671,9 @@ impl Router {
             }
         } else { o });
         match ev {
+            // Exact events are handled at feed, where the engine owns their
+            // retained host tuple. Router-only callers must not erase identity.
+            In::HostOn(..) | In::HostOff(..) | In::HostChoke(..) | In::HostExpression(..) => {},
             In::NoteOn(_, note, velocity) => {
                 let key = r.keys[note as usize & 127];
                 if key == NONE {
@@ -917,12 +926,31 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
 /// Send `ev` through `r` to its part's engine `e`; notes in channel mode
 /// arrive on `home`.
 pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
+    if let In::HostOn(note,_) = ev && !e.admit_host_note(note) { return; }
     r.follow(e);
     let zone = if r.by_channel() { None } else { r.route.zone() };
     e.set_mpe_zone(zone.map(|(master, members)| (master, members.fold(0u16, |mask, member| mask | (1 << member)))));
     e.set_mpe_master_bend_range(r.master_bend_range.map(|(semitones, cents)|
         (f32::from(semitones) + f32::from(cents) / 100.).min(96.)));
-    r.input(ev, home, &mut |o| apply(e, o));
+    match ev {
+        In::HostOn(note, velocity) => r.input(In::NoteOn(note.channel, note.key, velocity), home, &mut |o| match o {
+            Out::NoteOn(c, n, v) | Out::NoteOnFrom(c, _, n, v) => { e.host_note_on(note, c, n, v); }
+            o => apply(e, o),
+        }),
+        In::HostOff(pattern) | In::HostChoke(pattern) => {
+            if matches!(ev,In::HostChoke(_)) { e.host_note_choke(pattern); } else { e.host_note_off(pattern); }
+            let mut index = 0;
+            while let Some((note,_)) = e.host_note_at(index) {
+                if pattern.matches(note) && !e.host_key_held(note.channel,note.key) {
+                    r.held[note.channel as usize][note.key as usize] = (NONE,NONE);
+                    r.held_from[note.channel as usize] &= !(1u128 << note.key);
+                }
+                index += 1;
+            }
+        },
+        In::HostExpression(pattern, expression) => e.host_expression(pattern, expression),
+        ev => r.input(ev, home, &mut |o| apply(e, o)),
+    }
     e.set_mpe_master_bend_range(r.master_bend_range.map(|(semitones, cents)|
         (f32::from(semitones) + f32::from(cents) / 100.).min(96.)));
 }
@@ -930,6 +958,9 @@ pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
 /// Whether a part receives host input. Releases, bend and controllers other
 /// than volume and pan reach the whole port so routing changes never stick notes.
 pub fn reaches(c: &PartControls, r: &Router, port: u8, ev: In) -> bool {
+    // Old owners may outlive a part's routing change. Their immutable tuple,
+    // rather than the current channel/port selector, resolves these events.
+    if matches!(ev, In::HostOff(..) | In::HostChoke(..) | In::HostExpression(..)) { return true; }
     let wide = match ev {
         In::NoteOff(..) | In::Bend(..) => true,
         In::Cc(_, cc, _) => !matches!(cc, 7 | 10),
