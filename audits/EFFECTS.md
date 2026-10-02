@@ -108,25 +108,26 @@ preset folder and usually point into the resource container, e.g.
 Una Corda's `EMT140` IR member has a damaged archive header (see `archive-health.json`),
 so it is reported as unavailable and passes through.
 
-IRs currently use their decoded amplitudes without automatic gain compensation.
-Stored wet and dry levels still apply. This is a fallback, not a verified Kontakt
-gain law. The [NI effect reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/effect-reference)
-defines Auto Gain, which compensates level changes caused by processing settings,
-and an eight-segment Volume Envelope, which reshapes the impulse response. The
-native named serialization bindings establish the five flags in this order: Reverse,
-Auto Gain, Preserve Length, Bypass Latency Compensation, and Volume Envelope. The
-binary reader writes the same members in that order. Reverse now reverses the source
-IR during worker preparation, before resampling and predelay. Active Auto Gain and
-Volume Envelope remain unapplied and produce explicit warnings: the exact level
-metric, initial gain compensation, and envelope interpolation are unverified.
-The stored sample-rate factor and latency settings are retained without implementing
-the native quality/latency modes. The crossover field is named `er_lr_XPoint`; its
-units and automatic sentinel behavior are unverified. Existing serialized field names
-are retained so their raw values survive instrument cache round trips.
-Raw IR frequency gain, parallel returns and accumulated tails can therefore produce
-large output peaks even when the voice Amplifier and group selection are correct.
-Those peaks do not establish intended preset gain. Automatic normalization or a
-new limiter would conceal the missing native processing rather than prove its law.
+Stored wet and dry levels apply independently. Saved Auto Gain now compensates
+energy changes in the prepared IR: use the largest channel's sum of squared
+samples, target energy 0.5, cap gain at 2, and retain unity below energy 0.001.
+The named native settings binding, IR rebuild, and wet-output path establish this
+law. It is applied once to the prepared linear kernel, leaving dry audio unchanged.
+The authored stereo impulse gate checks asymmetric channel energy, the gain cap,
+the low-energy threshold, dry mixing, and rate/size/predelay order without audio
+thread allocation. Validation of this new gate is pending the shared build window.
+
+The [NI effect reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/effect-reference)
+defines Auto Gain as level compensation when processing settings change, and the
+Volume Envelope as IR shaping. Native bindings establish flags in this order:
+Reverse, Auto Gain, Preserve Length, Bypass Latency Compensation, and Volume
+Envelope. Reverse reverses the source IR during worker preparation. Enabled
+Volume Envelope, independent early/late sizing and filtering remain unapplied and
+warn explicitly; Auto Gain then warns that it uses the approximated prepared IR.
+The native sample-rate/latency modes and automatic early/late boundary remain
+unimplemented. Existing serialized field names retain those raw settings.
+Live KSP Auto Gain and Reverse writes are not yet bound. Large accumulated peaks
+alone do not establish preset correctness or justify a new limiter.
 
 ## DSP
 
