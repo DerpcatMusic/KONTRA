@@ -486,7 +486,7 @@ impl Prepared {
                 .iter()
                 .flat_map(|s| &s.spans)
                 .map(|span| span.data.bytes())
-                .sum();
+                .sum::<usize>();
         let state = Arc::new(State {
             maps,
             zones: zones.into(),

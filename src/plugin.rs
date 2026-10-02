@@ -6537,6 +6537,14 @@ end on"#.into()], ..Default::default() };
         wav.extend_from_slice(b"data");wav.extend_from_slice(&(frames.len() as u32*8).to_le_bytes());
         for frame in &frames {for value in frame {wav.extend_from_slice(&value.to_le_bytes());}}
         std::fs::write(&path,wav).unwrap();
+        let proof=std::env::var_os("KONTRA_ZONE_PROOF_DIR").map(std::path::PathBuf::from);
+        if let Some(dir)=&proof {std::fs::create_dir_all(dir).unwrap();std::fs::copy(&path,dir.join("authored-source.wav")).unwrap();}
+        let save=|name:&str,l:&[f32],r:&[f32]| {
+            if let Some(dir)=&proof {
+                let mut out=hound::WavWriter::create(dir.join(name),hound::WavSpec {channels:2,sample_rate:48000,bits_per_sample:32,sample_format:hound::SampleFormat::Float}).unwrap();
+                for (&l,&r) in l.iter().zip(r) {out.write_sample(l).unwrap();out.write_sample(r).unwrap();}out.finalize().unwrap();
+            }
+        };
         let bank = |zones: Vec<Zone>| Bank::from_samples(groups.clone(),zones,
             vec![(path.clone(),Sample {rate:48000,frames:frames.clone()})]).unwrap();
         let script = r#"on init
@@ -6597,7 +6605,7 @@ end on"#;
         assert_eq!(scalar(e,"$done"),crate::ksp::Value::Int(3));
         assert_eq!(scalar(e,"$success"),crate::ksp::Value::Int(3));
         assert_eq!(scalar(e,"$resumed"),crate::ksp::Value::Int(1));
-        assert_eq!(e.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],"0:60:60");
+        assert_eq!(e.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("0:60:60".into()));
         for (par,value) in [(ZonePar::Group,0),(ZonePar::LowKey,60),(ZonePar::HighKey,60)] {assert_eq!(e.bank().unwrap().zone_par(1,par),Some(value));}
         assert!(e.script().unwrap().diagnostics().is_empty(),"{:?}",e.script().unwrap().diagnostics());
         // Independent reference: old sampler keeps playing; a separately
@@ -6612,6 +6620,10 @@ end on"#;
         assert!(newl.iter().any(|v|v.abs()>0.01),"remapped WT really produces PCM");
         assert!(al.iter().zip(oldl.iter().zip(&newl)).chain(ar.iter().zip(oldr.iter().zip(&newr))).all(|(a,(old,new))|(a-old-new).abs()<1e-5),"new WT mapping plus untouched old sampler voice matches independent reference");
         assert!(s.rack.parts[0].voice_census().iter().any(|v|v.group==0 && v.wavetable.is_some()));
+        save("remapped-actual.wav",&al,&ar);save("old-sampler-reference.wav",&oldl,&oldr);save("new-wavetable-reference.wav",&newl,&newr);
+        let expected_l:Vec<_>=oldl.iter().zip(&newl).map(|(a,b)|a+b).collect();let expected_r:Vec<_>=oldr.iter().zip(&newr).map(|(a,b)|a+b).collect();
+        save("remapped-independent-reference.wav",&expected_l,&expected_r);
+        println!("mapped readback=0:60:60, waits=3, successful IDs=3; old sampler + new WT PCM matches independent sum");
         // A RAM fill built from original source mappings must be rebased,
         // retaining both mapped keys and the already playing WT window.
         { let chains=p.shared.zone_chains.lock().unwrap();let chain=chains.last().unwrap();
@@ -6625,6 +6637,8 @@ end on"#;
         assert!(old_bank.is_some());drop(old_bank);
         assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::LowKey),Some(60));
         assert!(al.iter().zip(oldl.iter().zip(&newl)).chain(ar.iter().zip(oldr.iter().zip(&newr))).all(|(a,(old,new))|(a-old-new).abs()<1e-5),"RAM fill retains remapped playback and active voice phase");
+        save("upgraded-actual.wav",&al,&ar);
+        let expected_l:Vec<_>=oldl.iter().zip(&newl).map(|(a,b)|a+b).collect();let expected_r:Vec<_>=oldr.iter().zip(&newr).map(|(a,b)|a+b).collect();save("upgraded-independent-reference.wav",&expected_l,&expected_r);
         // Also prepare a real zero-head sampler bank into a complete resident
         // WT table: the file decoder, not a synthetic silence fallback, runs.
         let bare=Bank::load_bare(&source).unwrap();
@@ -6639,6 +6653,24 @@ end on"#;
         assert_eq!(allocations(|| {bare_play.note_on(0,60,100);fresh_reference.note_on(0,60,100);
             bare_play.render(&mut al,&mut ar);fresh_reference.render(&mut newl,&mut newr);}),0);
         assert!(al.iter().zip(&newl).chain(ar.iter().zip(&newr)).all(|(a,b)|(a-b).abs()<1e-5));
+        save("zero-head-wavetable-actual.wav",&al,&ar);save("zero-head-independent-reference.wav",&newl,&newr);
+        // Sustain belongs to the note's channel for both source families.
+        let mut mapped=zones.clone();mapped[1].group=0;mapped[1].low_key=60;mapped[1].high_key=60;
+        let mut channels=Engine::default();channels.set_bank(Some(Box::new(bank(mapped))));
+        assert_eq!(allocations(|| {
+            channels.note_on(1,60,100);channels.note_on(2,55,100);
+            channels.cc(1,64,127);channels.cc(2,64,127);
+            channels.note_off(1,60);channels.note_off(2,55);
+            channels.render(&mut [0.;32],&mut [0.;32]);
+        }),0);
+        let voices=channels.voice_census();assert_eq!(voices.len(),2);assert!(voices.iter().all(|v|!v.released));
+        assert!(voices.iter().any(|v|v.channel==1 && v.group==0 && v.wavetable.is_some()));
+        assert!(voices.iter().any(|v|v.channel==2 && v.group==1 && v.wavetable.is_none()));
+        assert_eq!(allocations(|| {channels.cc(1,64,0);channels.render(&mut [0.;32],&mut [0.;32]);}),0);
+        let voices=channels.voice_census();assert!(voices.iter().any(|v|v.channel==1 && v.released));assert!(voices.iter().any(|v|v.channel==2 && !v.released));
+        assert_eq!(allocations(|| {channels.cc(2,64,0);channels.render(&mut [0.;32],&mut [0.;32]);}),0);
+        assert!(channels.voice_census().iter().all(|v|v.released));
+        println!("normal + WT channel ownership/sustain isolation: PASS; all audio allocation gates=0");
         // A new source bank may share dimensions, but an old prepared job
         // must not edit it or claim successful completion.
         while p.shared.discard.pop().is_some() {}
@@ -6680,9 +6712,9 @@ end on"#.into()],..Instrument::default()};
         assert!(errors.is_empty(),"{errors:?}");
         let mut offline=Engine::default();offline.set_script(rt);
         offline.set_bank(Some(Box::new(Bank::load(&init_source).unwrap())));
-        assert_eq!(offline.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"],"pending");
+        assert_eq!(offline.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("pending".into()));
         while offline.service_zone_edits().unwrap() {}
-        assert_eq!(offline.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"],"0:60:60");
+        assert_eq!(offline.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("0:60:60".into()));
         assert!(offline.script().unwrap().diagnostics().is_empty(),"{:?}",offline.script().unwrap().diagnostics());
         std::fs::remove_file(path).unwrap();
     }
