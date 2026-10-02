@@ -154,6 +154,7 @@ pub(super) struct Command {
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
     Start {
+        host_note: Option<super::HostRef>,
         note: u8,
         velocity: u8,
         owner: Option<(u8, u8)>,
@@ -171,6 +172,7 @@ pub(super) enum Kind {
     /// Key release; `trigger` carries note, velocity and groups for release
     /// triggers unless the note already fired them.
     Release {
+        host_note: Option<super::HostRef>,
         trigger: Option<(u8, u8)>,
         groups: GroupMask,
         expression: Option<Expression>,
@@ -278,6 +280,7 @@ impl KspEngine for Host<'_> {
         self.bank?;
         let id = self.player.next_id();
         let kind = Kind::Start {
+            host_note: n.host_note,
             note: n.note,
             velocity: n.velocity,
             owner: n.owner,
@@ -305,6 +308,7 @@ impl KspEngine for Host<'_> {
 
     fn note_off(&mut self, at: u32, voice: EventId, n: &NoteSpec<'_>) {
         let kind = Kind::Release {
+            host_note: n.host_note,
             trigger: (n.length != NoteLength::Sample).then_some((n.note, n.velocity)),
             groups: *n.groups,
             expression: n.frozen_expression.or_else(|| self.commands.iter().find_map(|c| match c.kind {
@@ -500,6 +504,7 @@ impl Player {
         let channel = c.channel;
         match &c.kind {
             &Kind::Start {
+                host_note,
                 note,
                 velocity,
                 owner,
@@ -513,6 +518,7 @@ impl Player {
                 ref groups,
             } => {
                 let event = NoteEvent {
+                    host_note,
                     channel,
                     note,
                     velocity,
@@ -534,10 +540,10 @@ impl Player {
                     self.start(bank, &event, id, true, defaults);
                 }
             }
-            Kind::Release { trigger, groups, expression } => {
+            Kind::Release { trigger, groups, expression, host_note } => {
                 let latched = self.release_voices(bank, id).is_some_and(|event| event.4);
                 if let &Some((note, velocity)) = trigger {
-                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, *expression, c.input_channel, defaults);
+                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, *expression, c.input_channel, *host_note, defaults);
                 }
             }
             &Kind::Freeze(expression) => {

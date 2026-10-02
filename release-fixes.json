@@ -804,6 +804,19 @@
       ],
       "validation": "Delayed600-cell NKA success/failure, invalid/completed IDs, wrong-slot completion, original event/channel context after note-off and both VM modes pass with zero processing heap. Existing array read/write/stale epoch, live IR completion, stop_wait and bounded async/PGS regressions all pass at5336388. Relative async_done callback order is local policy, not a claimed documented guarantee.",
       "accepted": true
+    },
+    {
+      "id": "retained-exact-host-note-lifetimes",
+      "summary": "Retain exact host note identities through routed notes, pedals, callbacks and aggregate NOTE_END",
+      "source_commits": [
+        "f6e6da7c9b038cdc80de872f51b63b1e4c31252e",
+        "e81cef85df0ef0c6268ba2a3909a6d46ac90ad55",
+        "ddbbebc268707d498546fd430a30a3c80b304270",
+        "965e501b0c1244a2574478c3f1fd4948782d2780",
+        "6ac223e72cd3966befeb758ebf1043cd35cceb2a"
+      ],
+      "validation": "Fourteen focused ownership/routing/MPE/delayed-expression/backpressure gates pass at301d720 after reproducing and correcting keyswitch theft of the host ID. Includes overlapping same-key IDs, mixed anonymous MIDI, callback children/waits, bank-only replacement, paused scoped cleanup, safe generation reuse and zero processing heap. Native CLAP gain/pan/tuning laws supported; unverified expression types and VST3 attack tuning/duration remain diagnosed, not claimed compatible. Combined root validation follows before shipping.",
+      "accepted": true
     }
   ]
 }
