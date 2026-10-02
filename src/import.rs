@@ -50,8 +50,12 @@ pub struct Group {
     pub modulators: Vec<Modulator>,
     /// Internal AHDSRs driving module parameters (filter cutoff, EQ gain).
     pub envelopes: Vec<ModEnvelope>,
-    /// Group insert effects (only filters and EQs play).
+    /// Group insert effects.
     pub fx: crate::fx::Chain,
+    /// First insert slot after the Amplifier (0: all after, 8: all before).
+    /// Absent in older caches or when the native split is not valid.
+    #[serde(default)]
+    pub amp_split_slot: Option<u8>,
     /// Kontakt voice group (choke/voice-limit group) index, if assigned.
     pub voice_group: Option<u32>,
     /// Raw interpolation quality setting; 0 in every local preset.
@@ -61,7 +65,7 @@ pub struct Group {
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), voice_group: None, interp_quality: 0 }
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0 }
     }
 }
 
@@ -683,6 +687,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             modulators: modulation.modulators,
             envelopes: modulation.envelopes,
             fx,
+            amp_split_slot: u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8),
             voice_group: u32::try_from(v.voice_group_index).ok(),
             interp_quality: v.interp_quality,
         });
