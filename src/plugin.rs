@@ -887,6 +887,12 @@ fn load_arrays(params: &SamplerParams) {
     while !params.shared.array_ready.is_full() {
         let Some((part, generation, epoch, mut request)) = params.shared.array_retired.pop() else { break };
         if !current(part, generation, epoch) { continue }
+        if request.error() == Some("load_array_str: prepared string capacity exceeded") {
+            let source = params.shared.view.lock().unwrap().parts[part].instrument.clone();
+            if let Some(source) = source {
+                crate::diagnostics::resource(&source.path, request.path(), request.error().unwrap());
+            }
+        }
         request.recycle();
         params.shared.array_ready.push((part, generation, epoch, request)).ok().unwrap();
     }
@@ -896,7 +902,7 @@ fn load_arrays(params: &SamplerParams) {
         if !request.read() {
             let source = params.shared.view.lock().unwrap().parts[part].instrument.clone();
             if let Some(source) = source {
-                crate::diagnostics::resource(&source.path, request.path(), "NKA file could not be read, or its array header does not match");
+                crate::diagnostics::resource(&source.path, request.path(), request.error().unwrap_or("NKA read failed"));
             }
         }
         params.shared.array_ready.push((part, generation, epoch, request)).ok().unwrap();
