@@ -870,18 +870,20 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             match signal {
                 b::signal::TIMER_MS => {
                     l.timer_us = value;
-                    l.beats = 0;
                 }
                 b::signal::TIMER_BEAT => {
                     l.beats = value;
-                    l.timer_us = 0;
                 }
                 _ => {
                     let bit = if signal == b::signal::TRANSP_START { 1 } else { 2 };
                     if value == 0 { l.transport &= !bit; } else { l.transport |= bit; }
                 }
             }
-            l.generation = l.generation.wrapping_add(1);
+            if matches!(signal, b::signal::TIMER_MS | b::signal::TIMER_BEAT) {
+                let index = usize::from(signal == b::signal::TIMER_BEAT);
+                l.generations[index] = l.generations[index].wrapping_add(1);
+                m.env.listeners_changed |= 1 << (usize::from(slot) * 2 + index);
+            }
             let name = match signal {
                 b::signal::TIMER_MS => "$NI_SIGNAL_TIMER_MS",
                 b::signal::TIMER_BEAT => "$NI_SIGNAL_TIMER_BEAT",
@@ -897,7 +899,6 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 else if m.env.loading { m.slot.ui.listeners.insert(name, value); }
                 else { return Err(Fault("KSP listener storage was not prepared")); }
             }
-            m.env.listeners_changed |= 1 << slot;
             Ok(Step::Next)
         }
         // ---- Groups, modules and engine parameters -------------------------------------

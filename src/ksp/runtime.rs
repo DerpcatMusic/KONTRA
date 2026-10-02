@@ -439,7 +439,7 @@ pub enum Work {
 enum TimerKind {
     Resume { thread: u16, generation: u32 },
     Release { event: i32, slot: u8 },
-    Listener { slot: u8, generation: u32 },
+    Listener { slot: u8, signal: i32, generation: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -517,7 +517,7 @@ pub struct Env {
     next_async_id: i32,
     pub async_done: Vec<(u8, i32, i32)>,
     pub stop_waits: Vec<(i32, i32)>,
-    pub listeners_changed: u8,
+    pub listeners_changed: u16,
     pub pgs_changed: bool,
 }
 
@@ -2103,17 +2103,17 @@ impl Runtime {
                     }
                 }
                 TimerKind::Release { event, slot } => self.env.queue(Work::Release { event, slot }),
-                TimerKind::Listener { slot, generation } => {
-                    let l = self.states[slot as usize].listener;
-                    if l.generation == generation {
+                TimerKind::Listener { slot, signal, generation } => {
+                    let index = usize::from(signal == b::signal::TIMER_BEAT);
+                    if self.states[slot as usize].listener.generations[index] == generation {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Listener));
-                        ctx.signal = if l.timer_us > 0 {
-                            b::signal::TIMER_MS
-                        } else {
-                            b::signal::TIMER_BEAT
-                        };
+                        ctx.signal = signal;
                         self.spawn_cb(engine, slot, Callback::Listener, ctx);
-                        self.schedule_listener(slot, t.at);
+                        // A listener may retune itself. Its changed bit schedules
+                        // the new generation; do not also schedule it here.
+                        if self.states[slot as usize].listener.generations[index] == generation {
+                            self.schedule_listener(slot, signal, t.at);
+                        }
                     }
                 }
             }
@@ -2121,23 +2121,18 @@ impl Runtime {
         }
     }
 
-    fn schedule_listener(&mut self, slot: u8, from: u64) {
+    fn schedule_listener(&mut self, slot: u8, signal: i32, from: u64) {
         let l = self.states[slot as usize].listener;
-        let us = if l.timer_us > 0 {
-            i64::from(l.timer_us)
-        } else if l.beats > 0 {
-            i64::from(self.env.quarter_us() / l.beats)
-        } else {
-            return;
+        let us = match signal {
+            b::signal::TIMER_MS if l.timer_us > 0 => i64::from(l.timer_us),
+            b::signal::TIMER_BEAT if l.beats > 0 => i64::from(self.env.quarter_us() / l.beats),
+            _ => return,
         };
         let at = from + self.env.samples(us).max(1);
-        self.env.timer(
-            at,
-            TimerKind::Listener {
-                slot,
-                generation: l.generation,
-            },
-        );
+        self.env.timer(at, TimerKind::Listener {
+            slot, signal,
+            generation: l.generations[usize::from(signal == b::signal::TIMER_BEAT)],
+        });
     }
 
     // ---- Scheduling ------------------------------------------------------------------
@@ -2201,8 +2196,10 @@ impl Runtime {
             if self.env.listeners_changed != 0 {
                 let changed = std::mem::take(&mut self.env.listeners_changed);
                 for slot in 0..self.states.len() as u8 {
-                    if changed & (1 << slot) != 0 {
-                        self.schedule_listener(slot, self.env.clock());
+                    for (index, signal) in [b::signal::TIMER_MS, b::signal::TIMER_BEAT].into_iter().enumerate() {
+                        if changed & (1 << (usize::from(slot) * 2 + index)) != 0 {
+                            self.schedule_listener(slot, signal, self.env.clock());
+                        }
                     }
                 }
             }

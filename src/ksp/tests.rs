@@ -2470,3 +2470,23 @@ end on"#;
     assert!(!rig.rt.ui_file_selection(&mut rig.engine,0,1,"/presets/Quiet.nka"));
     assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
 }
+
+#[test]
+fn ms_and_beat_listeners_retain_independent_phase_through_disable_retune_and_transport() {
+    let source = "on init\ndeclare ui_slider $ms(0,10000)\ndeclare ui_slider $beat(0,10000)\ndeclare ui_slider $start(0,10000)\ndeclare ui_slider $stop(0,10000)\ndeclare ui_slider $mode(0,3)\ndeclare $retune\nset_listener($NI_SIGNAL_TIMER_MS,1000)\nset_listener($NI_SIGNAL_TIMER_BEAT,4)\nset_listener($NI_SIGNAL_TRANSP_START,1)\nset_listener($NI_SIGNAL_TRANSP_STOP,1)\nend on\non listener\nselect($NI_SIGNAL_TYPE)\ncase $NI_SIGNAL_TIMER_MS\ninc($ms)\nif($retune=1)\n$retune := 0\nchange_listener_par($NI_SIGNAL_TIMER_MS,1000)\nend if\ncase $NI_SIGNAL_TIMER_BEAT\ninc($beat)\ncase $NI_SIGNAL_TRANSP_START\ninc($start)\ncase $NI_SIGNAL_TRANSP_STOP\ninc($stop)\nend select\nend on\non ui_control($mode)\nif($mode=1)\nchange_listener_par($NI_SIGNAL_TIMER_MS,0)\nelse\n$retune := 1\nchange_listener_par($NI_SIGNAL_TIMER_MS,2000)\nend if\nend on";
+    let mut rig = Rig::new(&[source]);
+    rig.block(6001);
+    let values = |rt: &Runtime| (0..4).map(|i|rt.interface(0).controls[i].properties["$CONTROL_PAR_VALUE"].clone()).collect::<Vec<_>>();
+    assert_eq!(values(&rig.rt),vec![Value::Int(125),Value::Int(1),Value::Int(0),Value::Int(0)]);
+    rig.rt.set_host_transport(&mut rig.engine,true,120.,0.,(4,4));
+    rig.rt.ui_control(&mut rig.engine,0,4,1);
+    rig.block(6000);
+    assert_eq!(values(&rig.rt),vec![Value::Int(125),Value::Int(2),Value::Int(1),Value::Int(0)]);
+    rig.rt.set_host_transport(&mut rig.engine,false,120.,0.,(4,4));
+    rig.rt.ui_control(&mut rig.engine,0,4,2);
+    rig.block(241);
+    assert_eq!(values(&rig.rt),vec![Value::Int(129),Value::Int(2),Value::Int(1),Value::Int(1)],"self-retuning schedules one new timer, not two");
+    rig.block(5759);
+    assert_eq!(rig.rt.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(3),"MS retuning and transport do not postpone the existing beat deadline");
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
