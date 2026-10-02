@@ -171,6 +171,8 @@ pub struct Expression {
     pub gain: f32,
     /// −1..=1, added to the voice's pan.
     pub pan: f32,
+    /// Absolute registered per-note CC74, independent of channel controllers.
+    pub note_cc74: Option<u8>,
     /// Raw member controls frozen at physical key-up; manager controls stay live.
     pub member_cc74: Option<u8>,
     pub member_pressure: Option<u8>,
@@ -178,7 +180,7 @@ pub struct Expression {
 
 impl Default for Expression {
     fn default() -> Self {
-        Self { tune: 0.0, gain: 1.0, pan: 0.0, member_cc74: None, member_pressure: None }
+        Self { tune: 0.0, gain: 1.0, pan: 0.0, note_cc74: None, member_cc74: None, member_pressure: None }
     }
 }
 
@@ -937,7 +939,13 @@ impl Engine {
 
     pub fn set_expression_on(&mut self, channel: u8, note: u8, expression: Expression) {
         if channel < 16 && note < 128 {
+            let previous = self.player.expression[channel as usize][note as usize];
             self.player.expression[channel as usize][note as usize] = expression;
+            // Settled modulation must see changed note controls without an unrelated CC.
+            if previous.note_cc74 != expression.note_cc74
+                || previous.member_cc74 != expression.member_cc74
+                || previous.member_pressure != expression.member_pressure
+            { self.player.touch(); }
         }
     }
 
