@@ -64,19 +64,28 @@ def source_tag(tag, revision):
             obj = api("git/tags/" + obj["sha"])["object"]
         assert obj["sha"] == revision, "Source tags must never move"
     else:
+        assert revision == SHA == api("git/ref/heads/main")["object"]["sha"], "Never create historical source refs"
         api("git/refs", "--method", "POST", "-f", "ref=refs/tags/" + tag, "-f", "sha=" + revision)
 
 
 def finish(release, manifest, manifest_bytes):
-    # Recover a published staging release before starting another upload.
     verify(release, manifest, manifest_bytes)
     assert not release["draft"]
     tag = f'v{manifest["version"]}'
     assert re.fullmatch(r"v\d+\.\d+\.\d+-nightly\.\d{8}\.g[0-9a-f]{12}", tag), tag
+    if release["tag_name"] == "nightly-staging":
+        # One-time migration: never ask GITHUB_TOKEN to retag historical commits.
+        assert manifest["revision"] == SHA == api("git/ref/heads/main")["object"]["sha"], "Recover staging while its source is still main"
+        source_tag(tag, SHA)
+        gh("release", "edit", "nightly-staging", "--tag", tag, "--target", SHA, "--prerelease=false", "--latest=true")
+        delete_ref("nightly-staging")
+        release = next(r for r in releases() if r["tag_name"] == tag)
+    assert release["tag_name"] == tag and not release["prerelease"]
+    verify(release, manifest, manifest_bytes)
     source_tag(tag, manifest["revision"])
+    assert api("releases/latest")["id"] == release["id"], "Complete snapshot must own Latest downloads"
     old = [r for r in releases() if not r["draft"] and r["id"] != release["id"]]
     previous = max(old, key=lambda r: r["published_at"], default=None)
-    legacy = False
     if previous:
         assets = {a["name"]: a for a in previous["assets"]}
         for platform in PLATFORMS:
@@ -85,21 +94,7 @@ def finish(release, manifest, manifest_bytes):
         if "release-manifest.json" in assets:
             old_data = gh("release", "download", previous["tag_name"], "--pattern", "release-manifest.json", "--output", "-")
             verify(previous, json.loads(old_data), old_data)
-        else:
-            legacy = True
-            source = previous["target_commitish"]
-            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source):
-                obj = api("git/ref/tags/" + previous["tag_name"])["object"]
-                while obj["type"] == "tag":
-                    obj = api("git/tags/" + obj["sha"])["object"]
-                source = obj["sha"]
-            previous["target_commitish"] = source
-            marker = re.search(r"<!-- kontra-source-tag: ([\w.\-]+) -->", previous.get("body") or "")
-            legacy_tag = marker[1] if marker else (previous["tag_name"] if previous["tag_name"].startswith("v") else f"legacy-g{source[:12]}")
-            source_tag(legacy_tag, source)
-            if not marker:
-                previous["body"] = (previous.get("body") or "") + f"\n\nLegacy snapshot: embedded version and build identity metadata are unavailable. Source tag: `{legacy_tag}`.\n<!-- kontra-source-tag: {legacy_tag} -->\n"
-    # Only prune after the new release is published and every asset verified.
+    # Old records/refs are never renamed or recreated. Delete only after validation.
     for r in old:
         if previous and r["id"] == previous["id"]:
             continue
@@ -107,20 +102,6 @@ def finish(release, manifest, manifest_bytes):
         marker = re.search(r"<!-- kontra-source-tag: (v[\w.\-]+|legacy-g[0-9a-f]{12}) -->", r.get("body") or "")
         if marker and managed_ref(marker[1]) and marker[1] != tag and (not previous or marker[0] not in (previous.get("body") or "")):
             delete_ref(marker[1])
-    if previous:
-        if previous["tag_name"] != "nightly-previous":
-            delete_ref("nightly-previous")
-        args = ["release", "edit", previous["tag_name"], "--tag", "nightly-previous", "--target", previous["target_commitish"], "--latest=false"]
-        if legacy:
-            Path("previous-notes.md").write_text(previous["body"])
-            title = previous["name"]
-            if "(legacy; build metadata unavailable)" not in title:
-                title += " (legacy; build metadata unavailable)"
-            args += ["--title", title, "--notes-file", "previous-notes.md"]
-        gh(*args)
-    delete_ref("nightly")
-    gh("release", "edit", release["tag_name"], "--tag", "nightly", "--target", manifest["revision"], "--latest=false")
-    delete_ref("nightly-staging")
 
 
 def main():
@@ -136,12 +117,17 @@ def main():
         return
     version = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
     assert re.fullmatch(r"\d+\.\d+\.\d+-nightly\.\d{8}\.g[0-9a-f]{12}", version), version
-    # A rerun of the same source/version must not evict the previous snapshot.
-    if any(r["tag_name"] == "nightly" and r["target_commitish"] == SHA and r["name"] == "KONTRA " + version for r in releases()):
+    tag = "v" + version
+    # Recover publication/pruning without editing the existing immutable record.
+    existing = next((r for r in releases() if r["tag_name"] == tag), None)
+    if existing and not existing["draft"]:
+        data = gh("release", "download", tag, "--pattern", "release-manifest.json", "--output", "-")
+        finish(existing, json.loads(data), data)
         Path(os.environ["GITHUB_OUTPUT"]).write_text("published=true\n")
         return
-    if staging and staging["draft"]:
-        gh("release", "delete", "nightly-staging", "--yes", "--cleanup-tag")
+    for draft in (staging, existing):
+        if draft and draft["draft"]:
+            gh("release", "delete", draft["tag_name"], "--yes", "--cleanup-tag")
     delete_ref("nightly-staging")
     assets = []
     for p, platform in zip(files, PLATFORMS):
@@ -179,6 +165,7 @@ Source tag: [`v{version}`](https://github.com/{REPO}/tree/v{version}).
 <!-- kontra-source-tag: v{version} -->
 
 All four archives come from this source commit. `release-manifest.json` records their sizes and SHA256 checksums; each archive includes separate `clap-build-info.json`, `vst3-build-info.json` and standalone `build-info.json` with their actual feature sets.
+Experimental nightly snapshot, not a stable-quality release. GitHub marks it Latest solely to provide permanent download links.
 Contents: CLAP plug-in, VST3 plug-in and standalone application. These builds have not been certified in Windows or macOS DAWs.
 macOS builds are signed ad hoc, not notarized: after unzipping, run `xattr -dr com.apple.quarantine KONTRA.clap KONTRA.vst3 kontakto-standalone`.
 x86_64 plug-ins require AVX2, FMA and BMI2. Linux requires Ubuntu 24.04-compatible system libraries.
@@ -186,20 +173,20 @@ x86_64 plug-ins require AVX2, FMA and BMI2. Linux requires Ubuntu 24.04-compatib
 The project retains this snapshot and one previous complete release for rollback. Older release records/downloads and managed nightly source tags are removed only after a complete replacement is published. Stable `vX.Y.Z` source tags are preserved.
 """)
     try:
-        gh("release", "create", "nightly-staging", *map(str, files), "dist/release-manifest.json", "--draft", "--prerelease", "--target", SHA, "--title", "KONTRA " + version, "--notes-file", "notes.md")
-        staging = next(r for r in releases() if r["tag_name"] == "nightly-staging")
+        gh("release", "create", tag, *map(str, files), "dist/release-manifest.json", "--draft", "--target", SHA, "--title", "KONTRA " + version, "--notes-file", "notes.md")
+        staging = next(r for r in releases() if r["tag_name"] == tag)
         verify(staging, manifest, data)
         if api("git/ref/heads/main")["object"]["sha"] != SHA:
-            gh("release", "delete", "nightly-staging", "--yes", "--cleanup-tag")
+            gh("release", "delete", tag, "--yes", "--cleanup-tag")
             return
-        gh("release", "edit", "nightly-staging", "--draft=false", "--latest=false")
-        staging["draft"] = False
+        gh("release", "edit", tag, "--draft=false", "--prerelease=false", "--latest=true")
+        staging = next(r for r in releases() if r["tag_name"] == tag)
         finish(staging, manifest, data)
     except BaseException:
         # Preserve a published replacement for recovery; remove only failed drafts.
-        staging = next((r for r in releases() if r["tag_name"] == "nightly-staging"), None)
+        staging = next((r for r in releases() if r["tag_name"] == tag), None)
         if staging and staging["draft"]:
-            gh("release", "delete", "nightly-staging", "--yes", "--cleanup-tag")
+            gh("release", "delete", tag, "--yes", "--cleanup-tag")
         raise
     Path(os.environ["GITHUB_OUTPUT"]).write_text("published=true\n")
 
