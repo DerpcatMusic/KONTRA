@@ -253,7 +253,9 @@ impl Scene {
                     modules.used.push((file.clone(), bytes.clone()));
                     drop(modules);
                     let source = std::str::from_utf8(&bytes).map_err(invalid)?;
-                    let lowered = frontend::lower(source).map_err(invalid)?;
+                    let lowered = frontend::lower(source).map_err(|error| {
+                        invalid(format!("Native UI resource {file}: {error:#}"))
+                    })?;
                     let value = lua
                         .load(&lowered)
                         .set_name(format!("@native_ui/{file}.lowered.lua"))
@@ -451,4 +453,53 @@ pub(crate) fn frontend_test_invalid_sources() -> bool {
     ]
     .iter()
     .all(|s| frontend::lower(s).is_err())
+}
+
+#[cfg(test)]
+mod library_probe {
+    #[test]
+    #[ignore = "requires an explicitly supplied owner's local native UI library"]
+    fn native_ui_library_scene_resource_probe() {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("KONTRA_NATIVE_UI_PROBE_INSTRUMENT")
+                .expect("set KONTRA_NATIVE_UI_PROBE_INSTRUMENT"),
+        );
+        let instrument =
+            if let Some(snapshot) = std::env::var_os("KONTRA_NATIVE_UI_PROBE_SNAPSHOT") {
+                crate::import::read_snapshot(&path, std::path::Path::new(&snapshot))
+            } else {
+                crate::import::read(&path)
+            }
+            .expect("actual instrument/resource import");
+        let (rt, errors) =
+            crate::engine::load_scripts(&instrument, instrument.script_state.clone(), 48000.);
+        assert!(
+            errors.is_empty(),
+            "actual KSP initialization errors: {errors:?}"
+        );
+        let rt = rt.expect("instrument has KSP scripts");
+        eprintln!(
+            "Native UI intent {:?}, successful performance pages {:?}",
+            rt.native_ui_request(),
+            rt.performance_slots()
+        );
+        let mut scene = super::Scene::prepare(&path, &rt)
+            .unwrap_or_else(|error| panic!("actual native scene preparation: {error:#}"))
+            .expect("native UI requested");
+        let root = scene.snapshot().expect("actual native scene evaluation");
+        eprintln!(
+            "Native scene identity {:?}, modules {}, root {}x{}",
+            scene.identity,
+            scene.resources.len(),
+            root.width.unwrap_or(0.),
+            root.height.unwrap_or(0.)
+        );
+        fn count(node: &super::Node) -> usize {
+            1 + node.children.iter().map(count).sum::<usize>()
+        }
+        eprintln!(
+            "Native evaluated nodes {} (metadata only; no PCM/render parity claim)",
+            count(&root)
+        );
+    }
 }
