@@ -233,9 +233,13 @@ impl Scene {
                             "Late native UI module loading is unavailable: {name}"
                         )));
                     }
+                    if modules.count >= 256 || modules.bytes >= 8 * 1024 * 1024 {
+                        return Err(invalid("Native UI resource budget exceeded"));
+                    }
+                    let limit = (8 * 1024 * 1024 - modules.bytes).min(1024 * 1024);
                     let bytes = modules
                         .resources
-                        .read_limited(&file, 1024 * 1024)
+                        .read_limited(&file, limit)
                         .map_err(invalid)?
                         .ok_or_else(|| invalid(format!("Native UI module missing: {file}")))?;
                     if bytes.len() > 1024 * 1024
