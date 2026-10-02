@@ -120,6 +120,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Portable license bundle checks
+        run: python3 tools/licenses.py --self-test
       - name: Nightly shipping identity
         if: inputs.release_validation
         shell: bash
