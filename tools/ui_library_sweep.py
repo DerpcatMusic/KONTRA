@@ -16,7 +16,7 @@ TEST = "ui::audit::tests::real_instrument_frame_benchmark"
 MODES = {"Original": 1, "KONTRA": 2, "Vectorized": 3}
 
 
-def cases(plan, libraries, modes, scales):
+def cases(plan, libraries, modes, scales, view_scales=(0,), appearances=(0,)):
     seen = set()
     for library in plan["libraries"]:
         if libraries and library["name"] not in libraries:
@@ -25,13 +25,15 @@ def cases(plan, libraries, modes, scales):
             for program in patch["initial_read_audit"]["programs"]:
                 for mode in modes:
                     for scale in scales:
-                        identity = (patch["path"], program["program"], mode, scale)
-                        if identity in seen:
-                            continue
-                        seen.add(identity)
-                        yield {"library": library["name"], "patch": patch["path"],
-                               "program": program["program"], "mode": mode,
-                               "device_scale": scale}
+                        for view_scale in view_scales:
+                            for appearance in appearances:
+                                identity = (patch["path"], program["program"], mode, scale, view_scale, appearance)
+                                if identity in seen:
+                                    continue
+                                seen.add(identity)
+                                yield {"library": library["name"], "library_root": library["path"], "patch": patch["path"],
+                                       "program": program["program"], "mode": mode, "view_scale": view_scale,
+                                       "appearance": appearance, "device_scale": scale}
 
 
 def parse(output):
@@ -58,6 +60,8 @@ def main():
     parser.add_argument("--library", action="append", default=[])
     parser.add_argument("--mode", choices=MODES, action="append")
     parser.add_argument("--device-scale", type=int, choices=[1, 2], action="append")
+    parser.add_argument("--view-scale", type=float, choices=[0, .5, 1, 2], action="append", help="0 fits the panel")
+    parser.add_argument("--appearance", type=int, choices=[0, 1, 2], action="append", help="Plain=0, Color=1, Artwork=2")
     parser.add_argument("--frames", type=int, default=24)
     parser.add_argument("--edits", type=int, default=24)
     parser.add_argument("--host-frames", type=int, choices=[64, 128, 512], default=128)
@@ -68,7 +72,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text())
-    selected = list(cases(plan, args.library, args.mode or list(MODES), args.device_scale or [1, 2]))
+    selected = list(cases(plan, args.library, args.mode or list(MODES), args.device_scale or [1, 2], args.view_scale or [0], args.appearance or [0]))
     if args.dry_run:
         print(json.dumps({"cases": len(selected), "libraries": sorted({c["library"] for c in selected}),
                           "programs": len({(c["patch"], c["program"]) for c in selected})}, indent=2))
@@ -83,6 +87,8 @@ def main():
         env.update(KONTRA_UI_BENCH_PATCH=case["patch"], KONTRA_UI_BENCH_PROGRAM=str(case["program"]),
                    KONTRA_UI_BENCH_MODE=str(MODES[case["mode"]]),
                    KONTRA_UI_BENCH_DEVICE_SCALE=str(case["device_scale"]),
+                   KONTRA_UI_BENCH_VIEW_SCALE=str(case["view_scale"]), KONTRA_UI_BENCH_APPEARANCE=str(case["appearance"]),
+                   KONTRA_UI_BENCH_LIBRARY_ROOT=case["library_root"], KONTRA_UI_BENCH_LIBRARY_NAME=case["library"],
                    KONTRA_UI_BENCH_FRAMES=str(args.frames), KONTRA_UI_BENCH_EDITS=str(args.edits),
                    KONTRA_UI_BENCH_HOST_FRAMES=str(args.host_frames), RUST_MIN_STACK="16777216")
         # Every case has isolated preferences; the user's live editor is untouched.

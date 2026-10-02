@@ -410,6 +410,10 @@ mod tests {
         let program = option("KONTRA_UI_BENCH_PROGRAM", 0);
         let mode = option("KONTRA_UI_BENCH_MODE", 1);
         assert!((1..=3).contains(&mode), "mode must be Original=1, KONTRA=2, Vectorized=3");
+        let appearance = option("KONTRA_UI_BENCH_APPEARANCE", 0);
+        assert!(appearance <= 2, "appearance must be Plain=0, Color=1, Artwork=2");
+        let view_scale = std::env::var("KONTRA_UI_BENCH_VIEW_SCALE").ok().map(|v| v.parse::<f32>().expect("view scale")).unwrap_or(0.);
+        assert!([0.,0.5,1.,2.].contains(&view_scale), "view scale must be fit=0, .5, 1 or 2");
         let device_scale = option("KONTRA_UI_BENCH_DEVICE_SCALE", 1);
         assert!((1..=2).contains(&device_scale), "device scale must be 1 or 2");
         let started = Instant::now();
@@ -433,10 +437,24 @@ mod tests {
             println!("UI_BENCH status=skipped reason=no_animated_knob_or_slider program={program}");
             return;
         };
-        let changed_control = changed.control;
+        let mut changed_control = changed.control;
         println!("UI_BENCH control={changed_control} kind={:?} size={}x{} sprite_frames={}",
             changed.kind, changed.w, changed.h, changed.picture.as_ref().map_or(0, |p| p.frames.len()));
         let params = Arc::new(SamplerParams::new());
+        params.selection.write().unwrap().appearance = appearance as u8;
+        params.shared.libraries.edit(|s| s.view_scale = view_scale);
+        if let Some(root) = std::env::var_os("KONTRA_UI_BENCH_LIBRARY_ROOT") {
+            let root = PathBuf::from(root);
+            assert!(instrument.path.starts_with(&root), "selected program belongs to its library");
+            let library = crate::library::Library {
+                name: std::env::var("KONTRA_UI_BENCH_LIBRARY_NAME").expect("library name"),
+                hue: artwork::own_hue(&root), dir: root, ..Default::default()
+            };
+            let mut view = params.shared.view.lock().unwrap();
+            view.artwork = artwork::scan(std::slice::from_ref(&library));
+            view.shelf = Arc::new(crate::library::Shelf::new(vec![library]));
+        }
+        println!("UI_BENCH view_scale={view_scale} appearance={appearance} library_artwork={}", params.shared.view.lock().unwrap().artwork.len());
         params.selection.write().unwrap().parts.push(Part {
             path: instrument.path.to_string_lossy().into(),
             program,
@@ -446,7 +464,8 @@ mod tests {
         params.shared.view.lock().unwrap().parts[0] = part.clone();
         let mut ui = theme::ui();
         ui.set_scale(Some(f64::from(device_scale)));
-        let mut draw = build(&params, Arc::default(), Arc::default(), Arc::default(), Arc::default());
+        let art = Arc::<art::Art>::default();
+        let mut draw = build(&params, Arc::default(), Arc::default(), Arc::default(), art.clone());
         let mut bridge = Bridge::new(params.clone());
         let (width, height) = ((1180 * device_scale) as u16, (900 * device_scale) as u16);
         let transform = vello::kurbo::Affine::scale(f64::from(device_scale));
@@ -490,6 +509,25 @@ mod tests {
             (device, renderer, target.create_view(&Default::default()))
         });
         let mut gpu_pixels = 0;
+        let tree = draw(&mut ui, &mut bridge);
+        ui.frame(tree, Some(Size::new(1180.,900.)), Input::default(),1./60.).unwrap();
+        let art_started = Instant::now();
+        while art.busy() && art_started.elapsed() < Duration::from_secs(10) { std::thread::sleep(Duration::from_millis(2)); }
+        assert!(!art.busy(), "library appearance preparation completes outside measurement");
+        let prefix = if mode == 2 { "ksp" } else { "kpv" };
+        let visible = shown.iter().filter(|c| matches!(c.kind, Kind::Knob | Kind::Slider))
+            .filter(|c| mode == 2 || c.picture.as_ref().is_none_or(|p| p.frames.len() > 1))
+            .filter(|c| ui.scene().unwrap().surface(&format!("{prefix}-0-{}", c.control)).is_some_and(|s| {
+                let r = s.frame;
+                r.x >= 0. && r.y >= 0. && r.x + r.size.width <= 1180. && r.y + r.size.height <= 900.
+            }))
+            .max_by(|a,b| (a.w*a.h).total_cmp(&(b.w*b.h)));
+        let Some(visible) = visible else {
+            println!("UI_BENCH status=skipped reason=no_visible_controllable_surface program={program}");
+            return;
+        };
+        changed_control = visible.control;
+        println!("UI_BENCH visible_control={changed_control}");
         let frame_count = std::env::var("KONTRA_UI_BENCH_FRAMES").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(24).clamp(4, 120);
         for changing in [false, true] {
             let mut times = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
@@ -578,11 +616,16 @@ mod tests {
             let mut observer = |published: &Arc<SamplerParams>| -> anyhow::Result<()> {
                 if observer_draw.is_none() {
                     published.selection.write().unwrap().parts[0].view = mode as u8;
+                    published.selection.write().unwrap().appearance = appearance as u8;
+                    published.shared.libraries.edit(|s| s.view_scale = view_scale);
                     let mut view = published.shared.view.lock().unwrap();
+                    let prepared = params.shared.view.lock().unwrap();
+                    view.artwork = prepared.artwork.clone();
+                    view.shelf = prepared.shelf.clone();
                     view.parts[0].pictures = part.pictures.clone();
                     view.parts[0].wallpaper = part.wallpaper.clone();
                     drop(view);
-                    observer_draw = Some((Bridge::new(published.clone()), build(published, Arc::default(), Arc::default(), Arc::default(), Arc::default())));
+                    observer_draw = Some((Bridge::new(published.clone()), build(published, Arc::default(), Arc::default(), Arc::default(), art.clone())));
                 }
                 fitted::ready();
                 let start = Instant::now();
