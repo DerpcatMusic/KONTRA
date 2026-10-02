@@ -179,7 +179,7 @@ else: raise AssertionError(a)
 save(); print(out,end="" if a[:2]==["release","download"] else "\n"); sys.exit(status)
 '''
 
-cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","rotation-fails")
+cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","rotation-fails","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source")
 for case in cases:
     with tempfile.TemporaryDirectory(prefix="kontra-nightly-check-") as directory:
         root=Path(directory); root.joinpath("gh").write_text(mock_gh); root.joinpath("gh").chmod(0o755); root.joinpath("dist").mkdir()
@@ -197,7 +197,17 @@ for case in cases:
                     for bundle in ("KONTRA.clap", "KONTRA.vst3"):
                         z.writestr(f"KONTRA-nightly-{platform}/{bundle}/Contents/Info.plist", plistlib.dumps(dict(CFBundleShortVersionString="0.2.0",CFBundleVersion="0.2.0",KONTRAVersion=version)))
                 z.writestr(f"KONTRA-nightly-{platform}/SOURCE_COMMIT.txt", "a"*40+"\n")
-                for name in (*binaries,"LICENSE","NOTICE","THIRD_PARTY.md"): z.writestr(f"KONTRA-nightly-{platform}/{name}",b"fixture")
+                for name in (*binaries,"LICENSE","NOTICE","THIRD_PARTY.md", "assets/OFL.txt", "docs/LEGAL.md",
+                             "licenses/THIRD_PARTY_NOTICES.txt", "licenses/MUI/LICENSE", "licenses/MOOSE/LICENSE",
+                             "licenses/MOOSE/LICENSE-MIT", "licenses/MOOSE/LICENSE-APACHE", "licenses/MOOSE/NOTICE",
+                             "licenses/sources/symphonia-0.5.5.crate", "licenses/sources/option-ext-0.2.0.crate",
+                             "licenses/sources/symphonia-format-riff-0.5.5.crate"):
+                    if (case,name) in (("missing-font-license","assets/OFL.txt"), ("missing-legal-review","docs/LEGAL.md"),
+                                     ("missing-notices","licenses/THIRD_PARTY_NOTICES.txt"),
+                                     ("missing-mpl-source","licenses/sources/option-ext-0.2.0.crate"),
+                                     ("missing-patched-mpl-source","licenses/sources/symphonia-format-riff-0.5.5.crate")): continue
+                    content = b"symphonia 0.5.5: MPL-2.0\noption-ext 0.2.0: MPL-2.0\nsymphonia-format-riff 0.5.5: MPL-2.0\n" if name == "licenses/THIRD_PARTY_NOTICES.txt" else b"fixture"
+                    z.writestr(f"KONTRA-nightly-{platform}/{name}",content)
             archive=root/f"dist/KONTRA-nightly-{platform}.zip"
             digest=hashlib.sha256(archive.read_bytes()).hexdigest()
             archive.with_suffix(".zip.sha256").write_text(("0"*64 if case=="bad-checksum" else digest)+"  "+archive.name+"\n")
@@ -219,7 +229,7 @@ for case in cases:
         env=dict(os.environ,PATH=f"{root}:{os.environ['PATH']}",GITHUB_SHA="a"*40,GH_REPO="example/KONTRA",GITHUB_RUN_ID="7",GITHUB_OUTPUT=str(output),TEST_VERSION=version)
         def run(command): return subprocess.run(["bash","--noprofile","--norc","-e","-o","pipefail","-c",command],cwd=root,env=env,capture_output=True,text=True)
         result=run(publish); state=json.loads(root.joinpath("state.json").read_text())
-        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum","wrong-format") else 0),(case,result.stderr)
+        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum","wrong-format","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source") else 0),(case,result.stderr)
         if case=="rotation-fails":
             assert state["published"] and len(state["releases"])==4 and state["latest"] is not None
             result=run(publish); assert result.returncode==0,result.stderr
@@ -296,4 +306,4 @@ for case in cases:
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
-print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 11 retention/rerun/upload/checksum/cleanup scenarios and four stable README links.")
+print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 16 retention/rerun/upload/checksum/cleanup/legal-bundle scenarios and four stable README links.")

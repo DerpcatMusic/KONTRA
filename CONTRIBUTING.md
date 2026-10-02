@@ -4,6 +4,45 @@ KONTRA is under active development. Keep changes small, describe the behavior th
 change, and report the checks actually run. Do not commit proprietary sample banks,
 local logs, support reports, build output or machine-specific configuration.
 
+## Rights and provenance
+
+Submit original work that you are entitled to contribute. Intentional
+contributions to project-authored code follow Apache-2.0 section 5;
+third-party code retains its own license. A public GitHub repository is
+not sufficient evidence of redistribution rights. Preserve copyright,
+license and NOTICE files and clearly identify modifications to vendored code.
+
+For a dependency, copied implementation or interoperability change, record
+its origin: repository/document URL, exact revision, author, applicable
+license or written permission, and the information actually used. Distinguish
+format observations and mathematical facts from copied source expression.
+Record access to reference implementations accurately; do not describe
+existing work as clean-room work without supporting development records.
+Keep lawful-acquisition and permission records privately; never publish
+receipts, account information or library access values as proof.
+
+Do not submit Kontakt executable code, leaked SDKs, patches to remove
+activation checks, account credentials, serial numbers, library-key lists,
+commercial instruments/samples, extracted scripts, impulse responses,
+artwork or manuals without appropriate rights. Use synthetic fixtures or
+material with an explicit redistribution grant. A library purchase or a
+personal music-production license does not establish fixture-sharing rights.
+Keep licensing questions visible; do not remove provenance to pass a scan.
+
+Bug reports should contain reproduction steps and the minimum reviewed
+diagnostics needed. Commercial presets, `.nicnt` access metadata, caches,
+screenshots of library artwork and converted instruments may contain
+protected or private material. Do not attach them by default. Local
+testing does not authorize uploading its inputs or outputs to an issue.
+The maintainer's lawful-interoperability purpose is not permission to
+publish content or facilitate unauthorized use. Do not add piracy links,
+shared credentials, or instructions for acquiring unlicensed libraries.
+
+Before distributing binaries, regenerate the [license/source bundle](THIRD_PARTY.md#distribution-notices-and-assets)
+from the locked dependency graph and review new licenses, native components
+and vendored changes. The required `ni-file` permission and focused GPL
+reference review remain unresolved; a successful build is not clearance.
+
 ## Local workflow
 
 The declared minimum is Rust 1.92, matching the pinned plugin framework. CI and contributors

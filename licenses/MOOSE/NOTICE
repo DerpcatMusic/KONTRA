@@ -1,0 +1,13 @@
+MOOSE (Matari's Own Open Sound Engine)
+Copyright Matari Audio
+
+This product is a fork of truce, the Rust audio plugin framework.
+  Upstream:   https://github.com/truce-audio/truce
+  Fork point: v6.3.0 (commit 25791270)
+
+truce is licensed under The Truce License, Version 1.0
+(SPDX LicenseRef-TruceLicense-1.0), a dual Apache-2.0 / MIT grant with
+a framework rider. The full text is in LICENSE, LICENSE-APACHE and
+LICENSE-MIT; those files and their copyright notices are retained
+unmodified. The "truce" name belongs to its authors; this fork is
+renamed to MOOSE and is not affiliated with or endorsed by them.

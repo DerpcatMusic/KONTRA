@@ -1,0 +1,8 @@
+# cargo-about 0.9.2. This chooses among alternatives; it does not waive AND terms.
+# ni-file deliberately has no license override. MOOSE's custom terms are bundled
+# separately, unchanged, under licenses/MOOSE/.
+accepted = [
+    "MIT", "Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "ISC", "Zlib",
+    "BSL-1.0", "CC0-1.0", "MPL-2.0", "Unicode-3.0",
+    "LicenseRef-TruceLicense-1.0",
+]
