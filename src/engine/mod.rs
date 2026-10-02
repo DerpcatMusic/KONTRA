@@ -618,6 +618,7 @@ impl Engine {
 
     /// The runtime and its engine view, borrowed apart so scripts can drive voices.
     fn scripted_from(&mut self, channel: u8, input_channel: u8) -> Option<(&mut Runtime, Host<'_>)> {
+        if self.script.as_deref().is_some_and(|rt| !rt.admits_input(input_channel)) { return None; }
         let (rt, host) = self.scripted(channel)?;
         rt.set_input_channel(input_channel);
         Some((rt, host))
@@ -657,6 +658,10 @@ impl Engine {
         let channel = self.script.as_deref().and_then(Runtime::channel_domain_home).unwrap_or(channel);
         if velocity == 0 {
             return self.note_off_from(channel, owner, note);
+        }
+        if self.script.as_deref().is_some_and(|rt| !rt.admits_input(owner)) {
+            self.script.as_deref_mut().unwrap().env.note("KSP input origin has no prepared channel bank; new note rejected");
+            return;
         }
         let control = if self.player.domain_origins.is_some() { owner } else { channel };
         self.player.keys[control as usize][note as usize] = velocity.min(127);
@@ -729,6 +734,12 @@ impl Engine {
         let channel = self.script.as_deref().and_then(Runtime::channel_domain_home).unwrap_or(channel);
         let private = self.player.domain_origins.is_some();
         let control = if private { input_channel.min(15) } else { channel };
+        if !matches!(cc, 7 | 10) && self.script.as_deref().is_some_and(|rt| !rt.admits_input(input_channel)) {
+            // Port-wide pedal/reset/release ingress may have no prepared KSP
+            // bank. Keep its native physical lane, never alias private bank 0.
+            self.player.cc(self.bank.as_deref(), control, cc, value, self.defaults());
+            return;
+        }
         if cc == 120 && private {
             self.all_sound_off_from(channel, 1 << control);
             self.player.cc(self.bank.as_deref(), control, cc, value, self.defaults());
@@ -779,7 +790,12 @@ impl Engine {
                 if !private { self.script.as_deref_mut().unwrap().reset_controllers(None); }
             }
             if cc < 120 {
-                if let Some((rt, mut host)) = self.scripted_from(channel, input_channel) {
+                let scripted = if matches!(cc, 7 | 10) { self.scripted(channel) }
+                    else { self.scripted_from(channel, input_channel) };
+                if let Some((rt, mut host)) = scripted {
+                    // Volume/pan are the existing shared mixer policy, even
+                    // when their physical input has no performance bank.
+                    rt.set_input_channel(input_channel);
                     rt.controller(&mut host, 0, cc, value.min(127));
                 }
                 return;
@@ -867,7 +883,8 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted_from(channel, input_channel) {
             return rt.pitch_bend(&mut host, 0, i32::from(value) - 8192);
         }
-        self.player.bend[channel as usize] = (f32::from(value) - 8192.0) / 8192.0;
+        let control = if self.player.domain_origins.is_some() { input_channel.min(15) } else { channel };
+        self.player.bend[control as usize] = (f32::from(value) - 8192.0) / 8192.0;
         self.player.touch();
     }
 
@@ -881,7 +898,8 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted_from(channel, input_channel) {
             return rt.channel_pressure(&mut host, 0, value);
         }
-        self.player.pressure[channel as usize] = value;
+        let control = if self.player.domain_origins.is_some() { input_channel.min(15) } else { channel };
+        self.player.pressure[control as usize] = value;
         self.player.touch();
     }
 

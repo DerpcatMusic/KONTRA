@@ -1740,10 +1740,14 @@ impl Runtime {
 
     /// Physical input ownership can differ from the channel the script sees.
     pub(crate) fn note_on_from(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: u8) {
-        self.set_input_channel(owner);
         if velocity == 0 {
             return self.note_off_from(engine, at, owner, note);
         }
+        if !self.admits_input(owner) {
+            self.env.note("KSP input origin has no prepared channel bank; new note rejected");
+            return;
+        }
+        self.set_input_channel(owner);
         self.advance(engine, at);
         let note = note.min(127);
         self.select_domain(self.env.input.domain);
@@ -1777,6 +1781,7 @@ impl Runtime {
     }
 
     pub(crate) fn note_off_from(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8) {
+        if !self.admits_input(owner) { return; }
         self.set_input_channel(owner);
         self.advance(engine, at);
         let note = note.min(127);
@@ -1976,6 +1981,7 @@ impl Runtime {
     }
 
     pub(crate) fn reset_controllers_from(&mut self, input: u8) {
+        if !self.admits_input(input) { return; }
         self.reset_domain_controllers(self.domain_map[input.min(15) as usize], None);
         self.changes += 1;
     }
@@ -1990,6 +1996,12 @@ impl Runtime {
     }
 
     pub(crate) fn channel_domain_mask(&self) -> Option<u16> { self.domain_mask }
+
+    /// Admission remains fixed for this prepared runtime: route edits must not
+    /// reinterpret banks still owned by held/released notes.
+    pub(crate) fn admits_input(&self, input: u8) -> bool {
+        self.domain_mask.is_none_or(|mask| mask & (1 << input.min(15)) != 0)
+    }
 
     pub(crate) fn channel_domain_home(&self) -> Option<u8> { self.domain_mask.map(|_| self.domain_home) }
 

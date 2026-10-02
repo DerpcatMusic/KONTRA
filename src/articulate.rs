@@ -1218,6 +1218,78 @@ mod tests {
     }
 
     #[test]
+    fn unprepared_controller_origins_do_not_alias_banks_and_old_route_roots_still_release() {
+        let (mut e, _) = three_articulation_part();
+        let source = GLOBAL_ARTICULATION.replace("declare $art := 0", "declare $art := 0\ndeclare $callbacks\nmake_persistent($callbacks)")
+            + "\non controller\ninc($callbacks)\nend on";
+        e.set_script(Some(Box::new(runtime(&source))));
+        let found: Vec<Found> = ["Pizzicato", "Staccato", "Legato"].into_iter().enumerate()
+            .map(|(n,name)|(name.into(),Some(12+n as u8),None)).collect();
+        let mut a = Articulate::default();
+        a.sync("lib.nki",&found);
+        a.mode = Mode::Channel;
+        a.articulations[0].channel = 1;
+        a.articulations[1].channel = 3;
+        a.articulations[2].enabled = false;
+        let mut r = router(&a,&Mpe::default());
+        e.prepare_channel_domains(r.route.channel_origins(),7);
+        assert_eq!(e.script().unwrap().channel_domain_mask(),Some((1<<1)|(1<<3)));
+        no_audio_heap(|| {
+            for owner in [1,3] {
+                feed(&mut r,&mut e,In::Cc(owner,64,127),7);
+                feed(&mut r,&mut e,In::NoteOn(owner,60,100),7);
+                feed(&mut r,&mut e,In::NoteOff(owner,60),7);
+            }
+            render(&mut e);
+        });
+        assert_eq!(voices(&e,60,false),[0,1],"both physical pedal lanes hold their own release");
+        let callbacks = e.script().unwrap().persistence()[0]["$callbacks"].clone();
+        no_audio_heap(|| {
+            // These controllers reach the full port even though CH5 has no
+            // prepared script bank. Its native lane still receives them.
+            for (cc,value) in [(64,0),(66,127),(121,0),(1,23)] {
+                feed(&mut r,&mut e,In::Cc(5,cc,value),7);
+            }
+            feed(&mut r,&mut e,In::Bend(5,9000),7);
+            feed(&mut r,&mut e,In::Pressure(5,70),7);
+            render(&mut e);
+        });
+        assert_eq!(e.cc_state()[5][1],23,"unmapped controllers are forwarded to their native physical lane");
+        assert_eq!(e.cc_state()[5][66],0,"unmapped CC121 resets only its native lane");
+        assert_eq!(e.script().unwrap().persistence()[0]["$callbacks"],callbacks,"CH5 must not execute CH1's callbacks");
+        for owner in [1,3] {
+            assert_eq!(e.script().unwrap().controller_cache(owner)[64],127);
+            assert_eq!(e.cc_state()[owner as usize][64],127);
+        }
+        assert_eq!(voices(&e,60,false),[0,1]);
+        // Explicit shared volume/pan policy survives unprepared ingress.
+        no_audio_heap(|| { feed(&mut r,&mut e,In::Cc(5,7,90),7); render(&mut e); });
+        for owner in [1,3] { assert_eq!(e.script().unwrap().controller_cache(owner)[7],90); }
+        no_audio_heap(|| { feed(&mut r,&mut e,In::NoteOn(1,61,100),7); render(&mut e); });
+        assert!(e.script().unwrap().key_down_from(1,7,61));
+        a.articulations[0].channel = 5;
+        r.set_route(Route::new("lib.nki",&a,&Mpe::default()));
+        no_audio_heap(|| {
+            feed(&mut r,&mut e,In::NoteOn(5,61,100),7);
+            feed(&mut r,&mut e,In::NoteOff(5,61),7);
+            feed(&mut r,&mut e,In::NoteOff(1,61),7);
+            render(&mut e);
+        });
+        assert!(e.voice_census().iter().all(|v|v.input_channel!=Some(5)),"new route origins require prepared admission, never reuse bank 0");
+        assert!(!e.script().unwrap().key_down_from(1,7,61),"old held roots retain their captured physical route");
+        no_audio_heap(|| { feed(&mut r,&mut e,In::Cc(1,64,0),7); render(&mut e); });
+        assert!(e.voice_census().iter().filter(|v|v.input_channel==Some(1)).all(|v|v.released));
+        assert!(e.voice_census().iter().any(|v|v.input_channel==Some(3)&&!v.released),"removed CH1's pedal-up must not release CH3");
+        assert_eq!(e.script().unwrap().controller_cache(1)[64],0);
+        assert_eq!(e.script().unwrap().controller_cache(3)[64],127);
+        assert!(e.script().unwrap().diagnostics().iter().any(|d|d.contains("no prepared channel bank")));
+        assert_eq!(e.dropped_commands(),0);
+        no_audio_heap(|| { feed(&mut r,&mut e,In::Cc(3,64,0),7); e.panic(); for _ in 0..5 { render(&mut e); } });
+        assert_eq!(e.script().unwrap().env.events.live_count(),0);
+        assert!(e.voice_census().is_empty());
+    }
+
+    #[test]
     fn prepared_channel_domains_keep_delayed_articulation_and_same_pitch_ids() {
         for waiting in [false, true] {
             let (mut e, mut r) = three_articulation_part();
