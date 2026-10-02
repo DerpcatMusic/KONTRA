@@ -409,6 +409,7 @@ fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths()
         let p = Arc::new(SamplerParams::new());
         let original = Part {
             path: "/virtual/Library/Piano.nki".into(),
+            snapshot: "/virtual/Library/Old.nksn".into(),
             name: "Old name".into(),
             group: 7,
             script_state: serde_json::to_string(&old_state).unwrap(),
@@ -446,6 +447,7 @@ fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths()
         expected.path = "/virtual/Library/Strings.nki".into();
         expected.group = u32::MAX;
         expected.name.clear();
+        expected.snapshot.clear();
         expected.script_state.clear();
         expected.ir_settings.clear();
         assert!(part == expected, "replacement dropped={dropped}: actual {}, expected {}",
@@ -453,6 +455,24 @@ fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths()
         let restored = serde_json::from_str(&part.script_state).unwrap_or_else(|_| new.script_state.clone());
         assert_eq!(caption(restored), Value::Text("CHORUS".into()), "replacement uses its own authored defaults");
     }
+}
+
+#[test]
+fn snapshot_drop_targets_an_explicit_header_without_changing_active_state() {
+    let p = Arc::new(SamplerParams::new());
+    let original = Part { path: "/virtual/Library/Piano.nki".into(), snapshot: "/virtual/Library/Old.nksn".into(),
+        script_state: "retained".into(), ..Default::default() };
+    p.selection.write().unwrap().parts = vec![original.clone()];
+    let h = Harness::new(&p, 1180., 760.);
+    let at = center(&h.ui, "header-0");
+    let snapshot = [PathBuf::from("/virtual/Library/Warm.nksn")];
+    assert!(native_files(&p, &Default::default(), &h.ui, at, &snapshot, false));
+    assert!(lock(&p.shared.snapshot_request).is_none(), "hovering does not enqueue a load");
+    assert!(native_files(&p, &Default::default(), &h.ui, at, &snapshot, true));
+    assert!(lock(&p.shared.snapshot_request).is_some());
+    assert!(p.selection.read().unwrap().parts[0] == original);
+    p.selection.write().unwrap().parts[0].path = "Ensemble.nkm".into();
+    assert!(!native_files(&p, &Default::default(), &h.ui, at, &snapshot, true));
 }
 
 #[test]

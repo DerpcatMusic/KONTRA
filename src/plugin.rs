@@ -80,8 +80,23 @@ pub struct Part {
     /// 1 the library's original, 2 KONTRA's own controls, 3 the original
     /// vectorized ([`crate::library::ViewMode`]).
     pub view: u8,
+    /// Snapshot applied to `path`, which remains its explicit base NKI.
+    /// Appended so pre-keyed host states keep their positional field order.
+    pub snapshot: String,
 }
 impl Part {
+    pub(crate) fn source(&self) -> (String, u32, String) {
+        (self.path.clone(), self.program, self.snapshot.clone())
+    }
+    pub(crate) fn snapshot_base(&self) -> bool {
+        self.program == 0 && Path::new(&self.path).extension().is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+    }
+    fn select_snapshot(&mut self, path: String) {
+        self.snapshot = path;
+        self.script_state.clear();
+        self.ir_settings.clear();
+        self.edits = Edits::default();
+    }
     /// Where the part's samples play from, given the rack's setting.
     pub fn streaming(&self, rack: Streaming) -> Streaming {
         self.streaming.unwrap_or(rack)
@@ -152,6 +167,7 @@ impl Default for Part {
             mic_buses: Vec::new(),
             mic_names: Vec::new(),
             view: 0,
+            snapshot: String::new(),
         }
     }
 }
@@ -442,6 +458,7 @@ pub struct Shared {
     pub(crate) panic: AtomicBool,
     pub(crate) midi_thru: AtomicBool,
     pub(crate) multi_request: Mutex<Option<String>>,
+    pub(crate) snapshot_request: Mutex<Option<SnapshotRequest>>,
     /// The app's library folders and the scan of them.
     pub(crate) libraries: library::Scanner,
     pub(crate) view: Mutex<View>,
@@ -523,7 +540,7 @@ pub(crate) struct PartView {
     /// Control pictures the scripts name, by name.
     pub(crate) pictures: Arc<HashMap<String, Arc<artwork::Picture>>>,
     pub(crate) wallpaper_status: String,
-    pub(crate) attempted: Option<(String, u32)>,
+    pub(crate) attempted: Option<(String, u32, String)>,
     /// How the attempted load placed samples.
     pub(crate) streaming: Streaming,
     pub(crate) instrument: Option<Arc<Instrument>>,
@@ -651,6 +668,7 @@ impl Default for Shared {
             panic: AtomicBool::new(false),
             midi_thru: AtomicBool::new(false),
             multi_request: Mutex::new(None),
+            snapshot_request: Mutex::new(None),
             libraries: library::Scanner::default(),
             voices: AtomicU64::new(0),
             audible: AtomicU64::new(0),
@@ -1308,6 +1326,19 @@ impl Shared {
         }
     }
 
+    /// Queue a snapshot against this exact source. Parsing and mutation stay
+    /// on the existing worker; a later source request cancels its result.
+    pub(crate) fn queue_snapshot(&self, slot: usize, part: &Part, path: String) -> bool {
+        if slot >= RACK_SLOTS || !part.snapshot_base()
+        { return false; }
+        let mut request = self.snapshot_request.lock().unwrap();
+        let generation = self.generation[slot].fetch_add(1, Ordering::AcqRel) + 1;
+        *request = Some(SnapshotRequest { slot, source: part.source(), path, generation });
+        drop(request);
+        self.view.lock().unwrap().parts[slot].status = "Loading snapshot…".into();
+        true
+    }
+
     /// Ask the loader to replace the rack with the multi at `path`.
     pub(crate) fn queue_multi(&self, path: String) {
         self.view.lock().unwrap().multi_status = "Loading multi…".into();
@@ -1503,6 +1534,42 @@ fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, chan
     if p.shared.diagnostic_audio.force_push(audio).is_some() { p.shared.diagnostic_dropped.fetch_add(1, Ordering::Relaxed); }
 }
 
+pub(crate) struct SnapshotRequest {
+    slot: usize,
+    source: (String, u32, String),
+    path: String,
+    generation: u64,
+}
+
+/// Validate on the loader before replacing any saved or playing state.
+fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, String), Arc<Instrument>)> {
+    let request = params.shared.snapshot_request.lock().unwrap().take()?;
+    let current = || {
+        params.shared.generation[request.slot].load(Ordering::Acquire) == request.generation
+            && params.selection.read().unwrap().parts.get(request.slot)
+                .is_some_and(|p| p.source() == request.source)
+    };
+    if !current() { return None; }
+    let result = import::read_snapshot(Path::new(&request.source.0), Path::new(&request.path));
+    if !current() { return None; }
+    match result {
+        Ok(instrument) => {
+            let mut selection = params.selection.write().unwrap();
+            let part = selection.parts.get_mut(request.slot)?;
+            if part.source() != request.source
+                || params.shared.generation[request.slot].load(Ordering::Acquire) != request.generation
+            { return None; }
+            part.select_snapshot(request.path);
+            Some((request.slot, part.source(), Arc::new(instrument)))
+        }
+        Err(error) => {
+            params.shared.view.lock().unwrap().parts[request.slot].status =
+                format!("Snapshot was not loaded: {error:#}");
+            None
+        }
+    }
+}
+
 pub struct Load;
 impl BackgroundTask for Load {
     type Params = SamplerParams;
@@ -1577,6 +1644,7 @@ impl BackgroundTask for Load {
                 }
             }
         }
+        let prepared_snapshot = prepare_snapshot(params);
         let selection = params.selection.read().unwrap().clone();
         params
             .shared
@@ -1617,14 +1685,15 @@ impl BackgroundTask for Load {
         }
         for slot in 0..RACK_SLOTS {
             let part = selection.parts.get(slot).cloned().unwrap_or_default();
-            let target = (part.path.clone(), part.program);
+            let target = part.source();
             let streaming = part.streaming(selection.streaming);
+            let selected_snapshot = prepared_snapshot.as_ref().is_some_and(|(at, source, _)| *at == slot && *source == target);
             // The host restored different script values for a loaded part: rebuild only its scripts.
             let restore = {
                 let view = params.shared.view.lock().unwrap();
                 let v = &view.parts[slot];
                 v.instrument.clone().filter(|i| {
-                    v.attempted.as_ref() == Some(&target)
+                    !selected_snapshot && v.attempted.as_ref() == Some(&target)
                         && v.fx_rate != 0.
                         && !i.scripts.is_empty()
                         && (part.script_state != v.script_state || part.ir_settings != v.ir_settings)
@@ -1684,7 +1753,7 @@ impl BackgroundTask for Load {
             let loaded = {
                 let view = params.shared.view.lock().unwrap();
                 let v = &view.parts[slot];
-                v.attempted.as_ref() == Some(&target) && v.streaming == streaming
+                !selected_snapshot && v.attempted.as_ref() == Some(&target) && v.streaming == streaming
             };
             if loaded {
                 continue;
@@ -1711,7 +1780,7 @@ impl BackgroundTask for Load {
             let canceled = || {
                 let current = params.selection.read().unwrap();
                 current.parts.get(slot).is_none_or(|p| {
-                    p.path != part.path || p.program != part.program
+                    p.source() != part.source()
                         || p.streaming != part.streaming || p.streaming(current.streaming) != streaming
                 })
                     || params.shared.generation[slot].load(Ordering::Acquire) != generation
@@ -1736,6 +1805,7 @@ impl BackgroundTask for Load {
             }
             let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&part.path), part.program, Some(slot));
             trace.detail("instance_id", params.shared.instance_id);
+            if !part.snapshot.is_empty() { trace.detail("snapshot", &part.snapshot); }
             trace.detail("sample_rate", params.shared.rate());
             trace.detail("streaming_requested", format!("{streaming:?}"));
             let set_stage = |trace: &mut crate::diagnostics::LoadTrace, name: &'static str| {
@@ -1756,7 +1826,14 @@ impl BackgroundTask for Load {
                     }
                 }
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
-                let instrument = import::shared_program(Path::new(&part.path), part.program)?;
+                let instrument = if let Some((_, _, instrument)) = prepared_snapshot.as_ref().filter(|(at, source, _)| *at == slot && *source == target) {
+                    Arc::clone(instrument)
+                } else if part.snapshot.is_empty() {
+                    import::shared_program(Path::new(&part.path), part.program)?
+                } else {
+                    anyhow::ensure!(part.snapshot_base(), "Snapshot requires an explicit base NKI");
+                    Arc::new(import::read_snapshot(Path::new(&part.path), Path::new(&part.snapshot))?)
+                };
                 trace.detail("groups", instrument.groups.len());
                 trace.detail("zones_total", instrument.zones.len());
                 trace.detail("script_slots", instrument.scripts.len());
@@ -1786,7 +1863,7 @@ impl BackgroundTask for Load {
                 let needs_art = {
                     let view = params.shared.view.lock().unwrap();
                     let v = &view.parts[slot];
-                    v.program != part.program || v.instrument.as_ref().is_none_or(|i| i.path != instrument.path)
+                    !part.snapshot.is_empty() || v.program != part.program || v.instrument.as_ref().is_none_or(|i| i.path != instrument.path)
                 };
                 let parsed = needs_art.then(|| script_interface(script.as_deref()));
                 let art = {
@@ -1814,7 +1891,7 @@ impl BackgroundTask for Load {
                     let group = instrument.first_playable_group().unwrap_or(0);
                     let mut current = params.selection.write().unwrap();
                     if let Some(c) = current.parts.get_mut(slot).filter(|c| {
-                        c.path == part.path && c.program == part.program && c.group == u32::MAX
+                        c.source() == part.source() && c.group == u32::MAX
                     }) {
                         c.group = group as u32;
                     }
@@ -2147,7 +2224,7 @@ impl BackgroundTask for Load {
             if let Some(p) = current
                 .parts
                 .get_mut(slot)
-                .filter(|p| target.as_ref() == Some(&(p.path.clone(), p.program)))
+                .filter(|p| target.as_ref() == Some(&p.source()))
             {
                 p.script_state = json;
                 p.ir_settings = ir_settings;
@@ -2380,7 +2457,7 @@ fn align(params: &SamplerParams) {
             let instrument = {
                 let view = shared.view.lock().unwrap();
                 let v = &view.parts[slot];
-                let ready = v.attempted == Some((part.path.clone(), part.program)) && !v.loading && v.bytes > 0;
+                let ready = v.attempted.as_ref().is_some_and(|(path, program, snapshot)| path == &part.path && *program == part.program && snapshot == &part.snapshot) && !v.loading && v.bytes > 0;
                 v.instrument.clone().filter(|i| ready && i.path == Path::new(&part.path) && v.program == part.program)
             };
             let Some(instrument) = instrument else { continue };
@@ -3169,7 +3246,7 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
     {
         let mut view = params.shared.view.lock().unwrap();
         let v = &mut view.parts[0];
-        v.attempted = Some((part.path.clone(), part.program));
+        v.attempted = Some(part.source());
         v.instrument = Some(instrument.clone());
         v.streaming = streaming;
         v.fx_rate = 48000.;
@@ -3748,6 +3825,109 @@ mod tests {
     use super::*;
 
     #[test]
+    fn snapshot_requests_validate_before_mutating_and_preserve_older_host_state() {
+        use moose::core::custom_state::State;
+        let part = Part { path: "/unavailable-kontakto/base.nki".into(), program: 0,
+            script_state: r#"[{"retained":1}]"#.into(), gain: -4., channel: 3,
+            snapshot: "/unavailable-kontakto/old.nksn".into(), ..Default::default() };
+        let bytes = State::serialize(&part);
+        assert!(Part::deserialize(&bytes) == Some(part.clone()));
+        let count = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        let mut frames = Vec::new();
+        let mut at = 8;
+        for _ in 0..count {
+            let len = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+            frames.push(bytes[at..at + 8 + len].to_vec());
+            at += 8 + len;
+        }
+        // Snapshot is appended: old codecs omit the last keyed frame, or
+        // write the preceding field payloads in their original order.
+        frames.pop();
+        let mut old_keyed = bytes[..8].to_vec();
+        old_keyed[4..8].copy_from_slice(&(count - 1).to_le_bytes());
+        let mut legacy = (count - 1).to_le_bytes().to_vec();
+        for frame in frames { old_keyed.extend(&frame); legacy.extend(&frame[4..]); }
+        let mut old = part.clone(); old.snapshot.clear();
+        assert!(Part::deserialize(&old_keyed) == Some(old.clone()));
+        assert!(Part::deserialize(&legacy) == Some(old));
+        assert!(serde_json::from_str::<Part>("{}").unwrap().snapshot.is_empty());
+
+        let p = SamplerParams::new();
+        p.selection.write().unwrap().parts = vec![part.clone()];
+        assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/missing.nksn".into()));
+        assert!(prepare_snapshot(&p).is_none());
+        assert!(p.selection.read().unwrap().parts[0] == part);
+        assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot was not loaded"));
+        assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/stale.nksn".into()));
+        p.selection.write().unwrap().parts[0].snapshot = "replacement.nksn".into();
+        p.shared.view.lock().unwrap().parts[0].status = "replacement".into();
+        assert!(prepare_snapshot(&p).is_none());
+        assert_eq!(p.shared.view.lock().unwrap().parts[0].status, "replacement");
+        let multi = Part { path: "ensemble.nkm".into(), ..Default::default() };
+        assert!(!p.shared.queue_snapshot(0, &multi, "preset.nksn".into()));
+        let program = Part { program: 1, ..part };
+        assert!(!p.shared.queue_snapshot(0, &program, "preset.nksn".into()));
+    }
+
+    /// Opt-in real worker proof; only paths are supplied by the local owner.
+    #[test]
+    #[ignore = "requires a local NKI, three matching snapshots and one foreign snapshot"]
+    fn factory_snapshots_load_through_the_production_worker() {
+        use moose::core::bus_routing::{BusActivation, BusRouting};
+        let base = std::env::var("KONTRA_SNAPSHOT_BASE").expect("KONTRA_SNAPSHOT_BASE");
+        let snapshots: Vec<_> = std::env::split_paths(&std::env::var_os("KONTRA_SNAPSHOTS").expect("KONTRA_SNAPSHOTS")).collect();
+        assert_eq!(snapshots.len(), 3);
+        let foreign = std::env::var("KONTRA_FOREIGN_SNAPSHOT").expect("KONTRA_FOREIGN_SNAPSHOT");
+        let p = SamplerParams::new();
+        p.selection.write().unwrap().parts = vec![Part { path: base.clone(), gain: -2., channel: 0, ..Default::default() }];
+        let mut dsp = Dsp::default();
+        let transport = TransportInfo::default();
+        let mut midi_out = EventList::with_capacity(4);
+        let mut routing = BusRouting::new(); routing.push_output(2, BusActivation::Active);
+        let mut cx = ProcessContext::new(&transport, 48000., 128, &mut midi_out).with_bus_routing(routing);
+        let mut out = vec![vec![0f32; 128]; 2];
+        let mut refs: Vec<_> = out.iter_mut().map(|o| o.as_mut_slice()).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 128);
+        let none = EventList::with_capacity(0);
+        let mut epoch = 0;
+        for snapshot in snapshots {
+            let before = p.selection.read().unwrap().parts[0].clone();
+            let path = snapshot.to_string_lossy().into_owned();
+            assert!(p.shared.queue_snapshot(0, &before, path.clone()));
+            assert!(p.selection.read().unwrap().parts[0] == before, "queued selection does not modify active state");
+            Load.run(&p);
+            let part = p.selection.read().unwrap().parts[0].clone();
+            assert_eq!((&part.path, &part.snapshot, part.channel, part.gain), (&base, &path, 0, -2.));
+            assert_eq!(p.shared.view.lock().unwrap().parts[0].attempted, Some(part.source()));
+            Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx);
+            assert!(dsp.script_epoch[0] > epoch); epoch = dsp.script_epoch[0];
+            assert!(dsp.rack.parts[0].bank().is_some());
+            let instrument = p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
+            assert_eq!(instrument.name, snapshot.file_stem().unwrap().to_string_lossy());
+            let (expected, _, errors) = scripts(&instrument, "", &[], 48000.);
+            assert!(errors.is_empty(), "{errors:?}");
+            assert!(dsp.rack.parts[0].script().unwrap().persistence() == expected.unwrap().persistence(), "snapshot persistence is the worker-installed state");
+            assert_eq!(allocations(|| {
+                for _ in 0..32 { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }
+            }), 0, "loaded snapshot processing allocated or freed on audio");
+            let multi = SavedMulti::of("snapshot", &p.selection.read().unwrap());
+            let restored: SavedMulti = serde_json::from_str(&serde_json::to_string(&multi).unwrap()).unwrap();
+            assert_eq!(restored.parts[0].snapshot, path);
+            println!("worker snapshot {}: epoch {}, controls {}, groups {}, audio heap 0", instrument.name, epoch,
+                p.shared.view.lock().unwrap().parts[0].interface.as_ref().map_or(0, |i| i.controls.len()), instrument.groups.len());
+        }
+        let before = p.selection.read().unwrap().parts[0].clone();
+        let bank = dsp.rack.parts[0].bank().unwrap() as *const Bank;
+        assert!(p.shared.queue_snapshot(0, &before, foreign));
+        Load.run(&p);
+        assert!(p.selection.read().unwrap().parts[0] == before, "foreign snapshot leaves all active saved state intact");
+        assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot requires base instrument"));
+        Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx);
+        assert_eq!(dsp.rack.parts[0].bank().unwrap() as *const Bank, bank);
+        println!("foreign snapshot rejected without replacing active state or bank");
+    }
+
+    #[test]
     fn publisher_reuses_unique_rows_and_preserves_retained_snapshots_and_menus() {
         use crate::ksp::Value;
         let script = r#"on init
@@ -3849,7 +4029,7 @@ end on"#;
             let mut view = p.shared.view.lock().unwrap();
             view.script_epoch = 1;
             let v = &mut view.parts[0];
-            v.attempted = Some((String::new(), 0));
+            v.attempted = Some((String::new(), 0, String::new()));
             v.streaming = streaming;
             v.script_epoch = 1;
             v.interface = live.interface.clone().map(Arc::new);
@@ -4668,6 +4848,7 @@ end on"#,dir.display());
             parts: vec![
                 Part {
                     path: "/libraries/Keys/Piano.nki".into(),
+                    snapshot: "/libraries/Keys/Warm.nksn".into(),
                     channel: 3,
                     port: 1,
                     output: 2,
@@ -4797,7 +4978,7 @@ end on"#,dir.display());
         p.selection.write().unwrap().parts = vec![initial];
         {
             let mut view = p.shared.view.lock().unwrap();
-            view.parts[0].attempted = Some((path.to_string_lossy().into_owned(), 0));
+            view.parts[0].attempted = Some((path.to_string_lossy().into_owned(), 0, String::new()));
             view.parts[0].streaming = streaming;
         }
         p.shared.snapshots.push((0, 1, Box::new(PersistenceSnapshot {
