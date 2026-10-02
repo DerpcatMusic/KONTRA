@@ -2237,7 +2237,7 @@ impl Runtime {
                 }
             }
             if completions < MAX_COMPLETIONS
-                && let Some((slot, id, status)) = self.env.async_done.pop()
+                && let Some((slot, domain, id, status)) = self.env.async_done.pop()
             {
                 completions += 1;
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::AsyncComplete));

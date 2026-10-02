@@ -595,7 +595,7 @@ impl Router {
     pub fn select(&mut self, to: usize, channel: u8, e: &mut Engine) {
         self.follow(e);
         if to < self.route.count {
-            self.switch(to, channel & 15, &mut |o| apply(e, o));
+            self.switch(to, channel & 15, channel & 15, &mut |o| apply(e, o));
         }
     }
 
@@ -1180,7 +1180,7 @@ mod tests {
                     render(&mut e);
                 });
                 assert!(e.voice_census().iter().filter(|v| v.input_channel == Some(channel)).all(|v| v.released), "wait={waiting}, channel={channel}");
-                for other in (0..3).filter(|c| *c != channel && e.key_down_from(*c,0,60)) {
+                for other in (0..3).filter(|c| *c != channel && e.script().unwrap().key_down_from(*c,0,60)) {
                     assert!(e.voice_census().iter().any(|v| v.input_channel == Some(other) && !v.released));
                 }
             }
