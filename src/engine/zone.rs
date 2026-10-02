@@ -153,7 +153,7 @@ impl Bank {
     pub(crate) fn zone_init_source_matches(&self, source: usize) -> bool {
         self.zone_context
             .as_ref()
-            .is_some_and(|c| c.source_identity == Some(source))
+            .is_some_and(|c| c.source_identity.is_none_or(|own| own == source))
     }
     pub(crate) fn zone_editable(&self, id: usize) -> bool {
         self.zone_context
