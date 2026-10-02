@@ -12,7 +12,7 @@ use super::compile::{self, Callback, Program, Setup, Ty};
 use super::engine::{EnginePar, EventId, Fade, GroupMask, KspEngine, NoteLength, NoteSpec};
 use super::vm::{self, Ctx, Forward, Kind, Machine, POLY_ROWS, SlotState, Stacks, Thread, Yield};
 use super::{HostState, Interface, KeyState, Value};
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
@@ -208,6 +208,15 @@ impl std::fmt::Display for LiveFault {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NativeControl {
+    pub name: String,
+    pub slot: usize,
+    pub control: usize,
+    storage: usize,
+    pub value: i32,
+}
+
 /// What the host shows of running scripts, refreshed in place.
 #[derive(Clone, Debug)]
 pub struct Live {
@@ -230,6 +239,8 @@ pub struct Live {
     control_value_revisions: Vec<u64>,
     interface_revision: u64,
     keys_revision: u64,
+    pub(crate) native_controls: Vec<NativeControl>,
+    pub(crate) native_revision: u64,
 }
 
 impl Live {
@@ -255,6 +266,7 @@ impl PartialEq for Live {
             && self.interface == other.interface && self.keys == other.keys
             && self.menu_spares == other.menu_spares && self.control_revisions == other.control_revisions
             && self.control_value_revisions == other.control_value_revisions
+            && self.native_controls == other.native_controls
     }
 }
 
@@ -1424,6 +1436,28 @@ impl Runtime {
 
     /// Prepare a particular performance page off-thread. The buffer retains
     /// its slot while refreshed, so identical control IDs never cross pages.
+    /// Retained init intent; execution/resource I/O belongs to the editor worker.
+    pub(crate) fn native_ui_request(&self) -> Result<Option<(&str, bool)>> {
+        let mut names = self.states.iter().filter(|s| s.error.is_none()).map(|s| s.ui.native_ui.as_str()).filter(|s| !s.is_empty());
+        let name = names.next();
+        ensure!(names.next().is_none(), "Multiple native UI roots are unavailable");
+        Ok(name.map(|name| (name, self.states.iter().any(|s| s.error.is_none() && s.ui.exposed))))
+    }
+
+    /// Prepare scalar connections once off-thread; all subsequent reads are bounded.
+    pub(crate) fn prepare_native_controls(&self, live: &mut Live) {
+        live.native_controls.clear();
+        let mut identifiers = BTreeSet::new();
+        for (slot, state) in self.states.iter().enumerate().filter(|(_, s)| s.error.is_none()) {
+            for (control, c) in state.ui.controls.iter().enumerate() {
+                let var = &self.programs[slot].vars[c.var as usize];
+                if !identifiers.insert(var.name.trim_start_matches(['$', '%', '~', '?', '@', '!']).to_owned()) { continue; }
+                if var.ty != Ty::Int || var.len.is_some() { continue; }
+                live.native_controls.push(NativeControl { name: var.name.trim_start_matches('$').into(), slot, control, storage: var.slot as usize, value: state.mem.ints[var.slot as usize] });
+            }
+        }
+    }
+
     pub fn live_for_slot(&self, slot: Option<usize>) -> Live {
         let slot = slot.filter(|&s| self.states.get(s).is_some_and(|s| s.ui.performance));
         let mut interface = slot.map(|s| self.interface(s));
@@ -1509,6 +1543,8 @@ impl Runtime {
             notes: Vec::with_capacity(NOTE_CAPACITY),
             interface_revision: 0,
             keys_revision: 0,
+            native_controls: Vec::new(),
+            native_revision: 0,
             refresh_interface: true,
             interface_current: true,
             slot: slot.unwrap_or(0),
@@ -1559,12 +1595,21 @@ impl Runtime {
             live.interface_current = false;
             return true;
         }
+        let mut remaining = budget;
+        while at.native_at < live.native_controls.len() {
+            if remaining == 0 { return false; }
+            let c = &mut live.native_controls[at.native_at];
+            let value = self.states[c.slot].mem.ints[c.storage];
+            if c.value != value { c.value = value; live.native_revision = live.native_revision.wrapping_add(1); at.changed = true; }
+            at.native_at += 1;
+            remaining -= 1;
+        }
         if let Some(out) = &mut live.interface
             && let Some(state) = self.states.get(live.slot)
             && at.item != usize::MAX
         {
             let prog = &self.programs[live.slot];
-            let changed = state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut live.control_revisions, &mut live.control_value_revisions, &mut at.value_revision, &mut at.item, &mut at.at, budget);
+            let changed = state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut live.control_revisions, &mut live.control_value_revisions, &mut at.value_revision, &mut at.item, &mut at.at, remaining);
             if changed { live.interface_revision = live.interface_revision.wrapping_add(1); }
             at.changed |= changed;
             if at.item != usize::MAX {
@@ -3067,6 +3112,7 @@ pub(super) fn refresh_range(
 /// Where an incremental refresh stands; start from the default.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Refresh {
+    native_at: usize,
     value_revision: u64,
     slot: usize,
     item: usize,

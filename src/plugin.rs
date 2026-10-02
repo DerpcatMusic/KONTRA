@@ -661,6 +661,8 @@ pub(crate) struct PartView {
     /// Script slot that `interface` belongs to.
     pub(crate) script_slot: usize,
     pub(crate) script_pages: Arc<ScriptPages>,
+    pub(crate) native_scene: Option<Arc<Mutex<crate::native_ui::Scene>>>,
+    pub(crate) native_status: String,
     /// Samples are being read for this slot.
     pub(crate) loading: bool,
     /// Keyboard colors and names the scripts set, kept current while they run.
@@ -1149,7 +1151,28 @@ pub(crate) struct PersistenceSnapshot {
     ir: Vec<crate::fx::IrSlotSettings>,
     native: crate::engine::native_state::NativeSnapshot,
 }
-/// Initialize `i`'s scripts off the audio thread, with a snapshot buffer shaped for them.
+/// Prepare the supported legacy scene off-thread without changing classic controls.
+fn native_scene(i: &Instrument, rt: Option<&Runtime>, live: &mut Option<Box<Live>>, pages: &ScriptPages, trace: &mut crate::diagnostics::LoadTrace) -> (Option<Arc<Mutex<crate::native_ui::Scene>>>, String) {
+    let Some(rt) = rt else { return (None, String::new()) };
+    match crate::native_ui::Scene::prepare(&i.path, rt) {
+        Ok(None) => (None, String::new()),
+        Ok(Some(scene)) => {
+            if let Some(live) = live { rt.prepare_native_controls(live); }
+            for live in pages.buffers.lock().unwrap().iter_mut() { rt.prepare_native_controls(live); }
+            trace.detail("native_ui", scene.identity.as_str());
+            trace.detail("native_ui_modules", scene.resources.len());
+            trace.detail("native_ui_scope", "legacy text/rectangle/tap subset; images and remaining APIs unavailable");
+            (Some(Arc::new(Mutex::new(scene))), String::new())
+        }
+        Err(error) => {
+            let message = format!("Native UI scene unavailable: {error:#}");
+            trace.issue("ui", "native_ui_unsupported", &message);
+            (None, message)
+        }
+    }
+}
+
+/// Initialize scripts and prepare their persistence handoff off-thread.
 fn scripts(
     i: &Instrument,
     saved: &str,
@@ -1244,6 +1267,11 @@ impl Shared {
         for _ in 0..if editor { 1 } else { self.view.lock().unwrap().parts.len() } {
             let Some((slot, epoch, live)) = self.lives.pop() else { break };
             let revisions = live.revisions();
+            let native = {
+                let view = self.view.lock().unwrap();
+                view.parts.get(slot).filter(|v| epoch != 0 && v.script_epoch == epoch).and_then(|v| v.native_scene.clone())
+            };
+            if let Some(scene) = native { scene.lock().unwrap().observe(&live); }
             let (keys_changed, previous, previous_diagnostics) = {
                 let view = self.view.lock().unwrap();
                 let v = &view.parts[slot];
@@ -1486,6 +1514,15 @@ impl Shared {
         let mut selected = FileSelection { part, epoch, slot, control, path: [0; 1280], len: path.len() };
         selected.path[..path.len()].copy_from_slice(path.as_bytes());
         self.file_selections.push(selected).is_ok()
+    }
+
+    /// Native UI connections retain their exact script slot independently of the visible KSP page.
+    pub(crate) fn edit_control_slot(&self, part: usize, epoch: u64, slot: usize, control: usize, value: i32) -> bool {
+        if part >= self.grown.load(Ordering::Acquire) as usize { return false; }
+        let view = self.view.lock().unwrap();
+        let Some(v) = view.parts.get(part).filter(|v| epoch != 0 && v.script_epoch == epoch) else { return false; };
+        if v.native_scene.as_ref().is_none_or(|scene| !scene.lock().unwrap().has_control(slot, control)) { return false; }
+        self.edits.push(Edit { part, epoch, slot, control, value }).is_ok()
     }
 
     pub(crate) fn edit_control(&self, part: usize, control: usize, value: i32) {
@@ -2050,8 +2087,9 @@ impl BackgroundTask for Load {
                 if let Some(rt) = script.as_deref() {
                     trace.script_runtime(rt, &instrument.scripts);
                 }
-                let live = script.as_deref().map(first_script_live);
+                let mut live = script.as_deref().map(first_script_live);
                 let pages = script_pages(script.as_deref());
+                let (native, native_status) = native_scene(&instrument, script.as_deref(), &mut live, &pages, &mut trace);
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
                 let fx_rate = {
                     let view = params.shared.view.lock().unwrap();
@@ -2067,6 +2105,8 @@ impl BackgroundTask for Load {
                 let mut view = params.shared.view.lock().unwrap();
                 let epoch = next_epoch(&mut view, slot, snapshot, live);
                 view.parts[slot].script_pages = pages;
+                view.parts[slot].native_scene = native;
+                view.parts[slot].native_status = native_status;
                 if let Some(selected) = view.parts[slot].live.as_ref().map(|live| live.slot) { view.parts[slot].script_slot = selected; }
                 view.parts[slot].script_state = part.script_state.clone();
                 view.parts[slot].ir_settings = part.ir_settings.clone();
@@ -2113,6 +2153,8 @@ impl BackgroundTask for Load {
                 v.loading = true;
                 v.script_epoch = 0;
                 v.script_pages = Arc::default();
+                v.native_scene = None;
+                v.native_status.clear();
                 v.edited.clear();
                 v.snapshot = None;
                 v.live = None;
@@ -2268,13 +2310,14 @@ impl BackgroundTask for Load {
             // Keep both outside the editor's view lock, including controller patches.
             if result.is_ok() { set_stage(&mut trace, "effects"); }
             let result = result.map(|(instrument, bank, script, snapshot, preload, art)| {
-                let live = script.as_deref().map(first_script_live);
+                let mut live = script.as_deref().map(first_script_live);
                 let pages = script_pages(script.as_deref());
+                let (native, native_status) = native_scene(&instrument, script.as_deref(), &mut live, &pages, &mut trace);
                 let rate = params.shared.rate();
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
                 trace_effects(&mut trace, &instrument);
                 let fx = crate::engine::effects(&instrument, script.as_deref(), rate as f32);
-                (instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs)
+                (instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs, native, native_status)
             });
             if canceled() {
                 let report = trace.finish("canceled");
@@ -2284,7 +2327,7 @@ impl BackgroundTask for Load {
                 continue;
             }
             let status = match &result {
-                Ok((_, bank, _, _, _, _, _, _, _, _, _)) => {
+                Ok((_, bank, _, _, _, _, _, _, _, _, _, _, _)) => {
                     if let Some(b) = bank.as_deref() {
                         trace.detail("samples_loaded", b.sample_count());
                         trace.detail("samples_streamed", b.streamed_samples());
@@ -2309,13 +2352,15 @@ impl BackgroundTask for Load {
             view.parts[slot].runtime_status.clear();
             view.parts[slot].diagnostics_lent = None;
             match result {
-                Ok((instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs)) => {
+                Ok((instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs, native, native_status)) => {
                     let epoch = if script.is_some() {
                         next_epoch(&mut view, slot, snapshot, live)
                     } else {
                         0
                     };
                     view.parts[slot].script_pages = pages;
+                    view.parts[slot].native_scene = native;
+                    view.parts[slot].native_status = native_status;
                     if let Some(selected) = view.parts[slot].live.as_ref().map(|live| live.slot) { view.parts[slot].script_slot = selected; }
                     let mut bank = bank;
                     let residency = bank.as_mut().and_then(|b| b.take_residency());
@@ -4611,6 +4656,74 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn native_ui_scene_uses_exact_slot_plugin_edits_and_published_callbacks_without_audio_heap() {
+        use crate::native_ui::{Scene, Node, Paint};
+        let directory = std::env::temp_dir().join(format!("kontra-native-scene-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources = directory.join("Resources/native_ui");
+        std::fs::create_dir_all(resources.join("components")).unwrap();
+        std::fs::write(resources.join("main.nui"), include_str!("../tests/fixtures/native-ui-scene/main.nui")).unwrap();
+        std::fs::write(resources.join("components/card.nui"), include_str!("../tests/fixtures/native-ui-scene/components/card.nui")).unwrap();
+        let i = Instrument { path: directory.join("fixture.nki"), scripts: vec![
+            "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Amount(0,100)\n$Amount := 17\nend on\non ui_control($Amount)\n$Amount := $Amount*2\nend on".into(),
+            "on init\nmake_perfview\ndeclare ui_slider $Remote(0,100)\n$Remote := 9\ndeclare ui_slider $Amount(0,100)\n$Amount := 90\nend on\non ui_control($Remote)\n$Remote := $Remote+10\nend on".into()
+        ], ..Default::default() };
+        let (rt, errors) = crate::engine::load_scripts(&i, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}"); let rt=rt.unwrap();
+        let mut live=Some(first_script_live(&rt)); let pages=script_pages(Some(&rt));
+        let mut trace=crate::diagnostics::LoadTrace::new(&i.path,0,Some(0));
+        let (scene,status)=native_scene(&i,Some(&rt),&mut live,&pages,&mut trace);
+        assert!(status.is_empty(),"{status}");let scene=scene.unwrap();
+        assert_eq!(scene.lock().unwrap().resources.len(),2);
+        let p=SamplerParams::new();let mut dsp=Dsp::default();
+        let epoch={let mut view=p.shared.view.lock().unwrap();
+            let epoch=next_epoch(&mut view,0,None,live);
+            let v=&mut view.parts[0];v.native_scene=Some(scene.clone());v.script_pages=pages;v.interface=Some(Arc::new(rt.interface(0)));epoch};
+        dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
+        fn texts(node:&Node, out:&mut Vec<String>) {if let Paint::Text(text)=&node.paint {out.push(text.clone())}for c in &node.children {texts(c,out)}}
+        let initial=scene.lock().unwrap().snapshot().unwrap();let mut labels=Vec::new();texts(&initial,&mut labels);
+        assert_eq!(labels,["Amount:17:0","Remote:9:0"]);
+        let watch_before=crate::ui::native_watch_fingerprint(&p.shared.view.lock().unwrap());
+        for node in &initial.children {if node.tap {
+            let edits=scene.lock().unwrap().tap(node.id).unwrap();
+            for edit in edits {assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
+        }}
+        assert_ne!(watch_before,crate::ui::native_watch_fingerprint(&p.shared.view.lock().unwrap()),"native-only local changes wake an idle editor");
+        assert!(!p.shared.edit_control_slot(0,epoch.wrapping_sub(1),1,0,70),"stale scenes cannot edit a new runtime");
+        assert!(!p.shared.edit_control_slot(0,epoch,1,1,0),"later duplicate is not an exposed connection");
+        let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();
+        p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
+        let (mut left,mut right)=([0.;64],[0.;64]);let mut slices=[left.as_mut_slice(),right.as_mut_slice()];
+        let mut buffer=AudioBuffer::from_slices_checked(&[],&mut slices,64);
+        let transport=TransportInfo::default();let mut output=EventList::with_capacity(4);let events=EventList::with_capacity(1);
+        let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
+        assert_eq!(allocations(||{for _ in 0..8 {Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);
+        p.shared.publish_live(true);
+        let published=scene.lock().unwrap().snapshot().unwrap();
+        labels.clear();texts(&published,&mut labels);
+        use moose::mui::mui::prelude::{Size,Font};
+        let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::paint_snapshot(&published,(640.,400.)))
+            .offered(Size::new(640.,400.)).font(Font::new(include_bytes!("../assets/NotoSans.ttf")).unwrap());
+        let rendered=moose::mui::mui::scene::resolve(&spec).unwrap();
+        assert_eq!(rendered.paint.iter().filter(|p| p.text.is_some()).count(),2,"both computed labels use the production MUI primitive adapter");
+        assert_eq!(labels,["Amount:44:1","Remote:24:1"],"same scene observes callback results and retains local state");
+        let rt=dsp.rack.parts[0].script().unwrap();
+        assert_eq!(rt.interface(1).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(90));
+        assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return function() return @ui.Image {path='picture.webp'} end").unwrap();
+        let error=Scene::prepare(&i.path,rt).unwrap_err().to_string();
+        assert!(error.contains("Unsupported native UI API")&&error.contains("Image"),"{error}");
+        assert!(crate::native_ui::frontend_test_invalid_sources());
+        let mut reader=crate::resources::Resources::of(&i.path,"native_ui");
+        assert!(reader.read_limited("components/card.nui",4).unwrap_err().contains("exceeds"),"payload bound precedes VM allocation");
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui')\nlocal tree=@ui.ZStack {\n @ui.Text {text='caption' -- authored property comment\n }\n}.frame(width=640,height=400)\nerror('authored source line')\nreturn tree").unwrap();
+        let error=format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err());
+        assert!(error.contains("main.nui.lowered.lua:6:")&&error.contains("authored source line"),"lowered source identifies its origin and preserves lines after components: {error}");
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') local child=@ui.Text{text='a'} return @ui.ZStack{child,child}.frame(width=10,height=10)").unwrap();
+        assert!(format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err()).contains("Aliased native UI node"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn performance_pages_keep_slot_callbacks_and_late_buffers_separate() {

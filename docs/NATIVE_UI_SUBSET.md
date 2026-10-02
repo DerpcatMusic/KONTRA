@@ -1,0 +1,39 @@
+# Legacy native UI execution subset
+
+The optional plug-in adapter loads a requested `.nui` resource with embedded
+Lua 5.4. It lowers the supported `@component` form, resolves dotted resource
+module names, and retains the real resource bytes and module identity. Lua
+errors identify `.nui.lowered.lua`; line counts after a component are preserved,
+while locations inside the rewritten property/child tables refer to lowered Lua.
+
+Supported scene primitives are `ZStack`, `Text` and `Rectangle`, with explicit
+frames, RGB colors, computed text, local scalar state and tap callbacks. The
+editor uses the existing MUI painter. Connected integer KSP UI controls retain
+their exact script slot/control ID; duplicate identifiers use the first slot,
+as specified for `expose_controls`. Tap edits use the existing bounded plug-in
+queue and real `ui_control` callbacks. Published values include connected controls
+from all successful slots, independently of the selected classic performance page.
+
+Scene preparation runs in the loader. Lua scene evaluation and gestures run in
+editor/worker services; Lua is never stored in or executed by the audio engine.
+Scalar snapshot copying charges the existing refresh budget. Resource payloads
+are bounded before reading: 1 MiB per module, 8 MiB total, 256 modules. The VM
+has a 64 MiB memory limit and 100,000 instructions per scene evaluation/gesture.
+Scenes allow 4,096 unique nodes, depth 64, 8 KiB text, frames up to 4,096 pixels,
+and 64 edits per gesture. Module loading is sealed after preparation; later
+missing `require` calls fail without editor file I/O. OS, I/O, package/native
+modules and dynamic source loaders are not exposed.
+
+Images, additional primitives/modifiers, indexed array connections, generalized
+reactive subscriptions and parameter writes outside gestures are explicitly
+unsupported. Unsupported scenes keep the classic KSP projection available and
+record a loader warning; this subset does not establish full library native UI
+layout or artwork parity. Modern `.kscript` UI is separate and remains unsupported.
+
+The authored regression
+`native_ui_scene_uses_exact_slot_plugin_edits_and_published_callbacks_without_audio_heap`
+uses two actual KSP slots and the production scene preparation, edit queue,
+callback execution, publication and MUI primitive adapter. It checks duplicate
+identity, stale epochs, nested modules, bounded resources, source line diagnostics
+and explicit unsupported-image rejection. No instrument-library code or artwork
+is included in its fixtures.

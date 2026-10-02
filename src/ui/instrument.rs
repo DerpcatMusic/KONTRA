@@ -65,6 +65,7 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
             format!("This instrument could not be loaded: {reason}.{still}"),
         ));
     }
+    if !v.native_status.is_empty() { out.push(banner(Role::Warning, v.native_status.clone())); }
     if let Some(i) = instrument_of(cx, slot) {
         if let Some(w) = i.warnings.iter().find(|w| w.contains("read back as zeros")) {
             out.push(banner(Role::Warning, sentence(w)));
@@ -108,6 +109,8 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     slot.hash(&mut h);
     (v.loading, &v.status).hash(&mut h);
     v.live_revisions.hash(&mut h);
+    if let Some(scene) = &v.native_scene { (v.script_epoch, Arc::as_ptr(scene) as usize, scene.lock().unwrap().revision()).hash(&mut h); }
+    v.native_status.hash(&mut h);
     for edit in v.edited_values() { edit.hash(&mut h); }
     at(v.interface.as_ref().map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
     at(instrument_of(cx, slot).map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
@@ -126,6 +129,7 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
 
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let page = stage_page(ui, cx, slot);
+    if cx.view.parts[slot].native_scene.is_some() && perf_view::shows(cx, slot) == ViewMode::Original { return page; }
     let pages = cx.view.parts[slot].script_pages.clone();
     if pages.views.len() < 2 { return page; }
     let selected = cx.view.parts[slot].script_slot;
@@ -145,6 +149,7 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 
 fn stage_page(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let loaded = instrument_of(cx, slot).is_some();
+    if loaded && perf_view::shows(cx, slot) == ViewMode::Original && let Some(scene) = super::native_scene::view(ui, cx, slot) { return scene.id(format!("stage-{slot}")); }
     if loaded && perf_view::shows(cx, slot) != ViewMode::Kontra {
         // The articulation setup follows the controls whichever view shows them.
         if let Some(interface) = cx.view.parts[slot].interface.clone() {

@@ -52,7 +52,7 @@ fn performance_view_loads_hierarchy_defaults_callbacks_and_resource_cache_identi
     assert_eq!(ui.controls[2].menu,vec![("First \"quoted\"".into(),42)]);
     assert_eq!(ui.controls[3].properties["$CONTROL_PAR_VALUE"],Value::IntArray(vec![0,0,17,0]));
     assert_eq!(ui.controls[4].properties["$CONTROL_PAR_VALUE"],Value::Text("Exact \"name\"\nC:\\folder".into()));
-    assert!(first.diagnostics().iter().any(|d| d.contains("scripted native UI execution is unavailable")));
+    assert_eq!(first.native_ui_request().unwrap(), Some(("main", false)));
     first.ui_control(&mut engine,0,2,42);
     assert_eq!(first.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(42));
     assert_eq!(first.interface(0).controls[3].properties["$CONTROL_PAR_VALUE"],Value::IntArray(vec![0,42,17,0]));
