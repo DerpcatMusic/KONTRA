@@ -1519,7 +1519,7 @@ impl SavedMulti {
 fn trace_effects(trace: &mut crate::diagnostics::LoadTrace, instrument: &Instrument) {
     for warning in instrument.fx.warnings() { trace.issue("effects", "unsupported_effect", warning); }
     for (group, g) in instrument.groups.iter().enumerate() {
-        for warning in crate::engine::filter::unsupported(&g.fx) {
+        for warning in crate::engine::filter::unsupported_at(&g.fx, g.amp_split_slot) {
             trace.issue("effects", "unsupported_group_effect", format!("Group {group} ({}): {warning}", g.name));
         }
     }

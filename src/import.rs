@@ -325,7 +325,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         let fx = crate::fx::Chain::from_array(&saved.fx)
             .with_context(|| format!("Snapshot group {id} effect parameters"))?;
         warnings.extend(modulation.warnings);
-        warnings.extend(crate::engine::filter::unsupported(&fx));
+        warnings.extend(crate::engine::filter::unsupported_at(&fx, instrument.groups[id].amp_split_slot));
         let group = &mut instrument.groups[id];
         group.volume_env = modulation.volume_env;
         group.flex_env = modulation.flex_env;
@@ -673,7 +673,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
                 Default::default()
             }
         };
-        warnings.extend(crate::engine::filter::unsupported(&fx));
+        warnings.extend(crate::engine::filter::unsupported_at(&fx, u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8)));
         // Gain and tuning are linear ratios (see audits/MODULATION.md).
         groups.push(Group {
             name: v.name,

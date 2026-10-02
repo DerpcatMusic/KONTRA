@@ -110,7 +110,9 @@ fn tally_instrument(i: &Instrument, name: &str, tally: &mut Tally) {
                 Params::Eq(eq) => add("group filter", format!("EQ {} band ({})", eq.bands.len(), state(fx.bypass)), true),
                 p => {
                     let ok = matches!(p, Params::StereoModeller(_))
-                        || crate::fx::blocks::Drive::supports(fx.kind)
+                        || (crate::fx::blocks::VoiceEffect::supports(fx.kind)
+                            && crate::fx::blocks::fields(p).is_some()
+                            && (fx.kind != crate::fx::Kind::Compressor || g.amp_split_slot.is_some()))
                         || fx.kind == crate::fx::Kind::SolidGeq
                         || (fx.kind == crate::fx::Kind::Inverter
                             && !matches!(p, Params::Fields(f) if f.iter().any(|f| matches!(f.value, Value::Flag(true)))));
