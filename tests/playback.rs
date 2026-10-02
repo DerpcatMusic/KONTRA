@@ -2303,6 +2303,48 @@ fn set_controller_in_init_reaches_the_engine() {
 }
 
 #[test]
+fn init_rpn_reaches_initialized_later_slots_and_replays_authored_native_settings() {
+    use kontakto::ksp::Value;
+    let sender = "on init\nset_rpn(7,4242)\nset_nrpn(9,111)\nmake_perfview\ndeclare ui_button $send\nset_text($send,\"UI initialized\")\nend on\non ui_control($send)\nset_rpn(7,4242)\nend on";
+    let receiver = "on init\nmake_perfview\ndeclare ui_slider $rpn(0,16383)\ndeclare ui_slider $nrpn(0,16383)\nend on\non rpn\nif ($RPN_ADDRESS = 7)\n$rpn := $RPN_VALUE\nset_engine_par($ENGINE_PAR_VOLUME,250000,0,-1,-1)\nset_controller(11,127)\nend if\nend on\non nrpn\nif ($RPN_ADDRESS = 9)\n$nrpn := $RPN_VALUE\nset_controller(74,63)\nend if\nend on";
+    let mut i = instrument(vec![Group::default()], Vec::new());
+    i.scripts = vec![sender.into(), receiver.into()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let rt = rt.unwrap();
+    assert_eq!(rt.interface(0).controls[0].properties["$CONTROL_PAR_TEXT"], Value::Text("UI initialized".into()));
+    assert_eq!(rt.interface(1).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(4242));
+    assert_eq!(rt.interface(1).controls[1].properties["$CONTROL_PAR_VALUE"], Value::Int(111));
+    assert_eq!(rt.init_controllers, vec![(11,127),(74,63)]);
+    let mut e = engine_with(layered(i.groups.clone(), &[0.5]));
+    e.set_script(Some(rt));
+    assert!(e.cc_state().iter().all(|cc| cc[11] == 127 && cc[74] == 63));
+    i.scripts = vec!["on init\nset_engine_par($ENGINE_PAR_VOLUME,250000,0,-1,-1)\nend on".into()];
+    let (reference_rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut reference = engine_with(layered(i.groups.clone(), &[0.5]));
+    reference.set_script(reference_rt);
+    reference.note_on(0,60,127);
+    let expected = render(&mut reference,512);
+    let (mut left,mut right) = ([0.;512],[0.;512]);
+    assert_eq!(allocations(|| {
+        e.begin_audio_block(512,1,true);
+        e.ui_control(0,0,1);
+        e.note_on(0,60,127);
+        e.render(&mut left,&mut right);
+    }),0);
+    assert!(left.iter().zip(&right).zip(&expected).all(|((&l,&r),&want)| close([l,r],want)), "receiver's staged volume must apply to the playing bank");
+    assert!(e.script().unwrap().diagnostics().is_empty());
+    i.scripts = vec![sender.into()];
+    let (last, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let last = last.unwrap();
+    assert_eq!(last.interface(0).controls.len(),1, "a last-slot message is valid without a receiver");
+    assert!(last.init_controllers.is_empty(), "internal RPN must not synthesize native CC messages");
+    assert!(last.diagnostics().is_empty());
+}
+
+#[test]
 fn steady_scripted_playback_with_diagnostics_does_not_allocate() {
     // After a warm-up note sizes the string buffers, every note runs a native
     // scan, builds an 80-byte persistent string and, from the first counted

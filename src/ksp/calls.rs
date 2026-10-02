@@ -801,7 +801,6 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         SetRpn | SetNrpn => {
             let [address, value] = ints(m);
-            if m.env.loading { return Err(Fault("RPN messages are unavailable during initialization")); }
             if !(0..=16383).contains(&address) || !(0..=16383).contains(&value) {
                 return Err(Fault("RPN address or value out of range"));
             }

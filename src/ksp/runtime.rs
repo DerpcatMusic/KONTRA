@@ -794,8 +794,8 @@ impl Runtime {
             .take(MAX_SLOTS)
             .map(|s| rt.load(engine, s.as_ref()).err().map(|e| format!("{e:#}")))
             .collect();
-        // Per-note messages emitted by persistence callbacks can now reach
-        // later slots, whose initialization had not yet run when emitted.
+        // Internal messages emitted while loading can now reach later slots,
+        // whose initialization had not yet run when emitted.
         rt.settle(engine);
         (rt, errors)
     }
@@ -1136,7 +1136,7 @@ impl Runtime {
         // settle with `on persistence_changed`.
         self.env
             .work
-            .retain(|w| matches!(w, Work::Controller { .. } | Work::NoteController { .. }));
+            .retain(|w| matches!(w, Work::Controller { .. } | Work::NoteController { .. } | Work::Rpn { .. }));
         Ok(())
     }
 
@@ -2073,7 +2073,8 @@ impl Runtime {
                     _ => None,
                 };
                 let unloaded = self.env.loading && matches!(w,
-                    Work::NoteController { slot, .. } if slot as usize >= self.programs.len());
+                    Work::NoteController { slot, .. } | Work::Rpn { slot, .. }
+                        if slot as usize >= self.programs.len());
                 if unloaded || self.env.cleaning && event.is_some_and(|id| self.env.events.get(id).is_some_and(|e| !e.cleanup)) {
                     // Rotate work awaiting a later slot's initialization, or
                     // fresh notes held behind the existing cleanup fence.
