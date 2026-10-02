@@ -776,6 +776,15 @@
       ],
       "validation": "Nineteen publication scenarios plus signing-script accepted/rejected/bad-ticket/missing-credential and package identity/hash gates passed; strict temporary-material permissions and wrapped-certificate handling checked. Existing Apple secrets successfully reused through owned Drop workflow37037003405. Actual Apple notarization of the next shipping source remains pending; no unsigned release fallback.",
       "accepted": true
+    },
+    {
+      "id": "wavetable-modulation-slot-boundary",
+      "summary": "Read wavetable group modulation targets without a module slot byte",
+      "source_commits": [
+        "6580cd7674365c22f43d9289f9be73978e4eb2ac"
+      ],
+      "validation": "Native parameter registrations11..16 and identical reader/writer slot predicates corroborate six slotless group names. Authored mixed group/module strict-boundary gate passes. All3752 actual Conflux assignments decode with zero failures and byte-exact records/base roundtrips; three raw snapshots roundtrip exactly. Shaper decoding remains strict0/1/2; this does not implement the target DSP.",
+      "accepted": true
     }
   ]
 }
