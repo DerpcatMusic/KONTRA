@@ -2385,7 +2385,7 @@ impl Runtime {
                 self.stop_waits(engine);
                 continue;
             }
-            if self.env.listeners_changed.iter().any(|&changed| changed != 0) {
+            if self.env.listeners_changed[..self.domain_count as usize].iter().any(|&changed| changed != 0) {
                 let changed = std::mem::take(&mut self.env.listeners_changed);
                 for domain in 0..self.domain_count {
                     for slot in 0..self.states.len() as u8 {
