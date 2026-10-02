@@ -482,14 +482,14 @@ impl ProgramFx {
             }
             match &fx.params {
                 Params::Convolution(c) => {
-                    if c.auto_gain() && (c.envelope_active()
+                    if c.auto_gain() && ((c.envelope_active() && !c.envelope_supported())
                         || c.early.low_cut_hz != c.late.low_cut_hz
                         || c.early.high_cut_hz != c.late.high_cut_hz
                         || c.early.length_ratio != c.late.length_ratio) {
                         out.push(format!("{at}: Auto Gain uses the approximated IR; unsupported native shaping changes its energy"));
                     }
-                    if c.envelope_active() {
-                        out.push(format!("{at}: native IR Volume Envelope is not applied"));
+                    if c.envelope_active() && !c.envelope_supported() {
+                        out.push(format!("{at}: native IR Volume Envelope is not applied; eight finite time/level knots are required"));
                     }
                     if let Some(e) = &c.ir_error {
                         out.push(format!("{at}: impulse response unavailable ({e})"));

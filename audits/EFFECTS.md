@@ -121,9 +121,14 @@ The [NI effect reference](https://docs.native-instruments.com/ni-tech-manuals/ko
 defines Auto Gain as level compensation when processing settings change, and the
 Volume Envelope as IR shaping. Native bindings establish flags in this order:
 Reverse, Auto Gain, Preserve Length, Bypass Latency Compensation, and Volume
-Envelope. Reverse reverses the source IR during worker preparation. Enabled
-Volume Envelope, independent early/late sizing and filtering remain unapplied and
-warn explicitly; Auto Gain then warns that it uses the approximated prepared IR.
+Envelope. Reverse reverses the source IR during worker preparation. Enabled eight-point Volume Envelopes now sort native time knots, round them over
+the shaped IR duration, convert dB to amplitudes, and interpolate amplitudes before
+Auto Gain and predelay. Collapsed intervals write no samples; samples outside the
+knot range remain unchanged. Malformed active curves and independent early/late
+sizing/filtering remain explicit warnings; Auto Gain then warns that it uses the
+approximated prepared IR. The authored envelope impulse gate covers knot sorting,
+collapsed boundaries, amplitude ramps, rate/size, disabled envelopes and processing
+order without audio-thread allocation; this unit is validation-pending.
 The native sample-rate/latency modes and automatic early/late boundary remain
 unimplemented. Existing serialized field names retain those raw settings.
 Live KSP Auto Gain and Reverse switches use native 0/1 values and reuse the

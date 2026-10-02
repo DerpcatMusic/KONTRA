@@ -954,6 +954,24 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
     if p.early.low_cut_hz == p.late.low_cut_hz && p.early.high_cut_hz == p.late.high_cut_hz {
         crate::engine::filter::filter_ir(&mut shaped, p.late.low_cut_hz, p.late.high_cut_hz, sample_rate);
     }
+    if p.envelope_active() && p.envelope_supported() {
+        // Native knots are sorted in time, rounded over the shaped IR's
+        // duration, and interpolated in amplitude after converting from dB.
+        // Predelay is independent: the envelope acts on the response only.
+        let mut knots: [(f32, f32); 8] = std::array::from_fn(|n|
+            (p.curve_x[n], (p.curve_db[n] * 0.05 * std::f32::consts::LN_10).exp()));
+        knots.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let frames = shaped[0].len() - pre;
+        for pair in knots.windows(2) {
+            let start = (frames as f32 * pair[0].0.clamp(0.0, 1.0) + 0.5) as usize;
+            let end = (frames as f32 * pair[1].0.clamp(0.0, 1.0) + 0.5) as usize;
+            // Collapsed knots write no frames; outside the knots is unchanged.
+            for n in start..end {
+                let gain = pair[0].1 + (pair[1].1 - pair[0].1) * (n - start) as f32 / (end - start) as f32;
+                shaped.iter_mut().for_each(|ch| ch[pre + n] *= gain);
+            }
+        }
+    }
     if p.auto_gain() {
         // Native Auto Gain uses the loudest prepared IR channel's energy,
         // not RMS or peak normalization. Baking the wet gain into this

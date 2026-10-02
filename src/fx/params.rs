@@ -249,6 +249,12 @@ impl Convolution {
     pub fn preserve_length_ir(&self) -> bool { self.flags[2] }
     pub fn bypass_latency_compensation(&self) -> bool { self.flags[3] }
     pub fn envelope_active(&self) -> bool { self.flags[4] }
+    pub fn envelope_supported(&self) -> bool {
+        self.curve_x.len() == 8 && self.curve_db.len() == 8
+            && self.curve_x.iter().all(|v| v.is_finite())
+            && self.curve_db.iter().all(|v| v.is_finite()
+                && (v * 0.05 * std::f32::consts::LN_10).exp().is_finite())
+    }
     /// Stored native crossover value; its units are not inferred.
     pub fn early_late_xpoint(&self) -> f32 { self.unknown_9 }
     pub fn sample_rate_decimation_factor(&self) -> f32 { self.unknown[0] }
