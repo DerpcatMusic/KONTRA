@@ -1118,7 +1118,7 @@ fn reporter_worker(
                 let _ = acknowledge.send(persisted);
                 // Persist the initialization marker before invoking any platform subprocess.
                 // The plugin may open/crash while system metadata is still being collected.
-                let platform = super::platform::snapshot().clone();
+                let platform = super::platform::snapshot(&stopping).clone();
                 if let Some(current) = marker.lock_unpoisoned().as_mut() {
                     current.platform = platform;
                     persist_json(&session_path, current);
@@ -1777,6 +1777,102 @@ mod tests {
             pending_before,
             "failed delivery must retain complete evidence"
         );
+
+        // A second crash while the first is offline must not overwrite the first report.
+        let mut second = new_session_marker(2, "second-crash");
+        second.pid = u32::MAX - 8;
+        second.host_process = "second-authored-host".into();
+        let second_marker = sessions_dir().join("second-fixture.json");
+        let second_journal = sessions_dir().join(second.journal_file.as_ref().unwrap());
+        let recorder = Recorder::start(second_journal.clone(), 32, 0).unwrap();
+        recorder.sink().record(
+            Subsystem::Host,
+            "plugin_initialize",
+            Phase::Started,
+            Default::default(),
+            "distinct second crash startup",
+        );
+        assert!(recorder.shutdown(std::time::Duration::from_secs(2)));
+        assert!(persist_json(&second_marker, &second));
+        assert!(persist_json(&panic_marker_path(second.pid), &panic));
+        let second_marker_before = std::fs::read(&second_marker).unwrap();
+        let second_journal_before = std::fs::read(&second_journal).unwrap();
+
+        let (sender, receiver) = mpsc::channel();
+        let session = sessions_dir().join("live-retry-session.json");
+        let pending = Arc::new(Mutex::new(load_pending_incident()));
+        let worker = std::thread::spawn(move || {
+            reporter_worker(
+                receiver,
+                Arc::new(Mutex::new(None)),
+                pending,
+                Arc::new(AtomicBool::new(false)),
+                None,
+                session,
+                bootstrap_journal_path("live-retry"),
+                "live-retry".into(),
+                Arc::new(AtomicBool::new(false)),
+            )
+        });
+        let (acknowledge, acknowledged) = mpsc::sync_channel(1);
+        sender
+            .send(ReporterControl::Register(3, acknowledge))
+            .unwrap();
+        assert!(
+            acknowledged
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+        );
+        sender
+            .send(ReporterControl::Submitted("wrong-id".into()))
+            .unwrap();
+        sender.send(ReporterControl::Shutdown).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            std::fs::read(pending_incident_path()).unwrap(),
+            pending_before
+        );
+        assert_eq!(std::fs::read(&second_marker).unwrap(), second_marker_before);
+        assert_eq!(
+            std::fs::read(&second_journal).unwrap(),
+            second_journal_before
+        );
+
+        // An acknowledged first report permits recovery on the next plugin session.
+        // Exercise the same Submitted handler used after a verified server receipt.
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ReporterControl::Submitted(recovered.id.clone()))
+            .unwrap();
+        drop(sender);
+        reporter_worker(
+            receiver,
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            sessions_dir().join("unused.json"),
+            bootstrap_journal_path("unused"),
+            "unused".into(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(!pending_incident_path().exists());
+        let second_recovered = detect_stale_sessions(&AtomicBool::new(false)).unwrap();
+        assert_ne!(second_recovered.id, recovered.id);
+        assert!(
+            second_recovered
+                .render_diagnostics(true)
+                .contains("distinct second crash startup")
+        );
+        assert_eq!(load_pending_incident().unwrap().id, second_recovered.id);
+        assert!(!second_marker.exists() && !second_journal.exists());
+        let second_pending = std::fs::read(pending_incident_path()).unwrap();
+        assert!(super::super::request_agent().is_err());
+        assert_eq!(
+            std::fs::read(pending_incident_path()).unwrap(),
+            second_pending
+        );
+        assert!(detect_stale_sessions(&AtomicBool::new(false)).is_none());
     }
     #[test]
     fn delayed_evidence_only_upgrades_unclean_exit() {

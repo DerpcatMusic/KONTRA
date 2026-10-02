@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -60,13 +60,13 @@ fn push_field(output: &mut String, label: &str, value: &str) {
     }
 }
 
-static SNAPSHOT: LazyLock<PlatformSnapshot> = LazyLock::new(capture_snapshot);
+static SNAPSHOT: OnceLock<PlatformSnapshot> = OnceLock::new();
 
-pub(super) fn snapshot() -> &'static PlatformSnapshot {
-    &SNAPSHOT
+pub(super) fn snapshot(stopping: &AtomicBool) -> &'static PlatformSnapshot {
+    SNAPSHOT.get_or_init(|| capture_snapshot(stopping))
 }
 
-fn capture_snapshot() -> PlatformSnapshot {
+fn capture_snapshot(stopping: &AtomicBool) -> PlatformSnapshot {
     let mut snapshot = PlatformSnapshot {
         process_architecture: std::env::consts::ARCH.to_owned(),
         native_architecture: std::env::consts::ARCH.to_owned(),
@@ -74,10 +74,13 @@ fn capture_snapshot() -> PlatformSnapshot {
         ..PlatformSnapshot::default()
     };
 
+    if stopping.load(Ordering::Acquire) {
+        return snapshot;
+    }
     #[cfg(target_os = "linux")]
     capture_linux_snapshot(&mut snapshot);
     #[cfg(target_os = "macos")]
-    capture_macos_snapshot(&mut snapshot);
+    capture_macos_snapshot(&mut snapshot, stopping);
     #[cfg(target_os = "windows")]
     capture_windows_snapshot(&mut snapshot);
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -191,19 +194,19 @@ fn equals_value(text: &str, key: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn capture_macos_snapshot(snapshot: &mut PlatformSnapshot) {
+fn capture_macos_snapshot(snapshot: &mut PlatformSnapshot, stopping: &AtomicBool) {
     snapshot.os_name = "macOS".to_owned();
-    snapshot.os_version = command_output("sw_vers", &["-productVersion"]);
-    snapshot.kernel = command_output("uname", &["-sr"]);
-    snapshot.cpu = command_output("sysctl", &["-n", "machdep.cpu.brand_string"]);
+    snapshot.os_version = command_output("sw_vers", &["-productVersion"], stopping);
+    snapshot.kernel = command_output("uname", &["-sr"], stopping);
+    snapshot.cpu = command_output("sysctl", &["-n", "machdep.cpu.brand_string"], stopping);
     if snapshot.cpu.is_empty() {
-        snapshot.cpu = command_output("sysctl", &["-n", "hw.model"]);
+        snapshot.cpu = command_output("sysctl", &["-n", "hw.model"], stopping);
     }
-    snapshot.memory_mib = command_output("sysctl", &["-n", "hw.memsize"])
+    snapshot.memory_mib = command_output("sysctl", &["-n", "hw.memsize"], stopping)
         .parse::<u64>()
         .map(|bytes| bytes / (1024 * 1024))
         .unwrap_or(0);
-    let translated = command_output("sysctl", &["-n", "sysctl.proc_translated"]) == "1";
+    let translated = command_output("sysctl", &["-n", "sysctl.proc_translated"], stopping) == "1";
     snapshot.runtime = if translated {
         "Rosetta 2".to_owned()
     } else {
@@ -215,11 +218,11 @@ fn capture_macos_snapshot(snapshot: &mut PlatformSnapshot) {
 }
 
 #[cfg(target_os = "macos")]
-fn command_output(program: &str, args: &[&str]) -> String {
+fn command_output(program: &str, args: &[&str], stopping: &AtomicBool) -> String {
     command_output_with_deadline(
         std::process::Command::new(program).args(args),
         std::time::Duration::from_secs(2),
-        &AtomicBool::new(false),
+        stopping,
     )
     .ok()
     .flatten()
