@@ -2035,7 +2035,7 @@ impl BackgroundTask for Load {
                         trace.detail("samples_streamed", b.streamed_samples());
                         trace.detail("zones_playable", b.zones().len());
                         trace.detail("zones_skipped", b.skipped_zones);
-                        trace.detail("zone_skip_counts", b.zone_skip_counts);
+                        trace.detail("zone_skip_counts", serde_json::json!(b.zone_skip_counts));
                         trace.detail("resident_bytes", b.bytes);
                         if let Some(w) = &b.warning { trace.issue("samples", "streaming_warning", w); }
                         for e in &b.issues { trace.issue("samples", "zone_skipped", e); }
@@ -2152,7 +2152,7 @@ impl BackgroundTask for Load {
                             trace.detail("resident_bytes", bank.bytes);
                             trace.detail("samples_loaded", bank.sample_count());
                             trace.detail("zones_skipped", bank.skipped_zones);
-                            trace.detail("zone_skip_counts", bank.zone_skip_counts);
+                            trace.detail("zone_skip_counts", serde_json::json!(bank.zone_skip_counts));
                             if let Some(w) = &bank.warning { trace.issue("samples", "streaming_warning", w); }
                             for e in &bank.issues { trace.issue("samples", "zone_skipped", e); }
                             "loaded"
@@ -2215,7 +2215,7 @@ impl BackgroundTask for Load {
                                 trace.detail("resident_bytes", bank.bytes);
                                 trace.detail("samples_loaded", bank.sample_count());
                                 trace.detail("zones_skipped", bank.skipped_zones);
-                                trace.detail("zone_skip_counts", bank.zone_skip_counts);
+                                trace.detail("zone_skip_counts", serde_json::json!(bank.zone_skip_counts));
                                 if let Some(w) = &bank.warning { trace.issue("samples", "streaming_warning", w); }
                                 for e in &bank.issues { trace.issue("samples", "zone_skipped", e); }
                                 "loaded"
