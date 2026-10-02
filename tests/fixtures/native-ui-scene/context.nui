@@ -1,2 +1,2 @@
 local ui=require("native_ui")
-return ui.create_context()
+return {primary=ui.create_context(),secondary=ui.create_context()}

@@ -4832,6 +4832,13 @@ pub(crate) mod tests {
         fn texts(node:&Node, out:&mut Vec<String>) {if let Paint::Text(text)=&node.paint {out.push(text.clone())}for c in &node.children {texts(c,out)}}
         let initial=scene.lock().unwrap().snapshot().unwrap();let mut labels=Vec::new();texts(&initial,&mut labels);
         assert_eq!(labels,["Amount:17:0","Remote:9:0"]);
+        fn text_styles(node:&Node,out:&mut Vec<(f64,[f32;4])>) {
+            if matches!(node.paint,Paint::Text(_)) {out.push((node.text_size,node.text_color));}
+            for child in &node.children {text_styles(child,out)}
+        }
+        let mut styles=Vec::new();text_styles(&initial,&mut styles);
+        assert_eq!(styles,[(12.,[10./255.,20./255.,30./255.,0.5]),(20.,[1.,0.,0.,1.])],"text styles inherit through lazy components and child modifiers override their scope");
+
         let watch_before=crate::ui::native_watch_fingerprint(&p.shared.view.lock().unwrap());
         fn taps(node:&Node,out:&mut Vec<usize>) {if node.tap {out.push(node.id)} for child in &node.children {taps(child,out)}}
         let mut ids=Vec::new();taps(&initial,&mut ids);

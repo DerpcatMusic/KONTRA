@@ -123,8 +123,27 @@ function native_component(target,props,children)
     return {kind=target.kind,props=props,children=children,modifiers={}}
 end
 function native_modifier(node,name,props,args)
-    assert(name=="frame" or name=="on_tap_gesture" or name=="context","Unsupported modifier: "..name)
-    assert(#args==0,"Unsupported positional native UI modifier: "..name)
+    local environment=name=="context" or name=="font_size" or name=="foreground_color"
+    assert(name=="frame" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
+    if name=="font_size" or name=="foreground_color" then
+        assert(next(props)==nil and #args<=1,"Invalid text style modifier: "..name)
+        local value=args[1]
+        assert(value==nil or type(value)=="function"
+            or (name=="font_size" and type(value)=="number" and value>=0 and value<=4096)
+            or (name=="foreground_color" and type(value)=="table"),"Invalid text style value: "..name)
+        props={value=value}
+    else
+        assert(#args==0,"Unsupported positional native UI modifier: "..name)
+    end
+    -- Environment modifiers compose as actual scopes. The closest scope wins,
+    -- including two context keys on one component or nested overrides.
+    if environment then
+        if name=="context" then
+            for key in pairs(props) do assert(key=="key" or key=="value","Unsupported context property") end
+            assert(type(props.key)=="table" and props.key.native_context,"Invalid context key")
+        end
+        return {kind="ZStack",props={},children={node},modifiers={[name]=props}}
+    end
     assert(node.modifiers[name]==nil,"Duplicate modifier")
     for key,value in pairs(props) do
         if name=="frame" then

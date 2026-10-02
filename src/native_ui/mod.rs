@@ -24,6 +24,8 @@ pub(crate) struct Node {
     pub paint: Paint,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub text_size: f64,
+    pub text_color: [f32; 4],
     pub tap: bool,
     pub children: Vec<Node>,
 }
@@ -516,6 +518,7 @@ impl Scene {
         self.node(
             root,
             self.lua.create_table()?,
+            (14., [1.; 4]),
             "0".into(),
             0,
             &mut seen,
@@ -526,6 +529,7 @@ impl Scene {
         &mut self,
         node: Table,
         context: Table,
+        style: (f64, [f32; 4]),
         path: String,
         depth: usize,
         seen: &mut BTreeSet<usize>,
@@ -551,6 +555,27 @@ impl Scene {
         let (node, context): (Table, Table) = expand.call((node, path.clone(), context))?;
         let props: Table = node.get("props")?;
         let modifiers: Table = node.get("modifiers")?;
+        let (mut text_size, mut text_color) = style;
+        for name in ["font_size", "foreground_color"] {
+            if let Some(modifier) = modifiers.get::<Option<Table>>(name)? {
+                let value = modifier.get::<Value>("value")?;
+                let value = match value { Value::Function(f) => f.call::<Value>(())?, v => v };
+                if matches!(value, Value::Nil) { continue; }
+                if name == "font_size" {
+                    text_size = match value {
+                        Value::Integer(value) => value as f64,
+                        Value::Number(value) => value,
+                        _ => bail!("Native UI font_size requires a number"),
+                    };
+                    ensure!(text_size.is_finite() && (0. ..=4096.).contains(&text_size), "Invalid native UI font size");
+                } else {
+                    let Value::Table(color) = value else { bail!("Native UI foreground_color requires a color"); };
+                    text_color = [color.get::<f32>("r")? / 255., color.get::<f32>("g")? / 255.,
+                        color.get::<f32>("b")? / 255., color.get::<Option<f32>>("a")?.unwrap_or(1.)];
+                    ensure!(text_color.iter().all(|v| v.is_finite() && (0. ..=1.).contains(v)), "Invalid native UI foreground color");
+                }
+            }
+        }
         let paint = match node.get::<String>("kind")?.as_str() {
             "ZStack" => Paint::Stack,
             "Text" => {
@@ -642,6 +667,7 @@ impl Scene {
             nodes.push(self.node(
                 child?,
                 context.clone(),
+                (text_size, text_color),
                 format!("{path}/{index}"),
                 depth + 1,
                 seen,
@@ -653,6 +679,8 @@ impl Scene {
             paint,
             width,
             height,
+            text_size,
+            text_color,
             tap: has_tap,
             children: nodes,
         })

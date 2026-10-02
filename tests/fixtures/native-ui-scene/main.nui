@@ -34,9 +34,9 @@ return function()
         true and -- an authored conditional may continue after its comment
         @Card {parameter_id="Amount"}
         or @ui.ZStack {}
-        @Card {parameter_id="Remote"}
+        @Card {parameter_id="Remote"}.font_size(20).foreground_color(ui.Color.red).context(key=context.primary,value="remote")
         @ui.Image {file=ui.create_computed(function()
             return remote:value()<20 and "assets/pics/ready.svg" or "assets/pics/changed.svg"
         end),resizable=false}
-    }.context(key=context,value="inherited").frame(width=640 height=400)
+    }.font_size(12).foreground_color(tint).context(key=context.primary,value="inherited").context(key=context.secondary,value="second").frame(width=640 height=400)
 end
