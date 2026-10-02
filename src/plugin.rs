@@ -4936,7 +4936,7 @@ end on"#;
             local ui=require('native_ui') local p=require('kontakt').connect_parameter('Amount')
             return @ui.ZStack { alignment="top right"
                 @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
-                @ui.Rectangle {color=ui.Color.blue}.frame(width=40,height=20).opacity(0.5)
+                @ui.Rectangle {color=ui.Color(0,0,255)}.frame(width=40,height=20).opacity(0.5)
                 @ui.Rectangle {color=ui.Color.white}.frame(width=20,height=10).on_tap_gesture(start=function() end).opacity(0)
             }.opacity(ui.create_computed(function() return p:value()/100 end)).frame(width=40,height=20)
         "#).unwrap();
