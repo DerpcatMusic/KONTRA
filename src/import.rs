@@ -299,14 +299,18 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
     let mut warnings = Vec::new();
     for ((id, saved), mut native) in snapshot_groups.into_iter().zip(native_groups.groups) {
         let id = id as usize;
+        let source = native.source_identity()?;
+        let mut identity = [0; 7];
+        identity[1..3].copy_from_slice(&source.version.to_le_bytes());
+        identity[3..].copy_from_slice(&source.mode.to_le_bytes());
         ensure!(
-            native.source_state()?[..7] == saved.source_data[..7],
+            identity == saved.source_data[..7],
             "Snapshot group {id}: source mode differs from base"
         );
         let native_fx = native.insert_fx()?;
         snapshot_slot_shape(&native_fx, &saved.fx)
             .with_context(|| format!("Snapshot group {id} effects"))?;
-        for (chunk_id, count, slots) in [(0x3b, 16, &saved.internal), (0x3c, 32, &saved.external)] {
+        for (chunk_id, count, slots) in [(0x3b, saved.internal.items.len() as u32, &saved.internal), (0x3c, saved.external.items.len() as u32, &saved.external)] {
             let original = native
                 .0
                 .find_first(chunk_id)
@@ -408,7 +412,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
             crate::audio::decode(&ir, max_frames)
         });
         warnings.extend(fx.warnings());
-        fx.main = std::mem::take(&mut instrument.fx.main);
+        if saved.version == 1 { fx.main = std::mem::take(&mut instrument.fx.main); }
         instrument.fx = fx;
     }
     if saved.groups.is_some() {
