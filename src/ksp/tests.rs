@@ -195,6 +195,26 @@ fn skin_offsets_are_pixels_per_slot_and_refresh_without_changing_picture_state()
     assert!(rig.rt.diagnostics().is_empty());
 }
 
+#[test]
+fn wallpaper_uses_last_assigning_slot_and_offsets_refresh_without_controls() {
+    let mut rig = Rig::new(&[
+        "on init\nmake_perfview\nset_control_par_str($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE,\"first\")\nset_skin_offset(19)\nend on",
+        "on init\nmake_perfview\nset_skin_offset(37)\nend on\non controller\nset_skin_offset(%CC[$CC_NUM] * 13)\nend on",
+        "on init\nset_control_par_str($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE,\"last\")\nset_skin_offset(900)\nend on",
+    ]);
+    assert_eq!(rig.rt.interface(0).wallpaper, "last");
+    assert_eq!(rig.rt.interface(0).skin_offset, 19);
+    let mut live = rig.rt.live();
+    assert_eq!(live.slot, 1);
+    assert_eq!(live.interface.as_ref().unwrap().wallpaper, "last");
+    assert_eq!(live.interface.as_ref().unwrap().skin_offset, 37);
+    rig.rt.controller(&mut rig.engine, 0, 1, 17);
+    assert!(rig.rt.refresh_live(&mut live));
+    assert_eq!(live.interface.as_ref().unwrap().skin_offset, 221);
+    assert_eq!(live.interface.as_ref().unwrap().wallpaper, "last");
+    assert!(!rig.rt.refresh_live(&mut live));
+}
+
 // ---- Initialization (ported from the init-only interpreter) ---------------------------
 
 #[test]

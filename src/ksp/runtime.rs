@@ -1113,9 +1113,13 @@ impl Runtime {
     }
 
     pub fn interface(&self, slot: usize) -> Interface {
-        self.states[slot]
-            .ui
-            .interface(&self.programs[slot], &self.states[slot].mem)
+        let mut interface = self.states[slot].ui.interface(&self.programs[slot], &self.states[slot].mem);
+        // Wallpaper is instrument-wide: the last slot assigning it wins.
+        // Pixel offsets remain per slot so one atlas can supply each view.
+        if let Some(state) = self.states.iter().rev().find(|s| !s.ui.wallpaper.is_empty()) {
+            interface.wallpaper.clone_from(&state.ui.wallpaper);
+        }
+        interface
     }
 
     /// What the host shows while the scripts run, shaped for
@@ -1211,7 +1215,7 @@ impl Runtime {
         }
         if let Some(out) = &mut live.interface
             && let Some(state) = self.states.get(live.slot)
-            && at.item < out.controls.len()
+            && at.item != usize::MAX
         {
             let prog = &self.programs[live.slot];
             at.changed |= state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut at.item, &mut at.at, budget);
