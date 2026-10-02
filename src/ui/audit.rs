@@ -307,10 +307,10 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
     };
     for warning in perf_view::font_fallbacks(&u) { trace.issue("ui", "font_fallback", &warning); }
     found.size = (u.width.max(0) as u32, u.height.max(0) as u32);
-    let names = u.controls.iter().map(|c| prop(c, "$CONTROL_PAR_PICTURE")).filter(|n| !n.is_empty());
+    let names: Vec<_> = artwork::picture_names(&u).collect();
     trace.stage("artwork");
     trace.detail("controls", u.controls.len());
-    let (pictures, errors) = artwork::pictures_report(&i.path, names);
+    let (pictures, errors) = artwork::pictures_report(&i.path, names.iter().map(|name| name.as_ref()));
     for e in errors { trace.issue("artwork", crate::diagnostics::code(&e), e); }
     trace.detail("pictures_loaded", pictures.len());
     let pictures = Arc::new(pictures);

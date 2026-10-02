@@ -1395,8 +1395,24 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             Ok(Step::Next)
         }
         GetFontId => {
-            // Numeric IDs (older scripts) pass through; named fonts are not rendered.
-            let n = m.stk.strs.pop().parse().unwrap_or(0);
+            let name = m.stk.strs.pop();
+            // Retain the historical numeric-ID form. Named fonts are an
+            // init-only resource registry, never allocated during callbacks.
+            let n = if let Ok(n) = name.parse() { n } else if !m.env.loading {
+                m.env.note("get_font_id: named bitmap fonts can only be registered on init; using the default font");
+                0
+            } else if name.is_empty() || name.contains(['/', '\\']) {
+                m.env.note("get_font_id: invalid bitmap font resource name; using the default font");
+                0
+            } else {
+                let fonts = &mut m.slot.ui.fonts;
+                let index = fonts.iter().position(|font| font == name).unwrap_or_else(|| {
+                    fonts.push(name.to_owned());
+                    fonts.len() - 1
+                });
+                i32::try_from(index).ok().and_then(|index| index.checked_add(26))
+                    .ok_or(Fault("Bitmap font ID space exhausted"))?
+            };
             push_int(m, n)
         }
         GetFolder => {
