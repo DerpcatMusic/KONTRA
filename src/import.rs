@@ -1230,10 +1230,22 @@ mod preset_tests {
         let state = super::wavetable_params(&raw).unwrap();
         assert_eq!((state.position, state.form1, state.phase, state.phase_random), (0.25, 0.5, 0.125, 0.0));
         assert_eq!((state.inharmonic, state.inharmonic_mode, state.form2), (0.5, 0, 0.75));
-        let constant = crate::ksp::builtins::constant;
-        assert_eq!(Some(state.form1_type), constant("$NI_WT_FORM_ASYM2MP"));
-        assert_eq!(Some(state.form2_type), constant("$NI_WT_FORM_LINEAR"));
-        assert_eq!(Some(state.quality), constant("$NI_WT_QUALITY_HIGH"));
+        let interface = crate::ksp::initialize(
+            "on init\n\
+             declare ui_slider $form1(0,1000000)\n\
+             declare ui_slider $form2(0,1000000)\n\
+             declare ui_slider $quality(0,1000000)\n\
+             $form1 := $NI_WT_FORM_ASYM2MP\n\
+             $form2 := $NI_WT_FORM_LINEAR\n\
+             $quality := $NI_WT_QUALITY_HIGH\n\
+             end on",
+            0,
+            8,
+        ).unwrap();
+        assert_eq!(interface.controls.len(), 3);
+        for (control, expected) in interface.controls.iter().zip([state.form1_type, state.form2_type, state.quality]) {
+            assert_eq!(control.properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(expected));
+        }
         for (raw_id, expected) in [(18, 18), (19, 17)] {
             raw.form_type = raw_id;
             assert_eq!(super::wavetable_params(&raw).unwrap().form1_type, expected);
