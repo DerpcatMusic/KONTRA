@@ -927,16 +927,15 @@ fn mix(out: &mut [f32], input: &[f32], level: f32) {
 fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]> {
     let ir = &p.ir.as_ref()?.0;
     let reverse = p.reversed();
-    // Size stretches time, including reflections; it does not trim the tail.
-    // Until the saved early/late boundary is identified, use uniform late size.
+    // Non-unit Size currently resamples the kernel instead of native time
+    // stretching. Unsupported split configurations retain uniform late size.
     let ratio = ir.rate as f32 / sample_rate / p.late.length_ratio.clamp(0.5, 1.5);
     let len = (ir.frames.len() as f32 / ratio).ceil() as usize;
     let pre = (p.predelay_ms.max(0.0) * 0.001 * sample_rate) as usize;
     // ponytail: linear interpolation aliases slightly on rate changes; use a
     // windowed-sinc resampler if IR brightness at 44.1k<->48k ever matters.
     let mut shaped = std::array::from_fn(|ch| {
-        let mut out = vec![0.0; pre];
-        out.extend((0..len.max(1)).map(|i| {
+        (0..len.max(1)).map(|i| {
             let x = i as f32 * ratio;
             let (j, frac) = (x as usize, x.fract());
             let sample = |j: usize| {
@@ -946,12 +945,12 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
             let a = sample(j);
             let b = sample(j + 1);
             a + (b - a) * frac
-        }));
-        out
+        }).collect()
     });
-    // No ER/LR boundary is decoded. Equal cutoffs are independent of that
-    // boundary; unequal settings remain unprocessed and reported on import.
-    if p.early.low_cut_hz == p.late.low_cut_hz && p.early.high_cut_hz == p.late.high_cut_hz {
+    let unequal = p.early.low_cut_hz != p.late.low_cut_hz || p.early.high_cut_hz != p.late.high_cut_hz;
+    if p.explicit_split_supported() && ir.rate as f32 == sample_rate && !ir.frames.is_empty() {
+        split_ir(&mut shaped, p, sample_rate);
+    } else if !unequal {
         crate::engine::filter::filter_ir(&mut shaped, p.late.low_cut_hz, p.late.high_cut_hz, sample_rate);
     }
     if p.envelope_active() && p.envelope_supported() {
@@ -961,16 +960,20 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
         let mut knots: [(f32, f32); 8] = std::array::from_fn(|n|
             (p.curve_x[n], (p.curve_db[n] * 0.05 * std::f32::consts::LN_10).exp()));
         knots.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let frames = shaped[0].len() - pre;
+        let frames = shaped[0].len();
         for pair in knots.windows(2) {
             let start = (frames as f32 * pair[0].0.clamp(0.0, 1.0) + 0.5) as usize;
             let end = (frames as f32 * pair[1].0.clamp(0.0, 1.0) + 0.5) as usize;
             // Collapsed knots write no frames; outside the knots is unchanged.
             for n in start..end {
                 let gain = pair[0].1 + (pair[1].1 - pair[0].1) * (n - start) as f32 / (end - start) as f32;
-                shaped.iter_mut().for_each(|ch| ch[pre + n] *= gain);
+                shaped.iter_mut().for_each(|ch| ch[n] *= gain);
             }
         }
+    }
+    for channel in &mut shaped {
+        channel.resize(channel.len() + pre, 0.0);
+        channel.rotate_right(pre);
     }
     if p.auto_gain() {
         // Native Auto Gain uses the loudest prepared IR channel's energy,
@@ -981,6 +984,30 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
         shaped.iter_mut().flatten().for_each(|x| *x *= gain);
     }
     Some(shaped)
+}
+
+/// Native unit-size ER/LR preparation: two full filtered responses, a 50 ms
+/// cos-squared overlap, and the original source duration. Worker thread only.
+fn split_ir(ir: &mut [Vec<f32>; 2], p: &params::Convolution, rate: f32) {
+    let frames = ir[0].len();
+    let mut late = ir.clone();
+    crate::engine::filter::filter_ir(ir, p.early.low_cut_hz, p.early.high_cut_hz, rate);
+    crate::engine::filter::filter_ir(&mut late, p.late.low_cut_hz, p.late.high_cut_hz, rate);
+    for channel in ir.iter_mut().chain(&mut late) { channel.truncate(frames); }
+    let boundary = ((frames as f32 * p.early_late_xpoint() + 0.5) as usize).min(frames);
+    let boundary = if p.reversed() { frames - boundary } else { boundary };
+    let transition = (rate * 0.05 + 0.5) as usize;
+    let raw_start = (boundary as f32 - transition as f32 * 0.5 + 0.5) as isize;
+    let start = raw_start.max(0) as usize;
+    let end = ((boundary as f32 + transition as f32 * 0.5 + 0.5) as usize).min(frames);
+    for (early, late) in ir.iter_mut().zip(late) {
+        for n in start..end {
+            let phase = (n as isize - raw_start) as f32 / transition as f32;
+            let weight = (phase * std::f32::consts::FRAC_PI_2).cos().powi(2);
+            early[n] = early[n] * weight + late[n] * (1.0 - weight);
+        }
+        early[end..].copy_from_slice(&late[end..]);
+    }
 }
 
 /// An output channel, 0..[`OUTS`], or -1 for the instrument output.

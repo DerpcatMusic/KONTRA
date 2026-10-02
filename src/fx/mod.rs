@@ -486,7 +486,7 @@ impl ProgramFx {
                         || c.early.low_cut_hz != c.late.low_cut_hz
                         || c.early.high_cut_hz != c.late.high_cut_hz
                         || c.early.length_ratio != 1.0 || c.late.length_ratio != 1.0) {
-                        out.push(format!("{at}: Auto Gain uses the approximated IR; unsupported native shaping changes its energy"));
+                        out.push(format!("{at}: Auto Gain uses the approximated IR when native shaping is unsupported; its energy can differ"));
                     }
                     if c.envelope_active() && !c.envelope_supported() {
                         out.push(format!("{at}: native IR Volume Envelope is not applied; eight finite time/level knots are required"));
@@ -495,7 +495,11 @@ impl ProgramFx {
                         out.push(format!("{at}: impulse response unavailable ({e})"));
                     }
                     if c.early.low_cut_hz != c.late.low_cut_hz || c.early.high_cut_hz != c.late.high_cut_hz {
-                        out.push(format!("{at}: independent early/late IR filtering is not applied"));
+                        out.push(if c.explicit_split_supported() {
+                            format!("{at}: independent early/late IR filtering requires matching IR/host rates; other rates remain unsupported")
+                        } else {
+                            format!("{at}: independent early/late IR filtering is not applied")
+                        });
                     }
                     if c.early.length_ratio != c.late.length_ratio {
                         out.push(format!("{at}: independent early/late IR sizing is not applied; late size stretches the whole IR"));
