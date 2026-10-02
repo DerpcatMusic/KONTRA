@@ -42,6 +42,8 @@ def parse(output):
         line = line.removeprefix(f"test {TEST} ... ")
         if line.startswith("UI_BENCH_CALLBACK "):
             result["callbacks"] = json.loads(line.removeprefix("UI_BENCH_CALLBACK "))
+        elif line.startswith("UI_BENCH_COST "):
+            result["cost_partition"] = json.loads(line.removeprefix("UI_BENCH_COST "))
         elif line.startswith("UI_BENCH "):
             fields = dict(re.findall(r"(\w+)=([^\s]+)", line))
             if "stage" in fields:

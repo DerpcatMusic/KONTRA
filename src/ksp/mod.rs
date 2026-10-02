@@ -7,6 +7,8 @@
 
 mod builtins;
 mod calls;
+mod arrays;
+pub use arrays::ArrayRead;
 mod compile;
 pub mod engine;
 mod idiom;
@@ -120,6 +122,9 @@ pub struct Interface {
     /// Vertical background offset in pixels, independent of picture state.
     #[serde(default)]
     pub skin_offset: i32,
+    /// Init-only named bitmap fonts; IDs are 26 + their slot-local index.
+    #[serde(default)]
+    pub fonts: Vec<String>,
     pub controls: Vec<Control>,
     pub diagnostics: BTreeSet<String>,
     pub listeners: BTreeMap<String, i32>,
@@ -135,6 +140,7 @@ impl Default for Interface {
             wallpaper: String::new(),
             wallpaper_state: 0,
             skin_offset: 0,
+            fonts: Vec::new(),
             controls: Vec::new(),
             diagnostics: BTreeSet::new(),
             listeners: BTreeMap::new(),

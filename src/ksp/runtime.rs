@@ -432,6 +432,11 @@ pub struct Env {
     /// Set while `on init` runs off the audio thread: storage may grow.
     pub(super) loading: bool,
     pub saved_arrays: BTreeMap<(u8, VarId), (Value, bool)>,
+    pub(super) array_spares: Vec<Box<super::ArrayRead>>,
+    pub(super) array_requests: VecDeque<Box<super::ArrayRead>>,
+    pub(super) array_inflight: usize,
+    array_results: VecDeque<Box<super::ArrayRead>>,
+    array_retired: VecDeque<Box<super::ArrayRead>>,
     pub spare_pgs_ints: Vec<(String, Vec<i32>)>,
     pub spare_pgs_strs: Vec<(String, String)>,
     pub spare_keyranges: Vec<String>,
@@ -478,6 +483,11 @@ impl Env {
             engine_pars: Vec::with_capacity(ENGINE_PAR_HEADROOM),
             loading: false,
             saved_arrays: BTreeMap::new(),
+            array_spares: Vec::new(),
+            array_requests: VecDeque::with_capacity(super::arrays::ARRAY_QUEUE),
+            array_inflight: 0,
+            array_results: VecDeque::with_capacity(super::arrays::ARRAY_QUEUE),
+            array_retired: VecDeque::with_capacity(super::arrays::ARRAY_QUEUE),
             spare_pgs_ints: Vec::new(),
             spare_pgs_strs: Vec::new(),
             spare_keyranges: Vec::new(),
@@ -912,6 +922,15 @@ impl Runtime {
                 state.ui.listeners.entry(name).or_insert(0);
             }
             state.persistent.reserve(prog.vars.len());
+            for &v in &prog.array_reads {
+                if !self.env.array_spares.iter().any(|r| r.slot == state.index && r.var == v) {
+                    // Two jobs per destination allow a second authored request
+                    // before the first result returns. Further requests fail explicitly.
+                    for _ in 0..2 {
+                        self.env.array_spares.push(Box::new(super::ArrayRead::prepared(state.index, v, &prog.vars[v as usize])));
+                    }
+                }
+            }
             for &v in &prog.saved_arrays {
                 let entry = self
                     .env
@@ -1199,6 +1218,24 @@ impl Runtime {
                 each_text_in(v, &mut room);
             }
             c.menu.iter_mut().for_each(|(t, _)| room(t));
+            // Delayed callbacks can first assign these scalar style fields.
+            // Reserve their map nodes off-thread without inventing defaults:
+            // numeric/text readers ignore an empty array until Ui::refresh
+            // replaces it with the authored integer. Its Vec has no storage
+            // to allocate or free when that happens on the audio thread.
+            for name in [
+                "$CONTROL_PAR_FONT_TYPE",
+                "$CONTROL_PAR_FONT_TYPE_ON",
+                "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED",
+                "$CONTROL_PAR_FONT_TYPE_ON_PRESSED",
+                "$CONTROL_PAR_FONT_TYPE_OFF_HOVER",
+                "$CONTROL_PAR_FONT_TYPE_ON_HOVER",
+                "$CONTROL_PAR_TEXTPOS_Y",
+                "$CONTROL_PAR_TEXT_ALIGNMENT",
+                "$CONTROL_PAR_TEXT_COLOR",
+            ] {
+                c.properties.entry(name.into()).or_insert_with(|| Value::IntArray(Vec::new()));
+            }
         }
         let menu_spares = interface.as_mut().map_or_else(Vec::new, |ui| {
             let state = &self.states[slot.unwrap()];
@@ -1573,7 +1610,16 @@ impl Runtime {
                 debug_assert!(e.callbacks == 0 || e.cleanup);
                 let id = i32::from(e.generation) << EVENT_INDEX_BITS | i as i32;
                 if e.cleanup {
-                    if e.released & 1 == 0 { self.env.queue(Work::Release { event: id, slot: 0 }); }
+                    // A finished ignored release has no live callback to resume.
+                    // Continue at its next reached slot, or recycle at the end;
+                    // do not replay notifications or duplicate queued releases.
+                    if e.callbacks == 0 && !self.env.work.iter().any(|w|
+                        matches!(w, Work::Release { event, .. } if *event == id))
+                    {
+                        let slot = (0..e.reached).find(|slot| e.released & (1 << slot) == 0)
+                            .unwrap_or(e.reached);
+                        self.env.queue(Work::Release { event: id, slot });
+                    }
                 } else if e.source >= 0 || !e.held {
                     self.env.events.free(id);
                 }
@@ -1794,8 +1840,91 @@ impl Runtime {
         self.settle(engine);
     }
 
+    /// Hand these jobs to a non-audio worker. A result retains its owned parse
+    /// buffers until the worker receives it again via `pop_retired_array_read`.
+    pub fn pop_array_read(&mut self) -> Option<Box<super::ArrayRead>> {
+        self.env.array_requests.pop_front()
+    }
+
+    pub fn can_finish_array_read(&self) -> bool {
+        self.env.array_results.len() < super::arrays::ARRAY_QUEUE
+    }
+
+    pub fn finish_array_read(&mut self, request: Box<super::ArrayRead>) -> Result<(), Box<super::ArrayRead>> {
+        if !self.programs.get(request.slot as usize).is_some_and(|p| p.array_reads.contains(&request.var)) {
+            return Err(request);
+        }
+        if request.id < 0 {
+            if self.env.array_spares.len() == self.env.array_spares.capacity() { return Err(request) }
+            self.env.array_inflight = self.env.array_inflight.saturating_sub(1);
+            self.env.array_spares.push(request);
+        } else {
+            if !self.can_finish_array_read() { return Err(request) }
+            self.env.array_results.push_back(request);
+        }
+        Ok(())
+    }
+
+    pub fn pop_retired_array_read(&mut self) -> Option<Box<super::ArrayRead>> {
+        self.env.array_retired.pop_front()
+    }
+
+    fn install_array_reads(&mut self, mut budget: usize) {
+        while budget > 0 && self.env.array_retired.len() < super::arrays::ARRAY_QUEUE
+            && self.env.async_done.len() < self.env.async_done.capacity()
+        {
+            let Some(request) = self.env.array_results.front_mut() else { break };
+            let Some((prog, state)) = self.programs.get(request.slot as usize)
+                .zip(self.states.get_mut(request.slot as usize)) else { break };
+            let var = &prog.vars[request.var as usize];
+            let values = match &request.values { Some(Value::Array(values)) => &values[..], _ => &[] };
+            let len = values.len().min(var.len.unwrap_or(0) as usize);
+            let end = (request.progress + budget).min(len);
+            // Validate all strings before changing any array cell. Validation
+            // and copying each advance at most 256 cells per audio block.
+            for (offset, value) in values.iter().enumerate().take(end).skip(request.progress) {
+                let i = var.slot as usize + offset;
+                if !request.validated {
+                    if let Value::Text(text) = value
+                        && vm::variable_text(text).len() > state.mem.strs[i].capacity()
+                    {
+                        request.success = false;
+                        request.failure = Some("load_array_str: prepared string capacity exceeded");
+                    }
+                } else if request.success {
+                    match (var.ty, value) {
+                        (Ty::Int, Value::Int(n)) if state.mem.ints[i] != *n => state.mem.ints[i] = *n,
+                        (Ty::Real, Value::Real(n)) if state.mem.reals[i] != *n => state.mem.reals[i] = *n,
+                        (Ty::Str, Value::Text(text)) if state.mem.strs[i] != vm::variable_text(text) => {
+                            state.mem.strs[i].clear();
+                            state.mem.strs[i].push_str(vm::variable_text(text));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            budget -= end - request.progress;
+            request.progress = end;
+            if end != len { break }
+            if !request.validated && request.success {
+                request.validated = true;
+                request.progress = 0;
+                continue;
+            }
+            let request = self.env.array_results.pop_front().unwrap();
+            if let Some(failure) = request.failure { self.env.note(failure); }
+            self.env.async_done.push((request.slot, request.id, i32::from(request.success)));
+            self.env.array_retired.push_back(request);
+            self.changes += 1;
+            // Deliver completion before starting another load into the same
+            // destination; its callback must not observe a partial next file.
+            break;
+        }
+    }
+
     /// Finish the current block: resume every callback due before its end.
     pub fn process(&mut self, engine: &mut dyn KspEngine, frames: u32) {
+        self.install_array_reads(256);
         let end = self.env.now + u64::from(frames);
         // What the last settle left for later (see `settle`).
         if self.env.cleaning || self.env.pgs_changed || !self.env.async_done.is_empty() {
@@ -2051,7 +2180,13 @@ impl Runtime {
                     }
                     return self.env.events.free(event);
                 }
-                if slot >= e.reached || e.released & (1 << slot) != 0 {
+                if slot >= e.reached {
+                    return self.env.events.free(event);
+                }
+                if e.released & (1 << slot) != 0 {
+                    if e.cleanup {
+                        return self.env.queue(Work::Release { event, slot: slot + 1 });
+                    }
                     return self.env.events.free(event);
                 }
                 e.released |= 1 << slot;

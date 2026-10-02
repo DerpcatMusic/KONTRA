@@ -224,6 +224,48 @@ pub fn pictures<'a>(path: &Path, names: impl IntoIterator<Item = &'a str>) -> Ha
     pictures_report(path, names).0
 }
 
+/// Font resources share the existing off-thread picture loading/cache path.
+/// The internal prefix cannot collide with a valid plain picture filename.
+pub fn font_key(name: &str) -> String { format!("@font/{name}") }
+
+pub fn picture_names(interface: &crate::ksp::Interface) -> impl Iterator<Item = std::borrow::Cow<'_, str>> {
+    interface.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
+        Some(crate::ksp::Value::Text(name)) if !name.is_empty() => Some(std::borrow::Cow::Borrowed(name.as_str())),
+        _ => None,
+    }).chain(interface.fonts.iter().map(|name| std::borrow::Cow::Owned(font_key(name))))
+}
+
+/// Kontakt bitmap fonts place 256 Windows-1252 glyphs side by side. A
+/// fully red pixel starts each glyph on the metadata row, which is not drawn.
+/// https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands
+pub(crate) fn font_frames(image: &Image) -> Result<Vec<Arc<Image>>, String> {
+    if image.height < 2 { return Err("bitmap font has no glyph rows".into()); }
+    let starts: Vec<u32> = (0..image.width).filter(|&x| {
+        let at = x as usize * 4;
+        image.rgba[at..at + 3] == [255, 0, 0]
+    }).collect();
+    if starts.len() != 256 || starts[0] != 0 {
+        return Err(format!("bitmap font needs 256 red glyph markers starting at x=0; found {}", starts.len()));
+    }
+    starts.iter().enumerate().map(|(n, &x)| {
+        crop(image, x, 1, starts.get(n + 1).copied().unwrap_or(image.width) - x, image.height - 1)
+            .ok_or_else(|| "invalid bitmap glyph dimensions".into())
+    }).collect()
+}
+
+/// Unicode text is indexed by the font's documented Windows-1252 byte order.
+/// Characters outside that alphabet use its authored question-mark glyph.
+pub(crate) fn font_glyph(c: char) -> usize {
+    const EXTENDED: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+        '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+    ];
+    match c as u32 {
+        0..=127 | 160..=255 => c as usize,
+        _ => EXTENDED.iter().position(|&glyph| glyph == c).map_or(b'?' as usize, |n| n + 128),
+    }
+}
+
 /// Preserve why a named control picture failed instead of silently discarding it.
 pub fn pictures_report<'a>(
     path: &Path,
@@ -236,19 +278,26 @@ pub fn pictures_report<'a>(
     for name in names {
         if name.is_empty() || !attempted.insert(name) { continue; }
         let result = (|| -> Result<Picture, String> {
-            let file = png_name(name).ok_or_else(|| format!("Picture {name:?}: invalid resource name"))?;
+            let font = name.strip_prefix("@font/");
+            let file = png_name(font.unwrap_or(name)).ok_or_else(|| format!("Picture {name:?}: invalid resource name"))?;
             let bytes = source.read(&file)?.ok_or_else(|| format!("Picture {file:?}: not found in the library resources or archives"))?;
             let image = decode_report(&bytes).map_err(|e| format!("Picture {file:?}: {e}"))?;
             let sidecar = format!("{}.txt", &file[..file.len() - 4]);
-            let text = source.read(&sidecar)?.unwrap_or_default();
-            let layout = Layout::parse(&String::from_utf8_lossy(&text));
-            let frames = layout.cut(&image);
+            let text = source.read(&sidecar)?;
+            if font.is_some() && text.is_none() { return Err(format!("Bitmap font {file:?}: required {sidecar:?} is missing")); }
+            let layout = Layout::parse(&String::from_utf8_lossy(&text.unwrap_or_default()));
+            let frames = if font.is_some() {
+                if layout.frames != 1 { return Err(format!("Bitmap font {file:?}: animated font strips are unsupported")); }
+                font_frames(&image).map_err(|e| format!("Bitmap font {file:?}: {e}"))?
+            } else { layout.cut(&image) };
             if frames.is_empty() { return Err(format!("Picture {file:?}: invalid frame dimensions in {sidecar:?}")); }
             Ok(Picture { frames, stretch: layout.stretch, atlas: None })
         })();
         match result {
             Ok(picture) => { out.insert(name.to_owned(), Arc::new(picture)); }
-            Err(e) => errors.push(format!("{name}: {e}")),
+            Err(e) => errors.push(if name.starts_with("@font/") {
+                format!("{name}: {e}; using bundled Noto Sans")
+            } else { format!("{name}: {e}") }),
         }
     }
     (out, errors)

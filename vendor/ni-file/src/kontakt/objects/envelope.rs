@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use crate::{
     Error,
@@ -8,6 +8,9 @@ use crate::{
 
 const CHUNK_ID: u16 = 0x3F;
 const VERSION: u16 = 0x11;
+// Corpus-inferred v0x11 minimum: four packed 13-byte records.
+// Preserve additional opaque bytes rather than imposing an exact-size cap.
+const AHDSR_TAIL: usize = 52;
 
 /// # EnvelopeAhdsr
 ///
@@ -36,9 +39,59 @@ pub struct EnvelopeAhdsr {
     /// Boolean flag of unknown meaning (possibly retrigger or AHD-only mode).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_flag: u8,
-    /// Trailing 52 bytes: four `(f32, f32, f32, bool)` records of unknown meaning.
+    /// At least 52 trailing bytes: four `(f32, f32, f32, bool)` records
+    /// of unknown meaning, plus any opaque extension bytes.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_tail: Vec<u8>,
+}
+
+impl EnvelopeAhdsr {
+    fn validate(&self) -> Result<(), Error> {
+        let times = [self.attack_ms, self.decay_ms, self.hold_ms, self.release_ms];
+        if self.unknown_tail.len() < AHDSR_TAIL {
+            return Err(Error::Static("Incomplete AHDSR opaque metadata"));
+        }
+        if !(-1.0..=1.0).contains(&self.attack_curve)
+            || !(0.0..=1.0).contains(&self.sustain)
+            || !times.iter().all(|t| t.is_finite() && *t >= 0.0)
+        {
+            return Err(Error::Static("AHDSR envelope values out of range"));
+        }
+        Ok(())
+    }
+
+    /// Encode editable parameters while preserving the unknown flag/tail.
+    /// Requires metadata from a complete record, not a runtime-cache copy.
+    pub fn to_chunk(&self) -> Result<Chunk, Error> {
+        self.validate()?;
+        let length = self
+            .unknown_tail
+            .len()
+            .checked_add(28)
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or(Error::Static("AHDSR chunk too large"))?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(length as usize)
+            .map_err(|_| Error::Static("AHDSR allocation failed"))?;
+        data.extend_from_slice(&[0, VERSION as u8, 0]);
+        for value in [
+            self.attack_curve,
+            self.attack_ms,
+            self.decay_ms,
+            self.hold_ms,
+            self.release_ms,
+            self.sustain,
+        ] {
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+        data.push(self.unknown_flag);
+        data.extend_from_slice(&self.unknown_tail);
+        Ok(Chunk { id: CHUNK_ID, data })
+    }
+
+    pub fn write(&self, writer: impl Write) -> Result<(), Error> {
+        self.to_chunk()?.write(writer)
+    }
 }
 
 impl TryFrom<&Chunk> for EnvelopeAhdsr {
@@ -76,19 +129,7 @@ impl TryFrom<&Chunk> for EnvelopeAhdsr {
             unknown_tail: reader.read_all()?,
         };
 
-        let times = [
-            envelope.attack_ms,
-            envelope.decay_ms,
-            envelope.hold_ms,
-            envelope.release_ms,
-        ];
-        let valid = (-1.0..=1.0).contains(&envelope.attack_curve)
-            && (0.0..=1.0).contains(&envelope.sustain)
-            && times.iter().all(|t| t.is_finite() && *t >= 0.0);
-        if !valid {
-            return Err(Error::Static("AHDSR envelope values out of range"));
-        }
-
+        envelope.validate()?;
         Ok(envelope)
     }
 }
@@ -98,6 +139,7 @@ const FLEX_CHUNK_ID: u16 = 0x40;
 const MAX_FLEX_POINTS: u32 = 32;
 /// Unknown bytes after the points in version 0x11.
 const FLEX_TAIL: usize = 13;
+const FLEX_TAIL_V12: usize = FLEX_TAIL + 2;
 
 /// One flex envelope breakpoint, reached from the previous one.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -135,6 +177,63 @@ pub struct EnvelopeFlex {
     pub unknown_tail: Vec<u8>,
 }
 
+impl EnvelopeFlex {
+    fn validate(&self) -> Result<(), Error> {
+        let count = self.points.len();
+        if count == 0
+            || count > MAX_FLEX_POINTS as usize
+            || self.sustain as usize >= count
+            || self.unknown_index as usize >= count
+        {
+            return Err(Error::Static("Flex envelope indices out of range"));
+        }
+        if !matches!(self.unknown_tail.len(), FLEX_TAIL | FLEX_TAIL_V12)
+            || !self.points.iter().all(|p| {
+                p.time_ms.is_finite()
+                    && p.time_ms >= 0.0
+                    && (0.0..=1.0).contains(&p.level)
+                    && (0.0..=1.0).contains(&p.curve)
+            })
+        {
+            return Err(Error::Static("Flex envelope values out of range"));
+        }
+        Ok(())
+    }
+
+    /// Preserve v0x11/v0x12 using their distinct 13/15-byte opaque tails.
+    /// Missing opaque metadata is rejected instead of synthesizing defaults.
+    pub fn to_chunk(&self) -> Result<Chunk, Error> {
+        self.validate()?;
+        let version = if self.unknown_tail.len() == FLEX_TAIL {
+            0x11u16
+        } else {
+            0x12
+        };
+        let mut data = Vec::new();
+        data.try_reserve_exact(15 + self.points.len() * 12 + self.unknown_tail.len())
+            .map_err(|_| Error::Static("Flex envelope allocation failed"))?;
+        data.push(0);
+        data.extend_from_slice(&version.to_le_bytes());
+        data.extend_from_slice(&(self.points.len() as u32 - 1).to_le_bytes());
+        data.extend_from_slice(&self.unknown_index.to_le_bytes());
+        data.extend_from_slice(&self.sustain.to_le_bytes());
+        for point in &self.points {
+            for value in [point.time_ms, point.level, point.curve] {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        data.extend_from_slice(&self.unknown_tail);
+        Ok(Chunk {
+            id: FLEX_CHUNK_ID,
+            data,
+        })
+    }
+
+    pub fn write(&self, writer: impl Write) -> Result<(), Error> {
+        self.to_chunk()?.write(writer)
+    }
+}
+
 impl TryFrom<&Chunk> for EnvelopeFlex {
     type Error = Error;
 
@@ -154,7 +253,7 @@ impl TryFrom<&Chunk> for EnvelopeFlex {
         let version = reader.read_u16_le()?;
         let tail = match version {
             0x11 => FLEX_TAIL,
-            0x12 => FLEX_TAIL + 2,
+            0x12 => FLEX_TAIL_V12,
             _ => {
                 return Err(Error::Generic(format!(
                     "Unsupported flex envelope version 0x{version:X}"
@@ -179,22 +278,16 @@ impl TryFrom<&Chunk> for EnvelopeFlex {
             .collect::<Result<Vec<_>, std::io::Error>>()?;
         let unknown_tail = reader.read_all()?;
 
-        let valid = unknown_tail.len() == tail
-            && points.iter().all(|p| {
-                p.time_ms.is_finite()
-                    && p.time_ms >= 0.0
-                    && (0.0..=1.0).contains(&p.level)
-                    && (0.0..=1.0).contains(&p.curve)
-            });
-        if !valid {
+        if unknown_tail.len() != tail {
             return Err(Error::Static("Flex envelope values out of range"));
         }
-
-        Ok(Self {
+        let envelope = Self {
             points,
             sustain,
             unknown_index,
             unknown_tail,
-        })
+        };
+        envelope.validate()?;
+        Ok(envelope)
     }
 }
