@@ -20,11 +20,15 @@ are added when a release is actually published; commit history is not a changelo
 - Native NKSN snapshots applied to an explicit base instrument, including supported
   saved controls, instrument/group FX, known envelopes and modulation assignments.
   Three Analog Strings snapshots have production state checks and two decoded IRs each.
-- Bounded asynchronous `load_array_str` NKA reads with typed array/UI revision
-  updates, completion callbacks and distinct header, value, resource and capacity
-  diagnostics. Three real Analog factory loads and the retained rhythm table are
-  verified; callback/install/refresh paths record zero heap operations over 7,800
-  blocks of 128 samples. This does not add arbitrary array-file saving.
+- Bounded asynchronous `load_array_str` reads and explicit-path `save_array_str`
+  writes for typed NKA files, with retained array/UI revisions, completion callbacks
+  and header, value, resource, capacity and write diagnostics. Three real Analog
+  factory loads and the retained rhythm table are verified; read callback/install/
+  refresh paths record zero heap operations over 7,800 blocks of 128 samples. Two
+  unchanged-script browser-star callbacks write a copied favorites file with fresh
+  byte readback, restore its original bytes and record zero audio heap operations
+  over 6,300 blocks. All 11 original metadata files remain unchanged. Mode-based
+  saves and external file dialogs remain unavailable, returning status 0.
 - AHDSR/Flex envelope record writers that preserve opaque metadata. The selected
   782-file / 788-program corpus verifies 230,627 byte-exact record roundtrips and
   edited-value readbacks with zero errors.
@@ -33,8 +37,9 @@ are added when a release is actually published; commit history is not a changelo
   waveform generation and routing remain unsupported, some tables remain raw,
   and typed rate/phase metadata does not establish DSP behavior.
 - Named bitmap font loading for 256-glyph Windows-1252 RGBA strips declared during
-  initialization. Unit coverage and separate Areia Basic/Advanced Original-view
-  probes pass; exact font-resource census/capture verification remains pending.
+  initialization. Actual Areia Advanced resources verify two 256-glyph, 14-pixel
+  fonts with variable advances and the native gray/orange switch-state change;
+  broader font compatibility remains unverified.
 
 ### Fixed
 
@@ -58,6 +63,8 @@ are added when a release is actually published; commit history is not a changelo
 - Zone ID mapping after import filtering and source-parser allocations in validated
   preset/container paths.
 - Browser scaling/layout and selected DSP effect processing paths.
+- RV2 Reverb Time captions use the existing DSP time conversion; the checked
+  Areia Advanced state displays 1099.5 ms. This does not establish Kontakt's law.
 - Original interface wallpaper page offsets and viewport rendering, authored fader
   travel, factory font color/state inheritance and explicit caption text colors.
   Factory glyphs still use the bundled font approximation.
@@ -84,4 +91,6 @@ The focused offline results do not certify live-host deadlines or every library.
 Opaque snapshot source state and unknown saved scalars are warned and remain unapplied.
 
 Analog Strings' live factory-preset and rhythm menus use bounded NKA reads; selected
-menu checks do not establish that every action or preset works.
+menu checks do not establish that every action or preset works. The installed
+header-favorite preset ID is absent from its registry, preventing that lookup from
+updating favorites; no supplied IDs were repaired or compared with Kontakt.
