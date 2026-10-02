@@ -433,6 +433,7 @@ impl Engine {
     /// bank, effects, scripts and group mask. Effects stay built for their own
     /// rate: replace them with [`set_fx`](Self::set_fx) when `rate` changes.
     pub fn reset(&mut self, rate: f64) {
+        self.release_script_pedals();
         self.cancel_notes(u16::MAX);
         self.player.clear_voices(self.bank.as_deref());
         self.commands.clear();
@@ -445,6 +446,13 @@ impl Engine {
         }
         self.apply_init_controllers();
         if let Some(rt) = self.script.as_deref_mut() { rt.reset_controllers(Some(&self.player.cc[0])); }
+        // A script's saved/default pedal-down value is restored with its other
+        // init controllers. Its private cache must see that restored value too.
+        self.notify_script_pedals([64usize, 66].map(|cc| {
+            let value = self.player.cc[0][cc];
+            (value >= 64).then_some(value)
+        }));
+        self.cancel_notes(u16::MAX);
     }
 
     fn cancel_notes(&mut self, channels: u16) {
@@ -454,19 +462,28 @@ impl Engine {
             || matches!(command.kind, script::Kind::Controller { .. }));
     }
 
-    /// Stop every performance context in one pass, preserving script/UI setup.
-    pub fn panic(&mut self) {
+    fn notify_script_pedals(&mut self, values: [Option<u8>; 2]) {
+        if self.script.is_none() { return; }
+        for channel in 0..16 {
+            for (cc, value) in [64, 66].into_iter().zip(values) {
+                if let Some(value) = value { self.cc(channel, cc, value); }
+            }
+        }
+    }
+
+    fn release_script_pedals(&mut self) {
         // Libraries cache pedal state in their own globals. Resetting %CC alone
         // leaves their next release callback believing the pedal is still down.
         if let Some(rt) = self.script.as_ref() {
             let down = [64usize, 66].map(|cc| rt.env.input.cc[cc] >= 64
                 || self.player.cc.iter().any(|row| row[cc] >= 64));
-            for channel in 0..16 {
-                for (cc, down) in [64, 66].into_iter().zip(down) {
-                    if down { self.cc(channel, cc, 0); }
-                }
-            }
+            self.notify_script_pedals(down.map(|down| down.then_some(0)));
         }
+    }
+
+    /// Stop every performance context in one pass, preserving script/UI setup.
+    pub fn panic(&mut self) {
+        self.release_script_pedals();
         // Pedal-up callbacks may release, create or wait on notes; cancel their
         // remaining performance work too, so Panic cannot resurrect a voice.
         self.cancel_notes(u16::MAX);
