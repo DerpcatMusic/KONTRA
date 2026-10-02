@@ -2270,14 +2270,15 @@ mod tests {
         assert!(address(id::INTMOD_INTENSITY, 3).is_none(), "other legacy module laws are not inferred");
         assert!(address(id::INTMOD_INTENSITY, 0).is_none(), "unsupported target does not alias cutoff");
         assert!(address(id::MOD_TARGET_MP_INTENSITY, 0).is_none(), "unsupported target does not alias a routed one");
-        let table = ModTable::default();
         let cc = [0; 128];
         let input = Inputs { cc: &cc, cc74: None, bend: 0., pressure: 0, note: 60, velocity: 100, counter: 0. };
         let f = settings[0].filter.as_ref().unwrap();
         let mut dry = f.clone();
         dry.envs = [].into();
-        let mut voice = VoiceFilter::new(Some(f), &table, &input, RATE);
-        let mut reference = VoiceFilter::new(Some(&dry), &table, &input, RATE);
+        // Filter external rows index this group's prepared assignments, as in
+        // production voice start; depth writes below update that same table.
+        let mut voice = VoiceFilter::new(Some(f), &settings[0].mods, &input, RATE);
+        let mut reference = VoiceFilter::new(Some(&dry), &settings[0].mods, &input, RATE);
         let mut clock = Envelope::new(&Ahdsr::from(&groups[0].envelopes[1].env), RATE);
         let mut pitch_clock = Envelope::new(&settings[0].pitch_envelopes[0].env, RATE);
         let mut ctl = [0.; MAX_BLOCK];
@@ -2336,8 +2337,8 @@ mod tests {
                     assert_eq!(params::read(&settings, legacy), Some(-0.125));
                     assert_eq!(legacy.encode(params::read(&settings, legacy).unwrap()), 250_000);
                 }
-                voice.process(settings[0].filter.as_ref().unwrap(), &table, &mut ctl, &mut l, &mut r, RATE);
-                reference.process(&dry, &table, &mut ctl, &mut dl, &mut dr, RATE);
+                voice.process(settings[0].filter.as_ref().unwrap(), &settings[0].mods, &mut ctl, &mut l, &mut r, RATE);
+                reference.process(&dry, &settings[0].mods, &mut ctl, &mut dl, &mut dr, RATE);
                 clock.skip(128, None, RATE);
                 let semitones = settings[0].pitch_envelopes[0].pitch(&mut pitch_clock, 128, RATE);
                 assert_eq!(pitch_clock.level(), clock.level(), "saved pitch bypass preserves the same clock");
@@ -2354,7 +2355,7 @@ mod tests {
             voice.release();
             clock.release(None);
             let (mut l, mut r) = ([0.; 128], [0.; 128]);
-            voice.process(settings[0].filter.as_ref().unwrap(), &table, &mut ctl, &mut l, &mut r, RATE);
+            voice.process(settings[0].filter.as_ref().unwrap(), &settings[0].mods, &mut ctl, &mut l, &mut r, RATE);
             clock.skip(128, None, RATE);
             assert_eq!(voice.envs[0].level(), clock.level());
         }), 0);
