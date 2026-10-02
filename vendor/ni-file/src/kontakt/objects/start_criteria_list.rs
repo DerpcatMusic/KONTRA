@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, SeekFrom, Write};
 
 use crate::{
     kontakt::{objects::StartCriteriaParams, Chunk, KontaktError},
@@ -18,12 +18,31 @@ const CHUNK_ID: u16 = 0x38;
 /// Kontakt 7:      ?
 /// KontaktIO:      StartCritList
 ///
-#[derive(Debug)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StartCriteriaList {
+    /// Original occupied-row mask. Retain holes when writing the list.
+    pub mask: u8,
     pub items: Vec<StartCriteriaParams>,
+    /// Uninterpreted bytes following the known records in the bounded list.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub unknown_tail: Vec<u8>,
 }
 
 impl StartCriteriaList {
+    pub fn write(&self, mut writer: impl Write) -> Result<(), Error> {
+        if self.mask > 15 || self.mask.count_ones() as usize != self.items.len() {
+            return Err(Error::Static("Start criteria mask does not match records"));
+        }
+        writer.write_all(&[self.mask])?;
+        for item in &self.items {
+            writer.write_all(&[0, 0x70, 0])?;
+            item.write(&mut writer)?;
+        }
+        writer.write_all(&self.unknown_tail)?;
+        Ok(())
+    }
+
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let num_items = reader.read_i8()?;
         let mut items = Vec::new();
@@ -33,8 +52,11 @@ impl StartCriteriaList {
         for i in 0..4 {
             if num_items & (1 << (i & 0x1F)) != 0 {
                 // ensure raw data
-                let is_structured_object = reader.read_bool()?;
-                if is_structured_object {return Err(Error::Static("Unexpected structured start criteria"));}
+                match reader.read_u8()? {
+                    0 => {},
+                    1 => return Err(Error::Static("Unexpected structured start criteria")),
+                    _ => return Err(Error::Static("Invalid start criteria object flag")),
+                }
 
                 // ensure startcriteria v70
                 let version = reader.read_u16_le()?;
@@ -45,7 +67,14 @@ impl StartCriteriaList {
             }
         }
 
-        Ok(Self { items })
+        let position = reader.stream_position()?;
+        let end = reader.seek(SeekFrom::End(0))?;
+        reader.seek(SeekFrom::Start(position))?;
+        let remaining = usize::try_from(end.checked_sub(position)
+            .ok_or(Error::Static("Invalid start criteria cursor"))?)
+            .map_err(|_| Error::Static("Start criteria tail exceeds address space"))?;
+        let unknown_tail = reader.read_bytes(remaining)?;
+        Ok(Self { mask: num_items as u8, items, unknown_tail })
     }
 }
 
