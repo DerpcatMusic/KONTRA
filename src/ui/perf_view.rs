@@ -876,6 +876,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     let drawn = match (picture, look) {
         (Some(image), _) => sliced(&image, shown.picture.as_ref().map_or([false; 2], |p| p.stretch), w, h, s, dev, slot),
         (None, Look::Vector(plan)) => match plan.face {
+            VFace::Normal if plan.skin => own().fill(Role::Surface),
             VFace::Normal => own(),
             VFace::Clear => block(w, h),
             VFace::Cover => block(w, h).fill(Role::Background),
