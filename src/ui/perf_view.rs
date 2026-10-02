@@ -807,7 +807,13 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
             // A marker on a wave moves along it.
             let vertical = drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour) && !marker_on_wave;
             let before = now;
-            let distance = if marker_on_wave { w } else {
+            let distance = if marker_on_wave { w } else if matches!(look, Look::Vector(p) if p.face == VFace::Normal)
+                && shown.kind == Kind::Slider && !knob_like(prop(c, "$CONTROL_PAR_PICTURE"), shown.w, shown.h)
+            {
+                // The native thumb's center moves within the track's end
+                // caps. Use that exact span, also at fractional view scales.
+                (if vertical { h } else { w }) - FADER_THUMB
+            } else {
                 travel(shown.kind, behaviour, hi - lo, (shown.w, shown.h), prop(c, "$CONTROL_PAR_PICTURE")) * s
             };
             // drive applies each pointer delta to the grabbed value, so a
@@ -1227,7 +1233,7 @@ mod tests {
         assert_eq!(travel(Kind::Slider, 0, 127., (120., 20.), "fader"), 120.);
         assert_eq!(travel(Kind::Slider, -1000, 127., (20., 120.), "fader"), 120.);
         assert_eq!(travel(Kind::Slider, 2500, 1_000_000., (734., 73.), "macro_slider_transparent"), 734.);
-        assert_eq!(travel(Kind::Slider, 1755, 1_000_000., (102., 13.), "mini_macro1_slider"), 102.);
+        assert_eq!(travel(Kind::Slider, 2500, 1_000_000., (111., 11.), "mini_macro1_slider"), 111.);
         assert_eq!(travel(Kind::Knob, 0, 127., (48., 50.), ""), 200.);
         assert_eq!(travel(Kind::Slider, -1000, 127., (48., 50.), "knob"), 100.);
         assert_eq!(travel(Kind::Slider, 5000, 127., (48., 50.), "knob"), 60., "the fastest knob still has room");
@@ -1235,13 +1241,13 @@ mod tests {
     }
 
     #[test]
-    fn slider_thumb_tracks_pointer_at_any_view_scale() {
+    fn sliders_use_drawn_length_for_pointer_drag_at_any_scale() {
         // Real Analog Strings macro dimensions/behaviour, plus a vertical
         // fader. Exercise the same Ui drag path as control(), not just the
         // distance formula. Pointer coordinates are logical host points.
         for (w, h, behaviour, picture) in [
             (734., 73., 2500, "macro_slider_transparent"),
-            (102., 13., 1755, "mini_macro1_slider"),
+            (111., 11., 2500, "mini_macro1_slider"),
             (13., 102., -1755, "fader"),
         ] {
             for view_scale in [0.5, 1., 2.] {
@@ -1271,6 +1277,41 @@ mod tests {
                         assert!((value - expected).abs() < 1e-6, "{w}x{h}, view {view_scale}, device {device_scale}, step {step}: {value} != {expected}");
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn native_fader_visible_thumb_follows_pointer_delta() {
+        // Read the painted thumb, independently of the drag equation.
+        // This face is shared by Vectorized and the native rack controls.
+        for width in [111., 734.] {
+            for scale in [0.5, 1., 2.] {
+                let mut ui = crate::ui::theme::ui();
+                let size = Size::new(width * scale, 30.);
+                let root = |value| fader_face(value, 0., None, false, 0., false).w(size.width).h(size.height).id("slider");
+                let mut value = 0.4;
+                ui.frame(root(value), Some(size), Input::default(), 0.).unwrap();
+                let thumb = |ui: &Ui| {
+                    let pixels = crate::ui::tests::pixels(ui, size.width.ceil() as u16, 30);
+                    let stride = size.width.ceil() as usize;
+                    // Four rows above the center: the track has no ink here.
+                    let lit: Vec<_> = (0..stride).filter(|&x| pixels[(11 * stride + x) * 4 + 3] > 127).collect();
+                    assert!(!lit.is_empty(), "the native thumb paints");
+                    (lit[0] + lit[lit.len() - 1]) as f64 / 2.
+                };
+                let before = thumb(&ui);
+                let grab = Point::new(size.width * 0.55, 15.);
+                for (tick, delta) in [0., 10.].into_iter().enumerate() {
+                    let input = Input { pointer: PointerInput {
+                        pos: Some(Point::new(grab.x + delta, grab.y)), buttons: Buttons::PRIMARY,
+                        ..Default::default()
+                    }, ..Default::default() };
+                    ui.frame(root(value), Some(size), input, (tick + 1) as f64 / 60.).unwrap();
+                    drive(&mut ui, "slider", &mut value, &(0. ..=1.), size.width - FADER_THUMB, false, 0.);
+                }
+                ui.frame(root(value), Some(size), Input::default(), 3. / 60.).unwrap();
+                assert!((thumb(&ui) - before - 10.).abs() <= 1., "width {width}, scale {scale}: the visible thumb follows ten pointer points");
             }
         }
     }

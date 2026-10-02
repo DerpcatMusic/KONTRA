@@ -20,6 +20,8 @@ pub const SMALL: f64 = TEXT - 1.;
 pub const TIGHT: f64 = TEXT / 3.;
 /// Between sibling controls.
 pub const SPACE: f64 = TEXT * 2. / 3.;
+/// Width of the native fader thumb, in logical points.
+pub const FADER_THUMB: f64 = SPACE * 0.75;
 /// Around a panel's content, and between panels' sections.
 pub const INSET: f64 = TEXT;
 /// A control's height: one line of text with room to aim at.
@@ -785,7 +787,7 @@ pub fn fader_face(at: f64, from: f64, detent: Option<f64>, vertical: bool, lift:
                 rect(along, off, l, t)
             }
         };
-        let thumb_w = SPACE * 0.75;
+        let thumb_w = FADER_THUMB;
         let inner = len - thumb_w;
         let x = |u: f64| thumb_w / 2. + u * inner;
         let mid = (across / 2.).round();
@@ -852,7 +854,7 @@ pub fn fader(
             }
         })
         .max(CONTROL);
-    let held = drive(ui, id, value, &range, track - SPACE, vertical, kind.reset);
+    let held = drive(ui, id, value, &range, track - FADER_THUMB, vertical, kind.reset);
     let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
     let unit = |v: f64| ((v - lo) / (hi - lo)).clamp(0., 1.);
     let (at, from) = (unit(*value), unit(kind.origin));
