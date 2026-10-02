@@ -373,9 +373,13 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 
 ### Candidates — not shipped
 
-The following ten logical units are staged for release review, not accepted or
-published. Authored gates below do not replace the forthcoming six-preset and
-four-Conflux actual replay checks. The accepted fix count remains 47.
+The following seventeen logical units are staged for release review, not accepted or
+published. Authored gates do not replace fresh actual candidate replays. The
+accepted fix count remains 47. The earlier `1f62da4` four-Conflux preloaded run
+reported zero underruns and complete journal delivery; six matched real LoFi
+checks changed four outputs toward their effect-off baselines and left two
+unchanged. Those results do not establish a calibrated Kontakt frequency law
+or certify the newer `9bbce5e` candidate.
 
 - Authored performance-view background colors survive live publications
   (`c286fe4`); the focused background gates passed. This does not establish every
@@ -406,6 +410,39 @@ four-Conflux actual replay checks. The accepted fix count remains 47.
 - Documented `ui_menu` `$CONTROL_PAR_VALUE` queries return the selected entry index
   (`1f62da4`). The focused runtime gate passed; this does not certify every menu
   path or Lua UI.
+- Template-named snapshots bind to the checked instrument name while rejecting
+  foreign names and truncated metadata (`0ebf976`); the production gate passed.
+- Explicit snapshot modulation removals preserve retained sibling identities
+  (`0ebf976`). The production gate passed; adding/replacing assignments, malformed
+  removed records and incompatible effect topology remain rejected.
+- GPU startup diagnostics retain their cause and identify Linux embedding failures
+  (`4bfa3ad`). This improves diagnosis; it does not claim that Void blank windows
+  or every host embedding failure are repaired.
+- Structured runtime faults retain callback/event action, array variable/index/
+  length and readable bounded source context in headless reports (`515a2f5`). The
+  gate passed with zero heap operations; repeated events update the latest action
+  without growing retained fault locations or duplicating the structured issue.
+- Ownerless UI/listener CC and MPE actions use the configured part home (`44ea2c5`);
+  the production routing and zero-heap gate passed. MIDI-owned callbacks retain
+  their ownership; fresh actual candidate playback remains pending.
+- Legacy AHDSR cutoff intensity reaches the filter through the checked cubic depth
+  law (`91a4b02`). Authored PCM, native readback and zero-heap checks passed;
+  original preset processing and calibrated Kontakt sound parity remain unverified.
+- Native persisted menus restore entry positions with retained origin/host state
+  (`9bbce5e`). The zero-heap gate passed. This corrects persistence separately from
+  the documented menu VALUE getter; fresh actual candidate replay is pending.
+
+#### Semantic coverage pending release review
+
+| Area | Checked scope | Remaining gap |
+| --- | --- | --- |
+| Snapshots and source records | Bounded known headers, counted slots, template binding and explicit removals | Fresh Morphology application is pending; unsupported source state and arbitrary topology changes remain unavailable. |
+| Native filters and LoFi | Authored identities/layout, live PCM/readback, cubic legacy depth; six earlier matched LoFi probes | Original Kontakt frequency/drive/depth calibration and full processing parity remain unverified. |
+| Controller and menu state | Authored home routing, selected-index getters, persisted menu positions and ownership | Fresh actual UI/controller replay does not cover every library, Lua UI or host. |
+| Diagnostics and editor startup | Bounded structured actions/source context, startup-cause retention; earlier complete journal delivery | Better error reports do not repair every script fault, Void window or Linux embedding failure. |
+| Streaming and convolution | Authored first-block RAM coverage and zero-heap gate; four earlier Conflux preloaded runs with zero underruns | Fresh six-Analog/three-Morphology and three-IR proofs are pending; uninterrupted realtime playback and sound equivalence are not established. |
+| Wavetable processing | Existing source diagnostics and preserved opaque metadata | New wavetable DSP remains unshipped/incomplete; no wavetable playback or complete-library parity claim. |
+
 - The passing Note Mono boolean check is a follow-up to the already counted
   release-trigger Note Mono correction, not an additional fix-count unit.
 - The CLI recorder JSON helper gate passed in the twelve-check runtime set. Audit
