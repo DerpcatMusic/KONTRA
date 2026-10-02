@@ -58,6 +58,12 @@ are added when a release is actually published; commit history is not a changelo
 
 ### Fixed
 
+- Leaving or unfocusing an editor cancels delayed pointer restoration, including
+  release events queued before the next frame. Popup menus capture hover and outside
+  dismissal clicks so tooltips and underlying controls cannot cover or activate them.
+- Solid G-EQ gain captions use the existing DSP's signed decibel conversion instead
+  of raw normalized integers; this changes display text without changing its gain law.
+
 - Shared controls recover movement before the drag threshold, so closed physical
   mouse paths return to their starting values at 100%, 150% and 200% display scale.
 
