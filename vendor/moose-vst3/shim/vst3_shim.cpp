@@ -2123,6 +2123,7 @@ struct IPlugViewContentScaleSupportVtbl {
 // vtable slot; the functions behind each vtable derive the base with
 // pointer arithmetic, matching the MooseComponent pattern.
 static uint32 comp_release(void* s);
+static tresult pv_setFrame(void* s, void* frame);
 
 struct MoosePlugView {
     IPlugViewVtbl* vtbl;
@@ -2181,6 +2182,8 @@ static uint32 pv_release(void* s) {
                 pv->comp->plugView = nullptr;
             }
         }
+        // Release the retained host frame after unregistering its run loop.
+        pv_setFrame(pv, nullptr);
         auto* owner = pv->owner;
         free(pv);
         if (owner) comp_release(owner);
@@ -2271,6 +2274,12 @@ static tresult pv_onSize(void* s, void* rect) {
 // plugin-initiated resize through it.
 static tresult pv_setFrame(void* s, void* frame) {
     auto* pv = (MoosePlugView*)s;
+    if (pv->frame == frame) return kResultOk;
+    if (frame) {
+        auto add_ref = (uint32 (*)(void*))(*(void***)frame)[1];
+        add_ref(frame);
+    }
+    auto* previous = pv->frame;
     pv->frame = frame;
 #if defined(__linux__)
     // Bind (or, on a null frame, unbind) the restart timer to the frame's
@@ -2278,6 +2287,10 @@ static tresult pv_setFrame(void* s, void* frame) {
     // host UI thread even without param polling.
     if (pv->comp) pv->comp->updateRunLoopRegistration(frame);
 #endif
+    if (previous) {
+        auto release = (uint32 (*)(void*))(*(void***)previous)[2];
+        release(previous);
+    }
     return kResultOk;
 }
 

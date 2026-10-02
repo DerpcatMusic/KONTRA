@@ -92,6 +92,12 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev \
             libgl1-mesa-dev libvulkan-dev mesa-vulkan-drivers \
             libasound2-dev libjack-jackd2-dev
+      - name: VST3 native shim editor lifecycle
+        run: |
+          for test in editor_attach editor_lifetime; do
+            g++ -std=c++17 -Wall -Wextra -Werror -pedantic "vendor/moose-vst3/tests/$test.cpp" -o "$RUNNER_TEMP/$test"
+            "$RUNNER_TEMP/$test"
+          done
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: linux-${{ env.CI_PROFILE }}-default
