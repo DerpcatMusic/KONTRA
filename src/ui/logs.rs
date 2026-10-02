@@ -1,5 +1,5 @@
 //! Global loader/runtime journal. Snapshot copies and report export stay off the UI thread.
-use super::{Cx, menu, theme::*};
+use super::{Cx, picker, theme::*};
 use crate::diagnostics::{self, DiagnosticSnapshot, ExportStatus, LogEvent, LogLevel};
 use crate::plugin::SamplerParams;
 use moose::mui::mui::prelude::*;
@@ -14,7 +14,9 @@ use std::sync::{
 const ROW: f64 = 36.;
 static WAKE: AtomicU64 = AtomicU64::new(0);
 
-/// A completed snapshot also wakes an idle plugin editor.
+/// Completed background UI operations also wake an idle plugin editor.
+pub(super) fn wake_worker() { WAKE.fetch_add(1, Ordering::Release); }
+
 pub fn wake() -> u64 {
     WAKE.load(Ordering::Acquire)
 }
@@ -55,6 +57,7 @@ pub struct State {
     export: Option<u64>,
     export_error: Option<String>,
     folder_error: Option<String>,
+    folder_picker: Arc<picker::Picker>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -87,6 +90,7 @@ impl Default for State {
             export: None,
             export_error: None,
             folder_error: None,
+            folder_picker: Arc::default(),
         }
     }
 }
@@ -108,6 +112,9 @@ impl State {
     }
 
     fn refresh(&mut self, params: &Arc<SamplerParams>) {
+        if let Some(picker::Picked::Revealed(result)) = self.folder_picker.take() {
+            self.folder_error = result.err();
+        }
         if self.copy_thread.is_some() {
             if let Some(answer) = super::lock(&self.copy_answer).take() {
                 let _ = self.copy_thread.take().unwrap().join();
@@ -342,7 +349,8 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         .or_else(diagnostics::log_path);
     if open {
         state.folder_error = match path.as_deref() {
-            Some(path) => menu::reveal(path).err(),
+            Some(path) => if state.folder_picker.ask(picker::Ask::Reveal(path.to_path_buf())) { None }
+                else { Some("Another folder operation is running. Retry when it finishes.".into()) },
             None => Some("No log folder is available yet. Refresh to retry.".into()),
         };
     }

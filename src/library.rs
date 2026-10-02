@@ -53,6 +53,8 @@ pub enum Cover {
 #[serde(default)]
 pub struct Settings {
     pub roots: Vec<Root>,
+    /// Display names chosen by the player, keyed by library folder.
+    pub names: BTreeMap<String, String>,
     /// Covers the player chose, by library folder.
     pub covers: BTreeMap<String, Cover>,
     /// The libraries Kontakt knows about were looked for, on the first run.
@@ -196,6 +198,11 @@ impl Folder {
     }
 }
 
+/// A library folder name without the vendor noise.
+pub fn label(name: &str) -> String {
+    name.replace("Performance Samples ", "").replace(" Library", "")
+}
+
 /// A sort key reading runs of digits as numbers: "2 Legato" before "10 Shorts".
 pub fn natural(text: &str) -> Vec<(u64, String)> {
     let mut out = Vec::new();
@@ -235,6 +242,23 @@ impl Settings {
         Some(s)
     }
 
+    /// Browser text only: resource and source identities keep `Library::name`.
+    pub fn library_name(&self, library: &Library) -> String {
+        if let Some(name) = self.names.get(library.dir.to_string_lossy().as_ref()).filter(|n| !n.trim().is_empty()) {
+            return name.clone();
+        }
+        let name = label(&library.name);
+        if !name.trim().is_empty() { return name; }
+        let folder = library.dir.file_name().unwrap_or(library.dir.as_os_str()).to_string_lossy();
+        if folder.trim().is_empty() { "Library".into() } else { folder.into_owned() }
+    }
+
+    pub fn rename_library(&mut self, dir: &str, name: &str) {
+        let name = name.trim();
+        if name.is_empty() { self.names.remove(dir); }
+        else { self.names.insert(dir.into(), name.into()); }
+    }
+
     /// `libraries` as the browser lists them: pinned ones first, then by the
     /// sort chosen. Libraries the custom order has not seen follow it, by name.
     pub fn arrange<'a>(&self, libraries: impl IntoIterator<Item = &'a Library>) -> Vec<&'a Library> {
@@ -249,7 +273,7 @@ impl Settings {
                 Sort::Recent => (u64::MAX - self.used.get(dir.as_ref()).map_or(0, |&t| t + 1), String::new()),
                 Sort::Vendor => (u64::from(l.vendor.is_empty()), l.vendor.to_lowercase()),
             };
-            (!self.pinned.iter().any(|p| Path::new(p) == l.dir), rank, vendor, l.name.to_lowercase())
+            (!self.pinned.iter().any(|p| Path::new(p) == l.dir), rank, vendor, self.library_name(l).to_lowercase())
         });
         out
     }
@@ -1223,6 +1247,25 @@ mod tests {
         assert_eq!(Settings { window_size: Some((0, 0)), ..Settings::default() }.editor_size(), (900, 600));
         drop(first); drop(second);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn library_names_are_display_only_and_survive_settings_roundtrip() {
+        let libraries = [
+            Library { dir: "/libs/Tubular Bell".into(), name: "Performance Samples  Library".into(), ..Default::default() },
+            Library { dir: "/libs/Zebra".into(), name: "Zebra".into(), ..Default::default() },
+        ];
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.library_name(&libraries[0]), "Tubular Bell");
+        settings.rename_library("/libs/Tubular Bell", "  Zzz Library  ");
+        assert_eq!(settings.library_name(&libraries[0]), "Zzz Library");
+        assert_eq!(settings.arrange(&libraries).iter().map(|l| l.dir.clone()).collect::<Vec<_>>(), [libraries[1].dir.clone(), libraries[0].dir.clone()]);
+        let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored, settings);
+        assert_eq!(libraries[0].name, "Performance Samples  Library");
+        settings.rename_library("/libs/Tubular Bell", " ");
+        assert!(settings.names.is_empty());
+        assert_eq!(settings.library_name(&libraries[0]), "Tubular Bell");
     }
 
     #[test]
