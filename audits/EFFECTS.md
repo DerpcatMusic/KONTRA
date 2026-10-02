@@ -167,6 +167,18 @@ guards, and checks the mismatched-rate fallback. Validation is pending. Automati
 crossovers, non-unit time stretching, decimated processing and other rate pairs
 retain explicit limitations. This does not establish Kontakt sonic equivalence.
 
+Convolution rebuild state now retains the native ER/LR Size pair. Reverse,
+Auto Gain and predelay changes preserve both ratios, and a changed ER or LR Size
+parameter updates only its own ratio and readback. The optional pair is serialized;
+older host records without it retain their previous uniform Size behavior. Their
+first new Size edit promotes the previous audible uniform pair before changing
+one band. Explicit authored uniform overrides remain available. Non-unit time
+stretching still uses the warned DSP approximation; accepting independent Size
+state does not establish independent native time-stretch processing. One authored
+callback and worker-restore gate checks untouched ratios, both separate Size edits,
+old-state promotion, dry gain, the current late-size proxy and allocation guards;
+validation is pending.
+
 Large accumulated peaks alone do not establish preset correctness or justify a limiter.
 
 ## DSP

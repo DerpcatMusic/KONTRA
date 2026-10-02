@@ -34,13 +34,25 @@ PY
 security create-keychain -p "$keychain_password" "$keychain"
 security set-keychain-settings -lut 21600 "$keychain"
 security unlock-keychain -p "$keychain_password" "$keychain"
-security import "$APPLICATION_P12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -t cert -f pkcs12 -T /usr/bin/codesign >/dev/null
+# Import may report a duplicate CA already carried inside a P12. Only that
+# exact error is safe; the application identity/chain is verified below.
+import_certificate() {
+  if ! security import "$@" > /dev/null 2> "$work/certificate-import.log"; then
+    error=$(cat "$work/certificate-import.log")
+    [ "$error" = 'security: SecKeychainItemImport: The specified item already exists in the keychain.' ] || {
+      printf '%s\n' "$error" >&2; exit 1;
+    }
+  fi
+}
+echo 'Importing the Developer ID signing identity'
+import_certificate "$APPLICATION_P12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -t cert -f pkcs12 -T /usr/bin/codesign
 # codesign needs the imported identity in its search list, and its chain
 # must include Apple's Developer ID intermediates on a fresh hosted runner.
 security list-keychains -d user -s "$keychain" "${original_keychains[@]}"
+echo 'Completing the Developer ID certificate chain'
 for certificate in DeveloperIDCA DeveloperIDG2CA; do
   curl --fail --silent --show-error "https://www.apple.com/certificateauthority/$certificate.cer" -o "$work/$certificate.cer"
-  security import "$work/$certificate.cer" -k "$keychain" -t cert >/dev/null
+  import_certificate "$work/$certificate.cer" -k "$keychain" -t cert
 done
 security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
 echo 'Validating the configured Developer ID identity and certificate chain'

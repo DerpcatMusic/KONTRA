@@ -118,6 +118,10 @@ with open(os.environ["NATIVE_CALLS"],"a") as calls: calls.write(name+" "+" ".joi
 if name=="security" and args[0]=="list-keychains":
     if "-s" in args: state.write_text(json.dumps(args[args.index("-s")+1:]))
     else: print("\n".join('"'+p+'"' for p in original))
+elif name=="security" and args[0]=="import" and ((args[1].endswith("DeveloperIDCA.cer") and os.environ["SIGNING_CASE"] in ("duplicate-ca", "bad-ca-import", "bad-chain")) or (args[1].endswith("application.p12") and os.environ["SIGNING_CASE"]=="duplicate-p12")):
+    print("security: SecKeychainItemImport: "+("The specified item already exists in the keychain." if os.environ["SIGNING_CASE"]!="bad-ca-import" else "Unknown import failure."),file=sys.stderr)
+    sys.exit(1)
+elif name=="security" and args[0]=="verify-cert" and os.environ["SIGNING_CASE"]=="bad-chain": sys.exit(1)
 elif name=="security" and args[0]=="find-certificate": print("synthetic-public-certificate")
 elif name=="curl": pathlib.Path(args[args.index("-o")+1]).write_bytes(b"synthetic-public-certificate")
 elif name=="codesign" and "--sign" in args:
@@ -128,7 +132,7 @@ elif name=="xcrun" and args[:2]==["notarytool","submit"]:
     print(json.dumps(dict(status="Invalid" if os.environ["SIGNING_CASE"]=="rejected" else "Accepted",id="12345678-1234-1234-1234-123456789abc")))
 elif name=="xcrun" and args[:2]==["stapler","validate"] and os.environ["SIGNING_CASE"]=="bad-ticket": sys.exit(1)
 '''
-for case in ("accepted", "rejected", "bad-ticket"):
+for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-chain", "rejected", "bad-ticket"):
     with tempfile.TemporaryDirectory(prefix="kontra-signing-check-") as directory:
         root=Path(directory); tools=root/"tools"; tools.mkdir(); script=tools/"mock";script.write_text(native_mock);script.chmod(0o755)
         for name in ("uuidgen","security","lipo","codesign","hdiutil","xcrun","spctl","curl"): tools.joinpath(name).symlink_to("mock")
@@ -140,12 +144,14 @@ for case in ("accepted", "rejected", "bad-ticket"):
         for secret in ("APPLE_CERTIFICATE_PASSWORD","APPLE_DEVELOPER_ID_APPLICATION","APPLE_ID","APPLE_APP_SPECIFIC_PASSWORD","APPLE_TEAM_ID"): env[secret]="synthetic-fixture"
         env["APPLE_APPLICATION_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-fixture").decode()+"\n"
         result=subprocess.run(["bash",str(signing)],env=env,capture_output=True,text=True)
-        assert result.returncode==(0 if case=="accepted" else 1),(case,result.stderr)
-        assert (stage/"notarization.json").exists()==(case=="accepted")
+        assert result.returncode==(0 if case in ("accepted", "duplicate-ca", "duplicate-p12") else 1),(case,result.stderr)
+        assert (stage/"notarization.json").exists()==(case in ("accepted", "duplicate-ca", "duplicate-p12"))
         calls=root.joinpath("calls").read_text()
         assert "security delete-keychain" in calls
         assert json.loads(root.joinpath("calls.keychains").read_text())==["/Users/test user/login.keychain-db", "/Library/Keychains/System.keychain"], "original keychains were not restored"
-        if case=="accepted":
+        if case in ("bad-ca-import", "bad-chain"):
+            assert "xcrun notarytool submit" not in calls
+        if case in ("accepted", "duplicate-ca", "duplicate-p12"):
             receipt=json.loads(stage.joinpath("notarization.json").read_text())
             assert receipt["status"]=="Accepted" and receipt["stapled"] and receipt["signatures_verified"]
             assert stage.joinpath("notarization.json").stat().st_mode & 0o777 == 0o600

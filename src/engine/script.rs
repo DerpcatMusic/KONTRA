@@ -768,13 +768,8 @@ impl KspEngine for ScriptSetup<'_> {
         if let Address::Fx(rack, slot, FxParam::Convolution(n)) = address {
             let mut settings = self.loads.iter().rev().find_map(|l| match l.load {
                 Load::Convolution(s) if (l.rack, l.slot) == (rack, slot) => Some(s), _ => None,
-            }).unwrap_or_else(|| {
-                let mut settings = crate::fx::params::IrSettings::DEFAULT;
-                for n in 0..5 {
-                    if let Some(value) = self.fx.param(rack, slot, FxParam::Convolution(n)) { settings.set(n, value); }
-                }
-                settings
-            });
+            }).unwrap_or_else(|| self.fx.ir_settings_with(&[]).into_iter()
+                .find(|s| (s.rack, s.slot) == (rack, slot)).map_or(crate::fx::params::IrSettings::DEFAULT, |s| s.settings));
             if !settings.set(n, v) { return false }
             self.loads.retain(|l| (l.rack, l.slot) != (rack, slot) || !matches!(l.load, Load::Convolution(_)));
             self.loads.push(ScriptIr { rack, slot, load: Load::Convolution(settings) });
