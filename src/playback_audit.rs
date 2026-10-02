@@ -90,7 +90,8 @@ fn snapshot(
     let notes: Vec<_> = census.iter().map(|v| json!({
         "channel":v.channel, "note":v.note, "group":v.group, "phase":format!("{:?}",v.phase),
         "event":v.event.0,"physical_channel":v.input_channel,"owner":v.owner,"held":v.held,
-        "released":v.released, "release_trigger":v.release_trigger, "level":v.gain * v.envelope,
+        "released":v.released, "release_trigger":v.release_trigger,
+        "gain":v.gain, "envelope":v.envelope, "level":v.gain * v.envelope,
     })).collect();
     json!({
         "phase":phase, "seconds":meter.frames as f64 / super::RATE,
