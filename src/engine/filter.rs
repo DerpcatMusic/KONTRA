@@ -1620,6 +1620,14 @@ mod tests {
             let (near, far) = if response == Response::Low { (4000.0, 8000.0) } else { (125.0, 62.5) };
             let slope = 20.0 * (proto.gain(near, RATE) / proto.gain(far, RATE)).log10();
             assert!((slope - 12.0).abs() < 2.0, "type {id}: {slope} dB/octave");
+            let mut s = Section::default();
+            for n in 0..200 {
+                let key = [(n % 20) as f32 / 19.0, (n % 11) as f32 / 10.0, 0.0];
+                s.coefficients(Proto::of(shape, key, 0, RATE));
+                let (mut left, mut right) = ([0.01; 64], [-0.01; 64]);
+                s.process(&mut left, &mut right);
+                assert!(left.iter().chain(&right).all(|v| v.is_finite() && v.abs() < 10.0));
+            }
         }
     }
 
