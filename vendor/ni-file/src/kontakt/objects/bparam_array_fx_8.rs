@@ -10,7 +10,7 @@ use super::BParFX;
 
 /// Type:           StructuredObject
 /// SerType:        0x3A
-/// Versions:       0x10, 0x11, 0x12
+/// Versions:       0x10, 0x11, 0x12, 0x13
 /// Kontakt 7:      BParameterArraySer<BParFX,8>
 /// KontaktIO:      BParamArray<8>
 #[doc = include_str!("../../../doc/presets/Kontakt/BParamArray.md")]
@@ -24,10 +24,16 @@ impl BParamArrayBParFX8 {
     pub fn read<R: ReadBytesExt>(mut reader: R, num_items: u32) -> Result<Self, Error> {
         let is_structured_data = reader.read_bool()?;
         let version = reader.read_u16_le()?;
-        if is_structured_data || !matches!(version, 0x10 | 0x12) {
+        if is_structured_data || !matches!(version, 0x10 | 0x12 | 0x13) {
             return Err(NIFileError::Generic(format!(
                 "Unsupported BParamArrayBParFX8 v{version:x} (structured: {is_structured_data})"
             )));
+        }
+        // v0x13 serializes the array length before the existing slot records.
+        if version == 0x13 && reader.read_u32_le()? != num_items {
+            return Err(NIFileError::Generic(
+                "BParamArray slot count differs from its array".into(),
+            ));
         }
         let mut items = Vec::with_capacity(num_items as usize);
         for _ in 0..num_items {

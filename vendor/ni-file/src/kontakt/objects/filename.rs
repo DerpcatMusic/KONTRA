@@ -106,6 +106,9 @@ impl BFileNameRecord {
 impl BFileName {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Vec<String>, Error> {
         let segments = reader.read_i32_le()?;
+        if segments < 0 {
+            return Err(Error::Static("Invalid filename segment count"));
+        }
         let mut filename = Vec::new();
         for _ in 0..segments {
             filename.push(BFileNameSegment::read(&mut reader)?);
