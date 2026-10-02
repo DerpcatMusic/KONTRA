@@ -3,7 +3,7 @@
 Human-reviewed changes belong here before release. Dates and stable release headings
 are added when a release is actually published; commit history is not a changelog.
 
-## 0.2.0 — unreleased
+## 0.3.0 — unreleased
 
 ### Added
 
