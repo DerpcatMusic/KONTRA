@@ -168,6 +168,8 @@ pub struct Event {
     recycle_pending: bool,
     /// Physical release callback retained for host Panic/reset state cleanup.
     cleanup: bool,
+    /// CC120 cut sound; retain its physical row until actual key-up/reset.
+    pub silenced: bool,
     /// MIDI key still down.
     pub held: bool,
     /// Next MIDI event on the same input channel/key, oldest first.
@@ -209,6 +211,7 @@ impl Event {
         callbacks: 0,
         recycle_pending: false,
         cleanup: false,
+        silenced: false,
         held: false,
         next_input: 0,
         fade_in_us: 0,
@@ -1453,7 +1456,8 @@ impl Runtime {
         false
     }
 
-    /// Cancel existing note/input callbacks without invoking release callbacks.
+    /// Cut existing note/input work, retaining physically held event rows.
+    /// CC120 stops sound; actual key-up still clears authored note state.
     /// UI, listener and service callbacks retain their prepared state and timers.
     pub fn all_sound_off(&mut self, channel_mask: u16) {
         self.cancel_sound(channel_mask, None, false);
@@ -1483,7 +1487,8 @@ impl Runtime {
                 let mut id = self.env.input.keys[owner][note].0;
                 let (mut first, mut last) = (0, 0);
                 while let Some(e) = self.env.events.get(id) {
-                    let (next, remove) = (e.next_input, selected(e.channel, e.input_channel));
+                    let (next, remove) = (e.next_input, selected(e.channel, e.input_channel)
+                        && (cleanup || e.source >= 0 || !e.held));
                     if !remove {
                         if first == 0 { first = id; }
                         if let Some(e) = self.env.events.get_mut(last) { e.next_input = id; }
@@ -1499,17 +1504,22 @@ impl Runtime {
             affected |= 1 << e.channel.min(15);
             // Already running cleanup survives a repeated Panic. Only notes
             // that reached a slot need a release; queued fresh attacks do not.
-            e.cleanup |= cleanup && e.source < 0 && (e.held || e.released != 0) && e.reached > 0;
+            e.cleanup |= e.source < 0 && e.reached > 0
+                && (cleanup && e.held || e.released != 0 && !e.held);
             self.env.cleaning |= e.cleanup;
-            e.held = false;
-            e.next_input = 0;
+            let keep_key = !cleanup && e.source < 0 && e.held;
+            if !keep_key {
+                e.held = false;
+                e.next_input = 0;
+            }
             e.voice = None;
-            e.recycle_pending = !e.cleanup || e.released & 1 != 0 && e.recycle_pending;
+            e.silenced = true;
+            e.recycle_pending = !keep_key && (!e.cleanup || e.released & 1 != 0 && e.recycle_pending);
         }
         let events = &self.env.events;
         self.env.work.retain(|w| match *w {
             Work::Note { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel)),
-            Work::Release { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel) || cleanup && e.cleanup),
+            Work::Release { event, .. } => events.get(event).is_some_and(|e| !selected(e.channel, e.input_channel) || e.cleanup),
             Work::Controller { channel, input_channel, .. } | Work::PolyAt { channel, input_channel, .. }
                 | Work::Rpn { channel, input_channel, .. } => !selected(channel, input_channel),
         });
@@ -1517,11 +1527,15 @@ impl Runtime {
             let t = &self.threads[i];
             let input = matches!(t.ctx.kind, Kind::Cb(Callback::Controller | Callback::PolyAt | Callback::Rpn | Callback::Nrpn));
             if !t.live { continue; }
-            if cleanup && t.ctx.kind == Kind::Cb(Callback::Release)
+            if t.ctx.kind == Kind::Cb(Callback::Release)
                 && self.env.events.get(t.ctx.event).is_some_and(|e| e.cleanup) {
                 let t = &mut self.threads[i];
                 t.ctx.cleanup = true;
                 t.ctx.ignore_wait = true;
+                if std::mem::take(&mut t.ctx.release_blocked) {
+                    t.ctx.forward = Forward::Release;
+                    if let Some(e) = self.env.events.get_mut(t.ctx.event) { e.recycle_pending = false; }
+                }
                 if t.waiting {
                     t.waiting = false;
                     t.generation = t.generation.wrapping_add(1);
@@ -1553,11 +1567,11 @@ impl Runtime {
         for i in 0..self.env.events.slots.len() {
             let e = &self.env.events.slots[i];
             if e.live && selected(e.channel, e.input_channel) {
-                debug_assert!(e.callbacks == 0 || cleanup && e.cleanup);
+                debug_assert!(e.callbacks == 0 || e.cleanup);
                 let id = i32::from(e.generation) << EVENT_INDEX_BITS | i as i32;
-                if cleanup && e.cleanup {
+                if e.cleanup {
                     if e.released & 1 == 0 { self.env.queue(Work::Release { event: id, slot: 0 }); }
-                } else {
+                } else if e.source >= 0 || !e.held {
                     self.env.events.free(id);
                 }
             }
@@ -1779,7 +1793,7 @@ impl Runtime {
     pub fn process(&mut self, engine: &mut dyn KspEngine, frames: u32) {
         let end = self.env.now + u64::from(frames);
         // What the last settle left for later (see `settle`).
-        if self.env.pgs_changed || !self.env.async_done.is_empty() {
+        if self.env.cleaning || self.env.pgs_changed || !self.env.async_done.is_empty() {
             self.settle(engine);
         }
         self.run_timers(engine, end);
@@ -2016,6 +2030,10 @@ impl Runtime {
                 let Some(e) = self.env.events.get_mut(event) else {
                     return;
                 };
+                if e.live && e.silenced && e.source < 0 && !e.held {
+                    e.cleanup = true;
+                    self.env.cleaning = true;
+                }
                 if e.frozen_expression.is_none() {
                     e.frozen_expression = engine.release_expression(self.env.offset, e.voice, e.channel, e.note.clamp(0, 127) as u8);
                 }
@@ -2053,7 +2071,7 @@ impl Runtime {
                         ctx.input_channel = self.env.events.get(event).and_then(|e| e.input_channel);
                         ctx.poly_row = Event::index(event) as u32;
                         ctx.forward = Forward::Release;
-                        ctx.cleanup = self.env.events.get(event).is_some_and(|e| e.cleanup);
+                        ctx.cleanup = self.env.events.get(event).is_some_and(|e| e.cleanup || e.silenced);
                         ctx.ignore_wait = ctx.cleanup;
                         self.spawn_cb(engine, slot, Callback::Release, ctx);
                     }
@@ -2328,6 +2346,10 @@ impl Runtime {
     /// First yield of a callback: pass its event on unless the script ignored it.
     fn yielded(&mut self, i: u16) {
         let ctx = self.threads[i as usize].ctx;
+        if ctx.forward == Forward::Release && !ctx.cleanup
+            && self.env.events.get(ctx.event).is_some_and(|e| e.release_ignored) {
+            self.threads[i as usize].ctx.release_blocked = true;
+        }
         self.threads[i as usize].ctx.forward = Forward::None;
         self.forward(ctx);
     }

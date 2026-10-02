@@ -79,6 +79,8 @@ pub struct Ctx {
     pub ignore_wait: bool,
     /// Host Panic/reset cleanup writes script state while suppressing new notes.
     pub cleanup: bool,
+    /// A musical ignore_event suppressed release forwarding at an earlier wait.
+    pub release_blocked: bool,
     pub forward: Forward,
 }
 
@@ -102,6 +104,7 @@ impl Ctx {
             ignore_controller: false,
             ignore_wait: false,
             cleanup: false,
+            release_blocked: false,
             forward: Forward::None,
         }
     }

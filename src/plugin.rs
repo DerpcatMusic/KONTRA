@@ -3719,6 +3719,34 @@ mod tests {
     }
 
     #[test]
+    fn sound_off_preserves_later_note_cleanup_without_audio_allocations() {
+        let source = "on init\ndeclare $held\ndeclare $released\nmake_persistent($held)\nmake_persistent($released)\nend on\non note\ninc($held)\nend on\non release\nwait(1000000)\ndec($held)\ninc($released)\nplay_note(72,100,0,0)\nend on";
+        let mut init = crate::ksp::LogEngine::default();
+        let (rt, errors) = Runtime::with_scripts(&[source], &mut init, 0, Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        let mut engine = Engine::default();
+        engine.set_script(Some(Box::new(rt)));
+        let mut left = [0f32;64];
+        let mut right = [0f32;64];
+        assert_eq!(allocations(|| {
+            engine.note_on(0,60,100);
+            engine.cc(0,120,0);
+            engine.note_off(0,60);
+            engine.render(&mut left,&mut right);
+            engine.note_on(0,60,100);
+            engine.cc(0,120,0);
+            engine.panic();
+            engine.render(&mut left,&mut right);
+        }),0);
+        let rt = engine.script().unwrap();
+        assert_eq!(rt.persistence()[0]["$held"],crate::ksp::Value::Int(0));
+        assert_eq!(rt.persistence()[0]["$released"],crate::ksp::Value::Int(2));
+        assert_eq!(rt.env.events.live_count(),0);
+        assert_eq!(engine.pending_work(),[0,0,0]);
+        assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+    }
+
+    #[test]
     fn panic_and_host_reset_release_script_buffers_without_audio_allocations() {
         let source = "on init\ndeclare $held\ndeclare $released\ndeclare ui_switch $setting\nmake_persistent($held)\nmake_persistent($released)\nend on\non note\ninc($held)\nend on\non release\nwait(1000000)\ndec($held)\ninc($released)\nplay_note(72,100,0,0)\nend on";
         let mut init = crate::ksp::LogEngine::default();

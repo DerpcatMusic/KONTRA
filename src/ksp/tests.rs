@@ -1110,7 +1110,7 @@ end on"#]);
     rig.rt.controller(&mut rig.engine, 0, 1, 90);
     rig.engine.calls.clear();
     rig.rt.all_sound_off(1 << 2);
-    assert!(!rig.rt.key_down_from(5, 2, 60));
+    assert!(rig.rt.key_down_from(5, 2, 60), "sound-off retains held physical roots");
     assert!(rig.rt.key_down_from(5, 7, 60));
     assert!(rig.engine.calls.is_empty(), "cancellation must not forward or release events");
     rig.block(1024);
@@ -1131,7 +1131,7 @@ end on"#]);
     rig.engine.calls.clear();
     rig.rt.all_sound_off(u16::MAX);
     rig.rt.reset_controllers(None);
-    assert_eq!(rig.rt.env.events.live_count(), 0, "canceled callback rows must be reusable");
+    assert_eq!(rig.rt.env.events.live_count(), 3, "physical rows survive sound-off until actual key-up");
     assert_eq!(rig.rt.env.input.cc[64], 0);
     assert_eq!(rig.rt.env.input.cc[11], 127);
     assert_eq!(rig.rt.env.input.cc[7], 63, "Panic must preserve channel volume");
@@ -1149,6 +1149,8 @@ end on"#]);
     rig.on(0, 60).block(1024);
     assert!(rig.engine.calls.iter().any(|c| matches!(c, EngineCall::PlayNote { channel: 2, note: 72, .. })));
     rig.rt.all_sound_off(u16::MAX);
+    assert_eq!(rig.rt.env.events.live_count(), 4);
+    rig.rt.cleanup_notes(&mut rig.engine);
     assert_eq!(rig.rt.env.events.live_count(), 0);
     assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
 }
@@ -2045,6 +2047,66 @@ fn panic_cleanup_recycles_ignored_releases_and_notifies_remaining_slots() {
     let mut rig = Rig::new(&[first,last]);
     rig.on(0,60);
     rig.rt.cleanup_notes(&mut rig.engine);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"first cleaned");
+    assert_eq!(prop(&rig.rt.interface(1),0,"$CONTROL_PAR_TEXT"),"last cleaned");
+    assert_eq!(rig.rt.env.events.live_count(),0);
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn sound_off_keeps_physical_rows_and_suppresses_cleanup_retriggering() {
+    let source = r#"on init
+ declare %held[16]
+ declare %ids[16]
+ make_persistent(%held)
+ declare ui_label $info(1,1)
+end on
+on note
+ %ids[$MIDI_CHANNEL] := $EVENT_ID
+ inc(%held[$MIDI_CHANNEL])
+end on
+on release
+ wait(1000000)
+ dec(%held[$MIDI_CHANNEL])
+ play_note(72,100,0,0)
+ set_text($info,"released:" & $MIDI_CHANNEL & ":" & %KEY_DOWN[60])
+end on
+on controller
+ message(event_status(%ids[$MIDI_CHANNEL]) & ":" & %KEY_DOWN[60])
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    rig.rt.set_midi_channel(2);
+    rig.on(0,60);
+    rig.rt.set_midi_channel(7);
+    rig.on(0,60);
+    rig.engine.calls.clear();
+    rig.rt.all_sound_off(1<<2);
+    assert_eq!(rig.rt.env.events.live_count(),2,"held physical rows remain addressable");
+    assert!(rig.rt.key_down_from(2,2,60));
+    assert!(rig.rt.key_down_from(7,7,60));
+    rig.rt.set_midi_channel(2);
+    rig.rt.controller(&mut rig.engine,0,20,1);
+    assert_eq!(rig.rt.last_message(),"0:1","silenced event is inactive while its physical key is down");
+    rig.off(0,60);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"released:2:1");
+    assert!(!rig.rt.key_down_from(2,2,60));
+    assert!(rig.rt.key_down_from(7,7,60));
+    assert!(!rig.engine.calls.iter().any(|c|matches!(c,EngineCall::PlayNote{..})),"stopped release only updates script state");
+    rig.rt.set_midi_channel(7);
+    rig.off(0,60).block(96000);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"released:7:0");
+    assert!(rig.engine.calls.iter().any(|c|matches!(c,EngineCall::PlayNote{channel:7,note:72,..})),"unrelated releases retain musical timing and generated notes");
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn a_waiting_ignored_release_finishes_state_cleanup_after_sound_off() {
+    let first = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nignore_event($EVENT_ID)\nwait(1000000)\nset_text($info,\"first cleaned\")\nend on";
+    let last = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nset_text($info,\"last cleaned\")\nend on";
+    let mut rig = Rig::new(&[first,last]);
+    rig.on(0,60).off(0,60);
+    rig.rt.all_sound_off(u16::MAX);
+    rig.block(64);
     assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"first cleaned");
     assert_eq!(prop(&rig.rt.interface(1),0,"$CONTROL_PAR_TEXT"),"last cleaned");
     assert_eq!(rig.rt.env.events.live_count(),0);

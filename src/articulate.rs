@@ -763,9 +763,11 @@ impl Router {
             }
             In::Cc(_, cc @ (120 | 123), value) => {
                 let channels = self.stop_channels(channel);
-                for owner in (0..16).filter(|owner| channels & (1 << owner) != 0) {
+                // Sound-off retains physical routing until key-up; a remap
+                // made meanwhile must not change where its release goes.
+                for owner in (0..16).filter(|owner| cc == 123 && channels & (1 << owner) != 0) {
                     let row = std::mem::replace(&mut self.held[owner], [(NONE, NONE); 128]);
-                    if cc == 123 && r.by_channel() {
+                    if r.by_channel() {
                         // Shared scripts still release only this physical input.
                         for (to, key) in row {
                             if key != NONE { out(Out::NoteOffFrom(to, owner as u8, key)); }
@@ -1004,6 +1006,20 @@ mod tests {
         let mut r = Router::default();
         r.set_route(Route::new("lib.nki", a, mpe));
         r
+    }
+
+    #[test]
+    fn sound_off_keeps_the_original_noteoff_route_after_a_remap() {
+        let mut r = Router::default();
+        let mut before = Route::default();
+        before.keys[60] = 62;
+        r.set_route(before);
+        assert_eq!(run(&mut r,&[In::NoteOn(0,60,100)]),[Out::NoteOn(0,62,100)]);
+        assert_eq!(run(&mut r,&[In::Cc(0,120,0)]),[Out::Cc(0,120,0)]);
+        let mut after = Route::default();
+        after.keys[60] = 65;
+        r.set_route(after);
+        assert_eq!(run(&mut r,&[In::NoteOff(0,60)]),[Out::NoteOff(0,62)]);
     }
 
     #[test]
@@ -1306,8 +1322,8 @@ end on"#;
         }
         assert_eq!(e.voice_census().iter().filter(|v| v.note == 74).count(), 4, "UI callback has no physical origin");
         assert_eq!(e.cc_state()[0][7], 63);
-        assert!(r.held[0].iter().all(|h| h.1 == NONE));
-        assert!(!e.script().unwrap().key_down_from(0, 0, 60));
+        assert_eq!(r.held[0][60], (0,60), "sound-off keeps the physical release route");
+        assert!(e.script().unwrap().key_down_from(0, 0, 60));
         assert!(e.script().unwrap().key_down_from(1, 0, 60));
         e.cc(0, 64, 0);
         advance(&mut e, 512);
