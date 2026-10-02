@@ -177,7 +177,7 @@ pub(crate) fn validate_root(node: &Node, assets: &crate::native_assets::Assets) 
     static FONT: std::sync::OnceLock<Font> = std::sync::OnceLock::new();
     let font = FONT.get_or_init(|| Font::new(&include_bytes!("../../assets/NotoSans.ttf")[..]).expect("embedded native fallback font"));
     let spec = moose::mui::mui::scene::SceneSpec::new(scene_tree(node, assets))
-        .offered(Size::new(4096.,4096.)).font(font.clone());
+        .font(font.clone());
     let scene = moose::mui::mui::scene::resolve(&spec).map_err(|error|anyhow::anyhow!("Native UI root layout: {error}"))?;
     let size = scene.layout.size;
     anyhow::ensure!(size.width.is_finite() && size.height.is_finite() && size.width>0. && size.height>0. && size.width<=4096. && size.height<=4096.,"Native UI measured root exceeds positive 4096px bounds: {}×{}",size.width,size.height);
