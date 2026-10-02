@@ -905,7 +905,7 @@
       "source_commits": [
         "d3d7373f354787761d7d54939728469d012e8a81"
       ],
-      "validation": "Four exact gates pass on frozen 6bf086e: independent scalar branch-boundary values, linear Output, ordered group processing, live address identity and zero audio heap. Existing LoFi max-rate law remains unchanged. Actual Contradiction selected group37 is active Classic Mode0 Shape1; corrected matched capture is pending. Enhanced/Drums remain explicitly diagnosed approximations.",
+      "validation": "Four exact gates pass on frozen 6bf086e: independent scalar branch-boundary values, linear Output, ordered group processing, live address identity and zero audio heap. Existing LoFi max-rate law remains unchanged. Matched actual root 1e79e3d Contradiction capture gains 17.783694 dB RMS (peak 0.041667636 to 0.320852458) with identical onset, events, controls, native edits, full physical/virtual cursor census and loop bounds; bypassed Catastrophic PCM and census stay byte-identical to 0.3.92/0.3.95. All 242 journal rows and 216 warnings retained with zero faults, drops or underruns. All 89 playback regressions pass; both 64-second endpoints reach zero voices. Actual capture does not establish zero audio heap or sonic parity. Enhanced/Drums remain explicitly diagnosed approximations.",
       "accepted": true
     }
   ]
