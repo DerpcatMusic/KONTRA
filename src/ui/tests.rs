@@ -2942,4 +2942,30 @@ fn rack_growth_preserves_restored_slots_and_same_frame_duplicate() {
     assert!(lock(&p.shared.view).parts.len() >= 130);
     h.idle(3);
     assert!(h.ui.scene().unwrap().surface("header-129").is_some(), "the duplicated part is revealed");
+    let bounded = |h: &Harness, count: usize| {
+        let scene = h.ui.scene().unwrap();
+        let viewport = scene.surface("rack-view").unwrap().frame;
+        let headers = (0..count).filter(|n| scene.surface(&format!("header-{n}")).is_some()).count();
+        assert!(headers <= (viewport.size.height / rack::SLIM).ceil() as usize + 4,
+            "header subtrees follow the viewport, not {count} stored parts: {headers}, {viewport:?}");
+        assert!(scene.surface("rack-content").unwrap().frame.size.height >= count as f64 * rack::SLIM,
+            "offscreen rows retain their scroll extent");
+    };
+    bounded(&h, 130);
+    // Put the selected source at the far end, then exercise the real keyboard
+    // append/reveal path there. A virtual row has no old surface to scroll to.
+    write(&p.selection).order.rotate_left(2);
+    h.idle(2);
+    h.tick(Input {
+        keys: vec![KeyPress { key: Key::Char('d'), mods: Mods { ctrl: true, ..Default::default() } }],
+        ..Default::default()
+    });
+    assert_eq!(read(&p.selection).parts.len(), 131);
+    h.idle(60); // Allow the ordinary rack scroll spring to finish.
+    let scene = h.ui.scene().unwrap();
+    let viewport = scene.surface("rack-view").unwrap().frame;
+    let header = scene.surface("header-130").expect("the appended virtual row is revealed").frame;
+    assert!(header.y < viewport.y + viewport.size.height && header.y + header.size.height > viewport.y,
+        "revealed header intersects the viewport: {header:?}, {viewport:?}");
+    bounded(&h, 131);
 }
