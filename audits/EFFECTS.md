@@ -415,3 +415,28 @@ split-0 reference completed 4500 resident Engine::render calls without allocatio
 all PCM was finite and peaks stayed below 1. The reference changes only authored
 routing metadata in the same engine and is not Kontakt audio. These are functional
 checks; they do not establish throughput or Kontakt algorithm equivalence.
+
+### Native group Send Levels taps (validation pending)
+
+The [NI effect reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/effect-reference)
+defines Send Levels as a tap within the group insert chain. Decoded eight-send levels
+now compile into the same native slot sequence as filters and dynamics, with known
+Amplifier placement required. Each tap feeds the existing instrument send return
+buffers at that position; its output gain scales only those feeds, leaving the dry
+chain unchanged. Native send-level, output-gain and bypass controls use the existing
+instrument-tap laws. Active taps use individual voice processing. A pre-Amplifier
+tap continues to receive its source when Amplifier gain is zero.
+
+The worker retains otherwise unfed return DSP when groups contain supported taps.
+Return inputs clear once before the block's voice segments, accumulate all group
+and instrument taps, and then run the existing send DSP and main rack. Summed group
+feeds also wake return tails when the instrument's dry input is silent. The tap has
+40 bytes of shared worker metadata and no additional per-voice DSP state or buffers.
+Bus taps remain unsupported, as do non-neutral values in the undecoded 17-entry
+output-routing table; these cases retain explicit diagnostics.
+
+One authored regression covers independent sparse send slots, taps before and after
+the Amplifier, unchanged dry gain, native edits/readback, segment offsets, delayed IR
+tails across blocks, a silent Amplifier through the real voice planner, and allocation
+guards. Its release-build validation is pending. This does not establish Kontakt
+sonic equivalence or resolve undecoded convolution Auto Gain, envelopes or flags.
