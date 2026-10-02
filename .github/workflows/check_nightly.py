@@ -9,6 +9,46 @@ import subprocess
 import tempfile
 import textwrap
 import zipfile
+import base64
+from release_notes import generate, render
+
+# A release needs reviewed deltas and full shipped context even without Git history.
+previous_notes = '## 0.3.0 — unreleased\n### Added\n- Existing wrapped\n  feature.\n### Fixed\n- Old fix.\n'
+current_notes = previous_notes.replace('Existing wrapped\n  feature.', 'Existing wrapped feature.') + '\n- New fix.\n### Changed\n- New behavior.\n### Known limits\n- Runtime limitation remains.\n'
+commit = dict(sha='a'*40, commit=dict(message='fix: complete title\n\nExact explanation.'))
+followup = dict(sha='d'*40, commit=dict(message='test: retain complete validation context'))
+merged = dict(number=13, title='Reviewed batch', html_url='https://example/13', body='All reviewed details.', merged_at='2026-10-02', merge_commit_sha='a'*40)
+previous = dict(target_commitish='b'*40)
+def notes_api(path, *args):
+    if path.startswith('contents/'): return dict(content=base64.b64encode(previous_notes.encode()).decode())
+    if path.startswith('compare/'): return [dict(status='ahead', total_commits=2, commits=[commit]), dict(commits=[followup])]
+    if '/pulls?' in path: return [[merged, dict(merged, number=14, merged_at=None), dict(merged, number=15, merge_commit_sha='c'*40)]]
+    return commit
+notes = generate(notes_api, 'example/KONTRA', 'a'*40, '0.3.1-nightly.test', previous, current_notes)
+assert 'New fix.' in notes and 'New behavior.' in notes and 'Runtime limitation remains.' in notes
+assert '- Existing wrapped feature.' not in notes and '- Old fix.' not in notes
+assert 'Exact explanation.' in notes and 'All reviewed details.' in notes and 'Complete public comparison' in notes
+assert notes.count('#### [Reviewed batch]') == 1
+assert 'test: retain complete validation context' in notes
+bootstrap = generate(notes_api, 'example/KONTRA', 'a'*40, '0.3.1-nightly.test', None, current_notes)
+assert 'First published snapshot' in bootstrap and 'Existing wrapped feature.' in bootstrap
+def missing_old_notes(path, *args):
+    if path.startswith('contents/'):
+        raise subprocess.CalledProcessError(1, ['gh'], stderr=b'gh: Not Found (HTTP 404)')
+    return notes_api(path, *args)
+assert 'previous source has no changelog' in generate(missing_old_notes, 'example/KONTRA', 'a'*40, '0.3.1-nightly.test', previous, current_notes)
+try:
+    render('example/KONTRA', 'a'*40, '0.3.1', 'a'*40, '', '', None, [commit], [])
+except AssertionError:
+    pass
+else:
+    raise AssertionError('Empty reviewed notes accepted')
+try:
+    render('example/KONTRA', 'a'*40, '0.3.1', 'a'*40, '## 0.3.1 — date\nWrong checkpoint', '', None, [commit], [])
+except AssertionError:
+    pass
+else:
+    raise AssertionError('Wrong frozen checkpoint accepted')
 
 workflow = Path(__file__).with_name("nightly.yml").read_text()
 publish_step, cleanup_step = workflow.split("      - name: Publish the experimental nightly\n", 1)[1].split("      - name: Remove released Actions artifacts\n", 1)
@@ -58,7 +98,7 @@ for case in ("valid", "missing", "duplicate"):
                 assert info["KONTRAVersion"] == version and info["CFBundleIdentifier"] == "preserved"
 
 mock_gh = r'''#!/usr/bin/env python3
-import hashlib,json,os,sys
+import base64,hashlib,json,os,sys
 from pathlib import Path
 p=Path("state.json"); s=json.loads(p.read_text()); a=sys.argv[1:]; s["calls"].append(a)
 out=""; status=0
@@ -68,6 +108,10 @@ def save(): p.write_text(json.dumps(s))
 if a[0]=="api":
     path=next(v for v in a if v.startswith("repos/example/KONTRA/")).split("repos/example/KONTRA/",1)[1]
     if path=="releases": out=json.dumps([s["releases"]])
+    elif path.startswith("contents/CHANGELOG.md?"): out=json.dumps({"content":base64.b64encode("## Previous — unreleased\n### Added\n- Previous feature.\n".encode()).decode()})
+    elif path.startswith("compare/"): out=json.dumps([{"status":"ahead","total_commits":1,"commits":[{"sha":sha,"commit":{"message":"fix: reviewed snapshot\n\nComplete shipped detail."}}]}])
+    elif path.startswith("commits/") and "/pulls?" in path: out="[[]]"
+    elif path.startswith("commits/"): out=json.dumps({"sha":sha,"commit":{"message":"fix: reviewed snapshot\n\nComplete shipped detail."}})
     elif path=="releases/latest": out=json.dumps(next(r for r in s["releases"] if r["id"]==s["latest"]))
     elif path=="git/ref/heads/main":
         s["heads"]+=1
@@ -139,6 +183,7 @@ for case in cases:
         root=Path(directory); root.joinpath("gh").write_text(mock_gh); root.joinpath("gh").chmod(0o755); root.joinpath("dist").mkdir()
         version="0.2.0-nightly.20261002.gaaaaaaaaaaaa"
         root.joinpath("Cargo.toml").write_text('[package]\nversion="'+version+'"\n')
+        root.joinpath("CHANGELOG.md").write_text('## Current — unreleased\n### Added\n- Reviewed source feature.\n### Fixed\n- Reviewed defect corrected.\n### Known limits\n- Hosted compilation does not prove DAW compatibility.\n')
         for platform in platforms:
             if case=="missing-asset" and platform==platforms[-1]: continue
             with zipfile.ZipFile(root/f"dist/KONTRA-nightly-{platform}.zip","w") as z:
@@ -249,4 +294,4 @@ for case in cases:
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
-print("Nightly checks passed: format selection/plist checks, 11 retention/rerun/upload/checksum/cleanup scenarios and four stable README links.")
+print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 11 retention/rerun/upload/checksum/cleanup scenarios and four stable README links.")
