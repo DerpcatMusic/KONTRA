@@ -1578,6 +1578,8 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
             let valid = pending.is_none()
                 && params.shared.generation[request.slot].load(Ordering::Acquire) == request.generation;
             let Some(part) = selection.parts.get_mut(request.slot).filter(|p| valid && p.matches_source(&request.source)) else {
+                drop(pending);
+                drop(selection);
                 trace.detail("cancellation", "Source changed or a newer snapshot was requested before commit");
                 trace.finish("canceled");
                 return None;
@@ -1603,11 +1605,11 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
                 return None;
             }
             let message = format!("{error:#}");
-            let mut view = params.shared.view.lock().unwrap();
             // Linearize rejection against source changes and newer requests.
             // LoadTrace only enqueues its journal record; it does no file IO.
             trace.fail(&message);
             let report = trace.finish("failed");
+            let mut view = params.shared.view.lock().unwrap();
             view.parts[request.slot].status = format!("Snapshot was not loaded: {message}");
             view.parts[request.slot].load_report = Some(report);
             None
