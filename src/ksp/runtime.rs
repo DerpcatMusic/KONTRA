@@ -1619,7 +1619,7 @@ impl Runtime {
         });
         for i in 0..self.threads.len() {
             let t = &self.threads[i];
-            if !t.live || !(t.ctx.kind == Kind::Cb(Callback::Controller) && selected(t.ctx.channel, t.ctx.cc)
+            if !t.live || !(t.ctx.kind == Kind::Cb(Callback::Controller) && selected(t.ctx.channel, t.ctx.cc as u8)
                 || t.ctx.kind == Kind::Cb(Callback::PolyAt) && selected(t.ctx.channel, 129)) { continue; }
             self.threads[i].ctx.forward = Forward::None;
             self.finish(i as u16);
