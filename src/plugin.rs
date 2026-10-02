@@ -440,7 +440,7 @@ pub struct Shared {
     live_requests: ArrayQueue<(usize, u64, Box<Live>)>,
     lives: ArrayQueue<(usize, u64, Box<Live>)>,
     /// One non-audio publisher; the timestamp distinguishes editor frames from loader polling.
-    live_publish: Mutex<Option<Instant>>,
+    live_publish: Mutex<(Option<Instant>, usize)>,
     #[cfg(test)]
     load_gate: Mutex<Option<(usize, Arc<std::sync::Barrier>)>>,
     #[cfg(test)]
@@ -680,7 +680,7 @@ impl Default for Shared {
             snapshots: ArrayQueue::new(2 * RACK_SLOTS),
             live_requests: ArrayQueue::new(2 * RACK_SLOTS),
             lives: ArrayQueue::new(2 * RACK_SLOTS),
-            live_publish: Mutex::new(None),
+            live_publish: Mutex::new((None, 0)),
             #[cfg(test)]
             load_gate: Mutex::new(None),
             #[cfg(test)]
@@ -1175,13 +1175,13 @@ impl Shared {
         let Ok(mut owner) = self.live_publish.try_lock() else { return };
         let now = Instant::now();
         if editor {
-            *owner = Some(now);
+            owner.0 = Some(now);
             self.view.lock().unwrap().watched_at = Some(now);
         } else {
             if self.watched.swap(false, Ordering::Relaxed) {
                 self.view.lock().unwrap().watched_at = Some(now);
             }
-            if owner.is_some_and(|at| at.elapsed() < LIVE_WATCH) { return; }
+            if owner.0.is_some_and(|at| at.elapsed() < LIVE_WATCH) { return; }
         }
         // One completed interface per editor frame. Prepare changed rows off
         // the view lock; keep retained reader snapshots immutable. Unseen
@@ -1278,14 +1278,24 @@ impl Shared {
         }
         let mut view = self.view.lock().unwrap();
         let shown = view.watched_at.is_some_and(|at| at.elapsed() < LIVE_WATCH);
-        for (slot, v) in view.parts.iter_mut().enumerate().take(self.grown.load(Ordering::Acquire) as usize) {
+        let count = view.parts.len().min(self.grown.load(Ordering::Acquire) as usize);
+        if count == 0 { return }
+        let start = owner.1 % count;
+        for step in 0..count {
+            let slot = (start + step) % count;
+            owner.1 = (slot + 1) % count;
+            let v = &mut view.parts[slot];
             if (shown || v.diagnostics_lent.is_none_or(|at| at.elapsed().as_secs() >= 1))
                 && let Some(mut live) = v.live.take()
             {
                 live.refresh_interface = shown;
                 match self.live_requests.push((slot, v.script_epoch, live)) {
                     Ok(()) => v.diagnostics_lent = Some(now),
-                    Err((_, _, live)) => v.live = Some(live),
+                    Err((_, _, live)) => {
+                        v.live = Some(live);
+                        owner.1 = slot;
+                        break;
+                    }
                 }
             }
         }
@@ -6728,6 +6738,30 @@ end on"
         let pending = p.shared.pending_ready.lock().unwrap();
         assert_eq!(pending.len(), 1, "stale large banks retire on the worker instead of accumulating");
         assert_eq!((pending[0].0, pending[0].1), (128, 3));
+    }
+
+    #[test]
+    fn bounded_live_queue_refreshes_every_large_rack_part_under_continuous_recycling() {
+        let p = SamplerParams::new();
+        p.shared.ensure_parts(129);
+        p.shared.grown.store(129, Ordering::Release);
+        let (rt, errors) = Runtime::with_scripts(&["on init\nmake_perfview\nend on"], &mut crate::ksp::LogEngine::default(), 0, Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        for v in &mut p.shared.view.lock().unwrap().parts {
+            v.script_epoch = 1;
+            v.live = Some(Box::new(rt.live()));
+        }
+        p.shared.publish_live(true);
+        let mut seen = vec![false; 129];
+        for _ in 0..129 {
+            let (slot, _, live) = p.shared.live_requests.pop().unwrap();
+            seen[slot] = true;
+            // A low-numbered part may finish every frame. It must not take
+            // every newly free queue position ahead of higher-numbered parts.
+            p.shared.view.lock().unwrap().parts[slot].live = Some(live);
+            p.shared.publish_live(true);
+        }
+        assert!(seen.iter().all(|visited| *visited));
     }
 
     #[test]
