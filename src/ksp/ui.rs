@@ -329,7 +329,7 @@ impl Ui {
                             // Runtime::live reserved this inactive scalar slot
                             // off-thread. Replacing its storage-free marker
                             // preserves authored absence until the first setter.
-                            (Prop::Int(n), Some(d)) if matches!(d, Value::IntArray(v) if v.is_empty() && v.capacity() == 0) => {
+                            (Prop::Int(n), Some(d)) if matches!(&*d, Value::IntArray(v) if v.is_empty() && v.capacity() == 0) => {
                                 *d = Value::Int(*n);
                                 true
                             }
