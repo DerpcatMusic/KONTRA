@@ -415,11 +415,6 @@ impl Scene {
             Value::Table(t) => t,
             _ => bail!("Native UI root must return a scene or component function"),
         };
-        let resources = {
-            let mut m = modules.lock().unwrap();
-            m.sealed = true;
-            std::mem::take(&mut m.used)
-        };
         let mut scene = Self {
             lua,
             root,
@@ -435,9 +430,16 @@ impl Scene {
             raster_pending: Arc::new(AtomicBool::new(false)),
             identity,
             target_version,
-            resources,
+            resources: Vec::new(),
         };
+        // Authored component bodies expand lazily within their context. Their
+        // first require calls still belong to this off-thread preparation.
         let root = scene.snapshot_raw().context("Native UI scene validation")?;
+        scene.resources = {
+            let mut m = modules.lock().unwrap();
+            m.sealed = true;
+            std::mem::take(&mut m.used)
+        };
         let names = root.asset_names();
         ensure!(names.len() <= 256, "Native UI asset count exceeds 256");
         scene.assets = Arc::new(crate::native_assets::Assets::prepare_bounded(

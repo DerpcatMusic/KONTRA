@@ -4882,6 +4882,39 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_prepares_lazy_body_modules_and_seals_uncached_editor_imports() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-late-module-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(resources.join("data")).unwrap();
+        std::fs::write(resources.join("data/body.nui"),"return {text='prepared'}").unwrap();
+        std::fs::write(resources.join("data/editor_only.nui"),"error('editor must never read or execute this file')").unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local mode=require('kontakt').connect_parameter('Mode')
+            local function Body()
+                local data=require('data.body')
+                return @ui.Text {text=ui.create_computed(function()
+                    if mode:value()==1 then return require('data.editor_only').text end
+                    return data.text
+                end)}.frame(width=80,height=20)
+            end
+            return @Body{}
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_switch $Mode\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        assert_eq!(scene.resources.iter().map(|(name,_)|name.as_str()).collect::<Vec<_>>(),["main.nui","data/body.nui"],"lazy imports retain their exact resource provenance");
+        std::fs::remove_file(resources.join("data/body.nui")).unwrap();
+        fn label(node:&Node)->Option<&str>{if let Paint::Text(text)=&node.paint{Some(text)}else{node.children.iter().find_map(label)}}
+        assert_eq!(label(&scene.snapshot().unwrap()),Some("prepared"),"editor snapshots use the prepared module cache without reading files");
+        let mut engine=Engine::default();engine.set_script(Some(rt));let (mut left,mut right)=([0.;64],[0.;64]);
+        assert_eq!(allocations(||{engine.ui_control(0,0,1);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+        scene.observe(&live);let error=format!("{:#}",scene.snapshot().unwrap_err());
+        assert!(error.contains("Late native UI module loading is unavailable: data.editor_only"),"{error}");assert!(!error.contains("editor must never read"));
+        assert_eq!(scene.resources.len(),2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_parameter_handles_resolve_only_on_access_and_preserve_exact_epoch_callbacks() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-lazy-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
