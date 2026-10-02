@@ -1556,6 +1556,7 @@ impl Runtime {
 
     /// Physical input ownership can differ from the channel the script sees.
     pub(crate) fn note_on_from(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: u8) {
+        self.set_input_channel(owner);
         if velocity == 0 {
             return self.note_off_from(engine, at, owner, note);
         }
@@ -1592,6 +1593,7 @@ impl Runtime {
     }
 
     pub(crate) fn note_off_from(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8) {
+        self.set_input_channel(owner);
         self.advance(engine, at);
         let note = note.min(127);
         let (mut id, _) = std::mem::take(&mut self.env.input.keys[owner.min(15) as usize][note as usize]);
