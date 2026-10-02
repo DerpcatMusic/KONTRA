@@ -374,7 +374,9 @@ struct Stage {
 }
 
 /// Drive stages a voice runs; later ones pass through.
-const MAX_STAGES: usize = 2;
+// Kontakt group insert chains have eight slots, including bypassed modules
+// that scripts may enable after import.
+const MAX_STAGES: usize = 8;
 /// Knob rows modulation reaches: the units', then the drive stages'.
 const ROWS: usize = MAX_UNITS + MAX_STAGES;
 
@@ -1904,6 +1906,42 @@ mod tests {
         let dry = l;
         voice.drive(&f, 0, &m, &mut l, &mut r, RATE);
         assert!(l.iter().zip(&dry).all(|(a, b)| (a - b).abs() < 0.05));
+    }
+
+    #[test]
+    fn third_drive_insert_remains_addressable_and_processes_audio() {
+        use crate::fx::{Effect, params::{Field, Value}};
+        let mut group = Group::default();
+        // Analog Strings uses these three native slots. Bypassed earlier
+        // modules must not consume the capacity needed by Saturation at 7.
+        for (slot, kind) in [(5, Kind::LoFi), (6, Kind::Distortion), (7, Kind::SurroundPanner)] {
+            let params = Params::Fields(crate::fx::params::layout_names(kind).unwrap().iter()
+                .zip(blocks::defaults(kind).unwrap())
+                .map(|(&name, &value)| Field { name, value: Value::Number(value) })
+                .collect());
+            group.fx.slots.push(Effect { slot, kind, version: 0, bypass: true,
+                output_gain: 1.0, dry_level: 0.0, params });
+        }
+        let mut filter = GroupFilter::new(&group).unwrap();
+        assert_eq!(filter.stages.iter().map(|s| s.slot).collect::<Vec<_>>(), [5, 6, 7]);
+        assert!(filter.set_knob(7, Knob::Field(Kind::SurroundPanner, 0), 1.0));
+        assert!(filter.set_knob(7, Knob::Bypass, 0.0));
+        assert_eq!(filter.knob(7, Knob::Field(Kind::SurroundPanner, 0)), Some(1.0));
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0,
+            note: 60, velocity: 100, counter: 0.0 };
+        let mut voice = VoiceFilter::new(Some(&filter), &table, &input, RATE);
+        let dry: [f32; 128] = std::array::from_fn(|i| (TAU * 1000.0 * i as f32 / RATE).sin());
+        let (mut left, mut right) = (dry, dry);
+        voice.process(&filter, &table, &mut [0.0; MAX_BLOCK], &mut left, &mut right, RATE);
+        assert!(left.iter().chain(&right).all(|x| x.is_finite() && x.abs() < 0.6));
+        assert!(left.iter().zip(dry).any(|(a, b)| (a - b).abs() > 0.4));
+        assert!(filter.set_knob(7, Knob::Bypass, 1.0));
+        let (mut left, mut right) = (dry, dry);
+        voice.process(&filter, &table, &mut [0.0; MAX_BLOCK], &mut left, &mut right, RATE);
+        assert_eq!(left, dry);
+        assert_eq!(right, dry);
     }
 
     #[test]
