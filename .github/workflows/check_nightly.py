@@ -162,7 +162,10 @@ for case in cases:
                 old.append(dict(id=i,tag_name=tag,target_commitish=source,draft=False,prerelease=True,name="legacy",assets=[dict(name=f"KONTRA-nightly-{platform}.zip",state="uploaded",size=7,digest="sha256:"+hashlib.sha256(b"fixture").hexdigest()) for platform in platforms],body=f"<!-- kontra-source-tag: {oldver} -->" if i!=1 else "Legacy automated snapshot",published_at=f"2026-09-0{4-i}"))
                 refs[tag]=source
                 if i!=1: refs[oldver]=source
-        if case=="current": old.append(dict(id=5,tag_name="nightly-staging",draft=True))
+        if case=="current":
+            old.append(dict(id=5,tag_name="nightly-staging",draft=True))
+            orphan="v0.2.0-nightly.20261001.g777777777777"
+            old.append(dict(id=6,tag_name=orphan,draft=True));refs[orphan]="7"*40
         refs["nightly-staging-other"]="e"*40
         initial=dict(case=case,releases=old,refs=refs,heads=0,published=False,promoted=False,latest=None,calls=[],deleted=[],manifests={})
         root.joinpath("state.json").write_text(json.dumps(initial)); output=root/"outputs"; output.touch()

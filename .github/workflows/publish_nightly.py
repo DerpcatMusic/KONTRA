@@ -118,6 +118,10 @@ def main():
     version = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
     assert re.fullmatch(r"\d+\.\d+\.\d+-nightly\.\d{8}\.g[0-9a-f]{12}", version), version
     tag = "v" + version
+    # A terminated upload may leave an older versioned draft; only managed drafts.
+    for draft in current:
+        if draft["draft"] and managed_ref(draft["tag_name"]):
+            gh("release", "delete", draft["tag_name"], "--yes", "--cleanup-tag")
     # Recover publication/pruning without editing the existing immutable record.
     existing = next((r for r in releases() if r["tag_name"] == tag), None)
     if existing and not existing["draft"]:
@@ -125,9 +129,6 @@ def main():
         finish(existing, json.loads(data), data)
         Path(os.environ["GITHUB_OUTPUT"]).write_text("published=true\n")
         return
-    for draft in (staging, existing):
-        if draft and draft["draft"]:
-            gh("release", "delete", draft["tag_name"], "--yes", "--cleanup-tag")
     delete_ref("nightly-staging")
     assets = []
     for p, platform in zip(files, PLATFORMS):
