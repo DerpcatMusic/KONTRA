@@ -42,6 +42,9 @@ path = sys.argv[1]
 components = plistlib.load(open(path, 'rb'))
 for component in components:
     component['BundleIsRelocatable'] = False
+    # Nightlies share a numeric bundle version; an explicit previous-release
+    # installer must also replace a newer bundle when the user rolls back.
+    component['BundleIsVersionChecked'] = False
     component['BundleOverwriteAction'] = 'upgrade'
 with open(path, 'wb') as output:
     plistlib.dump(components, output)
