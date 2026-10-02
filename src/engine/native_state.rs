@@ -33,6 +33,8 @@ fn key(address: Address) -> Address {
             bipolar: false,
             cubic: None,
         },
+        Address::PitchLfoIntensity { group, slot, target, .. } =>
+            Address::PitchLfoIntensity { group, slot, target, bipolar: false },
         _ => address,
     }
 }
