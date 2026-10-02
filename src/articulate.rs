@@ -22,7 +22,7 @@
 //! part); the audio thread gets it as a fixed-size [`Route`] and keeps its
 //! own [`Router`] per rack slot.
 
-use crate::engine::{Engine, Expression, PartControls, RACK_SLOTS, Rack};
+use crate::engine::{Engine, Expression, PartControls, Rack};
 #[cfg(feature = "plugin")]
 use moose::core::{
     EventBody,
@@ -912,47 +912,54 @@ pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
         (f32::from(semitones) + f32::from(cents) / 100.).min(96.)));
 }
 
-/// Send `ev`, from host MIDI port `port`, through each rack part's router
-/// that takes it. Releases, pitch bend and controllers other than volume and
-/// pan reach every part on the port, so a changed routing never sticks a
-/// note or a pedal. Returns the slots it reached, one bit each.
-pub fn dispatch(rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], port: u8, ev: In) -> u32 {
-    let reached = reach(rack, routers, port, ev);
-    dispatch_to(rack, routers, reached, ev);
-    reached
-}
-
-/// The slots [`dispatch`] sends `ev` to, one bit each.
-pub fn reach(rack: &Rack, routers: &[Router; RACK_SLOTS], port: u8, ev: In) -> u32 {
+/// Whether a part receives host input. Releases, bend and controllers other
+/// than volume and pan reach the whole port so routing changes never stick notes.
+pub fn reaches(c: &PartControls, r: &Router, port: u8, ev: In) -> bool {
     let wide = match ev {
         In::NoteOff(..) | In::Bend(..) => true,
         In::Cc(_, cc, _) => !matches!(cc, 7 | 10),
         _ => false,
     };
-    let mut reached = 0;
-    for (slot, (c, r)) in rack.controls.iter().zip(routers.iter()).enumerate() {
-        if if wide { c.port == port } else { r.hears(c, port, ev.channel()) } {
-            reached |= 1 << slot;
-        }
-    }
-    reached
+    if wide { c.port == port } else { r.hears(c, port, ev.channel()) }
 }
 
-/// Send `ev` through the routers of the slots in `slots` (one bit each), as
-/// [`dispatch`] would: a note-off reaches exactly the parts its note-on did.
-pub fn dispatch_to(rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], slots: u32, ev: In) {
+/// Send host input through every part's router that accepts it.
+pub fn dispatch(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In) {
     let Rack { parts, controls, .. } = rack;
-    for (slot, ((e, c), r)) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()).enumerate() {
-        if slots & 1 << slot != 0 {
+    for ((e, c), r) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()) {
+        if reaches(c, r, port, ev) {
             feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
         }
     }
 }
 
-/// Send `ev` to rack slot `slot` alone (the on-screen keyboard), through its router.
-pub fn play(rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], slot: usize, ev: In) {
-    let slot = slot.min(RACK_SLOTS - 1);
-    feed(&mut routers[slot], &mut rack.parts[slot], ev, ev.channel());
+/// Dispatch and record its targets in caller-prepared storage for later key-up.
+/// Every flag is overwritten; there is no fixed-width part mask.
+pub fn dispatch_record(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In, reached: &mut [bool]) {
+    reached.fill(false);
+    let Rack { parts, controls, .. } = rack;
+    for (((e, c), r), target) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()).zip(reached) {
+        *target = reaches(c, r, port, ev);
+        if *target {
+            feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
+        }
+    }
+}
+
+/// Send input to previously recorded targets, even if routing has changed.
+pub fn dispatch_to(rack: &mut Rack, routers: &mut [Router], slots: impl IntoIterator<Item = usize>, ev: In) {
+    for slot in slots {
+        if let (Some(e), Some(c), Some(r)) = (rack.parts.get_mut(slot), rack.controls.get(slot), routers.get_mut(slot)) {
+            feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
+        }
+    }
+}
+
+/// Send input to one rack part (the on-screen keyboard).
+pub fn play(rack: &mut Rack, routers: &mut [Router], slot: usize, ev: In) {
+    if let (Some(e), Some(r)) = (rack.parts.get_mut(slot), routers.get_mut(slot)) {
+        feed(r, e, ev, ev.channel());
+    }
 }
 
 /// "C-1", "D#3", "Eb2" (Kontakt's names, C3 = 60) as a MIDI key.

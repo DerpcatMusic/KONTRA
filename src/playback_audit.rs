@@ -107,7 +107,7 @@ fn snapshot(
 
 fn phase(
     rack: &mut Rack,
-    routers: &mut [Router; RACK_SLOTS],
+    routers: &mut [Router],
     meter: &mut Meter,
     name: &str,
     seconds: f64,
