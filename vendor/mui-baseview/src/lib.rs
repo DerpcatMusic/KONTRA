@@ -416,12 +416,13 @@ impl<V: View> Handler<V> {
                     // it before the window.
                     #[expect(unsafe_code, reason = "calls the unsafe surface constructor")]
                     let surface = unsafe { surface::create(gpu.instance(), window) };
-                    if let Some(surface) = surface {
-                        gpu.replace_surface(surface);
-                    } else {
-                        log(&self.shared, "mui-baseview: surface lost; rebuilding");
-                        self.gpu = None;
-                        self.gpu_retry_at = now + GPU_RETRY;
+                    match surface {
+                        Ok(surface) => gpu.replace_surface(surface),
+                        Err(e) => {
+                            log(&self.shared, &format!("mui-baseview: surface lost ({e}); rebuilding"));
+                            self.gpu = None;
+                            self.gpu_retry_at = now + GPU_RETRY;
+                        }
                     }
                 }
                 Err(e) => {
@@ -813,11 +814,12 @@ fn open_gpu(window: &WindowContext, size: (u32, u32), mut report: impl FnMut(&st
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
         descriptor.backends = backends;
         let instance = wgpu::Instance::new(descriptor);
+        report("mui-baseview: GPU init creating native surface");
         // SAFETY: the surface comes from this window's live native handle,
         // and baseview drops the handler that owns it before the window.
         #[expect(unsafe_code, reason = "calls the unsafe surface constructor")]
-        let surface = unsafe { surface::create(&instance, window) }
-            .ok_or("native surface creation failed")?;
+        let surface = unsafe { surface::create(&instance, window) }?;
+        report("mui-baseview: GPU init creating adapter, device and renderer");
         let gpu = Host::new(instance, surface, size).map_err(|e| format!("{backends:?}: {e}; no automatic backend switch, WGPU_BACKEND must be selected before starting the host"))?;
         let adapter = gpu.device().0.adapter_info();
         report(&format!("mui-baseview: GPU ready backend={:?} adapter={:?} type={:?} vendor={:#06x} device={:#06x} driver={:?} driver_info={:?}",
