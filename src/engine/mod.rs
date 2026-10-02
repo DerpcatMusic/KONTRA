@@ -1409,6 +1409,22 @@ impl Player {
         if ev.channel >= 16 || ev.note >= 128 || !(1..=127).contains(&ev.velocity) {
             return None;
         }
+        if !release_trigger {
+            // Kontakt Source module Note Mono cuts a still-sounding release
+            // on the next same-key attack. Deferred pedal releases are not
+            // playing yet, so their independent event identities stay intact.
+            let input = ev.input_channel.or(ev.owner.map(|(channel, _)| channel)).unwrap_or(ev.channel);
+            let fade = self.fade_frames(DECLICK);
+            for voice in &mut self.voices {
+                if voice.release_trigger && voice.note == ev.note && voice.channel == ev.channel
+                    && voice.input_channel.or(voice.owner.map(|(channel, _)| channel)).unwrap_or(voice.channel) == input
+                    && bank.groups()[voice.group as usize].release_trigger_note_monophonic
+                    && !voice.fade.dying()
+                {
+                    voice.fade.start(0., fade, true);
+                }
+            }
+        }
         self.clock += 1;
         let mask = ev.groups.unwrap_or(&self.allowed);
         self.pending.clear();
@@ -2278,5 +2294,69 @@ mod pace_tests {
         std::thread::sleep(Duration::from_millis(10));
         assert!(pace.until(block) > Duration::ZERO);
         assert!(pace.until(block * 2) > Duration::ZERO);
+    }
+}
+
+#[cfg(test)]
+mod release_note_mono_tests {
+    use super::*;
+
+    fn engine(mono: bool, release_only: bool, until_release: bool) -> Engine {
+        let groups = vec![
+            crate::import::Group { muted: release_only, ..Default::default() },
+            crate::import::Group { release_trigger: true, release_trigger_note_monophonic: mono, ..Default::default() },
+            crate::import::Group { release_trigger: true, ..Default::default() },
+        ];
+        let zones = (0..groups.len()).map(|group| crate::import::Zone {
+            group, loop_range: Some(crate::import::Loop { start:0, end:64, alternating:false, until_release, crossfade:0 }),
+            ..Default::default()
+        }).collect();
+        let sample = crate::audio::Sample { rate:48000, frames:vec![[0.2;2];16384] };
+        let bank = Bank::from_samples(groups, zones, vec![(std::path::PathBuf::new(),sample)]).unwrap();
+        let mut engine = Engine::default(); engine.attack=0.0001; engine.release=0.001;
+        engine.set_bank(Some(Box::new(bank))); engine
+    }
+    fn tick(e: &mut Engine) { e.render(&mut [0.;512], &mut [0.;512]); }
+    fn tails(e: &Engine) -> usize { e.voice_census().iter().filter(|v|v.release_trigger && v.group==1).count() }
+
+    #[test]
+    fn note_mono_cuts_only_matching_sounding_release_tails() {
+        for mono in [false,true] {
+            for (release_only,until_release) in [(false,false),(true,false),(false,true),(true,true)] {
+                let mut e=engine(mono,release_only,until_release);
+                e.note_on_from(0,1,60,100); tick(&mut e);
+                e.note_off_from(0,1,60); tick(&mut e);
+                assert_eq!(tails(&e),1);
+                e.note_on_from(0,2,60,100); tick(&mut e);
+                e.note_on_from(1,1,60,100); tick(&mut e);
+                e.note_on_from(0,1,61,100); tick(&mut e);
+                assert_eq!(tails(&e),1,"other input owners, logical channels and pitches preserve the old tail");
+                e.note_on_from(0,1,60,100); tick(&mut e);
+                assert_eq!(tails(&e),usize::from(!mono),"a same-key restrike obeys the authored flag even in a release-only instrument");
+                assert_eq!(e.voice_census().iter().filter(|v|v.release_trigger && v.group==2).count(),1,"polyphonic sibling group remains sounding");
+            }
+            for pedal in [64,66] {
+                let mut e=engine(mono,false,false);
+                e.note_on(0,60,100); tick(&mut e); e.note_off(0,60); tick(&mut e);
+                if pedal==64 {e.cc(0,pedal,127);}
+                e.note_on(0,60,100); tick(&mut e);
+                if pedal==66 {e.cc(0,pedal,127);tick(&mut e);}
+                e.note_off(0,60); tick(&mut e);
+                assert_eq!(tails(&e),usize::from(!mono),"the new pedal-held key cuts a prior sounding tail");
+                e.cc(0,pedal,0); tick(&mut e);
+                assert_eq!(tails(&e),1+usize::from(!mono),"pedal-up starts the deferred release without coalescing events");
+            }
+            for duration in [-1,0,5000] {
+                let mut e=engine(mono,false,false);
+                let source=format!("on init\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)\nend on\non note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,{duration})\nend on");
+                let (runtime,errors)=crate::ksp::Runtime::with_scripts(&[&source],&mut crate::ksp::LogEngine::new(Vec::new(),48000.),3,Vec::new());
+                assert!(errors.iter().all(Option::is_none)); e.set_script(Some(Box::new(runtime)));
+                e.note_on(0,60,100);tick(&mut e);e.note_off(0,60);tick(&mut e);
+                assert_eq!(tails(&e),1,"the authored manual release starts for duration {duration}");
+                e.note_on(0,60,100);tick(&mut e);
+                assert_eq!(tails(&e),usize::from(!mono),"whole, fixed-duration and following-parent release samples obey Note Mono");
+                assert!(e.script().unwrap().diagnostics().is_empty());
+            }
+        }
     }
 }
