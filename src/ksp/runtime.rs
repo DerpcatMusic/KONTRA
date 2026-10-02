@@ -1843,9 +1843,9 @@ impl Runtime {
                     let e = &self.env.events.slots[index];
                     if !e.live || !e.cleanup { continue; }
                     let id = i32::from(e.generation) << EVENT_INDEX_BITS | index as i32;
-                    let callback = self.threads.iter().any(|t| t.live && t.ctx.event == id);
-                    let queued = self.env.work.iter().any(|w| matches!(w, Work::Release { event, .. } if *event == id));
-                    if !callback && !queued {
+                    // All cleanup release work was drained above. Only a
+                    // retained callback may still own its row at this point.
+                    if e.callbacks == 0 {
                         self.env.note("KSP Panic cleanup could not finish state notification; note canceled");
                         self.env.events.free(id);
                     }
