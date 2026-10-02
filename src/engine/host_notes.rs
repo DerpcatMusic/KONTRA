@@ -257,6 +257,68 @@ mod tests {
     }
 
     #[test]
+    fn scoped_choke_exposes_unselected_keys_and_bank_only_replacement_closes_waits() {
+        let script="on release\nif ($EVENT_NOTE=48)\nmessage(%KEY_DOWN[50])\nend if\nend on";
+        let (rt,errors)=crate::ksp::Runtime::with_scripts(&[script],&mut crate::ksp::LogEngine::default(),0,Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        let mut e=engine(false); e.set_script(Some(Box::new(rt)));
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            assert!(e.host_note_on(note(10),7,48,100));
+            assert!(e.host_note_on(HostNote { key:62,..note(11) },7,50,100)); render(&mut e,1);
+            e.host_note_choke(pattern(10));
+            assert_eq!(e.script().unwrap().last_message(),"1","scoped cleanup hid another held key from on release");
+            assert!(e.script().unwrap().key_down_from(4,7,50));
+            assert!(e.key_down(7,50));
+        }),0);
+        let script="on note\nignore_event($EVENT_ID)\nwait(100000)\nplay_note($EVENT_NOTE,100,0,-1)\nend on\non release\nwait(10000)\nplay_note(72,100,0,0)\nend on";
+        let (rt,errors)=crate::ksp::Runtime::with_scripts(&[script],&mut crate::ksp::LogEngine::default(),0,Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        let mut e=engine(false); e.set_script(Some(Box::new(rt)));
+        let mut old=None;
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            assert!(e.host_note_on(note(20),7,48,100)); render(&mut e,1);
+            e.mark_host_notes(); assert!(e.host_note_pending(note(20)));
+            old=e.set_bank(None);
+            render(&mut e,64); e.mark_host_notes();
+            assert!(!e.script().unwrap().key_down_from(4,7,48));
+            assert!(!e.host_note_pending(note(20)),"bank-only replacement retained an old held/waiting root");
+            assert_eq!(e.active_voices(),0);
+            e.host_note_off(pattern(20)); e.mark_host_notes();
+            assert!(!e.host_note_pending(note(20)));
+        }),0);
+        assert!(old.is_some());
+    }
+
+    #[test]
+    fn anonymous_key_up_preserves_exact_roots_but_exact_wildcard_releases_them() {
+        for scripted in [false,true] {
+            let mut e=engine(false);
+            if scripted {
+                let (rt,errors)=crate::ksp::Runtime::with_scripts(&["on note\nend on"],&mut crate::ksp::LogEngine::default(),0,Vec::new());
+                assert!(errors.iter().all(Option::is_none)); e.set_script(Some(Box::new(rt)));
+            }
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                assert!(e.host_note_on(note(10),7,48,100));
+                assert!(e.host_note_on(note(11),7,48,100));
+                e.note_on_from(7,4,48,100); render(&mut e,1);
+                e.note_off_from(7,4,48); render(&mut e,1);
+                assert!(e.key_down(7,48),"anonymous MIDI key-up cleared an exact root");
+                assert!(e.host_key_held(4,60));
+                for id in [10,11] {
+                    assert!(e.player.voices.iter().any(|v| v.held && !v.released
+                        && v.host_note.and_then(|r| e.player.host_notes.get(r)).is_some_and(|o| o.note.id==id)),"anonymous key-up released exact id {id}");
+                }
+                assert!(e.player.voices.iter().filter(|v| v.host_note.is_none()).all(|v| !v.held));
+                if let Some(rt)=e.script() { assert!(rt.key_down_from(4,7,48)); }
+                // CLAP id=-1 explicitly matches every exact owner on the PCK.
+                e.host_note_off(HostPattern { id:-1,..pattern(10) }); render(&mut e,1);
+                assert!(!e.host_key_held(4,60)); assert!(!e.key_down(7,48));
+                assert!(e.player.voices.iter().all(|v| !v.held || v.release_trigger));
+            }),0);
+        }
+    }
+
+    #[test]
     fn ownership_exhaustion_and_duplicate_tuples_do_not_steal_generations() {
         let mut owners=Owners::new();
         assert!(HostPattern { port:-1,channel:-1,key:-1,id:-1,clap:true }.matches(note(10)));
