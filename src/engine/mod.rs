@@ -434,7 +434,7 @@ impl Engine {
     /// rate: replace them with [`set_fx`](Self::set_fx) when `rate` changes.
     pub fn reset(&mut self, rate: f64) {
         self.release_script_pedals();
-        self.cancel_notes(u16::MAX);
+        self.cleanup_script_notes();
         self.player.clear_voices(self.bank.as_deref());
         self.commands.clear();
         self.writes.clear();
@@ -452,7 +452,7 @@ impl Engine {
             let value = self.player.cc[0][cc];
             (value >= 64).then_some(value)
         }));
-        self.cancel_notes(u16::MAX);
+        self.cleanup_script_notes();
     }
 
     fn cancel_notes(&mut self, channels: u16) {
@@ -460,6 +460,13 @@ impl Engine {
         // Controller commands can carry UI edits; stopping notes must not lose them.
         self.commands.retain(|command| channels & (1 << command.channel) == 0
             || matches!(command.kind, script::Kind::Controller { .. }));
+    }
+
+    fn cleanup_script_notes(&mut self) {
+        if let Some((rt, mut host)) = self.scripted(0) { rt.cleanup_notes(&mut host); }
+        // Cleanup runs under the normal callback budget; old performance
+        // commands are cut now, and its resumed callbacks cannot start notes.
+        self.commands.retain(|command| matches!(command.kind, script::Kind::Controller { .. }));
     }
 
     fn notify_script_pedals(&mut self, values: [Option<u8>; 2]) {
@@ -486,7 +493,7 @@ impl Engine {
         self.release_script_pedals();
         // Pedal-up callbacks may release, create or wait on notes; cancel their
         // remaining performance work too, so Panic cannot resurrect a voice.
-        self.cancel_notes(u16::MAX);
+        self.cleanup_script_notes();
         self.commands.retain(|command| !matches!(command.kind,
             script::Kind::Controller { cc: 1 | 11 | 64 | 66 | 128 | 129, .. }));
         let defaults = self.defaults();

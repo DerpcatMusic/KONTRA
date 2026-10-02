@@ -497,6 +497,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         // ---- Events ------------------------------------------------------------------
         PlayNote => {
             let [note, velocity, offset, duration] = ints(m);
+            if m.t.ctx.cleanup { return push_int(m, 0); }
             if !(0..128).contains(&note) {
                 m.env.note("play_note: note outside 0..127 ignored");
                 return push_int(m, 0);
