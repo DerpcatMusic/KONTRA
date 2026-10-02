@@ -925,6 +925,18 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return Err(Fault("Invalid listener signal/parameter"));
             }
             let l = &mut m.slot.listener;
+            let mut scope = m.t.ctx.scope();
+            if matches!(m.t.ctx.kind, super::vm::Kind::Cb(
+                super::compile::Callback::Init | super::compile::Callback::PersistenceChanged)) {
+                scope.common = true;
+            }
+            let owner = match signal {
+                b::signal::TIMER_MS => 0,
+                b::signal::TIMER_BEAT => 1,
+                b::signal::TRANSP_START => 2,
+                _ => 3,
+            };
+            l.scopes[owner] = scope;
             match signal {
                 b::signal::TIMER_MS => {
                     l.timer_us = value;
@@ -940,8 +952,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             if matches!(signal, b::signal::TIMER_MS | b::signal::TIMER_BEAT) {
                 let index = usize::from(signal == b::signal::TIMER_BEAT);
                 l.generations[index] = l.generations[index].wrapping_add(1);
-                m.env.listeners_changed[m.t.ctx.domain as usize] |= 1 << (usize::from(slot) * 2 + index);
+                m.env.listeners_changed[m.slot.domain as usize] |= 1 << (usize::from(slot) * 2 + index);
             }
+            if m.t.ctx.ui_replay { return Ok(Step::Next); }
             let name = match signal {
                 b::signal::TIMER_MS => "$NI_SIGNAL_TIMER_MS",
                 b::signal::TIMER_BEAT => "$NI_SIGNAL_TIMER_BEAT",

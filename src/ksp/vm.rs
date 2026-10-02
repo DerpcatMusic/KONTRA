@@ -56,7 +56,7 @@ pub enum Forward {
     Rpn { nrpn: bool },
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CallbackScope {
     pub domain: u8,
     pub common: bool,
@@ -545,6 +545,9 @@ pub struct Listener {
     pub transport: u8,
     /// Independent MS/beat generations: changing one timer preserves the other.
     pub generations: [u32; 2],
+    /// MS, beat, transport-start and transport-stop subscriptions can be
+    /// changed by different performance or configuration callbacks.
+    pub scopes: [CallbackScope; 4],
 }
 
 /// Polyphonic rows: one per event slot plus a scratch row for other callbacks.

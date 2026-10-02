@@ -456,7 +456,7 @@ pub enum Work {
 enum TimerKind {
     Resume { thread: u16, generation: u32 },
     Release { event: i32, slot: u8 },
-    Listener { slot: u8, domain: u8, signal: i32, generation: u32 },
+    Listener { slot: u8, scope: CallbackScope, signal: i32, generation: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -551,7 +551,7 @@ pub struct Env {
     pub(super) pending_async: Vec<(u8, i32)>,
     async_ready: bool,
     pub stop_waits: Vec<(i32, i32)>,
-    pub listeners_changed: [u16; 16],
+    pub listeners_changed: [u16; 17],
     pub pgs_changed: bool,
 }
 
@@ -610,7 +610,7 @@ impl Env {
             pending_async: Vec::with_capacity(64),
             async_ready: false,
             stop_waits: Vec::with_capacity(64),
-            listeners_changed: [0; 16],
+            listeners_changed: [0; 17],
             pgs_changed: false,
         }
     }
@@ -888,6 +888,10 @@ impl Runtime {
         for (p, state) in self.programs.iter().zip(&mut self.states) {
             state.mem.prepare_domains(count as usize, p.domain_slots);
             state.domain_listeners = vec![state.listener; count as usize];
+            for (domain, listener) in state.domain_listeners.iter_mut().enumerate() {
+                for scope in &mut listener.scopes { scope.domain = domain as u8; }
+            }
+            state.listener = state.domain_listeners[0];
             state.mem.poly.resize(p.poly as usize * (POLY_ROWS as usize - 1 + count as usize), 0);
         }
         // Unknown native parameters share initialized values but subsequent
@@ -930,11 +934,47 @@ impl Runtime {
         assert!(self.domain_mask.is_some(), "only configured Channel mode needs canonical storage");
         assert!(self.configuration_domain.is_none(), "prepare canonical storage once");
         assert_eq!(self.env.events.live_count(), 0, "prepare before performance starts");
+        self.select_domain(0);
         for (prog, state) in self.programs.iter().zip(&mut self.states) {
             assert_eq!(state.mem.prepare_configuration(), self.domain_count);
             state.mem.poly.resize(prog.poly as usize * (vm::CONFIGURATION_POLY_ROW as usize + 1), 0);
+            state.domain_listeners[0] = state.listener;
+            let mut canonical = state.listener;
+            if !canonical.scopes[0].common { canonical.timer_us = 0; }
+            if !canonical.scopes[1].common { canonical.beats = 0; }
+            if !canonical.scopes[2].common { canonical.transport &= !1; }
+            if !canonical.scopes[3].common { canonical.transport &= !2; }
+            for scope in &mut canonical.scopes {
+                if scope.common {
+                    *scope = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false };
+                }
+            }
+            for listener in &mut state.domain_listeners {
+                for scope in &mut listener.scopes {
+                    if scope.common { scope.ui_replay = true; }
+                }
+            }
+            state.listener = state.domain_listeners[0];
+            state.domain_listeners.push(canonical);
         }
         self.configuration_domain = Some(self.domain_count);
+        // Fresh init services keep their existing due frame. Retag only the
+        // prepared listener owners, without restarting performance callbacks.
+        let timers = std::mem::replace(&mut self.env.timers, BinaryHeap::with_capacity(TIMER_CAPACITY));
+        for Reverse(mut timer) in timers.into_vec() {
+            if let TimerKind::Listener { slot, scope, signal, generation } = timer.kind {
+                let listener = self.states[slot as usize].domain_listeners[scope.domain as usize];
+                let owner = listener.scopes[usize::from(signal == b::signal::TIMER_BEAT)];
+                timer.kind = TimerKind::Listener { slot, scope:owner, signal, generation };
+            }
+            self.env.timers.push(Reverse(timer));
+        }
+        for slot in 0..self.states.len() as u8 {
+            for signal in [b::signal::TIMER_MS, b::signal::TIMER_BEAT] {
+                self.schedule_listener(slot,self.domain_count,signal,self.env.clock());
+            }
+        }
+        self.select_domain(0);
     }
 
     pub(crate) fn channel_domains_prepared(&self) -> bool { self.domain_mask.is_some() }
@@ -2223,12 +2263,12 @@ impl Runtime {
         } else {
             b::signal::TRANSP_STOP
         };
-        for domain in 0..self.domain_count {
-            self.select_domain(domain);
+        for storage in 0..self.group_storage_count() as u8 {
+            self.select_callback_scope(self.scope_for_storage(storage));
             for slot in 0..self.states.len() as u8 {
                 if self.states[slot as usize].listener.transport & (if playing { 1 } else { 2 }) != 0 {
                     let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Listener));
-                    ctx.domain = domain;
+                    ctx.inherit_scope(self.states[slot as usize].listener.scopes[if playing {2} else {3}]);
                     ctx.signal = signal;
                     self.spawn_cb(engine, slot, Callback::Listener, ctx);
                 }
@@ -2362,19 +2402,19 @@ impl Runtime {
                     }
                 }
                 TimerKind::Release { event, slot } => self.env.queue(Work::Release { event, slot }),
-                TimerKind::Listener { slot, domain, signal, generation } => {
-                    self.select_domain(domain);
+                TimerKind::Listener { slot, scope, signal, generation } => {
+                    let storage = self.select_callback_scope(scope);
                     let index = usize::from(signal == b::signal::TIMER_BEAT);
                     if self.states[slot as usize].listener.generations[index] == generation {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Listener));
-                        ctx.domain = domain;
+                        ctx.inherit_scope(scope);
                         ctx.signal = signal;
                         self.spawn_cb(engine, slot, Callback::Listener, ctx);
                         // A listener may retune itself. Its changed bit schedules
                         // the new generation; do not also schedule it here.
-                        self.select_domain(domain);
+                        self.select_callback_scope(scope);
                         if self.states[slot as usize].listener.generations[index] == generation {
-                            self.schedule_listener(slot, domain, signal, t.at);
+                            self.schedule_listener(slot, storage, signal, t.at);
                         }
                     }
                 }
@@ -2383,8 +2423,8 @@ impl Runtime {
         }
     }
 
-    fn schedule_listener(&mut self, slot: u8, domain: u8, signal: i32, from: u64) {
-        self.select_domain(domain);
+    fn schedule_listener(&mut self, slot: u8, storage: u8, signal: i32, from: u64) {
+        self.select_callback_scope(self.scope_for_storage(storage));
         let l = self.states[slot as usize].listener;
         let us = match signal {
             b::signal::TIMER_MS if l.timer_us > 0 => i64::from(l.timer_us),
@@ -2393,7 +2433,7 @@ impl Runtime {
         };
         let at = from + self.env.samples(us).max(1);
         self.env.timer(at, TimerKind::Listener {
-            slot, domain, signal,
+            slot, scope:l.scopes[usize::from(signal == b::signal::TIMER_BEAT)], signal,
             generation: l.generations[usize::from(signal == b::signal::TIMER_BEAT)],
         });
     }
@@ -2452,13 +2492,13 @@ impl Runtime {
                 self.stop_waits(engine);
                 continue;
             }
-            if self.env.listeners_changed[..self.domain_count as usize].iter().any(|&changed| changed != 0) {
+            if self.env.listeners_changed[..self.group_storage_count()].iter().any(|&changed| changed != 0) {
                 let changed = std::mem::take(&mut self.env.listeners_changed);
-                for domain in 0..self.domain_count {
+                for storage in 0..self.group_storage_count() as u8 {
                     for slot in 0..self.states.len() as u8 {
                         for (index, signal) in [b::signal::TIMER_MS, b::signal::TIMER_BEAT].into_iter().enumerate() {
-                            if changed[domain as usize] & (1 << (usize::from(slot) * 2 + index)) != 0 {
-                                self.schedule_listener(slot, domain, signal, self.env.clock());
+                            if changed[storage as usize] & (1 << (usize::from(slot) * 2 + index)) != 0 {
+                                self.schedule_listener(slot, storage, signal, self.env.clock());
                             }
                         }
                     }
@@ -2857,12 +2897,18 @@ impl Runtime {
         self.resume(engine, i);
     }
 
-    /// Select memory for queued descendants without changing event ownership.
+    fn scope_for_storage(&self, storage: u8) -> CallbackScope {
+        if self.configuration_domain == Some(storage) {
+            CallbackScope { domain:0, common:true, configuration:true, ui_replay:false }
+        } else { CallbackScope::performance(storage) }
+    }
+
+    /// Select memory and listener state without changing event ownership.
     fn select_callback_scope(&mut self, scope: CallbackScope) -> u8 {
         self.select_domain(scope.domain);
         if scope.configuration {
             let bank = self.configuration_domain.expect("waiting configuration callback retains its prepared storage");
-            self.states.iter_mut().for_each(|state| state.mem.select(bank));
+            self.states.iter_mut().for_each(|state| state.select(bank));
             bank
         } else { scope.domain }
     }
@@ -3292,4 +3338,93 @@ pub(super) fn write_value_rt(
     }
     write_value(mem, var, value);
     Ok(())
+}
+
+#[cfg(test)]
+mod prepared_listener_tests {
+    use super::*;
+    use crate::ksp::{EngineCall, LogEngine};
+
+    #[test]
+    fn prepared_shared_and_performance_listeners_keep_signal_scope_through_waits_without_heap() {
+        let source = "on init\nmake_perfview\ndeclare ui_slider $edit(0,127)\ndeclare ui_label $info(1,1)\nset_text($info,\"seed\")\ndeclare $art\ndeclare $ticks\nmake_persistent($art)\nmake_persistent($ticks)\nset_listener($NI_SIGNAL_TIMER_MS,1000)\nset_listener($NI_SIGNAL_TRANSP_START,1)\nset_listener($NI_SIGNAL_TRANSP_STOP,1)\nend on\non ui_control($edit)\n$art := $edit\nif ($edit=0)\nchange_listener_par($NI_SIGNAL_TIMER_MS,0)\nset_listener($NI_SIGNAL_TRANSP_START,0)\nset_listener($NI_SIGNAL_TRANSP_STOP,0)\nelse\nchange_listener_par($NI_SIGNAL_TIMER_MS,3000)\nset_listener($NI_SIGNAL_TRANSP_STOP,1)\nend if\nend on\non note\nif ($EVENT_VELOCITY=99)\n$art := 99\nchange_listener_par($NI_SIGNAL_TIMER_MS,1000)\nset_listener($NI_SIGNAL_TRANSP_START,1)\nend if\nend on\non listener\nif ($NI_SIGNAL_TYPE=$NI_SIGNAL_TIMER_MS)\ninc($ticks)\nwait(1000)\nadd_text_line($info,\"L:\" & $art)\nset_controller(22,$art)\nend if\nend on";
+        let mut engine = LogEngine::new(vec!["tone".into()],48000.);
+        let (mut rt,errors) = Runtime::with_scripts(&[source],&mut engine,0,Vec::new());
+        assert!(errors.iter().all(Option::is_none),"{errors:?}");
+        assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+        rt.prepare_channel_domains((1<<1)|(1<<3)|(1<<5),7);
+        rt.prepare_channel_configuration();
+        let canonical = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false };
+        let replay = |domain|CallbackScope { domain, common:true, configuration:false, ui_replay:true };
+        let mut due:Vec<_> = rt.env.timers.iter().filter_map(|Reverse(t)|match t.kind {
+            TimerKind::Listener { scope,signal,.. } if signal==b::signal::TIMER_MS=>Some((t.at,scope)),
+            _=>None,
+        }).collect();
+        let mut expected_due = vec![(48,canonical),(48,replay(0)),(48,replay(1)),(48,replay(2))];
+        due.sort_unstable(); expected_due.sort_unstable();
+        assert_eq!(due,expected_due,"prepared init services retain phase and gain exactly one canonical owner");
+        assert_eq!(rt.states[0].domain_listeners.len(),4);
+        engine.calls.clear();
+        engine.calls.reserve(128);
+        let mut begin = || {
+            rt.ui_control_configuration(&mut engine,0,0,7);
+            for (owner,value) in [(1,8),(3,9),(5,10)] { rt.ui_control_replay(&mut engine,owner,0,0,value); }
+            rt.note_on_from(&mut engine,0,3,60,99);
+            rt.process(&mut engine,168);
+        };
+        #[cfg(feature="plugin")]
+        assert_eq!(crate::plugin::tests::allocations(||begin()),0);
+        #[cfg(not(feature="plugin"))]
+        begin();
+        let mut waiting:Vec<_> = rt.threads.iter().filter(|t|t.live && t.waiting
+            && t.ctx.kind==Kind::Cb(Callback::Listener)).map(|t|t.ctx.scope()).collect();
+        let mut expected = vec![canonical,replay(0),CallbackScope::performance(1),replay(2)];
+        waiting.sort_unstable(); expected.sort_unstable();
+        assert_eq!(waiting,expected,"simultaneous waits retain canonical, private replay and physical-origin ownership");
+        let mut finish = ||rt.process(&mut engine,96);
+        #[cfg(feature="plugin")]
+        assert_eq!(crate::plugin::tests::allocations(||finish()),0);
+        #[cfg(not(feature="plugin"))]
+        finish();
+        let value = |rt:&Runtime, bank, name:&str| {
+            let var = rt.programs[0].vars.iter().find(|v|&*v.name==name).unwrap();
+            read_value_view(rt.states[0].mem.view(Some(bank)),var)
+        };
+        for (bank,art,ticks) in [(0,8,1),(1,99,5),(2,10,1),(3,7,1)] {
+            assert_eq!(value(&rt,bank,"$art"),Value::Int(art));
+            assert_eq!(value(&rt,bank,"$ticks"),Value::Int(ticks));
+        }
+        let saved = rt.persistence();
+        assert_eq!(saved[0]["$art"],Value::Int(7));
+        assert_eq!(saved[0]["$ticks"],Value::Int(1));
+        let interface = rt.interface(0);
+        let Value::Text(text) = &interface.controls[1].properties["$CONTROL_PAR_TEXT"] else { panic!("authored label missing"); };
+        assert_eq!(text.lines().filter(|s|*s=="L:7").count(),1,"canonical metadata runs once");
+        assert_eq!(text.lines().filter(|s|*s=="L:99").count(),4,"performance metadata remains authored");
+        assert!(!text.lines().any(|s|matches!(s,"L:8"|"L:10")),"private replay cannot append shared UI history");
+        let mut output:BTreeMap<i32,usize> = BTreeMap::new();
+        for call in &engine.calls {
+            if let EngineCall::Controller { cc:22,value,.. } = call { *output.entry(*value).or_default()+=1; }
+        }
+        assert_eq!(output,BTreeMap::from([(7,1),(8,1),(10,1),(99,4)]),"native private controller values are retained");
+        rt.select_callback_scope(CallbackScope::performance(1));
+        let listener = rt.states[0].listener;
+        assert_eq!(listener.scopes[0],CallbackScope::performance(1));
+        assert_eq!(listener.scopes[2],CallbackScope::performance(1));
+        assert_eq!(listener.scopes[3],replay(1),"start ownership must not overwrite a separately configured stop subscription");
+        let mut stop = || {
+            rt.note_off_from(&mut engine,0,3,60);
+            rt.ui_control_configuration(&mut engine,0,0,0);
+            for owner in [1,3,5] { rt.ui_control_replay(&mut engine,owner,0,0,0); }
+            rt.process(&mut engine,128);
+        };
+        #[cfg(feature="plugin")]
+        assert_eq!(crate::plugin::tests::allocations(||stop()),0);
+        #[cfg(not(feature="plugin"))]
+        stop();
+        assert_eq!(rt.env.events.live_count(),0);
+        assert!(rt.threads.iter().all(|t|!t.live));
+        assert!(!rt.key_down_from(3,7,60));
+        assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+    }
 }
