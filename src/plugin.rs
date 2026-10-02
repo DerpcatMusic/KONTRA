@@ -400,12 +400,13 @@ struct AudioDiagnostics {
     offline: bool,
     output_buses: [(usize, usize); BUSES],
     parts: Vec<PartDiagnostics>,
+    unsupported_note_brightness: u64,
 }
 
 impl AudioDiagnostics {
     fn with_parts(count: usize) -> Self {
         Self { block: 0, sample_rate: 0.0, block_size: 0, output_channels: 0,
-            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count] }
+            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count], unsupported_note_brightness: 0 }
     }
 }
 
@@ -1691,6 +1692,13 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
                 "output_channels":audio.output_channels, "output_buses":audio.output_buses, "offline":audio.offline,
             }));
         }
+        let brightness = audio.unsupported_note_brightness.saturating_sub(previous.as_ref().map_or(0, |old| old.unsupported_note_brightness));
+        if brightness != 0 {
+            crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "midi", "unsupported_note_brightness", serde_json::json!({
+                "instance_id":params.shared.instance_id, "delta":brightness, "total":audio.unsupported_note_brightness,
+                "reason":"Host note-expression brightness has no verified CC74 value law; an unlinked brightness event after event-buffer overflow also has unknown provenance. It was not applied to another note or to channel CC74.",
+            }));
+        }
         for (part, current) in audio.parts.iter().enumerate() {
             // Rack slots retain their Engine across instrument/script reloads;
             // these counters have Engine lifetime, not generation lifetime.
@@ -1706,6 +1714,22 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
             }));
         }
         if let Some(previous) = previous { let _ = params.shared.diagnostic_free.force_push(previous); }
+    }
+}
+
+/// The simplified CC74 companion cannot supply a host expression's value law
+/// or note ID. Keep it unsupported, rather than applying it as absolute MIDI2
+/// CC74 to a newer same-pitch note. Direct registered MIDI2 CC74 stays admitted.
+fn unsupported_host_brightness(events: &EventList, index: usize) -> bool {
+    if !events.get(index).is_some_and(|event| matches!(event.body,
+        EventBody::PerNoteCC { cc:74, registered:true, .. })) { return false }
+    match events.exact_for_event(index).map(|event| event.body()) {
+        Some(moose::core::ExactEventBody::NoteExpression { expression_id:5, .. }
+            | moose::core::ExactEventBody::NormalizedNoteExpression { expression_id:5, .. }) => true,
+        // A full exact lane makes the adapter emit an unlinked semantic
+        // fallback. Capacity exhaustion must not erase the safety boundary.
+        None => events.overflow().is_some(),
+        _ => false,
     }
 }
 
@@ -1738,6 +1762,7 @@ fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, chan
     let audio = &mut s.diagnostic;
     audio.block = p.shared.blocks.load(Ordering::Relaxed); audio.sample_rate = s.rack.parts[0].rate();
     audio.block_size = frames; audio.output_channels = channels; audio.offline = offline;
+    audio.unsupported_note_brightness = s.unsupported_note_brightness;
     audio.output_buses = std::array::from_fn(|bus| cx.bus_routing.output(bus).map_or(if bus == 0 { (0, channels.min(2)) } else { (0, 0) }, |r| (r.channel_start(), r.channel_count())));
     for (part, current) in audio.parts.iter_mut().enumerate() {
         let e = &s.rack.parts[part]; let [pending_commands, pending_writes, pending_releases] = e.pending_work();
@@ -2620,6 +2645,7 @@ pub struct Dsp {
     until_diagnostics: usize,
     shared_parts: Vec<Arc<PartShared>>,
     diagnostic: AudioDiagnostics,
+    unsupported_note_brightness: u64,
     // Created off-thread with the rack, never acquired or replaced by reset/process.
     _diagnostics: crate::diagnostics::DiagnosticLease,
 }
@@ -2631,7 +2657,7 @@ impl Default for Dsp {
             snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
             align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
-            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), _diagnostics: crate::diagnostics::acquire() }
+            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, _diagnostics: crate::diagnostics::acquire() }
     }
 }
 
@@ -3352,7 +3378,9 @@ impl PluginLogic for Sampler {
                     out.port = 0;
                     cx.output_events.push(out);
                 }
-                if let Some(ev) = In::from_event(&e.body) {
+                if unsupported_host_brightness(events, next) {
+                    s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1);
+                } else if let Some(ev) = In::from_event(&e.body) {
                     // The on-screen keys and wheels follow what the host plays.
                     let lit = |note: u8, velocity| {
                         if let Some(lit) = p.shared.heard.get(note as usize) {
@@ -6440,6 +6468,87 @@ end on"#;
     /// The keys lit by the host's notes go out with its all-notes-off and
     /// all-sound-off (what a host sends on stop), and when it resets the
     /// plugin, with or without parts to play them.
+    #[test]
+    fn exact_host_brightness_does_not_alias_a_new_note_or_escape_through_overflow_without_heap() {
+        use moose::core::{ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
+        use crate::modulation::{ModAssignment, ModSource, ModTarget};
+        let p = SamplerParams::new();
+        let setup = || {
+            let group = import::Group { mods:vec![ModAssignment { name:"CC74_VOLUME".into(),
+                source:ModSource::MidiCc(74), target:ModTarget::Volume, intensity:1., invert:false,
+                lag_ms:0, shaper:None }], ..Default::default() };
+            let bank = Bank::from_samples(vec![group],vec![import::Zone::default()],vec![(PathBuf::new(),
+                crate::audio::Sample { rate:48000, frames:vec![[0.25;2];4096] })]).unwrap();
+            let mut dsp = Dsp::default();
+            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+            dsp.rack.parts[0].cc(0,74,32);
+            dsp
+        };
+        let brightness = Event::on_port(64,0,EventBody::PerNoteCC {
+            group:0, channel:0, note:60, cc:74, value:u32::MAX, registered:true });
+        let address = |id| ExactNoteAddress::from_raw_signed(0,0,60,id);
+        let make_events = |expression:bool| {
+            let mut events = EventList::with_capacity(8);
+            for (at,id,kind,body) in [
+                (0,10,ExactNoteKind::On,EventBody::NoteOn { group:0, channel:0, note:60, velocity:100 }),
+                (16,10,ExactNoteKind::Off,EventBody::NoteOff { group:0, channel:0, note:60, velocity:0 }),
+                (16,11,ExactNoteKind::On,EventBody::NoteOn { group:0, channel:0, note:60, velocity:100 }),
+            ] {
+                let token = events.try_push_exact_token(ExactEvent::new(at,ExactEventBody::Note {
+                    kind,address:address(id),velocity:100./127. })).unwrap();
+                events.try_push_exact_companion(token,Event::on_port(at,0,body)).unwrap();
+            }
+            if expression {
+                // The old released host note is still a legitimate expression
+                // target; its simplified companion must not affect note11.
+                let token = events.try_push_exact_token(ExactEvent::new(64,ExactEventBody::NoteExpression {
+                    expression_id:5,address:address(10),value:1. })).unwrap();
+                events.try_push_exact_companion(token,brightness).unwrap();
+                assert!(unsupported_host_brightness(&events,3));
+            }
+            events
+        };
+        let render = |dsp:&mut Dsp,params:&SamplerParams,events:&EventList| {
+            let (mut left,mut right) = ([0.;128],[0.;128]);
+            let mut output = [&mut left[..],&mut right[..]];
+            let mut buffer = AudioBuffer::from_slices_checked(&[],&mut output,128);
+            let transport = TransportInfo::default();
+            let mut midi_out = EventList::with_capacity(0);
+            let mut cx = ProcessContext::new(&transport,48000.,128,&mut midi_out);
+            assert_eq!(allocations(|| { Sampler::process(dsp,params,&mut buffer,events,&mut cx); }),0);
+            (left,right)
+        };
+        let (mut actual,mut expected) = (setup(),setup());
+        let with_expression = make_events(true);
+        let plain = make_events(false);
+        let reference = SamplerParams::new();
+        assert_eq!(render(&mut actual,&p,&with_expression),render(&mut expected,&reference,&plain));
+        assert_eq!(actual.unsupported_note_brightness,1);
+        assert_eq!(actual.rack.parts[0].cc_state()[0][74],32);
+        drain_audio_diagnostics(&p);
+        actual.until_diagnostics = 0;
+        render(&mut actual,&p,&EventList::with_capacity(0));
+        drain_audio_diagnostics(&p);
+        assert_eq!(p.shared.diagnostic_latest.lock().unwrap().as_ref().unwrap().unsupported_note_brightness,1);
+
+        let mut raw = EventList::with_capacity(1);
+        raw.push(brightness);
+        assert!(!unsupported_host_brightness(&raw,0),"direct registered MIDI2 brightness remains supported");
+        let mut normalized = EventList::with_capacity(1);
+        let token = normalized.try_push_exact_token(ExactEvent::new(64,ExactEventBody::NormalizedNoteExpression {
+            expression_id:5,address:address(11),value:1. })).unwrap();
+        normalized.try_push_exact_companion(token,brightness).unwrap();
+        assert!(unsupported_host_brightness(&normalized,0));
+        let mut overflow = EventList::with_capacity(1);
+        let exact = ExactEvent::new(64,ExactEventBody::NoteExpression { expression_id:5,address:address(10),value:1. });
+        overflow.try_push_exact_token(exact).unwrap();
+        assert!(overflow.try_push_exact_token(exact).is_err());
+        // Adapter fallback after the exact lane fills has no origin metadata.
+        overflow.push(brightness);
+        assert!(overflow.exact_for_event(0).is_none());
+        assert!(unsupported_host_brightness(&overflow,0));
+    }
+
     #[test]
     fn host_notes_light_until_the_host_lets_them_go() {
         let p = SamplerParams::new();
