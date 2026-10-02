@@ -646,9 +646,12 @@ pub(crate) fn script_excerpt(source: &str, slot: u32, line: u32, column: Option<
     found.then(|| serde_json::to_value(excerpt).unwrap())
 }
 
-/// Readable alongside the structured record, for Logs details and clipboard.
+/// Readable alongside issue maps or serialized events. LogEvent.details is
+/// serialized as `data`; older/support callers may also use `details`.
 pub(crate) fn excerpt_text(issue: &Value) -> Option<&str> {
     issue["source_excerpt"]["text"].as_str()
+        .or_else(|| issue["data"]["source_excerpt"]["text"].as_str())
+        .or_else(|| issue["details"]["source_excerpt"]["text"].as_str())
 }
 
 /// Called after a diagnostic snapshot returns from the audio thread.
@@ -1826,7 +1829,7 @@ mod tests {
         for file in ["events.jsonl", "journal.jsonl"] {
             let rows = std::fs::read_to_string(bundle.join(file)).unwrap();
             assert!(rows.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .any(|event| excerpt_text(&event["details"]).is_some_and(|text| text.contains(">     37 | set_key_color(128,$KEY_COLOR_RED)"))), "{file} retains authorized source context");
+                .any(|event| excerpt_text(&event).is_some_and(|text| text.contains(">     37 | set_key_color(128,$KEY_COLOR_RED)"))), "{file} retains authorized source context");
         }
         assert!(
             report["journal_source_sessions"]
