@@ -146,7 +146,7 @@ impl Listed {
 struct LibraryDrag(String);
 
 pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
-    let view = cx.view;
+    let view = &cx.view;
     let multis = cx.state.multis;
     // Which library each file is in, worked out once per scan.
     let (files, shelf, kind, grouped) = &mut cx.state.libraries;
@@ -602,7 +602,7 @@ fn list(
     recent: &[PathBuf],
     needle: &str,
 ) -> Vec<Row> {
-    let view = cx.view;
+    let view = &cx.view;
     let words: Vec<&str> = needle.split_whitespace().collect();
     // A preset's library and its folders inside it.
     let place = |path: &Path| -> (String, String) {
