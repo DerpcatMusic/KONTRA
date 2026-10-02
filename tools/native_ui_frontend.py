@@ -162,6 +162,9 @@ def main():
     parser.add_argument("resources", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
+    source_root, target_root = args.resources.resolve(), args.output.resolve()
+    if source_root.is_relative_to(target_root) or target_root.is_relative_to(source_root):
+        raise ValueError("lowered output must be separate from source resources")
     count, size = 0, 0
     for source in sorted(args.resources.rglob("*.nui")):
         if source.is_symlink():
