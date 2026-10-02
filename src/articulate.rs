@@ -941,7 +941,9 @@ pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
             if matches!(ev,In::HostChoke(_)) { e.host_note_choke(pattern); } else { e.host_note_off(pattern); }
             let mut index = 0;
             while let Some((note,_)) = e.host_note_at(index) {
-                if pattern.matches(note) && !e.host_key_held(note.channel,note.key) {
+                let (channel,key)=r.held[note.channel as usize][note.key as usize];
+                if pattern.matches(note) && !e.host_key_held(note.channel,note.key)
+                    && !e.input_key_down_from(note.channel,channel,key) {
                     r.held[note.channel as usize][note.key as usize] = (NONE,NONE);
                     r.held_from[note.channel as usize] &= !(1u128 << note.key);
                 }
@@ -1259,6 +1261,36 @@ mod tests {
                 assert_eq!(e.dropped_commands(),0);
                 assert!(e.script().unwrap().diagnostics().is_empty());
             }
+        }
+    }
+
+    #[test]
+    fn exact_choke_preserves_anonymous_key_and_route_ownership() {
+        use crate::engine::{HostNote,HostPattern};
+        for scripted in [false,true] {
+            let (mut e,mut r)=three_articulation_part();
+            if !scripted { e.set_script(None); }
+            let note=HostNote { port:0,channel:2,key:60,id:10,clap:true };
+            let pattern=HostPattern { port:0,channel:2,key:60,id:10,clap:true };
+            let mut actions=|| {
+                feed(&mut r,&mut e,In::HostOn(note,100),7);
+                feed(&mut r,&mut e,In::NoteOn(2,60,100),7);
+                render(&mut e);
+                feed(&mut r,&mut e,In::HostChoke(pattern),7);
+                assert!(e.key_down(7,60),"exact choke cleared the anonymous held key");
+                assert!(e.input_key_down_from(2,7,60));
+                assert_ne!(r.held[2][60],(NONE,NONE));
+                assert_ne!(r.held_from[2] & (1u128<<60),0);
+                r.set_route(Route::default());
+                feed(&mut r,&mut e,In::NoteOff(2,60),7);
+                render(&mut e);
+                assert!(!e.input_key_down_from(2,7,60),"anonymous key-up lost its captured route");
+                assert!(!e.key_down(7,60));
+            };
+            #[cfg(feature="plugin")]
+            assert_eq!(crate::plugin::tests::allocations(actions),0);
+            #[cfg(not(feature="plugin"))]
+            actions();
         }
     }
 
