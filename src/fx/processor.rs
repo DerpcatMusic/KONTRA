@@ -18,7 +18,7 @@ pub const DIRECT: u8 = BUSES as u8;
 
 /// An effect rack a script addresses (`$NI_INSERT_BUS`, `$NI_SEND_BUS`,
 /// `$NI_MAIN_BUS`, `$NI_BUS_OFFSET + n`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Rack {
     Insert,
     Send,
@@ -27,7 +27,7 @@ pub enum Rack {
 }
 
 /// A script-controllable effect or bus value. Gains are linear.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FxParam {
     /// 1.0 bypasses the slot.
     Bypass,

@@ -101,6 +101,8 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let at = |a: Option<*const ()>| a.map_or(0, |p| p as usize);
     let mut h = DefaultHasher::new();
     slot.hash(&mut h);
+    v.live_revisions.hash(&mut h);
+    for edit in v.edited_values() { edit.hash(&mut h); }
     at(v.interface.as_ref().map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
     at(instrument_of(cx, slot).map(|i| Arc::as_ptr(i).cast())).hash(&mut h);
     (Arc::as_ptr(&v.pictures) as usize, &v.interface_status).hash(&mut h);

@@ -439,7 +439,7 @@ fn plan(name: &str, sources: &[Source], progress: &dyn Fn(&str)) -> Plan {
             let loop_range = s
                 .loop_range
                 .filter(|(_, end)| *end <= s.frames)
-                .map(|(start, end)| Loop { start: start as usize, end: end as usize, until_release: false, crossfade: 0 });
+                .map(|(start, end)| Loop { start: start as usize, end: end as usize, alternating: false, until_release: false, crossfade: 0 });
             zones.push((
                 Zone { group, low_key, high_key, root, low_velocity, high_velocity, tune: roots[n].1, loop_range, ..Default::default() },
                 n,

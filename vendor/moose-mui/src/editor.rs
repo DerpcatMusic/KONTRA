@@ -100,6 +100,7 @@ pub struct MuiEditor<P: Params> {
     keys: Option<window::KeyHook>,
     /// [`MuiEditor::hide_pointer`], handed to each window it opens.
     pointer: Option<window::PointerHook>,
+    timing: Option<window::NativeTimingHook>,
 }
 
 /// Whole logical points, as the host's window API takes them.
@@ -153,6 +154,7 @@ impl<P: Params> MuiEditor<P> {
             window: None,
             keys: None,
             pointer: None,
+            timing: None,
         }
     }
 
@@ -200,6 +202,13 @@ impl<P: Params> MuiEditor<P> {
     #[must_use]
     pub fn hide_pointer(mut self, f: impl FnMut(&Ui) -> bool + Send + 'static) -> Self {
         self.pointer = Some(Arc::new(Mutex::new(f)));
+        self
+    }
+
+    /// Opt-in native callback capture: one ten-second primary drag report per window.
+    #[must_use]
+    pub fn native_timing(mut self, hook: Option<window::NativeTimingHook>) -> Self {
+        self.timing = hook;
         self
     }
 
@@ -251,6 +260,9 @@ impl<P: Params> Editor for MuiEditor<P> {
         }
         if let Some(pointer) = &self.pointer {
             self.requests.on_pointer(Arc::clone(pointer));
+        }
+        if let Some(timing) = &self.timing {
+            self.requests.on_native_timing(Arc::clone(timing));
         }
         self.window = window::open(
             &ParentWindow(parent),

@@ -390,6 +390,72 @@ fn the_browser_finds_by_library_and_folder() {
 }
 
 #[test]
+fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths() {
+    use crate::ksp::Value;
+    let script = |caption| format!("on init\nmake_perfview\ndeclare @caption\n@caption := \"{caption}\"\nmake_persistent(@caption)\nread_persistent_var(@caption)\ndeclare ui_label $l(1,1)\nset_text($l,@caption)\nend on");
+    let instrument = |caption| import::Instrument { scripts: vec![script(caption)], ..Default::default() };
+    let old = instrument("Areia");
+    let (old_rt, errors) = load_scripts(&old, Vec::new(), 48000.);
+    assert!(errors.is_empty());
+    let old_state = old_rt.unwrap().persistence();
+    let new = instrument("CHORUS");
+    let caption = |saved| {
+        let (rt, errors) = load_scripts(&new, saved, 48000.);
+        assert!(errors.is_empty());
+        rt.unwrap().live().interface.unwrap().controls[0].properties["$CONTROL_PAR_TEXT"].clone()
+    };
+    assert_eq!(caption(old_state.clone()), Value::Text("Areia".into()), "same-named persistent variables contaminate another preset");
+    for dropped in [false, true] {
+        let p = Arc::new(SamplerParams::new());
+        let original = Part {
+            path: "/virtual/Library/Piano.nki".into(),
+            name: "Old name".into(),
+            group: 7,
+            script_state: serde_json::to_string(&old_state).unwrap(),
+            ir_settings: vec![crate::fx::IrSlotSettings {
+                rack: crate::fx::Rack::Insert, slot: 0,
+                settings: crate::fx::params::IrSettings::DEFAULT, file: None,
+            }],
+            port: 1, channel: 3, output: 4, output_manual: true,
+            gain: -8., pan: 0.25, tune: 2., aux: 5, aux_gain: -12., view: 1,
+            mpe: crate::articulate::Mpe { zone: crate::articulate::Zone::Lower, ..Default::default() },
+            ..Default::default()
+        };
+        {
+            let mut selection = p.selection.write().unwrap();
+            selection.parts = vec![original.clone()];
+            selection.order = vec![0];
+        }
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.files = Arc::new(vec![original.path.clone().into(), "/virtual/Library/Strings.nki".into()]);
+            view.shelf = Arc::new(crate::library::Shelf::under("/virtual", &view.files));
+        }
+        let mut h = Harness::new(&p, 1180., 760.);
+        if dropped {
+            let at = center(&h.ui, "header-0");
+            assert!(native_files(&p, &Default::default(), &h.ui, at, &["/virtual/Library/Strings.nki".into()], true));
+        } else {
+            // The header's preset navigation calls the same Cx::replace as
+            // the browser. Its live surface avoids a hidden folder row.
+            assert!(h.ui.scene().unwrap().surface("preset-next-0").is_some());
+            h.press("preset-next-0");
+        }
+        let part = p.selection.read().unwrap().parts[0].clone();
+        let mut expected = original;
+        expected.path = "/virtual/Library/Strings.nki".into();
+        expected.group = u32::MAX;
+        expected.name.clear();
+        expected.script_state.clear();
+        expected.ir_settings.clear();
+        assert!(part == expected, "replacement dropped={dropped}: actual {}, expected {}",
+            serde_json::to_string(&part).unwrap(), serde_json::to_string(&expected).unwrap());
+        let restored = serde_json::from_str(&part.script_state).unwrap_or_else(|_| new.script_state.clone());
+        assert_eq!(caption(restored), Value::Text("CHORUS".into()), "replacement uses its own authored defaults");
+    }
+}
+
+#[test]
 fn rack_interactions() {
     let p = Arc::new(SamplerParams::new());
     {
@@ -1572,10 +1638,26 @@ fn scripted_part(script: &str) -> Arc<SamplerParams> {
     p
 }
 
+/// Synthetic callback publication follows production's immutable snapshots.
+fn publish_interface(p: &SamplerParams, edit: impl FnOnce(&mut crate::ksp::Interface)) {
+    let mut view = p.shared.view.lock().unwrap();
+    let part = &mut view.parts[0];
+    let mut next = part.interface.as_ref().unwrap().as_ref().clone();
+    edit(&mut next);
+    part.interface = Some(Arc::new(next));
+    let (interface, keys) = part.live_revisions.unwrap_or_default();
+    part.live_revisions = Some((interface.wrapping_add(1), keys));
+}
+
 /// Control `n`'s value in part 0's performance view.
 fn control_value(p: &SamplerParams, n: usize) -> crate::ksp::Value {
     let view = p.shared.view.lock().unwrap();
-    view.parts[0].interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"].clone()
+    let part = &view.parts[0];
+    if let Some((_, value)) = part.edited_values().find(|&(control, _)| control == n) {
+        crate::ksp::Value::Int(value)
+    } else {
+        part.interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"].clone()
+    }
 }
 
 /// An articulation's keyswitch is typed or played in place, its channel and
@@ -1760,7 +1842,7 @@ fn the_original_view_edits_the_script_and_switches() {
 }
 
 /// Offsets select a pixel window across page boundaries, rather than rounding
-/// to a frame, and an in-place script update invalidates the view memo.
+/// to a frame, and a new script snapshot invalidates the view memo.
 #[test]
 fn original_wallpaper_pixel_offsets_render_across_frames() {
     let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $v(0,100)\nmove_control_px($v,30,40)\nset_skin_offset(170)\nend on");
@@ -1779,10 +1861,7 @@ fn original_wallpaper_pixel_offsets_render_across_frames() {
     let painted = pixels(&h.ui, 1180, 760);
     assert_eq!(&painted[above..above+4], &[220, 20, 40, 255], "the window begins in the first frame");
     assert_eq!(&painted[below..below+4], &[20, 40, 220, 255], "the same window crosses into the next frame");
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).skin_offset = 271;
-    }
+    publish_interface(&p, |i| i.skin_offset = 271);
     h.idle(2);
     let moved = pixels(&h.ui, 1180, 760);
     assert_eq!(&moved[above..above+4], &[20, 40, 220, 255], "a changed offset redraws without changing the selected animation state");
@@ -1801,23 +1880,20 @@ fn original_tables_render_dense_values_at_the_declared_range() {
     }));
     let mut h = Harness::new(&p, 1180., 760.);
     let empty = pixels(&h.ui, 1180, 760);
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        let i = Arc::make_mut(view.parts[0].interface.as_mut().unwrap());
+    publish_interface(&p, |i| {
         assert_eq!(i.controls[0].properties["$CONTROL_PAR_MIN_VALUE"], crate::ksp::Value::Int(-100));
         assert_eq!(i.controls[0].properties["$CONTROL_PAR_MAX_VALUE"], crate::ksp::Value::Int(100));
         i.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::IntArray(vec![50, -50, 100, -100]));
-    }
+    });
     h.idle(2);
     let filled = pixels(&h.ui, 1180, 760);
     let changed = empty.chunks_exact(4).zip(filled.chunks_exact(4)).filter(|(a,b)| a != b).count();
     assert!(changed > 4000, "the numeric table paints bars, including its negative half: {changed}");
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).controls[0].properties.insert(
+    publish_interface(&p, |i| {
+        i.controls[0].properties.insert(
             "$CONTROL_PAR_VALUE".into(), crate::ksp::Value::RealArray(vec![50., -50., 100., -100.])
         );
-    }
+    });
     h.idle(2);
     assert!(filled == pixels(&h.ui, 1180, 760), "integer and real snapshots paint the same values");
 }
@@ -1858,9 +1934,9 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
 fn automatic_performance_scale_fits_rack_height_and_explicit_zoom_stays_scrollable() {
     let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(540)\ndeclare ui_slider $bottom(0,100)\nmove_control_px($bottom,40,500)\nend on");
     p.selection.write().unwrap().parts[0].view = 1;
+    publish_interface(&p, |i| i.width = 732);
     {
         let mut view = p.shared.view.lock().unwrap();
-        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).width = 732;
         let image = Arc::new(moose::mui::mui::scene::Image::rgba(732,608,vec![40;732*608*4]).unwrap());
         view.parts[0].wallpaper = Some(Arc::new(artwork::Picture {frames:vec![image],stretch:[false;2],atlas:None}));
     }
@@ -2719,4 +2795,37 @@ fn frame_views_leave_large_persistence_json_with_the_loader() {
     let view = p.shared.view.lock().unwrap();
     assert_eq!(view.parts[0].script_state.len(), 1_000_000);
     assert_eq!(view.parts[0].script_state.as_ptr(), address, "the loader retains the original allocation");
+}
+
+/// Pending values redraw without copying callback snapshots or treating an
+/// edit's settling timestamp as a visible change.
+#[test]
+fn optimistic_values_keep_callback_snapshots_immutable_and_invalidate_views() {
+    use std::hash::{DefaultHasher, Hasher};
+    let p = scripted_part("on init\nmake_perfview\ndeclare ui_slider $s(0,100)\nend on");
+    let signature = |view: &View| {
+        let mut h = DefaultHasher::new();
+        fingerprint(view, &mut h);
+        h.finish()
+    };
+    let (retained, before) = {
+        let view = p.shared.view.lock().unwrap();
+        (view.parts[0].interface.clone().unwrap(), signature(&view))
+    };
+    p.shared.edit_control(0, 0, 42);
+    let mut view = p.shared.view.lock().unwrap();
+    assert!(Arc::ptr_eq(&retained, view.parts[0].interface.as_ref().unwrap()));
+    assert_eq!(retained.controls[0].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(0));
+    assert_eq!(view.parts[0].control_value(0), Some(42.));
+    let edited = signature(&view);
+    assert_ne!(edited, before, "a pending value wakes an idle editor");
+    view.parts[0].edited[0].2 = Instant::now();
+    assert_eq!(signature(&view), edited, "timestamps do not cause redraws");
+    view.parts[0].edited.clear();
+    assert_eq!(view.parts[0].control_value(0), Some(0.));
+    assert_eq!(signature(&view), before, "settling removes the overlay");
+    view.parts[0].live_revisions = Some((1,0));
+    let revision = signature(&view);
+    view.parts[0].live_revisions = Some((2,0));
+    assert_ne!(signature(&view), revision, "a reused snapshot address cannot hide a new source revision");
 }

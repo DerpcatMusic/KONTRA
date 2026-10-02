@@ -142,6 +142,7 @@ builtins! {
     GetEventIds "get_event_ids" [A] 0 Void;
     IgnoreController "ignore_controller" [] 0 Void;
     SetController "set_controller" [I I] 0 Void;
+    SetNoteController "set_note_controller" [I I I] 0 Void;
     SetRpn "set_rpn" [I I] 0 Void;
     SetNrpn "set_nrpn" [I I] 0 Void;
     ResetRlsTrigCounter "reset_rls_trig_counter" [I] 0 Void;
@@ -272,6 +273,9 @@ pub enum SysVar {
     CcNum,
     PitchBend,
     PolyAtNum,
+    NcNum,
+    NcNote,
+    NcValue,
     RpnAddress,
     RpnValue,
     MidiChannel,
@@ -290,6 +294,8 @@ pub enum SysVar {
     DurationSixteenthTriplet,
     DurationBar,
     SongPosition,
+    SignatureNum,
+    SignatureDenom,
     TransportRunning,
     Tempo,
     CurrentScriptSlot,
@@ -310,6 +316,9 @@ pub fn sys_var(name: &str) -> Option<SysVar> {
         "$CC_NUM" => CcNum,
         "$PITCH_BEND" => PitchBend,
         "$POLY_AT_NUM" => PolyAtNum,
+        "$NC_NUM" => NcNum,
+        "$NC_NOTE" => NcNote,
+        "$NC_VALUE" => NcValue,
         "$RPN_ADDRESS" => RpnAddress,
         "$RPN_VALUE" => RpnValue,
         "$MIDI_CHANNEL" => MidiChannel,
@@ -328,6 +337,8 @@ pub fn sys_var(name: &str) -> Option<SysVar> {
         "$DURATION_SIXTEENTH_TRIPLET" => DurationSixteenthTriplet,
         "$DURATION_BAR" => DurationBar,
         "$NI_SONG_POSITION" => SongPosition,
+        "$SIGNATURE_NUM" => SignatureNum,
+        "$SIGNATURE_DENOM" => SignatureDenom,
         "$NI_TRANSPORT_RUNNING" => TransportRunning,
         "$NI_BPM" | "$NI_TEMPO" => Tempo,
         "$CURRENT_SCRIPT_SLOT" => CurrentScriptSlot,
@@ -384,6 +395,8 @@ impl SysArray {
 pub const CC_SLOTS: usize = 130;
 pub const VCC_PITCH_BEND: i32 = 128;
 pub const VCC_MONO_AT: i32 = 129;
+/// Distinct from the 512 registered/assignable per-note controller numbers.
+pub const VNC_PITCH_BEND: i32 = 512;
 
 /// `get_folder` arguments. Kontakt's values are not published; only
 /// `get_folder` reads them.
@@ -446,6 +459,7 @@ pub mod cb {
     pub const PERSISTENCE_CHANGED: i32 = 11;
     pub const ASYNC_COMPLETE: i32 = 12;
     pub const UI_CONTROLS: i32 = 13;
+    pub const NOTE_CONTROLLER: i32 = 14;
 }
 
 pub mod signal {
@@ -585,6 +599,7 @@ pub fn constant(name: &str) -> Option<i32> {
         "$ALL_GROUPS" => ALL_GROUPS,
         "$ALL_EVENTS" => ALL_EVENTS,
         "$VCC_PITCH_BEND" => VCC_PITCH_BEND,
+        "$VNC_PITCH_BEND" => VNC_PITCH_BEND,
         "$VCC_MONO_AT" => VCC_MONO_AT,
         "$INST_ICON_ID" => INST_ICON_ID,
         "$INST_WALLPAPER_ID" => INST_WALLPAPER_ID,
@@ -603,6 +618,7 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_CB_TYPE_NOTE" => cb::NOTE,
         "$NI_CB_TYPE_RELEASE" => cb::RELEASE,
         "$NI_CB_TYPE_CONTROLLER" => cb::CONTROLLER,
+        "$NI_CB_TYPE_NOTE_CONTROLLER" => cb::NOTE_CONTROLLER,
         "$NI_CB_TYPE_POLY_AT" => cb::POLY_AT,
         "$NI_CB_TYPE_RPN" => cb::RPN,
         "$NI_CB_TYPE_NRPN" => cb::NRPN,
@@ -638,7 +654,6 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_VL_TMPRO_HQ" | "$NI_VL_TMRPO_HQ" => VL_TMPRO_HQ,
         // A plugin with an editor, in 4/4 unless the host says otherwise.
         "$NI_KONTAKT_IS_HEADLESS" | "$NI_KONTAKT_IS_STANDALONE" => 0,
-        "$SIGNATURE_NUM" | "$SIGNATURE_DENOM" => 4,
         _ => return None,
     })
 }
