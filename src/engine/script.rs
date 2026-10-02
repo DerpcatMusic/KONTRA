@@ -427,7 +427,7 @@ impl KspEngine for Host<'_> {
         let bank = self.bank?;
         let normal = bank.matching_zones(command.channel, note, velocity, false, &groups).take(super::MAX_VOICES);
         let releases = bank.matching_zones(command.channel, note, velocity, true, &groups)
-            .take(if whole { super::MAX_VOICES } else { 0 });
+            .take(if whole || !self.player.native_release_triggers { super::MAX_VOICES } else { 0 });
         Some(normal.chain(releases).map(|z| bank.plays[z as usize].zone_id as i32).max().unwrap_or(-1))
     }
 
@@ -475,7 +475,9 @@ impl Player {
                     frozen_expression: expression,
                 };
                 self.start(bank, &event, id, false, defaults);
-                if whole {
+                // With the system release script bypassed, the script owns
+                // when its selected release groups start, for every duration.
+                if whole || !self.native_release_triggers {
                     self.start(bank, &event, id, true, defaults);
                 }
             }
