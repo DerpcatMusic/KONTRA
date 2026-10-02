@@ -1160,6 +1160,7 @@ fn native_scene(i: &Instrument, rt: Option<&Runtime>, live: &mut Option<Box<Live
             if let Some(live) = live { rt.prepare_native_controls(live); }
             for live in pages.buffers.lock().unwrap().iter_mut() { rt.prepare_native_controls(live); }
             trace.detail("native_ui", scene.identity.as_str());
+            if let Some(version) = &scene.target_version { trace.detail("native_ui_target_version", version.as_str()); }
             trace.detail("native_ui_modules", scene.resources.len());
             trace.detail("native_ui_scope", "legacy text/rectangle/tap subset; images and remaining APIs unavailable");
             (Some(Arc::new(Mutex::new(scene))), String::new())
@@ -4666,6 +4667,8 @@ pub(crate) mod tests {
         std::fs::write(resources.join("main.nui"), include_str!("../tests/fixtures/native-ui-scene/main.nui")).unwrap();
         std::fs::write(resources.join("components/init.nui"), include_str!("../tests/fixtures/native-ui-scene/components/card.nui")).unwrap();
         std::fs::write(resources.join("context.nui"), include_str!("../tests/fixtures/native-ui-scene/context.nui")).unwrap();
+        std::fs::create_dir_all(directory.join("Resources/info")).unwrap();
+        std::fs::write(directory.join("Resources/info/library.json"),r#"{"general":{"kontaktTargetVersion":"8.1"}}"#).unwrap();
         let i = Instrument { path: directory.join("fixture.nki"), scripts: vec![
             "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Amount(0,100)\n$Amount := 17\nend on\non ui_control($Amount)\n$Amount := $Amount*2\nend on".into(),
             "on init\nmake_perfview\ndeclare ui_slider $Remote(0,100)\n$Remote := 9\ndeclare ui_slider $Amount(0,100)\n$Amount := 90\nend on\non ui_control($Remote)\n$Remote := $Remote+10\nend on".into()
@@ -4677,6 +4680,15 @@ pub(crate) mod tests {
         let (scene,status)=native_scene(&i,Some(&rt),&mut live,&pages,&mut trace);
         assert!(status.is_empty(),"{status}");let scene=scene.unwrap();
         assert_eq!(scene.lock().unwrap().resources.len(),3);
+        assert_eq!(scene.lock().unwrap().identity,"native_ui/main.nui");
+        assert_eq!(scene.lock().unwrap().target_version.as_deref(),Some("8.1"));
+        std::fs::create_dir_all(directory.join("Resources/komplete_scripts")).unwrap();
+        std::fs::write(directory.join("Resources/komplete_scripts/main.kscript"),"not Lua: this must never enter the legacy interpreter").unwrap();
+        let typed=Instrument {path:i.path.clone(),scripts:vec!["on init\nload_native_ui(\"main.kscript\")\nexpose_controls\nend on".into()],..Default::default()};
+        let (typed_rt,typed_errors)=crate::engine::load_scripts(&typed,Vec::new(),48000.);
+        assert!(typed_errors.is_empty(),"{typed_errors:?}");
+        let error=format!("{:#}",Scene::prepare(&typed.path,&typed_rt.unwrap()).unwrap_err());
+        assert!(error.contains("Unsupported typed Komplete UI entry main.kscript")&&error.contains("8.1"),"{error}");
         let p=SamplerParams::new();let mut dsp=Dsp::default();
         let epoch={let mut view=p.shared.view.lock().unwrap();
             let epoch=next_epoch(&mut view,0,None,live);

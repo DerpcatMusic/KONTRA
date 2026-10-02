@@ -53,12 +53,14 @@ pub(crate) struct Scene {
     gestures: Vec<Option<Function>>,
     identities: BTreeMap<String, usize>,
     pub identity: String,
+    pub target_version: Option<String>,
     pub resources: Vec<(String, Vec<u8>)>,
 }
 impl std::fmt::Debug for Scene {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeUiScene")
             .field("identity", &self.identity)
+            .field("target_version", &self.target_version)
             .finish_non_exhaustive()
     }
 }
@@ -80,7 +82,35 @@ impl Scene {
         let Some((name, exposed)) = rt.native_ui_request()? else {
             return Ok(None);
         };
-        ensure!(module_name(name), "Invalid native UI root name {name:?}");
+        // load_native_ui establishes legacy intent for a bare module name;
+        // explicit typed entries are resolved and rejected before Lua sees bytes.
+        let extension = name.rsplit('.').next().unwrap_or_default();
+        let requested =
+            if extension.eq_ignore_ascii_case("nui") || extension.eq_ignore_ascii_case("kscript") {
+                name.to_owned()
+            } else {
+                format!("{name}.nui")
+            };
+        let entry = crate::resources::resolve_ui_entry(instrument, &requested, 1024 * 1024)
+            .map_err(anyhow::Error::msg)?
+            .with_context(|| format!("Native UI entry missing: {requested}"))?;
+        ensure!(
+            entry.dialect == crate::resources::UiDialect::LegacyLua,
+            "Unsupported typed Komplete UI entry {} (target version {:?}); legacy Lua execution is unavailable for .kscript",
+            entry.file,
+            entry.target_version
+        );
+        let root_name = entry
+            .file
+            .strip_suffix(".nui")
+            .context("Legacy native UI entry extension")?
+            .replace('/', ".");
+        ensure!(
+            module_name(&root_name),
+            "Invalid native UI root name {name:?}"
+        );
+        let identity = format!("native_ui/{}", entry.file);
+        let target_version = entry.target_version.clone();
         ensure!(
             exposed,
             "Native UI controls have not been exposed with expose_controls"
@@ -213,6 +243,7 @@ impl Scene {
         let loading = Arc::new(Mutex::new(BTreeSet::<String>::new()));
         struct Modules {
             resources: crate::resources::Resources,
+            entry: Option<crate::resources::UiEntry>,
             count: usize,
             bytes: usize,
             sealed: bool,
@@ -220,6 +251,7 @@ impl Scene {
         }
         let modules = Arc::new(Mutex::new(Modules {
             resources: crate::resources::Resources::of(instrument, "native_ui"),
+            entry: Some(entry),
             count: 0,
             bytes: 0,
             sealed: false,
@@ -253,23 +285,31 @@ impl Scene {
                         return Err(invalid("Native UI resource budget exceeded"));
                     }
                     let limit = (8 * 1024 * 1024 - modules.bytes).min(1024 * 1024);
-                    let bytes = match modules
-                        .resources
-                        .read_limited(&file, limit)
-                        .map_err(invalid)?
+                    let bytes = if modules
+                        .entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.file == file)
                     {
-                        Some(bytes) => bytes,
-                        None => {
-                            file = format!("{path}/init.nui");
-                            modules
-                                .resources
-                                .read_limited(&file, limit)
-                                .map_err(invalid)?
-                                .ok_or_else(|| {
-                                    invalid(format!(
-                                        "Native UI module missing: {path}.nui or {file}"
-                                    ))
-                                })?
+                        modules.entry.take().unwrap().source
+                    } else {
+                        match modules
+                            .resources
+                            .read_limited(&file, limit)
+                            .map_err(invalid)?
+                        {
+                            Some(bytes) => bytes,
+                            None => {
+                                file = format!("{path}/init.nui");
+                                modules
+                                    .resources
+                                    .read_limited(&file, limit)
+                                    .map_err(invalid)?
+                                    .ok_or_else(|| {
+                                        invalid(format!(
+                                            "Native UI module missing: {path}.nui or {file}"
+                                        ))
+                                    })?
+                            }
                         }
                     };
                     if bytes.len() > 1024 * 1024
@@ -303,7 +343,7 @@ impl Scene {
                 result
             })?,
         )?;
-        let module: Value = lua.globals().get::<Function>("require")?.call(name)?;
+        let module: Value = lua.globals().get::<Function>("require")?.call(root_name)?;
         let root = match module {
             Value::Function(f) => f.call::<Table>(())?,
             Value::Table(t) => t,
@@ -322,7 +362,8 @@ impl Scene {
             revision,
             gestures: Vec::new(),
             identities: BTreeMap::new(),
-            identity: name.into(),
+            identity,
+            target_version,
             resources,
         };
         let root = scene.snapshot().context("Native UI scene validation")?;
