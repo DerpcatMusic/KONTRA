@@ -220,6 +220,17 @@ fn auxiliary_meter_setup_preserves_the_rest_of_init() {
     );
     let wrong = initialize("on init\ndeclare ui_label $label(1,1)\nattach_level_meter(get_ui_id($label),-1,-1,0,-1)\nend on", 0, 8).unwrap_err();
     assert!(wrong.to_string().contains("requires a ui_level_meter"));
+    // Documented named chains are symbolic identities, not bus indices.
+    for chain in ["$NI_LEVEL_METER_MAIN", "$NI_LEVEL_METER_GROUP", "$NI_LEVEL_METER_INSERT", "15"] {
+        let source = format!("on init\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter),-1,0,0,{chain})\ndeclare ui_switch $ready\n$ready := 1\nend on");
+        let ui = initialize(&source,0,8).unwrap();
+        assert_eq!(prop(&ui,1,"$CONTROL_PAR_VALUE"),"1");
+        assert!(ui.diagnostics.iter().any(|d|d.contains("meter attachments are unavailable")));
+    }
+    for chain in ["$NI_LEVEL_METER_UNKNOWN", "16"] {
+        let source = format!("on init\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter),-1,0,0,{chain})\nend on");
+        assert!(initialize(&source,0,8).unwrap_err().to_string().contains("Invalid level meter attachment"));
+    }
 }
 
 #[test]

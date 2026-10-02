@@ -1079,7 +1079,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             if var.ui.as_deref() != Some("ui_level_meter") {
                 return Err(Fault("attach_level_meter requires a ui_level_meter"));
             }
-            if group < -1 || slot < -1 || !(0..16).contains(&channel) || !(-4..16).contains(&generic) {
+            let named_chain = matches!(m.prog.symbol_name(generic),
+                Some("$NI_LEVEL_METER_MAIN" | "$NI_LEVEL_METER_GROUP" | "$NI_LEVEL_METER_INSERT"));
+            if group < -1 || slot < -1 || !(0..16).contains(&channel)
+                || !((-4..16).contains(&generic) || named_chain) {
                 return Err(Fault("Invalid level meter attachment"));
             }
             // ponytail: no per-group/FX taps yet; preserve initialization and
