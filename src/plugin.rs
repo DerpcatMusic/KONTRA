@@ -3840,12 +3840,15 @@ mod tests {
             frames.push(bytes[at..at + 8 + len].to_vec());
             at += 8 + len;
         }
-        // Snapshot is appended: old codecs omit the last keyed frame, or
-        // write the preceding field payloads in their original order.
-        frames.pop();
+        // Fields before snapshot retain their original positional order.
+        // Later appended fields also default when restoring that older state.
+        let mut snapshot_field = Vec::new();
+        part.snapshot.write_field(&mut snapshot_field);
+        let old_count = frames.iter().position(|frame| frame[8..] == snapshot_field).unwrap();
+        frames.truncate(old_count);
         let mut old_keyed = bytes[..8].to_vec();
-        old_keyed[4..8].copy_from_slice(&(count - 1).to_le_bytes());
-        let mut legacy = (count - 1).to_le_bytes().to_vec();
+        old_keyed[4..8].copy_from_slice(&(old_count as u32).to_le_bytes());
+        let mut legacy = (old_count as u32).to_le_bytes().to_vec();
         for frame in frames { old_keyed.extend(&frame); legacy.extend(&frame[4..]); }
         let mut old = part.clone(); old.snapshot.clear();
         assert!(Part::deserialize(&old_keyed) == Some(old.clone()));
