@@ -800,6 +800,8 @@ pub struct Runtime {
     /// Host-block budget survives internal render segments and MIDI splits.
     audio_block: bool,
     audio_time: Option<std::time::Duration>,
+    /// Configured instrument channel for callbacks with no performance input.
+    service_channel: u8,
 }
 
 impl Runtime {
@@ -828,6 +830,7 @@ impl Runtime {
             changes: 0,
             audio_block: false,
             audio_time: None,
+            service_channel: 0,
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
             native_state: Default::default(),
@@ -1535,6 +1538,11 @@ impl Runtime {
     }
 
     // ---- Host input ------------------------------------------------------------------
+
+    /// Set by the configured part route, independently of MIDI ingress.
+    pub(crate) fn set_service_channel(&mut self, channel: u8) {
+        self.service_channel = channel.min(15);
+    }
 
     /// Set by the MIDI ingress; queued work and suspended callbacks retain it.
     pub fn set_midi_channel(&mut self, channel: u8) {
@@ -2519,6 +2527,10 @@ impl Runtime {
     }
 
     fn spawn(&mut self, engine: &mut dyn KspEngine, entry: u32, mut ctx: Ctx) {
+        if matches!(ctx.kind, Kind::UiControl | Kind::Cb(Callback::UiControls | Callback::UiUpdate
+            | Callback::Listener | Callback::PgsChanged | Callback::PersistenceChanged | Callback::AsyncComplete)) {
+            ctx.channel = self.service_channel;
+        }
         let Some(i) = self.free_threads.pop() else {
             self.env
                 .note("KSP callback pool exhausted; callback dropped");
