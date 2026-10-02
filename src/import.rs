@@ -734,7 +734,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
                 let state = g.wavetable_source().map_err(anyhow::Error::from)
                     .and_then(|state| wavetable_params(&state.context("Missing wavetable source record")?))
                     .with_context(|| format!("Group {} {:?}: native wavetable source v0x106, mode 9", groups.len(), v.name))?;
-                warnings.push(format!("{}: native wavetable position, forms, phase and modulation settings are decoded; opaque common/nested state and modulation tuning units remain unapplied. Playback supports tracked 2048-frame cycles, linear and ASYM2MP forms; randomized phase, active inharmonic/audio-rate modulation and other forms are rejected. Native quality {} is retained; playback uses cubic cycle interpolation; native High/Best anti-aliasing algorithms are not implemented or verified", v.name, state.quality));
+                warnings.push(format!("{}: native wavetable position, forms, phase and modulation settings are decoded; opaque common/nested state and modulation tuning units remain unapplied. Playback supports tracked 2048-frame cycles, linear and ASYM2MP forms; randomized phase, active inharmonic/audio-rate modulation and other forms are rejected. Native quality {} is retained; playback uses cubic cycle interpolation for all qualities. Native pitch-dependent table preparation and quality-specific interpolation/anti-aliasing algorithms are not implemented or verified", v.name, state.quality));
                 Some(state)
             }
             Ok(_) => None,
