@@ -6465,9 +6465,6 @@ end on"#;
         assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$legato"], crate::ksp::Value::Int(1),
             "Panic must preserve edited instrument controls");
     }
-    /// The keys lit by the host's notes go out with its all-notes-off and
-    /// all-sound-off (what a host sends on stop), and when it resets the
-    /// plugin, with or without parts to play them.
     #[test]
     fn exact_host_brightness_does_not_alias_a_new_note_or_escape_through_overflow_without_heap() {
         use moose::core::{ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
@@ -6549,6 +6546,9 @@ end on"#;
         assert!(unsupported_host_brightness(&overflow,0));
     }
 
+    /// The keys lit by the host's notes go out with its all-notes-off and
+    /// all-sound-off (what a host sends on stop), and when it resets the
+    /// plugin, with or without parts to play them.
     #[test]
     fn host_notes_light_until_the_host_lets_them_go() {
         let p = SamplerParams::new();
