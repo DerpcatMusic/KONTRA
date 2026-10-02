@@ -172,7 +172,8 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
     let clear: Vec<bool> = drawn.iter().map(|(s, _)| s.picture.as_ref().is_some_and(|p| assets.clear(p))).collect();
     // Structural skin pairing: an otherwise empty animated label can draw
     // the face of a transparent control occupying the same rectangle. Hide
-    // only a unique pair; ambiguous artwork keeps its authored appearance.
+    // only a uniquely matched control. Coincident animated layers form one
+    // skin only when their frame count and phase agree; other artwork stays.
     let controls: Vec<usize> = drawn.iter().enumerate()
         .filter(|(n, (s, _))| matches!(s.kind, Kind::Knob | Kind::Slider) && clear[*n] && !over_wave(drawn, s))
         .map(|(n, _)| n).collect();
@@ -194,8 +195,16 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
         }
     }
     let mut paired = vec![false; drawn.len()];
-    for (label, control) in pairs {
-        paired[label] = counts[label] == 1 && counts[control] == 1;
+    for &(label, control) in &pairs {
+        let face = &drawn[label].0;
+        let c = &interface.controls[face.control];
+        paired[label] = counts[label] == 1 && pairs.iter().filter(|(_, target)| *target == control).all(|&(other, _)| {
+            let sibling = &drawn[other].0;
+            counts[other] == 1
+                && inside(face, sibling) >= 0.9 * (face.w * face.h).max(sibling.w * sibling.h)
+                && face.picture.as_ref().map(|p| p.frames.len()) == sibling.picture.as_ref().map(|p| p.frames.len())
+                && int(c, "$CONTROL_PAR_PICTURE_STATE") == int(&interface.controls[sibling.control], "$CONTROL_PAR_PICTURE_STATE")
+        });
     }
     let mut faces: Vec<Face> = Vec::with_capacity(drawn.len());
     for (n, (s, frame)) in drawn.iter().enumerate() {
@@ -517,10 +526,18 @@ mod tests {
 
     #[test]
     fn animated_skin_pairs_replace_one_face_and_preserve_other_labels() {
-        // Real macro-page geometry: a 180-frame, 732x71 face behind a
-        // transparent 734x73 slider. No library pictures are needed.
+        // Real Main-page geometry: two coincident 180-frame, 732x71
+        // animated skin layers behind one transparent 734x73 slider. The
+        // second declares 800x67 but its nonstretch picture controls its size.
         let mut u = crate::ksp::initialize("on init\nmake_perfview\nset_ui_height_px(300)\ndeclare ui_label $face(1,1)\nset_text($face,\"\")\nmove_control_px($face,0,87)\nset_control_par_str(get_ui_id($face),$CONTROL_PAR_PICTURE,\"face\")\ndeclare ui_slider $macro(0,1000000)\nmove_control_px($macro,0,86)\nset_control_par_str(get_ui_id($macro),$CONTROL_PAR_PICTURE,\"transparent\")\nend on", 0, 8).unwrap();
         u.width = 800;
+        u.controls[0].properties.insert("$CONTROL_PAR_PICTURE_STATE".into(), Value::Int(101));
+        let mut name = u.controls[0].clone();
+        name.id += 2;
+        name.properties.insert("$CONTROL_PAR_POS_Y".into(), Value::Int(86));
+        name.properties.insert("$CONTROL_PAR_WIDTH".into(), Value::Int(800));
+        name.properties.insert("$CONTROL_PAR_HEIGHT".into(), Value::Int(67));
+        u.controls.push(name);
         let image = |w, h, alpha| Arc::new(Image::rgba(w, h, vec![alpha; w as usize * h as usize * 4]).unwrap());
         let pictures: HashMap<_, _> = [
             ("face".into(), Arc::new(Picture { frames: vec![image(732,71,255);180], stretch: [false;2], atlas: None })),
@@ -534,16 +551,22 @@ mod tests {
         let p = plans(&u);
         assert_eq!(p[0].face, Face::Clear, "paired old thumb disappears");
         assert_eq!(p[1].face, Face::Normal, "the native fader remains");
+        assert_eq!(p[2].face, Face::Clear, "the synchronized name-skin layer also disappears");
+        // A label ambiguous between two controls must retain its artwork.
+        let mut duplicate_control = u.controls[1].clone();
+        duplicate_control.id += 3;
+        u.controls.push(duplicate_control);
+        assert_ne!(plans(&u)[0].face, Face::Clear);
+        assert_ne!(plans(&u)[2].face, Face::Clear);
+        u.controls.pop();
         u.controls[0].properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text("Macro".into()));
         assert_ne!(plans(&u)[0].face, Face::Clear, "regular text labels remain");
         u.controls[0].properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text(String::new()));
-        let mut duplicate = u.controls[0].clone();
-        duplicate.id += 2;
-        u.controls.push(duplicate);
+        u.controls[2].properties.insert("$CONTROL_PAR_PICTURE_STATE".into(), Value::Int(100));
         let p = plans(&u);
-        assert_ne!(p[0].face, Face::Clear, "ambiguous skins remain");
+        assert_ne!(p[0].face, Face::Clear, "unrelated animation phases remain");
         assert_ne!(p[2].face, Face::Clear);
-        u.controls.pop();
+        u.controls[2].properties.insert("$CONTROL_PAR_PICTURE_STATE".into(), Value::Int(101));
         let mut waveform = u.controls[1].clone();
         waveform.id += 2;
         waveform.kind = "ui_waveform".into();
