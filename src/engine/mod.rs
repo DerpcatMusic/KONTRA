@@ -416,6 +416,13 @@ impl Engine {
         }
     }
 
+    /// Apply the host's transport before processing this block's callbacks.
+    pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64) {
+        if let Some((rt, mut host)) = self.scripted(self.script_channel) {
+            rt.set_host_transport(&mut host, playing, tempo, beats);
+        }
+    }
+
     /// The instrument's effects, and what it played past its own output.
     pub fn fx(&self) -> &FxProcessor {
         &self.fx

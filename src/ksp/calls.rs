@@ -876,7 +876,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     l.beats = value;
                     l.timer_us = 0;
                 }
-                _ => l.transport = value != 0,
+                _ => {
+                    let bit = if signal == b::signal::TRANSP_START { 1 } else { 2 };
+                    if value == 0 { l.transport &= !bit; } else { l.transport |= bit; }
+                }
             }
             l.generation = l.generation.wrapping_add(1);
             let name = match signal {
