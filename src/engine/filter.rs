@@ -89,8 +89,10 @@ pub(crate) fn filter_type(id: i32) -> Option<(Shape, u8)> {
         103 => ladder(High, 4, true),
         104 => ladder(Band, 2, true),
         105 => ladder(Band, 4, true),
-        106 => ladder(Low, 4, false),
-        107 => ladder(High, 4, false),
+        // NI's Daft filters have a 2-pole (12 dB/octave) response.
+        // Gain/resonance still use the shared linear ladder proxy.
+        106 => ladder(Low, 2, false),
+        107 => ladder(High, 2, false),
         _ => return None,
     };
     Some((Shape::Model(model), model.sections()))

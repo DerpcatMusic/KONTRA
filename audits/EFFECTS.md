@@ -294,6 +294,20 @@ as peaking sections, Talk morphing A-E-I-O-U, Size shifting, Sharp narrowing the
 (`FORMANT_TALK/SHARP/SIZE`); phaser: four first-order all-passes summed with the input
 (its feedback is not modelled).
 
+### Daft response correction (2026-10-02)
+
+The [NI filter reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference)
+describes Daft LP and HP as two-pole filters with a 12 dB/octave slope.
+Subtype 106/107 now selects one two-pole section, correcting the previous
+four-pole mapping. ANALOG STRINGS has 283 stored type-106 group slots, including
+261 active slots with the same cutoff/resonance settings.
+
+**Approximation remains:** this is the existing linear ladder proxy, not the
+nonlinear Massive algorithm. Its resonance law and pass-band attenuation have
+not been matched to Kontakt measurements; the slope correction does not claim
+gain, resonance, saturation, or waveform parity. No new gain/resonance law was
+invented to conceal that gap.
+
 Rack effects (`src/fx/blocks.rs`; stored values are what presets hold, scripts set
 normalized x = value/1e6 through a law):
 
