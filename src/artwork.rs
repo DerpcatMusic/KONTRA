@@ -479,8 +479,8 @@ fn resample(image: &Image, w: u32, h: u32, x0: f64, y0: f64, cw: f64, ch: f64) -
 pub fn banner(image: &Image, w: u32, h: u32, blurred: bool) -> Option<Image> {
     // The level every banner sits at, how much of its contrast and color
     // stays, and the brightest it gets (of 255).
-    const LEVEL: f32 = 52.;
-    const CONTRAST: f32 = 0.45;
+    const LEVEL: f32 = 64.;
+    const CONTRAST: f32 = 0.55;
     const COLOR: f32 = 0.55;
     const PEAK: f32 = 96.;
     let crop = thumbnail(image, w, h)?;
