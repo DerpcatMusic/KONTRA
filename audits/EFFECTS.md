@@ -79,7 +79,7 @@ All layouts match the byte length of every local instance (no instance falls bac
 | Send Levels | 0x51 | `u32 n=8, n x send level (linear, per send slot)`, `u32 m=17, m x f32` (all 1.0, unknown) | high for sends (0.25/0.128/0.0625 = -12/-18/-24 dB) |
 | Stereo Modeller | 0x70 | `spread, pan, pseudo(b)` (`$ENGINE_PAR_STEREO*` order) | medium; spread stored 0 on active ones, read as offset from 100% width (-1 mono .. +1 200%) - **low** |
 | Reverb (Galois) | 0x10 | 10 normalized values in `$ENGINE_PAR_RV2_*` order: `type, time, size, damping, mod, diffusion, predelay, high_cut, low_shelf, stereo` | medium: 10 values = Reverb2's 10 params, send-only, typical 0/0.37/0.5x4/0/0/0/1. Raum has 15 params, so 0x59 is *not* Raum |
-| Convolution | 0x70 | `sampleRateDecFactor(f), convolutionBlockSize(i), predelay_ms(f); ER: length_ratio, highpass_hz, lowpass_hz; LR: same three; er_lr_XPoint(f); Reverse(b), AutoGain(b), PreserveLengthIR(b), BypassLatencyCompensation(b), EnvActive(b); counted envelope times, counted envelope levels (dB); ir_index(i)` | native named XML bindings and the binary reader share the same member offsets; crossover units and automatic behavior remain unverified |
+| Convolution | 0x70 | `sampleRateDecFactor(f), convolutionBlockSize(i), predelay_ms(f); ER: length_ratio, highpass_hz, lowpass_hz; LR: same three; er_lr_XPoint(f); Reverse(b), AutoGain(b), PreserveLengthIR(b), BypassLatencyCompensation(b), EnvActive(b); counted envelope times, counted envelope levels (dB); ir_index(i)` | native named XML bindings and the binary reader share the same member offsets; explicit crossover is a source-duration fraction, negative automatic behavior remains unsupported |
 | Solid G-EQ | 0x10 | `lf_gain, lf_freq, lf_bell(b), lmf_gain, lmf_freq, lmf_q, hmf_gain, hmf_freq, hmf_q, hf_gain, hf_freq, hf_bell(b)` (normalized, 0.5 = 0 dB) | medium (10 f + 2 b = KSP list minus the HP/LP filters added later) |
 | Compressor | 0x70 | `param_0 (0), threshold_db (-24, -18.6), ratio (0.25, 0.205), attack_ms (50, 8.8), release_ms (300, 86), link(b)` | medium for dB/ms fields, low for ratio encoding |
 | Delay (legacy) | 0x51 | `time_ms 500, damping, pan, feedback, time_unit (-1), time_free_ms 500, param_6, flag_7(b)` | low beyond time |
@@ -146,12 +146,26 @@ adjacent values, multiple rates and zero audio-thread allocations; this gate is
 validation-pending. Worker padding uses the bilinear digital pole decay rather
 than an analog cutoff estimate, which truncated tails near Nyquist. The padding
 is a finite-tail approximation; the native prepared IR length is not established.
-Unequal early/late preparation and its automatic boundary
-remain unimplemented and explicitly reported.
+Unequal early/late preparation outside the explicit unit-size path below, and
+automatic boundaries, remain unimplemented and explicitly reported.
 Non-unit IR Size remains a resampling approximation and now warns even when the
 early and late values agree. The native regional preparation uses a time-stretcher
 with separate length and pitch/rate inputs; plain resampling is not equivalent.
 Auto Gain remains based on this approximated kernel and reports that limitation.
+
+Explicit nonnegative crossovers now prepare separate early and late filtered
+responses when both Size ratios are 1, the IR and host rates match, and native
+processing is full-rate (including Auto at that matching rate). The native setter
+rounds the crossover fraction over the source duration; Reverse mirrors this
+boundary. A 50 ms overlap uses a cosine-squared early weight and complementary
+late weight, with its phase preserved when the overlap clips at either end.
+At unit lengths recombination keeps the original IR duration. Envelope shaping,
+predelay and Auto Gain follow recombination; dry audio remains independent.
+An authored asymmetric stereo impulse gate compares independent direct-form
+filters, overlap endpoints, Reverse, Auto Gain, predelay, dry mixing and allocation
+guards, and checks the mismatched-rate fallback. Validation is pending. Automatic
+crossovers, non-unit time stretching, decimated processing and other rate pairs
+retain explicit limitations. This does not establish Kontakt sonic equivalence.
 
 Large accumulated peaks alone do not establish preset correctness or justify a limiter.
 
@@ -185,8 +199,8 @@ run) the old processor keeps running at its original rate.
   evenly over the head blocks, so the only per-tail-block spike is one FFT pair. Verified
   against direct convolution to 1e-4 for block sizes 1, 37, 64, 128, 300. IR resampled
   linearly to the host rate, with native Reverse and predelay applied. Equal ER/LR band
-  filters are applied; unequal cuts and length ratios retain explicit approximation
-  diagnostics because the native early/late boundary is unresolved. One asymmetric
+  filters are applied; unequal cuts outside the explicit unit-size path and
+  non-unit length ratios retain explicit approximation diagnostics. One asymmetric
   stereo impulse regression checks reversal, preserved gain, predelay, rate conversion
   and zero audio-thread allocations; its release-build validation is pending.
 - **Reverb**: 8-line FDN, Hadamard feedback, per-line damping, quadrature-LFO delay
