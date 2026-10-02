@@ -462,6 +462,10 @@ pub struct Shared {
     /// IR loads requested by scripts: part, instrument generation, script epoch.
     ir_requests: ArrayQueue<(usize, u64, u64, crate::engine::IrRequest)>,
     ir_ready: ArrayQueue<(usize, u64, IrHandoff)>,
+    zone_requests: ArrayQueue<ZoneRequest>,
+    zone_ready: ArrayQueue<ZoneReady>,
+    zone_pending: Mutex<Option<ZoneRequest>>,
+    zone_chains: Mutex<Vec<ZoneChain>>,
     array_requests: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
     array_ready: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
     array_retired: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
@@ -744,6 +748,10 @@ impl Default for Shared {
             file_selections: ArrayQueue::new(16),
             ir_requests: ArrayQueue::new(64),
             ir_ready: ArrayQueue::new(64),
+            zone_requests: ArrayQueue::new(crate::engine::zone::QUEUE),
+            zone_ready: ArrayQueue::new(64),
+            zone_pending: Mutex::default(),
+            zone_chains: Mutex::default(),
             array_requests: ArrayQueue::new(64),
             array_ready: ArrayQueue::new(64),
             array_retired: ArrayQueue::new(64),
@@ -1037,6 +1045,91 @@ struct Retired {
     routes: Option<Vec<Route>>,
     plan: Option<Plan>,
     diagnostic: Option<AudioDiagnostics>,
+    zone: Option<Box<crate::engine::zone::Prepared>>,
+    zone_preload: Option<(usize,u64,u64,Box<Bank>)>,
+}
+
+type ZoneRequest = (usize,u64,u64,crate::engine::zone::Job);
+type ZoneReady = (usize,u64,u64,Box<crate::engine::zone::Prepared>);
+struct ZoneChain {
+    part: usize, generation: u64, epoch: u64,
+    context: std::sync::Weak<crate::engine::zone::Context>,
+    state: Arc<crate::engine::zone::State>,
+}
+
+/// The serialized service worker batches consecutive edits without discarding
+/// their unique completion IDs. Playback preparation never runs on audio.
+fn load_zone_maps(params: &SamplerParams) {
+    let current = |part: usize,generation: u64,epoch: u64| {
+        let view = params.shared.view.lock().unwrap();
+        view.parts.get(part).is_some_and(|v| v.script_epoch == epoch
+            && params.shared.part(part).is_some_and(|p|p.generation.load(Ordering::Acquire)==generation)
+            && v.instrument.as_ref().is_some_and(|i|crate::cache::current(&i.dependencies)))
+    };
+    let mut chains = params.shared.zone_chains.lock().unwrap();
+    chains.retain(|chain| chain.context.strong_count() != 0 && current(chain.part,chain.generation,chain.epoch));
+    while !params.shared.zone_ready.is_full() {
+        let first = params.shared.zone_pending.lock().unwrap().take().or_else(||params.shared.zone_requests.pop());
+        let Some((part,generation,epoch,job)) = first else { break };
+        if !current(part,generation,epoch) { continue; }
+        let context = Arc::downgrade(&job.context);
+        let mut jobs = vec![job];
+        while jobs.len() < crate::engine::zone::QUEUE {
+            let Some((p,g,e,next)) = params.shared.zone_requests.pop() else { break };
+            if (p,g,e)==(part,generation,epoch) && Arc::ptr_eq(&next.context,&jobs[0].context) { jobs.push(next); }
+            else { *params.shared.zone_pending.lock().unwrap() = Some((p,g,e,next)); break; }
+        }
+        let chain = chains.iter().position(|c| (c.part,c.generation,c.epoch)==(part,generation,epoch) && c.context.ptr_eq(&context));
+        let base = chain.map_or_else(||jobs[0].base.clone(),|i|chains[i].state.clone());
+        let prepared = crate::engine::zone::Prepared::build(jobs,base,&||!current(part,generation,epoch));
+        if !current(part,generation,epoch) { continue; }
+        if let Some(error) = &prepared.error {
+            let source = params.shared.view.lock().unwrap().parts[part].instrument.clone();
+            if let Some(source) = source { crate::diagnostics::resource(&source.path,"zone mapping",error); }
+        }
+        if prepared.success {
+            let state = prepared.resulting_state();
+            match chain {
+                Some(i) => chains[i].state = state,
+                None => chains.push(ZoneChain {part,generation,epoch,context,state}),
+            }
+        }
+        params.shared.zone_ready.push((part,generation,epoch,prepared)).ok().unwrap();
+    }
+}
+
+/// Installation and callback delivery are distinct: every status1 follows the
+/// snapshot swap. Limit delivery to64 IDs per block, retaining the rest.
+fn finish_zone_maps(s: &mut Dsp,p: &SamplerParams) {
+    if s.zone_completion.is_none() && !p.shared.discard.is_full() {
+        s.zone_completion = p.shared.zone_ready.pop();
+    }
+    let Some((part,generation,epoch,prepared)) = &mut s.zone_completion else { return };
+    let current = s.rack.parts.get(*part).is_some() && *epoch == s.script_epoch[*part]
+        && part_atoms(&s.shared_parts,&p.shared,*part).is_some_and(|p|p.generation.load(Ordering::Acquire)==*generation)
+        && s.installed_generation[*part] == *generation;
+    if !current {
+        if !p.shared.discard.is_full() {
+            let (_,_,_,prepared) = s.zone_completion.take().unwrap();
+            p.shared.discard.push(Retired {zone:Some(prepared),..Default::default()}).ok().unwrap();
+        }
+        return;
+    }
+    if !prepared.installed && prepared.completed == 0 {
+        if p.shared.discard.is_full() { return; }
+        prepared.success = s.rack.parts[*part].install_zone_map(prepared);
+        // Mark a failed attempt too, so it never installs after callbacks began.
+        prepared.installed = true;
+    }
+    for _ in 0..64 {
+        let Some(edit) = prepared.edits.get(prepared.completed).copied() else { break };
+        if !s.rack.parts[*part].finish_zone_edit(edit,prepared.success) { break; }
+        prepared.completed += 1;
+    }
+    if prepared.completed == prepared.edits.len() && !p.shared.discard.is_full() {
+        let (_,_,_,prepared) = s.zone_completion.take().unwrap();
+        p.shared.discard.push(Retired {zone:Some(prepared),..Default::default()}).ok().unwrap();
+    }
 }
 
 /// Array reads, writes and disposal share the serialized file-service worker.
@@ -1930,8 +2023,32 @@ impl BackgroundTask for Load {
         drain_audio_diagnostics(params);
         params.shared.flush_ready();
         load_arrays(params);
+        load_zone_maps(params);
         let mut freed = false;
-        while params.shared.discard.pop().is_some() {
+        while let Some(mut retired) = params.shared.discard.pop() {
+            if let Some((part,generation,epoch,mut bank)) = retired.zone_preload.take() {
+                let current = || {
+                    let view=params.shared.view.lock().unwrap();
+                    view.parts.get(part).is_some_and(|v|v.script_epoch==epoch
+                        && params.shared.part(part).is_some_and(|p|p.generation.load(Ordering::Acquire)==generation)
+                        && v.instrument.as_ref().is_some_and(|i|crate::cache::current(&i.dependencies)))
+                };
+                if current() {
+                    let chains=params.shared.zone_chains.lock().unwrap();
+                    let latest=chains.iter().rev().find(|c|(c.part,c.generation,c.epoch)==(part,generation,epoch)
+                        && c.context.upgrade().is_some_and(|context|bank.zone_preload_matches(&context)));
+                    let result=latest.map_or(Ok(()),|chain| {
+                        let context=chain.context.upgrade().unwrap();
+                        bank.rebase_zone_preload(&context,chain.state.clone(),&||!current())
+                    });
+                    if result.is_ok() && current() {
+                        params.shared.publish_part((part,generation,Handoff::Bank(bank)));
+                    } else if let Err(error)=result {
+                        let source=params.shared.view.lock().unwrap().parts[part].instrument.clone();
+                        if let Some(source)=source { crate::diagnostics::resource(&source.path,"zone preload",&format!("{error:#}")); }
+                    }
+                }
+            }
             freed = true;
         }
         if freed {
@@ -2548,6 +2665,7 @@ impl BackgroundTask for Load {
         }
         load_irs(params);
         load_arrays(params);
+        load_zone_maps(params);
         if params.shared.diagnostic_free.is_empty() {
             let count = params.shared.grown.load(Ordering::Acquire) as usize;
             for _ in 0..2 { let _ = params.shared.diagnostic_free.force_push(AudioDiagnostics::with_parts(count)); }
@@ -2823,6 +2941,7 @@ pub struct Dsp {
     /// a block: slot, epoch and [`Runtime::changes`] at the start, buffer, progress.
     live: Option<Lent<Box<Live>>>,
     snapshot: Option<Lent<Box<PersistenceSnapshot>>>,
+    zone_completion: Option<ZoneReady>,
     /// Per slot, epoch and changes the buffers last refreshed whole hold:
     /// while the scripts do not run they are current and need no refresh.
     live_seen: Vec<(u64, u64)>,
@@ -2851,7 +2970,7 @@ impl Default for Dsp {
     fn default() -> Self {
         Self { rack: Box::default(), until_poll: 0, audition_left: vec![0; RACK_SLOTS],
             script_epoch: vec![0; RACK_SLOTS], installed_generation: vec![0; RACK_SLOTS],
-            live: None, snapshot: None, live_seen: vec![(0, 0); RACK_SLOTS],
+            live: None, snapshot: None, zone_completion: None, live_seen: vec![(0, 0); RACK_SLOTS],
             snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
             align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
@@ -3352,9 +3471,12 @@ impl PluginLogic for Sampler {
                     fx: Some(engine.set_fx(fx)),
                     ..Retired::default()
                 },
-                Handoff::Bank(bank) if current => Retired {
-                    bank: engine.upgrade_bank(bank),
-                    ..Retired::default()
+                Handoff::Bank(bank) if current => {
+                    if engine.zone_upgrade_ready(&bank) {
+                        Retired { bank:engine.upgrade_bank(bank),..Retired::default() }
+                    } else {
+                        Retired { zone_preload:Some((slot,generation,s.script_epoch[slot],bank)),..Retired::default() }
+                    }
                 },
                 Handoff::Script { script, epoch } if current => {
                     engine.reset(rate);
@@ -3418,6 +3540,7 @@ impl PluginLogic for Sampler {
             };
             let _ = p.shared.discard.push(Retired { ir, ..Retired::default() });
         }
+        finish_zone_maps(s,p);
         while !p.shared.array_retired.is_full() {
             let Some((slot, generation, epoch, request)) = p.shared.array_ready.pop() else { break };
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire)
@@ -3693,6 +3816,11 @@ impl PluginLogic for Sampler {
             while !p.shared.array_retired.is_full() {
                 let Some(request) = engine.pop_retired_array_job() else { break };
                 p.shared.array_retired.push((part, generation, s.script_epoch[part], request)).ok().unwrap();
+                arrays_queued = true;
+            }
+            while !p.shared.zone_requests.is_full() {
+                let Some(request) = engine.pop_zone_job() else { break };
+                p.shared.zone_requests.push((part,generation,s.script_epoch[part],request)).ok().unwrap();
                 arrays_queued = true;
             }
             while !p.shared.ir_requests.is_full() {
@@ -6390,6 +6518,150 @@ end on"#.into()], ..Default::default() };
         assert_eq!((restored.values[2] * 1e6).round() as i32, 1000000);
         assert_eq!((restored.values[0] * 1e6).round() as i32, 783203);
         println!("Size and Distance restored from DAW/multi state at 44100 Hz");
+    }
+
+    #[test]
+    fn zone_remaps_install_real_playback_before_async_resume_and_reject_stale_jobs_without_heap() {
+        use crate::{audio::Sample, import::{Group, Zone, Wavetable}, ksp::engine::ZonePar};
+        let groups = vec![Group { source_mode: Some(9), wavetable: Some(Wavetable::default()), ..Group::default() }, Group::default()];
+        let path=std::env::temp_dir().join(format!("kontra-zone-remap-{}.wav",std::process::id()));
+        let zones = vec![Zone {sample:path.clone(),group:1,low_key:55,high_key:55,..Zone::default()},
+            Zone {sample:path.clone(),group:1,low_key:59,high_key:59,..Zone::default()}];
+        let frames: Vec<_> = (0..4096).map(|i|[(std::f32::consts::TAU*(i%2048) as f32/2048.).sin()*0.125;2]).collect();
+        let mut wav=Vec::new();
+        wav.extend_from_slice(b"RIFF");wav.extend_from_slice(&(36u32+frames.len() as u32*8).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&3u16.to_le_bytes());wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&48000u32.to_le_bytes());wav.extend_from_slice(&384000u32.to_le_bytes());
+        wav.extend_from_slice(&8u16.to_le_bytes());wav.extend_from_slice(&32u16.to_le_bytes());
+        wav.extend_from_slice(b"data");wav.extend_from_slice(&(frames.len() as u32*8).to_le_bytes());
+        for frame in &frames {for value in frame {wav.extend_from_slice(&value.to_le_bytes());}}
+        std::fs::write(&path,wav).unwrap();
+        let bank = |zones: Vec<Zone>| Bank::from_samples(groups.clone(),zones,
+            vec![(path.clone(),Sample {rate:48000,frames:frames.clone()})]).unwrap();
+        let script = r#"on init
+set_snapshot_type(3)
+declare ui_switch $select
+declare ui_label $status(1,1)
+declare %jobs[3]
+declare $done
+declare $resumed
+declare $success
+make_persistent($done)
+make_persistent($resumed)
+make_persistent($success)
+end on
+on ui_control($select)
+%jobs[0] := set_zone_par(1,$ZONE_PAR_GROUP,0)
+%jobs[1] := set_zone_par(1,$ZONE_PAR_LOW_KEY,60)
+%jobs[2] := set_zone_par(1,$ZONE_PAR_HIGH_KEY,60)
+set_text($status,"pending")
+wait_async(%jobs[0])
+wait_async(%jobs[1])
+wait_async(%jobs[2])
+inc($resumed)
+set_text($status,get_zone_par(1,$ZONE_PAR_GROUP) & ":" & get_zone_par(1,$ZONE_PAR_LOW_KEY) & ":" & get_zone_par(1,$ZONE_PAR_HIGH_KEY))
+end on
+on async_complete
+inc($done)
+$success := $success+$NI_ASYNC_EXIT_STATUS
+end on"#;
+        let i = Instrument { groups:groups.clone(),zones:zones.clone(),scripts:vec![script.into()],..Instrument::default() };
+        let (rt,errors) = crate::engine::load_scripts(&i,Vec::new(),48000.);
+        assert!(errors.is_empty(),"{errors:?}");
+        let p = SamplerParams::default();
+        let mut s = Dsp::default();
+        s.script_epoch[0]=7;
+        s.installed_generation[0]=0;
+        { let mut v=p.shared.view.lock().unwrap();v.parts[0].instrument=Some(Arc::new(i));v.parts[0].script_epoch=7; }
+        let source=p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
+        s.rack.parts[0].set_bank(Some(Box::new(Bank::load(&source).unwrap())));
+        s.rack.parts[0].set_script(rt);
+        let mut old_reference=Engine::default();old_reference.set_bank(Some(Box::new(bank(zones.clone()))));
+        s.rack.parts[0].note_on(0,59,100);old_reference.note_on(0,59,100);
+        s.rack.parts[0].render(&mut [0.;128],&mut [0.;128]);old_reference.render(&mut [0.;128],&mut [0.;128]);
+        let scalar=|e:&Engine,name:&str|e.script().unwrap().persistence()[0][name].clone();
+        assert_eq!(allocations(||s.rack.parts[0].ui_control(0,0,1)),0);
+        assert_eq!(scalar(&s.rack.parts[0],"$resumed"),crate::ksp::Value::Int(0));
+        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        assert_eq!(allocations(|| {
+            while let Some(job)=s.rack.parts[0].pop_zone_job() { p.shared.zone_requests.push((0,0,7,job)).ok().unwrap(); }
+        }),0);
+        assert_eq!(p.shared.zone_requests.len(),3);
+        let mut ram_fill=Box::new(Bank::load(&source).unwrap());
+        assert!(!s.rack.parts[0].zone_upgrade_ready(&ram_fill),"pending writes postpone a baseline RAM fill");
+        load_zone_maps(&p); // real serialized preparation, outside the audio allocation gate
+        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(0),"preparation alone cannot complete IDs");
+        assert_eq!(allocations(||finish_zone_maps(&mut s,&p)),0);
+        let e=&s.rack.parts[0];
+        assert_eq!(scalar(e,"$done"),crate::ksp::Value::Int(3));
+        assert_eq!(scalar(e,"$success"),crate::ksp::Value::Int(3));
+        assert_eq!(scalar(e,"$resumed"),crate::ksp::Value::Int(1));
+        assert_eq!(e.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],"0:60:60");
+        for (par,value) in [(ZonePar::Group,0),(ZonePar::LowKey,60),(ZonePar::HighKey,60)] {assert_eq!(e.bank().unwrap().zone_par(1,par),Some(value));}
+        assert!(e.script().unwrap().diagnostics().is_empty(),"{:?}",e.script().unwrap().diagnostics());
+        // Independent reference: old sampler keeps playing; a separately
+        // authored WT mapping contributes the new oscillator at MIDI60.
+        let mut mapped=zones.clone();mapped[1].group=0;mapped[1].low_key=60;mapped[1].high_key=60;
+        let mut new_reference=Engine::default();new_reference.set_bank(Some(Box::new(bank(mapped))));
+        let (mut al,mut ar,mut oldl,mut oldr,mut newl,mut newr)=([0.;2048],[0.;2048],[0.;2048],[0.;2048],[0.;2048],[0.;2048]);
+        assert_eq!(allocations(|| {
+            s.rack.parts[0].note_on(0,60,100);new_reference.note_on(0,60,100);
+            s.rack.parts[0].render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
+        }),0);
+        assert!(newl.iter().any(|v|v.abs()>0.01),"remapped WT really produces PCM");
+        assert!(al.iter().zip(oldl.iter().zip(&newl)).chain(ar.iter().zip(oldr.iter().zip(&newr))).all(|(a,(old,new))|(a-old-new).abs()<1e-5),"new WT mapping plus untouched old sampler voice matches independent reference");
+        assert!(s.rack.parts[0].voice_census().iter().any(|v|v.group==0 && v.wavetable.is_some()));
+        // A RAM fill built from original source mappings must be rebased,
+        // retaining both mapped keys and the already playing WT window.
+        { let chains=p.shared.zone_chains.lock().unwrap();let chain=chains.last().unwrap();
+          ram_fill.rebase_zone_preload(&chain.context.upgrade().unwrap(),chain.state.clone(),&||false).unwrap(); }
+        assert!(s.rack.parts[0].zone_upgrade_ready(&ram_fill));
+        let mut old_bank=None;
+        assert_eq!(allocations(|| {
+            old_bank=s.rack.parts[0].upgrade_bank(ram_fill);
+            s.rack.parts[0].render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
+        }),0);
+        assert!(old_bank.is_some());drop(old_bank);
+        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::LowKey),Some(60));
+        assert!(al.iter().zip(oldl.iter().zip(&newl)).chain(ar.iter().zip(oldr.iter().zip(&newr))).all(|(a,(old,new))|(a-old-new).abs()<1e-5),"RAM fill retains remapped playback and active voice phase");
+        // Also prepare a real zero-head sampler bank into a complete resident
+        // WT table: the file decoder, not a synthetic silence fallback, runs.
+        let bare=Bank::load_bare(&source).unwrap();
+        let jobs=[(ZonePar::Group,0),(ZonePar::LowKey,60),(ZonePar::HighKey,60)].into_iter().enumerate().map(|(id,(par,value))|
+            bare.zone_job(crate::ksp::engine::ZoneEdit {zone:1,par,value,slot:0,id:id as i32}).unwrap()).collect::<Vec<_>>();
+        let base=jobs[0].base.clone();let mut prepared=crate::engine::zone::Prepared::build(jobs,base,&||false);
+        assert!(prepared.success,"{:?}",prepared.error);
+        let mut bare=bare;assert!(bare.install_zone_map(&mut prepared));
+        let mut bare_play=Engine::default();bare_play.set_bank(Some(Box::new(bare)));
+        let mut fresh_reference=Engine::default();let mut mapped=zones.clone();mapped[1].group=0;mapped[1].low_key=60;mapped[1].high_key=60;
+        fresh_reference.set_bank(Some(Box::new(bank(mapped))));
+        assert_eq!(allocations(|| {bare_play.note_on(0,60,100);fresh_reference.note_on(0,60,100);
+            bare_play.render(&mut al,&mut ar);fresh_reference.render(&mut newl,&mut newr);}),0);
+        assert!(al.iter().zip(&newl).chain(ar.iter().zip(&newr)).all(|(a,b)|(a-b).abs()<1e-5));
+        // A new source bank may share dimensions, but an old prepared job
+        // must not edit it or claim successful completion.
+        while p.shared.discard.pop().is_some() {}
+        assert_eq!(allocations(||s.rack.parts[0].ui_control(0,0,0)),0);
+        while let Some(job)=s.rack.parts[0].pop_zone_job() {p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
+        load_zone_maps(&p);
+        let replacement=Box::new(bank(zones.clone()));
+        let mut retired=None;
+        assert_eq!(allocations(|| {retired=s.rack.parts[0].set_bank(Some(replacement));finish_zone_maps(&mut s,&p);}),0);
+        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
+        assert_eq!(scalar(&s.rack.parts[0],"$success"),crate::ksp::Value::Int(3),"stale source completions fail");
+        drop(retired);
+        // Runtime epoch replacement suppresses delivery entirely.
+        while p.shared.discard.pop().is_some() {}
+        s.rack.parts[0].ui_control(0,0,1);
+        while let Some(job)=s.rack.parts[0].pop_zone_job(){p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
+        load_zone_maps(&p);
+        s.script_epoch[0]=8;
+        assert_eq!(allocations(||finish_zone_maps(&mut s,&p)),0);
+        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
+        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

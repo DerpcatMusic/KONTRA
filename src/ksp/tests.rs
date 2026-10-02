@@ -1966,13 +1966,11 @@ fn ui_and_debugger_commands_are_accepted() {
 
 #[test]
 fn unsupported_builtins_degrade_per_call() {
-    // `get_zone_par` is not implemented: init runs on, reads give 0, and an
-    // unknown built-in array reads 0 instead of failing the callback.
+    // Unproved zone fields report their limitation and read zero; an unknown
+    // built-in array also reads zero instead of failing the callback.
     let ui = initialize("on init\ndeclare ui_label $l(1,1)\nset_text($l, \"z\" & get_zone_par(0, $ZONE_PAR_VOLUME) & %NI_FUTURE_ARRAY[3])\nend on\non note\nset_zone_par(0, 0, 0)\nend on", 0, 0).unwrap();
     assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "z00");
-    for name in ["get_zone_par", "set_zone_par"] {
-        assert!(ui.diagnostics.iter().any(|d| d.starts_with(&format!("Unsupported KSP function: {name}"))), "{:?}", ui.diagnostics);
-    }
+    assert!(ui.diagnostics.iter().any(|d| d.contains("zone parameter is not implemented; mapping unchanged")), "{:?}", ui.diagnostics);
     assert!(ui.diagnostics.iter().any(|d| d.starts_with("Unsupported KSP variable: %NI_FUTURE_ARRAY")));
 }
 
