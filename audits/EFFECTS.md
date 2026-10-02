@@ -354,11 +354,14 @@ parameter laws, with independent detector state per voice. This is the generic m
 above, with the same stated confidence; it does not establish Kontakt algorithm or
 sonic equivalence. Unknown Amplifier metadata retains existing post-Amplifier routing
 with a diagnostic and does not enable a new compressor. Active pre-Amplifier inserts
-use their own voice processing; the shared post-Amplifier linear optimization remains
-for chains where it is applicable. The unfiltered SIMD path is unchanged.
+use their own voice processing, as do inline gains/mixers before a later active filter
+and pending inline matrix ramps: their section states are not the canonical states
+used by the shared lane. The shared post-Amplifier linear optimization remains for
+chains where it is applicable. The unfiltered SIMD path is unchanged.
 
 The fixed voice state adds 32 bytes for the drive/compressor enum, 128 bytes for
-per-slot gain/mixer smoothing and a small type revision counter. Live filter subtype
+per-slot gain/mixer smoothing and a small type revision counter, and removes the old
+16-byte aggregate smoothing matrix. Live filter subtype
 changes invalidate shape-sensitive coefficient caches even when cutoff/resonance are
 unchanged. Existing filter-unit/section capacity limits, opaque filter subtypes,
 unimplemented group send/dynamics families and reverb/IR shaping gaps remain explicit.

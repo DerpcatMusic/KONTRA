@@ -443,6 +443,7 @@ pub struct GroupFilter {
     slot_matrices: [Matrix; 8],
     type_revision: u32,
     pre_active: bool,
+    matrix_interleaved: bool,
     /// Stereo Modellers and every active slot's output gain as one matrix:
     /// they are linear and the filters treat both channels alike, so the
     /// order does not matter.
@@ -553,8 +554,9 @@ impl GroupFilter {
             }
             units_.push(unit);
         }
+        units_.sort_unstable_by_key(|unit| unit.slot);
         let units = units_;
-        let mixers: Box<[Mixer]> = group
+        let mut mixers: Box<[Mixer]> = group
             .fx
             .slots
             .iter()
@@ -572,7 +574,8 @@ impl GroupFilter {
                 })
             })
             .collect();
-        let stages: Box<[Stage]> = (group.fx.slots.iter())
+        mixers.sort_unstable_by_key(|mixer| mixer.slot);
+        let mut stages: Box<[Stage]> = (group.fx.slots.iter())
             .filter(|fx| VoiceEffect::supports(fx.kind) && (fx.kind != Kind::Compressor || group.amp_split_slot.is_some()))
             .filter_map(|fx| {
                 Some(Stage {
@@ -585,6 +588,7 @@ impl GroupFilter {
             })
             .take(MAX_STAGES)
             .collect();
+        stages.sort_unstable_by_key(|stage| stage.slot);
         if units.is_empty() && mixers.is_empty() && stages.is_empty() {
             return None;
         }
@@ -625,6 +629,7 @@ impl GroupFilter {
             slot_matrices: [IDENTITY; 8],
             type_revision: 0,
             pre_active: false,
+            matrix_interleaved: false,
             matrix: IDENTITY,
             envs,
             ext,
@@ -655,6 +660,8 @@ impl GroupFilter {
         self.matrix = self.mix();
         self.slot_matrices.fill(IDENTITY);
         self.pre_active = false;
+        self.matrix_interleaved = false;
+        let mut matrix_before = false;
         for insert in &self.inserts {
             let (bypass, gain, stereo) = match insert.operation {
                 Operation::Unit { index, .. } => { let u = &self.units[index as usize]; (u.bypass, u.gain, None) }
@@ -663,6 +670,7 @@ impl GroupFilter {
             };
             if bypass { continue; }
             self.pre_active |= self.amp_split.is_some_and(|split| insert.slot < split);
+            self.matrix_interleaved |= matrix_before && matches!(insert.operation, Operation::Unit { .. });
             let mut matrix = IDENTITY;
             if let Some([spread, pan]) = stereo {
                 let w = (1.0 + spread).clamp(0.0, 2.0);
@@ -671,6 +679,7 @@ impl GroupFilter {
                 matrix = [bl * same, bl * other, br * other, br * same];
             }
             self.slot_matrices[insert.slot as usize] = matrix.map(|x| x * gain);
+            matrix_before |= self.slot_matrices[insert.slot as usize] != IDENTITY;
         }
     }
 
@@ -1125,7 +1134,6 @@ pub(crate) struct VoiceFilter {
     /// Knobs of each section's last coefficients (NaN: none yet), so static
     /// settings cost no coefficient math.
     tuned: [[f32; 3]; MAX_SECTIONS],
-    matrix: Matrix,
     drives: [VoiceEffect; MAX_STAGES],
     slot_matrices: [Matrix; 8],
     type_revision: u32,
@@ -1144,7 +1152,6 @@ impl VoiceFilter {
             ext: [0.0; MAX_EXT],
             sections: [Section::default(); MAX_SECTIONS],
             tuned: [[f32::NAN; 3]; MAX_SECTIONS],
-            matrix: IDENTITY,
             drives: [VoiceEffect::default(); MAX_STAGES],
             slot_matrices: [IDENTITY; 8],
             type_revision: 0,
@@ -1159,7 +1166,6 @@ impl VoiceFilter {
             for (value, (_, i)) in out.ext.iter_mut().zip(&f.ext) {
                 *value = table.mods[*i as usize].start_value(input);
             }
-            out.matrix = f.matrix;
             out.slot_matrices = f.slot_matrices;
             out.type_revision = f.type_revision;
         }
@@ -1188,8 +1194,8 @@ impl VoiceFilter {
     pub fn hold(&mut self, f: &GroupFilter, table: &ModTable, rate: f32) -> Option<u64> {
         self.check_type_revision(f);
         // Drives are nonlinear: voices cannot share them.
-        if f.pre_active
-            || !f.envs.is_empty() || self.matrix != f.matrix || f.stages.iter().any(|s| !s.bypass) {
+        if f.pre_active || f.matrix_interleaved
+            || !f.envs.is_empty() || self.slot_matrices != f.slot_matrices || f.stages.iter().any(|s| !s.bypass) {
             return None;
         }
         let mut knobs: [[f32; KNOBS]; ROWS] =
@@ -1361,7 +1367,6 @@ impl VoiceFilter {
             if !amplified { amplifier.unwrap().apply(start, l, r); }
         }
         self.slot_matrices = f.slot_matrices;
-        self.matrix = f.matrix;
     }
 }
 
@@ -1772,6 +1777,42 @@ mod tests {
     }
 
     #[test]
+    fn interleaved_slot_gains_do_not_share_canonical_filter_states() {
+        let mut group = Group { amp_split_slot: Some(0), ..Group::default() };
+        for slot in [0, 1] {
+            group.fx.slots.push(crate::fx::Effect {
+                slot, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0,
+                params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.5, resonance: 0.0, extra: [0.0; 3] }),
+            });
+        }
+        let mut f = GroupFilter::new(&group).unwrap();
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
+        assert!(voice.hold(&f, &table, RATE).is_some());
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            assert!(f.set_knob(0, Knob::Output, 2.0));
+            assert!(f.set_knob(1, Knob::Output, 0.5));
+            assert_eq!(f.matrix, IDENTITY, "the collapsed final gain hides the interleaving");
+            for block in 0..8 {
+                let mut l: [f32; 128] = std::array::from_fn(|i| (TAU * 1000.0 * (block * 128 + i) as f32 / RATE).sin());
+                let mut r = l;
+                voice.process(&f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE);
+            }
+            // Unit 1 has processed twice the canonical lane input. Summing
+            // these states into a lane followed by one final gain is invalid.
+            assert!(voice.hold(&f, &table, RATE).is_none());
+            assert!(f.set_knob(0, Knob::Output, 1.0));
+            assert!(f.set_knob(1, Knob::Output, 1.0));
+            assert!(voice.hold(&f, &table, RATE).is_none(), "pending inline ramps cannot collapse to a final matrix");
+            let (mut l, mut r) = ([0.0; 128], [0.0; 128]);
+            voice.process(&f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE);
+            assert!(voice.hold(&f, &table, RATE).is_some(), "canonical routing returns after the inline ramp");
+        }), 0);
+    }
+
+    #[test]
     fn live_filter_type_change_retunes_identical_knobs_without_heap() {
         let group = Group { amp_split_slot: Some(8), fx: Chain { slots: vec![crate::fx::Effect {
             slot: 0, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0,
@@ -2111,7 +2152,7 @@ mod tests {
             // Stereo Modeller: mono, panned half right.
             mixers: [Mixer { slot: 2, stereo: Some([-1.0, 0.5]), bypass: false, gain: 1.0 }].into(),
             stages: [].into(),
-            inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false,
+            inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix_interleaved: false,
             matrix: IDENTITY,
             envs: [].into(),
             ext: [].into(),
@@ -2145,7 +2186,7 @@ mod tests {
     #[test]
     fn filter_types_switch_and_play() {
         let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [0.6, 0.7, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2 };
-        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
+        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
         f.compile_inserts();
         let table = ModTable::default();
         let cc = [0u8; 128];
@@ -2182,7 +2223,7 @@ mod tests {
         let mut fields = [0.0; blocks::FIELDS];
         fields[0] = 1.0;
         let stage = Stage { slot: 2, kind: Kind::SurroundPanner, fields, bypass: false, gain: 1.0 };
-        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [stage].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
+        let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [stage].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
         f.compile_inserts();
         let table = ModTable::default();
         let cc = [0u8; 128];
