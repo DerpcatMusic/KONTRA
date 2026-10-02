@@ -10,7 +10,7 @@ use crate::modulation::PitchLfo;
 /// offset advances separately, including short event fragments.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Clock {
-    phase: [f32; 16],
+    phase: [f64; 16],
     previous: f32,
     current: f32,
     offset: u8,
@@ -36,34 +36,29 @@ impl Clock {
         if n == 0 {
             return (0, 0);
         }
-        let mut points = [0.; 4];
         let active = lfos.iter().any(|l| !l.bypassed);
-        for lfo in lfos.iter().filter(|l| !l.bypassed) {
-            let phase = &mut self.phase[lfo.slot as usize];
-            let hz = lfo.frequency(tempo);
-            let increment = hz * 32. / rate;
-            let gain = 12. * lfo.depth * lfo.sine / lfo.sine.abs().max(1.);
-            for (i, point) in points.iter_mut().take(n.div_ceil(32)).enumerate() {
-                // Native Multi negates its sine component. Ordinary sine has
-                // a different sign and is deliberately not accepted here.
-                let angle = (*phase + i as f32 * increment).rem_euclid(1.) * std::f32::consts::TAU;
-                *point -= angle.sin() * gain;
-            }
-            *phase = (*phase + hz * n as f32 / rate).rem_euclid(1.);
-        }
-        if active && !self.initialized {
-            self.current = points[0];
-            self.previous = self.current;
-            self.initialized = true;
-        }
-        let mut next = 0;
         let mut position = 0u64;
-        for frame in out.iter_mut() {
+        for (i, frame) in out.iter_mut().enumerate() {
             let pitch = if active {
-                if self.offset == 0 {
+                // Voice planning fragments are not native control intervals.
+                // Sample the source at the retained note-clock boundary, even
+                // when a command or another loop voice split this render call.
+                if self.offset == 0 || !self.initialized {
+                    let mut point = 0.;
+                    for lfo in lfos.iter().filter(|l| !l.bypassed) {
+                        let hz = f64::from(lfo.frequency(tempo));
+                        let phase = (self.phase[lfo.slot as usize]
+                            + i as f64 * hz / f64::from(rate)).rem_euclid(1.);
+                        let gain = 12. * lfo.depth * lfo.sine / lfo.sine.abs().max(1.);
+                        // Multi negates sine; ordinary sine is not admitted.
+                        point -= (phase * std::f64::consts::TAU).sin() as f32 * gain;
+                    }
                     self.previous = self.current;
-                    self.current = points[next];
-                    next += 1;
+                    self.current = point;
+                    if !self.initialized {
+                        self.previous = point;
+                        self.initialized = true;
+                    }
                 }
                 self.previous + (self.current - self.previous) * (f32::from(self.offset) / 32.)
             } else {
@@ -73,6 +68,11 @@ impl Clock {
             let ratio = 2f64.powf(f64::from(pitch) / 12.);
             position += ((step * ratio).min(MAX_STEP) * FIXED_ONE) as u64;
             self.offset = (self.offset + 1) & 31;
+        }
+        for lfo in lfos.iter().filter(|l| !l.bypassed) {
+            let phase = &mut self.phase[lfo.slot as usize];
+            *phase = (*phase + f64::from(lfo.frequency(tempo)) * n as f64 / f64::from(rate))
+                .rem_euclid(1.);
         }
         (position, out.last().copied().unwrap_or(0))
     }

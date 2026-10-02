@@ -788,7 +788,12 @@ sign from the simple sine source. Source bypass pauses its phase. The
 pitch target binder is independently connected to the ordinary sampler's
 pitch buffer: it linearly interpolates previous/current control points
 per audio frame with a retained modulo32 offset, rather than holding
-pitch for32 frames. The renderer applies that curve only to affected
+pitch for32 frames. KONTRA's command/voice-planning fragments are not native
+source-dispatch blocks: source points are sampled at that retained note-clock
+boundary, so 17/111 fragments and an unrelated eligible loop's 32-frame planner
+splits cannot shift the oscillator. The native producer's partial-block phase
+correction independently establishes actual elapsed-frame phase advancement;
+arbitrary native host-block dispatch alignment remains unverified. The renderer applies that curve only to affected
 voices; ordinary fixed-pitch lanes retain their existing fast path.
 The oscillator continues through the existing release envelope and does
 not extend voice lifetime. No amplitude bypass lifecycle is changed.
@@ -798,7 +803,11 @@ proprietary legacy waveform table; this is an explicit numerical
 approximation. The authored gate independently generates control points
 and the audio ramp, then compares actual PCM from a linear sample, both
 bipolar halves, short fragments, retrigger, release retirement and zero
-heap activity. It does not establish full reference Kontakt sonic parity.
+heap activity. The combined Constant-loop gate additionally compares
+unchanged-loop eligibility against no control assignment, 128 versus 17/111
+PCM, RAM versus bare-stream playback, and a command at frame141 split as
+13/115 versus 13/19/96 with native-tick application and bounded release.
+It does not establish full reference Kontakt sonic parity.
 Free-running/shared ownership, other waveforms and Multi mixes, positive
 fade/delay, external phase/frequency modulation, lag and live legacy
 frequency dispatch remain unsupported.

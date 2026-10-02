@@ -3992,7 +3992,7 @@ fn saved_sine_multi_pitch_uses_native_clock_and_audio_interpolation() {
     let mut left = [0.; MAX_BLOCK];
     let mut right = [0.; MAX_BLOCK];
     assert_eq!(allocations(|| e.note_on(0, 60, 127)), 0);
-    let (mut phase, mut cursor, mut previous, mut current) = (0f64, 0f64, 0f64, 0f64);
+    let (mut cursor, mut previous, mut current) = (0f64, 0f64, 0f64);
     let mut offset = 0usize;
     let mut source_points = 0;
     let mut faster = false;
@@ -4001,11 +4001,13 @@ fn saved_sine_multi_pitch_uses_native_clock_and_audio_interpolation() {
     // Short event fragments exercise the retained interpolation offset.
     for n in [17, 111, 128, 128, 128, 128, 128, 128, 128] {
         assert_eq!(allocations(|| e.render(&mut left[..n], &mut right[..n])), 0);
-        let points: Vec<_> = (0..n.div_ceil(32)).map(|i|
-            -3. * ((phase + i as f64 * 48. * 32. / 48000.) * std::f64::consts::TAU).sin()).collect();
-        let mut next = 0;
         for i in 0..n {
-            if offset == 0 { previous = current; current = points[next]; next += 1; source_points += 1; }
+            if offset == 0 {
+                previous = current;
+                current = -3. * (recorded.len() as f64 * 48. / 48000.
+                    * std::f64::consts::TAU).sin();
+                source_points += 1;
+            }
             let semitones = previous + (current - previous) * offset as f64 / 32.;
             let step = 2f64.powf(semitones / 12.);
             faster |= step > 1.01;
@@ -4020,9 +4022,16 @@ fn saved_sine_multi_pitch_uses_native_clock_and_audio_interpolation() {
             cursor += step;
             offset = (offset + 1) & 31;
         }
-        phase += 48. * n as f64 / 48000.;
     }
     assert!(source_points > 16 && faster && slower);
+    let mut whole = make();
+    whole.set_transport(false, 120., 0., (4, 4));
+    whole.note_on(0, 60, 127);
+    let uninterrupted = render(&mut whole, 128);
+    for (frame, expected) in uninterrupted.iter().zip(&recorded) {
+        assert!((frame[0] - expected).abs() < 1e-7,
+            "17/111 planner fragments must preserve the note-clock control points");
+    }
     e.note_off(0, 60);
     assert_eq!(allocations(|| { for _ in 0..16 { e.render(&mut left, &mut right); } }), 0);
     assert_eq!(e.active_voices(), 0, "LFO never extends the note lifetime");

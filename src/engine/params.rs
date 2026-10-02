@@ -2126,6 +2126,96 @@ mod tests {
     }
 
     #[test]
+    fn saved_pitch_lfo_and_constant_loop_are_partition_invariant_in_ram_and_stream() {
+        use crate::{audio::Sample, engine::{Bank, Engine}, import::{Instrument, Loop, PitchLfo, Zone}};
+        let mut group = Group { pitch_lfos: vec![PitchLfo { slot: 7, count: 1.,
+            note_value: 1. / 24., sine: 0.5, depth: 0.5, bypassed: false }],
+            mods: ["loopStart", "loopLength"].into_iter().map(|param| ModAssignment {
+                name: "Constant".into(), source: ModSource::Constant,
+                target: ModTarget::Group(param.into()), intensity: 0., invert: false,
+                lag_ms: 0, shaper: None }).collect(),
+            modulators: vec![Modulator { name: "Constant".into(),
+                targets: vec!["Loop_Start".into(), "Loop_Length".into()], assignments: Some(0),
+                volume_env: false, bypassed: false, flex: false, envelope: None,
+                kind: "external".into() }], ..Group::default() };
+        let length = Address::resolve(EnginePar { id: id::INTMOD_INTENSITY,
+            group: 0, slot: 0, generic: 1 }, std::slice::from_ref(&group)).unwrap();
+        let frames: Vec<_> = (0..4096).map(|n| [(n as f32 * 0.031).sin() * 0.2; 2]).collect();
+        let path = std::env::temp_dir().join(format!("kontakto-loop-lfo-{}.wav", std::process::id()));
+        let mut wav = b"RIFF".to_vec(); wav.extend((36u32 + 4096 * 8).to_le_bytes());
+        wav.extend(b"WAVEfmt "); wav.extend(16u32.to_le_bytes()); wav.extend(3u16.to_le_bytes());
+        wav.extend(2u16.to_le_bytes()); wav.extend(48_000u32.to_le_bytes()); wav.extend(384_000u32.to_le_bytes());
+        wav.extend(8u16.to_le_bytes()); wav.extend(32u16.to_le_bytes()); wav.extend(b"data");
+        wav.extend((4096u32 * 8).to_le_bytes());
+        for frame in &frames { for channel in frame { wav.extend(channel.to_le_bytes()); } }
+        std::fs::write(&path, wav).unwrap();
+        let zone = Zone { sample: path.clone(), tune: 1.37,
+            loop_range: Some(Loop { start: 0, end: 4096, crossfade: 32,
+                until_release: true, alternating: false }), ..Zone::default() };
+        let create = |bank| {
+            let mut e = Engine::default(); e.attack = 0.; e.release = 0.001;
+            e.blocking_streams = true; e.set_transport(false, 120., 0., (4, 4));
+            e.set_bank(Some(Box::new(bank))); e
+        };
+        let ram = |group: Group| Bank::from_samples(vec![group], vec![zone.clone()],
+            vec![(path.clone(), Sample { rate: 48_000, frames: frames.clone() })]).unwrap();
+        let mut full = create(ram(group.clone()));
+        let mut split = create(ram(group.clone()));
+        let mut stream = create(Bank::load_bare(&Instrument { groups: vec![group.clone()],
+            zones: vec![zone.clone()], ..Default::default() }).unwrap());
+        group.mods.clear(); group.modulators.clear();
+        let mut no_controls = create(ram(group));
+        assert!(full.bank().unwrap().has_native_controls());
+        assert!(!no_controls.bank().unwrap().has_native_controls());
+        let (mut a, mut ar, mut b, mut br, mut c, mut cr, mut d, mut dr) =
+            ([0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128]);
+        let equal = |a: &[f32], b: &[f32]| assert!(a.iter().zip(b)
+            .all(|(a, b)| (a - b).abs() < 1e-7), "planner partition changed PCM");
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for e in [&mut full, &mut split, &mut stream, &mut no_controls] { e.note_on(0, 60, 127); }
+            full.render(&mut a, &mut ar);
+            no_controls.render(&mut d, &mut dr);
+            for (from, to) in [(0, 17), (17, 128)] {
+                split.render(&mut b[from..to], &mut br[from..to]);
+                stream.render(&mut c[from..to], &mut cr[from..to]);
+            }
+            equal(&a, &b); equal(&ar, &br); equal(&a, &c); equal(&ar, &cr);
+            equal(&a, &d); equal(&ar, &dr);
+            assert!(full.player.voices[0].pos < 4096., "loop has not been reached");
+            // Same command at note frame141; only fragment boundaries differ.
+            for (e, l, r) in [(&mut full, &mut a, &mut ar), (&mut split, &mut b, &mut br),
+                (&mut stream, &mut c, &mut cr)] { e.render(&mut l[..13], &mut r[..13]); }
+            let old = full.player.voices[0].map;
+            for e in [&mut full, &mut split, &mut stream] {
+                assert!(write(&mut e.bank.as_mut().unwrap().settings, length, -0.5));
+                assert_eq!(read(&e.bank().unwrap().settings, length), Some(-0.5));
+                e.player.touch();
+            }
+            full.render(&mut a[13..], &mut ar[13..]);
+            for (from, to) in [(13, 32), (32, 128)] {
+                split.render(&mut b[from..to], &mut br[from..to]);
+                stream.render(&mut c[from..to], &mut cr[from..to]);
+                if to == 32 {
+                    assert_eq!(split.player.voices[0].map, old, "edit waits for native tick160");
+                }
+            }
+            equal(&a, &b); equal(&ar, &br); equal(&a, &c); equal(&ar, &cr);
+            for e in [&mut full, &mut split, &mut stream] {
+                assert_eq!(e.player.voices[0].map.looped.unwrap().end, 2048);
+                e.note_off(0, 60);
+            }
+            for _ in 0..16 {
+                full.render(&mut a, &mut ar); split.render(&mut b, &mut br); stream.render(&mut c, &mut cr);
+                equal(&a, &b); equal(&ar, &br); equal(&a, &c); equal(&ar, &cr);
+            }
+            assert_eq!(full.active_voices(), 0); assert_eq!(split.active_voices(), 0);
+            assert_eq!(stream.active_voices(), 0, "source clock cannot extend release lifetime");
+        }), 0);
+        assert_eq!(stream.underruns(), 0);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn signed_intensity_aliases_reach_external_pitch_and_cutoff_pcm_without_heap() {
         use crate::{audio::Sample, engine::{Bank, Engine, ScriptSetup}, import::{Instrument, Zone},
             ksp::{Runtime, Value}};
