@@ -129,7 +129,7 @@ for case in ("accepted", "rejected", "bad-ticket"):
         stage.joinpath("build-info.json").write_text(json.dumps(dict(version="0.3.78-nightly.test",revision="a"*40,target="aarch64-apple-darwin")))
         env=dict(clean_env,PATH=str(tools)+":"+os.environ["PATH"],STAGE=str(stage),KONTRA_TARGET="aarch64-apple-darwin",GITHUB_SHA="a"*40,NATIVE_CALLS=str(root/"calls"),SIGNING_CASE=case)
         for secret in ("APPLE_CERTIFICATE_PASSWORD","APPLE_DEVELOPER_ID_APPLICATION","APPLE_ID","APPLE_APP_SPECIFIC_PASSWORD","APPLE_TEAM_ID"): env[secret]="synthetic-fixture"
-        env["APPLE_APPLICATION_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-fixture").decode()
+        env["APPLE_APPLICATION_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-fixture").decode()+"\n"
         result=subprocess.run(["bash",str(signing)],env=env,capture_output=True,text=True)
         assert result.returncode==(0 if case=="accepted" else 1),(case,result.stderr)
         assert (stage/"notarization.json").exists()==(case=="accepted")
