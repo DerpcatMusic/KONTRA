@@ -3536,7 +3536,7 @@ impl PluginLogic for Sampler {
                             // A switch or unmatched route creates no sounding
                             // owner. Return that exact identity immediately.
                             if let In::HostOn(note,_) = ev
-                                && note.clap && !holding
+                                && note.clap && !s.align.host_note_waiting(note)
                                 && !s.rack.parts.iter().any(|e| e.host_note_present(note)) {
                                 if cx.output_events.try_push_exact(ExactEvent::new(exact.sample_offset(),ExactEventBody::Note {
                                     kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
@@ -6942,11 +6942,57 @@ end on"#;
         assert_eq!(ended.len(),2);
         for id in [10,11] { assert!(ended.contains(&address(id))); }
         assert!(dsp.rack.parts.iter().all(|e| e.host_note_at(0).is_none()));
-        let unmatched=ExactNoteAddress::from_raw_signed(7,4,60,12);
-        let mut absent=EventList::with_capacity(2);
-        absent.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:unmatched,velocity:0.8 })).unwrap();
-        assert_eq!(allocations(|| Sampler::process(&mut dsp,&params,&mut buffer,&absent,&mut cx)),0);
-        assert!(cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address,.. } if *address==unmatched))),"a no-sound route retained the host identity");
+        for holding in [false,true] {
+            dsp.align.plan.on=holding;
+            let unmatched=ExactNoteAddress::from_raw_signed(7,4,60,12+i32::from(holding));
+            let mut absent=EventList::with_capacity(2);
+            absent.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:unmatched,velocity:0.8 })).unwrap();
+            assert_eq!(allocations(|| Sampler::process(&mut dsp,&params,&mut buffer,&absent,&mut cx)),0);
+            assert!(cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address,.. } if *address==unmatched))),"a no-sound route retained the host identity");
+        }
+        let mut art=crate::articulate::Articulate::default();
+        art.sync("switch",&[("Switch".into(),Some(60),None)]);
+        for router in &mut dsp.routers { router.set_route(crate::articulate::Route::new("switch",&art,&crate::articulate::Mpe::default())); }
+        let switch=ExactNoteAddress::from_raw_signed(0,4,60,14);
+        let mut switched=EventList::with_capacity(2);
+        switched.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:switch,velocity:0.8 })).unwrap();
+        assert_eq!(allocations(|| Sampler::process(&mut dsp,&params,&mut buffer,&switched,&mut cx)),0);
+        assert!(cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address,.. } if *address==switch))),"aligned keyswitch retained the host identity");
+    }
+
+    #[test]
+    fn delayed_exact_expression_retains_owner_until_safe_same_id_reuse() {
+        use crate::{audio::Sample, import::{Group,Zone}, engine::{HostNote,HostPattern,HostExpression}};
+        let params=SamplerParams::new(); let mut dsp=Dsp::default();
+        dsp.rack.parts[0].reset(48000.);
+        let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.2;2];32] })]).unwrap();
+        dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+        dsp.align.plan.parts[0]=Holds::of(&timing::Timing { override_ms:Some(0.),..Default::default() },&[],10.);
+        let note=HostNote { port:0,channel:4,key:60,id:10,clap:true };
+        let pattern=HostPattern { port:0,channel:4,key:60,id:10,clap:true };
+        let transport=TransportInfo::default(); let mut output=EventList::with_capacity(128);
+        let mut cx=ProcessContext::new(&transport,48000.,128,&mut output);
+        let (mut left,mut right)=([0.;64],[0.;64]);
+        assert_eq!(allocations(|| {
+            feed_host_input(&mut dsp,&params,In::HostOn(note,100),0,0,true,48000.);
+            feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,96,true,48000.);
+            feed_host_input(&mut dsp,&params,In::HostExpression(pattern,HostExpression::Gain(0.)),0,240,true,48000.);
+            dsp.align.release(600,&mut dsp.rack,&mut dsp.routers);
+            dsp.rack.parts[0].render(&mut left,&mut right);
+            finish_host_notes(&mut dsp,&mut cx,63);
+            assert_eq!(dsp.rack.parts[0].active_voices(),0);
+            assert!(dsp.align.host_note_waiting(note),"delayed old expression lost its owner pin");
+            assert!(dsp.rack.parts[0].host_note_present(note));
+            assert!(!dsp.rack.parts[0].admit_host_note(note),"same ID became reusable before delayed work completed");
+            assert!(!cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,.. }))));
+            dsp.align.release(720,&mut dsp.rack,&mut dsp.routers);
+            finish_host_notes(&mut dsp,&mut cx,63);
+            assert!(!dsp.align.host_note_waiting(note));
+            assert!(!dsp.rack.parts[0].host_note_present(note));
+            feed_host_input(&mut dsp,&params,In::HostOn(note,100),0,0,false,48000.);
+            dsp.rack.parts[0].render(&mut left,&mut right);
+            assert!(left.iter().any(|sample| sample.abs()>1e-6),"old gain expression leaked into reused host ID");
+        }),0);
     }
 
     /// The keys lit by the host's notes go out with its all-notes-off and

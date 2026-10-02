@@ -699,9 +699,12 @@ impl Engine {
             self.player.pending_releases.retain(|r| r.host_note != Some(id));
             let fade = self.player.fade_frames(STEAL_FADE);
             for v in self.player.voices.iter_mut().filter(|v| v.host_note == Some(id)) { v.fade.start(0., fade, true); v.held = false; }
-            let held = self.player.host_notes.active.iter().filter_map(|r| self.player.host_notes.get(*r))
-                .any(|o| o.held && o.channel == owner.channel && o.key == owner.key);
-            if !held { self.player.keys[owner.channel as usize][owner.key as usize] = 0; }
+            let remaining = self.player.host_notes.active.iter().filter_map(|r| self.player.host_notes.get(*r))
+                .filter(|o| o.held && o.channel == owner.channel && o.key == owner.key).map(|o| o.velocity.max(1)).max().unwrap_or(0);
+            let anonymous = self.player.input_keys.iter().filter(|row| row[owner.key as usize].0 == owner.channel)
+                .map(|row| row[owner.key as usize].1).max().unwrap_or(0);
+            let scripted = self.script.as_deref().is_some_and(|rt| (0..16).any(|input| rt.key_down_from(input,owner.channel,owner.key)));
+            self.player.keys[owner.channel as usize][owner.key as usize] = remaining.max(anonymous).max(u8::from(scripted));
         }
     }
 
@@ -755,6 +758,12 @@ impl Engine {
         self.player.host_notes.active.iter().any(|r| self.player.host_notes.get(*r).is_some_and(|o| o.held && o.note.channel == channel && o.note.key == key))
     }
     pub(crate) fn host_note_drops(&self) -> u64 { self.player.host_notes.dropped }
+    /// Retained anonymous/script roots use the router's captured mapped key.
+    pub(crate) fn input_key_down_from(&self, input:u8, channel:u8, key:u8) -> bool {
+        if input>=16 || channel>=16 || key>=128 { return false; }
+        let held=self.player.input_keys[input as usize][key as usize];
+        (held.0==channel && held.1>0) || self.script.as_deref().is_some_and(|rt| rt.key_down_from(input,channel,key))
+    }
 
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
         self.note_on_from(channel, channel, note, velocity);

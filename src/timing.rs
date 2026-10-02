@@ -525,7 +525,13 @@ impl Align {
 
     /// Whether notes are held back now.
     pub(crate) fn host_note_waiting(&self, note:crate::engine::HostNote) -> bool {
-        self.parts.iter().any(|s| (0..s.len).any(|i| matches!(s.at(i).ev,In::HostOn(n,_) if n==note)))
+        // Any delayed exact work retains the old tuple until it is applied.
+        // Otherwise an ended root's queued expression could hit a reused ID.
+        self.parts.iter().any(|s| (0..s.len).any(|i| match s.at(i).ev {
+            In::HostOn(n,_) => n==note,
+            In::HostOff(pattern) | In::HostChoke(pattern) | In::HostExpression(pattern,_) => pattern.matches(note),
+            _ => false,
+        }))
     }
     pub(crate) fn host_note_at(&self, mut index:usize) -> Option<(crate::engine::HostNote,bool)> {
         for s in &self.parts {
