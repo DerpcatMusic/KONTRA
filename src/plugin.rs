@@ -451,6 +451,8 @@ pub struct Shared {
     #[cfg(test)]
     load_gate: Mutex<Option<(usize, Arc<std::sync::Barrier>)>>,
     #[cfg(test)]
+    restore_gate: Mutex<Option<(usize, Arc<std::sync::Barrier>)>>,
+    #[cfg(test)]
     publish_gate: Mutex<Option<Arc<std::sync::Barrier>>>,
     #[cfg(test)]
     snapshot_gate: Mutex<Option<Arc<std::sync::Barrier>>>,
@@ -728,6 +730,8 @@ impl Default for Shared {
             live_publish: Mutex::new((None, 0)),
             #[cfg(test)]
             load_gate: Mutex::new(None),
+            #[cfg(test)]
+            restore_gate: Mutex::new(None),
             #[cfg(test)]
             publish_gate: Mutex::new(None),
             #[cfg(test)]
@@ -2037,9 +2041,9 @@ impl BackgroundTask for Load {
                         && v.fx_rate != 0.
                         && !i.scripts.is_empty()
                         && (part.script_state != v.script_state || part.ir_settings != v.ir_settings || part.engine_state.as_slice() != v.engine_state.as_ref())
-                })
+                }).map(|i| (i, atoms.generation.load(Ordering::Acquire), v.script_epoch))
             };
-            if let Some(instrument) = restore {
+            if let Some((instrument, generation, previous_epoch)) = restore {
                 let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
                 trace.detail("instance_id", params.shared.instance_id);
                 trace.detail("operation", "script_restore");
@@ -2062,9 +2066,30 @@ impl BackgroundTask for Load {
                     trace_effects(&mut trace, &instrument);
                     crate::engine::effects(&instrument, script.as_deref(), rate as f32)
                 });
-                let report = trace.finish("loaded");
                 let interface_status = errors.join("\n");
+                #[cfg(test)]
+                if let Some(gate) = {
+                    let mut gate = params.shared.restore_gate.lock().unwrap();
+                    gate.as_ref().is_some_and(|(at, _)| *at == slot)
+                        .then(|| gate.take().unwrap().1)
+                } { gate.wait(); gate.wait(); }
                 let mut view = params.shared.view.lock().unwrap();
+                // Rebuilding scripts/FX can outlive a newer host restore or
+                // source selection. Check its exact saved state, not rack gain
+                // or editor settings, before giving old work a fresh epoch.
+                let current = params.selection.read().unwrap();
+                let v = &view.parts[slot];
+                let fresh = current.parts.get(slot).is_some_and(|p| p.matches_source(&target)
+                    && p.script_state == part.script_state && p.ir_settings == part.ir_settings
+                    && p.engine_state == part.engine_state)
+                    && atoms.generation.load(Ordering::Acquire) == generation
+                    && v.script_epoch == previous_epoch && v.attempted.as_ref() == Some(&target)
+                    && v.instrument.as_ref().is_some_and(|i| Arc::ptr_eq(i, &instrument));
+                if !fresh {
+                    drop(current); drop(view);
+                    trace.finish("canceled");
+                    continue;
+                }
                 let epoch = next_epoch(&mut view, slot, snapshot, live);
                 view.parts[slot].script_pages = pages;
                 if let Some(selected) = view.parts[slot].live.as_ref().map(|live| live.slot) { view.parts[slot].script_slot = selected; }
@@ -2073,25 +2098,30 @@ impl BackgroundTask for Load {
                 view.parts[slot].engine_state = part.engine_state.clone().into();
                 view.parts[slot].interface_status = interface_status;
                 view.parts[slot].runtime_status.clear();
-                if let Some(load) = &mut view.parts[slot].load_report {
-                    let load = Arc::make_mut(load);
-                    load["runtime"] = serde_json::Value::Null;
-                    if report["status"] == "partial" && load["status"] == "loaded" { load["status"] = "partial".into(); }
-                    load["script_restore"] = (*report).clone();
-                } else { view.parts[slot].load_report = Some(report); }
                 if let Some(fx) = fx {
                     view.parts[slot].irs = irs;
                     let _ = params.shared.publish_part((
                         slot,
-                        atoms.generation.load(Ordering::Acquire),
+                        generation,
                         Handoff::Fx(fx),
                     ));
                 }
                 let _ = params.shared.publish_part((
                     slot,
-                    atoms.generation.load(Ordering::Acquire),
+                    generation,
                     Handoff::Script { script, epoch },
                 ));
+                drop(current); drop(view);
+                let report = trace.finish("loaded");
+                let mut view = params.shared.view.lock().unwrap();
+                if view.parts[slot].script_epoch == epoch {
+                    if let Some(load) = &mut view.parts[slot].load_report {
+                        let load = Arc::make_mut(load);
+                        load["runtime"] = serde_json::Value::Null;
+                        if report["status"] == "partial" && load["status"] == "loaded" { load["status"] = "partial".into(); }
+                        load["script_restore"] = (*report).clone();
+                    } else { view.parts[slot].load_report = Some(report); }
+                }
                 continue;
             }
             let loaded = {
@@ -6029,6 +6059,70 @@ end on"#,dir.display());
         assert_eq!(report["issues"][0]["stage"], "import");
         assert!(!report["issues"][0]["message"].as_str().unwrap().is_empty());
         assert!(report["log_path"].as_str().is_some());
+    }
+
+    #[test]
+    fn delayed_script_restore_rejects_replaced_source_and_newer_saved_state() {
+        use crate::ksp::Value;
+        use std::sync::Barrier;
+        let instrument = Arc::new(Instrument { path: "/virtual/restore-freshness.nki".into(),
+            scripts: vec!["on init\nmake_perfview\ndeclare ui_slider $saved(0,100)\nmake_persistent($saved)\n$saved := 1\nend on".into()],
+            ..Default::default() });
+        let (rt, _, errors) = scripts(&instrument, "", &[], &[], 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut rt = rt.unwrap();
+        let initial = serde_json::to_string(&rt.persistence()).unwrap();
+        rt.ui_control(&mut crate::ksp::LogEngine::default(), 0, 0, 7);
+        let restoring = serde_json::to_string(&rt.persistence()).unwrap();
+        rt.ui_control(&mut crate::ksp::LogEngine::default(), 0, 0, 9);
+        let newer = serde_json::to_string(&rt.persistence()).unwrap();
+        // The last case changes only a rack gain: it must not cancel a valid
+        // restore whose source and saved script/IR/native state still match.
+        for change in 0..5 {
+            let p = Arc::new(SamplerParams::new());
+            let part = Part { path: instrument.path.to_string_lossy().into_owned(),
+                script_state: restoring.clone(), ..Default::default() };
+            let streaming = part.streaming(p.selection.read().unwrap().streaming);
+            p.selection.write().unwrap().parts = vec![part.clone()];
+            {
+                let mut view = p.shared.view.lock().unwrap();
+                for v in &mut view.parts { v.attempted = Some(Part::default().source()); v.streaming = streaming; }
+                let v = &mut view.parts[0];
+                v.attempted = Some(part.source()); v.instrument = Some(instrument.clone());
+                v.fx_rate = 48000.; v.script_epoch = 1; v.script_state = initial.clone();
+            }
+            let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
+            let gate = Arc::new(Barrier::new(2));
+            *p.shared.restore_gate.lock().unwrap() = Some((0, gate.clone()));
+            let worker = { let p = p.clone(); std::thread::spawn(move || Load.run(&p)) };
+            gate.wait();
+            assert!(p.shared.view.try_lock().is_ok(), "restore preparation cannot hold the editor lock");
+            match change {
+                0 => p.selection.write().unwrap().parts[0].path = "/virtual/replacement.nki".into(),
+                1 => p.selection.write().unwrap().parts[0].script_state = newer.clone(),
+                2 => { p.shared.part(0).unwrap().generation.fetch_add(1, Ordering::AcqRel); }
+                3 => p.selection.write().unwrap().parts.clear(),
+                _ => p.selection.write().unwrap().parts[0].gain = -6.,
+            }
+            gate.wait(); worker.join().unwrap();
+            let mut restored = None;
+            while let Some((slot, handoff_generation, handoff)) = p.shared.ready.pop() {
+                if slot == 0 && let Handoff::Script { script, epoch } = handoff { restored = Some((handoff_generation, script, epoch)); }
+            }
+            let view = p.shared.view.lock().unwrap();
+            let v = &view.parts[0];
+            if change < 4 {
+                assert!(restored.is_none(), "stale restore cannot enter the callback queue ({change})");
+                assert_eq!(v.script_epoch, 1, "stale preparation cannot acquire a fresh epoch");
+                assert_eq!(v.script_state, initial, "stale preparation cannot replace published state");
+            } else {
+                let (handoff_generation, script, epoch) = restored.expect("unrelated gain preserves the pending restore");
+                assert_eq!(handoff_generation, generation); assert_ne!(epoch, 1);
+                assert_eq!(script.unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(7));
+                assert_eq!(v.script_state, restoring);
+            }
+            if change == 1 { assert_eq!(p.selection.read().unwrap().parts[0].script_state, newer); }
+        }
     }
 
     #[test]
