@@ -10,7 +10,7 @@ use crate::{
     routing,
     import::{self, Instrument},
     timing::{self, Align, Holds, Plan, Timing},
-    ksp::{Interface, KeyState, Live, Persisted, Refresh, Runtime},
+    ksp::{Interface, KeyState, Live, LiveFault, Persisted, Refresh, Runtime},
 };
 use crossbeam_queue::ArrayQueue;
 #[cfg(test)]
@@ -384,6 +384,12 @@ pub struct Shared {
     /// Live script views, lent and refreshed the same way.
     live_requests: ArrayQueue<(usize, Box<Live>)>,
     lives: ArrayQueue<(usize, u64, Box<Live>)>,
+    /// One non-audio publisher; the timestamp distinguishes editor frames from loader polling.
+    live_publish: Mutex<Option<Instant>>,
+    #[cfg(test)]
+    load_gate: Mutex<Option<(usize, Arc<std::sync::Barrier>)>>,
+    #[cfg(test)]
+    publish_gate: Mutex<Option<Arc<std::sync::Barrier>>>,
     /// Edits of script controls from the performance view.
     edits: ArrayQueue<Edit>,
     /// IR loads requested by scripts: part, instrument generation, script epoch.
@@ -496,6 +502,13 @@ struct Measure {
     /// Slot and what was measured, or why it could not be.
     done: Mutex<Vec<(usize, String, Result<Timing, String>)>>,
 }
+#[derive(PartialEq, Eq)]
+pub(crate) struct LiveDiagnostics {
+    epoch: u64,
+    faults: Vec<LiveFault>,
+    notes: Vec<&'static str>,
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
     pub(crate) program: u32,
@@ -504,6 +517,9 @@ pub(crate) struct PartView {
     pub(crate) load_report: Option<Arc<serde_json::Value>>,
     pub(crate) runtime_status: String,
     pub(crate) diagnostics_lent: Option<Instant>,
+    /// Latest bounded raw diagnostics; formatting never delays live-buffer recycling.
+    live_diagnostics: Option<Arc<LiveDiagnostics>>,
+    diagnostics_dirty: bool,
     pub(crate) wallpaper: Option<Arc<artwork::Picture>>,
     /// Control pictures the scripts name, by name.
     pub(crate) pictures: Arc<HashMap<String, Arc<artwork::Picture>>>,
@@ -573,6 +589,11 @@ impl Default for Shared {
             snapshots: ArrayQueue::new(2 * RACK_SLOTS),
             live_requests: ArrayQueue::new(2 * RACK_SLOTS),
             lives: ArrayQueue::new(2 * RACK_SLOTS),
+            live_publish: Mutex::new(None),
+            #[cfg(test)]
+            load_gate: Mutex::new(None),
+            #[cfg(test)]
+            publish_gate: Mutex::new(None),
             edits: ArrayQueue::new(256),
             ir_requests: ArrayQueue::new(64),
             ir_ready: ArrayQueue::new(64),
@@ -955,9 +976,134 @@ fn next_epoch(
     v.snapshot = snapshot;
     v.snapshot_lent = None;
     v.live = live;
+    v.live_diagnostics = None;
+    v.diagnostics_dirty = false;
     view.script_epoch
 }
 impl Shared {
+    /// Publish visible script state on the editor thread, with a worker fallback
+    /// after the editor closes. Neither caller may keep this guard while loading.
+    pub(crate) fn publish_live(&self, editor: bool) {
+        let Ok(mut owner) = self.live_publish.try_lock() else { return };
+        let now = Instant::now();
+        if editor {
+            *owner = Some(now);
+            self.view.lock().unwrap().watched_at = Some(now);
+        } else {
+            if self.watched.swap(false, Ordering::Relaxed) {
+                self.view.lock().unwrap().watched_at = Some(now);
+            }
+            if owner.is_some_and(|at| at.elapsed() < LIVE_WATCH) { return; }
+        }
+        // ponytail: one changed interface copy per editor frame; share control
+        // metadata if that copy exceeds the frame budget. Unseen diagnostics
+        // may drain the bounded rack queue in one worker pass.
+        for _ in 0..if editor { 1 } else { RACK_SLOTS } {
+            let Some((slot, epoch, live)) = self.lives.pop() else { break };
+            let previous = {
+                let view = self.view.lock().unwrap();
+                let v = &view.parts[slot];
+                if epoch == 0 || epoch != v.script_epoch { continue; }
+                (v.interface.clone(), v.keys.clone(), v.live_diagnostics.clone(), !v.edited.is_empty())
+            };
+            // Prepare copies before taking the view lock: readers retain their
+            // previous Arc snapshots, and the audio buffer is immediately reusable.
+            let mut interface = (live.refresh_interface
+                && (previous.3 || previous.0.as_deref() != live.interface.as_ref()))
+                .then(|| live.interface.clone().map(Arc::new));
+            let keys = (live.refresh_interface && *previous.1 != live.keys).then(|| Arc::new(live.keys.clone()));
+            let diagnostics = previous.2.filter(|old|
+                old.epoch == epoch && old.faults == live.faults && old.notes == live.notes
+            ).unwrap_or_else(|| Arc::new(LiveDiagnostics {
+                epoch, faults: live.faults.clone(), notes: live.notes.clone(),
+            }));
+            #[cfg(test)]
+            if let Some(gate) = self.publish_gate.lock().unwrap().take() {
+                gate.wait();
+                gate.wait();
+            }
+            let mut view = self.view.lock().unwrap();
+            let v = &mut view.parts[slot];
+            // A restore/unload can replace the runtime during preparation.
+            if epoch == 0 || epoch != v.script_epoch { continue; }
+            if let Some(interface) = &mut interface {
+                settle_edits(&mut v.edited, interface.as_mut().and_then(Arc::get_mut));
+                if v.interface.as_deref() != interface.as_deref() { v.interface = interface.take(); }
+            }
+            if let Some(keys) = keys { v.keys = keys; }
+            if v.live_diagnostics.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &diagnostics)) {
+                v.live_diagnostics = Some(diagnostics);
+                v.diagnostics_dirty = true;
+            }
+            v.script_slot = live.slot;
+            v.live = Some(live);
+        }
+        let mut view = self.view.lock().unwrap();
+        let shown = view.watched_at.is_some_and(|at| at.elapsed() < LIVE_WATCH);
+        for (slot, v) in view.parts.iter_mut().enumerate() {
+            if (shown || v.diagnostics_lent.is_none_or(|at| at.elapsed().as_secs() >= 1))
+                && let Some(mut live) = v.live.take()
+            {
+                live.refresh_interface = shown;
+                match self.live_requests.push((slot, live)) {
+                    Ok(()) => v.diagnostics_lent = Some(now),
+                    Err((_, live)) => v.live = Some(live),
+                }
+            }
+        }
+    }
+
+    /// Formatting and journal I/O stay on Load; a busy loader cannot retain
+    /// the live view's reusable audio buffer while the editor is open.
+    fn drain_live_diagnostics(&self) {
+        for slot in 0..RACK_SLOTS {
+            let pending = {
+                let mut view = self.view.lock().unwrap();
+                let v = &mut view.parts[slot];
+                if !std::mem::take(&mut v.diagnostics_dirty) { continue; }
+                v.live_diagnostics.clone().filter(|d| d.epoch != 0 && d.epoch == v.script_epoch)
+                    .zip(v.load_report.clone())
+                    .map(|(diagnostics, report)| (diagnostics, report,
+                        v.instrument.as_ref().map(|i| i.path.clone()), v.program))
+            };
+            let Some((diagnostics, previous, path, program)) = pending else { continue };
+            let runtime = serde_json::json!({"faults":diagnostics.faults,"notes":diagnostics.notes});
+            if previous["runtime"] == runtime { continue; }
+            let mut new_issues = Vec::new();
+            for fault in runtime["faults"].as_array().into_iter().flatten() {
+                let known = previous["runtime"]["faults"].as_array().into_iter().flatten().any(|old|
+                    old["slot"] == fault["slot"] && old["line"] == fault["line"] && old["message"] == fault["message"]
+                );
+                if !known { new_issues.push(fault.clone()); }
+            }
+            for note in runtime["notes"].as_array().into_iter().flatten() {
+                if !previous["runtime"]["notes"].as_array().is_some_and(|old| old.contains(note)) {
+                    new_issues.push(serde_json::json!({"message":note}));
+                }
+            }
+            let status = diagnostics.faults.iter().map(|f| format!("Slot {} line {}: {} ({}x)", f.slot, f.line, f.message, f.count))
+                .chain(diagnostics.notes.iter().map(|n| (*n).to_owned())).collect::<Vec<_>>().join("\n");
+            let load_id = previous["script_restore"]["load_id"].as_str().or_else(|| previous["load_id"].as_str()).map(str::to_owned);
+            let mut report = (*previous).clone();
+            if !diagnostics.faults.is_empty() || !diagnostics.notes.is_empty() { report["status"] = "partial".into(); }
+            report["runtime"] = runtime;
+            let report = Arc::new(report);
+            let mut view = self.view.lock().unwrap();
+            let v = &mut view.parts[slot];
+            if v.script_epoch != diagnostics.epoch
+                || v.live_diagnostics.as_ref().is_none_or(|latest| !Arc::ptr_eq(latest, &diagnostics))
+                || v.load_report.as_ref().is_none_or(|latest| !Arc::ptr_eq(latest, &previous))
+            {
+                if v.script_epoch == diagnostics.epoch { v.diagnostics_dirty = true; }
+                continue;
+            }
+            v.load_report = Some(report);
+            v.runtime_status = status;
+            drop(view);
+            if let Some(path) = path { crate::diagnostics::runtime(&path, program, slot, diagnostics.epoch, load_id.as_deref(), &new_issues); }
+        }
+    }
+
     fn rate(&self) -> f64 {
         f64::from_bits(self.rate.load(Ordering::Acquire))
     }
@@ -1403,6 +1549,8 @@ impl BackgroundTask for Load {
                 v.script_epoch = 0;
                 v.snapshot = None;
                 v.live = None;
+                v.live_diagnostics = None;
+                v.diagnostics_dirty = false;
             };
             let generation = params.shared.generation[slot].fetch_add(1, Ordering::AcqRel) + 1;
             let canceled = || {
@@ -1441,6 +1589,17 @@ impl BackgroundTask for Load {
             };
             let result = (|| -> anyhow::Result<_> {
                 set_stage(&mut trace, "import");
+                #[cfg(test)]
+                {
+                    let gate = {
+                        let mut gate = params.shared.load_gate.lock().unwrap();
+                        if gate.as_ref().is_some_and(|(at, _)| *at == slot) { gate.take() } else { None }
+                    };
+                    if let Some((_, gate)) = gate {
+                        gate.wait();
+                        gate.wait();
+                    }
+                }
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
                 let instrument = import::shared_program(Path::new(&part.path), part.program)?;
                 trace.detail("groups", instrument.groups.len());
@@ -1625,6 +1784,9 @@ impl BackgroundTask for Load {
                         trace.detail("pictures_loaded", pictures.len());
                         trace.detail("performance_view", interface.is_some_and(|u| u.performance));
                         trace.detail("controls", interface.map_or(0, |u| u.controls.len()));
+                        for warning in interface.into_iter().flat_map(crate::ui::font_fallbacks) {
+                            trace.issue("ui", "font_fallback", warning);
+                        }
                         for c in interface.into_iter().flat_map(|u| &u.controls) {
                             if let Some(reason) = crate::diagnostics::widget_limit(&c.kind) {
                                 trace.issue("ui", "unsupported", format!("{} ({}): {reason}", c.kind, c.variable));
@@ -1839,73 +2001,13 @@ impl BackgroundTask for Load {
                 p.ir_settings = ir_settings;
             }
         }
-        // Show what the scripts changed since the last round.
-        while let Some((slot, epoch, live)) = params.shared.lives.pop() {
-            let mut view = params.shared.view.lock().unwrap();
-            let v = &mut view.parts[slot];
-            if epoch == 0 || epoch != v.script_epoch {
-                continue;
-            }
-            if live.refresh_interface {
-                let mut interface = live.interface.clone();
-                settle_edits(&mut v.edited, interface.as_mut());
-                if v.interface.as_deref() != interface.as_ref() {
-                    v.interface = interface.map(Arc::new);
-                }
-            }
-            if live.refresh_interface && *v.keys != live.keys {
-                v.keys = Arc::new(live.keys.clone());
-            }
-            let runtime = serde_json::json!({"faults":live.faults,"notes":live.notes});
-            let mut new_issues = Vec::new();
-            if let Some(report) = &mut v.load_report {
-                if report["runtime"] != runtime {
-                    for fault in runtime["faults"].as_array().into_iter().flatten() {
-                        let known = report["runtime"]["faults"].as_array().into_iter().flatten().any(|old|
-                            old["slot"] == fault["slot"] && old["line"] == fault["line"] && old["message"] == fault["message"]
-                        );
-                        if !known { new_issues.push(fault.clone()); }
-                    }
-                    for note in runtime["notes"].as_array().into_iter().flatten() {
-                        if !report["runtime"]["notes"].as_array().is_some_and(|old| old.contains(note)) {
-                            new_issues.push(serde_json::json!({"message":note}));
-                        }
-                    }
-                    let report = Arc::make_mut(report);
-                    if !live.faults.is_empty() || !live.notes.is_empty() { report["status"] = "partial".into(); }
-                    report["runtime"] = runtime;
-                    v.runtime_status = live.faults.iter().map(|f| format!("Slot {} line {}: {} ({}x)", f.slot, f.line, f.message, f.count))
-                        .chain(live.notes.iter().map(|n| (*n).to_owned())).collect::<Vec<_>>().join("\n");
-                }
-            }
-            let path = v.instrument.as_ref().map(|i| i.path.clone());
-            let load_id = v.load_report.as_ref().and_then(|r| r["script_restore"]["load_id"].as_str().or_else(|| r["load_id"].as_str())).map(str::to_owned);
-            let program = v.program;
-            v.script_slot = live.slot;
-            v.live = Some(live);
-            drop(view);
-            if let Some(path) = path { crate::diagnostics::runtime(&path, program, slot, epoch, load_id.as_deref(), &new_issues); }
-        }
+        // Visible editors publish and recycle directly, even while this task loads another part.
+        params.shared.publish_live(false);
+        params.shared.drain_live_diagnostics();
         smart_memory(&params.shared);
         align(params);
-        if params.shared.watched.swap(false, Ordering::Relaxed) {
-            params.shared.view.lock().unwrap().watched_at = Some(Instant::now());
-        }
         for slot in 0..RACK_SLOTS {
             let mut view = params.shared.view.lock().unwrap();
-            // Live views only while an editor shows them: refreshing script
-            // interfaces no one sees was most of an idle rack's audio work.
-            let shown = view.watched_at.is_some_and(|t| t.elapsed() < LIVE_WATCH);
-            let v = &mut view.parts[slot];
-            if (shown || v.diagnostics_lent.is_none_or(|t| t.elapsed().as_secs() >= 1))
-                && let Some(mut live) = v.live.take()
-            {
-                live.refresh_interface = shown;
-                match params.shared.live_requests.push((slot, live)) {
-                    Ok(()) => v.diagnostics_lent = Some(Instant::now()),
-                    Err((_, live)) => v.live = Some(live),
-                }
-            }
             // Once a second: saving is all it is for, and big script tables
             // cost the audio thread a while to copy.
             let v = &mut view.parts[slot];
@@ -3451,6 +3553,115 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_publishes_and_recycles_live_views_while_another_part_loads() {
+        use crate::ksp::Value;
+        use std::sync::Barrier;
+        let source = "on init\nmake_perfview\ndeclare ui_slider $s(0,100)\ndeclare ui_label $l(1,1)\nset_text($l, \"start\")\nend on\non ui_control($s)\nset_text($l, \"value \" & $s)\nend on";
+        let (rt, errors) = Runtime::with_scripts(&[source], &mut crate::ksp::LogEngine::default(), 0, Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        let p = Arc::new(SamplerParams::new());
+        p.selection.write().unwrap().parts = vec![
+            Part::default(),
+            Part { path: "/missing-kontra-live-publication/second.nki".into(), ..Default::default() },
+        ];
+        let live = Box::new(rt.live());
+        let address = (&*live as *const Live) as usize;
+        let streaming = {
+            let selection = p.selection.read().unwrap();
+            selection.parts[0].streaming(selection.streaming)
+        };
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.script_epoch = 1;
+            let v = &mut view.parts[0];
+            v.attempted = Some((String::new(), 0));
+            v.streaming = streaming;
+            v.script_epoch = 1;
+            v.interface = live.interface.clone().map(Arc::new);
+            v.load_report = Some(Arc::new(serde_json::json!({"status":"loaded","runtime":null})));
+            v.live = Some(live);
+        }
+        let mut dsp = Dsp::default();
+        dsp.script_epoch[0] = 1;
+        dsp.until_poll = usize::MAX;
+        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+        p.shared.publish_live(true);
+        let bank_gate = Arc::new(Barrier::new(2));
+        *p.shared.load_gate.lock().unwrap() = Some((1, bank_gate.clone()));
+        let loader = {
+            let p = p.clone();
+            std::thread::spawn(move || Load.run(&p))
+        };
+        bank_gate.wait();
+        assert!(p.shared.view.lock().unwrap().parts[1].loading);
+
+        let label = |p: &SamplerParams| p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap()
+            .controls[1].properties["$CONTROL_PAR_TEXT"].clone();
+        let transport = TransportInfo::default();
+        let mut outgoing = EventList::with_capacity(0);
+        let none = EventList::with_capacity(0);
+        let mut cx = ProcessContext::new(&transport, 48000., 64, &mut outgoing);
+        let mut left = [0f32;64];
+        let mut right = [0f32;64];
+        let mut outputs = [&mut left[..], &mut right[..]];
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outputs, 64);
+        for value in [42, 84] {
+            p.shared.edit_control(0, 0, value);
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
+            let (slot, epoch, mut live) = p.shared.lives.pop().expect("audio completes a live view");
+            assert_eq!((&*live as *const Live) as usize, address, "the same prepared buffer is recycled");
+            live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", count: value as u32 });
+            p.shared.lives.push((slot, epoch, live)).ok().unwrap();
+            let retained = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
+            p.shared.publish_live(true);
+            assert_eq!(label(&p), Value::Text(format!("value {value}")), "callback-derived labels publish without Load");
+            assert!(p.shared.view.lock().unwrap().parts[0].edited.is_empty());
+            assert_eq!(p.shared.live_requests.len(), 1, "re-lending never waits for diagnostics or loading");
+            assert_ne!(retained.controls[1].properties["$CONTROL_PAR_TEXT"], Value::Text(format!("value {value}")));
+            assert!(p.shared.view.lock().unwrap().watched_at.is_some_and(|at| at.elapsed() < LIVE_WATCH));
+            assert!(p.shared.view.lock().unwrap().parts[0].load_report.as_ref().unwrap()["runtime"].is_null(), "UI never formats JSON");
+            assert!(!loader.is_finished(), "another part's loader remains blocked");
+        }
+        bank_gate.wait();
+        loader.join().unwrap();
+        assert_eq!(p.shared.view.lock().unwrap().parts[0].load_report.as_ref().unwrap()["runtime"]["faults"][0]["count"], 84,
+            "Load eventually formats the latest raw diagnostics");
+
+        // Replace the runtime after a view is prepared but before it commits.
+        let (slot, mut live) = p.shared.live_requests.pop().unwrap();
+        live.interface.as_mut().unwrap().controls[1].properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text("stale".into()));
+        p.shared.lives.push((slot, 1, live)).ok().unwrap();
+        let publication_gate = Arc::new(Barrier::new(2));
+        *p.shared.publish_gate.lock().unwrap() = Some(publication_gate.clone());
+        let publisher = {
+            let p = p.clone();
+            std::thread::spawn(move || p.shared.publish_live(true))
+        };
+        publication_gate.wait();
+        let replacement = Box::new(dsp.rack.parts[0].script().unwrap().live());
+        next_epoch(&mut p.shared.view.lock().unwrap(), 0, None, Some(replacement));
+        publication_gate.wait();
+        publisher.join().unwrap();
+        assert_eq!(label(&p), Value::Text("value 84".into()), "prepared old-epoch views cannot overwrite a restore");
+        assert_eq!(p.shared.live_requests.len(), 1, "only the new runtime's buffer is lent");
+
+        let (slot, mut live) = p.shared.live_requests.pop().unwrap();
+        live.interface.as_mut().unwrap().controls[1].properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text("hidden update".into()));
+        p.shared.lives.push((slot, 2, live)).ok().unwrap();
+        p.shared.publish_live(false);
+        assert_eq!(p.shared.lives.len(), 1, "worker leaves visible publication to the editor");
+        *p.shared.live_publish.lock().unwrap() = Some(Instant::now() - LIVE_WATCH * 2);
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.watched_at = Some(Instant::now() - LIVE_WATCH * 2);
+            view.parts[0].diagnostics_lent = None;
+        }
+        p.shared.publish_live(false);
+        assert_eq!(label(&p), Value::Text("hidden update".into()), "closed editors retain worker fallback");
+        assert!(!p.shared.live_requests.pop().unwrap().1.refresh_interface, "hidden views only refresh diagnostics");
+    }
 
     #[test]
     fn changed_live_views_wake_publication_without_allocating_or_busy_polling() {
