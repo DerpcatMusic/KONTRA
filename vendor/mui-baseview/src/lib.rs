@@ -78,6 +78,10 @@ pub type KeyHook = Arc<Mutex<dyn FnMut(&mui::Ui, &KeyEvent) -> bool + Send>>;
 /// comes back where it hid.
 pub type PointerHook = Arc<Mutex<dyn FnMut(&mui::Ui) -> bool + Send>>;
 
+/// KONTAKTO patch: GPU callbacks may run synchronously or off the window
+/// thread. Share the diagnostic sink independently of the UI/model lock.
+pub type LogHook = Arc<Mutex<dyn FnMut(&str) + Send>>;
+
 /// Requests from the host's thread, applied by the window's next tick,
 /// which is the only place baseview's `WindowContext` can be touched.
 #[derive(Default)]
@@ -91,9 +95,15 @@ pub struct Requests {
     pointer: Mutex<Option<PointerHook>>,
     /// KONTAKTO patch: one bounded native capture, configured before open.
     timing: Mutex<Option<NativeTimingHook>>,
+    log: Mutex<Option<LogHook>>,
 }
 
 impl Requests {
+    /// Receive uncaptured GPU errors without taking the UI/model lock.
+    pub fn on_log(&self, hook: LogHook) {
+        *self.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+    }
+
     /// KONTAKTO patch: hand every key event to `hook` first.
     pub fn on_key(&self, hook: KeyHook) {
         *self.keys.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
@@ -238,6 +248,7 @@ pub struct Handler<V> {
     shared: Arc<Mutex<Shared<V>>>,
     requests: Arc<Requests>,
     gpu: Option<Host>,
+    gpu_log_generation: Option<u64>,
     gpu_retry_at: Instant,
     applied_cursor: Option<MouseCursor>,
     /// The current scene is not on screen yet: paint it.
@@ -275,6 +286,7 @@ impl<V: View> Handler<V> {
             shared,
             requests,
             gpu: None,
+            gpu_log_generation: None,
             gpu_retry_at: Instant::now(),
             applied_cursor: None,
             unpainted: true,
@@ -337,6 +349,7 @@ impl<V: View> Handler<V> {
         if self.gpu.is_none() && target_size(size.0, size.1).is_some() && now >= self.gpu_retry_at {
             match open_gpu(window, size, |line| log(&self.shared, line)) {
                 Ok(gpu) => {
+                    self.gpu_log_generation = None;
                     self.gpu = Some(gpu);
                     self.unpainted = true;
                 }
@@ -348,6 +361,9 @@ impl<V: View> Handler<V> {
                     self.gpu_retry_at = now + GPU_RETRY;
                 }
             }
+        }
+        if let Some(gpu) = &self.gpu {
+            hook_gpu_errors(gpu, &self.requests, &mut self.gpu_log_generation);
         }
         // The lock covers the frame and a snapshot of its scene, not the
         // present: acquiring a surface texture can wait out a vsync, and a
@@ -419,6 +435,9 @@ impl<V: View> Handler<V> {
             if let Some(sample) = sample { sample.resize_ns = timing::elapsed(resize_at); }
             let present_at = sample.as_ref().map(|_| Instant::now());
             let presented = gpu.present(&scene, Affine::scale(self.driver.ui_scale()));
+            // Host rebuilds a lost device inside present. Its new callback
+            // must reach the same sink before the next frame is submitted.
+            hook_gpu_errors(gpu, &self.requests, &mut self.gpu_log_generation);
             if let Some(sample) = sample {
                 sample.present_ns = timing::elapsed(present_at);
                 sample.outcome = if resize_failed { NativeFrameOutcome::Error } else { match &presented {
@@ -649,14 +668,13 @@ impl<V: View> Adapter<V> {
 /// `panic = "unwind"` (the `plugin` profile); under release's abort the
 /// panic kills the process before it gets here.
 fn guard<V: View, R>(h: &mut Handler<V>, f: impl FnOnce(&mut Handler<V>) -> R) -> Option<R> {
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(h))).ok();
-    if r.is_none() {
-        log(
-            &h.shared,
-            "mui-baseview: panic in the window, swallowed at the FFI edge",
-        );
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(h))) {
+        Ok(r) => Some(r),
+        Err(payload) => {
+            log(&h.shared, &format!("mui-baseview: panic in the window, swallowed at the FFI edge: {}", panic_message(payload.as_ref())));
+            None
+        }
     }
-    r
 }
 
 impl<V: View + 'static> WindowHandler for Adapter<V> {
@@ -813,6 +831,32 @@ fn log<V: View>(shared: &Mutex<Shared<V>>, line: &str) {
     lock(shared).view.log(line);
 }
 
+fn report_gpu_error(hook: &LogHook, error: impl std::fmt::Display) {
+    // Retain mui-vello's stderr diagnostic as well as the app's persistent
+    // sink. Do not change its separate device-lost callback or recovery.
+    eprintln!("mui-vello: uncaptured GPU error: {error}");
+    let line = format!("mui-baseview: GPU failed (uncaptured error: {error})");
+    let mut sink = match hook.try_lock() {
+        Ok(sink) => sink,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        // A sink may itself trigger another GPU diagnostic. Preserve stderr
+        // without blocking or recursively entering its FnMut callback.
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(&line))).is_err() {
+        eprintln!("mui-baseview: diagnostic sink panicked; GPU error retained on stderr");
+    }
+}
+
+fn hook_gpu_errors(gpu: &Host, requests: &Requests, generation: &mut Option<u64>) {
+    if *generation == Some(gpu.generation()) { return; }
+    let hook = requests.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    if let Some(hook) = hook {
+        gpu.device().0.on_uncaptured_error(Arc::new(move |error| report_gpu_error(&hook, error)));
+    }
+    *generation = Some(gpu.generation());
+}
+
 #[cfg(target_os = "linux")]
 fn linux_parent_api(handle: raw_window_handle::RawWindowHandle) -> Result<&'static str, &'static str> {
     use raw_window_handle::RawWindowHandle;
@@ -827,10 +871,13 @@ fn linux_parent_api(handle: raw_window_handle::RawWindowHandle) -> Result<&'stat
 /// KONTAKTO patch: retain wgpu's panic cause instead of discarding the
 /// shader/backend diagnostic when the native initialization unwinds.
 fn gpu_panic_reason(payload: &(dyn std::any::Any + Send)) -> String {
-    let reason = payload.downcast_ref::<String>().map(String::as_str)
+    format!("panic while creating GPU resources: {}", panic_message(payload))
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload.downcast_ref::<String>().map(String::as_str)
         .or_else(|| payload.downcast_ref::<&str>().copied())
-        .unwrap_or("non-string panic payload");
-    format!("panic while creating GPU resources: {reason}")
+        .unwrap_or("non-string panic payload")
 }
 
 /// KONTAKTO patch: do not initialize Vulkan implicitly in Windows hosts.
