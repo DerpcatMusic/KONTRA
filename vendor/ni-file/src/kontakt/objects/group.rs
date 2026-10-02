@@ -15,6 +15,16 @@ use crate::{
 #[derive(Debug)]
 pub struct Group(pub StructuredObject);
 
+/// Bounded source serialization identity, not decoded playback parameters.
+/// The preceding flag does not indicate absence: valid records follow zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceIdentity {
+    pub flag: u8,
+    pub structured: bool,
+    pub version: u16,
+    pub mode: u32,
+}
+
 #[derive(Debug)]
 pub struct GroupParams {
     pub name: String,
@@ -64,16 +74,35 @@ impl Group {
         Ok(Cursor::new(&data[records + PRIVATE_TRAILER..]))
     }
 
+    fn source_reader(&self) -> Result<(Cursor<&[u8]>, u8), Error> {
+        let mut reader = self.private_rack_reader()?;
+        super::BParamArrayBParFX8::read(&mut reader, 8)?;
+        let flag = reader.read_u8()?;
+        if flag > 1 { return Err(Error::Static("Invalid group source flag")); }
+        Ok((reader, flag))
+    }
+
+    /// Read only the seven-byte identity whose location is verified in legacy
+    /// v0x102 groups and Kontakt 8 v0x106 groups. Their remaining private bytes
+    /// remain opaque; this does not establish their source-record length or
+    /// implement wavetable/time-stretch playback. Snapshot state stays strict.
+    pub fn source_identity(&self) -> Result<SourceIdentity, Error> {
+        let (mut reader, flag) = self.source_reader()?;
+        if reader.read_u8()? != 0 {
+            return Err(Error::Static("Unsupported structured group source identity"));
+        }
+        let version = reader.read_u16_le()?;
+        if !matches!(version, 0x102 | 0x106) {
+            return Err(Error::Generic(format!("Unsupported group source identity version 0x{version:x}")));
+        }
+        Ok(SourceIdentity { flag, structured: false, version, mode: reader.read_u32_le()? })
+    }
+
     /// Opaque v0x102 source state after the private insert rack. Exposing its
     /// serialization header/mode permits snapshot compatibility checks without
     /// interpreting the remaining source parameters.
     pub fn source_state(&self) -> Result<[u8; 32], Error> {
-        let mut reader = self.private_rack_reader()?;
-        super::BParamArrayBParFX8::read(&mut reader, 8)?;
-        // This flag is false in some valid groups; the source record still follows.
-        if reader.read_u8()? > 1 {
-            return Err(Error::Static("Invalid group source flag"));
-        }
+        let (mut reader, _) = self.source_reader()?;
         let mut state = [0; 32];
         std::io::Read::read_exact(&mut reader, &mut state)?;
         if state[..3] != [0, 2, 1] {

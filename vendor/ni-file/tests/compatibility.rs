@@ -992,3 +992,48 @@ fn flat_filename_tables_keep_global_indices_and_reject_damage() {
         .to_string()
         .contains("version 4"));
 }
+
+#[test]
+fn modern_source_identity_retains_opaque_bytes_and_keeps_snapshot_codec_strict() {
+    use ni_file::kontakt::{StructuredObject, objects::{Group, SourceIdentity}};
+    let mut private = Vec::new();
+    for _ in 0..136 { private.extend(8u32.to_le_bytes()); private.extend([0; 8]); }
+    private.extend([0; 24]);
+    private.extend([0, 0x13, 0]);
+    private.extend(8u32.to_le_bytes());
+    private.extend([0; 8]);
+    let flag = private.len();
+    private.push(0);
+    let source = private.len();
+    private.extend([0, 6, 1]);
+    private.extend(9u32.to_le_bytes());
+    private.extend([0x5a; 114]); // Opaque remainder; not asserted as a source length.
+    let mut group = Group(StructuredObject { version: 150, public_data: Vec::new(), private_data: private, children: Vec::new() });
+    for value in [0, 1] {
+        group.0.private_data[flag] = value;
+        let before = group.0.private_data.clone();
+        assert_eq!(group.source_identity().unwrap(), SourceIdentity { flag: value, structured: false, version: 0x106, mode: 9 });
+        assert_eq!(group.0.private_data, before, "identity reads preserve the entire unknown remainder");
+        assert!(group.source_state().is_err(), "modern identity cannot masquerade as a legacy snapshot record");
+    }
+    group.0.private_data[flag] = 2;
+    assert!(group.source_identity().is_err());
+    group.0.private_data[flag] = 0;
+    group.0.private_data[source] = 1;
+    assert!(group.source_identity().is_err());
+    group.0.private_data[source] = 0;
+    group.0.private_data[source + 1] = 7;
+    assert!(group.source_identity().is_err(), "future versions remain unclassified");
+    group.0.private_data[source + 1] = 6;
+    let full = group.0.private_data.clone();
+    for bytes in 0..7 {
+        group.0.private_data = full[..source + bytes].to_vec();
+        assert!(group.source_identity().is_err(), "truncated identity {bytes}");
+    }
+    group.0.private_data = full[..source + 7].to_vec();
+    assert_eq!(group.source_identity().unwrap().mode, 9, "only the identity is consumed; no claim of a decoded tail");
+    group.0.private_data = full;
+    group.0.private_data[source + 1] = 2;
+    assert_eq!(group.source_identity().unwrap().version, 0x102);
+    assert!(group.source_state().is_ok());
+}
