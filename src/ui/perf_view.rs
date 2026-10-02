@@ -667,13 +667,6 @@ fn words(words: String, align: i32, top: Option<f64>, w: f64, h: f64, s: f64, in
     }
 }
 
-/// The size `text` is set at to fit `room` points: `size`, or smaller down
-/// to three quarters of it. Kontakt's own fonts are narrower than ours.
-pub fn fit(text: &str, room: f64, size: f64) -> f64 {
-    let wide = super::cover::advance(text, size);
-    if wide <= room || wide <= 0. { size } else { (size * room / wide).max(size * 0.75) }
-}
-
 /// A control's range as declared: a switch's is 0 to 1.
 fn range(kind: Kind, c: &Control) -> (f64, f64) {
     let toggle = matches!(kind, Kind::Switch | Kind::Button);
