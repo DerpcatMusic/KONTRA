@@ -313,6 +313,8 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
             }
         }
         (at(&v.instrument), at(&v.interface), at(&v.wallpaper)).hash(h);
+        v.live_revisions.hash(h);
+        for edit in v.edited_values() { edit.hash(h); }
         (Arc::as_ptr(&v.keys) as usize, Arc::as_ptr(&v.pictures) as usize).hash(h);
     }
 }

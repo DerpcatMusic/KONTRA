@@ -486,15 +486,10 @@ const EDIT_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Keep recent `edited` values over a live view begun before the scripts
 /// had them; an edit the view agrees with, or an old one, is done.
-fn settle_edits(edited: &mut Vec<(usize, i32, Instant)>, mut interface: Option<&mut crate::ksp::Interface>) {
+fn settle_edits(edited: &mut Vec<(usize, i32, Instant)>, interface: Option<&crate::ksp::Interface>) {
     edited.retain(|&(control, value, at)| {
-        let Some(c) = interface.as_deref_mut().and_then(|i| i.controls.get_mut(control)) else { return false };
-        let want = crate::ksp::Value::Int(value);
-        if at.elapsed() > EDIT_SETTLE || c.properties.get("$CONTROL_PAR_VALUE") == Some(&want) {
-            return false;
-        }
-        c.properties.insert("$CONTROL_PAR_VALUE".into(), want);
-        true
+        at.elapsed() <= EDIT_SETTLE && interface.and_then(|i| i.controls.get(control)).is_some_and(|c|
+            c.properties.get("$CONTROL_PAR_VALUE") != Some(&crate::ksp::Value::Int(value)))
     });
 }
 
@@ -564,6 +559,26 @@ pub(crate) struct PartView {
     /// scripts began before the edit reached them still shows the old value,
     /// and would flick the control back for a frame.
     pub(crate) edited: Vec<(usize, i32, Instant)>,
+}
+impl PartView {
+    /// Pending scalar values affect drawing without copying or mutating the
+    /// callback-derived interface retained by readers.
+    pub(crate) fn control_value(&self, control: usize) -> Option<f64> {
+        let c = self.interface.as_ref()?.controls.get(control)?;
+        if let Some((_, value)) = self.edited_values().find(|&(n, _)| n == control) {
+            return Some(f64::from(value));
+        }
+        match c.properties.get("$CONTROL_PAR_VALUE")? {
+            crate::ksp::Value::Int(n) => Some(f64::from(*n)),
+            crate::ksp::Value::Real(r) => Some(*r),
+            _ => None,
+        }
+    }
+
+    /// Timestamps settle edits; only control/value pairs invalidate drawing.
+    pub(crate) fn edited_values(&self) -> impl Iterator<Item = (usize, i32)> + '_ {
+        self.edited.iter().map(|&(n, value, _)| (n, value))
+    }
 }
 #[derive(Clone)]
 pub(crate) struct View {
@@ -1059,16 +1074,13 @@ impl Shared {
                 let view = self.view.lock().unwrap();
                 let v = &view.parts[slot];
                 if epoch == 0 || epoch != v.script_epoch { continue; }
-                let restore = v.edited.iter().any(|&(n, value, at)| now.saturating_duration_since(at) > EDIT_SETTLE
-                    && live.interface.as_ref().and_then(|i| i.controls.get(n)).is_some_and(|c|
-                        c.properties.get("$CONTROL_PAR_VALUE") != Some(&crate::ksp::Value::Int(value))));
-                (v.live_revisions, v.live_diagnostics.clone(), restore)
+                (v.live_revisions, v.live_diagnostics.clone())
             };
             // Prepare copies before taking the view lock: readers retain their
             // previous Arc snapshots, and the audio buffer is immediately reusable.
             let revisions = live.revisions();
-            let mut interface = (live.refresh_interface
-                && (previous.2 || previous.0.is_none_or(|old| old.0 != revisions.0)))
+            let interface = (live.refresh_interface
+                && previous.0.is_none_or(|old| old.0 != revisions.0))
                 .then(|| live.interface.clone().map(Arc::new));
             let keys = (live.refresh_interface && previous.0.is_none_or(|old| old.1 != revisions.1))
                 .then(|| Arc::new(live.keys.clone()));
@@ -1086,15 +1098,11 @@ impl Shared {
             let v = &mut view.parts[slot];
             // A restore/unload can replace the runtime during preparation.
             if epoch == 0 || epoch != v.script_epoch { continue; }
-            if let Some(interface) = &mut interface {
-                settle_edits(&mut v.edited, interface.as_mut().and_then(Arc::get_mut));
-                v.interface = interface.take();
-            } else if live.refresh_interface {
-                // Equal source revisions still acknowledge optimistic edits;
-                // a refused value restores once its grace period expires.
-                v.edited.retain(|&(n, value, at)| now.saturating_duration_since(at) <= EDIT_SETTLE
-                    && live.interface.as_ref().and_then(|i| i.controls.get(n)).is_some_and(|c|
-                        c.properties.get("$CONTROL_PAR_VALUE") != Some(&crate::ksp::Value::Int(value))));
+            if let Some(interface) = interface { v.interface = interface; }
+            if live.refresh_interface {
+                // Pending edits are a view overlay. Matching callbacks acknowledge
+                // them; refused values become visible when their grace expires.
+                settle_edits(&mut v.edited, live.interface.as_ref());
             }
             if live.refresh_interface { v.live_revisions = Some(revisions); }
             if let Some(keys) = keys { v.keys = keys; }
@@ -1189,14 +1197,6 @@ impl Shared {
         };
         if self.edits.push(edit).is_err() {
             return;
-        }
-        if let Some(c) = v
-            .interface
-            .as_mut()
-            .and_then(|i| Arc::make_mut(i).controls.get_mut(control))
-        {
-            c.properties
-                .insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::Int(value));
         }
         v.edited.retain(|e| e.0 != control);
         v.edited.push((control, value, Instant::now()));
@@ -3713,8 +3713,15 @@ mod tests {
         let mut outputs = [&mut left[..], &mut right[..]];
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outputs, 64);
         for value in [42, 84] {
-            p.shared.edit_control(0, 0, value);
             let retained = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
+            let source_value = retained.controls[0].properties["$CONTROL_PAR_VALUE"].clone();
+            p.shared.edit_control(0, 0, value);
+            {
+                let view = p.shared.view.lock().unwrap();
+                assert!(Arc::ptr_eq(&retained, view.parts[0].interface.as_ref().unwrap()), "an edit copies no interface under the view lock");
+                assert_eq!(view.parts[0].control_value(0), Some(f64::from(value)), "the edit is visible immediately");
+                assert_eq!(retained.controls[0].properties["$CONTROL_PAR_VALUE"], source_value);
+            }
             assert!(crate::ui::watch_live_change(&p, || {
                 assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
                 let (slot, epoch, mut live) = p.shared.lives.pop().expect("audio completes a live view");
@@ -3743,6 +3750,8 @@ mod tests {
         p.shared.edit_control(0, 0, 99);
         p.shared.edits.pop().unwrap(); // Simulate an edit rejected by the script.
         let optimistic = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
+        assert_eq!(p.shared.view.lock().unwrap().parts[0].control_value(0), Some(99.));
+        assert_eq!(optimistic.controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(84));
         let (slot, live) = p.shared.live_requests.pop().unwrap();
         p.shared.lives.push((slot, 1, live)).ok().unwrap();
         p.shared.publish_live(true);
@@ -3754,6 +3763,8 @@ mod tests {
         p.shared.publish_live(true);
         assert_eq!(p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(84));
         assert!(p.shared.view.lock().unwrap().parts[0].edited.is_empty(), "refused optimistic edits eventually settle");
+        assert_eq!(p.shared.view.lock().unwrap().parts[0].control_value(0), Some(84.));
+        assert!(Arc::ptr_eq(&optimistic, p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap()), "refusal restores the source value without recopying it");
         bank_gate.wait();
         loader.join().unwrap();
         assert_eq!(p.shared.view.lock().unwrap().parts[0].load_report.as_ref().unwrap()["runtime"]["faults"][0]["count"], 84,
@@ -4234,18 +4245,19 @@ end on"#,dir.display());
             });
             i
         };
-        let value = |i: &Interface| i.controls[0].properties["$CONTROL_PAR_VALUE"].clone();
-        let mut edited = vec![(0, 1, Instant::now())];
-        let mut stale = shown(0);
-        settle_edits(&mut edited, Some(&mut stale));
-        assert_eq!((value(&stale), edited.len()), (Value::Int(1), 1), "a stale view shows the edit");
-        let mut caught_up = shown(1);
-        settle_edits(&mut edited, Some(&mut caught_up));
-        assert!(edited.is_empty(), "a view that has it ends the edit");
-        let mut edited = vec![(0, 1, Instant::now() - EDIT_SETTLE * 2)];
-        let mut refused = shown(0);
-        settle_edits(&mut edited, Some(&mut refused));
-        assert_eq!((value(&refused), edited.len()), (Value::Int(0), 0), "a script that kept its value wins in the end");
+        let mut part = PartView { interface: Some(Arc::new(shown(0))),
+            edited: vec![(0, 1, Instant::now())], ..Default::default() };
+        let retained = part.interface.clone().unwrap();
+        settle_edits(&mut part.edited, part.interface.as_deref());
+        assert_eq!((part.control_value(0), part.edited.len()), (Some(1.), 1), "a stale view shows the overlay");
+        assert_eq!(retained.controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(0), "callback snapshots remain immutable");
+        part.interface = Some(Arc::new(shown(1)));
+        settle_edits(&mut part.edited, part.interface.as_deref());
+        assert!(part.edited.is_empty(), "a view that has it ends the edit");
+        part.interface = Some(Arc::new(shown(0)));
+        part.edited = vec![(0, 1, Instant::now() - EDIT_SETTLE * 2)];
+        settle_edits(&mut part.edited, part.interface.as_deref());
+        assert_eq!((part.control_value(0), part.edited.len()), (Some(0.), 0), "a script that kept its value wins in the end");
     }
 
     /// Routing never holds the selection while it waits for `view`, which
