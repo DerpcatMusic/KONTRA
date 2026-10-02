@@ -1332,7 +1332,7 @@ fn sys_of(ctx: &Ctx, env: &Env, slot: u8, v: SysVar) -> i32 {
         SysVar::EventVelocity => event().map_or(0, |e| e.velocity),
         SysVar::NoteHeld => bool_int(env.events.held(ctx.event)),
         SysVar::CcNum => ctx.cc,
-        SysVar::PitchBend => env.input.pitch_bend,
+        SysVar::PitchBend => env.input.pitch_bend_for(ctx.domain),
         SysVar::PolyAtNum | SysVar::NcNote => ctx.note,
         SysVar::NcNum => ctx.cc,
         SysVar::NcValue => ctx.value,

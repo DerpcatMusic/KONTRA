@@ -433,8 +433,20 @@ pub struct Input {
     pub input_channel: Option<u8>,
     pub cc: [i32; CC_SLOTS],
     pub pitch_bend: i32,
+    /// Prepared per-domain controller caches; physical key chains remain shared.
+    performance: Vec<[i32; CC_SLOTS]>,
     /// First/last MIDI event per input key; links live in the prepared event pool.
     keys: [[(i32, i32); 128]; 16],
+}
+
+impl Input {
+    fn controllers(&self, domain: u8) -> &[i32; CC_SLOTS] {
+        if self.performance.is_empty() { &self.cc } else { &self.performance[domain as usize] }
+    }
+    pub(super) fn pitch_bend_for(&self, domain: u8) -> i32 {
+        if self.performance.is_empty() { self.pitch_bend }
+        else { self.performance[domain as usize][b::VCC_PITCH_BEND as usize] }
+    }
 }
 
 /// Shared runtime state visible to builtins.
@@ -500,6 +512,7 @@ impl Env {
                 input_channel: Some(0),
                 cc: [0; CC_SLOTS],
                 pitch_bend: 0,
+                performance: Vec::new(),
                 keys: [[(0, 0); 128]; 16],
             },
             work: VecDeque::with_capacity(WORK_CAPACITY),
@@ -745,6 +758,7 @@ pub struct Runtime {
     programs: Vec<Arc<Program>>,
     states: Vec<SlotState>,
     domain_map: [u8; 16],
+    domain_origins: [u8; 16],
     domain_count: u8,
     domain_mask: Option<u16>,
     pub env: Env,
@@ -786,12 +800,16 @@ impl Runtime {
     /// Prepare performance storage off the audio thread, after all slots load.
     /// Only assigned Channel-mode origins need a bank; the UI and scheduler stay shared.
     pub fn prepare_channel_domains(&mut self, channels: u16) {
+        if channels == 0 { return; }
         assert!(self.domain_mask.is_none(), "channel domains are prepared once per loaded runtime");
         self.domain_mask = Some(channels);
         let count = channels.count_ones().max(1) as u8;
+        let mut initial = self.env.input.cc;
+        for &(cc, value) in &self.init_controllers { initial[cc as usize] = i32::from(value); }
+        self.env.input.performance = vec![initial; count as usize];
         let mut next = 0;
         for c in 0..16 {
-            if channels & (1 << c) != 0 { self.domain_map[c] = next; next += 1; }
+            if channels & (1 << c) != 0 { self.domain_map[c] = next; self.domain_origins[next as usize] = c as u8; next += 1; }
         }
         for (p, state) in self.programs.iter().zip(&mut self.states) {
             state.mem.prepare_domains(count as usize, p.domain_slots);
@@ -846,6 +864,7 @@ impl Runtime {
             programs: Vec::new(),
             states: Vec::new(),
             domain_map: [0; 16],
+            domain_origins: [0; 16],
             domain_count: 1,
             domain_mask: None,
             env: Env::new(host, persisted),
@@ -1778,47 +1797,66 @@ impl Runtime {
     /// Synchronize a full Panic/reset's controller state without script callbacks.
     /// With no replacement state, use the MIDI RP-015 CC121 defaults.
     pub fn reset_controllers(&mut self, controllers: Option<&[u8; 128]>) {
+        for domain in 0..self.domain_count { self.reset_domain_controllers(domain, controllers); }
+        self.changes += 1;
+    }
+
+    pub(crate) fn reset_controllers_from(&mut self, input: u8) {
+        self.reset_domain_controllers(self.domain_map[input.min(15) as usize], None);
+        self.changes += 1;
+    }
+
+    pub(crate) fn controller_cache(&self, input: u8) -> &[i32; CC_SLOTS] {
+        self.env.input.controllers(self.domain_map[input.min(15) as usize])
+    }
+
+    pub(crate) fn cached_pedal_down(&self, cc: usize) -> bool {
+        if self.env.input.performance.is_empty() { self.env.input.cc[cc] >= 64 }
+        else { self.env.input.performance.iter().any(|row| row[cc] >= 64) }
+    }
+
+    pub(crate) fn channel_domain_mask(&self) -> Option<u16> { self.domain_mask }
+
+    fn reset_domain_controllers(&mut self, domain: u8, controllers: Option<&[u8; 128]>) {
+        let input = &mut self.env.input;
+        let row = if input.performance.is_empty() { &mut input.cc } else { &mut input.performance[domain as usize] };
         if let Some(controllers) = controllers {
-            for (cc, &value) in controllers.iter().enumerate() {
-                self.env.input.cc[cc] = i32::from(value);
-            }
+            for (cc, &value) in controllers.iter().enumerate() { row[cc] = i32::from(value); }
         } else {
             for cc in 0..128 {
                 let initial = self.init_controllers.iter().rev()
                     .find(|&&(controller, _)| controller as usize == cc).map(|&(_, value)| value);
-                if let Some(value) = reset_controller_value(cc as u8, initial) {
-                    self.env.input.cc[cc] = i32::from(value);
-                }
+                if let Some(value) = reset_controller_value(cc as u8, initial) { row[cc] = i32::from(value); }
             }
         }
-        self.env.input.cc[b::VCC_PITCH_BEND as usize] = 0;
-        self.env.input.cc[b::VCC_MONO_AT as usize] = 0;
+        row[b::VCC_PITCH_BEND as usize] = 0;
+        row[b::VCC_MONO_AT as usize] = 0;
+        let current = *row;
+        self.env.input.cc = current;
         self.env.input.pitch_bend = 0;
-        for domain in 0..self.domain_count {
-            self.select_domain(domain);
-            for cc in 0..CC_SLOTS {
-                self.set_sys(SysArray::Cc, cc, self.env.input.cc[cc]);
-                self.set_sys(SysArray::CcTouched, cc, 0);
-            }
-            for note in 0..128 { self.set_sys(SysArray::PolyAt, note, 0); }
+        self.select_domain(domain);
+        for cc in 0..CC_SLOTS {
+            self.set_sys(SysArray::Cc, cc, current[cc]);
+            self.set_sys(SysArray::CcTouched, cc, 0);
         }
-        self.changes += 1;
+        for note in 0..128 { self.set_sys(SysArray::PolyAt, note, 0); }
     }
 
     /// Fence older performance-controller callbacks without canceling keys,
     /// note/release callbacks, UI edits or unrelated MIDI channels.
     pub(crate) fn cancel_performance_controllers(&mut self, channels: u16) {
-        let selected = |channel: u8, cc: u8| channels & (1 << channel.min(15)) != 0
+        let origins = self.domain_mask.map(|_| self.domain_origins);
+        let selected = |channel: u8, domain: u8, cc: u8| channels & (1 << origins.map_or(channel, |o| o[domain as usize]).min(15)) != 0
             && reset_controller_value(cc, None).is_some();
         self.env.work.retain(|w| match *w {
-            Work::Controller { channel, cc, .. } => !selected(channel, cc),
-            Work::PolyAt { channel, .. } => !selected(channel, 129),
+            Work::Controller { channel, domain, cc, .. } => !selected(channel, domain, cc),
+            Work::PolyAt { channel, domain, .. } => !selected(channel, domain, 129),
             _ => true,
         });
         for i in 0..self.threads.len() {
             let t = &self.threads[i];
-            if !t.live || !(t.ctx.kind == Kind::Cb(Callback::Controller) && selected(t.ctx.channel, t.ctx.cc as u8)
-                || t.ctx.kind == Kind::Cb(Callback::PolyAt) && selected(t.ctx.channel, 129)) { continue; }
+            if !t.live || !(t.ctx.kind == Kind::Cb(Callback::Controller) && selected(t.ctx.channel, t.ctx.domain, t.ctx.cc as u8)
+                || t.ctx.kind == Kind::Cb(Callback::PolyAt) && selected(t.ctx.channel, t.ctx.domain, 129)) { continue; }
             self.threads[i].ctx.forward = Forward::None;
             self.finish(i as u16);
         }
@@ -1856,10 +1894,14 @@ impl Runtime {
     fn cc(&mut self, engine: &mut dyn KspEngine, at: u32, cc: u8, value: i32) {
         self.advance(engine, at);
         self.env.input.cc[cc as usize] = value;
-        // Common part controllers refresh every bank's cached authored state,
-        // while native modulation/pedals receive the forwarded MIDI once.
+        // CC7/10 keep the existing part-wide mixer policy. Other performance
+        // input belongs to its physical domain; authored common UI callbacks
+        // already replay independently and emit to each bank's native origin.
+        let common = matches!(cc, 7 | 10);
         for domain in 0..self.domain_count {
-            self.env.queue(Work::Controller { emit: domain == 0, channel: self.env.input.channel, domain, input_channel: self.env.input.input_channel, cc, value, slot: 0 });
+            if !common && domain != self.env.input.domain { continue; }
+            if !self.env.input.performance.is_empty() { self.env.input.performance[domain as usize][cc as usize] = value; }
+            self.env.queue(Work::Controller { emit: true, channel: self.env.input.channel, domain, input_channel: self.env.input.input_channel, cc, value, slot: 0 });
         }
         self.settle(engine);
     }
@@ -2403,8 +2445,10 @@ impl Runtime {
                 }
             }
             Work::Controller { emit, channel, domain, input_channel, cc, value, slot } => {
+                if !self.env.input.performance.is_empty() { self.env.input.performance[domain as usize][cc as usize] = value; }
                 self.select_domain(domain);
                 if slot >= slots {
+                    engine.set_domain(domain, false);
                     if emit { engine.controller_from(self.env.offset, channel, input_channel, cc, value); }
                     return;
                 }

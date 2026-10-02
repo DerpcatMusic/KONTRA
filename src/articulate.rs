@@ -427,7 +427,9 @@ pub enum Out {
     Control(usize, usize, i32),
     ControlFrom(u8, usize, usize, i32),
     Expression(u8, u8, Expression),
+    ExpressionFrom(u8, u8, u8, Expression),
     FreezeExpression(u8, u8),
+    FreezeExpressionFrom(u8, u8, u8),
 }
 
 /// MIDI state of each channel's RPN: selected parameter and fine data entry.
@@ -648,10 +650,10 @@ impl Router {
             * (f32::from(self.bend_range.0) + f32::from(self.bend_range.1) / 100.).min(96.)
     }
 
-    fn pressure(&mut self, channel: u8, key: u8, value: u8, out: &mut impl FnMut(Out)) {
+    fn pressure(&mut self, channel: u8, expression_channel: u8, key: u8, value: u8, out: &mut impl FnMut(Out)) {
         out(Out::PolyAt(channel, key, value));
         if !self.handles_pressure {
-            self.set_expression(channel, key, |x| x.gain = pressure_gain(value), out);
+            self.set_expression(expression_channel, key, |x| x.gain = pressure_gain(value), out);
         }
     }
 
@@ -661,6 +663,8 @@ impl Router {
         let r = self.route;
         let channel = ev.channel();
         let to = if r.by_channel() { home & 15 } else { channel };
+        let private = self.domains && r.by_channel();
+        let expression_channel = if private { channel } else { to };
         let out = &mut |o| output(if r.by_channel() {
             match o {
                 Out::NoteOn(c, n, v) => Out::NoteOnFrom(c, channel, n, v),
@@ -670,6 +674,8 @@ impl Router {
                 Out::Pressure(c, v) => Out::PressureFrom(c, channel, v),
                 Out::PolyAt(c, n, v) => Out::PolyAtFrom(c, channel, n, v),
                 Out::Control(s, c, v) => Out::ControlFrom(channel, s, c, v),
+                Out::Expression(_, n, x) if private => Out::ExpressionFrom(to, channel, n, x),
+                Out::FreezeExpression(c, n) if private => Out::FreezeExpressionFrom(c, channel, n),
                 o => o,
             }
         } else { o });
@@ -702,7 +708,7 @@ impl Router {
                 }
                 let tune = if r.member(channel) { self.member_tune(channel) } else { 0.0 };
                 self.brightness[key as usize] = NONE;
-                self.set_expression(to, key, |x| *x = Expression { tune, ..Expression::default() }, out);
+                self.set_expression(expression_channel, key, |x| *x = Expression { tune, ..Expression::default() }, out);
                 self.held[channel as usize][note as usize & 127] = (to, key);
                 if r.by_channel() {
                     out(Out::NoteOnFrom(to, channel, key, velocity));
@@ -711,7 +717,7 @@ impl Router {
                 }
                 if r.member(channel) {
                     if let Some(value) = self.member_pressure[channel as usize] {
-                        self.pressure(to, key, value, out);
+                        self.pressure(to, expression_channel, key, value, out);
                     }
                 }
             }
@@ -737,7 +743,7 @@ impl Router {
                 let tune = self.member_tune(channel);
                 let row = self.held[channel as usize];
                 for (to, key) in row.into_iter().filter(|h| h.1 != NONE) {
-                    self.set_expression(to, key, |x| x.tune = tune, out);
+                    self.set_expression(if private { channel } else { to }, key, |x| x.tune = tune, out);
                 }
             }
             In::Bend(_, value) => {
@@ -747,7 +753,7 @@ impl Router {
                 self.member_pressure[channel as usize] = Some(value.min(127));
                 let row = self.held[channel as usize];
                 for (to, key) in row.into_iter().filter(|h| h.1 != NONE) {
-                    self.pressure(to, key, value, out);
+                    self.pressure(to, expression_channel, key, value, out);
                 }
                 out(Out::Pressure(to, value));
             }
@@ -815,25 +821,25 @@ impl Router {
             In::NoteTune(_, note, semitones) => {
                 let key = self.key_of(channel, note);
                 if key != NONE {
-                    self.set_expression(to, key, |x| x.tune = semitones, out);
+                    self.set_expression(expression_channel, key, |x| x.tune = semitones, out);
                 }
             }
             In::NotePressure(_, note, value) => {
                 let key = self.key_of(channel, note);
                 if key != NONE {
-                    self.pressure(to, key, value, out);
+                    self.pressure(to, expression_channel, key, value, out);
                 }
             }
             In::NoteGain(_, note, gain) => {
                 let key = self.key_of(channel, note);
                 if key != NONE {
-                    self.set_expression(to, key, |x| x.gain = gain.clamp(0.0, 4.0), out);
+                    self.set_expression(expression_channel, key, |x| x.gain = gain.clamp(0.0, 4.0), out);
                 }
             }
             In::NotePan(_, note, pan) => {
                 let key = self.key_of(channel, note);
                 if key != NONE {
-                    self.set_expression(to, key, |x| x.pan = pan.clamp(-1.0, 1.0), out);
+                    self.set_expression(expression_channel, key, |x| x.pan = pan.clamp(-1.0, 1.0), out);
                 }
             }
             In::NoteBrightness(_, note, value) => {
@@ -909,7 +915,9 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
         Out::Control(slot, control, value) => e.ui_control(slot, control, value),
         Out::ControlFrom(input, slot, control, value) => e.ui_control_from(input, slot, control, value),
         Out::Expression(c, n, x) => e.set_expression_on(c, n, x),
+        Out::ExpressionFrom(c, input, n, x) => e.set_expression_from(c, input, n, x),
         Out::FreezeExpression(c, n) => e.freeze_released_expression(c, n),
+        Out::FreezeExpressionFrom(c, input, n) => e.freeze_released_expression_from(c, input, n),
     }
 }
 
@@ -1218,6 +1226,106 @@ mod tests {
         no_audio_heap(|| { e.panic(); for _ in 0..5 { render(&mut e); } });
         assert!(e.voice_census().is_empty());
         assert_eq!(e.dropped_commands(),0);
+        assert!(e.script().unwrap().diagnostics().is_empty());
+    }
+
+    #[test]
+    fn prepared_native_pedals_keep_their_physical_owner() {
+        for cc in [64, 66] {
+            let (mut e, mut r) = three_articulation_part();
+            e.prepare_channel_domains(r.route.channel_origins());
+            no_audio_heap(|| {
+                for channel in 0..3 { feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0); }
+                render(&mut e);
+                feed(&mut r, &mut e, In::Cc(1, cc, 127), 0);
+                render(&mut e);
+                for channel in [2, 0, 1] { feed(&mut r, &mut e, In::NoteOff(channel, 60), 0); }
+                render(&mut e);
+            });
+            for voice in e.voice_census().iter().filter(|v| !v.release_trigger) {
+                assert_eq!(voice.released, voice.input_channel != Some(1), "CC{cc}: {voice:?}");
+                assert!(!voice.held);
+            }
+            assert_eq!(e.cc_state()[1][cc as usize], 127);
+            assert_eq!([e.cc_state()[0][cc as usize], e.cc_state()[2][cc as usize]], [0, 0]);
+            no_audio_heap(|| { feed(&mut r, &mut e, In::Cc(1, cc, 0), 0); render(&mut e); });
+            assert!(e.voice_census().iter().all(|v| v.released));
+            assert_eq!(e.dropped_commands(), 0);
+            assert!(e.script().unwrap().diagnostics().is_empty());
+        }
+    }
+
+    #[test]
+    fn prepared_native_expression_and_authored_controllers_keep_their_owner() {
+        let (mut e, mut r) = three_articulation_part();
+        let source = GLOBAL_ARTICULATION.replace("declare $art := 0", "declare $art := 0\ndeclare ui_switch $go")
+            + "\non controller\nif ($CC_NUM = 20)\nset_controller(21,%CC[20]+1)\nend if\nend on\non ui_control($go)\nset_controller(22,$art+1)\nend on";
+        e.set_script(Some(Box::new(runtime(&source))));
+        e.prepare_channel_domains(r.route.channel_origins());
+        no_audio_heap(|| {
+            for channel in 0..3 { feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0); }
+            render(&mut e);
+        });
+        let baseline = e.voice_census();
+        no_audio_heap(|| {
+            feed(&mut r, &mut e, In::Cc(1, 20, 50), 0);
+            feed(&mut r, &mut e, In::Pressure(2, 80), 0);
+            feed(&mut r, &mut e, In::Bend(1, 12288), 0);
+            feed(&mut r, &mut e, In::NoteTune(1, 60, 12.), 0);
+            feed(&mut r, &mut e, In::NoteGain(2, 60, 0.5), 0);
+            render(&mut e);
+        });
+        assert_eq!([e.cc_state()[0][21], e.cc_state()[1][21], e.cc_state()[2][21]], [0, 51, 0]);
+        assert_eq!(e.script().unwrap().controller_cache(1)[128], 4096);
+        assert_eq!(e.script().unwrap().controller_cache(2)[129], 80);
+        let voices = e.voice_census();
+        for owner in 0..3 {
+            let before = baseline.iter().find(|v| v.input_channel == Some(owner)).unwrap();
+            let after = voices.iter().find(|v| v.input_channel == Some(owner)).unwrap();
+            assert!((after.step / before.step - if owner == 1 { 2. } else { 1. }).abs() < 1e-5);
+            assert!((after.gain / before.gain - if owner == 2 { 0.5 } else { 1. }).abs() < 1e-5);
+        }
+        no_audio_heap(|| { e.ui_control(0, 0, 1); render(&mut e); });
+        assert_eq!([e.cc_state()[0][22], e.cc_state()[1][22], e.cc_state()[2][22]], [1, 2, 3]);
+        assert_eq!(e.dropped_commands(), 0);
+        assert!(e.script().unwrap().diagnostics().is_empty());
+    }
+
+    #[test]
+    fn prepared_native_reset_and_sound_off_leave_other_origins_running() {
+        let (mut e, mut r) = three_articulation_part();
+        let instrument = crate::import::Instrument {
+            groups: vec![crate::import::Group::default(); 3],
+            scripts: vec![GLOBAL_ARTICULATION.replace("declare $art := 0", "declare $art := 0\nset_controller(110,127)\nset_controller(111,100)")],
+            ..Default::default()
+        };
+        let (runtime, errors) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        e.set_script(runtime);
+        e.prepare_channel_domains(r.route.channel_origins());
+        no_audio_heap(|| {
+            for channel in 0..3 {
+                feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0);
+                feed(&mut r, &mut e, In::Cc(channel, 64, 127), 0);
+                feed(&mut r, &mut e, In::Cc(channel, 110, 30 + channel), 0);
+                feed(&mut r, &mut e, In::NoteOff(channel, 60), 0);
+            }
+            render(&mut e);
+            feed(&mut r, &mut e, In::Cc(1, 121, 0), 0);
+            render(&mut e);
+        });
+        for owner in 0..3 {
+            assert_eq!(e.cc_state()[owner][64], if owner == 1 { 0 } else { 127 });
+            assert_eq!(e.cc_state()[owner][110], if owner == 1 { 127 } else { 30 + owner as u8 });
+            assert_eq!(e.script().unwrap().controller_cache(owner as u8)[110], i32::from(e.cc_state()[owner][110]));
+        }
+        assert!(e.voice_census().iter().filter(|v| !v.release_trigger).all(|v| v.released == (v.input_channel == Some(1))));
+        no_audio_heap(|| { feed(&mut r, &mut e, In::Cc(2, 120, 0), 0); for _ in 0..5 { render(&mut e); } });
+        assert!(e.voice_census().iter().any(|v| v.input_channel == Some(0) && !v.released));
+        assert!(!e.voice_census().iter().any(|v| v.input_channel == Some(2)));
+        no_audio_heap(|| { e.panic(); for _ in 0..5 { render(&mut e); } });
+        assert!(e.voice_census().is_empty());
+        assert_eq!(e.dropped_commands(), 0);
         assert!(e.script().unwrap().diagnostics().is_empty());
     }
 

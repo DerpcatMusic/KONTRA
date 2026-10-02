@@ -253,7 +253,7 @@ impl Host<'_> {
             };
         if full {
             self.player.dropped_commands += 1;
-            if stop && channel < 16 { self.player.stop_overflow |= 1 << channel; }
+            if stop && channel < 16 { self.player.stop_overflow |= 1 << self.player.control_channel(channel, self.domain); }
             return false;
         }
         let i = self.commands.partition_point(|c| c.at <= at);
@@ -434,7 +434,7 @@ impl KspEngine for Host<'_> {
                 .filter(|(_, w)| w.at == at).map(|(i, w)| ((w.domain, w.address), i)));
         }
         if let Some(&i) = self.write_index.1.get(&(domain, address)) {
-            self.writes[i].local = !self.common && self.bank.is_some_and(|b| !b.domain_base.is_empty()) && address.is_group();
+            self.writes[i].local = !self.common && self.player.domain_origins.is_some() && address.is_group();
             self.writes[i].value = value;
             self.writes[i].par = par;
             self.writes[i].native = native;
@@ -447,7 +447,7 @@ impl KspEngine for Host<'_> {
         let i = self.writes.partition_point(|w| w.at <= at);
         // Insertion follows every existing write at this sample, so it cannot
         // move an index cached for the current batch, even with future writes.
-        self.writes.insert(i, Write { local: !self.common && self.bank.is_some_and(|b| !b.domain_base.is_empty()) && address.is_group(), domain, at, address, value, par, native });
+        self.writes.insert(i, Write { local: !self.common && self.player.domain_origins.is_some() && address.is_group(), domain, at, address, value, par, native });
         self.write_index.1.insert((domain, address), i);
         true
     }
@@ -506,6 +506,7 @@ impl Player {
     pub(super) fn apply(&mut self, bank: &Bank, c: &Command, defaults: Ahdsr) {
         let id = c.id;
         let channel = c.channel;
+        let control_channel = self.control_channel(channel, c.domain);
         match &c.kind {
             &Kind::Start {
                 note,
@@ -569,22 +570,22 @@ impl Player {
             }
             &Kind::Change(change) => self.change_event(id, change),
             &Kind::Controller { cc: 128, value } => {
-                self.bend[channel as usize] = value.clamp(-8192, 8191) as f32 / 8192.0;
+                self.bend[control_channel as usize] = value.clamp(-8192, 8191) as f32 / 8192.0;
                 self.touch();
             }
             &Kind::Controller { cc, value } if cc < 128 => {
                 let value = value.clamp(0, 127) as u8;
-                self.cc(Some(bank), channel, cc, value, defaults);
+                self.cc(Some(bank), control_channel, cc, value, defaults);
             }
             &Kind::Controller { cc: 129, value } => {
-                self.pressure[channel as usize] = value.clamp(0, 127) as u8;
+                self.pressure[control_channel as usize] = value.clamp(0, 127) as u8;
                 self.touch();
             }
             // Other virtual controllers: nothing in the engine uses them.
             Kind::Controller { .. } => {}
             &Kind::ResetCounter(note) => {
-                self.key_on[channel as usize & 15][note as usize & 127] = self.now;
-                for v in self.voices.iter_mut().filter(|v| v.channel == channel && v.note == note && !v.release_trigger && v.counter_stop.is_none()) {
+                self.key_on[control_channel as usize & 15][note as usize & 127] = self.now;
+                for v in self.voices.iter_mut().filter(|v| v.control_channel == control_channel && v.note == note && !v.release_trigger && v.counter_stop.is_none()) {
                     v.counter_start = self.now;
                 }
             }

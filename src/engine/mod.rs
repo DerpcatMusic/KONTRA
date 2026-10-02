@@ -333,6 +333,7 @@ impl Engine {
     /// Engine parameters the scripts set in `on init` apply now, and again to
     /// banks and effects installed later.
     pub fn set_script(&mut self, mut script: Option<Box<Runtime>>) -> Option<Box<Runtime>> {
+        self.player.domain_origins = None;
         self.commands.clear();
         self.writes.clear();
         self.write_index.1.clear();
@@ -399,8 +400,14 @@ impl Engine {
 
     /// Prepare configured Channel-mode origins on the loading thread.
     pub fn prepare_channel_domains(&mut self, channels: u16) {
+        if channels == 0 { return; }
         if let Some(rt) = self.script.as_deref_mut() {
             rt.prepare_channel_domains(channels);
+            let mut origins = [0; 16];
+            for (domain, origin) in (0..16u8).filter(|c| channels & (1 << c) != 0).enumerate() {
+                origins[domain] = origin;
+            }
+            self.player.domain_origins = (channels != 0).then_some(origins);
             if let Some(bank) = self.bank.as_deref_mut() {
                 bank.prepare_channel_domains(channels.count_ones().max(1) as usize);
             }
@@ -518,9 +525,12 @@ impl Engine {
 
     fn notify_script_pedals(&mut self, values: [Option<u8>; 2]) {
         if self.script.is_none() { return; }
-        for channel in 0..16 {
+        let mask = self.script.as_ref().unwrap().channel_domain_mask();
+        for input in 0..16 {
+            if mask.is_some_and(|mask| mask & (1 << input) == 0) { continue; }
+            let channel = if mask.is_some() { self.script.as_ref().unwrap().env.input.channel } else { input };
             for (cc, value) in [64, 66].into_iter().zip(values) {
-                if let Some(value) = value { self.cc(channel, cc, value); }
+                if let Some(value) = value { self.cc_from(channel, input, cc, value); }
             }
         }
     }
@@ -529,7 +539,7 @@ impl Engine {
         // Libraries cache pedal state in their own globals. Resetting %CC alone
         // leaves their next release callback believing the pedal is still down.
         if let Some(rt) = self.script.as_ref() {
-            let down = [64usize, 66].map(|cc| rt.env.input.cc[cc] >= 64
+            let down = [64usize, 66].map(|cc| rt.cached_pedal_down(cc)
                 || self.player.cc.iter().any(|row| row[cc] >= 64));
             self.notify_script_pedals(down.map(|down| down.then_some(0)));
         }
@@ -637,8 +647,9 @@ impl Engine {
         if velocity == 0 {
             return self.note_off_from(channel, owner, note);
         }
-        self.player.keys[channel as usize][note as usize] = velocity.min(127);
-        self.player.key_on[channel as usize][note as usize] = self.player.now;
+        let control = if self.player.domain_origins.is_some() { owner } else { channel };
+        self.player.keys[control as usize][note as usize] = velocity.min(127);
+        self.player.key_on[control as usize][note as usize] = self.player.now;
         if let Some((rt, mut host)) = self.scripted(channel) {
             return rt.note_on_from(&mut host, 0, owner, note, velocity.min(127));
         }
@@ -674,9 +685,11 @@ impl Engine {
             }
         }
         if self.script.is_some() {
-            if !self.script.as_ref().unwrap().key_down_except(owner, channel, note) {
-                self.player.keys[channel as usize][note as usize] = 0;
-                self.player.key_up[channel as usize][note as usize] = self.player.now;
+            let private = self.player.domain_origins.is_some();
+            if private || !self.script.as_ref().unwrap().key_down_except(owner, channel, note) {
+                let control = if private { owner } else { channel };
+                self.player.keys[control as usize][note as usize] = 0;
+                self.player.key_up[control as usize][note as usize] = self.player.now;
             }
             if let Some((rt, mut host)) = self.scripted(channel) {
                 rt.note_off_from(&mut host, 0, owner, note);
@@ -701,6 +714,13 @@ impl Engine {
         if channel >= 16 || cc >= 128 {
             return;
         }
+        let private = self.player.domain_origins.is_some();
+        let control = if private { input_channel.min(15) } else { channel };
+        if cc == 120 && private {
+            self.all_sound_off_from(channel, 1 << control);
+            self.player.cc(self.bank.as_deref(), control, cc, value, self.defaults());
+            return;
+        }
         if cc == 120 {
             let members = self.player.mpe_zone.filter(|(master, _)| *master == channel).map_or(0, |(_, members)| members);
             let channels = (1 << channel) | members;
@@ -713,12 +733,13 @@ impl Engine {
         }
         if self.script.is_some() {
             if cc == 121 {
-                let channels = (1 << channel) | self.player.mpe_zone
-                    .filter(|(master, _)| *master == channel).map_or(0, |(_, members)| members);
+                let channels = (1 << control) | self.player.mpe_zone
+                    .filter(|(master, _)| *master == control).map_or(0, |(_, members)| members);
                 let previous = self.player.cc;
                 let controller_defaults = self.player.controller_defaults;
-                let script_previous = self.script.as_deref().unwrap().env.input.cc;
-                self.commands.retain(|c| channels & (1 << c.channel) == 0
+                let script_previous = *self.script.as_deref().unwrap().controller_cache(input_channel);
+                let origins = self.player.domain_origins;
+                self.commands.retain(|c| channels & (1 << origins.map_or(c.channel, |o| o[c.domain as usize])) == 0
                     || !matches!(c.kind, script::Kind::Controller { cc, .. }
                         if crate::ksp::reset_controller_value(cc, None).is_some()));
                 self.script.as_deref_mut().unwrap().cancel_performance_controllers(channels);
@@ -735,13 +756,14 @@ impl Engine {
                             || previous[c as usize][cc as usize] != value
                             || script_previous[cc as usize] != i32::from(value)
                         {
-                            self.cc_from(c, input_channel, cc, value);
+                            self.cc_from(if private { channel } else { c }, if private { c } else { input_channel }, cc, value);
                         }
                     }
-                    self.pitch_bend_from(c, input_channel, 8192);
-                    self.channel_pressure_from(c, input_channel, 0);
+                    self.pitch_bend_from(if private { channel } else { c }, if private { c } else { input_channel }, 8192);
+                    self.channel_pressure_from(if private { channel } else { c }, if private { c } else { input_channel }, 0);
+                    if private { self.script.as_deref_mut().unwrap().reset_controllers_from(c); }
                 }
-                self.script.as_deref_mut().unwrap().reset_controllers(None);
+                if !private { self.script.as_deref_mut().unwrap().reset_controllers(None); }
             }
             if cc < 120 {
                 if let Some((rt, mut host)) = self.scripted_from(channel, input_channel) {
@@ -751,6 +773,7 @@ impl Engine {
             }
             if cc == 123 {
                 for owner in 0..16 {
+                    if private && owner != control { continue; }
                     for note in 0..128 {
                         if self.script.as_ref().is_some_and(|rt| rt.key_down_from(owner, channel, note)) {
                             self.note_off_from(channel, owner, note);
@@ -762,7 +785,7 @@ impl Engine {
         }
         let defaults = self.defaults();
         self.player
-            .cc(self.bank.as_deref(), channel, cc, value, defaults);
+            .cc(self.bank.as_deref(), control, cc, value, defaults);
     }
 
     /// Cut a physical performance context, including notes a script rerouted.
@@ -791,6 +814,13 @@ impl Engine {
                 affected |= 1 << key.0;
                 *key = (0, 0);
             }
+        }
+        if self.player.domain_origins.is_some() {
+            for input in (0..16).filter(|input| input_mask & (1 << input) != 0) {
+                self.player.keys[input].fill(0);
+                self.player.key_up[input].fill(self.player.now);
+            }
+            return;
         }
         for channel in (0..16).filter(|channel| affected & (1 << channel) != 0) {
             for note in 0..128 {
@@ -971,6 +1001,10 @@ impl Engine {
         }
     }
 
+    pub(crate) fn set_expression_from(&mut self, channel: u8, input: u8, note: u8, expression: Expression) {
+        self.set_expression_on(if self.player.domain_origins.is_some() { input } else { channel }, note, expression);
+    }
+
     pub(crate) fn set_mpe_zone(&mut self, zone: Option<(u8, u16)>) {
         self.player.mpe_zone = zone.map(|(master, members)| {
             let master = master.min(15);
@@ -992,10 +1026,15 @@ impl Engine {
     }
 
     pub(crate) fn freeze_released_expression(&mut self, channel: u8, note: u8) {
-        if channel >= 16 || note >= 128 { return; }
-        let expression = self.release_snapshot(channel, note);
+        self.freeze_released_expression_from(channel, channel, note);
+    }
+
+    pub(crate) fn freeze_released_expression_from(&mut self, channel: u8, input: u8, note: u8) {
+        if channel >= 16 || input >= 16 || note >= 128 { return; }
+        let control = if self.player.domain_origins.is_some() { input } else { channel };
+        let expression = self.release_snapshot(control, note);
         for v in &mut self.player.voices {
-            if v.channel == channel && v.owner.map_or(v.note, |(_, key)| key) == note && v.frozen_expression.is_none()
+            if v.control_channel == control && v.owner.map_or(v.note, |(_, key)| key) == note && v.frozen_expression.is_none()
                 && (!v.held || self.commands.iter().any(|c| c.at == 0 && c.id == v.event
                     && matches!(c.kind, script::Kind::Release { .. }))) {
                 v.frozen_expression = Some(expression);
@@ -1142,7 +1181,7 @@ impl Engine {
         // leaving an unreleaseable voice or pedal; the drop counter reports it.
         let overflow = std::mem::take(&mut self.player.stop_overflow);
         for channel in (0..16).filter(|c| overflow & (1 << c) != 0) {
-            self.player.pending_releases.retain(|r| r.channel != channel);
+            self.player.pending_releases.retain(|r| r.control_channel != channel);
             self.player.cc(self.bank.as_deref(), channel, 121, 0, defaults);
             self.player.cc(self.bank.as_deref(), channel, 120, 0, defaults);
         }
@@ -1197,6 +1236,7 @@ struct PendingRelease {
     input_channel: Option<u8>,
     domain: u8,
     channel: u8,
+    control_channel: u8,
     note: u8,
     velocity: u8,
     groups: GroupMask,
@@ -1231,6 +1271,8 @@ struct Player {
     /// KSP preprocessor flags bypass only these native system-script actions.
     native_sustain: bool,
     native_release_triggers: bool,
+    /// Prepared script domains' physical MIDI origins; playback channels stay logical.
+    domain_origins: Option<[u8; 16]>,
     sustain: [bool; 16],
     /// Pedals and stop messages on an MPE master affect its member channels.
     mpe_zone: Option<(u8, u16)>,
@@ -1293,6 +1335,7 @@ impl Player {
             rate,
             native_sustain: true,
             native_release_triggers: true,
+            domain_origins: None,
             sustain: [false; 16],
             mpe_zone: None,
             mpe_master_bend_range: None,
@@ -1347,6 +1390,13 @@ impl Player {
     /// Something modulation reads changed: settled voices modulate again.
     fn touch(&mut self) {
         self.inputs = self.inputs.wrapping_add(1);
+    }
+
+    fn control_channel(&self, channel: u8, domain: u8) -> u8 {
+        // Replayed common callbacks carry each bank's domain even when their
+        // originating UI/controller input is the same; their native outputs
+        // must reach that bank, including service callbacks without an event.
+        self.domain_origins.map_or(channel, |origins| origins[domain as usize])
     }
 
     fn clear_voices(&mut self, bank: Option<&Bank>) {
@@ -1485,7 +1535,8 @@ impl Player {
             1.0
         };
         let step = f64::from(sample.rate) / self.rate * zone.tune * key;
-        let c = ev.channel as usize;
+        let control_channel = self.control_channel(ev.channel, ev.domain);
+        let c = control_channel as usize;
         let master = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0).map(|(master, _)| master as usize);
         let expression_key = ev.owner.map_or(ev.note, |(_, key)| key);
         let expression = ev.frozen_expression.unwrap_or(self.expression[c][expression_key as usize & 127]);
@@ -1497,14 +1548,14 @@ impl Player {
             note: ev.note,
             velocity: ev.velocity,
             counter: if release_trigger {
-                params::release_counter(group.release_counter_ms, ev.release_held_ms.unwrap_or_else(|| self.held_ms(ev.channel, ev.note)))
+                params::release_counter(group.release_counter_ms, ev.release_held_ms.unwrap_or_else(|| self.held_ms(control_channel, ev.note)))
             } else {
                 0.0
             },
         };
         let bend_pitch = self.mpe_zone.and_then(|(manager, members)| self.mpe_master_bend_range
-            .filter(|_| manager == ev.channel || members & (1 << c) != 0)
-            .map(|_| if manager == ev.channel { 0. } else { self.bend[c] }));
+            .filter(|_| manager == control_channel || members & (1 << c) != 0)
+            .map(|_| if manager == control_channel { 0. } else { self.bend[c] }));
         let mods = settings.mods.start(&inputs, bend_pitch);
         let modulated = (settings.mods.start_offset(&inputs) * play.start_mod as f32) as u64;
         let offset = ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)
@@ -1568,6 +1619,7 @@ impl Player {
             group: zone.group as u32,
             voice_group: settings.voice_group,
             channel: ev.channel,
+            control_channel,
             note: ev.note,
             velocity: ev.velocity,
             counter_start: self.now,
@@ -1737,7 +1789,7 @@ impl Player {
             let event = first.get_or_insert((v.channel, v.note, v.velocity, v.release_trigger, false, v.input_channel, v.domain));
             event.4 |= v.sostenuto;
             v.counter_stop.get_or_insert(self.now);
-            let c = v.channel as usize & 15;
+            let c = v.control_channel as usize & 15;
             if self.sustain[c] || v.sostenuto {
                 v.held = false;
             } else {
@@ -1758,7 +1810,7 @@ impl Player {
 
     fn release_snapshot(&self, commands: &[script::Command], at: u32, channel: u8, note: u8) -> Expression {
         let mut x = self.member_snapshot(channel, note);
-        for c in commands.iter().filter(|c| c.channel == channel && c.at <= at) {
+        for c in commands.iter().filter(|c| self.control_channel(c.channel, c.domain) == channel && c.at <= at) {
             match c.kind {
                 script::Kind::Controller { cc: 74, value } => x.member_cc74 = Some(value.clamp(0, 127) as u8),
                 script::Kind::Controller { cc: 129, value } => x.member_pressure = Some(value.clamp(0, 127) as u8),
@@ -1780,6 +1832,7 @@ impl Player {
     /// key-up while the script delayed its release callback.
     fn release_expression(&self, source: EventId, channel: u8, note: u8) -> Option<Expression> {
         let voice = self.voices.iter().find(|v| v.event == source);
+        let channel = voice.map_or(channel, |v| v.control_channel);
         let key = voice.and_then(|v| v.owner).map_or(note, |(_, key)| key);
         voice.and_then(|v| v.frozen_expression)
             .or_else(|| self.mpe_zone.filter(|(_, members)| channel < 16 && members & (1 << channel) != 0)
@@ -1801,8 +1854,9 @@ impl Player {
         defaults: Ahdsr,
     ) {
         if !self.native_release_triggers { return; }
-        let held_ms = self.event_held_ms(source, channel, note);
-        if channel < 16 && note < 128 && (latched || self.sustain[channel as usize]) {
+        let control_channel = self.control_channel(channel, domain);
+        let held_ms = self.event_held_ms(source, control_channel, note);
+        if channel < 16 && note < 128 && (latched || self.sustain[control_channel as usize]) {
             if self.pending_releases.iter().any(|r| r.source == source) { return; }
             if self.pending_releases.len() == crate::ksp::EVENT_CAPACITY {
                 // Only the excess release sample is lost; voice and pedal
@@ -1811,7 +1865,7 @@ impl Player {
                 return;
             }
             self.pending_releases.push(PendingRelease {
-                source, input_channel, domain, channel, note, velocity, groups: *groups, captured: latched, expression, held_ms,
+                source, input_channel, domain, channel, control_channel, note, velocity, groups: *groups, captured: latched, expression, held_ms,
             });
             return;
         }
@@ -1860,26 +1914,30 @@ impl Player {
                     // Scripts may queue these commands while input keys already
                     // reflect later note-offs. Capture the voices sounding at
                     // this command's time, only on the pedal's down edge.
-                    for v in self.voices.iter_mut().filter(|v| v.channel == channel && v.held && !v.released && !v.release_trigger) {
+                    for v in self.voices.iter_mut().filter(|v| v.control_channel == channel && v.held && !v.released && !v.release_trigger) {
                         v.sostenuto = true;
                     }
                 } else {
-                    for v in self.voices.iter_mut().filter(|v| v.channel == channel) { v.sostenuto = false; }
-                    for r in self.pending_releases.iter_mut().filter(|r| r.channel == channel) { r.captured = false; }
+                    for v in self.voices.iter_mut().filter(|v| v.control_channel == channel) { v.sostenuto = false; }
+                    for r in self.pending_releases.iter_mut().filter(|r| r.control_channel == channel) { r.captured = false; }
                     if let Some(bank) = bank { self.pedal_up(bank, channel, defaults); }
                 }
             }
             // All sound off: a click-free cut, well short of any release.
             120 => {
                 let fade = self.fade_frames(STEAL_FADE);
-                for v in self.voices.iter_mut().filter(|v| v.channel == channel) {
+                for v in self.voices.iter_mut().filter(|v| v.control_channel == channel) {
                     v.fade.start(0.0, fade, true);
                 }
-                self.pending_releases.retain(|r| r.channel != channel);
+                self.pending_releases.retain(|r| r.control_channel != channel);
                 self.keys[c].fill(0);
                 self.key_up[c].fill(self.now);
-                for row in self.input_keys.iter_mut() {
-                    for input in row.iter_mut().filter(|input| input.0 == channel) { *input = (0, 0); }
+                if self.domain_origins.is_some() {
+                    self.input_keys[c].fill((0, 0));
+                } else {
+                    for row in self.input_keys.iter_mut() {
+                        for input in row.iter_mut().filter(|input| input.0 == channel) { *input = (0, 0); }
+                    }
                 }
             }
             121 => {
@@ -1922,7 +1980,7 @@ impl Player {
         let c = channel as usize;
         if self.sustain[c] { return }
         for v in &mut self.voices {
-            if v.channel == channel
+            if v.control_channel == channel
                 && !v.sostenuto
                 && !v.held
                 && !v.released
@@ -1936,7 +1994,7 @@ impl Player {
         let mut keep = 0;
         for i in 0..self.pending_releases.len() {
             let r = self.pending_releases[i];
-            if r.channel == channel && !r.captured {
+            if r.control_channel == channel && !r.captured {
                 let id = self.next_id();
                 let event = NoteEvent { domain: r.domain, input_channel: r.input_channel, groups: Some(&r.groups), frozen_expression: r.expression, release_held_ms: Some(r.held_ms), ..NoteEvent::new(r.channel, r.note, r.velocity) };
                 self.start(bank, &event, id, true, defaults);

@@ -923,6 +923,8 @@ pub(crate) struct Voice {
     pub group: u32,
     pub voice_group: Option<u16>,
     pub channel: u8,
+    /// Native controllers belong to this pinned physical origin in Channel mode.
+    pub control_channel: u8,
     pub domain: u8,
     pub note: u8,
     pub velocity: u8,
@@ -1106,11 +1108,11 @@ impl Voice {
     pub fn plan(&mut self, cx: &Context, n: usize, bus: Option<u8>, through: Option<[f32; 2]>) -> Option<Lane> {
         let group = &cx.bank.settings_for(self.domain)[self.group as usize];
         let key = self.owner.map_or(self.note, |(_, key)| key);
-        let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][key as usize & 127]);
-        let inputs = cx.inputs(self.channel, self.note, self.velocity, x);
-        let master = cx.mpe_zone.filter(|(master, members)| *master == self.channel || members & (1 << self.channel) != 0)
+        let x = self.frozen_expression.unwrap_or(cx.expression[self.control_channel as usize & 15][key as usize & 127]);
+        let inputs = cx.inputs(self.control_channel, self.note, self.velocity, x);
+        let master = cx.mpe_zone.filter(|(master, members)| *master == self.control_channel || members & (1 << self.control_channel) != 0)
             .and_then(|(master, _)| cx.mpe_master_bend_range.map(|range| (master, cx.bend[master as usize], range)));
-        let bend_pitch = master.map(|(manager, ..)| if manager == self.channel { 0. } else { cx.bend[self.channel as usize] });
+        let bend_pitch = master.map(|(manager, ..)| if manager == self.control_channel { 0. } else { cx.bend[self.control_channel as usize] });
         // Settled modulation (every controller at rest, as held ones soon
         // are) gives the same result until an input changes: the group's
         // table, a cache miss per voice, is not read.
