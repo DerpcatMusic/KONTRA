@@ -39,6 +39,7 @@ def cases(plan, libraries, modes, scales, view_scales=(0,), appearances=(0,)):
 def parse(output):
     result = {"stages": []}
     for line in output.splitlines():
+        line = line.removeprefix(f"test {TEST} ... ")
         if line.startswith("UI_BENCH_CALLBACK "):
             result["callbacks"] = json.loads(line.removeprefix("UI_BENCH_CALLBACK "))
         elif line.startswith("UI_BENCH "):
