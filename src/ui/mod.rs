@@ -673,8 +673,6 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
     shelf.of(path).map(|l| l.name.clone()).unwrap_or_default()
 }
 
-/// Put `part` in the first empty slot; `None` when the rack is full.
-/// A part for `path` on the input and output the settings give new parts.
 /// Instrument state belongs to its preset; rack routing and player settings stay.
 fn replace_part(part: &mut Part, path: String) {
     part.path = path;
@@ -686,6 +684,7 @@ fn replace_part(part: &mut Part, path: String) {
     part.ir_settings.clear();
 }
 
+/// A part for `path` on the input and output the settings give new parts.
 fn new_part(selection: &Selection, settings: &crate::library::Settings, path: String) -> Part {
     let (port, channel) = settings.new_input.unwrap_or_else(|| selection.next_input());
     Part {
@@ -698,6 +697,7 @@ fn new_part(selection: &Selection, settings: &crate::library::Settings, path: St
     }
 }
 
+/// Put `part` in the first empty slot; `None` when the rack is full.
 fn add_part(selection: &mut Selection, part: Part) -> Option<usize> {
     let slot = selection
         .parts
