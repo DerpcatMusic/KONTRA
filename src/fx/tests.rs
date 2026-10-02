@@ -230,10 +230,10 @@ fn convolution_size_stretches_reflections_and_predelay_offsets_them() {
     impulse[8] = 1.;
     let fx = ProgramFx { insert: Chain { slots: vec![convolution(&impulse)] }, ..Default::default() };
     for (size, predelay, peak) in [(0., 0., 4), (0.5, 0., 8), (1., 0., 12), (0.5, 0.25, 248)] {
-        let settings = params::IrSettings { values: [predelay, size, size], size };
+        let settings = params::IrSettings { values: [predelay, size, size], size, ..params::IrSettings::DEFAULT };
         let loads = [ScriptIr { rack: Rack::Insert, slot: 0, load: Load::Convolution(settings) }];
         let mut p = fx.processor_with(SR, 64, &loads);
-        assert_eq!(p.ir_settings(Rack::Insert, 0), Some(settings));
+        assert_eq!(p.ir_settings(Rack::Insert, 0), Some(params::IrSettings { reverse: Some(false), auto_gain: Some(false), ..settings }));
         let mut output = Vec::new();
         for block in 0..8 {
             let mut left = [0.; 64];
@@ -253,14 +253,14 @@ fn convolution_size_stretches_reflections_and_predelay_offsets_them() {
     }
     // Requested split values survive rate rebuilds even though the current
     // renderer uses the last edited size uniformly without an ER/LR boundary.
-    let settings = params::IrSettings { values: [0.25, 0.5, 1.], size: 1. };
+    let settings = params::IrSettings { values: [0.25, 0.5, 1.], size: 1., ..params::IrSettings::DEFAULT };
     let early_last = params::IrSettings { size: 0.5, ..settings };
     let mut replayed = early_last;
     for (n, value) in settings.values.into_iter().enumerate() { assert!(replayed.set(n as u8, value)); }
     assert_eq!(replayed, early_last, "unchanged parameter replay preserves the last edited size");
     let loads = [ScriptIr { rack: Rack::Insert, slot: 0, load: Load::Convolution(settings) }];
     let p = fx.processor_with(44100., 64, &loads);
-    assert_eq!(p.ir_settings(Rack::Insert, 0), Some(settings));
+    assert_eq!(p.ir_settings(Rack::Insert, 0), Some(params::IrSettings { reverse: Some(false), auto_gain: Some(false), ..settings }));
     for (n, want) in settings.values.iter().enumerate() {
         assert_eq!(p.param(Rack::Insert, 0, FxParam::Convolution(n as u8)), Some(*want));
         assert_eq!(fx.param(Rack::Insert, 0, FxParam::Convolution(n as u8)), Some(params::IrSettings::DEFAULT.values[n]));

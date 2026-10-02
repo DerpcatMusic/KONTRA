@@ -612,7 +612,7 @@ impl FxProcessor {
 
     pub(super) fn init_ir_settings(&mut self, rack: Rack, slot: u8, settings: params::IrSettings) {
         if let Some(s) = self.slot_mut(rack, slot).filter(|s| s.ir_settings.is_some()) {
-            s.ir_settings = Some(settings);
+            s.ir_settings = Some(settings.inherit_flags(s.ir_settings.unwrap()));
             s.ir_dirty = false;
         }
     }
@@ -682,7 +682,7 @@ impl FxProcessor {
             (FxParam::Bypass, _) => Some(f32::from(s.bypass)),
             (FxParam::Wet, _) => Some(s.wet),
             (FxParam::Dry, _) => Some(s.dry),
-            (FxParam::Convolution(n), _) => s.ir_settings?.values.get(n as usize).copied(),
+            (FxParam::Convolution(n), _) => s.ir_settings?.value(n),
             (FxParam::Reverb(n), Dsp::Reverb(_, p)) => { *p }.field(n).copied(),
             (FxParam::Filter(knob), Dsp::Block(b)) => b.filter_param(knob),
             (FxParam::Filter(super::FilterParam::Spread), Dsp::Stereo { width, .. }) => Some(*width - 1.0),
