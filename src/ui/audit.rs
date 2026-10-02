@@ -320,7 +320,7 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
         }
     };
     if let Some(w) = &wallpaper
-        && (i64::from(w.frames[0].width) - i64::from(u.width)).abs() > 2
+        && (i64::from(w.atlas.map_or(w.frames[0].width, |a| a[0])) - i64::from(u.width)).abs() > 2
     {
         found.add("wallpaper narrower or wider than the view");
     }

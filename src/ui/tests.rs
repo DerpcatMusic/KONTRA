@@ -1715,9 +1715,9 @@ fn the_original_view_edits_the_script_and_switches() {
     {
         let mut view = p.shared.view.lock().unwrap();
         let frame = Arc::new(moose::mui::mui::scene::Image::rgba(40, 40, vec![255; 40 * 40 * 4]).unwrap());
-        let strip = Arc::new(artwork::Picture { frames: vec![frame; 11], stretch: [false; 2] });
+        let strip = Arc::new(artwork::Picture { frames: vec![frame; 11], stretch: [false; 2], atlas: None });
         view.parts[0].pictures = Arc::new([("strip".to_owned(), strip)].into());
-        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, vec![40; 632 * 268 * 4]).unwrap())], stretch: [false; 2] }));
+        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, vec![40; 632 * 268 * 4]).unwrap())], stretch: [false; 2], atlas: None }));
     }
     let value = |n: usize| control_value(&p, n);
     let mut h = Harness::new(&p, 1180., 760.);
@@ -1759,6 +1759,36 @@ fn the_original_view_edits_the_script_and_switches() {
     assert!(h.ui.scene().unwrap().surface("kpv-0-1").is_some());
 }
 
+/// Offsets select a pixel window across page boundaries, rather than rounding
+/// to a frame, and an in-place script update invalidates the view memo.
+#[test]
+fn original_wallpaper_pixel_offsets_render_across_frames() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $v(0,100)\nmove_control_px($v,30,40)\nset_skin_offset(170)\nend on");
+    let mut rgba = [220, 20, 40, 255].repeat(632 * 268);
+    rgba.extend([20, 40, 220, 255].repeat(632 * 268));
+    let image = Arc::new(moose::mui::mui::scene::Image::rgba(632, 536, rgba).unwrap());
+    p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
+        frames: vec![image], stretch: [false; 2], atlas: Some([632, 268]),
+    }));
+    p.selection.write().unwrap().parts[0].view = 1;
+    let mut h = Harness::new(&p, 1180., 760.);
+    let control = h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame;
+    let at = |y: f64| (y as usize * 1180 + (control.x + 300.) as usize) * 4;
+    let above = at(control.y - 30.);
+    let below = at(control.y + 20.);
+    let painted = pixels(&h.ui, 1180, 760);
+    assert_eq!(&painted[above..above+4], &[220, 20, 40, 255], "the window begins in the first frame");
+    assert_eq!(&painted[below..below+4], &[20, 40, 220, 255], "the same window crosses into the next frame");
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).skin_offset = 271;
+    }
+    h.idle(2);
+    let moved = pixels(&h.ui, 1180, 760);
+    assert_eq!(&moved[above..above+4], &[20, 40, 220, 255], "a changed offset redraws without changing the selected animation state");
+    assert_eq!(h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame, control, "artwork scrolling never moves controls");
+}
+
 /// The vectorized view keeps every control of the original where it was, at
 /// its size: only the drawing changes.
 #[test]
@@ -1767,6 +1797,7 @@ fn original_tables_render_dense_values_at_the_declared_range() {
     p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
         frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 248, vec![40; 632 * 248 * 4]).unwrap())],
         stretch: [false; 2],
+        atlas: None,
     }));
     let mut h = Harness::new(&p, 1180., 760.);
     let empty = pixels(&h.ui, 1180, 760);
@@ -1818,11 +1849,11 @@ fn the_vectorized_view_keeps_the_original_layout() {
     let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $vol(0, 100)\nmove_control_px($vol, 30, 40)\nset_control_par_str(get_ui_id($vol), $CONTROL_PAR_PICTURE, \"knob\")\ndeclare ui_switch $legato\nmove_control_px($legato, 120, 40)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nmove_control_px($mic, 200, 90)\ndeclare ui_label $title(1,1)\nset_text($title, \"Tone\")\nmove_control_px($title, 30, 100)\nend on");
     {
         let frame = Arc::new(moose::mui::mui::scene::Image::rgba(48, 50, vec![200; 48 * 50 * 4]).unwrap());
-        let knob = artwork::Picture { frames: vec![frame; 11], stretch: [false; 2] };
+        let knob = artwork::Picture { frames: vec![frame; 11], stretch: [false; 2], atlas: None };
         let mut view = p.shared.view.lock().unwrap();
         view.parts[0].pictures = Arc::new([("knob".to_owned(), Arc::new(knob))].into());
         let wallpaper = Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, [210, 180, 140, 255].repeat(632 * 268)).unwrap());
-        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![wallpaper], stretch: [false; 2] }));
+        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![wallpaper], stretch: [false; 2], atlas: None }));
     }
     let rects = |code: u8| {
         p.selection.write().unwrap().parts[0].view = code;
