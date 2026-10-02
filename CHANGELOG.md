@@ -65,6 +65,16 @@ are added when a release is actually published; commit history is not a changelo
 
 ### Fixed
 
+- Windows editors default to Direct3D 12 instead of implicitly initializing
+  Vulkan. Explicit `WGPU_BACKEND` selections remain authoritative; renderer
+  startup, adapter details and recoverable failures enter persistent diagnostics.
+  This avoids the reported Intel Vulkan path by default, but has not yet been
+  verified against that FL Studio crash on the affected machine.
+- Live UI refresh skips unchanged menu rows, and repeated identical indexed
+  integer writes no longer dirty entire table snapshots. Listener behavior and
+  audio work budgets remain unchanged.
+- Import reuses one decoded filename table for samples, resources and impulses,
+  avoiding three repeated full-table decodes in large instruments.
 - Failed or canceled load reports retain their status and cause when diagnostics
   or artwork from the active instrument arrive later.
 - Native SV Notch 4 filter type 58 uses the existing four-pole processing path;
