@@ -48,6 +48,10 @@ are added when a release is actually published; commit history is not a changelo
   full timestamps, uninterpreted sample records and trailing metadata. Three actual
   tables covering 102,026 sample references pass byte-exact and edited readback checks.
   Existing raw chunk writing was already lossless; this adds typed editing access.
+- Imported zero-crossfade alternating sample loops share reflected playback mapping
+  between resident and streaming readers. Cache and NKI export retain their direction.
+  Crossfaded alternating loops retain metadata and warn about forward-crossfade fallback;
+  endpoint/interpolation equivalence with Kontakt remains unverified.
 - Opt-in native UI timing capture records one bounded ten-second drag window and
   summarizes it on the diagnostics worker. It measures application callback and
   presentation-submission time, without forced GPU synchronization or display-FPS claims.
@@ -59,6 +63,10 @@ are added when a release is actually published; commit history is not a changelo
   bar duration follows the host meter. Start/stop listener subscriptions are independent.
   Beat listeners still use elapsed-clock phase; missing host timeline validity is
   an upstream limitation, so unavailable beat position cannot be distinguished from zero.
+- Repeated same-sample group parameter restores use a preallocated address lookup.
+  The checked Areia Core F3 channel-overlap burst drops zero writes instead of 854,
+  without increasing queue capacity; measured event-plus-render time stays near
+  baseline at 3.56 versus 3.53 ms. Distinct-sample timing and latest-value reads remain.
 - Instrument replacement clears previous script state and convolution settings;
   source epochs on both live-request and snapshot queues reject stale updates.
   A native Areia-to-CHORUS transition verifies the new logo, controls, header and

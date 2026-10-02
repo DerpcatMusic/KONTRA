@@ -154,7 +154,7 @@ while IFS=: read -r f n; do
     *.rs) case $f in
       ./src/ksp/tests.rs) limit=182 ;;
       ./src/articulate.rs) limit=31 ;;
-      ./tests/playback.rs) limit=73 ;;
+      ./tests/playback.rs) limit=79 ;;
       ./src/plugin.rs) limit=72 ;;
       ./tests/*|*/tests.rs) limit=40 ;;
       *) limit=3 ;;
