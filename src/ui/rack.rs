@@ -116,7 +116,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     if order.is_empty() {
         add_drop(ui, cx, "rack-welcome");
-        items.push(instrument::welcome(cx).flex(0).h((view_h - CONTROL - 2. * SPACE).max(240.)).shrink(0).id("rack-welcome"));
+        // The welcome itself uses flex-basis zero to fill its parent. Give
+        // that parent a measured height so it remains a real drop surface.
+        items.push(col![instrument::welcome(cx)]
+            .h((view_h - CONTROL - 2. * SPACE).max(240.))
+            .shrink(0)
+            .id("rack-welcome"));
     }
     items.push(foot(ui, cx));
     // Keep a viewport of quiet canvas after Add. It belongs to this rack's
@@ -175,6 +180,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut row_items = vec![stack(layers).flex(1).min_w(0).min_h(0).h(Len::Pct(100.)).clip()];
     if content_h > view_h + 0.5 && view_h > 0. {
         row_items.push(scrollbar(ui, "rack-bar", "Scroll the rack", y, view_h, content_h));
+    } else {
+        // Reserve the bar's width before the first measured layout. The
+        // scroll tail always overflows; appearing later must not move controls.
+        row_items.push(block(8, Len::Pct(100.)).shrink(0));
     }
     row(row_items).gap(0).align(Align::Stretch).flex(1).min_h(0)
 }
