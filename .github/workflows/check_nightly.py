@@ -61,6 +61,7 @@ readme = Path(__file__).resolve().parents[2].joinpath("README.md").read_text()
 for platform in platforms:
     assert f"name: {platform}" in workflow
     assert f"releases/latest/download/KONTRA-nightly-{platform}.zip" in readme
+assert "releases/latest/download/KONTRA-nightly-macos-universal.pkg" in readme
 assert "nightly-build-${{ matrix.name }}\n      cancel-in-progress: true" in workflow
 assert "nightly-publish\n      cancel-in-progress: false" in workflow
 assert "retention-days: 1" in workflow
@@ -143,6 +144,7 @@ for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-
         env=dict(clean_env,PATH=str(tools)+":"+os.environ["PATH"],STAGE=str(stage),KONTRA_TARGET="aarch64-apple-darwin",GITHUB_SHA="a"*40,NATIVE_CALLS=str(root/"calls"),SIGNING_CASE=case)
         for secret in ("APPLE_CERTIFICATE_PASSWORD","APPLE_DEVELOPER_ID_APPLICATION","APPLE_ID","APPLE_APP_SPECIFIC_PASSWORD","APPLE_TEAM_ID"): env[secret]="synthetic-fixture"
         env["APPLE_APPLICATION_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-fixture").decode()+"\n"
+        env["APPLE_INSTALLER_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-installer-fixture").decode()+"\n"
         result=subprocess.run(["bash",str(signing)],env=env,capture_output=True,text=True)
         assert result.returncode==(0 if case in ("accepted", "duplicate-ca", "duplicate-p12") else 1),(case,result.stderr)
         assert (stage/"notarization.json").exists()==(case in ("accepted", "duplicate-ca", "duplicate-p12"))
@@ -238,7 +240,23 @@ else: raise AssertionError(a)
 save(); print(out,end="" if a[:2]==["release","download"] else "\n"); sys.exit(status)
 '''
 
-cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","rotation-fails","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product")
+def universal_fixture(root, version, revision, case="current"):
+    package = root/"dist/KONTRA-nightly-macos-universal.pkg"
+    package.write_bytes(b"xar!synthetic-installer")
+    builds = {}
+    for arch in ("arm64", "x86_64"):
+        archive = root/f"dist/KONTRA-nightly-macos-{arch}.zip"
+        if not archive.exists(): continue
+        with zipfile.ZipFile(archive) as z:
+            builds[arch] = {fmt: json.loads(z.read(f"KONTRA-nightly-macos-{arch}/"+name)) for fmt,name in (("clap","clap-build-info.json"),("vst3","vst3-build-info.json"),("standalone","build-info.json"))}
+    receipt = dict(version=version,revision=revision,target="universal-apple-darwin",architectures=["arm64","x86_64"],targets=["aarch64-apple-darwin","x86_64-apple-darwin"],profile="release",id="12345678-1234-1234-1234-123456789abc",status="Rejected" if case=="rejected-installer" else "Accepted",stapled=True,signatures_verified=True,package_sha256=hashlib.sha256(package.read_bytes()).hexdigest(),source_builds=builds,
+        products={name:"0"*64 for name in ("Library/Audio/Plug-Ins/CLAP/KONTRA.clap/Contents/MacOS/KONTRA","Library/Audio/Plug-Ins/VST3/KONTRA.vst3/Contents/MacOS/KONTRA","Applications/KONTRA.app/Contents/MacOS/KONTRA")})
+    if case=="wrong-installer-source": receipt["source_builds"]["arm64"]["clap"]["revision"]="b"*40
+    package.with_suffix(".notarization.json").write_text(json.dumps(receipt))
+    if case=="missing-universal": package.unlink()
+    if case=="changed-installer": package.write_bytes(b"xar!changed-installer")
+
+cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","rotation-fails","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source")
 for case in cases:
     with tempfile.TemporaryDirectory(prefix="kontra-nightly-check-") as directory:
         root=Path(directory); root.joinpath("gh").write_text(mock_gh); root.joinpath("gh").chmod(0o755); root.joinpath("dist").mkdir()
@@ -277,6 +295,7 @@ for case in cases:
             archive=root/f"dist/KONTRA-nightly-{platform}.zip"
             digest=hashlib.sha256(archive.read_bytes()).hexdigest()
             archive.with_suffix(".zip.sha256").write_text(("0"*64 if case=="bad-checksum" else digest)+"  "+archive.name+"\n")
+        universal_fixture(root, version, "a"*40, case)
         old=[]; refs={}
         if case!="first":
             for i,tag in enumerate(("nightly","nightly-previous","v1.0.0"),1):
@@ -295,7 +314,7 @@ for case in cases:
         env=dict(os.environ,PATH=f"{root}:{os.environ['PATH']}",GITHUB_SHA="a"*40,GH_REPO="example/KONTRA",GITHUB_RUN_ID="7",GITHUB_OUTPUT=str(output),TEST_VERSION=version)
         def run(command): return subprocess.run(["bash","--noprofile","--norc","-e","-o","pipefail","-c",command],cwd=root,env=env,capture_output=True,text=True)
         result=run(publish); state=json.loads(root.joinpath("state.json").read_text())
-        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum","wrong-format","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product") else 0),(case,result.stderr)
+        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum","wrong-format","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source") else 0),(case,result.stderr)
         if case=="rotation-fails":
             assert state["published"] and len(state["releases"])==4 and state["latest"] is not None
             result=run(publish); assert result.returncode==0,result.stderr
@@ -352,6 +371,7 @@ for case in cases:
                                 data=("f"*40+"\n").encode()
                             z.writestr(name,data)
                     path.with_suffix(".zip.sha256").write_text(hashlib.sha256(path.read_bytes()).hexdigest()+"  "+path.name+"\n")
+                universal_fixture(root, next_version, "f"*40)
                 result=run(publish);assert result.returncode==0,result.stderr
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert len(state["releases"])==2
@@ -374,4 +394,4 @@ for case in cases:
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
-print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 19 retention/rerun/upload/checksum/cleanup/legal-bundle/notarization scenarios and four stable README links.")
+print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 23 retention/rerun/upload/checksum/cleanup/legal-bundle/notarization/installer scenarios and four stable README links.")

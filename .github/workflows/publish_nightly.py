@@ -47,7 +47,10 @@ def delete_ref(tag):
 def verify(release, manifest, manifest_bytes):
     assert release["target_commitish"] == manifest["revision"]
     assert release["name"] == f'KONTRA {manifest["version"]}'
-    assert {a["name"] for a in manifest["assets"]} == {f"KONTRA-nightly-{p}.zip" for p in PLATFORMS}
+    names = {f"KONTRA-nightly-{p}.zip" for p in PLATFORMS}
+    if any(a["name"].endswith(".pkg") for a in manifest["assets"]):
+        names |= {"KONTRA-nightly-macos-universal.pkg", "KONTRA-nightly-macos-universal.notarization.json"}
+    assert {a["name"] for a in manifest["assets"]} == names
     expected = {a["name"]: a for a in manifest["assets"]}
     expected["release-manifest.json"] = dict(size=len(manifest_bytes), sha256=hashlib.sha256(manifest_bytes).hexdigest())
     assert set(expected) == {a["name"] for a in release["assets"]}, "Incomplete release assets"
@@ -181,6 +184,26 @@ def main():
             assert (notarization["version"], notarization["revision"], notarization["target"]) == (version, SHA, target), "Wrong notarized build identity"
             asset["notarization"] = notarization
         assets.append(asset)
+    package = Path("dist/KONTRA-nightly-macos-universal.pkg")
+    receipt_file = package.with_suffix(".notarization.json")
+    assert package.is_file() and receipt_file.is_file(), "Missing universal Mac installer"
+    receipt = json.loads(receipt_file.read_text())
+    assert package.read_bytes()[:4] == b"xar!", "Invalid Mac installer container"
+    assert (receipt["version"], receipt["revision"], receipt["profile"]) == (version, SHA, "release"), "Wrong universal installer identity"
+    assert receipt["target"] == "universal-apple-darwin" and receipt["architectures"] == ["arm64", "x86_64"]
+    assert receipt["targets"] == ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+    assert receipt["status"] == "Accepted" and receipt["stapled"] is True and receipt["signatures_verified"] is True, "Untrusted universal installer"
+    assert re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", receipt["id"]), "Missing installer Apple submission ID"
+    assert set(receipt["products"]) == {"Library/Audio/Plug-Ins/CLAP/KONTRA.clap/Contents/MacOS/KONTRA", "Library/Audio/Plug-Ins/VST3/KONTRA.vst3/Contents/MacOS/KONTRA", "Applications/KONTRA.app/Contents/MacOS/KONTRA"}
+    assert all(re.fullmatch(r"[0-9a-f]{64}", h) for h in receipt["products"].values())
+    assert set(receipt["source_builds"]) == {"arm64", "x86_64"}
+    for arch in ("arm64", "x86_64"):
+        source = next(a for a in assets if a["platform"] == "macos-" + arch)
+        assert receipt["source_builds"][arch] == {"clap": source["clap_build"], "vst3": source["vst3_build"], "standalone": source["standalone_build"]}, "Installer source builds differ"
+    assert hashlib.sha256(package.read_bytes()).hexdigest() == receipt["package_sha256"], "Universal installer checksum mismatch"
+    for path in (package, receipt_file):
+        assets.append(dict(name=path.name, platform="macos-universal", size=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest(), notarization=receipt))
+    files += [package, receipt_file]
     previous = max((r for r in current if not r["draft"]), key=lambda r: r["published_at"], default=None)
     changelog = release_notes(api, REPO, SHA, version, previous)
     manifest = dict(version=version, revision=SHA, workflow_run=os.environ["GITHUB_RUN_ID"], assets=assets, changelog=changelog)
@@ -196,6 +219,7 @@ All four archives come from this source commit. `release-manifest.json` records 
 Experimental nightly snapshot, not a stable-quality release. GitHub marks it Latest solely to provide permanent download links.
 Contents: CLAP plug-in, VST3 plug-in and standalone application. These builds have not been certified in Windows or macOS DAWs.
 Licensing: project-authored code is Apache-2.0; third-party terms apply. Redistribution permission for the required ni-file parser remains unresolved. Library-access decryption is enabled and does not validate ownership or activation. No commercial Kontakt instrument library is supplied. Read the included THIRD_PARTY.md and docs/LEGAL.md before use or redistribution; the notice/source bundle is not legal clearance.
+The universal macOS `.pkg` installs both Intel and Apple Silicon CLAP/VST3 plug-ins under `/Library/Audio/Plug-Ins` and the standalone app under `/Applications`. It is signed with Developer ID Installer, accepted by Apple, and carries a validated stapled ticket. Its `KONTRA-nightly-macos-universal.notarization.json` receipt binds both source targets and product/package hashes. Publication requires this installer in addition to the compatibility archives.
 macOS products are Developer ID signed with hardened runtime and timestamped. Each Mac ZIP includes `KONTRA.dmg`, accepted by Apple and carrying a validated stapled ticket for offline delivery. Open the DMG in Finder before copying its products; ZIPs and bare executables cannot themselves carry stapled tickets. Direct ZIP extraction does not supply the DMG offline ticket. `notarization.json` records the submission ID and hashes, also retained in the release manifest. Publication requires both Mac architectures to pass signing, notarization and package validation.
 x86_64 plug-ins require AVX2, FMA and BMI2. Linux requires compatible X11/XCB, XKB, OpenGL/Vulkan and ALSA/JACK system libraries.
 

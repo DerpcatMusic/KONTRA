@@ -75,10 +75,13 @@ class Gates(unittest.TestCase):
         self.assertIn("  push:\n    branches: [main]", nightly)
         self.assertNotIn("schedule:", nightly)
         self.assertIn("    uses: ./.github/workflows/ci.yml\n    with:\n      release_validation: true", nightly)
-        build = nightly.split("  build:\n", 1)[1].split("\n  release:\n", 1)[0]
+        build = nightly.split("  build:\n", 1)[1].split("\n  macos-universal:\n", 1)[0]
         self.assertNotIn("needs:", build)
         release = nightly.split("\n  release:\n", 1)[1]
-        self.assertIn("    needs: [verify, build]\n", release)
+        self.assertIn("    needs: [verify, build, macos-universal]\n", release)
+        universal = nightly.split("\n  macos-universal:\n", 1)[1].split("\n  release:\n", 1)[0]
+        self.assertIn("    needs: build\n", universal)
+        self.assertIn("package_macos.sh", universal)
         self.assertIn("          ref: ${{ github.sha }}", nightly)
         self.assertIn("            ${{ env.STAGE }}.zip.sha256", nightly)
         self.assertIn("      cancel-in-progress: false", nightly)

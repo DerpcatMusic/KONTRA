@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Bundle dependency notices and exact MPL source archives; never grant ni-file rights."""
 import argparse
+import gzip
+import os
 import json
 from pathlib import Path
 import shutil
@@ -40,8 +42,18 @@ def bundle_source(package, sources):
     filename = f'{package["name"]}-{package["version"]}.crate'
     if manifest == ROOT / "vendor/symphonia-format-riff/Cargo.toml":
         # Ship the patched source compiled into the binary, not an upstream copy.
-        with tarfile.open(sources / filename, "w:gz") as archive:
-            archive.add(manifest.parent, arcname=filename.removesuffix(".crate"))
+        epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
+        def normalize(member):
+            member.mtime = epoch
+            member.uid = member.gid = 0
+            member.uname = member.gname = ""
+            member.mode = 0o755 if member.isdir() else 0o644
+            member.pax_headers = {}
+            return member
+        with (sources / filename).open("wb") as raw:
+            with gzip.GzipFile(fileobj=raw, filename="", mode="wb", mtime=epoch) as compressed:
+                with tarfile.open(fileobj=compressed, mode="w") as archive:
+                    archive.add(manifest.parent, arcname=filename.removesuffix(".crate"), filter=normalize)
     else:
         registry = manifest.parents[3]
         archive = registry / "cache" / manifest.parents[1].name / filename
@@ -118,6 +130,25 @@ def self_test():
                 if path.is_file():
                     member = "symphonia-format-riff-0.5.5/" + path.relative_to(vendored).as_posix()
                     assert archive.extractfile(member).read() == path.read_bytes()
+        # Independently checked-out architectures must ship identical sources,
+        # even when checkout times and filesystem ownership/modes differ.
+        copies = []
+        with patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1790962911"}):
+            for index in (1, 2):
+                checkout = root / f"checkout-{index}"
+                vendor = checkout / "vendor/symphonia-format-riff"
+                vendor.mkdir(parents=True)
+                for name in ("Cargo.toml", "lib.rs"):
+                    path = vendor / name
+                    path.write_bytes(b"authored deterministic source\n")
+                    os.utime(path, (index * 100, index * 100))
+                    path.chmod(0o600 if index == 1 else 0o644)
+                with patch.dict(globals(), {"ROOT": checkout}):
+                    bundle_source(dict(package, manifest_path=str(vendor / "Cargo.toml")), output)
+                copies.append((output / "symphonia-format-riff-0.5.5.crate").read_bytes())
+        assert copies[0] == copies[1], "Source archive depends on architecture checkout metadata"
+        with tarfile.open(output / "symphonia-format-riff-0.5.5.crate") as archive:
+            assert all(m.mtime == 1790962911 and m.uid == m.gid == 0 and not m.uname and not m.gname for m in archive)
         # Registry packages keep their exact upstream archive bytes.
         manifest = root / "registry/src/example-index/example-1.0/Cargo.toml"
         manifest.parent.mkdir(parents=True)
