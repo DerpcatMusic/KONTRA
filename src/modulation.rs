@@ -243,7 +243,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                 }
             };
             if !params.unknown_tail.is_empty() {
-                out.warnings.push("External modulation v0x104 footer fields are retained but not applied".into());
+                out.warnings.push(format!("External modulation v0x{:X} footer fields are retained but not applied", assignment.0.version));
             }
             out.modulators.push(Modulator {
                 name: params.name.clone(),
