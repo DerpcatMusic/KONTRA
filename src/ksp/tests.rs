@@ -934,6 +934,7 @@ const PASS: &str = "on init\nend on";
 #[test]
 fn prepared_common_ui_replays_keep_one_menu_and_text_while_assigning_private_table_values() {
     let source = r#"on init
+make_perfview
 declare ui_slider $edit(0,10)
 declare ui_label $info(1,1)
 set_text($info,"seed")
@@ -961,6 +962,7 @@ end on"#;
     rig.rt.prepare_channel_domains((1<<1)|(1<<3)|(1<<5),7);
     rig.rt.prepare_channel_configuration();
     let mut live = rig.rt.live();
+    assert!(live.interface.is_some(), "fixture must expose its authored performance view before callbacks");
     let mut edit = || {
         rig.rt.ui_control_configuration(&mut rig.engine,0,0,3);
         for owner in [1,3,5] { rig.rt.ui_control_replay(&mut rig.engine,owner,0,0,3); }
@@ -990,6 +992,7 @@ end on"#;
 #[test]
 fn prepared_configuration_waits_keep_ui_history_and_performance_event_ids_separate() {
     let source = r#"on init
+make_perfview
 declare ui_slider $edit(0,10)
 declare ui_label $info(1,1)
 set_text($info,"seed")
@@ -1025,6 +1028,7 @@ end on"#;
     rig.rt.prepare_channel_domains((1<<1)|(1<<3)|(1<<5),7);
     rig.rt.prepare_channel_configuration();
     let mut live = rig.rt.live();
+    assert!(live.interface.is_some(), "fixture must expose its authored performance view before callbacks");
     rig.engine.calls.reserve(64);
     for (owner, velocity) in [(1,1),(3,2),(5,3)] {
         rig.rt.note_on_from(&mut rig.engine,0,owner,60,velocity);
