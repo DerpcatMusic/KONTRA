@@ -1540,6 +1540,7 @@ dependencies = [
  "png",
  "realfft",
  "rfd 0.17.2",
+ "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "symphonia",
