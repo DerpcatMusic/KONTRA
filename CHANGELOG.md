@@ -40,9 +40,17 @@ are added when a release is actually published; commit history is not a changelo
   initialization. Actual Areia Advanced resources verify two 256-glyph, 14-pixel
   fonts with variable advances and the native gray/orange switch-state change;
   broader font compatibility remains unverified.
+- Internal slot-to-slot MIDI2 note-controller callbacks, registered/assignable/bend
+  values, forwarding, waits and startup persistence delivery. External MIDI2 input
+  and multi-script MIDI-input callbacks remain absent; the selected 13-script
+  census contains no uses, so this does not establish an actual-library benefit.
 
 ### Fixed
 
+- Instrument replacement clears previous script state and convolution settings;
+  source epochs on both live-request and snapshot queues reject stale updates.
+  A native Areia-to-CHORUS transition verifies the new logo, controls, header and
+  playable range, resolving the observed cross-instrument state contamination.
 - Physical note ownership, delayed callback cancellation, MIDI stop ordering and
   selective sound-off across articulation channels sharing one engine channel.
 - Sustain release bookkeeping, generated-note lifecycle and MPE expression/tuning
@@ -76,6 +84,9 @@ are added when a release is actually published; commit history is not a changelo
   device scale 1.5; selected callbacks are checked, not every control action.
 - Warm Vectorized CPU planning drops 78% in one bounded paired Analog trial
   (2.567 to 0.566 ms). This does not establish overall GPU/frame/input latency.
+- Scalar edits avoid copying the imported interface under the view lock. A matched
+  Analog trial measures mean edit submission at 1.152 to 0.000240 ms; whole observed
+  frame means are 4.223 and 4.395 ms, providing no frame-rate improvement evidence.
 - Internal pitch AHDSR routing to voice modulation, selected filter coefficients
   and worker-built convolution cutoff processing. These changes do not establish
   Kontakt parameter-law or sonic equivalence.
