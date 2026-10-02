@@ -23,6 +23,16 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
             return None;
         }
     };
+    if let Err(error) =
+        cx.p.shared
+            .request_native_assets(part, epoch, root.asset_names())
+    {
+        let mut view = cx.p.shared.view.lock().unwrap();
+        if let Some(v) = view.parts.get_mut(part).filter(|v| v.script_epoch == epoch) {
+            v.native_status = error;
+        }
+    }
+    let assets = scene.lock().unwrap().assets.clone();
     fn draw(
         ui: &mut Ui,
         cx: &mut Cx,
@@ -31,21 +41,25 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
         scene: &std::sync::Arc<std::sync::Mutex<crate::native_ui::Scene>>,
         node: &Node,
         offered: (f64, f64),
+        assets: &crate::native_assets::Assets,
     ) -> El {
+        let natural = intrinsic(node, assets, offered);
         let (w, h) = (
-            node.width.unwrap_or(offered.0),
-            node.height.unwrap_or(offered.1),
+            node.width.unwrap_or(natural.0),
+            node.height.unwrap_or(natural.1),
         );
         let children = node
             .children
             .iter()
             .map(|child| {
-                let cw = child.width.unwrap_or(w);
-                let ch = child.height.unwrap_or(h);
-                draw(ui, cx, part, epoch, scene, child, (w, h)).at((w - cw) / 2., (h - ch) / 2.)
+                let natural = intrinsic(child, assets, (w, h));
+                let cw = child.width.unwrap_or(natural.0);
+                let ch = child.height.unwrap_or(natural.1);
+                draw(ui, cx, part, epoch, scene, child, (w, h), assets)
+                    .at((w - cw) / 2., (h - ch) / 2.)
             })
             .collect();
-        let el = primitive(node, w, h, children);
+        let el = primitive(node, w, h, children, assets);
         let id = format!("native-ui-{part}-{}", node.id);
         if node.tap {
             let response = ui.get(id.as_str());
@@ -96,7 +110,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
     }
     let size = (root.width?, root.height?);
     Some(
-        draw(ui, cx, part, epoch, &scene, &root, size)
+        draw(ui, cx, part, epoch, &scene, &root, size, &assets)
             .clip()
             .shrink(0)
             .named("Native UI subset scene"),
@@ -104,7 +118,26 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
 }
 
 // Both native editor rendering and the authored headless gate use this mapping.
-fn primitive(node: &Node, w: f64, h: f64, children: Vec<El>) -> El {
+fn intrinsic(
+    node: &Node,
+    assets: &crate::native_assets::Assets,
+    offered: (f64, f64),
+) -> (f64, f64) {
+    if let Paint::Asset(reference) = &node.paint
+        && !reference.resizable
+        && let Some(Ok(asset)) = assets.entries.get(&reference.resource)
+    {
+        return asset.size();
+    }
+    offered
+}
+fn primitive(
+    node: &Node,
+    w: f64,
+    h: f64,
+    children: Vec<El>,
+    assets: &crate::native_assets::Assets,
+) -> El {
     match &node.paint {
         Paint::Text(value) => text(value.clone())
             .text_size(14.)
@@ -114,21 +147,45 @@ fn primitive(node: &Node, w: f64, h: f64, children: Vec<El>) -> El {
             .h(h),
         Paint::Rectangle(color) => block(w, h).fill(Color::srgb(color[0], color[1], color[2])),
         Paint::Stack => stack(children).w(w).h(h),
+        Paint::Asset(reference) => match assets.entries.get(&reference.resource) {
+            Some(Ok(asset)) => match asset.as_ref() {
+                crate::native_assets::Asset::Vector(vector) => {
+                    block(w, h).fill(Fill::Vector(vector.clone(), Fit::Fill))
+                }
+                crate::native_assets::Asset::Bitmap(image) => {
+                    block(w, h).fill(Fill::Image(image.clone(), Fit::Fill))
+                }
+            },
+            _ => block(w, h), // Pending/failed assets never become fabricated artwork.
+        },
     }
 }
 #[cfg(test)]
 pub(crate) fn paint_snapshot(node: &Node, offered: (f64, f64)) -> El {
+    paint_snapshot_assets(node, offered, &crate::native_assets::Assets::default())
+}
+#[cfg(test)]
+pub(crate) fn paint_snapshot_assets(
+    node: &Node,
+    offered: (f64, f64),
+    assets: &crate::native_assets::Assets,
+) -> El {
+    let natural = intrinsic(node, assets, offered);
     let (w, h) = (
-        node.width.unwrap_or(offered.0),
-        node.height.unwrap_or(offered.1),
+        node.width.unwrap_or(natural.0),
+        node.height.unwrap_or(natural.1),
     );
     let children = node
         .children
         .iter()
         .map(|child| {
-            let (cw, ch) = (child.width.unwrap_or(w), child.height.unwrap_or(h));
-            paint_snapshot(child, (w, h)).at((w - cw) / 2., (h - ch) / 2.)
+            let natural = intrinsic(child, assets, (w, h));
+            let (cw, ch) = (
+                child.width.unwrap_or(natural.0),
+                child.height.unwrap_or(natural.1),
+            );
+            paint_snapshot_assets(child, (w, h), assets).at((w - cw) / 2., (h - ch) / 2.)
         })
         .collect();
-    primitive(node, w, h, children)
+    primitive(node, w, h, children, assets)
 }

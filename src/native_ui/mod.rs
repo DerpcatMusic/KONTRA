@@ -16,6 +16,7 @@ pub(crate) enum Paint {
     Stack,
     Text(String),
     Rectangle([f32; 3]),
+    Asset(crate::native_assets::AssetRef),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Node {
@@ -25,6 +26,21 @@ pub(crate) struct Node {
     pub height: Option<f64>,
     pub tap: bool,
     pub children: Vec<Node>,
+}
+impl Node {
+    pub(crate) fn asset_names(&self) -> BTreeSet<String> {
+        fn collect(node: &Node, names: &mut BTreeSet<String>) {
+            if let Paint::Asset(asset) = &node.paint {
+                names.insert(asset.resource.clone());
+            }
+            for child in &node.children {
+                collect(child, names);
+            }
+        }
+        let mut names = BTreeSet::new();
+        collect(self, &mut names);
+        names
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Edit {
@@ -52,6 +68,8 @@ pub(crate) struct Scene {
     revision: Arc<AtomicU64>,
     gestures: Vec<Option<Function>>,
     identities: BTreeMap<String, usize>,
+    pub(crate) assets: Arc<crate::native_assets::Assets>,
+    asset_pending: BTreeSet<String>,
     pub identity: String,
     pub target_version: Option<String>,
     pub resources: Vec<(String, Vec<u8>)>,
@@ -365,6 +383,8 @@ impl Scene {
             revision,
             gestures: Vec::new(),
             identities: BTreeMap::new(),
+            assets: Arc::default(),
+            asset_pending: BTreeSet::new(),
             identity,
             target_version,
             resources,
@@ -374,7 +394,52 @@ impl Scene {
             root.width.is_some_and(|v| v > 0.) && root.height.is_some_and(|v| v > 0.),
             "Native UI root requires an explicit positive frame"
         );
+        let names = root.asset_names();
+        ensure!(names.len() <= 256, "Native UI asset count exceeds 256");
+        scene.assets = Arc::new(crate::native_assets::Assets::prepare_bounded(
+            instrument,
+            names,
+            128 << 20,
+        ));
         Ok(Some(scene))
+    }
+    pub(crate) fn reserve_assets(&mut self, names: BTreeSet<String>) -> Result<Vec<String>> {
+        let missing: Vec<_> = names
+            .into_iter()
+            .filter(|name| {
+                !self.assets.entries.contains_key(name) && !self.asset_pending.contains(name)
+            })
+            .collect();
+        ensure!(
+            self.assets.entries.len() + self.asset_pending.len() + missing.len() <= 256,
+            "Native UI asset count exceeds 256"
+        );
+        self.asset_pending.extend(missing.iter().cloned());
+        Ok(missing)
+    }
+    pub(crate) fn remaining_asset_bytes(&self) -> usize {
+        (128usize << 20).saturating_sub(
+            self.assets
+                .entries
+                .values()
+                .filter_map(|result| result.as_ref().ok())
+                .map(|asset| asset.retained_bytes())
+                .fold(0usize, usize::saturating_add),
+        )
+    }
+    pub(crate) fn cancel_assets(&mut self, names: &[String]) {
+        for name in names {
+            self.asset_pending.remove(name);
+        }
+    }
+    pub(crate) fn install_assets(&mut self, ready: crate::native_assets::Assets) {
+        let mut all = (*self.assets).clone();
+        for (name, result) in ready.entries {
+            self.asset_pending.remove(&name);
+            all.entries.insert(name, result);
+        }
+        self.assets = Arc::new(all);
+        self.revision.fetch_add(1, Ordering::Relaxed);
     }
     pub(crate) fn has_control(&self, slot: usize, control: usize) -> bool {
         self.parameters
@@ -466,6 +531,25 @@ impl Scene {
                     color.get::<f32>("g")? / 255.,
                     color.get::<f32>("b")? / 255.,
                 ])
+            }
+            "Image" => {
+                let value = props.get::<Value>("file")?;
+                let value = match value {
+                    Value::Function(f) => f.call::<Value>(())?,
+                    v => v,
+                };
+                let Value::String(file) = value else {
+                    bail!("Native UI Image.file requires a string");
+                };
+                let resource = file.to_str()?.to_string();
+                ensure!(
+                    !resource.is_empty() && resource.len() <= 1024,
+                    "Invalid native UI Image.file length"
+                );
+                Paint::Asset(crate::native_assets::AssetRef {
+                    resource,
+                    resizable: props.get::<Option<bool>>("resizable")?.unwrap_or(false),
+                })
             }
             kind => bail!("Unsupported native UI primitive: {kind}"),
         };

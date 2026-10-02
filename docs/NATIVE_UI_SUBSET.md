@@ -2,14 +2,14 @@
 
 The optional plug-in adapter loads a requested `.nui` resource with embedded
 Lua 5.4. It lowers the supported `@component` form, resolves dotted resource
-module names, and retains the real resource bytes and module identity. Lua
+module names, and retains the real resource bytes and module identity.
 Entry resolution retains the optional `general.kontaktTargetVersion` metadata;
 an explicit `.kscript` entry is rejected before legacy Lua evaluation. Bare
 `load_native_ui` requests retain their legacy `.nui` intent.
-errors identify `.nui.lowered.lua`; line counts after a component are preserved,
+Lua errors identify `.nui.lowered.lua`; line counts after a component are preserved,
 while locations inside the rewritten property/child tables refer to lowered Lua.
 
-Supported scene primitives are `ZStack`, `Text` and `Rectangle`, with explicit
+Supported scene primitives are `ZStack`, `Text`, `Rectangle` and `Image`, with explicit
 frames, RGB colors, computed text, local scalar state, inherited contexts and tap callbacks. Component functions
 expand lazily within their parent context; local state hooks persist by
 component source identity and scene path across refreshes. The
@@ -33,7 +33,17 @@ instruction exhaustion even across nested catches. Coroutines and `xpcall`
 are unavailable. Native temporary MIDI export remains explicitly unsupported
 when invoked; looking up its API does not fabricate a file or enable mocks.
 
-Images, additional primitives/modifiers, indexed array connections, generalized
+Image filenames retain their evaluated resource identity. Initial images prepare
+on the loader; changed references queue through the same worker and publish only
+to the matching scene and source epoch. SVGs retain paths, gradients and layers
+through existing MUI vector paint. Supported PNG/JPEG/WebP images retain source
+pixels. The cache retains both successes and failures, with at most 256 names
+and a 128 MiB retained asset budget;
+missing or unsupported assets are diagnosed and never replaced by invented artwork.
+Unframed, nonresizable images use their intrinsic size; explicit frames and
+resizable images use the authored frame.
+
+Additional primitives/modifiers, indexed array connections, generalized
 reactive subscriptions and parameter writes outside gestures are explicitly
 unsupported. Unsupported scenes keep the classic KSP projection available and
 record a loader warning; this subset does not establish full library native UI
@@ -44,5 +54,6 @@ The authored regression
 uses two actual KSP slots and the production scene preparation, edit queue,
 callback execution, publication and MUI primitive adapter. It checks duplicate
 identity, stale epochs, nested modules, bounded resources, source line diagnostics
-and explicit unsupported-image rejection. No instrument-library code or artwork
+retained vector artwork, changed-asset worker requests, stale asset rejection
+and explicit unsupported-primitive rejection. No instrument-library code or artwork
 is included in its fixtures.

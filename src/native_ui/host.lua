@@ -39,7 +39,7 @@ local ui = {
         return {r=r,g=g,b=b}
     end,
 }
-for _,kind in ipairs({"ZStack","Text","Rectangle"}) do ui[kind]={kind=kind} end
+for _,kind in ipairs({"ZStack","Text","Rectangle","Image"}) do ui[kind]={kind=kind} end
 native_ui_host = strict("native_ui",ui)
 kontakt_host = strict("kontakt", {
     create_tmp_midi_file=function()
@@ -66,7 +66,7 @@ function native_component(target,props,children)
         return {kind="Component",target=target,props=props,children=children,modifiers={}}
     end
     assert(type(target)=="table" and target.kind,"Unsupported component target")
-    local supported={ZStack={children=true},Text={children=true,text=true},Rectangle={children=true,color=true}}
+    local supported={ZStack={children=true},Text={children=true,text=true},Rectangle={children=true,color=true},Image={children=true,file=true,resizable=true}}
     assert(supported[target.kind],"Unsupported component")
     assert(target.kind=="ZStack" or #children==0,"Primitive children require ZStack")
     for key in pairs(props) do assert(supported[target.kind][key],"Unsupported primitive property: "..target.kind.."."..key) end

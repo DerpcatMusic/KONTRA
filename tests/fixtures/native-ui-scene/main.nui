@@ -1,6 +1,7 @@
 local ui = require("native_ui")
 local connected,kontakt=pcall(require,"kontakt")
 assert(connected and kontakt.connect_parameter)
+local remote=kontakt.connect_parameter("Remote")
 local Card = require("components")
 local context=require("context")
 return function()
@@ -11,5 +12,8 @@ return function()
         @Card {parameter_id="Amount"}
         or @ui.ZStack {}
         @Card {parameter_id="Remote"}
+        @ui.Image {file=ui.create_computed(function()
+            return remote:value()<20 and "assets/pics/ready.svg" or "assets/pics/changed.svg"
+        end),resizable=false}
     }.context(key=context,value="inherited").frame(width=640 height=400)
 end
