@@ -113,7 +113,7 @@ if [ $mode = public ]; then
     grep -Fq 'The keystream in `src/access.rs`' THIRD_PARTY.md ||
     { echo "public manifest lost required third-party provenance" >&2; exit 1; }
   mapfile -t code_files < <(git -C "$repo" ls-tree -r --name-only "$ref" |
-    grep -Ei '\.(rs|py|sh|c|cc|cpp|h|hpp|js|ts|cjs|m|mm|java|kt|cs|go|rb|lua|pl|ps1|bat|cmd|sql)$' |
+    grep -Ei '\.(rs|py|sh|swift|c|cc|cpp|h|hpp|js|ts|cjs|m|mm|java|kt|cs|go|rb|lua|pl|ps1|bat|cmd|sql)$|^\.github/scripts/macos_installer/postinstall$' |
     grep -v '^\.claude/' || true)
   for f in "${code_files[@]}"; do
     [ -f "$f" ] || { echo "public manifest omitted code file: $f" >&2; exit 1; }
@@ -163,7 +163,7 @@ ksp='^[[:space:]]*"?(declare (const |ui_|polyphonic |global |read |pers |[%$!@~?
 while IFS=: read -r f n; do
   case $f in
     *.rs) case $f in
-      ./src/ksp/tests.rs) limit=223 ;; # Adds 14 authored wait_async callback/control fixture lines.
+      ./src/ksp/tests.rs) limit=231 ;; # Adds 8 authored optional_note_off fixture lines after wait_async's 223.
       ./src/import.rs) limit=5 ;; # Authored wavetable control-constant fixture.
       ./src/engine/params.rs) limit=5 ;; # Authored live saved pitch-LFO callback/control fixture.
       ./src/articulate.rs) limit=31 ;;
@@ -182,7 +182,15 @@ done < <(scan -cEI "$ksp" . | grep -v ':0$' || true)
 # Key-like 64-digit hex strings. Lockfile checksums and the codec's test
 # data hashes and the reviewed official actionlint archive checksum are the
 # known exceptions; the latter is a public download-integrity check, not a key.
-while IFS= read -r f; do leak "64-digit hex string in $f"; done < <(
+while IFS= read -r f; do
+  if [ "$f" = ./release-fixes.json ]; then
+    # Reviewed compiled-executable digest in five authored validation notes,
+    # not a key. Preserve the ledger; every other hex string still fails.
+    sed 's/Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5;//g' "$f" |
+      grep -qEI '(^|[^0-9A-Fa-f])[0-9A-Fa-f]{64}([^0-9A-Fa-f]|$)' || continue
+  fi
+  leak "64-digit hex string in $f"
+done < <(
   scan -lEI '(^|[^0-9A-Fa-f])[0-9A-Fa-f]{64}([^0-9A-Fa-f]|$)' . |
     grep -vE '^\./(vendor/ni-file/)?Cargo\.lock$|^\./vendor/ncw/WRITER_VALIDATION\.md$|^\./\.github/scripts/check_workflows\.sh$' || true)
 

@@ -478,6 +478,9 @@ impl ProgramFx {
             if fx.kind == Kind::SurroundPanner && blocks::fields(&fx.params).is_some_and(|f| f[1] != 0.0) {
                 out.push(format!("{at}: Enhanced/Drums modes use an unverified transfer-curve proxy"));
             }
+            if fx.kind == Kind::Distortion {
+                out.push(format!("{at}: Damping parameter smoothing is not applied"));
+            }
             if !fx.is_implemented() {
                 out.push(format!(
                     "{at} is active but not implemented; audio passes through"

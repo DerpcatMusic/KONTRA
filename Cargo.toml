@@ -1,6 +1,6 @@
 [package]
 name = "kontakto"
-version = "0.3.96"
+version = "0.3.115"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"
@@ -38,6 +38,13 @@ walkdir = "2"
 # Kontakt NKI export compresses the preset the way Kontakt does.
 fastlz = "0.1"
 dirs = "5"
+blake3 = "1.8.7"
+getrandom = "0.4.3"
+sha2 = "0.10.9"
+tempfile = "3"
+ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
+derpcat-flight-recorder = { path = "vendor/derpcat-flight-recorder" }
+buffr-durable-file = { path = "vendor/buffr-durable-file" }
 moose = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", default-features = false, features = ["mui"], optional = true }
 moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", optional = true }
 moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", optional = true }
@@ -51,8 +58,11 @@ mui-text = { git = "https://github.com/Matari-Audio/MUI", optional = true }
 zune-jpeg = { version = "0.5", default-features = false, features = ["std"], optional = true }
 
 # Stream rings hand idle pages back (madvise).
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_LibraryLoader"] }
 
 [[bin]]
 name = "kontakto"
@@ -130,7 +140,7 @@ symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
 members = [".", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3"]
-exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/mui-baseview", "vendor/symphonia-format-riff"]
+exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/mui-baseview", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 
 # Optimized CI keeps release semantics while avoiding cross-crate ThinLTO.

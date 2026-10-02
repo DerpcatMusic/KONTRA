@@ -525,6 +525,9 @@ pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
         if fx.kind == Kind::SurroundPanner && blocks::fields(&fx.params).is_some_and(|f| f[1] != 0.0) {
             out.push("Group Saturation: Enhanced/Drums modes use an unverified transfer-curve proxy".into());
         }
+        if fx.kind == Kind::Distortion {
+            out.push("Group Distortion: Damping parameter smoothing is not applied".into());
+        }
         match &fx.params {
             Params::Filter(f) if filter_type(f.filter_type).is_none() => {
                 out.push(format!("Group filter type {} is not implemented; audio passes through", f.filter_type));
@@ -2786,6 +2789,69 @@ mod tests {
         let dry = l;
         voice.drive(&f, 0, &m, &mut l, &mut r, RATE);
         assert!(l.iter().zip(&dry).all(|(a, b)| (a - b).abs() < 0.05));
+    }
+
+    #[test]
+    fn tube_distortion_native_drive_edits_and_routing_match_rack_without_heap() {
+        use crate::{fx::{Effect, params::Field}, engine::{GroupSettings, params::{Address, self}}, ksp::EnginePar};
+        let drive_id = (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 512)
+            .find(|&id| crate::ksp::engine_par_name(id) == Some("$ENGINE_PAR_DRIVE")).unwrap();
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        for (mode, split) in [(0.0, 0), (0.0, 8), (1.0, 0), (1.0, 8)] {
+            let effect = Effect {
+                slot: 6, kind: Kind::Distortion, version: 0, bypass: false,
+                output_gain: 0.75, dry_level: 0.0,
+                params: Params::Fields(crate::fx::params::layout_names(Kind::Distortion).unwrap().iter()
+                    .enumerate().map(|(i, &name)| Field { name, value: Value::Number(if i == 0 { mode } else { 0.0 }) }).collect()),
+            };
+            let groups = [Group { fx: Chain { slots: vec![effect.clone()] }, amp_split_slot: Some(split), ..Group::default() }];
+            let mut settings = [GroupSettings::from(&groups[0])];
+            let address = Address::resolve(EnginePar { id: drive_id, group: 0, slot: 6, generic: -1 }, &groups).unwrap();
+            let mut voice = VoiceFilter::new(settings[0].filter.as_deref(), &table, &input, RATE);
+            let mut rack = blocks::Block::new(&effect, RATE).unwrap();
+            let amp = [0.5; 128];
+            let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.8], delta: [0.0; 2] };
+            for value in [0, 1_000_000, 250_000] {
+                let pattern = [-4.0, -0.25, -0.01, 0.0, 0.01, 0.25, 4.0];
+                let source: [f32; 128] = std::array::from_fn(|i| pattern[i % pattern.len()]);
+                let (mut l, mut r, mut expected_l, mut expected_r) = (source, source.map(|x| -x), source, source.map(|x| -x));
+                assert_eq!(crate::plugin::tests::allocations(|| {
+                    assert!(params::write(&mut settings, address, address.decode(value)));
+                    assert_eq!(address.encode(params::read(&settings, address).unwrap()), value);
+                    assert!(rack.set(Kind::Distortion, 1, value as f32 / 1_000_000.0));
+                    if split == 0 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
+                    rack.process(&mut expected_l, &mut expected_r);
+                    expected_l.iter_mut().chain(&mut expected_r).for_each(|x| *x *= effect.output_gain);
+                    if split == 8 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
+                    let filter = settings[0].filter.as_ref().unwrap();
+                    voice.process_amplified(filter, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r,
+                        RATE, &amp, amplifier.gains, amplifier.delta, None);
+                    assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r)).all(|(a,b)| (a-b).abs() < 2e-6));
+                }), 0);
+                if value == 0 {
+                    // Independent prepared float LP/HP coefficients and
+                    // native clock. Apply the known amplifier split explicitly.
+                    let a = -0.7484753727912903f32;
+                    let b = 0.5 * (1.0 - a);
+                    let (mut previous, mut state) = (0.0f32, 0.0f32);
+                    let mut history = [0.0f32; 4];
+                    let [b0, b1, b2, a1, a2] = [0.9986164569854736f32, -1.9972329139709473,
+                        0.9986164569854736, 1.9972310066223145, -0.9972348213195801];
+                    for (x, actual) in source.into_iter().zip(l) {
+                        let input = if split == 0 { x * 0.2 } else { x };
+                        state = (b * input + b * previous) + a * state + 1e-20;
+                        previous = input;
+                        let [x1, x2, y1, y2] = history;
+                        let filtered = (((state * b0 + x1 * b1) + x2 * b2) + y1 * a1) + y2 * a2;
+                        history = [state, x1, filtered, y1];
+                        let reference = if split == 0 { filtered * 0.75 } else { (filtered * 0.75) * 0.2 };
+                        assert!((actual - reference).abs() < 2e-6);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

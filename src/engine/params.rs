@@ -2159,7 +2159,7 @@ mod tests {
     fn saved_pitch_lfo_and_constant_loop_are_partition_invariant_in_ram_and_stream() {
         use crate::{audio::Sample, engine::{Bank, Engine}, import::{Instrument, Loop, PitchLfo, Zone}};
         let mut group = Group { pitch_lfos: vec![PitchLfo { slot: 7, count: 1.,
-            note_value: 1. / 24., sine: 0.5, depth: 0.5, targets: vec![], bypassed: false }],
+            note_value: 1. / 24., sine: 0.5, fade_ms: 0., depth: 0.5, targets: vec![], bypassed: false }],
             mods: ["loopStart", "loopLength"].into_iter().map(|param| ModAssignment {
                 name: "Constant".into(), source: ModSource::Constant,
                 target: ModTarget::Group(param.into()), intensity: 0., invert: false,
@@ -2264,9 +2264,9 @@ mod tests {
         use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
             import::{Instrument, PitchLfo, Zone}, ksp::Value};
         let mut group = Group { pitch_lfos: vec![
-            PitchLfo { slot: 7, count: 1., note_value: 1. / 24., sine: 0.5,
+            PitchLfo { slot: 7, count: 1., note_value: 1. / 24., sine: 0.5, fade_ms: 0.,
                 depth: 0.2, targets: vec![(1, 0.25), (3, -0.05)], bypassed: false },
-            PitchLfo { slot: 3, count: 2., note_value: 1. / 24., sine: 0.1,
+            PitchLfo { slot: 3, count: 2., note_value: 1. / 24., sine: 0.1, fade_ms: 0.,
                 depth: 0.1, targets: vec![(1, 0.1)], bypassed: false }], ..Group::default() };
         group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
             assignments: None, volume_env: false, bypassed: false, flex: false,

@@ -907,6 +907,183 @@
       ],
       "validation": "Four exact gates pass on frozen 6bf086e: independent scalar branch-boundary values, linear Output, ordered group processing, live address identity and zero audio heap. Existing LoFi max-rate law remains unchanged. Matched actual root 1e79e3d Contradiction capture gains 17.783694 dB RMS (peak 0.041667636 to 0.320852458) with identical onset, events, controls, native edits, full physical/virtual cursor census and loop bounds; bypassed Catastrophic PCM and census stay byte-identical to 0.3.92/0.3.95. All 242 journal rows and 216 warnings retained with zero faults, drops or underruns. All 89 playback regressions pass; both 64-second endpoints reach zero voices. Actual capture does not establish zero audio heap or sonic parity. Enhanced/Drums remain explicitly diagnosed approximations.",
       "accepted": true
+    },
+    {
+      "id": "tube-distortion-native-transfer",
+      "summary": "Replace the incorrect Tube Distortion scalar proxy and invented makeup with the native asymmetric rational/cubic law",
+      "source_commits": [
+        "334265511f83c847bf46d9eb80d482a03a808bdf"
+      ],
+      "validation": "Independent signed numeric blend-boundary and neutral Drive gates, native readback, group/rack pre/post-amplifier routing and zero audio heap pass. Damping/DC filtering remains explicitly approximate; actual Factory Prelude applicability is metadata-confirmed, corrected replay pending. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
+      "accepted": true
+    },
+    {
+      "id": "transistor-distortion-native-transfer",
+      "summary": "Replace the incorrect Transistor hard-clip proxy and invented makeup with the native threshold/power/blend law",
+      "source_commits": [
+        "6c963845b32c915e28b01fe84f3747a409544575"
+      ],
+      "validation": "Independent signed threshold/quarter-range/Drive boundaries, two sample rates, state reset, shared group/rack routing and zero audio heap pass. Damping/DC filtering remains explicitly approximate; no actual-preset sound claim. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-note-off-offset-retained-event",
+      "summary": "Honor optional note_off microsecond offsets and replace existing duration timers without losing the scheduled event",
+      "source_commits": [
+        "8775d97522791ee86775e8266a17fc930c03eee8"
+      ],
+      "validation": "Focused gate passes exact timer replacement, original channel/event identity, independent concurrent notes, immediate offset, whole-sample pool pressure, negative-offset diagnostics and zero audio heap. Areia repetition is not attributed to this gap. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
+      "accepted": true
+    },
+    {
+      "id": "stale-script-restore-publication",
+      "summary": "Cancel stale script restores before old state acquires a new epoch or reaches the audio handoff",
+      "source_commits": [
+        "869bf7a6399ee0975568497bf4ee90545a6183eb"
+      ],
+      "validation": "Controlled worker barrier gate passes source replacement, newer saved state, generation changes and removal cancellation, plus valid gain-only edits. Initial fixture epoch collision corrected using production allocator; production freshness check unchanged. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
+      "accepted": true
+    },
+    {
+      "id": "saved-legacy-pitch-lfo-fade-in",
+      "summary": "Render proven saved legacy unsynchronized fade-in on admitted retriggered sine Multi pitch sources",
+      "source_commits": [
+        "b8885133bd4a0a9523e7ad00e37a40a1f46ee2ff"
+      ],
+      "validation": "Independent physical cursor/PCM, 32-frame clock, block partition, retrigger/release and zero-heap gates pass; malformed/synchronized states remain rejected. Standalone clock math passes 18 cases across 44.1/48/96k. Finite millisecond fades do not establish a cause for longer preset repetition/thinness. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
+      "accepted": true
+    },
+    {
+      "id": "vst3-optional-note-length-admission",
+      "summary": "Admit VST3 notes with optional unused length metadata without shortening routed ownership",
+      "source_commits": [
+        "a357e1eaa1ef3c909d73e49d99b5babf191c95a0",
+        "401d59e835d9ce5eae8435fd4632a033dce80649"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
+    },
+    {
+      "id": "legacy-delay-time-conversion",
+      "summary": "Correct legacy unsynchronized Delay Time conversion over its admitted absolute range",
+      "source_commits": [
+        "f191cc20318091fae1efddd4715037fdf236217a",
+        "aaf2959fe340562a1222d50a2a8daec1a6c672c6"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
+    },
+    {
+      "id": "delay-ring-write-clock",
+      "summary": "Write Delay input before advancing its ring cursor",
+      "source_commits": [
+        "4ec295836e026ac23022e0b1c6f53b706855991b"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
+    },
+    {
+      "id": "distortion-native-damping-law",
+      "summary": "Use the checked native Distortion Damping law",
+      "source_commits": [
+        "b3e453e144b9ab01b8a251d87583c6a7cf435938"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
+    },
+    {
+      "id": "distortion-native-dc-filter-order",
+      "summary": "Apply native Distortion DC rejection after Damping with its checked scalar/SIMD sum order",
+      "source_commits": [
+        "74e3c0eb43e8b0a879784777ab7d78675fe18c6e",
+        "cd940e2490afa2a54ba1c8965e5699083eb742fe"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
+    },
+    {
+      "id": "macos-plugin-finder-bundle-recognition",
+      "summary": "Preserve Finder package flags and validate native recognition for both macOS plugin formats",
+      "source_commits": [
+        "60011265897a045e915c5b74b28834f11541008f"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Driver-free packaging gates retain Finder-flag operations and installed-bundle checks. Native macOS Swift/Finder/factory, signing, Installer and Apple acceptance remain required hosted checks; no Bitwig discovery or playback claim.",
+      "accepted": true
+    },
+    {
+      "id": "vst3-component-editor-view-lifetime",
+      "summary": "Retain the VST3 component while editor views remain alive",
+      "source_commits": [
+        "3e76d6013fd7fbb85f250ec4290badb3ab1fb21b"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Strict actual C++ editor_attach/editor_lifetime gates passed at 72d3b9b; those shim sources are unchanged through the frozen source. This does not validate every host embedding path.",
+      "accepted": true
+    },
+    {
+      "id": "vst3-editor-resize-frame-lifetime",
+      "summary": "Retain VST3 resize frame ownership across attachment and replacement",
+      "source_commits": [
+        "3784c6720bd6f8807391014f270dd9d2f1ff37e0"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Strict actual C++ editor_attach/editor_lifetime gates passed at 72d3b9b; those shim sources are unchanged through the frozen source. This does not validate every host embedding path.",
+      "accepted": true
+    },
+    {
+      "id": "vst3-view-run-loop-registration",
+      "summary": "Keep run-loop registration associated with the current VST3 view",
+      "source_commits": [
+        "e3822b263005bd54039766cc9d21969b01b9b694"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Strict actual C++ editor_attach/editor_lifetime gates passed at 72d3b9b; those shim sources are unchanged through the frozen source. This does not validate every host embedding path.",
+      "accepted": true
+    },
+    {
+      "id": "vst3-attached-gui-view-owner",
+      "summary": "Track attached GUI view ownership independently of view creation order",
+      "source_commits": [
+        "be80724d39ffa3a1f843333d33879e0da684fe24"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Strict actual C++ editor_attach/editor_lifetime gates passed at 72d3b9b; those shim sources are unchanged through the frozen source. This does not validate every host embedding path.",
+      "accepted": true
+    },
+    {
+      "id": "native-editor-pre-entry-diagnostics",
+      "summary": "Persist native editor startup and thread context before platform window entry",
+      "source_commits": [
+        "c3763d1985b43189bda60b79110f8a7e26ca55fe"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Vendored pre-native-entry Linux headless gate passes at 2d5822e; actual macOS window startup and host crash recovery remain unverified.",
+      "accepted": true
+    },
+    {
+      "id": "confirmed-crash-recovery-report-delivery",
+      "summary": "Recover confirmed prior host crash evidence and retain complete sanitized reports until acknowledged",
+      "source_commits": [
+        "665ffeeb963d533cfb9ef43b398827fe0a1fc242",
+        "72d3b9b6a8e815bc8ecae0090d1e438a3124c075",
+        "0c7b622a1bad87c8aa26debec7b209922dbc8484"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Support recovery/delivery fixtures pass without sending production reports. No real-world host-crash-to-server end-to-end result or KONTRA fault attribution is established; native OS evidence and service public/private policy remain separate requirements.",
+      "accepted": true
+    },
+    {
+      "id": "vst3-initial-cents-atomic-onset",
+      "summary": "Apply VST3 initial cents tuning atomically with bounded note onset",
+      "source_commits": [
+        "53ab06fd060ef5584899b74a8e9fcbb21ce84053",
+        "2d5822e18ac85666e936e6d2416fdf07637c4048"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "accepted": true
+    },
+    {
+      "id": "zero-rate-integer-sample-tap-panic",
+      "summary": "Avoid a zero-stride iterator panic while rendering zero-rate integer sample taps",
+      "source_commits": [
+        "4529cbf592b0b4809129db180fbdaeb523f62de4"
+      ],
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Shared zero-rate renderer correction is a distinct defect from atomic initial cents; negative length hints and safety fixture follow-ups add no counts.",
+      "accepted": true
     }
   ]
 }
