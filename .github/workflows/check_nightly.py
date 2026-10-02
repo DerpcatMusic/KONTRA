@@ -3,6 +3,7 @@
 import json
 import hashlib
 import os
+import plistlib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -23,6 +24,38 @@ assert "nightly-publish\n      cancel-in-progress: false" in workflow
 assert "retention-days: 1" in workflow
 assert "if: success()" in cleanup_step
 assert "continue-on-error: true" in cleanup_step
+
+# Exercise the workflow's actual selector against per-format and stale outputs.
+selector = textwrap.dedent(workflow.split("          python3 - <<'PYINFO'\n", 1)[1].split("          PYINFO", 1)[0]).replace("${{ matrix.target }}", "x86_64-unknown-linux-gnu")
+plist_step = textwrap.dedent(workflow.split("          python3 - <<'PYPLIST'\n", 1)[1].split("          PYPLIST", 1)[0])
+for case in ("valid", "missing", "duplicate"):
+    with tempfile.TemporaryDirectory(prefix="kontra-format-check-") as directory:
+        root = Path(directory)
+        version = "0.2.0-nightly.20261001.gaaaaaaaaaaaa"
+        root.joinpath("Cargo.toml").write_text('[package]\nversion="'+version+'"\n')
+        env = dict(os.environ, GITHUB_SHA="a"*40, STAGE="stage")
+        for format in ("clap", "vst3", "standalone", "stale", "wrong-target", "wrong-profile", "duplicate"):
+            if format == "clap" and case == "missing" or format == "duplicate" and case != "duplicate": continue
+            info = dict(version=version, revision="a"*40, target="x86_64-unknown-linux-gnu", profile="release", features=["plugin","library-access", "clap" if format in ("stale","wrong-target","wrong-profile","duplicate") else format])
+            if format == "stale": info["revision"] = "b"*40
+            if format == "wrong-target": info["target"] = "aarch64-apple-darwin"
+            if format == "wrong-profile": info["profile"] = "debug"
+            path = root / f"target/x86_64-unknown-linux-gnu/release/build/kontakto-{format}/out/kontra-build.json"
+            path.parent.mkdir(parents=True); path.write_text(json.dumps(info))
+        result = subprocess.run(["python3", "-c", selector], cwd=root, env=env, capture_output=True)
+        assert result.returncode == (0 if case == "valid" else 1), (case, result.stderr)
+        if case == "valid":
+            for format in ("clap", "vst3"):
+                info=json.loads(root.joinpath(format+"-build-info.json").read_text())
+                assert set(info["features"]) & {"clap","vst3","standalone"} == {format}
+                path=root / f"stage/KONTRA.{format}/Contents/Info.plist"
+                path.parent.mkdir(parents=True); path.write_bytes(plistlib.dumps(dict(CFBundleVersion="1",CFBundleIdentifier="preserved")))
+            result=subprocess.run(["python3", "-c", plist_step], cwd=root, env=env, capture_output=True)
+            assert result.returncode == 0, result.stderr
+            for format in ("clap", "vst3"):
+                info=plistlib.loads(root.joinpath(f"stage/KONTRA.{format}/Contents/Info.plist").read_bytes())
+                assert info["CFBundleShortVersionString"] == info["CFBundleVersion"] == "0.2.0"
+                assert info["KONTRAVersion"] == version and info["CFBundleIdentifier"] == "preserved"
 
 mock_gh = r'''#!/usr/bin/env python3
 import hashlib,json,os,sys
@@ -94,7 +127,7 @@ else: raise AssertionError(a)
 save(); print(out,end="" if a[:2]==["release","download"] else "\n"); sys.exit(status)
 '''
 
-cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","cleanup-fails","rotation-fails")
+cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","rotation-fails")
 for case in cases:
     with tempfile.TemporaryDirectory(prefix="kontra-nightly-check-") as directory:
         root=Path(directory); root.joinpath("gh").write_text(mock_gh); root.joinpath("gh").chmod(0o755); root.joinpath("dist").mkdir()
@@ -103,10 +136,13 @@ for case in cases:
         for platform in platforms:
             if case=="missing-asset" and platform==platforms[-1]: continue
             with zipfile.ZipFile(root/f"dist/KONTRA-nightly-{platform}.zip","w") as z:
-                for name in ("build-info.json","plugin-build-info.json"):
+                for name in ("build-info.json","clap-build-info.json","vst3-build-info.json"):
                     target={"linux-x86_64":"x86_64-unknown-linux-gnu","windows-x86_64":"x86_64-pc-windows-msvc","macos-arm64":"aarch64-apple-darwin","macos-x86_64":"x86_64-apple-darwin"}[platform]
-                    z.writestr(f"KONTRA-nightly-{platform}/{name}",json.dumps(dict(version=version,revision="a"*40,target=target,profile="release",features=["library-access"]+(["standalone"] if name=="build-info.json" else []))))
+                    z.writestr(f"KONTRA-nightly-{platform}/{name}",json.dumps(dict(version=version,revision="a"*40,target=target,profile="release",features=["plugin","library-access"]+(["clap","vst3","standalone"] if name=="build-info.json" else [name.split("-")[0]])+(["vst3"] if case=="wrong-format" and name=="clap-build-info.json" else []))))
                 binaries=("KONTRA.clap/Contents/MacOS/KONTRA","KONTRA.vst3/Contents/MacOS/KONTRA","kontakto-standalone") if platform.startswith("macos-") else (("KONTRA.clap","KONTRA.vst3/Contents/x86_64-win/KONTRA.vst3","kontakto-standalone.exe") if platform.startswith("windows-") else ("KONTRA.clap","KONTRA.vst3/Contents/x86_64-linux/KONTRA.so","kontakto-standalone"))
+                if platform.startswith("macos-"):
+                    for bundle in ("KONTRA.clap", "KONTRA.vst3"):
+                        z.writestr(f"KONTRA-nightly-{platform}/{bundle}/Contents/Info.plist", plistlib.dumps(dict(CFBundleShortVersionString="0.2.0",CFBundleVersion="0.2.0",KONTRAVersion=version)))
                 z.writestr(f"KONTRA-nightly-{platform}/SOURCE_COMMIT.txt", "a"*40+"\n")
                 for name in (*binaries,"LICENSE","NOTICE","THIRD_PARTY.md"): z.writestr(f"KONTRA-nightly-{platform}/{name}",b"fixture")
             archive=root/f"dist/KONTRA-nightly-{platform}.zip"
@@ -126,7 +162,7 @@ for case in cases:
         env=dict(os.environ,PATH=f"{root}:{os.environ['PATH']}",GITHUB_SHA="a"*40,GH_REPO="example/KONTRA",GITHUB_RUN_ID="7",GITHUB_OUTPUT=str(output))
         def run(command): return subprocess.run(["bash","--noprofile","--norc","-e","-o","pipefail","-c",command],cwd=root,env=env,capture_output=True,text=True)
         result=run(publish); state=json.loads(root.joinpath("state.json").read_text())
-        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum") else 0),(case,result.stderr)
+        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum","wrong-format") else 0),(case,result.stderr)
         if case=="rotation-fails":
             assert state["published"] and len(state["releases"])==2 and any(r["tag_name"]=="nightly-previous" for r in state["releases"])
             result=run(publish); assert result.returncode==0,result.stderr
@@ -160,6 +196,8 @@ for case in cases:
                         for name,data in entries.items():
                             if name.endswith("build-info.json"):
                                 info=json.loads(data);info.update(version=next_version,revision="f"*40);data=json.dumps(info).encode()
+                            elif name.endswith("Info.plist"):
+                                plist=plistlib.loads(data);plist["KONTRAVersion"]=next_version;data=plistlib.dumps(plist)
                             elif name.endswith("SOURCE_COMMIT.txt"):
                                 data=("f"*40+"\n").encode()
                             z.writestr(name,data)
@@ -184,4 +222,4 @@ for case in cases:
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
-print("Nightly checks passed: 10 retention/rerun/upload/checksum/cleanup scenarios and four stable README links.")
+print("Nightly checks passed: format selection/plist checks, 11 retention/rerun/upload/checksum/cleanup scenarios and four stable README links.")

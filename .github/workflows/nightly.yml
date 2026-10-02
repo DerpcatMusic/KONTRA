@@ -82,13 +82,19 @@ jobs:
           python3 - <<'PYINFO'
           import glob, json, os, pathlib, tomllib
           version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
-          matches = []
-          for path in glob.glob("target/${{ matrix.target }}/release/build/kontakto-*/out/kontra-build.json"):
-              info = json.loads(pathlib.Path(path).read_text())
-              if info["version"] == version and info["revision"] == os.environ["GITHUB_SHA"] and "standalone" not in info["features"]:
-                  matches.append(path)
-          assert len(matches) == 1, matches
-          pathlib.Path("plugin-build-info.json").write_bytes(pathlib.Path(matches[0]).read_bytes())
+          # cargo-moose builds each format with --no-default-features.
+          for format in ("clap", "vst3"):
+              matches = []
+              for path in glob.glob("target/${{ matrix.target }}/release/build/kontakto-*/out/kontra-build.json"):
+                  info = json.loads(pathlib.Path(path).read_text())
+                  features = set(info["features"])
+                  if (info["version"] == version and info["revision"] == os.environ["GITHUB_SHA"]
+                      and info["target"] == "${{ matrix.target }}" and info["profile"] == "release"
+                      and {"plugin", "library-access", format} <= features
+                      and not ({"clap", "vst3", "standalone"} - {format}) & features):
+                      matches.append(path)
+              assert len(matches) == 1, (format, matches)
+              pathlib.Path(format + "-build-info.json").write_bytes(pathlib.Path(matches[0]).read_bytes())
           PYINFO
       - name: Standalone
         shell: bash
@@ -102,13 +108,22 @@ jobs:
           exe=kontakto-standalone; [ "$RUNNER_OS" = Windows ] && exe=kontakto-standalone.exe
           cp "target/${{ matrix.target }}/release/$exe" "$stage/"
           cp LICENSE NOTICE THIRD_PARTY.md "$stage/"
-          cp plugin-build-info.json "$stage/"
+          cp clap-build-info.json vst3-build-info.json "$stage/"
           printf '%s\n' "$GITHUB_SHA" > "$stage/SOURCE_COMMIT.txt"
           "$stage/$exe" --build-info > "$stage/build-info.json"
           echo "STAGE=$stage" >> "$GITHUB_ENV"
       - name: Ad-hoc codesign (macOS)
         if: runner.os == 'macOS'
         run: |
+          python3 - <<'PYPLIST'
+          import os, pathlib, plistlib, tomllib
+          version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
+          for bundle in ("KONTRA.clap", "KONTRA.vst3"):
+              path = pathlib.Path(os.environ["STAGE"]) / bundle / "Contents/Info.plist"
+              info = plistlib.loads(path.read_bytes())
+              info.update(CFBundleShortVersionString=version.split("-", 1)[0], CFBundleVersion=version.split("-", 1)[0], KONTRAVersion=version)
+              path.write_bytes(plistlib.dumps(info, sort_keys=False))
+          PYPLIST
           codesign --force --deep --sign - "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3" "$STAGE/kontakto-standalone"
           codesign --verify --deep --verbose=2 "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3"
       - name: Zip
