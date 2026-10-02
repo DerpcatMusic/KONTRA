@@ -52,10 +52,16 @@ The graph is:
 4. Build CLAP, VST3 and standalone for Linux x64, Windows x64, macOS arm64 and macOS x64
 5. Verify all four ZIP checksum sidecars, required binaries/legal files and embedded
    build identities, then publish only if that SHA is still `main`. Each ZIP includes
-   `SOURCE_COMMIT.txt`, `plugin-build-info.json` and standalone `build-info.json`; the
-   published `release-manifest.json` records version, source, identities and SHA256.
+   `SOURCE_COMMIT.txt`, `clap-build-info.json`, `vst3-build-info.json` and standalone
+   `build-info.json`; the published `release-manifest.json` records version, source, identities and SHA256.
    Sidecars are transient build-to-publisher checks; release checksums are in the
-   downloadable manifest.
+   downloadable manifest. cargo-moose builds CLAP and VST3 separately with
+   `--no-default-features`, each format plus the non-format defaults and requested
+   `library-access`; manifests are matched uniquely to their actual format features.
+   macOS bundle plist versions use numeric Cargo base SemVer before signing; the
+   full nightly version remains in `KONTRAVersion` and embedded build JSON. See
+   Apple's [bundle build version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion)
+   and [release version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring) formats.
 6. Retain the newest and one previous complete release, preserving immutable stable
    source tags. Only after successful publication or a safe superseded-head exit,
    remove this run's transient Actions artifacts. Failed builds/uploads retain their
