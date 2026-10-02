@@ -8,7 +8,7 @@
 //! With sticky headers on, parts scrolled out of view keep their headers
 //! stacked at the rack's edges. Presets dropped on a header replace that
 //! part; parts dragged by their name reorder; anything dropped on the
-//! rack's foot is added.
+//! rack's foot or the empty canvas beyond it is added.
 
 use super::{Cx, RackDrag, instrument, menu, move_part, theme::*};
 use crate::import;
@@ -44,7 +44,7 @@ pub const SLIM: f64 = CONTROL + 6.;
 /// Parts built in a frame before the rack knows where they are.
 const UNPLACED: usize = 4;
 
-/// Every part in rack order, then the foot that adds more.
+/// Every part in rack order, then the foot and empty canvas that add more.
 ///
 /// The rack scrolls itself rather than as a scroll node, so it can scroll
 /// to a part and knows where each part is: with sticky headers on, a part
@@ -55,14 +55,6 @@ const UNPLACED: usize = 4;
 /// room but are not built.
 pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let order: Vec<usize> = cx.selection.order.iter().map(|&n| n as usize).collect();
-    if order.is_empty() {
-        cx.state.rack_y = 0.;
-        return col![instrument::welcome(cx), foot(ui, cx)]
-            .gap(0)
-            .align(Align::Stretch)
-            .flex(1)
-            .min_h(0);
-    }
     // A click on the rack itself, off every part, lets go of the selection.
     if ui.get("rack-view").clicked {
         cx.state.selected_none();
@@ -112,7 +104,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         }
     }
     wheel_taken();
-    let mut items = Vec::with_capacity(n + 1);
+    let mut items = Vec::with_capacity(n + 3);
     let mut shape = {
         use std::hash::{DefaultHasher, Hash};
         let mut h = DefaultHasher::new();
@@ -122,7 +114,14 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     for (i, &slot) in order.iter().enumerate() {
         items.push(part(ui, cx, slot, stuck[i], near[i], &mut shape));
     }
+    if order.is_empty() {
+        add_drop(ui, cx, "rack-welcome");
+        items.push(instrument::welcome(cx).flex(0).h((view_h - CONTROL - 2. * SPACE).max(240.)).shrink(0).id("rack-welcome"));
+    }
     items.push(foot(ui, cx));
+    // Keep a viewport of quiet canvas after Add. It belongs to this rack's
+    // existing scroll content, so the footer can scroll completely above it.
+    items.push(empty(ui, cx, view_h.max(240.)));
     let headers: Vec<(usize, El)> = (0..n)
         .filter(|&i| stuck[i] && frames[i].is_some())
         .map(|i| (i, col![header_at(ui, cx, order[i], true), rule()].gap(0).w(Len::Pct(100.))))
@@ -311,11 +310,10 @@ fn behind(cx: &mut Cx, slot: usize, stage: El) -> El {
     }
 }
 
-/// Where presets are dropped to be added, and a button that finds one.
-fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
-    let dragging = ui.dragging::<RackDrag>().is_some();
-    let over = ui.get("rack-drop").drop_target;
-    if let Some(RackDrag::Instrument(path)) = ui.dropped_on::<RackDrag>("rack-drop") {
+/// Footer and empty canvas share the browser's append operation. Explicit
+/// header targets still own replacement and part reordering.
+fn add_drop(ui: &mut Ui, cx: &mut Cx, id: &str) {
+    if let Some(RackDrag::Instrument(path)) = ui.dropped_on::<RackDrag>(id) {
         cx.state.notice.clear();
         if import::is_multi(Path::new(&path)) {
             cx.p.shared.queue_multi(path);
@@ -323,6 +321,27 @@ fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
             cx.add(path);
         }
     }
+}
+
+fn empty(ui: &mut Ui, cx: &mut Cx, height: f64) -> El {
+    add_drop(ui, cx, "rack-empty");
+    if ui.get("rack-empty").clicked {
+        cx.state.selected_none();
+    }
+    let over = ui.get("rack-empty").drop_target
+        && matches!(ui.dragging::<RackDrag>(), Some(RackDrag::Instrument(_)));
+    block(Len::Pct(100.), height)
+        .when(over, |el| el.stroke(accent()).stroke_width(1))
+        .named("Drop an instrument to append to the rack")
+        .shrink(0)
+        .id("rack-empty")
+}
+
+/// Where presets are dropped to be added, and a button that finds one.
+fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
+    let dragging = ui.dragging::<RackDrag>().is_some();
+    let over = ui.get("rack-drop").drop_target;
+    add_drop(ui, cx, "rack-drop");
     if ui.get("rack-drop").activated() {
         cx.state.browser = true;
         ui.focus("search");
@@ -331,7 +350,7 @@ fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
     let text = if dragging {
         "Drop to add to the rack".to_owned()
     } else {
-        format!("Add an instrument · {loaded} of 16")
+        format!("Add an instrument · {loaded} loaded")
     };
     let el = row![
         glyph(Icon::Plus, TEXT, if dragging { Fill::from(Role::Ink) } else { secondary() }),

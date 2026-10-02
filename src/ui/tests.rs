@@ -508,6 +508,55 @@ fn snapshot_header_steps_and_selects_without_replacing_the_base() {
 }
 
 #[test]
+fn empty_rack_canvas_appends_and_scrolls_beyond_the_add_button() {
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.files = Arc::new(vec!["/virtual/Library/Piano.nki".into(), "/virtual/Library/Strings.nki".into()]);
+        view.shelf = Arc::new(crate::library::Shelf::under("/virtual", &view.files));
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("library-0");
+    h.drag("instrument-0", "rack-welcome");
+    assert_eq!(p.selection.read().unwrap().order, [0], "the empty welcome canvas accepts a browser drop");
+    p.selection.write().unwrap().parts[0].collapsed = true;
+    h.idle(30);
+    h.drag("instrument-1", "rack-empty");
+    {
+        let selection = p.selection.read().unwrap();
+        assert_eq!(selection.order, [0, 1], "a drop beyond Add appends a new part");
+        assert!(selection.parts[0].path.ends_with("Piano.nki"));
+        assert!(selection.parts[1].path.ends_with("Strings.nki"));
+    }
+    p.selection.write().unwrap().parts[1].collapsed = true;
+    h.idle(30);
+    let at = center(&h.ui, "rack-empty");
+    for down in [true, false] { h.tick(pointer(at, down)); }
+    h.idle(2);
+    assert_eq!(p.selection.read().unwrap().order.len(), 2, "clicking empty canvas never adds an instrument");
+    let before = h.ui.scene().unwrap().surface("rack-drop").unwrap().frame;
+    h.tick(Input { wheel: Vec2::new(0., 10_000.), ..pointer(at, false) });
+    h.idle(60);
+    let scene = h.ui.scene().unwrap();
+    let footer = scene.surface("rack-drop").unwrap().frame;
+    let viewport = scene.surface("rack-view").unwrap().frame;
+    let empty = scene.surface("rack-empty").unwrap().frame;
+    assert!(before.y - footer.y > before.size.height, "the rack scrolls further than the Add footer: {before:?} → {footer:?}");
+    assert!(footer.y + footer.size.height <= viewport.y + 1., "Add can scroll completely above the empty viewport: {footer:?}, {viewport:?}");
+    assert!(empty.size.height >= viewport.size.height - 1., "a full viewport of empty canvas remains: {empty:?}");
+    h.tick(Input { wheel: Vec2::new(0., -10_000.), ..pointer(center(&h.ui, "rack-view"), false) });
+    h.idle(60);
+    h.drag("instrument-0", "header-1");
+    {
+        let selection = p.selection.read().unwrap();
+        assert_eq!(selection.order.len(), 2, "an explicit header drop still replaces");
+        assert!(selection.parts[1].path.ends_with("Piano.nki"));
+    }
+    h.drag("name-1", "header-0");
+    assert_eq!(p.selection.read().unwrap().order, [1, 0], "explicit header reordering remains intact");
+}
+
+#[test]
 fn rack_interactions() {
     let p = Arc::new(SamplerParams::new());
     {
