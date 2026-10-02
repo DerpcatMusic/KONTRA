@@ -63,10 +63,14 @@ struct Binding {
     slot: usize,
     control: usize,
     value: i32,
+    meter_control: bool,
+    meter: Option<crate::fx::MeterAttachment>,
 }
+struct MeterBinding { slot: usize, control: usize, reader: Arc<crate::fx::MeterReader> }
 #[derive(Default)]
 struct Parameters {
     bindings: BTreeMap<String, Binding>,
+    meters: BTreeMap<String, MeterBinding>,
     edits: Vec<Edit>,
     gesture_active: bool,
 }
@@ -77,6 +81,7 @@ pub(crate) struct Scene {
     parameters: Arc<Mutex<Parameters>>,
     instructions: Arc<AtomicUsize>,
     revision: Arc<AtomicU64>,
+    output_meters: Arc<crate::fx::OutputMeters>,
     gestures: Vec<Option<Function>>,
     identities: BTreeMap<String, usize>,
     pub(crate) assets: Arc<crate::native_assets::Assets>,
@@ -155,6 +160,8 @@ impl Scene {
                 slot: c.slot,
                 control: c.control,
                 value: c.value,
+                meter_control: c.kind.as_ref() == "ui_level_meter",
+                meter: c.meter,
             });
         }
         ensure!(
@@ -213,6 +220,27 @@ impl Scene {
                 Ok((b.slot, b.control))
             })?,
         )?;
+        let p = parameters.clone();
+        let levels = rt.output_meters.clone();
+        lua.globals().set("native_connect_level_meter", lua.create_function(move |lua, name: String| {
+            let mut p = p.lock().unwrap();
+            let binding = p.bindings.get(&name).ok_or_else(|| invalid(format!("Unknown exposed level meter: {name}")))?;
+            if !binding.meter_control { return Err(invalid(format!("Level meter connection requires ui_level_meter: {name}"))); }
+            let identity = (binding.slot, binding.control);
+            let attachment = binding.meter;
+            if !p.meters.contains_key(&name) {
+                if p.meters.len() >= 256 { return Err(invalid("Native UI meter subscription count exceeds 256")); }
+                let reader = attachment.and_then(|target| levels.subscribe(target)).ok_or_else(|| invalid(format!("Unsupported or unattached KSP meter tap: {name}, {attachment:?}")))?;
+                p.meters.insert(name.clone(), MeterBinding { slot: identity.0, control: identity.1, reader });
+            }
+            let reader = p.meters[&name].reader.clone();
+            drop(p);
+            let object = lua.create_table()?;
+            object.set("level_value", lua.create_function(move |_, _: Value| {
+                reader.level().ok_or_else(|| invalid(format!("KSP meter {name} was reattached to an unsupported tap")))
+            })?)?;
+            Ok(object)
+        })?)?;
         let p = parameters.clone();
         lua.globals().set(
             "native_value",
@@ -395,6 +423,7 @@ impl Scene {
             parameters,
             instructions,
             revision,
+            output_meters: rt.output_meters.clone(),
             gestures: Vec::new(),
             identities: BTreeMap::new(),
             assets: Arc::default(),
@@ -500,7 +529,7 @@ impl Scene {
             .any(|b| b.slot == slot && b.control == control)
     }
     pub(crate) fn revision(&self) -> u64 {
-        self.revision.load(Ordering::Relaxed)
+        self.revision.load(Ordering::Relaxed).wrapping_add(self.output_meters.revision())
     }
     pub(crate) fn observe(&self, live: &Live) {
         let mut p = self.parameters.lock().unwrap();
@@ -508,11 +537,15 @@ impl Scene {
             if let Some(b) = p.bindings.get_mut(&c.name)
                 && b.slot == c.slot
                 && b.control == c.control
-                && b.value != c.value
+                && (b.value != c.value || b.meter != c.meter)
             {
                 b.value = c.value;
+                b.meter = c.meter;
                 self.revision.fetch_add(1, Ordering::Relaxed);
             }
+            if let Some(meter) = p.meters.get(&c.name)
+                && meter.slot == c.slot && meter.control == c.control
+            { meter.reader.reattach(c.meter); }
         }
     }
     pub(crate) fn snapshot(&mut self) -> Result<Node> {

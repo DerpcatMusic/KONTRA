@@ -216,6 +216,7 @@ pub(crate) struct NativeControl {
     /// Exact KSP declaration, retained off-thread for typed native adapters.
     pub kind: Box<str>,
     pub range: Option<(i32, i32)>,
+    pub meter: Option<crate::fx::MeterAttachment>,
     storage: usize,
     pub value: i32,
 }
@@ -917,6 +918,7 @@ pub struct Runtime {
     audio_time: Option<std::time::Duration>,
     /// Configured instrument channel for callbacks with no performance input.
     service_channel: u8,
+    pub(crate) output_meters: Arc<crate::fx::OutputMeters>,
 }
 
 impl Runtime {
@@ -946,6 +948,7 @@ impl Runtime {
             audio_block: false,
             audio_time: None,
             service_channel: 0,
+            output_meters: Arc::default(),
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
             native_state: Default::default(),
@@ -1461,7 +1464,7 @@ impl Runtime {
                     (Some(super::ui::Prop::Int(a)), Some(super::ui::Prop::Int(z))) => Some((*a, *z)),
                     _ => None,
                 };
-                live.native_controls.push(NativeControl { name: var.name.trim_start_matches('$').into(), slot, control, kind: kind.clone(), range, storage: var.slot as usize, value: state.mem.ints[var.slot as usize] });
+                live.native_controls.push(NativeControl { name: var.name.trim_start_matches('$').into(), slot, control, kind: kind.clone(), range, meter: c.meter, storage: var.slot as usize, value: state.mem.ints[var.slot as usize] });
             }
         }
     }
@@ -1614,8 +1617,8 @@ impl Runtime {
                 (Some(super::ui::Prop::Int(a)), Some(super::ui::Prop::Int(z))) => Some((*a, *z)),
                 _ => None,
             };
-            if c.value != value || c.range != range {
-                c.value = value; c.range = range;
+            if c.value != value || c.range != range || c.meter != control.meter {
+                c.value = value; c.range = range; c.meter = control.meter;
                 live.native_revision = live.native_revision.wrapping_add(1); at.changed = true;
             }
             at.native_at += 1;

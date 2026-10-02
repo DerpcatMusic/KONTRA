@@ -38,6 +38,7 @@ pub struct ControlState {
     pub spare_text: Vec<(i32, String)>,
     /// read_persistent_var can precede add_menu_item during initialization.
     pub native_menu_index: Option<usize>,
+    pub meter: Option<crate::fx::MeterAttachment>,
 }
 
 impl ControlState {
@@ -273,6 +274,7 @@ impl Ui {
             spare_text: Vec::new(),
             frozen: false,
             native_menu_index: None,
+            meter: None,
         };
         c.set_int(b::CONTROL_PAR_POS_X, 0)?;
         c.set_int(b::CONTROL_PAR_POS_Y, 0)?;

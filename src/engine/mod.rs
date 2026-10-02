@@ -327,7 +327,8 @@ impl Engine {
     /// Install the program effects, built for [`rate`](Self::rate) with
     /// blocks of [`MAX_BLOCK`]; returns the previous processor for disposal
     /// off the audio thread.
-    pub fn set_fx(&mut self, fx: FxProcessor) -> FxProcessor {
+    pub fn set_fx(&mut self, mut fx: FxProcessor) -> FxProcessor {
+        fx.set_output_meters(self.script.as_ref().map(|rt| rt.output_meters.clone()));
         let old = std::mem::replace(&mut self.fx, fx);
         self.replay(|a| matches!(a, Address::Fx(..)));
         if let Some(rt) = self.script.as_deref() { rt.native_state.replay_fx(&mut self.fx); }
@@ -352,6 +353,7 @@ impl Engine {
             rt.set_service_channel(channel);
         }
         let old = std::mem::replace(&mut self.script, script);
+        self.fx.set_output_meters(self.script.as_ref().map(|rt| rt.output_meters.clone()));
         self.player.controller_defaults.fill(None);
         if let Some(rt) = self.script.as_deref() {
             for &(cc, value) in &rt.init_controllers {
@@ -1228,6 +1230,7 @@ impl Engine {
         let n = left.len().min(right.len());
         left.fill(0.0);
         right.fill(0.0);
+        self.fx.begin_output_meters();
         // An empty slot: nothing to play, run or ring out.
         if self.bank.is_none() && self.script.is_none() && self.fx.is_empty() {
             self.commands.clear();
@@ -1307,6 +1310,8 @@ impl Engine {
                 self.player.tone = [0.0; 2];
             }
         }
+        self.fx.main_output_meters(&left[..n], &right[..n]);
+        self.fx.publish_output_meters();
         // Only an empty render leaves changes behind: apply them now.
         for i in written..self.writes.len() {
             let w = self.writes[i];

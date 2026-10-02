@@ -89,6 +89,8 @@ pub struct FxProcessor {
     /// A block ended ([`mix_buses`](Self::mix_buses)): the next write to a
     /// channel starts the next block, clearing them all first.
     outs_done: bool,
+    meters: Option<std::sync::Arc<super::OutputMeters>>,
+    meter_peaks: [[f32; 2]; super::METER_OUTPUTS],
 }
 
 /// When a chain may stop processing: its input has been silent (−120 dBFS)
@@ -328,6 +330,8 @@ impl ProgramFx {
             outs: (0..OUTS).map(|_| [zeros(max_block), zeros(max_block)]).collect(),
             out_fed: 0,
             outs_done: false,
+            meters: None,
+            meter_peaks: [[0.; 2]; super::METER_OUTPUTS],
         }
     }
 }
@@ -358,10 +362,23 @@ impl FxProcessor {
         }
         self.sleep = Sleep::ASLEEP;
         self.group_inputs = false;
+        self.meter_peaks.fill([0.; 2]);
+        if let Some(m) = &self.meters { m.clear(); }
         self.returns.iter_mut().flat_map(|r| &mut r.buffer).for_each(|b| b.fill(0.0));
         self.outs.iter_mut().flatten().for_each(|b| b.fill(0.0));
         self.out_fed = 0;
     }
+
+    pub(crate) fn set_output_meters(&mut self, meters: Option<std::sync::Arc<super::OutputMeters>>) { self.meters = meters; }
+    pub(crate) fn begin_output_meters(&mut self) { self.meter_peaks.fill([0.; 2]); }
+    pub(crate) fn main_output_meters(&mut self, left: &[f32], right: &[f32]) {
+        if self.meters.as_ref().is_some_and(|m| m.watched(16)) {
+            for (peak, samples) in self.meter_peaks[16].iter_mut().zip([left, right]) {
+                *peak = samples.iter().fold(*peak, |p, x| p.max(x.abs()));
+            }
+        }
+    }
+    pub(crate) fn publish_output_meters(&self) { if let Some(m) = &self.meters { m.publish(&self.meter_peaks); } }
 
     /// Processes the program output in place. Once the input has been silent
     /// for longer than every tail, blocks pass through untouched.
@@ -431,6 +448,7 @@ impl FxProcessor {
     /// instrument output through a fader at rest: no effects, no ramp this
     /// block. Voices can mix straight to the output through them, the same sum.
     pub fn bus_gains(&self, bus: u8) -> Option<[f32; 2]> {
+        if self.meters.as_ref().is_some_and(|m| bus < BUSES as u8 && m.watched(bus as usize)) { return None; }
         let bus = self.buses.get(*self.bus_of.get(bus as usize)? as usize)?;
         (bus.output < 0 && bus.chain.is_empty() && bus.gains == balance(bus.volume, bus.pan)).then_some(bus.gains)
     }
@@ -473,6 +491,8 @@ impl FxProcessor {
                 }
                 _ => (&mut left[..n], &mut right[..n]),
             };
+            let watched = self.meters.as_ref().is_some_and(|m| m.watched(bus.index as usize));
+            let mut peaks = [0f32; 2];
             for (i, ((l, r), (x, y))) in to_l
                 .iter_mut()
                 .zip(to_r.iter_mut())
@@ -480,11 +500,13 @@ impl FxProcessor {
                 .enumerate()
             {
                 let i = i as f32;
-                *l += *x * (start[0] + step[0] * i);
-                *r += *y * (start[1] + step[1] * i);
+                let out = [*x * (start[0] + step[0] * i), *y * (start[1] + step[1] * i)];
+                *l += out[0]; *r += out[1];
+                if watched { peaks[0] = peaks[0].max(out[0].abs()); peaks[1] = peaks[1].max(out[1].abs()); }
                 (*x, *y) = (0.0, 0.0);
             }
             bus.gains = target;
+            if watched { for (p, value) in self.meter_peaks[bus.index as usize].iter_mut().zip(peaks) { *p = p.max(value); } }
         }
         self.outs_done = true;
     }
