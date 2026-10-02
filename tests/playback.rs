@@ -616,6 +616,7 @@ fn envelope_follows_group_ahdsr() {
         decay: 0.05,
         sustain: 0.5,
         release: 0.05,
+        ahd_only: false,
     });
     let mut e = engine_with(bank);
     e.note_on(0, 60, 127);

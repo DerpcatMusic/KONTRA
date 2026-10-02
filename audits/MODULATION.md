@@ -479,6 +479,37 @@ regression. Run the ignored `analog_strings_pitch_envelopes_are_routed` with
 `KONTRA_ANALOG_NKI` pointing to the installed instrument to verify its aggregate
 483 pitch-envelope routes without publishing library content.
 
+## Explicit AHD Only script control
+
+`$ENGINE_PAR_ENV_AHD` addresses decoded AHDSR volume, pitch and module envelopes
+through the existing stage parameter route. Its named runtime symbol is appended
+so previous serialized parameter IDs remain stable. Boolean readback is 0/1.
+The [official Kontakt modulation manual](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation)
+describes AHD Only as a one-shot attack/hold/decay envelope completed independently
+of the held key. The existing envelope kernel therefore uses a zero decay target,
+ignores key release and finishes after decay. It retains the stored sustain and
+release settings for ordinary AHDSR mode. As with the existing AHDSR stage knobs,
+mode is captured when a new voice starts; this does not claim a Kontakt-calibrated
+mid-note mode switch. Explicit stop/fade and sample playback endpoints remain
+separate voice lifecycle operations.
+
+Imported native mode/flag bytes remain neutral: byte-exact parser roundtrips do
+not identify their AHD, bypass or retrigger semantics. No preset flag is silently
+mapped by this control. LFO generation also remains unimplemented; the current
+voice path has envelope states, while the existing oscillator code belongs to
+chorus/phaser/reverb effects and does not identify native LFO fields. Documented
+waveforms/freewheel/retrigger behavior alone cannot establish packed frequency
+units, normalized transfer law, initial phase or multi-waveform coefficients.
+
+The focused `scripted_ahd_only_ignores_early_release_and_finishes_without_heap`
+regression checks named script initialization/readback, volume and pitch routing,
+zero audio-heap writes/rendering, early key release versus holding, finite terminal
+zero, block versus scalar versus skipped clocks, curved and zero-duration stages,
+and restored ordinary sustain/release. Production compilation is pending when
+this evidence note is authored. An isolated rustc 1.98.1 check of the same
+pure-stdlib envelope kernel passes its scalar/skip/early-release cases. It is not
+an actual-library playback or Kontakt reference-render comparison.
+
 ## Opaque LFO investigation (2026-10-02)
 
 A second metadata-only census of the same 782 files and 788 programs completed

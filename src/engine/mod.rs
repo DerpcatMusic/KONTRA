@@ -1128,6 +1128,7 @@ impl Engine {
             decay: 0.0,
             sustain: 1.0,
             release: self.release,
+            ahd_only: false,
         }
     }
 }

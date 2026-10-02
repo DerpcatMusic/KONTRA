@@ -466,6 +466,8 @@ pub mod id {
     pub const RELEASE: i32 = B + 9;
     pub const HOLD: i32 = B + 10;
     pub const ATK_CURVE: i32 = B + 11;
+    // Appended runtime symbol index; existing serialized parameter IDs stay stable.
+    pub const ENV_AHD: i32 = B + 183;
     pub const MOD_TARGET_INTENSITY: i32 = B + 16;
     pub const MOD_TARGET_MP_INTENSITY: i32 = B + 17;
     pub const INTMOD_INTENSITY: i32 = B + 18;
@@ -527,6 +529,7 @@ pub(crate) enum Stage {
     Decay,
     Sustain,
     Release,
+    AhdOnly,
 }
 
 /// A modelled engine parameter.
@@ -623,7 +626,7 @@ impl Address {
                     _ => return None,
                 }
             }
-            id::ATTACK | id::ATK_CURVE | id::DECAY | id::SUSTAIN | id::RELEASE | id::HOLD => {
+            id::ATTACK | id::ATK_CURVE | id::DECAY | id::SUSTAIN | id::RELEASE | id::HOLD | id::ENV_AHD => {
                 let g = group()?;
                 let m = modulator(g)?;
                 let stage = match par.id {
@@ -632,6 +635,7 @@ impl Address {
                     id::HOLD => Stage::Hold,
                     id::DECAY => Stage::Decay,
                     id::SUSTAIN => Stage::Sustain,
+                    id::ENV_AHD => Stage::AhdOnly,
                     _ => Stage::Release,
                 };
                 match (m.volume_env, m.envelope) {
@@ -806,6 +810,7 @@ impl Address {
             },
             Self::Envelope(_, stage) | Self::ModEnvelope(_, _, stage) => match stage {
                 Stage::Sustain => x,
+                Stage::AhdOnly => f32::from(value != 0),
                 // Solo sets 1000000, 750000 and 333333 where its presets store 1, 0.5, -0.33.
                 Stage::Curve => 2.0 * x - 1.0,
                 Stage::Attack | Stage::Hold => time(x, SHORT),
@@ -860,6 +865,7 @@ impl Address {
             },
             Self::Envelope(_, stage) | Self::ModEnvelope(_, _, stage) => match stage {
                 Stage::Sustain => v,
+                Stage::AhdOnly => return i32::from(v != 0.),
                 Stage::Curve => (v + 1.0) * 0.5,
                 Stage::Attack | Stage::Hold => time_value(v, SHORT),
                 Stage::Decay | Stage::Release => time_value(v, LONG),
@@ -1016,6 +1022,7 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
                 Stage::Decay => env.decay = value.max(0.0),
                 Stage::Sustain => env.sustain = value.clamp(0.0, 1.0),
                 Stage::Release => env.release = value.max(0.0),
+                Stage::AhdOnly => env.ahd_only = value != 0.,
             }
             // One modulator may drive pitch and a filter; both copies share its knobs.
             let updated = *env;
@@ -1132,6 +1139,7 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
                 Stage::Decay => env.decay,
                 Stage::Sustain => env.sustain,
                 Stage::Release => env.release,
+                Stage::AhdOnly => f32::from(env.ahd_only),
             })
         }
         Address::Intensity { group, index, .. } => settings
@@ -1529,6 +1537,85 @@ mod tests {
             ),
             (1.0, 0.0, 1)
         );
+    }
+
+    #[test]
+    fn scripted_ahd_only_ignores_early_release_and_finishes_without_heap() {
+        use crate::{engine::ScriptSetup, import::Instrument, ksp::{KspEngine, Runtime, Value}};
+        let imported = crate::import::Ahdsr { attack_curve: 0., attack_ms: 7., hold_ms: 3.,
+            decay_ms: 40., sustain: 0.8, release_ms: 1., unknown_flag: 0, unknown_tail: Vec::new() };
+        let mut volume = group();
+        volume.volume_env = Some(imported.clone());
+        let mut pitch = volume.clone();
+        pitch.volume_env = None;
+        pitch.modulators[0].volume_env = false;
+        pitch.modulators[0].envelope = Some(0);
+        pitch.envelopes = vec![crate::modulation::ModEnvelope { env: imported, targets: vec![ModAssignment {
+            name: "Envelope".into(), source: ModSource::Unassigned, target: ModTarget::Pitch,
+            intensity: 1., invert: false, lag_ms: 0, shaper: None,
+        }] }];
+        let i = Instrument { groups: vec![volume, pitch], ..Default::default() };
+        assert_eq!(crate::ksp::engine_par_id("$ENGINE_PAR_ENV_AHD"), Some(id::ENV_AHD));
+        let mut setup = ScriptSetup::new(&i, 1000.);
+        let source = "on init\nset_engine_par($ENGINE_PAR_ENV_AHD,1,0,0,-1)\nset_engine_par($ENGINE_PAR_ENV_AHD,1,1,0,-1)\ndeclare $saved := get_engine_par($ENGINE_PAR_ENV_AHD,0,0,-1)\nmake_persistent($saved)\nend on";
+        let (rt, errors) = Runtime::with_scripts(&[source], &mut setup, 0, Vec::new());
+        assert!(errors.iter().all(Option::is_none));
+        assert_eq!(rt.persistence()[0]["$saved"], Value::Int(1));
+        let pars: [_; 2] = std::array::from_fn(|g| EnginePar { id: id::ENV_AHD, group: g as i32, slot: 0, generic: -1 });
+        for par in pars { assert_eq!(setup.engine_par(par), Some(1)); }
+        let mut settings: Vec<_> = i.groups.iter().map(GroupSettings::from).collect();
+        let addresses: [_; 2] = pars.map(|p| Address::resolve(p, &i.groups).unwrap());
+        assert!(!settings[0].envelope.unwrap().ahd_only, "preset flags are not inferred");
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for address in addresses {
+                assert!(write(&mut settings, address, address.decode(1)));
+                assert_eq!(address.encode(read(&settings, address).unwrap()), 1);
+            }
+            assert!(settings[0].envelope.unwrap().ahd_only);
+            assert!(settings[1].pitch_envelopes[0].env.ahd_only);
+            for curve in [-0.8, 0., 0.8] {
+                for zero_times in [false, true] {
+                    let mut p = settings[0].envelope.unwrap();
+                    p.curve = curve;
+                    if zero_times { p.attack = 0.; p.hold = 0.; p.decay = 0.; }
+                    let mut held = Envelope::new(&p, 1000.);
+                    let mut released = held;
+                    let mut skipped = held;
+                    let mut scalar = held;
+                    released.release(None);
+                    skipped.release(None);
+                    scalar.release(None);
+                    for block in 0..32 {
+                        let (mut h, mut r, mut q) = ([0.; 13], [0.; 13], [0.; 13]);
+                        held.render(&mut h, None, 1000.);
+                        released.render(&mut r, None, 1000.);
+                        for x in &mut q { scalar.render(std::slice::from_mut(x), None, 1000.); }
+                        skipped.skip(13, None, 1000.);
+                        assert_eq!(h, r, "AHD is one-shot even when released during attack");
+                        assert!(h.iter().all(|v| v.is_finite()));
+                        for (a,b) in h.into_iter().zip(q) { assert!((a-b).abs() < 0.00002); }
+                        assert!((held.level() - skipped.level()).abs() < 0.00002);
+                        assert_eq!(held.phase(), skipped.phase());
+                        if block == 1 { released.release(None); skipped.release(None); scalar.release(None); }
+                    }
+                    assert!(held.done() && released.done() && skipped.done() && scalar.done());
+                    assert_eq!(held.level(), 0.);
+                }
+            }
+            // Turning it off restores the stored sustain/release behavior.
+            let address = addresses[0];
+            assert!(write(&mut settings, address, address.decode(0)));
+            assert_eq!(address.encode(read(&settings, address).unwrap()), 0);
+            let p = settings[0].envelope.unwrap();
+            assert_eq!(p.sustain, 0.8);
+            let mut ordinary = Envelope::new(&p, 1000.);
+            ordinary.skip(300, None, 1000.);
+            assert!(!ordinary.done());
+            assert_eq!(ordinary.level(), 0.8);
+            ordinary.release(None);
+            ordinary.skip(20, None, 1000.);
+            assert!(ordinary.done());
+        }), 0);
     }
 
     #[test]
