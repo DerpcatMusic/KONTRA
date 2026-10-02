@@ -187,7 +187,7 @@ fn groups(groups: &[Group]) -> Result<Vec<u8>> {
         public.extend(g.gain.to_le_bytes());
         public.extend(g.pan.to_le_bytes());
         public.extend((g.tune as f32).to_le_bytes());
-        public.extend([g.key_tracking as u8, g.reverse as u8, g.release_trigger as u8, 0]);
+        public.extend([g.key_tracking as u8, g.reverse as u8, g.release_trigger as u8, g.release_trigger_note_monophonic as u8]);
         public.extend(g.release_counter_ms.to_le_bytes());
         public.extend(g.channel.to_le_bytes());
         public.extend(g.voice_group.map_or(-1, |v| v as i32).to_le_bytes());
@@ -535,6 +535,8 @@ mod tests {
         raw.extend([0xA5, 0, 0xFF]);
         let group = crate::import::Group {
             name: "Authored condition".into(),
+            release_trigger: true,
+            release_trigger_note_monophonic: true,
             start_criteria: StartCriteriaList::read(Cursor::new(&raw)).unwrap(),
             ..Default::default()
         };
@@ -543,8 +545,10 @@ mod tests {
         assert_eq!(saved.start_criteria, group.start_criteria);
         let mut older = json;
         older.as_object_mut().unwrap().remove("start_criteria");
+        older.as_object_mut().unwrap().remove("release_trigger_note_monophonic");
         let older: crate::import::Group = serde_json::from_value(older).unwrap();
         assert_eq!(older.start_criteria, StartCriteriaList::default());
+        assert!(!older.release_trigger_note_monophonic, "older native presets keep their polyphonic releases");
         let bytes = super::container(&super::Program {
             name: "Authored", author: "Test", groups: &[group],
             zones: &[], samples: &[], script: None,
@@ -553,7 +557,9 @@ mod tests {
         let chunks = ni_file::kontakt::KontaktChunks::read(Cursor::new(file.inner_preset().unwrap())).unwrap();
         let program = chunks.program().unwrap().unwrap();
         let groups = GroupList::try_from(program.0.find_first(0x33).unwrap()).unwrap();
-        let criteria = groups.groups[0].params().unwrap().start_criteria;
+        let params = groups.groups[0].params().unwrap();
+        assert!(params.release_trigger && params.release_trigger_note_monophonic);
+        let criteria = params.start_criteria;
         let mut written = Vec::new();
         criteria.write(&mut written).unwrap();
         assert_eq!(written, raw, "NKI writer retains native fields without interpreting them");

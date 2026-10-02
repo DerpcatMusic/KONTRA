@@ -64,12 +64,15 @@ pub struct Group {
     pub voice_group: Option<u32>,
     /// Raw interpolation quality setting; 0 in every local preset.
     pub interp_quality: i32,
+    /// Source module Note Mono: repeating a key cuts its prior release tails.
+    #[serde(default)]
+    pub release_trigger_note_monophonic: bool,
 }
 
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0 }
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false }
     }
 }
 
@@ -670,7 +673,6 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
                 .map(|c| (c.mode, c.next_criteria, c.cycle_class)).collect();
             warnings.push(format!("{}: native group start conditions are retained but not evaluated (mask {}, raw mode/operator/cycle records {records:?}, {} opaque tail bytes); native numeric IDs are not verified", v.name, v.start_criteria.mask, v.start_criteria.unknown_tail.len()));
         }
-        if v.release_trigger_note_monophonic {warnings.push("Release-trigger note monophony is not imported".into());}
         let modulation = match crate::modulation::read_group_partial(g, groups.len(), &v.name) {
             Ok(modulation) => modulation,
             Err(e) => {
@@ -697,6 +699,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             key_tracking: v.key_tracking,
             reverse: v.reverse,
             release_trigger: v.release_trigger,
+            release_trigger_note_monophonic: v.release_trigger_note_monophonic,
             release_counter_ms: v.rls_trig_counter,
             muted: v.muted,
             channel: v.midi_channel,
