@@ -496,7 +496,7 @@ mod library_probe {
         eprintln!(
             "Native UI intent {:?}, successful performance pages {:?}",
             rt.native_ui_request(),
-            rt.performance_slots()
+            rt.performance_slots().collect::<Vec<_>>()
         );
         let mut scene = super::Scene::prepare(&path, &rt)
             .unwrap_or_else(|error| panic!("actual native scene preparation: {error:#}"))
