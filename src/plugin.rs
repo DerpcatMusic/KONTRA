@@ -4847,6 +4847,90 @@ end on"#.into()],
     }
 
     #[test]
+    fn internal_note_controllers_forward_wait_ignore_and_retune_without_audio_allocations() {
+        // NI's two-slot per-note pitch-bend example, with an intervening
+        // callback exercising the same forwarding rules as controllers.
+        let send = r#"on init
+declare ui_button $send
+declare ui_slider $unexpected(0,100)
+end on
+on ui_control($send)
+set_note_controller(0,60,127)
+set_note_controller(511,61,7)
+set_note_controller($VNC_PITCH_BEND,60,-4096)
+set_note_controller(23,60,3)
+end on
+on note_controller
+inc($unexpected)
+end on"#;
+        let filter = r#"on init
+declare ui_label $delayed(1,1)
+end on
+on note_controller
+if ($NC_NUM = 23)
+ignore_controller
+else
+wait(1000)
+set_text($delayed,$NC_NUM & ":" & $NC_NOTE & ":" & $NC_VALUE & ":" & $MIDI_CHANNEL)
+end if
+end on"#;
+        let receive = r#"on init
+make_perfview
+declare %events[128]
+declare ui_slider $count(0,10000)
+declare ui_slider $registered(0,127)
+declare ui_slider $assignable(0,127)
+declare ui_slider $bend(-8192,8191)
+declare ui_slider $callback_type(0,1)
+end on
+on note
+%events[$EVENT_NOTE] := $EVENT_ID
+end on
+on note_controller
+inc($count)
+if ($NI_CALLBACK_TYPE = $NI_CB_TYPE_NOTE_CONTROLLER)
+$callback_type := 1
+end if
+select ($NC_NUM)
+case 0
+$registered := $NC_VALUE
+case 511
+$assignable := $NC_VALUE
+case $VNC_PITCH_BEND
+$bend := $NC_VALUE
+change_tune(%events[$NC_NOTE],$NC_VALUE * 10,0)
+end select
+end on"#;
+        let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.);
+        let (mut rt, errors) = Runtime::with_scripts(&[send, filter, receive], &mut engine, 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        rt.set_midi_channel(5);
+        rt.note_on(&mut engine, 0, 60, 100);
+        engine.calls.clear();
+        engine.calls.reserve(256);
+        let mut live = rt.live();
+        assert_eq!(allocations(|| {
+            for _ in 0..100 {
+                rt.ui_control(&mut engine, 0, 0, 1);
+                rt.process(&mut engine, 49);
+                rt.refresh_live(&mut live);
+            }
+        }), 0, "first-use and repeated internal per-note messages must not allocate or free");
+        let interface = live.interface.as_ref().unwrap();
+        for (index, expected) in [300, 127, 7, -4096, 1].into_iter().enumerate() {
+            assert_eq!(interface.controls[index].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(expected));
+        }
+        assert_eq!(rt.interface(1).controls[0].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("512:60:-4096:0".into()),
+            "UI-generated messages retain their own channel and controller context across wait");
+        assert_eq!(rt.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(0), "generated messages start after the sending slot");
+        assert_eq!(engine.calls.len(), 100);
+        assert!(engine.calls.iter().all(|call| matches!(call,
+            crate::ksp::EngineCall::SetPar { par: crate::ksp::VoicePar::TuneMc, value: -40960, .. })),
+            "only the receiving script applies per-note tuning to the existing voice");
+        assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics());
+    }
+
+    #[test]
     fn delayed_label_style_reaches_retained_live_without_audio_allocations() {
         let script = r#"on init
 make_perfview

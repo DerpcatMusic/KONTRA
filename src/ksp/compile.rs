@@ -353,6 +353,7 @@ pub enum Callback {
     Note,
     Release,
     Controller,
+    NoteController,
     PolyAt,
     Rpn,
     Nrpn,
@@ -366,7 +367,7 @@ pub enum Callback {
 }
 
 impl Callback {
-    const COUNT: usize = 13;
+    const COUNT: usize = 14;
 
     fn from_name(name: &str) -> Option<Self> {
         Some(match name {
@@ -374,6 +375,7 @@ impl Callback {
             "note" => Self::Note,
             "release" => Self::Release,
             "controller" => Self::Controller,
+            "note_controller" => Self::NoteController,
             "poly_at" => Self::PolyAt,
             "rpn" => Self::Rpn,
             "nrpn" => Self::Nrpn,
@@ -394,6 +396,7 @@ impl Callback {
             Self::Note => cb::NOTE,
             Self::Release => cb::RELEASE,
             Self::Controller => cb::CONTROLLER,
+            Self::NoteController => cb::NOTE_CONTROLLER,
             Self::PolyAt => cb::POLY_AT,
             Self::Rpn => cb::RPN,
             Self::Nrpn => cb::NRPN,

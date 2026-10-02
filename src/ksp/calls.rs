@@ -778,6 +778,27 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             }
             Ok(Step::Next)
         }
+        SetNoteController => {
+            let [controller, note, value] = ints(m);
+            if m.t.ctx.kind == super::vm::Kind::Cb(super::compile::Callback::Init) {
+                return Err(Fault("set_note_controller is unavailable during initialization"));
+            }
+            let range = if controller == b::VNC_PITCH_BEND { -8192..=8191 } else { 0..=127 };
+            if !(0..=b::VNC_PITCH_BEND).contains(&controller)
+                || !(0..=127).contains(&note) || !range.contains(&value) {
+                m.env.note("set_note_controller: controller, note or value out of range");
+            } else {
+                m.env.queue(super::runtime::Work::NoteController {
+                    channel: m.t.ctx.channel,
+                    input_channel: m.t.ctx.input_channel,
+                    controller,
+                    note: note as u8,
+                    value,
+                    slot: slot + 1,
+                });
+            }
+            Ok(Step::Next)
+        }
         SetRpn | SetNrpn => {
             let [address, value] = ints(m);
             if m.env.loading { return Err(Fault("RPN messages are unavailable during initialization")); }
