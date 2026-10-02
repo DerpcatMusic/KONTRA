@@ -1408,7 +1408,7 @@ impl Runtime {
     }
 
     pub fn interface(&self, slot: usize) -> Interface {
-        let mut interface = self.states[slot].ui.interface(&self.programs[slot], &self.states[slot].mem);
+        let mut interface = self.states[slot].ui.interface(&self.programs[slot], self.states[slot].mem.view(None));
         // Wallpaper is instrument-wide: the last slot assigning it wins.
         // Pixel offsets remain per slot so one atlas can supply each view.
         if let Some(state) = self.states.iter().rev().find(|s| !s.ui.wallpaper.is_empty()) {
@@ -1577,7 +1577,7 @@ impl Runtime {
             && at.item != usize::MAX
         {
             let prog = &self.programs[live.slot];
-            let changed = state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut live.control_revisions, &mut live.control_value_revisions, &mut at.value_revision, &mut at.item, &mut at.at, budget);
+            let changed = state.ui.refresh(prog, state.mem.view(None), out, &mut live.menu_spares, &mut live.control_revisions, &mut live.control_value_revisions, &mut at.value_revision, &mut at.item, &mut at.at, budget);
             if changed { live.interface_revision = live.interface_revision.wrapping_add(1); }
             at.changed |= changed;
             if at.item != usize::MAX {
@@ -2979,7 +2979,9 @@ impl Runtime {
     }
 }
 
-pub fn read_value(mem: &vm::Memory, var: &compile::Var) -> Value {
+pub fn read_value(mem: &vm::Memory, var: &compile::Var) -> Value { read_value_view(mem.view(None), var) }
+
+pub(super) fn read_value_view(mem: vm::MemoryView<'_>, var: &compile::Var) -> Value {
     let s = var.slot as usize;
     match (var.ty, var.len, var.poly) {
         (_, _, true) => Value::Int(0),
@@ -3030,6 +3032,13 @@ pub(super) fn refresh_value(mem: &vm::Memory, var: &compile::Var, value: &mut Va
 /// [`refresh_value`] for the array elements in `range` (a scalar is element 0).
 pub(super) fn refresh_range(
     mem: &vm::Memory,
+    var: &compile::Var,
+    value: &mut Value,
+    range: std::ops::Range<usize>,
+) -> bool { refresh_range_view(mem.view(None), var, value, range) }
+
+pub(super) fn refresh_range_view(
+    mem: vm::MemoryView<'_>,
     var: &compile::Var,
     value: &mut Value,
     range: std::ops::Range<usize>,

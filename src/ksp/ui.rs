@@ -4,8 +4,8 @@
 
 use super::builtins::{self as b, FIRST_UI_ID};
 use super::compile::{Program, Ty, VarId};
-use super::runtime::{copy_text, refresh_range};
-use super::vm::Memory;
+use super::runtime::{copy_text, refresh_range_view};
+use super::vm::{Memory, MemoryView};
 use super::{Control, Interface, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,6 +40,10 @@ pub struct ControlState {
 
 impl ControlState {
     pub fn selected_menu(&self, prog: &Program, mem: &Memory) -> Option<usize> {
+        self.selected_menu_view(prog, mem.view(None))
+    }
+
+    fn selected_menu_view(&self, prog: &Program, mem: MemoryView<'_>) -> Option<usize> {
         let var = &prog.vars[self.var as usize];
         if var.ui.as_deref() != Some("ui_menu") { return None; }
         self.menu.iter().position(|m| m.value == mem.ints[var.slot as usize])
@@ -54,8 +58,8 @@ impl ControlState {
         }
     }
 
-    pub fn visible_menu<'a>(&'a self, prog: &Program, mem: &Memory) -> impl Iterator<Item = &'a MenuItem> {
-        let selected = self.selected_menu(prog, mem);
+    pub fn visible_menu<'a>(&'a self, prog: &Program, mem: MemoryView<'_>) -> impl Iterator<Item = &'a MenuItem> {
+        let selected = self.selected_menu_view(prog, mem);
         // Kontakt keeps a hidden selected item until another item is selected.
         self.menu.iter().enumerate().filter(move |(i, m)| m.visible || Some(*i) == selected).map(|(_, m)| m)
     }
@@ -294,7 +298,7 @@ impl Ui {
     pub fn refresh(
         &self,
         prog: &Program,
-        mem: &Memory,
+        mem: MemoryView<'_>,
         out: &mut Interface,
         menu_spares: &mut [Vec<(String, i32)>],
         revisions: &mut [u64],
@@ -376,7 +380,7 @@ impl Ui {
             // Metadata can exceed this coarse budget; still make progress.
             let end = len.min(value_at.saturating_add(left.max(1)));
             if let Some(v) = o.properties.get_mut("$CONTROL_PAR_VALUE") {
-                changed |= refresh_range(mem, var, v, *value_at..end);
+                changed |= refresh_range_view(mem, var, v, *value_at..end);
             }
             left = left.saturating_sub(end - *value_at);
             if end < len {
@@ -395,7 +399,7 @@ impl Ui {
         changed
     }
 
-    pub fn interface(&self, prog: &Program, mem: &Memory) -> Interface {
+    pub fn interface(&self, prog: &Program, mem: MemoryView<'_>) -> Interface {
         let controls = self
             .controls
             .iter()

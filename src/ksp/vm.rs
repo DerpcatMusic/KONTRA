@@ -327,10 +327,11 @@ impl<T> Values<T> {
         self.domains = (1..count).map(|_| self.values[..mutable].iter().map(&clone).collect()).collect();
     }
     fn select(&mut self, domain: u8) { self.active = domain; }
-    fn slice(&self, range: std::ops::Range<usize>) -> &[T] {
-        if self.active != 0 && range.start < self.mutable {
+    fn slice(&self, range: std::ops::Range<usize>) -> &[T] { self.slice_in(range, self.active) }
+    fn slice_in(&self, range: std::ops::Range<usize>, domain: u8) -> &[T] {
+        if domain != 0 && range.start < self.mutable {
             assert!(range.end <= self.mutable, "a variable cannot straddle domain storage");
-            &self.domains[self.active as usize - 1][range]
+            &self.domains[domain as usize - 1][range]
         } else { &self.values[range] }
     }
     fn slice_mut(&mut self, range: std::ops::Range<usize>) -> &mut [T] {
@@ -417,6 +418,33 @@ impl Values<i32> {
     }
 }
 
+/// A snapshot selects its own bank without changing a suspended callback's
+/// memory selection. VM indexed writes keep the existing direct lookup.
+pub struct ValuesView<'a, T> { values: &'a Values<T>, domain: u8 }
+impl<T> Copy for ValuesView<'_, T> {}
+impl<T> Clone for ValuesView<'_, T> { fn clone(&self) -> Self { *self } }
+impl<T> ValuesView<'_, T> {
+    pub fn revision(&self, slot: usize) -> u64 { self.values.revision(slot) }
+}
+impl<T> std::ops::Index<usize> for ValuesView<'_, T> {
+    type Output = T;
+    fn index(&self, index: usize) -> &T { &self.values.slice_in(index..index + 1, self.domain)[0] }
+}
+impl<T> std::ops::Index<std::ops::Range<usize>> for ValuesView<'_, T> {
+    type Output = [T];
+    fn index(&self, range: std::ops::Range<usize>) -> &[T] { self.values.slice_in(range, self.domain) }
+}
+
+#[derive(Clone, Copy)]
+pub struct MemoryView<'a> {
+    pub ints: ValuesView<'a, i32>,
+    pub reals: ValuesView<'a, f64>,
+    pub strs: ValuesView<'a, String>,
+}
+impl<'a> From<&'a Memory> for MemoryView<'a> {
+    fn from(mem: &'a Memory) -> Self { mem.view(None) }
+}
+
 /// Typed script memory: scalars and arrays share one vector per type.
 pub struct Memory {
     pub ints: Values<i32>,
@@ -426,6 +454,13 @@ pub struct Memory {
 }
 
 impl Memory {
+    pub(super) fn view(&self, domain: Option<u8>) -> MemoryView<'_> {
+        MemoryView {
+            ints: ValuesView { values: &self.ints, domain: domain.unwrap_or(self.ints.active) },
+            reals: ValuesView { values: &self.reals, domain: domain.unwrap_or(self.reals.active) },
+            strs: ValuesView { values: &self.strs, domain: domain.unwrap_or(self.strs.active) },
+        }
+    }
     pub(super) fn prepare_domains(&mut self, count: usize, slots: [u32; 3]) {
         self.ints.prepare_domains(count, slots[0] as usize, |v| *v);
         self.reals.prepare_domains(count, slots[1] as usize, |v| *v);
@@ -1465,6 +1500,40 @@ fn init_array(m: &mut Machine, i: u32) -> Exec<()> {
 #[cfg(test)]
 mod revision_tests {
     use super::*;
+
+    #[test]
+    fn snapshots_read_the_requested_bank_without_reselecting_live_callback_memory() {
+        let p = super::super::compile::compile("on init\ndeclare ui_slider $gain(0,100)\ndeclare %held[128]\ndeclare $lookup := 900\nend on\non note\n%held[$EVENT_NOTE] := $EVENT_ID\nend on", &super::super::compile::Setup { groups:1,zones:0,outputs:8 }).unwrap();
+        let var = |name: &str| p.vars.iter().find(|v| &*v.name == name).unwrap();
+        let gain = var("$gain").slot as usize;
+        let held = var("%held").slot as usize;
+        let lookup = var("$lookup").slot as usize;
+        let mut state = SlotState::new(0, &p);
+        state.mem.ints[gain] = 17;
+        state.mem.ints[held + 60] = 101;
+        state.mem.ints[lookup] = 900;
+        state.mem.prepare_domains(3, p.domain_slots);
+        state.mem.select(1);
+        state.mem.ints[gain] = 31;
+        state.mem.ints[held + 60] = 202;
+        let mut snapshot = super::super::Value::Int(0);
+        let mut roots = super::super::Value::IntArray(vec![0;128]);
+        let mut copy = || {
+            let common = state.mem.view(Some(0));
+            super::super::runtime::refresh_range_view(common, var("$gain"), &mut snapshot, 0..1);
+            super::super::runtime::refresh_range_view(common, var("%held"), &mut roots, 0..128);
+            assert_eq!(common.ints[lookup], 900, "initialized suffix stays shared");
+            assert_eq!(state.mem.ints[gain], 31, "snapshot cannot change a suspended callback's bank");
+            assert_eq!(state.mem.ints[held + 60], 202);
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| copy()), 0);
+        #[cfg(not(feature = "plugin"))]
+        copy();
+        assert_eq!(snapshot, super::super::Value::Int(17));
+        let super::super::Value::IntArray(roots) = roots else { unreachable!() };
+        assert_eq!(roots[60],101);
+    }
 
     #[test]
     fn shared_revision_owners_cover_sparse_slots_bulk_writes_and_all_types() {
