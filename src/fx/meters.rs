@@ -53,7 +53,7 @@ impl OutputMeters {
             .any(|n| n.load(Ordering::Relaxed) != 0)
     }
     pub(crate) fn revision(&self) -> u64 {
-        self.revision.load(Ordering::Relaxed)
+        self.revision.load(Ordering::Acquire)
     }
     pub(crate) fn subscribe(self: &Arc<Self>, target: MeterAttachment) -> Option<Arc<MeterReader>> {
         let address = target.address()?;
