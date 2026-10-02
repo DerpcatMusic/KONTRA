@@ -6756,13 +6756,16 @@ end on"
         p.shared.sync_overrides(&edited);
         assert!(p.shared.sent.lock().unwrap()[128].is_empty(), "new-slot edits wait for callback acknowledgment");
         p.shared.prepare_growth();
-        let mut outputs = vec![vec![0f32; 128]; 2];
+        let mut outputs = vec![vec![0f32; 128]; 2 * BUSES];
         let mut refs: Vec<_> = outputs.iter_mut().map(|o| o.as_mut_slice()).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 128);
         let transport = TransportInfo::default();
         let events = EventList::with_capacity(0);
         let mut midi_out = EventList::with_capacity(0);
-        let mut cx = ProcessContext::new(&transport, 48000., 128, &mut midi_out);
+        use moose::core::bus_routing::{BusActivation, BusRouting};
+        let mut routing = BusRouting::new();
+        for _ in 0..BUSES { routing.push_output(2, BusActivation::Active); }
+        let mut cx = ProcessContext::new(&transport, 48000., 128, &mut midi_out).with_bus_routing(routing);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert_eq!(dsp.rack.parts.len(), 129);
         assert!(dsp.rack.parts[0].key_down(0, 59), "growth preserves held notes");
@@ -6773,12 +6776,17 @@ end on"
         p.shared.part(128).unwrap().generation.store(73, Ordering::Release);
         p.shared.ready.push((128, 73, Handoff::Part { bank: Some(late_bank(&[(0, 127, 0)])),
             fx: FxProcessor::default(), script: None, epoch: 9 })).ok().unwrap();
+        p.shared.scope.source.store(129, Ordering::Relaxed);
         p.shared.press_key(128, 60, 100);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert!(dsp.rack.parts[128].key_down(0, 60));
+        assert_eq!(dsp.rack.tap, Some(128), "high part scope is distinct from the master sentinel");
+        assert!(p.shared.part(128).unwrap().meter.iter().any(|m| f32::from_bits(m.load(Ordering::Relaxed)) > 0.));
         p.shared.release_key(60);
+        p.shared.scope.source.store(SCOPE_MASTER, Ordering::Relaxed);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert!(!dsp.rack.parts[128].key_down(0, 60), "part 128 is not the old key-owner sentinel");
+        assert_eq!(dsp.rack.tap, None, "master scope remains independent of part count");
         p.shared.press_key(EVERY_PART, 61, 100);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert!(dsp.rack.parts[0].key_down(0, 61) && dsp.rack.parts[128].key_down(0, 61));
@@ -6793,6 +6801,8 @@ end on"
         assert_eq!(audio.parts[128].generation, 73);
         assert_eq!(audio.parts[128].held_keys.len(), 16, "MIDI channel count stays independent");
         assert_eq!(audio.output_buses.len(), BUSES, "host buses stay independent of parts");
+        assert_eq!(audio.output_channels, 32);
+        assert_eq!(audio.output_buses[BUSES - 1], (30, 2));
         // A full publication queue may coexist with worker-recycled buffers.
         let _ = p.shared.diagnostic_free.force_push(AudioDiagnostics::with_parts(129));
         assert_eq!(allocations(|| {
