@@ -95,9 +95,9 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Changed
 
-- **Pending validation:** rack headers give instrument titles more room beside
-  compact MIDI and output routing controls. The next combined editor checks
-  remain open.
+- Rack headers give instrument titles more room beside
+  compact MIDI and output routing controls. Combined 900/1180/1920 viewport
+  bounds and routing/navigation/mute/remove callback checks pass.
 
 - Logs search is simpler and copying includes complete retained diagnostic details;
   event text is owned before the query changes. Rack header artwork is more visible.
@@ -109,17 +109,34 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Fixed
 
-- **Pending validation:** native group feedback compressor, limiter, Solid Bus
+- Process all eight native filter/EQ inserts and up to 32 sections instead of
+  truncating supported chains. Eight four-band GEQs match the existing rack
+  reference with live slot-7 edits and no audio heap operations; fixed state
+  increases by 1,248 bytes per voice.
+- Format, clone and retire large persistent script/native values outside the
+  editor mutex. Revalidate the script epoch before committing a snapshot;
+  unchanged host JSON and prepared audio buffers are retained.
+- Clicking either diagnostic row text line selects the event, as does its blank
+  area. Native Copy all verification retained 148 events and eight source excerpts.
+- Rejected zone mappings identify the offending field/value, original ranges,
+  source/version, zone, group and sample. Validity checks remain strict.
+- Preserve native GPU surface errors and flush startup stages before driver calls.
+  This improves blank-editor diagnosis; a Windows driver crash is not reproduced.
+- Read generated dependency license JSON explicitly as UTF-8, fixing Windows
+  packaging on a CP1252 default locale. The non-ASCII generation regression passes.
+
+- Native group feedback compressor, limiter, Solid Bus
   Compressor and Transient Master stages reuse bounded rack processing at the
-  decoded Amplifier split. The next audio/allocation gates remain open; this
-  does not establish native Kontakt parameter or sound equivalence.
-- **Pending validation:** import and NKI writing retain native group start records.
+  decoded Amplifier split. Rack-reference PCM, native edit/readback and zero-heap
+  checks pass; this does not establish native Kontakt parameter or sound equivalence.
+- Import and NKI writing retain native group start records.
   Record preservation does not implement every start condition or establish
   arbitrary imported-preset editing.
-- **Pending validation:** periodic audio snapshots wake a separate managed worker
+- Periodic audio snapshots wake a separate managed worker
   during instrument loads. Cumulative playback counters retain their baseline
   across generation changes, preventing repeated totals from appearing as new
-  drops or underruns; the next queue/delta regression gates remain open.
+  drops or underruns; independent wakeup, bounded handoff and exact delta
+  regression checks pass.
 
 - Parse/runtime diagnostics now show readable bounded source context with slot,
   line/column markers and the relevant command arguments. Serialized event data

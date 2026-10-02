@@ -220,6 +220,115 @@
       ],
       "validation": "Combined 57efa33 malformed-source/runtime-argument zero-audio-heap regression passed; fcdcd51 compiled journal/export and actual Logs Copy all numbered-code checks passed unchanged.",
       "accepted": true
+    },
+    {
+      "id": "native-group-dynamics",
+      "summary": "Process decoded native group feedback compressor, limiter and Solid Bus Compressor inserts",
+      "source_commits": [
+        "a8ee29b8f7790550f31e4d3fd1c30e918d3aa140"
+      ],
+      "validation": "Authored rack-reference PCM, native edit/readback and zero-heap checks passed at c5d8ce3 after correcting the inactive detector stimulus; actual affected library and Kontakt equivalence remain unverified.",
+      "accepted": true
+    },
+    {
+      "id": "native-group-transient-processing",
+      "summary": "Process decoded native group Transient Master inserts",
+      "source_commits": [
+        "f6f24e07fa40c33d554444bd0bed8e3a95225314"
+      ],
+      "validation": "Authored onset/body/silence rack-reference, native edits and zero-heap check passed at b2b69c6; no authentic affected group-family render or Kontakt equivalence claim.",
+      "accepted": true
+    },
+    {
+      "id": "native-start-condition-record-retention",
+      "summary": "Retain native group start records through import and NKI writing",
+      "source_commits": [
+        "472d5d59b5196a339a7208fc83ae88ef7e21f977"
+      ],
+      "validation": "Native writer/serde/FastLZ regression passed at b2b69c6 and nine actual record roundtrips passed; predicate playback and unknown enum semantics remain unsupported.",
+      "accepted": true
+    },
+    {
+      "id": "independent-periodic-audio-diagnostics",
+      "summary": "Wake and serialize periodic audio diagnostics independently of instrument loading",
+      "source_commits": [
+        "b035621fb61503dd90ae7b89a00bf61a493a7d52"
+      ],
+      "validation": "Independent managed-lane wakeup and bounded audio handoff checks passed at b2b69c6 with zero audio heap operations; saturated shared workers may still coalesce snapshots.",
+      "accepted": true
+    },
+    {
+      "id": "lifetime-playback-drop-baselines",
+      "summary": "Keep cumulative playback-drop baselines across instrument and script reloads",
+      "source_commits": [
+        "b035621fb61503dd90ae7b89a00bf61a493a7d52"
+      ],
+      "validation": "Journal regression passed at b2b69c6: cumulative 25,40,46 produces only 25,15,6 deltas across reloads; command drop deltas are 5,2,1.",
+      "accepted": true
+    },
+    {
+      "id": "readable-compact-rack-headers",
+      "summary": "Keep titles and routing controls inside narrow rack headers",
+      "source_commits": [
+        "0c15dffb99798a508e9f3adf590925a658a00f17"
+      ],
+      "validation": "900/1180/1920 viewport bounds and actual routing/navigation/mute/remove callbacks passed at c5d8ce3 with authored artwork; native updated header remains to be inspected.",
+      "accepted": true
+    },
+    {
+      "id": "invalid-zone-mapping-values",
+      "summary": "Identify rejected zone-mapping fields and original source values",
+      "source_commits": [
+        "ad5613292a29d37275b697700bd1968edfd72592"
+      ],
+      "validation": "Strict mapping rejection regression passed at c5d8ce3; invalid field, original ranges, source/version/group/sample remain visible without relaxing acceptance.",
+      "accepted": true
+    },
+    {
+      "id": "native-surface-error-details",
+      "summary": "Retain native handle and GPU surface creation errors with flushed initialization stages",
+      "source_commits": [
+        "88b6898b76937df6894983af1660868d60f1c391"
+      ],
+      "validation": "Driver-free native-handle error regression passed in mui-baseview; Windows crash reproduction remains unavailable and existing DX12 selection is unchanged.",
+      "accepted": true
+    },
+    {
+      "id": "complete-native-filter-eq-capacity",
+      "summary": "Process all eight native filter/EQ inserts and up to 32 sections",
+      "source_commits": [
+        "76d491e80a653c1779b84f6c18c415dc702b2acf"
+      ],
+      "validation": "Eight four-band GEQ rack-reference, slot-7 edit/readback, changed finite PCM and zero-heap regression passed at 726889c; fixed storage adds 1248 bytes per voice.",
+      "accepted": true
+    },
+    {
+      "id": "persistence-formatting-editor-lock",
+      "summary": "Release editor locks while formatting and retiring large persistence snapshots",
+      "source_commits": [
+        "726889c137ae80ac6bc2b4ec83d9fc8de262f9ae",
+        "5489733f8e532e7edbf48c6aa503dd14a9d5110b"
+      ],
+      "validation": "16384-cell snapshot barrier regression passed at 726889c: editor reads remain available, JSON/buffer reuse is exact and stale epochs are rejected; cleanup compiled with the Logs batch. No measured FPS claim.",
+      "accepted": true
+    },
+    {
+      "id": "diagnostic-event-text-selection",
+      "summary": "Select diagnostic event rows when their title or message is clicked",
+      "source_commits": [
+        "ed275fadfb3583e972cd32be2cd6f610992142bb"
+      ],
+      "validation": "Existing Logs harness passed on ae56f5a with real pointer hits on title, message and blank area selecting the same event.",
+      "accepted": true
+    },
+    {
+      "id": "windows-license-json-encoding",
+      "summary": "Decode generated dependency license JSON as UTF-8 on Windows",
+      "source_commits": [
+        "ae56f5a4e7d4ffbf15ecd67692c7eecabbb6a26f"
+      ],
+      "validation": "Actual license generation self-test passed with non-ASCII UTF-8 output and emulated CP1252 default; prior default decoding reproduces the Windows packaging failure.",
+      "accepted": true
     }
   ]
 }
