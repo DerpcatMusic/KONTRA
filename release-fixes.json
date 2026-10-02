@@ -9,8 +9,8 @@
       "source_commits": [
         "98f77553e8fa15f600d5e75be51c9e79e0b97792"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "global-window-size-persistence",
@@ -18,8 +18,8 @@
       "source_commits": [
         "ccb861a07aa53c16486f3e7df91632e1a5e9ea6f"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "flat-filename-table-decoding",
@@ -27,8 +27,8 @@
       "source_commits": [
         "50f8b34b209e81b7bddc857d6c7c23a3e543336a"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "explicit-effect-slot-decoding",
@@ -36,8 +36,8 @@
       "source_commits": [
         "50f8b34b209e81b7bddc857d6c7c23a3e543336a"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "archive-read-error-context",
@@ -45,8 +45,8 @@
       "source_commits": [
         "83b7dbc59869716dba9d06f189fa960f92f75743"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "sample-rejection-provenance",
@@ -56,8 +56,8 @@
         "4ee0a3ae915df413696a27977a2727593c03575c",
         "e0f81e20210b8a0874dfbc5853d6da344b990e1f"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "ksp-omitted-fault-accounting",
@@ -65,8 +65,8 @@
       "source_commits": [
         "10cb26531ca3b9e1d8040cc50db884b477c73566"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "legacy-pgs-callback",
@@ -74,8 +74,8 @@
       "source_commits": [
         "f4c81fa2ae779a64fb8827f4698c972f4294142f"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "rack-canvas-drop-and-geometry",
@@ -84,8 +84,8 @@
         "298e0887754e223aef532640eaadda8959ddd9f8",
         "0f677fbb79bba1ef02ef32790e8d2d2e39805782"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "declared-jpeg-resources",
@@ -93,8 +93,8 @@
       "source_commits": [
         "f585d3718377a8588d659c1e09fe4342dd6f6dd2"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "module-envelope-bypass-and-depth",
@@ -102,8 +102,8 @@
       "source_commits": [
         "8883c4ed4ce95383fae656d35502265ecb0a4bf8"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "wavetable-source-diagnostics",
@@ -111,8 +111,8 @@
       "source_commits": [
         "6d1592542122a2b4777cdc2852a34851d6f67ce1"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "bounded-command-fault-context",
@@ -121,8 +121,8 @@
         "70dfb4bb68d4cac2ac3ce350e252b5e7bb7421cf",
         "9bcbb147a1af23e0c59e12e5f806b34470889f0f"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "independent-listeners",
@@ -131,8 +131,8 @@
         "702fee1fa92231009036a68f3a72dc4e651efb83",
         "eca46291cbbdcd71145b8d30358d9322bd032a15"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "offline-release-tail-preservation",
@@ -140,8 +140,8 @@
       "source_commits": [
         "3295d693f90985687c24a1979ca918af7a5edaf0"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
     },
     {
       "id": "native-group-insert-order",
@@ -153,8 +153,27 @@
         "a71c6b233e2649ca45491c4d6f342b697bc697f5",
         "c689cab487884c94ef52153ce9e3976f81e5ccae"
       ],
-      "validation": "Pending maintainer classification and final shipping validation; this entry does not advance the version.",
-      "accepted": false
+      "validation": "Reviewed logical defect; authored source/parser/runtime checks passed at d1ba465, e68d28c or isolated production fixtures. Combined e68d28c release build passed, with 20 focused regressions and 83 playback tests. Library-specific limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "native-reveal-paths",
+      "summary": "Reveal actual library and log directories, including extended Windows drive and UNC paths",
+      "source_commits": [
+        "3b6467c2986575a78303eb355e015042407c764d",
+        "e68d28c624647501e37b465e49542b376ce6df8d"
+      ],
+      "validation": "e68d28c native path, worker lifecycle and rename UI checks passed; Windows Explorer launch remains unverified.",
+      "accepted": true
+    },
+    {
+      "id": "encrypted-access-metadata-lookup",
+      "summary": "Resolve relative preset paths and whitespace-delimited library access fields with actionable missing-data errors",
+      "source_commits": [
+        "78ef3e76eb78ee2bdc7251c8acbb00538ac8fd5b"
+      ],
+      "validation": "Five isolated access checks passed including right-key decryption and wrong-key rejection; combined e68d28c build passed. Emotional Piano payload unavailable locally.",
+      "accepted": true
     }
   ]
 }
