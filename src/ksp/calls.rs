@@ -1225,7 +1225,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let c = control(m, id)?;
             let v = if p == b::CONTROL_PAR_NUM_ITEMS {
                 m.slot.ui.controls[c].menu.len() as i32
-            } else if p == b::CONTROL_PAR_SELECTED_ITEM_IDX {
+            } else if p == b::CONTROL_PAR_SELECTED_ITEM_IDX
+                || (p == b::CONTROL_PAR_VALUE
+                    && m.prog.vars[m.slot.ui.controls[c].var as usize].ui.as_deref() == Some("ui_menu"))
+            {
+                // KSP's menu VALUE getter reports the entry index; the variable
+                // itself retains the value supplied to add_menu_item().
                 m.slot.ui.controls[c].selected_menu(m.prog, &m.slot.mem).map_or(-1, |i| i as i32)
             } else if p == b::CONTROL_PAR_VALUE {
                 let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];

@@ -2180,7 +2180,7 @@ declare ui_label $restored(1,1)
 set_text($init, !names[get_control_par(get_ui_id($room), $CONTROL_PAR_SELECTED_ITEM_IDX)])
 end on
 on persistence_changed
-set_text($restored, !names[get_control_par(get_ui_id($room), $CONTROL_PAR_SELECTED_ITEM_IDX)])
+set_text($restored, !names[get_control_par(get_ui_id($room), $CONTROL_PAR_VALUE)])
 end on"#;
     for (saved, value, label) in [(2, 60, "First"), (61, 61, "Second"), (89, 89, "Last")] {
         let mut engine = LogEngine::new(Vec::new(), 48000.);
