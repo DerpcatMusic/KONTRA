@@ -301,6 +301,36 @@ fn room_height(ui: &Ui, slot: usize) -> f64 {
     (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.)).max(0.)
 }
 
+/// The scalar/table part of the memo key, also measured by the opt-in UI probe.
+pub(super) fn hash_properties(i: &Interface, h: &mut DefaultHasher) {
+    for c in &i.controls {
+        for (k, v) in &c.properties {
+            // Scalar properties include layout, text, picture and colors.
+            // Hash directly: formatting them allocates on every redraw.
+            k.hash(h);
+            match v {
+                Value::Int(n) => n.hash(h),
+                Value::Real(n) => n.to_bits().hash(h),
+                Value::Text(t) => t.hash(h),
+                Value::IntArray(a) if c.kind == "ui_table" => a.hash(h),
+                Value::RealArray(a) if c.kind == "ui_table" => {
+                    for n in a { n.to_bits().hash(h); }
+                }
+                Value::Array(a) if c.kind == "ui_table" => {
+                    for v in a {
+                        match v {
+                            Value::Int(n) => n.hash(h),
+                            Value::Real(n) => n.to_bits().hash(h),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Everything [`view`] reads beyond the frame's input, hashed.
 pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let v = &cx.view.parts[slot];
@@ -311,32 +341,7 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     if let Some(i) = &v.interface {
         (Arc::as_ptr(i) as usize, i.width, i.height, i.wallpaper_state, i.skin_offset).hash(&mut h);
         // An edit may change the interface in place.
-        for c in &i.controls {
-            for (k, v) in &c.properties {
-                // Scalar properties include layout, text, picture and colors.
-                // Hash directly: formatting them allocates on every redraw.
-                k.hash(&mut h);
-                match v {
-                    Value::Int(n) => n.hash(&mut h),
-                    Value::Real(n) => n.to_bits().hash(&mut h),
-                    Value::Text(t) => t.hash(&mut h),
-                    Value::IntArray(a) if c.kind == "ui_table" => a.hash(&mut h),
-                    Value::RealArray(a) if c.kind == "ui_table" => {
-                        for n in a { n.to_bits().hash(&mut h); }
-                    }
-                    Value::Array(a) if c.kind == "ui_table" => {
-                        for v in a {
-                            match v {
-                                Value::Int(n) => n.hash(&mut h),
-                                Value::Real(n) => n.to_bits().hash(&mut h),
-                                _ => {}
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+        hash_properties(i, &mut h);
     }
     // A wave read since.
     if let (Some(i), Some(u)) = (&v.instrument, &v.interface) {
@@ -758,7 +763,7 @@ fn ink(under: Option<f32>) -> Color {
 
 /// How light (0 to 1) what lies under authored point `(x, y)` is: the
 /// topmost opaque picture of `below` there, else the wallpaper.
-fn luma_under(below: &[(Shown, Option<Arc<Image>>)], wallpaper: Option<(&Image, [u32; 2])>, x: f64, y: f64) -> Option<f32> {
+pub(super) fn luma_under(below: &[(Shown, Option<Arc<Image>>)], wallpaper: Option<(&Image, [u32; 2])>, x: f64, y: f64) -> Option<f32> {
     let at = |image: &Image, u: f64, v: f64| {
         let (px, py) = (u.floor(), v.floor());
         if px < 0. || py < 0. || px >= f64::from(image.width) || py >= f64::from(image.height) {

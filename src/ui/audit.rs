@@ -402,6 +402,74 @@ mod tests {
         assert_eq!(super::general("Script 2: KSP line 41: no x1"), "Script N: KSP line N: no xN");
     }
 
+    /// After the native worker stops: diagnostic microcosts, not frame samples.
+    fn cost_partition(p: &Arc<SamplerParams>) -> serde_json::Value {
+        use std::hint::black_box;
+        fn measure(mut f: impl FnMut()) -> serde_json::Value {
+            for _ in 0..8 { f(); }
+            let mut times: Vec<_> = (0..16).map(|_| {
+                let start = Instant::now();
+                f();
+                start.elapsed().as_secs_f64() * 1000.
+            }).collect();
+            times.sort_by(f64::total_cmp);
+            serde_json::json!({"n":times.len(),"mean_ms":times.iter().sum::<f64>()/times.len() as f64,"p99_ms":times[times.len()-1]})
+        }
+        let selection = p.selection.read().unwrap().clone();
+        let view = shown(&p.shared.view);
+        let part = &view.parts[0];
+        let interface = part.interface.as_ref().expect("published interface");
+        let instrument = part.instrument.as_ref().expect("published instrument");
+        let drawn: Vec<_> = perf_view::layout(interface, &part.pictures).into_iter().map(|s| {
+            let image = perf_view::frame_of(&s, &interface.controls[s.control]);
+            (s, image)
+        }).collect();
+        let wallpaper = part.wallpaper.as_ref().and_then(|p| p.wallpaper(interface.wallpaper_state, interface.skin_offset));
+        let mut assets = super::super::vector::Assets::default();
+        let mut stages = BTreeMap::new();
+        stages.insert("selection_double_clone_and_drop", measure(|| {
+            let copy = black_box(selection.clone());
+            black_box(copy.clone());
+        }));
+        stages.insert("shown_view_clone_and_drop", measure(|| { black_box(shown(&p.shared.view)); }));
+        stages.insert("watch_fingerprint", measure(|| {
+            let mut h = DefaultHasher::new();
+            fingerprint(&view, &mut h);
+            black_box(h.finish());
+        }));
+        stages.insert("interface_clone_and_drop", measure(|| { black_box(interface.as_ref().clone()); }));
+        stages.insert("scalar_table_property_hash", measure(|| {
+            let mut h = DefaultHasher::new();
+            perf_view::hash_properties(interface, &mut h);
+            black_box(h.finish());
+        }));
+        stages.insert("visible_layout_and_drop", measure(|| { black_box(perf_view::layout(interface, &part.pictures)); }));
+        stages.insert("warm_vector_plan_and_drop", measure(|| {
+            black_box(super::super::vector::plan(interface, &part.pictures, &drawn, &mut assets));
+        }));
+        stages.insert("original_luma_prefixes", measure(|| {
+            let mut sum = 0.;
+            for (n, (s, _)) in drawn.iter().enumerate() {
+                for dx in [-0.25, 0., 0.25] {
+                    sum += perf_view::luma_under(&drawn[..=n], wallpaper.as_ref().map(|(i, origin)| (i.as_ref(), *origin)),
+                        s.x + s.w / 2. + dx * s.w, s.y + s.h / 2.).unwrap_or(0.);
+                }
+            }
+            black_box(sum);
+        }));
+        stages.insert("conditional_missing_zone_count", measure(|| {
+            black_box(instrument.zones.iter().filter(|z| !z.available).count());
+        }));
+        serde_json::json!({"scope":"16 bounded microcost samples after native worker completion; clone timings include drop, not concurrent contention or whole-frame latency",
+            "selection_script_state_bytes":selection.parts.iter().map(|p|p.script_state.len()).sum::<usize>(),
+            "view_script_state_bytes":p.shared.view.lock().unwrap().parts.iter().map(|p|p.script_state.len()).sum::<usize>(),
+            "controls":interface.controls.len(),"visible_controls":drawn.len(),
+            "properties":interface.controls.iter().map(|c|c.properties.len()).sum::<usize>(),
+            "groups":instrument.groups.len(),"zones":instrument.zones.len(),
+            "missing_notice_active":!instrument.warnings.iter().any(|w|w.contains("read back as zeros"))
+                && (part.status.contains("zones skipped") || !instrument.missing_samples.is_empty()),"stages":stages})
+    }
+
     /// Fixture page changes use the authored callback, including its listeners.
     pub(super) fn select_benchmark_page(runtime: &mut crate::ksp::Runtime, instrument: &import::Instrument, cold: bool) {
         let Ok(variable) = std::env::var("KONTRA_UI_BENCH_PAGE") else { return };
@@ -636,7 +704,10 @@ mod tests {
             let mut rendered = Vec::new();
             let mut rendered_changes = 0;
             let mut publication_ms = Vec::new();
+            let partition = std::env::var_os("KONTRA_UI_BENCH_PARTITION").is_some();
+            let mut last_published = None;
             let mut observer = |published: &Arc<SamplerParams>| -> anyhow::Result<()> {
+                if partition { last_published = Some(published.clone()); }
                 if observer_draw.is_none() {
                     published.selection.write().unwrap().parts[0].view = mode as u8;
                     published.selection.write().unwrap().appearance = appearance as u8;
@@ -684,6 +755,9 @@ mod tests {
             println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
                 "live_publication_ms":{"mean":publication_ms.iter().sum::<f64>()/publication_ms.len() as f64,"p99":publication_ms[((publication_ms.len()-1) as f64*0.99).ceil() as usize]},
                 "callback_published_render_ms":{"mean":rendered.iter().sum::<f64>()/rendered.len() as f64,"p99":rendered[((rendered.len()-1) as f64*0.99).ceil() as usize]}}));
+            if let Some(published) = last_published {
+                println!("UI_BENCH_COST {}", cost_partition(&published));
+            }
         }
         if let Some(to) = std::env::var_os("KONTRA_UI_BENCH_SHOT") {
             ctx.reset();
