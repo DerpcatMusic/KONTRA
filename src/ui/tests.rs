@@ -1841,6 +1841,34 @@ fn the_original_view_edits_the_script_and_switches() {
     assert!(h.ui.scene().unwrap().surface("kpv-0-1").is_some());
 }
 
+#[test]
+fn popup_retires_tooltips_and_consumes_its_outside_dismissal_click() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $switch\nmove_control_px($switch,10,120)\nend on");
+    let mut h = Harness::new(&p, 1180., 760.);
+    let trigger = center(&h.ui, "view-0");
+    for _ in 0..60 { h.tick(pointer(trigger, false)); }
+    assert!(h.ui.scene().unwrap().surface("/tip").is_some(), "the trigger tooltip is already due before opening");
+    h.tick(pointer(trigger, true));
+    h.tick(pointer(trigger, false));
+    for _ in 0..60 { h.tick(pointer(trigger, false)); }
+    assert!(h.ui.scene().unwrap().surface("context-menu").is_some());
+    assert!(h.ui.scene().unwrap().surface("/tip").is_none(), "the old trigger tooltip cannot cover the popup");
+    // Keyboard activation continues to reach the existing menu rows.
+    h.press("menu-item-1");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 3);
+    h.press("view-0");
+    let underneath = center(&h.ui, "kpv-0-0");
+    h.tick(pointer(underneath, true));
+    h.tick(pointer(underneath, false));
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("context-menu").is_none(), "an outside click dismisses the popup");
+    assert_eq!(control_value(&p, 0), crate::ksp::Value::Int(0), "the dismissal click does not toggle the control underneath");
+    h.tick(pointer(underneath, true));
+    h.tick(pointer(underneath, false));
+    h.idle(3);
+    assert_eq!(control_value(&p, 0), crate::ksp::Value::Int(1), "normal interaction resumes once the popup closes");
+}
+
 /// Offsets select a pixel window across page boundaries, rather than rounding
 /// to a frame, and a new script snapshot invalidates the view memo.
 #[test]
