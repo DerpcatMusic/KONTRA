@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
+- Explicit positive convolution crossover now prepares separate early/late filters at unit Size and matching sample rates, with the checked 50 ms blend and original source duration. Nonunit Size, automatic crossover and resampling remain approximate.
+
 - Both Mac release architectures now require timestamped Developer ID signatures, Apple acceptance, and a validated stapled DMG; unsigned fallback is removed. Existing credentials were reused through the owned signing workflow. The next real Apple submission is pending.
 - Modern signed cutoff intensity now uses the independently corroborated cubic law and inverse readback, with normalized bounds retained. The actual Conflux saved value showed the old linear conversion overstating its depth by about 4,877×; other modulation laws are unchanged.
 - Native LFO waveform-specific v0x71–v0x73 records now decode and write losslessly with strict size/flag checks. Forty-two authored combinations and 60 actual selected records pass. LFO playback/freewheel behavior is still incomplete.
