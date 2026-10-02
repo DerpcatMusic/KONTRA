@@ -101,3 +101,39 @@ fn a_redraw_request_from_the_host_thread_is_a_frame() {
     h.requests.redraw();
     assert!(h.step());
 }
+
+#[test]
+fn leaving_before_the_release_frame_cancels_pointer_restoration() {
+    let at = PhysicalPosition::new(20., 40.);
+    let moved = Event::Mouse(MouseEvent::CursorMoved { position: at, modifiers: Modifiers::default() });
+    let button = |down| Event::Mouse(if down {
+        MouseEvent::ButtonPressed { button: MouseButton::Left, modifiers: Modifiers::default() }
+    } else {
+        MouseEvent::ButtonReleased { button: MouseButton::Left, modifiers: Modifiers::default() }
+    });
+    for left in [Event::Mouse(MouseEvent::CursorLeft), Event::Mouse(MouseEvent::DragLeft), Event::Window(WindowEvent::Unfocused)] {
+        for release_first in [false, true] {
+            let mut h = handler((640, 400), 1.);
+            h.step();
+            h.on_event_inner(&moved);
+            h.on_event_inner(&button(true));
+            h.step();
+            // The native hide hook records this during a dragged frame.
+            h.hidden_at = Some(at);
+            if release_first { h.on_event_inner(&button(false)); }
+            h.on_event_inner(&left);
+            if !release_first { h.on_event_inner(&button(false)); }
+            assert!(h.pointer_at.is_none() && h.hidden_at.is_none(), "leave/focus loss cancels the pending warp before painting release");
+            assert!(h.driver.pointer().pos.is_none(), "the next frame sees the pointer leave");
+            h.step();
+            assert!(h.hidden_at.is_none(), "a delayed frame cannot restore the old drag origin");
+        }
+    }
+    let mut h = handler((640, 400), 1.);
+    h.on_event_inner(&moved);
+    h.on_event_inner(&button(true));
+    h.hidden_at = Some(at);
+    h.on_event_inner(&button(false));
+    assert_eq!(h.hidden_at, Some(at), "a release inside still restores the intentional drag origin");
+    assert_eq!(h.pointer_at, Some(at));
+}
