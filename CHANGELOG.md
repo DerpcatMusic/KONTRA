@@ -10,7 +10,7 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
-- Tube and Transistor Distortion now use their checked native scalar curves without the previous invented drive compensation. Independent signed boundaries, live Drive readback, group/rack routing and zero-heap gates pass. Damping/DC filtering remains explicitly approximate; whole-effect parity and corrected actual preset replay are not established.
+- Tube and Transistor Distortion now use their checked native scalar curves without the previous invented drive compensation. Independent signed boundaries, live Drive readback, group/rack routing and zero-heap gates pass. The separately reviewed Damping/DC corrections are recorded below; whole-effect parity and corrected actual preset replay are not established.
 - Optional KSP `note_off` microsecond offsets now replace existing duration timers and retain the exact scheduled event under pool pressure. Concurrent-note, channel, timing, invalid-offset and zero-heap checks pass.
 - Stale script restores now cancel before obtaining a fresh epoch or publishing old scripts/effects. Controlled races cover source/state replacement, generation changes and removal; unrelated gain edits preserve valid restores.
 - Saved legacy unsynchronized fade-in now reaches eligible retriggered sine Multi pitch sources on the same 32-frame clock. Independent physical cursor/PCM, fragmentation, retrigger, lifetime and zero-heap checks pass. Synchronized fades, wider waveforms, free-running clocks and live frequency remain unsupported.
@@ -499,66 +499,76 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
   User zoom, cached snapshots and native file-picker tests do not certify every
   gesture, resource, preset or file-dialog workflow.
 
-### Known limits
+### Fixed
 
-#### Reviewed next-cut candidates — not shipped
-
-The following 14 distinct outcomes are source-reviewed candidates, not accepted
-fixes or published behavior. Runtime gates, actual factory checks and native hosted
-platform checks are pending for this cut; the accepted ledger remains 101.
-Follow-up and safety fixtures belong to their existing outcome, not new counts.
-The 14 ledger proposals are explicitly unaccepted until the final frozen verdict.
-Root reports the focused optimized extreme-onset, zero-stride PCM and exact
-scalar/SIMD gates pass at `d7b9e11` with frozen executable prefix `eebeb2eb1efd`.
-The full suite and actual factory checks remain pending; this is not acceptance.
-Promotion will place the shipped fixes under `Fixed` and the reporter/support
-workflow under `Added`; no candidate statement describes the previous 0.3.96
-release. Actual Mac recognition/host behavior and real-world crash delivery are
-not established by Linux or mock tests.
+The 14 newly accepted logical defects are source-reviewed and recorded individually
+in `release-fixes.json`; follow-up and safety fixtures do not add counts. The previous
+published 0.3.96 binaries are unchanged. These entries describe the next source cut.
 
 - Optional VST3 note-length metadata no longer rejects ordinary host notes or
-  shortens their retained ownership; unused negative hints are ignored too.
-  Source: `a357e1e`, follow-up `401d59e`.
+  shortens retained ownership; unused negative hints are ignored too.
+  Sources: `a357e1e`, `401d59e`.
 - Legacy unsynchronized Delay Time uses the checked conversion across its admitted
-  absolute range. Source: `f191cc2`; fractional fixture follow-up `aaf2959`.
+  absolute range. Sources: `f191cc2`, fractional fixture follow-up `aaf2959`.
 - Delay writes the current input before advancing its ring clock, preserving the
   intended sample position. Source: `4ec2958`.
 - Native Distortion Damping uses the checked native law. Source: `b3e453e`.
-- Distortion's native DC filter runs after Damping; scalar/SIMD summation follow-ups
-  remain one DC-processing outcome. Sources: `74e3c0e`, `cd940e2`.
+- Distortion's native DC filter runs after Damping with the checked scalar/SIMD
+  summation order. Sources: `74e3c0e`, `cd940e2`; one DC-processing outcome.
 - macOS plug-in bundles retain the Finder package flag as well as `BNDL` metadata.
-  ZIP extraction and installed payload gates check Finder/Foundation recognition
-  and both plug-in factories. Actual hosted Mac execution remains pending;
-  this is not a Bitwig scan or playback claim. Source: `6001126`.
+  ZIP extraction and installed-payload gates check Finder/Foundation recognition
+  and both plug-in factories. Sources: `6001126`. Actual hosted Mac execution is
+  still required; this source correction is not a Bitwig scan or playback result.
 - VST3 editor views retain their component while alive. Source: `3e76d60`.
 - VST3 resize frames retain their owner through attachment and replacement.
   Source: `3784c67`.
 - VST3 run-loop registration follows the currently attached view.
   Source: `e3822b2`.
-- The attached GUI view owns its lifetime independently of creation order.
-  Source: `be80724`.
+- Attached GUI view ownership is independent of creation order. Source: `be80724`.
 - Native editor startup and thread information is persisted before entering the
   platform window path, preserving context if startup fails. Source: `c3763d1`.
+- VST3 initial cents tuning is applied atomically with note onset, including bounded
+  extreme finite values. Sources: `53ab06f`, `2d5822e`.
+- Zero-rate integer sample taps avoid the reproduced zero-stride iterator panic.
+  This shared renderer correction is distinct from atomic initial tuning.
+  Source: `4529cbf`.
+
+### Added
+
 - Confirmed previous-session host crashes recover accessible native evidence and
   complete sanitized diagnostic activity through the reused BUFFR reporter.
+  This is the fourteenth accepted defect outcome: reliable crash-evidence recovery
+  and acknowledged delivery, grouped with its retry/cancellation follow-ups.
   The private report includes the full sanitized evidence; the public issue is
   limited to safe platform/host/format/build/failure metadata. Automatic reports
   exclude library source excerpts, samples, access data and credentials. Full-hash
   acknowledgements govern delivery; failed or delayed reports remain retryable.
   No host-wide crash hook is installed, and host crashes do not establish KONTRA
   fault ownership. Sources: `665ffee`, `72d3b9b`, `0c7b622`.
-- VST3 initial cents tuning is applied atomically with note onset, including
-  bounded handling of extreme finite values. Sources: `53ab06f`, `2d5822e`.
 
-- Zero-rate integer sample taps avoid the reproduced zero-stride iterator panic.
-  This shared renderer correction is a distinct defect from atomic initial tuning;
-  its final runtime acceptance is pending. Source: `4529cbf`.
+### Known limits
 
-These scopes do not implement Conflux's native Lua interface or establish complete
-Kontakt processing parity. Native crash evidence depends on the host/OS producing
-accessible artifacts. Manual local support exports can retain bounded, reviewed
-source excerpts; the automatic crash transport excludes them. Public/private
-report rendering is a support-service contract, not proof of host fault ownership.
+- Frozen optimized source `d7b9e11ad096283aab06c79c15732d9bd5a48a03` passes
+  all 547 library tests (30 ignored), including 30 support tests, and 89 playback
+  tests (4 ignored). Dedicated extreme-onset, zero-stride PCM and exact scalar/SIMD
+  checks pass in executable prefix `eebeb2eb1efd`. The clean CDLL prefix
+  `d504c6786bb0` embeds that exact revision; its actual Linux VST3 factory exposes
+  one KONTRA class with unchanged class ID and releases all factory references.
+  Strict C++ editor attachment/lifetime gates pass on unchanged shim sources.
+  These are optimized Linux and driver-free checks, not native Mac or every-host
+  embedding validation. The tested executable carries its original 0.3.101
+  metadata; the accepted ledger derives the next package version as 0.3.115.
+- Native macOS Swift/Finder/factory checks, Developer ID signatures, Installer
+  execution and Apple acceptance remain required hosted shipping gates for this
+  cut. Existing 0.3.96 notarization does not verify these changed bundles.
+- Crash recovery/delivery fixtures do not establish a real-world host-crash-to-server
+  end-to-end result. Native evidence depends on accessible host/OS artifacts;
+  public/private rendering is a support-service contract. Manual local exports may
+  retain bounded, reviewed source excerpts; automatic reports exclude them.
+- These corrections do not implement Conflux's native Lua interface or establish
+  complete Kontakt processing parity, every host workflow or complete-library
+  compatibility. No production crash report or synthetic public issue was sent
+  as part of the test evidence.
 
 ### Candidates — not shipped
 
