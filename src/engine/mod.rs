@@ -24,6 +24,7 @@ mod script;
 pub(crate) mod native_state;
 mod stream;
 mod voice;
+mod wavetable;
 
 pub(crate) use bank::parallel;
 pub use audit::audit_dsp;
@@ -1364,6 +1365,10 @@ impl Player {
                 slots[stream.slot as usize].stop();
             }
             let sample = &new.samples[v.sample as usize];
+            if let Some(table) = v.wavetable {
+                v.span = sample.span_at(table.first as u64).expect("resident wavetable after bank upgrade");
+                continue;
+            }
             let first = (v.pos as u64).saturating_sub(1);
             v.span = (v.map.run(first, v.wraps))
                 .and_then(|run| sample.span_at(run.frame))
@@ -1493,7 +1498,9 @@ impl Player {
         } else {
             1.0
         };
-        let step = f64::from(sample.rate) / self.rate * zone.tune * key;
+        let step = if play.wavetable.is_some() {
+            wavetable::step(ev.note, self.rate) * zone.tune
+        } else { f64::from(sample.rate) / self.rate * zone.tune * key };
         let c = ev.channel as usize;
         let master = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0).map(|(master, _)| master as usize);
         let expression_key = ev.owner.map_or(ev.note, |(_, key)| key);
@@ -1532,7 +1539,7 @@ impl Player {
             .unwrap_or(0);
         let span = &sample.spans[span_index as usize];
         let limit = play.map.resident_limit(first, wraps, span.start, span.end());
-        let stream = if sample.streamed {
+        let stream = if sample.streamed && play.wavetable.is_none() {
             self.free.pop()
         } else {
             None
@@ -1590,12 +1597,13 @@ impl Player {
             frozen_expression: ev.frozen_expression,
             age: self.clock,
             sample: play.sample,
+            wavetable: play.wavetable,
             span: span_index,
             map: play.map,
             wraps,
-            length: play.map.len(wraps),
+            length: if play.wavetable.is_some() { FOREVER } else { play.map.len(wraps) },
             limit,
-            pos: offset as f64,
+            pos: if play.wavetable.is_some() { f64::from(settings.wavetable.unwrap().phase) * wavetable::CYCLE as f64 } else { offset as f64 },
             step,
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),

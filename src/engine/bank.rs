@@ -84,6 +84,8 @@ pub struct GroupSettings {
     pub filter: Option<Box<GroupFilter>>,
     /// Kontakt interpolation quality; every setting currently uses 4-point Hermite.
     pub interp_quality: i32,
+    /// Native wavetable controls; complete source cycles are kept resident.
+    pub wavetable: Option<crate::import::Wavetable>,
     /// Index into the instrument's voice groups.
     pub voice_group: Option<u16>,
 }
@@ -103,6 +105,7 @@ impl From<&Group> for GroupSettings {
             pitch_envelopes: super::params::PitchEnvelope::from_group(group),
             filter: GroupFilter::new(group),
             interp_quality: group.interp_quality,
+            wavetable: group.wavetable,
             voice_group: None,
         }
     }
@@ -317,6 +320,7 @@ pub(crate) struct ZonePlay {
     pub map: PlayMap,
     /// Maximum start offset in frames.
     pub start_mod: u64,
+    pub wavetable: Option<super::wavetable::Table>,
 }
 
 pub(crate) struct VoiceGroup {
@@ -543,6 +547,8 @@ impl Bank {
         // reads its own copy; growing the shared spans in place, and moving
         // the other banks onto them, would keep one.
         let mut layout = builder.plan(&frame_bytes, budget, controllers);
+        anyhow::ensure!(layout.bytes <= budget || !builder.plays.iter().any(|p| p.wavetable.is_some()),
+            "Complete wavetable cycles and sample heads need {} MiB resident, over the {} MiB budget", layout.bytes >> 20, budget >> 20);
         trace.mark("zones+plan");
         let ram_only = (streaming == Streaming::RamOnly).then(|| {
             // ponytail: /proc/meminfo only; other systems get MEMORY_LIMIT until they have a probe.
@@ -727,16 +733,42 @@ impl Bank {
         let empty = Frames::new(Pcm::pack(&[], false));
         let mut samples = Vec::with_capacity(kept.len());
         let mut streamed = Vec::with_capacity(kept.len());
-        for (source, header, path) in kept {
+        let mut bytes = Streamer::BYTES;
+        for (id, (source, header, path)) in kept.into_iter().enumerate() {
+            let waves: Vec<_> = builder.plays.iter().filter(|p| p.sample as usize == id && p.wavetable.is_some())
+                .map(|p| (p, (0, 0))).collect();
+            let mut resident_spans = vec![Span { start: 0, data: empty.clone() }];
+            if !waves.is_empty() {
+                let (ranges, ..) = spans(&waves, 0, 0);
+                let needed = ranges.iter().map(|r| (r.end - r.start) as usize * Pcm::frame_bytes(header.bits)).sum::<usize>();
+                anyhow::ensure!(needed <= memory_budget().saturating_sub(bytes), "Complete wavetable cycles exceed the resident memory budget");
+                let key = (path.clone(), false, source.version);
+                let mut reader = None;
+                let (mut ints, mut frames) = (Vec::new(), Vec::new());
+                resident_spans.clear();
+                for range in ranges {
+                    anyhow::ensure!(!canceled(), "Instrument load canceled");
+                    if let Some(span) = resident::find(&key, &range, range.start, u64::MAX) {
+                        resident_spans.push(span);
+                    } else {
+                        if reader.is_none() { reader = Some(source.open()?); }
+                        let data = Frames::new(reader.as_mut().unwrap().read_pcm_cancelable(range.clone(), false, &mut ints, &mut frames, canceled)?);
+                        let span = Span { start: range.start, data };
+                        resident::insert(key.clone(), &span);
+                        resident_spans.push(span);
+                    }
+                }
+                bytes += resident_spans.iter().map(|s| s.data.bytes()).sum::<usize>();
+            }
             samples.push(SampleData {
                 rate: header.rate,
-                spans: vec![Span { start: 0, data: empty.clone() }],
+                spans: resident_spans,
                 streamed: true,
             });
             streamed.push(Some(resident::source((source, path))));
         }
         let streamer = Streamer::spawn(streamed)?;
-        let mut bank = builder.finish(samples, Some(streamer), Streamer::BYTES)?;
+        let mut bank = builder.finish(samples, Some(streamer), bytes)?;
         (bank.preload, bank.cover) = (0, 0);
         trace.mark("bare");
         Ok(bank)
@@ -922,6 +954,13 @@ impl Builder {
             };
             match play_map(&zone, group, frames) {
                 Ok((map, clamped)) => {
+                    let wavetable = if group.wavetable.as_ref().is_some_and(|source| super::wavetable::supported(source, group.key_tracking)) {
+                        let Some(table) = super::wavetable::Table::new(map.start as usize, map.end as usize) else {
+                            issues.skip(ZoneSkipCause::InvalidSampleBounds, format_args!("wavetable needs complete 2048-frame cycles: {} (zone ID {zone_id}, start {}, end {})", zone.sample.display(), map.start, map.end));
+                            continue;
+                        };
+                        Some(table)
+                    } else { None };
                     if clamped {
                         issues.note(format_args!(
                             "loop crossfade shortened in {}",
@@ -937,6 +976,7 @@ impl Builder {
                         zone_id,
                         map,
                         start_mod,
+                        wavetable,
                     });
                     kept.push(zone);
                 }
@@ -1294,6 +1334,15 @@ pub(super) fn spans(plays: &[(&ZonePlay, (u64, u64))], preload: u64, cover: u64)
     for &(play, (lo, hi)) in plays {
         let map = &play.map;
         frames = frames.max(map.end);
+        if play.wavetable.is_some() {
+            // Arbitrary table position reads any cycle; streaming a prefix
+            // cannot provide an oscillator's resident data. Uncompressed PCM
+            // also permits bounded random taps without decoding whole blocks.
+            looping = true;
+            any_loop = true;
+            ranges.push(map.start..map.end);
+            continue;
+        }
         any_loop |= map.looped.is_some();
         // A voice's first window frame is one before its start offset.
         let (first, head) = (lo.saturating_sub(1), hi.min(lo.saturating_add(cover)) + preload);

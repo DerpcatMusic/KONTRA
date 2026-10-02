@@ -988,6 +988,80 @@ fn transposed_stream_starts_have_a_resident_first_block_without_audio_heap_work(
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn wavetable_cycles_ignore_sample_rate_and_root_and_keep_common_note_lifetimes() {
+    use kontakto::import::Wavetable;
+    let path = PathBuf::from("authored-five-cycle-table");
+    let setup = |rate, root| {
+        let frames = (0..5 * 2048).map(|i| {
+            let x = ((i % 2048) as f32 * std::f32::consts::TAU / 2048.).sin() * 0.2;
+            [if i < 2048 { x } else { -x }; 2]
+        }).collect();
+        let group = Group { volume_env: Some(kontakto::import::Ahdsr { attack_ms: 0., decay_ms: 0., hold_ms: 0., sustain: 1., release_ms: 1., attack_curve: 0. }),
+            wavetable: Some(Wavetable { quality: 2, ..Default::default() }), ..Group::default() };
+        engine_with(Bank::from_samples(vec![group], vec![Zone { sample: path.clone(), root, ..Zone::default() }],
+            vec![(path.clone(), Sample { rate, frames })]).unwrap())
+    };
+    for note in [33, 69, 96, 127] {
+        let (mut a, mut b) = (setup(44100, 0), setup(132300, 127));
+        let (mut al, mut ar, mut bl, mut br) = ([0.;128], [0.;128], [0.;128], [0.;128]);
+        assert_eq!(allocations(|| { a.note_on(0, note, 100); b.note_on(0, note, 100); }), 0);
+        for _ in 0..200 {
+            assert_eq!(allocations(|| { a.render(&mut al, &mut ar); b.render(&mut bl, &mut br); }), 0);
+            assert_eq!((al, ar), (bl, br), "sample metadata changed oscillator pitch at note {note}");
+        }
+        let voice = &a.voice_census()[0];
+        let expected = 440. * 2f64.powf((f64::from(note) - 69.) / 12.) * 2048. / 48000.;
+        assert!((voice.step - expected).abs() < 1e-10);
+        assert!((0. ..2048.).contains(&voice.pos));
+        assert_eq!(allocations(|| { a.cc(0,64,127); a.note_off(0,note); a.render(&mut al, &mut ar); }), 0);
+        assert_eq!(a.active_voices(), 1, "sustain retains the oscillator");
+        assert_eq!(allocations(|| { a.cc(0,64,0); for _ in 0..8 { a.render(&mut al, &mut ar); } }), 0);
+        assert_eq!(a.active_voices(), 0, "pedal-up releases its common envelope");
+        assert_eq!(a.underruns(), 0);
+    }
+    let mut e = setup(44100, 0);
+    e.set_script(runtime("on init\nend on\non controller\nif ($CC_NUM = 1)\nset_engine_par($ENGINE_PAR_WT_POSITION,%CC[1] * 1000000 / 127,0,-1,-1)\nmessage(get_engine_par($ENGINE_PAR_WT_POSITION,0,-1,-1))\nend if\nend on"));
+    let (mut l,mut r)=([0.;128],[0.;128]);
+    e.note_on(0,69,100);
+    e.render(&mut l,&mut r);
+    let before = e.voice_census()[0].pos;
+    assert_eq!(allocations(|| { e.cc(0,1,127); e.render(&mut l,&mut r); }), 0);
+    assert_eq!(e.script().unwrap().last_message(), "1000000");
+    let voice = &e.voice_census()[0];
+    assert!((voice.pos - (before + 128. * voice.step).rem_euclid(2048.)).abs() < 1e-6, "table position does not restart phase");
+    assert_eq!(allocations(|| { e.panic(); for _ in 0..8 { e.render(&mut l,&mut r); } }),0);
+    assert_eq!(e.active_voices(),0);
+}
+
+#[test]
+fn bare_wavetable_bank_and_its_upgrade_keep_complete_tables_and_voice_phase() {
+    use kontakto::import::Wavetable;
+    let dir = std::env::temp_dir().join(format!("kontra-wavetable-fill-{}",std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("five-cycles.wav");
+    write_wav_bits(&path, 5*2048, 16);
+    let instrument = instrument(vec![Group { wavetable: Some(Wavetable { phase: 0.5, quality: 2, ..Default::default() }), ..Group::default() }],
+        vec![Zone { sample:path,root:0,..Zone::default() }]);
+    let (bare,loaded)=(Bank::load_bare(&instrument).unwrap(),Bank::load(&instrument).unwrap());
+    let mut a=engine_with(bare);
+    let mut b=engine_with(loaded);
+    let upgrade=Box::new(Bank::load(&instrument).unwrap());
+    let(mut al,mut ar,mut bl,mut br)=([0.;128],[0.;128],[0.;128],[0.;128]);
+    assert_eq!(allocations(|| { a.note_on(0,96,100);b.note_on(0,96,100); }),0);
+    for _ in 0..10 {
+        assert_eq!(allocations(|| {a.render(&mut al,&mut ar);b.render(&mut bl,&mut br);}),0);
+        assert_eq!((al,ar),(bl,br));
+    }
+    let mut retired=None;
+    assert_eq!(allocations(|| { retired=a.upgrade_bank(upgrade);a.render(&mut al,&mut ar);b.render(&mut bl,&mut br); }),0);
+    assert!(retired.is_some());
+    assert_eq!((al,ar),(bl,br));
+    assert_eq!(a.underruns(),0);
+    assert!(Bank::load_within(&instrument,1).is_err(),"a partial table cannot be published as a supported oscillator");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A bare bank (nothing resident: what the plugin plays while the preload
 /// loads) sounds as the preloaded bank does, and a note started on it carries
 /// on identically when the preloaded bank takes over mid-note.

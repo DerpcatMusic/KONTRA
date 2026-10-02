@@ -521,6 +521,9 @@ pub(crate) enum GroupPar {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum WavePar { Position, Phase }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Stage {
     Attack,
     /// Attack curve, -1..=1.
@@ -536,6 +539,7 @@ pub(crate) enum Stage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Address {
     Group(u16, GroupPar),
+    Wavetable(u16, WavePar),
     /// Volume, pan or tune of the whole instrument.
     Instrument(GroupPar),
     /// Volume envelope of a group.
@@ -609,6 +613,8 @@ impl Address {
         };
         let filter = |knob| insert(knob, FxParam::Filter(knob));
         Some(match par.id {
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_POSITION") => Self::Wavetable(group()?, WavePar::Position),
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_PHASE") => Self::Wavetable(group()?, WavePar::Phase),
             id::VOLUME | id::PAN | id::TUNE | id::OUTPUT_CHANNEL => {
                 let p = match par.id {
                     id::VOLUME => GroupPar::Volume,
@@ -774,6 +780,7 @@ impl Address {
         matches!(
             self,
             Self::Group(..)
+                | Self::Wavetable(..)
                 | Self::Envelope(..)
                 | Self::ModEnvelope(..)
                 | Self::InternalIntensity { .. }
@@ -789,6 +796,7 @@ impl Address {
     pub(crate) fn decode(self, value: i32) -> f32 {
         let x = (value as f32 / UNIT).clamp(0.0, 1.0);
         match self {
+            Self::Wavetable(..) => x,
             // An instrument bus, or past the instrument output to output
             // channel `c` as bus `DIRECT + c` (a mic mixer's "Out 2").
             Self::Group(_, GroupPar::Output) => match (value, value - BUS_OFFSET) {
@@ -847,6 +855,7 @@ impl Address {
     /// Inverse of [`decode`](Self::decode), rounded.
     pub(crate) fn encode(self, v: f32) -> i32 {
         let x = match self {
+            Self::Wavetable(..) => v,
             Self::Group(_, GroupPar::Output) => {
                 return match v {
                     v if v >= f32::from(DIRECT) => v as i32 - i32::from(DIRECT),
@@ -1009,6 +1018,13 @@ pub fn display(id: i32, value: i32) -> Option<Disp> {
 /// other addresses and missing groups.
 pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32) -> bool {
     match address {
+        Address::Wavetable(g, p) => {
+            let Some(source) = settings.get_mut(g as usize).and_then(|g| g.wavetable.as_mut()) else { return false; };
+            match p {
+                WavePar::Position => source.position = value.clamp(0., 1.),
+                WavePar::Phase => source.phase = value.clamp(0., 1.),
+            }
+        }
         Address::Group(g, p) => {
             let Some(group) = settings.get_mut(g as usize) else {
                 return false;
@@ -1119,6 +1135,10 @@ fn envelope(settings: &mut [GroupSettings], address: Address) -> Option<(&mut Ah
 /// Current value of a group-level parameter.
 pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> {
     match address {
+        Address::Wavetable(g, p) => {
+            let source = settings.get(g as usize)?.wavetable.as_ref()?;
+            Some(match p { WavePar::Position => source.position, WavePar::Phase => source.phase })
+        }
         Address::Group(g, p) => {
             let group = settings.get(g as usize)?;
             Some(match p {
