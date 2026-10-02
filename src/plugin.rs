@@ -6661,6 +6661,29 @@ end on"#;
         assert_eq!(allocations(||finish_zone_maps(&mut s,&p)),0);
         assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
         assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        // Offline hosts and the Part script-before-bank install order use
+        // the same preparation boundary; init resumes only after installation.
+        let init_source=Instrument {groups:groups.clone(),zones:zones.clone(),scripts:vec![r#"on init
+set_snapshot_type(3)
+declare ui_label $status(1,1)
+declare %jobs[3]
+%jobs[0] := set_zone_par(1,$ZONE_PAR_GROUP,0)
+%jobs[1] := set_zone_par(1,$ZONE_PAR_LOW_KEY,60)
+%jobs[2] := set_zone_par(1,$ZONE_PAR_HIGH_KEY,60)
+set_text($status,"pending")
+wait_async(%jobs[0])
+wait_async(%jobs[1])
+wait_async(%jobs[2])
+set_text($status,get_zone_par(1,$ZONE_PAR_GROUP) & ":" & get_zone_par(1,$ZONE_PAR_LOW_KEY) & ":" & get_zone_par(1,$ZONE_PAR_HIGH_KEY))
+end on"#.into()],..Instrument::default()};
+        let (rt,errors)=crate::engine::load_scripts(&init_source,Vec::new(),48000.);
+        assert!(errors.is_empty(),"{errors:?}");
+        let mut offline=Engine::default();offline.set_script(rt);
+        offline.set_bank(Some(Box::new(Bank::load(&init_source).unwrap())));
+        assert_eq!(offline.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"],"pending");
+        while offline.service_zone_edits().unwrap() {}
+        assert_eq!(offline.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"],"0:60:60");
+        assert!(offline.script().unwrap().diagnostics().is_empty(),"{:?}",offline.script().unwrap().diagnostics());
         std::fs::remove_file(path).unwrap();
     }
 

@@ -2099,7 +2099,11 @@ impl Runtime {
         if !loaded {
             self.env.note("load_ir_sample: file not found, or that slot holds no convolution effect");
         }
-        self.service_complete(engine, slot, id, loaded);
+        if !self.service_complete(engine, slot, id, loaded) {
+            self.env.finish_async(slot,id);
+            self.env.note("KSP async completion callback queue exhausted");
+            self.settle(engine);
+        }
     }
 
     pub(crate) fn service_complete(&mut self, engine: &mut dyn KspEngine, slot: u8, id: i32, loaded: bool) -> bool {
