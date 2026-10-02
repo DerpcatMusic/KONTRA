@@ -22,6 +22,47 @@ pub(crate) enum Asset {
     Bitmap(Arc<Image>),
 }
 impl Asset {
+    /// Conservative retained storage charge; shared buffers are charged per asset
+    /// so cache budgets never depend on deduplicating allocator ownership.
+    pub fn retained_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let vector_bytes = |v: &Vector| {
+            let mut bytes = size_of::<Vector>() + v.commands().len() * size_of::<VectorCommand>();
+            for c in v.commands() {
+                let (path, brush, stroke) = match c {
+                    VectorCommand::Fill { path, brush, .. } => (path, Some(brush), None),
+                    VectorCommand::Stroke {
+                        path,
+                        brush,
+                        stroke,
+                        ..
+                    } => (path, Some(brush), Some(stroke)),
+                    VectorCommand::PushLayer { path, .. } => (path, None, None),
+                    VectorCommand::PopLayer => continue,
+                };
+                // Decoder paths grow geometrically; allow their spare capacity.
+                bytes = bytes.saturating_add(
+                    path.elements()
+                        .len()
+                        .max(8)
+                        .saturating_mul(2 * size_of::<vello_svg::kurbo::PathEl>()),
+                );
+                if let Some(Brush::Gradient(g)) = brush {
+                    bytes = bytes.saturating_add(
+                        g.stops.capacity() * size_of::<vello_svg::peniko::ColorStop>(),
+                    );
+                }
+                if let Some(s) = stroke {
+                    bytes = bytes.saturating_add(s.dash_pattern.capacity() * size_of::<f64>());
+                }
+            }
+            bytes
+        };
+        size_of::<Self>().saturating_add(match self {
+            Self::Vector(v) => vector_bytes(v),
+            Self::Bitmap(i) => size_of::<Image>().saturating_add(i.rgba.len()),
+        })
+    }
     pub fn size(&self) -> (f64, f64) {
         match self {
             Self::Vector(v) => (v.width, v.height),
@@ -39,6 +80,15 @@ pub(crate) struct Assets {
 impl Assets {
     /// Call on the preparation worker with evaluated Image.file references.
     pub fn prepare(instrument: &Path, names: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        Self::prepare_bounded(instrument, names, PIXEL_LIMIT)
+    }
+    /// Remaining instrument-wide retained budget, supplied by the scene owner.
+    /// Decode remains off-thread; a rejected result is dropped before insertion.
+    pub fn prepare_bounded(
+        instrument: &Path,
+        names: impl IntoIterator<Item = impl AsRef<str>>,
+        mut remaining: usize,
+    ) -> Self {
         let mut out = Self::default();
         let mut source = crate::resources::Resources::of(instrument, "native_ui");
         for name in names {
@@ -47,10 +97,19 @@ impl Assets {
                 continue;
             }
             let decoded = resource_name(literal).and_then(|name| {
+                if remaining == 0 {
+                    return Err("Native UI retained asset budget exhausted".into());
+                }
                 let bytes = source
                     .read_limited(&name, INPUT_LIMIT)?
                     .ok_or_else(|| format!("Native UI asset {name:?} was not found"))?;
-                decode(&name, &bytes).map(Arc::new)
+                let asset = decode(&name, &bytes)?;
+                let charge = asset.retained_bytes();
+                if charge > remaining {
+                    return Err("Native UI asset exceeds remaining retained budget".into());
+                }
+                remaining -= charge;
+                Ok(Arc::new(asset))
             });
             out.entries.insert(literal.to_owned(), decoded);
         }
