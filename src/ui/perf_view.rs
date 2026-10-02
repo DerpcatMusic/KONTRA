@@ -1310,6 +1310,47 @@ mod tests {
     }
 
     #[test]
+    fn closed_physical_drag_keeps_the_starting_value_across_device_scales() {
+        // Native X11 samples are integer physical pixels. At scale 1.5 the
+        // first six-pixel move equals MUI's click threshold and is not yet
+        // a drag. Losing it moved Analog's 180-frame macro one frame left.
+        for scale in [1., 1.5, 2.] {
+            for vertical in [false, true] {
+                for fine in [false, true] {
+                    let mut ui = crate::ui::theme::ui();
+                    let size = Size::new(734., 734.);
+                    let root = || block(size.width, size.height).id("macro");
+                    ui.frame(root(), Some(size), Input::default(), 0.).unwrap();
+                    let mut value = 500_000.;
+                    let mut peak: f64 = 0.;
+                    // Repeat on the same ID so the second press must reset
+                    // the remembered first-drag frame too.
+                    for _ in 0..2 {
+                        for step in 0..=500 {
+                            let physical = (250. * (step as f64 / 500. * std::f64::consts::TAU * 2.).sin()).round();
+                            let delta = physical / scale;
+                            let at = if vertical { Point::new(400., 400. - delta) } else { Point::new(400. + delta, 400.) };
+                            let input = Input { pointer: PointerInput {
+                                pos: Some(at), buttons: Buttons::PRIMARY,
+                                mods: Mods { shift: fine, ..Default::default() }, ..Default::default()
+                            }, ..Default::default() };
+                            ui.frame(root(), Some(size), input, 0.012).unwrap();
+                            drive(&mut ui, "macro", &mut value, &(0. ..=1_000_000.), 734., vertical, 0.);
+                            peak = peak.max((value - 500_000.).abs());
+                        }
+                        assert!((value - 500_000.).abs() < 1e-6, "scale {scale}, vertical {vertical}, fine {fine}: {value}");
+                        assert_eq!(frame(value.round(), 0., 1_000_000., 180), frame(500_000., 0., 1_000_000., 180), "authored sprite returns to the same frame");
+                        ui.frame(root(), Some(size), Input::default(), 0.6).unwrap();
+                        drive(&mut ui, "macro", &mut value, &(0. ..=1_000_000.), 734., vertical, 0.);
+                    }
+                    let expected = 250. / scale / 734. * 1_000_000. * if fine { 0.1 } else { 1. };
+                    assert!((peak - expected).abs() < 1e-6, "the control moves through the full pointer excursion");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn native_fader_visible_thumb_follows_pointer_delta() {
         // Read the painted thumb, independently of the drag equation.
         // This face is shared by Vectorized and the native rack controls.
