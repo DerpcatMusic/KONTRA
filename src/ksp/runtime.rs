@@ -2170,7 +2170,14 @@ impl Runtime {
 
     /// Common UI inputs replay the authored callback in each prepared bank.
     pub fn ui_control(&mut self, engine: &mut dyn KspEngine, slot: usize, control: usize, value: i32) {
-        for domain in 0..self.domain_count { self.ui_control_domain(engine, slot, control, value, domain, true, false, false); }
+        if self.configuration_domain.is_some() {
+            self.ui_control_configuration(engine, slot, control, value);
+            for domain in 0..self.domain_count {
+                self.ui_control_replay(engine, self.domain_origins[domain as usize], slot, control, value);
+            }
+        } else {
+            for domain in 0..self.domain_count { self.ui_control_domain(engine, slot, control, value, domain, true, false, false); }
+        }
     }
 
     /// Staged canonical pass; production routing remains disabled until common
@@ -3516,6 +3523,20 @@ end on"#,root.display());
         assert_eq!(rt.states[0].domain_listeners.len(),4);
         engine.calls.clear();
         engine.calls.reserve(128);
+        // Use the actual shared edit entry point, not only its staged helpers.
+        // Canonical and private callbacks have distinct service ownership even
+        // though every replay receives the same public UI value.
+        let mut common_edit = || rt.ui_control(&mut engine,0,0,5);
+        #[cfg(feature="plugin")]
+        assert_eq!(crate::plugin::tests::allocations(||common_edit()),0);
+        #[cfg(not(feature="plugin"))]
+        common_edit();
+        let art = rt.programs[0].vars.iter().find(|v|&*v.name=="$art").unwrap();
+        for (bank,scope) in [(0,replay(0)),(1,replay(1)),(2,replay(2)),(3,canonical)] {
+            assert_eq!(read_value_view(rt.states[0].mem.view(Some(bank)),art),Value::Int(5));
+            assert_eq!(rt.states[0].domain_listeners[bank as usize].scopes[0],scope,
+                "the public edit dispatches one canonical owner and each private replay");
+        }
         let mut begin = || {
             rt.ui_control_configuration(&mut engine,0,0,7);
             for (owner,value) in [(1,8),(3,9),(5,10)] { rt.ui_control_replay(&mut engine,owner,0,0,value); }
