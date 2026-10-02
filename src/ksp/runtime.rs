@@ -20,15 +20,24 @@ use std::sync::{Arc, Mutex, Weak};
 /// `source` compiled for `setup`, one copy per process while any runtime
 /// holds it: parts and plugin instances playing one instrument run the same
 /// code over their own memory.
-fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>) -> Result<Arc<Program>> {
-    type Compiled = std::collections::HashMap<(Box<str>, usize, usize, usize, BTreeSet<String>), Weak<Program>>;
+fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>, instrument: Option<&std::path::Path>) -> Result<Arc<Program>> {
+    type Compiled = std::collections::HashMap<(Box<str>, usize, usize, usize, BTreeSet<String>, Vec<u8>), Weak<Program>>;
     static COMPILED: Mutex<Option<Compiled>> = Mutex::new(None);
     let lock = || COMPILED.lock().unwrap_or_else(|e| e.into_inner());
-    let key = (Box::from(source), setup.groups, setup.outputs, setup.zones, inherited.clone());
+    // Ordinary scripts keep the existing cache-hit path: no tokenization or I/O.
+    let prepared = if source.contains("load_performance_view") {
+        Some(super::performance_view::prepare(source, inherited, instrument)?)
+    } else { None };
+    let resource = prepared.as_ref().map_or_else(Vec::new, |p| p.resource.clone());
+    let key = (Box::from(source), setup.groups, setup.outputs, setup.zones, inherited.clone(), resource);
     if let Some(p) = lock().get_or_insert_default().get(&key).and_then(Weak::upgrade) {
         return Ok(p);
     }
-    let program = Arc::new(compile::compile_with_conditions(source, setup, inherited)?);
+    let prepared = match prepared {
+        Some(p) => p,
+        None => super::performance_view::prepare(source, inherited, instrument)?,
+    };
+    let program = Arc::new(compile::compile_prepared(prepared, setup)?);
     let mut compiled = lock();
     let compiled = compiled.get_or_insert_default();
     compiled.retain(|_, p| p.strong_count() > 0);
@@ -1067,7 +1076,7 @@ impl Runtime {
         };
         let inherited = self.programs.iter().zip(&self.states).rev()
             .find(|(_, state)| state.error.is_none()).map(|(p, _)| p.conditions.clone()).unwrap_or_default();
-        let program = match compiled(source, &setup, &inherited) {
+        let program = match compiled(source, &setup, &inherited, engine.instrument_path()) {
             Ok(p) => p,
             Err(e) => {
                 self.programs.push(Arc::default());

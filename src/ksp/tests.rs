@@ -18,6 +18,61 @@ fn label(source: &str) -> String {
 }
 
 #[test]
+fn performance_view_loads_hierarchy_defaults_callbacks_and_resource_cache_identity() {
+    use serde_json::json;
+    let directory = std::env::temp_dir().join(format!("kontra-nckp-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let resources = directory.join("Resources/performance_view");
+    std::fs::create_dir_all(&resources).unwrap();
+    let instrument = directory.join("fixture.nki");
+    let common = |id: &str| json!({"id":id,"infoPaneText":"authored help","position":{"x":7,"y":9},"show":true,"size":{"width":85,"height":40},"zLayer":2});
+    let view = |default: i32| json!({"formatVersion":0,"type":{"name":"UI","version":0},"value":{"performanceView":{
+        "size":{"width":640,"height":400},"background":{"color":123,"image":"wallpaper"},"icon":{"image":"icon","show":true},
+        "controls":[{"index":0,"value":{"common":common("Section_"),"controls":[
+            {"index":3,"value":{"common":common("Amount"),"ratio":1,"unit":0,"value":{"min":0,"max":100,"default":default}}},
+            {"index":6,"value":{"common":common("Choice"),"entries":[{"show":true,"string":"First \"quoted\"","value":42},{"show":false,"string":"Hidden","value":91}]}},
+            {"index":9,"value":{"common":common("Curve"),"bipolar":true,"maxValue":1000,"steps":{"total":4,"visible":4}}},
+            {"index":10,"value":{"common":common("Name"),"text":{"string":"Exact \"name\"\nC:\\folder"}}}
+        ]}}]
+    }}});
+    let path = resources.join("fixture.nckp");
+    let source = "on init\nload_native_ui(\"main\")\nload_performance_view(\"fixture\")\n%Section__Curve[2] := $Section__Amount\nend on\non ui_control($Section__Choice)\n$Section__Amount := $Section__Choice\n%Section__Curve[1] := $Section__Choice\nend on";
+    std::fs::write(&path, serde_json::to_vec(&view(17)).unwrap()).unwrap();
+    let mut engine = LogEngine::new(Vec::new(),48000.0);
+    engine.instrument = Some(instrument);
+    let (mut first, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
+    assert!(errors.is_empty(), "{errors:?}");
+    let ui = first.interface(0);
+    assert_eq!(ui.controls.len(),5);
+    assert_eq!(ui.controls[1].variable,"$Section__Amount");
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(17));
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_POS_X"],Value::Int(7));
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_PARENT_PANEL"],Value::Int(ui.controls[0].id));
+    assert_eq!(ui.controls[2].menu,vec![("First \"quoted\"".into(),42)]);
+    assert_eq!(ui.controls[3].properties["$CONTROL_PAR_VALUE"],Value::IntArray(vec![0,0,17,0]));
+    assert_eq!(ui.controls[4].properties["$CONTROL_PAR_VALUE"],Value::Text("Exact \"name\"\nC:\\folder".into()));
+    assert!(first.diagnostics().iter().any(|d| d.contains("scripted native UI execution is unavailable")));
+    first.ui_control(&mut engine,0,2,42);
+    assert_eq!(first.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(42));
+    assert_eq!(first.interface(0).controls[3].properties["$CONTROL_PAR_VALUE"],Value::IntArray(vec![0,42,17,0]));
+    std::fs::write(&path, serde_json::to_vec(&view(31)).unwrap()).unwrap();
+    let (second, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(second.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(31));
+    assert_eq!(first.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(42));
+    // Inserted resource statements keep the original source's diagnostic lines.
+    let invalid = "on init\nload_performance_view(\"fixture\")\n$Section__Amount := $missing\nend on";
+    let (_, errors) = Runtime::with_scripts(&[invalid], &mut engine, 8, Vec::new());
+    assert!(errors.iter().any(|d| d.contains("line 3")), "{errors:?}");
+    std::fs::write(&path,b"{}").unwrap();
+    let (_, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
+    assert!(errors.iter().any(|d| d.contains("Performance view") && d.contains("line 3")), "{errors:?}");
+    let excluded = "on init\nUSE_CODE_IF(ABSENT)\nload_performance_view(\"missing\")\nEND_USE_CODE\ndeclare ui_button $valid\nend on";
+    let (_, errors) = Runtime::with_scripts(&[excluded], &mut engine, 8, Vec::new());
+    assert!(errors.is_empty(), "{errors:?}");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn legacy_pgs_callback_dispatches_through_the_same_shared_storage() {
     let sender = "on init\n_pgs_create_key(shared_value,1)\ndeclare ui_button $send\nend on\non ui_control($send)\n_pgs_set_key_val(shared_value,0,42)\nend on";
     let receiver = "on init\ndeclare ui_slider $received(0,100)\nend on\non _pgs_changed\n$received := _pgs_get_key_val(shared_value,0)\nend on";
