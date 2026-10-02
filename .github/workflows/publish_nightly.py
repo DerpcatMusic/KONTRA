@@ -33,9 +33,12 @@ def managed_ref(tag):
 
 def delete_ref(tag):
     assert managed_ref(tag), "Stable source tags must be preserved"
-    # Missing tags are normal after an interrupted release rename.
+    # Missing refs can return 422 on DELETE. Prefix matches are not this tag.
+    if not any(r["ref"] == "refs/tags/" + tag for r in api("git/matching-refs/tags/" + tag)):
+        return
     result = subprocess.run(["gh", "api", f"repos/{REPO}/git/refs/tags/{tag}", "--method", "DELETE"], capture_output=True)
     if result.returncode and b"HTTP 404" not in result.stderr:
+        print(result.stderr.decode(), end="")
         raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
 
