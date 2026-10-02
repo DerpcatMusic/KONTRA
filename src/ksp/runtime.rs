@@ -213,6 +213,9 @@ pub(crate) struct NativeControl {
     pub name: String,
     pub slot: usize,
     pub control: usize,
+    /// Exact KSP declaration, retained off-thread for typed native adapters.
+    pub kind: Box<str>,
+    pub range: Option<(i32, i32)>,
     storage: usize,
     pub value: i32,
 }
@@ -1453,7 +1456,12 @@ impl Runtime {
                 let var = &self.programs[slot].vars[c.var as usize];
                 if !identifiers.insert(var.name.trim_start_matches(['$', '%', '~', '?', '@', '!']).to_owned()) { continue; }
                 if var.ty != Ty::Int || var.len.is_some() { continue; }
-                live.native_controls.push(NativeControl { name: var.name.trim_start_matches('$').into(), slot, control, storage: var.slot as usize, value: state.mem.ints[var.slot as usize] });
+                let Some(kind) = &var.ui else { continue };
+                let range = match (c.get(b::CONTROL_PAR_MIN_VALUE), c.get(b::CONTROL_PAR_MAX_VALUE)) {
+                    (Some(super::ui::Prop::Int(a)), Some(super::ui::Prop::Int(z))) => Some((*a, *z)),
+                    _ => None,
+                };
+                live.native_controls.push(NativeControl { name: var.name.trim_start_matches('$').into(), slot, control, kind: kind.clone(), range, storage: var.slot as usize, value: state.mem.ints[var.slot as usize] });
             }
         }
     }
@@ -1599,8 +1607,17 @@ impl Runtime {
         while at.native_at < live.native_controls.len() {
             if remaining == 0 { return false; }
             let c = &mut live.native_controls[at.native_at];
-            let value = self.states[c.slot].mem.ints[c.storage];
-            if c.value != value { c.value = value; live.native_revision = live.native_revision.wrapping_add(1); at.changed = true; }
+            let state = &self.states[c.slot];
+            let value = state.mem.ints[c.storage];
+            let control = &state.ui.controls[c.control];
+            let range = match (control.get(b::CONTROL_PAR_MIN_VALUE), control.get(b::CONTROL_PAR_MAX_VALUE)) {
+                (Some(super::ui::Prop::Int(a)), Some(super::ui::Prop::Int(z))) => Some((*a, *z)),
+                _ => None,
+            };
+            if c.value != value || c.range != range {
+                c.value = value; c.range = range;
+                live.native_revision = live.native_revision.wrapping_add(1); at.changed = true;
+            }
             at.native_at += 1;
             remaining -= 1;
         }
