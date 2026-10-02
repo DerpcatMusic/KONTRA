@@ -4852,6 +4852,45 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_opacity_updates_each_descendant_without_changing_layout_or_hits() {
+        use crate::native_ui::{Node, Paint, Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-opacity-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local p=require('kontakt').connect_parameter('Amount')
+            return @ui.ZStack {
+                @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
+                @ui.Rectangle {color=ui.Color.blue}.frame(width=20,height=10).opacity(0.5)
+                @ui.Rectangle {color=ui.Color.white}.frame(width=20,height=10).on_tap_gesture(start=function() end).opacity(0)
+            }.opacity(ui.create_computed(function() return p:value()/100 end)).frame(width=40,height=20)
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Amount(0,100)\n$Amount := 100\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let mut engine=Engine::default();engine.set_script(Some(rt));
+        fn primitives<'a>(node:&'a Node,out:&mut Vec<&'a Node>){if matches!(node.paint,Paint::Rectangle(..)){out.push(node)}for child in &node.children{primitives(child,out)}}
+        for amount in [100,40] {
+            let (mut left,mut right)=([0.;64],[0.;64]);
+            assert_eq!(allocations(||{engine.ui_control(0,0,amount);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+            scene.observe(&live);let root=scene.snapshot().unwrap();let mut nodes=Vec::new();primitives(&root,&mut nodes);
+            assert_eq!(nodes.iter().map(|n|n.opacity).collect::<Vec<_>>(),[amount as f32/100.,amount as f32/200.,0.]);
+            let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets));
+            let rendered=moose::mui::mui::scene::resolve(&spec).unwrap();
+            assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(40.,20.));
+            for node in nodes {
+                let key=format!("native-snapshot-{}",node.id);let surface=rendered.surface(&key).unwrap();
+                assert_eq!((surface.frame.size.width,surface.frame.size.height),(20.,10.));assert!(!surface.disabled,"opacity must not hide or disable controls");
+                if node.opacity!=1. {assert!(rendered.paint.iter().any(|p|p.key.as_str()==key&&matches!(p.layer,moose::mui::mui::scene::Layer::Blend{opacity,..} if opacity==node.opacity)),"each leaf receives its own MUI layer, not a flattened parent layer");}
+            }
+            fn tap_id(node:&Node)->Option<usize>{if node.tap{Some(node.id)}else{node.children.iter().find_map(tap_id)}}
+            assert!(scene.tap(tap_id(&root).unwrap()).unwrap().is_empty(),"zero opacity preserves the authored tap callback");
+        }
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.Rectangle{color=ui.Color.red}.opacity(function() return 0/0 end).frame(width=20,height=10)").unwrap();
+        assert!(format!("{:#}",Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap_err()).contains("Invalid native UI opacity"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_scene_uses_exact_slot_plugin_edits_and_published_callbacks_without_audio_heap() {
         use crate::native_ui::{Scene, Node, Paint};
         let directory = std::env::temp_dir().join(format!("kontra-native-scene-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

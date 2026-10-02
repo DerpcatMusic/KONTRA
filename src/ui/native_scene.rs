@@ -152,6 +152,11 @@ fn primitive(
             }
         },
     };
+    // NI opacity applies to each painted descendant, not a flattened stack.
+    // Carry the product through composition and let MUI blend each primitive.
+    let el = if !matches!(node.paint, Paint::Stack) && node.opacity != 1. {
+        el.opacity(node.opacity)
+    } else { el };
     if node.hidden { el.opacity(0.).disabled() } else { el }
 }
 #[cfg(test)]
