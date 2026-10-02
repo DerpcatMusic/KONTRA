@@ -2812,7 +2812,7 @@ mod tests {
             let groups = [Group { fx: Chain { slots: vec![effect.clone()] }, amp_split_slot: Some(split), ..Group::default() }];
             let mut settings = [GroupSettings::from(&groups[0])];
             let address = Address::resolve(EnginePar { id: drive_id, group: 0, slot: 6, generic: -1 }, &groups).unwrap();
-            let mut voice = VoiceFilter::new(settings[0].filter.as_ref(), &table, &input, RATE);
+            let mut voice = VoiceFilter::new(settings[0].filter.as_deref(), &table, &input, RATE);
             let mut rack = blocks::Block::new(&effect, RATE).unwrap();
             let amp = [0.5; 128];
             let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.8], delta: [0.0; 2] };
