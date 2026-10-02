@@ -485,6 +485,10 @@ impl Engine {
             .iter()
             .map(|v| VoiceInfo {
                 group: v.group,
+                event: v.event,
+                input_channel: v.input_channel,
+                owner: v.owner,
+                held: v.held,
                 channel: v.channel,
                 note: v.note,
                 released: v.released,
@@ -1010,6 +1014,11 @@ impl Engine {
 #[derive(Clone, Copy, Debug)]
 pub struct VoiceInfo {
     pub group: u32,
+    pub event: EventId,
+    /// Physical input provenance, retained through script rerouting.
+    pub input_channel: Option<u8>,
+    pub owner: Option<(u8, u8)>,
+    pub held: bool,
     pub channel: u8,
     pub note: u8,
     pub released: bool,
