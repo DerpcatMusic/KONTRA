@@ -996,12 +996,7 @@ fn hash_value(v: &Value, h: &mut DefaultHasher) {
 
 /// The imported canvas keeps authored coordinates, labels and bitmap frames.
 fn live(cx: &Cx, part: usize, control: usize) -> Option<f64> {
-    let c = cx.view.parts.get(part)?.interface.as_ref()?.controls.get(control)?;
-    match c.properties.get("$CONTROL_PAR_VALUE")? {
-        Value::Int(n) => Some(f64::from(*n)),
-        Value::Real(r) => Some(*r),
-        _ => None,
-    }
+    cx.view.parts.get(part)?.control_value(control)
 }
 
 /// `item` with its value and readout as they are now.

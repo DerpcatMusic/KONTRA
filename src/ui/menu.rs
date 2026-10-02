@@ -377,10 +377,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             else {
                 return Vec::new();
             };
-            let value = match c.properties.get("$CONTROL_PAR_VALUE") {
-                Some(crate::ksp::Value::Int(n)) => *n,
-                _ => 0,
-            };
+            let value = cx.view.parts[part].control_value(control).unwrap_or(0.) as i32;
             c.menu
                 .iter()
                 .map(|(text, v)| {

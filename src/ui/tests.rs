@@ -1575,7 +1575,12 @@ fn scripted_part(script: &str) -> Arc<SamplerParams> {
 /// Control `n`'s value in part 0's performance view.
 fn control_value(p: &SamplerParams, n: usize) -> crate::ksp::Value {
     let view = p.shared.view.lock().unwrap();
-    view.parts[0].interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"].clone()
+    let part = &view.parts[0];
+    if let Some((_, value)) = part.edited_values().find(|&(control, _)| control == n) {
+        crate::ksp::Value::Int(value)
+    } else {
+        part.interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"].clone()
+    }
 }
 
 /// An articulation's keyswitch is typed or played in place, its channel and
@@ -2719,4 +2724,37 @@ fn frame_views_leave_large_persistence_json_with_the_loader() {
     let view = p.shared.view.lock().unwrap();
     assert_eq!(view.parts[0].script_state.len(), 1_000_000);
     assert_eq!(view.parts[0].script_state.as_ptr(), address, "the loader retains the original allocation");
+}
+
+/// Pending values redraw without copying callback snapshots or treating an
+/// edit's settling timestamp as a visible change.
+#[test]
+fn optimistic_values_keep_callback_snapshots_immutable_and_invalidate_views() {
+    use std::hash::{DefaultHasher, Hasher};
+    let p = scripted_part("on init\nmake_perfview\ndeclare ui_slider $s(0,100)\nend on");
+    let signature = |view: &View| {
+        let mut h = DefaultHasher::new();
+        fingerprint(view, &mut h);
+        h.finish()
+    };
+    let (retained, before) = {
+        let view = p.shared.view.lock().unwrap();
+        (view.parts[0].interface.clone().unwrap(), signature(&view))
+    };
+    p.shared.edit_control(0, 0, 42);
+    let mut view = p.shared.view.lock().unwrap();
+    assert!(Arc::ptr_eq(&retained, view.parts[0].interface.as_ref().unwrap()));
+    assert_eq!(retained.controls[0].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(0));
+    assert_eq!(view.parts[0].control_value(0), Some(42.));
+    let edited = signature(&view);
+    assert_ne!(edited, before, "a pending value wakes an idle editor");
+    view.parts[0].edited[0].2 = Instant::now();
+    assert_eq!(signature(&view), edited, "timestamps do not cause redraws");
+    view.parts[0].edited.clear();
+    assert_eq!(view.parts[0].control_value(0), Some(0.));
+    assert_eq!(signature(&view), before, "settling removes the overlay");
+    view.parts[0].live_revisions = Some((1,0));
+    let revision = signature(&view);
+    view.parts[0].live_revisions = Some((2,0));
+    assert_ne!(signature(&view), revision, "a reused snapshot address cannot hide a new source revision");
 }

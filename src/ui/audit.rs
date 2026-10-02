@@ -123,7 +123,7 @@ fn inspect(i: &import::Instrument, u: &Interface, shown: &[Shown], pictures: &Ha
 fn vectorized(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwork::Picture>>, found: &mut Found) {
     use super::vector::plan;
     let drawn: Vec<_> = shown.iter().map(|s| (s.clone(), perf_view::frame_of(s, &u.controls[s.control]))).collect();
-    let plans = plan(u, pictures, &drawn, &mut super::vector::Assets::default());
+    let plans = plan(u, pictures, &drawn, &mut super::vector::Assets::default(), |_| None);
     let (vw, vh) = (f64::from(u.width), f64::from(u.height));
     // Each word's ink, absolute: (owner, x, y, w, h).
     let mut inks = Vec::new();
@@ -445,7 +445,7 @@ mod tests {
         }));
         stages.insert("visible_layout_and_drop", measure(|| { black_box(perf_view::layout(interface, &part.pictures)); }));
         stages.insert("warm_vector_plan_and_drop", measure(|| {
-            black_box(super::super::vector::plan(interface, &part.pictures, &drawn, &mut assets));
+            black_box(super::super::vector::plan(interface, &part.pictures, &drawn, &mut assets, |n| part.control_value(n)));
         }));
         stages.insert("original_luma_prefixes", measure(|| {
             let mut sum = 0.;
@@ -717,6 +717,7 @@ mod tests {
             let mut publication_ms = Vec::new();
             let partition = std::env::var_os("KONTRA_UI_BENCH_PARTITION").is_some();
             let mut last_published = None;
+            let mut published_arc_owners = Vec::new();
             let mut observer = |published: &Arc<SamplerParams>| -> anyhow::Result<()> {
                 if partition { last_published = Some(published.clone()); }
                 if observer_draw.is_none() {
@@ -733,9 +734,15 @@ mod tests {
                     observer_draw = Some((Bridge::new(published.clone()), build(published, Arc::default(), Arc::default(), Arc::default(), art.clone())));
                 }
                 fitted::ready();
-                let start = Instant::now();
                 // Native MuiEditor publishes before its changed fingerprint;
                 // this headless pump has no Watch, so perform the same stage.
+                if partition {
+                    let view = published.shared.view.lock().unwrap();
+                    if let Some(source) = &view.parts[0].interface {
+                        published_arc_owners.push((Arc::strong_count(source), Arc::weak_count(source)));
+                    }
+                }
+                let start = Instant::now();
                 published.shared.publish_live(true);
                 publication_ms.push(start.elapsed().as_secs_f64()*1000.);
                 let (bridge, draw) = observer_draw.as_mut().unwrap();
@@ -767,7 +774,15 @@ mod tests {
                 "live_publication_ms":{"mean":publication_ms.iter().sum::<f64>()/publication_ms.len() as f64,"p99":publication_ms[((publication_ms.len()-1) as f64*0.99).ceil() as usize]},
                 "callback_published_render_ms":{"mean":rendered.iter().sum::<f64>()/rendered.len() as f64,"p99":rendered[((rendered.len()-1) as f64*0.99).ceil() as usize]}}));
             if let Some(published) = last_published {
-                println!("UI_BENCH_COST {}", cost_partition(&published));
+                let mut costs = cost_partition(&published);
+                costs["published_arc_owners"] = serde_json::json!({
+                    "scope":"before native publication; no extra interface Arc is retained by this counter",
+                    "frames":published_arc_owners.len(),
+                    "unique_strong_frames":published_arc_owners.iter().filter(|(strong,_)| *strong == 1).count(),
+                    "max_strong":published_arc_owners.iter().map(|(strong,_)| *strong).max(),
+                    "max_weak":published_arc_owners.iter().map(|(_,weak)| *weak).max(),
+                });
+                println!("UI_BENCH_COST {}", costs);
             }
         }
         if let Some(to) = std::env::var_os("KONTRA_UI_BENCH_SHOT") {
