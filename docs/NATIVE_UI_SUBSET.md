@@ -28,6 +28,10 @@ Scenes allow 4,096 unique nodes, depth 64, 8 KiB text, frames up to 4,096 pixels
 and 64 edits per gesture. Module loading is sealed after preparation; later
 missing `require` calls fail without editor file I/O. OS, I/O, package/native
 modules and dynamic source loaders are not exposed.
+Protected calls preserve ordinary Lua results/errors, but rethrow sticky
+instruction exhaustion even across nested catches. Coroutines and `xpcall`
+are unavailable. Native temporary MIDI export remains explicitly unsupported
+when invoked; looking up its API does not fabricate a file or enable mocks.
 
 Images, additional primitives/modifiers, indexed array connections, generalized
 reactive subscriptions and parameter writes outside gestures are explicitly

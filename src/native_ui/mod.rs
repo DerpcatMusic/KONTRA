@@ -136,14 +136,7 @@ impl Scene {
             LuaOptions::default(),
         )?;
         lua.set_memory_limit(64 * 1024 * 1024)?;
-        for name in [
-            "dofile",
-            "loadfile",
-            "load",
-            "collectgarbage",
-            "pcall",
-            "xpcall",
-        ] {
+        for name in ["dofile", "loadfile", "load", "collectgarbage", "xpcall"] {
             lua.globals().set(name, Value::Nil)?;
         }
         let instructions = Arc::new(AtomicUsize::new(0));
@@ -158,6 +151,16 @@ impl Scene {
             },
         )?;
         let revision = Arc::new(AtomicU64::new(1));
+        let budget = instructions.clone();
+        lua.globals().set(
+            "native_budget_check",
+            lua.create_function(move |_, ()| {
+                if budget.load(Ordering::Relaxed) >= 100_000 {
+                    return Err(invalid("Native UI instruction budget exceeded"));
+                }
+                Ok(())
+            })?,
+        )?;
         let changed = revision.clone();
         lua.globals().set(
             "native_changed",

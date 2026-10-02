@@ -1,4 +1,13 @@
 -- KONTRA's deliberately small native UI host. Unknown API is an explicit error.
+-- Keep the original protected call private. A caught hook error cannot reset
+-- fuel: every return, including nested calls, rethrows sticky exhaustion.
+local protected_call, budget_check = pcall, native_budget_check
+pcall = function(fn,...)
+    budget_check()
+    local result = table.pack(protected_call(fn,...))
+    budget_check()
+    return table.unpack(result,1,result.n)
+end
 local function strict(name, values)
     return setmetatable(values, {__index=function(_,key)
         error("Unsupported native UI API: "..name.."."..tostring(key),2)
@@ -33,6 +42,9 @@ local ui = {
 for _,kind in ipairs({"ZStack","Text","Rectangle"}) do ui[kind]={kind=kind} end
 native_ui_host = strict("native_ui",ui)
 kontakt_host = strict("kontakt", {
+    create_tmp_midi_file=function()
+        error("Unsupported native UI API: kontakt.create_tmp_midi_file",2)
+    end,
     connect_parameter=function(name)
         local slot,control = native_connect(name)
         return strict("parameter", {
