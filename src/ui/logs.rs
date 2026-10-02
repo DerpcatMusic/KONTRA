@@ -330,7 +330,7 @@ fn support_text(snapshot: DiagnosticSnapshot, context: serde_json::Value) -> Res
             event["code"].as_str().or_else(|| event["event"].as_str()).unwrap_or("event"),
             event["reason"].as_str().unwrap_or(""));
         text.push_str(&serde_json::to_string_pretty(event).map_err(|e| e.to_string())?);
-        if let Some(excerpt) = diagnostics::excerpt_text(&event["details"]) {
+        if let Some(excerpt) = diagnostics::excerpt_text(event) {
             text.push_str("\nScript source context (numbered lines; > marks the fault)\n");
             text.push_str(excerpt);
         }
