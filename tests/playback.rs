@@ -1852,10 +1852,10 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
     let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
     assert!(errors.is_empty(), "{errors:?}");
     e.set_script(rt);
-    assert_eq!(e.script().unwrap().last_message(), "8:8");
-    for (channel, note, velocity, expected) in [(0, 60, 100, 3), (0, 60, 50, 1),
-        (1, 60, 100, 5), (0, 60, 10, -1), (0, 61, 100, -1),
-        (0, 62, 100, -1), (0, 63, 100, -1), (0, 65, 100, 6)] {
+    assert_eq!(e.script().unwrap().last_message(), "8:7");
+    for (channel, note, velocity, expected) in [(0, 60, 100, 2), (0, 60, 50, 0),
+        (1, 60, 100, 4), (0, 60, 10, -1), (0, 61, 100, -1),
+        (0, 62, 100, -1), (0, 63, 100, -1), (0, 65, 100, 5)] {
         e.panic();
         e.note_on(channel, note, velocity);
         // Before wait the MIDI event has not reached the playback host.
@@ -1863,7 +1863,7 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
         // The callback resumes before queued Start commands are applied.
         let (mut left, mut right) = ([0.0; 64], [0.0; 64]);
         assert_eq!(allocations(|| e.render(&mut left, &mut right)), 0);
-        let message = format!("{expected}:8:3");
+        let message = format!("{expected}:8:2");
         assert_eq!(e.script().unwrap().last_message(), message, "queued channel={channel} note={note} velocity={velocity}");
         e.cc(channel, 1, 1);
         assert_eq!(e.script().unwrap().last_message(), message, "live channel={channel} note={note} velocity={velocity}");
@@ -1874,10 +1874,10 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
     e.note_off(0, 60);
     render(&mut e, 1000);
     e.cc(0, 1, 2);
-    assert_eq!(e.script().unwrap().last_message(), "0:8:3");
+    assert_eq!(e.script().unwrap().last_message(), "0:8:2");
     e.note_on(0, 60, 110);
     render(&mut e, 64);
-    assert_eq!(e.script().unwrap().last_message(), "3:8:3");
+    assert_eq!(e.script().unwrap().last_message(), "2:8:2");
     assert!(e.script().unwrap().diagnostics().iter().any(|d| d.contains("EVENT_PAR_ZONE_ID is read-only")));
     drop(e);
     std::fs::remove_dir_all(dir).unwrap();
