@@ -36,6 +36,8 @@ pub struct ControlState {
     pub frozen: bool,
     pub spare_menu: Vec<MenuItem>,
     pub spare_text: Vec<(i32, String)>,
+    /// read_persistent_var can precede add_menu_item during initialization.
+    pub native_menu_index: Option<usize>,
 }
 
 impl ControlState {
@@ -46,12 +48,37 @@ impl ControlState {
     }
 
     /// An unset or stale menu value selects its first item.
-    pub fn snap_menu(&self, prog: &Program, mem: &mut Memory) {
+    pub fn snap_menu(&mut self, prog: &Program, mem: &mut Memory) {
+        if let Some(index) = self.native_menu_index {
+            let Some(item) = self.menu.get(index) else { return };
+            let var = &prog.vars[self.var as usize];
+            mem.ints[var.slot as usize] = item.value;
+            self.native_menu_index = None;
+            return;
+        }
         let Some(first) = self.menu.first().map(|i| i.value) else { return };
         let var = &prog.vars[self.var as usize];
         if var.ty == Ty::Int && var.len.is_none() && self.selected_menu(prog, mem).is_none() {
             mem.ints[var.slot as usize] = first;
         }
+    }
+
+    /// Native records select by position; host records and script assignments
+    /// select by assigned value. Only native menu restoration uses this path.
+    pub fn restore_menu(&mut self, prog: &Program, mem: &mut Memory, value: &Value, building: bool) {
+        self.native_menu_index = None;
+        if prog.vars[self.var as usize].ui.as_deref() == Some("ui_menu")
+            && let Value::NativeInt { native_int } = value
+        {
+            self.native_menu_index = usize::try_from(*native_int).ok();
+            if !building && self.native_menu_index.is_none_or(|i| i >= self.menu.len()) {
+                self.native_menu_index = None;
+                if let Some(item) = self.menu.first() {
+                    mem.ints[prog.vars[self.var as usize].slot as usize] = item.value;
+                }
+            }
+        }
+        self.snap_menu(prog, mem);
     }
 
     pub fn visible_menu<'a>(&'a self, prog: &Program, mem: &Memory) -> impl Iterator<Item = &'a MenuItem> {
@@ -239,6 +266,7 @@ impl Ui {
             spare_menu: Vec::new(),
             spare_text: Vec::new(),
             frozen: false,
+            native_menu_index: None,
         };
         c.set_int(b::CONTROL_PAR_POS_X, 0)?;
         c.set_int(b::CONTROL_PAR_POS_Y, 0)?;
