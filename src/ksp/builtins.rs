@@ -991,6 +991,7 @@ pub const ENGINE_PARS: &[&str] = &[
     "$ENGINE_PAR_LIM_RELEASE",
     "$ENGINE_PAR_RV_PREDELAY",
     "$ENGINE_PAR_RV_SIZE",
+    "$ENGINE_PAR_ENV_AHD",
 ];
 
 pub fn engine_par_id(name: &str) -> Option<i32> {

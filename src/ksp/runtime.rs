@@ -93,12 +93,14 @@ pub type Persisted = BTreeMap<String, Value>;
 pub enum FaultContext {
     MidiNote { builtin: &'static str, argument: u8, value: i32 },
     Listener { change: bool, signal: i32, parameter: i32 },
+    ArrayIndex { variable: u32, index: i32, length: u32 },
 }
 
 impl std::fmt::Display for FaultContext {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MidiNote { builtin, argument, value } => write!(out, "{builtin} argument {argument} = {value}"),
+            Self::ArrayIndex { variable, index, length } => write!(out, "array #{variable} index {index}, length {length}"),
             Self::Listener { change, signal, parameter } => {
                 let command = if *change { "change_listener_par" } else { "set_listener" };
                 let name = match *signal {
@@ -114,6 +116,76 @@ impl std::fmt::Display for FaultContext {
     }
 }
 
+/// The latest occurrence's callback context; repeated faults still aggregate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct FaultAction {
+    pub callback: &'static str,
+    pub callback_id: i32,
+    pub event_id: Option<i32>,
+    /// Zero-based MIDI channel, only for MIDI callbacks.
+    pub midi_channel: Option<u8>,
+    pub input_channel: Option<u8>,
+    pub note: Option<i32>,
+    pub value: Option<i32>,
+    pub velocity: Option<i32>,
+    pub controller: Option<i32>,
+    pub rpn_address: Option<i32>,
+    pub async_id: Option<i32>,
+    pub async_status: Option<i32>,
+    pub ui_control: Option<i32>,
+    pub listener_signal: Option<i32>,
+    pub cleanup: bool,
+}
+impl FaultAction {
+    fn from_ctx(ctx: Ctx, env: &Env) -> Self {
+        let callback = match ctx.kind {
+            Kind::UiControl => "ui_control",
+            Kind::Cb(cb) => match cb {
+                Callback::Init => "init", Callback::Note => "note", Callback::Release => "release",
+                Callback::Controller => "controller", Callback::NoteController => "note_controller",
+                Callback::PolyAt => "poly_at", Callback::Rpn => "rpn", Callback::Nrpn => "nrpn",
+                Callback::Listener => "listener", Callback::UiUpdate => "ui_update",
+                Callback::PgsChanged => "pgs_changed", Callback::PersistenceChanged => "persistence_changed",
+                Callback::AsyncComplete => "async_complete", Callback::UiControls => "ui_controls",
+            },
+        };
+        let midi = matches!(ctx.kind, Kind::Cb(Callback::Note | Callback::Release | Callback::Controller | Callback::NoteController | Callback::PolyAt | Callback::Rpn | Callback::Nrpn));
+        let note_event = matches!(ctx.kind, Kind::Cb(Callback::Note | Callback::Release));
+        let note = if note_event { env.events.get(ctx.event).map(|e| e.note) }
+            else { matches!(ctx.kind, Kind::Cb(Callback::NoteController | Callback::PolyAt)).then_some(ctx.note) };
+        let ui = matches!(ctx.kind, Kind::UiControl | Kind::Cb(Callback::UiControls));
+        Self {
+            callback, callback_id: ctx.callback_id, event_id: (ctx.event != 0).then_some(ctx.event),
+            midi_channel: midi.then_some(ctx.channel), input_channel: ctx.input_channel,
+            note, value: (midi && !note_event).then_some(ctx.value),
+            velocity: if note_event { env.events.get(ctx.event).map(|e| e.velocity) } else { None },
+            controller: matches!(ctx.kind, Kind::Cb(Callback::Controller | Callback::NoteController)).then_some(ctx.cc),
+            rpn_address: matches!(ctx.kind, Kind::Cb(Callback::Rpn | Callback::Nrpn)).then_some(ctx.cc),
+            async_id: matches!(ctx.kind, Kind::Cb(Callback::AsyncComplete)).then_some(ctx.async_id),
+            async_status: matches!(ctx.kind, Kind::Cb(Callback::AsyncComplete)).then_some(ctx.async_status),
+            ui_control: ui.then_some(ctx.ui_id),
+            listener_signal: matches!(ctx.kind, Kind::Cb(Callback::Listener)).then_some(ctx.signal),
+            cleanup: ctx.cleanup,
+        }
+    }
+}
+impl std::fmt::Display for FaultAction {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "on {}", self.callback)?;
+        if self.callback_id != 0 { write!(out, ", callback {}", self.callback_id)?; }
+        if let Some(event) = self.event_id { write!(out, ", event {event}")?; }
+        if let Some(channel) = self.midi_channel { write!(out, ", MIDI channel {}", channel + 1)?; }
+        if let Some(note) = self.note { write!(out, ", note {note}")?; }
+        if let Some(controller) = self.controller { write!(out, ", controller {controller}")?; }
+        if let Some(address) = self.rpn_address { write!(out, ", RPN/NRPN address {address}")?; }
+        if let Some(async_id) = self.async_id { write!(out, ", async {async_id}")?; }
+        if let Some(control) = self.ui_control { write!(out, ", UI control {control}")?; }
+        if let Some(signal) = self.listener_signal { write!(out, ", signal {signal}")?; }
+        if self.cleanup { write!(out, ", Panic/reset cleanup")?; }
+        Ok(())
+    }
+}
+
 /// One bounded, allocation-free runtime fault snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct LiveFault {
@@ -122,6 +194,8 @@ pub struct LiveFault {
     pub message: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<FaultContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_action: Option<FaultAction>,
     pub count: u32,
 }
 
@@ -129,6 +203,7 @@ impl std::fmt::Display for LiveFault {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(out, "Slot {} line {}: {}", self.slot, self.line, self.message)?;
         if let Some(context) = self.context { write!(out, " ({context})")?; }
+        if let Some(action) = self.last_action { write!(out, " (latest: {action})")?; }
         write!(out, " ({}x)", self.count)
     }
 }
@@ -455,6 +530,7 @@ struct FaultRecord {
     pc: u32,
     what: &'static str,
     context: Option<FaultContext>,
+    last_action: Option<FaultAction>,
     count: u32,
 }
 
@@ -511,6 +587,7 @@ pub struct Env {
     pub notes: Vec<&'static str>,
     faults: Vec<FaultRecord>,
     pub(super) fault_context: Option<FaultContext>,
+    pub(super) fault_action: Option<Ctx>,
     fault_occurrences_omitted: u64,
     rng: u64,
     next_callback_id: i32,
@@ -565,6 +642,7 @@ impl Env {
             notes: Vec::with_capacity(NOTE_CAPACITY),
             faults: Vec::with_capacity(FAULT_CAPACITY),
             fault_context: None,
+            fault_action: None,
             fault_occurrences_omitted: 0,
             rng: 0x9E37_79B9_7F4A_7C15,
             next_callback_id: 0,
@@ -667,18 +745,21 @@ impl Env {
 
     pub fn fault(&mut self, slot: u8, pc: u32, what: &'static str) {
         let context = self.fault_context.take();
+        let action = self.fault_action.map(|ctx| FaultAction::from_ctx(ctx, self));
         if let Some(f) = self
             .faults
             .iter_mut()
             .find(|f| f.slot == slot && f.pc == pc && f.what == what && f.context == context)
         {
             f.count = f.count.saturating_add(1);
+            f.last_action = action;
         } else if self.faults.len() < FAULT_CAPACITY {
             self.faults.push(FaultRecord {
                 slot,
                 pc,
                 what,
                 context,
+                last_action: action,
                 count: 1,
             });
         } else {
@@ -800,6 +881,8 @@ pub struct Runtime {
     /// Host-block budget survives internal render segments and MIDI splits.
     audio_block: bool,
     audio_time: Option<std::time::Duration>,
+    /// Configured instrument channel for callbacks with no performance input.
+    service_channel: u8,
 }
 
 impl Runtime {
@@ -828,6 +911,7 @@ impl Runtime {
             changes: 0,
             audio_block: false,
             audio_time: None,
+            service_channel: 0,
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
             native_state: Default::default(),
@@ -1178,6 +1262,7 @@ impl Runtime {
             },
             &mut fuel,
         );
+        let action = self.env.fault_action.take();
         self.env.block_fuel = saved_fuel;
         match result {
             Ok(Yield::Done) => {}
@@ -1187,17 +1272,17 @@ impl Runtime {
             ),
             // Like Kontakt's runaway-loop guard, stop the callback, not the script:
             // everything `on init` declared before the loop stays usable.
-            Ok(Yield::OutOfFuel | Yield::OutOfTime) => self.env.fault(
-                slot,
-                t.pc,
-                "on init exceeded its instruction budget and was stopped",
-            ),
+            Ok(Yield::OutOfFuel | Yield::OutOfTime) => {
+                self.env.fault_action = action;
+                self.env.fault(slot, t.pc, "on init exceeded its instruction budget and was stopped");
+                self.env.fault_action = None;
+            }
             Err(f) => {
                 let line = prog.line(t.pc.saturating_sub(1));
                 if let Some(context) = self.env.fault_context.take() {
-                    bail!("KSP line {line}: {} ({context})", f.0);
+                    bail!("KSP line {line}: {} ({context}; on init)", f.0);
                 }
-                bail!("KSP line {line}: {}", f.0);
+                bail!("KSP line {line}: {} (on init)", f.0);
             }
         }
         // Nothing plays yet, so init's notes are dropped; controllers it sets
@@ -1221,7 +1306,7 @@ impl Runtime {
             if let Some(value) = saved.get(&*var.name) {
                 write_value(&mut state.mem, var, value);
                 if let Some(c) = state.ui.control_of(v) {
-                    state.ui.controls[c].snap_menu(prog, &mut state.mem);
+                    state.ui.controls[c].restore_menu(prog, &mut state.mem, value, false);
                 }
             }
         }
@@ -1444,13 +1529,7 @@ impl Runtime {
     pub fn refresh_diagnostics(&self, live: &mut Live) {
         live.fault_occurrences_omitted = self.env.fault_occurrences_omitted;
         live.faults.clear();
-        live.faults.extend(self.env.faults.iter().map(|f| LiveFault {
-            slot: f.slot + 1,
-            line: self.programs[f.slot as usize].line(f.pc.saturating_sub(1)),
-            message: f.what,
-            context: f.context,
-            count: f.count,
-        }));
+        live.faults.extend(self.faults());
         live.notes.clear();
         live.notes.extend_from_slice(&self.env.notes);
     }
@@ -1500,6 +1579,18 @@ impl Runtime {
         true
     }
 
+    /// Bounded retained faults. Slot and source line are one-based.
+    pub fn faults(&self) -> impl Iterator<Item = LiveFault> + '_ {
+        self.env.faults.iter().map(|f| LiveFault {
+            slot: f.slot + 1, line: self.programs[f.slot as usize].line(f.pc.saturating_sub(1)),
+            message: f.what, context: f.context, last_action: f.last_action, count: f.count,
+        })
+    }
+    pub fn fault_occurrences_omitted(&self) -> u64 { self.env.fault_occurrences_omitted }
+    pub(crate) fn fault_variable_name(&self, slot: u8, variable: u32) -> Option<&str> {
+        self.programs.get(slot.checked_sub(1)? as usize)?.vars.get(variable as usize).map(|v| v.name.as_ref())
+    }
+
     /// Slot errors, runtime faults (with script line numbers) and service notes.
     pub fn diagnostics(&self) -> Vec<String> {
         let mut out: Vec<String> = self
@@ -1517,10 +1608,7 @@ impl Runtime {
                     .map(|e| format!("Slot {}: callback disabled: {e}", i + 1)),
             );
         }
-        out.extend(self.env.faults.iter().map(|f| {
-            let line = self.programs[f.slot as usize].line(f.pc.saturating_sub(1));
-            LiveFault { slot: f.slot + 1, line, message: f.what, context: f.context, count: f.count }.to_string()
-        }));
+        out.extend(self.faults().map(|fault| fault.to_string()));
         out.extend(self.env.notes.iter().map(|n| n.to_string()));
         if self.env.fault_occurrences_omitted != 0 {
             out.push(format!("KSP fault diagnostics omitted {} executions at additional locations", self.env.fault_occurrences_omitted));
@@ -1535,6 +1623,11 @@ impl Runtime {
     }
 
     // ---- Host input ------------------------------------------------------------------
+
+    /// Set by the configured part route, independently of MIDI ingress.
+    pub(crate) fn set_service_channel(&mut self, channel: u8) {
+        self.service_channel = channel.min(15);
+    }
 
     /// Set by the MIDI ingress; queued work and suspended callbacks retain it.
     pub fn set_midi_channel(&mut self, channel: u8) {
@@ -2519,6 +2612,10 @@ impl Runtime {
     }
 
     fn spawn(&mut self, engine: &mut dyn KspEngine, entry: u32, mut ctx: Ctx) {
+        if matches!(ctx.kind, Kind::UiControl | Kind::Cb(Callback::UiControls | Callback::UiUpdate
+            | Callback::Listener | Callback::PgsChanged | Callback::PersistenceChanged | Callback::AsyncComplete)) {
+            ctx.channel = self.service_channel;
+        }
         let Some(i) = self.free_threads.pop() else {
             self.env
                 .note("KSP callback pool exhausted; callback dropped");
@@ -2568,6 +2665,7 @@ impl Runtime {
             },
             &mut fuel,
         );
+        let action = self.env.fault_action.take();
         self.env.block_fuel -= budget - fuel;
         self.env.spent += budget - fuel;
         self.threads[i as usize].spent += budget - fuel;
@@ -2596,11 +2694,13 @@ impl Runtime {
             }
             Ok(Yield::OutOfFuel) if self.threads[i as usize].spent >= self.fuel_cap => {
                 let pc = self.threads[i as usize].pc;
+                self.env.fault_action = action;
                 self.env.fault(
                     slot as u8,
                     pc,
                     "KSP callback exceeded its instruction budget",
                 );
+                self.env.fault_action = None;
                 if self.threads[i as usize].ctx.cleanup {
                     self.env.note("KSP Panic cleanup instruction limit; state notification incomplete");
                 }
@@ -2628,7 +2728,9 @@ impl Runtime {
                     self.env.note("KSP Panic cleanup fault; state notification incomplete");
                 }
                 let pc = self.threads[i as usize].pc;
+                self.env.fault_action = action;
                 self.env.fault(slot as u8, pc, f.0);
+                self.env.fault_action = None;
                 self.finish(i);
             }
         }
@@ -2892,7 +2994,7 @@ pub fn write_value(mem: &mut vm::Memory, var: &compile::Var, value: &Value) {
     }
     let s = var.slot as usize;
     let one = |mem: &mut vm::Memory, i: usize, v: &Value| match (var.ty, v) {
-        (Ty::Int, Value::Int(n)) => mem.ints[i] = *n,
+        (Ty::Int, Value::Int(n) | Value::NativeInt { native_int: n }) => mem.ints[i] = *n,
         (Ty::Real, Value::Real(n)) => mem.reals[i] = *n,
         (Ty::Str, Value::Text(t)) => {
             mem.strs[i].clear();

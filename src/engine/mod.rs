@@ -207,8 +207,8 @@ pub struct Engine {
     /// Current-sample parameter positions, allocated before audio processing.
     write_index: (u32, std::collections::HashMap<Address, usize>),
     ir_requests: Vec<IrRequest>,
-    /// MIDI channel of the latest input routed to the script; its notes play there.
-    script_channel: u8,
+    /// Configured part channel for callbacks without a MIDI input owner.
+    home_channel: u8,
     /// Envelope attack (s) for groups without their own envelope.
     pub attack: f32,
     /// Envelope release (s) for groups without their own envelope.
@@ -238,7 +238,7 @@ impl Default for Engine {
             writes: Vec::with_capacity(MAX_WRITES),
             write_index: (0, std::collections::HashMap::with_capacity(MAX_WRITES)),
             ir_requests: Vec::with_capacity(32),
-            script_channel: 0,
+            home_channel: 0,
             attack: 0.002,
             release: 0.15,
             cutoff: 20000.0,
@@ -333,8 +333,10 @@ impl Engine {
         self.writes.clear();
         self.write_index.1.clear();
         self.ir_requests.clear();
+        let channel = self.service_channel();
         if let Some(rt) = script.as_deref_mut() {
             rt.set_sample_rate(self.player.rate);
+            rt.set_service_channel(channel);
         }
         let old = std::mem::replace(&mut self.script, script);
         self.player.controller_defaults.fill(None);
@@ -425,7 +427,7 @@ impl Engine {
 
     /// Apply the host's transport before processing this block's callbacks.
     pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64, signature: (u8, u8)) {
-        if let Some((rt, mut host)) = self.scripted(self.script_channel) {
+        if let Some((rt, mut host)) = self.scripted(self.service_channel()) {
             rt.set_host_transport(&mut host, playing, tempo, beats, signature);
         }
     }
@@ -582,7 +584,6 @@ impl Engine {
 
     fn scripted(&mut self, channel: u8) -> Option<(&mut Runtime, Host<'_>)> {
         let rt = self.script.as_deref_mut()?;
-        self.script_channel = channel;
         rt.set_midi_channel(channel);
         let host = Host {
             channel,
@@ -752,6 +753,8 @@ impl Engine {
         for v in self.player.voices.iter_mut().filter(|v| selected(v.input_channel)) {
             affected |= 1 << v.channel;
             v.fade.start(0.0, fade, true);
+            // Relinquish key ownership during the fade, as the logical stop does.
+            v.held = false;
         }
         self.player.pending_releases.retain(|r| {
             if !selected(r.input_channel) { return true; }
@@ -812,12 +815,12 @@ impl Engine {
     /// A host edit of script control `control` in script slot `slot`: sets its
     /// value and runs the script's `on ui_control`.
     pub fn ui_file_selection(&mut self, slot: usize, control: usize, path: &str) -> bool {
-        let channel = self.script_channel;
+        let channel = self.service_channel();
         self.scripted(channel).is_some_and(|(rt, mut host)| rt.ui_file_selection(&mut host, slot, control, path))
     }
 
     pub fn ui_control(&mut self, slot: usize, control: usize, value: i32) {
-        let channel = self.script_channel;
+        let channel = self.service_channel();
         if let Some((rt, mut host)) = self.scripted(channel) {
             rt.ui_control(&mut host, slot, control, value);
         }
@@ -873,7 +876,7 @@ impl Engine {
             },
             None => (false, None),
         };
-        if id >= 0 && let Some((rt, mut host)) = self.scripted(self.script_channel) {
+        if id >= 0 && let Some((rt, mut host)) = self.scripted(self.service_channel()) {
             rt.async_complete(&mut host, slot, id, loaded);
         }
         retired
@@ -938,11 +941,22 @@ impl Engine {
         }
     }
 
+    fn service_channel(&self) -> u8 {
+        self.player.mpe_zone.map_or(self.home_channel, |(master, _)| master)
+    }
+
+    pub(crate) fn set_home_channel(&mut self, channel: u8) {
+        self.home_channel = channel.min(15);
+        let channel = self.service_channel();
+        if let Some(rt) = self.script.as_deref_mut() { rt.set_service_channel(channel); }
+    }
+
     pub(crate) fn set_mpe_zone(&mut self, zone: Option<(u8, u16)>) {
         self.player.mpe_zone = zone.map(|(master, members)| {
             let master = master.min(15);
             (master, members & !(1 << master))
         });
+        self.set_home_channel(self.home_channel);
     }
 
     pub(crate) fn set_mpe_master_bend_range(&mut self, range: Option<f32>) {
@@ -1024,7 +1038,7 @@ impl Engine {
             self.write_index.1.clear();
             return;
         }
-        let channel = self.script_channel;
+        let channel = self.service_channel();
         if let Some((rt, mut host)) = self.scripted(channel) {
             rt.process(&mut host, n as u32);
         }
@@ -1033,12 +1047,14 @@ impl Engine {
         if !self.blocking_streams { self.player.shed(self.load); }
         let defaults = self.defaults();
         let (mut next, mut written) = (0, 0);
+        let block_size = MAX_BLOCK.min(self.fx.block_size());
         for (block, (l, r)) in left[..n]
-            .chunks_mut(MAX_BLOCK)
-            .zip(right[..n].chunks_mut(MAX_BLOCK))
+            .chunks_mut(block_size)
+            .zip(right[..n].chunks_mut(block_size))
             .enumerate()
         {
-            let (base, len) = (block * MAX_BLOCK, l.len());
+            let (base, len) = (block * block_size, l.len());
+            self.fx.begin_group_sends(len);
             let mut pos = 0;
             loop {
                 // Parameters first: they configure notes started at the same frame.
@@ -1128,6 +1144,7 @@ impl Engine {
             decay: 0.0,
             sustain: 1.0,
             release: self.release,
+            ahd_only: false,
         }
     }
 }
@@ -1407,6 +1424,22 @@ impl Player {
     ) -> Option<EventId> {
         if ev.channel >= 16 || ev.note >= 128 || !(1..=127).contains(&ev.velocity) {
             return None;
+        }
+        if !release_trigger && bank.note_mono_releases {
+            // Kontakt Source module Note Mono cuts a still-sounding release
+            // on the next same-key attack. Deferred pedal releases are not
+            // playing yet, so their independent event identities stay intact.
+            let input = ev.input_channel.or(ev.owner.map(|(channel, _)| channel)).unwrap_or(ev.channel);
+            let fade = self.fade_frames(DECLICK);
+            for voice in &mut self.voices {
+                if voice.release_trigger && voice.note == ev.note && voice.channel == ev.channel
+                    && voice.input_channel.or(voice.owner.map(|(channel, _)| channel)).unwrap_or(voice.channel) == input
+                    && bank.groups()[voice.group as usize].release_trigger_note_monophonic
+                    && !voice.fade.dying()
+                {
+                    voice.fade.start(0., fade, true);
+                }
+            }
         }
         self.clock += 1;
         let mask = ev.groups.unwrap_or(&self.allowed);
@@ -1839,6 +1872,9 @@ impl Player {
                 let fade = self.fade_frames(STEAL_FADE);
                 for v in self.voices.iter_mut().filter(|v| v.channel == channel) {
                     v.fade.start(0.0, fade, true);
+                    // The stop fade may outlive a physical key-up. This voice
+                    // no longer owns a held key and must not fire a new release.
+                    v.held = false;
                 }
                 self.pending_releases.retain(|r| r.channel != channel);
                 self.keys[c].fill(0);
@@ -1994,10 +2030,9 @@ impl Player {
                 continue;
             }
             let bus = bank.settings[voice.group as usize].bus;
-            let (alive, underrun) = match bus.and_then(|b| fx.bus_input(b, offset..offset + n)) {
-                Some((l, r)) => voice.render(&cx, &mut self.scratch, l, r, false),
-                None => voice.render(&cx, &mut self.scratch, left, right, false),
-            };
+            let (input, mut sends) = fx.voice_inputs(bus, offset..offset + n);
+            let (l, r) = input.unwrap_or((left, right));
+            let (alive, underrun) = voice.render(&cx, &mut self.scratch, l, r, false, Some(&mut sends));
             self.underruns += u64::from(underrun);
             if !alive {
                 self.dead.push(i as u16);
@@ -2050,7 +2085,7 @@ impl Player {
                     sl.fill(0.0);
                     sr.fill(0.0);
                     let (alive, underrun) = match lane.is_solo() {
-                        true => voice.render(&cx, &mut self.scratch, sl, sr, true),
+                        true => voice.render(&cx, &mut self.scratch, sl, sr, true, None),
                         false => {
                             let Scratch { window, acc, amp, .. } = &mut self.scratch;
                             let acc = &mut acc[..lane.count(n)];
@@ -2277,5 +2312,191 @@ mod pace_tests {
         std::thread::sleep(Duration::from_millis(10));
         assert!(pace.until(block) > Duration::ZERO);
         assert!(pace.until(block * 2) > Duration::ZERO);
+    }
+}
+
+#[cfg(test)]
+mod release_note_mono_tests {
+    use super::*;
+
+    fn engine(mono: bool, release_only: bool, until_release: bool) -> Engine {
+        let groups = vec![
+            crate::import::Group { muted: release_only, ..Default::default() },
+            crate::import::Group { release_trigger: true, release_trigger_note_monophonic: mono, ..Default::default() },
+            crate::import::Group { release_trigger: true, ..Default::default() },
+        ];
+        let zones = (0..groups.len()).map(|group| crate::import::Zone {
+            group, loop_range: Some(crate::import::Loop { start:0, end:64, alternating:false, until_release, crossfade:0 }),
+            ..Default::default()
+        }).collect();
+        let sample = crate::audio::Sample { rate:48000, frames:vec![[0.2;2];16384] };
+        let bank = Bank::from_samples(groups, zones, vec![(std::path::PathBuf::new(),sample)]).unwrap();
+        let mut engine = Engine::default(); engine.attack=0.0001; engine.release=0.001;
+        engine.set_bank(Some(Box::new(bank))); engine
+    }
+    fn tick(e: &mut Engine) { e.render(&mut [0.;512], &mut [0.;512]); }
+    fn tails(e: &Engine) -> usize { e.voice_census().iter().filter(|v|v.release_trigger && v.group==1).count() }
+
+    #[test]
+    fn all_sound_off_relinquishes_note_owners_before_late_key_up() {
+        let mut e = engine(false, false, false);
+        e.note_on_from(0, 1, 60, 100);
+        e.note_on_from(1, 2, 61, 100);
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            e.cc_from(0, 1, 120, 0);
+            assert!(e.player.voices.iter().filter(|v| v.channel == 0).all(|v| !v.held && v.fade.dying()));
+            assert!(e.player.voices.iter().filter(|v| v.channel == 1).all(|v| v.held && !v.fade.dying()));
+            // Key-up arrives before even one sample of the stop fade is rendered.
+            e.note_off_from(0, 1, 60);
+            assert!(!e.player.voices.iter().any(|v| v.release_trigger));
+            tick(&mut e);
+            assert!(!e.player.voices.iter().any(|v| v.channel == 0));
+            assert!(e.key_down(1, 61));
+            // Fresh notes retain their normal native release behavior. Neither
+            // the stopped key nor another physical owner is released again.
+            e.note_on_from(0, 1, 60, 100);
+            e.note_off_from(0, 1, 60);
+            assert_eq!(e.player.voices.iter().filter(|v| v.release_trigger).count(), 2);
+            assert!(e.player.voices.iter().filter(|v| v.release_trigger).all(|v| v.channel == 0 && v.input_channel == Some(1)));
+            assert!(e.player.voices.iter().any(|v| v.channel == 1 && v.held));
+            tick(&mut e);
+        }), 0);
+        assert_eq!(e.dropped_commands(), 0);
+
+        // Channel-mode inputs can share one logical home and the same key.
+        // The physical stop must relinquish only its selected input owner.
+        let mut e = engine(false, false, false);
+        e.note_on_from(7, 1, 60, 100);
+        e.note_on_from(7, 2, 60, 100);
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            e.all_sound_off_from(7, 1 << 1);
+            assert!(e.player.voices.iter().filter(|v| v.input_channel == Some(1)).all(|v| !v.held && v.fade.dying()));
+            assert!(e.player.voices.iter().filter(|v| v.input_channel == Some(2)).all(|v| v.held && !v.fade.dying()));
+            e.note_off_from(7, 1, 60);
+            assert!(!e.player.voices.iter().any(|v| v.release_trigger));
+            assert!(e.key_down(7,60), "the other physical input still holds the shared key");
+            tick(&mut e);
+            assert!(!e.player.voices.iter().any(|v| v.input_channel == Some(1)));
+            e.note_off_from(7, 2, 60);
+            assert!(!e.key_down(7,60));
+            assert_eq!(e.player.voices.iter().filter(|v| v.release_trigger).count(), 2);
+            assert!(e.player.voices.iter().filter(|v| v.release_trigger).all(|v| v.input_channel == Some(2)));
+            tick(&mut e);
+        }),0);
+        assert_eq!(e.dropped_commands(),0);
+    }
+
+    #[test]
+    fn note_mono_scan_is_prepared_only_for_enabled_release_groups() {
+        for (release_trigger, note_mono, expected) in [(false, true, false), (true, false, false), (true, true, true)] {
+            let groups = vec![crate::import::Group { release_trigger, release_trigger_note_monophonic: note_mono, ..Default::default() }];
+            let bank = Bank::from_samples(groups, Vec::new(), Vec::new()).unwrap();
+            assert_eq!(bank.note_mono_releases, expected);
+        }
+    }
+
+    #[test]
+    fn note_mono_cuts_only_matching_sounding_release_tails() {
+        for mono in [false,true] {
+            for (release_only,until_release) in [(false,false),(true,false),(false,true),(true,true)] {
+                let mut e=engine(mono,release_only,until_release);
+                e.note_on_from(0,1,60,100); tick(&mut e);
+                e.note_off_from(0,1,60); tick(&mut e);
+                assert_eq!(tails(&e),1);
+                e.note_on_from(0,2,60,100); tick(&mut e);
+                e.note_on_from(1,1,60,100); tick(&mut e);
+                e.note_on_from(0,1,61,100); tick(&mut e);
+                assert_eq!(tails(&e),1,"other input owners, logical channels and pitches preserve the old tail");
+                e.note_on_from(0,1,60,100); tick(&mut e);
+                assert_eq!(tails(&e),usize::from(!mono),"a same-key restrike obeys the authored flag even in a release-only instrument");
+                assert_eq!(e.voice_census().iter().filter(|v|v.release_trigger && v.group==2).count(),1,"polyphonic sibling group remains sounding");
+            }
+            for pedal in [64,66] {
+                let mut e=engine(mono,false,false);
+                e.note_on(0,60,100); tick(&mut e); e.note_off(0,60); tick(&mut e);
+                if pedal==64 {e.cc(0,pedal,127);}
+                e.note_on(0,60,100); tick(&mut e);
+                if pedal==66 {e.cc(0,pedal,127);tick(&mut e);}
+                e.note_off(0,60); tick(&mut e);
+                assert_eq!(tails(&e),usize::from(!mono),"the new pedal-held key cuts a prior sounding tail");
+                e.cc(0,pedal,0); tick(&mut e);
+                assert_eq!(tails(&e),1+usize::from(!mono),"pedal-up starts the deferred release without coalescing events");
+            }
+            for duration in [-1,0,5000] {
+                let mut e=engine(mono,false,false);
+                let source=format!("on init\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)\nend on\non note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\ndisallow_group($ALL_GROUPS)\nallow_group(1)\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,{duration})\nend on");
+                let (runtime,errors)=crate::ksp::Runtime::with_scripts(&[&source],&mut crate::ksp::LogEngine::new(Vec::new(),48000.),3,Vec::new());
+                assert!(errors.iter().all(Option::is_none)); e.set_script(Some(Box::new(runtime)));
+                e.note_on(0,60,100);tick(&mut e);e.note_off(0,60);tick(&mut e);
+                assert_eq!(tails(&e),1,"the authored manual release starts for duration {duration}");
+                e.note_on(0,60,100);tick(&mut e);
+                assert_eq!(tails(&e),usize::from(!mono),"whole, fixed-duration and following-parent release samples obey Note Mono");
+                assert!(e.script().unwrap().diagnostics().is_empty());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod service_home_tests {
+    use super::*;
+    use crate::modulation::{ModAssignment, ModSource, ModTarget};
+
+    #[test]
+    fn configured_service_controllers_reach_resident_home_and_mpe_voices_without_heap() {
+        for mpe in [false, true] {
+            let group = crate::import::Group {
+                mods: vec![ModAssignment { name: "CC1_VOLUME".into(), source: ModSource::MidiCc(1),
+                    target: ModTarget::Volume, intensity: 1.0, invert: false, lag_ms: 0, shaper: None }],
+                ..Default::default()
+            };
+            let zone = crate::import::Zone { root:60, low_key:60, high_key:60,
+                loop_range: Some(crate::import::Loop { start:0, end:64, alternating:false, until_release:false, crossfade:0 }),
+                ..Default::default() };
+            let bank = Bank::from_samples(vec![group], vec![zone], vec![(std::path::PathBuf::new(),
+                crate::audio::Sample { rate:48000, frames:vec![[0.25;2];4096] })]).unwrap();
+            let source = "on init\ndeclare ui_slider $amount(0,127)\ndeclare ui_switch $timer\nset_listener($NI_SIGNAL_TIMER_MS,1000)\nend on\non ui_control($amount)\nset_controller(1,$amount)\nend on\non listener\nif ($timer=1)\nset_controller(1,64)\n$timer:=0\nend if\nend on\non controller\nif ($CC_NUM=2)\nset_controller(3,%CC[2])\nend if\nend on";
+            let (runtime, errors) = Runtime::with_scripts(&[source], &mut crate::ksp::LogEngine::default(), 1, Vec::new());
+            assert!(errors.iter().all(Option::is_none));
+            let mut rack = Rack::with_slots(1);
+            rack.set_controls(&Mix { parts:vec![PartControls { channel:7, ..Default::default() }], ..Default::default() });
+            let e = &mut rack.parts[0];
+            e.set_bank(Some(Box::new(bank)));
+            e.set_script(Some(Box::new(runtime)));
+            if mpe { e.set_mpe_zone(Some((0, (1 << 1) | (1 << 2)))); }
+            let (voice_channel, controller_channel) = if mpe { (1, 0) } else { (7, 7) };
+            let (mut left, mut right) = ([0.;512], [0.;512]);
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                // The configured home is already available before any MIDI.
+                e.ui_control(0,0,127);
+                e.render(&mut left,&mut right);
+                assert_eq!(e.player.cc[controller_channel][1],127);
+                e.cc(controller_channel as u8,1,0);
+                e.note_on(voice_channel as u8,60,100);
+                e.render(&mut left,&mut right);
+                assert!(left.iter().chain(&right).all(|v| v.abs() < 1e-7));
+                // An unrelated ingress must not select the service channel.
+                e.note_on_from(3,9,61,100);
+                e.cc_from(3,9,2,77);
+                e.ui_control(0,0,127);
+                e.render(&mut left,&mut right);
+                assert_eq!(e.player.cc[3][3],77,"performance callbacks keep their captured logical channel");
+                assert_eq!(e.player.cc[controller_channel][3],0);
+                assert_eq!(e.player.cc[controller_channel][1],127);
+                assert!(left.iter().chain(&right).all(|v| v.is_finite()));
+                let full = left[511];
+                assert!(full > 0.01,"UI CC reaches the resident voice's modulation input");
+                e.ui_control(0,1,1);
+                e.render(&mut left,&mut right);
+                assert_eq!(e.player.cc[controller_channel][1],64);
+                assert!((left[511] / full - 64.0 / 127.0).abs() < 0.015,"listener CC reaches the same voice");
+                if mpe {
+                    assert_eq!(e.player.cc[1][1],64);
+                    assert_eq!(e.player.cc[2][1],64);
+                }
+            }),0);
+            assert_eq!(e.dropped_commands(),0);
+            assert!(e.script().unwrap().diagnostics().is_empty());
+        }
     }
 }

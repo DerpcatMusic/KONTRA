@@ -463,15 +463,25 @@ fn resample(image: &Image, w: u32, h: u32, x0: f64, y0: f64, cw: f64, ch: f64) -
         let (top, bottom) = (y0 + f64::from(y) * ch / f64::from(h), y0 + f64::from(y + 1) * ch / f64::from(h));
         for x in 0..w {
             let (left, right) = (x0 + f64::from(x) * cw / f64::from(w), x0 + f64::from(x + 1) * cw / f64::from(w));
-            let (mut sum, mut n) = ([0u64; 4], 0u64);
+            // Fractional coverage matters: merely touching a pixel must not give
+            // it a full vote. Accumulate premultiplied RGB, then restore straight
+            // RGBA so transparent sprite edges retain their visible color.
+            let (mut sum, mut area) = ([0f64; 4], 0f64);
             for sy in top as usize..(bottom.ceil() as usize).min(image.height as usize).max(top as usize + 1) {
                 for sx in left as usize..(right.ceil() as usize).min(image.width as usize).max(left as usize + 1) {
                     let c = px[sy * image.width as usize + sx];
-                    (0..4).for_each(|k| sum[k] += u64::from(c[k]));
-                    n += 1;
+                    let weight = (bottom.min(sy as f64 + 1.) - top.max(sy as f64))
+                        * (right.min(sx as f64 + 1.) - left.max(sx as f64));
+                    let alpha = f64::from(c[3]) * weight;
+                    (0..3).for_each(|k| sum[k] += f64::from(c[k]) * alpha);
+                    sum[3] += alpha;
+                    area += weight;
                 }
             }
-            rgba.extend(sum.map(|s| (s / n.max(1)) as u8));
+            let rgb = if sum[3] > 0. { [sum[0], sum[1], sum[2]].map(|s| s / sum[3]) } else { [0.; 3] };
+            // Retain byte truncation without losing one unit to floating-point
+            // error (in particular, an opaque area's alpha must stay 255).
+            rgba.extend(rgb.into_iter().chain([sum[3] / area]).map(|v| (v + 1e-9).clamp(0., 255.) as u8));
         }
     }
     Image::rgba(w, h, rgba)
@@ -782,6 +792,23 @@ mod tests {
         assert_eq!(super::Layout::parse("").frames, 1);
         assert_eq!(super::picture_name("../x"), None);
         assert_eq!(super::picture_name("knob").as_deref(), Some("knob.png"));
+    }
+
+    #[test]
+    fn fractional_resizing_preserves_coverage_and_transparent_edge_color() {
+        let stripes: Vec<u8> = (0..8).flat_map(|x| [if x % 2 == 0 { 0 } else { 255 }; 3]
+            .into_iter().chain([255])).collect();
+        let image = super::Image::rgba(8, 1, stripes).unwrap();
+        let resized = super::resize(&image, 7, 1).unwrap();
+        for (pixel, expected) in resized.rgba.as_chunks::<4>().0.iter().zip([31, 191, 95, 127, 159, 63, 223]) {
+            assert!(pixel[..3].iter().all(|&c| c.abs_diff(expected) <= 1), "fractional coverage: {pixel:?} vs {expected}");
+            assert_eq!(pixel[3], 255);
+        }
+        assert_eq!(super::resize(&image, 4, 1).unwrap().rgba.as_ref(), &[127, 127, 127, 255].repeat(4), "whole-area averages remain unchanged");
+        let edge = super::Image::rgba(2, 1, vec![255, 80, 20, 255, 0, 0, 0, 0]).unwrap();
+        assert_eq!(super::resize(&edge, 1, 1).unwrap().rgba.as_ref(), &[255, 80, 20, 127], "transparent black must not darken visible color");
+        let clear = super::Image::rgba(1, 1, vec![90, 80, 70, 0]).unwrap();
+        assert_eq!(super::resize(&clear, 1, 1).unwrap().rgba.as_ref(), &[0, 0, 0, 0]);
     }
 
     #[test]

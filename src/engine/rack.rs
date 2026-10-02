@@ -190,6 +190,7 @@ impl Rack {
                 let rate = engine.rate();
                 engine.reset(rate);
             }
+            engine.set_home_channel(new.channel.clamp(0, 15) as u8);
             *old = new;
         }
     }

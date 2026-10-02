@@ -1,6 +1,6 @@
-//! Script pictures at the size they show: shrunk by area averaging, or
-//! grown by whole pixels, once and off the UI thread, so the renderer
-//! draws them one to one instead of resampling them bilinearly every frame.
+//! Script pictures shrunk by area coverage once and off the UI thread.
+//! Enlargements retain the source for the renderer's interpolated sampling;
+//! repeating source pixels first would make smooth artwork look pixelated.
 //! Until one is made the picture as it is stands in, and [`ready`] asks
 //! for the frame that swaps it in.
 use crate::artwork;
@@ -29,7 +29,7 @@ static WORKER: LazyLock<Mutex<Sender<(Key, Arc<Image>, usize)>>> = LazyLock::new
     let _ = std::thread::Builder::new().name("kontakto-fitted".into()).spawn(move || {
         for (key, source, owner) in rx {
             let [w, h, ..] = key.2;
-            let made = resize(&source, w, h).map(Arc::new);
+            let made = artwork::resize(&source, w, h).map(Arc::new);
             made_lock().insert(key, (Arc::downgrade(&source), made));
             GENERATION[owner % 64].fetch_add(1, Ordering::Relaxed);
             READY.store(true, Ordering::Release);
@@ -61,15 +61,13 @@ pub fn generation(owner: usize) -> u64 {
     GENERATION[owner % 64].load(Ordering::Relaxed)
 }
 
-/// `image` to draw at `w` x `h` device pixels: itself when that is its
-/// size or it would grow by a fraction, else shrunk or grown whole, as soon
-/// as that is made, for `owner`.
+/// `image` to draw at `w` x `h` device pixels: itself at its size or larger,
+/// otherwise shrunk once for `owner` as soon as that is made.
 pub fn fitted(image: &Arc<Image>, w: u32, h: u32, owner: usize) -> Arc<Image> {
     if (w, h) == (image.width, image.height) || w == 0 || h == 0 || image.width == 0 || image.height == 0 {
         return image.clone();
     }
-    let whole = w % image.width == 0 && h % image.height == 0 && w / image.width == h / image.height;
-    if !whole && (w > image.width || h > image.height) {
+    if w > image.width || h > image.height {
         return image.clone();
     }
     let key = (Arc::as_ptr(image) as usize, false, [w, h, 0, 0]);
@@ -114,26 +112,6 @@ pub fn window(image: &Arc<Image>, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<
     piece
 }
 
-/// Shrunk by area averaging, or grown by whole pixels.
-fn resize(image: &Image, w: u32, h: u32) -> Option<Image> {
-    if w <= image.width && h <= image.height {
-        return artwork::resize(image, w, h);
-    }
-    let k = (w / image.width) as usize;
-    let row = image.width as usize * 4;
-    let mut rgba = Vec::new();
-    rgba.try_reserve_exact((w as usize).checked_mul(h as usize)?.checked_mul(4)?).ok()?;
-    for line in image.rgba.chunks_exact(row) {
-        let start = rgba.len();
-        for pixel in line.chunks_exact(4) {
-            for _ in 0..k { rgba.extend_from_slice(pixel); }
-        }
-        let end = rgba.len();
-        for _ in 1..k { rgba.extend_from_within(start..end); }
-    }
-    Image::rgba(w, h, rgba)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,21 +132,20 @@ mod tests {
         let image = Arc::new(Image::rgba(4, 2, (0..32u8).map(|v| v * 8).collect::<Vec<u8>>()).unwrap());
         assert!(Arc::ptr_eq(&fitted(&image, 4, 2, 0), &image), "one to one is itself");
         assert!(Arc::ptr_eq(&fitted(&image, 6, 3, 0), &image), "a fractional growth is left to the renderer");
-        let first = fitted(&image, 8, 4, 0);
+        assert!(Arc::ptr_eq(&fitted(&image, 8, 4, 0), &image), "whole growth also retains source sampling");
+        let first = fitted(&image, 2, 1, 0);
         assert!(Arc::ptr_eq(&first, &image), "the original stands in until it is made");
         let made = loop {
-            let f = fitted(&image, 8, 4, 0);
+            let f = fitted(&image, 2, 1, 0);
             if !Arc::ptr_eq(&f, &image) {
                 break f;
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         };
-        assert_eq!((made.width, made.height), (8, 4));
-        assert_eq!(&made.rgba[..8], &image.rgba[..4].repeat(2)[..], "grown by whole pixels");
-        let small = resize(&image, 2, 1).unwrap();
-        assert_eq!((small.width, small.height), (2, 1));
+        assert_eq!((made.width, made.height), (2, 1));
+        assert!(Arc::ptr_eq(&made, &fitted(&image, 2, 1, 0)), "shrunk once and reused");
         let edge = Image::rgba(4, 1, vec![255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,0,255]).unwrap();
-        assert_eq!(resize(&edge, 2, 1).unwrap().rgba.as_ref(), &[127,127,0,255, 127,127,127,255], "resize keeps both edges instead of cropping to cover");
+        assert_eq!(artwork::resize(&edge, 2, 1).unwrap().rgba.as_ref(), &[127,127,0,255, 127,127,127,255], "resize keeps both edges instead of cropping to cover");
         let a = cut(&image, 1, 0, 2, 2).unwrap();
         assert!(Arc::ptr_eq(&a, &cut(&image, 1, 0, 2, 2).unwrap()), "cut once");
     }

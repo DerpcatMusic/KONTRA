@@ -16,6 +16,7 @@ mod reverb;
 pub use kind::{Kind, ksp_effect_type};
 pub use crate::engine::filter::Knob as FilterParam;
 pub use params::Params;
+pub(crate) use processor::SendInputs;
 pub use processor::{DIRECT, FxParam, FxProcessor, OUTS, PreparedIr, Rack};
 
 use anyhow::{Context, Result, ensure};
@@ -392,10 +393,22 @@ impl ProgramFx {
     /// [`processor`](Self::processor) with what scripts loaded in `on init`
     /// (`loads`, in order) in place of the preset's effects.
     pub fn processor_with(&self, sample_rate: f32, max_block: usize, loads: &[ScriptIr]) -> FxProcessor {
+        self.processor_loaded(sample_rate, max_block, loads, false)
+    }
+
+    /// Build return DSP when decoded group taps can feed it, even without an
+    /// instrument insert tap. Unknown Amplifier placement remains unsupported.
+    pub fn processor_for_groups(&self, sample_rate: f32, max_block: usize, loads: &[ScriptIr], groups: &[crate::import::Group]) -> FxProcessor {
+        let tapped = groups.iter().any(|g| g.amp_split_slot.is_some()
+            && g.fx.slots.iter().any(|fx| fx.slot < 8 && matches!(fx.params, Params::SendLevels(_))));
+        self.processor_loaded(sample_rate, max_block, loads, tapped)
+    }
+
+    fn processor_loaded(&self, sample_rate: f32, max_block: usize, loads: &[ScriptIr], group_sends: bool) -> FxProcessor {
         if loads.is_empty() {
-            return self.processor(sample_rate, max_block);
+            return self.processor_sends(sample_rate, max_block, group_sends);
         }
-        let mut out = self.with_loads(loads).processor(sample_rate, max_block);
+        let mut out = self.with_loads(loads).processor_sends(sample_rate, max_block, group_sends);
         for l in loads {
             if let Load::Convolution(settings) = l.load {
                 out.init_ir_settings(l.rack, l.slot, settings);
@@ -477,6 +490,14 @@ impl ProgramFx {
                     }
                     if c.early.length_ratio != c.late.length_ratio {
                         out.push(format!("{at}: independent early/late IR sizing is not applied; late size stretches the whole IR"));
+                    }
+                }
+                Params::SendLevels(s) => {
+                    if location != "instrument insert" {
+                        out.push(format!("{at}: send taps are not applied in this rack"));
+                    }
+                    if s.outputs.iter().any(|&v| v != 1.0) {
+                        out.push(format!("{at}: the undecoded output-routing table is not applied"));
                     }
                 }
                 Params::StereoModeller(s) if s.pseudo_stereo => {

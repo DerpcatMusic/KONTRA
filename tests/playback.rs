@@ -616,6 +616,7 @@ fn envelope_follows_group_ahdsr() {
         decay: 0.05,
         sustain: 0.5,
         release: 0.05,
+        ahd_only: false,
     });
     let mut e = engine_with(bank);
     e.note_on(0, 60, 127);
@@ -951,6 +952,39 @@ fn streamed_playback_matches_ram_playback() {
     }
     // Long enough to have exercised the streamer, not just the preload.
     assert!(frames as u64 > 4 * PRELOAD_FRAMES);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn transposed_stream_starts_have_a_resident_first_block_without_audio_heap_work() {
+    let dir = std::env::temp_dir().join(format!("kontakto-fast-stream-start-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("source.wav");
+    write_wav(&path, 120_000);
+    // The affected Conflux ratios: ~18.52 and values above the engine's
+    // 32-source-frames/output-frame limit, all on a 44.1-kHz root-zero zone.
+    for (note, tune) in [(64, 0.5), (64, 1.0), (96, 0.5)] {
+        let group = Group::default();
+        let zone = Zone { sample:path.clone(), root:0, tune, ..Default::default() };
+        let streamed = Bank::load(&instrument(vec![group.clone()], vec![zone.clone()])).unwrap();
+        assert_eq!(streamed.streamed_samples(), 1, "the rest of the source must remain streamed");
+        let ram = Bank::from_samples(vec![group], vec![zone], vec![(path.clone(), kontakto::audio::decode(&path, 120_000).unwrap())]).unwrap();
+        let (mut actual, mut expected) = (engine_with(streamed), engine_with(ram));
+        let (mut left, mut right, mut reference_l, mut reference_r) = ([0.;128], [0.;128], [0.;128], [0.;128]);
+        expected.note_on(0, note, 100);
+        expected.render(&mut reference_l, &mut reference_r);
+        assert_eq!(allocations(|| {
+            actual.note_on(0, note, 100);
+            actual.render(&mut left, &mut right);
+        }), 0, "note start and first render must allocate/free nothing");
+        assert_eq!((left, right), (reference_l, reference_r), "first block must match RAM immediately, note{note}/tune{tune}");
+        assert!(left.iter().chain(&right).any(|x| x.abs() > 1e-4), "a delayed/silent start is not a fix");
+        let position = actual.voice_census()[0].pos;
+        assert!(position > 2048., "fixture must demand more than the old preload");
+        assert!(actual.bank().unwrap().preload as f64 >= position,
+            "first-block source trajectory must stay resident regardless of worker scheduling");
+        assert_eq!(actual.underruns(), 0);
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }
 
