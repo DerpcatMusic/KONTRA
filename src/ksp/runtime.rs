@@ -759,6 +759,7 @@ pub struct Runtime {
     states: Vec<SlotState>,
     domain_map: [u8; 16],
     domain_origins: [u8; 16],
+    domain_home: u8,
     domain_count: u8,
     domain_mask: Option<u16>,
     pub env: Env,
@@ -799,10 +800,13 @@ impl Runtime {
 
     /// Prepare performance storage off the audio thread, after all slots load.
     /// Only assigned Channel-mode origins need a bank; the UI and scheduler stay shared.
-    pub fn prepare_channel_domains(&mut self, channels: u16) {
+    pub fn prepare_channel_domains(&mut self, channels: u16, home: u8) {
+        assert!(home < 16, "prepared logical MIDI home must be 0..15");
         if channels == 0 { return; }
         assert!(self.domain_mask.is_none(), "channel domains are prepared once per loaded runtime");
         self.domain_mask = Some(channels);
+        self.domain_home = home;
+        self.env.input.channel = home;
         let count = channels.count_ones().max(1) as u8;
         let mut initial = self.env.input.cc;
         for &(cc, value) in &self.init_controllers { initial[cc as usize] = i32::from(value); }
@@ -865,6 +869,7 @@ impl Runtime {
             states: Vec::new(),
             domain_map: [0; 16],
             domain_origins: [0; 16],
+            domain_home: 0,
             domain_count: 1,
             domain_mask: None,
             env: Env::new(host, persisted),
@@ -1559,6 +1564,7 @@ impl Runtime {
 
     /// Set by the MIDI ingress; queued work and suspended callbacks retain it.
     pub fn set_midi_channel(&mut self, channel: u8) {
+        let channel = self.channel_domain_home().unwrap_or(channel);
         self.env.input.channel = channel.min(15);
         self.env.input.domain = self.domain_map[channel.min(15) as usize];
         self.env.input.input_channel = Some(channel.min(15));
@@ -1816,6 +1822,8 @@ impl Runtime {
     }
 
     pub(crate) fn channel_domain_mask(&self) -> Option<u16> { self.domain_mask }
+
+    pub(crate) fn channel_domain_home(&self) -> Option<u8> { self.domain_mask.map(|_| self.domain_home) }
 
     fn reset_domain_controllers(&mut self, domain: u8, controllers: Option<&[u8; 128]>) {
         let input = &mut self.env.input;
@@ -2628,6 +2636,11 @@ impl Runtime {
     }
 
     fn spawn(&mut self, engine: &mut dyn KspEngine, entry: u32, mut ctx: Ctx) {
+        // UI/listener/async work has no performance event to supply a logical
+        // channel. Its configured part home must survive unrelated ingress.
+        if !matches!(ctx.kind, Kind::Cb(Callback::Note | Callback::Release | Callback::Controller
+            | Callback::PolyAt | Callback::Rpn | Callback::Nrpn | Callback::NoteController))
+            && let Some(home) = self.channel_domain_home() { ctx.channel = home; }
         let Some(i) = self.free_threads.pop() else {
             self.env
                 .note("KSP callback pool exhausted; callback dropped");

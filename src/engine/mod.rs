@@ -399,10 +399,11 @@ impl Engine {
     }
 
     /// Prepare configured Channel-mode origins on the loading thread.
-    pub fn prepare_channel_domains(&mut self, channels: u16) {
+    pub fn prepare_channel_domains(&mut self, channels: u16, home: u8) {
+        assert!(home < 16, "prepared logical MIDI home must be 0..15");
         if channels == 0 { return; }
         if let Some(rt) = self.script.as_deref_mut() {
-            rt.prepare_channel_domains(channels);
+            rt.prepare_channel_domains(channels, home);
             let mut origins = [0; 16];
             for (domain, origin) in (0..16u8).filter(|c| channels & (1 << c) != 0).enumerate() {
                 origins[domain] = origin;
@@ -618,8 +619,9 @@ impl Engine {
 
     fn scripted(&mut self, channel: u8) -> Option<(&mut Runtime, Host<'_>)> {
         let rt = self.script.as_deref_mut()?;
-        self.script_channel = channel;
         rt.set_midi_channel(channel);
+        let channel = rt.env.input.channel;
+        self.script_channel = channel;
         let host = Host {
             channel,
             domain: 0,
@@ -644,6 +646,7 @@ impl Engine {
         if channel >= 16 || owner >= 16 || note >= 128 {
             return;
         }
+        let channel = self.script.as_deref().and_then(Runtime::channel_domain_home).unwrap_or(channel);
         if velocity == 0 {
             return self.note_off_from(channel, owner, note);
         }
@@ -665,6 +668,7 @@ impl Engine {
         if channel >= 16 || owner >= 16 || note >= 128 {
             return;
         }
+        let channel = self.script.as_deref().and_then(Runtime::channel_domain_home).unwrap_or(channel);
         for v in self.player.voices.iter_mut().filter(|v| v.channel == channel && v.owner == Some((owner, note)) && v.held && !v.release_trigger) {
             v.counter_stop.get_or_insert(self.player.now);
         }
@@ -714,6 +718,7 @@ impl Engine {
         if channel >= 16 || cc >= 128 {
             return;
         }
+        let channel = self.script.as_deref().and_then(Runtime::channel_domain_home).unwrap_or(channel);
         let private = self.player.domain_origins.is_some();
         let control = if private { input_channel.min(15) } else { channel };
         if cc == 120 && private {

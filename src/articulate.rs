@@ -1176,7 +1176,7 @@ mod tests {
             let (mut e, mut r) = three_articulation_part();
             let source = format!("on init\ndeclare $art\ndeclare %ids[128]\nend on\non note\nif ($EVENT_NOTE < 24)\n$art := $EVENT_NOTE-12\nignore_event($EVENT_ID)\nelse\nignore_event($EVENT_ID)\n{}\ndisallow_group($ALL_GROUPS)\nallow_group($art)\n%ids[$EVENT_NOTE] := play_note($EVENT_NOTE,$EVENT_VELOCITY,0,0)\nend if\nend on\non release\nignore_event($EVENT_ID)\nif ($EVENT_NOTE >= 24)\nnote_off(%ids[$EVENT_NOTE])\nend if\nend on", if waiting { "wait(1000)" } else { "" });
             e.set_script(Some(Box::new(runtime(&source))));
-            e.prepare_channel_domains(r.route.channel_origins());
+            e.prepare_channel_domains(r.route.channel_origins(), 0);
             no_audio_heap(|| {
                 for channel in 0..3 { feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0); }
                 render(&mut e);
@@ -1206,7 +1206,7 @@ mod tests {
         let (mut e, mut r) = three_articulation_part();
         let source = "on init\ndeclare $art\ndeclare ui_slider $gain(0,1000000)\nend on\non note\nif ($EVENT_NOTE <24)\n$art := $EVENT_NOTE-12\nignore_event($EVENT_ID)\nelse\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nset_engine_par($ENGINE_PAR_VOLUME,($art+1)*200000,0,-1,-1)\nend if\nend on\non ui_control($gain)\nset_engine_par($ENGINE_PAR_VOLUME,$gain,0,-1,-1)\nend on";
         e.set_script(Some(Box::new(runtime(source))));
-        e.prepare_channel_domains(r.route.channel_origins());
+        e.prepare_channel_domains(r.route.channel_origins(), 0);
         let mut gains = [0.;3];
         for channel in 0..3 {
             no_audio_heap(|| { feed(&mut r,&mut e,In::NoteOn(channel,60,100),0); render(&mut e); });
@@ -1233,7 +1233,7 @@ mod tests {
     fn prepared_native_pedals_keep_their_physical_owner() {
         for cc in [64, 66] {
             let (mut e, mut r) = three_articulation_part();
-            e.prepare_channel_domains(r.route.channel_origins());
+            e.prepare_channel_domains(r.route.channel_origins(), 0);
             no_audio_heap(|| {
                 for channel in 0..3 { feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0); }
                 render(&mut e);
@@ -1261,7 +1261,7 @@ mod tests {
         let source = GLOBAL_ARTICULATION.replace("declare $art := 0", "declare $art := 0\ndeclare ui_switch $go")
             + "\non controller\nif ($CC_NUM = 20)\nset_controller(21,%CC[20]+1)\nend if\nend on\non ui_control($go)\nset_controller(22,$art+1)\nend on";
         e.set_script(Some(Box::new(runtime(&source))));
-        e.prepare_channel_domains(r.route.channel_origins());
+        e.prepare_channel_domains(r.route.channel_origins(), 0);
         no_audio_heap(|| {
             for channel in 0..3 { feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0); }
             render(&mut e);
@@ -1302,7 +1302,7 @@ mod tests {
         let (runtime, errors) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
         assert!(errors.is_empty(), "{errors:?}");
         e.set_script(runtime);
-        e.prepare_channel_domains(r.route.channel_origins());
+        e.prepare_channel_domains(r.route.channel_origins(), 0);
         no_audio_heap(|| {
             for channel in 0..3 {
                 feed(&mut r, &mut e, In::NoteOn(channel, 60, 100), 0);
@@ -1326,6 +1326,30 @@ mod tests {
         no_audio_heap(|| { e.panic(); for _ in 0..5 { render(&mut e); } });
         assert!(e.voice_census().is_empty());
         assert_eq!(e.dropped_commands(), 0);
+        assert!(e.script().unwrap().diagnostics().is_empty());
+    }
+
+    #[test]
+    fn prepared_native_common_callbacks_keep_the_configured_logical_home() {
+        let (mut e, mut r) = three_articulation_part();
+        let source = GLOBAL_ARTICULATION.replace("declare $art := 0", "declare $art := 0\ndeclare ui_switch $go")
+            + "\non ui_control($go)\nplay_note(64,100,0,0)\nset_controller(23,$MIDI_CHANNEL)\nend on";
+        e.set_script(Some(Box::new(runtime(&source))));
+        e.prepare_channel_domains(r.route.channel_origins(), 7);
+        no_audio_heap(|| {
+            for channel in 0..3 { feed(&mut r, &mut e, In::NoteOn(channel,60,100),7); }
+            render(&mut e);
+            // Ordinary public/UI entrypoints use their legacy default channel,
+            // while the prepared part retains the configured logical home.
+            e.ui_control(0,0,1);
+            render(&mut e);
+        });
+        assert_eq!(e.voice_census().len(),6);
+        assert!(e.voice_census().iter().all(|v| v.channel == 7));
+        assert_eq!([e.cc_state()[0][23],e.cc_state()[1][23],e.cc_state()[2][23]], [7,7,7]);
+        no_audio_heap(|| { e.panic(); for _ in 0..5 { render(&mut e); } });
+        assert!(e.voice_census().is_empty());
+        assert_eq!(e.dropped_commands(),0);
         assert!(e.script().unwrap().diagnostics().is_empty());
     }
 
