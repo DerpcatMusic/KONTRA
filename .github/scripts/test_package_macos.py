@@ -136,7 +136,20 @@ name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ['MOCK_LOG'], 'a') as log: log.write(json.dumps([name, args]) + '\\n')
 if name == os.environ.get('FAIL_TOOL') or (name == 'xcrun' and args[:2] == ['stapler', os.environ.get('FAIL_TOOL')]): sys.exit(1)
+if name == 'codesign' and '--force' in args and pathlib.Path(args[-1]).is_dir():
+    signature = pathlib.Path(args[-1]) / 'Contents/_CodeSignature'
+    signature.mkdir(exist_ok=True)
+    signature.chmod(0o700)
+    resource = signature / 'CodeResources'
+    resource.write_text('synthetic signature resource')
+    resource.chmod(0o600)
 if name == 'pkgbuild':
+    payload = pathlib.Path(args[args.index('--root')+1])
+    signatures = list(payload.rglob('_CodeSignature'))
+    assert len(signatures) == 3
+    for signature in signatures:
+        assert signature.stat().st_mode & 0o777 == 0o755
+        assert (signature / 'CodeResources').stat().st_mode & 0o777 == 0o644
     if '--analyze' in args:
         pathlib.Path(args[-1]).write_bytes(plistlib.dumps([{'BundleIsRelocatable': True, 'BundleIsVersionChecked': True}]))
     else:
