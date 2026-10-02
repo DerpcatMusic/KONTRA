@@ -1838,7 +1838,9 @@ mod tests {
                         for block in 0..64 {
                             let level = if kind == Kind::TransientMaster {
                                 match block % 16 { 0..=3 => 0.3, 4..=7 => 0.075, _ => 0.0 }
-                            } else { 0.3 };
+                            // After split0's amplifier, the linked peak must
+                            // cross the edited Solid Bus threshold (-12 dB).
+                            } else if kind == Kind::SolidBusComp { 1.0 } else { 0.3 };
                             let mut l: [f32; 128] = std::array::from_fn(|i| level * (TAU * 1000.0 * (block * 128 + i) as f32 / RATE).sin());
                             let (mut r, mut expected_l, mut expected_r) = (l, l, l);
                             let amp = [0.7; 128];
