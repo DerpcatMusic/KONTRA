@@ -184,7 +184,7 @@ fn nis_payload(n:ni_file::nis::ItemContainer,path:&Path,depth:usize)->Result<Vec
     }
     Ok(match Repository::from(n).infer_schema() {
             NISObject::BNISoundPreset(p) => {
-                let key = if p.is_encrypted()? { crate::access::library_key(path)? } else { None };
+                let key = if p.is_encrypted()? { Some(crate::access::require_library_key(path).context("NIS preset access lookup")?) } else { None };
                 let enc = p.encryption_item_with_key(key.as_deref()).context("NIS preset subtree")?;
                 ni_file::nis::schema::PresetChunkItem::from(enc.subtree.item()?).properties()?.0
             },
