@@ -148,12 +148,16 @@ pub struct IrBand {
     pub high_cut_hz: f32,
 }
 
-/// Script values (0..1): predelay, early size, late size. Until the saved
-/// early/late boundary is identified, the last size edit stretches the whole IR.
+/// Script values (0..1): predelay, early size, late size. Native band ratios
+/// remain independent; records predating the pair retain uniform `size`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct IrSettings {
     pub values: [f32; 3],
     pub size: f32,
+    /// Native ER/LR lengths. Older host records omit this pair and retain
+    /// their previous uniform `size` behavior until a Size knob changes.
+    #[serde(default)]
+    pub length_ratios: Option<[f32; 2]>,
     // Omitted in older host states: retain the native saved flags in that case.
     #[serde(default)]
     pub reverse: Option<bool>,
@@ -162,14 +166,15 @@ pub struct IrSettings {
 }
 
 impl IrSettings {
-    pub const DEFAULT: Self = Self { values: [0., 0.5, 0.5], size: 0.5, reverse: None, auto_gain: None };
+    pub const DEFAULT: Self = Self { values: [0., 0.5, 0.5], size: 0.5, length_ratios: None, reverse: None, auto_gain: None };
     pub fn from_convolution(p: &Convolution) -> Self {
         let values = [
             ((p.predelay_ms.max(0.) / 2. + 1.).ln() / 151f32.ln()).clamp(0., 1.),
             (p.early.length_ratio - 0.5).clamp(0., 1.),
             (p.late.length_ratio - 0.5).clamp(0., 1.),
         ];
-        Self { values, size: values[2], reverse: Some(p.reversed()), auto_gain: Some(p.auto_gain()) }
+        Self { values, size: values[2], length_ratios: Some([p.early.length_ratio, p.late.length_ratio]),
+            reverse: Some(p.reversed()), auto_gain: Some(p.auto_gain()) }
     }
 
     /// Continuous fields 0..2, then native Reverse and Auto Gain switches.
@@ -193,12 +198,20 @@ impl IrSettings {
             4 => { self.auto_gain = Some(value != 0.0); return true },
             _ => {}
         }
-        let Some(v) = self.values.get_mut(field as usize) else { return false };
+        let Some(current) = self.values.get(field as usize).copied() else { return false };
         let next = value.clamp(0., 1.);
         // Replaying unchanged script values after a rate rebuild must retain
         // which band was last edited for the uniform-size fallback.
-        if *v != next && field != 0 { self.size = next; }
-        *v = next;
+        if current != next && field != 0 {
+            // A legacy record played both bands at `size`. Promote that
+            // audible pair before changing only the addressed native band.
+            let ratios = self.length_ratios.get_or_insert([0.5 + self.size; 2]);
+            ratios[field as usize - 1] = 0.5 + next;
+            self.values[1] = (ratios[0] - 0.5).clamp(0., 1.);
+            self.values[2] = (ratios[1] - 0.5).clamp(0., 1.);
+            self.size = next;
+        }
+        self.values[field as usize] = next;
         true
     }
 
@@ -210,8 +223,9 @@ impl IrSettings {
 
     pub(super) fn apply(self, p: &mut Convolution) {
         p.predelay_ms = Self::predelay_ms(self.values[0]);
-        p.early.length_ratio = 0.5 + self.size;
-        p.late.length_ratio = p.early.length_ratio;
+        let [early, late] = self.length_ratios.unwrap_or([0.5 + self.size; 2]);
+        p.early.length_ratio = early;
+        p.late.length_ratio = late;
         if let Some(reverse) = self.reverse { p.flags[0] = reverse; }
         if let Some(auto_gain) = self.auto_gain { p.flags[1] = auto_gain; }
     }
@@ -227,7 +241,8 @@ pub struct Convolution {
     pub predelay_ms: f32,
     pub early: IrBand,
     pub late: IrBand,
-    /// Native er_lr_XPoint; units and automatic sentinel behavior remain unverified.
+    /// Native er_lr_XPoint: nonnegative values are a source-duration fraction.
+    /// Negative values request an automatic boundary, which remains unsupported.
     pub unknown_9: f32,
     /// Reverse, Auto Gain, Preserve Length, Bypass Latency Compensation,
     /// Volume Envelope. Names/order verified against native serialization bindings.
@@ -255,8 +270,15 @@ impl Convolution {
             && self.curve_db.iter().all(|v| v.is_finite()
                 && (v * 0.05 * std::f32::consts::LN_10).exp().is_finite())
     }
-    /// Stored native crossover value; its units are not inferred.
+    /// Stored native crossover fraction; negative automatic values stay raw.
     pub fn early_late_xpoint(&self) -> f32 { self.unknown_9 }
+    /// The proved explicit split excludes native time stretching/decimation.
+    /// Rendering additionally requires the source and host rates to agree.
+    pub(crate) fn explicit_split_supported(&self) -> bool {
+        (0.0..=1.0).contains(&self.early_late_xpoint())
+            && self.early.length_ratio == 1.0 && self.late.length_ratio == 1.0
+            && (self.sample_rate_decimation_factor() == 1.0 || self.sample_rate_decimation_factor() < 0.0)
+    }
     pub fn sample_rate_decimation_factor(&self) -> f32 { self.unknown[0] }
     /// The native second word is an integer, not a floating-point parameter.
     pub fn convolution_block_size(&self) -> i32 { self.unknown[1].to_bits() as i32 }

@@ -4,7 +4,7 @@ use super::{
     DECLICK, EventId, MAX_BLOCK,
     bank::{Bank, Span},
     filter::{FilterKey, LaneFilter, VoiceFilter},
-    map::{FOREVER, PlayMap, Run},
+    map::{FOREVER, LoopMap, PlayMap, Run},
     params::{Inputs, VOICE_MODS, PITCH_ENVS},
     stream::Slot,
 };
@@ -912,6 +912,9 @@ pub(crate) struct Plan {
     pub n: usize,
     /// Source frames per output frame, 32.32 fixed point.
     pub step: u64,
+    pub travel: u64,
+    pub last: u64,
+    pub curved_pitch: bool,
     pub target: [f32; 2],
     pub muted: bool,
     /// Output frames to the sample's end, when it ends within the block.
@@ -926,6 +929,7 @@ pub(crate) struct Plan {
 /// One playing zone. Plain data; the engine owns the storage.
 pub(crate) struct Voice {
     pub event: EventId,
+    pub host_note: Option<super::HostRef>,
     pub zone_id: u32,
     pub group: u32,
     pub voice_group: Option<u16>,
@@ -952,6 +956,11 @@ pub(crate) struct Voice {
     pub wavetable: Option<super::wavetable::Table>,
     pub span: u32,
     pub map: PlayMap,
+    /// Saved geometry; control offsets always apply to it, never accumulate.
+    pub base_loop: Option<LoopMap>,
+    pub loop_offsets: [f32; 2],
+    pub loop_deferred: Option<[f32; 2]>,
+    pub loop_deferred_edits: u32,
     pub wraps: u64,
     /// Virtual path length for the current wraps.
     pub length: u64,
@@ -969,6 +978,7 @@ pub(crate) struct Voice {
     /// Current value of each of the group's voiced modulation assignments.
     pub mods: [f32; VOICE_MODS],
     pub pitch_envs: [Envelope; PITCH_ENVS],
+    pub pitch_lfo: super::lfo::Clock,
     /// The last modulation result `(gain, semitones)`, and the input stamp
     /// ([`Context::inputs`]) it holds for while the modulation is settled.
     pub modulated: (f32, f32),
@@ -1011,10 +1021,14 @@ pub(crate) struct Context<'a> {
     pub pressure: &'a [u8; 16],
     /// Per-channel/key MPE and note expression.
     pub expression: &'a [[super::Expression; 128]; 16],
+    pub host_notes: &'a super::host_notes::Owners,
     /// Instrument tune in semitones.
     pub tune: f32,
     pub rate: f32,
+    pub tempo: f32,
     pub blocking: bool,
+    /// Native sample-geometry controls update only at the 32-frame edge.
+    pub native_control_tick: bool,
     /// Changes whenever anything modulation reads may have: controllers,
     /// bend, pressure or group parameters.
     pub inputs: u32,
@@ -1043,6 +1057,7 @@ pub(crate) struct Scratch {
     pub window: Box<[Frame]>,
     pub amp: [f32; MAX_BLOCK],
     pub flex: [f32; MAX_BLOCK],
+    pub positions: [u64; MAX_BLOCK],
     /// A filtered voice's own output before it joins the mix.
     pub out: [[f32; MAX_BLOCK]; 2],
     /// A lane's summed window.
@@ -1055,6 +1070,7 @@ impl Default for Scratch {
             window: vec![[0.0; 2]; WINDOW].into_boxed_slice(),
             amp: [0.0; MAX_BLOCK],
             flex: [0.0; MAX_BLOCK],
+            positions: [0; MAX_BLOCK],
             out: [[0.0; MAX_BLOCK]; 2],
             acc: vec![[0.0; 2]; WINDOW].into_boxed_slice(),
         }
@@ -1111,9 +1127,11 @@ impl Voice {
     /// passes to the output through a fader at rest.
     #[inline(always)]
     pub fn plan(&mut self, cx: &Context, n: usize, bus: Option<u8>, through: Option<[f32; 2]>) -> Option<Lane> {
+        if cx.native_control_tick { self.refresh_loop(cx); }
         let group = &cx.bank.settings[self.group as usize];
         let key = self.owner.map_or(self.note, |(_, key)| key);
         let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][key as usize & 127]);
+        let x = cx.host_notes.overlay(self.host_note, x);
         let inputs = cx.inputs(self.channel, self.note, self.velocity, x);
         let master = cx.mpe_zone.filter(|(master, members)| *master == self.channel || members & (1 << self.channel) != 0)
             .and_then(|(master, _)| cx.mpe_master_bend_range.map(|range| (master, cx.bend[master as usize], range)));
@@ -1137,6 +1155,17 @@ impl Voice {
         }
         let step = self.step * self.tune * self.pitch.1;
         let step = if self.wavetable.is_some() { step } else { step.min(MAX_STEP) };
+        let curved_pitch = group.pitch_lfos.iter().any(|l| !l.bypassed);
+        let fixed_step = if self.wavetable.is_some() { super::wavetable::clock(step) }
+            else { (step * FIXED_ONE) as u64 };
+        let (travel, last) = if curved_pitch {
+            let mut preview = self.pitch_lfo;
+            let mut positions = [0; MAX_BLOCK];
+            preview.positions(&group.pitch_lfos, cx.rate, cx.tempo, self.step * self.tune * self.pitch.1, &mut positions[..n])
+        } else {
+            self.pitch_lfo.skip_bypassed(n);
+            (fixed_step * n as u64, fixed_step * (n as u64 - 1))
+        };
         let level = self.base_level * group.gain * modulation * self.volume * x.gain;
         let target = balance(
             level,
@@ -1148,13 +1177,15 @@ impl Voice {
         let muted = target == [0.0; 2] && self.gains == [0.0; 2]
             && !group.filter.as_ref().is_some_and(|f| f.pre_sends);
         // A sample ending mid-waveform ramps out over its last millisecond.
-        let end = ((self.length as f64 - self.pos) / step) as f32;
+        let end = ((self.length as f64 - self.pos) / (travel as f64 / FIXED_ONE / n as f64)) as f32;
         let declick = self.wavetable.is_none() && end < n as f32 + DECLICK * cx.rate;
         let mut plan = Plan {
             n,
             // 32.32 fixed point: exact, cheap to index.
-            step: if self.wavetable.is_some() { super::wavetable::clock(step) }
-                else { (step * FIXED_ONE) as u64 },
+            step: fixed_step,
+            travel,
+            last,
+            curved_pitch,
             target,
             muted,
             declick: declick.then_some(end),
@@ -1174,7 +1205,7 @@ impl Voice {
         let mut lane = None;
         // One gain all block, before any filter: the voice's frames can be
         // summed, weighted, with others resampled alike.
-        if let Some(class) = class.filter(|_| self.wavetable.is_none() && !muted && !declick && self.gains == target && self.fade.steady()) {
+        if let Some(class) = class.filter(|_| self.wavetable.is_none() && !curved_pitch && !muted && !declick && self.gains == target && self.fade.steady()) {
             let flex = match &self.flex {
                 Some(env) => env.shape(n),
                 None => Some(Shape::Flat(1.0)),
@@ -1204,6 +1235,59 @@ impl Voice {
         lane
     }
 
+    /// Live boundary edits preserve the fractional physical cursor. Once released,
+    /// the existing until-release seam and tail retain their final geometry.
+    fn refresh_loop(&mut self, cx: &Context) {
+        let Some(base) = self.base_loop else { return; };
+        let offsets = cx.bank.settings[self.group as usize].mods.loop_offsets();
+        if offsets == self.loop_offsets { return; }
+        if self.released { self.defer_loop(offsets); return; }
+        let sample = &cx.bank.samples[self.sample as usize];
+        let Some(map) = (PlayMap { looped: Some(base), ..self.map })
+            .controlled_loop(offsets, sample.frames) else { self.defer_loop(offsets); return; };
+        if map == self.map {
+            self.loop_offsets = offsets;
+            self.loop_deferred = None;
+            return;
+        }
+        let Some(run) = self.map.run(self.pos as u64, self.wraps) else { return; };
+        let physical = run.frame as f64 + self.pos.fract();
+        // The native behind-end seam transition is not established. Keep this
+        // edit inert rather than invent a cursor reset; a later valid edit works.
+        if physical > map.looped.unwrap().end as f64 + 4. { self.defer_loop(offsets); return; }
+        self.loop_offsets = offsets;
+        self.loop_deferred = None;
+        self.pos = physical;
+        self.map = map;
+        self.wraps = map.wraps(FOREVER);
+        self.length = map.len(self.wraps);
+        let first = (self.pos as u64).saturating_sub(1);
+        if let Some(run) = map.run(first, self.wraps)
+            && let Some(span) = sample.span_at(run.frame) { self.span = span; }
+        let span = self.span(cx.bank);
+        self.limit = map.resident_limit(first, self.wraps, span.start, span.end());
+        if let Some(stream) = &mut self.stream {
+            let slot = &cx.slots[stream.slot as usize];
+            if self.limit == FOREVER {
+                slot.stop();
+                (stream.tag, stream.trusted, stream.paused) = (0, 0, false);
+            }
+            else {
+                let from = self.limit.max(first);
+                stream.tag = slot.configure(self.sample, &map, self.wraps, from, first);
+                stream.trusted = from;
+                stream.paused = false;
+            }
+        }
+    }
+
+    fn defer_loop(&mut self, offsets: [f32; 2]) {
+        if self.loop_deferred != Some(offsets) {
+            self.loop_deferred_edits = self.loop_deferred_edits.saturating_add(1);
+            self.loop_deferred = Some(offsets);
+        }
+    }
+
     /// Mix the planned block into `left`/`right`, through the group's
     /// filter unless `bare` (its lane filters). Returns `(alive, underrun)`.
     pub fn render(
@@ -1218,6 +1302,11 @@ impl Voice {
         let Plan { n, step, target, muted, declick, .. } = self.plan;
         let group = &cx.bank.settings[self.group as usize];
         let own = group.filter.as_ref().filter(|_| !bare);
+        if self.plan.curved_pitch {
+            let base_step = self.step * self.tune * self.pitch.1;
+            self.pitch_lfo.positions(&group.pitch_lfos, cx.rate, cx.tempo, base_step,
+                &mut scratch.positions[..n]);
+        }
         let amp = &mut scratch.amp[..n];
         let flex = &mut scratch.flex[..n];
         if muted {
@@ -1238,7 +1327,14 @@ impl Voice {
             if let Some(end) = declick {
                 let declick = DECLICK * cx.rate;
                 for (i, a) in amp.iter_mut().enumerate() {
-                    *a *= ((end - i as f32) / declick).clamp(0.0, 1.0);
+                    let remaining = if self.plan.curved_pitch {
+                        let position = scratch.positions[i];
+                        let next = scratch.positions.get(i + 1).filter(|_| i + 1 < n)
+                            .copied().unwrap_or(self.plan.travel);
+                        ((self.length as f64 - self.pos - position as f64 / FIXED_ONE)
+                            / ((next - position) as f64 / FIXED_ONE)) as f32
+                    } else { end - i as f32 };
+                    *a *= (remaining / declick).clamp(0.0, 1.0);
                 }
             }
         }
@@ -1281,9 +1377,17 @@ impl Voice {
                 // the control scratch for unity interpolation, then for the
                 // insert envelopes after interpolation has finished.
                 scratch.flex[..n].fill(1.0);
-                mix(window, base, if self.wavetable.is_some() { 1 << 32 } else { step }, &scratch.flex[..n], [1.0; 2], [0.0; 2], l, r);
+                if self.plan.curved_pitch {
+                    mix_positions(window, base, &scratch.positions[..n], &scratch.flex[..n], [1.; 2], [0.; 2], l, r);
+                } else {
+                    mix(window, base, if self.wavetable.is_some() { 1 << 32 } else { step }, &scratch.flex[..n], [1.0; 2], [0.0; 2], l, r);
+                }
             } else {
-                mix(window, base, if self.wavetable.is_some() { 1 << 32 } else { step }, amp, self.gains, delta, l, r);
+                if self.plan.curved_pitch {
+                    mix_positions(window, base, &scratch.positions[..n], amp, self.gains, delta, l, r);
+                } else {
+                    mix(window, base, if self.wavetable.is_some() { 1 << 32 } else { step }, amp, self.gains, delta, l, r);
+                }
             }
             if let Some(filter) = own {
                 let (l, r) = (&mut out_l[..n], &mut out_r[..n]);
@@ -1378,7 +1482,7 @@ impl Voice {
     fn reach(&self) -> (i64, u64, usize) {
         let first = self.pos as i64 - 1;
         let base = ((self.pos - first as f64) * FIXED_ONE) as u64;
-        let count = ((base + self.plan.step * (self.plan.n as u64 - 1)) >> 32) as usize + 4;
+        let count = ((base + self.plan.last) >> 32) as usize + 4;
         (first, base, count)
     }
 
@@ -1408,7 +1512,7 @@ impl Voice {
 
     /// Move past the planned block; whether the voice plays on.
     fn advance(&mut self, cx: &Context) -> bool {
-        self.pos += (self.plan.step * self.plan.n as u64) as f64 / FIXED_ONE;
+        self.pos += self.plan.travel as f64 / FIXED_ONE;
         if self.wavetable.is_some() { self.pos = self.pos.rem_euclid(super::wavetable::CYCLE as f64); }
         if let Some(stream) = self.stream.filter(|s| !s.paused) {
             cx.slots[stream.slot as usize].release_below((self.pos as u64).saturating_sub(1));
@@ -1963,6 +2067,23 @@ fn mix_body(
         let fi = i as f32;
         *l += yl * a * (gains[0] + delta[0] * fi);
         *r += yr * a * (gains[1] + delta[1] * fi);
+    }
+}
+
+/// A native pitch buffer supplies one position per audio frame. Keep the
+/// existing vector/lane paths for constant pitch and this scalar path scoped
+/// to voices with an active decoded LFO.
+#[allow(clippy::too_many_arguments)]
+fn mix_positions(window: &[Frame], base: u64, positions: &[u64], amp: &[f32],
+    gains: [f32; 2], delta: [f32; 2], left: &mut [f32], right: &mut [f32]) {
+    for (i, (((l, r), a), &offset)) in left.iter_mut().zip(right).zip(amp).zip(positions).enumerate() {
+        let p = base + offset;
+        let j = (p >> 32) as usize;
+        let t = ((p as u32) >> 8) as f32 * (1. / (1 << 24) as f32);
+        let Some(q) = window.get(j - 1..).and_then(<[Frame]>::first_chunk::<4>) else { break; };
+        let [yl, yr] = hermite(q, t);
+        *l += yl * a * (gains[0] + delta[0] * i as f32);
+        *r += yr * a * (gains[1] + delta[1] * i as f32);
     }
 }
 

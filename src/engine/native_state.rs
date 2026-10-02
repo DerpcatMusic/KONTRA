@@ -26,11 +26,6 @@ fn key(address: Address) -> Address {
             envelope,
             target,
             ..
-        }
-        | Address::LegacyInternalIntensity {
-            group,
-            envelope,
-            target,
         } => Address::InternalIntensity {
             group,
             envelope,
@@ -38,6 +33,8 @@ fn key(address: Address) -> Address {
             bipolar: false,
             cubic: None,
         },
+        Address::PitchLfoIntensity { group, slot, target, .. } =>
+            Address::PitchLfoIntensity { group, slot, target, bipolar: false },
         _ => address,
     }
 }

@@ -32,6 +32,24 @@ assert 'Exact explanation.' in notes and 'All reviewed details.' in notes and 'C
 assert notes.count('#### [Reviewed batch]') == 1
 assert 'Exact authored source message.' in notes and 'Untested future feature.' not in notes
 assert 'test: retain complete validation context' in notes
+# The reviewed 64 -> 83 batch used two human-readable headings. Neither may
+# silently disappear from structured notes even though PR descriptions survive.
+ledger = json.loads(Path(__file__).resolve().parents[2].joinpath('release-fixes.json').read_text())['fixes']
+start = next(i for i, fix in enumerate(ledger) if fix['id'] == 'modern-signed-pitch-depth')
+end = next(i for i, fix in enumerate(ledger) if fix['id'] == 'required-macos-notarization-gate')
+reviewed = ledger[start:end + 1]
+assert len(reviewed) == 19 and all(fix['accepted'] for fix in reviewed)
+aliased = '## Unreleased\n### Verified processing and diagnostics follow-ups\n'
+aliased += '\n'.join('- ' + fix['summary'] for fix in reviewed[3:])
+aliased += '\n### Fixed after 0.3.64\n' + '\n'.join('- ' + fix['summary'] for fix in reviewed[:3])
+aliased += '\n### Known limits\n- Partial compatibility remains.\n'
+structured = render('example/KONTRA', 'a'*40, '0.3.83-nightly.test', 'a'*40,
+                    aliased, previous_notes, previous, [commit], [])
+assert all(fix['summary'] in structured for fix in reviewed)
+assert all(fix['summary'] in structured.split('### Fixed', 1)[1] for fix in reviewed[:3])
+assert all(fix['summary'] in structured.split('### Changed', 1)[1].split('### Fixed', 1)[0]
+           for fix in reviewed[3:])
+assert 'No reviewed changes in this category' not in structured.split('### Changed', 1)[1]
 bootstrap = generate(notes_api, 'example/KONTRA', 'a'*40, '0.3.1-nightly.test', None, current_notes)
 assert 'First published snapshot' in bootstrap and 'Existing wrapped feature.' in bootstrap
 def missing_old_notes(path, *args):

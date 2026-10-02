@@ -79,6 +79,14 @@ if [ $mode = public ]; then
       -e 's#/mnt/[^/[:space:]]+/Libraries#/path/to/Libraries#g' \
       -e 's#/mnt/[^/[:space:]]+#/path/to/storage#g' "$f"
   done < <(grep -rlIZ --exclude=export-public.sh '/mnt/' . || true)
+  # Public UVI example checksums are metadata, not keys. Keep their links and
+  # private provenance; omit only these two reviewed strings from the export.
+  if [ -f docs/FALCON_FORMAT_GROUNDWORK.md ]; then
+    sed -i \
+      -e 's/, SHA-256 `98f403a58b92a4e04364094c08d4b114edc93549cf3937f4dd5bb745973bcb2d`//g' \
+      -e 's/, SHA-256 `b17f3895d0e78b4c16d6ab5691f39ac080a2b70a983705c228e1fe086478cf0e`//g' \
+      docs/FALCON_FORMAT_GROUNDWORK.md
+  fi
 fi
 # Strip marker comments only. The enclosed provenance text remains public.
 find . -name '*.md' -type f -print0 |
@@ -155,8 +163,9 @@ ksp='^[[:space:]]*"?(declare (const |ui_|polyphonic |global |read |pers |[%$!@~?
 while IFS=: read -r f n; do
   case $f in
     *.rs) case $f in
-      ./src/ksp/tests.rs) limit=209 ;; # Authored native-menu persistence and delayed control-name fixtures.
+      ./src/ksp/tests.rs) limit=223 ;; # Adds 14 authored wait_async callback/control fixture lines.
       ./src/import.rs) limit=5 ;; # Authored wavetable control-constant fixture.
+      ./src/engine/params.rs) limit=5 ;; # Authored live saved pitch-LFO callback/control fixture.
       ./src/articulate.rs) limit=31 ;;
       ./tests/playback.rs) limit=79 ;;
       ./src/plugin.rs) limit=99 ;; # Authored native-send, source-context, script-page and live IR-switch fixtures.
