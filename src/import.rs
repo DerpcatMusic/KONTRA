@@ -650,6 +650,12 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     for g in &gl.groups {
         let v = g.params().with_context(|| format!("Group {} version {:x}", groups.len(),g.0.version))?;
         ensure!(v.volume.is_finite() && v.pan.is_finite() && v.tune.is_finite() && v.tune > 0.0, "Invalid group gain/tuning");
+        match g.source_identity() {
+            Ok(source) if source.version == 0x106 && source.mode == 9 => warnings.push(format!(
+                "{}: Kontakt 8 wavetable source playback is not implemented (source version 0x106, mode 9, flag {}); mapped zones use ordinary sample playback, without wavetable position, forms or audio-rate modulation", v.name, source.flag)),
+            Ok(_) => {},
+            Err(error) => warnings.push(format!("{}: source identity is not decoded: {error}; source-specific playback parameters are not applied", v.name)),
+        }
         if !v.start_criteria.items.is_empty() { warnings.push(format!("{}: native group start conditions are not implemented", v.name)); }
         if v.release_trigger_note_monophonic {warnings.push("Release-trigger note monophony is not imported".into());}
         let modulation = match crate::modulation::read_group(g) {
