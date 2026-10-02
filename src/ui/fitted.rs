@@ -20,6 +20,17 @@ static MADE: LazyLock<Mutex<Made>> = LazyLock::new(Mutex::default);
 static READY: AtomicBool = AtomicBool::new(false);
 /// Per owner (a rack slot), bumped with each picture made for it.
 static GENERATION: [AtomicU64; 64] = [const { AtomicU64::new(0) }; 64];
+#[cfg(test)]
+static QUEUED: [AtomicU64; 64] = [const { AtomicU64::new(0) }; 64];
+#[cfg(test)]
+static COMPLETED: [AtomicU64; 64] = [const { AtomicU64::new(0) }; 64];
+
+/// Cumulative audit counts; callers record deltas, without resetting shared state.
+#[cfg(test)]
+pub(super) fn audit_counts(owner: usize) -> (u64, u64) {
+    (QUEUED[owner % 64].load(Ordering::Relaxed), COMPLETED[owner % 64].load(Ordering::Relaxed))
+}
+
 // ponytail: forgets everything when full (a rack of big views makes a few
 // thousand); an LRU if window resizes ever thrash it.
 const MAX: usize = 1 << 16;
@@ -32,6 +43,8 @@ static WORKER: LazyLock<Mutex<Sender<(Key, Arc<Image>, usize)>>> = LazyLock::new
             let made = artwork::resize(&source, w, h).map(Arc::new);
             made_lock().insert(key, (Arc::downgrade(&source), made));
             GENERATION[owner % 64].fetch_add(1, Ordering::Relaxed);
+            #[cfg(test)]
+            COMPLETED[owner % 64].fetch_add(1, Ordering::Relaxed);
             READY.store(true, Ordering::Release);
         }
     });
@@ -78,6 +91,8 @@ pub fn fitted(image: &Arc<Image>, w: u32, h: u32, owner: usize) -> Arc<Image> {
         None => {
             made.insert(key, (Arc::downgrade(image), None));
             drop(made);
+            #[cfg(test)]
+            QUEUED[owner % 64].fetch_add(1, Ordering::Relaxed);
             let _ = WORKER.lock().unwrap_or_else(PoisonError::into_inner).send((key, image.clone(), owner));
             image.clone()
         }

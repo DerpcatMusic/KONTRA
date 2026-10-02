@@ -716,6 +716,10 @@ mod tests {
             let mut rendered = Vec::new();
             let mut rendered_changes = 0;
             let mut publication_ms = Vec::new();
+            let mut frame_stages = [Vec::new(), Vec::new(), Vec::new()];
+            let mut frame_work = Vec::new();
+            let initial_fitted = fitted::audit_counts(0);
+            let mut previous_fitted = initial_fitted;
             let partition = std::env::var_os("KONTRA_UI_BENCH_PARTITION").is_some();
             let mut last_published = None;
             let mut published_arc_owners = Vec::new();
@@ -760,8 +764,22 @@ mod tests {
                     }
                 }
                 let (bridge, draw) = observer_draw.as_mut().unwrap();
+                let builds = perf_view::control_builds();
+                let stage = Instant::now();
                 let tree = draw(&mut ui, bridge);
+                frame_stages[0].push(stage.elapsed().as_secs_f64()*1000.);
+                let stage = Instant::now();
                 ui.frame(tree, Some(Size::new(1180.,900.)), Input::default(),1./60.).unwrap();
+                frame_stages[1].push(stage.elapsed().as_secs_f64()*1000.);
+                let counts = fitted::audit_counts(0);
+                frame_work.push(serde_json::json!({
+                    "control_builds":perf_view::control_builds()-builds,
+                    "fitted_queued":counts.0-previous_fitted.0,
+                    "fitted_completed":counts.1-previous_fitted.1,
+                    "fitted_generation":fitted::generation(0),
+                }));
+                previous_fitted = counts;
+                let stage = Instant::now();
                 let scene = ui.scene().unwrap();
                 if let Some((device, renderer, target)) = &mut gpu {
                     let stats = renderer.render(scene, transform, target).unwrap();
@@ -773,6 +791,7 @@ mod tests {
                     ctx.flush();
                     ctx.render(&mut pixmap, &mut resources);
                 }
+                frame_stages[2].push(stage.elapsed().as_secs_f64()*1000.);
                 rendered.push(start.elapsed().as_secs_f64()*1000.);
                 Ok(())
             };
@@ -784,7 +803,16 @@ mod tests {
             assert!(report["latest_edits_published"].as_u64().unwrap_or(0) > 0, "actual callback state must settle at least one queued edit: {report}");
             rendered.sort_by(f64::total_cmp);
             publication_ms.sort_by(f64::total_cmp);
-            println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
+            let summarize = |mut samples: Vec<f64>| {
+                samples.sort_by(f64::total_cmp);
+                serde_json::json!({"n":samples.len(),"mean":samples.iter().sum::<f64>()/samples.len() as f64,
+                    "p99":samples[((samples.len()-1) as f64*0.99).ceil() as usize]})
+            };
+            let stages: serde_json::Map<String, serde_json::Value> = ["build", "layout", "render"]
+                .into_iter().zip(frame_stages).map(|(name,samples)| (name.into(),summarize(samples))).collect();
+            println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,
+                "stage_ms":stages,"frame_work":frame_work,
+                "fitted_jobs":{"queued":previous_fitted.0-initial_fitted.0,"completed":previous_fitted.1-initial_fitted.1},"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
                 "live_publication_ms":{"mean":publication_ms.iter().sum::<f64>()/publication_ms.len() as f64,"p99":publication_ms[((publication_ms.len()-1) as f64*0.99).ceil() as usize]},
                 "callback_published_render_ms":{"mean":rendered.iter().sum::<f64>()/rendered.len() as f64,"p99":rendered[((rendered.len()-1) as f64*0.99).ceil() as usize]}}));
             if let Some(published) = last_published {
