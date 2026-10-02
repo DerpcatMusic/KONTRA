@@ -25,6 +25,7 @@ pub(super) fn prepare(
     let mut resource = Vec::new();
     let mut init = false;
     let mut found = false;
+    let mut explicit_perfview = false;
     let mut at = 0;
     while at < tokens.toks.len() {
         if tokens.toks[at] == Tok::Ident(kw::ON) {
@@ -35,6 +36,8 @@ pub(super) fn prepare(
         {
             init = false;
         }
+        explicit_perfview |= init
+            && matches!(tokens.toks[at], Tok::Ident(s) if tokens.syms.name(s) == "make_perfview");
         let is_load = matches!(tokens.toks[at], Tok::Ident(s) if tokens.syms.name(s) == "load_performance_view")
             && tokens.toks.get(at + 1) == Some(&Tok::Punct(Punct::LParen));
         if !is_load {
@@ -111,6 +114,10 @@ pub(super) fn prepare(
         resource = bytes;
         at += len;
     }
+    ensure!(
+        !found || !explicit_perfview,
+        "load_performance_view cannot be combined with make_perfview"
+    );
     Ok(Prepared {
         tokens,
         conditions,
