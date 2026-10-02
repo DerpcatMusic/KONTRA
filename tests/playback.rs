@@ -2023,15 +2023,18 @@ end on"#;
     });
     assert_eq!(count, 0, "first callback allocated or freed");
     let rt = e.script().unwrap();
-    assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics());
+    assert_eq!(rt.diagnostics(),vec![
+        "save_array: external file dialogs and mode-based saves are unavailable".to_owned(),
+        "load_array: no file dialog here; nothing saved in this session".to_owned(),
+    ],"unsupported dialogs must report failure rather than pretend to save");
     let ui = rt.interface(0);
     assert_eq!(ui.controls[1].menu.len(), 1);
     assert_eq!(rt.env.host.keyranges, vec![(36, 60, rt.last_message().to_owned())]);
     let saved = rt.persistence();
-    assert_eq!(saved[0]["%values"], Value::IntArray(vec![42, 73, 0, 0]));
+    assert_eq!(saved[0]["%values"], Value::IntArray(vec![0, 73, 0, 0]));
     assert_eq!(
         saved[0]["!strings"],
-        Value::Array(vec![Value::Text(rt.last_message().into()); 2])
+        Value::Array(vec![Value::Text(String::new()),Value::Text(rt.last_message().into())])
     );
     assert_eq!(rt.last_message().len(), 80);
 }

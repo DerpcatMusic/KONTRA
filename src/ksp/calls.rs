@@ -6,7 +6,7 @@ use super::compile::{Callback, Ty, VarId};
 use super::engine::{EnginePar, Fade, GroupMask, VoicePar};
 use super::runtime::{read_value, refresh_value, write_value_rt};
 use super::ui::{MenuItem, Prop};
-use super::arrays::{read_path, nka};
+use super::arrays::{read_path, nka, save_nka};
 use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text, put_variable_text};
 use super::{KeyState, Value};
 
@@ -396,10 +396,28 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             push_int(m, equal as i32)
         }
         LoadArray | LoadArrayStr | SaveArray | SaveArrayStr => {
-            if f == LoadArrayStr && !m.env.loading {
+            if matches!(f, LoadArrayStr | SaveArrayStr) && !m.env.loading {
                 let v = m.stk.var();
-                let path = m.stk.strs.pop();
                 let id = m.env.next_async();
+                let saving = f == SaveArrayStr;
+                if saving {
+                    let var = &m.prog.vars[v as usize];
+                    let n = u64::from(var.len.unwrap_or(1));
+                    let fits = charge(m,fuel,n).is_ok() && {
+                        let bytes = if var.ty == Ty::Str {
+                            m.slot.mem.strs[var.slot as usize..var.slot as usize+n as usize]
+                                .iter().map(|s| s.len() as u64).sum()
+                        } else { n };
+                        charge(m,fuel,bytes).is_ok()
+                    };
+                    if !fits {
+                        m.stk.strs.pop();
+                        m.env.note("save_array_str: snapshot exceeds audio block budget");
+                        if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,id,0)); }
+                        return push_int(m,id);
+                    }
+                }
+                let path = m.stk.strs.pop();
                 let spare = m.env.array_spares.iter().position(|r| r.slot == slot && r.var == v);
                 if m.env.array_inflight < super::arrays::ARRAY_QUEUE
                     && let Some(spare) = spare
@@ -408,10 +426,16 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     let mut request = m.env.array_spares.swap_remove(spare);
                     request.path.push_str(path);
                     request.id = id;
+                    request.write = saving;
+                    if saving {
+                        refresh_value(&m.slot.mem, &m.prog.vars[v as usize],
+                            request.snapshot.as_mut().expect("prepared array save snapshot"));
+                    }
                     m.env.array_requests.push_back(request);
                     m.env.array_inflight += 1;
                 } else {
-                    m.env.note("load_array_str: prepared request queue or path capacity exhausted");
+                    m.env.note(if saving { "save_array_str: prepared request queue or path capacity exhausted" }
+                        else { "load_array_str: prepared request queue or path capacity exhausted" });
                     if m.env.async_done.len() < m.env.async_done.capacity() {
                         m.env.async_done.push((slot, id, 0));
                     }
@@ -425,6 +449,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 (-1, m.env.loading.then(|| path.to_owned()))
             };
             let v = m.stk.var();
+            if f == SaveArray || (f == LoadArray && mode == 0) {
+                m.env.note(if f == SaveArray {
+                    "save_array: external file dialogs and mode-based saves are unavailable"
+                } else { "load_array: no file dialog here; nothing saved in this session" });
+                let id = async_done(m,0);
+                return push_int(m,id);
+            }
             let var = &m.prog.vars[v as usize];
             let n = u64::from(var.len.unwrap_or(1));
             charge(m, fuel, n)?;
@@ -432,22 +463,18 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 m.slot.mem.strs[var.slot as usize..var.slot as usize + n as usize].iter().map(|s| s.len() as u64 + 1).sum()
             } else { n };
             charge(m, fuel, cost)?;
-            let status = if matches!(f, SaveArray | SaveArrayStr) {
-                if m.env.loading {
-                    m.env.saved_arrays.insert((slot, v), (read_value(&m.slot.mem, var), true));
-                } else {
-                    let (value, saved) = m.env.saved_arrays.get_mut(&(slot, v))
-                        .ok_or(Fault("KSP array save storage was not prepared"))?;
-                    refresh_value(&m.slot.mem, var, value);
-                    *saved = true;
+            let status = if f == SaveArrayStr {
+                let name = var.name.trim_start_matches(['%', '!', '?', '$', '@', '~']);
+                match save_nka(path.as_deref().unwrap_or(""),var.ty,name,&read_value(&m.slot.mem,var)) {
+                    Ok(()) => 1,
+                    Err(error) => {
+                        if let Some(instrument) = m.engine.instrument_path() {
+                            crate::diagnostics::resource(instrument,path.as_deref().unwrap_or(""),&error);
+                        }
+                        m.env.note("save_array_str: file could not be written; see diagnostics log");
+                        0
+                    }
                 }
-                1
-            } else if f == LoadArray && let Some((value, true)) = m.env.saved_arrays.get(&(slot, v)) {
-                write_value_rt(&mut m.slot.mem, var, value, m.env.loading)?;
-                1
-            } else if mode == 0 {
-                m.env.note("load_array: no file dialog here; nothing saved in this session");
-                0
             } else if !m.env.loading {
                 m.env.note("load_array: files load only during on init");
                 0
