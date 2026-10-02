@@ -791,6 +791,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         // ---- Time --------------------------------------------------------------------
         Wait | WaitTicks => {
             let [n] = ints(m);
+            if m.t.ctx.ignore_wait { return Ok(Step::Next); }
             let us = if f == Wait {
                 i64::from(n)
             } else {

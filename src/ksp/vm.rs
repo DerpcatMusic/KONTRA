@@ -75,6 +75,8 @@ pub struct Ctx {
     pub async_id: i32,
     pub async_status: i32,
     pub ignore_controller: bool,
+    /// stop_wait(..., 1) continues this callback without subsequent waits.
+    pub ignore_wait: bool,
     pub forward: Forward,
 }
 
@@ -96,6 +98,7 @@ impl Ctx {
             async_id: 0,
             async_status: 0,
             ignore_controller: false,
+            ignore_wait: false,
             forward: Forward::None,
         }
     }

@@ -1804,11 +1804,8 @@ impl Runtime {
             let t = &mut self.threads[i];
             t.generation = t.generation.wrapping_add(1);
             t.waiting = false;
-            if mode == 0 {
-                self.resume(engine, i as u16);
-            } else {
-                self.finish(i as u16);
-            }
+            t.ctx.ignore_wait |= mode != 0;
+            self.resume(engine, i as u16);
         }
     }
 
