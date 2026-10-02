@@ -21,6 +21,13 @@ for product in KONTRA.clap KONTRA.vst3 kontakto-standalone; do
     --options runtime --timestamp "$STAGE/$product"
   codesign --verify --deep --strict "$STAGE/$product"
 done
+# Finder's package bit is separate from BNDL and signatures. Set it after
+# signing (QA1940 forbids FinderInfo during signing), then verify that payload.
+for bundle in KONTRA.clap KONTRA.vst3; do
+  xcrun SetFile -a B "$STAGE/$bundle"
+  codesign --verify --deep --strict "$STAGE/$bundle"
+done
+xcrun swift .github/scripts/check_macos_bundles.swift "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3"
 # ZIPs and bare Mach-O executables cannot carry stapled tickets. A DMG holds
 # these same signed products plus the legal/build metadata for offline delivery.
 hdiutil create -quiet -format UDZO -volname KONTRA -srcfolder "$STAGE" "$work/KONTRA.dmg"

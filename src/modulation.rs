@@ -103,7 +103,7 @@ pub struct Modulator {
     pub kind: String,
 }
 
-/// Saved retriggered, zero-delay sine-only Multi source driving pitch.
+/// Saved retriggered sine-only Multi source driving pitch.
 /// This is a bounded implemented subset, not a fallback for other LFO states.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PitchLfo {
@@ -111,6 +111,9 @@ pub struct PitchLfo {
     pub count: f32,
     pub note_value: f32,
     pub sine: f32,
+    /// Unsynchronized legacy fade-in duration in milliseconds.
+    #[serde(default)]
+    pub fade_ms: f32,
     pub depth: f32,
     /// Original native pitch-target indices and individual signed depths.
     /// Empty in older cached metadata: live writes must remain unsupported.
@@ -233,7 +236,9 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                     // independently established saved-only source clock.
                     let weights = lfo.trailing_values.unwrap_or([0.; 5]);
                     let supported = lfo.version == 0x71 && lfo.waveform == 5 && params.unknown_flags[2] != 0
-                        && lfo.initial_values[0] == 0. && lfo.initial_values[3] == 0.
+                        && lfo.initial_values[0].is_finite() && (0. ..=5000.).contains(&lfo.initial_values[0])
+                        && lfo.records[1].values[0].is_finite() && lfo.records[1].values[0] <= 0.
+                        && lfo.initial_values[3] == 0.
                         && lfo.initial_values[1].is_finite() && lfo.initial_values[1] >= 1.
                         && lfo.records[0].values[0].is_finite() && lfo.records[0].values[0] > 0.
                         && lfo.records[1].flag && weights[0].is_finite() && weights[0].abs() <= 1.
@@ -245,10 +250,10 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled) && target_depth(t).is_finite()) {
                         out.pitch_lfos.push(PitchLfo { slot: slot as u8,
                             count: lfo.initial_values[1], note_value: lfo.records[0].values[0],
-                            sine: weights[0], depth,
+                            sine: weights[0], fade_ms: lfo.initial_values[0], depth,
                             targets: pitch.iter().map(|(i, t)| (*i as u32, target_depth(t))).collect(),
                             bypassed: params.unknown_flags[1] != 0 });
-                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered zero-delay sine-only Multi pitch is eligible for ordinary sampler playback; live LFO timing, bypass and other targets remain unsupported"));
+                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi pitch with legacy unsynchronized fade-in is eligible for ordinary sampler playback; live LFO timing, bypass and other targets remain unsupported"));
                     } else { skipped_lfos += 1; }
                     false
                 }
@@ -542,23 +547,23 @@ mod tests {
             data.extend(slot); data.extend([0, 0]); // not inverted, no shaper
             data
         }
-        let source = Lfo { structured: false, version: 0x71, waveform: 5,
-            initial_values: [0., 14., 0.5, 0.], records: [
-                LfoRecord { flag: true, values: [1. / 24., 0., 0.] },
-                LfoRecord { flag: true, values: [-1., 0., 0.] }],
-            trailing_flag: false, trailing_values: Some([0.03, 0., 0., 0., 0.]), additional_flag: None };
-        let mut child = Vec::new(); source.to_chunk().unwrap().write(&mut child).unwrap();
-        let mut internals = Vec::new();
-        for slot in 0..16 {
-            internals.push(u8::from(slot < 8));
-            if slot < 8 {
-                let mut private = target("pitch", None, 0.44428888, 0);
-                private.extend([0, 0, 1, 0]); private.extend(0u32.to_le_bytes());
-                name(&mut private, &format!("LFO{slot}")); private.extend(1u32.to_le_bytes());
-                object(0x0d, &private, &[], &child, 0x80).write(&mut internals).unwrap();
+        let raw = |param: &str, fade_ms, delay_note| {
+            let source = Lfo { structured: false, version: 0x71, waveform: 5,
+                initial_values: [fade_ms, 14., 0.5, 0.], records: [
+                    LfoRecord { flag: true, values: [1. / 24., 0., 0.] },
+                    LfoRecord { flag: true, values: [delay_note, 0., 0.] }],
+                trailing_flag: false, trailing_values: Some([0.03, 0., 0., 0., 0.]), additional_flag: None };
+            let mut child = Vec::new(); source.to_chunk().unwrap().write(&mut child).unwrap();
+            let mut internals = Vec::new();
+            for slot in 0..16 {
+                internals.push(u8::from(slot < 8));
+                if slot < 8 {
+                    let mut private = target("pitch", None, 0.44428888, 0);
+                    private.extend([0, 0, 1, 0]); private.extend(0u32.to_le_bytes());
+                    name(&mut private, &format!("LFO{slot}")); private.extend(1u32.to_le_bytes());
+                    object(0x0d, &private, &[], &child, 0x80).write(&mut internals).unwrap();
+                }
             }
-        }
-        let raw = |param: &str| {
             // Actual-shaped CV_SATURATION: Constant, zero depth, 15 ms lag,
             // effect slot7 overlaps an independently retriggered LFO slot7.
             let mut private = target(param, Some(7), 0., 15);
@@ -570,11 +575,17 @@ mod tests {
                 children: vec![object(INTERNAL_MODS_ID, &[], &internals, &[], 0x10),
                     object(EXTERNAL_MODS_ID, &[], &external, &[], 0x10)] })
         };
-        let decoded = read_group(&raw("shaper")).unwrap();
+        let decoded = read_group(&raw("shaper", 0., -1.)).unwrap();
         assert!(decoded.pitch_lfos.iter().any(|l| l.slot == 7), "group effect slot7 cannot disable internal LFO slot7");
         assert_eq!(decoded.mods[0].target, ModTarget::Module { param: "shaper".into(), slot: 7 });
         assert_eq!((decoded.mods[0].intensity, decoded.mods[0].lag_ms), (0., 15), "legitimate effect assignment is retained");
-        let unknown = read_group(&raw("unknownSourceControl")).unwrap();
+        let with_fade = read_group(&raw("shaper", 2.3047996, -1.)).unwrap();
+        assert_eq!(with_fade.pitch_lfos[0].fade_ms, 2.3047996);
+        for (fade, note) in [(2., 1. / 24.), (-1., -1.), (f32::NAN, -1.)] {
+            assert!(read_group(&raw("shaper", fade, note)).unwrap().pitch_lfos.is_empty(),
+                "synchronized or invalid fade state must retain unsupported diagnostics");
+        }
+        let unknown = read_group(&raw("unknownSourceControl", 0., -1.)).unwrap();
         assert!(!unknown.pitch_lfos.iter().any(|l| l.slot == 7), "unknown same-slot source controls remain unsupported");
         assert!(unknown.pitch_lfos.iter().any(|l| l.slot == 6), "other sources remain eligible");
         assert!(unknown.warnings.iter().any(|w| w.contains("external source controls its parameters")));

@@ -1,0 +1,9 @@
+#!/bin/bash
+# Finder package recognition must survive Installer on clients without Xcode.
+set -euo pipefail
+target=${3:-/}
+for relative in Library/Audio/Plug-Ins/CLAP/KONTRA.clap Library/Audio/Plug-Ins/VST3/KONTRA.vst3; do
+  /usr/bin/xattr -wx com.apple.FinderInfo \
+    "$(printf '%016d2000%044d' 0 0)" \
+    "${target%/}/$relative"
+done

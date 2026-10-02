@@ -332,7 +332,8 @@ impl Route {
 /// What reaches a part.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum In {
-    HostOn(crate::engine::HostNote, u8),
+    /// Exact owner, velocity and initial tuning in semitones.
+    HostOn(crate::engine::HostNote, u8, f32),
     HostOff(crate::engine::HostPattern),
     HostChoke(crate::engine::HostPattern),
     HostExpression(crate::engine::HostPattern, crate::engine::HostExpression),
@@ -390,7 +391,7 @@ impl In {
 
     fn channel(self) -> u8 {
         match self {
-            Self::HostOn(note, _) => note.channel,
+            Self::HostOn(note, ..) => note.channel,
             Self::HostOff(p) | Self::HostChoke(p) | Self::HostExpression(p, _) => p.channel.max(0).min(15) as u8,
             Self::NoteOn(c, ..)
             | Self::NoteOff(c, _)
@@ -412,7 +413,7 @@ impl In {
 pub enum Out {
     /// The delivered original host input; generated articulation keyswitches
     /// remain ordinary notes, even when their pitch equals this input.
-    HostNoteOn(crate::engine::HostNote, u8, u8, u8),
+    HostNoteOn(crate::engine::HostNote, u8, u8, u8, f32),
     NoteOn(u8, u8, u8),
     NoteOff(u8, u8),
     /// Script channel, physical input channel, key, velocity.
@@ -660,7 +661,7 @@ impl Router {
     /// where channel mode plays everything.
     pub fn input(&mut self, ev: In, home: u8, output: &mut impl FnMut(Out)) {
         let (ev, host_note) = match ev {
-            In::HostOn(note, velocity) => (In::NoteOn(note.channel, note.key, velocity), Some(note)),
+            In::HostOn(note, velocity, tune) => (In::NoteOn(note.channel, note.key, velocity), Some((note,tune))),
             ev => (ev, None),
         };
         let r = self.route;
@@ -714,8 +715,8 @@ impl Router {
                 let bit = 1u128 << (note & 127);
                 if r.by_channel() { self.held_from[channel as usize] |= bit; }
                 else { self.held_from[channel as usize] &= !bit; }
-                if let Some(note) = host_note {
-                    out(Out::HostNoteOn(note, to, key, velocity));
+                if let Some((note,tune)) = host_note {
+                    out(Out::HostNoteOn(note, to, key, velocity, tune));
                 } else if r.by_channel() {
                     out(Out::NoteOnFrom(to, channel, key, velocity));
                 } else {
@@ -913,7 +914,7 @@ impl Router {
 /// Apply what a router sends to its engine.
 pub(crate) fn apply(e: &mut Engine, o: Out) {
     match o {
-        Out::HostNoteOn(note, c, n, v) => { e.host_note_on(note, c, n, v); }
+        Out::HostNoteOn(note, c, n, v, tune) => { e.host_note_on(note, c, n, v, tune); }
         Out::NoteOn(c, n, v) => e.note_on(c, n, v),
         Out::NoteOff(c, n) => e.note_off(c, n),
         Out::NoteOnFrom(c, owner, n, v) => e.note_on_from(c, owner, n, v),
@@ -936,7 +937,7 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
 /// Send `ev` through `r` to its part's engine `e`; notes in channel mode
 /// arrive on `home`.
 pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
-    if let In::HostOn(note,_) = ev && !e.admit_host_note(note) { return; }
+    if let In::HostOn(note, ..) = ev && !e.admit_host_note(note) { return; }
     r.follow(e);
     let zone = if r.by_channel() { None } else { r.route.zone() };
     e.set_mpe_zone(zone.map(|(master, members)| (master, members.fold(0u16, |mask, member| mask | (1 << member)))));
@@ -1283,7 +1284,7 @@ mod tests {
         let note=HostNote { port:0,channel:2,key:60,id:10,clap:true };
         let pattern=HostPattern { port:0,channel:2,key:60,id:10,clap:true };
         assert_eq!(crate::plugin::tests::allocations(|| {
-            feed(&mut r,&mut e,In::HostOn(note,100),7);
+            feed(&mut r,&mut e,In::HostOn(note,100,0.),7);
             assert_eq!(e.held_host_route(2,60),Some((7,60)),"the articulation keyswitch must not acquire the host tuple");
             assert_eq!(e.host_note_drops(),0);
             feed(&mut r,&mut e,In::NoteOn(2,60,100),7); render(&mut e);
@@ -1304,7 +1305,7 @@ mod tests {
         assert_eq!(crate::plugin::tests::allocations(|| {
             r.switch(2,7,&mut |o| apply(&mut e,o));
             assert!(e.host_note_at(0).is_none());
-            feed(&mut r,&mut e,In::HostOn(note,100),7);
+            feed(&mut r,&mut e,In::HostOn(note,100,0.),7);
             assert_eq!(e.held_host_route(2,60),Some((7,60)));
             assert_eq!(e.host_note_drops(),0);
             assert!(e.key_down(7,60));
@@ -1322,7 +1323,7 @@ mod tests {
             let note=HostNote { port:0,channel:2,key:60,id:10,clap:true };
             let pattern=HostPattern { port:0,channel:2,key:60,id:10,clap:true };
             let mut actions=|| {
-                feed(&mut r,&mut e,In::HostOn(note,100),7);
+                feed(&mut r,&mut e,In::HostOn(note,100,0.),7);
                 assert_eq!(e.held_host_route(2,60),Some((7,60)));
                 assert_eq!(e.host_note_drops(),0);
                 feed(&mut r,&mut e,In::NoteOn(2,60,100),7);

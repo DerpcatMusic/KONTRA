@@ -1,4 +1,4 @@
-//! The independently decoded saved retriggered, zero-delay sine-only Multi LFO.
+//! The independently decoded saved retriggered sine-only Multi LFO.
 //! Other waveforms, free-running clocks and live frequency conversion remain
 //! unsupported. See audits/MODULATION.md for the source-clock boundary.
 
@@ -15,6 +15,44 @@ pub(crate) struct Clock {
     current: f32,
     offset: u8,
     initialized: bool,
+    fades: [Fade; 16],
+    fade_started: u16,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Fade {
+    remaining: u32,
+    value: f32,
+    factor: f32,
+}
+
+impl Fade {
+    fn new(ms: f32, rate: f32) -> Self {
+        // Native time getter returns milliseconds; DSP runs at rate / 32.
+        let remaining = (ms * (rate / 32.) * 0.001) as u32;
+        let factor = if remaining == 0 {
+            1.
+        } else {
+            (1. + 1. / f64::from(0.3f32)).powf(1. / f64::from(remaining)) as f32
+        };
+        Self {
+            remaining,
+            value: 0.3,
+            factor,
+        }
+    }
+
+    fn next(&mut self) -> f32 {
+        if self.remaining == 0 {
+            return 1.;
+        }
+        let gain = self.value - 0.3;
+        // v71/v72 set the native legacy switch false: its ceiling is 1,
+        // unlike v73's optional .3..1.3 mode. Only N points are scaled.
+        self.value = (self.value * self.factor).clamp(0., 1.);
+        self.remaining -= 1;
+        gain
+    }
 }
 
 impl Clock {
@@ -48,8 +86,18 @@ impl Clock {
                     for lfo in lfos.iter().filter(|l| !l.bypassed) {
                         let hz = f64::from(lfo.frequency(tempo));
                         let phase = (self.phase[lfo.slot as usize]
-                            + i as f64 * hz / f64::from(rate)).rem_euclid(1.);
-                        let gain = 12. * lfo.depth * lfo.sine / lfo.sine.abs().max(1.);
+                            + i as f64 * hz / f64::from(rate))
+                        .rem_euclid(1.);
+                        let mut gain = 12. * lfo.depth * lfo.sine / lfo.sine.abs().max(1.);
+                        if lfo.fade_ms > 0. {
+                            let slot = usize::from(lfo.slot);
+                            let bit = 1 << slot;
+                            if self.fade_started & bit == 0 {
+                                self.fades[slot] = Fade::new(lfo.fade_ms, rate);
+                                self.fade_started |= bit;
+                            }
+                            gain *= self.fades[slot].next();
+                        }
                         // Multi negates sine; ordinary sine is not admitted.
                         point -= (phase * std::f64::consts::TAU).sin() as f32 * gain;
                     }
