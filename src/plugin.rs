@@ -6044,8 +6044,14 @@ declare ui_slider $size(0, 1000000)
 declare ui_slider $distance(0, 1000000)
 declare ui_button $reverse
 declare ui_button $automatic
+declare $read_reverse
+declare $read_automatic
+make_persistent($read_reverse)
+make_persistent($read_automatic)
 $reverse := get_engine_par($ENGINE_PAR_IRC_REVERSE,-1,0,$NI_INSERT_BUS)
 $automatic := get_engine_par($ENGINE_PAR_IRC_AUTO_GAIN,-1,0,$NI_INSERT_BUS)
+$read_reverse := $reverse
+$read_automatic := $automatic
 declare $id
 end on
 on ui_control($room)
@@ -6067,9 +6073,11 @@ set_engine_par($ENGINE_PAR_IRC_PREDELAY, $distance, -1, 0, $NI_INSERT_BUS)
 end on
 on ui_control($reverse)
 set_engine_par($ENGINE_PAR_IRC_REVERSE,$reverse,-1,0,$NI_INSERT_BUS)
+$read_reverse := get_engine_par($ENGINE_PAR_IRC_REVERSE,-1,0,$NI_INSERT_BUS)
 end on
 on ui_control($automatic)
 set_engine_par($ENGINE_PAR_IRC_AUTO_GAIN,$automatic,-1,0,$NI_INSERT_BUS)
+$read_automatic := get_engine_par($ENGINE_PAR_IRC_AUTO_GAIN,-1,0,$NI_INSERT_BUS)
 end on
 on async_complete
 message($NI_ASYNC_ID & ":" & $NI_ASYNC_EXIT_STATUS)
@@ -6124,17 +6132,13 @@ end on"#.into()],
         while p.shared.discard.pop().is_some() {}
         // Native switches use 0/1, coalesce through the same worker path,
         // and read back before/after installation without RT allocation.
-        let switch = |name| crate::ksp::engine::EnginePar {
-            id: (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 1024)
-                .find(|&id| crate::ksp::engine_par_name(id) == Some(name)).unwrap(), group: -1, slot: 0, generic: 1,
-        };
         assert_eq!(allocations(|| {
             dsp.rack.parts[0].ui_control(0, 3, 1);
             dsp.rack.parts[0].ui_control(0, 4, 1);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
-        for name in ["$ENGINE_PAR_IRC_REVERSE", "$ENGINE_PAR_IRC_AUTO_GAIN"] {
-            assert_eq!(dsp.rack.parts[0].script().unwrap().engine_par(switch(name)), Some(1));
+        for name in ["$read_reverse", "$read_automatic"] {
+            assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0][name], crate::ksp::Value::Int(1));
         }
         assert_eq!(p.shared.ir_requests.len(), 1, "two switches need one IR rebuild");
         load_irs(&p);
@@ -6150,8 +6154,8 @@ end on"#.into()],
         let saved: Vec<crate::fx::IrSlotSettings> = serde_json::from_str(&json).unwrap();
         let (restored, errors) = crate::engine::load_scripts_with_state(&instrument, Vec::new(), 48000., &saved, &[]);
         assert!(errors.is_empty(), "{errors:?}");
-        for name in ["$ENGINE_PAR_IRC_REVERSE", "$ENGINE_PAR_IRC_AUTO_GAIN"] {
-            assert_eq!(restored.as_ref().unwrap().engine_par(switch(name)), Some(1), "restored switch");
+        for name in ["$read_reverse", "$read_automatic"] {
+            assert_eq!(restored.as_ref().unwrap().persistence()[0][name], crate::ksp::Value::Int(1), "restored switch");
         }
         let mut rebuilt = crate::engine::effects(&instrument, restored.as_deref(), 48000.);
         let (mut l, mut r) = ([1.,0.,0.,0.], [1.,0.,0.,0.]);
@@ -6163,7 +6167,10 @@ end on"#.into()],
         }
         let legacy: crate::fx::params::IrSettings = serde_json::from_str(r#"{"values":[0,0.5,0.5],"size":0.5}"#).unwrap();
         assert_eq!((legacy.reverse, legacy.auto_gain), (None, None));
-        let native = instrument.fx.with_loads(&loads);
+        let mut native = instrument.fx.clone();
+        let FxParams::Convolution(c) = &mut native.insert.slots[0].params else { unreachable!() };
+        c.flags[0] = true;
+        c.flags[1] = true;
         let legacy_load = crate::fx::ScriptIr { rack: crate::fx::Rack::Insert, slot: 0, load: FxLoad::Convolution(legacy) };
         let legacy_processor = native.processor_with(48000., 64, &[legacy_load]);
         let legacy_settings = legacy_processor.ir_settings(crate::fx::Rack::Insert, 0).unwrap();
@@ -6212,7 +6219,7 @@ end on"#.into()],
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
         assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().values, [0.25, 0.5, 0.]);
         assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().reverse, Some(false), "newer switch wins over the stale prepared kernel");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().engine_par(switch("$ENGINE_PAR_IRC_REVERSE")), Some(0));
+        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$read_reverse"], crate::ksp::Value::Int(0));
         assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0");
         dsp.rack.parts[0].ui_control(0, 0, 2);
         tick(&mut dsp, &mut buffer, &mut cx);
