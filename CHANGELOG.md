@@ -10,6 +10,14 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Added
 
+- Experimental Bitwig VST3 project inspection and explicit SavedMulti-to-KONTRA
+  migration create a new project copy and report; source bytes are rechecked and
+  retained. Shared plug-in-state entries and overlapping device mappings are
+  rejected instead of changing multiple devices through one cached state.
+- Independent authored performance pages expose each script slot's prepared UI
+  buffer. Footer selection keeps callbacks on the selected owning slot; late
+  publications and replacement epochs retain that ownership.
+
 - Cached instrument snapshots appear in a compact header preset row with owned
   category labels, alongside the existing explicit snapshot picker/drop workflow.
 - Independent user UI zoom preferences and persistent global editor window size.
@@ -96,6 +104,29 @@ below record reviewed source checkpoints; they are not claims about pending work
   effect indicators disclose partial processing instead of implying every FX runs.
 
 ### Fixed
+
+- Parse/runtime diagnostics now show readable bounded source context with slot,
+  line/column markers and the relevant command arguments. Serialized event data
+  keeps the excerpts visible in journal/export and Logs Copy all; both exact
+  diagnostic regressions passed on the corrected compiled binary.
+
+- Decode complete extended PCM WAVE format descriptors, including the checked
+  20-byte fmt records; two actual supplied samples decode fully. All 15 authored
+  descriptor cases and the combined audio regression passed.
+- Reveal actual library/log directories after validating the path, including
+  extended Windows drive and UNC spellings. Explorer launch remains unverified.
+- Resolve relative encrypted-preset paths and whitespace-delimited library access
+  fields with actionable missing-data errors; right-key and wrong-key checks pass.
+  The unavailable Emotional Piano payload has not been independently validated.
+- Accept documented symbolic MAIN/GROUP/INSERT level-meter chain selectors while
+  retaining rejection of invalid selectors. This is not a claim that every meter
+  source or an entire Conflux initialization now works.
+- Accept Creator Tools null menu lists for exported empty menus. The actual checked
+  Conflux resource loads 378 controls in 11 families; 100 callback operations show
+  no measured heap operations. Lua UI and unsupported level taps remain explicit.
+- Preserve independent script-slot pages and their callback ownership through
+  footer changes, delayed publications and replacement epochs. Authored UI/backend
+  checks pass; the Circle Bells payload was not available for validation.
 
 - Forward initialization RPN messages after receiving script slots initialize.
 - Persist global editor window size instead of losing the saved size between editors.
@@ -229,10 +260,30 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 - Root's shipping-profile focused checks through `e68d28c` passed 20 library checks
   and all 83 playback checks (4 ignored). NI's 13 focused checks passed. These results
   do not certify every actual library or a Windows/macOS DAW.
-- An actual imported performance resource exposes 378 controls, 11 families and
-  100 callback operations without measured callback heap allocations; complete
-  initialization still rejects an invalid level-meter attachment. This is not a
-  complete NCKP interface or native-UI compatibility claim.
+- Actual Conflux import/initialization at `0c0019a` reports no initialization
+  errors and exposes 378 controls. This does not validate full playback, Lua UI,
+  every control or actual meter signals; unsupported level taps remain explicit.
+  Circle Bells' multi-page interface was not available; authored page tests do
+  not certify that library.
+- Source excerpts retain up to five source lines, each clipped at 512 UTF-8 bytes
+  without splitting characters, plus labels/column markers. They intentionally
+  retain readable source text; full raw scripts are not included in copied reports
+  or support bundles. Missing source/locations cannot produce an excerpt.
+- Bitwig migration is an experimental partial copy, not a verified replacement
+  project: Kontakt automation/static host values are not translated, routing comes
+  from an explicit SavedMulti, and original Kontakt bus assignments remain undecoded.
+  VST2/CLAP instances are not classified; Bitwig reopening and sonic parity remain
+  unverified. Unmapped devices stay unchanged, and shared-state migration is refused.
+- Actual module-envelope callback checks retain 483 groups, 480 bypass sources and
+  959 of 960 known filter/formant depth targets across three Analog Strings states;
+  one opaque target remains unsupported. Finite PCM differences use an authored
+  stimulus and replacement sample map with flattened buses and omitted program FX.
+  This does not validate stock legacy depth controls or original-map/Kontakt audio.
+- Native group insert-order checks cover rack split references, threshold changes,
+  subtype retuning and 83 playback cases. Three factory-state probes perform 4,500
+  finite resident renders without heap operations; their reference is the same
+  engine with authored routing changes. Added inline fields measure 116 bytes per
+  voice on the checked Rust 1.98.1 build, not a throughput or parity improvement.
 - Wavetable source diagnostics do not implement wavetable DSP. Partial group FX,
   decoded envelopes and selected compressor IDs do not establish Kontakt sonic
   equivalence; unsupported processing remains visible.
@@ -324,16 +375,35 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 
 > Use the detached catalog for library display aliases
 
-### Candidates — not shipped
+> Record complete nightly notes and count reviewed logical fixes
 
-The following subsequent work remains outside the reviewed release notes until its
-combined validation passes and the maintainer moves it into Added/Changed/Fixed:
+> fix(audio): decode extended PCM WAVE format descriptors
 
-- WAV loader boundary handling (`48a`): candidate, not accepted or shipped.
-- Access lookup diagnostics (`744`): candidate follow-up, not accepted or shipped.
-- Native Reveal behavior (`776`): candidate follow-up, not accepted or shipped.
-- Diagnostic source excerpts (`fc0`): candidate, not accepted or shipped.
-- Multi-script pages (`235`): candidate, not accepted or shipped.
+> Show bounded script source context with parse and runtime diagnostics
+
+> Expose authored performance pages with independent script-slot buffers
+
+> Advance to 0.3.18 for eighteen reviewed fixes
+
+> Use imported tab helper for performance page selectors
+
+> Fix source excerpt regression lease and report serialization
+
+> Accept documented symbolic level-meter chain selectors
+
+> feat(migration): inspect and migrate Bitwig copies with shared-state guard
+
+> Record validated native group pipeline and actual state budget
+
+> docs: record actual module envelope callback validation boundaries
+
+> Describe reviewed source batch and omit unshipped candidates from notes
+
+> Advance to 0.3.22 after four further compatibility fixes pass
+
+> Read source excerpts from serialized diagnostic event data
+
+> Advance to 0.3.23 with verified readable script diagnostics
 
 ## 0.3.0-nightly.20261002.g4399f700e590 — 2026-10-02
 
