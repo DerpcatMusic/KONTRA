@@ -5,16 +5,34 @@
 
 static bool context_alive;
 static int destroys, opens, closes;
-static void require(bool ok) {
-    if (!ok) { std::fputs("FAIL: editor/context ownership invariant\n", stderr); std::abort(); }
+static void require_impl(bool ok, const char* condition, int line) {
+    if (!ok) { std::fprintf(stderr, "FAIL line %d: %s\n", line, condition); std::abort(); }
 }
+#define require(value) require_impl((value), #value, __LINE__)
+
+struct RunLoop {
+    void** vtbl;
+    int refs = 1;
+    int registrations = 0;
+};
+static uint32 loop_add_ref(void* self) { return ++static_cast<RunLoop*>(self)->refs; }
+static uint32 loop_release(void* self) { return --static_cast<RunLoop*>(self)->refs; }
+static tresult loop_register(void* self, void*, uint64_t) { ++static_cast<RunLoop*>(self)->registrations; return kResultOk; }
+static tresult loop_unregister(void* self, void*) { --static_cast<RunLoop*>(self)->registrations; return kResultOk; }
 
 struct Frame {
     void** vtbl;
     int refs = 1;
     int resizes = 0;
+    RunLoop* loop = nullptr;
 };
-static tresult frame_query(void*, const TUID, void** out) { *out = nullptr; return kNoInterface; }
+static tresult frame_query(void* self, const TUID iid, void** out) {
+    auto* frame = static_cast<Frame*>(self);
+    if (frame->loop && iid_equal(iid, IRunLoop_iid)) {
+        *out = frame->loop; loop_add_ref(frame->loop); return kResultOk;
+    }
+    *out = nullptr; return kNoInterface;
+}
 static uint32 frame_add_ref(void* self) {
     auto* frame = static_cast<Frame*>(self); require(frame->refs > 0); return ++frame->refs;
 }
@@ -87,5 +105,21 @@ int main() {
     require(frame_release(&final_frame) == 1);
     require(view->vtbl->release(view) == 0 && final_frame.refs == 0 && context_alive);
     require(com->vtbl_component->release(com) == 0 && !context_alive && destroys == 102);
-    std::puts("PASS: component/view/scale ownership and reopen; frame same/replacement/null/final release and retained resize");
+    void* loop_vtbl[] = {nullptr, reinterpret_cast<void*>(loop_add_ref), reinterpret_cast<void*>(loop_release),
+        nullptr, nullptr, reinterpret_cast<void*>(loop_register), reinterpret_cast<void*>(loop_unregister)};
+    RunLoop old_loop{loop_vtbl}, current_loop{loop_vtbl};
+    Frame old_frame{frame_vtbl, 1, 0, &old_loop}, current_frame{frame_vtbl, 1, 0, &current_loop};
+    com = create_component();
+    auto* old = static_cast<MoosePlugView*>(com->vtbl_controller->createView(&com->vtbl_controller, "editor"));
+    require(old->vtbl->setFrame(old, &old_frame) == kResultOk && old_loop.registrations == 1);
+    view = static_cast<MoosePlugView*>(com->vtbl_controller->createView(&com->vtbl_controller, "editor"));
+    require(view->vtbl->setFrame(view, &current_frame) == kResultOk && current_loop.registrations == 1);
+    require(old_loop.registrations == 0 && old_loop.refs == 1);
+    require(old->vtbl->setFrame(old, nullptr) == kResultOk && current_loop.registrations == 1);
+    require(old->vtbl->setFrame(old, &old_frame) == kResultOk && current_loop.registrations == 1 && old_loop.registrations == 0);
+    require(old->vtbl->release(old) == 0 && current_loop.registrations == 1 && current_loop.refs == 2);
+    require(view->vtbl->release(view) == 0 && current_loop.registrations == 0 && current_loop.refs == 1);
+    require(old_frame.refs == 1 && current_frame.refs == 1);
+    require(com->vtbl_component->release(com) == 0 && !context_alive && destroys == 103);
+    std::puts("PASS: component/view/frame ownership; old view clear/release preserves current run-loop registration");
 }
