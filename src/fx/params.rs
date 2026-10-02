@@ -227,7 +227,8 @@ pub struct Convolution {
     pub predelay_ms: f32,
     pub early: IrBand,
     pub late: IrBand,
-    /// Native er_lr_XPoint; units and automatic sentinel behavior remain unverified.
+    /// Native er_lr_XPoint: nonnegative values are a source-duration fraction.
+    /// Negative values request an automatic boundary, which remains unsupported.
     pub unknown_9: f32,
     /// Reverse, Auto Gain, Preserve Length, Bypass Latency Compensation,
     /// Volume Envelope. Names/order verified against native serialization bindings.
@@ -255,8 +256,15 @@ impl Convolution {
             && self.curve_db.iter().all(|v| v.is_finite()
                 && (v * 0.05 * std::f32::consts::LN_10).exp().is_finite())
     }
-    /// Stored native crossover value; its units are not inferred.
+    /// Stored native crossover fraction; negative automatic values stay raw.
     pub fn early_late_xpoint(&self) -> f32 { self.unknown_9 }
+    /// The proved explicit split excludes native time stretching/decimation.
+    /// Rendering additionally requires the source and host rates to agree.
+    pub(crate) fn explicit_split_supported(&self) -> bool {
+        (0.0..=1.0).contains(&self.early_late_xpoint())
+            && self.early.length_ratio == 1.0 && self.late.length_ratio == 1.0
+            && (self.sample_rate_decimation_factor() == 1.0 || self.sample_rate_decimation_factor() < 0.0)
+    }
     pub fn sample_rate_decimation_factor(&self) -> f32 { self.unknown[0] }
     /// The native second word is an integer, not a floating-point parameter.
     pub fn convolution_block_size(&self) -> i32 { self.unknown[1].to_bits() as i32 }
