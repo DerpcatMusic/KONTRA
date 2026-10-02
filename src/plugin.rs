@@ -4920,6 +4920,11 @@ pub(crate) mod tests {
         let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::paint_snapshot_assets(&published,(640.,400.),&assets))
             .offered(Size::new(640.,400.)).font(Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap());
         let rendered=moose::mui::mui::scene::resolve(&spec).unwrap();
+        fn image_id(node:&Node) -> Option<usize> {
+            if matches!(node.paint,Paint::Asset(_)) {Some(node.id)} else {node.children.iter().find_map(image_id)}
+        }
+        let frame=rendered.surface(&format!("native-snapshot-{}",image_id(&published).unwrap())).unwrap().frame;
+        assert_eq!((frame.x,frame.y,frame.size.width,frame.size.height),(370.,220.,40.,20.),"nested frames use real MUI alignment and retain intrinsic image size");
         assert_eq!(rendered.paint.iter().filter(|p| p.text.is_some()).count(),2,"both computed labels use the production MUI primitive adapter");
         assert!(rendered.paint.iter().any(|p| matches!(p.paint,moose::mui::mui::scene::Paint::Vector {..})),"authored SVG retains its vector/source identity through MUI paint");
         let source=rendered.paint.iter().find_map(|p|match &p.paint {

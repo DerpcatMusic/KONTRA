@@ -52,11 +52,8 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
             .children
             .iter()
             .map(|child| {
-                let natural = intrinsic(child, assets, (w, h));
-                let cw = child.width.unwrap_or(natural.0);
-                let ch = child.height.unwrap_or(natural.1);
                 draw(ui, cx, part, epoch, scene, child, (w, h), assets)
-                    .at((w - cw) / 2., (h - ch) / 2.)
+                    .anchor(node.alignment.0, node.alignment.1)
             })
             .collect();
         let el = primitive(node, w, h, children, assets);
@@ -142,13 +139,17 @@ fn primitive(
         Paint::Text(value) => text(value.clone())
             .text_size(node.text_size)
             .lines(1)
-            .fill(Color::srgba(node.text_color[0], node.text_color[1], node.text_color[2], node.text_color[3]))
-            .w(w)
-            .h(h),
+            .fill(Color::srgba(
+                node.text_color[0], node.text_color[1], node.text_color[2], node.text_color[3],
+            ))
+            .w(node.width.map_or(Len::Auto, Len::Px))
+            .h(node.height.map_or(Len::Auto, Len::Px)),
         Paint::Rectangle(color) => {
             block(w, h).fill(Color::srgba(color[0], color[1], color[2], color[3]))
         }
-        Paint::Stack => stack(children).w(w).h(h),
+        Paint::Stack => stack(children)
+            .w(node.width.map_or(Len::Auto, Len::Px))
+            .h(node.height.map_or(Len::Auto, Len::Px)),
         Paint::Asset(reference) => match assets.entries.get(&reference.resource) {
             Some(Ok(asset)) => match asset.as_ref() {
                 crate::native_assets::Asset::Vector(vector) => {
@@ -181,13 +182,8 @@ pub(crate) fn paint_snapshot_assets(
         .children
         .iter()
         .map(|child| {
-            let natural = intrinsic(child, assets, (w, h));
-            let (cw, ch) = (
-                child.width.unwrap_or(natural.0),
-                child.height.unwrap_or(natural.1),
-            );
-            paint_snapshot_assets(child, (w, h), assets).at((w - cw) / 2., (h - ch) / 2.)
+            paint_snapshot_assets(child, (w, h), assets).anchor(node.alignment.0, node.alignment.1)
         })
         .collect();
-    primitive(node, w, h, children, assets)
+    primitive(node, w, h, children, assets).id(format!("native-snapshot-{}", node.id))
 }

@@ -4,6 +4,7 @@ mod frontend;
 use crate::ksp::{Live, Runtime};
 use anyhow::{Context, Result, bail, ensure};
 use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
+use moose::mui::mui::prelude::Align;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{
@@ -26,6 +27,7 @@ pub(crate) struct Node {
     pub height: Option<f64>,
     pub text_size: f64,
     pub text_color: [f32; 4],
+    pub alignment: (Align, Align),
     pub tap: bool,
     pub children: Vec<Node>,
 }
@@ -622,6 +624,40 @@ impl Scene {
             kind => bail!("Unsupported native UI primitive: {kind}"),
         };
         let frame: Option<Table> = modifiers.get("frame")?;
+        let mut alignment = (Align::Center, Align::Center);
+        if let Some(name) = frame
+            .as_ref()
+            .map(|frame| frame.get::<Option<String>>("alignment"))
+            .transpose()?
+            .flatten()
+        {
+            let (mut x, mut y) = (None, None);
+            ensure!(
+                (1..=2).contains(&name.split_whitespace().count()),
+                "Invalid native UI frame alignment: {name}"
+            );
+            for token in name.split_whitespace() {
+                match token {
+                    "left" | "right" => {
+                        ensure!(
+                            x.is_none(),
+                            "Conflicting native UI frame alignment: {name}"
+                        );
+                        x = Some(if token == "left" { Align::Start } else { Align::End });
+                    }
+                    "top" | "bottom" => {
+                        ensure!(
+                            y.is_none(),
+                            "Conflicting native UI frame alignment: {name}"
+                        );
+                        y = Some(if token == "top" { Align::Start } else { Align::End });
+                    }
+                    "center" => (),
+                    _ => bail!("Unsupported native UI frame alignment: {name}"),
+                }
+            }
+            alignment = (x.unwrap_or(Align::Center), y.unwrap_or(Align::Center));
+        }
         let width = frame
             .as_ref()
             .map(|t| t.get::<Option<f64>>("width"))
@@ -681,6 +717,7 @@ impl Scene {
             height,
             text_size,
             text_color,
+            alignment,
             tap: has_tap,
             children: nodes,
         })
