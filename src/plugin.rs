@@ -1797,7 +1797,7 @@ impl BackgroundTask for Load {
                 if let Some(load) = &mut view.parts[slot].load_report {
                     let load = Arc::make_mut(load);
                     load["runtime"] = serde_json::Value::Null;
-                    if report["status"] == "partial" { load["status"] = "partial".into(); }
+                    if report["status"] == "partial" && load["status"] == "loaded" { load["status"] = "partial".into(); }
                     load["script_restore"] = (*report).clone();
                 } else { view.parts[slot].load_report = Some(report); }
                 if let Some(fx) = fx {
@@ -2093,7 +2093,7 @@ impl BackgroundTask for Load {
                         let v = &mut view.parts[slot];
                         if let Some(load) = &mut v.load_report {
                             let load = Arc::make_mut(load);
-                            if report["status"] != "loaded" { load["status"] = "partial".into(); }
+                            if report["status"] != "loaded" && load["status"] == "loaded" { load["status"] = "partial".into(); }
                             load["artwork"] = (*report).clone();
                         }
                         v.pictures = Arc::new(pictures);
@@ -2136,7 +2136,7 @@ impl BackgroundTask for Load {
                     let v = &mut view.parts[slot];
                     if let Some(load) = &mut v.load_report {
                         let load = Arc::make_mut(load);
-                        if report["status"] != "loaded" { load["status"] = "partial".into(); }
+                        if report["status"] != "loaded" && load["status"] == "loaded" { load["status"] = "partial".into(); }
                         load["preload"] = (*report).clone();
                     }
                     match bank {
@@ -2198,7 +2198,7 @@ impl BackgroundTask for Load {
                         let v = &mut view.parts[slot];
                         if let Some(load) = &mut v.load_report {
                             let load = Arc::make_mut(load);
-                            if report["status"] != "loaded" { load["status"] = "partial".into(); }
+                            if report["status"] != "loaded" && load["status"] == "loaded" { load["status"] = "partial".into(); }
                             load["ram_fill"] = (*report).clone();
                         }
                         match bank {
@@ -4038,6 +4038,22 @@ mod tests {
             println!("worker snapshot {}: epoch {}, controls {}, groups {}, audio heap 0", instrument.name, epoch,
                 p.shared.view.lock().unwrap().parts[0].interface.as_ref().map_or(0, |i| i.controls.len()), instrument.groups.len());
         }
+        // Commit the active runtime's ordinary persistence before testing a
+        // rejected selection. Load also services normal audio handoffs, whose
+        // legitimate publication must not be confused with preset replacement.
+        let mut settled = false;
+        for _ in 0..32 {
+            assert_eq!(allocations(|| {
+                for _ in 0..16 { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }
+            }), 0);
+            Load.run(&p);
+            let expected = serde_json::to_string(&dsp.rack.parts[0].script().unwrap().persistence()).unwrap();
+            if p.selection.read().unwrap().parts[0].script_state == expected {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "active snapshot persistence did not settle within 512 blocks");
         let before = p.selection.read().unwrap().parts[0].clone();
         let bank = dsp.rack.parts[0].bank().unwrap() as *const Bank;
         let generation = p.shared.generation[0].load(Ordering::Acquire);
