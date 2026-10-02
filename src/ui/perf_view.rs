@@ -19,6 +19,13 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
+// Per-thread test counter: audit frames do not mix with parallel fixtures.
+#[cfg(test)]
+thread_local! { static CONTROL_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(super) fn control_builds() -> u64 { CONTROL_BUILDS.with(std::cell::Cell::get) }
+
 /// Rows of the wallpaper above the performance view: Kontakt's instrument
 /// header covers them.
 pub const HEADER: f64 = 68.;
@@ -890,6 +897,8 @@ enum Look<'a> {
 /// One control: its picture's frame or KONTRA's face, its text, and its
 /// pointer handling.
 fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s: f64, look: Look) -> El {
+    #[cfg(test)]
+    CONTROL_BUILDS.with(|count| count.set(count.get() + 1));
     let vector = matches!(look, Look::Vector(_));
     let marker_on_wave = matches!(look, Look::Vector(p) if p.face == VFace::Marker);
     let id = format!("kpv-{slot}-{}", shown.control);

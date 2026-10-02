@@ -36,7 +36,9 @@ pub struct InternalModParams {
     pub name: String,
     pub targets: Vec<ModTarget>,
     pub modulator: Modulator,
-    /// Four flag bytes; the first may be bypass, unverified.
+    /// Native v0x80/81: [router-open UI state, bypass, retrigger, unknown].
+    /// Boolean field order is corroborated by the native typed reader and XML
+    /// importer stores; unknown fields remain byte-preserved.
     pub unknown_flags: [u8; 4],
     /// Numeric id; meaning unknown.
     pub unknown_id: u32,

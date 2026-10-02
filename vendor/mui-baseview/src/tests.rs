@@ -6,6 +6,53 @@ use mui::Ui;
 use mui::prelude::{El, Input, knob};
 
 #[test]
+fn uncaptured_gpu_diagnostics_reach_the_sink_without_the_model_lock() {
+    let h = handler((400, 300), 1.0);
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&seen);
+    let hook: LogHook = Arc::new(Mutex::new(move |line: &str| sink.lock().unwrap().push(line.into())));
+    h.requests.on_log(hook);
+    let hook = h.requests.log.lock().unwrap().clone().unwrap();
+    // wgpu may call synchronously or from another thread. Holding the
+    // model must not prevent the independent diagnostic callback.
+    let _model = lock(&h.shared);
+    std::thread::spawn(move || report_gpu_error(&hook, std::io::Error::other("surface validation probe"))).join().unwrap();
+    assert_eq!(*seen.lock().unwrap(), ["mui-baseview: GPU failed (uncaptured error: surface validation probe)"]);
+}
+
+#[test]
+fn gpu_diagnostics_do_not_reenter_a_busy_sink_and_recover_poison() {
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&seen);
+    let hook: LogHook = Arc::new(Mutex::new(move |line: &str| sink.lock().unwrap().push(line.into())));
+    let busy = hook.lock().unwrap();
+    report_gpu_error(&hook, "nested GPU probe");
+    assert!(seen.lock().unwrap().is_empty());
+    drop(busy);
+    let poison = Arc::clone(&hook);
+    assert!(std::thread::spawn(move || {
+        let _sink = poison.lock().unwrap();
+        panic!("sink poison probe");
+    }).join().is_err());
+    report_gpu_error(&hook, "recovered GPU probe");
+    assert_eq!(*seen.lock().unwrap(), ["mui-baseview: GPU failed (uncaptured error: recovered GPU probe)"]);
+    let panicking: LogHook = Arc::new(Mutex::new(|_: &str| panic!("sink callback probe")));
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| report_gpu_error(&panicking, "GPU cause survives sink panic"))).is_ok());
+}
+
+#[test]
+fn a_caught_window_panic_keeps_the_handler_usable() {
+    let mut h = handler((400, 300), 1.0);
+    let caught = guard(&mut h, |h| {
+        let _model = lock(&h.shared);
+        panic!("first-frame layout probe");
+    });
+    assert!(caught.is_none());
+    assert_eq!(guard(&mut h, |_| 7), Some(7));
+    assert!(h.step());
+}
+
+#[test]
 fn gpu_startup_panic_keeps_the_backend_cause() {
     assert_eq!(gpu_panic_reason(&"Vulkan loader unavailable"),
         "panic while creating GPU resources: Vulkan loader unavailable");

@@ -1046,7 +1046,7 @@ impl Runtime {
                         .iter()
                         .map(|c| {
                             c.props.len()
-                                + 5
+                                + 7
                                 + c.menu.len()
                                 + if p.vars[c.var as usize].ui.as_deref() == Some("ui_menu") {
                                     16

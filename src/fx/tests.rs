@@ -22,11 +22,12 @@ fn gainer(gain: f32) -> Effect {
 
 fn convolution(ir: &[f32]) -> Effect {
     let bytes = {
-        let mut b: Vec<u8> = [-1.0f32, 0.0, 0.0, 1.0, 20.0, 20e3, 1.0, 20.0, 20e3, -1.0]
+        let mut b: Vec<u8> = [-1.0f32, 0.0, 0.0, 1.0, 20.0, SR * 0.5, 1.0, 20.0, SR * 0.5, -1.0]
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
-        b.extend([0, 1, 1, 1, 0]);
+        // Raw-kernel fixtures disable native IR cuts and Auto Gain.
+        b.extend([0, 0, 1, 1, 0]);
         b.extend([0u8; 8]);
         b.extend(0i32.to_le_bytes());
         b
@@ -40,6 +41,243 @@ fn convolution(ir: &[f32]) -> Effect {
         frames: ir.iter().map(|&v| [v, v]).collect(),
     })));
     fx
+}
+
+#[test]
+fn convolution_ir_filter_boundaries_follow_native_rate_and_biquad_law_without_heap() {
+    // An independent direct-form Butterworth reference checks the reused SVF,
+    // including native bypass decisions at and beside their exact boundaries.
+    let reference = |signal: &mut [f32; 128], hz: f32, rate: f32, highpass: bool| {
+        let k = (std::f32::consts::PI * hz / rate).tan();
+        let k2 = k * k;
+        let n = 1.0 / (1.0 + std::f32::consts::SQRT_2 * k + k2);
+        let b = if highpass { [n, -2.0 * n, n] } else { [k2 * n, 2.0 * k2 * n, k2 * n] };
+        let a = [2.0 * (k2 - 1.0) * n, (1.0 - std::f32::consts::SQRT_2 * k + k2) * n];
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+        for sample in signal {
+            let x = *sample;
+            let y = b[0] * x + b[1] * x1 + b[2] * x2 - a[0] * y1 - a[1] * y2;
+            (x2, x1, y2, y1) = (x1, x, y1, y);
+            *sample = y;
+        }
+    };
+    for (rate, low, high, hp, lp) in [
+        (48_000.0, 479.99, 21_600.1, false, false),
+        (48_000.0, 480.0, 24_000.0, true, false),
+        (48_000.0, 480.1, 24_000.0, true, false),
+        (48_000.0, 20.0, 21_600.0, false, true),
+        (48_000.0, 20.0, 21_599.9, false, true),
+        (48_000.0, 20.0, 20_000.0, false, true),
+        (44_100.0, 20.0, 20_000.0, false, false),
+        (24_000.0, 20.0, 20_000.0, false, false),
+        (48_000.0, 960.0, 6_000.0, true, true),
+    ] {
+        let mut fx = convolution(&[1.0, 0.5]);
+        let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+        c.early.low_cut_hz = low;
+        c.early.high_cut_hz = high;
+        c.late = c.early;
+        c.ir = Some(Impulse(Arc::new(Sample { rate: rate as u32, frames: vec![[1.0; 2], [0.5; 2]] })));
+        let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+        assert!(fx.warnings().is_empty());
+        let mut processor = fx.processor(rate, 16);
+        let mut expected = [0.0; 128];
+        expected[..2].copy_from_slice(&[1.0, 0.5]);
+        if lp { reference(&mut expected, high, rate, false); }
+        if hp { reference(&mut expected, low, rate, true); }
+        let mut actual = [[0.0; 2]; 128];
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for block in 0..8 {
+                let (mut l, mut r) = ([0.0; 16], [0.0; 16]);
+                if block == 0 { l[0] = 1.0; r[0] = 1.0; }
+                processor.process(&mut l, &mut r);
+                for n in 0..16 { actual[block * 16 + n] = [l[n], r[n]]; }
+            }
+        }), 0);
+        for (frame, (out, expected)) in actual.iter().zip(expected).enumerate() {
+            for value in out {
+                assert!((value - expected).abs() < 3e-6,
+                    "rate={rate} low={low} high={high} frame={frame}: {value} != {expected}");
+            }
+        }
+    }
+}
+
+#[test]
+fn convolution_reverse_preserves_asymmetric_ir_gain_predelay_and_rate_without_heap() {
+    let source = [[0.125, 2.0], [-0.5, 0.0], [0.0, -0.25], [1.5, 0.0],
+                  [0.25, 1.0], [0.0, 0.0], [0.75, -0.125], [-0.125, 0.5]];
+    for reverse in [false, true] {
+        for rate in [SR, SR / 2.0] {
+            let mut fx = convolution(&[1.0]);
+            let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+            c.flags[0] = reverse;
+            c.predelay_ms = 3.0 / SR * 1000.0;
+            c.ir = Some(Impulse(Arc::new(Sample { rate: SR as u32, frames: source.to_vec() })));
+            assert_eq!(c.reversed(), reverse);
+            assert!(!c.auto_gain() && c.preserve_length_ir() && c.bypass_latency_compensation() && !c.envelope_active());
+            let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+            assert!(fx.warnings().is_empty());
+            let mut p = fx.processor(rate, 4);
+            let mut output = [[0.0; 2]; 24];
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                for block in 0..6 {
+                    let (mut left, mut right) = ([0.0; 4], [0.0; 4]);
+                    if block == 0 { left[0] = 1.0; right[0] = 1.0; }
+                    p.process(&mut left, &mut right);
+                    for n in 0..4 { output[block * 4 + n] = [left[n], right[n]]; }
+                }
+            }), 0);
+            let stride = (SR / rate) as usize;
+            let pre = (3.0 * rate / SR) as usize;
+            for (n, actual) in output.iter().enumerate() {
+                let index = n.checked_sub(pre).map(|i| i * stride).filter(|&i| i < source.len());
+                let expected = index.map_or([0.0; 2], |i| source[if reverse { source.len() - 1 - i } else { i }]);
+                for ch in 0..2 {
+                    assert!((actual[ch] - expected[ch]).abs() < 1e-6, "reverse={reverse} rate={rate} frame={n} channel={ch}");
+                }
+            }
+        }
+    }
+    let mut fx = convolution(&[1.0]);
+    let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+    c.flags[1] = true;
+    c.flags[4] = true;
+    let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+    assert!(fx.warnings().iter().any(|w| w.contains("Auto Gain uses the approximated IR")));
+    assert!(fx.warnings().iter().any(|w| w.contains("Volume Envelope is not applied")));
+}
+
+#[test]
+fn convolution_auto_gain_uses_prepared_stereo_energy_and_preserves_dry_without_heap() {
+    // A louder right channel must determine the same wet gain for both sides.
+    // Small responses exercise the native low-energy threshold and 2x cap.
+    for (source, reference_gain) in [
+        (vec![[1.0, 2.0], [0.0, -1.0]], (0.5f32 / 5.0).sqrt()),
+        (vec![[0.25, 0.125]], 2.0),
+        (vec![[0.01, 0.02]], 1.0),
+        (vec![[0.0, 0.0]], 1.0),
+        (vec![[0.5, 0.5]], 2.0f32.sqrt()),
+        (vec![], 1.0),
+    ] {
+        for automatic in [false, true] {
+            let mut fx = convolution(&[1.0]);
+            fx.output_gain = 0.5;
+            fx.dry_level = 0.25;
+            let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+            c.flags[1] = automatic;
+            c.ir = Some(Impulse(Arc::new(Sample { rate: SR as u32, frames: source.clone() })));
+            let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+            assert!(fx.warnings().is_empty());
+            let mut p = fx.processor(SR, 4);
+            let (mut left, mut right) = ([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
+            assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+            let gain = if automatic { reference_gain } else { 1.0 };
+            for n in 0..4 {
+                for (ch, out) in [left[n], right[n]].into_iter().enumerate() {
+                    let wet = source.get(n).map_or(0.0, |v| v[ch]) * gain * 0.5;
+                    let dry = if n == 0 { 0.25 } else { 0.0 };
+                    assert!((out - wet - dry).abs() < 1e-6, "automatic={automatic} frame={n} channel={ch}: {out}");
+                }
+            }
+        }
+    }
+    // The current Size proxy resamples instead of native time stretching.
+    // At half the source rate, 1.5x size has a 4/3 source-frame stride.
+    // Gain must follow this prepared response, before its independent wet mix.
+    let source = [[1.0, 0.0], [0.0, 0.0], [0.0, 2.0], [0.0, 0.0]];
+    let prepared = [[1.0, 0.0], [0.0, 2.0 / 3.0], [0.0, 2.0 / 3.0]];
+    let mut fx = convolution(&[1.0]);
+    let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+    c.flags[1] = true;
+    c.early.length_ratio = 1.5;
+    c.late.length_ratio = 1.5;
+    c.predelay_ms = 0.1; // 2.4 frames, truncated to two.
+    c.ir = Some(Impulse(Arc::new(Sample { rate: SR as u32, frames: source.to_vec() })));
+    let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+    assert!(fx.warnings().iter().any(|w| w.contains("IR Size uses a resampling approximation")));
+    assert!(fx.warnings().iter().any(|w| w.contains("Auto Gain uses the approximated IR")));
+    let mut p = fx.processor(SR / 2.0, 8);
+    let (mut left, mut right) = ([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+    for n in 0usize..8 {
+        let expected = n.checked_sub(2).and_then(|i| prepared.get(i)).copied().unwrap_or([0.0; 2]);
+        for ch in 0..2 {
+            let out = [left[n], right[n]][ch];
+            assert!((out - expected[ch] * 0.5f32.sqrt()).abs() < 2e-6, "frame={n} channel={ch}: {out}");
+        }
+    }
+}
+
+#[test]
+fn convolution_envelope_interpolates_amplitudes_before_auto_gain_and_predelay_without_heap() {
+    let times = [0.0, 0.125, 0.25, 0.25, 0.5, 0.625, 0.75, 1.0];
+    let gains = [0.25f32, 0.5, 1.0, 2.0, 0.5, 0.25, 1.0, 0.5];
+    // Numeric references distinguish amplitude interpolation from dB ramps,
+    // and preserve the later endpoint after two knots round to one frame.
+    for (rate, size, expected, energy) in [
+        (SR, 1.0, vec![0.25,0.5,2.0,1.25,0.5,0.25,1.0,0.75], 31.0f32),
+        (SR / 2.0, 1.0, vec![0.25,2.0,0.5,1.0], 21.25),
+        (SR / 2.0, 1.5, vec![0.25,0.5,2.0,0.5,0.25,1.0], 22.5),
+    ] {
+        for active in [false, true] {
+            for automatic in [false, true] {
+                let mut fx = convolution(&[1.0]);
+                let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+                c.flags[1] = automatic;
+                c.flags[4] = active;
+                c.early.length_ratio = size;
+                c.late.length_ratio = size;
+                c.predelay_ms = 2.25 / rate * 1000.0;
+                c.ir = Some(Impulse(Arc::new(Sample { rate: SR as u32, frames: vec![[1.0,2.0];8] })));
+                // Deliberately unsorted, with duplicate times kept in order.
+                let order = [7,2,0,6,3,1,5,4];
+                c.curve_x = order.map(|i| times[i]).to_vec();
+                c.curve_db = order.map(|i| 20.0 * gains[i].log10()).to_vec();
+                let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+                if size == 1.0 {
+                    assert!(fx.warnings().is_empty());
+                } else {
+                    let warnings = fx.warnings();
+                    assert!(warnings.iter().any(|w| w.contains("IR Size uses a resampling approximation")));
+                    assert_eq!(warnings.iter().any(|w| w.contains("Auto Gain uses the approximated IR")), automatic);
+                }
+                let mut p = fx.processor(rate, 16);
+                let (mut left, mut right) = ([0.0;16], [0.0;16]);
+                left[0] = 1.0; right[0] = 1.0;
+                assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+                let energy = if active { energy } else { 4.0 * expected.len() as f32 };
+                let gain = if automatic { (0.5 / energy).sqrt() } else { 1.0 };
+                for n in 0usize..16 {
+                    let shape = n.checked_sub(2).filter(|&i| i < expected.len())
+                        .map_or(0.0, |i| if active { expected[i] } else { 1.0 });
+                    for ch in 0..2 {
+                        let out = [left[n],right[n]][ch];
+                        let want = shape * (ch + 1) as f32 * gain;
+                        assert!((out - want).abs() < 3e-6, "rate={rate} size={size} active={active} automatic={automatic} frame={n} channel={ch}: {out} vs {want}");
+                    }
+                }
+            }
+        }
+    }
+    // Native envelope leaves samples before its first/after its last knot
+    // unchanged; invalid active records remain explicit instead of guessed.
+    let mut fx = convolution(&[1.0;8]);
+    let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+    c.flags[4] = true;
+    c.curve_x = vec![0.25,0.3,0.35,0.4,0.5,0.6,0.7,0.75];
+    c.curve_db = vec![20.0 * 0.5f32.log10();8];
+    let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+    let mut p = fx.processor(SR, 8);
+    let (mut left, mut right) = ([1.,0.,0.,0.,0.,0.,0.,0.], [1.,0.,0.,0.,0.,0.,0.,0.]);
+    assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+    for (actual, expected) in left.into_iter().zip([1.,1.,0.5,0.5,0.5,0.5,1.,1.]) {
+        assert!((actual - expected).abs() < 1e-6);
+    }
+    let mut bad = fx;
+    let Params::Convolution(c) = &mut bad.insert.slots[0].params else { unreachable!() };
+    c.curve_x.pop();
+    assert!(bad.warnings().iter().any(|w| w.contains("Volume Envelope is not applied")));
 }
 
 #[test]
@@ -88,7 +326,7 @@ fn convolution_uniform_filters_shape_audio_and_keep_unknown_splits_explicit() {
     let Params::Convolution(c) = &mut sized.insert.slots[0].params else { unreachable!() };
     c.early.length_ratio = 1.5;
     c.late.length_ratio = 1.5;
-    assert!(sized.warnings().is_empty(), "uniform sizing already plays");
+    assert!(sized.warnings().iter().any(|w| w.contains("IR Size uses a resampling approximation")));
     let Params::Convolution(c) = &mut sized.insert.slots[0].params else { unreachable!() };
     c.early.length_ratio = 1.0;
     assert!(sized.warnings().iter().any(|w| w.contains("independent early/late IR sizing")));
@@ -126,10 +364,10 @@ fn convolution_size_stretches_reflections_and_predelay_offsets_them() {
     impulse[8] = 1.;
     let fx = ProgramFx { insert: Chain { slots: vec![convolution(&impulse)] }, ..Default::default() };
     for (size, predelay, peak) in [(0., 0., 4), (0.5, 0., 8), (1., 0., 12), (0.5, 0.25, 248)] {
-        let settings = params::IrSettings { values: [predelay, size, size], size };
+        let settings = params::IrSettings { values: [predelay, size, size], size, ..params::IrSettings::DEFAULT };
         let loads = [ScriptIr { rack: Rack::Insert, slot: 0, load: Load::Convolution(settings) }];
         let mut p = fx.processor_with(SR, 64, &loads);
-        assert_eq!(p.ir_settings(Rack::Insert, 0), Some(settings));
+        assert_eq!(p.ir_settings(Rack::Insert, 0), Some(params::IrSettings { reverse: Some(false), auto_gain: Some(false), ..settings }));
         let mut output = Vec::new();
         for block in 0..8 {
             let mut left = [0.; 64];
@@ -149,14 +387,14 @@ fn convolution_size_stretches_reflections_and_predelay_offsets_them() {
     }
     // Requested split values survive rate rebuilds even though the current
     // renderer uses the last edited size uniformly without an ER/LR boundary.
-    let settings = params::IrSettings { values: [0.25, 0.5, 1.], size: 1. };
+    let settings = params::IrSettings { values: [0.25, 0.5, 1.], size: 1., ..params::IrSettings::DEFAULT };
     let early_last = params::IrSettings { size: 0.5, ..settings };
     let mut replayed = early_last;
     for (n, value) in settings.values.into_iter().enumerate() { assert!(replayed.set(n as u8, value)); }
     assert_eq!(replayed, early_last, "unchanged parameter replay preserves the last edited size");
     let loads = [ScriptIr { rack: Rack::Insert, slot: 0, load: Load::Convolution(settings) }];
     let p = fx.processor_with(44100., 64, &loads);
-    assert_eq!(p.ir_settings(Rack::Insert, 0), Some(settings));
+    assert_eq!(p.ir_settings(Rack::Insert, 0), Some(params::IrSettings { reverse: Some(false), auto_gain: Some(false), ..settings }));
     for (n, want) in settings.values.iter().enumerate() {
         assert_eq!(p.param(Rack::Insert, 0, FxParam::Convolution(n as u8)), Some(*want));
         assert_eq!(fx.param(Rack::Insert, 0, FxParam::Convolution(n as u8)), Some(params::IrSettings::DEFAULT.values[n]));
