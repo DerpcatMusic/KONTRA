@@ -131,10 +131,15 @@ pub fn drags_vertically(kind: Kind, w: f64, h: f64, picture: &str, behaviour: i3
     }
 }
 
-/// How far a drag runs the whole range, in authored pixels: the size of
-/// `$CONTROL_PAR_MOUSE_BEHAVIOUR` is its speed, a value edit a few pixels
-/// a step.
-pub fn travel(kind: Kind, behaviour: i32, span: f64) -> f64 {
+/// How far a drag runs the whole range, in authored pixels. A real slider
+/// follows its drawn track; mouse behaviour selects its axis. Knobs (also
+/// sliders drawn as knobs) retain the scripted speed, and value edits run
+/// a few pixels a step.
+pub fn travel(kind: Kind, behaviour: i32, span: f64, size: (f64, f64), picture: &str) -> f64 {
+    let (w, h) = size;
+    if kind == Kind::Slider && !knob_like(picture, w, h) {
+        return if drags_vertically(kind, w, h, picture, behaviour) { h } else { w };
+    }
     match (kind, behaviour) {
         (Kind::Value, _) => (span * 3.).clamp(60., 600.),
         (_, 0) => 200.,
@@ -715,7 +720,12 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
             // A marker on a wave moves along it.
             let vertical = drags_vertically(shown.kind, shown.w, shown.h, prop(c, "$CONTROL_PAR_PICTURE"), behaviour) && !marker_on_wave;
             let before = now;
-            let held = drive(ui, &id, &mut now, &(lo..=hi), travel(shown.kind, behaviour, hi - lo) * s, vertical, reset);
+            let distance = if marker_on_wave { w } else {
+                travel(shown.kind, behaviour, hi - lo, (shown.w, shown.h), prop(c, "$CONTROL_PAR_PICTURE")) * s
+            };
+            // drive applies each pointer delta to the grabbed value, so a
+            // press keeps the grab offset instead of snapping the thumb.
+            let held = drive(ui, &id, &mut now, &(lo..=hi), distance, vertical, reset);
             if shown.kind == Kind::Value && ui.get(id.as_str()).double_clicked {
                 // A value edit types on a double-click, as Kontakt's does.
                 now = before;
@@ -1122,10 +1132,55 @@ mod tests {
         assert!(drags_vertically(Kind::Slider, 120., 20., "fader", -500), "negative behaviour is vertical");
         assert!(!drags_vertically(Kind::Slider, 20., 120., "fader", 500), "positive is horizontal");
         assert!(drags_vertically(Kind::Value, 80., 18., "", 0), "a value edit drags up and down");
-        assert_eq!(travel(Kind::Slider, 0, 127.), 200.);
-        assert_eq!(travel(Kind::Slider, -1000, 127.), 100.);
-        assert_eq!(travel(Kind::Slider, 5000, 127.), 60., "the fastest still has room");
-        assert_eq!(travel(Kind::Value, 0, 10.), 60.);
+        assert_eq!(travel(Kind::Slider, 0, 127., (120., 20.), "fader"), 120.);
+        assert_eq!(travel(Kind::Slider, -1000, 127., (20., 120.), "fader"), 120.);
+        assert_eq!(travel(Kind::Slider, 2500, 1_000_000., (734., 73.), "macro_slider_transparent"), 734.);
+        assert_eq!(travel(Kind::Slider, 1755, 1_000_000., (102., 13.), "mini_macro1_slider"), 102.);
+        assert_eq!(travel(Kind::Knob, 0, 127., (48., 50.), ""), 200.);
+        assert_eq!(travel(Kind::Slider, -1000, 127., (48., 50.), "knob"), 100.);
+        assert_eq!(travel(Kind::Slider, 5000, 127., (48., 50.), "knob"), 60., "the fastest knob still has room");
+        assert_eq!(travel(Kind::Value, 0, 10., (80., 18.), ""), 60.);
+    }
+
+    #[test]
+    fn slider_thumb_tracks_pointer_at_any_view_scale() {
+        // Real Analog Strings macro dimensions/behaviour, plus a vertical
+        // fader. Exercise the same Ui drag path as control(), not just the
+        // distance formula. Pointer coordinates are logical host points.
+        for (w, h, behaviour, picture) in [
+            (734., 73., 2500, "macro_slider_transparent"),
+            (102., 13., 1755, "mini_macro1_slider"),
+            (13., 102., -1755, "fader"),
+        ] {
+            for view_scale in [0.5, 1., 2.] {
+                for device_scale in [1., 2.] {
+                    let mut ui = crate::ui::theme::ui();
+                    ui.set_scale(Some(device_scale));
+                    let size = Size::new(w * view_scale, h * view_scale);
+                    let root = || canvas(|_| {}).w(size.width).h(size.height).id("slider");
+                    ui.frame(root(), Some(size), Input::default(), 0.).unwrap();
+                    let vertical = drags_vertically(Kind::Slider, w, h, picture, behaviour);
+                    let distance = travel(Kind::Slider, behaviour, 1_000_000., (w, h), picture) * view_scale;
+                    let physical_delta = 10.;
+                    let delta = physical_delta / device_scale;
+                    let grab = Point::new(size.width * 0.55, size.height * 0.55);
+                    let mut value = 400_000.;
+                    for (tick, (step, fine)) in [(0., false), (1., false), (1., false), (2., true)].into_iter().enumerate() {
+                        let at = if vertical { Point::new(grab.x, grab.y - step * delta) } else { Point::new(grab.x + step * delta, grab.y) };
+                        let input = Input { pointer: PointerInput {
+                            pos: Some(at), buttons: Buttons::PRIMARY,
+                            mods: Mods { shift: fine, ..Default::default() },
+                            ..Default::default()
+                        }, ..Default::default() };
+                        ui.frame(root(), Some(size), input, (tick + 1) as f64 / 60.).unwrap();
+                        drive(&mut ui, "slider", &mut value, &(0. ..=1_000_000.), distance, vertical, 0.);
+                        let travelled = match step { 0. => 0., 1. => delta, _ => delta * 1.1 };
+                        let expected = 400_000. + travelled / distance * 1_000_000.;
+                        assert!((value - expected).abs() < 1e-6, "{w}x{h}, view {view_scale}, device {device_scale}, step {step}: {value} != {expected}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
