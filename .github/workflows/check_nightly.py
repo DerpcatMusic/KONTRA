@@ -80,7 +80,10 @@ if a[0]=="api":
         s["refs"][values["ref"].removeprefix("refs/tags/")]=values["sha"]; out="{}"
     elif path.startswith("git/refs/tags/"):
         assert arg("--method")=="DELETE"
-        s["refs"].pop(path.split("tags/",1)[1],None); out="{}"
+        tag=path.split("tags/",1)[1]
+        if tag not in s["refs"]:
+            save();print("gh: Reference does not exist (HTTP 422)",file=sys.stderr);sys.exit(1)
+        s["refs"].pop(tag); out="{}"
     elif "/actions/runs/" in path or path.startswith("actions/runs/"):
         assert (s["promoted"] or s["case"] in ("stale-before","stale-after")) and path=="actions/runs/7/artifacts"
         out="100\n101\n102\n103"
@@ -157,6 +160,7 @@ for case in cases:
                 refs[tag]=source
                 if i!=1: refs[oldver]=source
         if case=="current": old.append(dict(id=5,tag_name="nightly-staging",draft=True))
+        refs["nightly-staging-other"]="e"*40
         initial=dict(case=case,releases=old,refs=refs,heads=0,published=False,promoted=False,calls=[],deleted=[],manifests={})
         root.joinpath("state.json").write_text(json.dumps(initial)); output=root/"outputs"; output.touch()
         env=dict(os.environ,PATH=f"{root}:{os.environ['PATH']}",GITHUB_SHA="a"*40,GH_REPO="example/KONTRA",GITHUB_RUN_ID="7",GITHUB_OUTPUT=str(output))
@@ -169,6 +173,7 @@ for case in cases:
             state=json.loads(root.joinpath("state.json").read_text())
         promoted=case in ("current","first","cleanup-fails","rotation-fails")
         assert state["promoted"]==promoted,(case,state)
+        assert state["refs"]["nightly-staging-other"]=="e"*40
         assert not any(r["draft"] for r in state["releases"]),(case,state)
         if promoted:
             assert len(state["releases"])==(1 if case=="first" else 2)
