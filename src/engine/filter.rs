@@ -83,17 +83,17 @@ pub(crate) fn filter_type(id: i32) -> Option<(Shape, u8)> {
         56 => return Some(svf(Band, 2)),
         57 => return Some(svf(High, 2)),
         13 => Model::Phaser,
-        70 | 71 | 90 => Model::Formant,
+        90 => Model::Formant,
         100 => ladder(Low, 2, true),
-        101 => ladder(Low, 4, true),
+        101 => ladder(Band, 2, true),
         102 => ladder(High, 2, true),
-        103 => ladder(High, 4, true),
-        104 => ladder(Band, 2, true),
-        105 => ladder(Band, 4, true),
+        103 => ladder(Low, 4, true),
+        104 => ladder(Band, 4, true),
+        105 => ladder(High, 4, true),
         // NI's Daft filters have a 2-pole (12 dB/octave) response.
         // The SVF is a linear proxy; Massive's nonlinear gain is unmodelled.
-        106 => return Some(svf(Low, 1)),
-        107 => return Some(svf(High, 1)),
+        70 => return Some(svf(Low, 1)),
+        71 => return Some(svf(High, 1)),
         _ => return None,
     };
     Some((Shape::Model(model), model.sections()))
@@ -102,12 +102,10 @@ pub(crate) fn filter_type(id: i32) -> Option<(Shape, u8)> {
 /// Native id: factory snapshots pair selected SV Notch 4 groups with type 58.
 const SV_NOTCH4: i32 = 58;
 
-/// KSP `$FILTER_TYPE_*` constants: the type ids presets store, so scripts
-/// read back what they set. 2..9 follow the reference's order; AR_LP2 is
-/// 100 (ANALOG STRINGS sets it on exactly the groups storing 100), the
-/// other AR and Daft ids continue that run in reference order and the
-/// phaser and formant ids are the remaining ones its presets store (low
-/// confidence). SV Notch 4 is 58 in native saved group state.
+/// KSP filter constants use native stored ids. Modern AR, Daft, Phaser
+/// and Notch identities are corroborated by authored menu selections and
+/// selected-group records across factory snapshots; see `audits/EFFECTS.md`.
+/// Older 2..9 ids retain their previous reference-order interpretation.
 const KSP_FILTER_TYPES: &[(&str, i32)] = &[
     ("$FILTER_TYPE_LP2POLE", 2),
     ("$FILTER_TYPE_HP2POLE", 3),
@@ -119,16 +117,15 @@ const KSP_FILTER_TYPES: &[(&str, i32)] = &[
     ("$FILTER_TYPE_LP6POLE", 9),
     ("$FILTER_TYPE_PHASER", 13),
     ("$FILTER_TYPE_VERSATILE", 19),
-    ("$FILTER_TYPE_FORMANT_1", 70),
-    ("$FILTER_TYPE_FORMANT_2", 71),
+    ("$FILTER_TYPE_FORMANT_1", 90),
     ("$FILTER_TYPE_AR_LP2", 100),
-    ("$FILTER_TYPE_AR_LP4", 101),
+    ("$FILTER_TYPE_AR_LP4", 103),
     ("$FILTER_TYPE_AR_HP2", 102),
-    ("$FILTER_TYPE_AR_HP4", 103),
-    ("$FILTER_TYPE_AR_BP2", 104),
-    ("$FILTER_TYPE_AR_BP4", 105),
-    ("$FILTER_TYPE_DAFT_LP", 106),
-    ("$FILTER_TYPE_DAFT_HP", 107),
+    ("$FILTER_TYPE_AR_HP4", 105),
+    ("$FILTER_TYPE_AR_BP2", 101),
+    ("$FILTER_TYPE_AR_BP4", 104),
+    ("$FILTER_TYPE_DAFT_LP", 70),
+    ("$FILTER_TYPE_DAFT_HP", 71),
     ("$FILTER_TYPE_SV_NOTCH4", SV_NOTCH4),
 ];
 
@@ -2334,7 +2331,7 @@ mod tests {
     #[test]
     fn daft_two_pole_proxy_preserves_passbands_and_resonates_at_cutoff() {
         let c = (1000.0 / CUTOFF_MIN_HZ).log2() / CUTOFF_OCTAVES;
-        for (id, response) in [(106, Response::Low), (107, Response::High)] {
+        for (id, response) in [(70, Response::Low), (71, Response::High)] {
             let (shape, sections) = filter_type(id).unwrap();
             assert_eq!(sections, 1, "Daft is a two-pole filter");
             assert!(matches!(shape, Shape::Filter(r) if r == response));
@@ -2361,6 +2358,68 @@ mod tests {
                 assert!(left.iter().chain(&right).all(|v| v.is_finite() && v.abs() < 10.0));
             }
         }
+    }
+
+    #[test]
+    fn native_filter_identities_and_daft_layout_reach_live_dsp_without_heap() {
+        use crate::fx::params::{parse, Filter};
+        for (name, id, response, poles) in [
+            ("$FILTER_TYPE_AR_LP2", 100, Response::Low, 2),
+            ("$FILTER_TYPE_AR_LP4", 103, Response::Low, 4),
+            ("$FILTER_TYPE_AR_HP2", 102, Response::High, 2),
+            ("$FILTER_TYPE_AR_HP4", 105, Response::High, 4),
+            ("$FILTER_TYPE_AR_BP2", 101, Response::Band, 2),
+            ("$FILTER_TYPE_AR_BP4", 104, Response::Band, 4),
+        ] {
+            assert_eq!(ksp_filter_type(name), Some(id));
+            assert!(matches!(filter_type(id), Some((Shape::Model(Model::Ladder {
+                response: r, poles: p, compensate: true }), _)) if r == response && p == poles));
+        }
+        for (name, id, response) in [("$FILTER_TYPE_DAFT_LP", 70i32, Response::Low),
+                                    ("$FILTER_TYPE_DAFT_HP", 71, Response::High)] {
+            assert_eq!(ksp_filter_type(name), Some(id));
+            // Authored record in the native layout: repeated type, leading
+            // parameter, cutoff, resonance. No proprietary fixture bytes.
+            let mut bytes = id.to_le_bytes().repeat(2);
+            for x in [0.0f32, 0.5, 0.1] { bytes.extend(x.to_le_bytes()); }
+            let Params::Filter(decoded) = parse(Kind::Filter, &bytes) else { panic!("native Daft") };
+            assert_eq!((decoded.cutoff, decoded.resonance, decoded.extra), (0.5, 0.1, [0.0; 3]));
+            let fx = crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 146,
+                bypass: false, output_gain: 1.0, dry_level: 1.0,
+                params: Params::Filter(Filter { ..decoded }) };
+            assert_eq!(effect_knob(&fx, Knob::Cutoff), Some(0.5));
+            assert_eq!(effect_knob(&fx, Knob::Resonance), Some(0.1));
+            let (shape, sections) = filter_type(id).unwrap();
+            assert_eq!(sections, 1);
+            assert_eq!(shape, Shape::Filter(response));
+            let proto = Proto::of(shape, [decoded.cutoff, 0.0, 0.0], 0, RATE);
+            let hz = filter_settings(decoded.cutoff, 0.0).0;
+            assert!((proto.gain(hz, RATE) - Q_MIN).abs() < 0.001, "cutoff must reach the coefficients");
+            if response == Response::High { assert!(proto.gain(hz / 8.0, RATE) < 0.02); }
+            else { assert!(proto.gain(hz * 8.0, RATE) < 0.02); }
+            let mut rack = RackFilter::new(&fx, RATE).unwrap();
+            let mut energies = [0.0f64; 2];
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                for (phase, cutoff) in [0.25, 0.75].into_iter().enumerate() {
+                    assert!(rack.set_knob(Knob::Cutoff, cutoff));
+                    assert_eq!(rack.knob(Knob::Cutoff), Some(cutoff));
+                    rack.clear();
+                    let (mut left, mut right) = ([0.0; 128], [0.0; 128]);
+                    left[0] = 1.0;
+                    rack.process(&mut left, &mut right);
+                    energies[phase] = left.iter().map(|x| f64::from(*x).powi(2)).sum();
+                    assert!(left.iter().all(|x| x.is_finite()));
+                }
+            }), 0);
+            assert!((energies[0] - energies[1]).abs() > 0.01, "native cutoff edit must affect PCM");
+            // The leading parameter is retained, with no invented gain law.
+            bytes[8..12].copy_from_slice(&0.4f32.to_le_bytes());
+            let Params::Filter(decoded) = parse(Kind::Filter, &bytes) else { panic!("leading parameter") };
+            assert_eq!((decoded.cutoff, decoded.resonance, decoded.extra[0]), (0.5, 0.1, 0.4));
+        }
+        assert_eq!(ksp_filter_type("$FILTER_TYPE_FORMANT_1"), Some(90));
+        assert!(matches!(filter_type(90), Some((Shape::Model(Model::Formant), 3))));
+        assert!(filter_type(106).is_none() && filter_type(107).is_none(), "unproved native identities are not Daft aliases");
     }
 
     #[test]
@@ -2563,7 +2622,7 @@ mod tests {
         let cc = [0u8; 128];
         let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
         let mut ctl = [0.0; MAX_BLOCK];
-        for kind in [13, 70, 90, 100, 101, 102, 103, 104, 105, 106, 107, SV_NOTCH4] {
+        for kind in [13, 70, 71, 90, 100, 101, 102, 103, 104, 105, SV_NOTCH4] {
             assert!(f.set_knob(0, Knob::Type, kind as f32), "{kind}");
             assert_eq!(f.knob(0, Knob::Type), Some(kind as f32));
             let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
@@ -2580,9 +2639,9 @@ mod tests {
             }
         }
         // A daft low pass passes the bass, its high pass does not.
-        f.set_knob(0, Knob::Type, 106.0);
+        f.set_knob(0, Knob::Type, 70.0);
         let low = f.magnitude(60.0, RATE);
-        f.set_knob(0, Knob::Type, 107.0);
+        f.set_knob(0, Knob::Type, 71.0);
         assert!(low > 10.0 * f.magnitude(60.0, RATE));
         assert!(!f.set_knob(0, Knob::Type, 4242.0), "unknown types are refused");
     }

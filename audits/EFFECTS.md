@@ -284,37 +284,46 @@ Filter type ids (`engine::filter::filter_type`, `KSP_FILTER_TYPES`):
 
 | Id | Type | Evidence | Confidence |
 |---|---|---|---|
-| 100..105 | AR LP2, LP4, HP2, HP4, BP2, BP4 | ANALOG STRINGS' script sets `$FILTER_TYPE_AR_LP2` on exactly the groups storing 100 | high for 100, medium for the run |
-| 106, 107 | Daft LP, HP | next in reference order; stored 106 on 283 ANALOG STRINGS groups | low |
-| 13 | Phaser | stored by ANALOG STRINGS, the remaining unexplained id | low |
-| 70, 71 | Formant 1, 2; 90 formant too | as above | low |
-| 52..57 | SVF 1 and 2 section LP/BP/HP (not AR) | Solo, Areia, Una Corda store them with SVF knobs | medium |
-| 19 | Versatile | Una Corda's script names it on the groups storing 19 | medium |
-| SV_NOTCH4 | 1000 (no preset stores it) | | none |
+| 100, 103 | AR LP2, LP4 | authored menu names paired with selected-group native snapshot records | high |
+| 102, 105 | AR HP2, HP4 | same native-record/menu census | high |
+| 101, 104 | AR BP2, BP4 | same native-record/menu census | high |
+| 70, 71 | Daft LP, HP | same native-record/menu census; stored cutoff/resonance match authored controls | high |
+| 13 | Phaser | same native-record/menu census | high |
+| 90 | Formant 1 | authored Formant selection enables native slot 1 with type 90 | high |
+| 52..57 | SVF 1 and 2 section LP/BP/HP (not AR) | stored SVF knobs | medium |
+| 19 | Versatile | authored script names paired with stored groups | medium |
+| 58 | SV Notch 4 | authored menu name paired with selected-group native records | high |
 
-`$ENGINE_PAR_EFFECT_SUBTYPE` (group slots) switches the filter type: the script's value is
-the type id itself (ANALOG STRINGS sets 106 on slots storing 106). All are the linear
-response of the analog topology factored into the same TPT sections
-(`src/engine/filter/models.rs`): ladders are 2 or 4 one-pole stages in a feedback loop,
-pass band compensated (AR); formant: three vowel formants
-as peaking sections, Talk morphing A-E-I-O-U, Size shifting, Sharp narrowing them
-(`FORMANT_TALK/SHARP/SIZE`); phaser: four first-order all-passes summed with the input
-(its feedback is not modelled).
+The modern identity correction uses a census of 701 local factory snapshots,
+reading saved native records before running their scripts. Dominant menu/native
+pairs corroborate the identities above; some snapshots contain stale native
+settings that disagree with their saved UI selection. Numeric adjacency is not
+evidence. Native 106/107 are no longer guessed Daft aliases, and the old conflicting
+Formant 70/71 assignments are removed. Formant 2 remains unidentified. Other unidentified types remain unsupported.
 
-### Daft response correction (2026-10-02)
+`$ENGINE_PAR_EFFECT_SUBTYPE` uses these native ids for group and rack slots.
+AR models use pass-band-compensated ladder sections, with their established pole
+counts; the exact amplitude-adaptive resonance algorithm remains an approximation.
+The existing formant proxy uses three vowel peaks; the phaser uses four all-passes
+summed with the input, without native feedback modelling.
+
+### Native Daft identity and record correction
 
 The [NI filter reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference)
 describes Daft LP and HP as two-pole filters with a 12 dB/octave slope.
-Subtype 106/107 now selects the existing two-pole SVF with unity pass-band
-gain, correcting the previous four-pole ladder mapping. ANALOG STRINGS has 283 stored type-106 group slots, including
-261 active slots with the same cutoff/resonance settings.
+Native 70/71 select the existing two-pole SVF with unity pass-band gain.
+Their stored layout has a leading parameter before cutoff and resonance; the
+parser now retains that leading value separately and reads the actual cutoff
+and resonance. This fixes interpreting cutoff as resonance and the leading
+parameter as cutoff. Script reads, writes and response displays use the same
+corrected identities and decoded values. The importer hash invalidates old caches.
 
-**Approximation remains:** the existing SVF provides a stable linear response,
-not the nonlinear Massive algorithm. It uses the existing cutoff and Q laws;
-resonance peaks at the cutoff and does not add a feedback-related pass-band
-loss. This avoids the large attenuation of the uncompensated two-pole ladder
-proxy. No new gain/resonance law was invented; exact Kontakt gain, resonance,
-saturation, and waveform parity still require reference renders.
+**Approximation remains:** the SVF provides a stable linear response, not the
+nonlinear Massive algorithm. The leading stored parameter is retained but its
+native gain law is unverified and is not applied. Exact gain, resonance,
+saturation and waveform parity require reference renders. The focused regression
+checks authored native-format records, filter direction/pole counts, analytical
+cutoff response, and effective cutoff edits with no processing allocation.
 
 Rack effects (`src/fx/blocks.rs`; stored values are what presets hold, scripts set
 normalized x = value/1e6 through a law):
