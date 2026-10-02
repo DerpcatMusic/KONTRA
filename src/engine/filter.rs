@@ -1779,15 +1779,30 @@ mod tests {
 
     #[test]
     fn group_dynamics_families_match_rack_and_native_edits_without_heap() {
+        check_group_dynamics(&[
+            (Kind::FeedbackCompressor, "$ENGINE_PAR_FCOMP_INPUT", 900_000),
+            (Kind::Limiter, "$ENGINE_PAR_LIM_IN_GAIN", 900_000),
+            (Kind::SolidBusComp, "$ENGINE_PAR_SCOMP_THRESHOLD", 100_000),
+        ]);
+    }
+
+    #[test]
+    fn group_transient_master_matches_rack_and_native_edits_without_heap() {
+        eprintln!("group transient state: Transient={} Drive={} VoiceEffect={} VoiceFilter={} bytes",
+            std::mem::size_of::<blocks::Transient>(), std::mem::size_of::<blocks::Drive>(),
+            std::mem::size_of::<VoiceEffect>(), std::mem::size_of::<VoiceFilter>());
+        check_group_dynamics(&[
+            (Kind::TransientMaster, "$ENGINE_PAR_TR_ATTACK", 900_000),
+            (Kind::TransientMaster, "$ENGINE_PAR_TR_SUSTAIN", 900_000),
+        ]);
+    }
+
+    fn check_group_dynamics(cases: &[(Kind, &str, i32)]) {
         use crate::{fx::{Effect, params::Field}, engine::{GroupSettings, params::{self, Address}}, ksp::EnginePar};
         let table = ModTable::default();
         let cc = [0; 128];
         let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
-        for (kind, name, native) in [
-            (Kind::FeedbackCompressor, "$ENGINE_PAR_FCOMP_INPUT", 900_000),
-            (Kind::Limiter, "$ENGINE_PAR_LIM_IN_GAIN", 900_000),
-            (Kind::SolidBusComp, "$ENGINE_PAR_SCOMP_THRESHOLD", 100_000),
-        ] {
+        for &(kind, name, native) in cases {
             let fx = Effect { slot: 3, kind, version: 0, bypass: false, output_gain: 0.8, dry_level: 0.0,
                 params: Params::Fields(crate::fx::params::layout_names(kind).unwrap().iter()
                     .zip(blocks::defaults(kind).unwrap())
@@ -1821,7 +1836,10 @@ mod tests {
                     assert!(voice.hold(f, &table, RATE).is_none());
                     assert_eq!(crate::plugin::tests::allocations(|| {
                         for block in 0..64 {
-                            let mut l: [f32; 128] = std::array::from_fn(|i| 0.3 * (TAU * 1000.0 * (block * 128 + i) as f32 / RATE).sin());
+                            let level = if kind == Kind::TransientMaster {
+                                match block % 16 { 0..=3 => 0.3, 4..=7 => 0.075, _ => 0.0 }
+                            } else { 0.3 };
+                            let mut l: [f32; 128] = std::array::from_fn(|i| level * (TAU * 1000.0 * (block * 128 + i) as f32 / RATE).sin());
                             let (mut r, mut expected_l, mut expected_r) = (l, l, l);
                             let amp = [0.7; 128];
                             let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.6], delta: [0.0; 2] };

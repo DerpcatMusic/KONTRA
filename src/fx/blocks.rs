@@ -432,6 +432,7 @@ pub(crate) struct Comp {
 pub(crate) enum VoiceEffect {
     Drive(Drive),
     Comp(Comp),
+    Transient(Transient),
 }
 
 impl Default for VoiceEffect {
@@ -444,11 +445,14 @@ impl VoiceEffect {
     }
 
     pub(crate) fn supports_at(kind: Kind, amp_split: Option<u8>) -> bool {
-        Drive::supports(kind) || (amp_split.is_some() && Self::dynamics(kind))
+        Drive::supports(kind) || (amp_split.is_some() && (Self::dynamics(kind) || kind == Kind::TransientMaster))
     }
 
     pub(crate) fn tune(&mut self, kind: Kind, fields: &Fields, rate: f32) {
-        if Self::dynamics(kind) {
+        if kind == Kind::TransientMaster {
+            if !matches!(self, Self::Transient(_)) { *self = Self::Transient(Transient::new()); }
+            if let Self::Transient(transient) = self { transient.tune(fields, rate); }
+        } else if Self::dynamics(kind) {
             if !matches!(self, Self::Comp(_)) { *self = Self::Comp(Comp::new()); }
             if let Self::Comp(comp) = self { comp.tune(kind, fields, rate); }
         } else {
@@ -458,11 +462,11 @@ impl VoiceEffect {
     }
 
     pub(crate) fn clear(&mut self) {
-        match self { Self::Drive(d) => d.clear(), Self::Comp(c) => c.clear() }
+        match self { Self::Drive(d) => d.clear(), Self::Comp(c) => c.clear(), Self::Transient(t) => t.clear() }
     }
 
     pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        match self { Self::Drive(d) => d.process(left, right), Self::Comp(c) => c.process(left, right) }
+        match self { Self::Drive(d) => d.process(left, right), Self::Comp(c) => c.process(left, right), Self::Transient(t) => t.process(left, right) }
     }
 }
 
@@ -568,7 +572,8 @@ impl Comp {
 /// Transient Master: a fast and a slow envelope; their difference (dB)
 /// scaled by attack (-1..=1) boosts or cuts onsets, by sustain the rest.
 /// Input ±12 dB about 0.5; smooth lengthens the slow release.
-struct Transient {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Transient {
     input: f32,
     attack: f32,
     sustain: f32,
@@ -577,6 +582,12 @@ struct Transient {
 }
 
 impl Transient {
+    fn new() -> Self {
+        Self { input: 1.0, attack: 0.0, sustain: 0.0, k: [1.0; 4], env: [FLOOR_DB; 2] }
+    }
+
+    fn clear(&mut self) { self.env = [FLOOR_DB; 2]; }
+
     fn tune(&mut self, f: &Fields, rate: f32) {
         let x = |i: usize| f[i].clamp(0.0, 1.0);
         self.input = db(24.0 * x(0) - 12.0);
@@ -821,9 +832,7 @@ impl Block {
         let dsp = match kind {
             k if Drive::supports(k) => Dsp::Drive(Drive::default()),
             Kind::Compressor | Kind::Limiter | Kind::SolidBusComp | Kind::FeedbackCompressor => Dsp::Comp(Comp::new()),
-            Kind::TransientMaster => {
-                Dsp::Transient(Transient { input: 1.0, attack: 0.0, sustain: 0.0, k: [1.0; 4], env: [FLOOR_DB; 2] })
-            }
+            Kind::TransientMaster => Dsp::Transient(Transient::new()),
             Kind::Delay => Dsp::Delay(Delay {
                 lines: Lines::new((MAX_DELAY_S * rate) as usize),
                 frames: 1.0,
@@ -915,7 +924,7 @@ impl Block {
         match &mut self.dsp {
             Dsp::Drive(d) => d.clear(),
             Dsp::Comp(c) => c.clear(),
-            Dsp::Transient(t) => t.env = [FLOOR_DB; 2],
+            Dsp::Transient(t) => t.clear(),
             Dsp::Delay(d) => {
                 d.lines.clear();
                 d.lp = [0.0; 2];
