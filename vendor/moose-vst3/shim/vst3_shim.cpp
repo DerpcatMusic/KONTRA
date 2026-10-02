@@ -2165,14 +2165,9 @@ static uint32 pv_addRef(void* s) { return ++((MoosePlugView*)s)->refCount; }
 static uint32 pv_release(void* s) {
     auto* pv = (MoosePlugView*)s;
     if (--pv->refCount <= 0) {
+        // Only the current view may unregister the component's run loop.
+        pv_setFrame(pv, nullptr);
         if (pv->comp) {
-#if defined(__linux__)
-            // The frame goes away with the view: drop the run-loop
-            // registration so the host doesn't hold a handler tied to a
-            // freed view. A spec-compliant host already called
-            // setFrame(nullptr); this covers those that don't.
-            pv->comp->updateRunLoopRegistration(nullptr);
-#endif
             // Null the component's pointer to this view so
             // `moose_vst3_request_resize` doesn't dereference a
             // freed plug-view between the host releasing the
@@ -2182,8 +2177,6 @@ static uint32 pv_release(void* s) {
                 pv->comp->plugView = nullptr;
             }
         }
-        // Release the retained host frame after unregistering its run loop.
-        pv_setFrame(pv, nullptr);
         auto* owner = pv->owner;
         free(pv);
         if (owner) comp_release(owner);
@@ -2285,7 +2278,7 @@ static tresult pv_setFrame(void* s, void* frame) {
     // Bind (or, on a null frame, unbind) the restart timer to the frame's
     // run loop so a latency change flagged by the audio thread reaches the
     // host UI thread even without param polling.
-    if (pv->comp) pv->comp->updateRunLoopRegistration(frame);
+    if (pv->comp && pv->comp->plugView == pv) pv->comp->updateRunLoopRegistration(frame);
 #endif
     if (previous) {
         auto release = (uint32 (*)(void*))(*(void***)previous)[2];
@@ -2518,6 +2511,9 @@ void* MooseComponent::createView(FIDString /*name*/, void* owner) {
     // time, and the most-recently-created is the one
     // request_resize should target.
     plugView = pv;
+#if defined(__linux__)
+    updateRunLoopRegistration(nullptr);
+#endif
     return pv;
 }
 
