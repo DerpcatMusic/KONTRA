@@ -300,19 +300,13 @@ impl Stacks {
 /// pass through the same prepared owner map, including optimized VM loops.
 pub struct Values<T> {
     values: Vec<T>,
-    owners: Vec<u32>,
+    owners: std::sync::Arc<[u32]>,
     revisions: Vec<u64>,
 }
 
 impl<T: Clone> Values<T> {
-    fn new(value: T, len: usize, prog: &Program, ty: Ty) -> Self {
-        let vars: Vec<_> = prog.vars.iter().filter(|v| v.ui.is_some() && v.ty == ty).collect();
-        let bound = vars.iter().map(|v| v.slot as usize + v.len.unwrap_or(1) as usize).max().unwrap_or(0);
-        let mut owners = vec![u32::MAX; bound];
-        for (i, var) in vars.iter().enumerate() {
-            owners[var.slot as usize..var.slot as usize + var.len.unwrap_or(1) as usize].fill(i as u32);
-        }
-        Self { values: vec![value; len], owners, revisions: vec![0; vars.len()] }
+    fn new(value: T, len: usize, owners: &std::sync::Arc<[u32]>, count: usize) -> Self {
+        Self { values: vec![value; len], owners: owners.clone(), revisions: vec![0; count] }
     }
 }
 
@@ -413,9 +407,9 @@ impl SlotState {
         Self {
             index,
             mem: Memory {
-                ints: Values::new(0, p.ints as usize, p, Ty::Int),
-                reals: Values::new(0.0, p.real_slots as usize, p, Ty::Real),
-                strs: Values::new(String::new(), p.strs as usize, p, Ty::Str),
+                ints: Values::new(0, p.ints as usize, &p.revision_owners[0], p.revision_counts[0]),
+                reals: Values::new(0.0, p.real_slots as usize, &p.revision_owners[1], p.revision_counts[1]),
+                strs: Values::new(String::new(), p.strs as usize, &p.revision_owners[2], p.revision_counts[2]),
                 poly: vec![0; (p.poly * POLY_ROWS) as usize],
             },
             ui: Ui::new(p.vars.len()),
@@ -1387,4 +1381,56 @@ fn init_array(m: &mut Machine, i: u32) -> Exec<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+
+    #[test]
+    fn shared_revision_owners_cover_sparse_slots_bulk_writes_and_all_types() {
+        let setup = super::super::compile::Setup { groups: 0, zones: 0, outputs: 8 };
+        let p = super::super::compile::compile(r#"on init
+declare %gap[255]
+declare ui_table %table[513](1,1,127)
+declare %large_gap[1000000]
+declare ui_slider $last(0,127)
+declare ui_xy ?xy[2]
+declare ui_text_edit @text
+end on"#, &setup).unwrap();
+        let mut first = SlotState::new(0, &p);
+        let second = SlotState::new(0, &p);
+        assert!(std::sync::Arc::ptr_eq(&first.mem.ints.owners, &second.mem.ints.owners));
+        let slot = |name| p.vars.iter().find(|v| &*v.name == name).unwrap().slot as usize;
+        let table = slot("%table");
+        let last = slot("$last");
+        assert_eq!(table, 255);
+        for i in [0,254,768,1000000] { first.mem.ints[i] = 1; }
+        assert_eq!(first.mem.ints.revision(table), 0, "unowned cells do not dirty UI values");
+        for i in [255,256,511,512,767] { first.mem.ints[i] = 2; }
+        assert_eq!(first.mem.ints.revision(table), 5);
+        first.mem.ints[254..769].fill(3);
+        assert_eq!(first.mem.ints.revision(table), 6, "bulk borrows bump a contiguous variable once");
+        first.mem.ints.copy_within(255..768, 255);
+        assert_eq!(first.mem.ints.revision(table), 7);
+        for value in &mut first.mem.ints { *value += 1; }
+        assert_eq!(first.mem.ints.revision(table), 8);
+        assert_eq!(first.mem.ints.revision(last), 1);
+        assert_eq!(second.mem.ints.revision(table), 0, "only ownership is shared, revisions remain local");
+        let xy = slot("?xy");
+        first.mem.reals[xy..xy+2].fill(0.5);
+        first.mem.strs[slot("@text")].push_str("updated");
+        assert_eq!(first.mem.reals.revision(xy), 1);
+        assert_eq!(first.mem.strs.revision(slot("@text")), 1);
+
+        let dense = super::super::compile::compile("on init\ndeclare ui_table %dense[4096](1,1,127)\nend on", &setup).unwrap();
+        let mut dense = SlotState::new(0, &dense);
+        dense.mem.ints[..].fill(1);
+        assert_eq!(dense.mem.ints.revision(4095), 1);
+        let plain = super::super::compile::compile("on init\ndeclare %plain[4096]\nend on", &setup).unwrap();
+        let mut plain = SlotState::new(0, &plain);
+        plain.mem.ints[..].fill(1);
+        assert_eq!(plain.mem.ints.revision(4095), 0);
+        assert_eq!(plain.mem.ints.owners.len(), 0);
+    }
 }
