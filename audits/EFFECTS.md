@@ -359,9 +359,21 @@ and pending inline matrix ramps: their section states are not the canonical stat
 used by the shared lane. The shared post-Amplifier linear optimization remains for
 chains where it is applicable. The unfiltered SIMD path is unchanged.
 
-The fixed voice state adds 32 bytes for the drive/compressor enum, 128 bytes for
-per-slot gain/mixer smoothing and a small type revision counter, and removes the old
-16-byte aggregate smoothing matrix. Live filter subtype
+On the checked Rust 1.98.1 release build, both the old Drive and the new VoiceEffect
+enum are 72 bytes. The fixed voice state adds 128 bytes for per-slot gain/mixer
+smoothing and a four-byte type revision counter, and removes the old 16-byte
+aggregate smoothing matrix: 116 bytes of added inline fields per voice (116 KiB
+for 1024 voices); VoiceFilter is 1804 bytes. Live filter subtype
 changes invalidate shape-sensitive coefficient caches even when cutoff/resonance are
 unchanged. Existing filter-unit/section capacity limits, opaque filter subtypes,
 unimplemented group send/dynamics families and reverb/IR shaping gaps remain explicit.
+
+Validation: the split 0/6/8 rack-reference PCM, changed native compressor threshold,
+live same-knob subtype retuning and interleaved-state eligibility regressions passed,
+as did the 83 playback tests. Three local factory states preserved split 8 for all
+six selected groups. Matched scripted parent gates and both layers' native Saturation
+readback produced changed PCM in each state. Their native routing and an explicit
+split-0 reference completed 4500 resident Engine::render calls without allocations;
+all PCM was finite and peaks stayed below 1. The reference changes only authored
+routing metadata in the same engine and is not Kontakt audio. These are functional
+checks; they do not establish throughput or Kontakt algorithm equivalence.
