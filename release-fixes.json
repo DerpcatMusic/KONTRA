@@ -658,6 +658,58 @@
       ],
       "validation": "Production raw flag fixture and elapsed-clock/live-resume mixed pitch/filter PCM/readback/zero-heap gates passed. Flag0 is UI router state, flag1 bypass. All twelve selected actual Analog amplitude envelopes are active; amplitude/Flex bypass lifetime remains unverified and no amplitude lifetime change was accepted.",
       "accepted": true
+    },
+    {
+      "id": "live-convolution-native-switches",
+      "summary": "Route live convolution Reverse and Auto Gain through worker preparation and saved state",
+      "source_commits": [
+        "54bf96046cb512a38be148f020bfdfefb278cf35"
+      ],
+      "validation": "Focused authored KSP live-control/readback, worker completion, JSON/script reload, legacy native inheritance, stale-epoch/rate rejection, asymmetric PCM and zero audio heap gate passed at bd09edb.",
+      "accepted": true
+    },
+    {
+      "id": "convolution-native-volume-envelope",
+      "summary": "Apply enabled eight-knot IR envelopes with native amplitude interpolation before Auto Gain",
+      "source_commits": [
+        "a27836063b63358a752ac53f006cc20699b72198"
+      ],
+      "validation": "Independent numeric amplitude, rounding, sorted/duplicate knots, rate/size, predelay and Auto Gain order gates passed at bd09edb with zero processing heap. Unequal early/late shaping remains approximate; malformed active curves are diagnosed.",
+      "accepted": true
+    },
+    {
+      "id": "prepared-dynamic-control-names",
+      "summary": "Prepare control short and automation names before delayed script callbacks",
+      "source_commits": [
+        "9dfef7c7ca45946644517122174a734c2bc49757",
+        "ba11ff291b8b4920e563e58a92c7b09f208f0c57"
+      ],
+      "validation": "Authored persistence/UI callback, delayed effect remapping, repeated readback, fresh/live equivalence and zero audio heap gate passed at bd09edb. Actual Conflux callback replay is pending; tuning/pedal intent remains unresolved.",
+      "accepted": true
+    },
+    {
+      "id": "resident-wavetable-source-playback",
+      "summary": "Play native wavetable sources as resident periodic cycles instead of ordinary samples",
+      "source_commits": [
+        "1558ea0b6e2936064033362af16a4542db0fe4d3",
+        "666907d0d44bcd150c40443e3b9daedf21e58d59",
+        "fa388482565baaf110669999bf76c6d0de1f3598",
+        "1296d3fa914fbc8e324e34d3062f572cbd866449",
+        "b6653e6df75ba1f10dfcbb7a2d2655376c092e6a",
+        "3fe32935d574faa939723123b891e55309133c90",
+        "76a4fe49c2a54dff22d2a21411b4b6ec46d8a9b9"
+      ],
+      "validation": "Thirteen focused processing/import/write/lifetime/heap gates and nine actual Conflux captures across three patches passed. Octave ratios are exactly two and actual source census confirms five 2048-frame cycles, zero underruns. High/Best anti-aliasing, additional forms and active inharmonic/audio-rate modes remain unsupported; preset tuning and scripted pedal intent remain unresolved.",
+      "accepted": true
+    },
+    {
+      "id": "resident-wavetable-tap-dispatch",
+      "summary": "Dispatch resident PCM once per wavetable block instead of decoding each tap through window",
+      "source_commits": [
+        "246618a7a6cec7d695898cade99f39365fa5903a"
+      ],
+      "validation": "All four PCM formats match reference output and phase exactly across morph/forms/cycle seams. Seven alternating thread-CPU rounds at bd09edb measured 1.55x F32, 2.00x I16 and 1.73x I24 kernel speedups; packed fallback is effectively unchanged. These are kernel measurements, not total plugin or UI speed claims.",
+      "accepted": true
     }
   ]
 }

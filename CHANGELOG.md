@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
+- Live convolution Reverse and Auto Gain now rebuild on the worker and survive saved-state restoration; stale completions retain the current kernel.
+- Enabled eight-knot IR volume envelopes use checked amplitude interpolation before Auto Gain, with predelay kept separate. Malformed active curves retain diagnostics.
+- Delayed script callbacks can update prepared short and automation control names without allocating on the audio thread; actual Conflux preset replay is next.
+- Resident wavetable taps dispatch PCM once per block. Matched-output thread-CPU measurements show 1.55x/2.00x/1.73x speedups for F32/I16/I24 in this kernel; packed decoding and total-plugin performance are not included in that claim.
+- Nightly packages build alongside the unchanged shipping checks; publication still requires both to pass for the same source commit. Duplicate ordinary main-push CI is removed. Hosted timing improvement is not yet measured.
 - Uncaptured native GPU failures now reach persistent diagnostics after device rebuilds; original stderr and device-loss recovery remain intact. Void blank-editor repair is not yet confirmed.
 - Registered per-note MIDI2 brightness now follows its retained note, including start-only modulation. Ambiguous host brightness is explicitly diagnosed instead of changing channel CC74 or a newer same-pitch note.
 - Saved convolution Auto Gain now uses the checked prepared stereo-energy rule, threshold and cap while preserving dry output. Unequal early/late shaping remains approximate.
@@ -19,7 +24,7 @@ below record reviewed source checkpoints; they are not claims about pending work
 ### Fixed after 0.3.64
 
 - Modern signed pitch intensity now follows the checked cubic conversion and retains 24/36-semitone values; non-pitch modulation laws are unchanged.
-- Convolution Reverse now reverses the source impulse response before rate conversion and predelay. Saved Auto Gain uses the verified prepared-energy law; live switches and active IR Volume Envelope are undergoing focused verification. Unequal early/late shaping remains approximate.
+- Convolution Reverse now reverses the source impulse response before rate conversion and predelay. Auto Gain uses the verified prepared-energy law, and live switches and eight-knot IR Volume Envelope passed focused processing checks. Unequal early/late shaping remains approximate.
 - Large load dependency lists now use bounded typed journal chunks that can be reassembled completely in support reports. Source excerpts and path redaction remain intact; oversized individual values still report truncation.
 
 ### Added
