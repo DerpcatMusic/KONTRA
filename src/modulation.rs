@@ -112,6 +112,10 @@ pub struct PitchLfo {
     pub note_value: f32,
     pub sine: f32,
     pub depth: f32,
+    /// Original native pitch-target indices and individual signed depths.
+    /// Empty in older cached metadata: live writes must remain unsupported.
+    #[serde(default)]
+    pub targets: Vec<(u32, f32)>,
     pub bypassed: bool,
 }
 
@@ -234,15 +238,17 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                         && lfo.records[0].values[0].is_finite() && lfo.records[0].values[0] > 0.
                         && lfo.records[1].flag && weights[0].is_finite() && weights[0].abs() <= 1.
                         && weights[1..].iter().all(|&v| v == 0.);
-                    let pitch: Vec<_> = params.targets.iter().filter(|t| t.param == "pitch" && t.slot.is_none()).collect();
-                    let depth: f32 = pitch.iter().map(|t| target_depth(t)).sum();
-                    if supported && depth.is_finite() && !pitch.is_empty() && pitch.iter().all(|t| !t.invert && t.lag_ms == 0
+                    let pitch: Vec<_> = params.targets.iter().enumerate()
+                        .filter(|(_, t)| t.param == "pitch" && t.slot.is_none()).collect();
+                    let depth: f32 = pitch.iter().map(|(_, t)| target_depth(t)).sum();
+                    if supported && depth.is_finite() && !pitch.is_empty() && pitch.iter().all(|(_, t)| !t.invert && t.lag_ms == 0
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled) && target_depth(t).is_finite()) {
                         out.pitch_lfos.push(PitchLfo { slot: slot as u8,
                             count: lfo.initial_values[1], note_value: lfo.records[0].values[0],
                             sine: weights[0], depth,
+                            targets: pitch.iter().map(|(i, t)| (*i as u32, target_depth(t))).collect(),
                             bypassed: params.unknown_flags[1] != 0 });
-                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered zero-delay sine-only Multi pitch is eligible for ordinary sampler playback; live LFO parameters and other targets remain unsupported"));
+                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered zero-delay sine-only Multi pitch is eligible for ordinary sampler playback; live LFO timing, bypass and other targets remain unsupported"));
                     } else { skipped_lfos += 1; }
                     false
                 }
@@ -451,14 +457,14 @@ mod tests {
             out.extend((s.len() as u32).to_le_bytes());
             out.extend(s.as_bytes());
         }
-        let targets = |params: &[(&str, Option<u8>)]| {
+        let targets = |params: &[(&str, Option<u8>)], lag: u16| {
             let mut b = (params.len() as u32).to_le_bytes().to_vec();
             for (param, slot) in params {
                 name(&mut b, param);
                 b.extend(0.5f32.to_le_bytes());
                 b.extend((-1i16).to_le_bytes());
                 b.push(0x10);
-                b.extend(15u16.to_le_bytes());
+                b.extend(lag.to_le_bytes());
                 name(&mut b, "<none>");
                 b.extend(slot);
                 b.push(0); // invert
@@ -466,7 +472,7 @@ mod tests {
             b.extend(std::iter::repeat_n(0, params.len())); // no shapers
             b
         };
-        let mut ext = targets(&[("pan", None), ("loopStart", None), ("loopLength", None), ("filterCutoff", Some(0))]);
+        let mut ext = targets(&[("pan", None), ("loopStart", None), ("loopLength", None), ("filterCutoff", Some(0))], 15);
         name(&mut ext, "Loop_Start");
         ext.extend(2u32.to_le_bytes()); // unassigned
         ext.extend([0, 0]);
@@ -475,7 +481,7 @@ mod tests {
         let p = ExternalMod(object(0x100, ext, Vec::new())).params().unwrap();
         assert_eq!(p.targets.iter().map(|t| t.slot).collect::<Vec<_>>(), [None, None, None, Some(0)]);
 
-        let mut int = targets(&[("pan", None)]);
+        let mut int = targets(&[("pan", None)], 15);
         int.extend([0, 1, 1, 0]);
         int.extend(187u32.to_le_bytes());
         name(&mut int, "LFO_P1");
@@ -491,6 +497,31 @@ mod tests {
         assert!(matches!(p.modulator, Modulator::Lfo(_)));
         assert_eq!(p.targets[0].param, "pan");
         assert_eq!(p.targets[0].intensity, 0.5);
+        let source = ni_file::kontakt::objects::Lfo { structured: false, version: 0x71,
+            waveform: 5, initial_values: [0., 12., 0.5, 0.], records: [
+                ni_file::kontakt::objects::LfoRecord { flag: true, values: [1. / 24., 0., 0.] },
+                ni_file::kontakt::objects::LfoRecord { flag: true, values: [-1., 0., 0.] }],
+            trailing_flag: false, trailing_values: Some([0.03, 0., 0., 0., 0.]), additional_flag: None };
+        let mut private = targets(&[("pan", None), ("pitch", None), ("volume", None), ("pitch", None)], 0);
+        private.extend([0, 0, 1, 0]); private.extend(0u32.to_le_bytes());
+        name(&mut private, "Saved pitch"); private.extend(1u32.to_le_bytes());
+        let mut wrapper = vec![1];
+        let internal = object(0x80, private, vec![source.to_chunk().unwrap()]);
+        let mut data = vec![1]; data.extend(internal.version.to_le_bytes());
+        for part in [&internal.private_data[..], &[][..]] { data.extend((part.len() as u32).to_le_bytes()); data.extend(part); }
+        let mut children = Vec::new(); internal.children[0].write(&mut children).unwrap();
+        data.extend((children.len() as u32).to_le_bytes()); data.extend(children);
+        Chunk { id: 0x0d, data }.write(&mut wrapper).unwrap(); wrapper.extend([0; 15]);
+        let raw = RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![],
+            children: vec![Chunk { id: INTERNAL_MODS_ID, data: {
+                let mut data = vec![1]; data.extend(0x10u16.to_le_bytes()); data.extend(0u32.to_le_bytes());
+                data.extend((wrapper.len() as u32).to_le_bytes()); data.extend(wrapper); data.extend(0u32.to_le_bytes()); data
+            }}] });
+        let decoded = read_group(&raw).unwrap();
+        assert_eq!(decoded.pitch_lfos.len(), 1);
+        assert_eq!(decoded.pitch_lfos[0].slot, 0);
+        assert_eq!(decoded.pitch_lfos[0].targets, [(1, 0.5), (3, 0.5)], "do not compress native target indices");
+        assert_eq!(decoded.pitch_lfos[0].depth, 1.);
     }
 
     #[test]

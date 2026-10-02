@@ -778,8 +778,13 @@ retrigger enabled, zero delay and phase, synchronized positive note value
 and count>=1, sine weight magnitude<=1, and the other four weights zero.
 Only ordinary sampler pitch targets with finite signed depth, zero lag,
 no inversion and no enabled shaper are applied. External assignments to
-the source's own parameters exclude it. Other states and live LFO engine
-parameter writes retain explicit unsupported diagnostics.
+the source's own parameters exclude it. Other states and live LFO timing/bypass engine
+parameter writes retain explicit unsupported diagnostics. Admitted pitch sources
+retain each original target index and signed depth. Signed legacy and modern
+intensity aliases and unsigned target intensity address those individual routes,
+update the prepared sum without allocation or phase reset, and share one physical
+source-slot/target persistence record. Non-pitch targets and older metadata without
+individual target identities remain unsupported.
 
 Independent source scheduling identifies a sampleRate/32 source clock,
 ceil(audioFrames/32) waveform points and correction for the final partial
@@ -819,3 +824,11 @@ the existing effect-parameter classifiers; unknown same-numbered module targets
 still exclude the saved-only source clock with a diagnostic. The authored raw
 fixture preserves the actual-shaped Constant zero-depth/15 ms lag assignment and
 checks both the recognized insert case and conservative unknown-source rejection.
+
+The native pitch pipeline interpolates normalized octave values before an
+in-place exponential conversion to playback ratios. KONTRA follows that order
+with standard floating-point math; it does not interpolate ratio endpoints or
+copy the proprietary exponential approximation. A private optimized stdlib probe
+measured about 6.1 ms per 1,048,576 planned frames for this subset on this host;
+that is not a whole-engine performance or real-library timing claim. Cached
+exponential recurrences have not been introduced.
