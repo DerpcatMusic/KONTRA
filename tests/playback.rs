@@ -955,16 +955,12 @@ fn streamed_playback_matches_ram_playback() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A bare bank (nothing resident: what the plugin plays while the preload
-/// loads) sounds as the preloaded bank does, and a note started on it carries
-/// on identically when the preloaded bank takes over mid-note.
 #[test]
 fn transposed_stream_starts_have_a_resident_first_block_without_audio_heap_work() {
     let dir = std::env::temp_dir().join(format!("kontakto-fast-stream-start-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("source.wav");
     write_wav(&path, 120_000);
-    let decoded = kontakto::audio::decode(&path, 120_000).unwrap();
     // The affected Conflux ratios: ~18.52 and values above the engine's
     // 32-source-frames/output-frame limit, all on a 44.1-kHz root-zero zone.
     for (note, tune) in [(64, 0.5), (64, 1.0), (96, 0.5)] {
@@ -972,7 +968,7 @@ fn transposed_stream_starts_have_a_resident_first_block_without_audio_heap_work(
         let zone = Zone { sample:path.clone(), root:0, tune, ..Default::default() };
         let streamed = Bank::load(&instrument(vec![group.clone()], vec![zone.clone()])).unwrap();
         assert_eq!(streamed.streamed_samples(), 1, "the rest of the source must remain streamed");
-        let ram = Bank::from_samples(vec![group], vec![zone], vec![(path.clone(), decoded.clone())]).unwrap();
+        let ram = Bank::from_samples(vec![group], vec![zone], vec![(path.clone(), kontakto::audio::decode(&path, 120_000).unwrap())]).unwrap();
         let (mut actual, mut expected) = (engine_with(streamed), engine_with(ram));
         let (mut left, mut right, mut reference_l, mut reference_r) = ([0.;128], [0.;128], [0.;128], [0.;128]);
         expected.note_on(0, note, 100);
@@ -992,6 +988,9 @@ fn transposed_stream_starts_have_a_resident_first_block_without_audio_heap_work(
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A bare bank (nothing resident: what the plugin plays while the preload
+/// loads) sounds as the preloaded bank does, and a note started on it carries
+/// on identically when the preloaded bank takes over mid-note.
 #[test]
 fn notes_during_the_preload_sound_as_after_it() {
     let dir = std::env::temp_dir().join(format!("kontakto-bare-{}", std::process::id()));
