@@ -155,6 +155,14 @@ impl StateField for crate::fx::IrSlotSettings {
         serde_json::from_str(&String::read_field(cursor)?).ok()
     }
 }
+impl StateField for crate::fx::DelayState {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        serde_json::to_string(self).unwrap_or_default().write_field(buf);
+    }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        serde_json::from_str(&String::read_field(cursor)?).ok()
+    }
+}
 impl Default for Part {
     fn default() -> Self {
         Self {
