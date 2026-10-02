@@ -147,6 +147,71 @@ fn convolution_auto_gain_uses_prepared_stereo_energy_and_preserves_dry_without_h
 }
 
 #[test]
+fn convolution_envelope_interpolates_amplitudes_before_auto_gain_and_predelay_without_heap() {
+    let times = [0.0, 0.125, 0.25, 0.25, 0.5, 0.625, 0.75, 1.0];
+    let gains = [0.25f32, 0.5, 1.0, 2.0, 0.5, 0.25, 1.0, 0.5];
+    // Numeric references distinguish amplitude interpolation from dB ramps,
+    // and preserve the later endpoint after two knots round to one frame.
+    for (rate, size, expected, energy) in [
+        (SR, 1.0, vec![0.25,0.5,2.0,1.25,0.5,0.25,1.0,0.75], 31.0f32),
+        (SR / 2.0, 1.0, vec![0.25,2.0,0.5,1.0], 21.25),
+        (SR / 2.0, 1.5, vec![0.25,0.5,2.0,0.5,0.25,1.0], 22.5),
+    ] {
+        for active in [false, true] {
+            for automatic in [false, true] {
+                let mut fx = convolution(&[1.0]);
+                let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+                c.flags[1] = automatic;
+                c.flags[4] = active;
+                c.early.length_ratio = size;
+                c.late.length_ratio = size;
+                c.predelay_ms = 2.25 / rate * 1000.0;
+                c.ir = Some(Impulse(Arc::new(Sample { rate: SR as u32, frames: vec![[1.0,2.0];8] })));
+                // Deliberately unsorted, with duplicate times kept in order.
+                let order = [7,2,0,6,3,1,5,4];
+                c.curve_x = order.map(|i| times[i]).to_vec();
+                c.curve_db = order.map(|i| 20.0 * gains[i].log10()).to_vec();
+                let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+                assert!(fx.warnings().is_empty());
+                let mut p = fx.processor(rate, 16);
+                let (mut left, mut right) = ([0.0;16], [0.0;16]);
+                left[0] = 1.0; right[0] = 1.0;
+                assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+                let energy = if active { energy } else { 4.0 * expected.len() as f32 };
+                let gain = if automatic { (0.5 / energy).sqrt() } else { 1.0 };
+                for n in 0usize..16 {
+                    let shape = n.checked_sub(2).filter(|&i| i < expected.len())
+                        .map_or(0.0, |i| if active { expected[i] } else { 1.0 });
+                    for ch in 0..2 {
+                        let out = [left[n],right[n]][ch];
+                        let want = shape * (ch + 1) as f32 * gain;
+                        assert!((out - want).abs() < 3e-6, "rate={rate} size={size} active={active} automatic={automatic} frame={n} channel={ch}: {out} vs {want}");
+                    }
+                }
+            }
+        }
+    }
+    // Native envelope leaves samples before its first/after its last knot
+    // unchanged; invalid active records remain explicit instead of guessed.
+    let mut fx = convolution(&[1.0;8]);
+    let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+    c.flags[4] = true;
+    c.curve_x = vec![0.25,0.3,0.35,0.4,0.5,0.6,0.7,0.75];
+    c.curve_db = vec![20.0 * 0.5f32.log10();8];
+    let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+    let mut p = fx.processor(SR, 8);
+    let (mut left, mut right) = ([1.,0.,0.,0.,0.,0.,0.,0.], [1.,0.,0.,0.,0.,0.,0.,0.]);
+    assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+    for (actual, expected) in left.into_iter().zip([1.,1.,0.5,0.5,0.5,0.5,1.,1.]) {
+        assert!((actual - expected).abs() < 1e-6);
+    }
+    let mut bad = fx;
+    let Params::Convolution(c) = &mut bad.insert.slots[0].params else { unreachable!() };
+    c.curve_x.pop();
+    assert!(bad.warnings().iter().any(|w| w.contains("Volume Envelope is not applied")));
+}
+
+#[test]
 fn convolution_uniform_filters_shape_audio_and_keep_unknown_splits_explicit() {
     let make = |low, high, unequal| {
         let mut fx = convolution(&[1.0]);
