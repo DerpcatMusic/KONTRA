@@ -52,10 +52,12 @@ local function color(r,g,b,a)
         opacity=function(self,value) return color(self.r,self.g,self.b,value) end,
     })})
 end
-local Color=strict("Color", {
+-- Named colors are optional Lua table data: missing entries remain nil.
+-- Callable APIs and color instance methods retain explicit validation.
+local Color=setmetatable({
     white=color(255,255,255,1),black=color(0,0,0,1),
     red=color(255,0,0,1),none=color(0,0,0,0),
-})
+}, {})
 getmetatable(Color).__call=function(_,r,g,b,a)
     if g==nil and b==nil and a==nil then
         assert(type(r)=="number" and r%1==0 and r>=-2147483648 and r<=4294967295,"Invalid packed color")
