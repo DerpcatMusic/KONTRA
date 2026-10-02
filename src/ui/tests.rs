@@ -1638,6 +1638,17 @@ fn scripted_part(script: &str) -> Arc<SamplerParams> {
     p
 }
 
+/// Synthetic callback publication follows production's immutable snapshots.
+fn publish_interface(p: &SamplerParams, edit: impl FnOnce(&mut crate::ksp::Interface)) {
+    let mut view = p.shared.view.lock().unwrap();
+    let part = &mut view.parts[0];
+    let mut next = part.interface.as_ref().unwrap().as_ref().clone();
+    edit(&mut next);
+    part.interface = Some(Arc::new(next));
+    let (interface, keys) = part.live_revisions.unwrap_or_default();
+    part.live_revisions = Some((interface.wrapping_add(1), keys));
+}
+
 /// Control `n`'s value in part 0's performance view.
 fn control_value(p: &SamplerParams, n: usize) -> crate::ksp::Value {
     let view = p.shared.view.lock().unwrap();
@@ -1831,7 +1842,7 @@ fn the_original_view_edits_the_script_and_switches() {
 }
 
 /// Offsets select a pixel window across page boundaries, rather than rounding
-/// to a frame, and an in-place script update invalidates the view memo.
+/// to a frame, and a new script snapshot invalidates the view memo.
 #[test]
 fn original_wallpaper_pixel_offsets_render_across_frames() {
     let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $v(0,100)\nmove_control_px($v,30,40)\nset_skin_offset(170)\nend on");
@@ -1850,10 +1861,7 @@ fn original_wallpaper_pixel_offsets_render_across_frames() {
     let painted = pixels(&h.ui, 1180, 760);
     assert_eq!(&painted[above..above+4], &[220, 20, 40, 255], "the window begins in the first frame");
     assert_eq!(&painted[below..below+4], &[20, 40, 220, 255], "the same window crosses into the next frame");
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).skin_offset = 271;
-    }
+    publish_interface(&p, |i| i.skin_offset = 271);
     h.idle(2);
     let moved = pixels(&h.ui, 1180, 760);
     assert_eq!(&moved[above..above+4], &[20, 40, 220, 255], "a changed offset redraws without changing the selected animation state");
@@ -1872,23 +1880,20 @@ fn original_tables_render_dense_values_at_the_declared_range() {
     }));
     let mut h = Harness::new(&p, 1180., 760.);
     let empty = pixels(&h.ui, 1180, 760);
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        let i = Arc::make_mut(view.parts[0].interface.as_mut().unwrap());
+    publish_interface(&p, |i| {
         assert_eq!(i.controls[0].properties["$CONTROL_PAR_MIN_VALUE"], crate::ksp::Value::Int(-100));
         assert_eq!(i.controls[0].properties["$CONTROL_PAR_MAX_VALUE"], crate::ksp::Value::Int(100));
         i.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::IntArray(vec![50, -50, 100, -100]));
-    }
+    });
     h.idle(2);
     let filled = pixels(&h.ui, 1180, 760);
     let changed = empty.chunks_exact(4).zip(filled.chunks_exact(4)).filter(|(a,b)| a != b).count();
     assert!(changed > 4000, "the numeric table paints bars, including its negative half: {changed}");
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).controls[0].properties.insert(
+    publish_interface(&p, |i| {
+        i.controls[0].properties.insert(
             "$CONTROL_PAR_VALUE".into(), crate::ksp::Value::RealArray(vec![50., -50., 100., -100.])
         );
-    }
+    });
     h.idle(2);
     assert!(filled == pixels(&h.ui, 1180, 760), "integer and real snapshots paint the same values");
 }
@@ -1929,9 +1934,9 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
 fn automatic_performance_scale_fits_rack_height_and_explicit_zoom_stays_scrollable() {
     let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(540)\ndeclare ui_slider $bottom(0,100)\nmove_control_px($bottom,40,500)\nend on");
     p.selection.write().unwrap().parts[0].view = 1;
+    publish_interface(&p, |i| i.width = 732);
     {
         let mut view = p.shared.view.lock().unwrap();
-        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).width = 732;
         let image = Arc::new(moose::mui::mui::scene::Image::rgba(732,608,vec![40;732*608*4]).unwrap());
         view.parts[0].wallpaper = Some(Arc::new(artwork::Picture {frames:vec![image],stretch:[false;2],atlas:None}));
     }
