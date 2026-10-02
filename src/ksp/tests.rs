@@ -942,7 +942,7 @@ fn prepared_controller_replays_keep_authored_output_policy_through_waits() {
         // banks, then deliver the one ordinary native controller input.
         for (domain,owner) in [(1,3),(2,5)] {
             rig.rt.env.queue(super::runtime::Work::Controller { emit: false,
-                channel:7, domain, input_channel:Some(owner), cc:20, value:77, slot:0 });
+                channel:7, scope: super::vm::CallbackScope::performance(domain), input_channel:Some(owner), cc:20, value:77, slot:0 });
         }
         rig.rt.set_midi_channel(7);
         rig.rt.set_input_channel(1);
@@ -964,6 +964,43 @@ fn prepared_controller_replays_keep_authored_output_policy_through_waits() {
         "set_controller must inherit the original callback's nonemitting replay policy");
     assert_eq!(controllers.iter().filter(|(cc,_)|*cc==22).copied().collect::<Vec<_>>(),vec![(22,78);3],
         "each origin still receives the authored private native value");
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn prepared_controller_and_rpn_descendants_keep_canonical_and_private_scope_after_waits() {
+    let scripts = [
+        "on init\nmake_perfview\ndeclare ui_slider $edit(0,127)\nend on\non ui_control($edit)\nset_controller(20,$edit)\nend on",
+        "on init\nmake_perfview\ndeclare ui_label $info(1,1)\nset_text($info,\"seed\")\ndeclare $stored\nmake_persistent($stored)\nend on\non controller\nif ($CC_NUM=20)\n$stored := %CC[20]\nwait(1000)\nadd_text_line($info,\"C:\" & $stored)\nset_rpn(17,$stored)\nend if\nend on\non note\nchange_vol($EVENT_ID,-1000*$stored,0)\nend on",
+        "on init\nmake_perfview\ndeclare ui_label $info(1,1)\nset_text($info,\"seed\")\nend on\non rpn\nif ($RPN_ADDRESS=17)\nwait(1000)\nadd_text_line($info,\"R:\" & $RPN_VALUE)\nend if\nend on",
+    ];
+    let mut rig = Rig::new(&scripts);
+    rig.rt.prepare_channel_domains((1<<1)|(1<<3)|(1<<5),7);
+    rig.rt.prepare_channel_configuration();
+    rig.engine.calls.reserve(64);
+    let mut edit = || {
+        rig.rt.ui_control_configuration(&mut rig.engine,0,0,7);
+        for (owner,value) in [(1,8),(3,9),(5,10)] {
+            rig.rt.ui_control_replay(&mut rig.engine,owner,0,0,value);
+        }
+        rig.block(128);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(||edit()),0);
+    #[cfg(not(feature = "plugin"))]
+    edit();
+    assert_eq!(prop(&rig.rt.interface(1),0,"$CONTROL_PAR_TEXT"),"seed\nC:7",
+        "queued controller children must retain canonical memory and suppress private metadata replay");
+    assert_eq!(prop(&rig.rt.interface(2),0,"$CONTROL_PAR_TEXT"),"seed\nR:7",
+        "RPN descendants must retain that same scope through another wait");
+    assert_eq!(rig.rt.persistence()[1]["$stored"],Value::Int(7));
+    for owner in [1,3,5] { rig.rt.note_on_from(&mut rig.engine,0,owner,60,100); }
+    let played:Vec<_> = rig.engine.calls.iter().filter_map(|c|match c {
+        EngineCall::PlayNote { channel,volume_mdb,.. }=>Some((*channel,*volume_mdb)), _=>None,
+    }).collect();
+    assert_eq!(played,vec![(7,-8000),(7,-9000),(7,-10000)],
+        "private controller-derived configuration remains independent of canonical snapshots");
+    for owner in [3,1,5] { rig.rt.note_off_from(&mut rig.engine,0,owner,60); }
     assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
 }
 

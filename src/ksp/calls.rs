@@ -811,7 +811,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 Some(cc) => m.env.queue(super::runtime::Work::Controller {
                     emit: m.t.ctx.controller_output,
                     channel: m.t.ctx.channel,
-                    domain: m.t.ctx.domain,
+                    scope: m.t.ctx.scope(),
                     input_channel: m.t.ctx.input_channel,
                     cc,
                     value,
@@ -833,7 +833,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             } else {
                 m.env.queue(super::runtime::Work::NoteController {
                     channel: m.t.ctx.channel,
-                    domain: m.t.ctx.domain,
+                    scope: m.t.ctx.scope(),
                     input_channel: m.t.ctx.input_channel,
                     controller,
                     note: note as u8,
@@ -850,7 +850,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             }
             m.env.queue(super::runtime::Work::Rpn {
                 channel: m.t.ctx.channel,
-                    domain: m.t.ctx.domain, input_channel: m.t.ctx.input_channel, nrpn: f == SetNrpn, address, value, slot: slot + 1,
+                    scope: m.t.ctx.scope(), input_channel: m.t.ctx.input_channel, nrpn: f == SetNrpn, address, value, slot: slot + 1,
             });
             Ok(Step::Next)
         }

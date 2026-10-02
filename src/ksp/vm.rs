@@ -56,6 +56,18 @@ pub enum Forward {
     Rpn { nrpn: bool },
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CallbackScope {
+    pub domain: u8,
+    pub common: bool,
+    pub configuration: bool,
+    pub ui_replay: bool,
+}
+
+impl CallbackScope {
+    pub(super) fn performance(domain: u8) -> Self { Self { domain, ..Self::default() } }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Ctx {
     pub slot: u8,
@@ -94,6 +106,16 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    pub(super) fn scope(&self) -> CallbackScope {
+        CallbackScope { domain: self.domain, common: self.common,
+            configuration: self.configuration, ui_replay: self.ui_replay }
+    }
+    pub(super) fn inherit_scope(&mut self, scope: CallbackScope) {
+        self.domain = scope.domain;
+        self.common = scope.common;
+        self.configuration = scope.configuration;
+        self.ui_replay = scope.ui_replay;
+    }
     pub fn new(slot: u8, kind: Kind) -> Self {
         Self {
             slot,
