@@ -1097,6 +1097,12 @@ impl Block {
         true
     }
 
+    pub(crate) fn restore_delay(&mut self, saved: &super::DelayState) -> bool {
+        if self.kind != Kind::Delay || !saved.apply(&mut self.fields) { return false }
+        self.tune();
+        true
+    }
+
     pub(crate) fn delay_fields(&self) -> Option<Fields> {
         (self.kind == Kind::Delay).then_some(self.fields)
     }

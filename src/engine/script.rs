@@ -38,6 +38,16 @@ pub fn load_scripts_with_state(
     instrument: &Instrument, persisted: Vec<Persisted>, rate: f64,
     ir_settings: &[crate::fx::IrSlotSettings], engine_state: &[crate::ksp::engine::NativeEdit],
 ) -> (Option<Box<Runtime>>, Vec<String>) {
+    load_scripts_with_delay_state(instrument, persisted, rate, ir_settings, engine_state, &[])
+}
+
+/// Physical Delay caches accompany final-address edits in new host states.
+/// The existing entry point keeps legacy/empty-state behavior unchanged.
+pub fn load_scripts_with_delay_state(
+    instrument: &Instrument, persisted: Vec<Persisted>, rate: f64,
+    ir_settings: &[crate::fx::IrSlotSettings], engine_state: &[crate::ksp::engine::NativeEdit],
+    delay_state: &[crate::fx::DelayState],
+) -> (Option<Box<Runtime>>, Vec<String>) {
     if instrument.scripts.is_empty() {
         return (None, Vec::new());
     }
@@ -45,6 +55,10 @@ pub fn load_scripts_with_state(
     // Kontakt saves engine state separately from script variables. Seed it
     // before init so authored get_engine_par calls see the restored values.
     let mut restore_errors = Vec::new();
+    setup.saved_delays = delay_state.iter().copied().filter(|saved| {
+        let mut fields = [0.0; crate::fx::blocks::FIELDS]; saved.apply(&mut fields)
+    }).collect();
+    for saved in &setup.saved_delays { setup.fx.to_mut().restore_delay(saved); }
     for saved in ir_settings {
         let (rack, slot, settings) = (saved.rack, saved.slot, saved.settings);
         if setup.fx.param(rack, slot, FxParam::Convolution(0)).is_none()
@@ -87,7 +101,17 @@ pub fn load_scripts_with_state(
             && setup.set_engine_par(0, par, value) { restored.push((par, value)); }
         else { restore_errors.push(format!("Saved engine parameter is unavailable: {par:?}")); }
     }
+    let saved_delays = std::mem::take(&mut setup.saved_delays);
+    let mut restored_delays = Vec::new();
+    for saved in &saved_delays {
+        if setup.fx.to_mut().restore_delay(saved) { restored_delays.push(*saved); }
+        else { restore_errors.push(format!("Saved Delay state is unavailable: {:?} slot {}", saved.rack, saved.slot)); }
+    }
+    if saved_delays.len() != delay_state.len() {
+        restore_errors.push("Invalid saved Delay state rejected".into());
+    }
     rt.native_state = setup.prepare_native_state();
+    for saved in restored_delays { rt.native_state.restored_delay(saved); }
     for &(par, value) in &restored {
         if let Some(address) = setup.address(par) { rt.native_state.restored(address, par, value); }
     }
@@ -680,6 +704,7 @@ pub struct ScriptSetup<'a> {
     effects: Vec<(Address, f32)>,
     pars: Vec<(EnginePar, i32)>,
     saved: Vec<crate::ksp::engine::NativeEdit>,
+    saved_delays: Vec<crate::fx::DelayState>,
     controllers: Vec<(u8, u8)>,
     /// Effects and impulse responses loaded, in order.
     loads: Vec<ScriptIr>,
@@ -700,6 +725,7 @@ impl<'a> ScriptSetup<'a> {
             effects: Vec::new(),
             pars: Vec::new(),
             saved: Vec::new(),
+            saved_delays: Vec::new(),
             controllers: Vec::new(),
             loads: Vec::new(),
         }
@@ -743,6 +769,7 @@ impl<'a> ScriptSetup<'a> {
                 for &id in &ids { add(EnginePar { id, group: -1, slot, generic }); }
             }
         }
+        state.prepare_delays(&self.fx);
         state
     }
 
@@ -775,6 +802,11 @@ impl<'a> ScriptSetup<'a> {
         });
         self.loads.retain(|l| (l.rack, l.slot) != (rack, slot));
         self.loads.push(ScriptIr { rack, slot, load: Load::Kind(kind) });
+        // A newly created Delay can now consume its validated physical state
+        // before subsequent init getters; other kinds never receive it.
+        for saved in self.saved_delays.iter().filter(|s| (s.rack, s.slot) == (rack, slot)) {
+            self.fx.to_mut().restore_delay(saved);
+        }
         // Some scripts create their rack in init. Seed its saved controls as
         // soon as the type exists, before subsequent authored getter calls.
         let saved: Vec<_> = self.saved.iter().copied().filter(|edit|

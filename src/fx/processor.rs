@@ -662,6 +662,12 @@ impl FxProcessor {
         None
     }
 
+    pub(crate) fn restore_delay(&mut self, saved: &super::DelayState) -> bool {
+        let Some(slot) = self.slot_mut(saved.rack, saved.slot) else { return false };
+        let Dsp::Block(block) = &mut slot.dsp else { return false };
+        block.restore_delay(saved)
+    }
+
     pub(crate) fn delay_fields(&self, rack: Rack, slot: u8) -> Option<(super::blocks::Fields, f32)> {
         let Dsp::Block(block) = &self.slot(rack, slot)?.dsp else { return None };
         Some((block.delay_fields()?, self.tempo))

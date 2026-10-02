@@ -38,7 +38,7 @@ pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
-pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_ir, load_scripts_with_state};
+pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_ir, load_scripts_with_state, load_scripts_with_delay_state};
 pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 
 use crate::fx::FxProcessor;
@@ -399,6 +399,7 @@ impl Engine {
             }
         }
         self.replay(|_| true);
+        if let Some(rt) = self.script.as_deref() { rt.native_state.replay_delays(&mut self.fx); }
         self.apply_init_controllers();
         self.queue_init_zone_edits();
         old
@@ -1372,6 +1373,10 @@ impl Engine {
                 {
                     if self.write(w.address, w.value) && let Some(rt) = self.script.as_deref_mut() {
                         rt.native_state.capture(w.address, w.par, w.native, w.value);
+                        if let Address::Fx(rack, slot, crate::fx::FxParam::Field(crate::fx::Kind::Delay, 0 | 4)) = w.address
+                            && let Some((fields, _)) = self.fx.delay_fields(rack, slot) {
+                            rt.native_state.capture_delay(crate::fx::DelayState::from_fields(rack, slot, &fields), w.par);
+                        }
                     }
                     written += 1;
                 }

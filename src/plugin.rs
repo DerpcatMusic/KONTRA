@@ -86,6 +86,8 @@ pub struct Part {
     pub snapshot: String,
     /// Supported engine edits applied by authored callbacks, in last-write order.
     pub engine_state: Vec<crate::ksp::engine::NativeEdit>,
+    /// Coupled Delay Time/unit caches, appended for older positional host states.
+    pub delay_state: Vec<crate::fx::DelayState>,
 }
 impl Part {
     pub(crate) fn source(&self) -> (String, u32, String) {
@@ -102,6 +104,7 @@ impl Part {
         self.script_state.clear();
         self.ir_settings.clear();
         self.engine_state.clear();
+        self.delay_state.clear();
         self.edits = Edits::default();
     }
     /// Where the part's samples play from, given the rack's setting.
@@ -184,6 +187,7 @@ impl Default for Part {
             view: 0,
             snapshot: String::new(),
             engine_state: Vec::new(),
+            delay_state: Vec::new(),
         }
     }
 }
@@ -653,6 +657,7 @@ pub(crate) struct PartView {
     pub(crate) script_state: String,
     pub(crate) ir_settings: Vec<crate::fx::IrSlotSettings>,
     pub(crate) engine_state: Arc<[crate::ksp::engine::NativeEdit]>,
+    pub(crate) delay_state: Arc<[crate::fx::DelayState]>,
     /// Epoch of the runtime last handed to the audio thread.
     pub(crate) script_epoch: u64,
     /// Snapshot buffer for this slot's runtime while the loader holds it.
@@ -1265,7 +1270,14 @@ fn scripts(
     Option<Box<PersistenceSnapshot>>,
     Vec<String>,
 ) {
-    let (script, errors) = crate::engine::load_scripts_with_state(i, persisted(saved, i), rate, ir_settings, engine_state);
+    scripts_with_delays(i, saved, ir_settings, engine_state, &[], rate)
+}
+
+fn scripts_with_delays(
+    i: &Instrument, saved: &str, ir_settings: &[crate::fx::IrSlotSettings],
+    engine_state: &[crate::ksp::engine::NativeEdit], delay_state: &[crate::fx::DelayState], rate: f64,
+) -> (Option<Box<Runtime>>, Option<Box<PersistenceSnapshot>>, Vec<String>) {
+    let (script, errors) = crate::engine::load_scripts_with_delay_state(i, persisted(saved, i), rate, ir_settings, engine_state, delay_state);
     // Nothing persistent: no snapshots to trade with the audio thread.
     let snapshot = script
         .as_ref()
@@ -2164,7 +2176,7 @@ impl BackgroundTask for Load {
                     !selected_snapshot && v.attempted.as_ref() == Some(&target)
                         && v.fx_rate != 0.
                         && !i.scripts.is_empty()
-                        && (part.script_state != v.script_state || part.ir_settings != v.ir_settings || part.engine_state.as_slice() != v.engine_state.as_ref())
+                        && (part.script_state != v.script_state || part.ir_settings != v.ir_settings || part.engine_state.as_slice() != v.engine_state.as_ref() || part.delay_state.as_slice() != v.delay_state.as_ref())
                 }).map(|i| (i, atoms.generation.load(Ordering::Acquire), v.script_epoch))
             };
             if let Some((instrument, generation, previous_epoch)) = restore {
@@ -2173,7 +2185,7 @@ impl BackgroundTask for Load {
                 trace.detail("operation", "script_restore");
                 trace.stage("scripts");
                 let (script, snapshot, errors) =
-                    scripts(&instrument, &part.script_state, &part.ir_settings, &part.engine_state, params.shared.rate());
+                    scripts_with_delays(&instrument, &part.script_state, &part.ir_settings, &part.engine_state, &part.delay_state, params.shared.rate());
                 for e in &errors { trace.script_issue("initialization_failed", e, &instrument.scripts); }
                 if let Some(rt) = script.as_deref() {
                     trace.script_runtime(rt, &instrument.scripts);
@@ -2231,7 +2243,7 @@ impl BackgroundTask for Load {
                 let v = &view.parts[slot];
                 let fresh = current.parts.get(slot).is_some_and(|p| p.matches_source(&target)
                     && p.script_state == part.script_state && p.ir_settings == part.ir_settings
-                    && p.engine_state == part.engine_state)
+                    && p.engine_state == part.engine_state && p.delay_state == part.delay_state)
                     && atoms.generation.load(Ordering::Acquire) == generation
                     && v.script_epoch == previous_epoch && v.attempted.as_ref() == Some(&target)
                     && v.instrument.as_ref().is_some_and(|i| Arc::ptr_eq(i, &instrument));
@@ -2246,6 +2258,7 @@ impl BackgroundTask for Load {
                 view.parts[slot].script_state = part.script_state.clone();
                 view.parts[slot].ir_settings = part.ir_settings.clone();
                 view.parts[slot].engine_state = part.engine_state.clone().into();
+                view.parts[slot].delay_state = part.delay_state.clone().into();
                 view.parts[slot].interface_status = interface_status;
                 view.parts[slot].runtime_status.clear();
                 if let Some(bank)=zone_bank.as_deref() {view.parts[slot].bytes=bank.bytes;}
@@ -2375,7 +2388,8 @@ impl BackgroundTask for Load {
                     let (rate, instrument, state) = (params.shared.rate(), &instrument, &part.script_state);
                     let ir_settings = &part.ir_settings;
                     let engine_state = &part.engine_state;
-                    let scripts = scope.spawn(move || scripts(instrument, state, ir_settings, engine_state, rate));
+                    let delay_state = &part.delay_state;
+                    let scripts = scope.spawn(move || scripts_with_delays(instrument, state, ir_settings, engine_state, delay_state, rate));
                     let bare = (!instrument.zones.is_empty()).then(|| Bank::load_bare_cancelable(instrument, &canceled));
                     let scripts = scripts.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
                     (scripts, bare)
@@ -2509,6 +2523,7 @@ impl BackgroundTask for Load {
                     v.script_state = part.script_state.clone();
                     v.ir_settings = part.ir_settings.clone();
                     v.engine_state = part.engine_state.clone().into();
+                    v.delay_state = part.delay_state.clone().into();
                     v.active = instrument.name.clone();
                     v.bytes = bank.as_ref().map(|b| b.bytes).unwrap_or(0);
                     v.freed = 0;
@@ -2768,6 +2783,7 @@ impl BackgroundTask for Load {
             let json = serde_json::to_string(&snapshot.script).unwrap_or_default();
             let ir_settings = snapshot.ir.clone();
             let engine_state = snapshot.native.saved();
+            let delay_state = snapshot.native.saved_delays();
             if snapshot.native.misses != snapshot.native.reported_misses {
                 crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "engine", "native_state_unprepared",
                     serde_json::json!({"part":slot,"script_epoch":epoch,"count":snapshot.native.misses,"parameter":snapshot.native.last_miss}));
@@ -2777,6 +2793,7 @@ impl BackgroundTask for Load {
             let view_json = json.clone();
             let view_ir = ir_settings.clone();
             let view_native = engine_state.clone().into();
+            let view_delay = delay_state.clone().into();
             let mut view = params.shared.view.lock().unwrap();
             let v = &mut view.parts[slot];
             // A replacement can publish while this worker formats the snapshot.
@@ -2785,7 +2802,7 @@ impl BackgroundTask for Load {
                 continue;
             }
             let retired_snapshot = v.snapshot.replace(snapshot);
-            if json == v.script_state && ir_settings == v.ir_settings && engine_state.as_slice() == v.engine_state.as_ref() {
+            if json == v.script_state && ir_settings == v.ir_settings && engine_state.as_slice() == v.engine_state.as_ref() && delay_state.as_slice() == v.delay_state.as_ref() {
                 drop(view);
                 drop(retired_snapshot);
                 continue;
@@ -2799,6 +2816,7 @@ impl BackgroundTask for Load {
                 std::mem::replace(&mut v.script_state, view_json),
                 std::mem::replace(&mut v.ir_settings, view_ir),
                 std::mem::replace(&mut v.engine_state, view_native),
+                std::mem::replace(&mut v.delay_state, view_delay),
             );
             drop(view);
             drop((retired, retired_snapshot));
@@ -2810,6 +2828,7 @@ impl BackgroundTask for Load {
                     std::mem::replace(&mut p.script_state, json),
                     std::mem::replace(&mut p.ir_settings, ir_settings),
                     std::mem::replace(&mut p.engine_state, engine_state),
+                    std::mem::replace(&mut p.delay_state, delay_state),
                 ))
             } else { None };
             drop(current);
@@ -6250,7 +6269,7 @@ end on"#,dir.display());
         let newer = serde_json::to_string(&rt.persistence()).unwrap();
         // The last case changes only a rack gain: it must not cancel a valid
         // restore whose source and saved script/IR/native state still match.
-        for change in 0..5 {
+        for change in 0..6 {
             let p = Arc::new(SamplerParams::new());
             let part = Part { path: instrument.path.to_string_lossy().into_owned(),
                 script_state: restoring.clone(), ..Default::default() };
@@ -6276,6 +6295,9 @@ end on"#,dir.display());
                 1 => p.selection.write().unwrap().parts[0].script_state = newer.clone(),
                 2 => { p.shared.part(0).unwrap().generation.fetch_add(1, Ordering::AcqRel); }
                 3 => p.selection.write().unwrap().parts.clear(),
+                4 => p.selection.write().unwrap().parts[0].delay_state.push(crate::fx::DelayState {
+                    rack: crate::fx::Rack::Insert, slot: 0, values: [10.0, 1.0, 1000.0, 3.0], legacy: false,
+                }),
                 _ => p.selection.write().unwrap().parts[0].gain = -6.,
             }
             gate.wait(); worker.join().unwrap();
@@ -6285,7 +6307,7 @@ end on"#,dir.display());
             }
             let view = p.shared.view.lock().unwrap();
             let v = &view.parts[0];
-            if change < 4 {
+            if change < 5 {
                 assert!(restored.is_none(), "stale restore cannot enter the callback queue ({change})");
                 assert_eq!(v.script_epoch, initial_epoch, "stale preparation cannot acquire a fresh epoch");
                 assert_eq!(v.script_state, initial, "stale preparation cannot replace published state");
@@ -6306,6 +6328,107 @@ end on"#,dir.display());
         }
         }
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn delay_physical_caches_survive_host_binary_json_worker_restore_and_unit_switch_without_heap() {
+        use crate::fx::{Chain, Effect, Kind, Params, Rack, FxParam};
+        use crate::ksp::Value;
+        use moose::core::custom_state::State;
+        let mut bytes: Vec<u8> = [3.0f32, 0.0, 0.0, 0.5, 1.0, 123.0, 2.0]
+            .into_iter().flat_map(f32::to_le_bytes).collect(); bytes.push(0);
+        let i = Arc::new(Instrument { path: "/virtual/Delay.nki".into(), scripts: vec![r#"on init
+ declare ui_slider $go(0,2)
+ declare ui_label $read(1,1)
+ set_text($read,get_engine_par_disp($ENGINE_PAR_DL_TIME,-1,0,$NI_INSERT_BUS))
+end on
+on ui_control($go)
+ if ($go = 1)
+  set_engine_par($ENGINE_PAR_DL_TIME_UNIT,$NI_SYNC_UNIT_ABS,-1,0,$NI_INSERT_BUS)
+  set_engine_par($ENGINE_PAR_DL_TIME,823567,-1,0,$NI_INSERT_BUS)
+  set_engine_par($ENGINE_PAR_DL_TIME_UNIT,$NI_SYNC_UNIT_QUARTER,-1,0,$NI_INSERT_BUS)
+  set_engine_par($ENGINE_PAR_DL_TIME,818182,-1,0,$NI_INSERT_BUS)
+ else
+  set_engine_par($ENGINE_PAR_DL_TIME_UNIT,$NI_SYNC_UNIT_ABS,-1,0,$NI_INSERT_BUS)
+  set_text($read,get_engine_par_disp($ENGINE_PAR_DL_TIME,-1,0,$NI_INSERT_BUS))
+ end if
+end on"#.into()], fx: crate::fx::ProgramFx { insert: Chain { slots: vec![Effect {
+            slot: 0, kind: Kind::Delay, version: 0, bypass: false, output_gain: 1.0,
+            dry_level: 0.0, params: crate::fx::params::parse(Kind::Delay, &bytes),
+        }] }, ..Default::default() }, ..Default::default() });
+        let (rt, snapshot, errors) = scripts_with_delays(&i, "", &[], &[], &[], 48000.0);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut snapshot = snapshot.unwrap();
+        let mut e = Engine::default();
+        e.set_bank(Some(Box::new(Bank::from_samples(Vec::new(), Vec::new(), Vec::new()).unwrap())));
+        e.set_fx(crate::engine::effects(&i, rt.as_deref(), 48000.0)); e.set_script(rt);
+        let mut l=[0.0;128]; let mut r=[0.0;128];
+        assert_eq!(allocations(|| {
+            e.ui_control(0,0,1); e.render(&mut l,&mut r);
+            while !e.script().unwrap().native_state.refresh(&mut snapshot.native,1) {}
+        }),0);
+        assert!(snapshot.native.changed);
+        let delays=snapshot.native.saved_delays();
+        assert_eq!(delays.len(),1,"only the successfully changed real slot is saved");
+        assert!((delays[0].values[2]-1000.0).abs()<0.01);
+        assert_eq!(delays[0].values[0],10.0);
+        let p=SamplerParams::new();
+        let part=Part { path:i.path.to_string_lossy().into_owned(), ..Default::default() };
+        p.selection.write().unwrap().parts=vec![part.clone()];
+        {
+            let mut view=p.shared.view.lock().unwrap(); let v=&mut view.parts[0];
+            v.instrument=Some(i.clone()); v.fx_rate=48000.0; v.script_epoch=1;
+            v.attempted=Some(part.source());
+        }
+        p.shared.snapshots.push((0,1,snapshot,true)).ok().unwrap(); Load.run(&p);
+        let saved=p.selection.read().unwrap().parts[0].clone();
+        assert_eq!(saved.delay_state,delays,"real snapshot worker publishes physical state");
+        let binary=State::serialize(&saved);
+        let read=Part::deserialize(&binary).unwrap();
+        assert!(read==saved,"host binary keeps appended physical state");
+        let count=u32::from_le_bytes(binary[4..8].try_into().unwrap());
+        let mut at=8; let mut older=binary[..8].to_vec();
+        let mut positional=(count-1).to_le_bytes().to_vec();
+        for _ in 0..count-1 {
+            let len=u32::from_le_bytes(binary[at+4..at+8].try_into().unwrap()) as usize;
+            older.extend(&binary[at..at+8+len]); positional.extend(&binary[at+4..at+8+len]); at+=8+len;
+        }
+        older[4..8].copy_from_slice(&(count-1).to_le_bytes());
+        let mut old_expected=saved.clone(); old_expected.delay_state.clear();
+        assert!(Part::deserialize(&older)==Some(old_expected.clone()),"older keyed state defaults new caches");
+        assert!(Part::deserialize(&positional)==Some(old_expected),"older positional state retains prior fields");
+        let saved:Part=serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();
+        let (rt,_,errors)=scripts_with_delays(&i,&saved.script_state,&saved.ir_settings,&saved.engine_state,&saved.delay_state,48000.0);
+        assert!(errors.is_empty(),"{errors:?}");
+        let mut restored=Engine::default();
+        restored.set_bank(Some(Box::new(Bank::from_samples(Vec::new(),Vec::new(),Vec::new()).unwrap())));
+        restored.set_fx(crate::engine::effects(&i,rt.as_deref(),48000.0)); restored.set_script(rt);
+        assert_eq!(restored.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],Value::Text("10".into()),"init reads restored synchronized state");
+        assert_eq!(allocations(|| {
+            restored.ui_control(0,0,2); restored.render(&mut l,&mut r);
+        }),0);
+        assert_eq!(restored.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],Value::Text("1000.0".into()));
+        let time=FxParam::Field(Kind::Delay,0);
+        assert!((restored.fx().param(Rack::Insert,0,time).unwrap()-823567.0/1e6).abs()<1e-6);
+        // Rate/effect rebuilds use the same retained physical state, preserving
+        // caches more recently changed than the last worker snapshot.
+        let rebuilt=crate::engine::effects(&i,restored.script(),48000.0);
+        let mut retired=None;
+        assert_eq!(allocations(|| { retired=Some(restored.set_fx(rebuilt)); }),0);
+        drop(retired);
+        assert!((restored.fx().param(Rack::Insert,0,time).unwrap()-823567.0/1e6).abs()<1e-6);
+        let legacy=serde_json::from_str::<Part>("{}").unwrap(); assert!(legacy.delay_state.is_empty());
+        let (legacy_rt,_,errors)=scripts(&i,"",&[],&[],48000.0);
+        assert!(errors.is_empty()); assert!(legacy_rt.unwrap().native_state.snapshot().saved_delays().is_empty());
+        let mut selected=saved.clone(); selected.select_snapshot("new.nksn".into());
+        assert!(selected.delay_state.is_empty());
+        let mut wrong=saved.delay_state[0]; wrong.slot=7;
+        let (wrong_rt,_,errors)=scripts_with_delays(&i,"",&[],&[],&[wrong],48000.0);
+        assert_eq!(errors.len(),1); assert!(wrong_rt.unwrap().native_state.snapshot().saved_delays().is_empty());
+        let mut other=Instrument { path:i.path.clone(), scripts:i.scripts.clone(), ..Default::default() };
+        other.fx.insert.slots.push(Effect { slot:0,kind:Kind::Gainer,version:0,bypass:false,output_gain:1.0,dry_level:0.0,params:Params::Gainer(crate::fx::params::Gainer{gain:1.0}) });
+        let (wrong_rt,_,errors)=scripts_with_delays(&other,"",&[],&[],&saved.delay_state,48000.0);
+        assert_eq!(errors.len(),1); assert!(wrong_rt.unwrap().native_state.snapshot().saved_delays().is_empty());
     }
 
     #[test]
