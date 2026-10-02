@@ -282,10 +282,11 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
 pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
     let (logs, logs_el) = action(ui, "info-open-logs", "Open Logs for this load", false);
     if logs {
-        cx.state.logs.load = cx.part_view().load_report.as_ref().map(|report| {
+        let load = cx.part_view().load_report.as_ref().map(|report| {
             report["load_id"].as_str().map(str::to_owned)
                 .or_else(|| report["load_id"].as_u64().map(|id| id.to_string())).unwrap_or_default()
         }).unwrap_or_default();
+        cx.state.logs.for_load(&load);
         cx.state.tab = super::Tab::Logs;
     }
     let v = cx.part_view();
