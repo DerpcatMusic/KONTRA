@@ -194,14 +194,18 @@ impl IrSettings {
 /// "other files" table, not an inline path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Convolution {
+    /// Native sampleRateDecFactor, then the bit pattern of the i32 block size.
+    /// The array is retained for existing serialized instrument metadata.
     pub unknown: [f32; 2],
     pub predelay_ms: f32,
     pub early: IrBand,
     pub late: IrBand,
+    /// Native er_lr_XPoint; units and automatic sentinel behavior remain unverified.
     pub unknown_9: f32,
-    /// Always `[false, true, true, true, false]` locally; meaning unknown.
+    /// Reverse, Auto Gain, Preserve Length, Bypass Latency Compensation,
+    /// Volume Envelope. Names/order verified against native serialization bindings.
     pub flags: [bool; 5],
-    /// An 8-point curve (x 0..1, y 0..-79 dB), identical in every local preset.
+    /// Volume-envelope times (0..1) and levels (dB), normally eight points.
     pub curve_x: Vec<f32>,
     pub curve_db: Vec<f32>,
     pub ir_index: i32,
@@ -209,6 +213,20 @@ pub struct Convolution {
     pub ir_error: Option<String>,
     #[serde(skip)]
     pub ir: Option<Impulse>,
+}
+
+impl Convolution {
+    /// Reverse the source impulse response before processing it.
+    pub fn reversed(&self) -> bool { self.flags[0] }
+    pub fn auto_gain(&self) -> bool { self.flags[1] }
+    pub fn preserve_length_ir(&self) -> bool { self.flags[2] }
+    pub fn bypass_latency_compensation(&self) -> bool { self.flags[3] }
+    pub fn envelope_active(&self) -> bool { self.flags[4] }
+    /// Stored native crossover value; its units are not inferred.
+    pub fn early_late_xpoint(&self) -> f32 { self.unknown_9 }
+    pub fn sample_rate_decimation_factor(&self) -> f32 { self.unknown[0] }
+    /// The native second word is an integer, not a floating-point parameter.
+    pub fn convolution_block_size(&self) -> i32 { self.unknown[1].to_bits() as i32 }
 }
 
 /// Decoded impulse response, shared between slots using the same file.

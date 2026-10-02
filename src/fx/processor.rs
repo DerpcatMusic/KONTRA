@@ -926,6 +926,7 @@ fn mix(out: &mut [f32], input: &[f32], level: f32) {
 /// Resamples (linear), stretches and predelays the IR for `sample_rate`.
 fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]> {
     let ir = &p.ir.as_ref()?.0;
+    let reverse = p.reversed();
     // Size stretches time, including reflections; it does not trim the tail.
     // Until the saved early/late boundary is identified, use uniform late size.
     let ratio = ir.rate as f32 / sample_rate / p.late.length_ratio.clamp(0.5, 1.5);
@@ -938,8 +939,12 @@ fn prepare_ir(p: &params::Convolution, sample_rate: f32) -> Option<[Vec<f32>; 2]
         out.extend((0..len.max(1)).map(|i| {
             let x = i as f32 * ratio;
             let (j, frac) = (x as usize, x.fract());
-            let a = ir.frames.get(j).map_or(0.0, |f| f[ch]);
-            let b = ir.frames.get(j + 1).map_or(0.0, |f| f[ch]);
+            let sample = |j: usize| {
+                let index = if reverse { ir.frames.len().checked_sub(j + 1) } else { Some(j) };
+                index.and_then(|j| ir.frames.get(j)).map_or(0.0, |f| f[ch])
+            };
+            let a = sample(j);
+            let b = sample(j + 1);
             a + (b - a) * frac
         }));
         out
