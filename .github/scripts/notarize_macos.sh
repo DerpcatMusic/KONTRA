@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Both hosted Mac architectures must pass; there is no unsigned fallback.
 set -euo pipefail
+umask 077
 for name in APPLE_APPLICATION_CERTIFICATE_P12_BASE64 APPLE_CERTIFICATE_PASSWORD \
   APPLE_DEVELOPER_ID_APPLICATION APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
   [ -n "${!name:-}" ] || { echo "Missing required signing secret: $name" >&2; exit 1; }
