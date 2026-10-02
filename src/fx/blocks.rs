@@ -258,6 +258,28 @@ fn transistor_curve(x: f32, drive: f32, power: f32, threshold: f32, scale: f32, 
 /// Keeps decaying feedback out of subnormal floats.
 const ANTI_DENORMAL: f32 = 1e-20;
 
+/// Native steady-state Distortion damping pole. The normalized cutoff uses
+/// an exponential polynomial followed by a sine-ratio bilinear transform.
+/// The following native DC filter and parameter smoothing remain unmodelled.
+fn distortion_damping(damping: f32, rate: f32) -> f32 {
+    let p = (1.0 - 0.4 * damping.clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    let x = (f64::from(p) * 6.15) as f32;
+    let exp = 1.0 + x * (1.0 + x * (0.5 + x * (1.0 / 6.0 + x * (1.0 / 24.0
+        + x * (1.0 / 120.0 + x * (1.0 / 720.0 + x * (1.0 / 5040.0 + x / 40320.0)))))));
+    let normalized = ((exp - 1.0) * 0.0025728317).clamp(0.0, 1.0) + 0.002;
+    let normalized = (normalized * (44011.97604790419 / f64::from(rate)) as f32).clamp(0.0, 1.0);
+    let angle = (f64::from(normalized) * std::f64::consts::FRAC_PI_2) as f32;
+    let angle = (f64::from(angle) * 0.99) as f32;
+    let angle = (f64::from(angle) * 0.9987809049669) as f32;
+    let sin = |z: f32| {
+        let z2 = z * z;
+        z * (1.0 + z2 * (-1.0 / 6.0 + z2 * (1.0 / 120.0 - z2 / 5040.0)))
+    };
+    let k = f64::from(sin(0.5 - angle) / sin(0.5 + angle));
+    let prototype = f64::from(0.29340800642967224f32);
+    ((prototype + k) / (1.0 + prototype * k)) as f32
+}
+
 /// A per-sample stereo stage: Saturation (stored as `0x1d`, Kontakt's
 /// "Surround Panner" slot class but `$ENGINE_PAR_SHAPE`'s effect),
 /// Distortion, Lo-Fi, Skreamer, Tape Saturator.
@@ -316,11 +338,11 @@ impl Drive {
                 let q = 0.975 * (4.0 + a) + 0.1;
                 [s, f[1], a, q, 1.0 / (1.0 + q), 0.0, 0.0, 0.0]
             }
-            // Neither native scalar core has drive makeup. Filtering
-            // retains the existing approximation until its law is proved.
+            // Neither native scalar core has drive makeup. Damping uses its
+            // native steady-state pole; DC and smoothing remain unsupported.
             DriveKind::Distortion => {
                 let d = x(1);
-                let a = one_pole(20_000.0 * 0.01f32.powf(x(2)), rate);
+                let a = distortion_damping(x(2), rate);
                 if f[0] >= 0.5 {
                     let threshold = f64::from(8.0 * d - 12.0).exp2() as f32;
                     [d, -60.0 / (48.0 * d - 60.0), a, 1.0,
@@ -399,15 +421,18 @@ impl Drive {
                 let [drive, power, a, transistor, c4, c5, k, ..] = self.c;
                 let inverse_power = 1.0 / f64::from(power);
                 for (ch, buf) in [left, right].into_iter().enumerate() {
-                    let mut lp = self.s[ch];
+                    let (mut previous, mut lp) = (self.s[2 * ch], self.s[2 * ch + 1]);
+                    let b = 0.5 * (1.0 - a);
                     for x in buf.iter_mut() {
                         let y = if transistor > 0.0 {
                             transistor_curve(*x, drive, power, c4, c5, inverse_power)
                         } else { tube_curve(*x, k, c4, c5) };
-                        lp += a * (y - lp) + ANTI_DENORMAL;
+                        lp = b * y + b * previous + a * lp + ANTI_DENORMAL;
+                        previous = y;
                         *x = lp;
                     }
-                    self.s[ch] = lp;
+                    self.s[2 * ch] = previous;
+                    self.s[2 * ch + 1] = lp;
                 }
             }
             DriveKind::LoFi => {
@@ -1243,11 +1268,11 @@ mod tests {
             insert: crate::fx::Chain { slots: vec![effect(Kind::Distortion, &[0.0, 0.0, 0.0])] },
             ..Default::default()
         };
-        assert!(fx.warnings().iter().any(|w| w.contains("native DC filtering is not applied")));
+        assert!(fx.warnings().iter().any(|w| w.contains("native DC filtering and Damping parameter smoothing are not applied")));
         assert!(fx.warnings().iter().all(|w| !w.contains("Transistor")));
         fx.insert.slots[0] = effect(Kind::Distortion, &[1.0, 0.0, 0.0]);
         assert!(crate::engine::filter::unsupported_at(&fx.insert, Some(8)).iter()
-            .any(|w| w.contains("native DC filtering is not applied")));
+            .any(|w| w.contains("native DC filtering and Damping parameter smoothing are not applied")));
     }
 
     #[test]
@@ -1291,18 +1316,82 @@ mod tests {
                     }
                     d.process(&mut l, &mut r);
                 }), 0);
-                // The existing filter approximation is deliberately preserved.
-                // Its rate-dependent one-pole recurrence is independent of the
-                // scalar fixture; resetting it must remove previous-rate state.
-                let cutoff = 20_000.0f64.min(0.45 * f64::from(rate));
-                let a = 1.0 - (-std::f64::consts::TAU * cutoff / f64::from(rate)).exp();
+                // Independent Decimal damping coefficients at native Damping 0.
+                let a = if rate == 44_100.0 { -0.968830620627632 } else { 0.072020615289497 };
+                let b = 0.5 * (1.0 - a);
                 for (buffer, reversed) in [(&l, false), (&r, true)] {
-                    let mut state = 0.0;
+                    let (mut previous, mut state) = (0.0, 0.0);
                     for (i, actual) in buffer.iter().enumerate() {
                         let source = expected[if reversed { expected.len() - 1 - i } else { i }];
-                        state += a * (source - state);
+                        state = b * (source + previous) + a * state;
+                        previous = source;
                         assert!((f64::from(*actual) - state).abs() < 2e-6);
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn distortion_damping_rates_impulse_partition_reset_without_heap() {
+        // Independent Decimal evaluation of the exponential and sine Taylor
+        // polynomials, followed by the bilinear pole and unity-DC normalization.
+        // Rows are native Damping 0, 0.5, 1; columns are 44.1, 48, 96 kHz.
+        let poles = [
+            [-0.968830620627632, -0.748475234218230, 0.072020615289497],
+            [0.281417361896059, 0.326787237731620, 0.613962547016527],
+            [0.727181173700699, 0.746823690647603, 0.865513282079401],
+        ];
+        for mode in [0.0, 1.0] {
+            for (rate_index, rate) in [44_100.0, 48_000.0, 96_000.0].into_iter().enumerate() {
+                for (damping_index, damping) in [0.0, 0.5, 1.0].into_iter().enumerate() {
+                    let mut fields = [0.0; FIELDS];
+                    fields[0] = mode; // Drive 0 isolates the damping filter.
+                    fields[2] = damping;
+                    let mut full = Drive::default();
+                    let (mut l, mut r) = ([0.0; 256], [0.0; 256]);
+                    l[0] = 1.0;
+                    r[7] = -0.25;
+                    let (mut split_l, mut split_r) = (l, r);
+                    assert_eq!(crate::plugin::tests::allocations(|| {
+                        assert!(full.tune(Kind::Distortion, &fields, rate));
+                        let a = poles[damping_index][rate_index];
+                        assert!((f64::from(full.c[2]) - a).abs() < 3e-6);
+                        assert!(full.c[2].abs() < 1.0);
+                        let mut partitioned = full;
+                        full.process(&mut l, &mut r);
+                        for (start, end) in [(0, 13), (13, 45), (45, 48), (48, 256)] {
+                            partitioned.process(&mut split_l[start..end], &mut split_r[start..end]);
+                        }
+                        assert_eq!(l, split_l);
+                        assert_eq!(r, split_r);
+                        assert_eq!(full.s, partitioned.s);
+                        let b = 0.5 * (1.0 - a);
+                        for (buffer, delay, amplitude) in [(&l, 0, 1.0), (&r, 7, -0.25)] {
+                            let (mut previous, mut state) = (0.0, 0.0);
+                            for (i, actual) in buffer.iter().enumerate() {
+                                let x = if i == delay { amplitude } else { 0.0 };
+                                state = b * (x + previous) + a * state;
+                                previous = x;
+                                assert!((f64::from(*actual) - state).abs() < 4e-6,
+                                    "mode{mode} rate{rate} damping{damping} frame{i}");
+                            }
+                        }
+                        // A live retune keeps history; clear removes it even
+                        // after a different-rate preparation and warm processing.
+                        let state = full.s;
+                        assert!(full.tune(Kind::Distortion, &fields, rate * 2.0));
+                        assert_eq!(full.s, state);
+                        full.clear();
+                        assert_eq!(full.s, [0.0; 8]);
+                        assert!(full.tune(Kind::Distortion, &fields, rate));
+                        let (mut reset_l, mut reset_r) = ([0.0; 256], [0.0; 256]);
+                        reset_l[0] = 1.0;
+                        reset_r[7] = -0.25;
+                        full.process(&mut reset_l, &mut reset_r);
+                        assert_eq!(l, reset_l);
+                        assert_eq!(r, reset_r);
+                    }), 0);
                 }
             }
         }

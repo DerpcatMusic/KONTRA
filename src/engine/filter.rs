@@ -526,7 +526,7 @@ pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
             out.push("Group Saturation: Enhanced/Drums modes use an unverified transfer-curve proxy".into());
         }
         if fx.kind == Kind::Distortion {
-            out.push("Group Distortion: Damping uses a low-pass approximation; native DC filtering is not applied".into());
+            out.push("Group Distortion: native DC filtering and Damping parameter smoothing are not applied".into());
         }
         match &fx.params {
             Params::Filter(f) if filter_type(f.filter_type).is_none() => {
@@ -2831,12 +2831,13 @@ mod tests {
                     assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r)).all(|(a,b)| (a-b).abs() < 2e-6));
                 }), 0);
                 if value == 0 {
-                    // The preserved filter, not soft clipping, processes neutral
-                    // Drive. Independent one-pole recurrence closes that case.
-                    let a = 1.0 - (-std::f64::consts::TAU * 20_000.0 / f64::from(RATE)).exp();
-                    let mut state = 0.0;
+                    // Native Damping 0 at 48 kHz, independently evaluated.
+                    let a = -0.748475234218230;
+                    let b = 0.5 * (1.0 - a);
+                    let (mut previous, mut state) = (0.0, 0.0);
                     for (x, actual) in source.into_iter().zip(l) {
-                        state += a * (f64::from(x) - state);
+                        state = b * (f64::from(x) + previous) + a * state;
+                        previous = f64::from(x);
                         assert!((f64::from(actual) - state * 0.15).abs() < 2e-6);
                     }
                 }
