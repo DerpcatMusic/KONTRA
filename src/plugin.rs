@@ -430,7 +430,7 @@ pub(crate) struct PartShared {
 }
 
 pub struct Shared {
-    native_asset_requests: ArrayQueue<NativeAssetJob>,
+    native_asset_requests: Arc<ArrayQueue<NativeAssetJob>>,
     instance_id: u64,
     diagnostic_audio: ArrayQueue<AudioDiagnostics>,
     diagnostic_free: ArrayQueue<AudioDiagnostics>,
@@ -717,7 +717,7 @@ impl Default for Shared {
         for _ in 0..2 { diagnostic_free.push(AudioDiagnostics::with_parts(RACK_SLOTS)).ok().unwrap(); }
         Self {
             instance_id: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
-            native_asset_requests: ArrayQueue::new(16),
+            native_asset_requests: Arc::new(ArrayQueue::new(16)),
             diagnostic_audio: ArrayQueue::new(2),
             diagnostic_free,
             diagnostic_latest: Mutex::new(None),
@@ -1173,9 +1173,29 @@ fn load_native_assets(params: &SamplerParams) {
             v.program
         };
         let mut trace = crate::diagnostics::LoadTrace::new(&job.path,program,Some(job.part));
-        trace.detail("operation","native_ui_assets");
+        trace.detail("operation",if job.names.is_empty() {"native_ui_rasters"}else{"native_ui_assets"});
         trace.detail("script_epoch",job.epoch);
         trace.stage("artwork");
+        if job.names.is_empty() {
+            let assets=job.scene.lock().unwrap().begin_rasters();
+            let mut changed=false;let mut errors=Vec::new();
+            for (name,asset) in &assets.entries {
+                if let Ok(asset)=asset { match asset.prepare_pending_rasters() {
+                    Ok(ready)=>changed|=ready,
+                    Err(error)=>errors.push(format!("{name}: {error}")),
+                }}
+            }
+            for error in &errors {trace.issue("artwork","native_ui_raster",error);}
+            let installed={let mut view=params.shared.view.lock().unwrap();
+                if let Some(v)=view.parts.get_mut(job.part).filter(|v| current(v)) {
+                    if changed || !errors.is_empty() {job.scene.lock().unwrap().rasters_ready();}
+                    if let Some(error)=errors.first() {v.native_status=format!("Native UI artwork unavailable: {error}");}
+                    true
+                }else{false}
+            };
+            trace.finish(if installed {if errors.is_empty(){"loaded"}else{"partial"}}else{"canceled"});
+            continue;
+        }
         let remaining=job.scene.lock().unwrap().remaining_asset_bytes();
         let ready = crate::native_assets::Assets::prepare_bounded(&job.path,&job.names,remaining);
         let errors: Vec<_> = ready.entries.iter().filter_map(|(name,result)|
@@ -1194,6 +1214,16 @@ fn load_native_assets(params: &SamplerParams) {
         };
         trace.finish(if installed { if errors.is_empty() { "loaded" } else { "partial" } } else { "canceled" });
     }
+    // A renderer can request a filtered size when the bounded queue is full.
+    // The retained pending bit lets the existing loader retry without a new
+    // thread, editor busy polling or losing the source/scene identity.
+    let retry: Vec<_>={let view=params.shared.view.lock().unwrap();
+        view.parts.iter().enumerate().filter_map(|(part,v)| {
+            let scene=v.native_scene.as_ref()?;
+            if !scene.lock().unwrap().rasters_pending(){return None}
+            Some(NativeAssetJob{part,epoch:v.script_epoch,path:v.instrument.as_ref()?.path.clone(),scene:scene.clone(),names:Vec::new()})
+        }).take(16).collect()};
+    for job in retry {let _=params.shared.native_asset_requests.push(job);}
 }
 /// Prepare the supported legacy scene off-thread without changing classic controls.
 fn native_scene(i: &Instrument, rt: Option<&Runtime>, live: &mut Option<Box<Live>>, pages: &ScriptPages, trace: &mut crate::diagnostics::LoadTrace) -> (Option<Arc<Mutex<crate::native_ui::Scene>>>, String) {
@@ -1301,6 +1331,13 @@ impl Shared {
             .ok_or_else(|| "Native UI asset request has a stale source".to_owned())?;
         let scene=v.native_scene.as_ref().ok_or("Native UI scene is unavailable")?.clone();
         let path=v.instrument.as_ref().ok_or("Native UI source is unavailable")?.path.clone();
+        let weak_scene=Arc::downgrade(&scene);let queue=Arc::downgrade(&self.native_asset_requests);
+        let origin=path.clone();
+        scene.lock().unwrap().set_raster_waker(Arc::new(move || {
+            if let (Some(queue),Some(scene))=(queue.upgrade(),weak_scene.upgrade()) {
+                let _=queue.push(NativeAssetJob{part,epoch,path:origin.clone(),scene,names:Vec::new()});
+            }
+        }));
         let missing=scene.lock().unwrap().reserve_assets(names).map_err(|e| e.to_string())?;
         if missing.is_empty() { return Ok(()) }
         if let Err(job)=self.native_asset_requests.push(NativeAssetJob {part,epoch,path,scene:scene.clone(),names:missing}) {
@@ -4731,7 +4768,7 @@ pub(crate) mod tests {
         std::fs::write(resources.join("context.nui"), include_str!("../tests/fixtures/native-ui-scene/context.nui")).unwrap();
         std::fs::create_dir_all(resources.join("assets/pics")).unwrap();
         for name in ["ready","changed"] {
-            std::fs::write(resources.join(format!("assets/pics/{name}.svg")),r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><path d="M0 0L40 0L40 20L0 20Z" fill="#ff0000"/></svg>"##).unwrap();
+            std::fs::write(resources.join(format!("assets/pics/{name}.svg")),r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><defs><filter id="blur"><feGaussianBlur stdDeviation="1"/></filter></defs><path d="M0 0L40 0L40 20L0 20Z" fill="#ff0000" filter="url(#blur)"/></svg>"##).unwrap();
         }
         std::fs::create_dir_all(directory.join("Resources/info")).unwrap();
         std::fs::write(directory.join("Resources/info/library.json"),r#"{"general":{"kontaktTargetVersion":"8.1"}}"#).unwrap();
@@ -4796,15 +4833,28 @@ pub(crate) mod tests {
             .offered(Size::new(640.,400.)).font(Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap());
         let rendered=moose::mui::mui::scene::resolve(&spec).unwrap();
         assert_eq!(rendered.paint.iter().filter(|p| p.text.is_some()).count(),2,"both computed labels use the production MUI primitive adapter");
-        assert!(rendered.paint.iter().any(|p| matches!(p.paint,moose::mui::mui::scene::Paint::Vector {..})),"authored SVG reaches retained vector paint without bitmap conversion");
+        assert!(rendered.paint.iter().any(|p| matches!(p.paint,moose::mui::mui::scene::Paint::Vector {..})),"authored SVG retains its vector/source identity through MUI paint");
+        let source=rendered.paint.iter().find_map(|p|match &p.paint {
+            moose::mui::mui::scene::Paint::Vector{vector,..}=>vector.raster_source().cloned(),_=>None,
+        }).unwrap();
+        assert!(source.prepared_image(40,20).unwrap().is_none(),"cold filter paint only requests worker preparation");
+        load_native_assets(&p);
+        assert!(source.prepared_image(40,20).unwrap().is_some(),"same loader prepares the requested device size");
+        for _ in 0..16 {p.shared.native_asset_requests.push(NativeAssetJob{part:0,epoch:epoch-1,path:i.path.clone(),scene:scene.clone(),names:Vec::new()}).ok().unwrap();}
+        assert!(source.prepared_image(80,40).unwrap().is_none());
+        load_native_assets(&p); // Full queue drained; retained pending scene queues a retry.
+        load_native_assets(&p);
+        assert!(source.prepared_image(80,40).unwrap().is_some(),"queue-full misses recover without editor raster work or another thread");
         assert_eq!(labels,["Amount:44:1","Remote:24:1"],"same scene observes callback results and retains local state");
         let rt=dsp.rack.parts[0].script().unwrap();
         assert_eq!(rt.interface(1).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(90));
         assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
         p.shared.request_native_assets(0,epoch,["assets/pics/stale.svg".to_string()].into_iter().collect()).unwrap();
-        p.shared.view.lock().unwrap().parts[0].script_epoch=epoch+1;
+        assert!(source.prepared_image(120,60).unwrap().is_none());
+        {let mut view=p.shared.view.lock().unwrap();view.parts[0].script_epoch=epoch+1;view.parts[0].native_scene=None;}
         load_native_assets(&p);
         assert!(!scene.lock().unwrap().assets.entries.contains_key("assets/pics/stale.svg"),"stale image jobs are discarded before reading or publication");
+        assert!(source.prepared_image(120,60).unwrap().is_none(),"a replaced scene's raster job does not prepare or publish after its source changes");
         std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return function() return @ui.Ring {} end").unwrap();
         let error=Scene::prepare(&i.path,rt).unwrap_err().to_string();
         assert!(error.contains("Unsupported native UI API")&&error.contains("Ring"),"{error}");

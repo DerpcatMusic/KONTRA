@@ -46,6 +46,11 @@ and a 128 MiB retained asset budget;
 missing or unsupported assets are diagnosed and never replaced by invented artwork.
 Unframed, nonresizable images use their intrinsic size; explicit frames and
 resizable images use the authored frame.
+Filtered SVG device-size misses also queue through that loader. Painting reads
+only prepared cache entries; a cold or queued image remains pending. A retained
+scene request bit permits queue-full retries on the existing worker, and stale
+scene/epoch jobs are discarded before preparation. No filter rendering runs in
+the editor snapshot or paint path.
 
 Additional primitives/modifiers, indexed array connections, generalized
 reactive subscriptions and parameter writes outside gestures are explicitly

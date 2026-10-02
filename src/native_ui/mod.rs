@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +70,8 @@ pub(crate) struct Scene {
     identities: BTreeMap<String, usize>,
     pub(crate) assets: Arc<crate::native_assets::Assets>,
     asset_pending: BTreeSet<String>,
+    raster_waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    raster_pending: Arc<AtomicBool>,
     pub identity: String,
     pub target_version: Option<String>,
     pub resources: Vec<(String, Vec<u8>)>,
@@ -385,6 +387,8 @@ impl Scene {
             identities: BTreeMap::new(),
             assets: Arc::default(),
             asset_pending: BTreeSet::new(),
+            raster_waker: None,
+            raster_pending: Arc::new(AtomicBool::new(false)),
             identity,
             target_version,
             resources,
@@ -435,10 +439,47 @@ impl Scene {
     pub(crate) fn install_assets(&mut self, ready: crate::native_assets::Assets) {
         let mut all = (*self.assets).clone();
         for (name, result) in ready.entries {
+            if let Some(wake) = &self.raster_waker
+                && let Ok(asset) = &result
+            {
+                asset.set_raster_waker(wake.clone());
+            }
             self.asset_pending.remove(&name);
             all.entries.insert(name, result);
         }
         self.assets = Arc::new(all);
+        self.revision.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn set_raster_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        if self.raster_waker.is_some() {
+            return;
+        }
+        let pending = self.raster_pending.clone();
+        let revision = self.revision.clone();
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            if !pending.swap(true, Ordering::AcqRel) {
+                revision.fetch_add(1, Ordering::Relaxed);
+                wake();
+            }
+        });
+        for asset in self
+            .assets
+            .entries
+            .values()
+            .filter_map(|result| result.as_ref().ok())
+        {
+            asset.set_raster_waker(wake.clone());
+        }
+        self.raster_waker = Some(wake);
+    }
+    pub(crate) fn rasters_pending(&self) -> bool {
+        self.raster_pending.load(Ordering::Acquire)
+    }
+    pub(crate) fn begin_rasters(&self) -> Arc<crate::native_assets::Assets> {
+        self.raster_pending.store(false, Ordering::Release);
+        self.assets.clone()
+    }
+    pub(crate) fn rasters_ready(&self) {
         self.revision.fetch_add(1, Ordering::Relaxed);
     }
     pub(crate) fn has_control(&self, slot: usize, control: usize) -> bool {
