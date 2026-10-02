@@ -3970,3 +3970,63 @@ fn growing_the_rack_keeps_voices_held_notes_and_recorded_targets_without_audio_h
         assert_eq!(rack.controls[32], Default::default(), "removed slots lose their old routing");
     }), 0, "growth, routing, alignment and playback must neither allocate nor free on audio");
 }
+
+/// Independently generated control-point/ramp reference, not a note-count or
+/// RMS-only check. A linear source makes each rendered sample expose its
+/// source cursor, including both halves of the bipolar pitch waveform.
+#[test]
+fn saved_sine_multi_pitch_uses_native_clock_and_audio_interpolation() {
+    use kontakto::import::PitchLfo;
+    let make = || {
+        let group = Group { pitch_lfos: vec![PitchLfo { slot: 7, count: 1.,
+            note_value: 1. / 24., sine: 0.5, depth: 0.5, bypassed: false }], ..Group::default() };
+        let sample = Sample { rate: 48000,
+            frames: (0..4096).map(|i| [i as f32 / 8192.; 2]).collect() };
+        engine_with(Bank::from_samples(vec![group], vec![Zone::default()],
+            vec![(PathBuf::new(), sample)]).unwrap())
+    };
+    let mut e = make();
+    assert_eq!(e.bank().unwrap().settings[0].pitch_lfos[0].slot, 7);
+    assert!(!e.bank().unwrap().settings[0].pitch_lfos[0].bypassed);
+    e.set_transport(false, 120., 0., (4, 4));
+    let mut left = [0.; MAX_BLOCK];
+    let mut right = [0.; MAX_BLOCK];
+    assert_eq!(allocations(|| e.note_on(0, 60, 127)), 0);
+    let (mut phase, mut cursor, mut previous, mut current) = (0f64, 0f64, 0f64, 0f64);
+    let mut offset = 0usize;
+    let mut source_points = 0;
+    let mut faster = false;
+    let mut slower = false;
+    let mut recorded = Vec::new();
+    // Short event fragments exercise the retained interpolation offset.
+    for n in [17, 111, 128, 128, 128, 128, 128, 128, 128] {
+        assert_eq!(allocations(|| e.render(&mut left[..n], &mut right[..n])), 0);
+        let points: Vec<_> = (0..n.div_ceil(32)).map(|i|
+            -3. * ((phase + i as f64 * 48. * 32. / 48000.) * std::f64::consts::TAU).sin()).collect();
+        let mut next = 0;
+        for i in 0..n {
+            if offset == 0 { previous = current; current = points[next]; next += 1; source_points += 1; }
+            let semitones = previous + (current - previous) * offset as f64 / 32.;
+            let step = 2f64.powf(semitones / 12.);
+            faster |= step > 1.01;
+            slower |= step < 0.99;
+            if recorded.len() >= 64 {
+                let expected = cursor as f32 / 8192.;
+                assert!((left[i] - expected).abs() < 2e-6,
+                    "frame {}: {} vs {expected}", recorded.len(), left[i]);
+                assert!((right[i] - expected).abs() < 2e-6);
+            }
+            recorded.push(left[i]);
+            cursor += step;
+            offset = (offset + 1) & 31;
+        }
+        phase += 48. * n as f64 / 48000.;
+    }
+    assert!(source_points > 16 && faster && slower);
+    e.note_off(0, 60);
+    assert_eq!(allocations(|| { for _ in 0..16 { e.render(&mut left, &mut right); } }), 0);
+    assert_eq!(e.active_voices(), 0, "LFO never extends the note lifetime");
+    e.note_on(0, 60, 127);
+    let replay = render(&mut e, 17);
+    for (a, b) in replay.iter().zip(&recorded) { assert_eq!(a[0], *b, "retriggered phase"); }
+}
