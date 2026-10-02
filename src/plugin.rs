@@ -4954,6 +4954,11 @@ pub(crate) mod tests {
         assert_eq!(fragment.snapshot().unwrap().children.len(),1,"anonymous authored groups compose their children");
         std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.Text{text='bounds'}.frame(width=4096,height=400).padding(1)").unwrap();
         assert!(format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err()).contains("measured root exceeds"),"padding around legal frames still respects the measured root budget");
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') local pad,set_pad=ui.create_state(0) return function() return @ui.Text{text='bounds'}.frame(width=4096,height=400).padding(pad()).on_tap_gesture(start=function()set_pad(1)end) end").unwrap();
+        let mut growing=Scene::prepare(&i.path,rt).unwrap().unwrap();
+        let bounded=growing.snapshot().unwrap();
+        assert!(growing.tap(bounded.id).unwrap().is_empty());
+        assert!(format!("{:#}",growing.snapshot().unwrap_err()).contains("measured root exceeds"),"reactive composition is checked again after initial admission");
         std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.Text{text='positional'}.frame(42)").unwrap();
         assert!(format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err()).contains("Unsupported positional native UI modifier: frame"),"positional arguments reach the host validation rather than being misparsed");
         std::fs::write(resources.join("main.nui"),"while true do pcall(function() pcall(function() while true do end end) end) end").unwrap();
