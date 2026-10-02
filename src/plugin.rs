@@ -4704,7 +4704,7 @@ pub(crate) mod tests {
         labels.clear();texts(&published,&mut labels);
         use moose::mui::mui::prelude::{Size,Font};
         let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::paint_snapshot(&published,(640.,400.)))
-            .offered(Size::new(640.,400.)).font(Font::new(include_bytes!("../assets/NotoSans.ttf")).unwrap());
+            .offered(Size::new(640.,400.)).font(Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap());
         let rendered=moose::mui::mui::scene::resolve(&spec).unwrap();
         assert_eq!(rendered.paint.iter().filter(|p| p.text.is_some()).count(),2,"both computed labels use the production MUI primitive adapter");
         assert_eq!(labels,["Amount:44:1","Remote:24:1"],"same scene observes callback results and retains local state");
