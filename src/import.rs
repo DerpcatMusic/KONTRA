@@ -25,6 +25,10 @@ pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEn
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Group {
     pub name: String,
+    /// Native group-start records, including unknown mode/operator IDs.
+    /// Retained for writing; playback does not yet evaluate these conditions.
+    #[serde(default)]
+    pub start_criteria: ni_file::kontakt::objects::StartCriteriaList,
     /// Linear amplitude ratio.
     pub gain: f32,
     pub pan: f32,
@@ -64,7 +68,7 @@ pub struct Group {
 
 impl Default for Group {
     fn default() -> Self {
-        Self { name: String::new(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
+        Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
             release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0 }
     }
 }
@@ -656,7 +660,11 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             Ok(_) => {},
             Err(error) => warnings.push(format!("{}: source identity is not decoded: {error}; source-specific playback parameters are not applied", v.name)),
         }
-        if !v.start_criteria.items.is_empty() { warnings.push(format!("{}: native group start conditions are not implemented", v.name)); }
+        if !v.start_criteria.items.is_empty() || !v.start_criteria.unknown_tail.is_empty() {
+            let records: Vec<_> = v.start_criteria.items.iter()
+                .map(|c| (c.mode, c.next_criteria, c.cycle_class)).collect();
+            warnings.push(format!("{}: native group start conditions are retained but not evaluated (mask {}, raw mode/operator/cycle records {records:?}, {} opaque tail bytes); native numeric IDs are not verified", v.name, v.start_criteria.mask, v.start_criteria.unknown_tail.len()));
+        }
         if v.release_trigger_note_monophonic {warnings.push("Release-trigger note monophony is not imported".into());}
         let modulation = match crate::modulation::read_group(g) {
             Ok(modulation) => modulation,
@@ -677,6 +685,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         // Gain and tuning are linear ratios (see audits/MODULATION.md).
         groups.push(Group {
             name: v.name,
+            start_criteria: v.start_criteria,
             gain: v.volume,
             pan: v.pan,
             tune: v.tune as f64,

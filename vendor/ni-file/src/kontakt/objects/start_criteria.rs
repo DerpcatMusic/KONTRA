@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use crate::{
     kontakt::{Chunk, KontaktError, StructuredObject},
@@ -16,7 +16,8 @@ const CHUNK_ID: u16 = 0x0F;
 #[derive(Debug)]
 pub struct StartCriteria(pub StructuredObject);
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StartCriteriaParams {
     /// Mode: Always, Start On Key, Start On Controller, Cycle Round Robin, Cycle Random, Slice Trigger
     pub mode: i32,
@@ -33,7 +34,22 @@ pub struct StartCriteriaParams {
 }
 
 impl StartCriteriaParams {
-    // 33 bytes
+    /// Write the fixed record without interpreting native mode/operator IDs.
+    pub fn write(&self, mut writer: impl Write) -> Result<(), Error> {
+        for value in [self.mode, self.next_criteria] {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        for value in [self.key_min, self.key_max, self.controller, self.cc_min, self.cc_max] {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        for value in [self.cycle_class, self.slice_zone_idx, self.slice_zone_slice_idx] {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        writer.write_all(&[u8::from(self.sequencer_only)])?;
+        Ok(())
+    }
+
+    // 31 bytes (the list's object flag and version add another 3 bytes).
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         Ok(StartCriteriaParams {
             mode: reader.read_i32_le()?,
@@ -46,7 +62,11 @@ impl StartCriteriaParams {
             cycle_class: reader.read_i32_le()?,
             slice_zone_idx: reader.read_i32_le()?,
             slice_zone_slice_idx: reader.read_i32_le()?,
-            sequencer_only: reader.read_bool()?,
+            sequencer_only: match reader.read_u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::Static("Invalid start criteria sequencer flag")),
+            },
         })
     }
 }
