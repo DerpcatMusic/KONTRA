@@ -3223,6 +3223,27 @@ fn decaying_tails_flush_denormals_to_zero() {
 }
 
 #[test]
+fn offline_overload_preserves_release_tails_and_live_shedding_still_works() {
+    let setup = || engine_with(layered(vec![Group::default()], &[0.5]));
+    let (mut reference, mut overloaded) = (setup(), setup());
+    for (e, load) in [(&mut reference, 0.0), (&mut overloaded, 1.0)] {
+        e.release = 10.0;
+        e.blocking_streams = true;
+        e.load = load;
+        e.note_on(0, 60, 100);
+        render(e, 480);
+        e.note_off(0, 60);
+    }
+    assert_eq!(render(&mut overloaded, 4800), render(&mut reference, 4800),
+        "an offline release must not depend on wall-clock or carried-over live load");
+    assert_eq!(overloaded.active_voices(), 1);
+    overloaded.blocking_streams = false;
+    render(&mut overloaded, 480);
+    assert_eq!(overloaded.active_voices(), 0, "live overload protection still fades the released voice");
+    assert_eq!(reference.active_voices(), 1);
+}
+
+#[test]
 fn overload_fades_released_voices_quietest_first() {
     // Every key plays a loud group and one at −70 dB; releases ring on.
     let quiet = Group {

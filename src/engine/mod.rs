@@ -1028,7 +1028,9 @@ impl Engine {
         if let Some((rt, mut host)) = self.scripted(channel) {
             rt.process(&mut host, n as u32);
         }
-        self.player.shed(self.load);
+        // Offline renders have no deadline: retain tails even if a live
+        // block's load estimate carried over or decoding takes longer.
+        if !self.blocking_streams { self.player.shed(self.load); }
         let defaults = self.defaults();
         let (mut next, mut written) = (0, 0);
         for (block, (l, r)) in left[..n]
