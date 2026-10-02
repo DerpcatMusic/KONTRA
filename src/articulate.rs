@@ -2135,6 +2135,7 @@ end on"#;
             declare %held[2048]
             declare $i
             declare ui_knob $setting (0, 100, 1)
+            declare ui_knob $registered (0, 127, 1)
         end on
         on note
             %events[128 * $MIDI_CHANNEL + $EVENT_NOTE] := $EVENT_ID
@@ -2147,6 +2148,9 @@ end on"#;
             end if
         end on
         on controller
+            if ($CC_NUM = 6 and %CC[100] < 127 and %CC[101] < 127)
+                $registered := %CC[6]
+            end if
             if ($CC_NUM = 1 and %CC[1] = 99)
                 wait(10000)
                 set_controller(64, 127)
@@ -2172,6 +2176,7 @@ end on"#;
                             (2, 88), (65, 127), (67, 127), (98, 0), (99, 0), (100, 0), (101, 0)] {
             e.cc(0, cc, value);
         }
+        e.cc(0, 6, 31);
         e.poly_pressure(0, 61, 92);
         e.render(&mut [0.; 128], &mut [0.; 128]);
         e.cc(0, 64, 127);
@@ -2193,6 +2198,7 @@ end on"#;
             assert_eq!(e.script().unwrap().env.input.cc[cc], i32::from(value));
         }
         assert_eq!(e.cc_state()[1][64], 127, "unrelated channel callbacks survive");
+        assert_eq!(e.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(31), "registered parameter changed while resetting its data-entry CC");
         assert!(!e.voice_census().iter().any(|v| v.note == 60));
         assert!(e.voice_census().iter().any(|v| v.note == 61));
         assert_eq!(e.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(42));

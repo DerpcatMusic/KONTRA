@@ -674,7 +674,9 @@ impl Engine {
                 // Authors often mirror controllers in globals. Deliver the
                 // same defaults the native reset uses before synchronizing %CC.
                 for c in (0..16u8).filter(|&c| channels & (1 << c) != 0) {
-                    for cc in 0..120u8 {
+                    // Deselect parameter addresses before data-entry defaults:
+                    // authored RPN/NRPN handlers must retain parameter values.
+                    for cc in (98..102u8).chain(0..98).chain(102..120) {
                         let Some(value) = crate::ksp::reset_controller_value(cc) else { continue; };
                         // Always refresh the standard performance caches; other
                         // supported CCs need a callback only when changed.
