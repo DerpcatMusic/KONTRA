@@ -7,7 +7,7 @@ use crate::{
 };
 
 use super::{
-    EnvelopeAhdsr, EnvelopeFlex, ModTarget,
+    EnvelopeAhdsr, EnvelopeFlex, Lfo, ModTarget,
     modulation::{ensure_consumed, read_name, read_targets},
 };
 
@@ -47,6 +47,7 @@ pub struct InternalModParams {
 pub enum Modulator {
     Ahdsr(EnvelopeAhdsr),
     Flex(EnvelopeFlex),
+    Lfo(Lfo),
     /// Undecoded modulator, identified by its chunk id.
     Other {
         chunk_id: u16,
@@ -87,18 +88,26 @@ impl InternalMod {
 
     /// The envelope wrapper (0x07) holds the concrete modulator chunk.
     fn modulator(&self) -> Result<Modulator, Error> {
-        let Some(wrapper) = self.0.find_first(ENVELOPE_ID) else {
-            let inner = self.0.children.first().ok_or(KontaktError::MissingChunk(ENVELOPE_ID))?;
-            return Ok(Modulator::Other { chunk_id: inner.id });
+        let wrapper;
+        let inner = if let Some(chunk) = self.0.find_first(ENVELOPE_ID) {
+            wrapper = StructuredObject::try_from(chunk)?;
+            wrapper
+                .children
+                .first()
+                .ok_or(Error::Static("Modulator wrapper has no modulator"))?
+        } else {
+            self.0
+                .children
+                .first()
+                .ok_or(KontaktError::MissingChunk(ENVELOPE_ID))?
         };
-        let wrapper = StructuredObject::try_from(wrapper)?;
-        let inner = wrapper
-            .children
-            .first()
-            .ok_or(Error::Static("Modulator wrapper has no modulator"))?;
         Ok(match inner.id {
             0x3F => Modulator::Ahdsr(EnvelopeAhdsr::try_from(inner)?),
             0x40 => Modulator::Flex(EnvelopeFlex::try_from(inner)?),
+            0x08 => match Lfo::read_supported(inner)? {
+                Some(lfo) => Modulator::Lfo(lfo),
+                None => Modulator::Other { chunk_id: inner.id },
+            },
             chunk_id => Modulator::Other { chunk_id },
         })
     }
