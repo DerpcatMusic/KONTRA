@@ -345,7 +345,8 @@ pub fn log_path() -> Option<PathBuf> {
 }
 
 /// Off-audio instrumentation. Recognized context fields are promoted from
-/// `details`; never pass sample bytes, ciphertext, access data or source payloads.
+/// `details`; never pass sample bytes, ciphertext, access data or full source
+/// payloads. Script context must use the bounded off-thread excerpt helper.
 pub fn event(level: LogLevel, module: &str, code: &str, details: Value) {
     emit(json!({"level":level,"module":module,"event":code,"code":code,"data":details}));
 }
@@ -563,8 +564,8 @@ fn emit_to(session: &Session, value: Value) -> Option<String> {
     }
 }
 
-/// Bridge the existing off-thread KSP formatters to typed log fields. Human
-/// slot numbers are one-based; raw runtime fault slots are already zero-based.
+/// Bridge the existing off-thread KSP formatters to zero-based typed log fields.
+/// The human-facing formatters and LiveFault.slot use one-based slot numbers.
 /// Keep the original message, and prefer explicit JSON fields when supplied.
 fn script_location(message: &str) -> (Option<u32>, Option<u32>) {
     fn leading_number(text: &str) -> Option<u32> {
@@ -586,6 +587,70 @@ fn script_location(message: &str) -> (Option<u32>, Option<u32>) {
     (slot, line)
 }
 
+/// Only resolved, cached plaintext script source belongs here, on a loader or
+/// report worker. Never pass container bytes, ciphertext or access material.
+/// Slots in this excerpt are human-facing (one-based), like LiveFault.slot.
+pub(crate) fn script_excerpt(source: &str, slot: u32, line: u32, column: Option<u32>) -> Option<Value> {
+    if line == 0 { return None; }
+    #[derive(Serialize)]
+    struct Excerpt {
+        origin: &'static str,
+        script_slot: u32,
+        line: u32,
+        column: Option<u32>,
+        first_line: u32,
+        last_line: u32,
+        truncated: bool,
+        text: String,
+    }
+    use std::fmt::Write;
+    let mut excerpt = Excerpt {
+        origin: "resolved instrument script (embedded or linked)",
+        script_slot: slot, line, column, first_line: line.saturating_sub(2).max(1),
+        last_line: 0, truncated: false, text: String::new(),
+    };
+    let mut found = false;
+    for (at, source_line) in source.split('\n').enumerate() {
+        let source_line = source_line.strip_suffix('\r').unwrap_or(source_line);
+        let at = at as u32 + 1;
+        if at > line.saturating_add(2) { break; }
+        if at < excerpt.first_line { continue; }
+        let first_column = if at == line { column.unwrap_or(1).saturating_sub(129) as usize } else { 0 };
+        let mut text = String::new();
+        let mut tail_clipped = false;
+        for ch in source_line.chars().skip(first_column) {
+            if text.len() + ch.len_utf8() > 512 {
+                tail_clipped = true;
+                break;
+            }
+            // Keep source line structure; terminal/control escapes are not code.
+            text.push(if ch.is_control() && ch != '\t' { '?' } else { ch });
+        }
+        let clipped = tail_clipped || first_column != 0;
+        excerpt.truncated |= clipped;
+        let prefix = if first_column != 0 { "…" } else { "" };
+        let suffix = if tail_clipped { "…" } else { "" };
+        let _ = writeln!(excerpt.text, "{} {at:>6} | {prefix}{text}{suffix}", if at == line { ">" } else { " " });
+        if at == line {
+            found = true;
+            if let Some(column) = column.filter(|&c| c > 0) {
+                let offset = (column as usize - 1).saturating_sub(first_column);
+                if offset <= text.chars().count() {
+                    let before: String = text.chars().take(offset).map(|ch| if ch == '\t' { '\t' } else { ' ' }).collect();
+                    let _ = writeln!(excerpt.text, "         | {}{before}^", if first_column != 0 { " " } else { "" });
+                }
+            }
+        }
+        excerpt.last_line = at;
+    }
+    found.then(|| serde_json::to_value(excerpt).unwrap())
+}
+
+/// Readable alongside the structured record, for Logs details and clipboard.
+pub(crate) fn excerpt_text(issue: &Value) -> Option<&str> {
+    issue["source_excerpt"]["text"].as_str()
+}
+
 /// Called after a diagnostic snapshot returns from the audio thread.
 pub(crate) fn runtime(
     path: &Path,
@@ -599,6 +664,9 @@ pub(crate) fn runtime(
         let mut data = issue.clone();
         if data.is_object() {
             data["script_epoch"] = json!(epoch);
+            if let Some(slot) = data["slot"].as_u64().and_then(|slot| slot.checked_sub(1)) {
+                data["script_slot"] = json!(slot);
+            }
         }
         emit(
             json!({"event":"runtime_issue","load_id":load_id,"path":path,"program":program,"part":part,"script_epoch":epoch,"data":data}),
@@ -914,7 +982,7 @@ pub fn export_preview(context: &Value) -> Value {
         "schema_version": SCHEMA_VERSION, "build":build_identity(), "context":context,
         "redact_paths":redact, "status":history.status,
         "contents":["report.json","README.txt","events.jsonl","journal.jsonl (current and retained inactive sessions)"],
-        "privacy":"Source/script payloads, sample bytes, ciphertext and access credentials are excluded. Paths are redacted by default. Review the preview before sharing.",
+        "privacy":"Bounded script excerpts around faults are included. Full scripts, sample bytes, ciphertext and access credentials are excluded. Paths are redacted by default. Review the preview before sharing.",
         "history_limit":HISTORY_LIMIT,"history_bytes_limit":HISTORY_BYTES,
         "journal_limit_bytes":LOG_LIMIT,"rotations_retained":1,
         "inactive_retention_bytes":64*1024*1024,"inactive_retention_days":7,
@@ -1092,7 +1160,7 @@ fn export_bundle(
             "context":context,"status":snapshot.status,"revision":snapshot.revision,
             "retained_events":snapshot.events.len(),"history_limit":HISTORY_LIMIT,
             "redact_paths":redact,
-            "privacy":{"paths_redacted":redact,"source_payloads":false,"sample_assets":false,"credentials":false,"ciphertext":false},
+            "privacy":{"paths_redacted":redact,"source_payloads":false,"bounded_script_excerpts":true,"sample_assets":false,"credentials":false,"ciphertext":false},
             "logs":{"journal_limit_bytes":LOG_LIMIT,"rotations_retained":1,"inactive_retention_bytes":64*1024*1024,"inactive_retention_days":7},
             "issues":snapshot.events.iter().filter(|e| matches!(e.level, LogLevel::Warning | LogLevel::Error)).collect::<Vec<_>>(),
         });
@@ -1189,7 +1257,7 @@ fn export_bundle(
             &serde_json::to_vec_pretty(&report)?,
         )?;
         let readme = format!(
-            "KONTRA diagnostic report\n\nBuild: {}\nPaths redacted: {redact}\nRecent events: {} (bounded to {HISTORY_LIMIT} rows / {} bytes)\nSession events: {}\nDropped before journal: {}\nWrite errors: {}\nJournal rows exported: {rows}\nMalformed journal rows omitted: {malformed}\n\nreport.json: build, system, caller-provided host/audio configuration, recent issues and counters.\nevents.jsonl: bounded recent in-memory history, including events lost before disk.\njournal.jsonl: current journal and one retained rotation, in chronological order.\n\nJournals rotate before exceeding 8MiB; at most two files per active session.\nInactive sessions are pruned to 64MiB / 7 days; active sessions are never deleted.\nAbrupt process termination may lose queued events; stage-start records show the last observed operation.\nSource/script payloads, sample assets, ciphertext and access credentials are excluded.\nPath redaction preserves file basenames; review diagnostic messages and library names before sharing.\n",
+            "KONTRA diagnostic report\n\nBuild: {}\nPaths redacted: {redact}\nRecent events: {} (bounded to {HISTORY_LIMIT} rows / {} bytes)\nSession events: {}\nDropped before journal: {}\nWrite errors: {}\nJournal rows exported: {rows}\nMalformed journal rows omitted: {malformed}\n\nreport.json: build, system, caller-provided host/audio configuration, recent issues and counters.\nevents.jsonl: bounded recent in-memory history, including events lost before disk.\njournal.jsonl: current journal and one retained rotation, in chronological order.\n\nJournals rotate before exceeding 8MiB; at most two files per active session.\nInactive sessions are pruned to 64MiB / 7 days; active sessions are never deleted.\nAbrupt process termination may lose queued events; stage-start records show the last observed operation.\nBounded script excerpts around faults are included; full scripts, sample assets, ciphertext and access credentials are excluded.\nPath redaction preserves file basenames; review diagnostic messages and library names before sharing.\n",
             snapshot.build["version"].as_str().unwrap_or("unknown"),
             snapshot.events.len(),
             HISTORY_BYTES,
@@ -1441,14 +1509,36 @@ impl LoadTrace {
         self.report["details"][key] = value.into();
     }
     pub fn issue(&mut self, stage: &'static str, code: &'static str, message: impl Into<String>) {
-        let mut message = message.into();
+        self.issue_details(stage, code, message.into(), json!({}));
+    }
+    /// Script errors retain their original message and a bounded local excerpt.
+    /// Full script payloads are never recorded.
+    pub fn script_issue(&mut self, code: &'static str, message: impl Into<String>, sources: &[String]) {
+        let message = message.into();
+        let (slot, line) = script_location(&message);
+        let column = message.split_once("column ").or_else(|| message.split_once("col "))
+            .and_then(|(_, text)| text.split(|c: char| !c.is_ascii_digit()).next()?.parse::<u32>().ok())
+            .filter(|&c| c > 0);
+        let mut details = json!({});
+        if let (Some(slot), Some(line)) = (slot, line) {
+            details["script_slot"] = json!(slot);
+            details["line"] = json!(line);
+            if let Some(source) = sources.get(slot as usize)
+                && let Some(excerpt) = script_excerpt(source, slot + 1, line, column)
+            { details["source_excerpt"] = excerpt; }
+        }
+        self.issue_details("scripts", code, message, details);
+    }
+    fn issue_details(&mut self, stage: &'static str, code: &'static str, mut message: String, mut issue: Value) {
         truncate(&mut message, 4096);
+        issue["stage"] = json!(stage);
+        issue["code"] = json!(code);
+        issue["message"] = json!(message);
         let key = (stage, code, message.clone());
         if self.seen.contains(&key) {
             return;
         }
         if self.seen.len() >= 1024 {
-            let issue = json!({"stage":stage,"code":code,"message":message});
             let error = matches!(code, "failed" | "initialization_failed");
             if error && self.report["last_error"] == issue {
                 return;
@@ -1465,7 +1555,6 @@ impl LoadTrace {
             return;
         }
         self.seen.insert(key);
-        let issue = json!({"stage":stage,"code":code,"message":message});
         self.report["issues"]
             .as_array_mut()
             .unwrap()
@@ -1563,7 +1652,8 @@ mod tests {
         ));
         std::fs::create_dir(&directory).unwrap();
         let session = Session::start(directory.join("logs"));
-        let row = json!({"module":"ksp","event":"runtime_issue","load_id":"load-contract","path":"/private/alice/Harp.nki","data":{"slot":2,"line":37,"message":"Cannot read '/private/alice/Missing Sample.wav'","count":4,"script_epoch":9}});
+        let source = format!("{}set_key_color(128,$KEY_COLOR_RED)\nend on", "\n".repeat(36));
+        let row = json!({"module":"ksp","event":"runtime_issue","load_id":"load-contract","path":"/private/alice/Harp.nki","data":{"slot":2,"line":37,"message":"Cannot read '/private/alice/Missing Sample.wav'","count":4,"script_epoch":9,"source_excerpt":script_excerpt(&source,2,37,None)}});
         emit_to(&session, row.clone());
         let (reply, done) = mpsc::channel();
         lock(&session.sender)
@@ -1732,6 +1822,12 @@ mod tests {
         let report: Value =
             serde_json::from_slice(&std::fs::read(bundle.join("report.json")).unwrap()).unwrap();
         assert_eq!(report["journal_coverage"], "partial");
+        assert_eq!(report["privacy"]["bounded_script_excerpts"], true);
+        for file in ["events.jsonl", "journal.jsonl"] {
+            let rows = std::fs::read_to_string(bundle.join(file)).unwrap();
+            assert!(rows.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .any(|event| excerpt_text(&event["details"]).is_some_and(|text| text.contains(">     37 | set_key_color(128,$KEY_COLOR_RED)"))), "{file} retains authorized source context");
+        }
         assert!(
             report["journal_source_sessions"]
                 .as_array()
