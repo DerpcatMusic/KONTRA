@@ -20,6 +20,9 @@ are added when a release is actually published; commit history is not a changelo
 - Native NKSN snapshots applied to an explicit base instrument, including supported
   saved controls, instrument/group FX, known envelopes and modulation assignments.
   Three Analog Strings snapshots have production state checks and two decoded IRs each.
+- Typed native LFO parsing and writing for known fields, with 9,600 actual-library
+  chunks round-tripping byte-for-byte. Import preserves this metadata; LFO clocks,
+  waveform generation and routing remain unsupported, and some tables remain raw.
 
 ### Fixed
 
@@ -28,9 +31,14 @@ are added when a release is actually published; commit history is not a changelo
 - Sustain release bookkeeping, generated-note lifecycle and MPE expression/tuning
   routing in the covered playback paths.
 - Bounded physical-input CC120 cleanup and Panic termination for previously lingering
-  Areia, Dolce and CHORUS script lifetimes. The focused six-patch rerun covers 24 cases
-  and 670,704 blocks with zero measured render-thread heap operations, nonfinite samples,
-  dropped commands or streaming underruns, and clear final held/voice/pending state.
+  Areia, Dolce and CHORUS script lifetimes. Reset restores recorded library device
+  defaults alongside standard controllers in native playback and scripts, fixing
+  all 12 previously silent legato fresh-note cases in the focused rerun.
+  The six-patch, 24-case run covers 670,704 blocks with zero measured render-thread
+  heap operations, nonfinite samples, drops, underruns or offline duration overruns;
+  every fresh post-Panic voice has positive gain/envelope levels and final held,
+  voice and pending state is clear. Three renders with effects disabled confirm
+  audible CC121 recovery and baseline-matching CC120/Panic recovery.
 - Zone ID mapping after import filtering and source-parser allocations in validated
   preset/container paths.
 - Browser scaling/layout and selected DSP effect processing paths.
@@ -51,6 +59,5 @@ passing synthetic test does not establish sonic parity for every library. Existi
 compatibility notes and unsupported-operation diagnostics remain applicable; these
 changes do not announce complete format, script or sound equivalence.
 
-Fresh notes after CC121 remain silent in three notes/pedals/stops cases and one
-CHORUS channel-articulation case; investigation continues. Opaque snapshot source
-state and unknown saved scalars are warned and remain unapplied.
+The focused offline results do not certify live-host deadlines or every library.
+Opaque snapshot source state and unknown saved scalars are warned and remain unapplied.
