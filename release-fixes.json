@@ -338,6 +338,96 @@
       ],
       "validation": "Production ordinary-import regression passed at d4dae04: unknown category/shaper/boolean slots remain explicit placeholders, valid envelope and target identities survive; strict snapshot decoding still rejects malformed records. Actual library benefit awaits headless loads.",
       "accepted": true
+    },
+    {
+      "id": "load-warning-journal-cap",
+      "summary": "Retain load warnings in the persistent journal beyond bounded report examples",
+      "source_commits": [
+        "e12f8a0b79b9f58c4792b28a836d025b2aad3644"
+      ],
+      "validation": "Root reports the focused gate passed and an actual Areia load delivered all 1125 warnings. Awaiting release acceptance.",
+      "accepted": false
+    },
+    {
+      "id": "scripted-ahd-only-envelope",
+      "summary": "Apply scripted AHD Only through the shared envelope kernel",
+      "source_commits": [
+        "de730e157c6807b3a51ae84a8fa486d12625d24d"
+      ],
+      "validation": "Root reports the explicit AHD Only gate passed. This does not validate every imported envelope or establish Kontakt sound parity. Awaiting release acceptance.",
+      "accepted": false
+    },
+    {
+      "id": "script-only-v3-snapshot",
+      "summary": "Apply script-only Kontakt v3 snapshots without replacing native instrument state",
+      "source_commits": [
+        "76d1e097cdd97466bcb0a48d55c32d8f596516ef"
+      ],
+      "validation": "Root reports vendor checks and actual Conflux snapshot application/audio outputs passed; realtime underruns remain. Awaiting release acceptance.",
+      "accepted": false
+    },
+    {
+      "id": "library-root-archive-sample-paths",
+      "summary": "Resolve library-root archive samples from nested instrument directories",
+      "source_commits": [
+        "b29eef1b054e5de0f9c7ee8302a517a28f1881cd"
+      ],
+      "validation": "Root reports authored resolution checks, actual archive members and loading 1985 Conflux zones passed. Full-library playback remains unverified. Awaiting release acceptance.",
+      "accepted": false
+    },
+    {
+      "id": "counted-modulation-array-slots",
+      "summary": "Decode counted native modulation arrays with 64 external slots",
+      "source_commits": [
+        "9bf24017fcbe9f7d29e9f6220cbc8356297146b0"
+      ],
+      "validation": "Root reports vendor checks and actual byte-preservation checks passed. Record preservation does not establish modulation processing parity. Awaiting release acceptance.",
+      "accepted": false
+    },
+    {
+      "id": "modern-bounded-source-identities",
+      "summary": "Read bounded native source identities in Kontakt v0x103 and v0x104",
+      "source_commits": [
+        "e92be6571f900ba65e00b7b1683699c68eeb3baa"
+      ],
+      "validation": "Pending combined gate and actual-source review; no passed validation or release acceptance claimed.",
+      "accepted": false
+    },
+    {
+      "id": "off-thread-load-journal-delivery",
+      "summary": "Preserve off-thread load diagnostic bursts and report delivery status",
+      "source_commits": [
+        "3a36b64721769d5c9398bc7d396c91072ae3e0a2"
+      ],
+      "validation": "Pending journal burst/delivery gate; separate from retaining warnings beyond the report-example cap.",
+      "accepted": false
+    },
+    {
+      "id": "release-trigger-note-mono",
+      "summary": "Preserve and apply release-trigger Note Mono",
+      "source_commits": [
+        "7c09b821feb5ed4ba43e509c63aab18ff07fccab"
+      ],
+      "validation": "Pending format, playback and release-trigger gate; no actual-library or sound-parity claim.",
+      "accepted": false
+    },
+    {
+      "id": "compact-modern-snapshot-records",
+      "summary": "Decode and preserve modern v3 snapshot and v4 compact source records",
+      "source_commits": [
+        "3801b2e4f44f9ba15865b7fa3062034019d24663"
+      ],
+      "validation": "Pending bounded-record and roundtrip gates; separate from applying script-only v3 snapshots.",
+      "accepted": false
+    },
+    {
+      "id": "native-group-send-level-routing",
+      "summary": "Route native group Send Levels taps into existing instrument returns",
+      "source_commits": [
+        "b77b748d36771bf9a786f1059554cb3610e351a0"
+      ],
+      "validation": "Pending group-send processing gate; unsupported processing and Kontakt sound equivalence remain unverified.",
+      "accepted": false
     }
   ]
 }
