@@ -15,6 +15,31 @@ local function strict(name, values)
 end
 local active, instances = nil, {}
 local instance_count = 0
+local function color(r,g,b,a)
+    local channels={r,g,b}
+    for index=1,3 do
+        local value=channels[index]
+        assert(type(value)=="number" and value%1==0 and value>=0 and value<=255,"Invalid RGB channel")
+    end
+    assert(type(a)=="number" and a>=0 and a<=1,"Invalid color opacity")
+    return setmetatable({r=r,g=g,b=b,a=a}, {__index=strict("Color", {
+        opacity=function(self,value) return color(self.r,self.g,self.b,value) end,
+    })})
+end
+local Color=strict("Color", {
+    white=color(255,255,255,1),black=color(0,0,0,1),
+    red=color(255,0,0,1),none=color(0,0,0,0),
+})
+getmetatable(Color).__call=function(_,r,g,b,a)
+    if g==nil and b==nil and a==nil then
+        assert(type(r)=="number" and r%1==0 and r>=-2147483648 and r<=4294967295,"Invalid packed color")
+        return color((r>>16)&255,(r>>8)&255,r&255,((r>>24)&255)/255)
+    end
+    if a~=nil then
+        assert(type(a)=="number" and a%1==0 and a>=0 and a<=255,"Invalid alpha channel")
+    end
+    return color(r,g,b,a==nil and 1 or a/255)
+end
 local ui = {
     create_state=function(value)
         if not active then
@@ -34,10 +59,7 @@ local ui = {
     end,
     -- Computed properties are reevaluated when a scene snapshot is requested.
     create_computed=function(compute) assert(type(compute)=="function"); return compute end,
-    Color=function(r,g,b)
-        for _,v in ipairs({r,g,b}) do assert(type(v)=="number" and v>=0 and v<=255,"Invalid color") end
-        return {r=r,g=g,b=b}
-    end,
+    Color=Color,
 }
 for _,kind in ipairs({"ZStack","Text","Rectangle","Image"}) do ui[kind]={kind=kind} end
 native_ui_host = strict("native_ui",ui)

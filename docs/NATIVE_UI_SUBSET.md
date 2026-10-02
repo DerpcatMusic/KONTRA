@@ -10,7 +10,7 @@ Lua errors identify `.nui.lowered.lua`; line counts after a component are preser
 while locations inside the rewritten property/child tables refer to lowered Lua.
 
 Supported scene primitives are `ZStack`, `Text`, `Rectangle` and `Image`, with explicit
-frames, RGB colors, computed text, local scalar state, inherited contexts and tap callbacks. Component functions
+frames, RGB/RGBA and packed ARGB colors, computed text, local scalar state, inherited contexts and tap callbacks. Component functions
 expand lazily within their parent context; local state hooks persist by
 component source identity and scene path across refreshes. The
 editor uses the existing MUI painter. Connected integer KSP UI controls retain
@@ -18,6 +18,10 @@ their exact script slot/control ID; duplicate identifiers use the first slot,
 as specified for `expose_controls`. Tap edits use the existing bounded plug-in
 queue and real `ui_control` callbacks. Published values include connected controls
 from all successful slots, independently of the selected classic performance page.
+Color opacity returns a new value with the requested alpha, preserving RGB.
+This value contract follows the [NI Color reference](https://developer.native-instruments.com/komplete-ui/docs/StandardLibrary/Color/)
+and matches the constructor/opacity forms observed in legacy resources; it does
+not make the modern typed source language executable by this Lua adapter.
 
 Scene preparation runs in the loader. Lua scene evaluation and gestures run in
 editor/worker services; Lua is never stored in or executed by the audio engine.

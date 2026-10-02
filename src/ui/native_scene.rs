@@ -145,7 +145,9 @@ fn primitive(
             .fill(Color::srgb(1., 1., 1.))
             .w(w)
             .h(h),
-        Paint::Rectangle(color) => block(w, h).fill(Color::srgb(color[0], color[1], color[2])),
+        Paint::Rectangle(color) => {
+            block(w, h).fill(Color::srgba(color[0], color[1], color[2], color[3]))
+        }
         Paint::Stack => stack(children).w(w).h(h),
         Paint::Asset(reference) => match assets.entries.get(&reference.resource) {
             Some(Ok(asset)) => match asset.as_ref() {
