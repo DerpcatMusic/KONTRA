@@ -113,7 +113,7 @@ if [ $mode = public ]; then
     grep -Fq 'The keystream in `src/access.rs`' THIRD_PARTY.md ||
     { echo "public manifest lost required third-party provenance" >&2; exit 1; }
   mapfile -t code_files < <(git -C "$repo" ls-tree -r --name-only "$ref" |
-    grep -Ei '\.(rs|py|sh|c|cc|cpp|h|hpp|js|ts|cjs|m|mm|java|kt|cs|go|rb|lua|pl|ps1|bat|cmd|sql)$' |
+    grep -Ei '\.(rs|py|sh|swift|c|cc|cpp|h|hpp|js|ts|cjs|m|mm|java|kt|cs|go|rb|lua|pl|ps1|bat|cmd|sql)$|^\.github/scripts/macos_installer/postinstall$' |
     grep -v '^\.claude/' || true)
   for f in "${code_files[@]}"; do
     [ -f "$f" ] || { echo "public manifest omitted code file: $f" >&2; exit 1; }
