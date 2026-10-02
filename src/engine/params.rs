@@ -510,7 +510,7 @@ const BUS_OFFSET: i32 = 1000;
 /// Instrument buses.
 const BUSES: u8 = 16;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum GroupPar {
     Volume,
     Pan,
@@ -518,7 +518,7 @@ pub(crate) enum GroupPar {
     Output,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Stage {
     Attack,
     /// Attack curve, -1..=1.
@@ -530,7 +530,7 @@ pub(crate) enum Stage {
 }
 
 /// A modelled engine parameter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Address {
     Group(u16, GroupPar),
     /// Volume, pan or tune of the whole instrument.

@@ -148,7 +148,7 @@ pub(crate) enum Shape {
 }
 
 /// Parameter of a filter, EQ or Stereo Modeller slot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Knob {
     Cutoff,
     Resonance,

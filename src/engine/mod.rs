@@ -203,6 +203,8 @@ pub struct Engine {
     commands: Vec<Command>,
     /// Script engine parameter changes for the next render, ordered by frame.
     writes: Vec<Write>,
+    /// Current-sample parameter positions, allocated before audio processing.
+    write_index: (u32, std::collections::HashMap<Address, usize>),
     ir_requests: Vec<IrRequest>,
     /// MIDI channel of the latest input routed to the script; its notes play there.
     script_channel: u8,
@@ -233,6 +235,7 @@ impl Default for Engine {
             script: None,
             commands: Vec::with_capacity(script::COMMAND_CAPACITY),
             writes: Vec::with_capacity(MAX_WRITES),
+            write_index: (0, std::collections::HashMap::with_capacity(MAX_WRITES)),
             ir_requests: Vec::with_capacity(32),
             script_channel: 0,
             attack: 0.002,
@@ -254,6 +257,7 @@ impl Engine {
         self.player.touch();
         self.commands.clear();
         self.writes.clear();
+        self.write_index.1.clear();
         self.ir_requests.clear();
         let old = std::mem::replace(&mut self.bank, bank);
         self.player.free.clear();
@@ -325,6 +329,7 @@ impl Engine {
     pub fn set_script(&mut self, mut script: Option<Box<Runtime>>) -> Option<Box<Runtime>> {
         self.commands.clear();
         self.writes.clear();
+        self.write_index.1.clear();
         self.ir_requests.clear();
         if let Some(rt) = script.as_deref_mut() {
             rt.set_sample_rate(self.player.rate);
@@ -451,6 +456,7 @@ impl Engine {
         self.player.clear_voices(self.bank.as_deref());
         self.commands.clear();
         self.writes.clear();
+        self.write_index.1.clear();
         self.fx.clear();
         self.player.reset_midi();
         self.player.rate = rate;
@@ -583,6 +589,7 @@ impl Engine {
             player: &mut self.player,
             commands: &mut self.commands,
             writes: &mut self.writes,
+            write_index: &mut self.write_index,
             ir_requests: &mut self.ir_requests,
         };
         Some((rt, host))
@@ -1007,6 +1014,7 @@ impl Engine {
         if self.bank.is_none() && self.script.is_none() && self.fx.is_empty() {
             self.commands.clear();
             self.writes.clear();
+            self.write_index.1.clear();
             return;
         }
         let channel = self.script_channel;
@@ -1096,6 +1104,7 @@ impl Engine {
         }
         self.commands.clear();
         self.writes.clear();
+        self.write_index.1.clear();
     }
 
     fn defaults(&self) -> Ahdsr {
