@@ -30,7 +30,8 @@ pub enum ModTarget {
     Volume,
     /// Group pitch (`pitch`).
     Pitch,
-    /// Another group parameter (`pan`, `loopLength`); playback does not model it.
+    /// Another group parameter. Constant loopStart/loopLength are processed on
+    /// eligible forward Source-mode-0 paths; other group destinations are retained.
     Group(String),
     /// Sample start position (`playPos`), scaled by the zone's `start_mod` range.
     SampleStart,
@@ -51,7 +52,7 @@ pub struct ModAssignment {
     pub source: ModSource,
     /// Modulated parameter.
     pub target: ModTarget,
-    /// Physical depth; pitch and filter cutoff include the saved target sign.
+    /// Physical depth; pitch, filter cutoff and loop bounds include the saved target sign.
     /// Other target magnitudes retain their existing interpretation.
     pub intensity: f32,
     /// Invert button; its order relative to the shaper is unverified.
@@ -295,9 +296,9 @@ fn target_depth(target: &ni_file::kontakt::objects::ModTarget) -> f32 {
     // The native signed-target setter writes abs(depth) and sets target bit 1
     // for negative values. The shared target reader/writer confirms this is
     // unknown_flags, separately from invert. Apply it only to the pitch and
-    // filter-cutoff target laws independently established by native records.
+    // filter-cutoff and loop target laws independently established by native records.
     let signed = matches!((target.param.as_str(), target.slot),
-        ("pitch", None) | ("filterCutoff", Some(_)));
+        ("pitch", None) | ("filterCutoff", Some(_)) | ("loopStart" | "loopLength", None));
     if signed && target.unknown_flags & 0x02 != 0 {
         -target.intensity
     } else {
@@ -441,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_target_sign_reaches_only_proven_pitch_and_cutoff_routes() {
+    fn saved_target_sign_reaches_only_proven_pitch_cutoff_and_loop_routes() {
         use ni_file::kontakt::{Chunk, StructuredObject, objects::{ExternalMod, InternalMod}};
         fn name(out: &mut Vec<u8>, text: &str) {
             out.extend((text.len() as u32).to_le_bytes()); out.extend(text.as_bytes());
@@ -500,7 +501,7 @@ mod tests {
                 assert_eq!(rows[1].target, ModTarget::Module { param: "filterCutoff".into(), slot: 3 });
                 assert_eq!(rows[1].intensity, expected);
                 assert_eq!(rows[2].intensity, 0.125, "unverified resonance law unchanged");
-                assert_eq!(rows[3].intensity, 0.5, "unverified loop law unchanged");
+                assert_eq!(rows[3].intensity, expected * 0.5, "independently proved loop sign");
                 assert!(rows.iter().all(|row| row.invert && row.lag_ms == 15 && row.shaper.is_none()));
             }
             let params = InternalMod::try_from(&internal(if i == 0 { 0x10 } else { 0x12 })).unwrap().params().unwrap();
