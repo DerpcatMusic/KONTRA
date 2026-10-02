@@ -6084,13 +6084,15 @@ end on"#,dir.display());
                 script_state: restoring.clone(), ..Default::default() };
             let streaming = part.streaming(p.selection.read().unwrap().streaming);
             p.selection.write().unwrap().parts = vec![part.clone()];
-            {
+            let initial_epoch = {
                 let mut view = p.shared.view.lock().unwrap();
                 for v in &mut view.parts { v.attempted = Some(Part::default().source()); v.streaming = streaming; }
+                let epoch = next_epoch(&mut view, 0, None, None);
                 let v = &mut view.parts[0];
                 v.attempted = Some(part.source()); v.instrument = Some(instrument.clone());
-                v.fx_rate = 48000.; v.script_epoch = 1; v.script_state = initial.clone();
-            }
+                v.fx_rate = 48000.; v.script_state = initial.clone();
+                epoch
+            };
             let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
             let gate = Arc::new(Barrier::new(2));
             *p.shared.restore_gate.lock().unwrap() = Some((0, gate.clone()));
@@ -6113,11 +6115,11 @@ end on"#,dir.display());
             let v = &view.parts[0];
             if change < 4 {
                 assert!(restored.is_none(), "stale restore cannot enter the callback queue ({change})");
-                assert_eq!(v.script_epoch, 1, "stale preparation cannot acquire a fresh epoch");
+                assert_eq!(v.script_epoch, initial_epoch, "stale preparation cannot acquire a fresh epoch");
                 assert_eq!(v.script_state, initial, "stale preparation cannot replace published state");
             } else {
                 let (handoff_generation, script, epoch) = restored.expect("unrelated gain preserves the pending restore");
-                assert_eq!(handoff_generation, generation); assert_ne!(epoch, 1);
+                assert_eq!(handoff_generation, generation); assert_ne!(epoch, initial_epoch);
                 assert_eq!(script.unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(7));
                 assert_eq!(v.script_state, restoring);
             }
