@@ -1826,12 +1826,8 @@ impl BackgroundTask for Load {
                         trace.stage("artwork");
                         let interface = interface.as_deref();
                         let wallpaper = artwork::performance(&instrument, interface);
-                        let names = interface.into_iter().flat_map(|u| &u.controls)
-                            .filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
-                                Some(crate::ksp::Value::Text(name)) => Some(name.as_str()),
-                                _ => None,
-                            });
-                        let (pictures, errors) = artwork::pictures_report(&instrument.path, names);
+                        let names: Vec<_> = interface.into_iter().flat_map(artwork::picture_names).collect();
+                        let (pictures, errors) = artwork::pictures_report(&instrument.path, names.iter().map(|name| name.as_ref()));
                         for e in errors { trace.issue("artwork", crate::diagnostics::code(&e), e); }
                         if let Err(e) = &wallpaper { trace.issue("artwork", crate::diagnostics::code(e), e); }
                         trace.detail("pictures_loaded", pictures.len());

@@ -177,6 +177,7 @@ pub struct Ui {
     /// Control index per ID offset, for IDs of UI controls.
     id_controls: Vec<u32>,
     pub controls: Vec<ControlState>,
+    pub fonts: Vec<String>,
     pub performance: bool,
     pub width: i32,
     pub height: i32,
@@ -193,6 +194,7 @@ impl Ui {
             var_ids: vec![0; vars],
             id_controls: Vec::with_capacity(vars),
             controls: Vec::new(),
+            fonts: Vec::new(),
             performance: false,
             width: 632,
             height: 350,
@@ -449,6 +451,7 @@ impl Ui {
             wallpaper_state: self.wallpaper_state,
             skin_offset: self.skin_offset,
             controls,
+            fonts: self.fonts.clone(),
             diagnostics,
             listeners: self
                 .listeners
