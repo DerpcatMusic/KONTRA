@@ -922,6 +922,7 @@ fn voice_groups(data: &[u8]) -> Result<(VoiceLimit, Vec<Option<VoiceLimit>>)> {
 
 pub struct Resolver {
     root: PathBuf,
+    canonical_root: Option<PathBuf>,
     dependencies: std::collections::HashSet<PathBuf>,
     index: Option<HashMap<String, Vec<PathBuf>>>,
     /// Lazily indexed archives with an open handle for member headers.
@@ -940,6 +941,7 @@ impl Resolver {
     pub fn new(root: &Path) -> Self {
         Self {
             root: root.into(),
+            canonical_root: root.canonicalize().ok(),
             dependencies: Default::default(),
             index: None,
             archives: HashMap::new(),
@@ -953,7 +955,7 @@ impl Resolver {
         let direct = parent.join(&name);
         self.dependencies.insert(direct.clone());
         // Archive members first: a path inside an archive file is never a file itself.
-        if let Some((archive, member)) = self.archive_member(&direct) {
+        if let Some((archive, member)) = self.archive_member_from(parent, &name) {
             if !self.archives.contains_key(archive.as_os_str()) {
                 let mut file = File::open(&archive)?;
                 let index = ni_file::nkr::Archive::read_index(&mut file).with_context(|| format!("Archive {}", archive.display()))?;
@@ -990,8 +992,9 @@ impl Resolver {
     pub fn resolve_all(&mut self, parent: &Path, names: &[&str]) -> Result<Vec<Option<PathBuf>>> {
         let (mut resolved, mut jobs, mut loose) = (vec![None; names.len()], Vec::new(), Vec::new());
         for (i, name) in names.iter().enumerate() {
-            let direct = parent.join(name.replace('\\', "/"));
-            let Some((archive, member)) = self.archive_member(&direct) else { loose.push(i); continue };
+            let name = name.replace('\\', "/");
+            let direct = parent.join(&name);
+            let Some((archive, member)) = self.archive_member_from(parent, &name) else { loose.push(i); continue };
             if !self.archives.contains_key(archive.as_os_str()) {
                 let mut file = File::open(&archive)?;
                 let index = ni_file::nkr::Archive::read_index(&mut file).with_context(|| format!("Archive {}", archive.display()))?;
@@ -1026,6 +1029,25 @@ impl Resolver {
             Some(entry) if entry.issue == Some("Zero-filled NKX member header") => { self.undownloaded.insert(direct.to_path_buf()); Ok(None) }
             _ => Ok(None),
         }
+    }
+
+    /// Relative archive prefixes can be rooted at the library rather than
+    /// the NKI's Instruments folder. Preserve direct references first and
+    /// search only the hierarchy within this library, never another library.
+    fn archive_member_from(&mut self, parent: &Path, name: &str) -> Option<(PathBuf, String)> {
+        if let Some(member) = self.archive_member(&parent.join(name)) { return Some(member); }
+        if Path::new(name).is_absolute() { return None; }
+        for at in parent.ancestors().skip(1) {
+            if !at.starts_with(&self.root) { break; }
+            let Some((archive, member)) = self.archive_member(&at.join(name)) else { continue };
+            if !self.canonical.contains_key(archive.as_os_str()) {
+                self.canonical.insert(archive.clone().into(), archive.canonicalize().ok()?);
+            }
+            if self.canonical_root.as_ref().is_some_and(|root| self.canonical[archive.as_os_str()].starts_with(root)) {
+                return Some((archive, member));
+            }
+        }
+        None
     }
 
     /// [`archive_member`], remembering which archive paths are files: one
@@ -1112,6 +1134,57 @@ pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod preset_tests {
+
+    #[test]
+    fn relative_archives_resolve_within_the_library_and_validate_members() {
+        use super::Resolver;
+        fn archive(path: &std::path::Path, name: &str) {
+            let mut bytes = 0x5e70ac54u32.to_le_bytes().to_vec();
+            bytes.extend(0x110u16.to_le_bytes()); bytes.extend([0; 8]);
+            bytes.extend(1u32.to_le_bytes()); bytes.extend([0; 4]);
+            let name: Vec<_> = name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+            bytes.extend(((name.len() + 8) as u16).to_le_bytes());
+            bytes.extend((128u32 ^ 0x1f4e0c8d).to_le_bytes()); bytes.extend(2u16.to_le_bytes()); bytes.extend(name);
+            bytes.resize(128, 0); bytes.extend(0x4916e63cu32.to_le_bytes());
+            bytes.extend(0x110u16.to_le_bytes()); bytes.extend([0; 13]);
+            bytes.extend(4u32.to_le_bytes()); bytes.extend([0; 4]); bytes.extend(*b"test");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap(); std::fs::write(path, bytes).unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("kontra-archive-root-{}", std::process::id()));
+        let root = dir.join("Library"); let parent = root.join("Instruments");
+        std::fs::create_dir_all(&parent).unwrap();
+        let bank = root.join("Samples/Bank.nkx"); archive(&bank, "voice.ncw");
+        let outside = dir.join("Outside/Bank.nkx"); archive(&outside, "voice.ncw");
+        let expected = bank.canonicalize().unwrap().join("voice.ncw");
+        let mut resolver = Resolver::new(&root);
+        assert_eq!(resolver.resolve(&parent, "Samples/Bank.nkx/voice.ncw").unwrap(), Some(expected.clone()));
+        assert_eq!(resolver.resolve_all(&parent, &["Samples/Bank.nkx/voice.ncw", "Samples/Bank.nkx/missing.ncw", r"..\Samples\Bank.nkx\voice.ncw"]).unwrap(), [Some(expected.clone()), None, Some(expected)]);
+        assert_eq!(resolver.resolve(&parent, "../Outside/Bank.nkx/voice.ncw").unwrap(), None, "fallback never crosses the library boundary");
+        // An existing direct archive stays authoritative even if another
+        // same-named archive above it contains the requested member.
+        archive(&parent.join("Samples/Bank.nkx"), "different.ncw");
+        assert_eq!(Resolver::new(&root).resolve(&parent, "Samples/Bank.nkx/voice.ncw").unwrap(), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the local Conflux archive and library access data"]
+    fn actual_conflux_archive_members_resolve_and_decode_without_extracting() {
+        let nki = std::path::PathBuf::from(std::env::var_os("KONTRA_CONFLUX_INSTRUMENT").expect("set KONTRA_CONFLUX_INSTRUMENT"));
+        let parent = nki.parent().unwrap(); let root = parent.parent().unwrap();
+        let names = ["Samples/CNX_01.nkx/Samples/01 AdditivMix.wav", "Samples/CNX_01.nkx/Samples/01 Sin-Square.wav"];
+        let paths = super::Resolver::new(root).resolve_all(parent, &names).unwrap();
+        let mut sources = crate::audio::Sources::default();
+        for (name, path) in names.iter().zip(paths) {
+            let path = path.expect("existing library-root archive member must resolve");
+            assert_eq!(path, root.canonicalize().unwrap().join(name));
+            let source = sources.source(&path).unwrap(); let mut reader = source.open().unwrap();
+            assert!(reader.header().frames > 0);
+            let mut pcm = [[0.0;2];64]; reader.read(0, &mut pcm).unwrap();
+            assert!(pcm.iter().flatten().all(|v| v.is_finite()));
+            eprintln!("Conflux archive member verified: {} frames", reader.header().frames);
+        }
+    }
 
     #[test]
     fn invalid_zone_mapping_names_rejected_values_without_narrowing() {
