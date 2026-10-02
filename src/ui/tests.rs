@@ -436,11 +436,10 @@ fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths()
             let at = center(&h.ui, "header-0");
             assert!(native_files(&p, &Default::default(), &h.ui, at, &["/virtual/Library/Strings.nki".into()], true));
         } else {
-            h.press("name-0");
-            h.press("library-0");
-            h.ui.focus("instrument-1");
-            h.tick(Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() });
-            h.idle(3);
+            // The header's preset navigation calls the same Cx::replace as
+            // the browser. Its live surface avoids a hidden folder row.
+            assert!(h.ui.scene().unwrap().surface("preset-next-0").is_some());
+            h.press("preset-next-0");
         }
         let part = p.selection.read().unwrap().parts[0].clone();
         let mut expected = original;
