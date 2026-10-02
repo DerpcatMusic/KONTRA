@@ -101,6 +101,11 @@ pub struct Reverb {
 }
 
 impl Reverb {
+    /// Current algorithmic DSP decay time; the UI shares this conversion.
+    pub fn time_seconds(value: f32) -> f32 {
+        0.2 * 100f32.powf(value.clamp(0., 1.))
+    }
+
     /// The values most local presets store, for a Reverb a script loads.
     pub const DEFAULT: Self = Self {
         room_type: 0.0,

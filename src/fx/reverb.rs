@@ -137,7 +137,7 @@ impl Reverb {
         let ms = |v: f32| v * 0.001 * sample_rate;
         let hall = p.room_type >= 0.5;
         let scale = (0.5 + n(p.size)) * if hall { 1.0 } else { 0.55 };
-        let rt60 = 0.2 * 100f32.powf(n(p.time));
+        let rt60 = params::Reverb::time_seconds(p.time);
         self.mod_depth = ms(n(p.modulation) * 1.5);
         self.delay = BASE_MS.map(|base| ms(base * scale));
         // Each pass through a line of length d must lose 60 dB over rt60.
