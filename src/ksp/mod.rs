@@ -117,6 +117,9 @@ pub struct Interface {
     pub wallpaper: String,
     #[serde(default)]
     pub wallpaper_state: i32,
+    /// Vertical background offset in pixels, independent of picture state.
+    #[serde(default)]
+    pub skin_offset: i32,
     pub controls: Vec<Control>,
     pub diagnostics: BTreeSet<String>,
     pub listeners: BTreeMap<String, i32>,
@@ -131,6 +134,7 @@ impl Default for Interface {
             title: String::new(),
             wallpaper: String::new(),
             wallpaper_state: 0,
+            skin_offset: 0,
             controls: Vec::new(),
             diagnostics: BTreeSet::new(),
             listeners: BTreeMap::new(),
