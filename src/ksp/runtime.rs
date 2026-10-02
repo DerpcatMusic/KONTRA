@@ -2078,7 +2078,13 @@ impl Runtime {
                     }
                     return self.env.events.free(event);
                 }
-                if slot >= e.reached || e.released & (1 << slot) != 0 {
+                if slot >= e.reached {
+                    return self.env.events.free(event);
+                }
+                if e.released & (1 << slot) != 0 {
+                    if e.cleanup {
+                        return self.env.queue(Work::Release { event, slot: slot + 1 });
+                    }
                     return self.env.events.free(event);
                 }
                 e.released |= 1 << slot;

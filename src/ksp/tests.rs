@@ -2056,6 +2056,19 @@ fn panic_cleanup_continues_finished_ignored_releases_without_replaying_notificat
         assert_eq!(rig.rt.env.events.live_count(), 0);
         assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
     }
+    // An authored note_off can reach and ignore a middle release slot before
+    // the first slot's physical release. Cleanup must skip that completed slot.
+    let first = "on init\ndeclare ui_label $info(1,1)\nend on\non note\nwait(1)\nnote_off($EVENT_ID)\nend on\non release\nset_text($info,\"first cleaned\")\nend on";
+    let middle = "on init\ndeclare $count\ndeclare ui_label $info(1,1)\nend on\non release\ninc($count)\nset_text($info,$count)\nignore_event($EVENT_ID)\nend on";
+    let mut rig = Rig::new(&[first, middle, last]);
+    rig.on(0, 60).block(64);
+    assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "1");
+    rig.rt.cleanup_notes(&mut rig.engine);
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "first cleaned");
+    assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "1");
+    assert_eq!(prop(&rig.rt.interface(2), 0, "$CONTROL_PAR_TEXT"), "last cleaned");
+    assert_eq!(rig.rt.env.events.live_count(), 0);
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
 }
 
 #[test]
