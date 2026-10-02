@@ -15,6 +15,7 @@ from release_notes import generate, render
 # A release needs reviewed deltas and full shipped context even without Git history.
 previous_notes = '## 0.3.0 — unreleased\n### Added\n- Existing wrapped\n  feature.\n### Fixed\n- Old fix.\n'
 current_notes = previous_notes.replace('Existing wrapped\n  feature.', 'Existing wrapped feature.') + '\n- New fix.\n### Changed\n- New behavior.\n### Known limits\n- Runtime limitation remains.\n'
+current_notes += '\n### Reviewed source changes\n> Exact authored source message.\n### Candidates — not shipped\n- Untested future feature.\n'
 commit = dict(sha='a'*40, commit=dict(message='fix: complete title\n\nExact explanation.'))
 followup = dict(sha='d'*40, commit=dict(message='test: retain complete validation context'))
 merged = dict(number=13, title='Reviewed batch', html_url='https://example/13', body='All reviewed details.', merged_at='2026-10-02', merge_commit_sha='a'*40)
@@ -29,6 +30,7 @@ assert 'New fix.' in notes and 'New behavior.' in notes and 'Runtime limitation 
 assert '- Existing wrapped feature.' not in notes and '- Old fix.' not in notes
 assert 'Exact explanation.' in notes and 'All reviewed details.' in notes and 'Complete public comparison' in notes
 assert notes.count('#### [Reviewed batch]') == 1
+assert 'Exact authored source message.' in notes and 'Untested future feature.' not in notes
 assert 'test: retain complete validation context' in notes
 bootstrap = generate(notes_api, 'example/KONTRA', 'a'*40, '0.3.1-nightly.test', None, current_notes)
 assert 'First published snapshot' in bootstrap and 'Existing wrapped feature.' in bootstrap

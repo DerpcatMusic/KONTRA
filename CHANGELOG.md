@@ -10,6 +10,21 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Added
 
+- Cached instrument snapshots appear in a compact header preset row with owned
+  category labels, alongside the existing explicit snapshot picker/drop workflow.
+- Independent user UI zoom preferences and persistent global editor window size.
+- Native file-picker callbacks for supported KSP file selectors, with prepared paths
+  and retained asynchronous callback routing.
+- Imported Creator Tools performance-view controls for supported exported records,
+  including null lists for empty menus and the initialization-only constraint.
+- Declared JPEG resource names share the image decoder instead of being discarded.
+- Prepared rack storage and viewport rows remove the previous fixed part cap; browser
+  drops can append parts in the empty canvas. This is a feature, not a fix-count unit.
+- Persistent library display aliases use the detached catalog without renaming
+  library files. Native Reveal validates its target path before dispatch.
+- Bounded source-identity diagnostics identify unsupported Kontakt 8 wavetable
+  playback instead of representing it as supported sample playback.
+
 - Every nightly records reviewed Added/Changed/Fixed/Known limits deltas, complete
   shipped public commit messages and merged PR descriptions in its release body and
   versioned manifest. The previous release source is the comparison baseline;
@@ -70,7 +85,37 @@ below record reviewed source checkpoints; they are not claims about pending work
   summarizes it on the diagnostics worker. It measures application callback and
   presentation-submission time, without forced GPU synchronization or display-FPS claims.
 
+### Changed
+
+- Logs search is simpler and copying includes complete retained diagnostic details;
+  event text is owned before the query changes. Rack header artwork is more visible.
+- Encrypted preset access failures explain the lookup boundary; XML fields tolerate
+  surrounding whitespace. These diagnostics do not add keys or bypass encryption.
+- Group processing follows decoded pre/post Amplifier insert order for supported
+  filter and drive stages. Interleaved filter states remain out of shared lanes;
+  effect indicators disclose partial processing instead of implying every FX runs.
+
 ### Fixed
+
+- Forward initialization RPN messages after receiving script slots initialize.
+- Persist global editor window size instead of losing the saved size between editors.
+- Decode native Kontakt 8 flat filename tables and explicit effect-slot identities;
+  retain supported records instead of rejecting their valid layout or misreading slots.
+- Archive errors retain directory signatures and exact read boundaries. Rejected
+  samples and loop bounds retain their actual failure cause and typed skip counters.
+- Count KSP faults omitted by the retained source-location cap, and retain command,
+  argument, signal and runtime-value context for invalid note/listener operations.
+- Dispatch the documented legacy PGS callback spelling.
+- Keep the rack welcome drop area and scrollbar gutter stable while accepting
+  append drops on the empty canvas.
+- Resolve declared JPEG resources and route decoded module envelope bypass and
+  supported modern target depths through the existing processing paths.
+- Schedule millisecond and beat listeners independently; registration, disabling
+  or retuning one clock no longer overwrites the other clock's phase or generation.
+- Preserve release tails during offline overload rendering.
+- Preserve native group insert order around the Amplifier, including separate
+  state for interleaved filters and honest partial-effect indicators.
+- Resolve the authored compressor native ID through its documented KSP names.
 
 - Group drive processing retains all eight native insert slots. A third drive
   stage was previously discarded, leaving Analog Strings' Saturation control
@@ -178,6 +223,117 @@ menu checks do not establish that every action or preset works. The installed
 header-favorite preset ID is absent from its registry, preventing that lookup from
 updating favorites; no supplied IDs were repaired or compared with Kontakt.
 
+
+### Known limits
+
+- Root's shipping-profile focused checks through `e68d28c` passed 20 library checks
+  and all 83 playback checks (4 ignored). NI's 13 focused checks passed. These results
+  do not certify every actual library or a Windows/macOS DAW.
+- An actual imported performance resource exposes 378 controls, 11 families and
+  100 callback operations without measured callback heap allocations; complete
+  initialization still rejects an invalid level-meter attachment. This is not a
+  complete NCKP interface or native-UI compatibility claim.
+- Wavetable source diagnostics do not implement wavetable DSP. Partial group FX,
+  decoded envelopes and selected compressor IDs do not establish Kontakt sonic
+  equivalence; unsupported processing remains visible.
+- Larger racks remain bounded by memory, voice budgets and host/editor capabilities.
+  User zoom, cached snapshots and native file-picker tests do not certify every
+  gesture, resource, preset or file-dialog workflow.
+
+### Reviewed source changes
+
+> Forward init RPN messages after receiving script slots initialize
+
+> Simplify Logs search and copy complete retained diagnostics
+
+> Make rack header artwork slightly more visible
+
+> Persist global editor size and add independent UI zoom preferences
+
+> Expose cached instrument snapshots in a compact preset row
+
+> Decode Kontakt 8 flat filename tables and explicit effect slots
+
+> fix(nkx): report directory signatures and read boundaries
+
+> fix(samples): report rejected zone and loop bounds
+
+> fix(diagnostics): count KSP faults omitted by the location cap
+
+> Dispatch the documented legacy PGS callback spelling
+
+> Append browser drops anywhere in the rack empty canvas
+
+> Resolve declared JPEG resource names with shared image decoding
+
+> Preserve native group Amplifier insert split metadata
+
+> fix(load): classify skipped zones by their actual failure cause
+
+> Route decoded module envelope bypass and modern target depths
+
+> feat(ksp): route file selectors through native picker callbacks
+
+> Own event detail text before updating the Logs query
+
+> fix(diagnostics): serialize typed zone skip counters
+
+> Load exported performance-view controls before KSP compilation
+
+> Enforce the documented performance-view initialization constraint
+
+> Keep snapshot categories in owned menu labels
+
+> Check performance-view slot results using the runtime result type
+
+> Keep rack welcome drop area and scrollbar gutter stable
+
+> Inspect bounded source identities and report unsupported Kontakt 8 wavetable playback
+
+> test(ksp): verify selector callbacks and prepared paths
+
+> Accept Creator Tools null lists for empty exported menus
+
+> docs: track generic compatibility gaps and validation boundaries
+
+> fix(ksp): retain command and arguments in note validation faults
+
+> Schedule KSP millisecond and beat listeners independently
+
+> Check independent listener delivery on the allocation-free audio path
+
+> Retain listener command and argument details in bounded faults
+
+> fix(render): retain release tails during offline overload
+
+> Preserve native group insert order around the amplifier
+
+> Report fixed group voice state size in the pipeline proof
+
+> Keep group effect indicators honest about partial processing
+
+> Keep interleaved group filter states out of shared lanes
+
+> Remove the rack part cap with prepared storage and viewport rows
+
+> Resolve the authored compressor native ID through KSP names
+
+> Add persistent library display names and validate native Reveal paths
+
+> Explain encrypted preset access lookup and accept XML field whitespace
+
+> Use the detached catalog for library display aliases
+
+### Candidates — not shipped
+
+The following subsequent work remains outside the reviewed release notes until its
+combined validation passes and the maintainer moves it into Added/Changed/Fixed:
+
+- WAV loader boundary handling (`48a`): candidate, not accepted or shipped.
+- Access lookup diagnostics (`744`): candidate follow-up, not accepted or shipped.
+- Native Reveal behavior (`776`): candidate follow-up, not accepted or shipped.
+- Diagnostic source excerpts (`fc0`): candidate, not accepted or shipped.
+- Multi-script pages (`235`): candidate, not accepted or shipped.
 
 ## 0.3.0-nightly.20261002.g4399f700e590 — 2026-10-02
 
