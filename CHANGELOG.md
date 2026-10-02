@@ -17,6 +17,9 @@ are added when a release is actually published; commit history is not a changelo
   Reports identify omitted events, write errors and partial journal coverage.
 - Script condition inheritance between successfully initialized slots, native
   pedal/release conditions, and additional supported script syntax and zone queries.
+- Native NKSN snapshots applied to an explicit base instrument, including supported
+  saved controls, instrument/group FX, known envelopes and modulation assignments.
+  Three Analog Strings snapshots have production state checks and two decoded IRs each.
 
 ### Fixed
 
@@ -24,6 +27,10 @@ are added when a release is actually published; commit history is not a changelo
   selective sound-off across articulation channels sharing one engine channel.
 - Sustain release bookkeeping, generated-note lifecycle and MPE expression/tuning
   routing in the covered playback paths.
+- Bounded physical-input CC120 cleanup and Panic termination for previously lingering
+  Areia, Dolce and CHORUS script lifetimes. The focused six-patch rerun covers 24 cases
+  and 670,704 blocks with zero measured render-thread heap operations, nonfinite samples,
+  dropped commands or streaming underruns, and clear final held/voice/pending state.
 - Zone ID mapping after import filtering and source-parser allocations in validated
   preset/container paths.
 - Browser scaling/layout and selected DSP effect processing paths.
@@ -43,3 +50,7 @@ Kontakt preset import, scripts and playback remain partial. Successful import or
 passing synthetic test does not establish sonic parity for every library. Existing
 compatibility notes and unsupported-operation diagnostics remain applicable; these
 changes do not announce complete format, script or sound equivalence.
+
+Fresh notes after CC121 remain silent in three notes/pedals/stops cases and one
+CHORUS channel-articulation case; investigation continues. Opaque snapshot source
+state and unknown saved scalars are warned and remain unapplied.
